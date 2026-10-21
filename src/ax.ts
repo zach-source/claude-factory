@@ -339,6 +339,9 @@ const gitlabRule = (host: string, uri?: (key: string) => string) => ({
   },
 })
 
+/** GitHub owners whose repos need their own vault key (the App's installation on that account); the Basic key adds `_BASIC` */
+const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
+
 /**
  * a worker's EgressPolicy: HTTPS to Anthropic and GitHub, plus the rig's own rules, and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
  * swaps the placeholder in each auth header for that agent-vault vault's credential: `ANTHROPIC` (a Claude OAuth token),
@@ -356,20 +359,39 @@ export function egressPolicy(
   extra: Egress[] = [],
   gate = process.env.FACTORY_AX_PKG_GATE,
   gitlabHost?: string,
+  githubOwner?: string,
+  githubKey = 'GITHUB_BASIC',
 ) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
-  const rule = (hostnames: string[], header: string, prefix: string, key: string, port?: number) => ({
+  const rule = (
+    hostnames: string[],
+    header: string,
+    prefix: string,
+    key: string,
+    port?: number,
+    pathPrefixes?: string[],
+  ) => ({
     https: {
       hostnames,
       ...(port && { ports: { numbers: [port] } }),
+      ...(pathPrefixes && { pathPrefixes }),
       ...(vault && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
     },
   })
+  const own = githubOwner && Object.hasOwn(GITHUB_OWNER_KEYS, githubOwner) && GITHUB_OWNER_KEYS[githubOwner]
+  const apiHosts = ['api.github.com', 'uploads.github.com']
   return {
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
-      rule(['api.github.com', 'uploads.github.com'], 'Authorization', 'Bearer ', 'GITHUB'),
-      rule(['github.com'], 'Authorization', 'Basic ', 'GITHUB_BASIC'),
+      rule(apiHosts, 'Authorization', 'Bearer ', own || 'GITHUB'),
+      rule(['github.com'], 'Authorization', 'Basic ', own ? `${own}_BASIC` : githubKey),
+      // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live)
+      ...(vault && githubKey === 'GITHUB_BASIC'
+        ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
+            rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
+            rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`]),
+          ])
+        : []),
       ...(gitlabHost ? [gitlabRule(gitlabHost, vault ? uri : undefined)] : []),
       // the binary caches the image's Nix installs tools and a repo's devenv from; their packages are signed. And
       // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would
@@ -389,18 +411,20 @@ export function egressPolicy(
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
  * One try: the tick that launched the task does not wait, the next ones try again.
  */
-export function createPolicy(task: string, extra: Egress[] = [], gitlabHost?: string) {
-  if (BROKER())
-    return broker(
-      'PUT',
-      `/policy/${ATESPACE()}/${task}`,
-      JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost)),
-    ).ok
+export function createPolicy(
+  task: string,
+  extra: Egress[] = [],
+  gitlabHost?: string,
+  githubOwner?: string,
+  githubKey?: string,
+) {
+  const policy = JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey))
+  if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
     [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
     {
-      stdin: Buffer.from(JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost))),
+      stdin: Buffer.from(policy),
       timeout: 30_000,
     },
   )
@@ -575,6 +599,9 @@ const MANAGER_PASS = [
   'FACTORY_AX_IMAGE',
   'FACTORY_AX_VAULT',
   'FACTORY_AX_ATESPACE',
+  'FACTORY_AX_BACKUP_REMOTE',
+  'FACTORY_AX_BACKUP_BRANCH',
+  'FACTORY_AX_BACKUP_EVERY',
 ]
 
 /**
@@ -631,6 +658,13 @@ export function managerEgress(env: Record<string, string | undefined> = process.
 }
 
 /**
+ * The backup repo's credential must not be a worker's. Workers get GITHUB_BASIC. When a backup remote is set, the
+ * manager gets its own vault key: a fine-grained token for the backup repo and the rigs it syncs.
+ */
+export const managerGithubKey = (env: Record<string, string | undefined> = process.env) =>
+  env.FACTORY_AX_BACKUP_REMOTE ? 'GITHUB_BASIC_MANAGER' : 'GITHUB_BASIC'
+
+/**
  * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
  * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
  */
@@ -638,7 +672,8 @@ export async function launchManager(image: string, args: string[], { tries = 24,
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress())) return { name, policy: true }
+    if (createPolicy(name, managerEgress(), undefined, undefined, managerGithubKey()))
+      return { name, policy: true }
     await Bun.sleep(waitMs)
   }
   return { name, policy: false }

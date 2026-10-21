@@ -1,6 +1,6 @@
 // `factory plan facts|set|show` (claude-factory-dun.2): the pm has no Bash, so this CLI
 // gathers the facts it ranks, validates its answer by hand, writes plan.json, and files each
-// finding and proposal as a bead -- the pm never calls `bd` itself. This drives the real CLI
+// proposal as a bead (findings stay in plan.json) -- the pm never calls `bd` itself. This drives the real CLI
 // through a fake `bd`, the same harness as dispatch.test.ts.
 import { afterEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
@@ -165,22 +165,28 @@ test('plan set writes plan.json with items in non-decreasing priority order', ()
   expect(written.proposals).toEqual([{ rig: 'a', change: 'bump fx-1 to P0', why: 'a customer is blocked' }])
 })
 
-test('a re-run files each finding/proposal key exactly once; the cap is 3 newly filed beads per rig', () => {
+test('a re-run files each proposal key exactly once; the cap is 3 newly filed beads per rig', () => {
   reset()
   writeFacts()
   const answerPath = join(dir, 'answer.json')
-  writeAnswer(answerPath)
+  const proposals = ['fx-1', 'fx-2', 'fx-3', 'fx-4'].map(bead => ({
+    rig: 'a',
+    bead,
+    change: `bump ${bead} to P0`,
+    why: 'a customer is blocked',
+  }))
+  writeAnswer(answerPath, { proposals })
 
   const first = factory(['plan', 'set', answerPath])
   expect(first.code).toBe(0)
-  // 3 findings + 1 proposal = 4 candidates to file, capped at 3 per rig
+  // 4 proposals to file, capped at 3 per rig
   expect(createCalls().length).toBe(3)
 
   writeFileSync(join(bin, 'calls.log'), '') // same facts+answer, second run
   const second = factory(['plan', 'set', answerPath])
   expect(second.code).toBe(0)
   // every key from the first run is now filed: this run creates nothing for them
-  expect(createCalls().length).toBe(1) // only the 4th (capped-out) item is still new
+  expect(createCalls().length).toBe(1) // only the 4th (capped-out) proposal is still new
 })
 
 test("a proposal becomes a 'human'-labeled bead; the argv log has no update and no bare -p", () => {
@@ -219,7 +225,7 @@ test('a proposal naming a bead dedupes on rig+bead, not on its wording: a reword
   expect(createCalls()).toHaveLength(1) // still 1: the key matched the already-filed bead
 })
 
-test('plan set labels starved-epic and goal-no-beads human; epic-done-open and goal-no-plan stay unlabeled (claude-factory-dun.16, pins HUMAN_FINDING_KINDS)', () => {
+test('plan set files no bead for a finding of any kind, and still files a proposal in the same answer', () => {
   reset()
   writeFacts({
     findings: [
@@ -230,26 +236,17 @@ test('plan set labels starved-epic and goal-no-beads human; epic-done-open and g
     ],
   })
   const answerPath = join(dir, 'answer.json')
-  writeAnswer(answerPath, { proposals: [] })
+  writeAnswer(answerPath)
   expect(factory(['plan', 'set', answerPath]).code).toBe(0)
-  const firstCreates = createCalls()
-  writeFileSync(join(bin, 'calls.log'), '') // the cap is 3/run: the 4th files on a second pass
-  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
-  const all = [...firstCreates, ...createCalls()]
-  expect(all).toHaveLength(4)
-  const lineFor = (titleWords: string) => all.find(l => l.includes(titleWords))
-  const starved = lineFor('starved epic, no progress')
-  const goalNoBeads = lineFor('has no open bead driving it')
-  const epicDoneOpen = lineFor('children are all closed')
-  const goalNoPlan = lineFor('has no ranked work to act on')
-  expect(starved).toBeDefined()
-  expect(goalNoBeads).toBeDefined()
-  expect(epicDoneOpen).toBeDefined()
-  expect(goalNoPlan).toBeDefined()
-  expect(starved).toContain('-l human')
-  expect(goalNoBeads).toContain('-l human')
-  expect(epicDoneOpen).not.toContain('-l human')
-  expect(goalNoPlan).not.toContain('-l human')
+  // the findings stay in plan.json
+  const written = JSON.parse(readFileSync(planJson(), 'utf8'))
+  expect(written.rigs.a.findings).toHaveLength(4)
+  // only the proposal became a bead
+  const creates = createCalls()
+  expect(creates).toHaveLength(1)
+  expect(creates[0]).toContain('pm proposal: bump fx-1 to P0')
+  expect(creates[0]).toContain('-l human')
+  expect(callsLog()).not.toContain('pm: ')
 })
 
 test('plan set strips control characters and newlines from a proposal before plan.json and the filed bead (claude-factory-dun.24)', () => {
@@ -326,7 +323,7 @@ test('plan set prints a JSON summary on stdout: rigs, items, findings, and filed
   const out = factory(['plan', 'set', answerPath])
   expect(out.code).toBe(0)
   const summary = JSON.parse(out.out.trim())
-  expect(summary).toEqual({ rigs: 1, items: 2, findings: 3, filed: 3 }) // 3 findings + 1 proposal, capped at 3
+  expect(summary).toEqual({ rigs: 1, items: 2, findings: 3, filed: 1 }) // 3 findings are not filed; the 1 proposal is
 })
 
 // `factory plan facts` gathers `rigFacts` for real, through a fake `bd` (claude-factory-dun.12, .13).

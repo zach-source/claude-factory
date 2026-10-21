@@ -185,6 +185,84 @@ test('with a vault named, the task sends placeholder auth headers for the gatewa
   }
 })
 
+const keyOf = (r: { https: { effects?: { replaceHeaders: { credentialUri: string }[] } } }) =>
+  r.https.effects!.replaceHeaders[0]!.credentialUri.split('/').at(-1)
+
+test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones keep the default keys', () => {
+  type R = {
+    https: {
+      hostnames: string[]
+      pathPrefixes?: string[]
+      effects?: { replaceHeaders: { header: string; prefix: string; credentialUri: string }[] }
+    }
+  }
+  const rules = ax.egressPolicy('factory').rules as R[]
+  const zsGit = rules.find(r => r.https.pathPrefixes?.[0] === '/zach-source/')!
+  expect(zsGit.https).toEqual({
+    hostnames: ['github.com'],
+    pathPrefixes: ['/zach-source/'],
+    effects: {
+      replaceHeaders: [
+        {
+          header: 'Authorization',
+          prefix: 'Basic ',
+          credentialUri: 'ate-secret://agent-vault/factory/GITHUB_ZS_BASIC',
+        },
+      ],
+    },
+  })
+  const zsApi = rules.find(r => r.https.pathPrefixes?.[0] === '/repos/zach-source/')!
+  expect(zsApi.https).toEqual({
+    hostnames: ['api.github.com', 'uploads.github.com'],
+    pathPrefixes: ['/repos/zach-source/'],
+    effects: {
+      replaceHeaders: [
+        {
+          header: 'Authorization',
+          prefix: 'Bearer ',
+          credentialUri: 'ate-secret://agent-vault/factory/GITHUB_ZS',
+        },
+      ],
+    },
+  })
+  const plain = rules.filter(r => !r.https.pathPrefixes)
+  expect(keyOf(plain.find(r => r.https.hostnames[0] === 'github.com')!)).toBe('GITHUB_BASIC')
+  expect(keyOf(plain.find(r => r.https.hostnames[0] === 'api.github.com')!)).toBe('GITHUB')
+  // two rules for one host must not share a prefix
+  const seen = new Set<string>()
+  for (const r of rules)
+    for (const h of r.https.hostnames)
+      for (const p of r.https.pathPrefixes ?? ['']) {
+        expect(seen.has(`${h} ${p}`)).toBe(false)
+        seen.add(`${h} ${p}`)
+      }
+  // no vault: no prefixed rule
+  expect(JSON.stringify(ax.egressPolicy(''))).not.toContain('pathPrefixes')
+})
+
+test('a worker of a zach-source rig gets the zach-source keys on the unprefixed GitHub rules', () => {
+  const plainKeys = (owner?: string) =>
+    (ax.egressPolicy('factory', [], undefined, undefined, owner).rules as any[])
+      .filter(r => !r.https.pathPrefixes && /github\.com/.test(r.https.hostnames[0]))
+      .map(keyOf)
+  expect(plainKeys('zach-source')).toEqual(['GITHUB_ZS', 'GITHUB_ZS_BASIC'])
+  expect(plainKeys('acme')).toEqual(['GITHUB', 'GITHUB_BASIC'])
+  expect(plainKeys()).toEqual(['GITHUB', 'GITHUB_BASIC'])
+})
+
+test('createPolicy passes the rig owner to the policy', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t3', [], undefined, 'zach-source')
+    expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(
+      ax.egressPolicy('factory', [], undefined, undefined, 'zach-source'),
+    )
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
 test("a worker's egress policy allows Anthropic and GitHub, and injects keys only from a named vault", () => {
   expect(ax.egressPolicy('')).toEqual({
     rules: [
@@ -207,6 +285,23 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
     },
   ])
   expect(git!.https.effects!.replaceHeaders[0]).toMatchObject({ header: 'Authorization', prefix: 'Basic ' })
+})
+
+test('the manager has its own github.com vault key when a backup remote is set; workers keep GITHUB_BASIC', () => {
+  const key = (k?: string) =>
+    JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, undefined, k).rules).match(
+      /factory\/(GITHUB_BASIC\w*)/,
+    )![1]
+  expect(key()).toBe('GITHUB_BASIC')
+  expect(key(ax.managerGithubKey({ FACTORY_AX_BACKUP_REMOTE: 'https://github.com/acme/h.git' }))).toBe(
+    'GITHUB_BASIC_MANAGER',
+  )
+  expect(ax.managerGithubKey({})).toBe('GITHUB_BASIC')
+  const mgr = JSON.stringify(
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER').rules,
+  )
+  expect(mgr).not.toContain('GITHUB_ZS')
+  expect(mgr).not.toContain('pathPrefixes')
 })
 
 test("a task's phase is read from ax get, and a deleted task has none", () => {
@@ -727,6 +822,64 @@ test("a rig's shared Dolt remote is what the VM's beads clone from, with only a 
   }
 })
 
+test('a rig with no Dolt remote bootstraps its beads from the git origin through a sync.remote config', () => {
+  const own = join(dir, 'own-beads-origin')
+  const bd = join(dir, 'bd-boot-origin')
+  // like bd 1.3.0: no .beads/config.yaml, no workspace
+  writeFileSync(
+    bd,
+    `#!/bin/sh\n[ -f .beads/config.yaml ] || { printf '%s\\n' 'Error: No active beads workspace found.' >&2; exit 1; }\ncat .beads/config.yaml >> ${join(dir, 'bd-boot-origin.log')}\nmkdir -p .beads/embeddeddolt\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  delete process.env.FACTORY_BEADS_REMOTE
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_REPO: gitOrigin('origin-ref', true),
+    FACTORY_BD: bd,
+  })
+  try {
+    worker.setupBeads()
+    const log = readFileSync(join(dir, 'bd-boot-origin.log'), 'utf8')
+    expect(log).toBe(`sync.remote: "git+${process.env.FACTORY_REPO}"\n`)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('a rig with no Dolt remote and an origin with no refs/dolt/data gets no store', () => {
+  const own = join(dir, 'own-beads-noref')
+  const bd = join(dir, 'bd-boot-noref')
+  writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
+  const saved = { ...process.env }
+  delete process.env.FACTORY_BEADS_REMOTE
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_REPO: gitOrigin('origin-noref', false),
+    FACTORY_BD: bd,
+  })
+  try {
+    expect(() => worker.setupBeads()).toThrow('has no refs/dolt/data')
+    expect(existsSync(join(own, 'beads', '.beads', 'embeddeddolt'))).toBe(false)
+  } finally {
+    process.env = saved
+  }
+})
+
+/** a local git origin, with refs/dolt/data when `withRef` */
+function gitOrigin(name: string, withRef: boolean) {
+  const o = join(dir, name)
+  mkdirSync(o, { recursive: true })
+  const git = (...a: string[]) =>
+    Bun.spawnSync(['git', '-C', o, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])
+  git('init', '-q')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  if (withRef) git('update-ref', 'refs/dolt/data', 'HEAD')
+  return o
+}
+
 test("a cached devenv becomes the worker's environment, keeping the VM's places and CA", () => {
   const own = join(dir, 'own-devenv')
   const repo = join(dir, 'repo-devenv')
@@ -1008,7 +1161,7 @@ test('a rig egress rule on another port names it, as a Dolt remotesapi needs', (
     prefix: 'Basic ',
     port: 50051,
   }
-  expect(ax.egressPolicy('factory', [dolt]).rules[4]).toEqual({
+  expect(ax.egressPolicy('factory', [dolt]).rules[6]).toEqual({
     https: {
       hostnames: ['dolt.example.com'],
       ports: { numbers: [50051] },
@@ -1032,8 +1185,8 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
     { https: { hostnames: ['pypi.org', 'files.pythonhosted.org'] } },
   ])
   const rules = ax.egressPolicy('factory', extra).rules
-  expect(rules).toHaveLength(6)
-  expect(rules[4]!.https).toEqual({
+  expect(rules).toHaveLength(8)
+  expect(rules[6]!.https).toEqual({
     hostnames: ['api.openai.com'],
     effects: {
       replaceHeaders: [
@@ -1045,13 +1198,13 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
       ],
     },
   })
-  expect(rules[5]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
+  expect(rules[7]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
 })
 
 test('unset, FACTORY_AX_PKG_GATE leaves egressPolicy byte-identical to today, registry hosts and all', () => {
   const extra = [ax.parseEgress('proxy.golang.org,sum.golang.org'), ax.parseEgress('pypi.org,api.openai.com')]
   expect(ax.egressPolicy('factory', extra, undefined)).toEqual(ax.egressPolicy('factory', extra))
-  expect(ax.egressPolicy('factory', extra).rules.slice(4)).toEqual([
+  expect(ax.egressPolicy('factory', extra).rules.slice(6)).toEqual([
     { https: { hostnames: ['proxy.golang.org', 'sum.golang.org'] } },
     { https: { hostnames: ['pypi.org', 'api.openai.com'] } },
   ])

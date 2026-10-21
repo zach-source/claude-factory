@@ -3,6 +3,7 @@
 // the run's inbox.jsonl, which the next tick drains in order.
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -17,6 +18,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
   writeSync,
 } from 'node:fs'
@@ -30,6 +32,7 @@ import {
   compile,
   extend,
   fill,
+  hasShipEdge,
   isParked,
   isPrWait,
   WORKER_OUTCOMES,
@@ -56,12 +59,14 @@ import {
   dispatchable,
   factoryOf,
   goalOf,
+  shipBranchOf,
   hasBeads,
   isOwned,
   LABEL,
   linearSourced,
   byId,
   parentOf,
+  shipQueueText,
   stationOf,
   type Bead,
 } from './beads'
@@ -82,7 +87,7 @@ import {
 } from './sweeps'
 import * as gatebrief from './gatebrief'
 import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
-import { tokens, waiting } from './sidebar'
+import { shipLines, tokens, waiting } from './sidebar'
 import * as devenv from './devenv'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
@@ -105,6 +110,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
@@ -239,6 +245,8 @@ export type Run = {
   forkedFrom?: string
   /** the bead this run works: its epic in the repo's beads tracker */
   bead?: string
+  /** a rig's ship run: only the runner writes this, and it counts against no run limit (claude-factory-rtuw) */
+  ship?: true
 }
 type Saved = {
   cursor: number
@@ -248,7 +256,13 @@ type Saved = {
 }
 /** bead bookkeeping, the beads pass's own file: journal entries mirrored, last heartbeat, whether track()
  * recorded the run's end, whether that ending was a requeue, and what last went wrong */
-type Track = { mirrored: number; beatAt: number; isSettled: boolean; requeued?: boolean; error?: string }
+export type Track = {
+  mirrored: number
+  beatAt: number
+  isSettled: boolean
+  requeued?: boolean
+  error?: string
+}
 type Input = Ev extends infer E ? (E extends Ev ? Omit<E, 'at'> : never) : never
 export type Row = {
   id: string
@@ -405,6 +419,8 @@ type TaskSide = {
   egress?: ax.Egress[]
   /** the rig origin's host when it is GitLab, for the egress policy's rule */
   gitlabHost?: string
+  /** the rig origin's GitHub owner, for the egress policy's per-owner key */
+  githubOwner?: string
   policy: boolean
   put?: string[]
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
@@ -611,7 +627,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress, side.gitlabHost))
+    if (!ax.createPolicy(task, side.egress, side.gitlabHost, side.githubOwner))
       return { status: 'pending', agent: 'ax', pending: 'egress policy not created' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
@@ -849,6 +865,16 @@ export function ownCopy(template: string, name: string) {
     `// commit, checked with \`factory check ${OWN}/${name}.ts\`. The improve sweep proposes changes to it.\n\n` +
     body
   )
+}
+
+/** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
+export function reworkBase(repo: string, branch: string) {
+  if (!/^factory\/[\w.-]+$/.test(branch) || branch.includes('..')) return undefined
+  Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', branch], { timeout: 30_000 })
+  const ref = `origin/${branch}`
+  return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
+    ? ref
+    : undefined
 }
 
 /**
@@ -1221,6 +1247,12 @@ export { httpsRemote }
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
  * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
+/** the VM has no codex guard yet: no deny hook, so no codex worker there (claude-factory-72dq) */
+export function axCodexRefused(agent: string) {
+  if (harnessOf(agent) === 'codex')
+    fail(`the ax runner does not run codex workers yet: they would have no deny hook (claude-factory-72dq)`)
+}
+
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
@@ -1229,7 +1261,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
-  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  if (!harness) fail(`the ax runner runs claude or pi workers, not "${agent}"`)
+  axCodexRefused(agent)
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1255,6 +1288,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const name = ax.taskName(run.id, c.seq)
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
+  const githubOwner = origin?.forge === 'github' ? origin.owner : undefined
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
@@ -1319,7 +1353,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     seq: c.seq,
     egress: rig?.egress,
     ...(gitlabHost && { gitlabHost }),
-    policy: ax.createPolicy(name, rig?.egress, gitlabHost),
+    ...(githubOwner && { githubOwner }),
+    policy: ax.createPolicy(name, rig?.egress, gitlabHost, githubOwner),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -1727,12 +1762,125 @@ export function workerFlags(
   return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
 }
 
+// codex features the guard needs off: each one lets a command run with no PreToolUse hook (claude-factory-x0b9)
+const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
+// codex_hooks is the legacy alias of hooks: turning it off turns the hooks off
+const CODEX_HOOKS = ['hooks', 'codex_hooks']
+// 0.160.1 ignores --disable unified_exec (features list keeps it true), so the launch probe cannot check it
+const CODEX_PROBED = CODEX_UNGUARDED.filter(f => f !== 'unified_exec')
+
+/** the reason a codex agent command turns a guard part off, or undefined */
+function codexGuardOff(agent: string): string | undefined {
+  // drop shell quotes and backslashes first: codex sees '--ignore-user-config' as the bare flag
+  const text = agent.replace(/['"\\]/g, '')
+  const w = text
+    .trim()
+    .split(/\s+/)
+    .flatMap(s => (/^--[\w-]+=/.test(s) ? s.split(/=(.*)/s).slice(0, 2) : [s]))
+  for (let i = 0; i < w.length; i++) {
+    const next = (w[i + 1] ?? '').replace(/\s/g, '')
+    if (w[i] === '--ignore-user-config') return w[i]
+    if (w[i] === '--disable' && CODEX_HOOKS.includes(next)) return `--disable ${next}`
+    if (w[i] === '--enable' && CODEX_UNGUARDED.includes(next)) return `--enable ${next}`
+  }
+  // -c/--config values in dotted, joined (-cfeatures.x=y) or table form (features={x=y}); fail closed on any match
+  const on = CODEX_UNGUARDED.join('|')
+  const re = new RegExp(
+    `features\\.(hooks|codex_hooks)=false|features\\.(${on})=true|features=\\{[^}]*((hooks|codex_hooks)=false|(${on})=true)`,
+  )
+  const m = text.replace(/\s/g, '').match(re)
+  if (m) return `-c ${m[0]}`
+}
+
+/**
+ * A codex worker gets its own CODEX_HOME at <run dir>/codex/<node>, never the person's ~/.codex. It holds
+ * config.toml (context limit), hooks.json (the person's hooks, then the deny hook last), AGENTS.md (the worker
+ * rules) and an auth.json link. Codex has the PreToolUse hook, so worker-hook.ts runs as it is. Fail closed:
+ * no hook file, or an agent command that turns the guard off, refuses the launch (claude-factory-x0b9).
+ */
+export function codexWorker(
+  run: Pick<Run, 'id' | 'worktree'>,
+  def: Pick<Factory, 'maxContextK'>,
+  node: string,
+  agent: string,
+  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches'>,
+  o: { hookFile?: string; userHome?: string; dir?: string; codexBin?: string } = {},
+): { env: Record<string, string>; extra: string } {
+  const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
+  if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
+  const off = codexGuardOff(agent)
+  if (off) fail(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
+  // the home trusts the worktree so codex shows no folder prompt; a .codex entry there would load unguarded config
+  for (let d = resolve(run.worktree); ; d = dirname(d)) {
+    if (existsSync(join(d, '.codex')))
+      fail(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
+    if (existsSync(join(d, '.git')) || dirname(d) === d) break
+  }
+  const user = o.userHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
+  const dir = o.dir ?? join(runDir(run.id), 'codex', node)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  let theirs: Record<string, unknown[]> = {}
+  try {
+    theirs = readJson<{ hooks?: Record<string, unknown[]> }>(join(user, 'hooks.json')).hooks ?? {}
+  } catch {
+    // no user hooks, or not JSON: the deny hook is the only one
+  }
+  const hook = denyHook(process.execPath, hookFile, personOnlyContexts(rig), protectedBranches(rig))
+  writeJson(join(dir, 'hooks.json'), {
+    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), hook] },
+  })
+  writeFileSync(
+    join(dir, 'config.toml'),
+    `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
+      `[projects.${JSON.stringify(run.worktree)}]\ntrust_level = "trusted"\n`,
+  )
+  const id = commitIdentity(HOME)
+  writeFileSync(
+    join(dir, 'AGENTS.md'),
+    readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') +
+      readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8') +
+      id.rule,
+  )
+  // one token store: codex rotates a ChatGPT refresh token, and a copy that refreshes would stale the person's own
+  const auth = join(user, 'auth.json')
+  const link = join(dir, 'auth.json')
+  rmSync(link, { force: true })
+  if (existsSync(auth)) symlinkSync(auth, link)
+  const extra =
+    ' --enable hooks --dangerously-bypass-hook-trust' +
+    CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
+    ' --disable apps --disable memories'
+  // ask codex what is on with these flags and this home: fail closed on a guard that is not in force
+  const probe = Bun.spawnSync([o.codexBin ?? 'codex', ...extra.trim().split(' '), 'features', 'list'], {
+    env: { ...process.env, CODEX_HOME: dir },
+  })
+  const on = new Map<string, string>()
+  for (const l of probe.stdout.toString().split('\n')) {
+    const c = l.trim().split(/\s+/)
+    if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
+  }
+  const bad =
+    probe.exitCode !== 0
+      ? 'codex features list failed'
+      : on.get('hooks') !== 'true'
+        ? 'hooks is not on'
+        : CODEX_PROBED.find(f => on.get(f) !== 'false')
+  if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
+  return {
+    env: { CODEX_HOME: dir, CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
+    extra,
+  }
+}
+
 function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
-  const extra = workerFlags(def, rig)
-  return command(agentOfNode(run, def, node), prompt, {
+  const agent = agentOfNode(run, def, node)
+  const setup =
+    harnessOf(agent) === 'codex' ? codexWorker(run, def, node, agent, rig) : { extra: workerFlags(def, rig) }
+  return command(agent, prompt, {
     session,
-    extra,
+    ...setup,
     mcp: rig?.mcp ? readMcp(rig.mcp) : undefined,
   })
 }
@@ -2321,8 +2469,27 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   }
 }
 
+/**
+ * The run's own PR among the links its reports cite. One link is that PR. With several, a report may cite
+ * a sibling PR, so the answer is the link whose head branch is the run's; no match records none, and the
+ * ship run finds the PR from ship_branch.
+ */
+export function shipPrOf(
+  links: string[],
+  branch: string,
+  headOf: (url: string) => string | null = url => {
+    const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'headRefName', '-q', '.headRefName'], {
+      timeout: 20_000,
+    })
+    return p.exitCode === 0 ? p.stdout.toString().trim() : null
+  },
+) {
+  if (links.length < 2) return links[0] ?? ''
+  return links.find(url => headOf(url) === branch) ?? ''
+}
+
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
-function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
+export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
   const b = beads(run.repo, actorOf(run.id))
   const id = run.bead!
   for (const e of c.log.slice(t.mirrored)) {
@@ -2338,9 +2505,24 @@ function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: nu
     const last = c.log.at(-1)
     const edge = last && def.nodes[last.node]?.next[last.outcome]
     const reason = clip(last ? `${last.node} ${last.outcome}: ${last.summary}` : node, 500)
+    // A ship edge hands the approved PR to the rig's ship run (claude-factory-rtuw). It runs before
+    // the open-children branch: approval is the end, and the ship run needs the bead open and queued.
+    if (node === 'done' && typeof edge === 'object' && edge.ship) {
+      const links = [...c.log].reverse().flatMap(e => [...prsIn(e.summary), ...mrsIn(e.summary)])
+      const url = shipPrOf([...new Set(links)], run.branch)
+      b.ship(id, run.id, { pr: url, branch: run.branch })
+      // a parked ship run wakes on mail; one that is not live is started by the next shipPass
+      for (const s of liveShipRuns().filter(s => s.run.repo === run.repo))
+        post(s.run.id, {
+          type: 'MAIL',
+          from: 'factory',
+          to: s.node,
+          text: `${id} joined the ship queue: ${url || 'no pull request link'} (run ${run.id}).`,
+        })
+    }
     // open children, however the run ended: what is left is theirs to start, so the bead stays open
     // rather than deferred out of sight (dispatch skips it, so it does not come straight back)
-    if (openChildren(b, id).length) {
+    else if (openChildren(b, id).length) {
       b.release(id)
       b.comment(id, `run ${run.id} ended with open child beads, so this stays open for them: ${reason}`)
     }
@@ -2442,6 +2624,55 @@ const trackOf = (id: string, saved?: Saved): Track => {
       }
 }
 
+/** the repos that need a new ship run: a non-empty queue and no live ship run (claude-factory-rtuw) */
+export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
+  repos.filter(r => !live.has(r) && queued(r) > 0)
+
+/** the live ship runs: the runner's own flag, or the id a ship run gets from its factory name */
+const liveShipRuns = () =>
+  runIds().flatMap(id => {
+    try {
+      const { run, value } = current(id)
+      const ended = ['done', 'aborted'].includes(where(value)[0])
+      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0] }] : []
+    } catch {
+      return [] // removed mid-pass
+    }
+  })
+
+/**
+ * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
+ * A ship run takes no room: it counts against FACTORY_MAX_RUNS and the rig's maxRuns never
+ * (claude-factory-rtuw), so this does not call assertRoom. The beads pass calls it.
+ */
+async function shipPass() {
+  if (halted()) return
+  const live = new Set(liveShipRuns().map(s => s.run.repo))
+  const byRepo = new Map(rigs().map(r => [r.repo, r]))
+  const queues = new Map<string, number>()
+  const queued = (repo: string) => {
+    try {
+      if (!hasBeads(repo)) return 0
+      if (!queues.has(repo)) queues.set(repo, beads(repo, 'factory').shipQueue().length)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} ship queue for ${repo}: ${(err as Error).message}`)
+    }
+    return queues.get(repo) ?? 0
+  }
+  for (const repo of shipStarts([...byRepo.keys()], queued, live)) {
+    const rig = byRepo.get(repo)!
+    try {
+      const preview = await loadFactory(factorySource('ship', repo))
+      if (preview.name !== 'ship') throw new Error(`its ship factory is named '${preview.name}', not 'ship'`)
+      const goal = `Ship rig ${rig.name}'s queue: factory ship ${rig.name} lists the pull requests, next to merge first.`
+      const { run } = await createTracked('ship', preview.name, repo, goal, undefined, undefined, true)
+      console.log(`${new Date().toISOString()} ship for rig ${rig.name} → ${run.id}`)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} ship for rig ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+}
+
 /**
  * every run's beads, out of the tick: under load one bd call can take a minute, and launching, nudging and
  * failing workers must not wait on it. Mirrors reports, heartbeats claims, settles finished runs, then
@@ -2493,6 +2724,7 @@ async function beadsPass() {
         // removed mid-pass
       }
     }
+    await shipPass()
     await linearPass()
     await dispatch()
     await labelPass()
@@ -4285,12 +4517,18 @@ async function createRun(
   spec: string,
   repo: string,
   goal: string,
-  { id, bead, from }: { id: string; bead?: string; from?: { run: Run; saved: Saved } },
+  {
+    id,
+    bead,
+    from,
+    ship,
+    onto,
+  }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
   const created = herdr(
-    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? base],
+    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? onto ?? base],
     ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
   )
   const ws: string = created.workspace.workspace_id
@@ -4303,6 +4541,9 @@ async function createRun(
   let def: Factory
   try {
     def = await loadFactory(source)
+    // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
+    if (hasShipEdge(def) && !hasBeads(repo))
+      throw new Error('it hands its beads to ship, which needs a repo with .beads')
     writeJson(pinned, def)
   } catch (err) {
     herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet
@@ -4328,6 +4569,7 @@ async function createRun(
     worktree,
     ...(from && { forkedFrom: from.run.id }),
     ...(bead && { bead }),
+    ...(ship && { ship }),
   }
   // the source's worker stays the source's: the fork launches its own
   const snapshot = from
@@ -4349,12 +4591,20 @@ async function createTracked(
   goal: string,
   bead?: string,
   from?: { run: Run; saved: Saved },
+  ship?: true,
+  shipBranch?: string,
 ) {
   const id = `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
   const b = beads(repo, actorOf(id))
   if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
   try {
-    return await createRun(spec, repo, goal, { id, bead, from })
+    return await createRun(spec, repo, goal, {
+      id,
+      bead,
+      from,
+      ship,
+      onto: shipBranch && reworkBase(repo, shipBranch),
+    })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
@@ -4938,6 +5188,7 @@ async function dispatch() {
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
+    if (!hasBeads(rig.repo)) continue // claude-factory-toml: a rig with no .beads store has no beads steps
     // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
     const skips = new Map<string, string>()
     const started = new Set<string>()
@@ -5202,7 +5453,16 @@ async function dispatch() {
         }
         let run, def
         try {
-          ;({ run, def } = await createTracked(spec, name, rig.repo, goalOf(bead), bead.id))
+          ;({ run, def } = await createTracked(
+            spec,
+            name,
+            rig.repo,
+            goalOf(bead),
+            bead.id,
+            undefined,
+            undefined,
+            shipBranchOf(bead),
+          ))
         } catch (err) {
           if (/already claimed/.test((err as Error).message)) {
             skips.set(bead.id, 'claimed elsewhere')
@@ -5451,16 +5711,6 @@ async function planFactsCmd() {
   console.log(clipFactsJson(facts))
 }
 
-const findingTitle = (kind: plan.FindingKind): string =>
-  (
-    ({
-      'starved-epic': 'pm: starved epic, no progress while lower-priority work shipped',
-      'goal-no-beads': "pm: this rig's goal has no open bead driving it",
-      'epic-done-open': "pm: an epic's children are all closed, but it is still open",
-      'goal-no-plan': "pm: this rig's goal has no ranked work to act on",
-    }) as Record<plan.FindingKind, string>
-  )[kind]
-
 /** the pm's raw answer, before `plan set` checks each field by hand: `{id, why}` per rig and
  * `{rig, bead?, change, why}` proposals, exactly as claude-factory-dun's inbox spec shapes it. */
 type PmAnswer = {
@@ -5470,7 +5720,8 @@ type PmAnswer = {
 
 /**
  * `factory plan set <file>` command (claude-factory-dun.2).
- * It reads the pm's answer. It builds `plan.json`. It files each finding and proposal as a bead.
+ * It reads the pm's answer. It builds `plan.json`. It files each proposal as a bead. It does not file findings: they stay in
+ * `plan.json`, and the board and `plan show` list them.
  *
  * It refuses, and writes nothing, in each of these cases:
  * - a worker calls it (`FACTORY_FROM` is set)
@@ -5478,7 +5729,7 @@ type PmAnswer = {
  * - `<file>` is missing or not valid JSON
  *
  * The pm never runs `bd`. This function turns the pm's answer into bd writes.
- * For each finding or proposal, it checks `hasMetadata('pm_finding', key)` first.
+ * For each proposal, it checks `hasMetadata('pm_finding', key)` first.
  * A key already filed is never filed again, even under a bead that later closed.
  * It files at most 3 new beads for each rig.
  */
@@ -5548,22 +5799,14 @@ function planSetCmd(answerPath?: string) {
     const rig = rigs().find(r => r.name === name)
     if (!rig || !hasBeads(rig.repo)) continue
     const b = beads(rig.repo, 'factory')
-    const toFile = [
-      ...rigsPlan[name]!.findings.map(f => ({
-        title: findingTitle(f.kind),
-        desc: f.text,
-        key: f.key,
-        human: plan.HUMAN_FINDING_KINDS.has(f.kind),
-      })),
-      ...cleanProposals
-        .filter(p => p.rig === name)
-        .map(p => ({
-          title: `pm proposal: ${clip(p.change, 80)}`,
-          desc: `${p.why}${p.bead ? ` (${p.bead})` : ''}`,
-          key: plan.proposalKey(name, p),
-          human: true,
-        })),
-    ]
+    const toFile = cleanProposals
+      .filter(p => p.rig === name)
+      .map(p => ({
+        title: `pm proposal: ${clip(p.change, 80)}`,
+        desc: `${p.why}${p.bead ? ` (${p.bead})` : ''}`,
+        key: plan.proposalKey(name, p),
+        human: true,
+      }))
     let filed = 0
     for (const item of toFile) {
       if (filed >= 3) break
@@ -5655,6 +5898,17 @@ export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: 
       r.log.some(e => [...prsIn(e.summary), ...mrsIn(e.summary)].includes(pr.url)),
   )?.id
 
+/** the queued bead whose PR this is: ship owns it, so no rework run may start on it (claude-factory-rtuw) */
+export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
+  queue.find(b => b.metadata?.ship_branch === pr.headRefName || (!!pr.url && b.metadata?.ship_pr === pr.url))
+
+/** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
+export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<typeof beads>, 'unship'>) {
+  const owner = queuedOwner({ url, headRefName: '' }, queue)
+  if (owner) b.unship(owner.id, `${url} was closed unmerged`)
+  return owner
+}
+
 /**
  * act on the labels pr-merger (or a person) puts on the rigs' pull requests: `close` closes the PR and
  * aborts the live run it belongs to; `conflict` or `rework` mails that run's station (so two workers never
@@ -5721,8 +5975,28 @@ async function labelPass() {
           }
     try {
       const labeled = forge.list()
+      const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
+        ? beads(rig.repo, 'factory').shipQueue()
+        : []
       for (const pr of labeled) {
         const action = labelAction(pr)
+        const queuedBead = action === 'rework' ? queuedOwner(pr, shipped) : undefined
+        // a queued PR closed unmerged leaves the queue: the ship run would loop on it as the next PR
+        if (action === 'close') {
+          const closed = queuedOwner(pr, shipped)
+          if (closed) beads(rig.repo, 'factory').unship(closed.id, `${pr.url} was closed unmerged`)
+        }
+        if (queuedBead) {
+          // the rig's ship run owns a queued PR: it hears of the label, and no rework run starts
+          const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
+          forge.unlabel(pr, reworkLabels(pr))
+          const ships = liveShipRuns().filter(s => s.run.repo === rig.repo)
+          for (const s of ships) post(s.run.id, { type: 'MAIL', from: 'factory', to: s.node, text })
+          // no live ship run to hear it: the bead keeps the ask, and the next ship run reads it
+          if (!ships.length) beads(rig.repo, 'factory').comment(queuedBead.id, text)
+          console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
+          continue
+        }
         const runId = prOwner(pr, live)
         if (action === 'close') {
           forge.close(pr, `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`)
@@ -5911,6 +6185,14 @@ async function watchPass() {
           store[key]!.routed = true
           console.log(`${iso} ${id}: routing ${node} -> ${outcome}: ${d.text.split('\n')[0]}`)
           routed.push({ run: id, node, url: d.url, outcome, at: now })
+          if (d.kind === 'hold' && run.ship && hasBeads(run.repo)) {
+            try {
+              const b = beads(run.repo, actorOf(id))
+              unshipClosed(d.url, b.shipQueue(), b)
+            } catch (err) {
+              console.log(`${iso} ${id}: closed PR not taken out of the queue: ${(err as Error).message}`)
+            }
+          }
           if (d.kind === 'changes' && run.bead && hasBeads(run.repo)) {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
@@ -5955,6 +6237,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   const held: (string | undefined)[] = []
   for (const id of runIds()) {
     const { run, value } = current(id)
+    if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
     const [node, sub] = where(value)
     const n = (await loadFactory(run.factory)).nodes[node]
     const s = slot(n, sub)
@@ -6029,7 +6312,8 @@ async function defineRig(
   if (remote && mcp !== undefined)
     fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
+    fail(`--agent for the ${rig.runner} runner is claude or pi (not "${agent}")`)
+  if (remote && agent !== undefined) axCodexRefused(agent)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
     let parsed: Egress[] | undefined
@@ -6118,6 +6402,10 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !preview.nodes[at])
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
+  if (preview.name === 'ship')
+    fail(
+      `only the runner starts a ship run, once for each rig with a queue: see factory ship ${rigOf(root)?.name ?? root}`,
+    )
   const linked = beadFor(root, goal, { isOwnerOk })
   const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
   if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
@@ -6629,6 +6917,14 @@ async function status(id: string | undefined) {
         ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
         : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
     )
+  if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
+    const age = backupAge(HOME, Date.now())
+    const err = backupError(HOME)
+    console.log(
+      (age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`) +
+        (err ? `; last run failed: ${err}` : ''),
+    )
+  }
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : runIds()) {
     const { run, value, c } = current(runId)
@@ -6654,6 +6950,28 @@ async function status(id: string | undefined) {
     for (const e of id ? c.log : c.log.slice(-1))
       console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${e.summary.replace(/\s+/g, ' ').slice(0, 160)}`)
   }
+  if (!id) {
+    const ships = liveShipRuns()
+    for (const [rig, queue] of Object.entries(shipQueues())) {
+      const repo = rigs().find(r => r.name === rig)!.repo
+      const live = ships.find(s => s.run.repo === repo)
+      const lines = shipLines(queue, live && { id: live.run.id, node: live.node })
+      if (lines.length) console.log(`rig ${rig}\n${lines.join('\n')}`)
+    }
+  }
+}
+
+/** each rig's ship queue, the next PR first; a rig whose bd cannot be read is left out */
+function shipQueues() {
+  const out: Record<string, Bead[]> = {}
+  for (const rig of rigs()) {
+    try {
+      if (hasBeads(rig.repo)) out[rig.name] = beads(rig.repo, 'factory').shipQueue()
+    } catch (err) {
+      console.error(`ship queue for ${rig.name}: ${(err as Error).message}`)
+    }
+  }
+  return out
 }
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
@@ -6709,7 +7027,8 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
-  show <run> | backlog | prs         JSON for the manager's views
+  ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
+  show <run> | backlog | prs        JSON for the manager's views
   decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
@@ -6888,7 +7207,7 @@ if (import.meta.main && !outboxCmd)
         break
       case 'manager':
         if (args[0] === 'host') {
-          await managerhost.host(args.slice(1), { prepare: reposSync })
+          await managerhost.host(args.slice(1), { prepare: reposSync, lock: () => hold('tick.lock') })
           break
         }
         if (args[0] === '--ax') {
@@ -7302,6 +7621,11 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'ship': {
+        if (!args[0]) fail('usage: factory ship <rig|repo>')
+        console.log(shipQueueText(beads(repoOf(args[0]!), 'factory').shipQueue()))
+        break
+      }
       case 'status':
         await status(args[0])
         break
@@ -7313,7 +7637,7 @@ if (import.meta.main && !outboxCmd)
             return row(run, def, value, c, agentOf(def, value, c))
           }),
         )
-        console.log(waiting(rows, Date.now()))
+        console.log(waiting(rows, Date.now(), shipQueues()))
         break
       }
       case 'report': {

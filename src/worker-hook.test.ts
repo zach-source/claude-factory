@@ -6,6 +6,7 @@ import {
   ALIAS_REASON,
   baseWord,
   baseWordForTest,
+  dynamicHeadDenyForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   COMMENT_REASON,
@@ -6158,10 +6159,222 @@ test.each(DYN_LATER_DENY)(
   },
 )
 
+// claude-factory-cwt9: a flag-shaped word with a dynamic character can split into "-" plus a command word.
+const DASH_DYN_DENY = [
+  'sudo -$(y) foo --recur /home',
+  'sudo -$(y) foo --rec /home',
+  'xargs -$(y) foo --recu /home',
+  'sudo -${Y} foo --recur /home',
+  'sudo -$(y) --rec /home',
+  'xargs -$(y) --recur /home',
+  'xargs -$(y) -I R --rec /home',
+  'env -u root -$Y -rf /',
+  'env -$Y -rf /',
+  'sudo -$Y -rf /',
+  'sudo -u root -$Y -rf /',
+  'env -u$Y -rf /',
+  'env -i -$Y -rf /',
+  'nice -n 5 -$Y -rf /',
+  'xargs -$Y -rf /',
+  '- -$Y -rf /',
+  'command -$Y -rf /',
+  'env -$Y -r src',
+  'env -"$Y" -rf /',
+  '$X -u root -$Y -rf /',
+  '$X -u root -$Y ../x',
+  '$X -u root --$Y -rf /',
+  'sudo -$(y) -rf /',
+  'sudo -u root -$(y) -rf /',
+  'sudo -E$(y) -rf /',
+  'sudo -`y` -rf /',
+  'xargs -$(y) -rf /',
+  'xargs -0$(y) -rf /',
+  'xargs -n1 -$(y) -rf /',
+  'xargs -`y` -rf /',
+  'timeout -$Y -rf /',
+  'nohup -$Y -rf /',
+  'exec -$Y -rf /',
+  'time -$Y -rf /',
+  'xargs -$(y) -r /home',
+  'xargs -$(y) -r -f /home',
+  'xargs -$(y) -R -f /home',
+  'xargs -$(y) -r -f ../x',
+  'xargs -0$(y) -r -f /home',
+  'sudo -$(y) -r -f /home',
+  'sudo -$(y) -R /home',
+  'sudo -$Y -R /home',
+  'xargs -$(y)r -f /home',
+  'xargs -$(y)rf /home',
+  'sudo -$(y)r -f /home',
+  'sudo -$(y)rf /home',
+  'xargs -${Y}r -f /home',
+  'xargs -${Y}rf /home',
+  'sudo -${Y}r -f /home',
+  'sudo -${Y}rf /home',
+  'xargs -$(y) foo -rf /home',
+  'xargs -$(y) -I REPL -rf /home',
+  'xargs -$(y) a b -rf /home',
+  'xargs -$(y) -n1 foo -rf /home',
+  'xargs -$Y -I REPL -rf /home',
+  'sudo -$(y) foo -rf /home',
+  'sudo -$(y) x -rf /home',
+  'sudo -$(y) -u root -rf /home',
+  'sudo -$(y) -n foo -rf /home',
+  'sudo -$(y) foo --recursive /home',
+  'sudo -$(y) foo --r /home',
+  'sudo -$(y) foo --re /home',
+  'xargs -$(y) foo --r /home',
+  'xargs -$(y) --re /home',
+  'sudo -${Y} foo --re /home',
+  'env -$Y foo --r /home',
+  'env -$Y --r /home',
+  'env -u root -$Y ls -d /',
+  'env -$Y rm /home/x',
+  'env -$Y rm ../x',
+  'sudo -$Y rm /home/x',
+  'sudo -$Y rm ../x',
+  'xargs -$Y rm /home/x',
+  'xargs -$Y rm ../x',
+  'nice -n 5 -$Y rm /home/x',
+  'sudo -E$(y) foo -rf /home',
+  'sudo -E$(y) x -rf /home',
+  'xargs -0$(y) foo -rf /home',
+  'xargs -n1$(y) a b -rf /home',
+  'xargs -I$(y) REPL -rf /home',
+  'sudo --user=$(y) foo -rf /home',
+  'sudo --group=$(y) foo -rf /home',
+  'sudo --user=$(y) foo /etc/passwd',
+  'xargs --max-args=$(y) foo -rf /home',
+]
+
+// claude-factory-cwt9.16: NAME=$(y) after env or sudo is an argument, so the substitution splits.
+test.each([
+  'env X=$(y) -rf /home',
+  'sudo X=$(y) -rf /home',
+  'env X=$(y) foo -rf /home',
+  'sudo X=$(y) foo /home/x',
+  'env -u root X=$(y) -rf /home',
+  'sudo -u root X=$(y) -rf /home',
+  'env A[1]=$(y) -rf /home',
+  'env X+=$(y) -rf /home',
+  'env X=$(y)b -rf /home',
+  'env X=$(y) ls /home',
+  'env A=1\\;B=1 X=$(y) -rf /home',
+  "env A='(B=1' X=$(y) -rf /home",
+  'env A="|B=1" X=$(y) -rf /home',
+  "env A='&B=1' X=$(y) -rf /home",
+  'sudo A=1\\;B=1 X=$(y) -rf /home',
+  "env A='|B=1' X=$(y) foo /home/x",
+  'env A=1\\|B=1 X=$(y) -rf /home',
+  'env A=1\\\nX=$(y) -rf /home',
+  "sudo A='(B=1' X=$(y) foo -rf /home",
+])(
+  'denyReason denies a split substitution after an env assignment argument: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeDefined()
+  },
+)
+
+test.each(['X=$(y) ls /home', 'A=$(y) B=$(y) make all'])(
+  'denyReason allows a prefix-slot assignment with a substitution: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+  },
+)
+
+test.each(DASH_DYN_DENY)(
+  'denyReason denies a dynamic flag-shaped word before rm: %s (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBe(REASON)
+  },
+)
+
+test('denyReason denies a glob flag word before rm (claude-factory-cwt9)', () => {
+  expect(denyReason('env -* -rf /', '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+})
+
+test.each([
+  'env -$Y ls',
+  'env -u root -$Y src',
+  'env -$Y ls -R src',
+  'xargs -$N grep -r foo src',
+  'env -$Y cat src/a',
+  'nice -n$N make all',
+  'xargs -$N echo',
+  'env -i -$Y',
+  'git log -$N',
+  'grep -$F x /',
+  'xargs -0 -r ls /',
+  'xargs -0 -r -n1 echo /',
+  'sudo -E ls -R /',
+])('denyReason keeps allowing a dynamic flag-shaped word without rm: %s (claude-factory-cwt9)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+test.each(['$X -u root --flag=$V src', '$MAKE -j$N all'])(
+  'denyReason does not deny %s with the rm reason (claude-factory-cwt9)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).not.toBe(REASON)
+  },
+)
+
+test.each(['env', 'xargs', '$X'])(
+  'denyReason scans a long run of dynamic flag words fast: %s (claude-factory-cwt9)',
+  head => {
+    const cmd = head + ' -$A'.repeat(2000)
+    const t = Date.now()
+    const r = denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
+    expect(Date.now() - t).toBeLessThan(1000)
+    expect(r).not.toBe(LONG_COMMAND_REASON)
+  },
+)
+
 const DYN_LATER_KEEP = ['echo $X -u root $Y -rf /', 'git -C $Y status']
 
 test.each(DYN_LATER_KEEP)('denyReason keeps allowing: %s (claude-factory-0xw4)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+})
+
+const DYN_SUB_DENY = [
+  '$X -u root $(cat f) ../x',
+  '$X -u root `cat f` ../x',
+  '$X -u root a$(cat f) ../x',
+  '$X -u root $(cat f)x ../x',
+  '$X -u root -$(cat f) ../x',
+  'find . -exec $X -u root $(cat f) ../x {} \\;',
+  '$X -u root $(cat f) ~/x',
+  "$X -u root $(cat f) ../x '${('",
+]
+
+test.each(DYN_SUB_DENY)(
+  'denyReason denies a substitution after a dynamic head and wrapper flags: %s (claude-factory-hevt)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeTruthy()
+  },
+)
+
+test.each(['echo $X -u root $(cat f) ../x', 'echo $X -u root `cat f` ../x'])(
+  'denyReason keeps allowing: %s (claude-factory-hevt)',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, SFT4_GATE)).toBeUndefined()
+  },
+)
+
+const NO_OTHER = { flags: false, rmfind: false, ifs: false }
+
+test.each([
+  [0, ['$X', '-u', 'root', '$']],
+  [0, ['$X', '-u', 'root', '`']],
+  [0, ['$X', '-u', 'root', '-$']],
+  [0, ['$X', '-u', 'root', 'a$']],
+  [0, ['$X', '-u', 'root', '<', '(']],
+  [3, ['find', '.', '-exec', '$X', '-u', 'root', '$']],
+])('dynamicHeadDeny denies a later word cut at a substitution: %#', (start, cmd) => {
+  expect(dynamicHeadDenyForTest(cmd as string[], start as number, '/root/repo', NO_OTHER).deny).toBe(true)
+})
+
+test('dynamicHeadDeny allows a plain later word (claude-factory-hevt)', () => {
+  expect(dynamicHeadDenyForTest(['$X', '-u', 'root', 'x'], 0, '/root/repo', NO_OTHER).deny).toBe(false)
 })
 
 test('denyReason denies a later dynamic word after a risky-free dynamic head (fail-closed, claude-factory-0xw4)', () => {
@@ -6659,6 +6872,69 @@ test.each(DENY_WMSR_CAPPED)('denyReason denies %j (capped, wmsr)', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
 })
 
+// claude-factory-wmsr.35: an escaped < before << does not make a here-string.
+const WMSR35_BODY = "\ndon't\nEOF\ngit push origin main"
+const DENY_WMSR_ESCAPED_LT = [
+  'cat \\<<<EOF',
+  "cat \\<<<'EOF'",
+  'echo \\<<<EOF',
+  'cat x\\<<<EOF',
+  'cat \\<\\<<<EOF',
+  'cat \\<\\\n<<EOF',
+].map(r => r + WMSR35_BODY)
+test.each(DENY_WMSR_ESCAPED_LT)('denyReason denies %j (escaped <, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_ESCAPED_LT = ['cat <<<"it\'s"', 'cat <\\\n<<x\necho "it\'s"']
+test.each(ALLOW_WMSR_ESCAPED_LT)('denyReason allows %j (here-string, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
+})
+
+// claude-factory-wmsr.37: a terminator line plus a closing backtick ends a backtick body early.
+const WMSR37_BT = '`'
+const WMSR37_BODY = "\necho 'a\nEOF" + WMSR37_BT
+const DENY_WMSR_BT_TERM = [
+  `x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<"EOF"${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<\\EOF${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<-'EOF'\n\techo 'a\n\tEOF${WMSR37_BT}\n${WM}\n\tEOF`,
+  `echo ${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}; ${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY} && ${WM}\nEOF`,
+  `y=1 x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}\n${WM}\nEOF`,
+  `x=${WMSR37_BT}cat <<'EOF'${WMSR37_BODY}\n${WM}\n${WMSR37_BT}\nEOF`,
+]
+test.each(DENY_WMSR_BT_TERM)('denyReason denies %j (terminator plus backtick, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_BT_TERM = ['git commit -m "$(cat <<\'EOF\'\ntext\nEOF\n)"']
+test.each(ALLOW_WMSR_BT_TERM)('denyReason allows %j (commit message heredoc, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
+})
+
+// claude-factory-wmsr.36: in an unquoted body a shell removes backslash-newline first, so a
+// joined line can end the body.
+const DENY_WMSR_JOINED_DELIM = [
+  "cat <<EOF\ndon't\nEO\\\nF\ngit push origin main\nEOF",
+  "cat <<EOF\ndon't\nEOF\\\n\ngit push origin main\nEOF",
+  "cat <<EOF\ndon't\nE\\\nO\\\nF\ngit push origin main\nEOF",
+  "cat <<-EOF\ndon't\n\tEO\\\nF\ngit push origin main\nEOF",
+  "bash <<EOF\ndon't\nEO\\\nF\ngit push origin main\nEOF",
+  "x=$(cat <<EOF\ndon't\nEO\\\nF\ngit push origin main\nEOF\n)",
+  'cat <<EOF\na \\\nb\nEOF',
+]
+test.each(DENY_WMSR_JOINED_DELIM)('denyReason denies %j (joined terminator, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeTruthy()
+})
+
+const ALLOW_WMSR_JOINED_DELIM = ["'EOF'", '\\EOF', '"EOF"'].map(
+  d => `cat <<${d}\ndon't\nEO\\\nF\necho hi\nEOF`,
+)
+test.each(ALLOW_WMSR_JOINED_DELIM)('denyReason allows %j (quoted delimiter, wmsr)', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, ZS39_GATE)).toBeFalsy()
+})
+
 // A # right after a brace or a redirect char can start a comment in a shell.
 const DENY_WMSR_COMMENT_PREV = [
   `echo a >#it's\n${WM}`,
@@ -7144,6 +7420,88 @@ test.each(DENY_DYNAMIC_LIVE_APPLY_VERB)(
 test('denyReason allows kubectl $V -f x --context kind-x with personOnly acme (claude-factory-p43v.6 AC11: an unlisted context stays allowed)', () => {
   expect(denyReason('kubectl $V -f x --context kind-x', undefined, ACME)).toBeUndefined()
 })
+
+// claude-factory-qbtz: a flag between kubectl rollout, auth or certificate and its sub word
+// must not hide the sub word. An unknown flag fails closed.
+const DENY_QBTZ_KUBECTL_SUB_PAST_FLAG = [
+  'kubectl --context acme rollout -n x restart deploy/x',
+  'kubectl rollout -n x restart deploy/x',
+  'kubectl rollout --namespace x undo deploy/x --context acme',
+  'kubectl rollout --namespace=x pause deploy/x --context acme',
+  'kubectl rollout --context acme resume deploy/x',
+  'kubectl rollout -nx restart deploy/x --context acme',
+  'kubectl --context acme rollout -n x $S deploy/x',
+  'kubectl auth -n x reconcile -f r.yaml --context acme',
+  'kubectl auth --context acme reconcile -f r.yaml',
+  'kubectl certificate --context acme approve csr-x',
+  'kubectl certificate -v 6 deny csr-x --context acme',
+  'kubectl rollout --bogus restart deploy/x --context acme',
+  'kubectl rollout --bogus v restart deploy/x --context acme',
+  'kubectl auth --bogus reconcile -f r.yaml --context acme',
+  'kubectl certificate --bogus approve csr-x --context acme',
+]
+
+test.each(DENY_QBTZ_KUBECTL_SUB_PAST_FLAG)(
+  'denyReason denies %j with personOnly acme (claude-factory-qbtz: a flag before the kubectl rollout/auth/certificate sub word)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+  },
+)
+
+const ALLOW_QBTZ_KUBECTL_SUB_PAST_FLAG = [
+  'kubectl --context acme rollout -n x status deploy/x',
+  'kubectl rollout -n x status deploy/x --context acme',
+  'kubectl rollout -n x history deploy/x --context acme',
+  'kubectl rollout -n restart status deploy/x --context acme',
+  'kubectl rollout --context acme status restart',
+  'kubectl auth -n x can-i get pods --context acme',
+  'kubectl auth --context acme whoami',
+  'kubectl auth -n reconcile can-i get pods --context acme',
+  'kubectl --context kind-x rollout -n x restart deploy/x',
+  'kubectl certificate --context kind-x approve csr-x',
+  'kubectl rollout -n x restart deploy/x --context acme --dry-run=server',
+  'kubectl rollout --bogus status deploy/x --context acme',
+]
+
+test.each(ALLOW_QBTZ_KUBECTL_SUB_PAST_FLAG)(
+  'denyReason allows %j with personOnly acme (claude-factory-qbtz: a read-only sub word or an unlisted context stays allowed)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
+  },
+)
+
+// claude-factory-qbtz.2: past an unknown flag the sub word slot is uncertain. The guard then
+// scans the words before -- for the verb own mutating set or a dynamic word.
+const DENY_QBTZ2_KUBECTL_SUB_SCAN = [
+  'kubectl auth --bogus v reconcile -f r.yaml --context acme',
+  'kubectl certificate --bogus v approve csr-x --context acme',
+  'kubectl certificate --bogus v deny csr-x --context acme',
+  'kubectl rollout --bogus v $S deploy/x --context acme',
+  'kubectl rollout --bogus v undo deploy/x --context acme',
+  "kubectl rollout -n x '' restart deploy/x --context acme",
+  'kubectl rollout -n x - restart deploy/x --context acme',
+]
+
+test.each(DENY_QBTZ2_KUBECTL_SUB_SCAN)(
+  'denyReason denies %j with personOnly acme (claude-factory-qbtz.2: uncertain sub slot scan)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+  },
+)
+
+const ALLOW_QBTZ2_KUBECTL_SUB_SCAN = [
+  'kubectl rollout --bogus status deploy/x --context acme -- restart',
+  'kubectl auth --bogus v can-i get pods --context acme',
+  'kubectl rollout -n x - status deploy/x --context acme',
+  'kubectl rollout --bogus v pause deploy/x --context kind-x',
+]
+
+test.each(ALLOW_QBTZ2_KUBECTL_SUB_SCAN)(
+  'denyReason allows %j with personOnly acme (claude-factory-qbtz.2: read-only sub word or unlisted context)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
+  },
+)
 
 // claude-factory-p43v.8: two dynamic words in a row hide the wrapper word and the verb.
 const DENY_TWO_DYNAMIC_COMMAND_WORDS = [
@@ -8932,7 +9290,6 @@ test.each(J1KI_PUSH_ROWS2)('claude-factory-j1ki.12-15: %s denies with PUSH_REASO
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
 })
 test.each([
-  'export${IFS}PATH=/x; git status',
   'cd /x && ls',
   'rm ./f',
   'echo $(date)',
@@ -9792,7 +10149,14 @@ test.each(DENY_PWY0)('denyReason denies %j (claude-factory-pwy0)', cmd => {
 })
 
 const ALLOW_PWY0: string[] = [
+  'export EDITOR=vim; $EDITOR acme.txt',
+  "SH=sh; $SH -c 'echo x'",
   '$EDITOR acme.txt',
+  'bash -c ls',
+  'eval echo hi',
+  "EDITOR=vim bash -c 'ls'",
+  'echo hi; ls',
+  'A[1]=x; echo ok',
   'echo $x rm',
   '$x ls',
   '${EDITOR:-vi} acme.txt',
@@ -9811,6 +10175,85 @@ const ALLOW_PWY0: string[] = [
 ]
 test.each(ALLOW_PWY0)('denyReason allows %j (claude-factory-pwy0)', cmd => {
   expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
+})
+
+test.each(['IFS=_; y=m_-rf_/; r$y', 'y=m_-rf_/; z=FS; export I$z=_; r$y'])(
+  'denyReason denies a variable set in an earlier segment %j (claude-factory-k8iz)',
+  cmd => {
+    expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
+  },
+)
+
+test('denyReason denies the bead row with the variable reason (claude-factory-k8iz)', () => {
+  expect(denyReason('y=rm_-rf_/; IFS=_; $y', '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
+})
+
+const DENY_K8IZ: string[] = [
+  "y='rm ../acme.txt'; $y",
+  'y="rm ../acme.txt"; $y',
+  "y='rm -f ../acme.txt'; $y",
+  "y='rm ../acme.txt'; eval '$y'",
+  "export y='rm ../acme.txt'; bash -c '$y'",
+  "export y='rm ../acme.txt'; sh -c '$y'",
+  "y='rm ../acme.txt' bash -c '$y'",
+  "y='rm ../acme.txt' eval '$y'",
+  "y='rm ../acme.txt' env bash -c '$y'",
+  'y=\'rm ../acme.txt\'; echo "`$y`"',
+  'y=\'rm ../acme.txt\' echo "`$y`"',
+  'set -- rm ../acme.txt; $1',
+  'cd acme && $y',
+  // k8iz.18: a leading redirect word
+  "y='rm ../acme.txt'; >/dev/null $y",
+  "y='rm ../acme.txt'; 2>/dev/null $y",
+  'IFS=_; y=rm_../acme.txt; >/dev/null $y',
+  // k8iz.26: an operator or flag-group head with IFS set or 2+ commands
+  'IFS=_; ${X%y} a.txt',
+  'IFS=_; ${X:-} a.txt',
+  'IFS=_; $=X a.txt',
+  'export IFS=_; ${X:0} a.txt',
+  'IFS=_; $PATH[(w)1] a.txt',
+  'echo hi; ${X%y} a.txt',
+  'IFS=_; $X[(w)1] a.txt',
+  'echo hi; $X[(w)1] a.txt',
+  // k8iz.15: accepted false denies (fail closed)
+  'export${IFS}PATH=/x; git status',
+]
+// miqy reads the value of a pure $NAME head first and denies with DYNAMIC_VERB_REASON.
+const DENY_K8IZ_DYN: string[] = [
+  'IFS=_; y=m_../acme.txt; r$y',
+  'z=FS; export I$z=_; y=m_../acme.txt; r$y',
+  'z=FS; declare I$z=_; y=m_../acme.txt; r$y',
+  'z=FS; printf -v I$z _; y=m_../acme.txt; r$y',
+  'n=I; export ${n}FS=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; export $a$b$c=_; y=m_../acme.txt; r$y',
+  'z=FS; export I`echo`$z=_; y=m_../acme.txt; r$y',
+  "y='m ../acme.txt'; r$y",
+  'y=m\\ ../acme.txt; r$y',
+  'a=I; b=F; c=S; eval $a$b$c=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; local $a$b$c=_; y=m_../acme.txt; r$y',
+  'a=I; b=F; c=S; let $a$b$c=_; y=m1../acme.txt; r$y',
+  'a=I; b=F; c=S; eval "$a$b$c=_"; y=m_../acme.txt; r$y',
+  'IFS=_; y=rm_../acme.txt; $y',
+  'y=rm_../acme.txt; IFS=_; $y',
+  'IFS=_; y=rm_/etc/hosts; $y',
+  'y=rm_/; IFS=_; $y',
+  'IFS=_; read y; $y',
+  "y+='rm ../acme.txt'; $y",
+  "y=rm; y+=' ../acme.txt'; $y",
+  "declare y+='rm ../acme.txt'; $y",
+  "printf -v y 'rm ../acme.txt'; $y",
+  "printf -v y '%s' 'rm ../acme.txt'; $y",
+  'read y; $y',
+  "IFS=_; y=rm_../acme.txt; eval '$y'",
+  'IFS=_; y=rm_../acme.txt; eval \\$y',
+  "y=rm_../acme.txt; IFS=_; eval '$y'",
+  "for y in 'rm ../acme.txt'; do $y; done",
+]
+test.each(DENY_K8IZ_DYN)('denyReason denies %j with the variable reason (claude-factory-k8iz)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(DYNAMIC_VERB_REASON)
+})
+test.each(DENY_K8IZ)('denyReason denies %j (claude-factory-k8iz)', cmd => {
+  expect(denyReason(cmd, '/Users/acme/widget')).toBe(REASON)
 })
 
 test('scanReason bounds a long nested default-value head word (claude-factory-pwy0)', () => {

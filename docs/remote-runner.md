@@ -56,7 +56,7 @@ export function runnerOf(address: string): Runner
 
 ### Harnesses in the VM
 
-The VM runs the agent the rig chose, the one `agentOfNode` gives a pane (the rig's `--agent`, else the station's, else the factory's), told apart by `harnessOf`. The laptop passes it as `FACTORY_HARNESS` (`claude`, `codex` or `pi`); an agent command that is none of them (a script) is refused at launch, and `rig add --runner ax --agent …` refuses it up front. Each turn is headless and has no permission prompts, because the microVM is the sandbox.
+The VM runs the agent the rig chose, the one `agentOfNode` gives a pane (the rig's `--agent`, else the station's, else the factory's), told apart by `harnessOf`. The laptop passes it as `FACTORY_HARNESS` (`claude`, `codex` or `pi`); an agent command that is none of them (a script) is refused at launch, and `rig add --runner ax --agent …` refuses it up front. A codex agent is refused too: the VM has no deny hook for codex yet (claude-factory-72dq). Each turn is headless and has no permission prompts, because the microVM is the sandbox.
 
 | Harness | First turn                                                                                             | Later turns                                       | Session id                                   |
 | ------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------- | -------------------------------------------- |
@@ -171,11 +171,20 @@ The VM holds no key and no token. Every HTTPS request out goes through Substrate
 
 - **Launch** (`src/ax.ts`): reads the gateway's public CA (ClusterTrustBundle `egress-mitm.ate.dev:mitm:primary-bundle`), applies the Task with it in `FACTORY_CA`, then tries once to create the task's policy with `kubectl ate create egress-policy`. AX creates the actor a moment after the apply, so the first try usually fails; each tick tries again (`policy` in `<run>/<task>.json`) and shows the worker as `pending` until it takes. Nothing sleeps in a tick, and every `ax` call has a 30 s timeout. A task whose actor never shows fails on the station's deadline while the shared controller is healthy. The reason names the cause: `worker never started on AX after <N> min: task phase Pending`, `...: egress policy not created` or `...: brief.md not yet copied to the VM`. A worker that started and then went silent still fails `no report within <N> min`.
 - **Placeholders** (only with `FACTORY_AX_VAULT`, because GitHub answers a placeholder Basic header with 400 even for a public clone): `CLAUDE_CODE_OAUTH_TOKEN` (claude) or `OPENAI_API_KEY` and `CODEX_API_KEY` (codex), and `GH_TOKEN`, set to `placeholder`, and git's `http.https://github.com/.extraHeader` set to `Authorization: Basic placeholder` through `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0`, so every git in the VM sends it.
-- **Policy**: HTTPS to `api.anthropic.com` (`Authorization: Bearer` ← `ANTHROPIC`), `api.github.com` and `uploads.github.com` (`Authorization: Bearer` ← `GITHUB`), and `github.com` (`Authorization: Basic` ← `GITHUB_BASIC`, base64 of `x-access-token:<token>`, since git sends Basic auth). Then the rig's own rules, and nothing else, so the task sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Without `FACTORY_AX_VAULT` the policy has the hosts and no injection.
+- **Policy**: HTTPS to `api.anthropic.com` (`Authorization: Bearer` ← `ANTHROPIC`), `api.github.com` and `uploads.github.com` (`Authorization: Bearer` ← `GITHUB`), and `github.com` (`Authorization: Basic` ← `GITHUB_BASIC`, base64 of `x-access-token:<token>`, since git sends Basic auth; the manager task uses `GITHUB_BASIC_MANAGER` there when `FACTORY_AX_BACKUP_REMOTE` is set, and then gets no `zach-source` path rules). Then the rig's own rules, and nothing else, so the task sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Without `FACTORY_AX_VAULT` the policy has the hosts and no injection.
+- **Repos of the zach-source account** (`GITHUB_OWNER_KEYS` in `src/ax.ts`): the GitHub App has one installation token for each account. With a vault, the policy adds two rules that match a request path (`pathPrefixes`):
+  - `github.com` with path `/zach-source/` uses `GITHUB_ZS_BASIC`.
+  - `api.github.com` and `uploads.github.com` with path `/repos/zach-source/` use `GITHUB_ZS`.
+  - Other paths keep `GITHUB_BASIC` and `GITHUB`.
+  - `gh` sends pull request calls to `/graphql`. No path prefix can choose a key there. So a worker of a rig with origin owner `zach-source` gets `GITHUB_ZS` and `GITHUB_ZS_BASIC` on the other paths too.
+  - The task side file keeps this owner as `githubOwner`, and a retry of the policy uses it.
+  - A side file with no `githubOwner`, a GitLab rig and the AX manager task keep the default keys. So the manager cannot use `gh pr view` on a zach-source pull request.
+  - A prefix chooses a key. It is not an access control.
+  - Rollout order: first the Substrate fork with `pathPrefixes` (`ateapi`, then `atenet`, then `kubectl-ate` and the broker image). An old `atenet` ignores `pathPrefixes` and applies the rule to all paths. An old `ateapi` or `kubectl-ate` can refuse the field, and then no task gets a policy. Do not merge this change before the rollout.
 - **A rig on GitLab** (its origin is a GitLab host `H`): the policy adds one rule for `H` that replaces `PRIVATE-TOKEN`, the header `glab` 1.99 sends with `GITLAB_TOKEN` set, with `GITLAB`, and `Authorization: Basic`, which git sends, with `GITLAB_BASIC`. The VM gets `GITLAB_TOKEN=placeholder`, `GITLAB_HOST=H` and a second git `http.https://H/.extraHeader` (`GIT_CONFIG_COUNT=2`). A GitHub rig's policy and env do not change.
 - **In the VM** (`setup()` in `src/worker.ts`, on every start): writes the CA and points `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` and `SSL_CERT_FILE` at it (the gateway re-signs every host the VM may reach, so it is the only root needed), then clones the run's branch.
 - **Who may fetch**: Substrate makes one actor per task (`spiffe://substrate-actor.local/actor/factory/<task>`). One agent-vault agent, `factory-tasks`, registered as `spiffe://substrate-actor.local/actor/factory/*` with `proxy` on vault `factory`, covers every task in the atespace, so the runner registers nothing per task.
-- **Where the keys come from**: agent-vault holds `ANTHROPIC`, `GITHUB` and `GITHUB_BASIC` (and `GITLAB` and `GITLAB_BASIC` for a rig on GitLab, and any rig key such as `OPENAI`) in the vault `FACTORY_AX_VAULT` names, as references to wherever they live (a password manager, a GitHub App that mints installation tokens). The cluster holds no copy of a key. `GITLAB` is a GitLab access token with the `api` scope (what `glab` sends); `GITLAB_BASIC` is base64 of `<user>:<the same token>` (what git sends as Basic auth; the token needs `write_repository`).
+- **Where the keys come from**: agent-vault holds `ANTHROPIC`, `GITHUB`, `GITHUB_BASIC`, `GITHUB_ZS` and `GITHUB_ZS_BASIC` (and `GITHUB_BASIC_MANAGER` for the backup, and `GITLAB` and `GITLAB_BASIC` for a rig on GitLab, and any rig key such as `OPENAI`) in the vault `FACTORY_AX_VAULT` names, as references to wherever they live (a password manager, a GitHub App that mints installation tokens). The cluster holds no copy of a key. `GITLAB` is a GitLab access token with the `api` scope (what `glab` sends); `GITLAB_BASIC` is base64 of `<user>:<the same token>` (what git sends as Basic auth; the token needs `write_repository`).
 - **Devenv cache and GitLab**: `factory devenv` fetches the repo with a `github.com` header and `gh auth token`, so a private GitLab rig's devenv build cannot fetch it. Such a rig has no cached devenv, and its workers use `nix shell` as they would without one.
 
 ### A known outage: the egress gateway and `api.anthropic.com`
@@ -219,7 +228,7 @@ REG=<registry>/<org> BUILDER=<builder> hack/push-worker.sh    # prints image@dig
 # on the laptop running the factory loop
 export FACTORY_AX_IMAGE=<registry>/<org>/factory-worker@sha256:…   # from push-worker.sh
 export FACTORY_AX_CONTEXT=<cluster>                               # kube context for ax and kubectl (kubectl-ate on PATH)
-export FACTORY_AX_VAULT=factory                              # agent-vault vault with ANTHROPIC, GITHUB, GITHUB_BASIC (GITLAB, GITLAB_BASIC for a GitLab rig)
+export FACTORY_AX_VAULT=factory                              # agent-vault vault with ANTHROPIC, GITHUB, GITHUB_BASIC, GITHUB_ZS, GITHUB_ZS_BASIC (GITHUB_BASIC_MANAGER for the backup; GITLAB, GITLAB_BASIC for a GitLab rig)
 export FACTORY_AX_ENV=~/.config/factory/ax-env.json          # optional: more env for the task, never a real key
 export FACTORY_AX_TOKEN_SWAP="bin/claude-token best"          # optional: swaps the vault's token on a usage limit
 export FACTORY_AX_PKG_GATE=http://pkg-gate.pkg-gate.svc.cluster.local:8080  # optional: see Package age gate, above
@@ -227,7 +236,7 @@ factory rig add web ~/repos/web --runner ax                   # rigs.json: "runn
 # a codex rig also needs its host and its vault key (OPENAI in the vault): --agent "codex" --egress api.openai.com=OPENAI
 ```
 
-Only that rig's new workers become AX tasks, and only at stations without a `runner` of their own: a station with `runner: herdr` (lifecycle's baseline, deploy, soak, rollback, incident and monitor, which read or change production) keeps its workers in panes, where the laptop's kubectl and network are. A worker already running in a pane stays there, and `--runner herdr` switches the rig back. `FACTORY_AX` points at a different `ax` binary.
+Only that rig's new workers become AX tasks, and only at stations without a `runner` of their own: a station with `runner: herdr` (lifecycle's baseline, incident and rollback, and ship's deploy, soak and rollback, which read or change production) keeps its workers in panes, where the laptop's kubectl and network are. A worker already running in a pane stays there, and `--runner herdr` switches the rig back. `FACTORY_AX` points at a different `ax` binary.
 
 ### Shared AX controller availability
 
@@ -281,7 +290,7 @@ This section moves a running laptop factory to the manager task. The task needs 
 
 A rig can have a `remote` field: its https clone URL. `factory repos sync` clones every rig's `remote` that is missing, and fetches the others. It changes `git@` and `ssh://` GitHub URLs to https. The gateway puts the GitHub credential in. A rig with no `remote` and no clone is an error, and the command names the rig. `factory manager host` runs `factory repos sync` before it starts the manager. A failure goes into `manager-host.log` and does not stop the manager.
 
-`factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
+`factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. A rig with no `beadsRemote` needs `refs/dolt/data` on its origin. If the origin has none, set `beadsRemote` for the rig. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
 
 Limits:
 
@@ -304,6 +313,44 @@ Limits:
 - The directories of all live runs. For finished runs (done or aborted), only the newest 50 move. `--keep N` changes the number. Their records in `metrics.jsonl` are already written.
 
 These stay on the laptop: `tick.lock`, `bin`, `devenv/`, the backups of `rigs.json`, and any other top-level file over 5 MB. The dry run names them.
+
+#### Back up the manager home
+
+AX keeps the workspace of a task only across suspend and resume. A new task, for example after an image update, starts with an empty `/workspace/w`. The host can back up `FACTORY_HOME` and the manager's Claude memory and sessions to a private git branch. It restores them in a new task.
+
+Owner steps (the factory does not do them):
+
+1. Make a private GitHub repository. The backup holds run journals and transcripts. Keep the repository private.
+   Do not install the GitHub App on it. Every worker task has the App token (`GITHUB_BASIC`). A worker can then push to the backup, and the next restore writes its files.
+   Put a fine-grained token in the vault key `GITHUB_BASIC_MANAGER`. The value must be base64 of `x-access-token:<token>`, the same as `GITHUB_BASIC`. A raw token makes every `github.com` git call of the manager fail.
+   The token needs read and write on the backup repository and on the rig repositories the manager syncs. A fine-grained token covers one resource owner only. If the owners differ, put the backup repository under the owner of the rig repositories, or use a classic token with the `repo` scope.
+   The App must not cover the backup repository. An installation for "All repositories" covers a new repository at once. Then every worker of that account can force-push the backup branch.
+   Do one of these:
+   - Set the installation of that account to "Only select repositories". Leave the backup repository out.
+   - Put the backup repository under an account that has no installation. Use a classic token with the `repo` scope.
+
+   Then do this check. In a worker task, run `git ls-remote <backup url>`. It must get 401 or 403. If it lists refs, the App covers the repository. Do not continue.
+   When `FACTORY_AX_BACKUP_REMOTE` is set, `factory manager --ax` gives the manager task that key for `github.com`. Worker tasks keep `GITHUB_BASIC`.
+2. On the laptop, set `FACTORY_AX_BACKUP_REMOTE` to its https URL. Do not put a key in the URL. Optional: `FACTORY_AX_BACKUP_BRANCH` (default `manager-home`) and `FACTORY_AX_BACKUP_EVERY` in ms (default 600000).
+3. Run `factory manager --ax`. The task gets the variables.
+
+How it works:
+
+- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot and frees it before the push. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
+- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log` and `worktrees/`.
+- A file that holds a token shape (GitHub, Anthropic, AWS, Slack, a private key, an Authorization header) stops the backup. `home/backup.json` names the file, not the text.
+- The host does not back up while the home is not ready. An empty home never replaces a good backup.
+- When the host starts with an empty home (no `rigs.json`, `runs/` or `.migrated`), it fetches the branch and writes `.migrated`. The manager then starts and resumes the last session. A used home is never changed. If the fetch fails (network or auth), the host tries again each cycle and does not start the manager. This holds with `FACTORY_AX_FRESH=1` too. If there is no remote or no branch, the host waits for `factory migrate-to-ax` as before.
+- `home/memory` goes in as plain files, with or without a `.git` inside. The memory `.gitignore` applies, and uncommitted notes are saved. The git history of memory is not saved, so only files that the scan reads leave the VM. The snapshot writes `home/memory-dream.at`, the time of the last `dream:` commit. Restore runs `git init` in `home/memory` and makes one commit that has this date, so the next dream reads the journal from the last real dream.
+- The scan reads the staged files (the blobs), not the work tree. It also checks URL user info, JWT, `sk-proj-`, `lin_api_`, `glpat-`, `AIza`, `ops_`, `npm_`, `xapp-` and `PRIVATE-TOKEN:`.
+- If `home/.git` exists (the config sync repo), the backup refuses with an error. Git would save it as one empty link.
+- A restore refuses a branch that holds a path the backup leaves out (for example `claude/settings.json` or `home/bin/`). It writes no file and returns an error.
+- A restore writes `home/.restoring` before the checkout and removes it at the end. While the file exists, the host counts the home as not ready, restore runs again, and no backup runs. If the remote is unset while the file exists, a person must remove the file.
+- Look at `home/backup.json` (`at`, `sha`, `error`), `manager-host.log` and `factory status` in the task (the backup age and the last error).
+
+To test (owner only, it changes the live system): run `ax delete task f-manager`. Then run `factory manager --ax` with the new image. The manager must come back with the same runs, memory and session, with no migration from the laptop.
+
+To turn it off, unset `FACTORY_AX_BACKUP_REMOTE` and run `factory manager --ax` again.
 
 #### Safety
 
