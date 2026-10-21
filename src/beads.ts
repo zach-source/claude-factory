@@ -18,6 +18,8 @@ export type Bead = {
   status?: string
   close_reason?: string
   assignee?: string
+  /** ISO time the assignee's claim lapses unless a heartbeat renews it */
+  lease_expires_at?: string
   priority?: number
   issue_type?: string
   metadata?: Record<string, unknown>
@@ -641,6 +643,11 @@ export const beads = (repo: string, actor: string) => ({
     return bd(repo, actor, 'update', id, '--claim').isOk
   },
   release: (id: string) => bd(repo, actor, 'unclaim', id).isOk,
+  /** takes back a claim another actor abandoned: repairs calls it only for a run that is not live,
+   * with an expired lease */
+  releaseStale: (id: string, reason: string) =>
+    bd(repo, actor, 'unclaim', id, '--force').isOk &&
+    bd(repo, actor, 'comment', id, `claim released: ${reason}`).isOk,
   children: (id: string): Bead[] => {
     const r = bd(repo, actor, 'children', id, '--json')
     return r.isOk ? JSON.parse(r.out) : []

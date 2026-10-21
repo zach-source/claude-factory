@@ -58,6 +58,33 @@ describe('repairs', () => {
     expect(run([b], [pr(8, 'OPEN')])).toEqual([])
   })
 
+  test('releases a claim held by a factory run that is not live and whose lease expired', () => {
+    const past = new Date(Date.now() - 60_000).toISOString()
+    const future = new Date(Date.now() + 60_000).toISOString()
+    const held = (id: string, assignee: string, lease: string, extra: Partial<Bead> = {}) =>
+      bead(id, { status: 'in_progress', assignee, lease_expires_at: lease, ...extra })
+    const every = [
+      held('c-1', 'factory/lifecycle-dead', past),
+      held('c-2', 'factory/lifecycle-dead', future), // the lease still runs
+      held('c-3', 'Zach Taylor', past), // a person's claim
+      held('c-4', 'factory/lifecycle-live', past), // a live run owns it
+      // released first: bd refuses to close a bead that another actor holds
+      held('c-5', 'factory/lifecycle-dead', past, { metadata: { ship_pr: pr(5, 'MERGED').url } }),
+    ]
+    expect(run(every, [pr(5, 'MERGED')], ['c-4'])).toEqual([
+      {
+        kind: 'release',
+        id: 'c-1',
+        reason: `factory/lifecycle-dead is not live and its lease expired at ${past}`,
+      },
+      {
+        kind: 'release',
+        id: 'c-5',
+        reason: `factory/lifecycle-dead is not live and its lease expired at ${past}`,
+      },
+    ])
+  })
+
   test('skips closed, deferred and live beads, and gives one action to a bead', () => {
     const merged = pr(5, 'MERGED')
     const shipped = { metadata: { ship_pr: merged.url } }
