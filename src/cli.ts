@@ -2745,8 +2745,10 @@ async function beadsPass() {
     await shipPass()
     await linearPass()
     await dispatch()
+    // repairs share the label pass's throttle: one labels.stamp gates both
+    const labelsDue = !isFresh(join(HOME, 'labels.stamp'), LABELS_MS)
     await labelPass()
-    await repairPass()
+    if (labelsDue) await repairPass()
   } finally {
     release()
   }
@@ -6042,10 +6044,10 @@ const repairsFile = () => join(HOME, 'repairs.jsonl')
  * It makes at most REPAIR_CAP changes in a rig in one pass. Each change goes to repairs.jsonl,
  * which `factory digest` reads. The beads pass calls it.
  */
+const isFresh = (stamp: string, ms: number) => existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < ms
+
 async function repairPass() {
-  const stamp = join(HOME, 'repairs.stamp')
-  if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS)) return
-  writeFileSync(stamp, '')
+  if (halted()) return
   const live = new Set((await liveByBead()).keys())
   for (const rig of rigs()) {
     try {
