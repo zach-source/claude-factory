@@ -9145,8 +9145,25 @@ test.each([
   'g${X}it${IFS}push${IFS}origin${IFS}HEAD:main',
   'gi${X}t${IFS}pu${X}sh${IFS}origin${IFS}main',
   'g$X"it"$IFS"push"$IFS"origin"$IFS"main"',
+  'g${X}it${IFS:0:1}push${IFS:0:1}--force${IFS:0:1}origin${IFS:0:1}main',
+  'g${X:-it}${IFS}push${IFS}origin${IFS}main',
+  'g${X=it}${IFS}push${IFS}origin${IFS}main',
+  'g${X:=it}${IFS}push${IFS}origin${IFS}main',
+  '${X:-git}${IFS}push${IFS}origin${IFS}main',
 ])('claude-factory-y094: %s denies with PUSH_REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
+})
+// y094.6: an IFS span with a modifier glued after an emptied head word still denies (any reason).
+test.each([
+  'g${X}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+  'g${X}it${IFS:1:1}push${IFS:1:1}origin${IFS:1:1}main',
+  'g${X}it${IFS:1}push${IFS:1}origin${IFS:1}main',
+  'g${X}it${IFS::1}push${IFS::1}origin${IFS::1}main',
+  'g${X}it${IFS:-}push${IFS:-}origin${IFS:-}main',
+  'g${X}it${IFS-}push${IFS-}origin${IFS-}main',
+  'g${X}it${IFS}push${IFS:0:1}origin${IFS:+}main',
+])('claude-factory-y094.6: %s denies', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeDefined()
 })
 test.each(['r${X}m -rf /', 'r${X}m${IFS}-rf${IFS}/', 'r$(:)m -r ./d'])(
   'claude-factory-y094: %s denies with REASON',
@@ -9166,6 +9183,9 @@ test.each([
   '$HOME/.local/bin/claude plugin test mod',
   'git -C "$WT"/sub status',
   'ls$IFS-la',
+  'ls ${X:-.}',
+  'echo a${X:-b}c',
+  'ls${IFS:0:1}-la',
 ])('claude-factory-y094: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
 })

@@ -7702,10 +7702,12 @@ function replaceGluedSubstitutions(command: string): string {
 // an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
 // ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
 // becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
-// replaces only the "${". In empty mode, only an exact $IFS or ${IFS} stays a space; every other
-// glued span becomes empty text, as the shell reads an unset name.
-function replaceGluedExpansions(command: string, empty = false): string {
+// replaces only the "${". In empty mode, an exact $IFS or ${IFS} stays a space. A ${IFS...} span with
+// a modifier is a space when its bit in ifsMask is set, else empty. A ${NAME:-word} default (also -,
+// :=, =) becomes its word. Every other glued span becomes empty text, as the shell reads an unset name.
+function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): string {
   let out = ''
+  let ifsIdx = 0
   let q = ''
   const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
   for (let i = 0; i < command.length; i++) {
@@ -7754,12 +7756,25 @@ function replaceGluedExpansions(command: string, empty = false): string {
       out += c
       continue
     }
+    const span = command.slice(i, end)
     if (isSpace(command[i - 1]) && isSpace(command[end])) {
-      out += command.slice(i, end)
-    } else out += empty && !['$IFS', '${IFS}'].includes(command.slice(i, end)) ? '' : ' '
+      out += span
+    } else if (!empty || span === '$IFS' || span === '${IFS}') out += ' '
+    else if (IFS_MOD_RE.test(span)) out += (ifsMask >> Math.min(ifsIdx++, 30)) & 1 ? ' ' : ''
+    else out += DEFAULT_WORD_RE.exec(span)?.[1] ?? ''
     i = end - 1
   }
   return out
+}
+const IFS_MOD_RE = /^\$\{IFS(?![A-Za-z0-9_])/
+const DEFAULT_WORD_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=]([^${}]*)\}$/
+
+// claude-factory-y094.6: the empty readings of a text. Each ${IFS...} span with a modifier may hold
+// a separator or nothing, so read every choice for up to 3 such spans, else all of them and none.
+function emptyReadings(text: string): string[] {
+  const n = text.match(/\$\{IFS(?![A-Za-z0-9_}])/g)?.length ?? 0
+  const masks = n > 3 ? [0, -1] : Array.from({ length: 1 << n }, (_, k) => k)
+  return [...new Set(masks.map(m => replaceGluedExpansions(text, true, m)))]
 }
 
 function quoteWord(w: string): string {
@@ -7904,9 +7919,12 @@ function denyAtScan(
     const split = denyAt(unglued, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
   }
+  const seen = new Set<string>()
   if (unglued.includes('$')) {
-    for (const raw of [replaceGluedExpansions(unglued), replaceGluedExpansions(unglued, true)]) {
-      if (raw === unglued) continue
+    for (const raw of new Set([replaceGluedExpansions(unglued), ...emptyReadings(unglued)])) {
+      if (raw === unglued || seen.has(raw)) continue
+      seen.add(raw)
+      spendWork(state, command.length * 8)
       const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
       if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
     }
@@ -7915,8 +7933,10 @@ function denyAtScan(
   if (command.includes('$')) {
     const subbed = command.includes('$(') ? replaceGluedSubstitutions(command) : command
     const emptied = subbed.replace(GLUED_BARE_NAME_RE, m => (m === '$IFS' ? ' ' : ''))
-    for (const raw of [emptied, replaceGluedExpansions(emptied, true)]) {
-      if (raw === command || raw === unglued) continue
+    for (const raw of new Set([emptied, ...emptyReadings(emptied)])) {
+      if (raw === command || raw === unglued || seen.has(raw)) continue
+      seen.add(raw)
+      spendWork(state, command.length * 8)
       const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
       if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
     }
