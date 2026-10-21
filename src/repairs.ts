@@ -11,7 +11,7 @@ export type PrFact = {
   body?: string
   headRefName?: string
 }
-export type Repair = { kind: 'close' | 'unship'; id: string; reason: string }
+export type Repair = { kind: 'close' | 'unship' | 'release'; id: string; reason: string }
 
 /** most repairs one pass makes in one rig */
 export const REPAIR_CAP = 20
@@ -42,10 +42,20 @@ function closeReason(b: Bead, prs: PrFact[]): string | undefined {
   return sha ? `rejected as already done, and commit ${sha[0]} is cited` : undefined
 }
 
+/** a claim that no run will release: a factory run that is not live holds it, and its lease expired.
+ * A run that ends on another manager (the AX cutover) or crashes leaves one (claude-factory-wpuy). */
+function staleClaim(b: Bead, now: number): string | undefined {
+  const lease = b.lease_expires_at
+  if (!b.assignee?.startsWith('factory/') || !lease || Date.parse(lease) >= now) return undefined
+  return `${b.assignee} is not live and its lease expired at ${lease}`
+}
+
 /**
  * What to fix in one rig. `every` is the rig's whole bead list (closed too), `prs` its pull requests
  * of any state, `live` the bead ids a live run owns. A bead with a live run is never touched.
- * One action for each bead, in this order: merged evidence, a done epic, a ship PR closed unmerged.
+ * One action for each bead, in this order: a stale claim, merged evidence, a done epic, a ship PR
+ * closed unmerged. A stale claim goes first because bd refuses to close a bead another actor holds:
+ * the next pass closes it.
  */
 export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<string>, now: number): Repair[] {
   const doneEpics = new Set(
@@ -56,6 +66,11 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
   const out: Repair[] = []
   for (const b of every) {
     if (b.status === 'closed' || b.status === 'deferred' || live.has(b.id)) continue
+    const stale = staleClaim(b, now)
+    if (stale) {
+      out.push({ kind: 'release', id: b.id, reason: stale })
+      continue
+    }
     const reason = closeReason(b, prs) ?? (doneEpics.has(b.id) ? 'every child is closed' : undefined)
     if (reason) {
       out.push({ kind: 'close', id: b.id, reason })

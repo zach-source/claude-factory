@@ -6326,7 +6326,8 @@ async function liveByBead() {
 const repairsFile = () => join(HOME, 'repairs.jsonl')
 
 /**
- * Closes or defers beads whose work is plainly done or dead (`repairs` in src/repairs.ts decides).
+ * Closes or defers beads whose work is plainly done or dead, and releases claims that no live run
+ * holds (`repairs` in src/repairs.ts decides).
  * It makes at most REPAIR_CAP changes in a rig in one pass. Each change goes to repairs.jsonl,
  * which `factory digest` reads. The beads pass calls it.
  */
@@ -6341,7 +6342,13 @@ async function repairPass() {
       const b = beads(rig.repo, 'factory')
       const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
       for (const r of todo) {
-        if (r.kind === 'close' ? !b.close(r.id, r.reason) : !b.unship(r.id, r.reason)) continue
+        const done =
+          r.kind === 'close'
+            ? b.close(r.id, r.reason)
+            : r.kind === 'release'
+              ? b.releaseStale(r.id, r.reason)
+              : b.unship(r.id, r.reason)
+        if (!done) continue
         const at = new Date().toISOString()
         appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')
         console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
