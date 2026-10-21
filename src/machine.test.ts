@@ -235,6 +235,20 @@ test('validate rejects broken graphs', () => {
   expect(validate(def)).toBe(def)
 })
 
+test('validate accepts a defer edge that names a station of the factory, and refuses an unknown one', () => {
+  const rejects = (edge: object) => () =>
+    validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
+  expect(rejects({ to: 'done', defer: { station: 'a' } })).not.toThrow()
+  expect(rejects({ to: 'done', defer: { station: 'nope' } })).toThrow('defer station "nope" is not a node')
+  expect(rejects({ to: 'a', defer: { station: 'a' } })).toThrow('only an edge into done defers')
+  expect(rejects({ to: 'done', defer: { station: 'a' }, requeue: true })).toThrow(
+    'defers, rejects or requeues, only one',
+  )
+  expect(rejects({ to: 'done', defer: { station: 'a' }, ship: true })).toThrow(
+    'defers, rejects, requeues or ships, only one',
+  )
+})
+
 test('validate refuses a requeue edge that does not go into done, that also defers or rejects, or that names an invalid factory/station', () => {
   const rejects = (edge: object) => () =>
     validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
@@ -413,6 +427,64 @@ test('onRounds re-plans a capped station with its findings, then holds for the m
   expect(s.context.error).toBe('review reported changes more than 2 times')
   expect(s.context.mail.manager?.at(-1)?.text).toContain('already re-planned once')
   expect(s.context.mail.manager?.at(-1)?.text).toContain('held instead of going to implement')
+})
+
+// claude-factory-53tf: only an outcome that loops back counts toward a node's rounds cap.
+// review's `security` leaves the loop for a deeper node, so it never counts.
+const secDef = (onRounds?: string): Factory => ({
+  ...def,
+  nodes: {
+    plan: { prompt: 'plan it', next: { planned: 'implement' } },
+    implement: { prompt: 'build it', next: { ready: 'review' }, retries: 1 },
+    review: {
+      prompt: 'review it',
+      next: { changes: 'implement', security: 'security', approve: 'done' },
+      rounds: 3,
+      ...(onRounds ? { onRounds } : {}),
+    },
+    security: { prompt: 'scan it', next: { changes: 'implement', approve: 'done' } },
+  },
+  start: 'plan',
+})
+
+function secRun(onRounds?: string) {
+  const { send } = run(secDef(onRounds))
+  let seq = 1
+  let t = 0
+  const d = (outcome: string) => send({ type: 'DONE', seq: seq++, outcome, summary: outcome, at: ++t })
+  d('planned')
+  return { d, send }
+}
+
+test.each(['plan', undefined])(
+  'review security reports never count toward the cap (onRounds %s)',
+  onRounds => {
+    const { d } = secRun(onRounds)
+    for (let i = 0; i < 5; i++) {
+      d('ready')
+      const s = d('security')
+      expect(where(s.value)).toEqual(['security', 'working'])
+      expect(s.context.mail.plan ?? []).toHaveLength(0)
+      expect(s.context.log.some(e => e.replan)).toBe(false)
+      d('changes') // security changes goes back to implement
+    }
+  },
+)
+
+test('back edges still cap, and security reports between them do not move the cap', () => {
+  const { d } = secRun('plan')
+  for (let i = 0; i < 3; i++) {
+    d('ready')
+    d('security')
+    d('changes')
+    d('ready')
+    expect(where(d('changes').value)).toEqual(['implement', 'working'])
+  }
+  d('ready')
+  const s = d('changes')
+  expect(where(s.value)).toEqual(['plan', 'working'])
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', replan: true })
+  expect(s.context.mail.plan?.at(-1)?.text).toContain('round cap')
 })
 
 // claude-factory-qgz AC2: the re-plan mail stays near 24000 chars even when every round's summary is huge.
