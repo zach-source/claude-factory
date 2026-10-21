@@ -9324,6 +9324,15 @@ test.each([
   'g${HOME:+it}${IFS}push${IFS}origin${IFS}main',
   'g${X:-${Y:-i}}t${IFS}push${IFS}origin${IFS}main',
   'g${X:-it${IFS}push}${IFS}origin${IFS}main',
+  'g${X:+zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X+zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X-zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-${Y:+zz}}it${IFS}push${IFS}origin${IFS}main',
+  'g' + '${X:+${IFS:0:1}}'.repeat(50) + 'it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-"i"}t${IFS}push${IFS}origin${IFS}main',
+  "g${X:-'i'}t${IFS}push${IFS}origin${IFS}main",
+  'g${X:-\\i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+"i"}t${IFS}push${IFS}origin${IFS}main',
 ])('claude-factory-y094: %s denies with PUSH_REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(PUSH_REASON)
 })

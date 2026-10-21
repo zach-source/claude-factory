@@ -7879,9 +7879,11 @@ function replaceGluedExpansions(command: string, empty = false, ifsMask = 0): st
     else if (IFS_MOD_RE.test(span)) out += (ifsMask >> Math.min(ifsIdx++, 30)) & 1 ? ' ' : ''
     else {
       const word = DEFAULT_WORD_RE.exec(span)?.[1]
-      // The word is read again with glue on both sides, so a nested span in it is read too.
+      // A default or alternate span is read as its word or as empty text, by its bit in ifsMask.
+      // A word with a quote or backslash and a dollar or brace reads as empty; else it is read again.
+      const asWord = (ifsMask >> Math.min(ifsIdx++, 30)) & 1
       out +=
-        word === undefined || /['"\\]/.test(word)
+        word === undefined || !asWord || (/['"\\]/.test(word) && /[${}]/.test(word))
           ? ''
           : replaceGluedExpansions('x' + word + 'x', true, ifsMask).slice(1, -1)
     }
@@ -7895,7 +7897,7 @@ const DEFAULT_WORD_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([\s\S]*)\}$/
 // claude-factory-y094.6: the empty readings of a text. Each ${IFS...} span with a modifier may hold
 // a separator or nothing, so read every choice for up to 3 such spans, else all of them and none.
 function emptyReadings(text: string): string[] {
-  const n = text.match(/\$\{IFS(?![A-Za-z0-9_}])/g)?.length ?? 0
+  const n = text.match(/\$\{IFS(?![A-Za-z0-9_}])|\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]/g)?.length ?? 0
   const masks = n > 3 ? [0, -1] : Array.from({ length: 1 << n }, (_, k) => k)
   return [...new Set(masks.map(m => replaceGluedExpansions(text, true, m)))]
 }
