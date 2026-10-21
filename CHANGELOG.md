@@ -425,6 +425,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the dispatch loop reported `bd list: Error: no beads database found` for a rig with no `.beads` store, such as the ax rig. The loop now skips such a rig (claude-factory-toml).
 - Fixed: the worker hook allowed a `find` with `-delete` (or a glob or brace word that can expand to it) on a start path outside the worktree, such as `find / -delete`. The hook now denies it when a start path is outside the worktree, a glob, a variable or a tilde path (claude-factory-easj).
 - New: `src/filing-guard.ts` with `filingActor`, `clusterKey` and `filingGuard` (claude-factory-nwlh.1). `filingGuard` caps the beads one actor or one cluster can file in a window, and counts held beads that use slots. No caller yet: nwlh.2 wires it in.
+- Changed: the dispatch plan sorts a top-level P0 or P1 bead from a review, security, verify or check station as P2. It does not write to bd. A finding outside the diff no longer gives the verdict `changes`. The station files one P2 bead for each class (claude-factory-nwlh.4).
 
 ## 0.13.0 (2026-10-18)
 
