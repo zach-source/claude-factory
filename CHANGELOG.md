@@ -422,6 +422,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the worker hook let `sudo ${=X}` run the value of a set name. In `X="git push origin main"; sudo ${=X}`, zsh splits the value and sudo runs it. The hook took `${=X}` for a `NAME=value` word and skipped it. A wrapper can skip a word. The hook now denies that word if it expands a set name. Examples: `sudo -u $X` and `nice -n ${=X}`. (claude-factory-xbr1)
 - Fixed: the worker hook did not see zsh glob qualifier code. A glued group such as `ls *(e:...:)` or `ls *(+name)` runs a command for each file. The hook now denies an unquoted group glued to a word that holds `e`, `+`, `$` or a backtick (claude-factory-1r7x).
 - Fixed: a codex worker had no deny hook, lean settings, worker rules or context limit (claude-factory-x0b9). It now gets its own `CODEX_HOME` with the deny hook, the worker rules and a compaction limit. A codex launch refuses if the agent command turns the guard off. The ax runner refuses codex workers until claude-factory-72dq.
+- Fixed: the dispatch loop reported `bd list: Error: no beads database found` for a rig with no `.beads` store, such as the ax rig. The loop now skips such a rig (claude-factory-toml).
 
 ## 0.13.0 (2026-10-18)
 
