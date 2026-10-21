@@ -7761,49 +7761,6 @@ function replaceGluedExpansions(command: string, empty = false): string {
   return out
 }
 
-// claude-factory-y094: an unset variable in the middle of a word is empty text, so g${X}it is git.
-// splitGluedExpansions reads it as a break (g it). This is the extra deny-only reading: each glued
-// ${...} span or $NAME that is not IFS, and each $1 or $@, becomes empty text. A span or name that
-// holds IFS stays a break, and a $( ) stays for splitGluedExpansions. A whole-word expansion stays.
-function emptyGluedExpansions(words: string[]): string[] {
-  return words.map(w => {
-    if (!w.includes('$')) return w
-    let out = ''
-    for (let i = 0; i < w.length; i++) {
-      if (w[i] !== '$') {
-        out += w[i]
-        continue
-      }
-      const n = w[i + 1]
-      if (n === '{') {
-        let depth = 0
-        let end = -1
-        for (let j = i + 1; j < w.length; j++) {
-          if (w[j] === '{' && w[j - 1] === '$') depth++
-          else if (w[j] === '}' && --depth === 0) {
-            end = j
-            break
-          }
-        }
-        if (end < 0) {
-          out += '$@'
-        } else {
-          out += w.slice(i, end + 1).includes('IFS') ? '$@' : ''
-          i = end
-        }
-        continue
-      }
-      const name = /^\$=?[A-Za-z_][A-Za-z0-9_]*/.exec(w.slice(i))?.[0]
-      if (name) {
-        out += name.includes('IFS') ? '$@' : ''
-        i += name.length - 1
-      } else if (n !== undefined && /[0-9@*#?$!-]/.test(n)) i++
-      else out += '$'
-    }
-    return out === '' ? w : out
-  })
-}
-
 function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
 }
@@ -8135,10 +8092,7 @@ function denyAtScan(
       if (aliased) return aliased
     }
     const splitWords = splitGluedExpansions(words)
-    const emptied = emptyGluedExpansions(words)
-    const emptiedSplit =
-      splitGluedExpansions(emptied) ?? (emptied.some((w, k) => w !== words[k]) ? emptied : undefined)
-    for (const sw of [splitWords, splitGluedExpansions(words, false), emptiedSplit]) {
+    for (const sw of [splitWords, splitGluedExpansions(words, false)]) {
       if (!sw?.length) continue
       const split = denyAt(
         sw.map(quoteWord).join(' '),
