@@ -586,6 +586,39 @@ export const beads = (repo: string, actor: string) => ({
     if (!r.isOk) throw new Error(`bd list --metadata-field ${field}=${value}: ${r.err.split('\n')[0]}`)
     return r.out !== 'null' && (JSON.parse(r.out) as Bead[]).length > 0
   },
+  /** the open bead with `<field>=<value>` in its metadata, or null. Throws on a bd failure. */
+  findOpenByMetadata: (field: string, value: string): Bead | null => {
+    const out = must(
+      bd(repo, actor, 'list', '--metadata-field', `${field}=${value}`, '--json', '-n', '1'),
+      'list',
+    )
+    return out === 'null' ? null : ((JSON.parse(out) as Bead[])[0] ?? null)
+  },
+  /** files a bead with exact labels, priority and metadata (the advisories sweep). Returns bd's output. */
+  fileWith: (
+    title: string,
+    description: string,
+    o: { labels: string[]; priority: number; metadata: Record<string, string> },
+  ): string =>
+    must(
+      bd(
+        repo,
+        actor,
+        'create',
+        title,
+        '-d',
+        description,
+        '-p',
+        String(o.priority),
+        '--metadata',
+        JSON.stringify(o.metadata),
+        ...o.labels.flatMap(l => ['-l', l]),
+      ),
+      'create',
+    ),
+  /** replaces a bead's description */
+  setDescription: (id: string, description: string) =>
+    must(bd(repo, actor, 'update', id, '-d', description), 'update'),
   /**
    * Files a plan finding or proposal (claude-factory-dun) as a new bead, with no `factory` label
    * (unlike `create`, above): the factory itself must never start it as a run. `human` adds the

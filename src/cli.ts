@@ -71,6 +71,7 @@ import {
   type Bead,
 } from './beads'
 import * as plan from './plan'
+import { parseAdvisoryInput, planAdvisories } from './advisories'
 import {
   clipUtf8,
   dueSweeps,
@@ -5747,6 +5748,60 @@ async function planFactsCmd() {
   console.log(clipFactsJson(facts))
 }
 
+/**
+ * `factory advisories file <path>` (claude-factory-yex): the advisories sweep's only way to file beads.
+ * It refuses, with no bd call, unless BEADS_ACTOR is an advisories sweep run's actor.
+ * Each bead it files is then a sweep-filed bead, so the flood guard (`sweepGuard`) applies.
+ * It files critical beads first. A bad input file or a bd failure stops the pass.
+ * The command files nothing without a dedupe answer.
+ */
+function advisoriesFileCmd(path?: string) {
+  if (!path) fail('usage: factory advisories file <path>')
+  const actor = process.env.BEADS_ACTOR ?? ''
+  if (sweepFiler({ created_by: actor }) !== 'advisories')
+    fail('factory advisories file runs only in an advisories sweep run (BEADS_ACTOR)')
+  if (!existsSync(path!)) fail(`no file ${path}`)
+  const b = beads(process.cwd(), actor)
+  try {
+    const input = parseAdvisoryInput(JSON.parse(readFileSync(path!, 'utf8')))
+    const p = planAdvisories(input, (field, value) => b.hasMetadata(field, value))
+    for (const f of p.files) {
+      b.fileWith(f.title, f.body, {
+        labels: f.labels,
+        priority: f.priority,
+        metadata: Object.fromEntries(f.keys.map(k => [k, '1'])),
+      })
+      console.log(`${f.queued ? 'queued' : 'held'} ${f.keys[0]}`)
+    }
+    if (p.ownerStep) {
+      b.fileWith(p.ownerStep.title, p.ownerStep.body, {
+        labels: ['human'],
+        priority: 2,
+        metadata: { advisory_owner_step: input.repo },
+      })
+      console.log(`owner step ${input.repo}`)
+    }
+    if (p.digestRows.length) {
+      const body = `Medium and low advisories for ${input.repo}:\n${p.digestRows.map(r => `- ${r}`).join('\n')}`
+      const open = b.findOpenByMetadata('advisory_digest', input.repo)
+      if (open) b.setDescription(open.id, body)
+      else
+        b.fileWith(`Advisories digest: ${input.repo}`, body, {
+          labels: [],
+          priority: 3,
+          metadata: { advisory_digest: input.repo },
+        })
+      console.log(`digest ${input.repo} ${p.digestRows.length} rows`)
+    }
+    const queued = p.files.filter(f => f.queued).length
+    console.log(
+      `filed ${p.files.length} (queued ${queued}, held ${p.files.length - queued}, digest ${p.digestRows.length} rows, owner step ${p.ownerStep ? 'yes' : 'no'})`,
+    )
+  } catch (err) {
+    fail(`advisories file: ${(err as Error).message}`)
+  }
+}
+
 /** the pm's raw answer, before `plan set` checks each field by hand: `{id, why}` per rig and
  * `{rig, bead?, change, why}` proposals, exactly as claude-factory-dun's inbox spec shapes it. */
 type PmAnswer = {
@@ -7634,6 +7689,11 @@ if (import.meta.main && !outboxCmd)
           break
         }
         fail(`unknown plan command "${sub}": facts, set <file> or show`)
+        break
+      }
+      case 'advisories': {
+        if (args[0] !== 'file') fail('unknown advisories command: file <path>')
+        advisoriesFileCmd(args[1])
         break
       }
       case 'gate-brief': {
