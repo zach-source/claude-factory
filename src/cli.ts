@@ -5587,16 +5587,6 @@ async function planFactsCmd() {
   console.log(clipFactsJson(facts))
 }
 
-const findingTitle = (kind: plan.FindingKind): string =>
-  (
-    ({
-      'starved-epic': 'pm: starved epic, no progress while lower-priority work shipped',
-      'goal-no-beads': "pm: this rig's goal has no open bead driving it",
-      'epic-done-open': "pm: an epic's children are all closed, but it is still open",
-      'goal-no-plan': "pm: this rig's goal has no ranked work to act on",
-    }) as Record<plan.FindingKind, string>
-  )[kind]
-
 /** the pm's raw answer, before `plan set` checks each field by hand: `{id, why}` per rig and
  * `{rig, bead?, change, why}` proposals, exactly as claude-factory-dun's inbox spec shapes it. */
 type PmAnswer = {
@@ -5606,7 +5596,8 @@ type PmAnswer = {
 
 /**
  * `factory plan set <file>` command (claude-factory-dun.2).
- * It reads the pm's answer. It builds `plan.json`. It files each finding and proposal as a bead.
+ * It reads the pm's answer. It builds `plan.json`. It files each proposal as a bead. It does not file findings: they stay in
+ * `plan.json`, and the board and `plan show` list them.
  *
  * It refuses, and writes nothing, in each of these cases:
  * - a worker calls it (`FACTORY_FROM` is set)
@@ -5614,7 +5605,7 @@ type PmAnswer = {
  * - `<file>` is missing or not valid JSON
  *
  * The pm never runs `bd`. This function turns the pm's answer into bd writes.
- * For each finding or proposal, it checks `hasMetadata('pm_finding', key)` first.
+ * For each proposal, it checks `hasMetadata('pm_finding', key)` first.
  * A key already filed is never filed again, even under a bead that later closed.
  * It files at most 3 new beads for each rig.
  */
@@ -5684,22 +5675,14 @@ function planSetCmd(answerPath?: string) {
     const rig = rigs().find(r => r.name === name)
     if (!rig || !hasBeads(rig.repo)) continue
     const b = beads(rig.repo, 'factory')
-    const toFile = [
-      ...rigsPlan[name]!.findings.map(f => ({
-        title: findingTitle(f.kind),
-        desc: f.text,
-        key: f.key,
-        human: plan.HUMAN_FINDING_KINDS.has(f.kind),
-      })),
-      ...cleanProposals
-        .filter(p => p.rig === name)
-        .map(p => ({
-          title: `pm proposal: ${clip(p.change, 80)}`,
-          desc: `${p.why}${p.bead ? ` (${p.bead})` : ''}`,
-          key: plan.proposalKey(name, p),
-          human: true,
-        })),
-    ]
+    const toFile = cleanProposals
+      .filter(p => p.rig === name)
+      .map(p => ({
+        title: `pm proposal: ${clip(p.change, 80)}`,
+        desc: `${p.why}${p.bead ? ` (${p.bead})` : ''}`,
+        key: plan.proposalKey(name, p),
+        human: true,
+      }))
     let filed = 0
     for (const item of toFile) {
       if (filed >= 3) break
