@@ -1400,7 +1400,14 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
     const w = cmd[i]!
     if (w.startsWith('-') || w === '(' || w === '!') break
     // easj.9: a later word that may expand to -delete starts the expression, not a path.
-    if (i >= 2 && /[$`]/.test(w) && dynamicMayBeDelete(w)) break
+    // easj.12: break only when this word is the sole delete word; a real delete word keeps the path test.
+    if (
+      i >= 2 &&
+      /[$`]/.test(w) &&
+      dynamicMayBeDelete(w) &&
+      !findHasDelete(cmd.map((v, j) => (j === i ? 'x' : v)))
+    )
+      break
     if (findPathRisky(w, root)) return true
   }
   return false
