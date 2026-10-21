@@ -1592,7 +1592,7 @@ test('launchManager applies the manager task with its command and env, then retr
       FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
     })
     delete process.env.FACTORY_AX_IMAGE
-    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
+    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], [], { waitMs: 0 })
     expect(r).toEqual({ name: 'f-manager', policy: true })
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
@@ -1681,4 +1681,40 @@ test('routerAddress gives host:port of the router URL, port 80 by default, and n
   expect(ax.routerAddress('http://r.example.svc:8081')).toBe('r.example.svc:8081')
   expect(ax.routerAddress('r.example.svc:80')).toBeUndefined()
   expect(ax.routerAddress(undefined)).toBeUndefined()
+})
+
+test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none without one', () => {
+  const rig = (name: string, url?: string) => ({
+    name,
+    ...(url && { beadsRemote: { name: 'origin', url, user: 'u' } }),
+  })
+  const rigs = [
+    rig('a', 'http://beads-dolt.beads.svc.cluster.local:50051/acme/widget'),
+    rig('b', 'http://beads-dolt.beads.svc.cluster.local:50051/acme/other'),
+    rig('c', 'https://dolt.example.com/acme/x'),
+    rig('d'),
+    rig('e', 'not a url'),
+  ]
+  const dolt = (hosts: string[], port: number) => ({
+    hosts,
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+    port,
+  })
+  expect(ax.managerEgress({}, rigs)).toEqual([
+    { hosts: ['claude.ai'] },
+    dolt(['beads-dolt.beads.svc.cluster.local'], 50051),
+    dolt(['dolt.example.com'], 443),
+  ])
+  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }])
+})
+
+test('managerEgress adds the Linear rule only for a rig with --linear', () => {
+  const linear = { name: 'l', linear: { team: 't' } }
+  expect(ax.managerEgress({}, [{ name: 'x' }])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [linear])).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
+  ])
 })

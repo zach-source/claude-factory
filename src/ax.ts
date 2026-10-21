@@ -643,9 +643,12 @@ export function routerAddress(url?: string) {
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
- * A value that is not a URL adds no rule. ponytail: a rig's hosts stay with the workers
+ * A value that is not a URL adds no rule. A rig's beadsRemote adds its Dolt rule, and a --linear rig adds Linear's.
  */
-export function managerEgress(env: Record<string, string | undefined> = process.env): Egress[] {
+export function managerEgress(
+  env: Record<string, string | undefined> = process.env,
+  rigs: { beadsRemote?: { url: string }; linear?: unknown }[] = [],
+): Egress[] {
   const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap(k => {
     try {
       const u = env[k] ? new URL(env[k]!) : null
@@ -654,7 +657,27 @@ export function managerEgress(env: Record<string, string | undefined> = process.
       return []
     }
   })
-  return [{ hosts: ['claude.ai'] }, ...rules]
+  // one DOLT_BASIC rule for each host:port of a rig's beadsRemote; a rig with none adds none
+  const dolt = new Map<string, Egress>()
+  for (const r of rigs) {
+    try {
+      const u = r.beadsRemote ? new URL(r.beadsRemote.url) : null
+      if (!u?.hostname) continue
+      const port = Number(u.port) || (u.protocol === 'http:' ? 80 : 443)
+      dolt.set(`${u.hostname}:${port}`, {
+        hosts: [u.hostname],
+        key: 'DOLT_BASIC',
+        header: 'Authorization',
+        prefix: 'Basic ',
+        port,
+      })
+    } catch {}
+  }
+  // Linear sends its raw key, so the prefix is empty
+  const linear = rigs.some(r => r.linear)
+    ? [{ hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' }]
+    : []
+  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear]
 }
 
 /**
@@ -668,11 +691,16 @@ export const managerGithubKey = (env: Record<string, string | undefined> = proce
  * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
  * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
  */
-export async function launchManager(image: string, args: string[], { tries = 24, waitMs = 5000 } = {}) {
+export async function launchManager(
+  image: string,
+  args: string[],
+  rigs: Parameters<typeof managerEgress>[1] = [],
+  { tries = 24, waitMs = 5000 } = {},
+) {
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress(), undefined, undefined, managerGithubKey()))
+    if (createPolicy(name, managerEgress(process.env, rigs), undefined, undefined, managerGithubKey()))
       return { name, policy: true }
     await Bun.sleep(waitMs)
   }
