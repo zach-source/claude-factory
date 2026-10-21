@@ -49,8 +49,12 @@ const alive = (pid: number) => {
 export function queue(argv: string[], usage?: Usage[]) {
   appendFileSync(
     outbox(),
-    JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now(), ...(usage?.length && { usage }) }) +
-      '\n',
+    JSON.stringify({
+      argv,
+      from: process.env.FACTORY_FROM,
+      at: Date.now(),
+      ...(usage?.length && { usage }),
+    }) + '\n',
   )
 }
 
