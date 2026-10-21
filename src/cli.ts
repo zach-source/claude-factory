@@ -166,6 +166,14 @@ import {
   type RunMeta,
 } from './prs'
 import {
+  digestLines,
+  findHygiene,
+  hygieneHeld,
+  proposalComment,
+  RECENT_COMMENT_MS,
+  STALE_LABEL,
+} from './hygiene'
+import {
   nextSyncEntry,
   runBounded,
   syncDue,
@@ -4122,10 +4130,116 @@ type SweepLogEntry = {
   at: number
   rig: string
   sweep: string
-  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads' | 'green' | 'tracked' | 'quiet'
+  action:
+    | 'started'
+    | 'no-room'
+    | 'unchanged'
+    | 'error'
+    | 'no-beads'
+    | 'hygiene'
+    | 'off'
+    | 'green'
+    | 'tracked'
+    | 'quiet'
   run?: string
+  proposed?: number
+  kinds?: Record<string, number>
+  digest?: string
+  ghError?: string
 }
 const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
+
+/**
+ * claude-factory-8bg: one hygiene pass for a rig (src/hygiene.ts). With `write` false it only reads
+ * and returns what it would propose. It never closes, defers or reopens a bead. A bead gets the
+ * `hygiene_proposed` stamp first, so a crash between writes cannot propose it twice.
+ */
+async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: Gh = spawnGh) {
+  const b = beads(rig.repo, 'factory/hygiene')
+  const now = Date.now()
+  let prs: MergedPr[] = []
+  let ghError: string | undefined
+  if (originRef(rig.repo)?.forge !== 'github') ghError = 'not a GitHub repo: shipped kind skipped'
+  else {
+    try {
+      const r = await gh(
+        [
+          'pr',
+          'list',
+          '--state',
+          'merged',
+          '-L',
+          '500',
+          '--json',
+          'number,url,title,headRefName,mergeCommit',
+        ],
+        { cwd: rig.repo, timeout: 30_000 },
+      )
+      if (r.code !== 0) throw new Error('gh pr list failed')
+      prs = parseMergedPrs(r.out)
+    } catch {
+      ghError = 'gh failed: shipped kind skipped' // never the raw gh text
+    }
+  }
+  const runBranches = (id: string) =>
+    runIds()
+      .filter(r => {
+        try {
+          return loadRun(r).bead === id
+        } catch {
+          return false
+        }
+      })
+      .map(r => `factory/${r}`)
+  const findings = findHygiene(
+    b.every(),
+    prs,
+    now,
+    id => {
+      try {
+        return b.comments(id).some(c => now - Date.parse(c.created_at) < RECENT_COMMENT_MS)
+      } catch {
+        return true // unreadable comments: leave the bead alone this pass
+      }
+    },
+    undefined,
+    runBranches,
+  )
+  const out: { findings: typeof findings; proposed: typeof findings; ghError?: string; digest?: string } = {
+    findings,
+    proposed: [],
+    ghError,
+  }
+  if (!write) return out
+  const day = new Date(now).toISOString().slice(0, 10)
+  for (const f of findings) {
+    try {
+      b.setMetadata(f.id, { hygiene_proposed: `${f.kind}@${new Date(now).toISOString()}` })
+      b.relabel(f.id, { add: [STALE_LABEL] })
+      b.comment(f.id, proposalComment(f))
+      out.proposed.push(f)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} hygiene ${rig.name} ${f.id}: ${(err as Error).message}`)
+    }
+  }
+  if (out.proposed.length) {
+    try {
+      const id = b.createUnlabeled(
+        `hygiene digest ${day}: ${out.proposed.length} proposed closes`,
+        digestLines(out.proposed),
+        { hygiene_digest: day },
+        '-t',
+        'task',
+        '-p',
+        '3',
+      )
+      out.digest = id
+    } catch (err) {
+      console.error(`${new Date().toISOString()} hygiene ${rig.name} digest: ${(err as Error).message}`)
+    }
+  }
+  return out
+}
 
 /** Runs a rig's `--slo` command (claude-factory-8pc.6): the monitor sweep's read, on the laptop, not
  * on a worker. It is a shell command (`sh -c`), since a person writes it in rigs.json and it may
@@ -4292,6 +4406,34 @@ async function sweep() {
     }
     for (const station of due) {
       const at = Date.now()
+      // claude-factory-8bg: hygiene is code, not a run. lastAt lands first, so a crash cannot double a pass.
+      if (station === 'hygiene') {
+        state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+        writeJson(sweepStateFile(), state)
+        if (process.env.FACTORY_HYGIENE === '0') {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'off' })
+          continue
+        }
+        try {
+          const r = await hygienePass(rig, true)
+          const kinds: Record<string, number> = {}
+          for (const f of r.proposed) kinds[f.kind] = (kinds[f.kind] ?? 0) + 1
+          logSweep({
+            at,
+            rig: rig.name,
+            sweep: station,
+            action: 'hygiene',
+            proposed: r.proposed.length,
+            kinds,
+            digest: r.digest,
+            ghError: r.ghError,
+          })
+        } catch (err) {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+          console.error(`${new Date().toISOString()} hygiene for rig ${rig.name}: ${(err as Error).message}`)
+        }
+        continue
+      }
       const goal = sweepGoal(station)
       // monitor reads before it ever asks for a slot: unchanged needs no run, so it must cost no
       // room, and a changed read still needs its mail even when no room is free yet (it waits)
@@ -5529,11 +5671,13 @@ async function dispatch() {
         const why =
           isOwned(x) || x.labels?.includes(OWNER) || (open.length && open.every(isWaitingOnPerson))
             ? 'owner decisions pending'
-            : open.length
-              ? 'open children'
-              : linearIds.has(x.id)
-                ? 'Linear id unconfirmed'
-                : ''
+            : hygieneHeld(x)
+              ? 'hygiene proposed close (factory queue releases it)'
+              : open.length
+                ? 'open children'
+                : linearIds.has(x.id)
+                  ? 'Linear id unconfirmed'
+                  : ''
         if (why) skips.set(x.id, why)
         return !why
       })
@@ -7956,6 +8100,13 @@ if (import.meta.main && !outboxCmd)
         console.log(
           `queued ${id}${station ? ` at ${station}` : ''}: ${rigOf(root) ? 'it starts at the next dispatch' : 'make the repo a rig (factory rig add) for it to start'}`,
         )
+        break
+      }
+      case 'hygiene': {
+        if (!args[0]) fail('usage: factory hygiene <rig|repo>')
+        const repo = repoOf(args[0]!)
+        const r = await hygienePass({ name: rigOf(repo)?.name ?? args[0]!, repo }, false)
+        console.log(JSON.stringify({ findings: r.findings, ghError: r.ghError }, null, 2))
         break
       }
       case 'ship': {

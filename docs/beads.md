@@ -328,6 +328,40 @@ If a rig's pull fails, the factory mails the manager once for that error. If a l
 
 `$FACTORY_HOME/linear-sync.json` keeps each rig's last result. The factory cuts an error in this file to 200 characters. It replaces every secret value with `***`.
 
+## Hygiene sweep
+
+Once a day, `factory tick` runs the `hygiene` sweep for each rig. The pass is code. It uses no model
+and starts no run. It reads all beads with one `bd list` and the last 500 merged PRs with one
+`gh pr list`. It proposes a close for a bead, with one of these kinds:
+
+| Kind        | Rule                                                                                                           |
+| ----------- | -------------------------------------------------------------------------------------------------------------- |
+| `shipped`   | A merged PR title names the bead id, or the id without the rig prefix as one item in parentheses, such as `(192.4, 192.5)`. A merged PR on a run branch `factory/<runId>` of the bead also counts. A PR that names a child counts when all children are closed. |
+| `duplicate` | Two open beads have the same title words (Jaccard 0.8 or more, 3 words or more). The newer bead is the finding. |
+| `orphan`    | The bead is open and its parent is closed or missing.                                                          |
+| `deferred`  | The bead is deferred, has no assignee, has no future `defer_until`, and nobody touched it for 14 days.         |
+| `stale`     | The bead is open or blocked, has no open child, and nobody touched it for 14 days.                             |
+
+A bead gets one kind at most. The pass skips a bead that is closed or `in_progress`, that has the
+label `stale?`, that has the metadata `hygiene_proposed` or `hygiene_digest`, or that has a comment
+from the last 7 days. One pass proposes at most 20 beads.
+
+For each proposed bead, the pass sets the metadata `hygiene_proposed=<kind>@<time>`, adds the label
+`stale?`, and adds the comment `proposed close: <kind>: <evidence>`. Then it files one digest bead
+(type task, priority 3, no labels, metadata `hygiene_digest=<date>`) that lists them. A pass with
+no proposal files no digest. The pass never closes, defers or reopens a bead. A person closes.
+
+To keep a bead, run `bd label remove <id> stale?`. The dispatch loop holds a `factory`-labeled bead
+that has `stale?` and a `shipped` or `duplicate` proposal, so it starts no run for work that is
+probably done. `factory queue <rig> <id>` removes `stale?` and releases the bead.
+
+- `factory hygiene <rig>` prints the findings as JSON and writes nothing.
+- `FACTORY_HYGIENE=0` makes the pass write nothing. `sweeps.jsonl` logs the action `off`.
+- `factory rig <rig> --sweeps <list>` without `hygiene` turns it off for one rig. A rig with its own
+  `.factory/sweeps.ts` that has no `hygiene` node gets no pass.
+- If `gh` fails, or the repo is not on GitHub, the pass skips only `shipped`. `sweeps.jsonl` logs
+  the action `hygiene` with `proposed`, `kinds`, `digest` and `ghError`.
+
 ## Common problems
 
 | Symptom                                                     | Cause and fix                                                                                                                                                                                                                                      |
@@ -343,6 +377,7 @@ If a rig's pull fails, the factory mails the manager once for that error. If a l
 | `bd` warns that `.beads` has permissions 0755               | `chmod 700 .beads`.                                                                                                                                                                                                                                |
 | A worker's bd writes fail with schema errors                | The `bd` on `PATH` does not match the repo's schema. Use one `bd` version everywhere, the factory machine and the AX image included.                                                                                                               |
 | A deferred bead never comes back                            | Deferred beads stay out of `bd ready` until you `bd undefer <id>`. That is how you hand held or aborted work back.                                                                                                                                 |
+| A bead has the label `stale?` and a comment `proposed close: ...` | The hygiene sweep proposes a close (see "Hygiene sweep"). It closes nothing. Close the bead yourself, or keep it with `bd label remove <id> stale?`. |
 | A bead that a station rejected                              | It is open with the `rejected` label and the reason in its metadata (`bd show <id>`). `factory queue <rig> <id>` queues it again, or close it yourself.                                                                                            |
 | A ready bead never starts a run, with a comment that names a merged pull request | Dispatch's pre-check rejected it (`bd show <id>` shows `rejected_by: dispatch`). Check the evidence in the comment. `factory queue <rig> <id>` starts it anyway. |
 | A ready bead never starts a run, with a comment that names a live run | Dispatch's pre-check found that run already holds the bead (`bd show <id>` shows metadata `dispatch_skip: <runId>`, and keeps the `factory` label; it is not rejected). `factory queue <rig> <id>` is a no-op here. Wait for the holding run to end or release the bead, or find out why the run lost its claim. |

@@ -33,6 +33,7 @@ test('sweeps carries the same house rules and params as lifecycle', () => {
 
 test('each prompt names its own sweep label, the daily cap and the auto-queue allowlist', () => {
   for (const [id, node] of Object.entries(sweeps.nodes)) {
+    if (id === 'hygiene') continue // code-only: no worker reads this prompt
     expect(node.prompt).toContain(`sweep:${id}`)
     expect(node.prompt).toMatch(/\b5\b.*24 hour/)
     expect(node.prompt).toContain('sweep-queue:incident')
@@ -40,6 +41,10 @@ test('each prompt names its own sweep label, the daily cap and the auto-queue al
     expect(node.prompt).toContain('sweep-queue:critical-advisory')
     expect(node.prompt).toContain('sweep-queue:flaky-test')
   }
+})
+
+test('hygiene is a daily code-only sweep node', () => {
+  expect(sweeps.nodes.hygiene.everyMin).toBe(1440)
 })
 
 test('ci runs every 2 h and flakes every week, both on the laptop', () => {

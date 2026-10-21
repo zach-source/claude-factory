@@ -10,6 +10,7 @@ import type { Factory } from '../src/machine'
 //   flakes    flaky tests of the last 7 days, once a week; a run starts only when it finds a candidate
 //   maintain  dependency, advisory and docs maintenance, once a day
 //   improve   refactor, performance, cost and factory-health review, once a day, lens in rotation
+//   hygiene   proposes closing shipped, duplicate and stale beads, once a day, in code (no model, no run)
 //
 // Each pass files what it finds as separate work in the backlog. The flood guard
 // (src/sweeps.ts's `sweepGuard`, applied in `dispatch()`) caps every rig at 5 sweep-filed beads in
@@ -60,6 +61,14 @@ export default {
   maxSteps: 24,
   rules,
   nodes: {
+    // sweep() in src/cli.ts handles this station in code (src/hygiene.ts). It starts no run and
+    // never closes a bead. The prompt only keeps the node valid.
+    hygiene: {
+      everyMin: 1440,
+      timeoutMin: 5,
+      prompt: 'Code-only pass: the factory runs it itself and starts no worker here. Report filed.',
+      next: { filed: 'done' },
+    },
     monitor: {
       runner: LAPTOP,
       everyMin: 30,

@@ -393,7 +393,7 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     expect(readFileSync(log, 'utf8')).not.toContain('close')
     expect(show).toBe('show fx-1 --json --actor factory/run-1')
     expect(queue).toBe(
-      'update fx-1 --add-label factory --remove-label rejected --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
+      'update fx-1 --add-label factory --remove-label rejected --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
     )
   } finally {
     process.env.PATH = path
@@ -424,7 +424,9 @@ test('queue removes a stale factory:*/station:* label before adding the station 
       .find(l => l.startsWith('update'))!
     expect(update).toContain('--remove-label factory:release')
     expect(update).toContain('--remove-label station:deploy')
-    expect(update).toContain('--add-label factory --remove-label rejected --remove-label owner')
+    expect(update).toContain(
+      '--add-label factory --remove-label rejected --remove-label stale? --remove-label owner',
+    )
     expect(update).toContain('--unset-metadata owner_question --unset-metadata owner_since')
     expect(update).toContain('--add-label station:implement')
   } finally {
