@@ -9368,6 +9368,50 @@ const EASJ_DYNAMIC_PATH_ROWS = [
 test.each(EASJ_DYNAMIC_PATH_ROWS)('claude-factory-easj.12: %s denies with REASON', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
 })
+// easj security round 1 (.13 to .18)
+const EASJ_SEC_DENY_ROWS = [
+  'find . -[x; rm -rf /',
+  'find . -[x; git push --force origin main',
+  "find / -name '-[x' -o -delete",
+  'find - / -delete',
+  'find -- - / -delete',
+  'find -L - / -delete',
+  'find - .. -delete',
+  'find . -exec find / -delete \\;',
+  'find . -execdir find / -delete \\;',
+  'find . -maxdepth 0 -exec find / -delete \\;',
+  'find . -exec env find / -delete \\;',
+  'find . -exec sudo find / -delete \\;',
+  'find . -exec /usr/bin/find / -delete \\;',
+  'find . -exec find -L / -delete \\;',
+  'find . -exec find / -delete {} +',
+  'find . -ok find / -delete \\;',
+  'find . -execdir xargs find / -delete \\;',
+  'echo / | xargs -I% find % -delete',
+  'echo / | xargs -I @ find @ -delete',
+  'echo / | xargs -J % find % -delete',
+  'echo / | xargs --replace=% find % -delete',
+  'echo / | xargs -I % sudo find % -delete',
+  'echo / | xargs -L1 -I% find % -delete',
+  'echo / | xargs -0 -I% find % -delete',
+  'echo / | xargs -I% find -L % -delete',
+  'echo / | xargs find % -name x -delete',
+  'echo / | xargs -I% find -f % -delete',
+  'chdir /; find . -delete',
+]
+test.each(EASJ_SEC_DENY_ROWS)('claude-factory-easj sec: %s denies', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeDefined()
+})
+test.each(['find . -delete', 'find -delete', 'find ./x -delete', 'find . -name x -delete'])(
+  'claude-factory-easj.17: %s denies when gate cwd is outside root',
+  cmd => {
+    for (const cwd of ['/', '/etc'])
+      expect(denyReason(cmd, '/root/repo', undefined, { ...J1KI_GATE, cwd })).toBeDefined()
+  },
+)
+test.each(['find . -delete', 'find .scratch/x -delete'])('claude-factory-easj.17: %s allows with cwd inside root', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, { ...J1KI_GATE, cwd: '/root/repo/sub' })).toBeUndefined()
+})
 const EASJ_OTHER_DENY_ROWS = ['find $HOME -delete', 'find / -de?ete', 'find * -delete']
 const EASJ_ALLOW_ROWS = [
   'find .scratch/x -delete',
