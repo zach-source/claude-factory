@@ -75,6 +75,12 @@ import { filingActor, filingGuard } from './filing-guard'
 import {
   clipUtf8,
   dueSweeps,
+  failedTests,
+  flakeCandidates,
+  flakyRuns,
+  mainCiReds,
+  newCiReds,
+  type GhRun,
   guardHandled,
   markGuardHandled,
   pruneGuardState,
@@ -1805,7 +1811,7 @@ export function codexWorker(
   node: string,
   agent: string,
   rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches'>,
-  o: { hookFile?: string; userHome?: string; dir?: string; codexBin?: string } = {},
+  o: { hookFile?: string; userHome?: string; dir?: string; timeoutMs?: number } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
   if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
@@ -1853,16 +1859,21 @@ export function codexWorker(
     CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
     ' --disable apps --disable memories'
   // ask codex what is on with these flags and this home: fail closed on a guard that is not in force
-  const probe = Bun.spawnSync([o.codexBin ?? 'codex', ...extra.trim().split(' '), 'features', 'list'], {
+  // the shell splits the agent words as the pane does, so the probe sees the same exe and flags
+  const probe = Bun.spawnSync(['sh', '-c', `${agent}${extra} features list`], {
     env: { ...process.env, CODEX_HOME: dir },
+    stdin: 'ignore',
+    timeout: o.timeoutMs ?? 10_000,
+    killSignal: 'SIGKILL',
   })
   const on = new Map<string, string>()
   for (const l of probe.stdout.toString().split('\n')) {
     const c = l.trim().split(/\s+/)
     if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
   }
-  const bad =
-    probe.exitCode !== 0
+  const bad = probe.exitedDueToTimeout
+    ? 'codex features list timed out'
+    : probe.exitCode !== 0
       ? 'codex features list failed'
       : on.get('hooks') !== 'true'
         ? 'hooks is not on'
@@ -4096,7 +4107,7 @@ type SweepLogEntry = {
   at: number
   rig: string
   sweep: string
-  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads'
+  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads' | 'green' | 'tracked' | 'quiet'
   run?: string
 }
 const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
@@ -4109,6 +4120,109 @@ const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.strin
 function readSlo(rig: Rig): string {
   const p = Bun.spawnSync(['sh', '-c', rig.slo!], { cwd: rig.repo, timeout: 30_000 })
   return (p.stdout.toString() + p.stderr.toString()).trim()
+}
+
+/** the rig's default branch: origin/HEAD without `origin/`, else main */
+function defaultBranch(repo: string): string {
+  const p = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  const b =
+    p.exitCode === 0
+      ? p.stdout
+          .toString()
+          .trim()
+          .replace(/^origin\//, '')
+      : ''
+  return /^[\w][\w./-]*$/.test(b) ? b : 'main'
+}
+
+/** one read-only `gh` call on the laptop (claude-factory-q08): a non-zero exit or a timeout throws */
+function ghRead(repo: string, args: string[], timeout = 30_000): string {
+  const p = Bun.spawnSync(['gh', ...args], { cwd: repo, timeout, maxBuffer: 8_000_000 })
+  if (p.exitCode !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')}: ${p.exitCode ?? 'timeout'}`)
+  return p.stdout.toString()
+}
+
+const GH_RUN_FIELDS =
+  'workflowDatabaseId,workflowName,headSha,conclusion,status,databaseId,createdAt,url,event,attempt'
+const ghRuns = (repo: string, extra: string[]): GhRun[] => {
+  const runs = JSON.parse(ghRead(repo, ['run', 'list', ...extra, '--json', GH_RUN_FIELDS]))
+  if (!Array.isArray(runs)) throw new Error('gh run list: not a list')
+  return runs
+}
+
+/** the labels of every open bead in `repo`, for the ci-red and flake dedupe; a bd failure throws */
+const openLabels = (repo: string): Set<string> =>
+  new Set(
+    beads(repo, 'factory')
+      .every()
+      .filter(b => b.status !== 'closed')
+      .flatMap(b => b.labels ?? []),
+  )
+
+/** printable ASCII only, so a workflow name or URL cannot carry a control or bidi character into a mail */
+const plain = (s: string, max = 200) => s.replace(/[^\x20-\x7e]/g, '?').slice(0, max)
+
+/**
+ * The deterministic read of the `ci` and `flakes` sweeps (claude-factory-q08). No model runs here.
+ * `start` means a run is worth its tokens, and `mail` is its inbox text: keys, ids and URLs only,
+ * never raw log text. Any gh or bd failure throws, so no run starts (the caller logs `error`).
+ */
+function ciSweepRead(
+  rig: Rig,
+  station: 'ci' | 'flakes',
+  now: number,
+): { action: 'green' | 'tracked' | 'quiet' | 'start'; mail?: string } {
+  const branch = defaultBranch(rig.repo)
+  if (station === 'ci') {
+    const reds = mainCiReds(ghRuns(rig.repo, ['--branch', branch, '--limit', '100']))
+    if (!reds.length) return { action: 'green' }
+    const fresh = newCiReds(reds, openLabels(rig.repo))
+    if (!fresh.length) return { action: 'tracked' }
+    return {
+      action: 'start',
+      mail: clipUtf8(
+        fresh
+          .map(
+            r =>
+              `key: ${r.key} | workflow: ${plain(r.workflow, 80)} | first failing sha: ${r.sha.slice(0, 40)} | newest run: ${plain(r.url)}`,
+          )
+          .join('\n'),
+      ),
+    }
+  }
+  const since = new Date(now - 7 * 86_400_000).toISOString().slice(0, 10)
+  const flaky = flakyRuns(
+    ghRuns(rig.repo, ['--branch', branch, '--created', `>=${since}`, '--limit', '1000']),
+  ).slice(0, 10)
+  if (!flaky.length) return { action: 'quiet' }
+  const labels = openLabels(rig.repo)
+  const logs = flaky.flatMap(r => {
+    try {
+      const out = ghRead(rig.repo, [
+        'run',
+        'view',
+        String(r.id),
+        '--log-failed',
+        ...(r.attempt ? ['--attempt', String(r.attempt)] : []),
+      ])
+      return [{ url: plain(r.url), tests: failedTests(out) }]
+    } catch {
+      return [] // a log that expired or timed out only costs this run's evidence
+    }
+  })
+  const found = flakeCandidates(logs, labels)
+  if (!found.length) return { action: 'quiet' }
+  return {
+    action: 'start',
+    mail: clipUtf8(
+      found
+        .map(
+          c =>
+            `test: ${c.id} | key: ${c.key} | n: ${c.n} | queue: ${c.queue} | runs: ${c.urls.slice(0, 3).join(' ')}`,
+        )
+        .join('\n'),
+    ),
+  }
 }
 
 /**
@@ -4168,6 +4282,34 @@ async function sweep() {
       // room, and a changed read still needs its mail even when no room is free yet (it waits)
       let mail: string | undefined
       let read: { sig: string; lines: number } | undefined
+      if (station === 'ci' || station === 'flakes') {
+        // Check room first. A full factory writes no lastAt, so a late check repeats the gh reads each tick.
+        try {
+          await assertRoom(rig.repo)
+        } catch {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'no-room' })
+          continue
+        }
+        let ci: { action: 'green' | 'tracked' | 'quiet' | 'start'; mail?: string }
+        try {
+          ci = ciSweepRead(rig, station, at)
+        } catch (err) {
+          state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+          writeJson(sweepStateFile(), state)
+          logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+          console.error(
+            `${new Date().toISOString()} sweep ${station} for rig ${rig.name}: ${(err as Error).message}`,
+          )
+          continue
+        }
+        if (ci.action !== 'start') {
+          state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+          writeJson(sweepStateFile(), state)
+          logSweep({ at, rig: rig.name, sweep: station, action: ci.action })
+          continue
+        }
+        mail = ci.mail
+      }
       if (station === 'monitor') {
         let output: string
         try {
@@ -5304,12 +5446,18 @@ async function dispatch() {
       // both calls land. `factory queue` removes the `held:*` label; the mark keeps the guard from
       // holding the bead again. Like the sweep guard, a failed call leaves the bead out of `ready`.
       for (const v of filingGuard(
-        all.filter(x => !parentOf(x) && !sweepFiler(x) && x.status !== 'closed'),
+        all.filter(x => !parentOf(x) && !sweepFiler(x)),
         Date.now(),
       )) {
         if (v.kept || guardHandled(filingState, rig.name, v.id)) continue
-        excluded.add(v.id)
         const current = all.find(x => x.id === v.id)
+        if (current?.status === 'closed') continue // a closed bead uses a slot but needs no hold
+        excluded.add(v.id)
+        if (!current?.labels?.includes(LABEL)) {
+          // not factory-queued (a person's or pm-proposal bead): mark only, no relabel, comment or row
+          filingState = markGuardHandled(filingState, rig.name, v.id, Date.now())
+          continue
+        }
         try {
           const label = v.held === 'cluster' ? `held:cluster:${v.cluster}` : 'held:station'
           b.relabel(v.id, { add: [label], remove: current?.labels?.includes(LABEL) ? [LABEL] : [] })

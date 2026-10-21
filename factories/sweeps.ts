@@ -6,14 +6,16 @@ import type { Factory } from '../src/machine'
 // A pass is one run. It goes straight to `done`. The cadence lives in `sweep()`, not in a self-loop.
 //
 //   monitor   production watch, read-only, every 30 min, on a rig with a `--slo` command set
+//   ci        red main-branch CI, every 2 h; a run starts only when `sweep()` finds a new red
+//   flakes    flaky tests of the last 7 days, once a week; a run starts only when it finds a candidate
 //   maintain  dependency, advisory and docs maintenance, once a day
 //   improve   refactor, performance, cost and factory-health review, once a day, lens in rotation
 //
 // Each pass files what it finds as separate work in the backlog. The flood guard
 // (src/sweeps.ts's `sweepGuard`, applied in `dispatch()`) caps every rig at 5 sweep-filed beads in
 // any 24 hour window. It starts a kept bead on its own only when the bead carries
-// `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every other
-// bead waits for a person.
+// `sweep-queue:incident`, `sweep-queue:main-ci-red`, `sweep-queue:critical-advisory` or
+// `sweep-queue:flaky-test`. Every other bead waits for a person.
 //
 // This file is self-contained. It does not import from lifecycle.ts. This lets `ownCopy` and
 // `factory adopt` copy it into a repo on its own.
@@ -41,7 +43,7 @@ const guardNote = (station: string) =>
   `The factory labels what you file sweep:${station}, and keeps at most 5 such beads for this rig in ` +
   `any 24 hour window; a later finding still gets filed, just held for a person instead of started. ` +
   `It starts a kept one on its own only when it also carries sweep-queue:incident, ` +
-  `sweep-queue:main-ci-red or sweep-queue:critical-advisory: label a finding one of those only when ` +
+  `sweep-queue:main-ci-red, sweep-queue:critical-advisory or sweep-queue:flaky-test: label a finding one of those only when ` +
   `it earns it. Every other finding waits for a person to prioritize.`
 
 export default {
@@ -68,11 +70,31 @@ ${guardNote('monitor')}
 Report filed with the key numbers, which the next pass compares against, and what you filed.`,
       next: { filed: 'done' },
     },
+    ci: {
+      runner: LAPTOP,
+      everyMin: 120,
+      timeoutMin: 20,
+      prompt: `One pass on a red main branch. The factory read the CI runs of the default branch before it started you. Your inbox holds one line for each red workflow that no open bead tracks yet: its key (ci-red:<workflow id>-<first failing SHA, 7 characters>), the workflow name, the first failing SHA and the URL of the newest run. The mail holds no log text.
+Read the failing run's log (\`gh run view <id> --log-failed\`) and find the cause. File ONE bead for all the keys in your inbox: \`bd create -t bug -p 1\`, with the labels factory, station:plan, sweep-queue:main-ci-red and every key from the mail. Put the diagnosis, the first failing SHA and the run URLs in its description. Do not file a second bead for the same keys.
+${guardNote('ci')}
+Report filed with the keys and the bead id.`,
+      next: { filed: 'done' },
+    },
+    flakes: {
+      runner: LAPTOP,
+      everyMin: 10080,
+      timeoutMin: 30,
+      prompt: `One weekly pass on flaky tests. The factory read the last 7 days of CI runs of the default branch before it started you. Your inbox holds up to three candidates, each a test that failed in 2 or more runs that later passed: its id, its key (flake:<12 hex characters>), the number of flaky runs n, queue (true or false) and the run URLs. The mail holds no log text.
+File one bead for each candidate: title \`quarantine + fix flaky test: <id>\`, \`bd create -t bug -p 2\`, with the candidate's key as a label. Put the evidence (the run URLs and the failure you read in the log) in the description. Add the labels factory, station:plan and sweep-queue:flaky-test only when the candidate has queue true. Without queue, file the bead with no factory label.
+${guardNote('flakes')}
+Report filed with the ids and the beads you filed.`,
+      next: { filed: 'done' },
+    },
     maintain: {
       everyMin: 1440,
       timeoutMin: 60,
-      prompt: `One pass of maintenance. Look for, most urgent first: security advisories on dependencies and base images; failing or flaky tests and CI jobs; deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code.
-File each item worth doing as separate work, at most five per pass, skipping what is already tracked. A security advisory starts on its own at the plan station, labeled sweep-queue:critical-advisory; a red main-branch CI run starts on its own at the plan station too, labeled sweep-queue:main-ci-red; everything else is for a person to prioritize.
+      prompt: `One pass of maintenance. Look for, most urgent first: security advisories on dependencies and base images; deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code. The ci and flakes sweeps own red main-branch CI and flaky tests: do not file those.
+File each item worth doing as separate work, at most five per pass, skipping what is already tracked. A security advisory starts on its own at the plan station, labeled sweep-queue:critical-advisory; everything else is for a person to prioritize.
 ${guardNote('maintain')}
 Report filed with what you filed and what you skipped on purpose.`,
       next: { filed: 'done' },

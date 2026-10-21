@@ -1868,6 +1868,7 @@ type FBead = {
   hoursAgo: number
   parent?: string
   labels?: string[]
+  status?: string
 }
 
 /** a fake bd for the filing guard. `list` answers `all`; `ready` answers each bead that still
@@ -1883,8 +1884,10 @@ function fakeFilingBd(all: FBead[]) {
     created_at: new Date(Date.now() - b.hoursAgo * 3600_000).toISOString(),
     ...(b.parent && { parent: b.parent }),
     labels: b.labels ?? ['factory'],
+    ...(b.status && { status: b.status }),
   }))
   const readyCase = full
+    .filter(b => b.labels.includes('factory') && b.status !== 'closed')
     .map(
       b =>
         `    if [ ! -f "${gdir}/removed-${b.id}" ]; then out="$out$sep{\\"id\\":\\"${b.id}\\",\\"title\\":\\"t\\",\\"labels\\":[\\"factory\\"]}"; sep=","; fi`,
@@ -2080,4 +2083,32 @@ test('the filing guard leaves child, sweep-filed and person beads alone', () => 
       ? readFileSync(join(ghome, 'filing-guard.json'), 'utf8')
       : '',
   ).not.toMatch(/w-0|h-|s-/)
+})
+
+test('a closed bead uses a cluster slot: the 7th stays held, the closed one gets no write', () => {
+  const beads = replayBeads()
+  beads[1].status = 'closed' // w-2
+  filingReset(beads)
+  gfactory(['beads'])
+  // w-2 closed still uses a slot, so w-6 is the 6th and w-7 is the 7th: held
+  expect(fCalls().filter(l => /^bd update w-7 .*--add-label held:cluster:worker-hook/.test(l))).toHaveLength(1)
+  expect(fCalls().some(l => /^bd (update|comment) w-2 /.test(l))).toBe(false)
+  expect(startedBeads()).not.toContain('w-7')
+})
+
+test('a past-cap bead with no factory label gets a mark only; factory queue later starts it', () => {
+  const beads = replayBeads()
+  beads[6].labels = ['pm-proposal'] // w-7
+  filingReset(beads)
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd (update|comment) w-7 .*(held:|filing)/.test(l))).toBe(false)
+  expect(dispatchRows().some(r => r.id === 'w-7' && r.skip?.startsWith('filing guard'))).toBe(false)
+  expect(JSON.parse(readFileSync(join(ghome, 'filing-guard.json'), 'utf8')).a).toHaveProperty('w-7')
+  expect(startedBeads()).not.toContain('w-7')
+  // factory queue adds the label; the mark keeps the guard from holding it
+  beads[6].labels = ['factory']
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(startedBeads()).toContain('w-7')
 })
