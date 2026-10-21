@@ -3239,11 +3239,18 @@ export function selfUpdateMail(now: number, home = HOME): (Mail & { run: string 
 }
 
 /** token usage of the live runs from the last `days` days; '' when no worker session ran */
-export function tokenReport(days: number): string {
-  const live = records().filter(r => Date.now() - r.createdAt < days * 86_400_000 && runIds().includes(r.id))
+export function tokenTable(recs: ReturnType<typeof records>, emptyOk: boolean): string {
+  const live = recs.filter(r => runIds().includes(r.id))
   const sessions = live.flatMap(r => sessionsOf(loadRun(r.id)))
-  if (!sessions.length) return ''
+  if (!sessions.length && !emptyOk) return ''
   return renderTokens(sessions, new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)))
+}
+
+export function tokenReport(days: number): string {
+  return tokenTable(
+    records().filter(r => Date.now() - r.createdAt < days * 86_400_000),
+    false,
+  )
 }
 
 /**
@@ -7599,16 +7606,7 @@ if (import.meta.main && !outboxCmd)
           )
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
         }
-        if (args.includes('--tokens')) {
-          const live = picked.filter(r => runIds().includes(r.id))
-          console.log(
-            '\n' +
-              renderTokens(
-                live.flatMap(r => sessionsOf(loadRun(r.id))),
-                new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)),
-              ),
-          )
-        }
+        if (args.includes('--tokens')) console.log('\n' + tokenTable(picked, true))
         break
       }
       case 'backlog':
