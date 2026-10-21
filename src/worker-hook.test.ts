@@ -9172,6 +9172,15 @@ const EASJ_DENY_ROWS = [
   'cd / && find . -delete',
   'cd /; find . -delete',
   'pushd /; find . -delete',
+  'find . -delete -exec ${X} -rf / +',
+  'find -O10 / -delete',
+  'find -O99 / -delete',
+  'find / $X',
+  'find / ${X}',
+  'find / "$X"',
+  'find / -print $X',
+  'cd / ; >f find . -delete',
+  'cd / ; 2>f find . -delete',
 ]
 // These rows keep their own deny reason (the home rule or the glob command word rule).
 const EASJ_OTHER_DENY_ROWS = ['find $HOME -delete', 'find / -de?ete', 'find * -delete']
@@ -9183,6 +9192,9 @@ const EASJ_ALLOW_ROWS = [
   'find / -name x -print',
   'find "$D"/x -name y -print',
   'find . -$X',
+  'find / -name "$X" -print',
+  'find . -name "$X" -delete',
+  'find . $X',
   'find -f .scratch . -delete',
 ]
 test.each(EASJ_DENY_ROWS)('claude-factory-easj: %s denies with REASON', cmd => {

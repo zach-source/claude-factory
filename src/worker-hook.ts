@@ -1342,22 +1342,34 @@ function findExecRmDeny(cmdIn: string[]): boolean {
   return false
 }
 
-/**
- * claude-factory-easj: `find -delete` removes every match, like `rm -r`.
- * Returns true when `cmd`, a find command, has a delete word and a start path that is dynamic or outside `root`.
- * A delete word is `-delete`, a glob word that can match it, or a brace word with its letters.
- * The rule allows the root itself and a find with no start path. It only denies.
- */
+// easj.9: primaries whose next word is a value, so an expansion there is not an action word.
+const FIND_VALUE_PRIMARY =
+  /^-(name|iname|path|ipath|wholename|iwholename|regex|iregex|lname|ilname|type|xtype|user|group|perm|size|newer|samefile|fstype|printf|fprintf|fprint|fprint0|fls|mindepth|maxdepth|mtime|atime|ctime|mmin|amin|cmin|links|inum|uid|gid|context|newer[a-zA-Z]{2})$/
+
+// easj.9: an expansion can make the word -delete when its literal text is a subsequence of -delete.
+function dynamicMayBeDelete(w: string): boolean {
+  const lit = w.replace(/\$\{[^}]*\}|\$\([^)]*\)|\$\w+|`[^`]*`|["'\\$`]/g, '')
+  return hasLettersInOrder('-delete', lit.toLowerCase())
+}
+
 function findHasDelete(cmd: string[]): boolean {
   return cmd.some(
-    w =>
+    (w, i) =>
       w === '-delete' ||
       (w.startsWith('-') && /[$`]/.test(w)) ||
+      (i >= 2 && /[$`]/.test(w) && !FIND_VALUE_PRIMARY.test(cmd[i - 1]!) && dynamicMayBeDelete(w)) ||
       (w.startsWith('-') && BRACE_LIST_WORD.test(w) && hasLettersInOrder(w, '-delete')) ||
       (globActionWord(w) && globMatchesDelete(w)),
   )
 }
 
+/**
+ * claude-factory-easj: `find -delete` removes every match, like `rm -r`.
+ * Returns true when the find command `cmd` has a delete word.
+ * It must also have a start path that is dynamic or outside `root`.
+ * A delete word is `-delete`, a glob word that can match it, or a brace word with its letters.
+ * The rule allows the root itself and a find with no start path. It only denies.
+ */
 function findDeleteDeny(cmdIn: string[], root?: string): boolean {
   const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
   if (!findHasDelete(cmd)) return false
@@ -1382,11 +1394,13 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
       i++
       continue
     }
-    if (!/^-([HLPEXdsx]+|O\d?)$/.test(w)) break
+    if (!/^-([HLPEXdsx]+|O\d+)$/.test(w)) break
   }
   for (; i < cmd.length; i++) {
     const w = cmd[i]!
     if (w.startsWith('-') || w === '(' || w === '!') break
+    // easj.9: a later word that may expand to -delete starts the expression, not a path.
+    if (i >= 2 && /[$`]/.test(w) && dynamicMayBeDelete(w)) break
     if (findPathRisky(w, root)) return true
   }
   return false
@@ -2023,13 +2037,13 @@ function rmFindReading(
   if (b === 'find') {
     if (findBraceRmDeny(cmd) || findExecRmDeny(cmd) || findDeleteDeny(cmd, root))
       return { deny: true, rm: false }
-    if (findHasDelete(cmd)) return { deny: false, rm: true }
     for (let i = 0; i < cmd.length; i++) {
       if (!findExecWord(cmd[i]!) || i + 1 >= cmd.length) continue
       const next = cmd[i + 1]!
       if (DYN_CHARS.test(next) && dynamicHeadDeny(cmd, i + 1, root, other).deny)
         return { deny: true, rm: false }
     }
+    if (findHasDelete(cmd)) return { deny: false, rm: true }
   }
   return { deny: false, rm: false }
 }
@@ -8412,6 +8426,7 @@ function denyAtScan(
         (findBraceRmDeny(c2) || findExecRmDeny(c2) || findDeleteDeny(c2, root))
       )
         return REASON
+      if (c2.length && baseWord(c2[0]!) === 'find' && findHasDelete(c2)) hasRm = true
     }
     // claude-factory-21ux: read an unknown wrapper flag as a bare flag and as a flag with a value.
     const readings = wrapperReadingsDeny(words, root, otherSegs(segIdx))
