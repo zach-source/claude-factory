@@ -6,6 +6,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { mergedFileChurn } from './cli'
 import { PLAN_FRESH_MS } from './plan'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -588,4 +589,88 @@ test('plan show sanitizes and clips a long, dirty pm-log error before printing i
   const line = out.out.split('\n').find(l => l.includes('last pm attempt'))
   expect(line).toBeDefined()
   expect(line!.length).toBeLessThan(220)
+})
+
+const churnFinding = (count: number) => ({
+  kind: 'file-churn',
+  rig: 'a',
+  key: 'file-churn:a:12345678',
+  text: `src/hot.ts changed in ${count} merged PRs in 48 hours`,
+  file: 'src/hot.ts',
+  count,
+})
+
+test('plan set turns a file-churn finding into one human design-question bead, and a re-run with a new count files none', () => {
+  reset()
+  writeFacts({ findings: [churnFinding(8)] })
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, { proposals: [] })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  const written = JSON.parse(readFileSync(planJson(), 'utf8'))
+  expect(written.rigs.a.findings).toHaveLength(1)
+  expect(written.proposals).toHaveLength(1)
+  expect(written.proposals[0].change).toContain('design question: src/hot.ts')
+  expect(createCalls()).toHaveLength(1)
+  expect(createCalls()[0]).toContain('-l human')
+  expect(createCalls()[0]).toContain('pm proposal: design question')
+
+  writeFacts({ findings: [churnFinding(30)] })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  expect(createCalls()).toHaveLength(1)
+})
+
+test('a pm proposal cannot set the dedupe key', () => {
+  reset()
+  writeFacts({ findings: [] })
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, {
+    proposals: [{ rig: 'a', bead: 'fx-1', change: 'c', why: 'w', key: 'proposal:a:file-churn:12345678' }],
+  })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  expect(JSON.parse(readFileSync(planJson(), 'utf8')).proposals[0].key).toBeUndefined()
+  expect(createCalls()).toHaveLength(1)
+  expect(callsLog()).toContain('proposal:a:fx-1')
+})
+
+test('mergedFileChurn counts PR merges on the main line, not sync merges inside a PR branch', () => {
+  reset()
+  const r = join(dir, 'churn-repo')
+  mkdirSync(r, { recursive: true })
+  const git = (...a: string[]) => {
+    const p = Bun.spawnSync(
+      ['git', '-C', r, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a],
+      { stdout: 'pipe', stderr: 'pipe' },
+    )
+    if (p.exitCode !== 0) throw new Error(p.stderr.toString())
+  }
+  git('init', '-q', '-b', 'main')
+  writeFileSync(join(r, 'a.ts'), '1')
+  git('add', '.')
+  git('commit', '-qm', 'init')
+  git('checkout', '-qb', 'pr')
+  writeFileSync(join(r, 'b.ts'), '1')
+  git('add', '.')
+  git('commit', '-qm', 'pr work')
+  git('checkout', '-q', 'main')
+  writeFileSync(join(r, 'a.ts'), '2')
+  git('commit', '-qam', 'main moves')
+  git('checkout', '-q', 'pr')
+  git('merge', '-q', '--no-ff', '-m', 'sync main', 'main')
+  git('checkout', '-q', 'main')
+  git('merge', '-q', '--no-ff', '-m', 'merge pr', 'pr')
+  git('update-ref', 'refs/remotes/origin/main', 'main')
+  expect(mergedFileChurn(r)).toEqual({ 'b.ts': 1 })
+})
+
+test('plan set files the pm proposals first; churn takes only the slots left in the 3-per-rig cap', () => {
+  reset()
+  writeFacts({ findings: [churnFinding(8)] })
+  const answerPath = join(dir, 'answer.json')
+  writeAnswer(answerPath, {
+    proposals: ['p1', 'p2', 'p3'].map(c => ({ rig: 'a', bead: c, change: c, why: 'w' })),
+  })
+  expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+  const calls = createCalls()
+  expect(calls).toHaveLength(3)
+  expect(calls.join('\n')).not.toContain('design question')
 })
