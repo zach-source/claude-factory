@@ -1712,6 +1712,26 @@ test('a station:<name> the named factory lacks defers only that bead; the next c
   ).toBe(true)
 })
 
+test('station:constructor (an Object.prototype key) defers like an unknown station; the next candidate still starts (claude-factory-dax)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'factory:release', 'station:constructor'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  const out = pfactory(['beads'], { GH_JSON: '[]' })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+  const started = JSON.parse(readFileSync(join(phome, 'runs', runDirs()[0]!, 'run.json'), 'utf8')) as {
+    bead?: string
+  }
+  expect(started.bead).toBe('acme-2')
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(
+    calls.some(
+      l => l.startsWith('bd defer acme-1') && l.includes('station constructor not in factory release'),
+    ),
+  ).toBe(true)
+})
+
 // claude-factory-wnm (A8): the full, end-to-end claim. A bead moves from one factory to another
 // with no hand `factory start`. Run 1 (factory `lifecycle`) ends on a requeue edge, naming factory
 // `release` and station `deploy`. `beadsPass()` runs track() then dispatch() in one call
