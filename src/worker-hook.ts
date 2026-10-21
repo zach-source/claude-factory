@@ -2643,7 +2643,9 @@ function dynamicHeadScripts(words: string[]): string[] {
     // A head with a slash ("$ROOT/bin/factory") names a path, so it is not read.
     // ibas.6, .7: drop ${...} groups first; any other unquoted dollar (e$X) makes it dynamic.
     const bare = head.replace(/\$\{[^}]*\}/g, '$V')
-    if (head.startsWith("'") || !bare.includes('$') || bare.includes('/')) continue
+    // ibas.9: only a slash after the last close brace is a path; a nested or escaped brace hides none.
+    const path = head.slice(head.lastIndexOf('}') + 1).includes('/')
+    if (head.startsWith("'") || !bare.includes('$') || path) continue
     const rest = words.slice(a + 1)
     // A here-string form has its own, more specific deny (SHELL_STDIN_REASON).
     if (!rest.length || rest.includes('<<<')) return []

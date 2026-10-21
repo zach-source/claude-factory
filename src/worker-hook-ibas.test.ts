@@ -30,6 +30,11 @@ const ROWS = [
   '"${X/b/a}" "rm -rf /"',
   'e$X "rm -rf /"',
   'ev${X} "rm -rf /"',
+  '${X:-${Y}/} "rm -rf /"',
+  '"${X:-${Y}/}" "rm -rf /"',
+  '${X#${Y}/} "rm -rf /"',
+  '${X:-\\}/} "rm -rf /"',
+  '${X:-"}/"} "rm -rf /"',
 ]
 const PREFIXES = [
   '%',
