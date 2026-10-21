@@ -13,6 +13,9 @@ const run = (cmd: string) => denyReason(cmd, '/root/repo', undefined, GATE)
 
 const AC1 = [
   '$G-push origin main',
+  '$G-push$E origin main',
+  '$G-push${E} origin main',
+  '"$G-push$E" origin main',
   '${G}-push origin main',
   '"$G"-push origin main',
   '"$G-push" origin main',
