@@ -428,6 +428,7 @@ minor release may change the factory format, the CLI or the run state.
 - Changed: the dispatch plan sorts a top-level P0 or P1 bead from a review, security, verify or check station as P2. It does not write to bd. A finding outside the diff no longer gives the verdict `changes`. The station files one P2 bead for each class (claude-factory-nwlh.4).
 - New: the PM plan has a `file-churn` finding (claude-factory-nwlh.5). `factory plan facts` counts the merged PRs for each file on `origin/main` in the last 48 hours. A file in 8 or more PRs gives a finding in `plan.json`. Each rig gets the top 5. The count skips lockfiles and `CHANGELOG.md`. `factory plan set` also files one `human` bead for each file that asks a design question. The dedupe key does not use the count, so a file gets one bead.
 - Fixed: the release workflow cuts the release PR body at 60000 chars (claude-factory-b2dn). GitHub refuses a PR body over 65536 chars, and the 0.13.0 notes had 77849. The cut body links the full CHANGELOG.md on the release branch.
+- Fixed: the worker hook did not deny a dynamic command word that ends in a dashed git verb, such as `$G-push`. The shell runs the `git-push` binary. The hook now denies such a word at the command slot. A dynamic word that ends in any trigger verb also denies (claude-factory-ycaq).
 
 ## 0.13.0 (2026-10-18)
 
