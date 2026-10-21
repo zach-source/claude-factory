@@ -292,6 +292,8 @@ A rig can have a `remote` field: its https clone URL. `factory repos sync` clone
 
 `factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. A rig with no `beadsRemote` needs `refs/dolt/data` on its origin. If the origin has none, set `beadsRemote` for the rig. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
 
+To check every rig in the task, run `hack/ax-repos-check.sh`. It checks the clone and the beads store of each rig. With `AX_CHECK_START=1` it also runs `factory start` on each rig. That makes a real run on each rig, so run it only with the person's OK.
+
 Limits:
 
 - With a `beadsRemote`, the task runs plain `bd dolt push` and `bd dolt pull`. The laptop uses SQL on its Dolt server, and the task has no Dolt server. The laptop's rule for a pull conflict (keep the worker's row, and comment the other on the issue) does not run in the task. A conflict stops the pull with bd's own error.
