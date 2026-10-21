@@ -335,7 +335,7 @@ and starts no run. It reads all beads with one `bd list` and the last 500 merged
 
 | Kind        | Rule                                                                                                           |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |
-| `shipped`   | A merged PR title names the bead id exactly, or names a child when all children are closed.                   |
+| `shipped`   | A merged PR title names the bead id, or the id without the rig prefix as one item in parentheses, such as `(192.4, 192.5)`. A merged PR on a run branch `factory/<runId>` of the bead also counts. A PR that names a child counts when all children are closed. |
 | `duplicate` | Two open beads have the same title words (Jaccard 0.8 or more, 3 words or more). The newer bead is the finding. |
 | `orphan`    | The bead is open and its parent is closed or missing.                                                          |
 | `deferred`  | The bead is deferred, has no assignee, has no future `defer_until`, and nobody touched it for 14 days.         |

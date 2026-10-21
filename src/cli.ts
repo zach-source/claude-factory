@@ -4016,13 +4016,30 @@ async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: 
       ghError = 'gh failed: shipped kind skipped' // never the raw gh text
     }
   }
-  const findings = findHygiene(b.every(), prs, now, id => {
-    try {
-      return b.comments(id).some(c => now - Date.parse(c.created_at) < RECENT_COMMENT_MS)
-    } catch {
-      return true // unreadable comments: leave the bead alone this pass
-    }
-  })
+  const runBranches = (id: string) =>
+    runIds()
+      .filter(r => {
+        try {
+          return loadRun(r).bead === id
+        } catch {
+          return false
+        }
+      })
+      .map(r => `factory/${r}`)
+  const findings = findHygiene(
+    b.every(),
+    prs,
+    now,
+    id => {
+      try {
+        return b.comments(id).some(c => now - Date.parse(c.created_at) < RECENT_COMMENT_MS)
+      } catch {
+        return true // unreadable comments: leave the bead alone this pass
+      }
+    },
+    undefined,
+    runBranches,
+  )
   const out: { findings: typeof findings; proposed: typeof findings; ghError?: string; digest?: string } = {
     findings,
     proposed: [],
@@ -4045,12 +4062,12 @@ async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: 
       const id = b.createUnlabeled(
         `hygiene digest ${day}: ${out.proposed.length} proposed closes`,
         digestLines(out.proposed),
+        { hygiene_digest: day },
         '-t',
         'task',
         '-p',
         '3',
       )
-      b.setMetadata(id, { hygiene_digest: day })
       out.digest = id
     } catch (err) {
       console.error(`${new Date().toISOString()} hygiene ${rig.name} digest: ${(err as Error).message}`)

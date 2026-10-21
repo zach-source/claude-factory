@@ -271,6 +271,7 @@ function createBead(
   title: string,
   description: string,
   extra: string[],
+  meta: Record<string, string> = {},
 ) {
   const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
   const attempt = () =>
@@ -284,7 +285,7 @@ function createBead(
       ...(labeled ? ['-l', LABEL] : []),
       '--silent',
       '--metadata',
-      `{"factory_create":"${token}"}`,
+      JSON.stringify({ factory_create: token, ...meta }),
       ...extra,
     )
   const landed = (afterErr: string) => {
@@ -412,8 +413,8 @@ export const beads = (repo: string, actor: string) => ({
   create: (title: string, description: string, ...extra: string[]) =>
     createBead(repo, actor, true, title, description, extra),
   /** `create` without the `factory` label, so dispatch never starts the bead (the hygiene digest) */
-  createUnlabeled: (title: string, description: string, ...extra: string[]) =>
-    createBead(repo, actor, false, title, description, extra),
+  createUnlabeled: (title: string, description: string, meta: Record<string, string>, ...extra: string[]) =>
+    createBead(repo, actor, false, title, description, extra, meta),
   /** a bead's comments as bd prints them */
   comments: (id: string): { text: string; created_at: string }[] =>
     JSON.parse(must(bd(repo, actor, 'comments', id, '--json'), 'comments') || '[]'),

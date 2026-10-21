@@ -61,7 +61,22 @@ export const hygieneHeld = (b: HygieneBead) =>
   !!b.labels?.includes(STALE_LABEL) &&
   /^(shipped|duplicate)@/.test(String(b.metadata?.hygiene_proposed ?? ''))
 
-function classify(b: HygieneBead, all: HygieneBead[], prs: MergedPr[], now: number): Finding | null {
+/** a PR title that cites the full id, or the id without its rig prefix as a whole item in parentheses */
+function cites(id: string, title: string): boolean {
+  if (citesBead(id, title)) return true
+  const short = id.slice(id.lastIndexOf('-') + 1)
+  return [...title.matchAll(/\(([^)]*)\)/g)].some(m =>
+    (m[1] ?? '').split(/[\s,;]+/).some(w => w.replace(/[.:]+$/, '') === short),
+  )
+}
+
+function classify(
+  b: HygieneBead,
+  all: HygieneBead[],
+  prs: MergedPr[],
+  now: number,
+  branches: string[],
+): Finding | null {
   const kids = all.filter(c => c.parent === b.id)
   const mk = (kind: Kind, evidence: string): Finding => ({
     id: b.id,
@@ -70,7 +85,12 @@ function classify(b: HygieneBead, all: HygieneBead[], prs: MergedPr[], now: numb
     evidence: clip(evidence),
   })
   const done = kids.length > 0 && kids.every(c => c.status === 'closed')
-  const pr = prs.find(p => citesBead(b.id, p.title) || (done && kids.some(c => citesBead(c.id, p.title))))
+  const pr = prs.find(
+    p =>
+      cites(b.id, p.title) ||
+      branches.includes(p.headRefName) ||
+      (done && kids.some(c => cites(c.id, p.title))),
+  )
   if (pr) return mk('shipped', `${pr.url} (#${pr.number}, merged ${pr.mergeCommit}) "${clip(pr.title, 60)}"`)
   if (isOpen(b)) {
     // the newer bead of a pair is the finding: the older one is its twin
@@ -114,10 +134,11 @@ export function findHygiene(
   now: number,
   commentedRecently: (id: string) => boolean = () => false,
   cap = MAX_FINDINGS,
+  runBranches: (id: string) => string[] = () => [],
 ): Finding[] {
   const found = beads
     .filter(b => !excluded(b))
-    .flatMap(b => classify(b, beads, prs, now) ?? [])
+    .flatMap(b => classify(b, beads, prs, now, runBranches(b.id)) ?? [])
     .sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind))
   const count = new Map(beads.map(b => [b.id, b.comment_count ?? 0]))
   const out: Finding[] = []
