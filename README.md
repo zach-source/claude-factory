@@ -1003,7 +1003,9 @@ rows = [
 <name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
   are in the memory's git history like its notes.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
-  from their Claude transcripts.
+  from their Claude transcripts. The tick also mails the manager this table for the last 7 days once a
+  week (`HOME/token-digest.json` holds the date). `FACTORY_TOKEN_DIGEST=0` turns the mail off.
+  `FACTORY_TOKEN_DIGEST_MS` sets the period.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
   stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (16) runs holding a worker.
