@@ -254,7 +254,7 @@ If the manager runs in the AX task `f-manager`, use these commands on the laptop
 - `factory attach` prints the manager pane once. `factory attach --follow` prints it again every 3 seconds.
 - `factory say <text...>` types the text and Enter into the manager pane.
 
-To stop, press Ctrl-C. This stops only the command on the laptop. The manager keeps running, because it is the AX task `f-manager`. `ax ssh` has no PTY, so `factory attach` shows a snapshot and not a keyboard. To read another pane, set `FACTORY_AX_MANAGER_PANE` to an id from `herdr pane list`. See [remote-runner.md](remote-runner.md).
+To stop, press Ctrl-C. This stops only the command on the laptop. The manager keeps running, because it is the AX task `f-manager`. `ax ssh` has no PTY, so `factory attach` shows a snapshot and not a keyboard. To read another pane, set `FACTORY_AX_MANAGER_PANE` to an id from `herdr pane list`. This command runs in the AX task, not on the laptop. See [remote-runner.md](remote-runner.md).
 
 ### Where the state lives
 

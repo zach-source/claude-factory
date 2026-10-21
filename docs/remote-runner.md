@@ -276,7 +276,7 @@ The manager runs in the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another n
 
 - `factory attach` prints the manager pane once. `factory attach --follow` prints it again every 3 seconds. Press Ctrl-C to stop. The manager keeps running.
 - `factory say <text...>` types the text and Enter into the manager pane. The text travels as base64, because `ax` reads `-a`, `-n`, `--server` and `--context` anywhere on its command line.
-- `FACTORY_AX_MANAGER_PANE` sets the pane id (default `w1:p1`, the first pane of a fresh herdr session). Use the id that `herdr pane list` shows in the task. To read the board, set it to the id of the board pane.
+- `FACTORY_AX_MANAGER_PANE` sets the pane id (default `w1:p1`, the first pane of a fresh herdr session). Use the id that `herdr pane list` shows in the task. The board is the `/factory` console in the same pane. It shows in the manager pane when the manager has `/factory` open.
 
 `ax ssh` has no stdin and no PTY. So `factory attach` shows a snapshot and does not give you a keyboard. A real `herdr attach` waits for stdin and a PTY in `ax ssh`.
 
