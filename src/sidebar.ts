@@ -16,13 +16,14 @@ const isLive = (r: Row) => r.node && r.node !== 'done' && r.node !== 'aborted'
 
 /** one run's line, e.g. "deploy · parked" or "implement · working" */
 export function runText(r: Row) {
+  const h = hold(r)
   const state =
-    hold(r) ??
-    (r.sub === 'waiting'
-      ? r.wakeAt
-        ? `waits ${new Date(r.wakeAt).toTimeString().slice(0, 5)}`
-        : 'waits until mailed'
-      : 'working')
+    h === 'parked' && !r.wakeAt
+      ? 'parked, waits until mailed'
+      : (h ??
+        (r.sub === 'waiting' && r.wakeAt
+          ? `waits ${new Date(r.wakeAt).toTimeString().slice(0, 5)}`
+          : 'working'))
   return `${r.node} · ${state}`
 }
 

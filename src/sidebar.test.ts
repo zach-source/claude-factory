@@ -106,13 +106,14 @@ test('shipLines shows the ship run, the count and the next PR first', () => {
   expect(shipLines([])).toEqual([])
 })
 
-test('a run with no timed wake says it waits until mailed', () => {
+test('a parked run with no timed wake says it waits until mailed', () => {
   const r: Row = {
     id: 'h',
     ws: 'w8',
     node: 'soak',
     sub: 'waiting',
-    last: { ...blocked, outcome: 'deployed' },
+    last: { ...blocked, node: 'soak', outcome: 'blocked' },
   }
-  expect(runText(r)).toBe('soak · waits until mailed')
+  expect(runText(r)).toBe('soak · parked, waits until mailed')
+  expect(runText({ ...r, wakeAt: Date.now() + 1000 })).toBe('soak · parked')
 })
