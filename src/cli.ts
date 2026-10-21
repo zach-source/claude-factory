@@ -1803,7 +1803,7 @@ export function codexWorker(
   node: string,
   agent: string,
   rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches'>,
-  o: { hookFile?: string; userHome?: string; dir?: string; codexBin?: string } = {},
+  o: { hookFile?: string; userHome?: string; dir?: string; timeoutMs?: number } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
   if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
@@ -1851,16 +1851,21 @@ export function codexWorker(
     CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
     ' --disable apps --disable memories'
   // ask codex what is on with these flags and this home: fail closed on a guard that is not in force
-  const probe = Bun.spawnSync([o.codexBin ?? 'codex', ...extra.trim().split(' '), 'features', 'list'], {
+  // the shell splits the agent words as the pane does, so the probe sees the same exe and flags
+  const probe = Bun.spawnSync(['sh', '-c', `${agent}${extra} features list`], {
     env: { ...process.env, CODEX_HOME: dir },
+    stdin: 'ignore',
+    timeout: o.timeoutMs ?? 10_000,
+    killSignal: 'SIGKILL',
   })
   const on = new Map<string, string>()
   for (const l of probe.stdout.toString().split('\n')) {
     const c = l.trim().split(/\s+/)
     if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
   }
-  const bad =
-    probe.exitCode !== 0
+  const bad = probe.exitedDueToTimeout
+    ? 'codex features list timed out'
+    : probe.exitCode !== 0
       ? 'codex features list failed'
       : on.get('hooks') !== 'true'
         ? 'hooks is not on'
