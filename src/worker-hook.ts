@@ -8772,7 +8772,14 @@ async function main() {
     // read this field; `gitReason` falls back to `root` itself at its own call site.
     cwd: i.cwd,
   }
-  const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
+  // claude-factory-sibp: a throw in a guard must deny. An uncaught throw exits 1, and Claude Code
+  // then runs the command (fail open). The reason holds no exception text.
+  let reason: string | undefined
+  try {
+    reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
+  } catch {
+    reason = HOOK_ERROR_REASON
+  }
   if (!reason) return
   console.log(
     JSON.stringify({
