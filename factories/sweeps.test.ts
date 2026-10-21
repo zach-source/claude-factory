@@ -40,3 +40,18 @@ test('each prompt names its own sweep label, the daily cap and the auto-queue al
     expect(node.prompt).toContain('sweep-queue:critical-advisory')
   }
 })
+
+test('advisories runs weekly on the laptop and files only through the factory CLI', () => {
+  const n = sweeps.nodes.advisories
+  expect(n.everyMin).toBe(10080)
+  expect(n.runner).toBe('herdr')
+  expect(Object.values(n.next)).toEqual(['done'])
+  expect(n.prompt).toContain('factory advisories file')
+  expect(n.prompt).toContain('Never file an advisory bead by hand')
+})
+
+test('maintain leaves advisories to the advisories sweep and keeps end-of-life runtimes', () => {
+  const p = sweeps.nodes.maintain.prompt
+  expect(p).not.toContain('security advisories on')
+  expect(p).toContain('end-of-life runtimes')
+})
