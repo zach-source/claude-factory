@@ -3238,6 +3238,36 @@ export function selfUpdateMail(now: number, home = HOME): (Mail & { run: string 
   return [{ run: 'factory', from: 'factory', text, at: now }]
 }
 
+/** token usage of the live runs from the last `days` days; '' when no worker session ran */
+export function tokenReport(days: number): string {
+  const live = records().filter(r => Date.now() - r.createdAt < days * 86_400_000 && runIds().includes(r.id))
+  const sessions = live.flatMap(r => sessionsOf(loadRun(r.id)))
+  if (!sessions.length) return ''
+  return renderTokens(sessions, new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)))
+}
+
+/**
+ * Mails the manager the `factory metrics --tokens` table once a week. Set FACTORY_TOKEN_DIGEST_MS to
+ * change the period. FACTORY_TOKEN_DIGEST=0 turns the mail off. The function writes the date before it
+ * runs the digest, so a failing digest waits a week. An empty digest sends no mail.
+ */
+export function tokenDigestMail(
+  now: number,
+  home = HOME,
+  digest: () => string = () => tokenReport(7),
+): (Mail & { run: string })[] {
+  if (process.env.FACTORY_TOKEN_DIGEST === '0') return []
+  const file = join(home, 'token-digest.json')
+  const period = Number(process.env.FACTORY_TOKEN_DIGEST_MS) || 7 * 86_400_000
+  if (existsSync(file) && now - readJson<{ at: number }>(file).at < period) return []
+  writeJson(file, { at: now })
+  const report = digest()
+  if (!report) return []
+  return [
+    { run: 'factory', from: 'factory', text: `factory weekly token digest, last 7d:\n${report}`, at: now },
+  ]
+}
+
 const CONFIG_SYNC_MS = 10 * 60_000
 // what a home's .gitignore lets in (its config: rigs.json) to its branch, and the memory to the memory branch
 export const CONFIG_SYNC = `git remote get-url origin >/dev/null 2>&1 || exit 0
@@ -4055,6 +4085,7 @@ async function tick(isPatrol = false) {
     out.manager.push(...skillMail(now))
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
+    out.manager.push(...tokenDigestMail(now))
     // skip rows are for people reading dispatch.json; the board, sidebar and reap() see only the rest
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()).filter(r => !r.skip) : []))
     out.runs.push(
