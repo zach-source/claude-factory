@@ -435,6 +435,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: `glab api --hostname` took the host from a merge request URL in a report. A worker report can name a URL on any host, and glab sent `GITLAB_TOKEN` to that host. `factory prs` and `factory watch` now call glab only for a merge request on the rig origin host. They skip other merge requests and do not count them as errors. (claude-factory-pw6t)
 - Fixed: a run state machine counted a review `security` approval toward the `rounds` limit of its node. The fourth approval re-planned the run. An outcome now counts only when its edge loops back. (claude-factory-53tf)
 - New: lifecycle triage has the outcomes `rollout`, `decision` and `elsewhere` (claude-factory-502). `rollout` requeues the bead into the `release` factory. `decision` (also at plan and implement) defers the bead with the question on it. `bd undefer` then restarts it at plan, through the new edge field `defer: { station }`. `elsewhere` defers the bead after the worker files it in the other rig. A worker on a VM leaves a `File in:` line. The manager prompt tells the manager to file it. Before, these runs parked for days. The manager prompt change needs a manager restart.
+- New: dispatch caps the live runs of one cluster in a rig (claude-factory-nwlh.3). A candidate whose cluster already holds `clusterRuns` live runs (default 2, set by hand in `rigs.json`) does not start. Its `dispatch.json` row says `cluster <key>: N live runs`.
 
 ## 0.13.0 (2026-10-18)
 

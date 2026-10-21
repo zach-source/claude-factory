@@ -70,6 +70,7 @@ import {
   stationOf,
   type Bead,
 } from './beads'
+import { clusterKey } from './filing-guard'
 import * as plan from './plan'
 import {
   clipUtf8,
@@ -4685,6 +4686,8 @@ export type Rig = {
   remote?: string
   factory: string
   maxRuns?: number
+  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; edit rigs.json by hand */
+  clusterRuns?: number
   sweeps?: string[]
   /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
   sweepsFactory?: string
@@ -4933,6 +4936,10 @@ export const room = (
       ? Infinity
       : rig.maxRuns - busy.filter(b => b === rig.name).length - held.filter(h => h === rig.name).length,
   )
+
+/** the most live runs one cluster may hold in `rig`: `clusterRuns` when a positive integer, else 2 */
+export const clusterCap = (rig: Pick<Rig, 'clusterRuns'>) =>
+  Number.isInteger(rig.clusterRuns) && rig.clusterRuns! > 0 ? rig.clusterRuns! : 2
 
 /**
  * the rigs' beads sync with their Dolt remotes, apart from dispatch: a slow or hung remote must not hold
@@ -5374,10 +5381,23 @@ async function dispatch() {
       const candidates = plan.orderByPlan(eligible, plan.rigPlanOf(freshPlan, rig.name))
       if (idle(rig, candidates.length))
         errors.push({ id: `rig:${rig.name}`, rig: rig.name, idle: 'no goal, no ready beads' })
+      // nwlh.3: live runs per cluster; a linked bead of another rig is not in `all`, so not counted
+      const liveByCluster = new Map<string, number>()
+      const rigBeads = byId(all)
+      for (const id of linked.keys()) {
+        const lb = rigBeads.get(id)
+        if (lb) liveByCluster.set(clusterKey(lb), (liveByCluster.get(clusterKey(lb)) ?? 0) + 1)
+      }
       for (const bead of candidates) {
         if (room(rig, busy, undefined, held) <= 0) {
           roomText = fullText(rig, busy, held)
           break
+        }
+        const cluster = clusterKey(bead)
+        const clusterLive = liveByCluster.get(cluster) ?? 0
+        if (clusterLive >= clusterCap(rig)) {
+          skips.set(bead.id, `cluster ${cluster}: ${clusterLive} live runs`)
+          continue
         }
         // claude-factory-wnm: a `factory:<name>` label on the bead picks a different factory to
         // compile this run from, in place of the rig's own `rig.factory`. A `station:<name>` label
@@ -5483,6 +5503,7 @@ async function dispatch() {
         }
         if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
         busy.push(rig.name)
+        liveByCluster.set(cluster, clusterLive + 1)
         started.add(bead.id)
       }
     } catch (err) {
