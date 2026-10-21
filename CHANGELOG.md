@@ -443,6 +443,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: the codex launch probe ran `codex` from PATH with only the factory flags (claude-factory-b9vf). It now runs the agent's own executable and flags, then the factory flags, then `features list`. It stops after 10 seconds and refuses the launch.
 - New: a daily `hygiene` sweep (claude-factory-8bg). It runs in code, with no model and no run. It proposes closes for open beads that a merged PR already shipped, for duplicates, orphans, deferred beads with no owner and beads that nobody touched for 14 days. Each gets the label `stale?`, the metadata `hygiene_proposed` and the comment `proposed close: <kind>: <evidence>`. One digest bead lists up to 20 of them. The sweep never closes a bead. Dispatch holds a `factory` bead with `stale?` and a `shipped` or `duplicate` proposal, and `factory queue` releases it. `factory hygiene <rig>` prints a preview. `FACTORY_HYGIENE=0` turns the sweep off. See "Hygiene sweep" in docs/beads.md.
 - Fix: `filingGuard` and `sweepGuard` now count a bead with an unparseable `created_at` as created now. Before, such a bead escaped the flood cap. (claude-factory-d4jx)
+- Docs: the memory lifecycle task list marks T006 as done (claude-factory-kw1). It changes no code.
 
 ## 0.13.0 (2026-10-18)
 
