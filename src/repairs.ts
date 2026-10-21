@@ -20,10 +20,6 @@ const merged = (prs: PrFact[]) => prs.filter(p => p.state === 'MERGED')
 const meta = (b: Bead, key: string) => String(b.metadata?.[key] ?? '')
 const prOf = (prs: PrFact[], ref: string) =>
   ref ? prs.find(p => p.url === ref || p.url.endsWith(`/${ref.replace(/^#/, '')}`)) : undefined
-const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-/** the id as a whole word. A text with `x.10` does not name `x.1`. A dot that ends a sentence is fine. */
-const names = (text: string | undefined, id: string) =>
-  !!text && new RegExp(`(?<![\\w-])${esc(id)}(?![\\w-]|\\.\\d)`).test(text)
 const DONE = /already (fixed|shipped|done)|duplicate/i
 const SHA = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/
 
@@ -32,8 +28,11 @@ function closeReason(b: Bead, prs: PrFact[]): string | undefined {
   const done = merged(prs)
   const shipped = prOf(done, meta(b, 'ship_pr'))
   if (shipped) return `shipped: ${shipped.url} is merged`
-  const named = done.find(p => names(p.body, b.id) || names(p.headRefName, b.id))
-  if (named) return `shipped: merged ${named.url} names this bead`
+  // ponytail: only the bead's own ship metadata links it to a PR. A PR body can name other beads
+  // (a follow-up, a related bead), so text in the body is not evidence.
+  const branch = meta(b, 'ship_branch')
+  const onBranch = branch ? done.find(p => p.headRefName === branch) : undefined
+  if (onBranch) return `shipped: ${onBranch.url} from ${branch} is merged`
   if (!b.labels?.includes(REJECTED)) return undefined
   const why = meta(b, 'reject_reason')
   if (!DONE.test(why)) return undefined

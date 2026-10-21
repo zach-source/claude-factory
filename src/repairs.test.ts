@@ -20,17 +20,17 @@ describe('repairs', () => {
     ])
   })
 
-  test('closes a bead a merged PR names in its body or branch', () => {
-    const out = run(
-      [bead('a-1'), bead('a-2'), bead('a-3')],
-      [pr(6, 'MERGED', { body: 'Fixes a-1.' }), pr(7, 'MERGED', { headRefName: 'factory/a-2' })],
-    )
-    expect(out.map(r => r.id)).toEqual(['a-1', 'a-2'])
+  test('closes a bead whose ship_branch is a merged head branch', () => {
+    const b = bead('a-2', { labels: ['ship'], metadata: { ship_branch: 'factory/lifecycle-x' } })
+    expect(run([b], [pr(7, 'MERGED', { headRefName: 'factory/lifecycle-x' })]).map(r => r.id)).toEqual([
+      'a-2',
+    ])
+    expect(run([b], [pr(7, 'OPEN', { headRefName: 'factory/lifecycle-x' })])).toEqual([])
   })
 
-  test('an id is not named by a longer id, and an open PR proves nothing', () => {
-    expect(run([bead('a-1')], [pr(6, 'MERGED', { body: 'see a-1.2 and a-10' })])).toEqual([])
-    expect(run([bead('a-1')], [pr(6, 'OPEN', { body: 'a-1' })])).toEqual([])
+  test('a merged PR that only names a bead in its body or branch closes nothing', () => {
+    expect(run([bead('a-1')], [pr(6, 'MERGED', { body: 'Fixes a-1. Follow-up: a-6.' })])).toEqual([])
+    expect(run([bead('a-2')], [pr(7, 'MERGED', { headRefName: 'factory/a-2' })])).toEqual([])
   })
 
   test('closes an epic whose children are all closed, unless a run is live', () => {
@@ -59,12 +59,13 @@ describe('repairs', () => {
   })
 
   test('skips closed, deferred and live beads, and gives one action to a bead', () => {
-    const merged = pr(5, 'MERGED', { body: 'a-1 a-2 a-3 a-4' })
+    const merged = pr(5, 'MERGED')
+    const shipped = { metadata: { ship_pr: merged.url } }
     const every = [
-      bead('a-1', { status: 'closed' }),
-      bead('a-2', { status: 'deferred' }),
-      bead('a-3'),
-      bead('a-4'),
+      bead('a-1', { status: 'closed', ...shipped }),
+      bead('a-2', { status: 'deferred', ...shipped }),
+      bead('a-3', shipped),
+      bead('a-4', shipped),
     ]
     expect(run(every, [merged], ['a-3']).map(r => r.id)).toEqual(['a-4'])
   })
