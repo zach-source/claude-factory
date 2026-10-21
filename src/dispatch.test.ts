@@ -1384,6 +1384,26 @@ test('REQUEUE_MAX (5) stops the loop: a bead already requeued 5 times is deferre
   expect(trackOf('run-4').requeued).toBeUndefined()
 })
 
+test.each(['x', 'NaN'])(
+  'a non-numeric requeues value (%s) counts as at-cap: deferred, not requeued (claude-factory-yo9)',
+  bad => {
+    const showJson = JSON.stringify([
+      {
+        id: 'acme-1',
+        title: 't',
+        labels: ['factory', 'factory:lifecycle'],
+        metadata: { requeued_from: 'run-0', requeues: bad },
+      },
+    ])
+    reqReset(showJson)
+    requeuedRun('run-4', 'acme-1', 'ship')
+    expect(pfactory(['beads']).code).toBe(0)
+    const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+    expect(calls.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
+    expect(trackOf('run-4').requeued).toBeUndefined()
+  },
+)
+
 test('a bd show failure during the REQUEUE_MAX check leaves the run unsettled for a retry, not deferred (claude-factory-wnm.10)', () => {
   reqResetShowFails()
   requeuedRun('run-5', 'acme-1', 'ship')
