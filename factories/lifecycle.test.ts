@@ -498,3 +498,32 @@ test('a manager goto plan between two verify reds breaks the repeat streak (clau
   // the re-plan renumbered AC2, so this is not a real repeat: still only the 1st mail
   expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
 })
+
+test('implement runs a numbered self-check and reports a Self-check block (2ida AC1, AC2)', () => {
+  const p = lifecycle.nodes.implement!.prompt
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.']) expect(p).toContain(`\n${n} `)
+  expect(p).toContain('the whole test suite')
+  expect(p).toContain('AC table')
+  expect(p).toContain('git diff <reviewed sha>..HEAD')
+  expect(p).toContain('Add no changelog entry')
+  expect(p).toContain("'Self-check:'")
+  expect(p).toContain('Close every task of this run')
+})
+
+test('review, security and check share one blocking-scope rule (2ida AC3, AC4)', () => {
+  for (const n of ['review', 'security', 'check'] as const) {
+    const p = lifecycle.nodes[n]!.prompt
+    expect(p).toContain('A finding blocks only when it is one of these')
+    expect(p).toContain('Not blocking')
+    expect(p).toContain('discovered-from:')
+  }
+  expect(lifecycle.nodes.security!.prompt).toContain('P1 or higher')
+})
+
+test('plan names the proof for each AC, negative rows and a fail-closed class rule (2ida AC5)', () => {
+  const p = lifecycle.nodes.plan!.prompt
+  expect(p).toContain('the test or command that proves it')
+  expect(p).toContain('negative rows')
+  expect(p).toContain('one fail-closed rule')
+  expect(p).toContain('out of scope')
+})
