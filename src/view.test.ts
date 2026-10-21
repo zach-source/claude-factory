@@ -984,6 +984,11 @@ test('each live run counts in one state, so a gate that is also stuck is not sub
 test('ownerStep reads the command after "parked, waiting on:"; interviews tag only parked owner steps; mergeSame never folds them (n340)', () => {
   expect(ownerStep('x\nParked,   Waiting on:  helm  upgrade w ')).toBe('helm upgrade w')
   expect(ownerStep('Question: ship?')).toBeUndefined()
+  expect(
+    ownerStep(
+      'parked, waiting on: kubectl apply -f k.yaml\nQuestion: Run it?\nOptions: yes: apply | no: skip',
+    ),
+  ).toBe('kubectl apply -f k.yaml')
   const park = (id: string, summary: string) =>
     ({
       id,
