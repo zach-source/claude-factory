@@ -67,6 +67,9 @@ import { homedir } from 'node:os'
 import { join as joinPath, posix, resolve as resolvePath } from 'node:path'
 import { homeReason } from './home-guard'
 
+export const HOOK_ERROR_REASON =
+  'The factory denies this command: the hook failed while it read this command, so it denies it (fail closed). Do not retry this exact command.'
+
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
   'rm a $variable path, a glob, or a path outside the worktree. ' +

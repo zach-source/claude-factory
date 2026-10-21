@@ -12,6 +12,7 @@ import {
   COMMENT_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
+  HOOK_ERROR_REASON,
   COMMENT_CONTINUATION_REASON,
   DOLLAR_QUOTE_REASON,
   DYNAMIC_VERB_REASON,
@@ -871,6 +872,20 @@ test('run as `bun src/worker-hook.ts`, an allow command, a non-Bash tool or bad 
   expect(other).toEqual({ out: '', code: 0 })
   const bad = await run('not json')
   expect(bad).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+test('run as `bun src/worker-hook.ts`, a guard throw prints one deny with HOOK_ERROR_REASON and exits 0 (claude-factory-sibp)', async () => {
+  for (const command of [123, ['x']]) {
+    const { out, code } = await run(JSON.stringify({ tool_name: 'Bash', tool_input: { command } }))
+    expect(code).toBe(0)
+    expect(JSON.parse(out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: HOOK_ERROR_REASON,
+      },
+    })
+  }
 }, 10_000)
 
 test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-factory-99d.2', async () => {
