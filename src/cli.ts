@@ -6010,7 +6010,7 @@ async function watchPass() {
         const forgeHost = originRef(run.repo)?.host
         const mrUrls = mrsIn(parked.summary).filter(url => {
           if (onHost(url, forgeHost)) return true
-          console.error(`watch: skip merge request on host ${new URL(url).hostname}: not the rig forge host`)
+          console.error(`watch: skip merge request on host ${url.split('/')[2]}: not the rig forge host`)
           return false
         })
         if (!urls.length && !mrUrls.length) continue

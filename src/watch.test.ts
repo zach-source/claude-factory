@@ -629,6 +629,16 @@ test('a park that names only a merge request on another host runs glab 0 times a
   expect(watchJson().errors).toBe(0)
 })
 
+test('an off-host merge request URL that new URL rejects does not stop the run (pw6t.3)', () => {
+  reset()
+  routeRun('r1', { url: `https://1.2.3.999/acme/widget/-/merge_requests/1 and ${MR_URL}` })
+  fakeGlab(mrBody(), [])
+  logGlab()
+  const out = factory(['watch'])
+  expect(readFileSync(glabCalls(), 'utf8')).toContain('gitlab.example.com')
+  expect(out.err).toContain('1.2.3.999')
+})
+
 test('an off-host merge request is skipped and the on-host one still routes (pw6t)', () => {
   reset()
   routeRun('r1', { url: `${OFF_HOST} and ${MR_URL}` })
