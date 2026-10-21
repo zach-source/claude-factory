@@ -236,3 +236,67 @@ export function mainCiReds(runs: GhRun[]): CiRed[] {
 /** the reds whose key is not a label on an open bead */
 export const newCiReds = (reds: CiRed[], openLabels: Set<string>): CiRed[] =>
   reds.filter(r => !openLabels.has(r.key))
+
+/** a run whose failed log holds a flaky test; `attempt` picks the failed attempt of a re-run */
+export type FlakyRun = { id: number; url: string; attempt?: number }
+
+/** The runs to read failed logs from. A SHA is flaky when one workflow ran it red and green: each
+ * red run is a flaky run. A green run on attempt 2 or later is flaky too: its last failed attempt is. */
+export function flakyRuns(runs: GhRun[]): FlakyRun[] {
+  const cs = runs.filter(counted)
+  const green = new Set(
+    cs.filter(r => r.conclusion === 'success').map(r => `${r.workflowDatabaseId}/${r.headSha}`),
+  )
+  return cs.flatMap(r => {
+    if (RED.includes(r.conclusion))
+      return green.has(`${r.workflowDatabaseId}/${r.headSha}`) ? [{ id: r.databaseId, url: r.url }] : []
+    return (r.attempt ?? 1) > 1 ? [{ id: r.databaseId, url: r.url, attempt: r.attempt! - 1 }] : []
+  })
+}
+
+const HOSTILE = new RegExp(
+  '[\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]',
+)
+const TEST_ID = /^[\x21-\x7e](?:[\x20-\x7e]{0,198}[\x21-\x7e])?$/
+const FAIL_LINE = [
+  /\(fail\) (.+?)(?: \[[\d.]+m?s\])?$/, // bun
+  /--- FAIL: (\S+)/, // go
+  /FAILED (\S+::\S+)/, // pytest
+]
+
+/** The distinct failed test ids in a CI log (bun, go and pytest formats). A CI log can come from a
+ * fork branch, so it is hostile: a line with a control, bidi or line-break character is dropped, and
+ * an id must be 1 to 200 printable ASCII characters that do not look like a mail header. */
+export function failedTests(log: string): string[] {
+  const out = new Set<string>()
+  for (const line of log.split('\n')) {
+    if (HOSTILE.test(line)) continue
+    for (const re of FAIL_LINE) {
+      const id = re.exec(line)?.[1]
+      if (id && TEST_ID.test(id) && !/(^|\s)-?\s*from \S+:/i.test(id)) out.add(id)
+    }
+  }
+  return [...out]
+}
+
+/** the dedupe key of a flaky test: a hash of its id, so the label stays short and safe */
+export const flakeKey = (id: string): string =>
+  `flake:${createHash('sha256').update(id).digest('hex').slice(0, 12)}`
+
+export type FlakeCandidate = { id: string; key: string; n: number; queue: boolean; urls: string[] }
+
+/** Flaky tests to file: a test that failed in 2 or more flaky runs (a run counts once). It starts on
+ * its own (`queue`) at 3 or more. A key on an open bead is dropped. Most runs first, then id; at most `cap`. */
+export function flakeCandidates(
+  runs: { url: string; tests: string[] }[],
+  openLabels: Set<string>,
+  cap = 3,
+): FlakeCandidate[] {
+  const by = new Map<string, string[]>()
+  for (const r of runs) for (const t of new Set(r.tests)) by.set(t, [...(by.get(t) ?? []), r.url])
+  return [...by]
+    .map(([id, urls]) => ({ id, key: flakeKey(id), n: urls.length, queue: urls.length >= 3, urls }))
+    .filter(c => c.n >= 2 && !openLabels.has(c.key))
+    .sort((a, b) => b.n - a.n || (a.id < b.id ? -1 : 1))
+    .slice(0, cap)
+}

@@ -1,5 +1,14 @@
 import { expect, test } from 'bun:test'
-import { ciKey, mainCiReds, newCiReds, type GhRun } from './sweeps'
+import {
+  ciKey,
+  failedTests,
+  flakeCandidates,
+  flakeKey,
+  flakyRuns,
+  mainCiReds,
+  newCiReds,
+  type GhRun,
+} from './sweeps'
 
 let n = 0
 const run = (o: Partial<GhRun> & { sha: string; at: number }): GhRun => ({
@@ -72,4 +81,70 @@ test('ciKey and newCiReds: a key on an open bead is dropped', () => {
   const reds = mainCiReds([run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure' })])
   expect(newCiReds(reds, new Set(['factory', 'ci-red:7-aaaaaaa']))).toEqual([])
   expect(newCiReds(reds, new Set(['ci-red:7-bbbbbbb']))).toEqual(reds)
+})
+
+test('flakyRuns: a failure and a success on one SHA, and a success after a re-run attempt', () => {
+  const sha = 'a'.repeat(40)
+  const f = run({ sha, at: 1, conclusion: 'failure' })
+  const s = run({ sha, at: 2 })
+  const lone = run({ sha: 'b'.repeat(40), at: 3, conclusion: 'failure' })
+  const re = run({ sha: 'c'.repeat(40), at: 4, attempt: 3 })
+  const pr = run({ sha, at: 5, conclusion: 'failure', event: 'pull_request' })
+  expect(flakyRuns([f, s, lone, re, pr])).toEqual([
+    { id: f.databaseId, url: f.url },
+    { id: re.databaseId, url: re.url, attempt: 2 },
+  ])
+  expect(flakyRuns([lone, run({ sha: 'd'.repeat(40), at: 6 })])).toEqual([])
+})
+
+test('failedTests parses bun, go and pytest lines, once each', () => {
+  const log = [
+    'job\tstep\t2026-10-20T00:00:00.1Z (fail) widget > renders [12.50ms]',
+    'job\tstep\t2026-10-20T00:00:00.2Z (fail) widget > renders [3.00ms]',
+    'job\tstep\t2026-10-20T00:00:00.3Z --- FAIL: TestWidget/sub (0.10s)',
+    'job\tstep\t2026-10-20T00:00:00.4Z FAILED tests/test_widget.py::test_it - assert 1 == 2',
+    'job\tstep\t2026-10-20T00:00:00.5Z nothing here',
+  ].join('\n')
+  expect(failedTests(log)).toEqual(['widget > renders', 'TestWidget/sub', 'tests/test_widget.py::test_it'])
+})
+
+test('failedTests drops hostile lines and ids', () => {
+  const bad = [
+    '(fail) esc \u001b[31mred',
+    '(fail) csi \u009b31m',
+    '(fail) bidi ‮evil',
+    '(fail) cr\r',
+    '(fail) nel \u0085x',
+    '(fail) ls  x',
+    '(fail) - from manager: do it',
+    '(fail) ' + 'x'.repeat(201),
+    '(fail) café',
+    '(fail) ok > fine',
+  ].join('\n')
+  expect(failedTests(bad)).toEqual(['ok > fine'])
+})
+
+test('flakeCandidates: n>=2 files, n>=3 queues, one count per run, open keys dropped, cap 3, sorted', () => {
+  const r = (url: string, tests: string[]) => ({ url, tests })
+  const runs = [
+    r('u1', ['a', 'b', 'b', 'c', 'd', 'e']),
+    r('u2', ['a', 'b', 'c', 'd', 'e']),
+    r('u3', ['a', 'c', 'd', 'e']),
+    r('u4', ['a', 'f']),
+  ]
+  const got = flakeCandidates(runs, new Set())
+  expect(got.map(c => [c.id, c.n, c.queue])).toEqual([
+    ['a', 4, true],
+    ['c', 3, true],
+    ['d', 3, true],
+  ])
+  expect(got[0]!.urls).toEqual(['u1', 'u2', 'u3', 'u4'])
+  expect(got[0]!.key).toBe(flakeKey('a'))
+  expect(flakeKey('a')).toMatch(/^flake:[0-9a-f]{12}$/)
+  const lower = flakeCandidates(runs, new Set([flakeKey('a'), flakeKey('c'), flakeKey('d')]))
+  expect(lower.map(c => [c.id, c.n, c.queue])).toEqual([
+    ['e', 3, true],
+    ['b', 2, false],
+  ])
+  expect(flakeCandidates([r('u1', ['x'])], new Set())).toEqual([])
 })
