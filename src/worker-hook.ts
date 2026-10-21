@@ -2559,10 +2559,10 @@ function shCScriptValue(words: string[], start: number): string | undefined {
 function dynamicHeadScripts(words: string[]): string[] {
   for (const a of commandAnchors(words)) {
     const head = words[a]!
-    if (!dynamicCommandWord(head)) continue
-    if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
+    if (!/^"?\$\{?\w+\}?"?$/.test(head)) continue
     const rest = words.slice(a + 1)
-    if (!rest.length) return []
+    // A here-string form has its own, more specific deny (SHELL_STDIN_REASON).
+    if (!rest.length || rest.includes('<<<')) return []
     return [rest.join(' '), ...rest.filter(w => /[\s;&|<>()$`]/.test(w))]
   }
   return []
@@ -6943,10 +6943,6 @@ function anyShellReason(
   let slotEnd = 0
   let trapEnd = 0
   let moved = movedBefore
-  for (const t of dynamicHeadScripts(words)) {
-    const r = denyAt(t, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
-    if (r) return r
-  }
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
     if (DIR_CHANGE_WORDS.has(bw)) {
@@ -7092,6 +7088,11 @@ function anyShellReason(
       }
       break
     }
+  }
+  // claude-factory-ibas: run last, so an earlier rule keeps its own reason.
+  for (const t of dynamicHeadScripts(words)) {
+    const r = denyAt(t, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
+    if (r) return r
   }
   return undefined
 }
