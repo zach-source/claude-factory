@@ -392,7 +392,9 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     // nothing closes it: still open and ready for a person
     expect(readFileSync(log, 'utf8')).not.toContain('close')
     expect(show).toBe('show fx-1 --json --actor factory/run-1')
-    expect(queue).toBe('update fx-1 --add-label factory --remove-label rejected --actor factory/run-1')
+    expect(queue).toBe(
+      'update fx-1 --add-label factory --remove-label rejected --remove-label stale? --actor factory/run-1',
+    )
   } finally {
     process.env.PATH = path
   }
