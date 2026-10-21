@@ -71,6 +71,7 @@ import {
   type Bead,
 } from './beads'
 import * as plan from './plan'
+import { filingActor, filingGuard } from './filing-guard'
 import {
   clipUtf8,
   dueSweeps,
@@ -4973,6 +4974,7 @@ const syncFile = () => join(HOME, 'sync.json')
 /** the flood guard's own "already handled" marks (claude-factory-8pc.18): a sweep worker's bd
  * labels never reach this file, so they cannot forge the mark the way `sweep:<station>` can. */
 const sweepGuardFile = () => join(HOME, 'sweep-guard.json')
+const filingGuardFile = () => join(HOME, 'filing-guard.json')
 
 /** why a rig takes no more runs: the town's cap, or its own */
 const fullText = (
@@ -5189,6 +5191,10 @@ async function dispatch() {
   // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A flat 48h
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
+  // The filing guard's marks (claude-factory-nwlh.2): same shape and rules as the sweep guard's.
+  let filingState: SweepGuardState = existsSync(filingGuardFile())
+    ? readJson<SweepGuardState>(filingGuardFile())
+    : {}
   for (const rig of rigs()) {
     if (!hasBeads(rig.repo)) continue // claude-factory-toml: a rig with no .beads store has no beads steps
     // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
@@ -5291,6 +5297,33 @@ async function dispatch() {
           errors.push({ id: current.id, error: (err as Error).message })
         }
       }
+      // claude-factory-nwlh.2: the filing guard. `filingGuard` (src/filing-guard.ts) scores the
+      // top-level beads a factory worker filed (a child bead, a sweep-filed bead and a closed bead
+      // are not its concern). A bead past a cap loses `factory`, gains `held:cluster:<key>` or
+      // `held:station`, and gets one comment. A mark in filing-guard.json is written only after
+      // both calls land. `factory queue` removes the `held:*` label; the mark keeps the guard from
+      // holding the bead again. Like the sweep guard, a failed call leaves the bead out of `ready`.
+      for (const v of filingGuard(
+        all.filter(x => !parentOf(x) && !sweepFiler(x) && x.status !== 'closed'),
+        Date.now(),
+      )) {
+        if (v.kept || guardHandled(filingState, rig.name, v.id)) continue
+        excluded.add(v.id)
+        const current = all.find(x => x.id === v.id)
+        try {
+          const label = v.held === 'cluster' ? `held:cluster:${v.cluster}` : 'held:station'
+          b.relabel(v.id, { add: [label], remove: current?.labels?.includes(LABEL) ? [LABEL] : [] })
+          b.comment(
+            v.id,
+            `filing guard: held (${label}). ${v.held === 'cluster' ? `Cluster ${v.cluster} already has 6 beads` : `Run/station ${v.station} already filed 3 beads`} in the last 24h. Run: factory queue ${rig.name} ${v.id} to release it.`,
+          )
+          filingState = markGuardHandled(filingState, rig.name, v.id, Date.now()) // only on success
+          errors.push({ id: v.id, rig: rig.name, skip: `filing guard: held (${label})` })
+        } catch (err) {
+          skips.set(v.id, 'filing guard: hold call failed, retries next pass')
+          errors.push({ id: v.id, error: (err as Error).message })
+        }
+      }
       // claude-factory-8pc.17 and .18: a sweep pass can file a new bead. This can happen between
       // the `b.every()` read above and the `b.ready()` read below. Neither loop above scores this
       // bead, so it is not in `excluded`. It still shows up in `ready`, with no cap check and no
@@ -5301,11 +5334,15 @@ async function dispatch() {
       const ready = everyReady.filter(x => {
         const isKept = (() => {
           if (excluded.has(x.id)) return false
+          if (filingActor(x.created_by) && !all.some(y => y.id === x.id)) {
+            skips.set(x.id, 'filing guard: filed mid-pass') // the guard never scored it
+            return false
+          }
           const station = sweepFiler(x)
           if (!station) return true // not a sweep-filed bead: not this guard's concern
           return guardHandled(guardState, rig.name, x.id) // only a mark from an earlier pass lets it start
         })()
-        if (!isKept) skips.set(x.id, 'sweep flood guard')
+        if (!isKept && !skips.has(x.id)) skips.set(x.id, 'sweep flood guard')
         return isKept
       })
       // claude-factory-6as.3: a live run can already hold a ready, unassigned, top-level bead (it
@@ -5500,6 +5537,7 @@ async function dispatch() {
     }
   }
   writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
+  writeJson(filingGuardFile(), pruneGuardState(filingState, Date.now(), openIds))
   writeJson(dispatchFile(), errors)
 }
 
