@@ -39,6 +39,7 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  shouldHandToOwner,
   timeoutOf,
   unread,
   validate,
@@ -62,6 +63,8 @@ import {
   shipBranchOf,
   hasBeads,
   isOwned,
+  OWNER,
+  REJECTED,
   LABEL,
   linearSourced,
   byId,
@@ -2526,6 +2529,9 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
       b.release(id)
       b.comment(id, `run ${run.id} ended with open child beads, so this stays open for them: ${reason}`)
     }
+    // a blocked run that waits on a person ends here: the bead goes to its owner, not to the deferred pile
+    else if (node === 'aborted' && shouldHandToOwner(c.log, now))
+      b.handToOwner(id, clip(c.log.at(-1)!.summary, 500))
     // deferred work is out of bd ready until a person undefers it, which hands it back to the factory
     else if (node === 'aborted') b.defer(id, `run ${run.id} was aborted`)
     // A requeue edge keeps the bead ready and factory-labeled for the next dispatch, in the factory
@@ -2711,6 +2717,10 @@ async function beadsPass() {
         if (!run.bead) continue
         const saved = readJson<Saved>(join(runDir(id), 'state.json'))
         const t = trackOf(id, saved)
+        // a parked run whose blocker needs a person ends; track() hands its bead to the owner
+        const [liveNode, sub] = where(saved.snapshot.value)
+        if (sub === 'waiting' && liveNode !== 'done' && liveNode !== 'aborted')
+          if (shouldHandToOwner(saved.snapshot.context.log, Date.now())) post(id, { type: 'ABORT' })
         try {
           track(
             run,
@@ -4617,6 +4627,9 @@ async function createTracked(
 /** the bead a new run works: the one its goal names, or a new one when the repo tracks beads */
 /** a run's tasks are its bead's children, and its release waits on every one: a bead whose children
  * already exist is worked child by child, a run each */
+/** a child bead that waits on a person: handed to its owner, deferred or rejected */
+const isWaitingOnPerson = (x: Bead) =>
+  x.status === 'deferred' || !!x.labels?.some(l => l === OWNER || l === REJECTED)
 const openChildren = (b: ReturnType<typeof beads>, id: string) =>
   b.children(id).filter(x => x.status !== 'closed')
 
@@ -5357,13 +5370,15 @@ async function dispatch() {
         )
       }
       const eligible = startable.filter(x => {
-        const why = isOwned(x)
-          ? 'owner decisions pending'
-          : openChildren(b, x.id).length
-            ? 'open children'
-            : linearIds.has(x.id)
-              ? 'Linear id unconfirmed'
-              : ''
+        const open = isOwned(x) || x.labels?.includes(OWNER) ? [] : openChildren(b, x.id)
+        const why =
+          isOwned(x) || x.labels?.includes(OWNER) || (open.length && open.every(isWaitingOnPerson))
+            ? 'owner decisions pending'
+            : open.length
+              ? 'open children'
+              : linearIds.has(x.id)
+                ? 'Linear id unconfirmed'
+                : ''
         if (why) skips.set(x.id, why)
         return !why
       })
