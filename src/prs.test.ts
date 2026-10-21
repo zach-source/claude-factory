@@ -1502,7 +1502,9 @@ test('gitlabWatchNotes asks the project for each human author and trusts access 
 })
 
 test('gitlabWatchNotes: a 404 is no member, any other failure gives null (5wav.7)', async () => {
-  expect((await gitlabWatchNotes(glabFake({}).glab, MR_URL, '/tmp', 'gitlab.example.com'))!.some(n => n.person)).toBe(false)
+  expect(
+    (await gitlabWatchNotes(glabFake({}).glab, MR_URL, '/tmp', 'gitlab.example.com'))!.some(n => n.person),
+  ).toBe(false)
   const boom = glabFake({ 7: { code: 1, out: '', err: 'timeout' } })
   expect(await gitlabWatchNotes(boom.glab, MR_URL, '/tmp', 'gitlab.example.com')).toBeNull()
 })
