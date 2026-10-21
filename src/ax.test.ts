@@ -103,7 +103,7 @@ test('task names are RFC 1123 labels that keep the seq', () => {
 })
 
 test("a station's model comes from its herdr agent command", () => {
-  expect(ax.modelOf(`claude-smart --new --model 'claude-sonnet-5[1m]'`)).toBe('claude-sonnet-5[1m]')
+  expect(ax.modelOf(`claude-smart --new --model 'claude-sonnet-5-5[1m]'`)).toBe('claude-sonnet-5-5[1m]')
   expect(ax.modelOf('claude-smart --new --dangerously-skip-permissions')).toBeUndefined()
 })
 

@@ -40,7 +40,7 @@ export function taskName(run: string, seq: number) {
 /** where the image keeps the factory (Dockerfile.worker), and with it the workers' system prompt */
 export const FACTORY_DIR = '/opt/factory'
 
-/** the station's model, read from its agent command (`--model 'claude-sonnet-5[1m]'`, codex's `-m o3`) */
+/** the station's model, read from its agent command (`--model 'claude-sonnet-5-5[1m]'`, codex's `-m o3`) */
 export const modelOf = (agent: string) => agent.match(/(?:^|\s)(?:--model|-m)[\s=]+'?([^'\s]+)'?/)?.[1]
 /** pi's provider, read from its agent command (`--provider anthropic`); pi defaults to google */
 export const providerOf = (agent: string) => agent.match(/(?:^|\s)--provider[\s=]+'?([^'\s]+)'?/)?.[1]
