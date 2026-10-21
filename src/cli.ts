@@ -104,8 +104,7 @@ import {
   parseSync,
   pullArgs,
   redact,
-  resolveConnectCreds,
-  resolveLinearApiKey,
+  linearAuth,
   routeLinearIssue,
   syncEnv,
 } from './linear'
@@ -326,7 +325,7 @@ async function launchAxManager(args: string[]) {
     fail('FACTORY_AX_MANAGER_IMAGE is not set: name the manager image (Dockerfile.worker, target manager)')
   const m = ax.remoteManager()
   if (m) fail(m)
-  const { name, policy } = await ax.launchManager(image!, args)
+  const { name, policy } = await ax.launchManager(image!, args, rawRigs())
   console.log(
     `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
   )
@@ -4333,10 +4332,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
   const since = force || !prior?.lastGoodAt ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
   let secrets: string[] = []
   try {
-    const creds = resolveConnectCreds()
-    secrets = [creds.token, creds.cfId, creds.cfSecret]
-    const apiKey = await resolveLinearApiKey(creds, linearConnectCache)
-    secrets.push(apiKey)
+    const apiKey = await linearAuth(secrets, process.env, linearConnectCache)
     const { issues, truncated } = await fetchLinearIssues(apiKey, rig.linear!.team)
     const allRigs = rigs()
     let unrouted = 0
