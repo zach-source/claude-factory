@@ -5,7 +5,7 @@
 //
 // These tests drive the real CLI against on-disk fixtures, like src/watch.test.ts does.
 import { afterEach, expect, test } from 'bun:test'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -246,4 +246,50 @@ test('a metrics.jsonl line with no sessions field still reads (hr94 AC5)', () =>
     JSON.stringify({ id: 'old-1', node: 'done', createdAt: 0, log: [] }) + '\n',
   )
   expect(factory(['metrics', '--tokens']).code).toBe(0)
+})
+
+test('a station end skips a transcript older than the station start (hr94 review)', () => {
+  const { runDir, seq, env } = workingRun('u2')
+  const old = new Date(Date.now() - 3_600_000)
+  const project = join(dir, 'claude-u2', 'projects', join(dir, 'wt-u2').replace(/[^a-zA-Z0-9]/g, '-'))
+  utimesSync(join(project, 's1.jsonl'), old, old)
+  writeFileSync(
+    join(runDir, 'inbox.jsonl'),
+    JSON.stringify({ type: 'DONE', seq, outcome: 'ready', summary: 'built' }) + '\n',
+  )
+  expect(factory(['tick'], env).code).toBe(0)
+  expect(existsSync(join(runDir, 'usage.jsonl'))).toBe(false)
+})
+
+test('factory rm keeps the last row of a session and model stored twice (hr94 review)', () => {
+  const { id, runDir, seq, env } = workingRun('u3')
+  const old = new Date(Date.now() - 3_600_000)
+  const project = join(dir, 'claude-u3', 'projects', join(dir, 'wt-u3').replace(/[^a-zA-Z0-9]/g, '-'))
+  utimesSync(join(project, 's1.jsonl'), old, old) // the tick stores nothing: only the rows below
+  writeFileSync(
+    join(runDir, 'inbox.jsonl'),
+    JSON.stringify({ type: 'DONE', seq, outcome: 'ready', summary: 'built' }) + '\n',
+  )
+  expect(factory(['tick'], env).code).toBe(0)
+  const row = (node: string, read: number) =>
+    JSON.stringify({
+      run: id,
+      node,
+      seq: 1,
+      session: 's1',
+      model: 'claude-opus-4-7',
+      input: 1,
+      cacheWrite: 2,
+      cacheRead: read,
+      output: 3,
+      turns: 1,
+      peak: 5,
+    })
+  writeFileSync(join(runDir, 'usage.jsonl'), `${row('implement', 10)}\n${row('verify', 99)}\n`)
+  rmSync(join(dir, 'wt-u3'), { recursive: true })
+  const rm = factory(['rm', id], env)
+  expect(rm.err).toBe('')
+  const line = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n').at(-1)!)
+  expect(line.sessions).toHaveLength(1)
+  expect(line.sessions[0]).toMatchObject({ node: 'verify', cacheRead: 99 })
 })

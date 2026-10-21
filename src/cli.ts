@@ -306,7 +306,7 @@ export type Row = {
 
 const runDir = (id: string) => join(HOME, 'runs', id)
 // gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
-// it, so usageOf() still maps a session's turns to the station that ran it after gc prunes them
+// it. Nothing reads it now: the usage rows keep their own station name (storeUsage).
 const promptsListFile = (id: string) => join(runDir(id), 'prompts.list')
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
@@ -3538,7 +3538,7 @@ function gcPass(days: number, dryRun: boolean) {
       const listFile = promptsListFile(r.id)
       // Union with any names prompts.list already held (claude-factory-503.1.7): a goto revive
       // after an earlier gc can have refilled prompts/ with only its new names, and overwriting
-      // the list here would lose the old station names usageOf() still needs.
+      // the list here would lose the old station names.
       const old = existsSync(listFile) ? readJson<string[]>(listFile) : []
       const current = existsSync(dir) ? readdirSync(dir) : []
       writeJson(listFile, [...new Set([...old, ...current])])
@@ -6916,27 +6916,9 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   console.log(`proposed options for ${key}`)
 }
 
-/** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
 /** what each Claude worker session of a run spent, from the transcripts in its worktree's project dir */
 function usageOf(run: Run, since = 0): Usage[] {
-  const prompts = join(runDir(run.id), 'prompts')
-  const listFile = promptsListFile(run.id)
-  // gc can have removed prompts/, leaving prompts.list with the names that were in it. A goto
-  // revive after gc recreates prompts/ with only the new names: union both so old station names
-  // survive the revive (claude-factory-503.1.5).
-  const names = [
-    ...new Set([
-      ...(existsSync(listFile) ? readJson<string[]>(listFile) : []),
-      ...(existsSync(prompts) ? readdirSync(prompts) : []),
-    ]),
-  ]
-  const nodes = new Map(
-    names.flatMap(f => {
-      const m = /^(\d+)-(.+)\.md$/.exec(f)
-      return m ? [[Number(m[1]), m[2]!.replace(/-resume$/, '')] as const] : []
-    }),
-  )
-  return usageIn(run.worktree, run.id, seq => nodes.get(seq) ?? '?', since)
+  return usageIn(run.worktree, run.id, () => '?', since)
 }
 
 /** the usage rows of every Claude session that ran in `cwd` and wrote its transcript at or after `since` */

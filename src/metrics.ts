@@ -480,7 +480,7 @@ export function renderTokens(rows: StoredUsage[], shipped: Set<string>, manager:
     lines.push(
       '',
       'manager sessions:',
-      '  name       model                  turns   tokens  input  c.write  c.read  output  hit    cost',
+      '  name       model                  rows    tokens  input  c.write  c.read  output  hit    cost',
     )
     for (const m of r.manager)
       lines.push(

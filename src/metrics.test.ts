@@ -265,6 +265,7 @@ test('renderTokens shows the hit rate, a cost from PRICES, the shipped run token
   expect(r.stations.find(s => s.node === 'implement')!.perShippedRun).toBe(11_000_000) // run-2's one implement row
   expect(r.tokensPerShippedRun).toBe(33_000_000) // run-2: 3 rows of 11M
   expect(text).toMatch(/patrol\s+claude-haiku-5-5/)
+  expect(text).toMatch(/name\s+model\s+rows\s+tokens/)
   expect(text).toContain('$6.00') // haiku: 1*1 + 1*5
   expect(hitRate({ input: 0, cacheWrite: 0, cacheRead: 0, output: 5 })).toBeNull()
 })
