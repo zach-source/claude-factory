@@ -5065,6 +5065,7 @@ async function dispatch() {
   // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
   const openIds: Record<string, Set<string>> = {}
   for (const rig of rigs()) {
+    if (!hasBeads(rig.repo)) continue // claude-factory-toml: a rig with no .beads store has no beads steps
     // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
     const skips = new Map<string, string>()
     const started = new Set<string>()
