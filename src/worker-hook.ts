@@ -6438,7 +6438,7 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
 const TRIGGER_ALT = [...DYNAMIC_COMMAND_TRIGGER].join('|')
 const DASHED_VERB_TAIL = new RegExp(`-(?:${TRIGGER_ALT})(?:$|\\$)`)
 const EXPANSION_END_VERB = new RegExp(
-  `(?:[})\`]|\\$[a-z_][a-z0-9_]*)(?:${TRIGGER_ALT})(?:$|\\$(?:\\{[^{}]*\\}|\\w+)$)`,
+  `(?:[})\`]|\\$[a-z_][a-z0-9_]*)(?<!\\$ifs)(?:${TRIGGER_ALT})(?:\\$(?:\\{[^{}]*\\}|\\w+|[@*]))*$`,
 )
 
 /**
