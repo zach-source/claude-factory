@@ -424,6 +424,8 @@ minor release may change the factory format, the CLI or the run state.
 - Fixed: a codex worker had no deny hook, lean settings, worker rules or context limit (claude-factory-x0b9). It now gets its own `CODEX_HOME` with the deny hook, the worker rules and a compaction limit. A codex launch refuses if the agent command turns the guard off. The ax runner refuses codex workers until claude-factory-72dq.
 - Fixed: the dispatch loop reported `bd list: Error: no beads database found` for a rig with no `.beads` store, such as the ax rig. The loop now skips such a rig (claude-factory-toml).
 - Changed: a station that reports blocked again and again now waits up to 24h (was 8h) between re-checks. After 6 blocked reports in a row that name no pull or merge request, it has no timed wake. `factory status` shows `waits until mailed`, the manager gets one mail, and mail to the station wakes it at once (claude-factory-nfh4).
+- Fixed: the worker hook allowed a `find` with `-delete` (or a glob or brace word that can expand to it) on a start path outside the worktree, such as `find / -delete`. The hook now denies it when a start path is outside the worktree, a glob, a variable or a tilde path (claude-factory-easj).
+- New: `src/filing-guard.ts` with `filingActor`, `clusterKey` and `filingGuard` (claude-factory-nwlh.1). `filingGuard` caps the beads one actor or one cluster can file in a window, and counts held beads that use slots. No caller yet: nwlh.2 wires it in.
 
 ## 0.13.0 (2026-10-18)
 
