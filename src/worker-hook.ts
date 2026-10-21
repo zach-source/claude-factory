@@ -225,6 +225,12 @@ export const ENV_SPLIT_VAR_REASON =
   'env expands ${NAME} in this value into a command word, so this guard cannot read the real ' +
   'command. Write the command words plainly, without env -S. Do not retry this exact command.'
 
+// claude-factory-1r7x: zsh runs the text of a glob qualifier e:...: or +name as a command.
+export const GLOB_CODE_REASON =
+  'The factory denies this command: an unquoted ( ) group glued to a word holds e, +, a $ or a ' +
+  'backtick. zsh reads it as a glob qualifier and runs that text as a command for each file. ' +
+  'Quote the pattern, or use find. Do not retry this exact command.'
+
 // claude-factory-hewq: bash and zsh decode an unquoted $'...' or $"..." quote, and they decode it
 // in different ways. segments() cannot read the real words, so denyAt denies the quote.
 export const DOLLAR_QUOTE_REASON =
@@ -847,6 +853,24 @@ function groupEndsCommand(cmd: string, open: number): boolean {
   return j >= cmd.length || ';&|\n)'.includes(cmd[j]!)
 }
 
+/** claude-factory-1r7x: the raw text of the group that opens at `cmd[open]`, up to its matching `)`. */
+function groupBody(cmd: string, open: number): string {
+  let depth = 0
+  let j = open
+  for (; j < cmd.length; j++) {
+    const c = cmd[j]!
+    if (c === '\\') j++
+    else if (c === "'") {
+      j = cmd.indexOf("'", j + 1)
+      if (j < 0) return cmd.slice(open + 1)
+    } else if (c === '"') {
+      for (j++; j < cmd.length && cmd[j] !== '"'; j++) if (cmd[j] === '\\') j++
+    } else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) break
+  }
+  return cmd.slice(open + 1, j)
+}
+
 /** What segments() reports to its caller. A set flag makes denyAt deny the command. */
 type SegInfo = {
   dollarQuote: boolean
@@ -862,6 +886,8 @@ type SegInfo = {
   quotedNames?: Map<string[], number[]>
   // claude-factory-4a4o: an unquoted < or > sits inside a word, after other text (`rm>f`)
   gluedRedir?: boolean
+  // claude-factory-1r7x: a glued ( ) group holds e, +, $ or a backtick: a zsh glob qualifier that runs code
+  globCode?: boolean
 }
 
 const HAZARD_RE = /['"`\\]/
@@ -869,7 +895,7 @@ function lastHazard(cmd: string): number {
   for (let k = cmd.length - 1; k >= 0; k--) if (HAZARD_RE.test(cmd[k]!)) return k
   return -1
 }
-type Hz = { clearTo: number; checks: number; last: number }
+type Hz = { clearTo: number; checks: number; last: number; quoted: [number, number][] }
 function prevRaw(cmd: string, i: number): string {
   let k = i - 1
   while (k >= 1 && cmd[k] === '\n' && cmd[k - 1] === '\\') k -= 2
@@ -892,7 +918,9 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: b
   j++
   while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
   if (cmd[j] === '<') return
-  const nl = cmd.indexOf('\n', j)
+  // claude-factory-1r7x.8: a newline after an odd run of backslashes is a continuation. The command line goes on.
+  let nl = cmd.indexOf('\n', j)
+  while (nl > 0 && /(?:^|[^\\])(?:\\\\)*\\$/.test(cmd.slice(j, nl))) nl = cmd.indexOf('\n', nl + 1)
   if (nl < 0 || !/\S/.test(cmd.slice(nl + 1))) return
   if (++hz.checks > 32) {
     info.heredoc = true
@@ -915,6 +943,7 @@ function heredocHazard(cmd: string, i: number, info: SegInfo, hz: Hz, afterLt: b
     const line = cmd.slice(p, e)
     if (line === delim || (dash && line.replace(/^\t+/, '') === delim)) {
       const body = cmd.slice(nl + 1, p)
+      if (quoted) hz.quoted.push([nl + 1, p])
       if (hazard && (/\S/.test(cmd.slice(e + 1)) || (!quoted && /\$\(|`|\\\n/.test(body))))
         info.heredoc = true
       return
@@ -1002,11 +1031,15 @@ function segments(
   // claude-factory-4i60: true when the last unquoted, unescaped char was $, <, > or =. A line
   // continuation keeps it. It exempts `$()`, `<()`, `>()`, `=()` and `a=()` from funcDef.
   let exemptPrev: boolean = false
-  const hz: Hz = { clearTo: -1, checks: 0, last: -2 }
+  let closePrev = false
+  const hz: Hz = { clearTo: -1, checks: 0, last: -2, quoted: [] }
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
     const wasExempt: boolean = exemptPrev
     exemptPrev = false
+    // claude-factory-1r7x.7: true when the last char closed a group, a substitution or a backtick. A `(` right after it still glues to the word.
+    const afterClose: boolean = closePrev
+    closePrev = false
     // claude-factory-cu5m.15: true only when the last loop step read an unquoted, unescaped < or >.
     const afterRedir: boolean = redirPrev
     redirPrev = false
@@ -1057,6 +1090,7 @@ function segments(
       if (cmd[i + 1] === '\n') {
         // claude-factory-abmq: a continuation is not a char, so `>BSNL&1` stays one redirect.
         redirPrev = afterRedir
+        closePrev = afterClose
         i++
         exemptPrev = wasExempt
         continue
@@ -1089,6 +1123,19 @@ function segments(
           }
           if (cmd[j] === ')') info.funcDef = true
         }
+        if (
+          info &&
+          (hasWord || afterClose) &&
+          !info.globCode &&
+          !(wasExempt && '$<>'.includes(prev)) &&
+          !(wasExempt && prev === '=' && (word === '=' || cur.every(shellAssignmentWord))) &&
+          !(prev === '{' && cmd[i - 2] === '$' && !/(?:^|[^\\])(?:\\\\)*\\$/.test(cmd.slice(0, i - 2))) &&
+          !(prev === '[' && /^(?:\$\w+)?\[$/.test(word)) &&
+          !hz.quoted.some(([a, b]) => i >= a && i < b) &&
+          /[e+$`]/.test(groupBody(cmd, i))
+        ) {
+          info.globCode = true
+        }
         const arg = (hasWord || cur.length > 0) && prev !== '$'
         parens.push(arg)
         if (arg) {
@@ -1100,7 +1147,7 @@ function segments(
             hasWord &&
             !wasExempt &&
             !info.funcDef &&
-            !(prev === '{' && cmd[i - 2] === '$') &&
+            !(prev === '{' && cmd[i - 2] === '$' && !/(?:^|[^\\])(?:\\\\)*\\$/.test(cmd.slice(0, i - 2))) &&
             !(prev === '[' && /^(?:\$\w+)?\[$/.test(word)) &&
             !groupEndsCommand(cmd, i)
           ) {
@@ -1113,6 +1160,7 @@ function segments(
         endWord()
         cur.push(')')
       }
+      if (c === ')') closePrev = true
       endSeg()
       continue
     }
@@ -1133,6 +1181,7 @@ function segments(
         hasWord = true
       }
       inBacktick = !inBacktick
+      if (!inBacktick) closePrev = true
       endSeg()
       continue
     }
@@ -1902,11 +1951,18 @@ function dynamicHeadDeny(
       return { deny: true, rm: false }
   }
   let later = 0
+  let scanned = -2
   for (let k = start + 1; k < cmd.length; k++) {
     const t = cmd[k]!
     if (start > 0 && (t === ';' || t === '+')) break
-    if (t[0] === '-' || !DYN_CHARS.test(t)) continue
+    if (!DYN_CHARS.test(t)) continue
     if (!later) later = k
+    // Safe skip: isRecursiveRm at the earlier dash word k-1 already reads this word as a flag.
+    if (t[0] === '-' && scanned === k - 1) {
+      scanned = k
+      continue
+    }
+    scanned = t[0] === '-' ? k : -2
     if (isRecursiveRm(cmd, k)) return { deny: true, rm: false }
   }
   const riskyFrom = (from: number): boolean => {
@@ -2012,6 +2068,33 @@ function wrapperReadingsDeny(
     if (r.deny) found = true
     if (r.rm) rm = true
   }
+  // claude-factory-cwt9: the lexer drops a substitution, so `-$(y)` or `-E$(y)` reads as `-` or `-E`.
+  // The dropped text can be a command word. A recursive flag and a risky target after the dash
+  // word: after a lone dash or a dynamic dash word, any risky operand denies. After a real dash
+  // word, a recursive flag and a risky target deny. A plain -r after a real dash word is safe:
+  // `xargs -0 -r ls /` is common.
+  const dashHidesRm = (j: number): boolean => {
+    const nx = words[j + 1]
+    if (nx === undefined) return false
+    // claude-factory-cwt9.11: a dash word with a dynamic part, or a lone dash, can hide a command
+    // word. The literal rm rule denies any risky operand, so deny any risky operand after it.
+    // This tests no flag, so a new spelling of a recursive flag cannot get past it.
+    if (words[j] === '-' || DYN_CHARS.test(words[j]!)) {
+      if (words.slice(j + 1).some(x => !x.startsWith('-') && riskyTarget(x, root))) return true
+    }
+    if (
+      nx !== '-r' &&
+      nx !== '-R' &&
+      isRecursiveRm(words, j) &&
+      rmTargets(words.slice(j)).some(t => riskyTarget(t, root))
+    )
+      return true
+    // A plain -r is recursive only when the first operand is risky.
+    // `xargs -0 -r ls /` has the operand `ls`, so it stays allowed.
+    if (!/^-[A-Za-z]*[rR]/.test(nx)) return false
+    const first = words.slice(j + 1).find(x => !x.startsWith('-'))
+    return first !== undefined && riskyTarget(first, root)
+  }
   const xargsFlags = (j: number): void => {
     const key = 'xargs:' + j
     if (seenFlag.has(key)) return
@@ -2022,6 +2105,8 @@ function wrapperReadingsDeny(
       work.push(() => head(j))
       return
     }
+    if (DYN_CHARS.test(w)) work.push(() => head(j))
+    if (dashHidesRm(j)) found = true
     work.push(() => xargsFlags(j + 1))
     work.push(() => xargsFlags(j + 2))
   }
@@ -2040,10 +2125,12 @@ function wrapperReadingsDeny(
       work.push(() => flags(name, j + 1))
       return
     }
+    if (w.startsWith('-') && dashHidesRm(j)) found = true
     if (w === '-' || !w.startsWith('-')) {
       after(name, j)
       return
     }
+    if (w !== '--' && DYN_CHARS.test(w)) work.push(() => head(j))
     if (w === '--') {
       let k = j + 1
       if (name === 'env' && words[k] === '-') k++
@@ -7675,7 +7762,7 @@ function substitutionEnd(command: string, from: number): number {
 // with a space or paren on both sides is a whole word and stays, but the scan goes into its body.
 // The body of a glued $( ) is read again and added as an extra line, so a glued $( ) inside it is
 // read too.
-function replaceGluedSubstitutions(command: string): string {
+function replaceGluedSubstitutions(command: string, fill = ' '): string {
   let out = ''
   let last = 0
   const extra: string[] = []
@@ -7684,14 +7771,39 @@ function replaceGluedSubstitutions(command: string): string {
     const end = substitutionEnd(command, from)
     const before = from > 0 ? command[from - 1]! : ' '
     const after = end < command.length ? command[end]! : ' '
-    if (/[\s(]/.test(before) && /[\s)]/.test(after)) {
+    const wordStart =
+      Math.max(
+        command.lastIndexOf(' ', from),
+        command.lastIndexOf('\n', from),
+        command.lastIndexOf('\t', from),
+      ) + 1
+    const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/
+    let cmdStart = 0
+    for (let k = wordStart - 1; k >= 0; k--) {
+      const ch = command[k]!
+      if (ch === '\n' || ch === ';' || ch === '&' || ch === '|' || (ch === '(' && command[k - 1] !== '$')) {
+        cmdStart = k + 1
+        break
+      }
+    }
+    // An assignment word skips only in the prefix slot. After env or sudo it is an argument.
+    const assignWord = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/.test(command.slice(wordStart, from))
+    const assign =
+      assignWord &&
+      !/['"\\`]/.test(command.slice(0, wordStart)) &&
+      command
+        .slice(cmdStart, wordStart)
+        .split(/\s+/)
+        .every(w => w === '' || ASSIGN.test(w))
+    if ((/[\s(]/.test(before) && /[\s)]/.test(after)) || (fill !== ' ' && assign)) {
       from = command.indexOf('$(', from + 2)
       continue
     }
-    out += command.slice(last, from) + ' '
+    // After env or sudo, NAME=$(y) splits: the part after the first word is a command word.
+    out += command.slice(last, from) + (assignWord && fill !== ' ' ? ' ' : '') + fill
     last = end
     const body = command.slice(from + 2, command[end - 1] === ')' ? end - 1 : end)
-    const inner = body.includes('$(') ? replaceGluedSubstitutions(body) : body
+    const inner = body.includes('$(') ? replaceGluedSubstitutions(body, fill) : body
     if (inner !== body) extra.push(inner)
     from = command.indexOf('$(', end)
   }
@@ -7910,6 +8022,7 @@ function denyAtScan(
     )
   if (quoteInfo.deep) return DEEP_COMMAND_REASON
   if (quoteInfo.dollarQuote) return DOLLAR_QUOTE_REASON
+  if (quoteInfo.globCode) return GLOB_CODE_REASON
   // claude-factory-j1ki: segments() breaks a word at "$(", so splitGluedExpansions never sees a
   // command substitution glued to text. Read the command again with each such substitution as a
   // space. This text has fewer "$(" than the source, so the recursion ends.
@@ -7920,6 +8033,15 @@ function denyAtScan(
     if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
   }
   const seen = new Set<string>()
+  // claude-factory-cwt9.12: the lexer drops a glued substitution, so `-E$(y)` reads as `-E`. Read the
+  // command again with each one as the text `$_`, so the word stays dynamic. It has fewer "$(" too.
+  if (command.includes('$(')) {
+    const kept = replaceGluedSubstitutions(command, '$_')
+    if (kept !== command) {
+      const split = denyAt(kept, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
+    }
+  }
   if (unglued.includes('$')) {
     for (const raw of new Set([replaceGluedExpansions(unglued), ...emptyReadings(unglued)])) {
       if (raw === unglued || seen.has(raw)) continue
@@ -8226,7 +8348,12 @@ function denyAtScan(
         }
       }
     }
-    if (!cmd.length) continue
+    if (!cmd.length) {
+      // claude-factory-cwt9: `sudo -`y`` leaves no command word, but the backtick word can be one.
+      if (words.some(w => w[0] === '-' && w.includes('`')) && wrapperReadingsDeny(words, root).deny)
+        return REASON
+      continue
+    }
     const b = baseWord(cmd[0]!)
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
