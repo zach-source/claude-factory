@@ -12,6 +12,8 @@ import { NAME } from './beads'
  * the run moves on.
  *
  * The `defer` field (`to: 'done'` only) ends the run. The work stays open for a person to pick up.
+ * `defer: { station }` also moves the bead's `station:*` label, so the run after an undefer starts
+ * at that station. The station must be a node of the same factory.
  *
  * The `reject` field (`to: 'done'` only) also ends the run. The work stays open and ready. It stays
  * out of the factory's queue until a person queues it again.
@@ -32,7 +34,7 @@ export type Edge =
   | {
       to: string
       delayMin?: number
-      defer?: true
+      defer?: true | { station: string }
       reject?: true
       requeue?: true | { factory?: string; station?: string }
       ship?: true
@@ -304,6 +306,10 @@ export function validate(def: Factory): Factory {
             edge.reject &&
             edge.to !== 'done' &&
             `${id}: only an edge into done rejects`,
+          typeof edge !== 'string' &&
+            typeof edge.defer === 'object' &&
+            !ids.includes(edge.defer.station) &&
+            `${id}: outcome "${outcome}" defer station "${edge.defer.station}" is not a node`,
           typeof edge !== 'string' &&
             edge.defer &&
             edge.reject &&
