@@ -449,6 +449,7 @@ minor release may change the factory format, the CLI or the run state.
 - Docs: the memory lifecycle task list marks T006 as done (claude-factory-kw1). It changes no code.
 - Docs: the README now says the flood guard finds a sweep-filed bead by `created_by`, not by the `sweep:<name>` label (claude-factory-8v9). It changes no code.
 - New: `hack/ax-repos-check.sh` checks in the AX manager task that each rig has a clone and a beads store (claude-factory-192.4). With `AX_CHECK_START=1` it also runs `factory start` on each rig.
+- New: lifecycle runs a share of its stations as Codex workers (claude-factory-jd9q). A station can have `split: { agent, share }`. A stable hash of the run id picks the agent for each run. `implement` and `verify` use `codex_share` (default 0.3, model `codex_exec_model` gpt-6.1-sol). `security` uses `codex_security_share` (default 0.3, model `codex_security_model` gpt-6-astra). The `rework` factory splits `resolve` the same way. A share of 0 turns the tier off, and so does `FACTORY_CODEX_SHARE=0`. The ax runner never gets a split, and a rig with its own `--agent` keeps it. `factory metrics` shows the launches by harness and model, from the new `launches.jsonl`. The mod subagents and the manager name full Claude model ids. The manager `--model` change needs a manager restart.
 
 ## 0.13.0 (2026-10-18)
 

@@ -39,6 +39,7 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  shareOk,
   shouldHandToOwner,
   timeoutOf,
   unread,
@@ -131,10 +132,13 @@ import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerIn
 import {
   createdAt,
   fate,
+  launchStats,
   metrics,
+  parseLaunchLines,
   parsePrecheckLines,
   precheckStats,
   render,
+  renderLaunches,
   renderTokens,
   sessionOf,
   type RunRecord,
@@ -1213,6 +1217,19 @@ function reviveWorktree(run: Run) {
   )
 }
 
+/** one line a launch in HOME/launches.jsonl, for `factory metrics`: a write error never blocks the launch */
+function logLaunch(run: Run, node: string, seq: number, agent: string, resume: boolean) {
+  try {
+    const rig = rigOf(run.repo)?.name
+    const harness = harnessOf(agent) ?? 'other'
+    const model = ax.modelOf(agent) ?? 'default'
+    const line = { at: Date.now(), run: run.id, rig, node, seq, harness, model, resume }
+    appendFileSync(join(HOME, 'launches.jsonl'), `${JSON.stringify(line)}\n`)
+  } catch {
+    // best effort: see above
+  }
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
@@ -1224,6 +1241,7 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, full())
   }
+  logLaunch(run, node, c.seq, agentOfNode(run, def, node), !!session)
   return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
 }
 
@@ -1458,11 +1476,34 @@ export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>
       rig?.params?.[k] ?? (env[`FACTORY_${k.toUpperCase()}`]?.trim() || v),
     ]),
   )
-/** the worker command: the rig's own (one harness for all its stations) over the station's and the factory's */
-const agentOfNode = (run: Run, def: Factory, node: string) => {
-  const rig = rigOf(run.repo)
-  return fill(rig?.agent ?? def.nodes[node]!.agent ?? def.agent ?? AGENT, paramsOf(def, rig))
+/**
+ * Does this run take the split agent? The pick hashes the run id and the share's name, so one run picks the
+ * same way every time, and two share params pick on their own. A bad share value (not a number from 0 to 1) is 0.
+ */
+export function splitPick(runId: string, shareName: string, share: string | undefined) {
+  if (share === undefined || !shareOk(share)) return false
+  const h = createHash('sha256').update(`${runId}:${shareName}`).digest().readUInt32BE(0)
+  return h / 2 ** 32 < Number(share)
 }
+/**
+ * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
+ * factory's. The split never applies on the ax runner (it has no codex guard yet: claude-factory-72dq).
+ */
+export const pickAgent = (
+  runId: string,
+  def: Factory,
+  node: string,
+  rig: Pick<Rig, 'agent' | 'params'> | undefined,
+  runner: string,
+  env = process.env,
+) => {
+  const params = paramsOf(def, rig, env)
+  const split = def.nodes[node]!.split
+  const picked = split && runner !== 'ax' && splitPick(runId, split.share, params[split.share])
+  return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
+}
+const agentOfNode = (run: Run, def: Factory, node: string) =>
+  pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 /** the context of the last turn in a Claude transcript's tail, in tokens; 0 when it has none */
 export function lastContext(tail: string) {
@@ -1928,7 +1969,7 @@ const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill,Agen
 export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
-  'opus', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
+  'claude-opus-5-5', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
   // the person's own default mode (auto) refuses the production reads a patrol needs
   ...['--permission-mode', 'bypassPermissions'],
   '--strict-mcp-config', // and no --mcp-config: no MCP servers
@@ -8001,12 +8042,19 @@ if (import.meta.main && !outboxCmd)
         const precheckAll = existsSync(precheckFile())
           ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
           : []
+        const launchFile = join(HOME, 'launches.jsonl')
+        const launches = existsSync(launchFile)
+          ? parseLaunchLines(readFileSync(launchFile, 'utf8')).filter(
+              l => l.at >= since_ && (!rig || l.rig === rig),
+            )
+          : []
         const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
         if (args.includes('--json'))
           console.log(
             JSON.stringify({
               all: metrics(picked),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
+              launches,
               rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
             }),
           )
@@ -8019,6 +8067,8 @@ if (import.meta.main && !outboxCmd)
             ),
           )
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
+          if (launches.length)
+            console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
         }
         if (args.includes('--tokens')) {
           const live = picked.filter(r => runIds().includes(r.id))

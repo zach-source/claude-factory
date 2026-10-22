@@ -1169,7 +1169,7 @@ export const register: Register = (on, options) => {
           "The factory manager's hidden patrol: answers worker mail, works stuck stations, and starts backlog work, on its own timer.",
         prompt: PATROL(rt.cli),
         tools: ['Bash', 'Read', 'Grep', 'Glob'],
-        model: 'sonnet',
+        model: 'claude-sonnet-5-5',
         maxTurns: 40,
         omitClaudeMd: true,
       })
@@ -1189,7 +1189,7 @@ export const register: Register = (on, options) => {
         // remote. An empty array tells the engine to allow no tool call. Leaving `tools` out
         // instead gives the pm every tool its parent session has.
         tools: [],
-        model: 'sonnet',
+        model: 'claude-sonnet-5-5',
         maxTurns: 15,
         omitClaudeMd: true,
       })
@@ -1204,7 +1204,7 @@ export const register: Register = (on, options) => {
         // pull request's title or a run's journal text. With Bash, that text can make the briefer
         // run `gh` or a `factory` verb of its own, instead of only reading the facts it got.
         tools: [],
-        model: 'haiku', // Haiku 5.5 through the manager's ANTHROPIC_DEFAULT_HAIKU_MODEL: no tools, one short summary
+        model: 'claude-haiku-5-5', // Haiku 5.5: no tools, one short summary
         maxTurns: 3,
         omitClaudeMd: true,
       })
