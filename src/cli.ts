@@ -102,6 +102,8 @@ import {
   claudeCommand,
   codexFeaturesBad,
   command,
+  cutOffCall,
+  cutOffNote,
   harnessOf,
   readMcp,
   sq,
@@ -1171,7 +1173,9 @@ function tracking(run: Run, node: string) {
 }
 
 const resumeNote = (run: Run, node: string, c: Ctx) =>
-  `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
+  `[factory] Your pane closed and this session was resumed.` +
+  cutOffNote(c.session ? cutOffCall(tailOf(run.worktree, c.session)) : undefined) +
+  ` Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
 /** where a station's workers run: the station's own runner, else the rig's */
@@ -1284,7 +1288,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  typeLaunch(pane, launch(run, def, node, file, session))
+  typeLaunch(pane, launch(run, def, node, c, file, session))
   return pane
 }
 
@@ -1396,6 +1400,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       ...env,
       ...rig?.env,
       FACTORY_FROM: node,
+      ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
       FACTORY_HOME: `${ax.OWN}/home`,
       // each agent's config and sessions on the workspace volume, so a session survives a suspend
@@ -1967,11 +1972,21 @@ export function codexWorker(
   }
 }
 
-function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
+/**
+ * when the station fails a worker that is still working (`deadline`: 1.5x its minutes from launch), in ms. The deny
+ * hook clamps a Bash call's timeout to it, so a command ends before the run fails (claude-factory-p0yt)
+ */
+const deadlineOf = (def: Factory, node: string, c: Ctx) =>
+  String(Date.now() + timeoutOf(def.nodes[node]!, c, node) * 90_000)
+
+function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
+  // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const setup =
-    harnessOf(agent) === 'codex' ? codexWorker(run, def, node, agent, rig) : { extra: workerFlags(def, rig) }
+    harnessOf(agent) === 'codex'
+      ? codexWorker(run, def, node, agent, rig)
+      : { extra: workerFlags(def, rig), env: { FACTORY_DEADLINE: deadlineOf(def, node, c) } }
   return command(agent, prompt, {
     session,
     ...setup,
@@ -2224,7 +2239,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return status
     }
     herdr('pane', 'send-keys', c.pane, 'ctrl+u')
-    typeLaunch(c.pane, launch(run, def, node, resumeFile(run, node, c), c.session))
+    typeLaunch(c.pane, launch(run, def, node, c, resumeFile(run, node, c), c.session))
     send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
     return 'resuming'
   }
@@ -2241,7 +2256,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (step === 'enter') herdr('pane', 'send-keys', c.pane, 'Enter')
     if (step === 'retype') {
       herdr('pane', 'send-keys', c.pane, 'ctrl+u') // whatever is left on the line
-      typeLaunch(c.pane, launch(run, def, node, promptOf(run, node, c)))
+      typeLaunch(c.pane, launch(run, def, node, c, promptOf(run, node, c)))
     }
     if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'

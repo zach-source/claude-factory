@@ -18,7 +18,7 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { CODEX_GUARD_FLAGS, codexFeaturesBad } from './harness'
+import { CODEX_GUARD_FLAGS, codexFeaturesBad, cutOffCall, cutOffNote } from './harness'
 import { rmSafe } from './home-guard'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
@@ -1073,6 +1073,10 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
       onSession,
       egress,
     )
+  } else if (prior?.status === 'working') {
+    // the VM stopped mid-turn (a restart, a suspend): say so, and name the call it cut off (claude-factory-p0yt)
+    set('working')
+    session = await turnWithRetry(resumeNote(session), model, session, onEgress, onSession, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
@@ -1156,6 +1160,37 @@ export function lastTurn(session?: string) {
     if (existsSync(file)) return lastAssistant(file)
   }
   return lastAssistant(join(own(), 'claude.jsonl'))
+}
+
+/**
+ * the turn a session resumed mid-turn gets first. Before it, a VM that restarted during the brief went idle
+ * with nothing to do, and the run waited for its deadline (claude-factory-p0yt)
+ */
+export function resumeNote(session: string) {
+  const call = harness() === 'claude' ? cutOffCall(transcriptTail(session)) : undefined
+  return (
+    `[factory] Your VM restarted and this session was resumed.${cutOffNote(call)} Carry on where you left off: ` +
+    `check git status and git log first. When finished, report exactly once, as your brief says.`
+  )
+}
+
+/** the end of a Claude session's transcript, else of the turn stream; empty when neither is there */
+function transcriptTail(session: string) {
+  const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+  for (const f of [file, join(own(), 'claude.jsonl')]) {
+    try {
+      const size = statSync(f).size
+      const buf = Buffer.alloc(Math.min(size, 512 * 1024))
+      const fd = openSync(f, 'r')
+      readSync(fd, buf, 0, buf.length, size - buf.length)
+      closeSync(fd)
+      return buf.toString()
+    } catch {
+      // not there: try the next
+    }
+  }
+  return ''
 }
 
 export function prompt(base64: string) {

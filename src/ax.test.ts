@@ -1828,3 +1828,50 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('a session cut off mid-turn resumes with a note naming the cut-off call; an idle one does not (claude-factory-p0yt)', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-resume-'))
+  const own = join(tmp, 'own')
+  const repo = join(tmp, 'repo')
+  const conf = join(tmp, 'claude')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const projects = join(conf, 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'))
+  mkdirSync(projects, { recursive: true })
+  const use = { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git push origin HEAD' } }
+  writeFileSync(
+    join(projects, 's-1.jsonl'),
+    JSON.stringify({ type: 'assistant', message: { content: [use] } }) + '\n',
+  )
+  const claude = join(tmp, 'claude-bin')
+  writeFileSync(
+    claude,
+    `#!/bin/sh\nn=$(ls ${tmp}/stdin.* 2>/dev/null | wc -l)\ncat > ${tmp}/stdin.$n\necho '{"session_id":"s-1"}'\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_HARNESS: 'claude',
+    FACTORY_CLAUDE: claude,
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CLAUDE_CONFIG_DIR: conf,
+  })
+  for (const k of ['FACTORY_REPO', 'FACTORY_CA', 'FACTORY_BRIEF', 'FACTORY_CLAUDE_FLAGS'])
+    delete process.env[k]
+  try {
+    writeFileSync(join(own, 'state.json'), JSON.stringify({ status: 'working', session: 's-1', pid: 1 }))
+    await worker.serve(undefined, { once: true })
+    const note = readFileSync(join(tmp, 'stdin.0'), 'utf8')
+    expect(note).toStartWith('[factory] Your VM restarted')
+    expect(note).toContain('`git push origin HEAD`')
+    expect(note).toContain('may have taken effect')
+    // idle when it stopped: nothing was cut off, so no note
+    await worker.serve(undefined, { once: true })
+    expect(existsSync(join(tmp, 'stdin.1'))).toBe(false)
+  } finally {
+    process.env = saved
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})

@@ -51,6 +51,46 @@ export function codexFeaturesBad(out: string) {
   return on.get('hooks') !== 'true' ? 'hooks is not on' : CODEX_PROBED.find(f => on.get(f) !== 'false')
 }
 
+// tools that only read: a call cut off mid-way is safe to run again
+const READ_TOOLS = ['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'TodoWrite']
+
+/**
+ * The last tool call in a Claude transcript tail (the session file, or `claude -p` stream-json) that has no
+ * result: the call a crash cut off. Undefined when every call got its result (claude-factory-p0yt).
+ */
+export function cutOffCall(tail: string) {
+  const open = new Map<string, { name: string; input: Record<string, unknown> }>()
+  for (const line of tail.split('\n')) {
+    let e: { type?: string; message?: { content?: unknown } }
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue // the tail's first line is cut, or a line is not JSON
+    }
+    const content = Array.isArray(e?.message?.content) ? (e.message.content as Record<string, unknown>[]) : []
+    for (const b of content) {
+      if (e.type === 'assistant' && b.type === 'tool_use')
+        open.set(String(b.id), { name: String(b.name), input: (b.input as Record<string, unknown>) ?? {} })
+      if (e.type === 'user' && b.type === 'tool_result') open.delete(String(b.tool_use_id))
+    }
+  }
+  return [...open.values()].at(-1)
+}
+
+/** the resume note's sentence on a cut-off call: a read is safe to repeat, any other call may have taken effect */
+export function cutOffNote(call: { name: string; input: Record<string, unknown> } | undefined) {
+  if (!call) return ''
+  if (READ_TOOLS.includes(call.name))
+    return ` Your last tool call (${call.name}) was cut off before it finished. It only read, so it is safe to repeat.`
+  const what =
+    typeof call.input.command === 'string'
+      ? `the ${call.name} command \`${call.input.command.slice(0, 300)}\``
+      : typeof call.input.file_path === 'string'
+        ? `${call.name} on ${call.input.file_path}`
+        : call.name
+  return ` Your last tool call was cut off before it finished: ${what}. It may have taken effect: check its result (git status, the files it touches) before you repeat it.`
+}
+
 /** an MCP config file in Claude's shape ({ mcpServers }), checked once where a rig names it */
 export function readMcp(file: string): Mcp {
   const servers = JSON.parse(readFileSync(file, 'utf8')).mcpServers
@@ -89,7 +129,7 @@ export const codexMcp = (servers: Record<string, McpServer>) =>
 /**
  * the shell line that starts a worker on the prompt file, or resumes its session with the prompt as
  * the next turn. `extra` is flags put after the agent's own (Claude's --settings, codex's guard flags).
- * `env` is a codex-only VAR=value prefix (CODEX_HOME).
+ * `env` is a VAR=value prefix for claude and codex (FACTORY_DEADLINE; CODEX_HOME).
  */
 export function command(
   agent: string,
@@ -98,16 +138,16 @@ export function command(
 ) {
   const text = `"$(cat ${sq(prompt)})"`
   const { session, mcp } = o
+  const env = Object.entries(o.env ?? {})
+    .map(([k, v]) => `${k}=${sq(v)} `)
+    .join('')
   switch (harnessOf(agent)) {
     case 'claude': {
       const base = session ? `${agent.replace(/\s--new\b/, '')} --resume ${sq(session)}` : agent
-      return `${base}${mcp ? ` --mcp-config ${sq(mcp.file)}` : ''}${o.extra ?? ''} ${text}`
+      return `${env}${base}${mcp ? ` --mcp-config ${sq(mcp.file)}` : ''}${o.extra ?? ''} ${text}`
     }
     case 'codex': {
       const flags = `${o.extra ?? ''}${mcp ? codexMcp(mcp.servers) : ''}`
-      const env = Object.entries(o.env ?? {})
-        .map(([k, v]) => `${k}=${sq(v)} `)
-        .join('')
       if (!session) return `${env}${agent}${flags} ${text}`
       // codex resume [OPTIONS] [SESSION_ID] [PROMPT]: the subcommand goes right after the executable
       const [exe, ...rest] = agent.trim().split(/\s+/)
