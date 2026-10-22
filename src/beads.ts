@@ -643,6 +643,11 @@ export const beads = (repo: string, actor: string) => ({
     return bd(repo, actor, 'update', id, '--claim').isOk
   },
   release: (id: string) => bd(repo, actor, 'unclaim', id).isOk,
+  /** puts a bead that repairs closed back in the ship queue while its PR is open: no claim, no run label */
+  reship: (id: string, reason: string) =>
+    bd(repo, actor, 'reopen', id, '--reason', reason).isOk &&
+    bd(repo, actor, 'update', id, '--add-label', SHIP).isOk &&
+    bd(repo, actor, 'comment', id, reason).isOk,
   /** takes back a claim another actor abandoned: repairs calls it only for a run that is not live,
    * with an expired lease */
   releaseStale: (id: string, reason: string) =>
