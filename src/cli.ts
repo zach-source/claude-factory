@@ -96,7 +96,17 @@ import {
   type SweepState,
 } from './sweeps'
 import * as gatebrief from './gatebrief'
-import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
+import {
+  CODEX_GUARD_FLAGS,
+  CODEX_UNGUARDED,
+  claudeCommand,
+  codexFeaturesBad,
+  command,
+  harnessOf,
+  readMcp,
+  sq,
+  writeLaunch,
+} from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
 import { REPAIR_CAP, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
@@ -1285,11 +1295,22 @@ export { httpsRemote }
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
  * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
-/** the VM has no codex guard yet: no deny hook, so no codex worker there (claude-factory-72dq) */
+/**
+ * Only an image with the VM codex guard (claude-factory-72dq) may run codex. An older worker ignores the guard files,
+ * and its codex would run with no deny hook. So the person sets FACTORY_AX_CODEX=1 with FACTORY_AX_IMAGE.
+ */
+export const axCodex = (env = process.env) => env.FACTORY_AX_CODEX === '1'
 export function axCodexRefused(agent: string) {
-  if (harnessOf(agent) === 'codex')
-    fail(`the ax runner does not run codex workers yet: they would have no deny hook (claude-factory-72dq)`)
+  if (harnessOf(agent) === 'codex' && !axCodex())
+    fail(
+      'the ax runner runs codex only with FACTORY_AX_CODEX=1: set it with an image that has the codex guard',
+    )
 }
+/** a codex worker in a VM calls the OpenAI API: its policy opens api.openai.com with the vault key OPENAI, unless the rig already names that host */
+export const codexEgress = (egress: Egress[] = []) =>
+  egress.some(e => e.hosts.includes('api.openai.com'))
+    ? egress
+    : [...egress, { hosts: ['api.openai.com'], key: 'OPENAI' }]
 
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
@@ -1299,8 +1320,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
-  if (!harness) fail(`the ax runner runs claude or pi workers, not "${agent}"`)
+  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   axCodexRefused(agent)
+  const egress = harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1367,6 +1389,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     provider: ax.providerOf(agent),
     claudeFlags:
       harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
+    codexHome:
+      harness === 'codex' ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
     gitlabHost,
     env: {
       ...env,
@@ -1378,6 +1402,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
       CODEX_HOME: `${ax.OWN}/codex`,
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
+      // the deny hook finds the worktree root here; Claude sets it for itself, codex does not
+      ...(harness === 'codex' && { CLAUDE_PROJECT_DIR: ax.REPO }),
       ...(hasRunBeads && { FACTORY_BEADS: '1' }),
       ...(hasRunBeads &&
         rig?.beadsRemote && {
@@ -1389,10 +1415,10 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const side: TaskSide = {
     node,
     seq: c.seq,
-    egress: rig?.egress,
+    egress,
     ...(gitlabHost && { gitlabHost }),
     ...(githubOwner && { githubOwner }),
-    policy: ax.createPolicy(name, rig?.egress, gitlabHost, githubOwner),
+    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -1460,6 +1486,21 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
   ]
 }
 
+/**
+ * A codex worker's CODEX_HOME files in the VM, the ones a pane gets from codexWorker. hooks.json runs the deny hook
+ * from the image's own worker-hook.ts. config.toml sets the compaction limit and trusts the repo. `serve` writes
+ * them, adds AGENTS.md from the image's worker rules and checks the guard before the first turn (claude-factory-72dq).
+ */
+export function vmCodexHome(def: Pick<Factory, 'maxContextK'>, contexts?: string[], branches?: string[]) {
+  const hook = denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches)
+  return {
+    'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
+    'config.toml':
+      `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
+      `[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
+  }
+}
+
 /** the note a resumed worker is sent, written where its launch reads it */
 function resumeFile(run: Run, node: string, c: Ctx) {
   const file = promptOf(run, node, c).replace(/\.md$/, '-resume.md')
@@ -1487,7 +1528,7 @@ export function splitPick(runId: string, shareName: string, share: string | unde
 }
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
- * factory's. The split never applies on the ax runner (it has no codex guard yet: claude-factory-72dq).
+ * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex).
  */
 export const pickAgent = (
   runId: string,
@@ -1499,7 +1540,8 @@ export const pickAgent = (
 ) => {
   const params = paramsOf(def, rig, env)
   const split = def.nodes[node]!.split
-  const picked = split && runner !== 'ax' && splitPick(runId, split.share, params[split.share])
+  const picked =
+    split && (runner !== 'ax' || axCodex(env)) && splitPick(runId, split.share, params[split.share])
   return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
@@ -1823,12 +1865,8 @@ export function workerFlags(
   return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
 }
 
-// codex features the guard needs off: each one lets a command run with no PreToolUse hook (claude-factory-x0b9)
-const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
 // codex_hooks is the legacy alias of hooks: turning it off turns the hooks off
 const CODEX_HOOKS = ['hooks', 'codex_hooks']
-// 0.160.1 ignores --disable unified_exec (features list keeps it true), so the launch probe cannot check it
-const CODEX_PROBED = CODEX_UNGUARDED.filter(f => f !== 'unified_exec')
 
 /** the reason a codex agent command turns a guard part off, or undefined */
 function codexGuardOff(agent: string): string | undefined {
@@ -1908,10 +1946,7 @@ export function codexWorker(
   const link = join(dir, 'auth.json')
   rmSync(link, { force: true })
   if (existsSync(auth)) symlinkSync(auth, link)
-  const extra =
-    ' --enable hooks --dangerously-bypass-hook-trust' +
-    CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
-    ' --disable apps --disable memories'
+  const extra = ` ${CODEX_GUARD_FLAGS.join(' ')}`
   // ask codex what is on with these flags and this home: fail closed on a guard that is not in force
   // the shell splits the agent words as the pane does, so the probe sees the same exe and flags
   const probe = Bun.spawnSync(['sh', '-c', `${agent}${extra} features list`], {
@@ -1920,18 +1955,11 @@ export function codexWorker(
     timeout: o.timeoutMs ?? 10_000,
     killSignal: 'SIGKILL',
   })
-  const on = new Map<string, string>()
-  for (const l of probe.stdout.toString().split('\n')) {
-    const c = l.trim().split(/\s+/)
-    if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
-  }
   const bad = probe.exitedDueToTimeout
     ? 'codex features list timed out'
     : probe.exitCode !== 0
       ? 'codex features list failed'
-      : on.get('hooks') !== 'true'
-        ? 'hooks is not on'
-        : CODEX_PROBED.find(f => on.get(f) !== 'false')
+      : codexFeaturesBad(probe.stdout.toString())
   if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
   return {
     env: { CODEX_HOME: dir, CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
@@ -6842,7 +6870,7 @@ async function defineRig(
   if (remote && mcp !== undefined)
     fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${rig.runner} runner is claude or pi (not "${agent}")`)
+    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
   if (remote && agent !== undefined) axCodexRefused(agent)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')

@@ -603,8 +603,9 @@ test('share 0 never picks codex, share 1 always does, a bad share is 0', () => {
   expect(codexCount({ params: { codex_share: '0' } }, {}, 'herdr', 'b')).toBeGreaterThan(2500)
 })
 
-test('the ax runner and a rig agent never get the split agent', () => {
+test('the ax runner gets the split agent only with FACTORY_AX_CODEX=1; a rig agent never does', () => {
   expect(codexCount({ params: { codex_share: '1' } }, {}, 'ax')).toBe(0)
+  expect(codexCount({ params: { codex_share: '1' } }, { FACTORY_AX_CODEX: '1' }, 'ax')).toBe(10000)
   expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: { codex_share: '1' } }, 'herdr', {})).toBe(
     'pi',
   )

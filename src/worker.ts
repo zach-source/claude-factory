@@ -17,7 +17,8 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { CODEX_GUARD_FLAGS, codexFeaturesBad } from './harness'
 import { rmSafe } from './home-guard'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
@@ -266,6 +267,8 @@ export function turnArgv(
     case 'codex':
       return [
         process.env.FACTORY_CODEX ?? 'codex',
+        // the deny hook on, the features that skip it off (codexHome checks they hold)
+        ...CODEX_GUARD_FLAGS,
         ...['exec', ...(o.session ? ['resume'] : [])],
         ...['--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
         ...model('-m'),
@@ -942,6 +945,43 @@ export function trustCA() {
 }
 
 /**
+ * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
+ * and AGENTS.md from this image's worker rules. It fails closed, as a pane's launch does (cli.ts codexWorker):
+ * a .codex directory in the repo would add project config, and `codex features list` must show the guard on
+ * (claude-factory-72dq).
+ */
+export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000) {
+  if (harness() !== 'codex') return
+  const files = process.env.FACTORY_CODEX_HOME_FILES
+  if (!files || !dir)
+    throw new Error('a codex worker needs FACTORY_CODEX_HOME_FILES and CODEX_HOME from the laptop')
+  const local = join(repo(), '.codex')
+  if (existsSync(local))
+    throw new Error(`a codex worker keeps the deny hook on: ${local} would add project config`)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  for (const [name, text] of Object.entries(JSON.parse(files) as Record<string, string>))
+    writeFileSync(join(dir, basename(name)), text)
+  writeFileSync(
+    join(dir, 'AGENTS.md'),
+    readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
+      readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+  )
+  const p = Bun.spawnSync([process.env.FACTORY_CODEX ?? 'codex', ...CODEX_GUARD_FLAGS, 'features', 'list'], {
+    env: { ...process.env, CODEX_HOME: dir },
+    stdin: 'ignore',
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
+  })
+  const bad = p.exitedDueToTimeout
+    ? 'codex features list timed out'
+    : p.exitCode !== 0
+      ? 'codex features list failed'
+      : codexFeaturesBad(p.stdout.toString())
+  if (bad) throw new Error(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
+}
+
+/**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
@@ -1002,6 +1042,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
+  codexHome()
   const services = await startServices()
   let session = prior?.session
   let egress: Egress | undefined = prior?.egress

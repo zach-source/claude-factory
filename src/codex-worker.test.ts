@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axCodexRefused, codexWorker } from './cli'
+import { axCodexRefused, codexEgress, codexWorker, vmCodexHome } from './cli'
 import { command } from './harness'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
@@ -199,10 +199,42 @@ test('a codex launch refuses when codex reports a guard that is not in force', (
   expect(() => f.make()).toThrow('feature check')
 })
 
-test('the ax runner refuses codex and still takes claude and pi', () => {
-  expect(() => axCodexRefused('codex -m o3')).toThrow('claude-factory-72dq')
-  expect(() => axCodexRefused('claude')).not.toThrow()
-  expect(() => axCodexRefused('pi')).not.toThrow()
+test('a VM codex home runs the image deny hook, sets the limit and trusts the VM repo (claude-factory-72dq)', () => {
+  const h = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'])
+  expect(Object.keys(h).sort()).toEqual(['config.toml', 'hooks.json'])
+  const hook = JSON.parse(h['hooks.json']).hooks.PreToolUse
+  expect(hook).toHaveLength(1)
+  expect(hook[0].matcher).toBe('Bash')
+  const cmd: string = hook[0].hooks[0].command
+  expect(cmd).toContain("'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'")
+  expect(cmd).toContain("--person-only-contexts 'acme'")
+  expect(cmd).toContain("--protected-branches 'release'")
+  expect(h['config.toml']).toBe(
+    'model_auto_compact_token_limit = 300000\n\n[projects."/workspace/w/repo"]\ntrust_level = "trusted"\n',
+  )
+})
+
+test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi always', () => {
+  const keep = process.env.FACTORY_AX_CODEX
+  try {
+    delete process.env.FACTORY_AX_CODEX
+    expect(() => axCodexRefused('codex -m o3')).toThrow('FACTORY_AX_CODEX=1')
+    expect(() => axCodexRefused('claude')).not.toThrow()
+    expect(() => axCodexRefused('pi')).not.toThrow()
+    process.env.FACTORY_AX_CODEX = '1'
+    expect(() => axCodexRefused('codex -m o3')).not.toThrow()
+  } finally {
+    if (keep === undefined) delete process.env.FACTORY_AX_CODEX
+    else process.env.FACTORY_AX_CODEX = keep
+  }
+})
+
+test('a VM codex worker reaches api.openai.com with the OPENAI key, unless the rig names the host', () => {
+  expect(codexEgress()).toEqual([{ hosts: ['api.openai.com'], key: 'OPENAI' }])
+  const pypi = { hosts: ['pypi.org'] }
+  expect(codexEgress([pypi])).toEqual([pypi, { hosts: ['api.openai.com'], key: 'OPENAI' }])
+  const own = [{ hosts: ['api.openai.com'], key: 'OPENAI_ZS' }]
+  expect(codexEgress(own)).toBe(own)
 })
 
 test('the probe runs the agent own executable, not codex from PATH', () => {
