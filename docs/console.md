@@ -206,7 +206,12 @@ line stays empty until then. The `details` toggle shows the full brief, up to 8 
 request, the verify and review summaries, and the run's own goal. The briefer cannot decide the
 gate, and you still pick the outcome yourself.
 
-Two open items that have the same decision fold into one row. This applies to the same bead, or
+A run that parked with `parked, waiting on: <command>` is an owner step. The `questions` sub-tab
+shows all owner steps from all rigs first, under one `Owner steps (N)` header. Each row shows the
+exact command, the run, the rig and the age. An owner step never folds into another row. Your
+answer to a row mails only that run's station.
+
+Two other open items that have the same decision fold into one row. This applies to the same bead, or
 to the same question in the same rig. Answering that row answers every run or bead that the row covers.
 
 | Key or button | What it does |
