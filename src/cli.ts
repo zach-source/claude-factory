@@ -6433,7 +6433,11 @@ async function repairPass() {
             ? b.close(r.id, r.reason)
             : r.kind === 'release'
               ? b.releaseStale(r.id, r.reason)
-              : b.unship(r.id, r.reason)
+              : r.kind === 'reship'
+                ? b.reship(r.id, r.reason)
+                : r.kind === 'unship'
+                  ? b.unship(r.id, r.reason)
+                  : false
         if (!done) continue
         const at = new Date().toISOString()
         appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')

@@ -106,4 +106,39 @@ describe('repairs', () => {
     ]
     expect(run(every, [merged], ['a-3']).map(r => r.id)).toEqual(['a-4'])
   })
+
+  describe('reship', () => {
+    const qbi3 = (extra: Partial<Bead> = {}) =>
+      bead('q-1', {
+        status: 'closed',
+        labels: ['ship'],
+        close_reason: 'every child is closed',
+        metadata: { ship_run: 'run-1', ship_pr: pr(9, 'OPEN').url },
+        ...extra,
+      })
+    test('an open draft PR puts the closed bead back', () => {
+      expect(run([qbi3()], [pr(9, 'OPEN', { isDraft: true })])).toEqual([
+        {
+          kind: 'reship',
+          id: 'q-1',
+          reason: 'reship: https://github.com/o/r/pull/9 is open; closed by repairs as every child is closed',
+        },
+      ])
+    })
+    test('a merged, closed or missing PR gives nothing', () => {
+      expect(run([qbi3()], [pr(9, 'MERGED')])).toEqual([])
+      expect(run([qbi3()], [pr(9, 'CLOSED')])).toEqual([])
+      expect(run([qbi3()], [])).toEqual([])
+    })
+    test('a person close, a live run or no ship_run gives nothing', () => {
+      const open = [pr(9, 'OPEN')]
+      expect(run([qbi3({ close_reason: 'done by hand' })], open)).toEqual([])
+      expect(run([qbi3()], open, ['q-1'])).toEqual([])
+      expect(run([qbi3({ metadata: { ship_pr: open[0]!.url } })], open)).toEqual([])
+    })
+    test('ship_branch alone matches the head branch', () => {
+      const b = qbi3({ metadata: { ship_run: 'run-1', ship_branch: 'factory/x' } })
+      expect(run([b], [pr(9, 'OPEN', { headRefName: 'factory/x' })]).map(r => r.kind)).toEqual(['reship'])
+    })
+  })
 })

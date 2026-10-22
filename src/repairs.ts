@@ -1,7 +1,7 @@
 // Repairs in code, not in prompts: a bead whose work is plainly done or dead gets closed or
 // deferred by the factory. `repairs` is pure: it decides. cli.ts's `repairPass` does the effects.
 import { findings } from './plan'
-import { SHIP, REJECTED, type Bead } from './beads'
+import { SHIP, REJECTED, shipBranchOf, type Bead } from './beads'
 
 export type PrFact = {
   number: number
@@ -11,7 +11,7 @@ export type PrFact = {
   body?: string
   headRefName?: string
 }
-export type Repair = { kind: 'close' | 'unship' | 'release'; id: string; reason: string }
+export type Repair = { kind: 'close' | 'unship' | 'release' | 'reship'; id: string; reason: string }
 
 /** most repairs one pass makes in one rig */
 export const REPAIR_CAP = 20
@@ -65,6 +65,23 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
   )
   const out: Repair[] = []
   for (const b of every) {
+    if (
+      b.status === 'closed' &&
+      !live.has(b.id) &&
+      b.close_reason === 'every child is closed' &&
+      meta(b, 'ship_run')
+    ) {
+      const branch = shipBranchOf(b)
+      const pr =
+        prOf(prs, meta(b, 'ship_pr')) ?? (branch ? prs.find(p => p.headRefName === branch) : undefined)
+      if (pr?.state === 'OPEN')
+        out.push({
+          kind: 'reship',
+          id: b.id,
+          reason: `reship: ${pr.url} is open; closed by repairs as every child is closed`,
+        })
+      continue
+    }
     if (b.status === 'closed' || b.status === 'deferred' || live.has(b.id)) continue
     const stale = staleClaim(b, now)
     if (stale) {

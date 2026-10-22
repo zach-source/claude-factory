@@ -771,3 +771,34 @@ test('handToOwner drops the factory label and sets the owner label, question and
     process.env.PATH = path
   }
 })
+
+test('reship reopens, adds only the ship label, comments, and never claims', () => {
+  const run = (exitOn: string) => {
+    const bin = join(tmpdir(), `fake-bd-reship-${exitOn || 'ok'}-${process.pid}`)
+    mkdirSync(bin, { recursive: true })
+    const log = join(bin, 'calls')
+    rmSync(log, { force: true })
+    const script = ['#!/bin/sh', `echo "$*" >> ${log}`, `[ "$1" = "${exitOn}" ] && exit 1`, 'exit 0'].join(
+      '\n',
+    )
+    writeFileSync(join(bin, 'bd'), script)
+    chmodSync(join(bin, 'bd'), 0o755)
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const ok = beads(tmpdir(), 'factory').reship('fx-1', 'r')
+      return { ok, calls: readFileSync(log, 'utf8').trim().split('\n') }
+    } finally {
+      process.env.PATH = path
+    }
+  }
+  const good = run('')
+  expect(good.ok).toBe(true)
+  expect(good.calls.map(c => c.split(' ')[0])).toEqual(['reopen', 'update', 'comment'])
+  expect(good.calls[0]).toContain('--reason r')
+  expect(good.calls[1]).toContain('--add-label ship')
+  expect(good.calls.join('\n')).not.toMatch(/--claim|add-label factory|station:/)
+  const bad = run('reopen')
+  expect(bad.ok).toBe(false)
+  expect(bad.calls.map(c => c.split(' ')[0])).toEqual(['reopen'])
+})
