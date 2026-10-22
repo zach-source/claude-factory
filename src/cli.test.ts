@@ -30,6 +30,8 @@ import {
   loadFactory,
   ownCopy,
   paramsOf,
+  pickAgent,
+  splitPick,
   reapable,
   progressNow,
   progressSig,
@@ -558,6 +560,64 @@ test("the manager's --tools carries Agent, so the mod can spawn a patrol subagen
   const i = managerCommand().indexOf('--tools')
   expect(i).toBeGreaterThanOrEqual(0)
   expect(managerCommand()[i + 1]!.split(',')).toContain('Agent')
+})
+
+const splitDef = {
+  name: 'x',
+  start: 'a',
+  agent: 'claude',
+  params: { codex: 'codex', codex_share: '0.3', other_share: '0.3' },
+  nodes: {
+    a: { prompt: '', next: { ok: 'done' }, split: { agent: '{codex}', share: 'codex_share' } },
+    b: { prompt: '', next: { ok: 'done' }, split: { agent: '{codex}', share: 'other_share' } },
+    c: { prompt: '', next: { ok: 'done' } },
+  },
+}
+const ids = Array.from({ length: 10000 }, (_, i) => `run-${i}`)
+const codexCount = (
+  rig: object | undefined,
+  env: Record<string, string> = {},
+  runner = 'herdr',
+  node = 'a',
+) => ids.filter(id => pickAgent(id, splitDef, node, rig, runner, env) === 'codex').length
+
+test('a split pick is stable per run, and each share param picks on its own', () => {
+  for (const id of ids.slice(0, 200))
+    expect(pickAgent(id, splitDef, 'a', undefined, 'herdr', {})).toBe(
+      pickAgent(id, splitDef, 'a', undefined, 'herdr', {}),
+    )
+  const n = codexCount(undefined)
+  expect(n).toBeGreaterThan(2500)
+  expect(n).toBeLessThan(3500)
+  const both = ids.filter(
+    id => splitPick(id, 'codex_share', '0.3') && splitPick(id, 'other_share', '0.3'),
+  ).length
+  expect(both).toBeLessThan(n * 0.6)
+  expect(pickAgent('run-1', splitDef, 'c', undefined, 'herdr', {})).toBe('claude')
+})
+
+test('share 0 never picks codex, share 1 always does, a bad share is 0', () => {
+  expect(codexCount({ params: { codex_share: '0' } })).toBe(0)
+  expect(codexCount(undefined, { FACTORY_CODEX_SHARE: '0' })).toBe(0)
+  expect(codexCount({ params: { codex_share: '1' } })).toBe(10000)
+  for (const bad of ['abc', '-1', '2', 'NaN']) expect(codexCount({ params: { codex_share: bad } })).toBe(0)
+  expect(codexCount({ params: { codex_share: '0' } }, {}, 'herdr', 'b')).toBeGreaterThan(2500)
+})
+
+test('the ax runner gets the split agent only with FACTORY_AX_CODEX=1; a rig agent never does', () => {
+  expect(codexCount({ params: { codex_share: '1' } }, {}, 'ax')).toBe(0)
+  expect(codexCount({ params: { codex_share: '1' } }, { FACTORY_AX_CODEX: '1' }, 'ax')).toBe(10000)
+  expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: { codex_share: '1' } }, 'herdr', {})).toBe(
+    'pi',
+  )
+})
+
+test('the manager and the mod subagents name a full model id, never an alias', () => {
+  const c = managerCommand()
+  expect(c[c.indexOf('--model') + 1]).toBe('claude-opus-5-5')
+  const src = readFileSync(new URL('../mod/hooks/register.tsx', import.meta.url), 'utf8')
+  const models = [...src.matchAll(/^\s+model: '([^']+)'/gm)].map(m => m[1])
+  expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])
 })
 
 test("workers commit as the factory home's own git identity, crediting factory.coauthor", () => {

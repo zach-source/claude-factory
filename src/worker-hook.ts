@@ -8878,6 +8878,26 @@ export function shellSnapshotAliases(dir: string): Map<string, string | null> | 
   return table
 }
 
+// Claude's Bash tool runs a call for 2 min when it names no timeout
+const BASH_DEFAULT_MS = 120_000
+// the least a clamped call still gets, so a report or a commit runs even past the deadline
+const CLAMP_FLOOR_MS = 30_000
+
+/**
+ * A Bash call's timeout cut to what is left before the station's deadline (FACTORY_DEADLINE, ms), or undefined
+ * when the call already ends in time. A command then ends before the run fails, and the worker still has
+ * its turn to commit and report (claude-factory-p0yt). A background call has no timeout to clamp.
+ */
+export function clampTimeout(
+  input: { timeout?: number; run_in_background?: boolean },
+  deadline: number,
+  now: number,
+) {
+  if (input.run_in_background || !Number.isFinite(deadline)) return undefined
+  const left = Math.max(CLAMP_FLOOR_MS, deadline - now)
+  return left < (input.timeout ?? BASH_DEFAULT_MS) ? left : undefined
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -8886,7 +8906,11 @@ async function main() {
   } catch {
     return
   }
-  const i = input as { tool_name?: string; cwd?: string; tool_input?: { command?: string } }
+  const i = input as {
+    tool_name?: string
+    cwd?: string
+    tool_input?: { command?: string; timeout?: number; run_in_background?: boolean }
+  }
   if (i?.tool_name !== 'Bash') return
   // Claude Code sets CLAUDE_PROJECT_DIR to the worktree root for a hook; input.cwd can be a
   // subdir of it after a `cd`, so it is only the second choice for root.
@@ -8931,7 +8955,23 @@ async function main() {
     cwd: i.cwd,
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
-  if (!reason) return
+  if (!reason) {
+    const timeout = process.env.FACTORY_DEADLINE
+      ? clampTimeout(i.tool_input ?? {}, Number(process.env.FACTORY_DEADLINE), Date.now())
+      : undefined
+    if (timeout)
+      console.log(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            permissionDecisionReason: `the station's deadline is ${Math.round(timeout / 1000)} s away: timeout cut to that`,
+            updatedInput: { ...i.tool_input, timeout },
+          },
+        }),
+      )
+    return
+  }
   console.log(
     JSON.stringify({
       hookSpecificOutput: {
