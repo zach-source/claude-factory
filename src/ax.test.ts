@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
+import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
 
 const dir = join(tmpdir(), `ax-${process.pid}`)
@@ -980,11 +981,18 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
   // stdin, never argv, since a prompt over Linux's MAX_ARG_STRLEN (131072 bytes) made posix_spawn fail with
   // ENAMETOOLONG (claude-factory-kcg)
   expect(worker.turnArgv('codex', { model: 'o3' })).toEqual([
-    ...['codex', 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
-    ...['-m', 'o3', '--', '-'],
+    ...['codex', ...CODEX_GUARD_FLAGS, 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...['--skip-git-repo-check', '-m', 'o3', '--', '-'],
   ])
   expect(worker.turnArgv('codex', { session: 'th-1' })).toEqual([
-    ...['codex', 'exec', 'resume', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...[
+      'codex',
+      ...CODEX_GUARD_FLAGS,
+      'exec',
+      'resume',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ],
     ...['--skip-git-repo-check', '--', 'th-1', '-'],
   ])
   expect(worker.turnArgv('pi', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
@@ -1053,6 +1061,7 @@ test('a codex worker briefs once, then resumes the thread its first turn named',
   writeFileSync(
     codex,
     `#!/bin/sh
+case "$*" in *'features list') printf 'hooks stable true\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; exit;; esac
 echo "$*" >> ${dir}/codex.log
 n=$(ls ${dir}/codex.stdin.* 2>/dev/null | wc -l)
 cat > ${dir}/codex.stdin.$n
@@ -1068,6 +1077,8 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
     FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CODEX_HOME: join(own, 'codex'),
+    FACTORY_CODEX_HOME_FILES: '{}',
   })
   delete process.env.FACTORY_REPO
   delete process.env.FACTORY_CA
@@ -1077,7 +1088,7 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
     await worker.serve('o3', { once: true })
     const turns = readFileSync(join(dir, 'codex.log'), 'utf8').trim().split('\n')
     expect(turns[0]).toEndWith('-m o3 -- -') // no prompt text on argv: '-' reads it from stdin
-    expect(turns[1]).toStartWith('exec resume --json')
+    expect(turns[1]).toContain(' exec resume --json')
     expect(turns[1]).toEndWith('-m o3 -- th-1 -')
     expect(readFileSync(join(dir, 'codex.stdin.0'), 'utf8')).toBe('codex brief')
     expect(readFileSync(join(dir, 'codex.stdin.1'), 'utf8')).toBe('more')
@@ -1764,4 +1775,56 @@ test('managerEgress adds the Linear rule only for a rig with --linear', () => {
     { hosts: ['claude.ai'] },
     { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
   ])
+})
+
+test('serve writes a codex worker home and fails closed when the guard is off (claude-factory-72dq)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-codex-'))
+  const repo = join(tmp, 'repo')
+  const home = join(tmp, 'codex')
+  const features = join(tmp, 'features.txt')
+  const on =
+    'hooks stable true\nunified_exec stable true\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
+  writeFileSync(features, on)
+  const fake = join(tmp, 'fake-codex')
+  writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(tmp, 'argv')}'\ncat '${features}'\n`, {
+    mode: 0o755,
+  })
+  mkdirSync(repo)
+  const keep = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: fake,
+    FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', '../config.toml': 'x = 1\n' }),
+  })
+  try {
+    worker.codexHome(home)
+    expect(readdirSync(home).sort()).toEqual(['AGENTS.md', 'config.toml', 'hooks.json'])
+    expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
+    expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(
+      readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+    )
+    expect(readFileSync(join(tmp, 'argv'), 'utf8').trim().split('\n')).toEqual([
+      ...CODEX_GUARD_FLAGS,
+      'features',
+      'list',
+    ])
+    writeFileSync(features, on.replace('hooks stable true', 'hooks stable false'))
+    expect(() => worker.codexHome(home)).toThrow('hooks is not on')
+    writeFileSync(features, on.replace('multi_agent stable false', 'multi_agent stable true'))
+    expect(() => worker.codexHome(home)).toThrow('multi_agent')
+    writeFileSync(features, on)
+    mkdirSync(join(repo, '.codex'))
+    expect(() => worker.codexHome(home)).toThrow('would add project config')
+    rmSync(join(repo, '.codex'), { recursive: true })
+    delete process.env.FACTORY_CODEX_HOME_FILES
+    expect(() => worker.codexHome(home)).toThrow('FACTORY_CODEX_HOME_FILES')
+    process.env.FACTORY_HARNESS = 'claude'
+    expect(() => worker.codexHome(join(tmp, 'none'))).not.toThrow()
+    expect(existsSync(join(tmp, 'none'))).toBe(false)
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
+    Object.assign(process.env, keep)
+    rmSync(tmp, { recursive: true, force: true })
+  }
 })

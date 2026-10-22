@@ -31,6 +31,26 @@ export function harnessOf(agent: string): Harness | null {
   return exe === 'codex' || exe === 'pi' ? exe : null
 }
 
+// The guard must turn off these codex features. Each one lets a command run without the PreToolUse hook (claude-factory-x0b9).
+export const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
+// 0.160.1 ignores --disable unified_exec (features list keeps it true), so the launch probe cannot check it
+const CODEX_PROBED = CODEX_UNGUARDED.filter(f => f !== 'unified_exec')
+/** the codex flags a worker runs with: the hooks on, every unguarded feature off. A pane and a VM use the same ones */
+export const CODEX_GUARD_FLAGS = [
+  ...['--enable', 'hooks', '--dangerously-bypass-hook-trust'],
+  ...CODEX_UNGUARDED.flatMap(f => ['--disable', f]),
+  ...['--disable', 'apps', '--disable', 'memories'],
+]
+/** what in `codex features list` output says the guard is not in force, or undefined when it is */
+export function codexFeaturesBad(out: string) {
+  const on = new Map<string, string>()
+  for (const l of out.split('\n')) {
+    const c = l.trim().split(/\s+/)
+    if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
+  }
+  return on.get('hooks') !== 'true' ? 'hooks is not on' : CODEX_PROBED.find(f => on.get(f) !== 'false')
+}
+
 /** an MCP config file in Claude's shape ({ mcpServers }), checked once where a rig names it */
 export function readMcp(file: string): Mcp {
   const servers = JSON.parse(readFileSync(file, 'utf8')).mcpServers
