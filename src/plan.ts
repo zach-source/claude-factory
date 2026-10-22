@@ -7,7 +7,7 @@
 // It picks an order and a one-line why for each id that the CLI already offers.
 // It proposes a change that it cannot make itself (claude-factory-dun).
 import { createHash } from 'node:crypto'
-import { parentOf, type Bead } from './beads'
+import { parentOf, SHIP, type Bead } from './beads'
 
 export type PlanItem = { id: string; title: string; priority: number; why: string }
 export type FindingKind = 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan' | 'file-churn'
@@ -309,7 +309,7 @@ export function findings(
     if (!kids.length) continue
     const openKids = kids.filter(k => !isClosed(k))
     if (!openKids.length) {
-      if (!live.has(epic.id))
+      if (!live.has(epic.id) && !epic.labels?.includes(SHIP))
         out.push({
           kind: 'epic-done-open',
           rig,
