@@ -81,14 +81,16 @@ test('gates stay: deploy never merges, waits on the PR and parks on owner-only s
   expect(ship.rules).toContain('Only a person merges a pull request')
   expect(ship.rules).toContain("a worker's own comment never counts as approval")
   for (const [id, node] of Object.entries(ship.nodes)) {
-    expect(node.prompt, id).not.toMatch(/gh pr merge|--admin|git push --force|--force-with-lease/)
+    expect(node.prompt, id).not.toMatch(/--admin|git push --force|--force-with-lease/)
+    // only release names `gh pr merge`, as a line for the owner to run; no station runs it
+    if (id !== 'release') expect(node.prompt, id).not.toContain('gh pr merge')
     expect((node as { gate?: unknown }).gate, id).toBeUndefined()
   }
 })
 
 test('queue keeps PRs current with a merge commit, never a rebase or a force-push', () => {
   const p = ship.nodes.queue.prompt
-  expect(p).toContain('merge origin/main into its branch (a merge commit')
+  expect(p).toContain('merge origin/main into it (a merge commit')
   expect(p).toContain('Never rebase and never force-push')
   expect(p).not.toMatch(/\brebase onto\b/)
 })
@@ -133,7 +135,19 @@ test('a release that reports changes does not refill the budget: 12 x (ready, ch
   expect(where(snapshot.value)[1]).toBe('stuck')
 })
 
+test('queue and release cover every clean queued PR, not only the next', () => {
+  const q = ship.nodes.queue.prompt
+  const r = ship.nodes.release.prompt
+  expect(q).toContain('every queued pull request in merge order')
+  expect(q).toContain('conflict or a red check on their own, each with its reason')
+  expect(q).not.toContain('NEXT')
+  expect(r).toContain('every queued pull request that the queue reported')
+  expect(r).toContain('gh pr merge <n> -R <repo> --merge')
+  expect(r).toContain('You never run them')
+  expect(r).not.toContain('NEXT')
+})
+
 test('queue names the next PR first and lists every owner-only step in one list', () => {
-  expect(ship.nodes.queue.prompt).toContain('name it first')
+  expect(ship.nodes.queue.prompt).toContain('name the first one first')
   expect(ship.nodes.queue.prompt).toContain('every owner-only step the queue needs in one list')
 })

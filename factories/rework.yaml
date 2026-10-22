@@ -7,11 +7,17 @@ agent: "{claude} --dangerously-skip-permissions --model '{exec_model}'"
 params:
   claude: claude-smart --new --no-channels
   exec_model: claude-sonnet-5-5[1m]
+  codex: codex --dangerously-bypass-approvals-and-sandbox
+  codex_exec_model: gpt-6.1-sol
+  codex_share: '0.3'
 rules: |-
   - Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions and commands win over your habits.
   - Change what the PR needs and nothing else. Never skip or weaken a test, never rebase or force-push.
 nodes:
   resolve:
+    split:
+      agent: "{codex} -m '{codex_exec_model}'"
+      share: codex_share
     prompt: |-
       Your goal names a stuck pull request and what its labels ask. First triage it: `gh pr view <number> --comments`, its reviews (`gh api repos/{owner}/{repo}/pulls/<number>/reviews`) and `gh pr checks <number>`.
       - If it is no longer wanted (its change is already on the base, another PR supersedes it, or its reviews reject the idea), `gh pr comment <number>` saying why, `gh pr edit <number> --add-label close` so the factory closes it, and report obsolete.

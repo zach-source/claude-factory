@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
 import {
   acIdsIn,
@@ -11,6 +11,7 @@ import {
   isPrWait,
   mrsIn,
   parkDelayMin,
+  shouldHandToOwner,
   prevReport,
   prsIn,
   reach,
@@ -235,6 +236,20 @@ test('validate rejects broken graphs', () => {
   expect(validate(def)).toBe(def)
 })
 
+test('validate accepts a defer edge that names a station of the factory, and refuses an unknown one', () => {
+  const rejects = (edge: object) => () =>
+    validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
+  expect(rejects({ to: 'done', defer: { station: 'a' } })).not.toThrow()
+  expect(rejects({ to: 'done', defer: { station: 'nope' } })).toThrow('defer station "nope" is not a node')
+  expect(rejects({ to: 'a', defer: { station: 'a' } })).toThrow('only an edge into done defers')
+  expect(rejects({ to: 'done', defer: { station: 'a' }, requeue: true })).toThrow(
+    'defers, rejects or requeues, only one',
+  )
+  expect(rejects({ to: 'done', defer: { station: 'a' }, ship: true })).toThrow(
+    'defers, rejects, requeues or ships, only one',
+  )
+})
+
 test('validate refuses a requeue edge that does not go into done, that also defers or rejects, or that names an invalid factory/station', () => {
   const rejects = (edge: object) => () =>
     validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
@@ -413,6 +428,64 @@ test('onRounds re-plans a capped station with its findings, then holds for the m
   expect(s.context.error).toBe('review reported changes more than 2 times')
   expect(s.context.mail.manager?.at(-1)?.text).toContain('already re-planned once')
   expect(s.context.mail.manager?.at(-1)?.text).toContain('held instead of going to implement')
+})
+
+// claude-factory-53tf: only an outcome that loops back counts toward a node's rounds cap.
+// review's `security` leaves the loop for a deeper node, so it never counts.
+const secDef = (onRounds?: string): Factory => ({
+  ...def,
+  nodes: {
+    plan: { prompt: 'plan it', next: { planned: 'implement' } },
+    implement: { prompt: 'build it', next: { ready: 'review' }, retries: 1 },
+    review: {
+      prompt: 'review it',
+      next: { changes: 'implement', security: 'security', approve: 'done' },
+      rounds: 3,
+      ...(onRounds ? { onRounds } : {}),
+    },
+    security: { prompt: 'scan it', next: { changes: 'implement', approve: 'done' } },
+  },
+  start: 'plan',
+})
+
+function secRun(onRounds?: string) {
+  const { send } = run(secDef(onRounds))
+  let seq = 1
+  let t = 0
+  const d = (outcome: string) => send({ type: 'DONE', seq: seq++, outcome, summary: outcome, at: ++t })
+  d('planned')
+  return { d, send }
+}
+
+test.each(['plan', undefined])(
+  'review security reports never count toward the cap (onRounds %s)',
+  onRounds => {
+    const { d } = secRun(onRounds)
+    for (let i = 0; i < 5; i++) {
+      d('ready')
+      const s = d('security')
+      expect(where(s.value)).toEqual(['security', 'working'])
+      expect(s.context.mail.plan ?? []).toHaveLength(0)
+      expect(s.context.log.some(e => e.replan)).toBe(false)
+      d('changes') // security changes goes back to implement
+    }
+  },
+)
+
+test('back edges still cap, and security reports between them do not move the cap', () => {
+  const { d } = secRun('plan')
+  for (let i = 0; i < 3; i++) {
+    d('ready')
+    d('security')
+    d('changes')
+    d('ready')
+    expect(where(d('changes').value)).toEqual(['implement', 'working'])
+  }
+  d('ready')
+  const s = d('changes')
+  expect(where(s.value)).toEqual(['plan', 'working'])
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', replan: true })
+  expect(s.context.mail.plan?.at(-1)?.text).toContain('round cap')
 })
 
 // claude-factory-qgz AC2: the re-plan mail stays near 24000 chars even when every round's summary is huge.
@@ -987,4 +1060,64 @@ test('REPARK never moves wakeAt earlier, and ignores another node', () => {
   expect(s.context.wakeAt).toBe(old)
   s = send({ type: 'REPARK', node: 'release', wakeAt: old + 5, at: 2000 })
   expect(s.context.wakeAt).toBe(old)
+})
+
+describe('shouldHandToOwner', () => {
+  const H = 3_600_000
+  const blocked = (at: number, summary = 'waiting on a vendor', attempt = 1) => ({
+    node: 'deploy',
+    attempt,
+    outcome: 'blocked',
+    summary,
+    at,
+  })
+  test('two blocked passes in the first day stay with the factory', () => {
+    expect(shouldHandToOwner([blocked(0), blocked(H)], 2 * H)).toBe(false)
+  })
+  test('three blocked passes in a row hand the bead over', () => {
+    expect(shouldHandToOwner([blocked(0), blocked(H), blocked(2 * H)], 3 * H)).toBe(true)
+  })
+  test('a streak older than 24h hands the bead over', () => {
+    expect(shouldHandToOwner([blocked(0)], 25 * H)).toBe(true)
+    expect(shouldHandToOwner([blocked(0)], 23 * H)).toBe(false)
+  })
+  test('an owner step in the report hands the bead over at once', () => {
+    expect(shouldHandToOwner([blocked(0, 'owner step: rotate the key')], H)).toBe(true)
+  })
+  test('PR waits do not count', () => {
+    const pr = (at: number) => blocked(at, 'no worker yet: waiting for a PR', 0)
+    expect(shouldHandToOwner([pr(0), pr(H), pr(2 * H), blocked(3 * H)], 10 * H)).toBe(false)
+    expect(shouldHandToOwner([blocked(0), pr(H), blocked(2 * H), pr(3 * H)], 4 * H)).toBe(false)
+  })
+  test('a non-blocked outcome resets the streak', () => {
+    const fail = { node: 'deploy', attempt: 1, outcome: 'fail', summary: 'x', at: 2 * H }
+    expect(shouldHandToOwner([blocked(0), blocked(H), fail, blocked(3 * H)], 4 * H)).toBe(false)
+  })
+  test('a streak at another station does not count', () => {
+    const other = { ...blocked(H), node: 'plan' }
+    expect(shouldHandToOwner([blocked(0), blocked(0), other], 2 * H)).toBe(false)
+  })
+})
+
+test('validate checks a node split: its agent params, its share param and its default', () => {
+  const mk =
+    (split: object, params: Record<string, string> = {}, gate = false) =>
+    () =>
+      validate({
+        name: 'x',
+        start: 'a',
+        params: { codex: 'codex', codex_share: '0.3', ...params },
+        nodes: {
+          a: { prompt: '', next: { ok: 'done' }, ...(gate ? { gate: true } : {}), split: split as never },
+        },
+      })
+  const ok = { agent: '{codex}', share: 'codex_share' }
+  expect(mk(ok)).not.toThrow()
+  expect(mk({ ...ok, agent: '{ghost}' })).toThrow('{ghost}')
+  expect(mk({ ...ok, share: 'nope' })).toThrow('split share "nope" is not a param')
+  for (const bad of ['abc', '', '-1', '2', 'NaN', 'Infinity'])
+    expect(mk(ok, { codex_share: bad })).toThrow('between 0 and 1')
+  expect(mk(ok, { codex_share: '0' })).not.toThrow()
+  expect(mk(ok, { codex_share: '1' })).not.toThrow()
+  expect(mk(ok, {}, true)).toThrow('a gate has no worker, so no split')
 })
