@@ -393,7 +393,7 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     expect(readFileSync(log, 'utf8')).not.toContain('close')
     expect(show).toBe('show fx-1 --json --actor factory/run-1')
     expect(queue).toBe(
-      'update fx-1 --add-label factory --remove-label rejected --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
+      'update fx-1 --add-label factory --remove-label rejected --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
     )
   } finally {
     process.env.PATH = path
@@ -424,7 +424,9 @@ test('queue removes a stale factory:*/station:* label before adding the station 
       .find(l => l.startsWith('update'))!
     expect(update).toContain('--remove-label factory:release')
     expect(update).toContain('--remove-label station:deploy')
-    expect(update).toContain('--add-label factory --remove-label rejected --remove-label owner')
+    expect(update).toContain(
+      '--add-label factory --remove-label rejected --remove-label stale? --remove-label owner',
+    )
     expect(update).toContain('--unset-metadata owner_question --unset-metadata owner_since')
     expect(update).toContain('--add-label station:implement')
   } finally {
@@ -798,4 +800,35 @@ test('handToOwner drops the factory label and sets the owner label, question and
   } finally {
     process.env.PATH = path
   }
+})
+
+test('reship reopens, adds only the ship label, comments, and never claims', () => {
+  const run = (exitOn: string) => {
+    const bin = join(tmpdir(), `fake-bd-reship-${exitOn || 'ok'}-${process.pid}`)
+    mkdirSync(bin, { recursive: true })
+    const log = join(bin, 'calls')
+    rmSync(log, { force: true })
+    const script = ['#!/bin/sh', `echo "$*" >> ${log}`, `[ "$1" = "${exitOn}" ] && exit 1`, 'exit 0'].join(
+      '\n',
+    )
+    writeFileSync(join(bin, 'bd'), script)
+    chmodSync(join(bin, 'bd'), 0o755)
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const ok = beads(tmpdir(), 'factory').reship('fx-1', 'r')
+      return { ok, calls: readFileSync(log, 'utf8').trim().split('\n') }
+    } finally {
+      process.env.PATH = path
+    }
+  }
+  const good = run('')
+  expect(good.ok).toBe(true)
+  expect(good.calls.map(c => c.split(' ')[0])).toEqual(['reopen', 'update', 'comment'])
+  expect(good.calls[0]).toContain('--reason r')
+  expect(good.calls[1]).toContain('--add-label ship')
+  expect(good.calls.join('\n')).not.toMatch(/--claim|add-label factory|station:/)
+  const bad = run('reopen')
+  expect(bad.ok).toBe(false)
+  expect(bad.calls.map(c => c.split(' ')[0])).toEqual(['reopen'])
 })

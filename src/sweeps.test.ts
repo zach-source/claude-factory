@@ -169,6 +169,15 @@ test('a sweep-filed bead with no created_at stays inside the window, not at epoc
   })
 })
 
+test('a sweep-filed bead with an unparseable created_at stays inside the window', () => {
+  const now = Date.now()
+  const recent = Array.from({ length: 5 }, (_, i) =>
+    filed(`b${i}`, 'maintain', new Date(now - (4 - i) * 60_000).toISOString()),
+  )
+  const bad = filed('bad', 'maintain', 'garbage')
+  expect(sweepGuard([...recent, bad], now).find(v => v.id === 'bad')?.kept).toBe(false)
+})
+
 test('sweepGuard is idempotent: the same beads give the same verdicts on a second call', () => {
   const now = Date.now()
   const beads = Array.from({ length: 6 }, (_, i) =>

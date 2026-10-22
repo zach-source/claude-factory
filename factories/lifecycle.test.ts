@@ -1,9 +1,12 @@
 import { expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
-import { ruleLines } from '../src/cli'
+import { join } from 'node:path'
+import { modelOf } from '../src/ax'
+import { loadFactory, ruleLines } from '../src/cli'
 import {
   compile,
+  fill,
   isPrWait,
   repeatQuestion,
   timeoutOf,
@@ -15,6 +18,7 @@ import {
 import lifecycle from './lifecycle'
 import release from './release'
 import ship from './ship'
+import sweeps from './sweeps'
 
 const PR = 'https://github.com/acme/widget/pull/42'
 
@@ -537,6 +541,44 @@ test('triage rollout requeues into the release factory; decision defers at plan;
   expect(walk(lifecycle, ['decision'], 'implement').visited).toEqual(['implement', 'done'])
   expect(walk(lifecycle, ['build']).visited).toEqual(['triage', 'plan'])
   expect(walk(lifecycle, ['reject']).snapshot.context.log.at(-1)).toMatchObject({ outcome: 'reject' })
+})
+
+test('only implement, verify and security split to codex, and the exec tier never gets the security model', () => {
+  const lc = lifecycle as Factory
+  const split = Object.entries(lc.nodes)
+    .filter(([, n]) => n.split)
+    .map(([id, n]) => [id, n.split!.share, n.split!.agent])
+  expect(split).toEqual([
+    ['implement', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['verify', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['security', 'codex_security_share', "{codex} -m '{codex_security_model}'"],
+  ])
+  for (const id of ['plan', 'review', 'check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
+  expect(lc.params!.codex_share).toBe('0.3')
+  expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
+  validate(lifecycle as Factory)
+})
+
+test('every station model id of every factory resolves to a known id', async () => {
+  const lc = lifecycle as Factory
+  const known = [
+    'claude-sonnet-5-5[1m]',
+    'claude-opus-5-5[1m]',
+    'claude-fable-5-1',
+    'gpt-6.1-sol',
+    'gpt-6-astra',
+  ]
+  const rework = await loadFactory(join(import.meta.dir, 'rework.yaml'))
+  for (const def of [lifecycle, ship, release, sweeps, rework] as Factory[]) {
+    for (const node of Object.values(def.nodes)) {
+      for (const cmd of [node.agent ?? def.agent, node.split?.agent]) {
+        if (!cmd) continue
+        expect(known).toContain(modelOf(fill(cmd, def.params ?? {}))!)
+      }
+    }
+  }
+  expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
+  expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
 })
 
 test('review, security and check prompts hold the out-of-diff rule (claude-factory-nwlh.4)', () => {

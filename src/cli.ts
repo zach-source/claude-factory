@@ -39,6 +39,7 @@ import {
   parkDelayMin,
   prsIn,
   reach,
+  shareOk,
   shouldHandToOwner,
   timeoutOf,
   unread,
@@ -96,7 +97,19 @@ import {
   type SweepState,
 } from './sweeps'
 import * as gatebrief from './gatebrief'
-import { claudeCommand, command, harnessOf, readMcp, sq, writeLaunch } from './harness'
+import {
+  CODEX_GUARD_FLAGS,
+  CODEX_UNGUARDED,
+  claudeCommand,
+  codexFeaturesBad,
+  command,
+  cutOffCall,
+  cutOffNote,
+  harnessOf,
+  readMcp,
+  sq,
+  writeLaunch,
+} from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
 import { REPAIR_CAP, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
@@ -132,10 +145,13 @@ import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerIn
 import {
   createdAt,
   fate,
+  launchStats,
   metrics,
+  parseLaunchLines,
   parsePrecheckLines,
   precheckStats,
   render,
+  renderLaunches,
   renderTokens,
   sessionOf,
   type RunRecord,
@@ -166,6 +182,14 @@ import {
   type PrState,
   type RunMeta,
 } from './prs'
+import {
+  digestLines,
+  findHygiene,
+  hygieneHeld,
+  proposalComment,
+  RECENT_COMMENT_MS,
+  STALE_LABEL,
+} from './hygiene'
 import {
   nextSyncEntry,
   runBounded,
@@ -1150,7 +1174,9 @@ function tracking(run: Run, node: string) {
 }
 
 const resumeNote = (run: Run, node: string, c: Ctx) =>
-  `[factory] Your pane closed and this session was resumed. Carry on as the "${node}" station where you left off: ` +
+  `[factory] Your pane closed and this session was resumed.` +
+  cutOffNote(c.session ? cutOffCall(tailOf(run.worktree, c.session)) : undefined) +
+  ` Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
 
 /** where a station's workers run: the station's own runner, else the rig's */
@@ -1206,6 +1232,19 @@ function reviveWorktree(run: Run) {
   )
 }
 
+/** one line a launch in HOME/launches.jsonl, for `factory metrics`: a write error never blocks the launch */
+function logLaunch(run: Run, node: string, seq: number, agent: string, resume: boolean) {
+  try {
+    const rig = rigOf(run.repo)?.name
+    const harness = harnessOf(agent) ?? 'other'
+    const model = ax.modelOf(agent) ?? 'default'
+    const line = { at: Date.now(), run: run.id, rig, node, seq, harness, model, resume }
+    appendFileSync(join(HOME, 'launches.jsonl'), `${JSON.stringify(line)}\n`)
+  } catch {
+    // best effort: see above
+  }
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
@@ -1217,6 +1256,7 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, full())
   }
+  logLaunch(run, node, c.seq, agentOfNode(run, def, node), !!session)
   return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
 }
 
@@ -1249,7 +1289,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  typeLaunch(pane, launch(run, def, node, file, session))
+  typeLaunch(pane, launch(run, def, node, c, file, session))
   return pane
 }
 
@@ -1260,11 +1300,22 @@ export { httpsRemote }
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
  * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
  */
-/** the VM has no codex guard yet: no deny hook, so no codex worker there (claude-factory-72dq) */
+/**
+ * Only an image with the VM codex guard (claude-factory-72dq) may run codex. An older worker ignores the guard files,
+ * and its codex would run with no deny hook. So the person sets FACTORY_AX_CODEX=1 with FACTORY_AX_IMAGE.
+ */
+export const axCodex = (env = process.env) => env.FACTORY_AX_CODEX === '1'
 export function axCodexRefused(agent: string) {
-  if (harnessOf(agent) === 'codex')
-    fail(`the ax runner does not run codex workers yet: they would have no deny hook (claude-factory-72dq)`)
+  if (harnessOf(agent) === 'codex' && !axCodex())
+    fail(
+      'the ax runner runs codex only with FACTORY_AX_CODEX=1: set it with an image that has the codex guard',
+    )
 }
+/** a codex worker in a VM calls the OpenAI API: its policy opens api.openai.com with the vault key OPENAI, unless the rig already names that host */
+export const codexEgress = (egress: Egress[] = []) =>
+  egress.some(e => e.hosts.includes('api.openai.com'))
+    ? egress
+    : [...egress, { hosts: ['api.openai.com'], key: 'OPENAI' }]
 
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
@@ -1274,8 +1325,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
-  if (!harness) fail(`the ax runner runs claude or pi workers, not "${agent}"`)
+  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   axCodexRefused(agent)
+  const egress = harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1342,17 +1394,22 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     provider: ax.providerOf(agent),
     claudeFlags:
       harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
+    codexHome:
+      harness === 'codex' ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
     gitlabHost,
     env: {
       ...env,
       ...rig?.env,
       FACTORY_FROM: node,
+      ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
       FACTORY_HOME: `${ax.OWN}/home`,
       // each agent's config and sessions on the workspace volume, so a session survives a suspend
       CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
       CODEX_HOME: `${ax.OWN}/codex`,
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
+      // the deny hook finds the worktree root here; Claude sets it for itself, codex does not
+      ...(harness === 'codex' && { CLAUDE_PROJECT_DIR: ax.REPO }),
       ...(hasRunBeads && { FACTORY_BEADS: '1' }),
       ...(hasRunBeads &&
         rig?.beadsRemote && {
@@ -1364,10 +1421,10 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const side: TaskSide = {
     node,
     seq: c.seq,
-    egress: rig?.egress,
+    egress,
     ...(gitlabHost && { gitlabHost }),
     ...(githubOwner && { githubOwner }),
-    policy: ax.createPolicy(name, rig?.egress, gitlabHost, githubOwner),
+    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -1435,6 +1492,21 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
   ]
 }
 
+/**
+ * A codex worker's CODEX_HOME files in the VM, the ones a pane gets from codexWorker. hooks.json runs the deny hook
+ * from the image's own worker-hook.ts. config.toml sets the compaction limit and trusts the repo. `serve` writes
+ * them, adds AGENTS.md from the image's worker rules and checks the guard before the first turn (claude-factory-72dq).
+ */
+export function vmCodexHome(def: Pick<Factory, 'maxContextK'>, contexts?: string[], branches?: string[]) {
+  const hook = denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches)
+  return {
+    'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
+    'config.toml':
+      `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
+      `[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
+  }
+}
+
 /** the note a resumed worker is sent, written where its launch reads it */
 function resumeFile(run: Run, node: string, c: Ctx) {
   const file = promptOf(run, node, c).replace(/\.md$/, '-resume.md')
@@ -1451,11 +1523,35 @@ export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>
       rig?.params?.[k] ?? (env[`FACTORY_${k.toUpperCase()}`]?.trim() || v),
     ]),
   )
-/** the worker command: the rig's own (one harness for all its stations) over the station's and the factory's */
-const agentOfNode = (run: Run, def: Factory, node: string) => {
-  const rig = rigOf(run.repo)
-  return fill(rig?.agent ?? def.nodes[node]!.agent ?? def.agent ?? AGENT, paramsOf(def, rig))
+/**
+ * Does this run take the split agent? The pick hashes the run id and the share's name, so one run picks the
+ * same way every time, and two share params pick on their own. A bad share value (not a number from 0 to 1) is 0.
+ */
+export function splitPick(runId: string, shareName: string, share: string | undefined) {
+  if (share === undefined || !shareOk(share)) return false
+  const h = createHash('sha256').update(`${runId}:${shareName}`).digest().readUInt32BE(0)
+  return h / 2 ** 32 < Number(share)
 }
+/**
+ * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
+ * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex).
+ */
+export const pickAgent = (
+  runId: string,
+  def: Factory,
+  node: string,
+  rig: Pick<Rig, 'agent' | 'params'> | undefined,
+  runner: string,
+  env = process.env,
+) => {
+  const params = paramsOf(def, rig, env)
+  const split = def.nodes[node]!.split
+  const picked =
+    split && (runner !== 'ax' || axCodex(env)) && splitPick(runId, split.share, params[split.share])
+  return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
+}
+const agentOfNode = (run: Run, def: Factory, node: string) =>
+  pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 /** the context of the last turn in a Claude transcript's tail, in tokens; 0 when it has none */
 export function lastContext(tail: string) {
@@ -1775,12 +1871,8 @@ export function workerFlags(
   return ` --tools ${WORKER_TOOLS} --setting-sources project,local --settings ${sq(file)} --system-prompt-file ${sq(prompt)}`
 }
 
-// codex features the guard needs off: each one lets a command run with no PreToolUse hook (claude-factory-x0b9)
-const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
 // codex_hooks is the legacy alias of hooks: turning it off turns the hooks off
 const CODEX_HOOKS = ['hooks', 'codex_hooks']
-// 0.160.1 ignores --disable unified_exec (features list keeps it true), so the launch probe cannot check it
-const CODEX_PROBED = CODEX_UNGUARDED.filter(f => f !== 'unified_exec')
 
 /** the reason a codex agent command turns a guard part off, or undefined */
 function codexGuardOff(agent: string): string | undefined {
@@ -1860,10 +1952,7 @@ export function codexWorker(
   const link = join(dir, 'auth.json')
   rmSync(link, { force: true })
   if (existsSync(auth)) symlinkSync(auth, link)
-  const extra =
-    ' --enable hooks --dangerously-bypass-hook-trust' +
-    CODEX_UNGUARDED.map(f => ` --disable ${f}`).join('') +
-    ' --disable apps --disable memories'
+  const extra = ` ${CODEX_GUARD_FLAGS.join(' ')}`
   // ask codex what is on with these flags and this home: fail closed on a guard that is not in force
   // the shell splits the agent words as the pane does, so the probe sees the same exe and flags
   const probe = Bun.spawnSync(['sh', '-c', `${agent}${extra} features list`], {
@@ -1872,18 +1961,11 @@ export function codexWorker(
     timeout: o.timeoutMs ?? 10_000,
     killSignal: 'SIGKILL',
   })
-  const on = new Map<string, string>()
-  for (const l of probe.stdout.toString().split('\n')) {
-    const c = l.trim().split(/\s+/)
-    if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
-  }
   const bad = probe.exitedDueToTimeout
     ? 'codex features list timed out'
     : probe.exitCode !== 0
       ? 'codex features list failed'
-      : on.get('hooks') !== 'true'
-        ? 'hooks is not on'
-        : CODEX_PROBED.find(f => on.get(f) !== 'false')
+      : codexFeaturesBad(probe.stdout.toString())
   if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
   return {
     env: { CODEX_HOME: dir, CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
@@ -1891,11 +1973,21 @@ export function codexWorker(
   }
 }
 
-function launch(run: Run, def: Factory, node: string, prompt: string, session?: string) {
+/**
+ * when the station fails a worker that is still working (`deadline`: 1.5x its minutes from launch), in ms. The deny
+ * hook clamps a Bash call's timeout to it, so a command ends before the run fails (claude-factory-p0yt)
+ */
+const deadlineOf = (def: Factory, node: string, c: Ctx) =>
+  String(Date.now() + timeoutOf(def.nodes[node]!, c, node) * 90_000)
+
+function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
+  // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const setup =
-    harnessOf(agent) === 'codex' ? codexWorker(run, def, node, agent, rig) : { extra: workerFlags(def, rig) }
+    harnessOf(agent) === 'codex'
+      ? codexWorker(run, def, node, agent, rig)
+      : { extra: workerFlags(def, rig), env: { FACTORY_DEADLINE: deadlineOf(def, node, c) } }
   return command(agent, prompt, {
     session,
     ...setup,
@@ -1921,7 +2013,7 @@ const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill,Agen
 export const managerCommand = (extra: string[] = []) => [
   'claude',
   '--model',
-  'opus', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
+  'claude-opus-5-5', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
   // the person's own default mode (auto) refuses the production reads a patrol needs
   ...['--permission-mode', 'bypassPermissions'],
   '--strict-mcp-config', // and no --mcp-config: no MCP servers
@@ -2148,7 +2240,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return status
     }
     herdr('pane', 'send-keys', c.pane, 'ctrl+u')
-    typeLaunch(c.pane, launch(run, def, node, resumeFile(run, node, c), c.session))
+    typeLaunch(c.pane, launch(run, def, node, c, resumeFile(run, node, c), c.session))
     send({ type: 'SPAWNED', seq: c.seq, pane: c.pane, isResume: true })
     return 'resuming'
   }
@@ -2165,7 +2257,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (step === 'enter') herdr('pane', 'send-keys', c.pane, 'Enter')
     if (step === 'retype') {
       herdr('pane', 'send-keys', c.pane, 'ctrl+u') // whatever is left on the line
-      typeLaunch(c.pane, launch(run, def, node, promptOf(run, node, c)))
+      typeLaunch(c.pane, launch(run, def, node, c, promptOf(run, node, c)))
     }
     if (step) send({ type: 'NUDGED', seq: c.seq })
     return step ? 'relaunching' : 'starting'
@@ -4123,10 +4215,116 @@ type SweepLogEntry = {
   at: number
   rig: string
   sweep: string
-  action: 'started' | 'no-room' | 'unchanged' | 'error' | 'no-beads' | 'green' | 'tracked' | 'quiet'
+  action:
+    | 'started'
+    | 'no-room'
+    | 'unchanged'
+    | 'error'
+    | 'no-beads'
+    | 'hygiene'
+    | 'off'
+    | 'green'
+    | 'tracked'
+    | 'quiet'
   run?: string
+  proposed?: number
+  kinds?: Record<string, number>
+  digest?: string
+  ghError?: string
 }
 const logSweep = (e: SweepLogEntry) => appendFileSync(sweepLogFile(), JSON.stringify(e) + '\n')
+
+/**
+ * claude-factory-8bg: one hygiene pass for a rig (src/hygiene.ts). With `write` false it only reads
+ * and returns what it would propose. It never closes, defers or reopens a bead. A bead gets the
+ * `hygiene_proposed` stamp first, so a crash between writes cannot propose it twice.
+ */
+async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: Gh = spawnGh) {
+  const b = beads(rig.repo, 'factory/hygiene')
+  const now = Date.now()
+  let prs: MergedPr[] = []
+  let ghError: string | undefined
+  if (originRef(rig.repo)?.forge !== 'github') ghError = 'not a GitHub repo: shipped kind skipped'
+  else {
+    try {
+      const r = await gh(
+        [
+          'pr',
+          'list',
+          '--state',
+          'merged',
+          '-L',
+          '500',
+          '--json',
+          'number,url,title,headRefName,mergeCommit',
+        ],
+        { cwd: rig.repo, timeout: 30_000 },
+      )
+      if (r.code !== 0) throw new Error('gh pr list failed')
+      prs = parseMergedPrs(r.out)
+    } catch {
+      ghError = 'gh failed: shipped kind skipped' // never the raw gh text
+    }
+  }
+  const runBranches = (id: string) =>
+    runIds()
+      .filter(r => {
+        try {
+          return loadRun(r).bead === id
+        } catch {
+          return false
+        }
+      })
+      .map(r => `factory/${r}`)
+  const findings = findHygiene(
+    b.every(),
+    prs,
+    now,
+    id => {
+      try {
+        return b.comments(id).some(c => now - Date.parse(c.created_at) < RECENT_COMMENT_MS)
+      } catch {
+        return true // unreadable comments: leave the bead alone this pass
+      }
+    },
+    undefined,
+    runBranches,
+  )
+  const out: { findings: typeof findings; proposed: typeof findings; ghError?: string; digest?: string } = {
+    findings,
+    proposed: [],
+    ghError,
+  }
+  if (!write) return out
+  const day = new Date(now).toISOString().slice(0, 10)
+  for (const f of findings) {
+    try {
+      b.setMetadata(f.id, { hygiene_proposed: `${f.kind}@${new Date(now).toISOString()}` })
+      b.relabel(f.id, { add: [STALE_LABEL] })
+      b.comment(f.id, proposalComment(f))
+      out.proposed.push(f)
+    } catch (err) {
+      console.error(`${new Date().toISOString()} hygiene ${rig.name} ${f.id}: ${(err as Error).message}`)
+    }
+  }
+  if (out.proposed.length) {
+    try {
+      const id = b.createUnlabeled(
+        `hygiene digest ${day}: ${out.proposed.length} proposed closes`,
+        digestLines(out.proposed),
+        { hygiene_digest: day },
+        '-t',
+        'task',
+        '-p',
+        '3',
+      )
+      out.digest = id
+    } catch (err) {
+      console.error(`${new Date().toISOString()} hygiene ${rig.name} digest: ${(err as Error).message}`)
+    }
+  }
+  return out
+}
 
 /** Runs a rig's `--slo` command (claude-factory-8pc.6): the monitor sweep's read, on the laptop, not
  * on a worker. It is a shell command (`sh -c`), since a person writes it in rigs.json and it may
@@ -4293,6 +4491,34 @@ async function sweep() {
     }
     for (const station of due) {
       const at = Date.now()
+      // claude-factory-8bg: hygiene is code, not a run. lastAt lands first, so a crash cannot double a pass.
+      if (station === 'hygiene') {
+        state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at } } }
+        writeJson(sweepStateFile(), state)
+        if (process.env.FACTORY_HYGIENE === '0') {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'off' })
+          continue
+        }
+        try {
+          const r = await hygienePass(rig, true)
+          const kinds: Record<string, number> = {}
+          for (const f of r.proposed) kinds[f.kind] = (kinds[f.kind] ?? 0) + 1
+          logSweep({
+            at,
+            rig: rig.name,
+            sweep: station,
+            action: 'hygiene',
+            proposed: r.proposed.length,
+            kinds,
+            digest: r.digest,
+            ghError: r.ghError,
+          })
+        } catch (err) {
+          logSweep({ at, rig: rig.name, sweep: station, action: 'error' })
+          console.error(`${new Date().toISOString()} hygiene for rig ${rig.name}: ${(err as Error).message}`)
+        }
+        continue
+      }
       const goal = sweepGoal(station)
       // monitor reads before it ever asks for a slot: unchanged needs no run, so it must cost no
       // room, and a changed read still needs its mail even when no room is free yet (it waits)
@@ -4785,14 +5011,16 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk = false } = {}) {
   if (!hasBeads(repo)) return { goal }
   const b = beads(repo, 'factory')
-  const trimmed = goal.trim()
-  const looksLikeId = /^[a-z][\w-]*-[\w.]+$/i.test(trimmed)
+  // a bare id, or the id in front of '<id>: <title>': goalOf writes every run's goal that way, so a goal
+  // copied from a run or `factory status` names its bead too (claude-factory-vad1)
+  const id = /^([a-z][\w-]*-[\w.]+)(:\s.*)?$/is.exec(goal.trim())?.[1] ?? ''
+  const looksLikeId = !!id
   let named: Bead | null = null
   if (looksLikeId) {
     try {
-      named = b.lookup(trimmed)
+      named = b.lookup(id)
     } catch (err) {
-      fail(`could not look up bead ${trimmed} in ${repo}: ${(err as Error).message}; nothing was created`)
+      fail(`could not look up bead ${id} in ${repo}: ${(err as Error).message}; nothing was created`)
     }
     // not found: a goal shaped like this rig's own bead ids must never become a new bead titled with the
     // id text itself (claude-factory-5q3) -- a lookup failure above already failed the start; this is a
@@ -4802,10 +5030,10 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
       try {
         prefix = b.prefixStrict()
       } catch (err) {
-        fail(`could not look up bead ${trimmed} in ${repo}: ${(err as Error).message}; nothing was created`)
+        fail(`could not look up bead ${id} in ${repo}: ${(err as Error).message}; nothing was created`)
       }
-      if (trimmed.toLowerCase().startsWith(`${prefix.toLowerCase()}-`))
-        fail(`no bead ${trimmed} in ${repo}; nothing was created`)
+      if (id.toLowerCase().startsWith(`${prefix.toLowerCase()}-`))
+        fail(`no bead ${id} in ${repo}; nothing was created`)
     }
   }
   if (named) {
@@ -5577,11 +5805,13 @@ async function dispatch() {
         const why =
           isOwned(x) || x.labels?.includes(OWNER) || (open.length && open.every(isWaitingOnPerson))
             ? 'owner decisions pending'
-            : open.length
-              ? 'open children'
-              : linearIds.has(x.id)
-                ? 'Linear id unconfirmed'
-                : ''
+            : hygieneHeld(x)
+              ? 'hygiene proposed close (factory queue releases it)'
+              : open.length
+                ? 'open children'
+                : linearIds.has(x.id)
+                  ? 'Linear id unconfirmed'
+                  : ''
         if (why) skips.set(x.id, why)
         return !why
       })
@@ -6231,7 +6461,8 @@ async function liveByBead() {
 const repairsFile = () => join(HOME, 'repairs.jsonl')
 
 /**
- * Closes or defers beads whose work is plainly done or dead (`repairs` in src/repairs.ts decides).
+ * Closes or defers beads whose work is plainly done or dead, and releases claims that no live run
+ * holds (`repairs` in src/repairs.ts decides).
  * It makes at most REPAIR_CAP changes in a rig in one pass. Each change goes to repairs.jsonl,
  * which `factory digest` reads. The beads pass calls it.
  */
@@ -6246,7 +6477,17 @@ async function repairPass() {
       const b = beads(rig.repo, 'factory')
       const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
       for (const r of todo) {
-        if (r.kind === 'close' ? !b.close(r.id, r.reason) : !b.unship(r.id, r.reason)) continue
+        const done =
+          r.kind === 'close'
+            ? b.close(r.id, r.reason)
+            : r.kind === 'release'
+              ? b.releaseStale(r.id, r.reason)
+              : r.kind === 'reship'
+                ? b.reship(r.id, r.reason)
+                : r.kind === 'unship'
+                  ? b.unship(r.id, r.reason)
+                  : false
+        if (!done) continue
         const at = new Date().toISOString()
         appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')
         console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
@@ -6697,7 +6938,7 @@ async function defineRig(
   if (remote && mcp !== undefined)
     fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${rig.runner} runner is claude or pi (not "${agent}")`)
+    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
   if (remote && agent !== undefined) axCodexRefused(agent)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
@@ -7897,12 +8138,19 @@ if (import.meta.main && !outboxCmd)
         const precheckAll = existsSync(precheckFile())
           ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
           : []
+        const launchFile = join(HOME, 'launches.jsonl')
+        const launches = existsSync(launchFile)
+          ? parseLaunchLines(readFileSync(launchFile, 'utf8')).filter(
+              l => l.at >= since_ && (!rig || l.rig === rig),
+            )
+          : []
         const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
         if (args.includes('--json'))
           console.log(
             JSON.stringify({
               all: metrics(picked),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
+              launches,
               rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
             }),
           )
@@ -7915,6 +8163,8 @@ if (import.meta.main && !outboxCmd)
             ),
           )
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
+          if (launches.length)
+            console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
         }
         if (args.includes('--tokens')) {
           const live = picked.filter(r => runIds().includes(r.id))
@@ -8005,6 +8255,13 @@ if (import.meta.main && !outboxCmd)
         console.log(
           `queued ${id}${station ? ` at ${station}` : ''}: ${rigOf(root) ? 'it starts at the next dispatch' : 'make the repo a rig (factory rig add) for it to start'}`,
         )
+        break
+      }
+      case 'hygiene': {
+        if (!args[0]) fail('usage: factory hygiene <rig|repo>')
+        const repo = repoOf(args[0]!)
+        const r = await hygienePass({ name: rigOf(repo)?.name ?? args[0]!, repo }, false)
+        console.log(JSON.stringify({ findings: r.findings, ghError: r.ghError }, null, 2))
         break
       }
       case 'ship': {
