@@ -40,7 +40,7 @@ export function taskName(run: string, seq: number) {
 /** where the image keeps the factory (Dockerfile.worker), and with it the workers' system prompt */
 export const FACTORY_DIR = '/opt/factory'
 
-/** the station's model, read from its agent command (`--model 'claude-sonnet-5[1m]'`, codex's `-m o3`) */
+/** the station's model, read from its agent command (`--model 'claude-sonnet-5-5[1m]'`, codex's `-m o3`) */
 export const modelOf = (agent: string) => agent.match(/(?:^|\s)(?:--model|-m)[\s=]+'?([^'\s]+)'?/)?.[1]
 /** pi's provider, read from its agent command (`--provider anthropic`); pi defaults to google */
 export const providerOf = (agent: string) => agent.match(/(?:^|\s)--provider[\s=]+'?([^'\s]+)'?/)?.[1]
@@ -96,6 +96,8 @@ export type Launch = {
   provider?: string
   /** Claude's flags for a worker: tools, settings, system prompt (what workerFlags gives a pane's Claude) */
   claudeFlags?: string[]
+  /** a codex worker's CODEX_HOME files by name (cli.ts vmCodexHome); serve writes them before the first turn */
+  codexHome?: Record<string, string>
   env: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
@@ -130,6 +132,7 @@ export function manifest(l: Launch) {
           FACTORY_HARNESS: l.harness ?? 'claude',
           ...(l.provider && { FACTORY_PROVIDER: l.provider }),
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+          ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
         }),
       }).map(([name, value]) => ({
         name,

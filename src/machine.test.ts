@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
 import {
   acIdsIn,
@@ -11,6 +11,7 @@ import {
   isPrWait,
   mrsIn,
   parkDelayMin,
+  shouldHandToOwner,
   prevReport,
   prsIn,
   reach,
@@ -1059,4 +1060,64 @@ test('REPARK never moves wakeAt earlier, and ignores another node', () => {
   expect(s.context.wakeAt).toBe(old)
   s = send({ type: 'REPARK', node: 'release', wakeAt: old + 5, at: 2000 })
   expect(s.context.wakeAt).toBe(old)
+})
+
+describe('shouldHandToOwner', () => {
+  const H = 3_600_000
+  const blocked = (at: number, summary = 'waiting on a vendor', attempt = 1) => ({
+    node: 'deploy',
+    attempt,
+    outcome: 'blocked',
+    summary,
+    at,
+  })
+  test('two blocked passes in the first day stay with the factory', () => {
+    expect(shouldHandToOwner([blocked(0), blocked(H)], 2 * H)).toBe(false)
+  })
+  test('three blocked passes in a row hand the bead over', () => {
+    expect(shouldHandToOwner([blocked(0), blocked(H), blocked(2 * H)], 3 * H)).toBe(true)
+  })
+  test('a streak older than 24h hands the bead over', () => {
+    expect(shouldHandToOwner([blocked(0)], 25 * H)).toBe(true)
+    expect(shouldHandToOwner([blocked(0)], 23 * H)).toBe(false)
+  })
+  test('an owner step in the report hands the bead over at once', () => {
+    expect(shouldHandToOwner([blocked(0, 'owner step: rotate the key')], H)).toBe(true)
+  })
+  test('PR waits do not count', () => {
+    const pr = (at: number) => blocked(at, 'no worker yet: waiting for a PR', 0)
+    expect(shouldHandToOwner([pr(0), pr(H), pr(2 * H), blocked(3 * H)], 10 * H)).toBe(false)
+    expect(shouldHandToOwner([blocked(0), pr(H), blocked(2 * H), pr(3 * H)], 4 * H)).toBe(false)
+  })
+  test('a non-blocked outcome resets the streak', () => {
+    const fail = { node: 'deploy', attempt: 1, outcome: 'fail', summary: 'x', at: 2 * H }
+    expect(shouldHandToOwner([blocked(0), blocked(H), fail, blocked(3 * H)], 4 * H)).toBe(false)
+  })
+  test('a streak at another station does not count', () => {
+    const other = { ...blocked(H), node: 'plan' }
+    expect(shouldHandToOwner([blocked(0), blocked(0), other], 2 * H)).toBe(false)
+  })
+})
+
+test('validate checks a node split: its agent params, its share param and its default', () => {
+  const mk =
+    (split: object, params: Record<string, string> = {}, gate = false) =>
+    () =>
+      validate({
+        name: 'x',
+        start: 'a',
+        params: { codex: 'codex', codex_share: '0.3', ...params },
+        nodes: {
+          a: { prompt: '', next: { ok: 'done' }, ...(gate ? { gate: true } : {}), split: split as never },
+        },
+      })
+  const ok = { agent: '{codex}', share: 'codex_share' }
+  expect(mk(ok)).not.toThrow()
+  expect(mk({ ...ok, agent: '{ghost}' })).toThrow('{ghost}')
+  expect(mk({ ...ok, share: 'nope' })).toThrow('split share "nope" is not a param')
+  for (const bad of ['abc', '', '-1', '2', 'NaN', 'Infinity'])
+    expect(mk(ok, { codex_share: bad })).toThrow('between 0 and 1')
+  expect(mk(ok, { codex_share: '0' })).not.toThrow()
+  expect(mk(ok, { codex_share: '1' })).not.toThrow()
+  expect(mk(ok, {}, true)).toThrow('a gate has no worker, so no split')
 })

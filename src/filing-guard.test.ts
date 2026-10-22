@@ -77,6 +77,13 @@ test('a bead with no created_at counts as now: scored, and it can be the 7th', (
   expect(v.at(-1)?.kept).toBe(false)
 })
 
+test('a bead with an unparseable created_at counts as now and can be the 7th', () => {
+  const beads = [...many(6, i => ({ id: `b${i}` })), bead('z', { created_at: 'garbage' })]
+  const v = filingGuard(beads, now)
+  expect(v.at(-1)?.id).toBe('z')
+  expect(v.at(-1)?.kept).toBe(false)
+})
+
 test('a closed bead gets a verdict and uses a slot', () => {
   const v = filingGuard([bead('b0', { status: 'closed' }), ...many(6, i => ({ id: `b${i + 1}` }))], now)
   expect(v.find(x => x.id === 'b0')?.kept).toBe(true)

@@ -927,8 +927,8 @@ test('rig add --egress and --agent are for a runner that can take them', () => {
   expect(add('--egress', 'api.openai.com=OPENAI').err).toContain('add --runner ax')
   expect(add('--runner', 'ax', '--egress', 'https://x.com').err).toContain('not a hostname')
   expect(add('--runner', 'ax', '--egress', 'api.openai.com=openai').err).toContain('SCREAMING_SNAKE_CASE')
-  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude or pi')
-  expect(add('--runner', 'ax', '--agent', 'codex -m o3').err).toContain('claude-factory-72dq')
+  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude, codex or pi')
+  expect(add('--runner', 'ax', '--agent', 'codex -m o3').err).toContain('FACTORY_AX_CODEX=1')
   expect(add('--runner', 'ax', '--mcp', join(dir, 'mcp.json')).err).toContain('--mcp does not reach')
   const ok = add(
     ...['--runner', 'ax', '--agent', 'pi', '--egress', 'api.openai.com=OPENAI'],

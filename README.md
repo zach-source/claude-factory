@@ -241,6 +241,16 @@ fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). Th
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
 
+A rig starts only beads with the `factory` label. To keep a rig busy from its unlabeled ready
+beads, set `autoQueue` in `rigs.json`, for example `"autoQueue": { "minPriority": 2, "perHour": 3 }`.
+When the rig has room and no labeled bead to start, dispatch takes up to `perHour` beads in a
+rolling hour. It takes only leaf beads (no parent, no open child, not an epic) with no assignee, a
+priority of `minPriority` or higher urgency (0 is the highest), and no `rejected`, `owner`,
+`human` or `ship` label. It skips beads that a sweep filed and beads the flood guard holds. The
+best come first: priority, then oldest. Each pick gets the labels `factory` and `auto-queued`, and
+starts as a normal run. The picks of the last hour are in `auto-queue.json`. Without `autoQueue`
+the rig works as before.
+
 A rig can name kube contexts that only a person can change. Use `--person-only-context` to
 add one. Repeat the flag to add more contexts.
 
@@ -605,6 +615,15 @@ can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise 
 The default worker and the dream start from `FACTORY_CLAUDE` too, and its executable is treated
 as Claude.
 
+Lifecycle sends a share of runs to Codex. Two share params set it: `codex_share` for `implement` and
+`verify` (default `0.3`), and `codex_security_share` for `security` (default `0.3`). A hash of the run id
+picks the harness, so one run keeps its harness at every station and attempt. Two params set the
+Codex models: `codex_exec_model` (default `gpt-6.1-sol`) and `codex_security_model` (default
+`gpt-6-astra`). Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
+that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent`, and every
+station on the `ax` runner, never gets Codex. `factory metrics` shows the launches for each station by
+harness and model.
+
 ```sh
 factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-and-sandbox"
 factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none
@@ -653,8 +672,11 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 | Sweep    | Cadence       | What it needs                         |
 | -------- | ------------- | -------------------------------------- |
 | monitor  | every 30 min  | a rig's `--slo '<read-only command>'` |
+| ci       | every 2 h     | `gh` logged in on the laptop; a model runs only when main CI is red |
+| flakes   | weekly        | `gh` logged in on the laptop; a model runs only when a test flaked |
 | maintain | daily         | nothing extra                          |
 | improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
+| hygiene  | daily, in code (no model, no run); proposes closes, never closes | nothing extra |
 
 `factory tick` starts one run per due `(rig, sweep)` pass, at most every `FACTORY_SWEEP_MS`
 (default 300000ms); `FACTORY_SWEEPS=0` turns this off. Each pass goes straight to `done`: it
@@ -664,13 +686,37 @@ laptop (never on a VM worker), hashes its output, and starts a run only when the
 since the last pass; the unchanged output never reaches a model. Start a pass by hand with
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
-**Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
-`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A later bead
+`ci` and `flakes` read GitHub Actions on the laptop with `gh`. They start no run unless they find
+new work. `ci` lists the default branch's runs. Each workflow with a red newest run gets the key
+`ci-red:<workflow id>-<first failing SHA, 7 characters>`. If every key is a label on an open bead,
+nothing starts. If not, one run files ONE P1 bead with the labels `factory`, `station:plan` and
+`sweep-queue:main-ci-red`.
+
+`flakes` reads up to 1000 runs of the default branch from the past 7 days. A run is flaky when the same SHA passed
+and failed, or passed on a re-run. The factory reads the failed logs of at most 10 flaky runs.
+It keeps only test ids of 1 to 200 printable ASCII characters. A test that failed in 2 or more
+flaky runs gets one bead, `quarantine + fix flaky test: <id>`, with the label `flake:<12 hex>`.
+A pass files at most 3. A test that failed in 3 or more runs also gets `factory`, `station:plan`
+and `sweep-queue:flaky-test`. Each pass writes one line to `sweeps.jsonl`. The `action` is
+`green`, `tracked` (`ci`), `quiet` (`flakes`), `started` or `error`. `error` means a `gh` or `bd`
+call failed: no run starts, and the next pass waits for the cadence.
+
+**Flood guard**: the guard finds a sweep-filed bead by who filed it (the `created_by` field),
+not by a label. A worker cannot dodge the cap by setting a label. Dispatch adds the label
+`sweep:<name>` (for example `sweep:maintain`) after it scores the bead. The guard never reads
+that label. Each rig keeps at most 5 such beads in any 24-hour window. A later bead
 that day still gets filed, but it waits for a person instead of starting on its own. A kept
 bead keeps the `factory` label, and starts on its own, only when it also carries
-`sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every
-other kept bead loses the `factory` label too and waits for a person, the same as a later
-bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
+`sweep-queue:incident`, `sweep-queue:main-ci-red`, `sweep-queue:critical-advisory` or
+`sweep-queue:flaky-test`. Every other kept bead loses the `factory` label too and waits for a person, the same as a later
+bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label. This is the only use of that label.
+
+**Hygiene**: the `hygiene` sweep runs in code once a day for each rig. It starts no run. It finds
+open beads that a merged PR already shipped, duplicates, orphans, deferred beads with no owner and
+stale beads. It adds the label `stale?` and the comment `proposed close: <kind>: <evidence>` to
+each, and files one digest bead. It never closes a bead. `factory hygiene <rig>` prints what a pass
+would propose and writes nothing. `FACTORY_HYGIENE=0` turns the pass off. See
+[Hygiene sweep](docs/beads.md#hygiene-sweep).
 
 A pinned run from before this design (`claude-factory-8pc`) still loads its own copy of the
 sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
