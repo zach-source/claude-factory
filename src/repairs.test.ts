@@ -40,6 +40,16 @@ describe('repairs', () => {
     expect(run([bead('e-1'), bead('e-1.1', { parent: 'e-1' })])).toEqual([])
   })
 
+  test('a ship-queued epic with closed children is not closed as "every child is closed"', () => {
+    const kid = bead('e-2.1', { parent: 'e-2', status: 'closed' })
+    const queued = (n: number, state: string) =>
+      bead('e-2', { labels: ['ship'], metadata: { ship_pr: pr(n, state).url } })
+    expect(run([queued(9, 'OPEN'), kid], [pr(9, 'OPEN', { isDraft: true })])).toEqual([])
+    expect(run([queued(9, 'MERGED'), kid], [pr(9, 'MERGED')])).toEqual([
+      { kind: 'close', id: 'e-2', reason: 'shipped: https://github.com/o/r/pull/9 is merged' },
+    ])
+  })
+
   test('closes a rejected bead that says done and cites a merged PR or a commit', () => {
     const rej = (reason: string) => bead('r-1', { labels: ['rejected'], metadata: { reject_reason: reason } })
     expect(run([rej('already fixed in #9')], [pr(9, 'MERGED')])[0]?.reason).toContain('pull/9')
