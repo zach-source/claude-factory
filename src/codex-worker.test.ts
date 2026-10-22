@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axCodexRefused, codexWorker } from './cli'
+import { axCodexRefused, codexEgress, codexWorker, vmCodexHome } from './cli'
 import { command } from './harness'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
@@ -35,24 +35,26 @@ function fixture(maxContextK = 200) {
     'hooks stable true\nunified_exec stable true\n' +
       ['shell_snapshot', 'multi_agent', 'code_mode'].map(x => `${x} stable false\n`).join(''),
   )
-  writeFileSync(codexBin, `#!/bin/sh\ncat '${features}'\n`, { mode: 0o755 })
+  const fake = (body: string) => writeFileSync(codexBin, `#!/bin/sh\n${body}`, { mode: 0o755 })
+  fake(
+    `printf '%s\\n' "$@" > '${join(tmp, 'argv')}'\ncase "$*" in *x.guard=off*) printf 'hooks stable false\\n';; *) cat '${features}';; esac\n`,
+  )
   const run = { id: 'r1', worktree: join(tmp, 'wt') }
   const make = (agent = 'codex --dangerously-bypass-approvals-and-sandbox', o = {}) =>
     codexWorker(
       run,
       { maxContextK },
       'implement',
-      agent,
+      agent.replace(/^codex/, codexBin),
       { personOnlyContexts: ['acme'] },
       {
         hookFile: join(ROOT, 'src', 'worker-hook.ts'),
         userHome: user,
         dir,
-        codexBin,
         ...o,
       },
     )
-  return { tmp, user, dir, mine, make, run, features, codexBin }
+  return { tmp, user, dir, mine, make, run, features, codexBin, fake }
 }
 
 test('a codex worker home holds four files, the guard last, and the launch line names it', () => {
@@ -193,12 +195,87 @@ test('a codex launch refuses when codex reports a guard that is not in force', (
   }
   writeFileSync(f.features, 'shell_snapshot stable false\n') // hooks line missing
   expect(() => f.make()).toThrow('feature check')
-  writeFileSync(f.codexBin, '#!/bin/sh\nexit 3\n', { mode: 0o755 })
+  f.fake('exit 3\n')
   expect(() => f.make()).toThrow('feature check')
 })
 
-test('the ax runner refuses codex and still takes claude and pi', () => {
-  expect(() => axCodexRefused('codex -m o3')).toThrow('claude-factory-72dq')
-  expect(() => axCodexRefused('claude')).not.toThrow()
-  expect(() => axCodexRefused('pi')).not.toThrow()
+test('a VM codex home runs the image deny hook, sets the limit and trusts the VM repo (claude-factory-72dq)', () => {
+  const h = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'])
+  expect(Object.keys(h).sort()).toEqual(['config.toml', 'hooks.json'])
+  const hook = JSON.parse(h['hooks.json']).hooks.PreToolUse
+  expect(hook).toHaveLength(1)
+  expect(hook[0].matcher).toBe('Bash')
+  const cmd: string = hook[0].hooks[0].command
+  expect(cmd).toContain("'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'")
+  expect(cmd).toContain("--person-only-contexts 'acme'")
+  expect(cmd).toContain("--protected-branches 'release'")
+  expect(h['config.toml']).toBe(
+    'model_auto_compact_token_limit = 300000\n\n[projects."/workspace/w/repo"]\ntrust_level = "trusted"\n',
+  )
+})
+
+test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi always', () => {
+  const keep = process.env.FACTORY_AX_CODEX
+  try {
+    delete process.env.FACTORY_AX_CODEX
+    expect(() => axCodexRefused('codex -m o3')).toThrow('FACTORY_AX_CODEX=1')
+    expect(() => axCodexRefused('claude')).not.toThrow()
+    expect(() => axCodexRefused('pi')).not.toThrow()
+    process.env.FACTORY_AX_CODEX = '1'
+    expect(() => axCodexRefused('codex -m o3')).not.toThrow()
+  } finally {
+    if (keep === undefined) delete process.env.FACTORY_AX_CODEX
+    else process.env.FACTORY_AX_CODEX = keep
+  }
+})
+
+test('a VM codex worker reaches api.openai.com with the OPENAI key, unless the rig names the host', () => {
+  expect(codexEgress()).toEqual([{ hosts: ['api.openai.com'], key: 'OPENAI' }])
+  const pypi = { hosts: ['pypi.org'] }
+  expect(codexEgress([pypi])).toEqual([pypi, { hosts: ['api.openai.com'], key: 'OPENAI' }])
+  const own = [{ hosts: ['api.openai.com'], key: 'OPENAI_ZS' }]
+  expect(codexEgress(own)).toBe(own)
+})
+
+test('the probe runs the agent own executable, not codex from PATH', () => {
+  const f = fixture()
+  const other = join(f.tmp, 'bin')
+  mkdirSync(other)
+  writeFileSync(join(other, 'codex'), `#!/bin/sh\ncat '${f.features}'\n`, { mode: 0o755 })
+  f.fake(`printf 'hooks stable false\\n'\n`)
+  const path = process.env.PATH
+  process.env.PATH = `${other}:${path}`
+  try {
+    expect(() => f.make()).toThrow('feature check')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('the probe passes the agent words, quotes kept, then the factory flags', () => {
+  const f = fixture()
+  const { extra } = f.make("codex -m o3 -c 'a b'")
+  expect(readFileSync(join(f.tmp, 'argv'), 'utf8').trim().split('\n')).toEqual([
+    '-m',
+    'o3',
+    '-c',
+    'a b',
+    ...extra.trim().split(' '),
+    'features',
+    'list',
+  ])
+})
+
+test('an agent -c the guard check does not match is refused when codex reports hooks off', () => {
+  const f = fixture()
+  expect(() => f.make('codex -c x.guard=off')).toThrow('feature check')
+  expect(() => f.make('codex -c x.guard=on')).not.toThrow()
+})
+
+test('a hung probe fails closed within the timeout', () => {
+  const f = fixture()
+  f.fake('exec sleep 30\n')
+  const t = Date.now()
+  expect(() => f.make(undefined, { timeoutMs: 500 })).toThrow('timed out')
+  expect(Date.now() - t).toBeLessThan(5000)
 })

@@ -36,6 +36,11 @@ const claude = (model: string) => `{claude} --dangerously-skip-permissions --mod
 const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 const FABLE = claude('security_model')
+// A share of runs launch implement, verify and security as codex (cli.ts splitPick). A rig sets the share
+// to 0 to turn the tier off. Judge stations (plan, review, check, incident) never go to codex.
+const codex = (model: string) => `{codex} -m '{${model}}'`
+const CODEX_EXEC = codex('codex_exec_model')
+const CODEX_SECURITY = codex('codex_security_model')
 // stations that read or change production need the laptop's kubectl, cluster access and network, which a
 // rig's VM workers (--runner ax) do not have: they stay in herdr panes whatever the rig's runner
 const LAPTOP = 'herdr'
@@ -61,6 +66,11 @@ export default {
     exec_model: 'claude-sonnet-5-5[1m]', // execution
     judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
     security_model: 'claude-fable-5-1', // security and architecture
+    codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
+    codex_exec_model: 'gpt-6.1-sol', // codex in place of exec_model
+    codex_security_model: 'gpt-6-astra', // codex in place of security_model
+    codex_share: '0.3', // share of runs whose implement and verify use codex; 0 turns it off
+    codex_security_share: '0.3', // share of runs whose security uses codex; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,
@@ -75,9 +85,15 @@ export default {
 - optimize: make something faster or cheaper (a latency, throughput, memory or cost goal)
 - refactor: restructure code without changing behavior
 - incident: production is broken or degraded now
+- rollout: the goal is to ship pull requests that are already open or merged (release, deploy, roll out), with nothing to build. The bead moves to the release factory, which starts at recipe. Name the pull requests in the summary.
+- decision: the work cannot go on without a person's decision. Put the question on the bead (a bd comment) and end the summary with a \`Question:\` line and an \`Options:\` line. The run ends deferred. \`bd undefer\` starts it again at plan.
+- elsewhere: the change belongs in another rig's repo. File the bead there: run bd create with your cwd in that rig's repo (see \`factory rig\`), the label \`factory\`, and this bead's id in its description. Then comment the new id on this bead. If you cannot reach that repo (a VM worker), put one line \`File in: <rig>: <title> | <description>\` in the summary for the manager. The run ends deferred.
 - reject: unclear, already tracked (a run in \`factory status\`, an open issue), or not worth doing; say why
 Summary: the goal restated as a testable outcome, its constraints, and the files and systems involved.`,
       next: {
+        rollout: { to: 'done', requeue: { factory: 'release' } },
+        decision: { to: 'done', defer: { station: 'plan' } },
+        elsewhere: { to: 'done', defer: true },
         build: 'plan',
         small: 'quick',
         optimize: 'baseline',
@@ -100,8 +116,9 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 6. Observability: the metrics, logs or checks that prove it works in production; the ship run's soak reads them.
 7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary.
 For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned. For a change to the factory itself (.factory/), the acceptance criteria say what future runs will do differently and how that shows in their journals.
-Commit nothing but an architecture decision record, and only where the repo keeps them.`,
-      next: { ready: 'implement' },
+Commit nothing but an architecture decision record, and only where the repo keeps them.
+When the plan cannot go on without a person's decision, put the question on the bead and report decision, with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.`,
+      next: { ready: 'implement', decision: { to: 'done', defer: { station: 'plan' } } },
     },
     baseline: {
       runner: LAPTOP,
@@ -121,15 +138,18 @@ Report pinned with the invariants the refactor must keep and the area's coverage
 
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
+      split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
 Before you report ready, do what review would: merge origin/main and resolve any conflict; for each new branch, error path and guard, break it and see a test fail; check each claim you wrote in a doc, ADR or docstring against the code, and run each command you documented exactly as written. Close every task of this run (see Tracking). Push the branch and open it as a draft pull request if this run has none yet. Say in the summary that you did, and give the pull request link.
+Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
-For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, mail the manager the question and wait for the answer.
+For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, push the branch, name it and the draft pull request in the summary, put the question on the bead, and report decision with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
-      next: { ready: 'verify', abandon: 'done' },
+      next: { ready: 'verify', abandon: 'done', decision: { to: 'done', defer: { station: 'plan' } } },
     },
     verify: {
+      split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 75,
       prompt: `Check the branch independently; trust no earlier report and change no code.
 Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. Then try to fail it as review would: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard or comparison and see a test fail; check that each fixture can occur in real data, each claim in a changed doc matches the code, and each documented command runs as written. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green. For a change to .factory/, run the factory check on every changed file.
@@ -151,6 +171,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
     },
     security: {
       agent: FABLE,
+      split: { agent: CODEX_SECURITY, share: 'codex_security_share' },
       timeoutMin: 45,
       // claude-factory-3t2: 5 of 65 security visits timed out at 45 min, all on one large rig. The
       // retry right after a timeout gets 75 min and a narrower brief, instead of the same 45 min

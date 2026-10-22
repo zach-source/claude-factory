@@ -13,6 +13,7 @@ import {
   pullArgs,
   redact,
   resolveConnectCreds,
+  linearAuth,
   resolveLinearApiKey,
   routeLinearIssue,
   syncEnv,
@@ -1164,4 +1165,11 @@ test('the incremental cutoff looks 5 minutes behind the last good pull, so clock
   const pullCalls = callLines().filter(l => argvOf(l).startsWith('linear pull'))
   expect(pullCalls).toHaveLength(2) // the first pass's call, plus exactly one new call
   expect(argvOf(pullCalls[1]!)).toBe('linear pull A-2 --json')
+})
+
+test('linearAuth in the AX manager returns the placeholder and reads no Connect value', async () => {
+  const secrets: string[] = []
+  expect(await linearAuth(secrets, { FACTORY_IN_AX: '1', FACTORY_NO_KEYCHAIN: '1' })).toBe('placeholder')
+  expect(secrets).toEqual([])
+  await expect(linearAuth(secrets, { FACTORY_NO_KEYCHAIN: '1' })).rejects.toThrow(CONNECT_SETUP_HELP)
 })

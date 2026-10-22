@@ -392,7 +392,9 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     // nothing closes it: still open and ready for a person
     expect(readFileSync(log, 'utf8')).not.toContain('close')
     expect(show).toBe('show fx-1 --json --actor factory/run-1')
-    expect(queue).toBe('update fx-1 --add-label factory --remove-label rejected --actor factory/run-1')
+    expect(queue).toBe(
+      'update fx-1 --add-label factory --remove-label rejected --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
+    )
   } finally {
     process.env.PATH = path
   }
@@ -422,7 +424,10 @@ test('queue removes a stale factory:*/station:* label before adding the station 
       .find(l => l.startsWith('update'))!
     expect(update).toContain('--remove-label factory:release')
     expect(update).toContain('--remove-label station:deploy')
-    expect(update).toContain('--add-label factory --remove-label rejected')
+    expect(update).toContain(
+      '--add-label factory --remove-label rejected --remove-label stale? --remove-label owner',
+    )
+    expect(update).toContain('--unset-metadata owner_question --unset-metadata owner_since')
     expect(update).toContain('--add-label station:implement')
   } finally {
     process.env.PATH = path
@@ -694,4 +699,106 @@ test('fileFinding JSON-encodes a key with a quote or backslash, instead of break
   } finally {
     process.env.PATH = path
   }
+})
+
+test('defer with a station swaps station:* after bd defer; without one it makes no label call', () => {
+  const bin = join(tmpdir(), `fake-bd-defer-station-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const show = join(bin, 'show.json')
+  const script = ['#!/bin/sh', `echo "$*" >> ${log}`, 'case "$1" in', `  show) cat ${show};;`, 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    writeFileSync(
+      show,
+      JSON.stringify([{ id: 'fx-1', title: 't', labels: ['factory', 'factory:lifecycle', 'station:quick'] }]),
+    )
+    writeFileSync(log, '')
+    b.defer('fx-1', 'why', 'plan')
+    const calls = readFileSync(log, 'utf8').trim().split('\n')
+    expect(calls.some(c => c.startsWith('defer fx-1 --reason why'))).toBe(true)
+    const upd = calls.find(c => c.startsWith('update'))!
+    expect(upd).toContain('--remove-label station:quick')
+    expect(upd).toContain('--add-label station:plan')
+    expect(upd).not.toContain('factory:lifecycle')
+    // a bead started by hand has no factory label; undefer must still re-dispatch it (502.6)
+    writeFileSync(show, JSON.stringify([{ id: 'fx-1', title: 't', labels: ['station:quick'] }]))
+    writeFileSync(log, '')
+    b.defer('fx-1', 'why', 'plan')
+    expect(readFileSync(log, 'utf8')).toMatch(/--add-label factory( |$)/m)
+    writeFileSync(log, '')
+    b.defer('fx-1', 'why')
+    expect(readFileSync(log, 'utf8')).not.toContain('update')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('handToOwner drops the factory label and sets the owner label, question and time; queue clears them', () => {
+  const bin = join(tmpdir(), `fake-bd-owner-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  writeFileSync(
+    join(bin, 'bd'),
+    [
+      '#!/bin/sh',
+      `echo "$*" >> ${log}`,
+      `case "$1" in show) printf '%s' '[{"id":"fx-1","title":"t"}]';; esac`,
+    ].join('\n'),
+  )
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory/run-1')
+    b.handToOwner('fx-1', 'which region?')
+    const update = readFileSync(log, 'utf8')
+      .trim()
+      .split('\n')
+      .find(l => l.startsWith('update'))!
+    expect(update).toStartWith('update fx-1 --remove-label factory --add-label owner')
+    expect(update).toContain('--set-metadata owner_question=which region?')
+    expect(update).toMatch(/--set-metadata owner_since=\d{4}-/)
+    b.queue('fx-1')
+    expect(readFileSync(log, 'utf8')).toContain('--remove-label owner --unset-metadata owner_question')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('reship reopens, adds only the ship label, comments, and never claims', () => {
+  const run = (exitOn: string) => {
+    const bin = join(tmpdir(), `fake-bd-reship-${exitOn || 'ok'}-${process.pid}`)
+    mkdirSync(bin, { recursive: true })
+    const log = join(bin, 'calls')
+    rmSync(log, { force: true })
+    const script = ['#!/bin/sh', `echo "$*" >> ${log}`, `[ "$1" = "${exitOn}" ] && exit 1`, 'exit 0'].join(
+      '\n',
+    )
+    writeFileSync(join(bin, 'bd'), script)
+    chmodSync(join(bin, 'bd'), 0o755)
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const ok = beads(tmpdir(), 'factory').reship('fx-1', 'r')
+      return { ok, calls: readFileSync(log, 'utf8').trim().split('\n') }
+    } finally {
+      process.env.PATH = path
+    }
+  }
+  const good = run('')
+  expect(good.ok).toBe(true)
+  expect(good.calls.map(c => c.split(' ')[0])).toEqual(['reopen', 'update', 'comment'])
+  expect(good.calls[0]).toContain('--reason r')
+  expect(good.calls[1]).toContain('--add-label ship')
+  expect(good.calls.join('\n')).not.toMatch(/--claim|add-label factory|station:/)
+  const bad = run('reopen')
+  expect(bad.ok).toBe(false)
+  expect(bad.calls.map(c => c.split(' ')[0])).toEqual(['reopen'])
 })
