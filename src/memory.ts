@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { rmSafe } from './home-guard'
 import type { PrState } from './prs'
 
@@ -1089,6 +1089,9 @@ export type ShortCandidate = {
 }
 /** a LONG.md entry, with what decide() needs to judge it */
 export type LongCandidate = { path: string; activation: number; runs: number }
+/** a CORE.md line (`CORE.md#<hash>`), with how often notes contradicted it in the activation window */
+export type CoreCandidate = { path: string; contradicted: number; activation: number }
+const DEMOTE_CONTRADICTED = 2 // contradicted at least this often, and its activation below θa: demote it
 /** a pair of notes (short or long) whose summaries a caller already scored as near-duplicates */
 export type SimPair = { a: string; b: string; score: number }
 
@@ -1100,6 +1103,7 @@ export type Decision =
   | { kind: 'dedupe'; a: string; b: string; reason: string }
   | { kind: 'retire'; path: string; reason: string }
   | { kind: 'flag'; path: string; reason: string }
+  | { kind: 'demote'; path: string; reason: string }
 
 /**
  * The tier pass creates a plan. The plan uses no file and no clock. A table test covers each
@@ -1150,7 +1154,13 @@ export function decide(
   short: ShortCandidate[],
   long: LongCandidate[],
   sims: SimPair[] = [],
-  opts: { historyDays?: number; archiveCap?: number; topicCap?: number; theta?: Theta } = {},
+  opts: {
+    historyDays?: number
+    archiveCap?: number
+    topicCap?: number
+    theta?: Theta
+    core?: CoreCandidate[]
+  } = {},
 ): Decision[] {
   const { historyDays = Infinity, archiveCap = ARCHIVE_CAP, topicCap = Infinity, theta = THETA } = opts
   const decisions: Decision[] = []
@@ -1196,6 +1206,14 @@ export function decide(
         kind: 'promote',
         path: e.path,
         reason: `activation ${e.activation.toFixed(2)} across ${e.runs} runs`,
+      })
+  // FR-021: a core fact that keeps being contradicted, with too little use for it, goes back to a note
+  for (const c of opts.core ?? [])
+    if (c.contradicted >= DEMOTE_CONTRADICTED && c.activation < theta.archive)
+      decisions.push({
+        kind: 'demote',
+        path: c.path,
+        reason: `contradicted ${c.contradicted} times, activation ${c.activation.toFixed(2)}`,
       })
   for (const s of sims)
     if (s.score >= SAME)
@@ -1524,7 +1542,16 @@ export function applyTiers(
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
       }
     })
-  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap, theta: envTheta() })
+  const coreLines = coreNotes(dir)
+  const core: CoreCandidate[] = coreLines.map(n => {
+    const recent = (events.get(n.path) ?? []).filter(e => now - e.at <= ACTIVATION_WINDOW_DAYS * DAY_MS)
+    return {
+      path: n.path,
+      contradicted: recent.filter(e => e.kind === 'contradicted').length,
+      activation: activation(recent, now),
+    }
+  })
+  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap, theta: envTheta(), core })
   opts.onPlan?.(planLines(decisions, { archiveCap, historyDays }))
   // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
   // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
@@ -1536,11 +1563,30 @@ export function applyTiers(
   let merged = 0
   let archived = 0
   let retired = 0
+  let demoted = 0
   // one topic's remaining short-note count drops by one for every merge this pass writes to disk
   // (not one a skipped, unsafe LONG.md held back) and every archive or retire; overCap below reads this.
   const removedByTopic = new Map<string, number>()
   const removeOne = (topic: string) => removedByTopic.set(topic, (removedByTopic.get(topic) ?? 0) + 1)
   for (const d of decisions) {
+    if (d.kind === 'demote') {
+      // the line goes back to the inbox as a short note; the dream files it, and its usage follows it
+      const line = coreLines.find(n => n.path === d.path)
+      if (!line) continue
+      demoted++
+      if (opts.dryRun) continue
+      const file = add(dir, {
+        summary: line.summary,
+        rig: line.rig,
+        body: `Demoted from CORE.md: ${d.reason}.`,
+      })
+      writeFileSync(
+        join(dir, 'CORE.md'),
+        withoutCoreLine(readFileSync(join(dir, 'CORE.md'), 'utf8'), line.summary),
+      )
+      renamed[d.path] = relative(dir, file)
+      continue
+    }
     if (d.kind !== 'merge' && d.kind !== 'archive' && d.kind !== 'retire') continue
     const note = notes.find(n => n.path === d.path)
     if (!note) continue
@@ -1623,6 +1669,7 @@ export function applyTiers(
     merged,
     archived,
     retired,
+    demoted,
     flagged,
     held,
     skipped,
@@ -1882,6 +1929,12 @@ export const proposalMailText = (pending: ReturnType<typeof proposals>, cli: str
     `The dream proposed ${pending.length} change(s) one rung up the learning ladder. Read each file, then \`${cli} proposals install <name>\` (rung core adds the CORE.md line; a higher rung files a bead for a person) or \`${cli} proposals reject <name> <why>\`:`,
     ...pending.map(p => `- ${p.name} (rung ${p.rung}, ${p.target}): ${p.change} (${p.file})`),
   ].join('\n')
+/** CORE.md without its first bullet that reads `line` (claude-factory-3u1.3.3) */
+export function withoutCoreLine(core: string, line: string): string {
+  const lines = core.split('\n')
+  const i = lines.findIndex(l => /^-\s+(.*\S)\s*$/.exec(l)?.[1] === line)
+  return i < 0 ? core : [...lines.slice(0, i), ...lines.slice(i + 1)].join('\n')
+}
 /** the new proposal names past PROPOSAL_CAP, last by name: the dream wrote more than it may */
 export const proposalsOverCap = (before: string[], after: string[], cap = PROPOSAL_CAP) =>
   after
