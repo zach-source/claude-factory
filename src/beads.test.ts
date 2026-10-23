@@ -483,6 +483,27 @@ test('requeue releases the claim, swaps factory:*/station:* labels when told to,
     expect(calls2[2]).toContain('update fx-1 --add-label factory --remove-label rejected')
     expect(calls2[2]).not.toContain('--set-metadata')
 
+    // a non-numeric or negative count reads as 0: never NaN (claude-factory-yo9.1)
+    for (const bad of ['x', '-5']) {
+      writeFileSync(
+        show,
+        JSON.stringify([
+          {
+            id: 'fx-1',
+            title: 't',
+            labels: ['factory'],
+            metadata: { requeued_from: 'run-1', requeues: bad },
+          },
+        ]),
+      )
+      writeFileSync(log, '')
+      b.requeue('fx-1', 'run-1')
+      expect(readFileSync(log, 'utf8')).not.toContain('--set-metadata requeues')
+      writeFileSync(log, '')
+      b.requeue('fx-1', 'run-2')
+      expect(readFileSync(log, 'utf8')).toContain('--set-metadata requeues=1')
+    }
+
     // requeue: true (no `to`): the labels the worker set stay; a new run counts again
     writeFileSync(
       show,
