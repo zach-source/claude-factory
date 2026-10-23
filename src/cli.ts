@@ -157,7 +157,11 @@ import {
   renderTokens,
   sessionOf,
   type RunRecord,
-  type Session,
+  type ManagerUsage,
+  tokensReport,
+  type StoredUsage,
+  validUsage,
+  type Usage,
 } from './metrics'
 import {
   alreadyDone,
@@ -348,7 +352,7 @@ export type Row = {
 
 const runDir = (id: string) => join(HOME, 'runs', id)
 // gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
-// it, so sessionsOf() still maps a session's turns to the station that ran it after gc prunes them
+// it. Nothing reads it now: the usage rows keep their own station name (storeUsage).
 const promptsListFile = (id: string) => join(runDir(id), 'prompts.list')
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
@@ -729,6 +733,10 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     // best effort, the report stands either way
     // the same for its bd writes, which it pushed where the rig's VMs share its beads
     else if (argv![0] === 'report') {
+      try {
+        const rows = validUsage(JSON.parse(line).usage, side!.node, side!.seq)
+        if (rows.length) appendUsage(run.id, rows)
+      } catch {} // a bad usage never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       // from where this VM was told to push, which a rig changed since does not move
       if (vmBeads(run)) syncRigBeads(run, 'pull', side?.beadsRemote)
@@ -2553,6 +2561,32 @@ function haltRun(
   return step === 'wait' || step === 'tell' ? 'stopping' : 'paused'
 }
 
+/** a herdr worker's station ended: keep what its transcripts show. A failure here must never fail the tick */
+function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt: number) {
+  try {
+    if (runnerOf(pane).name !== 'herdr' || !startedAt) return
+    const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
+    if (rows.length) appendUsage(run.id, rows)
+  } catch {}
+}
+const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
+const appendUsage = (id: string, rows: Usage[]) =>
+  appendFileSync(usageFile(id), rows.map(r => JSON.stringify(r) + '\n').join(''))
+/** a run's stored rows; a session and model that was stored twice (a resumed worker) keeps its last row */
+function storedUsage(id: string): Usage[] {
+  if (!existsSync(usageFile(id))) return []
+  const rows = readFileSync(usageFile(id), 'utf8')
+    .split('\n')
+    .flatMap(l => {
+      try {
+        return l ? [JSON.parse(l) as Usage] : []
+      } catch {
+        return []
+      }
+    })
+  return [...new Map(rows.map(r => [`${r.session}\0${r.model}`, r])).values()]
+}
+
 async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   const def = await loadFactory(run.factory)
   const file = join(runDir(run.id), 'state.json')
@@ -2568,8 +2602,13 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     })
   const send = (e: Input, at = now) => {
     const pane = ctx().pane
+    const { seq, startedAt } = ctx()
+    const node = where(actor.getSnapshot().value)[0]
     actor.send({ ...e, at } as Ev)
-    if (pane && pane !== ctx().pane) runnerOf(pane).close(pane)
+    if (pane && pane !== ctx().pane) {
+      storeUsage(run, pane, node, seq, startedAt)
+      runnerOf(pane).close(pane)
+    }
   }
 
   for (const line of lines.slice(saved.cursor)) {
@@ -3121,6 +3160,32 @@ function compactMessage(
  * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
+/** the dream's own sessions (hr94): one name=dream row for each model in manager-usage.jsonl. Never throws */
+function storeDreamUsage(start: number) {
+  try {
+    const rows = usageIn(MEMORY, '', () => '?', start)
+    appendFileSync(
+      join(HOME, 'manager-usage.jsonl'),
+      rows
+        .map(u =>
+          JSON.stringify({
+            name: 'dream',
+            at: Date.now(),
+            model: u.model,
+            input: u.input,
+            cacheWrite: u.cacheWrite,
+            cacheRead: u.cacheRead,
+            output: u.output,
+            turns: u.turns,
+            peak: u.peak,
+          }),
+        )
+        .map(l => l + '\n')
+        .join(''),
+    )
+  } catch {}
+}
+
 async function dream() {
   const release = hold('dream.lock')
   if (!release) return 'a dream is already running'
@@ -3173,6 +3238,7 @@ async function dream() {
     )
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
     writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
+    storeDreamUsage(start)
     if (p.exitCode !== 0) return said
     git(MEMORY, 'add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
@@ -3387,19 +3453,21 @@ export function selfUpdateMail(now: number, home = HOME): (Mail & { run: string 
   return [{ run: 'factory', from: 'factory', text, at: now }]
 }
 
-/** token usage table of the live runs in recs; '' when no worker session ran and emptyOk is false */
-export function tokenTable(recs: ReturnType<typeof records>, emptyOk: boolean): string {
-  const live = recs.filter(r => runIds().includes(r.id))
-  const sessions = live.flatMap(r => sessionsOf(loadRun(r.id)))
-  if (!sessions.length && !emptyOk) return ''
-  return renderTokens(sessions, new Set(live.filter(r => fate(r) === 'shipped').map(r => r.id)))
+/** stored token usage table of the runs in recs; '' when nothing was stored and emptyOk is false */
+export function tokenTable(recs: ReturnType<typeof records>, emptyOk: boolean, since = 0): string {
+  const rows = recs.flatMap(r => (r.sessions ?? []).map(u => ({ ...u, run: r.id })))
+  const manager = managerUsage(since)
+  if (!rows.length && !manager.length && !emptyOk) return ''
+  return renderTokens(rows, new Set(recs.filter(r => fate(r) === 'shipped').map(r => r.id)), manager)
 }
 
-/** token usage of the live runs from the last days days */
+/** token usage of the runs from the last days days */
 export function tokenReport(days: number): string {
+  const since = Date.now() - days * 86_400_000
   return tokenTable(
-    records().filter(r => Date.now() - r.createdAt < days * 86_400_000),
+    records().filter(r => r.createdAt >= since),
     false,
+    since,
   )
 }
 
@@ -3664,7 +3732,7 @@ function gcPass(days: number, dryRun: boolean) {
       const listFile = promptsListFile(r.id)
       // Union with any names prompts.list already held (claude-factory-503.1.7): a goto revive
       // after an earlier gc can have refilled prompts/ with only its new names, and overwriting
-      // the list here would lose the old station names sessionsOf() still needs.
+      // the list here would lose the old station names.
       const old = existsSync(listFile) ? readJson<string[]>(listFile) : []
       const current = existsSync(dir) ? readdirSync(dir) : []
       writeJson(listFile, [...new Set([...old, ...current])])
@@ -7630,36 +7698,49 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   console.log(`proposed options for ${key}`)
 }
 
-/** the runs metrics count: every live run, and the ones factory rm kept in metrics.jsonl */
 /** what each Claude worker session of a run spent, from the transcripts in its worktree's project dir */
-function sessionsOf(run: Run): Session[] {
+function usageOf(run: Run, since = 0): Usage[] {
+  return usageIn(run.worktree, run.id, () => '?', since)
+}
+
+/** the usage rows of every Claude session that ran in `cwd` and wrote its transcript at or after `since` */
+function usageIn(cwd: string, run: string, nodeOfSeq: (seq: number) => string, since = 0): Usage[] {
   const dir = join(
     process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
     'projects',
-    run.worktree.replace(/[^a-zA-Z0-9]/g, '-'),
+    cwd.replace(/[^a-zA-Z0-9]/g, '-'),
   )
   if (!existsSync(dir)) return []
-  const prompts = join(runDir(run.id), 'prompts')
-  const listFile = promptsListFile(run.id)
-  // gc can have removed prompts/, leaving prompts.list with the names that were in it. A goto
-  // revive after gc recreates prompts/ with only the new names: union both so old station names
-  // survive the revive (claude-factory-503.1.5).
-  const names = [
-    ...new Set([
-      ...(existsSync(listFile) ? readJson<string[]>(listFile) : []),
-      ...(existsSync(prompts) ? readdirSync(prompts) : []),
-    ]),
-  ]
-  const nodes = new Map(
-    names.flatMap(f => {
-      const m = /^(\d+)-(.+)\.md$/.exec(f)
-      return m ? [[Number(m[1]), m[2]!.replace(/-resume$/, '')] as const] : []
-    }),
-  )
+  const read = (f: string) => readFileSync(f, 'utf8').split('\n')
   return readdirSync(dir)
-    .filter(f => f.endsWith('.jsonl'))
-    .map(f => sessionOf(readFileSync(join(dir, f), 'utf8').split('\n'), run.id, seq => nodes.get(seq) ?? '?'))
-    .filter(s => s.turns > 0)
+    .filter(f => f.endsWith('.jsonl') && statSync(join(dir, f)).mtimeMs >= since)
+    .flatMap(f => {
+      const session = f.slice(0, -'.jsonl'.length)
+      const subDir = join(dir, session, 'subagents')
+      const subs = existsSync(subDir)
+        ? readdirSync(subDir)
+            .filter(g => g.endsWith('.jsonl'))
+            .map(g => read(join(subDir, g)))
+        : []
+      const rows = sessionOf(read(join(dir, f)), run, nodeOfSeq, session, subs)
+      return rows.some(u => u.turns > 0) ? rows : []
+    })
+}
+
+/** the manager's own sessions (patrol, pm, briefer, dream) since `since`, from manager-usage.jsonl */
+function managerUsage(since: number): ManagerUsage[] {
+  const file = join(HOME, 'manager-usage.jsonl')
+  if (!existsSync(file)) return []
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .flatMap(l => {
+      try {
+        return l ? [JSON.parse(l) as ManagerUsage] : []
+      } catch {
+        return []
+      }
+    })
+    .filter(m => m.at >= since)
 }
 
 function records(): RunRecord[] {
@@ -7686,6 +7767,7 @@ function record(id: string): RunRecord {
     createdAt: createdAt(id),
     log: c.log,
     ...(trackOf(id).requeued && { requeued: true }),
+    sessions: storedUsage(id),
   }
 }
 
@@ -7917,7 +7999,7 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...args])
+  worker.queue([cmd!, ...args], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
@@ -8299,10 +8381,19 @@ if (import.meta.main && !outboxCmd)
             )
           : []
         const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
+        // --tokens reads what runs stored (record().sessions) and manager-usage.jsonl, never a live transcript
+        const tokenArgs = args.includes('--tokens')
+          ? ([
+              picked.flatMap(r => (r.sessions ?? []).map(u => ({ ...u, run: r.id }))),
+              new Set(picked.filter(r => fate(r) === 'shipped').map(r => r.id)),
+              managerUsage(since_),
+            ] as const)
+          : null
         if (args.includes('--json'))
           console.log(
             JSON.stringify({
               all: metrics(picked),
+              ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
               launches,
               rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
@@ -8320,7 +8411,7 @@ if (import.meta.main && !outboxCmd)
           if (launches.length)
             console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
         }
-        if (args.includes('--tokens')) console.log('\n' + tokenTable(picked, true))
+        if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
         break
       }
       case 'backlog':

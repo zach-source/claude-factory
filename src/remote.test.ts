@@ -1721,3 +1721,104 @@ esac
     rmSync(runDir, { recursive: true })
   }
 }, 90_000) // git clones and whole ticks
+
+// claude-factory-hr94: an AX worker sends its usage with its report
+const usageRow = (over: Record<string, unknown> = {}) => ({
+  session: 's1',
+  model: 'claude-opus-4-7',
+  input: 1,
+  cacheWrite: 2,
+  cacheRead: 300,
+  output: 4,
+  turns: 5,
+  peak: 303,
+  ...over,
+})
+const storedRows = (id: string) =>
+  readFileSync(join(home, 'runs', id, 'usage.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+
+test("inside a VM, a report carries the session's usage, subagents included (hr94 AC6)", () => {
+  mkdirSync(dir, { recursive: true })
+  const own = join(dir, 'vm-own')
+  const claudeHome = join(dir, 'vm-claude')
+  mkdirSync(join(claudeHome, 'projects', 'p', 'sess-9', 'subagents'), { recursive: true })
+  mkdirSync(own, { recursive: true })
+  writeFileSync(join(own, 'state.json'), JSON.stringify({ status: 'working', session: 'sess-9', pid: 1 }))
+  const turn = (id: string, model: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { id, model, usage: { input_tokens: 1, cache_read_input_tokens: 9, output_tokens: 2 } },
+    })
+  writeFileSync(join(claudeHome, 'projects', 'p', 'sess-9.jsonl'), turn('a', 'claude-opus-4-7') + '\n')
+  writeFileSync(
+    join(claudeHome, 'projects', 'p', 'sess-9', 'subagents', 'agent-1.jsonl'),
+    turn('b', 'claude-haiku-5-5') + '\n',
+  )
+  const outbox = join(dir, 'outbox-usage.jsonl')
+  const env = {
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'a',
+    FACTORY_WORKER_DIR: own,
+    CLAUDE_CONFIG_DIR: claudeHome,
+  }
+  expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)
+  const line = JSON.parse(readFileSync(outbox, 'utf8').trim())
+  expect(line.argv).toEqual(['report', 'r1', '1', 'ready', 'done'])
+  expect(line.usage.map((u: { model: string }) => u.model).sort()).toEqual([
+    'claude-haiku-5-5',
+    'claude-opus-4-7',
+  ])
+  expect(line.usage[0]).toMatchObject({ session: 'sess-9', input: 1, cacheRead: 9, output: 2 })
+})
+
+test("a replayed AX report stores the VM's usage as its station, and bad usage never refuses the report (hr94 AC6, AC7)", () => {
+  const seq = launched('ru1')
+  const rows = [
+    usageRow({ node: 'evil', seq: 99 }), // node and seq come from the laptop, not the VM
+    usageRow({ model: 'bad model!' }),
+    usageRow({ session: 's2', cacheRead: NaN }),
+    usageRow({ session: 's3', output: -1 }),
+    usageRow({ session: 's4', peak: 1e13 }),
+    usageRow({ session: 's5', turns: 1.5 }),
+    usageRow({ session: 's6', model: 'claude-haiku-5-5' }),
+    'junk',
+  ]
+  const report = JSON.stringify({
+    argv: ['report', 'ru1', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 1,
+    usage: rows,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+  expect(factory(['tick']).code).toBe(0)
+  expect(inbox('ru1')).toContain('"outcome":"ready"')
+  const stored = storedRows('ru1')
+  expect(stored.map(r => [r.session, r.model, r.node, r.seq])).toEqual([
+    ['s1', 'claude-opus-4-7', 'a', seq],
+    ['s6', 'claude-haiku-5-5', 'a', seq],
+  ])
+  rmSync(join(home, 'runs', 'ru1'), { recursive: true })
+})
+
+test('AX usage with 21 rows, or not an array, is ignored and the report still lands (hr94 AC7)', () => {
+  for (const [id, usage] of [
+    ['ru2', Array.from({ length: 21 }, () => usageRow())],
+    ['ru3', 'lots'],
+  ] as const) {
+    const seq = launched(id)
+    const report = JSON.stringify({
+      argv: ['report', id, String(seq), 'ready', 'x'],
+      from: 'a',
+      at: 1,
+      usage,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+    expect(factory(['tick']).code).toBe(0)
+    expect(inbox(id)).toContain('"outcome":"ready"')
+    expect(existsSync(join(home, 'runs', id, 'usage.jsonl'))).toBe(false)
+    rmSync(join(home, 'runs', id), { recursive: true })
+  }
+})

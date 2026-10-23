@@ -20,6 +20,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { CODEX_GUARD_FLAGS, codexFeaturesBad, cutOffCall, cutOffNote } from './harness'
 import { rmSafe } from './home-guard'
+import { sessionOf, type Usage } from './metrics'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -46,8 +47,42 @@ const alive = (pid: number) => {
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
-export function queue(argv: string[]) {
-  appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
+export function queue(argv: string[], usage?: Usage[]) {
+  appendFileSync(
+    outbox(),
+    JSON.stringify({
+      argv,
+      from: process.env.FACTORY_FROM,
+      at: Date.now(),
+      ...(usage?.length && { usage }),
+    }) + '\n',
+  )
+}
+
+/**
+ * what this VM's Claude session spent, with its subagents, for the report to carry. The laptop cannot
+ * read the VM's transcripts. A worker with no Claude transcript (codex, pi) gives none. Never throws.
+ */
+export function usageOfSession(run: string): Usage[] {
+  try {
+    const session = state()?.session
+    if (!session || !/^[A-Za-z0-9-]+$/.test(session)) return []
+    const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
+    const dir = readdirSync(projects)
+      .map(d => join(projects, d))
+      .find(d => existsSync(join(d, `${session}.jsonl`)))
+    if (!dir) return []
+    const read = (f: string) => readFileSync(f, 'utf8').split('\n')
+    const subDir = join(dir, session, 'subagents')
+    const subs = existsSync(subDir)
+      ? readdirSync(subDir)
+          .filter(g => g.endsWith('.jsonl'))
+          .map(g => read(join(subDir, g)))
+      : []
+    return sessionOf(read(join(dir, `${session}.jsonl`)), run, () => '?', session, subs)
+  } catch {
+    return []
+  }
 }
 
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
