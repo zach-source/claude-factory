@@ -1,7 +1,7 @@
 // claude-factory-3u1.3.1 (FR-018, research R8): the dream finds failure classes and re-learned lessons,
 // and writes at most 3 proposals one rung up the learning ladder.
 import { expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -9,11 +9,15 @@ import {
   dreamPrompt,
   failureClasses,
   format,
+  installCoreProposal,
   normalizeReason,
   PROPOSAL_CAP,
   proposals,
   proposalsOverCap,
+  rejectProposal,
   relearned,
+  withCoreLine,
+  withFrontmatter,
 } from './memory'
 
 test.each([
@@ -118,5 +122,64 @@ test('proposals() reads each .proposals/<name>.md frontmatter and its first body
     },
   ])
   expect(proposals(join(dir, 'none'))).toEqual([])
+  rmSync(dir, { recursive: true, force: true })
+})
+
+// claude-factory-3u1.3.2 (FR-019..021): install and reject
+test.each([
+  ['an empty CORE.md', '', '- new line\n'],
+  ['a top with no rig sections', '- a\n- b\n', '- a\n- b\n- new line\n'],
+  ['a top before a rig section', '- a\n\n## rig: x\n- x1\n', '- a\n- new line\n\n## rig: x\n- x1\n'],
+  ['only a rig section', '## rig: x\n- x1\n', '- new line\n\n## rig: x\n- x1\n'],
+])('withCoreLine: %s', (_, core, want) => {
+  expect(withCoreLine(core, 'new line')).toBe(want)
+})
+
+test.each([
+  [
+    'replaces a key',
+    '---\nstatus: pending\nrung: core\n---\nbody\n',
+    'status',
+    'installed',
+    '---\nstatus: installed\nrung: core\n---\nbody\n',
+  ],
+  [
+    'adds a key',
+    '---\nstatus: pending\n---\nbody\n',
+    'bead',
+    'x-1',
+    '---\nstatus: pending\nbead: x-1\n---\nbody\n',
+  ],
+  [
+    'leaves the body alone',
+    '---\nstatus: pending\n---\nstatus: in the body\n',
+    'status',
+    'rejected',
+    '---\nstatus: rejected\n---\nstatus: in the body\n',
+  ],
+])('withFrontmatter: %s', (_, text, key, value, want) => {
+  expect(withFrontmatter(text, key, value)).toBe(want)
+})
+
+test('installCoreProposal adds the line to CORE.md and marks it installed; rejectProposal writes the reason to the inbox', () => {
+  const dir = join(tmpdir(), `memory-proposals-install-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, '.proposals'), { recursive: true })
+  writeFileSync(join(dir, 'CORE.md'), '- old line\n')
+  const p = (rung: string, change: string) =>
+    `---\nrung: ${rung}\ntarget: CORE.md\nstatus: pending\n---\n${change}\n`
+  writeFileSync(join(dir, '.proposals', 'a.md'), p('core', 'Run prettier before a PR.'))
+  writeFileSync(join(dir, '.proposals', 'b.md'), p('instruction', 'Lint first.'))
+  installCoreProposal(dir, 'a')
+  expect(readFileSync(join(dir, 'CORE.md'), 'utf8')).toBe('- old line\n- Run prettier before a PR.\n')
+  expect(proposals(dir).find(x => x.name === 'a')?.status).toBe('installed')
+  expect(() => installCoreProposal(dir, 'a')).toThrow('no pending proposal a')
+  expect(() => installCoreProposal(dir, 'b')).toThrow('rung instruction')
+
+  rejectProposal(dir, 'b', 'the linter already runs first')
+  expect(proposals(dir).find(x => x.name === 'b')?.status).toBe('rejected')
+  const inbox = readdirSync(join(dir, 'inbox')).map(f => readFileSync(join(dir, 'inbox', f), 'utf8'))
+  expect(inbox.join('\n')).toContain('rejected the proposal b: the linter already runs first')
+  expect(() => rejectProposal(dir, '../x', 'why')).toThrow('no pending proposal ../x')
   rmSync(dir, { recursive: true, force: true })
 })
