@@ -127,6 +127,16 @@ export const READY_REASON =
   'review. Keep the pull request a draft here; report its link in your summary. Release marks it ' +
   'ready after verify, review and security pass. Do not retry this command.'
 
+// claude-factory-0gww.3: the stations that may run as the reviewer identity (the same names as REVIEWER_STATIONS in ax.ts)
+const REVIEWER_STATIONS = ['review', 'security', 'check']
+
+// claude-factory-0gww.3
+export const APPROVE_REASON =
+  'The factory denies this command: only a review, security or check station that runs as the ' +
+  'reviewer identity may approve a pull request. Here, post a comment review: gh pr review N ' +
+  '--comment --body-file f, or --request-changes. This hook also denies a gh call that creates a ' +
+  'review with an event it cannot read. Do not retry this command.'
+
 // claude-factory-zl5.22
 export const ALIAS_REASON =
   'The factory denies this command: gh alias set and git config alias.<name> name another ' +
@@ -338,6 +348,8 @@ export const DYNAMIC_VERB_REASON =
 export interface HookGate {
   /** the running station, from FACTORY_FROM. Only the release station may mark a pull request ready. */
   station?: string
+  /** true when FACTORY_GH_REVIEWER is 1 and the station is a reviewer station: only then may a gh call approve a pull request (claude-factory-0gww.3) */
+  reviewer?: boolean
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
   /** This field holds the tool call's own cwd (`i.cwd`). It is not the worktree root.
@@ -4415,6 +4427,76 @@ function ghApiReadyDenied(apiArgs: string[], gate: HookGate): boolean {
 // So a percent-encoded slash after `heads` (`heads%2Fmain`) matches the same as a literal one (`heads/main`).
 // The raw, still-encoded path has no `/` there. A match against the raw text misses this path.
 const REF_HEADS_PATH = /\/git\/refs?\/heads\/([^?#]+)/
+// claude-factory-0gww.3: a GraphQL mutation name that creates or submits a pull request review
+const REVIEW_MUTATIONS = ['addPullRequestReview', 'submitPullRequestReview']
+// a REST path that creates a review, or submits a pending one
+const REVIEWS_PATH = /(^|\/)pulls\/[^/]+\/reviews(\/[^/]+\/events)?$/
+// the only review events that are no approval
+const SAFE_REVIEW_EVENTS = new Set(['COMMENT', 'REQUEST_CHANGES'])
+
+/**
+ * claude-factory-0gww.3: true when a `gh api` call can approve a pull request and this hook cannot prove it does not.
+ * GraphQL: the query names `addPullRequestReview` or `submitPullRequestReview` (an unreadable query denies too).
+ * REST: a non-GET call to `.../pulls/<n>/reviews` or `.../pulls/<n>/reviews/<id>/events` is allowed only when every
+ * `event` value is literally `COMMENT` or `REQUEST_CHANGES`. A call to the create path with no event makes a pending
+ * review, which is no approval. A submit path with no event, a shell expansion, an `@file` value, or an `--input`
+ * body that is unreadable, not JSON, or has another event: deny.
+ */
+function ghApiReviewDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint) return false
+  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, REVIEW_MUTATIONS)
+  const path = decodeApiPath(normalizeEndpoint(endpoint))
+  if (path === undefined) return true
+  const match = REVIEWS_PATH.exec(path)
+  if (!match) return false
+  const fields = ghApiFields(apiArgs)
+  const inputFile = flagValue(apiArgs, new Set(['--input']))
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  if ((method || (fields.length > 0 || inputFile !== undefined ? 'POST' : 'GET')) === 'GET') return false
+  const events = fields.filter(f => f.name === 'event').map(f => f.value)
+  if (inputFile !== undefined) {
+    const content = SHELL_UNSAFE.test(inputFile) ? undefined : gate.readFile?.(inputFile)
+    if (content === undefined) return true
+    try {
+      const body: unknown = JSON.parse(content)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return true
+      const event = (body as { event?: unknown }).event
+      if (event !== undefined) {
+        if (typeof event !== 'string') return true
+        events.push(event)
+      }
+    } catch {
+      return true
+    }
+  }
+  if (events.length === 0) return match[2] !== undefined
+  return events.some(e => !SAFE_REVIEW_EVENTS.has(e))
+}
+
+/**
+ * claude-factory-0gww.3: true when a `gh pr review` call (`words`: its arguments after `review`) can approve.
+ * It is allowed only with a literal `-c`, `--comment`, `-r` or `--request-changes`, and with no `-a`, `--approve`,
+ * `--approve=...`, short cluster that holds `a`, or shell expansion in a flag position. The word after a value flag is data.
+ */
+function prReviewApproves(words: string[]): boolean {
+  let mode = false
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--') break
+    if (['-b', '--body', '-F', '--body-file', '-R', '--repo'].includes(w)) {
+      i++
+      continue
+    }
+    if (w === '-c' || w === '--comment' || w === '-r' || w === '--request-changes') mode = true
+    else if (w === '-a' || w === '--approve' || w.startsWith('--approve=')) return true
+    else if (/^-[^-]/.test(w) && w.includes('a')) return true
+    else if (dynamicWord(w)) return true
+  }
+  return !mode
+}
+
 // a REST path that creates a new ref. The caller names the new ref in a `ref` field.
 // claude-factory-zl5.25: `normalizeEndpoint` already strips a `?query` and `#fragment`, so this
 // pattern no longer needs to match one.
@@ -4730,6 +4812,14 @@ function ghReasonOn(
     if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
     return gate.station === 'release' ? undefined : READY_REASON
   }
+  if (
+    verb === 'pr' &&
+    sub === 'review' &&
+    !gate.reviewer &&
+    prReviewApproves(rest.slice(subScan.index + 1))
+  ) {
+    return APPROVE_REASON
+  }
   if (verb === 'api') {
     // claude-factory-zl5.16: this splits a clustered short flag (`-iXPUT`, `-if`) into separate
     // words. Every check below already reads these words, so this runs first.
@@ -4737,6 +4827,7 @@ function ghReasonOn(
     if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
     if (ghApiReadyDenied(apiArgs, gate)) return gate.station === 'release' ? undefined : READY_REASON
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
+    if (!gate.reviewer && ghApiReviewDenied(apiArgs, gate)) return APPROVE_REASON
 
     // claude-factory-p43v.11: a dynamic endpoint or method can still hide a merge or push call
     // that the 3 literal checks above miss, because they compare the word's raw, unresolved
@@ -4768,6 +4859,9 @@ function ghReasonOn(
       return gate.station === 'release' ? undefined : READY_REASON
     }
     if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
+    if (!gate.reviewer && verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['review']))) {
+      if (prReviewApproves(rest)) return APPROVE_REASON
+    }
   }
   if (uncertain) {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
@@ -4778,6 +4872,13 @@ function ghReasonOn(
     // probe today reaches a real `gh pr checkout` call this way: real gh exits with code 1
     // on the unknown flag first. This word scan still sets `branchChange`, fail closed.
     if (hasMutatingWordBeforeDashDash(tail, new Set(['checkout']))) state.branchChange = true
+    if (
+      !gate.reviewer &&
+      hasMutatingWordBeforeDashDash(tail, new Set(['review'])) &&
+      prReviewApproves(tail)
+    ) {
+      return APPROVE_REASON
+    }
   }
   return undefined
 }
@@ -8923,6 +9024,8 @@ async function main() {
   const protectedBranches = argp >= 0 ? process.argv[argp + 1]?.split(',').filter(Boolean) : undefined
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
+    reviewer:
+      process.env.FACTORY_GH_REVIEWER === '1' && REVIEWER_STATIONS.includes(process.env.FACTORY_FROM ?? ''),
     protectedBranches,
     headOf: (dir, timeoutMs) =>
       gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
