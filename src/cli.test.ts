@@ -1933,3 +1933,23 @@ test("workerFlags carries --merge-authority only for a rig with mergeAuthority t
   expect(cmd('worker-settings-acme.json')).toMatch(/worker-hook\.ts' --merge-authority$/)
   expect(cmd('worker-settings.json')).not.toContain('merge-authority')
 })
+
+// claude-factory-l3tl: the merge-authority rule shows only for the ship factory on an opted-in rig
+test('ruleLines adds the Merge authority section only for the ship factory and an opted-in rig', () => {
+  const ship = { name: 'ship', rules: '- rule one' }
+  const text = ruleLines(ship, undefined, undefined, true).join('\n')
+  expect(text).toContain('## Merge authority')
+  expect(text).toContain('--match-head-commit')
+  expect(ruleLines(ship, undefined, undefined, false)).toEqual(ruleLines(ship))
+  expect(ruleLines(ship)).not.toContain('## Merge authority')
+  expect(ruleLines({ name: 'lifecycle', rules: '- rule one' }, undefined, undefined, true)).toEqual(
+    ruleLines({ rules: '- rule one' }),
+  )
+})
+
+test('the ship release prompt merges only under a Merge authority section; deploy never merges', async () => {
+  const { default: ship } = await import('../factories/ship')
+  expect(ship.nodes.release.prompt).toContain('"Merge authority" section')
+  expect(ship.nodes.release.prompt).toContain('Without that section, you never merge')
+  expect(ship.nodes.deploy.prompt).toContain('you never merge it yourself')
+})

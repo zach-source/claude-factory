@@ -989,9 +989,22 @@ const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-dig
  * verbatim, under its own section, so a step it reserves for the person (a skip list, say) binds every
  * station, not only the manager patrol that reads rigs.json directly. No rules and no goal: no output.
  */
-export function ruleLines(def: Pick<Factory, 'rules'>, rigGoal?: string, personOnly?: string[]): string[] {
+export function ruleLines(
+  def: Pick<Factory, 'rules'> & { name?: string },
+  rigGoal?: string,
+  personOnly?: string[],
+  merge?: boolean,
+): string[] {
   return [
     ...(def.rules ? ['', '## House rules', def.rules.trim()] : []),
+    // claude-factory-l3tl: a person gave this rig merge authority; only the ship factory's release station uses it
+    ...(merge && def.name === 'ship'
+      ? [
+          '',
+          '## Merge authority',
+          'A person gave this rig merge authority. The ship release station (and no other station) merges each queued pull request that is ready, has green CI and has passed reviews, with exactly: gh pr merge <number> --merge --match-head-commit <head SHA> (add -R <owner/repo> if needed). Never use --admin, --squash, --rebase or --auto. This overrides the House rule that only a person merges, for that one command.',
+        ]
+      : []),
     ...(rigGoal
       ? [
           '',
@@ -1022,7 +1035,12 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
     `This run follows the factory pinned when it started (${run.factoryFrom ?? run.factory}): changes to ${OWN}/ on any branch reach only runs that start after they merge. Check an edited factory file with ${CLI} check <file>.`,
-    ...ruleLines(def, rigOf(run.repo)?.goal, personOnlyContexts(rigOf(run.repo))),
+    ...ruleLines(
+      def,
+      rigOf(run.repo)?.goal,
+      personOnlyContexts(rigOf(run.repo)),
+      mergeAuthority(rigOf(run.repo)),
+    ),
     '',
     ...remembered(run, node),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
@@ -1396,9 +1414,13 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     harness: harness!,
     provider: ax.providerOf(agent),
     claudeFlags:
-      harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig)) : undefined,
+      harness === 'claude'
+        ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        : undefined,
     codexHome:
-      harness === 'codex' ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig)) : undefined,
+      harness === 'codex'
+        ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        : undefined,
     gitlabHost,
     env: {
       ...env,
@@ -1515,7 +1537,13 @@ export function vmCodexHome(
   branches?: string[],
   merge?: boolean,
 ) {
-  const hook = denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge)
+  const hook = denyHook(
+    '/usr/local/bin/bun',
+    `${ax.FACTORY_DIR}/src/worker-hook.ts`,
+    contexts,
+    branches,
+    merge,
+  )
   return {
     'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
     'config.toml':
@@ -1875,7 +1903,9 @@ export function workerFlags(
   const merge = mergeAuthority(rig)
   const file = join(
     home,
-    contexts?.length || branches?.length || merge ? `worker-settings-${rig!.name}.json` : 'worker-settings.json',
+    contexts?.length || branches?.length || merge
+      ? `worker-settings-${rig!.name}.json`
+      : 'worker-settings.json',
   )
   const keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
     .split(',')

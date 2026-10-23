@@ -4713,7 +4713,7 @@ function prMergeReason(
   let repo = false
   const w = tail.slice(2)
   for (let k = 0; k < w.length; k++) {
-    const a = w[k]
+    const a = w[k]!
     if (MERGE_PR_NUMBER.test(a) && !num) num = true
     else if (a === '--merge' && !merge) merge = true
     else if ((a === '--match-head-commit' || a.startsWith('--match-head-commit=')) && !sha) {

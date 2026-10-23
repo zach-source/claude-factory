@@ -11,7 +11,8 @@ import type { Factory } from '../src/machine'
 // `factory tick` starts the run (src/cli.ts's `shipPass`) when the rig's queue is not empty and no ship
 // run is live. A new handoff mails the live run, which wakes it. The run counts against no run limit.
 //
-// A person merges every pull request: no station here merges. Owner-only steps stay with the person.
+// A person merges every pull request: no station here merges, unless a person gave the rig merge
+// authority (`factory rig add --merge-authority`). Then the release station alone runs one strict merge command. Owner-only steps stay with the person.
 // Keeping a pull request current with main is a merge commit pushed to its branch: never a rebase,
 // never a force-push. A pull request that needs changes goes back to a work run at implement.
 //
@@ -59,7 +60,8 @@ Report ready when at least one queued pull request is current with main and has 
     release: {
       timeoutMin: 60,
       prompt: `Every child task of the bead must be closed (bd children <bead>). If one is open, report changes and name it. Prepare the release of every queued pull request that the queue reported as current with main and free of conflict, in merge order. For each one, add the changelog entry and the version bump the repo's conventions call for, update the pull request description with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\`. You are the only station that marks a pull request ready. Wait for CI and read every failing check. Do not mark a pull request ready when it has a conflict or a red check: list it on its own with the reason.
-Report ready when the first pull request in the order is ready and CI is green. Give the full ordered list with the link of each one, and one line for each: \`gh pr merge <n> -R <repo> --merge\`. These lines are for the owner to run, in that order, in one sitting. You never run them. Report changes when the first pull request needs changes: write the evidence in a bead comment first, and the queue station sends it back to a work run.`,
+If your brief has a "Merge authority" section, merge each ready pull request in order, after you re-check that CI is green on its head SHA, that every review passed and that no check is red: \`gh pr merge <n> -R <repo> --merge --match-head-commit <head SHA>\`, where the SHA comes from \`gh pr view <n> --json headRefOid\`. Stop at the first pull request that fails a check or that the hook refuses. Then report ready, with the merge SHA of each merged pull request.
+Without that section, you never merge. Report ready when the first pull request in the order is ready and CI is green. Give the full ordered list with the link of each one, and one line for each: \`gh pr merge <n> -R <repo> --merge\`. These lines are for the owner to run, in that order, in one sitting. You never run them. Report changes when the first pull request needs changes: write the evidence in a bead comment first, and the queue station sends it back to a work run.`,
       next: { ready: 'deploy', changes: 'queue' },
     },
     deploy: {
