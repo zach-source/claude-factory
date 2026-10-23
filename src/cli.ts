@@ -7908,7 +7908,7 @@ const usage = `factory — herdr software factories on xstate
   memory add ${MEMORY_ADD_USAGE}   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping;
                                      a note that names a bead or PR needs --until unless --kind recipe
-  memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
+  memory helped --from run/station <note path...>  a note helped: the dream ranks notes by this
   memory compact [--dry-run]        merge 7+ day old short notes above θm into LONG.md; archive a 14+ day
                                      old one never shown, or below θa (FACTORY_MEMORY_THETA_* change θ; both
                                      wait for 14 days of usage history first); FACTORY_MEMORY_ARCHIVE_CAP
@@ -8222,7 +8222,14 @@ if (import.meta.main && !outboxCmd)
           const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
           const bad = paths.filter(p => p.startsWith('..') || !memory.noteExists(MEMORY, p))
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
-          memory.use(MEMORY, paths, 'helped', Date.now(), from)
+          const by = memory.helpedBy(from, process.env)
+          if (!by) {
+            console.error('factory memory helped: name the run it helped: --from run/station')
+            console.error('usage: factory memory helped --from run/station <note path...>')
+            process.exitCode = 2
+            break
+          }
+          memory.use(MEMORY, paths, 'helped', Date.now(), by)
           console.log(`noted: ${paths.join(', ')}`)
         } else if (sub === 'compact') {
           const dryRun = words.includes('--dry-run')

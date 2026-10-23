@@ -788,7 +788,7 @@ memory/
   on a near-tie, and another rig's notes never show) and
   `factory memory add [--rig r] [--from run/station] <summary> [body]`. The manager searches
   it before answering a worker and saves the person's decisions that later runs should follow.
-  `factory memory helped [--from run/station] <note>` marks a note that saved a worker time;
+  `factory memory helped --from run/station <note>` marks a note that saved a worker time;
   with how often searches return each note, it is what the dream orders by.
 - **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
   edit inside the memory: it files the inbox under topics, merges duplicates, drops what is

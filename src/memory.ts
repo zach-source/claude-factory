@@ -739,6 +739,12 @@ export function activation(events: UsageEvent[], now: number): number {
   )
   return Math.log(Math.max(sum, ACTIVATION_FLOOR))
 }
+/**
+ * the `run/station` a `memory helped` names (claude-factory-p11, FR-017): its --from, else
+ * $FACTORY_RUN/$FACTORY_STATION when both are set. undefined means the caller must refuse.
+ */
+export const helpedBy = (from: string | undefined, env: Record<string, string | undefined>) =>
+  from || (env.FACTORY_RUN && env.FACTORY_STATION ? `${env.FACTORY_RUN}/${env.FACTORY_STATION}` : undefined)
 type RawTally = {
   path: string
   shown: number
