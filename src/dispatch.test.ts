@@ -2086,7 +2086,10 @@ function filingReset(all: FBead[]) {
   const r = repo()
   fakeFilingBd(all)
   fakeGuardHerdr()
-  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  writeFileSync(
+    join(ghome, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', clusterRuns: 20 }]),
+  )
 }
 
 const stations = ['review', 'security', 'plan']
@@ -2275,7 +2278,13 @@ test('auto-queue does not re-queue a held bead after the 24h filing window', () 
   writeFileSync(
     join(ghome, 'rigs.json'),
     JSON.stringify([
-      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+      {
+        name: 'a',
+        repo: repo(),
+        factory: 'lifecycle',
+        clusterRuns: 20,
+        autoQueue: { minPriority: 4, perHour: 10 },
+      },
     ]),
   )
   gfactory(['beads'])
@@ -2296,7 +2305,13 @@ test('auto-queue does not re-queue a held or mark-only bead; factory queue still
   writeFileSync(
     join(ghome, 'rigs.json'),
     JSON.stringify([
-      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+      {
+        name: 'a',
+        repo: repo(),
+        factory: 'lifecycle',
+        clusterRuns: 20,
+        autoQueue: { minPriority: 4, perHour: 10 },
+      },
     ]),
   )
   gfactory(['beads']) // pass 1: w-7 held, w-8 marked
