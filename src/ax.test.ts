@@ -251,6 +251,67 @@ test('a worker of a zach-source rig gets the zach-source keys on the unprefixed 
   expect(plainKeys()).toEqual(['GITHUB', 'GITHUB_BASIC'])
 })
 
+test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else changes', () => {
+  const keys = (owner?: string, reviewer?: boolean) =>
+    (ax.egressPolicy('v', [], undefined, undefined, owner, undefined, reviewer).rules as any[])
+      .filter(r => /github\.com/.test(r.https.hostnames[0]))
+      .map(r => [r.https.pathPrefixes?.[0] ?? '', keyOf(r)])
+  expect(keys('acme', true)).toEqual([
+    ['', 'GITHUB_REVIEWER'],
+    ['', 'GITHUB_BASIC'],
+    ['/repos/zach-source/', 'GITHUB_ZS'],
+    ['/zach-source/', 'GITHUB_ZS_BASIC'],
+  ])
+  expect(keys('zach-source', true).slice(0, 2)).toEqual([
+    ['', 'GITHUB_REVIEWER'],
+    ['', 'GITHUB_ZS_BASIC'],
+  ])
+  expect(keys('acme', true).slice(2)).toEqual(keys('acme', false).slice(2))
+  expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
+  expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
+    ax.egressPolicy('v', [], undefined, undefined, 'acme'),
+  )
+  expect(ax.egressPolicy('', [], undefined, undefined, 'acme', undefined, true)).toEqual(
+    ax.egressPolicy(''),
+  )
+  expect(
+    JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
+  ).not.toContain('REVIEWER')
+})
+
+test('reviewerTask is true only for review, security and check with the vault and a matching owner flag', () => {
+  const env = { FACTORY_AX_VAULT: 'v', FACTORY_AX_REVIEWER_OWNER: 'acme' }
+  for (const n of ['review', 'security', 'check']) expect(ax.reviewerTask(n, 'acme', env)).toBe(true)
+  for (const n of [
+    'implement',
+    'plan',
+    'verify',
+    'triage',
+    'quick',
+    'release',
+    'incident',
+    'Review',
+    ' review',
+  ])
+    expect(ax.reviewerTask(n, 'acme', env)).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', env)).toBe(false)
+  expect(ax.reviewerTask('review', undefined, env)).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { ...env, FACTORY_AX_REVIEWER_OWNER: '' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_VAULT: 'v' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_REVIEWER_OWNER: 'acme' })).toBe(false)
+})
+
+test('createPolicy passes the reviewer flag to the policy', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t4', [], undefined, 'acme', undefined, true)
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).toContain('factory/GITHUB_REVIEWER')
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
 test('createPolicy passes the rig owner to the policy', () => {
   process.env.FACTORY_AX_VAULT = 'factory'
   try {
