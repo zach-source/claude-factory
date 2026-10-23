@@ -46,7 +46,7 @@ description: "Task list for the memory lifecycle (compress, age, learn)"
 
 - [x] T011 [US3] Write `activation(events, now)` in `src/memory.ts`. Weights: helped 1.0 (0.3 when `ok=false`), confirmed 1.0, shown 0.15, contradicted −1.0. Use a 90-day window; folded lines keep their events (claude-factory-3u1.2.1)
 - [x] T012 [US3] `decide()` uses θm/θa/θc thresholds in place of the 7/30-day limits, with boundary table tests (claude-factory-3u1.2.2)
-- [ ] T013 [US3] A bonus of at most 0.02 in `rank()`. `eval --self` must not regress (claude-factory-3u1.2.3, needs 9l7)
+- [x] T013 [US3] A bonus of at most 0.02 in `rank()`. `eval --self` must not regress (claude-factory-3u1.2.3, needs 9l7)
 - [x] T014 [P] [US3] `memory helped` requires `--from` or takes `FACTORY_RUN`/`FACTORY_STATION` from the env, in `src/cli.ts` (claude-factory-p11)
 - [x] T015 [US3] Outcome-weighted helps: the dream sets `ok` from the journal, in `src/cli.ts` `dream()` (claude-factory-3u1.2.4)
 
