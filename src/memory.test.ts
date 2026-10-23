@@ -708,51 +708,55 @@ const short = (over: Partial<ShortCandidate> = {}): ShortCandidate => ({
   path: 'beads/x.md',
   topic: 'beads',
   ageDays: 1,
-  staleDays: 1,
   shown: 0,
   helped: 0,
+  activation: -Infinity,
   ...over,
 })
+const USED = -1 // an activation above THETA.merge
+const IDLE = -5 // an activation below THETA.archive
 
-test('decide() archives a never-helped note stale past 30 days, not at 29', () => {
-  expect(decide([short({ staleDays: 29, helped: 0 })], [])).toEqual([])
-  expect(decide([short({ staleDays: 31, helped: 0 })], [])).toEqual([
-    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+test('decide() archives a shown note whose activation is below θa, once 14 days old', () => {
+  expect(decide([short({ ageDays: 13, shown: 1, activation: IDLE })], [])).toEqual([])
+  expect(decide([short({ ageDays: 31, shown: 1, activation: IDLE })], [])).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'activation -5.00 below -3.6, 31 days old' },
   ])
 })
 
-test('decide() never archives a note that ever helped, however stale', () => {
-  expect(decide([short({ staleDays: 400, helped: 1 })], [])).toEqual([])
+test('decide() never archives a note above θa, however old', () => {
+  expect(decide([short({ ageDays: 400, helped: 1, activation: USED })], []).map(d => d.kind)).toEqual([
+    'merge',
+  ])
 })
 
-test('decide() merges a shown-or-helped note once it is 7 days old, not at 6', () => {
-  expect(decide([short({ ageDays: 6, shown: 1 })], [])).toEqual([])
-  expect(decide([short({ ageDays: 8, shown: 1 })], [])).toEqual([
-    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 8 days old' },
+test('decide() merges a note above θm once it is 7 days old, not at 6', () => {
+  expect(decide([short({ ageDays: 6, shown: 1, activation: USED })], [])).toEqual([])
+  expect(decide([short({ ageDays: 8, shown: 1, activation: USED })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'activation -1.00, 8 days old' },
   ])
   // helped alone (never shown by a search) also qualifies
-  expect(decide([short({ ageDays: 8, shown: 0, helped: 1 })], [])).toEqual([
-    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 8 days old' },
+  expect(decide([short({ ageDays: 8, shown: 0, helped: 1, activation: USED })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'activation -1.00, 8 days old' },
   ])
   // never shown and never helped: never merges (claude-factory-503.2 now archives it at 14+ days
   // old instead; see the never-shown archive-rule tests below, so this stays under that boundary)
-  expect(decide([short({ ageDays: 10, shown: 0, helped: 0, staleDays: 10 })], [])).toEqual([])
+  expect(decide([short({ ageDays: 10, shown: 0, helped: 0 })], [])).toEqual([])
 })
 
 test('decide() archives a superseded note outright, even if young and helped', () => {
-  expect(decide([short({ ageDays: 1, staleDays: 1, helped: 5, superseded: 'beads/y.md' })], [])).toEqual([
+  expect(decide([short({ ageDays: 1, helped: 5, activation: USED, superseded: 'beads/y.md' })], [])).toEqual([
     { kind: 'archive', path: 'beads/x.md', reason: 'superseded by beads/y.md' },
   ])
 })
 
 test('decide() never touches an inbox note: the dream files it first', () => {
-  expect(decide([short({ topic: 'inbox', staleDays: 400, ageDays: 400 })], [])).toEqual([])
+  expect(decide([short({ topic: 'inbox', ageDays: 400 })], [])).toEqual([])
 })
 
-test('decide() flags a long entry as a promotion candidate at 3 helps across 3 runs, not at 2 runs', () => {
-  expect(decide([], [{ path: 'beads/LONG.md#lock', helped: 3, runs: 2 }])).toEqual([])
-  expect(decide([], [{ path: 'beads/LONG.md#lock', helped: 3, runs: 3 }])).toEqual([
-    { kind: 'promote', path: 'beads/LONG.md#lock', reason: 'helped 3 times across 3 runs' },
+test('decide() flags a long entry as a promotion candidate above θc across 3 runs, not at 2 runs', () => {
+  expect(decide([], [{ path: 'beads/LONG.md#lock', activation: 1, runs: 2 }])).toEqual([])
+  expect(decide([], [{ path: 'beads/LONG.md#lock', activation: 1, runs: 3 }])).toEqual([
+    { kind: 'promote', path: 'beads/LONG.md#lock', reason: 'activation 1.00 across 3 runs' },
   ])
 })
 
@@ -776,11 +780,11 @@ test('decide() archives a never-shown note at 14 days old, not at 13.9', () => {
 
 test('decide() never-shown archive rule skips a note shown or helped even once', () => {
   // shown or helped at ageDays 14 qualifies for the merge rule instead, never the archive rule
-  expect(decide([short({ ageDays: 14, shown: 1, helped: 0 })], [])).toEqual([
-    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 14 days old' },
+  expect(decide([short({ ageDays: 14, shown: 1, helped: 0, activation: USED })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'activation -1.00, 14 days old' },
   ])
-  expect(decide([short({ ageDays: 14, shown: 0, helped: 1 })], [])).toEqual([
-    { kind: 'merge', path: 'beads/x.md', reason: 'shown or helped, 14 days old' },
+  expect(decide([short({ ageDays: 14, shown: 0, helped: 1, activation: USED })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'activation -1.00, 14 days old' },
   ])
 })
 
@@ -791,10 +795,11 @@ test('decide() usage-history guard stops both usage-based archive rules under 14
   expect(decide([short({ ageDays: 14, shown: 0, helped: 0 })], [], [], { historyDays: 14 })).toEqual([
     { kind: 'archive', path: 'beads/x.md', reason: 'never shown, 14 days old' },
   ])
-  // The existing 30-day never-helped rule waits for the same guard.
-  expect(decide([short({ staleDays: 31, helped: 0 })], [], [], { historyDays: 13.9 })).toEqual([])
-  expect(decide([short({ staleDays: 31, helped: 0 })], [], [], { historyDays: 14 })).toEqual([
-    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+  // The activation rule (below θa) waits for the same guard.
+  const idle = short({ ageDays: 31, shown: 1, activation: IDLE })
+  expect(decide([idle], [], [], { historyDays: 13.9 })).toEqual([])
+  expect(decide([idle], [], [], { historyDays: 14 })).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'activation -5.00 below -3.6, 31 days old' },
   ])
   // The superseded rule ignores the guard: it archives with no usage history at all.
   expect(decide([short({ superseded: 'beads/y.md' })], [], [], { historyDays: 0 })).toEqual([
@@ -844,7 +849,7 @@ test('decide() archive cap is global across topics, not per topic', () => {
 })
 
 test('decide() archive cap of 0 holds every archive', () => {
-  const decisions = decide([short({ staleDays: 31, helped: 0 })], [], [], {
+  const decisions = decide([short({ ageDays: 31, shown: 1, activation: IDLE })], [], [], {
     historyDays: 100,
     archiveCap: 0,
   })
@@ -864,7 +869,7 @@ test('decide() archive cap counts a superseded archive against the same cap', ()
 })
 
 const plainOld = (path: string, over: Partial<ShortCandidate> = {}): ShortCandidate =>
-  short({ path, ageDays: 10, staleDays: 10, ...over })
+  short({ path, ageDays: 10, ...over })
 
 test('decide() topic cap: 15 short notes get no cap merge, 16 get exactly 1', () => {
   const fifteen = Array.from({ length: 15 }, (_, i) => plainOld(`beads/n${i}.md`))
@@ -914,8 +919,10 @@ test('decide() topic cap never picks a note under MERGE_AGE_DAYS (7) old, even w
 
 test('decide() topic cap: 20 notes with 3 merges and 2 archives already planned leaves 15, no cap merge', () => {
   const cands = [
-    ...Array.from({ length: 3 }, (_, i) => plainOld(`beads/shown${i}.md`, { shown: 1 })), // -> merge
-    ...Array.from({ length: 2 }, (_, i) => plainOld(`beads/stale${i}.md`, { staleDays: 31, helped: 0 })), // -> archive
+    ...Array.from({ length: 3 }, (_, i) => plainOld(`beads/shown${i}.md`, { shown: 1, activation: USED })), // -> merge
+    ...Array.from({ length: 2 }, (_, i) =>
+      plainOld(`beads/stale${i}.md`, { ageDays: 31, shown: 1, activation: IDLE }),
+    ), // -> archive
     ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
   ]
   const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15 })
@@ -926,7 +933,7 @@ test('decide() topic cap: 20 notes with 3 merges and 2 archives already planned 
 
 test('decide() topic cap counts a held note (over the archive cap) as still in the topic', () => {
   const cands = [
-    plainOld('beads/held-candidate.md', { staleDays: 31, helped: 0 }), // archive -> held (archiveCap 0)
+    plainOld('beads/held-candidate.md', { ageDays: 31, shown: 1, activation: IDLE }), // archive -> held (archiveCap 0)
     ...Array.from({ length: 15 }, (_, i) => plainOld(`beads/plain${i}.md`)),
   ]
   const decisions = decide(cands, [], [], { historyDays: 100, topicCap: 15, archiveCap: 0 })
@@ -980,12 +987,15 @@ test('decide() archives, not retires, an expired note that is also superseded: s
 // AC6: a flag never blocks another rule. Other rules still run and can add their own decision.
 test('decide() flags an untilFlag note, and still archives it under the normal archive rule', () => {
   expect(
-    decide([short({ untilFlag: 'bead acme-widget-h7c not found', helped: 0, staleDays: 31 })], [], [], {
-      historyDays: 100,
-    }),
+    decide(
+      [short({ untilFlag: 'bead acme-widget-h7c not found', ageDays: 31, shown: 1, activation: IDLE })],
+      [],
+      [],
+      { historyDays: 100 },
+    ),
   ).toEqual([
     { kind: 'flag', path: 'beads/x.md', reason: 'bead acme-widget-h7c not found' },
-    { kind: 'archive', path: 'beads/x.md', reason: 'never helped, unused for 31 days' },
+    { kind: 'archive', path: 'beads/x.md', reason: 'activation -5.00 below -3.6, 31 days old' },
   ])
 })
 
@@ -1000,7 +1010,7 @@ test('decide() archive cap treats a retire the same as an archive: the older not
   const decisions = decide(
     [
       short({ path: 'beads/old.md', ageDays: 40, expired: true, expiredReason: 'date passed' }),
-      short({ path: 'beads/new.md', ageDays: 20, shown: 0, helped: 0, staleDays: 35 }),
+      short({ path: 'beads/new.md', ageDays: 20, shown: 0, helped: 0 }),
     ],
     [],
     [],
@@ -1027,7 +1037,7 @@ test('decide() topic cap counts a retire as removed from the topic, same as an a
 // cap from picking that same note for a merge.
 test('decide() topic cap still merges an untilFlag note: the flag does not block it', () => {
   const notes = [
-    short({ path: 'beads/a.md', untilFlag: 'no lookup', ageDays: 10, staleDays: 10 }),
+    short({ path: 'beads/a.md', untilFlag: 'no lookup', ageDays: 10 }),
     ...Array.from({ length: 15 }, (_, i) => short({ path: `beads/n${i}.md` })),
   ]
   const decisions = decide(notes, [], [], { topicCap: 15 })
@@ -1088,7 +1098,7 @@ test('applyTiers() merges an old, used short note into LONG.md and keeps its usa
   expect(merged).toBe(1)
   expect(archived).toBe(0)
   expect(decisions).toEqual([
-    { kind: 'merge', path: 'beads/lock.md', reason: 'shown or helped, 14 days old' },
+    { kind: 'merge', path: 'beads/lock.md', reason: 'activation 1.59, 14 days old' },
   ])
   expect(renamed).toEqual({ 'beads/lock.md': 'beads/LONG.md#bd-init-locks-every-repo' })
   expect(existsSync(join(dir, 'beads', 'lock.md'))).toBe(false)
@@ -1561,7 +1571,7 @@ test("applyTiers() rewrites an archived note's README link, not just a merged on
       },
     },
   )
-  const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_STALE_DAYS (30)
+  const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_NEW_DAYS (14)
   // 20 days of usage history: clears the guard that holds back the never-helped archive rule
   use(dir, ['beads/unrelated.md'], 'shown', now - 20 * 24 * 60 * 60 * 1000)
 
@@ -1589,14 +1599,14 @@ test('applyTiers() ages a note with no at: from the commit that added it, not fr
       },
     },
   )
-  const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_STALE_DAYS (30)
+  const now = Date.parse('2026-10-15T00:00:00Z') // 75 days later: past ARCHIVE_NEW_DAYS (14)
   // 20 days of usage history: clears the guard that holds back the never-helped archive rule
   use(dir, ['beads/unrelated.md'], 'shown', now - 20 * 24 * 60 * 60 * 1000)
 
   const { decisions, archived } = applyTiers(dir, { now })
   expect(archived).toBe(1)
   expect(decisions).toEqual([
-    { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never helped') },
+    { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never shown') },
   ])
 })
 
@@ -1626,7 +1636,7 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   const { decisions, archived } = applyTiers(dir, { now })
   expect(archived).toBe(1) // archived only because the age comes from the 2026-08-01 add, not the edit
   expect(decisions).toEqual([
-    { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never helped') },
+    { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never shown') },
   ])
 })
 
@@ -1898,9 +1908,9 @@ test('tierCandidates composes decide(), longSimPairs() and usage() into dream-pr
   use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-b')
   use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-c')
 
-  const { promotions, duplicates } = await tierCandidates(dir)
+  const { promotions, duplicates } = await tierCandidates(dir, now)
   expect(promotions).toEqual([
-    '- beads/LONG.md#lock (bd init on the shared Dolt server locks every repo): helped 3 times across 3 runs',
+    '- beads/LONG.md#lock (bd init on the shared Dolt server locks every repo): activation 2.69 across 3 runs',
   ])
   expect(duplicates).toHaveLength(1)
   expect(duplicates[0]).toContain('beads/LONG.md#x')

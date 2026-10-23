@@ -7909,8 +7909,8 @@ const usage = `factory — herdr software factories on xstate
                                      inbox; one an existing note already says counts as that note helping;
                                      a note that names a bead or PR needs --until unless --kind recipe
   memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
-  memory compact [--dry-run]        merge old, used short notes into LONG.md; archive one that was never
-                                     shown and is 14+ days old, or never helped and unused 30+ days (both
+  memory compact [--dry-run]        merge 7+ day old short notes above θm into LONG.md; archive a 14+ day
+                                     old one never shown, or below θa (FACTORY_MEMORY_THETA_* change θ; both
                                      wait for 14 days of usage history first); FACTORY_MEMORY_ARCHIVE_CAP
                                      caps archives per pass (default 25), oldest first, the rest held;
                                      FACTORY_MEMORY_TOPIC_CAP caps short notes per topic (default 15): a

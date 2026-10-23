@@ -590,16 +590,21 @@ export async function longSimPairs(dir: string): Promise<SimPair[]> {
  * decide()'s promote and dedupe candidates among the long tier, worded for the dream prompt. A path
  * alone means little to the dream, so each line also carries its entry's summary.
  */
-export async function tierCandidates(dir: string): Promise<{ promotions: string[]; duplicates: string[] }> {
+export async function tierCandidates(
+  dir: string,
+  now = Date.now(),
+): Promise<{ promotions: string[]; duplicates: string[] }> {
   const { notes } = walk(dir)
   const long = notes.filter(n => n.tier === 'long')
   const uses = usage(dir)
+  const events = usageEvents(dir)
   const summaryOf = (path: string) => long.find(n => n.path === path)?.summary ?? path
-  const candidates: LongCandidate[] = long.map(n => {
-    const u = uses.get(n.path)
-    return { path: n.path, helped: u?.helped ?? 0, runs: u?.runs ?? 0 }
-  })
-  const decisions = decide([], candidates, await longSimPairs(dir))
+  const candidates: LongCandidate[] = long.map(n => ({
+    path: n.path,
+    activation: activation(events.get(n.path) ?? [], now),
+    runs: uses.get(n.path)?.runs ?? 0,
+  }))
+  const decisions = decide([], candidates, await longSimPairs(dir), { theta: envTheta() })
   return {
     promotions: decisions
       .filter(d => d.kind === 'promote')
@@ -951,14 +956,21 @@ export const usageLines = (dir: string) => {
 // duplicate. It reads no file and no clock. The caller gathers every input from the real store
 // (applyTiers does that). Because it is pure, a test can hit every boundary with a table and no fixture dir.
 const MERGE_AGE_DAYS = 7 // a short note waits this long before it can merge: a fresh note may still be wrong
-const ARCHIVE_STALE_DAYS = 30 // never shown or helped in this long, and this old: a candidate to archive
-const ARCHIVE_NEW_DAYS = 14 // never shown at all, and this old: a candidate too, once usage history is old enough to trust "never shown"
+const ARCHIVE_NEW_DAYS = 14 // a note this old can archive: never shown at all, or its activation is below θa
+/**
+ * activation() thresholds (claude-factory-3u1.2.2, research R2). θa = -3.6 is about one show 30 days
+ * ago, ln(0.15/√30), so a once-shown note archives where the old 30-day rule did. θm = θa keeps
+ * today's merge behaviour: every used note old enough either merges or archives. θc = 0 is about
+ * 3 helps in the last 9 days. Each has one env override: FACTORY_MEMORY_THETA_MERGE, _ARCHIVE, _PROMOTE.
+ */
+// ponytail: picked from the model's own decay curve, not measured on a home; retune with the env overrides
+export type Theta = { merge: number; archive: number; promote: number }
+export const THETA: Theta = { merge: -3.6, archive: -3.6, promote: 0 }
 // at most this many archives in one tiering pass, oldest (by ageDays) first: a long-idle home must not
 // dump every stale note into .archive the moment it crosses ARCHIVE_NEW_DAYS or ARCHIVE_STALE_DAYS
 // (claude-factory-503: a ~190-note mass archive at day 30 forced a revert of a 139-merge pass).
 const ARCHIVE_CAP = 25
-const PROMOTE_HELPED = 3 // a long entry helped at least this often...
-const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a promotion candidate
+const PROMOTE_RUNS = 3 // a long entry above θc across at least this many distinct runs becomes a promotion candidate
 // a topic's short-note cap (FR-010): past this many short notes in one topic, the tier pass merges
 // the oldest ones into LONG.md so the topic keeps retrieval dense; the dream drops or merges the rest
 // the tier pass cannot (claude-factory-3u1.1.3).
@@ -970,9 +982,9 @@ export type ShortCandidate = {
   topic: string
   superseded?: string // frontmatter `superseded: <path>`: archive it outright
   ageDays: number // since the note's own at:, else the commit that added it
-  staleDays: number // since it was last shown or helped; ageDays when it never was
   shown: number
   helped: number
+  activation: number // activation() of its usage events; -Infinity with none in the window
   // applyTiers() sets these three fields from untilStatus() before it calls decide(); decide() itself
   // never calls untilStatus(), so it stays pure and a table test can set them with no fixture or lookup
   expired?: boolean // true when untilStatus() says the until marker ended: decide() retires the note
@@ -980,7 +992,7 @@ export type ShortCandidate = {
   untilFlag?: string // untilStatus()'s unknown reason: decide() flags the note, but never retires it
 }
 /** a LONG.md entry, with what decide() needs to judge it */
-export type LongCandidate = { path: string; helped: number; runs: number }
+export type LongCandidate = { path: string; activation: number; runs: number }
 /** a pair of notes (short or long) whose summaries a caller already scored as near-duplicates */
 export type SimPair = { a: string; b: string; score: number }
 
@@ -995,7 +1007,12 @@ export type Decision =
 
 /**
  * The tier pass creates a plan. The plan uses no file and no clock. A table test covers each
- * boundary: 7, 14 and 30 days; 3 helps or runs; the cap.
+ * boundary: 7 and 14 days; θm, θa and θc; 3 runs; the cap.
+ *
+ * A used note at least 7 days old merges when its activation is above θm. A note at least 14 days
+ * old archives when it was never shown (FR-015), or when its activation is below θa (FR-014).
+ * A LONG.md entry above θc across at least 3 runs is a promotion candidate. `opts.theta` overrides
+ * THETA.
  *
  * A note with `n.expired` set gets a `retire` decision (FR-016). This check runs right after the
  * superseded check, and before every other rule. It holds at any age and any shown/helped count.
@@ -1037,9 +1054,9 @@ export function decide(
   short: ShortCandidate[],
   long: LongCandidate[],
   sims: SimPair[] = [],
-  opts: { historyDays?: number; archiveCap?: number; topicCap?: number } = {},
+  opts: { historyDays?: number; archiveCap?: number; topicCap?: number; theta?: Theta } = {},
 ): Decision[] {
-  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP, topicCap = Infinity } = opts
+  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP, topicCap = Infinity, theta = THETA } = opts
   const decisions: Decision[] = []
   for (const n of short) {
     if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
@@ -1055,35 +1072,34 @@ export function decide(
     }
     // untilFlag never retires or archives the note by itself; every other rule below still runs
     if (n.untilFlag) decisions.push({ kind: 'flag', path: n.path, reason: n.untilFlag })
-    if (historyDays >= ARCHIVE_NEW_DAYS && n.helped === 0 && n.staleDays >= ARCHIVE_STALE_DAYS) {
-      decisions.push({
-        kind: 'archive',
-        path: n.path,
-        reason: `never helped, unused for ${Math.floor(n.staleDays)} days`,
-      })
-      continue
+    const age = Math.floor(n.ageDays)
+    if (historyDays >= ARCHIVE_NEW_DAYS && n.ageDays >= ARCHIVE_NEW_DAYS) {
+      if (n.shown === 0 && n.helped === 0) {
+        decisions.push({ kind: 'archive', path: n.path, reason: `never shown, ${age} days old` })
+        continue
+      }
+      if (n.activation < theta.archive) {
+        decisions.push({
+          kind: 'archive',
+          path: n.path,
+          reason: `activation ${n.activation.toFixed(2)} below ${theta.archive}, ${age} days old`,
+        })
+        continue
+      }
     }
-    if (historyDays >= ARCHIVE_NEW_DAYS && n.shown === 0 && n.helped === 0 && n.ageDays >= ARCHIVE_NEW_DAYS) {
-      decisions.push({
-        kind: 'archive',
-        path: n.path,
-        reason: `never shown, ${Math.floor(n.ageDays)} days old`,
-      })
-      continue
-    }
-    if ((n.shown > 0 || n.helped > 0) && n.ageDays >= MERGE_AGE_DAYS)
+    if (n.activation > theta.merge && n.ageDays >= MERGE_AGE_DAYS)
       decisions.push({
         kind: 'merge',
         path: n.path,
-        reason: `shown or helped, ${Math.floor(n.ageDays)} days old`,
+        reason: `activation ${n.activation.toFixed(2)}, ${age} days old`,
       })
   }
   for (const e of long)
-    if (e.helped >= PROMOTE_HELPED && e.runs >= PROMOTE_RUNS)
+    if (e.activation > theta.promote && e.runs >= PROMOTE_RUNS)
       decisions.push({
         kind: 'promote',
         path: e.path,
-        reason: `helped ${e.helped} times across ${e.runs} runs`,
+        reason: `activation ${e.activation.toFixed(2)} across ${e.runs} runs`,
       })
   for (const s of sims)
     if (s.score >= SAME)
@@ -1164,6 +1180,19 @@ export function planLines(
     `${count('held')} held (cap ${opts.archiveCap}), ${count('flag')} flag, ` +
     `usage history ${Math.floor(opts.historyDays)} days`
   return [header, ...decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`)]
+}
+
+/** THETA with each FACTORY_MEMORY_THETA_MERGE, _ARCHIVE and _PROMOTE that parses as a finite number */
+export function envTheta(env: Record<string, string | undefined> = process.env): Theta {
+  const read = (name: string, fallback: number) => {
+    const n = Number(env[name] || NaN)
+    return Number.isFinite(n) ? n : fallback
+  }
+  return {
+    merge: read('FACTORY_MEMORY_THETA_MERGE', THETA.merge),
+    archive: read('FACTORY_MEMORY_THETA_ARCHIVE', THETA.archive),
+    promote: read('FACTORY_MEMORY_THETA_PROMOTE', THETA.promote),
+  }
 }
 
 /** FACTORY_MEMORY_ARCHIVE_CAP, when it is a whole number >= 0; else the default ARCHIVE_CAP (25). */
@@ -1371,6 +1400,7 @@ export function applyTiers(
   const now = opts.now ?? Date.now()
   const { notes } = walk(dir)
   const uses = usage(dir)
+  const events = usageEvents(dir)
   const historyDays = usageHistoryDays(dir, now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
   const topicCap = opts.topicCap ?? envTopicCap()
@@ -1381,7 +1411,6 @@ export function applyTiers(
       const atMs = n.at ? Date.parse(n.at) : NaN
       const createdMs = Number.isFinite(atMs) ? atMs : (gitAddedMs(dir, n.path) ?? now)
       const u = uses.get(n.path)
-      const lastMs = u?.at || createdMs
       // a date marker is always judged; a bead or PR marker only when the caller gave untilDeps
       // (AC8): this keeps a caller that never passes untilDeps free of any new verdict or flag.
       const until = n.until && (isDateUntil(n.until) || opts.untilDeps) ? n.until : undefined
@@ -1391,15 +1420,15 @@ export function applyTiers(
         topic: topicOf(n),
         superseded: n.superseded,
         ageDays: (now - createdMs) / DAY_MS,
-        staleDays: (now - lastMs) / DAY_MS,
         shown: u?.shown ?? 0,
         helped: u?.helped ?? 0,
+        activation: activation(events.get(n.path) ?? [], now),
         expired: verdict?.state === 'ended',
         expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
       }
     })
-  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap })
+  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap, theta: envTheta() })
   opts.onPlan?.(planLines(decisions, { archiveCap, historyDays }))
   // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
   // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
