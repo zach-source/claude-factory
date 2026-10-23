@@ -620,7 +620,7 @@ test('every station model id of every factory resolves to a known id', async () 
 
 test('claude-factory-0gww.4: review, security and check approve or request changes as the reviewer identity on the exact head, with a comment fallback', () => {
   for (const node of ['review', 'security', 'check']) {
-    const prompt = lifecycle.nodes[node]!.prompt
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
     for (const needle of [
       'FACTORY_GH_REVIEWER',
       'commit_id',
@@ -634,5 +634,5 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
       expect(prompt).toContain(needle)
   }
   for (const node of ['plan', 'implement', 'quick', 'verify'])
-    expect(lifecycle.nodes[node]!.prompt).not.toContain('event=APPROVE')
+    expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
 })
