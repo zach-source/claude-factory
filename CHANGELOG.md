@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Docs: the README memory section and onboarding show how to add a note with `--kind`, `--until` and `--supersedes`, with generic examples (claude-factory-3u1.1.5). The worker brief now tells a worker to replace a wrong note with `--supersedes <old note path>`. `src/worker-system.md` is not changed, because it is at its 3600-character cap and the brief already has the memory section.
+
 - New: each dream ends `dream.log` with a lifecycle metrics line (claude-factory-3u1.4.2). The line gives the notes in each topic, the notes the tier pass archived and retired, the share of short notes with a `kind`, and the share that cite a bead or PR with no `until`. These numbers measure spec 003 SC-003.
 
 - New: `.eval.jsonl` cases can carry `category`: `update`, `temporal` or `abstain` (claude-factory-3u1.4.1). `factory memory eval` then prints one score line for each category under the total. An `abstain` case has no `expect`, and it is a hit only when search returns nothing above the floor.

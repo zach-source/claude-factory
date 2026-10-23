@@ -786,8 +786,26 @@ memory/
   `factory memory search [--rig r] <query>` (local embeddings, bge-small, no service; a note
   ranks by its own match and its topic's, a long or fact note ranks slightly above a short one
   on a near-tie, and another rig's notes never show) and
-  `factory memory add [--rig r] [--from run/station] <summary> [body]`. The manager searches
-  it before answering a worker and saves the person's decisions that later runs should follow.
+  `factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--supersedes <note path>] <summary> [body]`.
+  The manager searches it before answering a worker and saves the person's decisions that later
+  runs should follow.
+- Each new note must have a kind, or `memory add` exits 2 with its usage text:
+  - `fact`: a verified, reusable lesson.
+  - `rule`: a convention or a requirement.
+  - `recipe`: a command sequence that works.
+
+  A note that names a bead id or a PR must also have `--until`, unless it is a recipe. The note
+  then retires when that bead closes, that PR merges or closes, or that date passes. The status of
+  the bead or PR stays in its own tracker. If a note is wrong, add the correct note with
+  `--supersedes <old note path>`. The old note gets `superseded:`, and the next tier pass archives
+  it. A duplicate add prints `already noted` and logs `confirmed` on the existing note.
+
+  ```
+  factory memory add --kind rule "push the tracker after each close" "a local close is not seen on other machines until the push"
+  factory memory add --kind fact --until example-ab1 "the timing test flakes under load" "rerun the failed job once; example-ab1 tracks the fix"
+  factory memory add --kind recipe "confirm a deploy with rollout status" "kubectl rollout status deployment/web -n example --timeout=120s"
+  factory memory add --kind fact --supersedes ci/old-cache.md "the build cache keys on the lockfile hash" "a lockfile change makes a new cache"
+  ```
   `factory memory helped --from run/station <note>` marks a note that saved a worker time;
   with how often searches return each note, it is what the dream orders by.
 - **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
