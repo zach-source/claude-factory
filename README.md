@@ -823,7 +823,9 @@ memory/
 - `factory memory eval` runs a fixed query set (`<memory>/.eval.jsonl`) through search and prints
   recall@5 and MRR, with which queries missed: how to tell that tiering did not cost search quality.
   `factory memory eval --self [n] [--seed s]` needs no `.eval.jsonl`. It samples n notes (default 60,
-  seed 1), asks each note's first body sentence, and expects that note back.
+  seed 1), asks each note's first body sentence, and expects that note back. A curated case can
+  carry `"category": "update" | "temporal" | "abstain"`, and eval then prints a score for each
+  category. An `abstain` case has no `expect`: it is a hit only when search returns nothing.
 
 ## Pull request labels
 
