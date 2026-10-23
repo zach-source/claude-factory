@@ -1,0 +1,9 @@
+{
+  "id": "example-run-b",
+  "factory": "factory.ts",
+  "repo": "/tmp/example-repo",
+  "goal": "add a date parser",
+  "ws": "w1",
+  "worktree": "/tmp/example-repo",
+  "branch": "b-example-run-b"
+}

@@ -817,6 +817,8 @@ memory/
   nothing helped is lost. `--dry-run` prints the plan without writing.
 - `factory memory eval` runs a fixed query set (`<memory>/.eval.jsonl`) through search and prints
   recall@5 and MRR, with which queries missed: how to tell that tiering did not cost search quality.
+  `factory memory eval --self [n] [--seed s]` needs no `.eval.jsonl`. It samples n notes (default 60,
+  seed 1), asks each note's first body sentence, and expects that note back.
 
 ## Pull request labels
 
