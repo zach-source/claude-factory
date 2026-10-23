@@ -525,6 +525,43 @@ test('a manager goto plan between two verify reds breaks the repeat streak (clau
   expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
 })
 
+test('implement runs a numbered self-check and reports a Self-check block (2ida AC1, AC2)', () => {
+  const p = lifecycle.nodes.implement!.prompt
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.']) expect(p).toContain(`\n${n} `)
+  expect(p).toContain('the whole test suite')
+  expect(p).toContain('AC table')
+  expect(p).toContain('git diff <reviewed sha>..HEAD')
+  expect(p).toContain('Add no changelog entry')
+  expect(p).toContain("'Self-check:'")
+  expect(p).toContain('Close every task of this run')
+})
+
+test('review, security and check share one blocking-scope rule (2ida AC3, AC4)', () => {
+  for (const n of ['review', 'security', 'check'] as const) {
+    const p = lifecycle.nodes[n]!.prompt
+    expect(p).toContain('A finding blocks only when it is one of these')
+    expect(p).toContain('makes an existing defect reachable or enabled')
+    expect(p).toContain('Not blocking')
+    expect(p).toContain('discovered-from:')
+    expect(p).toContain("outside this branch's diff never makes the verdict changes")
+    expect(p).toContain('bd search')
+    expect(p).toContain('P2 or lower')
+    expect(p).toContain('sets P0 or P1')
+    expect(p).toContain('and that is not kind 2 or 3 does not block')
+  }
+  expect(lifecycle.nodes.security!.prompt).not.toContain('P1 or higher')
+  expect(lifecycle.nodes.security!.prompt).toContain('for a person to prioritize')
+  expect(lifecycle.nodes.security!.prompt).toContain('that is not kind 1, 2 or 3 does not block')
+})
+
+test('plan names the proof for each AC, negative rows and a fail-closed class rule (2ida AC5)', () => {
+  const p = lifecycle.nodes.plan!.prompt
+  expect(p).toContain('the test or command that proves it')
+  expect(p).toContain('negative rows')
+  expect(p).toContain('one fail-closed rule')
+  expect(p).toContain('out of scope')
+})
+
 test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
   const decision = { to: 'done', defer: { station: 'plan' } }
   expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
@@ -579,14 +616,4 @@ test('every station model id of every factory resolves to a known id', async () 
   }
   expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
   expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
-})
-
-test('review, security and check prompts hold the out-of-diff rule (claude-factory-nwlh.4)', () => {
-  for (const n of ['review', 'security', 'check'] as const) {
-    const p = lifecycle.nodes[n]!.prompt
-    expect(p).toContain("outside this branch's diff never makes the verdict changes")
-    expect(p).toContain('bd search')
-    expect(p).toContain('P2 or lower')
-    expect(p).toContain('sets P0 or P1')
-  }
 })
