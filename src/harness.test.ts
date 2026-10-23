@@ -2,7 +2,16 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { claudeCommand, command, harnessOf, LAUNCH_LINE, readMcp, writeLaunch } from './harness'
+import {
+  claudeCommand,
+  command,
+  cutOffCall,
+  cutOffNote,
+  harnessOf,
+  LAUNCH_LINE,
+  readMcp,
+  writeLaunch,
+} from './harness'
 
 const mcp = { file: '/f/mcp.json', servers: { fx: { command: 'fx-mcp', args: ['--x'] } } }
 
@@ -120,4 +129,38 @@ test('sourcing LAUNCH_LINE in the pane shell runs the written command byte-for-b
     expect(p.exitCode, p.stderr.toString()).toBe(0)
     expect(JSON.parse(p.stdout.toString())).toEqual([promptText])
   }
+})
+
+// claude-factory-p0yt: the resume note names the call a crash cut off
+const line = (type: string, content: object[]) => JSON.stringify({ type, message: { content } })
+const use = (id: string, name: string, input: object) =>
+  line('assistant', [{ type: 'tool_use', id, name, input }])
+const result = (id: string) => line('user', [{ type: 'tool_result', tool_use_id: id, content: 'ok' }])
+
+test('cutOffCall finds the last call with no result, past a cut first line', () => {
+  const tail = [
+    '{"type":"assis', // the tail starts mid-line
+    use('a', 'Read', { file_path: '/r/x.ts' }),
+    result('a'),
+    use('b', 'Bash', { command: 'git push origin HEAD' }),
+  ].join('\n')
+  expect(cutOffCall(tail)).toEqual({ name: 'Bash', input: { command: 'git push origin HEAD' } })
+  expect(cutOffCall([use('a', 'Read', {}), result('a')].join('\n'))).toBeUndefined()
+  expect(cutOffCall('')).toBeUndefined()
+})
+
+test('cutOffNote says a read is safe to repeat and any other call may have taken effect', () => {
+  expect(cutOffNote(undefined)).toBe('')
+  expect(cutOffNote({ name: 'Grep', input: { pattern: 'x' } })).toContain('safe to repeat')
+  const bash = cutOffNote({ name: 'Bash', input: { command: 'git push origin HEAD' } })
+  expect(bash).toContain('`git push origin HEAD`')
+  expect(bash).toContain('may have taken effect')
+  expect(cutOffNote({ name: 'Edit', input: { file_path: '/r/x.ts' } })).toContain('Edit on /r/x.ts')
+  expect(cutOffNote({ name: 'Bash', input: { command: 'x'.repeat(1000) } }).length).toBeLessThan(500)
+})
+
+test('a claude launch line carries the env prefix, like codex', () => {
+  expect(command('claude', '/p.md', { env: { FACTORY_DEADLINE: '123' } })).toStartWith(
+    "FACTORY_DEADLINE='123' claude ",
+  )
 })

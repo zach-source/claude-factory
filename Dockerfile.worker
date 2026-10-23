@@ -83,6 +83,9 @@ RUN bun install --frozen-lockfile --production
 COPY bin bin
 COPY src src
 COPY factories factories
+# src imports mod (src/sidebar.ts -> mod/hooks/view), so the worker needs it too: without it `factory` fails to start
+# and serve never runs. The manager's Claude also loads it as a plugin dir: join(ROOT, 'mod') in src/cli.ts
+COPY mod mod
 RUN ln -s /opt/factory/bin/factory /usr/local/bin/factory
 
 # workers commit as the factory; Substrate's egress gateway puts the real keys in on the way out. Root (an `ax ssh`
@@ -101,8 +104,6 @@ FROM worker AS manager
 RUN nix profile install --profile /nix/var/nix/profiles/default nixpkgs#herdr nixpkgs#dolt \
   && herdr --version && dolt version
 COPY --from=axcli /ax-cli /usr/local/bin/ax
-# the manager's Claude loads the mod as a plugin dir: join(ROOT, 'mod') in src/cli.ts, with ROOT = /opt/factory
-COPY mod mod
 # the laptop-side lease code keys on this
 ENV FACTORY_IN_AX=1
 

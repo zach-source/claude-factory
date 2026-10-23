@@ -21,6 +21,7 @@ import {
   interviewAnswer,
   interviewPrompt,
   interviews,
+  ownerStep,
   runFacts,
   withProposals,
   type Interview,
@@ -978,4 +979,32 @@ test('each live run counts in one state, so a gate that is also stuck is not sub
     run({ node: 'done', rig: 'web' }),
   ])
   expect(n).toEqual({ live: 5, working: 2, gates: 1, stuck: 1, waiting: 1, rigs: { api: 1, web: 1 } })
+})
+
+test('ownerStep reads the command after "parked, waiting on:"; interviews tag only parked owner steps; mergeSame never folds them (n340)', () => {
+  expect(ownerStep('x\nParked,   Waiting on:  helm  upgrade w ')).toBe('helm upgrade w')
+  expect(ownerStep('Question: ship?')).toBeUndefined()
+  expect(
+    ownerStep(
+      'parked, waiting on: kubectl apply -f k.yaml\nQuestion: Run it?\nOptions: yes: apply | no: skip',
+    ),
+  ).toBe('kubectl apply -f k.yaml')
+  const park = (id: string, summary: string) =>
+    ({
+      id,
+      rig: 'api',
+      node: 'deploy',
+      sub: 'waiting',
+      bead: 'api-1',
+      last: { node: 'deploy', attempt: 1, outcome: 'blocked', summary, at: 1 },
+    }) as never
+  const items = interviews([
+    park('s1', 'parked, waiting on: terraform apply'),
+    park('s2', 'parked, waiting on: helm upgrade w'),
+    park('s3', 'Question: Which?\nOptions: a | b'),
+  ])
+  expect(items.map(i => i.step)).toEqual(['terraform apply', 'helm upgrade w', undefined])
+  const merged = mergeSame(items)
+  expect(merged.filter(i => i.step)).toHaveLength(2) // same bead, same question: still 2 items
+  expect(merged.every(i => !i.step || !i.also)).toBe(true)
 })

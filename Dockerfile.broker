@@ -1,6 +1,6 @@
 # The policy broker's image (docs/remote-runner.md, Policy broker): `bun src/broker.ts` with kubectl and
 # kubectl-ate, which it runs in the cluster. Build from this repo's root:
-#   docker buildx build --platform linux/amd64 -f Dockerfile.broker -t factory-broker .
+#   docker buildx build --platform linux/amd64 -f Dockerfile.broker --build-arg OP_VERSION=<x.y.z> --build-arg OP_SHA256=<sha> -t factory-broker .
 
 # kubectl-ate must match the ate-api your cluster runs: a newer or older client can send requests the
 # server cannot parse. Pass the cluster's Substrate source with SUBSTRATE_REPO and SUBSTRATE_COMMIT
@@ -13,14 +13,23 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /kubectl-ate ./cmd/kubectl
 
 FROM oven/bun:1.3.13-debian
 ARG KUBECTL_VERSION=v1.36.3
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+# POST /token/best runs bin/claude-token, which needs bash, jq and the op CLI. Pass the op release and the
+# SHA-256 of its linux amd64 zip from the op release page; the build fails when they do not match
+ARG OP_VERSION
+ARG OP_SHA256
+RUN test -n "${OP_VERSION}" && test -n "${OP_SHA256}" \
+  && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl bash jq unzip \
   && rm -rf /var/lib/apt/lists/* \
   && curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl \
-  && chmod +x /usr/local/bin/kubectl
+  && chmod +x /usr/local/bin/kubectl \
+  && curl -fsSL -o /tmp/op.zip https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_VERSION}/op_linux_amd64_v${OP_VERSION}.zip \
+  && echo "${OP_SHA256}  /tmp/op.zip" | sha256sum -c - \
+  && unzip -q /tmp/op.zip op -d /usr/local/bin && rm /tmp/op.zip
 COPY --from=ate /kubectl-ate /usr/local/bin/kubectl-ate
 # broker.ts imports nothing, so no package install
 WORKDIR /opt/factory
 COPY src/broker.ts src/broker.ts
+COPY bin/claude-token /usr/local/bin/claude-token
 USER bun
 EXPOSE 8080
 ENTRYPOINT ["bun", "/opt/factory/src/broker.ts", "serve"]

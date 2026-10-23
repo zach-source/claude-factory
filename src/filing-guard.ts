@@ -62,7 +62,8 @@ export function filingGuard(
     .flatMap(b => {
       const actor = filingActor(b.created_by)
       if (!actor) return []
-      const at = b.created_at ? new Date(b.created_at).getTime() : now
+      const t = b.created_at ? new Date(b.created_at).getTime() : now
+      const at = Number.isFinite(t) ? t : now
       const station = actor.run && actor.station ? `${actor.run}/${actor.station}` : undefined
       return now - at < windowMs ? [{ b, at, station, cluster: clusterKey(b) }] : []
     })
