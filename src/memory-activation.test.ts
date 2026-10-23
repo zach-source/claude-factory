@@ -6,6 +6,9 @@ import {
   activation,
   ACTIVATION_MAX,
   activationBonus,
+  applyTiers,
+  type CoreCandidate,
+  coreNotes,
   compact,
   decide,
   type Decision,
@@ -21,6 +24,7 @@ import {
   usageEvents,
   use,
   type UsageEvent,
+  withoutCoreLine,
 } from './memory'
 
 // claude-factory-3u1.2.1: an ACT-R base-level activation over the last 90 days of usage events (research R1)
@@ -223,4 +227,62 @@ test('rank() breaks a near-tie for the more used note, but a clearly more releva
   expect(order(['a/plain.md', 'a/used-close.md'])).toEqual(['a/plain.md', 'a/used-close.md'])
   expect(order(['a/plain.md', 'a/used-close.md'], used)).toEqual(['a/used-close.md', 'a/plain.md'])
   expect(order(['a/plain.md', 'a/used-far.md'], used)).toEqual(['a/plain.md', 'a/used-far.md'])
+})
+
+// claude-factory-3u1.3.3 (FR-021): a CORE.md fact that keeps being contradicted goes back to a note
+test.each<[string, CoreCandidate, string]>([
+  [
+    'contradicted twice, nothing for it: demote',
+    { path: 'CORE.md#a', contradicted: 2, activation: A([ev('contradicted', 1), ev('contradicted', 2)]) },
+    'demote',
+  ],
+  [
+    'contradicted once: not yet',
+    { path: 'CORE.md#a', contradicted: 1, activation: A([ev('contradicted', 1)]) },
+    '',
+  ],
+  [
+    'contradicted twice but helped more: keep',
+    {
+      path: 'CORE.md#a',
+      contradicted: 2,
+      activation: A([ev('contradicted', 1), ev('contradicted', 2), ...[1, 1, 1].map(d => ev('helped', d))]),
+    },
+    '',
+  ],
+])('decide() core: %s', (_, core, want) => {
+  expect(kindOf(decide([], [], [], { core: [core] }))).toBe(want)
+})
+
+test('decide() names the contradictions in a demote reason', () => {
+  expect(decide([], [], [], { core: [{ path: 'CORE.md#a', contradicted: 3, activation: -13.8 }] })).toEqual([
+    { kind: 'demote', path: 'CORE.md#a', reason: 'contradicted 3 times, activation -13.80' },
+  ])
+})
+
+test.each([
+  ['the only line', '- a\n', 'a', ''],
+  ['a top line', '- a\n- b\n\n## rig: x\n- c\n', 'a', '- b\n\n## rig: x\n- c\n'],
+  ['a rig line', '- a\n\n## rig: x\n- c\n', 'c', '- a\n\n## rig: x\n'],
+])('withoutCoreLine: %s', (_, core, line, want) => {
+  expect(withoutCoreLine(core, line)).toBe(want)
+})
+
+test('applyTiers() demotes a contradicted CORE.md line to an inbox note and keeps its usage under the new path', () => {
+  const dir = join(tmpdir(), `memory-demote-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'CORE.md'), '- keep this line\n- push twice to be safe\n')
+  const bad = coreNotes(dir).find(n => n.summary === 'push twice to be safe')!.path
+  use(dir, [bad], 'contradicted', now - DAY, 'r1/verify')
+  use(dir, [bad], 'contradicted', now - 2 * DAY, 'r2/verify')
+  const { decisions, demoted, renamed } = applyTiers(dir, { now, topicCap: Infinity })
+  expect(decisions.map(d => d.kind)).toEqual(['demote'])
+  expect(demoted).toBe(1)
+  expect(readFileSync(join(dir, 'CORE.md'), 'utf8')).toBe('- keep this line\n')
+  const note = readFileSync(join(dir, renamed[bad]!), 'utf8')
+  expect(renamed[bad]).toStartWith('inbox/')
+  expect(note).toContain('summary: push twice to be safe')
+  expect(note).toContain('contradicted 2 times')
+  rmSync(dir, { recursive: true, force: true })
 })
