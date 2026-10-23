@@ -172,6 +172,7 @@ import {
   onHost,
   parseGitlabLabeled,
   parseMergedPrs,
+  shortBeadId,
   parseRemote,
   sameFile,
   spawnGh,
@@ -5523,6 +5524,18 @@ async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh
   })
   if (search.code !== 0) throw new Error(clip(search.err.trim().split('\n')[0] || 'gh pr list failed', 200))
   const found = parseMergedPrs(search.out)
+  // claude-factory-jxl.1: a title may cite only the short child id ("192.6"); the full-id search misses it
+  const short = shortBeadId(id)
+  if (short) {
+    const byShort = await gh(
+      ['pr', 'list', '--state', 'merged', '--search', short, '--json', fields, '-L', '30'],
+      {
+        cwd: repo,
+        timeout: PRECHECK_TIMEOUT_MS,
+      },
+    )
+    if (byShort.code === 0) found.push(...parseMergedPrs(byShort.out))
+  }
   // claude-factory-6as.9: a failed `--head` call must not discard a hit `--search` already found.
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.

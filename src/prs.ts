@@ -139,6 +139,16 @@ export function citesBead(id: string, text: string): boolean {
   return new RegExp(`(?<![\\w.-])${esc}(?![\\w-]|\\.\\w)`).test(text)
 }
 
+/**
+ * claude-factory-jxl.1: PR titles often cite a child bead without its rig prefix ("192.6", "81tz.2").
+ * Return that short form for a dotted child id, or null. A bare id such as "acme-wmsr" or a tiny one
+ * such as "acme-1.2" gives null, as those words and numbers occur in unrelated titles.
+ */
+export function shortBeadId(id: string): string | null {
+  const short = id.slice(id.indexOf('-') + 1)
+  return id.includes('-') && /^[a-z0-9]{3,}(\.\d+)+$/i.test(short) ? short : null
+}
+
 /** a merged PR, as `parseMergedPrs` reads it off `gh pr list --json number,url,title,headRefName,mergeCommit` */
 export type MergedPr = {
   number: number
@@ -178,11 +188,17 @@ export function alreadyDone(
   prs: MergedPr[],
   ctx: { childIds: string[]; allChildrenClosed: boolean; runBranches: string[] },
 ): AlreadyDoneHit | null {
+  const short = shortBeadId(id)
   for (const pr of prs) {
     if (pr.state !== 'MERGED') continue
     const citesChild =
       ctx.childIds.length > 0 && ctx.allChildrenClosed && ctx.childIds.some(c => citesBead(c, pr.title))
-    if (citesBead(id, pr.title) || ctx.runBranches.includes(pr.headRefName) || citesChild)
+    if (
+      citesBead(id, pr.title) ||
+      (short !== null && citesBead(short, pr.title)) ||
+      ctx.runBranches.includes(pr.headRefName) ||
+      citesChild
+    )
       return {
         kind: 'merged-pr',
         pr: { number: pr.number, url: pr.url, title: pr.title, mergeCommit: pr.mergeCommit },
