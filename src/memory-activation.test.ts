@@ -2,7 +2,22 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { activation, compact, eventWeight, format, usage, usageEvents, use, type UsageEvent } from './memory'
+import {
+  activation,
+  compact,
+  decide,
+  type Decision,
+  envTheta,
+  eventWeight,
+  format,
+  type LongCandidate,
+  type ShortCandidate,
+  THETA,
+  usage,
+  usageEvents,
+  use,
+  type UsageEvent,
+} from './memory'
 
 // claude-factory-3u1.2.1: an ACT-R base-level activation over the last 90 days of usage events (research R1)
 const DAY = 24 * 60 * 60 * 1000
@@ -85,4 +100,90 @@ test('usageEvents reads raw lines with ok, and compact() keeps events within 90 
   use(dir, ['beads/a.md'], 'confirmed', now)
   expect(usageEvents(dir).get('beads/a.md')).toHaveLength(4)
   rmSync(dir, { recursive: true, force: true })
+})
+
+// claude-factory-3u1.2.2: decide() reads activation against θ thresholds in place of the 7/30-day limits (research R2)
+const cand = (over: Partial<ShortCandidate>): ShortCandidate => ({
+  path: 'beads/x.md',
+  topic: 'beads',
+  ageDays: 20,
+  shown: 1,
+  helped: 0,
+  activation: -Infinity,
+  ...over,
+})
+const A = (events: UsageEvent[]) => activation(events, now)
+const kindOf = (d: Decision[]) => d.map(x => x.kind).join(',')
+
+test.each<[string, Partial<ShortCandidate>, string]>([
+  ['shown yesterday, 20 days old: merge', { activation: A([ev('shown', 1)]) }, 'merge'],
+  [
+    'shown yesterday, 6.9 days old: too young to merge',
+    { ageDays: 6.9, activation: A([ev('shown', 1)]) },
+    '',
+  ],
+  ['shown yesterday, 7 days old: merge', { ageDays: 7, activation: A([ev('shown', 1)]) }, 'merge'],
+  ['shown once 29 days ago: still merges', { ageDays: 40, activation: A([ev('shown', 29)]) }, 'merge'],
+  ['shown once 31 days ago: archive', { ageDays: 40, activation: A([ev('shown', 31)]) }, 'archive'],
+  [
+    'helped once 60 days ago: merge, not archive',
+    { ageDays: 70, activation: A([ev('helped', 60)]) },
+    'merge',
+  ],
+  ['helped once 91 days ago: out of the window, archive', { ageDays: 100, helped: 1 }, 'archive'],
+  ['activation below θa at 13.9 days old: wait', { ageDays: 13.9, activation: THETA.archive - 1 }, ''],
+  ['activation below θa at 14 days old: archive', { ageDays: 14, activation: THETA.archive - 1 }, 'archive'],
+  ['never shown, 13.9 days old: wait', { ageDays: 13.9, shown: 0 }, ''],
+  ['never shown, 14 days old: archive (FR-015)', { ageDays: 14, shown: 0 }, 'archive'],
+])('decide(): %s', (_, over, want) => {
+  expect(kindOf(decide([cand(over)], [], [], { historyDays: 100 }))).toBe(want)
+})
+
+test('decide() names the activation in its merge and archive reasons', () => {
+  expect(decide([cand({ ageDays: 8, activation: -1 })], [])).toEqual([
+    { kind: 'merge', path: 'beads/x.md', reason: 'activation -1.00, 8 days old' },
+  ])
+  expect(decide([cand({ ageDays: 31, activation: -4 })], [])).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: `activation -4.00 below ${THETA.archive}, 31 days old` },
+  ])
+  expect(decide([cand({ ageDays: 31, shown: 0 })], [])).toEqual([
+    { kind: 'archive', path: 'beads/x.md', reason: 'never shown, 31 days old' },
+  ])
+})
+
+test.each<[string, LongCandidate, string]>([
+  [
+    '3 helps yesterday across 3 runs: promote',
+    { path: 'l#a', activation: A([1, 1, 1].map(d => ev('helped', d))), runs: 3 },
+    'promote',
+  ],
+  [
+    '3 helps yesterday across 2 runs: no',
+    { path: 'l#a', activation: A([1, 1, 1].map(d => ev('helped', d))), runs: 2 },
+    '',
+  ],
+  [
+    '3 helps 30 days ago across 3 runs: faded, no',
+    { path: 'l#a', activation: A([30, 30, 30].map(d => ev('helped', d))), runs: 3 },
+    '',
+  ],
+  ['activation at θc exactly: no', { path: 'l#a', activation: THETA.promote, runs: 5 }, ''],
+])('decide() promote: %s', (_, long, want) => {
+  expect(kindOf(decide([], [long]))).toBe(want)
+})
+
+test('decide() takes θ overrides through opts.theta', () => {
+  const c = cand({ ageDays: 31, activation: -2 })
+  expect(kindOf(decide([c], []))).toBe('merge')
+  expect(kindOf(decide([c], [], [], { theta: { merge: -1, archive: -1.5, promote: 0 } }))).toBe('archive')
+})
+
+test.each<[string | undefined, number]>([
+  [undefined, THETA.merge],
+  ['-2.5', -2.5],
+  ['not a number', THETA.merge],
+  ['', THETA.merge],
+])('envTheta reads FACTORY_MEMORY_THETA_MERGE=%p as %p', (raw, want) => {
+  const env = raw === undefined ? {} : { FACTORY_MEMORY_THETA_MERGE: raw }
+  expect(envTheta(env).merge).toBe(want)
 })
