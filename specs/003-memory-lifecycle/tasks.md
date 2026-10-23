@@ -14,11 +14,11 @@ description: "Task list for the memory lifecycle (compress, age, learn)"
 
 ## Phase 1: Setup
 
-- [ ] T001 Write generic memory and run fixtures (notes of each kind, a usage history, done/aborted/active runs, and a journal with one failure class repeated over 3 runs) in `src/fixtures/memory-lifecycle/`. Use no private names (shared by all stories; part of the first bead to start).
+- [x] T001 Write generic memory and run fixtures (notes of each kind, a usage history, done/aborted/active runs, and a journal with one failure class repeated over 3 runs) in `src/fixtures/memory-lifecycle/`. Use no private names (shared by all stories; part of the first bead to start).
 
 ## Phase 2: Foundational
 
-- [ ] T002 [US5] `factory memory eval --self [n] [--seed s]` in `src/memory.ts` `evaluate()` and in `src/cli.ts`, to give a baseline before any rank change (claude-factory-9l7)
+- [x] T002 [US5] `factory memory eval --self [n] [--seed s]` in `src/memory.ts` `evaluate()` and in `src/cli.ts`, to give a baseline before any rank change (claude-factory-9l7)
 
 **Checkpoint**: the baseline recall@5 and MRR are recorded in the bead before US3 starts.
 
