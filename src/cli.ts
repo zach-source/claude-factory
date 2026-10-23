@@ -460,6 +460,8 @@ type TaskSide = {
   gitlabHost?: string
   /** the rig origin's GitHub owner, for the egress policy's per-owner key */
   githubOwner?: string
+  /** the task runs as the reviewer identity: its egress policy holds the reviewer key (claude-factory-0gww.2) */
+  reviewer?: boolean
   policy: boolean
   put?: string[]
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
@@ -666,7 +668,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress, side.gitlabHost, side.githubOwner))
+    if (!ax.createPolicy(task, side.egress, side.gitlabHost, side.githubOwner, undefined, side.reviewer))
       return { status: 'pending', agent: 'ax', pending: 'egress policy not created' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
@@ -1356,9 +1358,15 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
   const githubOwner = origin?.forge === 'github' ? origin.owner : undefined
+  const reviewer = ax.reviewerTask(node, githubOwner)
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+    ...(reviewer
+      ? [
+          `- You review as the reviewer identity (FACTORY_GH_REVIEWER=1): your gh token is not the author's, so you may approve or request changes on the exact head, as your prompt says.`,
+        ]
+      : []),
     `- Run tests the way the repo does (its make or devenv targets, not a bare go test): those set up what tests need, such as envtest's KUBEBUILDER_ASSETS.`,
     ...(rig?.env?.FACTORY_NIX_CACHE && existsSync(join(run.worktree, 'devenv.nix'))
       ? [
@@ -1403,6 +1411,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       ...env,
       ...rig?.env,
       FACTORY_FROM: node,
+      ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
       ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
       FACTORY_HOME: `${ax.OWN}/home`,
@@ -1426,7 +1435,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     egress,
     ...(gitlabHost && { gitlabHost }),
     ...(githubOwner && { githubOwner }),
-    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner),
+    ...(reviewer && { reviewer }),
+    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
