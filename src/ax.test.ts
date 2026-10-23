@@ -271,9 +271,7 @@ test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else chan
   expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
     ax.egressPolicy('v', [], undefined, undefined, 'acme'),
   )
-  expect(ax.egressPolicy('', [], undefined, undefined, 'acme', undefined, true)).toEqual(
-    ax.egressPolicy(''),
-  )
+  expect(ax.egressPolicy('', [], undefined, undefined, 'acme', undefined, true)).toEqual(ax.egressPolicy(''))
   expect(
     JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
   ).not.toContain('REVIEWER')
@@ -294,7 +292,7 @@ test('reviewerTask is true only for review, security and check with the vault an
     ' review',
   ])
     expect(ax.reviewerTask(n, 'acme', env)).toBe(false)
-  expect(ax.reviewerTask('review', 'acme', env)).toBe(false)
+  expect(ax.reviewerTask('review', 'other', env)).toBe(false)
   expect(ax.reviewerTask('review', undefined, env)).toBe(false)
   expect(ax.reviewerTask('review', 'acme', { ...env, FACTORY_AX_REVIEWER_OWNER: '' })).toBe(false)
   expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_VAULT: 'v' })).toBe(false)
