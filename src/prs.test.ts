@@ -127,6 +127,7 @@ test('alreadyDone: a shorter-ancestor title (x-1 vs x-1.2) is not a hit', () => 
 test('shortBeadId: only a dotted child id gives a short form', () => {
   expect(shortBeadId('acme-192.6')).toBe('192.6')
   expect(shortBeadId('acme-81tz.2')).toBe('81tz.2')
+  expect(shortBeadId('acme-widget-192.6')).toBe('192.6')
   expect(shortBeadId('acme-wmsr')).toBeNull()
   expect(shortBeadId('acme-1.2')).toBeNull()
   expect(shortBeadId('acme')).toBeNull()
@@ -137,6 +138,7 @@ test('alreadyDone: a title that cites the short child id (no rig prefix) is a hi
   const ctx = { childIds: [], allChildrenClosed: false, runBranches: [] }
   expect(alreadyDone('acme-192.6', [pr], ctx)?.kind).toBe('merged-pr')
   expect(alreadyDone('acme-192.7', [pr], ctx)?.kind).toBe('merged-pr')
+  expect(alreadyDone('acme-widget-192.6', [pr], ctx)?.kind).toBe('merged-pr')
   expect(alreadyDone('acme-192.60', [pr], ctx)).toBeNull()
   expect(alreadyDone('acme-192.8', [pr], ctx)).toBeNull()
   expect(alreadyDone('acme-192', [pr], ctx)).toBeNull()

@@ -408,6 +408,7 @@ function fakeGh() {
     `echo "gh $*" >> "${ghCallsLog}"`,
     'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
     'case "$*" in',
+    '  *"--search 192.6 "*) if [ -n "$GH_FAIL_SHORT" ]; then echo "gh: rate limited" >&2; exit 1; fi; if [ -n "$GH_JSON_SHORT" ]; then printf \'%s\' "$GH_JSON_SHORT"; exit 0; fi;;',
     '  *--head*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi;;',
     '  *--remove-label*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi;;',
     '  *"--search label:"*) if [ -n "$GH_LABELED" ]; then printf \'%s\' "$GH_LABELED"; exit 0; fi;;',
@@ -547,7 +548,7 @@ test('gh failing (or timing out) fails open: the run still starts, with one disp
   expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped/.test(r.error ?? ''))).toBe(true)
 })
 
-// claude-factory-6as.9: a hung or rate-limited gh costs up to 4 calls of 15s, for each candidate.
+// claude-factory-6as.9: a hung or rate-limited gh costs up to 5 calls of 15s, for each candidate.
 // One candidate can already prove gh broken for this pass. Dispatch must not pay that cost again
 // for the rest. It must fail every other candidate open, with no further gh call.
 test('a gh failure for the first candidate fails every later candidate open with no further gh call (claude-factory-6as.9)', () => {
@@ -573,6 +574,27 @@ test('a --search hit still rejects the bead even when a --head call for its run 
   expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
   const ghCalls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
   expect(ghCalls.some(l => l.includes('--head'))).toBe(true) // the --head call ran, and failed
+})
+
+// claude-factory-jxl.1: a title may cite only the short child id; a second --search finds it
+test('a PR that cites only the short child id rejects a dotted bead (claude-factory-jxl.1)', () => {
+  precheckReset({ id: 'acme-192.6' })
+  const out = pfactory(['beads'], { GH_JSON: '[]', GH_JSON_SHORT: mergedPr('Manager lease (192.6, 192.7)') })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(0)
+  const bdCalls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+})
+
+test('a failed short-id search keeps the full-id hit (claude-factory-jxl.1)', () => {
+  precheckReset({ id: 'acme-192.6' })
+  const out = pfactory(['beads'], {
+    GH_JSON: mergedPr('fix: acme-192.6 lands the thing'),
+    GH_FAIL_SHORT: '1',
+  })
+  expect(out.code).toBe(0)
+  expect(runDirs()).toHaveLength(0)
+  expect(readFileSync(ghCallsLog, 'utf8')).toContain('--search 192.6 ')
 })
 
 test('a person-requeued bead (rejected_by=dispatch metadata) starts, with 0 gh calls', () => {

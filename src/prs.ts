@@ -145,7 +145,7 @@ export function citesBead(id: string, text: string): boolean {
  * such as "acme-1.2" gives null, as those words and numbers occur in unrelated titles.
  */
 export function shortBeadId(id: string): string | null {
-  const short = id.slice(id.indexOf('-') + 1)
+  const short = id.slice(id.lastIndexOf('-') + 1)
   return id.includes('-') && /^[a-z0-9]{3,}(\.\d+)+$/i.test(short) ? short : null
 }
 
