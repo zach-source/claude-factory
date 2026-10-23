@@ -493,33 +493,41 @@ export async function search(
 /**
  * one line of a fixed query set. `expect` is a substring of the path or the summary of the note that the
  * search for `query` must surface: summary text survives a merge into LONG.md, where the path does not.
+ * `category` (FR-023, research R10): update asks for the note that replaced an old one, temporal for a
+ * time-bound fact, abstain for a question memory must not answer. An abstain case has no `expect`: it
+ * hits when search returns nothing above FLOOR.
  */
-export type EvalCase = { query: string; expect: string; rig?: string }
+export type EvalCase = { query: string; expect?: string; rig?: string; category?: EvalCategory }
+export type EvalCategory = 'update' | 'temporal' | 'abstain'
+export type EvalScore = { recall: number; mrr: number; n: number }
 export type EvalResult = {
   recall: number // the fraction of cases where `expect` was somewhere in the results
   mrr: number // the mean of 1/rank over every case; 0 for a case that missed entirely
   misses: EvalCase[]
+  categories: Partial<Record<EvalCategory, EvalScore>> // the same scores over each category's cases
 }
 
 /** pure: scores a fixed query set against results already searched for, so a test needs no search() call */
 export function evalScore(cases: EvalCase[], results: string[][]): EvalResult {
-  let hits = 0
-  let rrSum = 0
-  const misses: EvalCase[] = []
-  cases.forEach((c, i) => {
-    const rank = (results[i] ?? []).findIndex(path => path.includes(c.expect))
-    if (rank < 0) {
-      misses.push(c)
-      return
-    }
-    hits++
-    rrSum += 1 / (rank + 1)
+  // the reciprocal rank of each case: 1/rank of its first hit, 0 for a miss
+  const rr = cases.map((c, i) => {
+    const found = results[i] ?? []
+    if (c.category === 'abstain') return found.length ? 0 : 1
+    const rank = c.expect === undefined ? -1 : found.findIndex(path => path.includes(c.expect!))
+    return rank < 0 ? 0 : 1 / (rank + 1)
   })
-  return {
-    recall: cases.length ? hits / cases.length : 1,
-    mrr: cases.length ? rrSum / cases.length : 1,
-    misses,
+  const score = (idx: number[]): EvalScore => ({
+    recall: idx.length ? idx.filter(i => rr[i]! > 0).length / idx.length : 1,
+    mrr: idx.length ? idx.reduce((s, i) => s + rr[i]!, 0) / idx.length : 1,
+    n: idx.length,
+  })
+  const all = score(cases.map((_, i) => i))
+  const categories: EvalResult['categories'] = {}
+  for (const k of ['update', 'temporal', 'abstain'] as const) {
+    const idx = cases.flatMap((c, i) => (c.category === k ? [i] : []))
+    if (idx.length) categories[k] = score(idx)
   }
+  return { recall: all.recall, mrr: all.mrr, misses: cases.filter((_, i) => !rr[i]), categories }
 }
 
 /** a seeded PRNG (mulberry32): the same seed samples the same notes, so two evals compare */
