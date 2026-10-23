@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   activation,
+  ACTIVATION_MAX,
+  activationBonus,
   compact,
   decide,
   type Decision,
@@ -11,6 +13,8 @@ import {
   eventWeight,
   format,
   type LongCandidate,
+  type Note,
+  rank,
   type ShortCandidate,
   THETA,
   usage,
@@ -186,4 +190,37 @@ test.each<[string | undefined, number]>([
 ])('envTheta reads FACTORY_MEMORY_THETA_MERGE=%p as %p', (raw, want) => {
   const env = raw === undefined ? {} : { FACTORY_MEMORY_THETA_MERGE: raw }
   expect(envTheta(env).merge).toBe(want)
+})
+
+// claude-factory-3u1.2.3 (FR-013, research R3): rank() adds clamp(A, 0, ACTIVATION_MAX) / ACTIVATION_MAX · 0.02
+test.each<[string, number, number]>([
+  ['no events', -Infinity, 0],
+  ['below 0', -2, 0],
+  ['half of the max', ACTIVATION_MAX / 2, 0.01],
+  ['at the max', ACTIVATION_MAX, 0.02],
+  ['past the max', ACTIVATION_MAX * 3, 0.02],
+])('activationBonus: %s', (_, a, want) => {
+  expect(activationBonus(a)).toBeCloseTo(want, 12)
+})
+
+test('rank() breaks a near-tie for the more used note, but a clearly more relevant note still wins', () => {
+  const note = (path: string): Note => ({ path, summary: path, body: '', tier: 'short' })
+  const vecs: Record<string, number[]> = {
+    'a/plain.md': [1, 0],
+    'a/used-close.md': [0.99, 0], // 0.01 below: inside the 0.02 bonus
+    'a/used-far.md': [0.95, 0], // 0.05 below: past it
+  }
+  const used = (n: Note) => (n.path.startsWith('a/used') ? ACTIVATION_MAX : -Infinity)
+  const order = (paths: string[], act?: (n: Note) => number) =>
+    rank(
+      paths.map(note),
+      n => vecs[n.path]!,
+      () => undefined,
+      [1, 0],
+      undefined,
+      act,
+    ).map(f => f.note.path)
+  expect(order(['a/plain.md', 'a/used-close.md'])).toEqual(['a/plain.md', 'a/used-close.md'])
+  expect(order(['a/plain.md', 'a/used-close.md'], used)).toEqual(['a/used-close.md', 'a/plain.md'])
+  expect(order(['a/plain.md', 'a/used-far.md'], used)).toEqual(['a/plain.md', 'a/used-far.md'])
 })

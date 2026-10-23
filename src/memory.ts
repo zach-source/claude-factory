@@ -395,6 +395,14 @@ const dot = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i]!, 0
 // a higher tier already survived a dream's judgment, so it outranks a short note at a near-equal match;
 // a short note still wins a search its tier mate loses outright (see the memory-long-0.005-vs-0.02 test)
 export const TIER_BONUS: Record<Tier, number> = { short: 0, long: 0.01, fact: 0.02 }
+/** the activation that earns the whole rank bonus: ln(20), about 20 helps a day ago */
+export const ACTIVATION_MAX = Math.log(20)
+/**
+ * at most 0.02, the scale of TIER_BONUS.fact, so use breaks only a near-tie and relevance still wins
+ * (claude-factory-3u1.2.3, research R3). -Infinity (no events) and below 0 earn nothing.
+ */
+export const activationBonus = (a: number) =>
+  (Math.min(Math.max(a, 0), ACTIVATION_MAX) / ACTIVATION_MAX) * 0.02
 /** a note of another rig never comes up; a note with no rig holds everywhere */
 export const rank = (
   notes: Note[],
@@ -402,6 +410,7 @@ export const rank = (
   topicVec: (topic: string) => number[] | undefined,
   query: number[],
   rig?: string,
+  act?: (n: Note) => number,
 ) =>
   notes
     .filter(n => !n.rig || !rig || n.rig === rig)
@@ -409,7 +418,7 @@ export const rank = (
       const own = dot(vec(n), query)
       const t = topicVec(topicOf(n))
       const base = t ? (1 - TOPIC_WEIGHT) * own + TOPIC_WEIGHT * dot(t, query) : own
-      return { note: n, score: base + TIER_BONUS[n.tier ?? 'short'] }
+      return { note: n, score: base + TIER_BONUS[n.tier ?? 'short'] + (act ? activationBonus(act(n)) : 0) }
     })
     .sort((a, b) => b.score - a.score)
 
@@ -484,8 +493,11 @@ export async function search(
   const all = [...notes, ...coreNotes(dir)]
   const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])
+  const events = usageEvents(dir)
+  const now = Date.now()
+  const act = (n: Note) => activation(events.get(n.path) ?? [], now)
   return close(
-    rank(all, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig),
+    rank(all, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig, act),
     limit,
   )
 }
