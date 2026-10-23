@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beads, shipQueueText, type Bead } from './beads'
+import { beads, shipQueueLines, shipQueueText, type Bead } from './beads'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 
@@ -144,6 +144,28 @@ test('shipQueue lists open ship beads oldest ship_at first and marks the first n
     expect(lines[0]).toMatch(/^next +fx-1 +p1 +r1 +2h/)
     expect(lines[1]).toMatch(/^ {5}fx-2 +p2 +r2 +1h/)
     expect(shipQueueText([], 0)).toBe('ship queue empty')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('shipQueueLines: the host queue as brief lines; a bd failure is never an empty queue', () => {
+  const f = fakeBd('fake-bd-qlines')
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const mk = (id: string, at: string) =>
+      bead(id, { labels: ['ship'], metadata: { ship_at: at, ship_pr: `#${id}` } })
+    writeFileSync(f.list, JSON.stringify([mk('fx-2', '2026-01-02'), mk('fx-1', '2026-01-01')]))
+    const lines = shipQueueLines(tmpdir())
+    expect(lines[0]).toContain('cannot read it in this VM')
+    expect(lines[1]).toMatch(/^next +fx-1/)
+    writeFileSync(f.list, '[]')
+    expect(shipQueueLines(tmpdir()).join('\n')).toContain('ship queue empty')
+    writeFileSync(join(f.bin, 'bd'), '#!/bin/sh\necho boom >&2\nexit 1\n')
+    const bad = shipQueueLines(tmpdir()).join('\n')
+    expect(bad).toContain('could not read')
+    expect(bad).not.toContain('ship queue empty')
   } finally {
     process.env.PATH = path
   }

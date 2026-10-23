@@ -61,6 +61,17 @@ export const shipQueueText = (queue: Bead[], now = Date.now()) =>
         })
         .join('\n')
     : 'ship queue empty'
+/** the host's ship queue as brief lines, for a ship worker whose VM cannot run `factory ship <rig>` */
+export const shipQueueLines = (repo: string, now = Date.now()): string[] => {
+  try {
+    return [
+      '- The ship queue, as the host read it when this station started (factory ship <rig> cannot read it in this VM):',
+      ...shipQueueText(beads(repo, 'factory').shipQueue(), now).split('\n'),
+    ]
+  } catch (e) {
+    return [`- The host could not read the ship queue: ${String((e as Error).message ?? e).slice(0, 300)}`]
+  }
+}
 export const hasBeads = (repo: string) => existsSync(join(repo, '.beads'))
 /** the run owns its bead under this name; its workers write as `<actor>/<station>` */
 export const actorOf = (runId: string) => `factory/${runId}`
