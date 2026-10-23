@@ -458,6 +458,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `plan` no longer files `epic-done-open` for an epic that has the `ship` label (claude-factory-xuav.1). Before, `repairs` closed a ship-queued epic as "every child is closed" before its PR merged. The epic still closes with `shipped:` after a person merges its PR.
 - New: `repairs` has a `reship` repair (claude-factory-xuav.2). It reopens a bead that was closed as "every child is closed" while its ship PR is still open, and adds the `ship` label. It adds no claim. Reships count toward the repair cap.
 - Fix: the `syncpass` test gives each test its own home directory (claude-factory-zhop). Detached `factory tick` children no longer write into the next test.
+- Fix: `factory dispatch` and `factory start` look up station names as own keys (claude-factory-dax). Before, the label `station:constructor` passed the station check through the prototype chain. The run then started at the factory start station.
 
 ## 0.13.0 (2026-10-18)
 

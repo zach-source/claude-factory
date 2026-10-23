@@ -5856,7 +5856,7 @@ async function dispatch() {
         }
         // a station the chosen factory lacks would otherwise start the run quietly at its own
         // first station (`def.start`, below), with no sign anywhere that the label was wrong
-        if (at && !nodes[at]) {
+        if (at && !Object.hasOwn(nodes, at)) {
           deferCandidate(`station ${at} not in factory ${name}`)
           continue
         }
@@ -5911,7 +5911,7 @@ async function dispatch() {
             errors.push({ id: bead.id, error: (err as Error).message })
           }
         }
-        if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
+        if (at && at !== def.start && Object.hasOwn(def.nodes, at)) post(run.id, { type: 'GOTO', node: at })
         busy.push(rig.name)
         started.add(bead.id)
       }
@@ -6977,7 +6977,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   const [spec, at] = factory!.split(/@(?=[^@/]+$)/)
   // the checkout's version answers the station question; the run pins the version its own commit holds
   const preview = await loadFactory(factorySource(spec!, root))
-  if (at && !preview.nodes[at])
+  if (at && !Object.hasOwn(preview.nodes, at))
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
   if (preview.name === 'ship')
     fail(
@@ -6985,7 +6985,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
     )
   const linked = beadFor(root, goal, { isOwnerOk })
   const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
-  if (at && at !== def.start && def.nodes[at]) post(run.id, { type: 'GOTO', node: at })
+  if (at && at !== def.start && Object.hasOwn(def.nodes, at)) post(run.id, { type: 'GOTO', node: at })
   await tick() // launches the first worker now rather than at the next tick
   console.log(
     `started ${run.id} in ${run.worktree} (herdr workspace ${run.ws}), following ${run.factoryFrom}${run.bead ? `, bead ${run.bead}` : ''}`,
@@ -6995,7 +6995,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
 async function fork(id: string | undefined, station: string | undefined, note: string) {
   const { run: src, value } = current(id)
   const def = await loadFactory(src.factory)
-  if (!def.nodes[station ?? ''])
+  if (!Object.hasOwn(def.nodes, station ?? ''))
     fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
   await assertRoom(src.repo)
   const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
