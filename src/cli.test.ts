@@ -1746,7 +1746,7 @@ test('memory helped on a real note still exits 0 and logs it', () => {
   const home = freshMemoryAddHome('helped-real-note')
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
   writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
-  const r = runMemoryHelped(home, ['beads/x.md'])
+  const r = runMemoryHelped(home, ['--from', 'r1/verify', 'beads/x.md'])
   expect(r.code).toBe(0)
   expect(r.out).toContain('noted:')
   expect(usageLinesOf(home).map(l => l.path)).toEqual(['beads/x.md'])
