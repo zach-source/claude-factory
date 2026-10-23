@@ -467,6 +467,7 @@ minor release may change the factory format, the CLI or the run state.
 - New: dispatch caps the live runs of one cluster in a rig (claude-factory-nwlh.3). A candidate whose cluster already holds `clusterRuns` live runs (default 2, set by hand in `rigs.json`) does not start. Its `dispatch.json` row says `cluster <key>: N live runs`.
 - Fix: `repairs` no longer leaves a ship-queue bead closed as "every child is closed" (claude-factory-xuav.3). If the ship PR is still open, the `reship` repair reopens the bead. It writes each reship to `repairs.jsonl`.
 - Fix: the dispatch pre-check matches a PR title with only the short child id, such as "192.6" (claude-factory-jxl.1). Triage no longer rejects these beads as already done.
+- Fix: an AX ship run can read its queue (claude-factory-cd6c). A ship run has no bead. Its VM had no bd store and no `rigs.json`. So `factory ship <rig>` failed with `no rig <rig>`. Now the host reads the ship queue and puts it in the station brief (`shipQueueLines`). If bd fails, the brief says that the host cannot read the queue. The ship VM also gets the rig's bd store, as a bead run does (`vmBeads`). The queue station can then comment, relabel and defer.
 
 ## 0.13.0 (2026-10-18)
 
