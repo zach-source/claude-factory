@@ -1083,9 +1083,14 @@ rows = [
   manager the new, changed and reaped ones, and it reads each and runs `factory skills install
 <name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
   are in the memory's git history like its notes.
-- **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
-  from their Claude transcripts. The tick also mails the manager this table for the last 7 days once a
-  week (`HOME/token-digest.json` holds the date). `FACTORY_TOKEN_DIGEST=0` turns the mail off.
+- **Tokens**: `factory metrics --tokens` shows what the workers spent, by station and model. It
+  shows input, cache write, cache read and output tokens, the cache hit rate and a cost estimate in
+  USD. It also shows the manager's patrol, pm, briefer and dream sessions. It reads the usage that
+  each run stores (`runs/<id>/usage.jsonl`, copied to the run's `metrics.jsonl` line by
+  `factory rm`) and `manager-usage.jsonl`. It reads no transcript, so a removed run still counts.
+  `--json` adds a `tokens` object. A run that ended before this change has no usage.
+  The tick also mails the manager this table for the last 7 days once a week
+  (`HOME/token-digest.json` holds the date). `FACTORY_TOKEN_DIGEST=0` turns the mail off.
   `FACTORY_TOKEN_DIGEST_MS` sets the period.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
