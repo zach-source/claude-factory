@@ -459,6 +459,7 @@ minor release may change the factory format, the CLI or the run state.
 - New: `repairs` has a `reship` repair (claude-factory-xuav.2). It reopens a bead that was closed as "every child is closed" while its ship PR is still open, and adds the `ship` label. It adds no claim. Reships count toward the repair cap.
 - Fix: the `syncpass` test gives each test its own home directory (claude-factory-zhop). Detached `factory tick` children no longer write into the next test.
 - Fix: `factory dispatch` and `factory start` look up station names as own keys (claude-factory-dax). Before, the label `station:constructor` passed the station check through the prototype chain. The run then started at the factory start station.
+- Fix: the requeue cap treats a non-numeric `requeues` value as at the cap (claude-factory-yo9). Before, `x` or `NaN` read as NaN, `NaN >= REQUEUE_MAX` was false, and `requeue()` wrote NaN back. Now `track()` defers the bead, and `requeue()` reads a non-finite count as 0.
 
 ## 0.13.0 (2026-10-18)
 
