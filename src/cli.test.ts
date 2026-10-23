@@ -7,6 +7,7 @@ import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
   brief,
+  vmBeads,
   clipFactsJson,
   clipReport,
   CONFIG_SYNC,
@@ -1952,4 +1953,11 @@ test('the ship release prompt merges only under a Merge authority section; deplo
   expect(ship.nodes.release.prompt).toContain('"Merge authority" section')
   expect(ship.nodes.release.prompt).toContain('Without that section, you never merge')
   expect(ship.nodes.deploy.prompt).toContain('you never merge it yourself')
+})
+
+// claude-factory-pfc8: an AX ship run has no bead, yet its queue station reads the ship queue from bd
+test('vmBeads gives the VM beads for a run with a bead and for a ship run', () => {
+  expect(vmBeads({ bead: 'app-1' })).toBe(true)
+  expect(vmBeads({ ship: true })).toBe(true)
+  expect(vmBeads({})).toBe(false)
 })

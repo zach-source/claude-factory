@@ -8,7 +8,8 @@ import type { Factory } from '../src/machine'
 //   monitor   production watch, read-only, every 30 min, on a rig with a `--slo` command set
 //   ci        red main-branch CI, every 2 h; a run starts only when `sweep()` finds a new red
 //   flakes    flaky tests of the last 7 days, once a week; a run starts only when it finds a candidate
-//   maintain  dependency, advisory and docs maintenance, once a day
+//   advisories  dependency and base-image CVEs, once a week; `factory advisories file` does the filing
+//   maintain  dependency, end-of-life runtime and docs maintenance, once a day
 //   improve   refactor, performance, cost and factory-health review, once a day, lens in rotation
 //   hygiene   proposes closing shipped, duplicate and stale beads, once a day, in code (no model, no run)
 //
@@ -102,10 +103,25 @@ Report filed with the ids and the beads you filed.`,
     maintain: {
       everyMin: 1440,
       timeoutMin: 60,
-      prompt: `One pass of maintenance. Look for, most urgent first: security advisories on dependencies and base images; deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code. The ci and flakes sweeps own red main-branch CI and flaky tests: do not file those.
-File each item worth doing as separate work, at most five per pass, skipping what is already tracked. A security advisory starts on its own at the plan station, labeled sweep-queue:critical-advisory; everything else is for a person to prioritize.
+      prompt: `One pass of maintenance. Look for, most urgent first: deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code. The ci and flakes sweeps own red main-branch CI and flaky tests: do not file those.
+File each item worth doing as separate work, at most five per pass, skipping what is already tracked. The advisories sweep owns security advisories; do not file them. Everything else is for a person to prioritize.
 ${guardNote('maintain')}
 Report filed with what you filed and what you skipped on purpose.`,
+      next: { filed: 'done' },
+    },
+    advisories: {
+      runner: LAPTOP, // the person's gh reads Dependabot alerts, and the live bin/factory has the filing command
+      everyMin: 10080,
+      timeoutMin: 45,
+      prompt: `One pass of the advisories sweep: dependency and base-image CVEs. You only collect. A command does the dedupe and the filing.
+1. Dependabot: \`gh api --paginate 'repos/<owner>/<repo>/dependabot/alerts?state=open'\`. If it answers 403 or 404, set dependabot to "off". A person must enable the alerts; you never do.
+2. Also run the audit tool of each lockfile: \`bun audit --json\`, \`npm audit --json\`, \`govulncheck -json\`, \`pip-audit -f json\`. On a GitOps rig, scan the image refs with trivy or grype if installed; if not, write "image scan skipped" in your report.
+3. Read the installed version of each package from the lockfile. Use null when you cannot find it, and null for a missing fix.
+4. Write .scratch/advisories.json: {"repo":"<owner>/<repo>","dependabot":"ok"|"off","advisories":[{"id":"GHSA-...|CVE-...","aliases":[],"severity":"critical|high|medium|low","package":"","ecosystem":"","installed":"1.2.3"|null,"fixed":"1.2.4"|null,"source":"dependabot|bun-audit|...","manifest":"bun.lock"}]}. Copy no free text (summary, description) into it: the command refuses a bad field and files nothing.
+5. Run \`factory advisories file .scratch/advisories.json\`. It skips every advisory id already filed, files critical and high ones (a major-version bump is held for a person, with no auto-start label), and puts medium and low ones in one digest bead. Never file an advisory bead by hand, and never set a label on one.
+No lockfile and no image refs: report filed 0.
+${guardNote('advisories')}
+Report filed with the command's last line (filed N, queued, held, digest rows, owner step).`,
       next: { filed: 'done' },
     },
     improve: {

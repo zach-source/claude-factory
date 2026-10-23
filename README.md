@@ -681,6 +681,7 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 | ci       | every 2 h     | `gh` logged in on the laptop; a model runs only when main CI is red |
 | flakes   | weekly        | `gh` logged in on the laptop; a model runs only when a test flaked |
 | maintain | daily         | nothing extra                          |
+| advisories | weekly      | nothing extra (see below)              |
 | improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
 | hygiene  | daily, in code (no model, no run); proposes closes, never closes | nothing extra |
 
@@ -723,6 +724,28 @@ stale beads. It adds the label `stale?` and the comment `proposed close: <kind>:
 each, and files one digest bead. It never closes a bead. `factory hygiene <rig>` prints what a pass
 would propose and writes nothing. `FACTORY_HYGIENE=0` turns the pass off. See
 [Hygiene sweep](docs/beads.md#hygiene-sweep).
+
+**Advisories sweep**: once a week, on the laptop, a model reads the Dependabot alerts
+(`gh api repos/<owner>/<repo>/dependabot/alerts`) and the audit tool of each lockfile. It writes
+the result to `.scratch/advisories.json`. The model never files a bead. The command
+`factory advisories file <path>` checks the file and files the beads. It refuses to run unless
+`BEADS_ACTOR` is an advisories sweep run, so the flood guard applies to every bead.
+
+- One bead for each advisory id (GHSA or CVE). A bead stores one `adv_<id>` metadata key for its
+  id and one for each alias. The command skips an id when any bead, a closed bead included,
+  holds its key.
+- A critical or high advisory gets the labels `factory`, `station:plan` and
+  `sweep-queue:critical-advisory` (P1 critical, P2 high) when the fix is not a major bump. A
+  fix is a major bump when the major version rises, or, for a `0.x` version, when the minor
+  version rises (`4.17.20` to `5.0.0`, `0.3.1` to `0.4.0`, `node:18` to `node:20`). A major bump,
+  an unknown installed version or no fix gives a held bead with none of these labels.
+- Medium and low advisories go in one open digest bead for each rig (metadata
+  `advisory_digest=<repo>`), with no `factory` label. Each pass writes its description again.
+- If the Dependabot read gets 403 or 404, the command files one bead with the label `human`,
+  titled `Enable Dependabot alerts on <repo>`. It shows in the Interview tab. The factory never
+  enables alerts. The owner does this step.
+- The input is untrusted. The command refuses the whole file when one field does not match its
+  pattern. A bead holds only checked fields and a fixed advisory URL, never advisory text.
 
 A pinned run from before this design (`claude-factory-8pc`) still loads its own copy of the
 sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
@@ -1066,9 +1089,14 @@ rows = [
   manager the new, changed and reaped ones, and it reads each and runs `factory skills install
 <name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
   are in the memory's git history like its notes.
-- **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
-  from their Claude transcripts. The tick also mails the manager this table for the last 7 days once a
-  week (`HOME/token-digest.json` holds the date). `FACTORY_TOKEN_DIGEST=0` turns the mail off.
+- **Tokens**: `factory metrics --tokens` shows what the workers spent, by station and model. It
+  shows input, cache write, cache read and output tokens, the cache hit rate and a cost estimate in
+  USD. It also shows the manager's patrol, pm, briefer and dream sessions. It reads the usage that
+  each run stores (`runs/<id>/usage.jsonl`, copied to the run's `metrics.jsonl` line by
+  `factory rm`) and `manager-usage.jsonl`. It reads no transcript, so a removed run still counts.
+  `--json` adds a `tokens` object. A run that ended before this change has no usage.
+  The tick also mails the manager this table for the last 7 days once a week
+  (`HOME/token-digest.json` holds the date). `FACTORY_TOKEN_DIGEST=0` turns the mail off.
   `FACTORY_TOKEN_DIGEST_MS` sets the period.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
