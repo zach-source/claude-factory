@@ -231,7 +231,7 @@ the person binds every station, not only the manager.
 factory rig add web ~/repos/web --max 4                     # all of factories/sweeps.ts's sweeps
 factory rig add app ~/repos/app --max 3 --sweeps none --goal finish the v2 features
 factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor --slo "kubectl get pods -n infra | grep -v Running"
-factory rig add docs ~/repos/docs review-loop --sweeps none
+factory rig add docs ~/repos/docs rework --sweeps none
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig rm docs                                         # nothing new starts; its runs carry on
 ```
@@ -879,11 +879,11 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 
 ## Define a factory
 
-`factories/<name>.ts` exports a graph ([review-loop](factories/review-loop.ts)):
+`factories/<name>.ts` exports a graph ([release](factories/release.ts)):
 
 ```ts
 export default {
-  name: 'review-loop',
+  name: 'implement-review',
   start: 'implement',
   nodes: {
     implement: { prompt: '...', next: { ready: 'review' } },
@@ -1061,7 +1061,9 @@ rows = [
 <name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
   are in the memory's git history like its notes.
 - **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
-  from their Claude transcripts.
+  from their Claude transcripts. The tick also mails the manager this table for the last 7 days once a
+  week (`HOME/token-digest.json` holds the date). `FACTORY_TOKEN_DIGEST=0` turns the mail off.
+  `FACTORY_TOKEN_DIGEST_MS` sets the period.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
   stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (16) runs holding a worker.

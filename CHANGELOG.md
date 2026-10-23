@@ -458,11 +458,14 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `plan` no longer files `epic-done-open` for an epic that has the `ship` label (claude-factory-xuav.1). Before, `repairs` closed a ship-queued epic as "every child is closed" before its PR merged. The epic still closes with `shipped:` after a person merges its PR.
 - New: `repairs` has a `reship` repair (claude-factory-xuav.2). It reopens a bead that was closed as "every child is closed" while its ship PR is still open, and adds the `ship` label. It adds no claim. Reships count toward the repair cap.
 - Fix: the `syncpass` test gives each test its own home directory (claude-factory-zhop). Detached `factory tick` children no longer write into the next test.
+- Removed: `factories/review-loop.ts`. No rig used it. A `rigs.json` that names `review-loop` must name `lifecycle`, `rework` or `release` instead (claude-factory-g34).
+- New: the tick mails the manager a token digest (`factory metrics --tokens`, last 7 days) once a week, from `factory`. `FACTORY_TOKEN_DIGEST=0` turns it off. `FACTORY_TOKEN_DIGEST_MS` sets the period (claude-factory-g34).
 - Fix: `factory dispatch` and `factory start` look up station names as own keys (claude-factory-dax). Before, the label `station:constructor` passed the station check through the prototype chain. The run then started at the factory start station.
 - Fix: the requeue cap treats a non-numeric `requeues` value as at the cap (claude-factory-yo9). Before, `x` or `NaN` read as NaN, `NaN >= REQUEUE_MAX` was false, and `requeue()` wrote NaN back. Now `track()` defers the bead, and `requeue()` reads a non-finite count as 0.
 - Change: lifecycle prompts cut the rework loop (claude-factory-2ida). Implement ends its ready report with a `Self-check:` block. Review, security and check share one blocking-scope rule. A gap that main also has goes to Not blocking and a filed bead. Plan names the proof and the negative rows for each AC.
 - New: dispatch holds overflow beads that factory workers file (claude-factory-nwlh.2). In one 24h window, a cluster keeps 6 top-level beads and a run/station keeps 3. A bead past a cap loses `factory`, gains `held:cluster:<key>` or `held:station`, and gets one comment. The marks are in `filing-guard.json`. `factory queue` removes the `held:*` label and releases the bead.
 - New: dispatch caps the live runs of one cluster in a rig (claude-factory-nwlh.3). A candidate whose cluster already holds `clusterRuns` live runs (default 2, set by hand in `rigs.json`) does not start. Its `dispatch.json` row says `cluster <key>: N live runs`.
+- Fix: `repairs` no longer leaves a ship-queue bead closed as "every child is closed" (claude-factory-xuav.3). If the ship PR is still open, the `reship` repair reopens the bead. It writes each reship to `repairs.jsonl`.
 
 ## 0.13.0 (2026-10-18)
 
