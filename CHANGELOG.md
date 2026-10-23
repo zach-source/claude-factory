@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: `activation(events, now)` in `src/memory.ts` gives each note an ACT-R score, `ln(Σ w · t_days^-0.5)`, over its last 90 days of usage events (claude-factory-3u1.2.1). The weights are helped 1.0 (0.3 when `ok` is false), confirmed 1.0, shown 0.15 and contradicted −1.0. A note with no events gets −Infinity. `compact()` now keeps each note's events from the last 90 days in its folded line as `events: [[at, kind, w]]`. Nothing reads the score yet.
+
 ## 0.14.0 (2026-10-23)
 
 - Fixed: an AX rig's ship run got no beads in its VM, so its queue station could not read the ship queue, and release never marked a PR ready (claude-factory-pfc8). AX rigs' PRs stayed drafts, and one rig aborted 15 ship runs this way. Now a ship run gets the rig's beads as a run with a bead does (`vmBeads`), and its brief tells the VM to run `factory ship .` in the repo, because the VM's factory has no rigs.

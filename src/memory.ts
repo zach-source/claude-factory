@@ -710,6 +710,30 @@ export const use = (
       paths.map(path => JSON.stringify({ path, [kind]: 1, at, ...(by ? { by } : {}) })).join('\n') + '\n',
     )
 }
+export type UsageKind = 'shown' | 'helped' | 'confirmed' | 'contradicted'
+/** one usage event, weighted for activation(). A folded line in `.usage.jsonl` stores it as `[at, kind, w]`. */
+export type UsageEvent = { at: number; kind: UsageKind; w: number }
+const EVENT_WEIGHT: Record<UsageKind, number> = { helped: 1, confirmed: 1, shown: 0.15, contradicted: -1 }
+/** a help counts 0.3 when its attempt failed (`ok: false`); a missing `ok` counts in full (research R1) */
+export const eventWeight = (kind: UsageKind, ok?: boolean) =>
+  kind === 'helped' && ok === false ? 0.3 : EVENT_WEIGHT[kind]
+export const ACTIVATION_WINDOW_DAYS = 90
+const ACTIVATION_MIN_DAYS = 1 / 24 // ponytail: an event this instant counts as one hour old, so t^-0.5 stays finite
+const ACTIVATION_FLOOR = 1e-6 // a sum that contradictions push to 0 or below: a finite low score, not NaN
+/**
+ * an ACT-R base-level activation, `ln(Σ w · t_days^-0.5)`, over the events of the last 90 days
+ * (claude-factory-3u1.2.1, research R1). One number for recency and frequency. No events gives -Infinity,
+ * which decide()'s never-shown rule handles.
+ */
+export function activation(events: UsageEvent[], now: number): number {
+  const recent = events.filter(e => now - e.at <= ACTIVATION_WINDOW_DAYS * DAY_MS)
+  if (!recent.length) return -Infinity
+  const sum = recent.reduce(
+    (s, e) => s + e.w * Math.max((now - e.at) / DAY_MS, ACTIVATION_MIN_DAYS) ** -0.5,
+    0,
+  )
+  return Math.log(Math.max(sum, ACTIVATION_FLOOR))
+}
 type RawTally = {
   path: string
   shown: number
@@ -719,6 +743,7 @@ type RawTally = {
   at: number
   runsBase: number
   keys: Set<string>
+  events: UsageEvent[]
 }
 /**
  * each note's raw totals, keys kept apart from their count. compact() must persist the keys themselves,
@@ -728,7 +753,14 @@ type RawTally = {
 function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<string, RawTally> {
   const out = new Map<string, RawTally>()
   for (const line of lines.filter(Boolean)) {
-    const u: Partial<Use> & { path: string; at: number; by?: string; keys?: string[] } = JSON.parse(line)
+    const u: Partial<Use> & {
+      path: string
+      at: number
+      by?: string
+      keys?: string[]
+      ok?: boolean
+      events?: [number, UsageKind, number][]
+    } = JSON.parse(line)
     const path = renamed[u.path] ?? u.path
     const t = out.get(path) ?? {
       path,
@@ -739,6 +771,7 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
       at: 0,
       runsBase: 0,
       keys: new Set<string>(),
+      events: [],
     }
     t.shown += u.shown ?? 0
     t.helped += u.helped ?? 0
@@ -749,6 +782,10 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
     else if (typeof u.runs === 'number')
       t.runsBase += u.runs // a pre-claude-factory-59r.17 folded line: no keys to recover
     else t.keys.add(runKey(u.by, u.at))
+    if (Array.isArray(u.events)) for (const [at, kind, w] of u.events) t.events.push({ at, kind, w })
+    else if (typeof u.runs !== 'number')
+      for (const kind of ['shown', 'helped', 'confirmed', 'contradicted'] as const)
+        if (u[kind]) t.events.push({ at: u.at, kind, w: eventWeight(kind, u.ok) })
     out.set(path, t)
   }
   return out
@@ -768,8 +805,12 @@ export const tally = (lines: string[], renamed: Record<string, string> = {}) => 
     })
   return result
 }
-export const usage = (dir: string, renamed?: Record<string, string>) =>
-  tally(existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : [], renamed)
+const usageFileLines = (dir: string) =>
+  existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
+export const usage = (dir: string, renamed?: Record<string, string>) => tally(usageFileLines(dir), renamed)
+/** each note's usage events, oldest line first, for activation() */
+export const usageEvents = (dir: string, renamed?: Record<string, string>) =>
+  new Map([...tallyRaw(usageFileLines(dir), renamed)].map(([path, t]) => [path, t.events]))
 
 /**
  * A note's path: a short note's file, a LONG.md entry's `#id`, or a CORE.md bullet's `#<hash>`
@@ -856,7 +897,7 @@ export function resolvePath(dir: string, path: string, extra: Record<string, str
  * even over several dreams. Then it keeps one usage line per note left. It follows renames, and a
  * removed note's counts go with it.
  */
-export function compact(dir: string, renamed: Record<string, string>) {
+export function compact(dir: string, renamed: Record<string, string>, now = Date.now()) {
   if (Object.keys(renamed).length)
     appendFileSync(
       renamesFile(dir),
@@ -882,6 +923,9 @@ export function compact(dir: string, renamed: Record<string, string>) {
             at: t.at,
             runs: t.runsBase + t.keys.size,
             ...(t.keys.size ? { keys: [...t.keys] } : {}),
+            events: t.events
+              .filter(e => now - e.at <= ACTIVATION_WINDOW_DAYS * DAY_MS)
+              .map(e => [e.at, e.kind, e.w]),
           })}\n`,
       )
       .join(''),
