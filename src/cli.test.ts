@@ -7,6 +7,7 @@ import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
   brief,
+  vmBeads,
   clipFactsJson,
   clipReport,
   CONFIG_SYNC,
@@ -1917,4 +1918,11 @@ test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file fi
 test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
   expect(clusterCap({ clusterRuns: 3 })).toBe(3)
   for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
+})
+
+// claude-factory-pfc8: an AX ship run has no bead, yet its queue station reads the ship queue from bd
+test('vmBeads gives the VM beads for a run with a bead and for a ship run', () => {
+  expect(vmBeads({ bead: 'app-1' })).toBe(true)
+  expect(vmBeads({ ship: true })).toBe(true)
+  expect(vmBeads({})).toBe(false)
 })
