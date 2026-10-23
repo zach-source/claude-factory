@@ -10746,10 +10746,10 @@ test.each([
   `gh -R acme/widget pr merge 12 --merge --match-head-commit ${SHA}`,
   `gh --repo acme/widget pr merge 12 --merge --match-head-commit ${SHA}`,
   `gh pr -R acme/widget merge 12 --merge --match-head-commit ${SHA}`,
-  `gh mm 12 --merge --match-head-commit ${SHA}`,
-  `gh pr '' merge 12 --merge --match-head-commit ${SHA}`,
-  `gh pr - merge 12 --merge --match-head-commit ${SHA}`,
-  `gh '' pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh mm 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr '' merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr - merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh '' pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
 ])('ship release with merge authority gives the form reason for %j', cmd => {
   expect(merge(cmd)).toBe(MERGE_FORM_REASON)
 })
