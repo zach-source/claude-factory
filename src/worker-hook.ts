@@ -21,6 +21,8 @@
  * It denies a GraphQL or REST call that merges a pull request.
  * It denies a GraphQL or REST call that turns on a pull request's auto-merge.
  * The owner decided that only a person merges a pull request.
+ * One exception (claude-factory-l3tl): a person can give a rig merge authority. The hook then lets the
+ * ship factory's release station run one strict `gh pr merge` form (see `prMergeReason`).
  * GitHub's admin bypass lets a worker merge, even under a ruleset that needs a review.
  * Before this guard, two pull requests merged before their review ran (ax-aw1).
  *
