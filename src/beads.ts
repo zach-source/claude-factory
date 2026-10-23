@@ -372,7 +372,7 @@ export const beads = (repo: string, actor: string) => ({
    */
   queue: (id: string, station?: string) => {
     const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(
-      l => l.startsWith('factory:') || l.startsWith('station:'),
+      l => l.startsWith('factory:') || l.startsWith('station:') || l.startsWith('held:'),
     )
     return must(
       bd(
@@ -555,7 +555,9 @@ export const beads = (repo: string, actor: string) => ({
     bd(repo, actor, 'unclaim', id)
     const b = lookupBead(repo, actor, id)
     const already = b?.metadata?.requeued_from === runId
-    const requeues = already ? Number(b?.metadata?.requeues ?? 0) : Number(b?.metadata?.requeues ?? 0) + 1
+    const prior = Number(b?.metadata?.requeues ?? 0)
+    // a non-finite or negative count never writes NaN back: it reads as 0 here, and track() defers it as at-cap
+    const requeues = (Number.isFinite(prior) && prior >= 0 ? prior : 0) + (already ? 0 : 1)
     const oldLabels = (b?.labels ?? []).filter(
       l => (to?.factory && l.startsWith('factory:')) || (to?.station && l.startsWith('station:')),
     )

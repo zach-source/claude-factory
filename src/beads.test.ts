@@ -434,6 +434,36 @@ test('queue removes a stale factory:*/station:* label before adding the station 
   }
 })
 
+test('queue removes every held:* label a filing-guard hold added (claude-factory-nwlh.2)', () => {
+  const bin = join(tmpdir(), `fake-bd-queue-held-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    `  show) printf '%s' '[{"id":"fx-1","title":"t","labels":["held:cluster:widget","held:station","keep"]}]';;`,
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    beads(tmpdir(), 'factory/run-1').queue('fx-1')
+    const update = readFileSync(log, 'utf8')
+      .trim()
+      .split('\n')
+      .find(l => l.startsWith('update'))!
+    expect(update).toContain('--remove-label held:cluster:widget')
+    expect(update).toContain('--remove-label held:station')
+    expect(update).toContain('--add-label factory')
+    expect(update).not.toContain('keep')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
 test('requeue releases the claim, swaps factory:*/station:* labels when told to, and counts once per run', () => {
   const bin = join(tmpdir(), `fake-bd-requeue-${process.pid}`)
   mkdirSync(bin, { recursive: true })
@@ -482,6 +512,27 @@ test('requeue releases the claim, swaps factory:*/station:* labels when told to,
     const calls2 = readFileSync(log, 'utf8').trim().split('\n')
     expect(calls2[2]).toContain('update fx-1 --add-label factory --remove-label rejected')
     expect(calls2[2]).not.toContain('--set-metadata')
+
+    // a non-numeric or negative count reads as 0: never NaN (claude-factory-yo9.1)
+    for (const bad of ['x', '-5']) {
+      writeFileSync(
+        show,
+        JSON.stringify([
+          {
+            id: 'fx-1',
+            title: 't',
+            labels: ['factory'],
+            metadata: { requeued_from: 'run-1', requeues: bad },
+          },
+        ]),
+      )
+      writeFileSync(log, '')
+      b.requeue('fx-1', 'run-1')
+      expect(readFileSync(log, 'utf8')).not.toContain('--set-metadata requeues')
+      writeFileSync(log, '')
+      b.requeue('fx-1', 'run-2')
+      expect(readFileSync(log, 'utf8')).toContain('--set-metadata requeues=1')
+    }
 
     // requeue: true (no `to`): the labels the worker set stay; a new run counts again
     writeFileSync(
