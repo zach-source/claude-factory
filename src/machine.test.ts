@@ -26,7 +26,7 @@ import {
 } from './machine'
 
 const def: Factory = {
-  name: 'review-loop',
+  name: 'implement-review',
   start: 'implement',
   backoffSec: 10,
   nodes: {

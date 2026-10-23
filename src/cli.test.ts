@@ -40,6 +40,7 @@ import {
   reworkGoal,
   ruleLines,
   selfUpdateMail,
+  tokenDigestMail,
   stalled,
   swapUntil,
   workerFlags,
@@ -1225,6 +1226,50 @@ test('selfUpdateMail mails a repeated refusal again once a no-op sits between th
   const again = selfUpdateMail(4, home)
   expect(again).toHaveLength(1)
   expect(again[0]!.text).toContain('a dirty tree')
+})
+
+test('tokenDigestMail mails the token digest once a week, from factory', () => {
+  const D = 86_400_000
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  const digest = () => 'tokens: X'
+  const first = tokenDigestMail(0, home, digest)
+  expect(first).toHaveLength(1)
+  expect(first[0]!.from).toBe('factory')
+  expect(first[0]!.text.startsWith('factory weekly token digest, last 7d:')).toBe(true)
+  expect(first[0]!.text).toContain('tokens: X')
+  expect(tokenDigestMail(6 * D, home, digest)).toHaveLength(0)
+  expect(tokenDigestMail(7 * D, home, digest)).toHaveLength(1)
+})
+
+test('tokenDigestMail mails nothing for an empty digest but moves the date', () => {
+  const D = 86_400_000
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  expect(tokenDigestMail(0, home, () => '')).toHaveLength(0)
+  expect(tokenDigestMail(D, home, () => 'tokens: X')).toHaveLength(0)
+  expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(0)
+})
+
+test('tokenDigestMail returns [] when the digest throws, and the date is written first', () => {
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  expect(
+    tokenDigestMail(5, home, () => {
+      throw new Error('boom')
+    }),
+  ).toEqual([])
+  expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(5)
+})
+
+test('tokenDigestMail does nothing when FACTORY_TOKEN_DIGEST=0', () => {
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  const was = process.env.FACTORY_TOKEN_DIGEST
+  process.env.FACTORY_TOKEN_DIGEST = '0'
+  try {
+    expect(tokenDigestMail(0, home, () => 'tokens: X')).toHaveLength(0)
+    expect(existsSync(join(home, 'token-digest.json'))).toBe(false)
+  } finally {
+    if (was === undefined) delete process.env.FACTORY_TOKEN_DIGEST
+    else process.env.FACTORY_TOKEN_DIGEST = was
+  }
 })
 
 // ---- clipFactsJson (claude-factory-dun.25) ----
