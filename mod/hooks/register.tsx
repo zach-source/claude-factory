@@ -448,6 +448,39 @@ async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry)
   await $.fs.write(`${rt.home}/patrol-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
 }
 
+/**
+ * claude-factory-hr94: what a manager subagent's turn spent, kept by its name in `<home>/manager-usage.jsonl`.
+ * The file has no line cap: `factory metrics --tokens` reads it. A write failure never reaches the caller.
+ */
+async function appendManagerUsage(
+  $: EngineInterface,
+  name: 'patrol' | 'pm' | 'briefer',
+  usage:
+    | {
+        model: string
+        input_tokens: number
+        output_tokens: number
+        cache_read_input_tokens: number
+        cache_creation_input_tokens: number
+      }
+    | undefined,
+) {
+  try {
+    if (!rt.home || !usage) return
+    const file = `${rt.home}/manager-usage.jsonl`
+    const row = {
+      name,
+      at: await $.clock.now(),
+      model: usage.model,
+      input: usage.input_tokens,
+      cacheWrite: usage.cache_creation_input_tokens,
+      cacheRead: usage.cache_read_input_tokens,
+      output: usage.output_tokens,
+    }
+    await $.fs.write(file, (await $.fs.read(file).catch(() => '')) + JSON.stringify(row) + '\n')
+  } catch {}
+}
+
 /** True once `$.agent.list()` names `agentId` as a `PM_TYPE` agent, the same check `isPatrolAgent`
  * makes for the patrol. Returns false on any error, including "no implementation". */
 async function isPmAgent($: EngineInterface, agentId: string) {
@@ -1382,6 +1415,7 @@ export const register: Register = (on, options) => {
       rt.isPatrolling = false
       rt.patrolId = undefined
       rt.patrolStartedAt = undefined
+      await appendManagerUsage($, 'patrol', e.usage)
       const report = e.answer.length > 600 ? `${e.answer.slice(0, 599)}…` : e.answer
       const entry: FactoryPatrolLogEntry = {
         at: await $.clock.now(),
@@ -1424,6 +1458,7 @@ export const register: Register = (on, options) => {
       rt.isPlanning = false
       rt.pmId = undefined
       rt.pmStartedAt = undefined
+      await appendManagerUsage($, 'pm', e.usage)
       const base = {
         at: await $.clock.now(),
         agentId: e.agentId,
@@ -1486,6 +1521,7 @@ export const register: Register = (on, options) => {
       rt.briefId = undefined
       rt.briefKey = undefined
       rt.briefStartedAt = undefined
+      await appendManagerUsage($, 'briefer', e.usage)
       const base = {
         at: await $.clock.now(),
         key: key ?? '',

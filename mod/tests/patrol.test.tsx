@@ -548,6 +548,19 @@ test(
     expect(entry.tokens).toBe(150)
     expect(entry.actions).toEqual(['factory mail r1 implement "answered"'])
     expect(entry.report).toContain('Mailed r1')
+    // claude-factory-hr94: the turn's spend, by type, under the name patrol
+    const spent = (files.get('/home/factory/manager-usage.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(spent.map(l => JSON.parse(l))).toEqual([
+      {
+        name: 'patrol',
+        at: expect.any(Number),
+        model: 'claude-x',
+        input: 100,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 50,
+      },
+    ])
 
     // the main loop's own turn.complete (no agentId, isPatrolling already false): writes nothing more
     await $.turn.complete({
