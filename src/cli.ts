@@ -2948,6 +2948,17 @@ const journalSince = (since: number) =>
     .slice(-300)
     .map(e => e.line)
 
+/** each run's journal entries since, for memory.helpOk(): a help from a red attempt weighs less */
+const outcomesSince = (since: number): memory.AttemptOutcome[] =>
+  runIds().flatMap(id => {
+    try {
+      const { log } = readJson<Saved>(join(runDir(id), 'state.json')).snapshot.context
+      return log.filter(e => e.at > since).map(e => ({ run: id, node: e.node, at: e.at, outcome: e.outcome }))
+    } catch {
+      return [] // removed mid-read
+    }
+  })
+
 /** what the manager did since, from its sessions' transcripts, and its skills with their uses */
 function managerSince(since: number) {
   const file = join(HOME, 'manager-sessions.json')
@@ -3247,7 +3258,9 @@ async function dream() {
     }
     // logged before applyTiers runs: applyTiers reads usage fresh, so a note the dream renamed must
     // already resolve to its new path, or it looks never used and risks archive (claude-factory-59r.10)
-    memory.compact(MEMORY, renamed)
+    // each help since the last dream gets its attempt's outcome as it folds (claude-factory-3u1.2.4)
+    const outcomes = outcomesSince(since)
+    memory.compact(MEMORY, renamed, Date.now(), (by, at) => memory.helpOk(outcomes, by, at))
     git(MEMORY, 'add', '-A')
     // committed even when it changed nothing, and dated when it began: what was journaled meanwhile is the next one's
     git(

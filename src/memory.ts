@@ -782,6 +782,25 @@ export function activation(events: UsageEvent[], now: number): number {
  */
 export const helpedBy = (from: string | undefined, env: Record<string, string | undefined>) =>
   from || (env.FACTORY_RUN && env.FACTORY_STATION ? `${env.FACTORY_RUN}/${env.FACTORY_STATION}` : undefined)
+/** one journal entry, cut down to what helpOk() needs */
+export type AttemptOutcome = { run: string; node: string; at: number; outcome: string }
+/** whether a help's attempt ended green, from its `by` and `at`; undefined when unknown */
+export type OkOf = (by: string | undefined, at: number) => boolean | undefined
+// ponytail: a fixed list of red outcomes; a factory with its own failure edge names must add them here
+const RED_OUTCOMES = new Set(['fail', 'failed', 'blocked', 'red', 'aborted'])
+/**
+ * whether the attempt a help came from ended green (claude-factory-3u1.2.4, research R1). The attempt
+ * is the first journal entry of the help's run and station at or after the help. undefined when the
+ * help names no run, or its attempt has no entry yet: such a help counts at full weight.
+ */
+export function helpOk(journal: AttemptOutcome[], by: string | undefined, at: number): boolean | undefined {
+  if (!by) return undefined
+  const [run, node] = by.split('/')
+  const ended = journal
+    .filter(e => e.run === run && e.node === node && e.at >= at)
+    .reduce<AttemptOutcome | undefined>((first, e) => (!first || e.at < first.at ? e : first), undefined)
+  return ended && !RED_OUTCOMES.has(ended.outcome)
+}
 type RawTally = {
   path: string
   shown: number
@@ -798,7 +817,7 @@ type RawTally = {
  * not only how many there were (claude-factory-59r.17): a folded line that kept only `runs: 2` cannot
  * tell a later line's run id was one it already counted, so that run got counted again.
  */
-function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<string, RawTally> {
+function tallyRaw(lines: string[], renamed: Record<string, string> = {}, okOf?: OkOf): Map<string, RawTally> {
   const out = new Map<string, RawTally>()
   for (const line of lines.filter(Boolean)) {
     const u: Partial<Use> & {
@@ -833,7 +852,12 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
     if (Array.isArray(u.events)) for (const [at, kind, w] of u.events) t.events.push({ at, kind, w })
     else if (typeof u.runs !== 'number')
       for (const kind of ['shown', 'helped', 'confirmed', 'contradicted'] as const)
-        if (u[kind]) t.events.push({ at: u.at, kind, w: eventWeight(kind, u.ok) })
+        if (u[kind])
+          t.events.push({
+            at: u.at,
+            kind,
+            w: eventWeight(kind, u.ok ?? (kind === 'helped' ? okOf?.(u.by, u.at) : undefined)),
+          })
     out.set(path, t)
   }
   return out
@@ -945,7 +969,8 @@ export function resolvePath(dir: string, path: string, extra: Record<string, str
  * even over several dreams. Then it keeps one usage line per note left. It follows renames, and a
  * removed note's counts go with it.
  */
-export function compact(dir: string, renamed: Record<string, string>, now = Date.now()) {
+/** `okOf` (the dream's journal) sets each raw help's weight as it folds; see helpOk() */
+export function compact(dir: string, renamed: Record<string, string>, now = Date.now(), okOf?: OkOf) {
   if (Object.keys(renamed).length)
     appendFileSync(
       renamesFile(dir),
@@ -956,7 +981,7 @@ export function compact(dir: string, renamed: Record<string, string>, now = Date
   const log = renameLog(dir)
   const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k)]))
   const lines = existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
-  const kept = [...tallyRaw(lines, resolved).values()].filter(t => noteExists(dir, t.path))
+  const kept = [...tallyRaw(lines, resolved, okOf).values()].filter(t => noteExists(dir, t.path))
   writeFileSync(
     `${usageFile(dir)}.tmp`,
     kept
