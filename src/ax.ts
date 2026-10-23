@@ -415,7 +415,14 @@ export function egressPolicy(
       // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live)
       ...(vault && githubKey === 'GITHUB_BASIC'
         ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
-            rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
+            rule(
+              apiHosts,
+              'Authorization',
+              'Bearer ',
+              reviewer && owner === githubOwner ? 'GITHUB_REVIEWER' : key,
+              undefined,
+              [`/repos/${owner}/`],
+            ),
             rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`]),
           ])
         : []),

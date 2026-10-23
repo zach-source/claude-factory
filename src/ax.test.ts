@@ -262,9 +262,11 @@ test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else chan
     ['/repos/zach-source/', 'GITHUB_ZS'],
     ['/zach-source/', 'GITHUB_ZS_BASIC'],
   ])
-  expect(keys('zach-source', true).slice(0, 2)).toEqual([
+  expect(keys('zach-source', true)).toEqual([
     ['', 'GITHUB_REVIEWER'],
     ['', 'GITHUB_ZS_BASIC'],
+    ['/repos/zach-source/', 'GITHUB_REVIEWER'],
+    ['/zach-source/', 'GITHUB_ZS_BASIC'],
   ])
   expect(keys('acme', true).slice(2)).toEqual(keys('acme', false).slice(2))
   expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
