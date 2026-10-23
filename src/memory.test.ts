@@ -24,6 +24,7 @@ import {
   inboxCount,
   installSkill,
   isUntil,
+  lifecycleMetrics,
   type LongEntry,
   longAliasRenames,
   longSimPairs,
@@ -1809,6 +1810,29 @@ test('evaluate() runs the fixed query set against a real store through search()'
   expect(r.recall).toBe(1)
   expect(r.misses).toEqual([])
 }, 60_000)
+
+test('lifecycleMetrics: notes per topic, archives this pass, and the kind and until shares', () => {
+  const short = (path: string, extra: Partial<Note> = {}): Note => ({
+    path,
+    summary: `s ${path}`,
+    body: 'a lesson',
+    tier: 'short',
+    ...extra,
+  })
+  const notes: Note[] = [
+    short('beads/a.md', { kind: 'fact' }),
+    short('beads/b.md', { kind: 'rule', body: 'see example-ab1 for the fix', until: 'example-ab1' }),
+    short('ci/c.md', { body: 'PR #12 fixed it' }), // cites a PR with no until, and has no kind
+    short('ci/d.md', { kind: 'recipe', body: 'run it as in example-org/example-repo#3' }), // counts too
+    { path: 'ci/LONG.md#x', summary: 'merged', body: 'b', tier: 'long' }, // a topic note, not in the shares
+  ]
+  expect(lifecycleMetrics(notes, { archived: 2, retired: 1 })).toBe(
+    'metrics: notes 5 (beads 2, ci 3)  archived 2  retired 1  kind 75%  cites-without-until 50%',
+  )
+  expect(lifecycleMetrics([], { archived: 0, retired: 0 })).toBe(
+    'metrics: notes 0 ()  archived 0  retired 0  kind 0%  cites-without-until 0%',
+  )
+})
 
 const note = (path: string, body: string): Note => ({ path, summary: `s ${path}`, body })
 

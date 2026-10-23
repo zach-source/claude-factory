@@ -542,6 +542,22 @@ export function evalScore(cases: EvalCase[], results: string[][]): EvalResult {
   return { recall: all.recall, mrr: all.mrr, misses: cases.filter((_, i) => !rr[i]), categories }
 }
 
+/**
+ * pure: the lifecycle numbers each dream logs to dream.log (FR-024, claude-factory-3u1.4.2). Notes are
+ * counted per topic over every tier. The kind and until shares count short notes only, since a LONG.md
+ * entry has no kind. A recipe that cites a bead or PR counts too: SC-003 measures every such note.
+ */
+export function lifecycleMetrics(notes: Note[], pass: { archived: number; retired: number }): string {
+  const perTopic = new Map<string, number>()
+  for (const n of notes) perTopic.set(topicOf(n), (perTopic.get(topicOf(n)) ?? 0) + 1)
+  const short = notes.filter(n => n.tier !== 'long' && n.tier !== 'fact')
+  const pct = (k: number) => `${short.length ? Math.round((100 * k) / short.length) : 0}%`
+  const withKind = short.filter(n => n.kind).length
+  const untracked = short.filter(n => !n.until && citesTracker(`${n.summary}\n${n.body}`)).length
+  const topics = [...perTopic].sort(([a], [b]) => (a < b ? -1 : 1)).map(([t, k]) => `${t} ${k}`)
+  return `metrics: notes ${notes.length} (${topics.join(', ')})  archived ${pass.archived}  retired ${pass.retired}  kind ${pct(withKind)}  cites-without-until ${pct(untracked)}`
+}
+
 /** a seeded PRNG (mulberry32): the same seed samples the same notes, so two evals compare */
 const rng = (seed: number) => () => {
   seed = (seed + 0x6d2b79f5) | 0
