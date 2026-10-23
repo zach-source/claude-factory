@@ -13,6 +13,7 @@ import {
   replayable,
   rigBeadsSync,
   vmClaudeFlags,
+  vmCodexHome,
 } from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
@@ -1611,4 +1612,38 @@ esac
     expect(lastFail(id)).toBe('no report within 45 min')
     rmSync(join(home, 'runs', id), { recursive: true })
   })
+})
+
+// claude-factory-l3tl: --merge-authority is the only way to set Rig.mergeAuthority; a redefine clears it
+test('rig add --merge-authority stores Rig.mergeAuthority; a rig add without it clears it; rig lists it', () => {
+  const r = repo()
+  const stored = () => JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]
+  expect(factory(['rig', 'add', 'x', r]).code).toBe(0)
+  expect(stored()).not.toHaveProperty('mergeAuthority')
+  expect(factory(['rig', 'add', 'x', r, '--protected-branch', 'acme-deploy']).code).toBe(0)
+  expect(stored()).not.toHaveProperty('mergeAuthority')
+  expect(factory(['rig']).out).not.toContain('merge authority')
+  expect(factory(['rig', 'add', 'x', r, '--merge-authority']).code).toBe(0)
+  expect(stored().mergeAuthority).toBe(true)
+  expect(factory(['rig']).out).toContain('merge authority: ship release station')
+  expect(factory(['rig', 'add', 'x', r]).code).toBe(0)
+  expect(stored()).not.toHaveProperty('mergeAuthority')
+  // a hand-edited value other than true counts as off
+  const rigs = JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))
+  writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ ...rigs[0], mergeAuthority: 'yes' }]))
+  expect(factory(['rig']).out).not.toContain('merge authority')
+})
+
+test("vmClaudeFlags and vmCodexHome carry --merge-authority on the hook's argv only when asked", () => {
+  const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, true)
+  const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
+  expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --merge-authority",
+  )
+  const off = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, false)
+  expect(off).toEqual(vmClaudeFlags({ maxContextK: 150 }))
+  expect(JSON.stringify(off)).not.toContain('merge-authority')
+  const codex = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'], true)
+  expect(codex['hooks.json']).toMatch(/--protected-branches 'release' --merge-authority/)
+  expect(vmCodexHome({ maxContextK: 150 })['hooks.json']).not.toContain('merge-authority')
 })

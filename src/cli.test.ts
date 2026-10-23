@@ -1918,3 +1918,18 @@ test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
   expect(clusterCap({ clusterRuns: 3 })).toBe(3)
   for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
 })
+
+// claude-factory-l3tl: an opted-in rig gets its own settings file, with --merge-authority on the hook's argv
+test("workerFlags carries --merge-authority only for a rig with mergeAuthority true, in the rig's own file", () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
+  const acme = { name: 'acme', mergeAuthority: true }
+  const web = { name: 'web' }
+  const loose = { name: 'loose', mergeAuthority: 'yes' as unknown as boolean }
+  expect(workerFlags({ maxContextK: 200 }, acme, home)).toContain(join(home, 'worker-settings-acme.json'))
+  expect(workerFlags({ maxContextK: 200 }, web, home)).toContain(join(home, 'worker-settings.json'))
+  expect(workerFlags({ maxContextK: 200 }, loose, home)).toContain(join(home, 'worker-settings.json'))
+  const cmd = (f: string) =>
+    JSON.parse(readFileSync(join(home, f), 'utf8')).hooks.PreToolUse.at(-1).hooks[0].command as string
+  expect(cmd('worker-settings-acme.json')).toMatch(/worker-hook\.ts' --merge-authority$/)
+  expect(cmd('worker-settings.json')).not.toContain('merge-authority')
+})
