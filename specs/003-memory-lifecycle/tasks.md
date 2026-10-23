@@ -63,7 +63,7 @@ description: "Task list for the memory lifecycle (compress, age, learn)"
 **Goal**: the numbers SC-003 to SC-005 need. **Independent test**: quickstart step 8.
 
 - [x] T019 [P] [US5] Eval categories (update/temporal/abstain) in `src/memory.ts` `evaluate()` (claude-factory-3u1.4.1)
-- [ ] T020 [P] [US5] Per-dream lifecycle metrics in `dream.log`, in `src/cli.ts` (claude-factory-3u1.4.2)
+- [x] T020 [P] [US5] Per-dream lifecycle metrics in `dream.log`, in `src/cli.ts` (claude-factory-3u1.4.2)
 
 ## Phase 8: Polish
 

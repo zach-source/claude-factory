@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: each dream ends `dream.log` with a lifecycle metrics line (claude-factory-3u1.4.2). The line gives the notes in each topic, the notes the tier pass archived and retired, the share of short notes with a `kind`, and the share that cite a bead or PR with no `until`. These numbers measure spec 003 SC-003.
+
 - New: `.eval.jsonl` cases can carry `category`: `update`, `temporal` or `abstain` (claude-factory-3u1.4.1). `factory memory eval` then prints one score line for each category under the total. An `abstain` case has no `expect`, and it is a hit only when search returns nothing above the floor.
 - New: the dream weighs a help by how its attempt ended (claude-factory-3u1.2.4). When it folds `.usage.jsonl`, it joins each help (by `run/station`) to the first journal entry of that station at or after the help. A help from an attempt that ended `fail`, `failed`, `blocked`, `red` or `aborted` weighs 0.3 in `activation()`, not 1.0. A help whose attempt has no entry yet, or that names no run, counts in full.
 - New: `factory memory eval --self [n] [--seed s]` scores search with no `.eval.jsonl` (claude-factory-9l7). It samples n notes (default 60) with a fixed seed (default 1). The query is each note's first body sentence, and the target is that note. The output is `recall@5 0.87  mrr 0.75  n=60`, the baseline that rank changes must not lower. The memory-lifecycle fixtures in `src/fixtures/memory-lifecycle/` hold notes of each kind, a usage history and three runs with one repeated failure.

@@ -820,6 +820,10 @@ memory/
   anything. A merge keeps the note's usage count under its new `<topic>/LONG.md#<id>` path,
   through `.renames.jsonl`, so a later `factory memory helped <old path>` still resolves and
   nothing helped is lost. `--dry-run` prints the plan without writing.
+- Each dream ends `dream.log` with one metrics line, for example
+  `metrics: notes 9 (beads 2, ci 4)  archived 0  retired 1  kind 75%  cites-without-until 12%`.
+  It gives the notes in each topic, the notes this pass archived and retired, the share of short
+  notes with a `kind`, and the share that cite a bead or PR with no `until`.
 - `factory memory eval` runs a fixed query set (`<memory>/.eval.jsonl`) through search and prints
   recall@5 and MRR, with which queries missed: how to tell that tiering did not cost search quality.
   `factory memory eval --self [n] [--seed s]` needs no `.eval.jsonl`. It samples n notes (default 60,

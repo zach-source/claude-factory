@@ -3272,6 +3272,7 @@ async function dream() {
       '-m',
       `dream: ${said}`,
     )
+    let pass = { archived: 0, retired: 0 } // the tier pass's archives, for the metrics line below
     if (process.env.FACTORY_MEMORY_TIERS !== '0') {
       const filesBefore = memory.mdFileCount(MEMORY)
       // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2):
@@ -3293,7 +3294,10 @@ async function dream() {
         '-m',
         compactMessage(tiers, filesBefore, memory.mdFileCount(MEMORY)),
       )
+      pass = tiers
     }
+    // after every write of this dream, so the numbers describe what the next worker searches
+    appendFileSync(join(HOME, 'dream.log'), memory.lifecycleMetrics(memory.walk(MEMORY).notes, pass) + '\n')
     return said
   } finally {
     release()
