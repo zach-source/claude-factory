@@ -139,6 +139,16 @@ export function citesBead(id: string, text: string): boolean {
   return new RegExp(`(?<![\\w.-])${esc}(?![\\w-]|\\.\\w)`).test(text)
 }
 
+/**
+ * claude-factory-jxl.1: PR titles often cite a child bead without its rig prefix ("192.6", "81tz.2").
+ * Return that short form for a dotted child id, or null. A bare id such as "acme-wmsr" or a tiny one
+ * such as "acme-1.2" gives null, as those words and numbers occur in unrelated titles.
+ */
+export function shortBeadId(id: string): string | null {
+  const short = id.slice(id.lastIndexOf('-') + 1)
+  return id.includes('-') && /^[a-z0-9]{3,}(\.\d+)+$/i.test(short) ? short : null
+}
+
 /** a merged PR, as `parseMergedPrs` reads it off `gh pr list --json number,url,title,headRefName,mergeCommit` */
 export type MergedPr = {
   number: number
@@ -178,11 +188,17 @@ export function alreadyDone(
   prs: MergedPr[],
   ctx: { childIds: string[]; allChildrenClosed: boolean; runBranches: string[] },
 ): AlreadyDoneHit | null {
+  const short = shortBeadId(id)
   for (const pr of prs) {
     if (pr.state !== 'MERGED') continue
     const citesChild =
       ctx.childIds.length > 0 && ctx.allChildrenClosed && ctx.childIds.some(c => citesBead(c, pr.title))
-    if (citesBead(id, pr.title) || ctx.runBranches.includes(pr.headRefName) || citesChild)
+    if (
+      citesBead(id, pr.title) ||
+      (short !== null && citesBead(short, pr.title)) ||
+      ctx.runBranches.includes(pr.headRefName) ||
+      citesChild
+    )
       return {
         kind: 'merged-pr',
         pr: { number: pr.number, url: pr.url, title: pr.title, mergeCommit: pr.mergeCommit },
@@ -730,13 +746,27 @@ export function gitlabNotes(out: string, members: Set<number> = new Set()): Note
   return notes
 }
 
+/** true when the URL is on the rig's forge host. A `glab api --hostname` call sends GITLAB_TOKEN to that host, so
+ * the sinks refuse any other host. Only the hostname counts: a port is dropped on both sides. */
+export const onHost = (url: string, host?: string): boolean => {
+  try {
+    return !!host && new URL(url).hostname.toLowerCase() === host.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
 /** the person notes of a merge request for the park watch, or null when glab could not say. The author of each
  * human note is checked against the project members (`members/all/:id`, access level 30 or above). A 404 means
  * not a member. Any other failure fails the whole call, so the watch never trusts a note it could not check. */
-export async function gitlabWatchNotes(glab: Gh, url: string, cwd: string): Promise<Note[] | null> {
+export async function gitlabWatchNotes(
+  glab: Gh,
+  url: string,
+  cwd: string,
+  host?: string,
+): Promise<Note[] | null> {
   const ref = prRef(url)
-  if (!ref) return null
-  const host = new URL(url).hostname
+  if (!ref || !host || !onHost(url, host)) return null
   const base = `projects/${encodeURIComponent(ref.repo)}`
   const api = (path: string) => glab(['api', '--hostname', host, path], timed(cwd))
   const res = await api(`${base}/merge_requests/${ref.number}/notes?sort=desc&per_page=50`)
@@ -856,7 +886,7 @@ export type Forge = {
   parseList(out: string): { url: string; headRefName: string }[]
   search(r: RunMeta): Promise<GhResult>
   parseSearch(out: string, startAt: number, endAt: number, now: number): Found[]
-  view(url: string, cwd: string): Promise<{ viewed: Viewed } | { err: string }>
+  view(url: string, cwd: string, host?: string): Promise<{ viewed: Viewed } | { err: string }>
 }
 
 const timed = (cwd: string) => ({ cwd, timeout: VIEW_TIMEOUT_MS })
@@ -902,10 +932,10 @@ export const gitlabForge = (glab: Gh): Forge => {
         r.repoDir,
       ),
     parseSearch: parseGitlabSearch,
-    async view(url, cwd) {
+    async view(url, cwd, host) {
+      if (!onHost(url, host)) return { err: 'merge request is not on the rig forge host' }
       const ref = prRef(url)!
       const path = `${project(ref.repo)}/${ref.number}`
-      const host = new URL(url).hostname
       const [mr, approvals] = await Promise.all([api(host, path, cwd), api(host, `${path}/approvals`, cwd)])
       const viewed = mr.code === 0 ? parseGitlabView(mr.out, approvals.code === 0 ? approvals.out : '') : null
       return viewed ? { viewed } : { err: mr.code === 0 ? 'glab api: unparseable JSON' : mr.err }
@@ -1033,7 +1063,7 @@ export async function buildPrs(
       const r = runs.find(x => x.id === runId)!
       // the PR's own URL says which forge answers for it: a run can name a PR on a forge its rig is not on
       const forge = prRef(url)?.forge ? forges.gitlab : forges.github
-      const res = await forge.view(url, r.repoDir)
+      const res = await forge.view(url, r.repoDir, r.host)
       const cur = files.get(runId)!
       const prs = cur.prs.map(p => {
         if (p.url !== url) return p

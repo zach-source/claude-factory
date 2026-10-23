@@ -36,6 +36,11 @@ const claude = (model: string) => `{claude} --dangerously-skip-permissions --mod
 const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 const FABLE = claude('security_model')
+// A share of runs launch implement, verify and security as codex (cli.ts splitPick). A rig sets the share
+// to 0 to turn the tier off. Judge stations (plan, review, check, incident) never go to codex.
+const codex = (model: string) => `{codex} -m '{${model}}'`
+const CODEX_EXEC = codex('codex_exec_model')
+const CODEX_SECURITY = codex('codex_security_model')
 // stations that read or change production need the laptop's kubectl, cluster access and network, which a
 // rig's VM workers (--runner ax) do not have: they stay in herdr panes whatever the rig's runner
 const LAPTOP = 'herdr'
@@ -50,7 +55,12 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.
 - .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep a person's merge of the pull request as the gate before anything deploys.`
 
-const outOfDiff = `A finding outside this branch's diff never makes the verdict changes: only the diff's own lines can block. File it as separate work instead. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (discovered-from this run's bead). Only a person, or triage or plan on the run's own bead, sets P0 or P1.`
+// review, security and check interpolate this: one rule for what blocks and where a finding goes
+const blockingScope = `A finding blocks only when it is one of these kinds:
+1. An acceptance criterion fails.
+2. The diff adds the defect, or the defect is in lines the diff changed, or the diff makes an existing defect reachable or enabled (a new caller, route, default, flag or input path).
+3. The defect is a sibling site of a defect that the diff fixes, or of an earlier round's finding.
+A finding outside this branch's diff never makes the verdict changes, unless it is kind 1 or 3 or the diff makes it reachable (kind 2). A gap that origin/main also has, that no acceptance criterion names and that is not kind 2 or 3 does not block: list it under 'Not blocking' and file it as separate work. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (\`--deps discovered-from:<run bead>\`, see Tracking). Only a person, or triage or plan on the run's own bead, sets P0 or P1. Each blocking finding names its kind: 1, 2 or 3.`
 
 export default {
   name: 'lifecycle',
@@ -61,6 +71,11 @@ export default {
     exec_model: 'claude-sonnet-5-5[1m]', // execution
     judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
     security_model: 'claude-fable-5-1', // security and architecture
+    codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
+    codex_exec_model: 'gpt-6.1-sol', // codex in place of exec_model
+    codex_security_model: 'gpt-6-astra', // codex in place of security_model
+    codex_share: '0.3', // share of runs whose implement and verify use codex; 0 turns it off
+    codex_security_share: '0.3', // share of runs whose security uses codex; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,
@@ -75,9 +90,15 @@ export default {
 - optimize: make something faster or cheaper (a latency, throughput, memory or cost goal)
 - refactor: restructure code without changing behavior
 - incident: production is broken or degraded now
+- rollout: the goal is to ship pull requests that are already open or merged (release, deploy, roll out), with nothing to build. The bead moves to the release factory, which starts at recipe. Name the pull requests in the summary.
+- decision: the work cannot go on without a person's decision. Put the question on the bead (a bd comment) and end the summary with a \`Question:\` line and an \`Options:\` line. The run ends deferred. \`bd undefer\` starts it again at plan.
+- elsewhere: the change belongs in another rig's repo. File the bead there: run bd create with your cwd in that rig's repo (see \`factory rig\`), the label \`factory\`, and this bead's id in its description. Then comment the new id on this bead. If you cannot reach that repo (a VM worker), put one line \`File in: <rig>: <title> | <description>\` in the summary for the manager. The run ends deferred.
 - reject: unclear, already tracked (a run in \`factory status\`, an open issue), or not worth doing; say why
 Summary: the goal restated as a testable outcome, its constraints, and the files and systems involved.`,
       next: {
+        rollout: { to: 'done', requeue: { factory: 'release' } },
+        decision: { to: 'done', defer: { station: 'plan' } },
+        elsewhere: { to: 'done', defer: true },
         build: 'plan',
         small: 'quick',
         optimize: 'baseline',
@@ -92,7 +113,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
       agent: OPUS,
       timeoutMin: 45,
       prompt: `Write the spec every later station works from: your summary is that spec. Cover:
-1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them.
+1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them. Each AC names the test or command that proves it, and its negative rows (the inputs that must stay denied or allowed). For a guard, validator or parser, define the class as one fail-closed rule, not as a list of forms, and name the forms that are out of scope.
 2. Design: the change, the files it touches, the alternatives you rejected and why.
 3. Test plan: the failing tests implement writes first.
 4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
@@ -100,8 +121,9 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 6. Observability: the metrics, logs or checks that prove it works in production; the ship run's soak reads them.
 7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary.
 For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned. For a change to the factory itself (.factory/), the acceptance criteria say what future runs will do differently and how that shows in their journals.
-Commit nothing but an architecture decision record, and only where the repo keeps them.`,
-      next: { ready: 'implement' },
+Commit nothing but an architecture decision record, and only where the repo keeps them.
+When the plan cannot go on without a person's decision, put the question on the bead and report decision, with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.`,
+      next: { ready: 'implement', decision: { to: 'done', defer: { station: 'plan' } } },
     },
     baseline: {
       runner: LAPTOP,
@@ -121,15 +143,25 @@ Report pinned with the invariants the refactor must keep and the area's coverage
 
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
+      split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
-Before you report ready, do what review would: merge origin/main and resolve any conflict; for each new branch, error path and guard, break it and see a test fail; check each claim you wrote in a doc, ADR or docstring against the code, and run each command you documented exactly as written. Close every task of this run (see Tracking). Push the branch and open it as a draft pull request if this run has none yet. Say in the summary that you did, and give the pull request link.
+Before you report ready, run this self-check at the final HEAD, after your last commit. Do what review would:
+1. Merge origin/main last and resolve any conflict. Then run the full gate the way CI runs it: the same commands, the pinned tool versions and the whole test suite, not only the files you touched. If load makes timing tests flake, run those files alone and say so.
+2. Make an AC table: each plan AC id and the test or command that proves it.
+3. Break each new branch, error path and guard alone. See a test fail. Then restore it.
+4. After your last code change, read again each doc, comment, docstring and pull request line that the diff touches or that names a changed symbol (grep for it). Check each claim against the code, and run each command you documented exactly as written. Keep each doc block directly above its function.
+5. After a send-back, read the whole delta since the last reviewed head (\`git diff <reviewed sha>..HEAD\`) for defects that your fixes added. Grep for the siblings of each finding.
+6. Add no changelog entry and no version bump: the ship release adds them.
+Close every task of this run (see Tracking). Push the branch and open it as a draft pull request if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
+Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
-For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, mail the manager the question and wait for the answer.
+For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, push the branch, name it and the draft pull request in the summary, put the question on the bead, and report decision with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
-      next: { ready: 'verify', abandon: 'done' },
+      next: { ready: 'verify', abandon: 'done', decision: { to: 'done', defer: { station: 'plan' } } },
     },
     verify: {
+      split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 75,
       prompt: `Check the branch independently; trust no earlier report and change no code.
 Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. Then try to fail it as review would: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard or comparison and see a test fail; check that each fixture can occur in real data, each claim in a changed doc matches the code, and each documented command runs as written. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green. For a change to .factory/, run the factory check on every changed file.
@@ -143,14 +175,15 @@ Report green with the evidence, or red with a numbered list of every failure, th
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
       onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
-${outOfDiff}
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
+${blockingScope}
 Post the review on the pull request: implement opens it as a draft; push the branch and open one yourself if this run still has none. Then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
 Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: { to: 'done', ship: true }, changes: 'implement', security: 'security' },
     },
     security: {
       agent: FABLE,
+      split: { agent: CODEX_SECURITY, share: 'codex_security_share' },
       timeoutMin: 45,
       // claude-factory-3t2: 5 of 65 security visits timed out at 45 min, all on one large rig. The
       // retry right after a timeout gets 75 min and a narrower brief, instead of the same 45 min
@@ -160,7 +193,8 @@ Report approve; changes with a numbered list of everything to fix, found in one 
         prompt: `Do not re-read the whole branch. Start from the changed-files list and the diff summary in review's or check's report in your Inbox. If there is none, run \`git diff --stat origin/main...HEAD\`. Read the hunks of the riskiest files first (auth, input parsing, secrets, permissions, .factory/). Post each finding on the pull request as you find it. Report before the limit, and name the files you did not read.`,
       },
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section, or triage's summary on a small run. Change no code.
-${outOfDiff}
+${blockingScope}
+A high or critical finding that origin/main also has and that is not kind 1, 2 or 3 does not block, but name it in the report as a high or critical finding for a person to prioritize.
 Post it on the pull request the way review does.
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
       next: { approve: { to: 'done', ship: true }, changes: 'implement' },
@@ -181,7 +215,8 @@ If the work proves bigger than small (more files, a security-sensitive surface, 
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
       prompt: `One station does both verify and review for a small change. Trust no earlier report.
 Run the repo's full pipeline: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Then try to fail it: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard, branch and error path and see a test fail; check that each claim in a changed doc or docstring matches the code, and each documented command runs as written. For a change to .factory/, run the factory check on every changed file.
-Then review the diff as you would before a merge: correctness, the tests' quality, simplicity, naming, backward compatibility. ${outOfDiff} A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
+Then review the diff as you would before a merge: correctness, the tests' quality, simplicity, naming, backward compatibility. A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
+${blockingScope}
 Push the branch and open it as a draft pull request if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line. Leave the pull request a draft; ship marks it ready.
 Report approve; or changes with one numbered list of every failure and finding, found in one pass over the whole diff, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the diff or the bead is security-sensitive (auth, secrets, crypto, input parsing, permissions, infrastructure access, or the label \`security\`), or the diff changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: { to: 'done', ship: true }, changes: 'quick', security: 'security' },

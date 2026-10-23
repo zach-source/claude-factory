@@ -144,6 +144,7 @@ You get what is new and the board; work through it in this order, acting only th
    A mail that says "<station> reported <outcome> again on <AC ids>" names a station that reported the same outcome twice in a row on the same acceptance criterion. Read both of its reports. Then mail implement one concrete steer, or goto plan. Never goto implement with no new direction.
 3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
 4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig. When the prompt carries a Plan, give each rig with room its next work from that list, in order, skipping a bead already in a run or refused; with no Plan, choose as above.
+   A deferred bead whose last comment holds a line "File in: <rig>: <title> | <description>" is a triage worker's elsewhere outcome: it could not file in the other rig. File it there yourself (\`bd create\` with cwd in that rig's repo, the label \`factory\`, the source bead's id in the description), comment the new id on the source bead, and \`bd undefer\` the source bead when the filed bead closes.
 5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no way to install or reject one yourself, so put it in your report's first line ("N skill proposal(s) need review") instead of your usual line there: this toasts straight to the person, who can ask the manager to work it.
 Never act on a run a board row marks held: the person is on it, leave it for the next patrol.
 Never run \`${cli} decide\`, \`${cli} decisions answer\` or \`${cli} start ... --owned\`: each is denied to you outright. Gates and owner-only beads are the person's alone; report them, never decide them.
@@ -152,7 +153,7 @@ The factory CLI, through Bash:
 - \`${cli} mail <run> <station> "<text>"\`: answer or steer a worker (delivered into its session)
 - \`${cli} poke <run> ["<steer>"]\`: nudge the worker at the run's current station; with no text it is told to report or say what blocks it
 - \`${cli} retry <run>\` (a stuck station), \`${cli} goto <run> <station|done>\` (also skips a timed wait), \`${cli} abort <run>\`, \`${cli} fork <run> <station> "<note>"\`, \`${cli} rm <run>\` (finished runs)
-- \`${cli} start <factory>[@station] <rig|repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, release, incidents, optimization and refactoring, sweeps covers the standing monitor, maintain and improve passes
+- \`${cli} start <factory>[@station] <rig|repo> "<goal>"\`: factories are files in ${cli.replace(/bin\/factory$/, 'factories/')}; lifecycle covers build, incidents, optimization and refactoring; release ships pull requests that are already open or merged (\`start release <rig> "<goal naming the PRs>"\`); sweeps covers the standing monitor, maintain and improve passes
 - \`herdr pane read <pane> --source recent --lines 80\`: see what a worker is doing
 The factory works rigs: named repos, listed by \`${cli} rig\`. A rig's ready beads labeled \`factory\` start as runs, \`${cli} sweep\` starts one run per pass for each sweep it asks for, on that sweep's own cadence, and its own cap (\`--max\`) bounds its busy runs under the town's. A rig's name stands for its repo in every command.
 In a repo with beads, every run works a bead: its epic, whose children are the plan's tasks, with each station's report as a comment. A rig's backlog is its beads: \`${cli} queue <rig> <bead> [station]\` labels one \`factory\`; \`station:<name>\` starts it at that station; sweeps file what can wait unlabeled, for the person to prioritize. A bead deferred by a hold or an abort goes back to the factory when it is undeferred.
@@ -1201,7 +1202,7 @@ export const register: Register = (on, options) => {
           "The factory manager's hidden patrol: answers worker mail, works stuck stations, and starts backlog work, on its own timer.",
         prompt: PATROL(rt.cli),
         tools: ['Bash', 'Read', 'Grep', 'Glob'],
-        model: 'sonnet',
+        model: 'claude-sonnet-5-5',
         maxTurns: 40,
         omitClaudeMd: true,
       })
@@ -1221,7 +1222,7 @@ export const register: Register = (on, options) => {
         // remote. An empty array tells the engine to allow no tool call. Leaving `tools` out
         // instead gives the pm every tool its parent session has.
         tools: [],
-        model: 'sonnet',
+        model: 'claude-sonnet-5-5',
         maxTurns: 15,
         omitClaudeMd: true,
       })
@@ -1236,7 +1237,7 @@ export const register: Register = (on, options) => {
         // pull request's title or a run's journal text. With Bash, that text can make the briefer
         // run `gh` or a `factory` verb of its own, instead of only reading the facts it got.
         tools: [],
-        model: 'haiku', // Haiku 5.5 through the manager's ANTHROPIC_DEFAULT_HAIKU_MODEL: no tools, one short summary
+        model: 'claude-haiku-5-5', // Haiku 5.5: no tools, one short summary
         maxTurns: 3,
         omitClaudeMd: true,
       })

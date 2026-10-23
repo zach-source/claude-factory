@@ -3,6 +3,9 @@ import {
   createdAt,
   failKind,
   fate,
+  launchStats,
+  parseLaunchLines,
+  renderLaunches,
   metrics,
   parsePrecheckLines,
   precheckStats,
@@ -567,4 +570,24 @@ test('a routed outcome (attempt 0, no worker) is not a deploy session or station
   ])
   expect(m.deploySessionsPerShippedRun).toBe(2)
   expect(m.stations.deploy?.visits).toBe(2)
+})
+
+test('launchStats counts launches per station by harness and model, and skips bad lines', () => {
+  const line = (node: string, harness: string, model: string) =>
+    JSON.stringify({ at: 1, run: 'r', rig: 'w', node, seq: 1, harness, model, resume: false })
+  const text = [
+    line('implement', 'codex', 'gpt-6.1-sol'),
+    line('implement', 'claude', 'claude-sonnet-5-5[1m]'),
+    line('implement', 'claude', 'claude-sonnet-5-5[1m]'),
+    '{"at":1,"run"',
+    line('security', 'codex', 'gpt-6-astra'),
+    '{"node":3}',
+  ].join('\n')
+  const stats = launchStats(parseLaunchLines(text))
+  expect(stats).toEqual({
+    implement: { 'codex gpt-6.1-sol': 1, 'claude claude-sonnet-5-5[1m]': 2 },
+    security: { 'codex gpt-6-astra': 1 },
+  })
+  expect(renderLaunches(stats)).toContain('implement: claude claude-sonnet-5-5[1m] 2, codex gpt-6.1-sol 1')
+  expect(renderLaunches({})).toBe('')
 })

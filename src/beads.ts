@@ -5,6 +5,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { bdEnv } from './axrepos'
+import { STALE_LABEL } from './hygiene'
 import { runBounded, syncTimeoutMs, timedOutText } from './sync'
 
 export type Bead = {
@@ -17,6 +18,8 @@ export type Bead = {
   status?: string
   close_reason?: string
   assignee?: string
+  /** ISO time the assignee's claim lapses unless a heartbeat renews it */
+  lease_expires_at?: string
   priority?: number
   issue_type?: string
   metadata?: Record<string, unknown>
@@ -38,6 +41,8 @@ export const LABEL = 'factory'
 export const REJECTED = 'rejected'
 /** a bead handed off to the rig's ship run: open, no `factory` label, so dispatch skips it */
 export const SHIP = 'ship'
+/** a bead a blocked run handed to its owner: open, no `factory` label, until `queue` puts it back */
+export const OWNER = 'owner'
 const shipAt = (b: Bead) => String(b.metadata?.ship_at ?? '')
 /** queue order: oldest handoff first */
 export const shipOrder = (bs: Bead[]) => [...bs].sort((a, b) => shipAt(a).localeCompare(shipAt(b)))
@@ -262,6 +267,60 @@ function lookupBead(repo: string, actor: string, id: string): Bead | null {
   throw new Error(`bd show ${id}: ${(r.stderr || r.out).split('\n')[0]}`)
 }
 
+/** a create bd itself may have lost the answer to: see `beads().create` */
+function createBead(
+  repo: string,
+  actor: string,
+  labeled: boolean,
+  title: string,
+  description: string,
+  extra: string[],
+  meta: Record<string, string> = {},
+) {
+  const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+  const attempt = () =>
+    bd(
+      repo,
+      actor,
+      'create',
+      title,
+      '-d',
+      description,
+      ...(labeled ? ['-l', LABEL] : []),
+      '--silent',
+      '--metadata',
+      JSON.stringify({ factory_create: token, ...meta }),
+      ...extra,
+    )
+  const landed = (afterErr: string) => {
+    const r = bd(
+      repo,
+      actor,
+      'list',
+      '--all',
+      '--metadata-field',
+      `factory_create=${token}`,
+      '--json',
+      '-n',
+      '2',
+    )
+    if (!r.isOk)
+      throw new Error(
+        `bd create: ${afterErr}; it may have landed: bd list --all --metadata-field factory_create=${token}`,
+      )
+    return (JSON.parse(r.out) as Bead[])[0]?.id
+  }
+  let r = attempt()
+  if (r.isOk) return r.out
+  let found = landed(r.err.split('\n')[0] ?? '')
+  if (found) return found
+  r = attempt() // absent: one retry, same token, then give up
+  if (r.isOk) return r.out
+  found = landed(r.err.split('\n')[0] ?? '')
+  if (found) return found
+  throw new Error(`bd create: ${r.err.split('\n')[0]}`)
+}
+
 export const beads = (repo: string, actor: string) => ({
   prefix: () => {
     const r = bd(repo, actor, 'config', 'get', 'issue_prefix')
@@ -313,7 +372,7 @@ export const beads = (repo: string, actor: string) => ({
    */
   queue: (id: string, station?: string) => {
     const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(
-      l => l.startsWith('factory:') || l.startsWith('station:'),
+      l => l.startsWith('factory:') || l.startsWith('station:') || l.startsWith('held:'),
     )
     return must(
       bd(
@@ -326,6 +385,14 @@ export const beads = (repo: string, actor: string) => ({
         LABEL,
         '--remove-label',
         REJECTED,
+        '--remove-label',
+        STALE_LABEL,
+        '--remove-label',
+        OWNER,
+        '--unset-metadata',
+        'owner_question',
+        '--unset-metadata',
+        'owner_since',
         ...(station ? ['--add-label', `station:${station}`] : []),
       ),
       'update',
@@ -353,51 +420,14 @@ export const beads = (repo: string, actor: string) => ({
    * with a token in its metadata, so a failure is checked against that token before any retry, instead of
    * risking a silent duplicate. One retry only: a second failure's caller re-runs by hand.
    */
-  create: (title: string, description: string, ...extra: string[]) => {
-    const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-    const attempt = () =>
-      bd(
-        repo,
-        actor,
-        'create',
-        title,
-        '-d',
-        description,
-        '-l',
-        LABEL,
-        '--silent',
-        '--metadata',
-        `{"factory_create":"${token}"}`,
-        ...extra,
-      )
-    const landed = (afterErr: string) => {
-      const r = bd(
-        repo,
-        actor,
-        'list',
-        '--all',
-        '--metadata-field',
-        `factory_create=${token}`,
-        '--json',
-        '-n',
-        '2',
-      )
-      if (!r.isOk)
-        throw new Error(
-          `bd create: ${afterErr}; it may have landed: bd list --all --metadata-field factory_create=${token}`,
-        )
-      return (JSON.parse(r.out) as Bead[])[0]?.id
-    }
-    let r = attempt()
-    if (r.isOk) return r.out
-    let found = landed(r.err.split('\n')[0] ?? '')
-    if (found) return found
-    r = attempt() // absent: one retry, same token, then give up
-    if (r.isOk) return r.out
-    found = landed(r.err.split('\n')[0] ?? '')
-    if (found) return found
-    throw new Error(`bd create: ${r.err.split('\n')[0]}`)
-  },
+  create: (title: string, description: string, ...extra: string[]) =>
+    createBead(repo, actor, true, title, description, extra),
+  /** `create` without the `factory` label, so dispatch never starts the bead (the hygiene digest) */
+  createUnlabeled: (title: string, description: string, meta: Record<string, string>, ...extra: string[]) =>
+    createBead(repo, actor, false, title, description, extra, meta),
+  /** a bead's comments as bd prints them */
+  comments: (id: string): { text: string; created_at: string }[] =>
+    JSON.parse(must(bd(repo, actor, 'comments', id, '--json'), 'comments') || '[]'),
   /**
    * keeps the claim's lease alive, taking it back if a reaper reclaimed it. Lost only when the bead
    * names another assignee: bd being unreachable (a shared server's maintenance lock) throws instead
@@ -433,9 +463,28 @@ export const beads = (repo: string, actor: string) => ({
   /** false when bd refuses, e.g. while the bead still has open tasks */
   close: (id: string, reason: string) => bd(repo, actor, 'close', id, '--reason', reason).isOk,
   /** unassigned and out of bd ready until a person undefers it, which hands it back to the factory */
-  defer: (id: string, reason: string) => {
+  defer: (id: string, reason: string, station?: string) => {
     bd(repo, actor, 'unclaim', id)
-    return must(bd(repo, actor, 'defer', id, '--reason', reason), 'defer')
+    const out = must(bd(repo, actor, 'defer', id, '--reason', reason), 'defer')
+    // with a station, the run after an undefer starts there: it replaces every station:* label
+    if (station) {
+      const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(l => l.startsWith('station:'))
+      must(
+        bd(
+          repo,
+          actor,
+          'update',
+          id,
+          ...old.flatMap(l => ['--remove-label', l]),
+          '--add-label',
+          LABEL, // a bead started by hand lacks it, and dispatch reads only labeled beads
+          '--add-label',
+          `station:${station}`,
+        ),
+        'update',
+      )
+    }
+    return out
   },
   /**
    * a station judged it not the factory's to do: still open and ready for a person, but out of the factory's
@@ -463,6 +512,27 @@ export const beads = (repo: string, actor: string) => ({
       'update',
     )
   },
+  /** a blocked run ends: the bead stays open and unclaimed, out of the queue, with the question for its owner */
+  handToOwner: (id: string, question: string) => {
+    bd(repo, actor, 'unclaim', id)
+    return must(
+      bd(
+        repo,
+        actor,
+        'update',
+        id,
+        '--remove-label',
+        LABEL,
+        '--add-label',
+        OWNER,
+        '--set-metadata',
+        `owner_question=${question}`,
+        '--set-metadata',
+        `owner_since=${new Date().toISOString()}`,
+      ),
+      'update',
+    )
+  },
   /**
    * Ends a run on a requeue edge (claude-factory-wnm). It releases the claim and keeps the bead open,
    * ready and `factory`-labeled; it never closes or defers it. The next dispatch starts a new run for
@@ -485,7 +555,9 @@ export const beads = (repo: string, actor: string) => ({
     bd(repo, actor, 'unclaim', id)
     const b = lookupBead(repo, actor, id)
     const already = b?.metadata?.requeued_from === runId
-    const requeues = already ? Number(b?.metadata?.requeues ?? 0) : Number(b?.metadata?.requeues ?? 0) + 1
+    const prior = Number(b?.metadata?.requeues ?? 0)
+    // a non-finite or negative count never writes NaN back: it reads as 0 here, and track() defers it as at-cap
+    const requeues = (Number.isFinite(prior) && prior >= 0 ? prior : 0) + (already ? 0 : 1)
     const oldLabels = (b?.labels ?? []).filter(
       l => (to?.factory && l.startsWith('factory:')) || (to?.station && l.startsWith('station:')),
     )
@@ -573,6 +645,16 @@ export const beads = (repo: string, actor: string) => ({
     return bd(repo, actor, 'update', id, '--claim').isOk
   },
   release: (id: string) => bd(repo, actor, 'unclaim', id).isOk,
+  /** puts a bead that repairs closed back in the ship queue while its PR is open: no claim, no run label */
+  reship: (id: string, reason: string) =>
+    bd(repo, actor, 'reopen', id, '--reason', reason).isOk &&
+    bd(repo, actor, 'update', id, '--add-label', SHIP).isOk &&
+    bd(repo, actor, 'comment', id, reason).isOk,
+  /** takes back a claim another actor abandoned: repairs calls it only for a run that is not live,
+   * with an expired lease */
+  releaseStale: (id: string, reason: string) =>
+    bd(repo, actor, 'unclaim', id, '--force').isOk &&
+    bd(repo, actor, 'comment', id, `claim released: ${reason}`).isOk,
   children: (id: string): Bead[] => {
     const r = bd(repo, actor, 'children', id, '--json')
     return r.isOk ? JSON.parse(r.out) : []

@@ -230,6 +230,11 @@ test(
     // so the fallback must carry them itself, or the main chat gets due.text with no rules to work it
     expect(submits[0]!.text).toContain('## Factory patrol')
     expect(submits[0]!.text).toContain("You are the factory manager's patrol")
+    // claude-factory-502: the prompt names the release factory and says what to do with a "File in:" line
+    expect(submits[0]!.text).toContain('start release <rig>')
+    expect(submits[0]!.text).not.toContain('lifecycle covers build, release')
+    expect(submits[0]!.text).toContain('"File in: <rig>: <title> | <description>"')
+    expect(submits[0]!.text).toContain('`bd undefer` the source bead')
     expect(JSON.stringify(status)).toContain('fell back to the main chat')
   },
 )

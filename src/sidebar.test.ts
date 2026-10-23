@@ -91,6 +91,8 @@ test("waiting names each rig's next PR and lists every owner-only step once, in 
   expect(text).toContain('3. terraform apply')
   expect(text).toContain('→ factory mail s1 deploy')
   expect(text.match(/factory mail s1/g)).toHaveLength(1) // an owner step is not also a per-run block
+  expect(text.match(/factory mail s2 /g)).toHaveLength(1) // each answer names only its own run
+  expect(text.match(/factory mail s3 /g)).toHaveLength(1)
   expect(waiting([], now, { web: queue('https://x/pull/7', 'w-1') })).toContain('next to merge')
 })
 
