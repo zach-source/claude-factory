@@ -805,9 +805,14 @@ memory/
   (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
-  topic's `LONG.md` once the note is 7 days old and was shown or helped at least once, and
-  archives a short note into `.archive/<topic>.md` once it is 30 days unused and never helped, or
-  once it was never shown at all and is 14 days old (or marked `superseded:` outright). Both
+  topic's `LONG.md` once the note is 7 days old and its activation is above θm, and archives a
+  short note into `.archive/<topic>.md` once it is 14 days old and its activation is below θa, or
+  it was never shown at all (or marked `superseded:` outright). Activation is
+  `ln(Σ w · t_days^-0.5)` over the last 90 days of usage events: helped 1.0 (0.3 for a failed
+  attempt), confirmed 1.0, shown 0.15, contradicted −1.0. θm and θa are −3.6 (about one show 30
+  days ago), and θc, the promote limit for a LONG.md entry helped across 3 runs, is 0. Set
+  `FACTORY_MEMORY_THETA_MERGE`, `FACTORY_MEMORY_THETA_ARCHIVE` or `FACTORY_MEMORY_THETA_PROMOTE`
+  to change one. Both
   usage-based archive rules wait until the store holds at least 14 days of usage history, so a new
   or lost `.usage.jsonl` cannot be misread as "never shown." A pass archives at most
   `FACTORY_MEMORY_ARCHIVE_CAP` notes (default 25), oldest first across every topic; the rest are
