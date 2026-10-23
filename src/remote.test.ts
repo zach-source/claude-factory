@@ -1635,16 +1635,16 @@ test('rig add --merge-authority stores Rig.mergeAuthority; a rig add without it 
 })
 
 test("vmClaudeFlags and vmCodexHome carry --merge-authority on the hook's argv only when asked", () => {
-  const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, true)
+  const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, 'acme/widget')
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --merge-authority",
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --merge-authority 'acme/widget'",
   )
-  const off = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, false)
+  const off = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined)
   expect(off).toEqual(vmClaudeFlags({ maxContextK: 150 }))
   expect(JSON.stringify(off)).not.toContain('merge-authority')
-  const codex = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'], true)
-  expect(codex['hooks.json']).toMatch(/--protected-branches 'release' --merge-authority/)
+  const codex = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'], 'acme/widget')
+  expect(codex['hooks.json']).toMatch(/--protected-branches 'release' --merge-authority 'acme\/widget'/)
   expect(vmCodexHome({ maxContextK: 150 })['hooks.json']).not.toContain('merge-authority')
 })
 

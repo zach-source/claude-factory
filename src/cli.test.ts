@@ -1923,15 +1923,22 @@ test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
 // claude-factory-l3tl: an opted-in rig gets its own settings file, with --merge-authority on the hook's argv
 test("workerFlags carries --merge-authority only for a rig with mergeAuthority true, in the rig's own file", () => {
   const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
-  const acme = { name: 'acme', mergeAuthority: true }
-  const web = { name: 'web' }
-  const loose = { name: 'loose', mergeAuthority: 'yes' as unknown as boolean }
+  const clone = join(home, 'clone')
+  Bun.spawnSync(['git', 'init', '-q', clone])
+  Bun.spawnSync(['git', '-C', clone, 'remote', 'add', 'origin', 'git@github.com:acme/widget.git'])
+  const bare = join(home, 'bare')
+  Bun.spawnSync(['git', 'init', '-q', bare])
+  const acme = { name: 'acme', repo: clone, mergeAuthority: true }
+  const noOrigin = { name: 'nogit', repo: bare, mergeAuthority: true }
+  const web = { name: 'web', repo: clone }
+  const loose = { name: 'loose', repo: clone, mergeAuthority: 'yes' as unknown as boolean }
   expect(workerFlags({ maxContextK: 200 }, acme, home)).toContain(join(home, 'worker-settings-acme.json'))
   expect(workerFlags({ maxContextK: 200 }, web, home)).toContain(join(home, 'worker-settings.json'))
+  expect(workerFlags({ maxContextK: 200 }, noOrigin, home)).toContain(join(home, 'worker-settings.json'))
   expect(workerFlags({ maxContextK: 200 }, loose, home)).toContain(join(home, 'worker-settings.json'))
   const cmd = (f: string) =>
     JSON.parse(readFileSync(join(home, f), 'utf8')).hooks.PreToolUse.at(-1).hooks[0].command as string
-  expect(cmd('worker-settings-acme.json')).toMatch(/worker-hook\.ts' --merge-authority$/)
+  expect(cmd('worker-settings-acme.json')).toMatch(/worker-hook\.ts' --merge-authority 'acme\/widget'$/)
   expect(cmd('worker-settings.json')).not.toContain('merge-authority')
 })
 

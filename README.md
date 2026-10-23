@@ -287,8 +287,8 @@ factory rig add ax ~/repos/ax --protected-branch acme-deploy
 
 A person can give a rig merge authority with `factory rig add <name> <repo> ship ... --merge-authority`.
 `rig add` replaces the whole rig, so repeat the current flags. Only the ship factory's `release`
-station then merges, and only with this form: `gh pr merge <number> --merge --match-head-commit <40-hex SHA>`
-(optional `-R owner/repo`). The hook denies every other merge form there. Every other rig and station
+station then merges, and only with this form: `gh pr merge <number> --merge --match-head-commit <40-hex SHA> -R <owner/repo>`
+(`-R` is required and must name the rig's own repo, read from its origin remote at launch). The hook denies every other merge form there. Every other rig and station
 keeps the deny below. The rig takes the setting at the next worker launch.
 
 A worker's PreToolUse hook denies these commands:

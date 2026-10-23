@@ -1017,7 +1017,7 @@ export function ruleLines(
       ? [
           '',
           '## Merge authority',
-          'A person gave this rig merge authority. The ship release station (and no other station) merges each queued pull request that is ready, has green CI and has passed reviews, with exactly: gh pr merge <number> --merge --match-head-commit <head SHA> (add -R <owner/repo> if needed). Never use --admin, --squash, --rebase or --auto. This overrides the House rule that only a person merges, for that one command.',
+          'A person gave this rig merge authority. The ship release station (and no other station) merges each queued pull request that is ready, has green CI and has passed reviews, with exactly: gh pr merge <number> --merge --match-head-commit <head SHA> -R <owner/repo of this rig> (-R is required). Never use --admin, --squash, --rebase or --auto. This overrides the House rule that only a person merges, for that one command.',
         ]
       : []),
     ...(rigGoal
@@ -1054,7 +1054,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       def,
       rigOf(run.repo)?.goal,
       personOnlyContexts(rigOf(run.repo)),
-      mergeAuthority(rigOf(run.repo)),
+      !!mergeAuthority(rigOf(run.repo)),
     ),
     '',
     ...remembered(run, node),
@@ -1485,11 +1485,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * When the list is not empty, the hook's own argv carries it: `--person-only-contexts a,b`.
  * `branches` names branches, over main and master, the rig reserves for a person's push
  * (claude-factory-zl5). Its own argv is `--protected-branches a,b`.
- * `merge` adds the bare word `--merge-authority` (claude-factory-l3tl): the hook then lets the ship
- * release station run one strict `gh pr merge` form.
+ * `merge` is the rig's owner/repo (claude-factory-l3tl). It adds `--merge-authority owner/repo`: the hook then lets the ship
+ * release station run one strict `gh pr merge` form, for that repo only (-R required).
  * An older VM image's hook copy ignores argv it does not know.
  */
-const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: boolean) => ({
+const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) => ({
   matcher: 'Bash',
   hooks: [
     {
@@ -1499,7 +1499,7 @@ const denyHook = (bun: string, file: string, contexts?: string[], branches?: str
         sq(file),
         ...(contexts?.length ? ['--person-only-contexts', sq(contexts.join(','))] : []),
         ...(branches?.length ? ['--protected-branches', sq(branches.join(','))] : []),
-        ...(merge ? ['--merge-authority'] : []),
+        ...(merge ? ['--merge-authority', sq(merge)] : []),
       ].join(' '),
       timeout: 10,
     },
@@ -1521,7 +1521,7 @@ export function vmClaudeFlags(
   def: Pick<Factory, 'maxContextK'>,
   contexts?: string[],
   branches?: string[],
-  merge?: boolean,
+  merge?: string,
 ) {
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
@@ -1555,7 +1555,7 @@ export function vmCodexHome(
   def: Pick<Factory, 'maxContextK'>,
   contexts?: string[],
   branches?: string[],
-  merge?: boolean,
+  merge?: string,
 ) {
   const hook = denyHook(
     '/usr/local/bin/bun',
@@ -1830,7 +1830,7 @@ export const workerSettings = (
   personOnly?: string[],
   branches?: string[],
   keep: string[] = [],
-  merge?: boolean,
+  merge?: string,
 ) => {
   const names = ['asd-ste100', ...keep]
   const ste = Object.entries(user.enabledPlugins ?? {}).filter(
@@ -1908,7 +1908,7 @@ export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSe
  */
 export function workerFlags(
   def: Pick<Factory, 'maxContextK'>,
-  rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'>,
+  rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
   home = HOME,
 ) {
   if (process.env.FACTORY_LEAN === '0') return ` --settings '${JSON.stringify(withoutFleet())}'`
@@ -1977,7 +1977,7 @@ export function codexWorker(
   def: Pick<Factory, 'maxContextK'>,
   node: string,
   agent: string,
-  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'>,
+  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
   o: { hookFile?: string; userHome?: string; dir?: string; timeoutMs?: number } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
@@ -5465,8 +5465,20 @@ const protectedBranches = (rig?: Pick<Rig, 'protectedBranches'>): string[] | und
   Array.isArray(rig?.protectedBranches) && rig.protectedBranches.every(b => typeof b === 'string')
     ? rig.protectedBranches
     : undefined
-/** true only when `rig.mergeAuthority` is the literal true (a hand-edited rigs.json cannot loosen it) */
-const mergeAuthority = (rig?: Pick<Rig, 'mergeAuthority'>): boolean => rig?.mergeAuthority === true
+/**
+ * the rig's owner/repo (from its origin remote) when `rig.mergeAuthority` is the literal true
+ * (a hand-edited rigs.json cannot loosen it), else undefined. No readable origin gives undefined: no merge.
+ */
+const mergeAuthority = (rig?: Pick<Rig, 'mergeAuthority'> & { repo?: string }): string | undefined => {
+  if (rig?.mergeAuthority !== true || !rig.repo) return undefined
+  try {
+    return git(expand(rig.repo), 'remote', 'get-url', 'origin').match(
+      /[:/]([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/,
+    )?.[1]
+  } catch {
+    return undefined
+  }
+}
 const expand = (path: string) => resolve(path.replace(/^~(?=\/|$)/, homedir()))
 const toplevel = (path: string) => git(expand(path), 'rev-parse', '--show-toplevel')
 /** a rig's name stands for its repo wherever a command takes one; a path says so (`/`, `.` or `~`) */
@@ -8811,7 +8823,8 @@ if (import.meta.main && !outboxCmd)
               console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
             if (protectedBranches(r)?.length)
               console.log(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
-            if (mergeAuthority(r)) console.log('  merge authority: ship release station')
+            if (r.mergeAuthority === true)
+              console.log(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
             if (r.mcp) console.log(`  mcp: ${r.mcp}`)
             for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
             if (r.linear) {

@@ -127,7 +127,7 @@ export const MERGE_REASON =
 export const MERGE_FORM_REASON =
   'The factory denies this command: this rig gives the ship release station merge authority, but ' +
   'only one form. Run exactly: gh pr merge <number> --merge --match-head-commit <40-hex head SHA>, ' +
-  'with an optional -R owner/repo. Use no other flag, no URL, no variable and no alias. ' +
+  'with -R set to the owner/repo of this rig (required). Use no other flag, no URL, no variable and no alias. ' +
   'Do not retry this exact command.'
 
 // claude-factory-zl5.2
@@ -350,8 +350,8 @@ export interface HookGate {
   /** claude-factory-l3tl: the factory name, from FACTORY_DEF_NAME. With `mergeAuthority` and the
    * `release` station it lets `gh pr merge` pass in one strict form (see `mayMerge`). */
   factory?: string
-  /** claude-factory-l3tl: true when this hook's argv holds `--merge-authority`. Only the literal true counts. */
-  mergeAuthority?: boolean
+  /** claude-factory-l3tl: the owner/repo that follows `--merge-authority` on this hook's argv. A missing or bad value gives no merge. */
+  mergeAuthority?: string
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
   /** This field holds the tool call's own cwd (`i.cwd`). It is not the worktree root.
@@ -4683,7 +4683,12 @@ function scanWithoutRedirects<T>(
 
 /** claude-factory-l3tl: true only for the ship factory's release station, on a rig that opted in. */
 function mayMerge(gate: HookGate): boolean {
-  return gate.mergeAuthority === true && gate.factory === 'ship' && gate.station === 'release'
+  return (
+    typeof gate.mergeAuthority === 'string' &&
+    MERGE_REPO.test(gate.mergeAuthority) &&
+    gate.factory === 'ship' &&
+    gate.station === 'release'
+  )
 }
 
 function mergeDenyReason(gate: HookGate): string {
@@ -4699,7 +4704,8 @@ const MERGE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
  * `tail` is the words after `gh`. The call passes only if `mayMerge(gate)` and every check holds:
  * `pr merge` are the first two words, this is the first scan (no alias, no blank skip), and each
  * later word is one PR number, `--merge`, `--match-head-commit <40 hex>` or `-R/--repo owner/repo`,
- * each at most once. Any other word (a flag, a variable, a redirect, `--`) denies.
+ * each at most once. `-R` is required and must equal `gate.mergeAuthority` (case-blind): the rig's own repo.
+ * Without it, gh takes the repo from GH_REPO or the cwd. Any other word (a flag, a variable, a redirect, `--`) denies.
  */
 function prMergeReason(
   tail: string[],
@@ -4724,11 +4730,11 @@ function prMergeReason(
       sha = true
     } else if ((a === '-R' || a === '--repo' || a.startsWith('--repo=')) && !repo) {
       const v = a.startsWith('--repo=') ? a.slice(7) : w[++k]
-      if (v === undefined || !MERGE_REPO.test(v)) return MERGE_FORM_REASON
+      if (v === undefined || v.toLowerCase() !== gate.mergeAuthority!.toLowerCase()) return MERGE_FORM_REASON
       repo = true
     } else return MERGE_FORM_REASON
   }
-  return merge && sha ? undefined : MERGE_FORM_REASON
+  return merge && sha && repo ? undefined : MERGE_FORM_REASON
 }
 
 function ghReasonOn(
@@ -8988,7 +8994,7 @@ async function main() {
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
     factory: process.env.FACTORY_DEF_NAME,
-    mergeAuthority: process.argv.includes('--merge-authority'),
+    mergeAuthority: process.argv[process.argv.indexOf('--merge-authority') + 1],
     protectedBranches,
     headOf: (dir, timeoutMs) =>
       gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
