@@ -40,7 +40,7 @@ export function taskName(run: string, seq: number) {
 /** where the image keeps the factory (Dockerfile.worker), and with it the workers' system prompt */
 export const FACTORY_DIR = '/opt/factory'
 
-/** the station's model, read from its agent command (`--model 'claude-sonnet-5[1m]'`, codex's `-m o3`) */
+/** the station's model, read from its agent command (`--model 'claude-sonnet-5-5[1m]'`, codex's `-m o3`) */
 export const modelOf = (agent: string) => agent.match(/(?:^|\s)(?:--model|-m)[\s=]+'?([^'\s]+)'?/)?.[1]
 /** pi's provider, read from its agent command (`--provider anthropic`); pi defaults to google */
 export const providerOf = (agent: string) => agent.match(/(?:^|\s)--provider[\s=]+'?([^'\s]+)'?/)?.[1]
@@ -96,6 +96,8 @@ export type Launch = {
   provider?: string
   /** Claude's flags for a worker: tools, settings, system prompt (what workerFlags gives a pane's Claude) */
   claudeFlags?: string[]
+  /** a codex worker's CODEX_HOME files by name (cli.ts vmCodexHome); serve writes them before the first turn */
+  codexHome?: Record<string, string>
   env: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
@@ -130,6 +132,7 @@ export function manifest(l: Launch) {
           FACTORY_HARNESS: l.harness ?? 'claude',
           ...(l.provider && { FACTORY_PROVIDER: l.provider }),
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+          ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
         }),
       }).map(([name, value]) => ({
         name,
@@ -152,23 +155,32 @@ export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1
 export function unavailable(): string | undefined {
   const unknown = 'AX executor unavailable: controller readiness could not be observed'
   try {
-    const p = Bun.spawnSync(
-      [
-        KUBECTL(),
-        ...context(),
-        'get',
-        'deployment',
-        'ax-controller',
-        '-n',
-        'ax-system',
-        '-o',
-        'json',
-        '--request-timeout=5s',
-      ],
-      { timeout: 6_000 },
-    )
-    if (p.exitCode !== 0) return unknown
-    const d = JSON.parse(p.stdout.toString())
+    let raw: string
+    if (BROKER()) {
+      // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
+      const r = broker('GET', '/controller')
+      if (!r.ok) return unknown
+      raw = r.body
+    } else {
+      const p = Bun.spawnSync(
+        [
+          KUBECTL(),
+          ...context(),
+          'get',
+          'deployment',
+          'ax-controller',
+          '-n',
+          'ax-system',
+          '-o',
+          'json',
+          '--request-timeout=5s',
+        ],
+        { timeout: 6_000 },
+      )
+      if (p.exitCode !== 0) return unknown
+      raw = p.stdout.toString()
+    }
+    const d = JSON.parse(raw)
     const generation = d?.metadata?.generation
     const status = d?.status
     if (
@@ -622,7 +634,11 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
     ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
-    ...(env[MANAGER_BROKER] && { FACTORY_POLICY_BROKER: env[MANAGER_BROKER] }),
+    ...(env[MANAGER_BROKER] && {
+      FACTORY_POLICY_BROKER: env[MANAGER_BROKER],
+      // the swap runs in the broker pod, where the op writer token is; the VM holds none
+      FACTORY_AX_TOKEN_SWAP: `curl -sSf -m 25 -X POST ${env[MANAGER_BROKER]!.replace(/\/+$/, '')}/token/best`,
+    }),
     // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
     ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
   }
@@ -643,9 +659,12 @@ export function routerAddress(url?: string) {
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
- * A value that is not a URL adds no rule. ponytail: a rig's hosts stay with the workers
+ * A value that is not a URL adds no rule. A rig's beadsRemote adds its Dolt rule, and a --linear rig adds Linear's.
  */
-export function managerEgress(env: Record<string, string | undefined> = process.env): Egress[] {
+export function managerEgress(
+  env: Record<string, string | undefined> = process.env,
+  rigs: { beadsRemote?: { url: string }; linear?: unknown; egress?: Egress[] }[] = [],
+): Egress[] {
   const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap(k => {
     try {
       const u = env[k] ? new URL(env[k]!) : null
@@ -654,7 +673,31 @@ export function managerEgress(env: Record<string, string | undefined> = process.
       return []
     }
   })
-  return [{ hosts: ['claude.ai'] }, ...rules]
+  // one rule for each host:port of a rig's https beadsRemote (the gateway injects only on HTTPS); a rig with none adds
+  // none. The key, header and prefix come from the rig's own egress entry for that host:port, else DOLT_BASIC
+  const dolt = new Map<string, Egress>()
+  for (const r of rigs) {
+    try {
+      const u = r.beadsRemote ? new URL(r.beadsRemote.url) : null
+      if (!u?.hostname || u.protocol !== 'https:') continue
+      const port = Number(u.port) || 443
+      const own = r.egress?.find(
+        e => e.key && e.hosts.includes(u.hostname) && (e.port ?? 443) === port && !e.http,
+      )
+      dolt.set(`${u.hostname}:${port}`, {
+        hosts: [u.hostname],
+        key: own?.key ?? 'DOLT_BASIC',
+        header: own ? (own.header ?? 'Authorization') : 'Authorization',
+        prefix: own ? (own.prefix ?? 'Bearer ') : 'Basic ',
+        port,
+      })
+    } catch {}
+  }
+  // Linear sends its raw key, so the prefix is empty
+  const linear = rigs.some(r => r.linear)
+    ? [{ hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' }]
+    : []
+  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear]
 }
 
 /**
@@ -668,11 +711,16 @@ export const managerGithubKey = (env: Record<string, string | undefined> = proce
  * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
  * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
  */
-export async function launchManager(image: string, args: string[], { tries = 24, waitMs = 5000 } = {}) {
+export async function launchManager(
+  image: string,
+  args: string[],
+  rigs: Parameters<typeof managerEgress>[1] = [],
+  { tries = 24, waitMs = 5000 } = {},
+) {
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress(), undefined, undefined, managerGithubKey()))
+    if (createPolicy(name, managerEgress(process.env, rigs), undefined, undefined, managerGithubKey()))
       return { name, policy: true }
     await Bun.sleep(waitMs)
   }

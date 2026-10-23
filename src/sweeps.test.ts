@@ -132,9 +132,14 @@ test('a kept bead with no sweep-queue:* label is not allowed to auto-start', () 
   expect(verdicts).toEqual([{ id: 'b0', station: 'maintain', kept: true, allowed: false }])
 })
 
-test('a kept bead labeled sweep-queue:incident, sweep-queue:main-ci-red or sweep-queue:critical-advisory is allowed', () => {
+test('a kept bead labeled sweep-queue:incident, sweep-queue:main-ci-red, sweep-queue:critical-advisory or sweep-queue:flaky-test is allowed', () => {
   const now = Date.now()
-  for (const label of ['sweep-queue:incident', 'sweep-queue:main-ci-red', 'sweep-queue:critical-advisory']) {
+  for (const label of [
+    'sweep-queue:incident',
+    'sweep-queue:main-ci-red',
+    'sweep-queue:critical-advisory',
+    'sweep-queue:flaky-test',
+  ]) {
     const b = filed('b0', 'monitor', new Date(now).toISOString(), [label])
     expect(sweepGuard([b], now)).toEqual([{ id: 'b0', station: 'monitor', kept: true, allowed: true }])
   }
@@ -162,6 +167,15 @@ test('a sweep-filed bead with no created_at stays inside the window, not at epoc
     kept: false,
     allowed: false,
   })
+})
+
+test('a sweep-filed bead with an unparseable created_at stays inside the window', () => {
+  const now = Date.now()
+  const recent = Array.from({ length: 5 }, (_, i) =>
+    filed(`b${i}`, 'maintain', new Date(now - (4 - i) * 60_000).toISOString()),
+  )
+  const bad = filed('bad', 'maintain', 'garbage')
+  expect(sweepGuard([...recent, bad], now).find(v => v.id === 'bad')?.kept).toBe(false)
 })
 
 test('sweepGuard is idempotent: the same beads give the same verdicts on a second call', () => {
