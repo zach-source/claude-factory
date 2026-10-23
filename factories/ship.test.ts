@@ -151,3 +151,39 @@ test('queue names the next PR first and lists every owner-only step in one list'
   expect(ship.nodes.queue.prompt).toContain('name the first one first')
   expect(ship.nodes.queue.prompt).toContain('every owner-only step the queue needs in one list')
 })
+
+const NO_EDIT = 'Do not edit CHANGELOG.md in a pull request.'
+
+test('no ship station tells a worker to edit CHANGELOG.md (debg AC1, AC2)', () => {
+  for (const [name, node] of Object.entries(ship.nodes)) {
+    const rest = node.prompt.replace(NO_EDIT, '')
+    expect(rest, name).not.toMatch(/\b(add|write|update|edit)\b[^.]*changelog|changelog entry/i)
+  }
+  const p = ship.nodes.release.prompt
+  expect(p).toContain(NO_EDIT)
+  expect(p).toContain('writes the changelog at release (tag) time from the merged pull request titles')
+  expect(p).toContain('one good changelog line')
+  expect(p).toContain('gh pr edit <n> -R <repo> --title')
+})
+
+test('release keeps version bump, description and ready steps (debg AC3)', () => {
+  const p = ship.nodes.release.prompt
+  expect(p).toContain("the version bump the repo's conventions call for")
+  expect(p).toContain("the plan's summary, the verification evidence and a rollback plan")
+  expect(p).toContain('gh pr ready')
+  expect(p).toContain('gh pr merge <n> -R <repo> --merge')
+  expect(p).toContain('You never run them')
+})
+
+test('queue resolves a BUILD.bazel-only conflict with gazelle and keeps it (debg AC4, AC5)', () => {
+  const [step1, step2] = ship.nodes.queue.prompt.split('\n2. ') as [string, string]
+  expect(step1).toContain('BUILD.bazel')
+  expect(step1).toContain('git checkout origin/main -- <file>')
+  expect(step1).toContain('bazelisk run //:gazelle -- <dirs>')
+  expect(step1).toContain('.bazelversion')
+  expect(step1).toContain('Any other conflicted file keeps the rule above')
+  const [two] = step2.split('\nReport ready')
+  expect(two).toContain('BUILD.bazel')
+  expect(two).toMatch(/not (go back|send)/i)
+  expect(two).toContain('station:implement')
+})

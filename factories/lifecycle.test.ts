@@ -532,6 +532,8 @@ test('implement runs a numbered self-check and reports a Self-check block (2ida 
   expect(p).toContain('AC table')
   expect(p).toContain('git diff <reviewed sha>..HEAD')
   expect(p).toContain('Add no changelog entry')
+  expect(p).not.toContain('the ship release adds them')
+  expect(p).toContain('writes the changelog at release time')
   expect(p).toContain("'Self-check:'")
   expect(p).toContain('Close every task of this run')
 })
