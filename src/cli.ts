@@ -70,6 +70,7 @@ import {
   linearSourced,
   byId,
   parentOf,
+  shipQueueLines,
   shipQueueText,
   stationOf,
   type Bead,
@@ -721,7 +722,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     else if (argv![0] === 'report') {
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       // from where this VM was told to push, which a rig changed since does not move
-      if (run.bead) syncRigBeads(run, 'pull', side?.beadsRemote)
+      if (vmBeads(run, hasBeads(run.repo))) syncRigBeads(run, 'pull', side?.beadsRemote)
     }
     seen.seen[h] = (seen.seen[h] ?? 0) + 1
     writeJson(seenFile(run, task), seen)
@@ -1318,6 +1319,13 @@ export const codexEgress = (egress: Egress[] = []) =>
     ? egress
     : [...egress, { hosts: ['api.openai.com'], key: 'OPENAI' }]
 
+/** a VM gets the rig's bd store for a bead run, and for a ship run, which has no bead but writes beads */
+export const vmBeads = (run: Pick<Run, 'bead' | 'ship'>, repoHasBeads: boolean) =>
+  (!!run.bead || !!run.ship) && repoHasBeads
+/** a ship worker's VM has no rigs.json, so `factory ship <rig>` fails there: the host reads the queue for it */
+export const shipBriefLines = (run: Pick<Run, 'ship' | 'repo'>) =>
+  run.ship && hasBeads(run.repo) ? shipQueueLines(run.repo) : []
+
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
@@ -1371,13 +1379,14 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
         ]
       : []),
     `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
-    ...(run.bead
+    ...shipBriefLines(run),
+    ...(vmBeads(run, hasBeads(run.repo))
       ? [
           `- bd here is the repo's issue store, cloned when you started from where the factory shares it. \`factory report\` pushes your bd changes back before it reports; to share them sooner (or to see others' since), bd dolt pull && bd dolt push.`,
         ]
       : []),
   ].join('\n')
-  const hasRunBeads = !!run.bead && hasBeads(run.repo)
+  const hasRunBeads = vmBeads(run, hasBeads(run.repo))
   // Substrate takes no env value past 32 KiB, and a brief with its bead's spec can pass that: it goes over
   // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
   // beadsRemote or else the repo's GitHub origin

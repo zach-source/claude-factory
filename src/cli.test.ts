@@ -50,6 +50,8 @@ import {
   room,
   clusterCap,
   slot,
+  shipBriefLines,
+  vmBeads,
   withoutFleet,
   type RigFacts,
 } from './cli'
@@ -1917,4 +1919,27 @@ test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file fi
 test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
   expect(clusterCap({ clusterRuns: 3 })).toBe(3)
   for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
+})
+
+test('vmBeads: a bead run or a ship run in a repo with beads gets the rig bd store in its VM', () => {
+  expect(vmBeads({ ship: true }, true)).toBe(true)
+  expect(vmBeads({ bead: 'fx-1' }, true)).toBe(true)
+  expect(vmBeads({}, true)).toBe(false)
+  expect(vmBeads({ ship: true }, false)).toBe(false)
+})
+
+test('shipBriefLines: only a ship run in a repo with beads gets the host queue', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'ship-brief-'))
+  const bin = mkdtempSync(join(tmpdir(), 'ship-brief-bin-'))
+  writeFileSync(join(bin, 'bd'), '#!/bin/sh\necho "[]"\n', { mode: 0o755 })
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    expect(shipBriefLines({ ship: true, repo })).toEqual([])
+    mkdirSync(join(repo, '.beads'))
+    expect(shipBriefLines({ ship: true, repo }).join('\n')).toContain('ship queue empty')
+    expect(shipBriefLines({ repo })).toEqual([])
+  } finally {
+    process.env.PATH = path
+  }
 })
