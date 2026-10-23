@@ -274,7 +274,7 @@ All files are under the factory directory (`FACTORY_HOME`). The factory has no l
 
 - **Remote runner.** A rig can run its workers in AX microVMs on a Kubernetes cluster. Add `--runner ax` to `rig add`. Read [remote-runner.md](remote-runner.md).
 - **GitLab rigs.** If the origin of a rig is GitLab, `factory prs` and the PRs tab show its merge requests. Sign in to `glab`. Workers still open and watch pull requests with `gh` only.
-- **Memory.** Workers share what they learn. Use `factory memory search [--rig r] <query...>` to find a note. Use `factory memory add [--rig r] <summary> [body...]` to save one. `factory dream` cleans the memory. A tick starts one dream each day.
+- **Memory.** Workers share what they learn. Use `factory memory search [--rig r] <query...>` to find a note. Use `factory memory add [--rig r] --kind fact|rule|recipe <summary> [body...]` to save one. A note that names a bead or a PR also needs `--until <bead|owner/repo#N|YYYY-MM-DD>`, unless its kind is `recipe`. To replace a wrong note, add the correct one with `--supersedes <old note path>`. `factory dream` cleans the memory. A tick starts one dream each day.
 - **Your own factory.** Run `factory adopt <repo>` to copy the lifecycle template to `<repo>/.factory/lifecycle.ts`. Run `factory check <file>` to validate a factory file.
 - **Metrics.** Run `factory metrics [--rig r] [--since 7d] [--json]`.
 - **Other agents.** Use `--agent` to run a rig with `codex` or `pi`, and `--mcp` to give workers MCP servers.

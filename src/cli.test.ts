@@ -959,6 +959,8 @@ test("brief()'s memory section tells a worker to pass --kind on memory add (clau
   const text = brief(run, def, 'implement', c, [])
   expect(text).toContain('memory add --from r1/implement --kind fact|rule|recipe')
   expect(text).toContain('--until')
+  // a note that proved wrong is replaced, not left beside its fix (claude-factory-3u1.1.5)
+  expect(text).toContain('--supersedes <old note path>')
 })
 
 // claude-factory-wnm (A10): a requeue edge can hand the same bead to a later run, in another
