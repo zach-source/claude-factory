@@ -173,6 +173,7 @@ import {
   onHost,
   parseGitlabLabeled,
   parseMergedPrs,
+  shortBeadId,
   parseRemote,
   sameFile,
   spawnGh,
@@ -5522,7 +5523,7 @@ const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) 
   }
 }
 
-/** `gh pr list --state merged --search <id> ...`, plus `--head <branch>` for up to 3 local run
+/** `gh pr list --state merged --search <id> ...`, a second `--search <short id>` for a dotted child id, plus `--head <branch>` for up to 3 local run
  * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
 async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh): Promise<MergedPr[]> {
   const fields = 'number,url,title,headRefName,mergeCommit'
@@ -5532,6 +5533,18 @@ async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh
   })
   if (search.code !== 0) throw new Error(clip(search.err.trim().split('\n')[0] || 'gh pr list failed', 200))
   const found = parseMergedPrs(search.out)
+  // claude-factory-jxl.1: a title may cite only the short child id ("192.6"); the full-id search misses it
+  const short = shortBeadId(id)
+  if (short) {
+    const byShort = await gh(
+      ['pr', 'list', '--state', 'merged', '--search', short, '--json', fields, '-L', '30'],
+      {
+        cwd: repo,
+        timeout: PRECHECK_TIMEOUT_MS,
+      },
+    )
+    if (byShort.code === 0) found.push(...parseMergedPrs(byShort.out))
+  }
   // claude-factory-6as.9: a failed `--head` call must not discard a hit `--search` already found.
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.
@@ -5615,7 +5628,7 @@ async function dispatch() {
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
-  // claude-factory-6as.9: one hung gh call already proved gh broken for this pass (4 calls, up to
+  // claude-factory-6as.9: one hung gh call already proved gh broken for this pass (5 calls, up to
   // 15s each). The other candidates, in this rig or the next, must fail open with no further gh
   // calls, not wait out the same timeout again.
   let ghFailed = false
