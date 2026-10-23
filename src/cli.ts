@@ -76,6 +76,7 @@ import {
 } from './beads'
 import { clusterKey } from './filing-guard'
 import * as plan from './plan'
+import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
 import {
   clipUtf8,
@@ -265,6 +266,12 @@ const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min)
 // a worker whose Claude has not appeared this long after launch never started: the shell was still
 // starting (direnv, under load) when herdr typed the command, and swallowed the Enter
 const LAUNCH_MS = 90_000
+/**
+ * whether a run's AX task gets the rig's beads: a run with a bead, and a rig's ship run, whose stations read the
+ * ship queue from bd and write its labels (claude-factory-pfc8)
+ */
+export const vmBeads = (run: Pick<Run, 'bead' | 'ship'>) => !!run.bead || !!run.ship
+
 const TIME_UP = 'minutes are up' // marks the deadline's warning among the factory's mail
 const HANDOFF_ASK = "past the factory's limit" // marks the ask to hand off
 
@@ -724,7 +731,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     else if (argv![0] === 'report') {
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       // from where this VM was told to push, which a rig changed since does not move
-      if (run.bead) syncRigBeads(run, 'pull', side?.beadsRemote)
+      if (vmBeads(run)) syncRigBeads(run, 'pull', side?.beadsRemote)
     }
     seen.seen[h] = (seen.seen[h] ?? 0) + 1
     writeJson(seenFile(run, task), seen)
@@ -1380,13 +1387,18 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
         ]
       : []),
     `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
-    ...(run.bead
+    ...(run.ship
+      ? [
+          `- This VM's factory has no rigs: where a station says \`factory ship <rig>\`, run \`factory ship .\` in the repo. It reads the same queue from bd.`,
+        ]
+      : []),
+    ...(vmBeads(run)
       ? [
           `- bd here is the repo's issue store, cloned when you started from where the factory shares it. \`factory report\` pushes your bd changes back before it reports; to share them sooner (or to see others' since), bd dolt pull && bd dolt push.`,
         ]
       : []),
   ].join('\n')
-  const hasRunBeads = !!run.bead && hasBeads(run.repo)
+  const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
   // Substrate takes no env value past 32 KiB, and a brief with its bead's spec can pass that: it goes over
   // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
   // beadsRemote or else the repo's GitHub origin
@@ -6317,6 +6329,60 @@ async function planFactsCmd() {
   console.log(clipFactsJson(facts))
 }
 
+/**
+ * `factory advisories file <path>` (claude-factory-yex): the advisories sweep's only way to file beads.
+ * It refuses, with no bd call, unless BEADS_ACTOR is an advisories sweep run's actor.
+ * Each bead it files is then a sweep-filed bead, so the flood guard (`sweepGuard`) applies.
+ * It files critical beads first. A bad input file or a bd failure stops the pass.
+ * The command files nothing without a dedupe answer.
+ */
+function advisoriesFileCmd(path?: string) {
+  if (!path) fail('usage: factory advisories file <path>')
+  const actor = process.env.BEADS_ACTOR ?? ''
+  if (sweepFiler({ created_by: actor }) !== 'advisories')
+    fail('factory advisories file runs only in an advisories sweep run (BEADS_ACTOR)')
+  if (!existsSync(path!)) fail(`no file ${path}`)
+  const b = beads(process.cwd(), actor)
+  try {
+    const input = parseAdvisoryInput(JSON.parse(readFileSync(path!, 'utf8')))
+    const p = planAdvisories(input, (field, value) => b.hasMetadata(field, value))
+    for (const f of p.files) {
+      b.fileWith(f.title, f.body, {
+        labels: f.labels,
+        priority: f.priority,
+        metadata: Object.fromEntries(f.keys.map(k => [k, '1'])),
+      })
+      console.log(`${f.queued ? 'queued' : 'held'} ${f.keys[0]}`)
+    }
+    if (p.ownerStep) {
+      b.fileWith(p.ownerStep.title, p.ownerStep.body, {
+        labels: ['human'],
+        priority: 2,
+        metadata: { advisory_owner_step: input.repo },
+      })
+      console.log(`owner step ${input.repo}`)
+    }
+    if (p.digestRows.length) {
+      const body = `Medium and low advisories for ${input.repo}:\n${p.digestRows.map(r => `- ${r}`).join('\n')}`
+      const open = b.findOpenByMetadata('advisory_digest', input.repo)
+      if (open) b.setDescription(open.id, body)
+      else
+        b.fileWith(`Advisories digest: ${input.repo}`, body, {
+          labels: [],
+          priority: 3,
+          metadata: { advisory_digest: input.repo },
+        })
+      console.log(`digest ${input.repo} ${p.digestRows.length} rows`)
+    }
+    const queued = p.files.filter(f => f.queued).length
+    console.log(
+      `filed ${p.files.length} (queued ${queued}, held ${p.files.length - queued}, digest ${p.digestRows.length} rows, owner step ${p.ownerStep ? 'yes' : 'no'})`,
+    )
+  } catch (err) {
+    fail(`advisories file: ${(err as Error).message}`)
+  }
+}
+
 /** the pm's raw answer, before `plan set` checks each field by hand: `{id, why}` per rig and
  * `{rig, bead?, change, why}` proposals, exactly as claude-factory-dun's inbox spec shapes it. */
 type PmAnswer = {
@@ -8311,6 +8377,11 @@ if (import.meta.main && !outboxCmd)
           break
         }
         fail(`unknown plan command "${sub}": facts, set <file> or show`)
+        break
+      }
+      case 'advisories': {
+        if (args[0] !== 'file') fail('unknown advisories command: file <path>')
+        advisoriesFileCmd(args[1])
         break
       }
       case 'gate-brief': {
