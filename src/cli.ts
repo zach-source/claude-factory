@@ -7931,7 +7931,8 @@ const usage = `factory — herdr software factories on xstate
                                      --dry-run only prints the plan (a dream runs this itself, after it
                                      files the inbox, unless FACTORY_MEMORY_TIERS=0)
   memory eval [--self [n] [--seed s]]  search quality (recall@5, MRR) over the fixed query set in
-                                     <memory>/.eval.jsonl, and which queries missed; --self builds n
+                                     <memory>/.eval.jsonl, and which queries missed, one line per
+                                     case category (update, temporal, abstain); --self builds n
                                      cases (default 60) from the notes, each note's first body
                                      sentence as the query, the same sample for one seed (default 1)
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
@@ -8308,13 +8309,18 @@ if (import.meta.main && !outboxCmd)
             fail(
               self
                 ? `no notes with a body in ${MEMORY} to build cases from`
-                : `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary"}, or run eval --self`,
+                : `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary","category":"update|temporal|abstain (optional)"}, or run eval --self`,
             )
-          const { recall, mrr, misses } = await memory.evaluate(MEMORY, cases)
+          const { recall, mrr, misses, categories } = await memory.evaluate(MEMORY, cases)
+          const line = (s: memory.EvalScore) =>
+            `recall@5 ${s.recall.toFixed(2)}  mrr ${s.mrr.toFixed(2)}  n=${s.n}`
           console.log(
             [
-              `recall@5 ${recall.toFixed(2)}  mrr ${mrr.toFixed(2)}  n=${cases.length}`,
-              ...misses.map(m => `miss: "${m.query}" expected "${m.expect}"`),
+              line({ recall, mrr, n: cases.length }),
+              ...Object.entries(categories).map(([k, s]) => `  ${k} ${line(s)}`),
+              ...misses.map(
+                m => `miss: "${m.query}" expected ${m.expect === undefined ? 'no match' : `"${m.expect}"`}`,
+              ),
             ].join('\n'),
           )
         } else

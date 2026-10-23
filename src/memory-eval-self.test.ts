@@ -1,7 +1,7 @@
 // `factory memory eval --self [n] [--seed s]` scores search with cases built from the notes
 // themselves, so a store with no .eval.jsonl still has a baseline (claude-factory-9l7).
 import { expect, test } from 'bun:test'
-import { cpSync, mkdirSync, rmSync } from 'node:fs'
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -39,3 +39,24 @@ test('eval --self refuses a sample size that is not a positive number', () => {
   expect(r.err).toContain('--self')
   rmSync(dir, { recursive: true, force: true })
 })
+
+test('eval prints one line per category when the curated cases carry one (claude-factory-3u1.4.1)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(home, { recursive: true })
+  cpSync(join(import.meta.dir, 'fixtures', 'memory-lifecycle', 'memory'), join(home, 'memory'), {
+    recursive: true,
+  })
+  const cases = [
+    { query: 'does the build cache need a manual clear?', expect: 'ci/cache.md', category: 'update' },
+    { query: 'is the timing test still flaky?', expect: 'ci/timing.md', category: 'temporal' },
+    { query: 'what is the boiling point of lead?', category: 'abstain' },
+    { query: 'how do I confirm a deploy?', expect: 'deploy/rollout.md' },
+  ]
+  writeFileSync(join(home, 'memory', '.eval.jsonl'), cases.map(c => JSON.stringify(c)).join('\n') + '\n')
+  const r = run(['memory', 'eval'])
+  expect(r.err).toBe('')
+  expect(r.out).toMatch(/^recall@5 \d\.\d\d {2}mrr \d\.\d\d {2}n=4$/m)
+  for (const c of ['update', 'temporal', 'abstain'])
+    expect(r.out).toMatch(new RegExp(`^ {2}${c} recall@5 \\d\\.\\d\\d {2}mrr \\d\\.\\d\\d {2}n=1$`, 'm'))
+  rmSync(dir, { recursive: true, force: true })
+}, 120_000)

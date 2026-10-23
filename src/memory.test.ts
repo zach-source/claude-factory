@@ -1767,7 +1767,34 @@ test('evalScore: recall and MRR over results already searched for, and the misse
 })
 
 test('evalScore on an empty case list scores perfectly, by convention, and names no misses', () => {
-  expect(evalScore([], [])).toEqual({ recall: 1, mrr: 1, misses: [] })
+  expect(evalScore([], [])).toEqual({ recall: 1, mrr: 1, misses: [], categories: {} })
+})
+
+test('evalScore scores each category; an abstain case hits only when search returns nothing', () => {
+  const cases: EvalCase[] = [
+    { query: 'where does the cache key come from', expect: 'ci/cache.md', category: 'update' },
+    { query: 'is the timing test still flaky', expect: 'ci/timing.md', category: 'temporal' },
+    { query: 'what is the capital of France', category: 'abstain' },
+    { query: 'what is the office wifi password', category: 'abstain' },
+    { query: 'how to deploy', expect: 'deploy/rollout.md' }, // no category: only in the total
+  ]
+  const results = [
+    ['ci/old-cache.md', 'ci/cache.md'], // rank 2
+    ['ci/timing.md'], // rank 1
+    [], // abstained: a hit
+    ['beads/lock.md'], // answered a question memory cannot: a miss
+    ['deploy/rollout.md'],
+  ]
+  const r = evalScore(cases, results)
+  expect(r.recall).toBeCloseTo(4 / 5, 5)
+  expect(r.categories).toEqual({
+    update: { recall: 1, mrr: 0.5, n: 1 },
+    temporal: { recall: 1, mrr: 1, n: 1 },
+    abstain: { recall: 0.5, mrr: 0.5, n: 2 },
+  })
+  expect(r.misses).toEqual([cases[3]!])
+  // a case with no expect and no abstain category never hits: an empty expect would match every path
+  expect(evalScore([{ query: 'q' }], [['a.md']]).recall).toBe(0)
 })
 
 test('evaluate() runs the fixed query set against a real store through search()', async () => {
