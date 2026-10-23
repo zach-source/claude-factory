@@ -121,6 +121,13 @@ export const MERGE_REASON =
   'and a GraphQL or REST call that merges a pull request or a branch, or marks it for auto-merge. ' +
   'Report the pull request link and what it waits on; leave it open. Do not retry this command.'
 
+// claude-factory-l3tl
+export const MERGE_FORM_REASON =
+  'The factory denies this command: this rig gives the ship release station merge authority, but ' +
+  'only one form. Run exactly: gh pr merge <number> --merge --match-head-commit <40-hex head SHA>, ' +
+  'with an optional -R owner/repo. Use no other flag, no URL, no variable and no alias. ' +
+  'Do not retry this exact command.'
+
 // claude-factory-zl5.2
 export const READY_REASON =
   'The factory denies this command: only the release station marks a pull request ready for ' +
@@ -338,6 +345,11 @@ export const DYNAMIC_VERB_REASON =
 export interface HookGate {
   /** the running station, from FACTORY_FROM. Only the release station may mark a pull request ready. */
   station?: string
+  /** claude-factory-l3tl: the factory name, from FACTORY_DEF_NAME. With `mergeAuthority` and the
+   * `release` station it lets `gh pr merge` pass in one strict form (see `mayMerge`). */
+  factory?: string
+  /** claude-factory-l3tl: true when this hook's argv holds `--merge-authority`. Only the literal true counts. */
+  mergeAuthority?: boolean
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
   /** This field holds the tool call's own cwd (`i.cwd`). It is not the worktree root.
@@ -4667,6 +4679,56 @@ function scanWithoutRedirects<T>(
   return dropped.length === tail.length ? undefined : scan(dropped)
 }
 
+/** claude-factory-l3tl: true only for the ship factory's release station, on a rig that opted in. */
+function mayMerge(gate: HookGate): boolean {
+  return gate.mergeAuthority === true && gate.factory === 'ship' && gate.station === 'release'
+}
+
+function mergeDenyReason(gate: HookGate): string {
+  return mayMerge(gate) ? MERGE_FORM_REASON : MERGE_REASON
+}
+
+const MERGE_PR_NUMBER = /^[1-9][0-9]*$/
+const MERGE_SHA = /^[0-9a-f]{40}$/
+const MERGE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
+
+/**
+ * claude-factory-l3tl: the reason to deny a `gh pr merge` call, or undefined for the one allowed form.
+ * `tail` is the words after `gh`. The call passes only if `mayMerge(gate)` and every check holds:
+ * `pr merge` are the first two words, this is the first scan (no alias, no blank skip), and each
+ * later word is one PR number, `--merge`, `--match-head-commit <40 hex>` or `-R/--repo owner/repo`,
+ * each at most once. Any other word (a flag, a variable, a redirect, `--`) denies.
+ */
+function prMergeReason(
+  tail: string[],
+  gate: HookGate,
+  aliasDepth: number,
+  skipBlank: boolean,
+): string | undefined {
+  if (!mayMerge(gate)) return MERGE_REASON
+  if (aliasDepth !== 0 || skipBlank || tail[0] !== 'pr' || tail[1] !== 'merge') return MERGE_FORM_REASON
+  let num = false
+  let merge = false
+  let sha = false
+  let repo = false
+  const w = tail.slice(2)
+  for (let k = 0; k < w.length; k++) {
+    const a = w[k]
+    if (MERGE_PR_NUMBER.test(a) && !num) num = true
+    else if (a === '--merge' && !merge) merge = true
+    else if ((a === '--match-head-commit' || a.startsWith('--match-head-commit=')) && !sha) {
+      const v = a.includes('=') ? a.slice(a.indexOf('=') + 1) : w[++k]
+      if (v === undefined || !MERGE_SHA.test(v)) return MERGE_FORM_REASON
+      sha = true
+    } else if ((a === '-R' || a === '--repo' || a.startsWith('--repo=')) && !repo) {
+      const v = a.startsWith('--repo=') ? a.slice(7) : w[++k]
+      if (v === undefined || !MERGE_REPO.test(v)) return MERGE_FORM_REASON
+      repo = true
+    } else return MERGE_FORM_REASON
+  }
+  return merge && sha ? undefined : MERGE_FORM_REASON
+}
+
 function ghReasonOn(
   tail: string[],
   gate: HookGate,
@@ -4724,7 +4786,7 @@ function ghReasonOn(
     // the same as before this guard existed.
   }
   if (verb === 'pr' && sub === 'checkout') state.branchChange = true
-  if (verb === 'pr' && sub === 'merge') return MERGE_REASON
+  if (verb === 'pr' && sub === 'merge') return prMergeReason(tail, gate, aliasDepth, skipBlank)
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
   if (verb === 'pr' && sub === 'ready') {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
@@ -4762,7 +4824,7 @@ function ghReasonOn(
   // claude-factory-zsj0: an unknown flag before the sub word can hide it. Scan the words, fail closed.
   // This does not depend on the top-level `uncertain`: an extra flag must not switch it off.
   if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
-    if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return MERGE_REASON
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return mergeDenyReason(gate)
     if (verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['ready']))) {
       if (hasMutatingWordBeforeDashDash(rest, new Set(['--undo']))) return undefined
       return gate.station === 'release' ? undefined : READY_REASON
@@ -4770,7 +4832,7 @@ function ghReasonOn(
     if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
   }
   if (uncertain) {
-    if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
+    if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return mergeDenyReason(gate)
     if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
       return gate.station === 'release' ? undefined : READY_REASON
     // claude-factory-c63.10: an unknown global flag can hide the `pr` word the same way it
@@ -8923,6 +8985,8 @@ async function main() {
   const protectedBranches = argp >= 0 ? process.argv[argp + 1]?.split(',').filter(Boolean) : undefined
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
+    factory: process.env.FACTORY_DEF_NAME,
+    mergeAuthority: process.argv.includes('--merge-authority'),
     protectedBranches,
     headOf: (dir, timeoutMs) =>
       gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
