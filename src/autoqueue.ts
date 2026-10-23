@@ -26,7 +26,7 @@ const isLeaf = (b: Bead, parents: Set<string>) =>
 const isHeld = (b: Bead, excluded: Set<string>) =>
   excluded.has(b.id) ||
   !!sweepFiler(b) ||
-  !!b.labels?.some(l => l === LABEL || HELD.includes(l)) ||
+  !!b.labels?.some(l => l === LABEL || l.startsWith('held:') || HELD.includes(l)) ||
   isOwned(b)
 
 const age = (b: Bead) => Date.parse(b.created_at ?? '') || 0
