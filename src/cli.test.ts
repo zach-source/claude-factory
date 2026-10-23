@@ -48,6 +48,7 @@ import {
   WORKER_TOOLS,
   commitIdentity,
   room,
+  clusterCap,
   slot,
   withoutFleet,
   type RigFacts,
@@ -1911,4 +1912,9 @@ test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file fi
     }
   }
   rmSync(dir, { recursive: true })
+})
+
+test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
+  expect(clusterCap({ clusterRuns: 3 })).toBe(3)
+  for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
 })

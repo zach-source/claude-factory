@@ -1917,6 +1917,89 @@ test('a bead moves lifecycle -> release with no hand factory start (A8)', () => 
   expect(calls.some(l => l.startsWith('bd update acme-1') && l.includes('--claim'))).toBe(true) // run 2 claimed it
 })
 
+// claude-factory-nwlh.3: a rig holds at most `clusterRuns` (default 2) live runs per cluster.
+/** fake bd: `ready` answers the `ready` beads, `list` (b.every()) the live runs' beads plus them */
+function clusterBd(live: [string, string][], ready: [string, string][]) {
+  const mk = (l: [string, string][]) => l.map(([id, title]) => ({ id, title, labels: ['factory'] }))
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    `  ready) printf '%s' '${JSON.stringify(mk(ready))}';;`,
+    "  children) printf '%s' '[]';;",
+    `  list) printf '%s' '${JSON.stringify(mk([...live, ...ready]))}';;`,
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  chmodSync(join(pbin, 'bd'), 0o755)
+}
+const skipRow = (id: string) =>
+  (JSON.parse(readFileSync(join(phome, 'dispatch.json'), 'utf8')) as { id: string; skip?: string }[]).find(
+    r => r.id === id && r.skip,
+  )?.skip
+function clusterSetup(
+  live: [string, string][],
+  ready: [string, string][],
+  rig: Record<string, unknown> = {},
+) {
+  precheckReset()
+  live.forEach(([id], i) => liveRun(`run-${i}`, id))
+  clusterBd(live, ready)
+  const r = join(pdir, 'repo')
+  writeFileSync(
+    join(phome, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', maxRuns: 5, ...rig }]),
+  )
+  return pfactory(['beads'], { GH_JSON: '[]' })
+}
+const newRuns = () => runDirs().filter(d => !d.startsWith('run-'))
+
+test('two live runs in cluster widget skip a third widget bead; a gadget bead starts', () => {
+  const out = clusterSetup(
+    [
+      ['acme-1', 'widget: a'],
+      ['acme-2', 'widget: b'],
+    ],
+    [
+      ['acme-3', 'widget: c'],
+      ['acme-4', 'gadget: d'],
+    ],
+  )
+  expect(out.code).toBe(0)
+  expect(newRuns()).toHaveLength(1)
+  expect(skipRow('acme-3')).toBe('cluster widget: 2 live runs')
+  expect(skipRow('acme-4')).toBeUndefined()
+  const calls = readFileSync(bdCallsLog, 'utf8').split('\n')
+  expect(calls.filter(l => /^bd (defer|comment|update|label)\b/.test(l) && l.includes('acme-3'))).toEqual([])
+})
+
+test('runs started in one pass count toward their cluster', () => {
+  clusterSetup(
+    [],
+    [
+      ['acme-1', 'widget: x'],
+      ['acme-2', 'widget: y'],
+      ['acme-3', 'widget: z'],
+    ],
+  )
+  expect(newRuns()).toHaveLength(2)
+  expect(skipRow('acme-3')).toBe('cluster widget: 2 live runs')
+})
+
+test('rigs.json clusterRuns sets the cap', () => {
+  const live: [string, string][] = [
+    ['acme-1', 'widget: a'],
+    ['acme-2', 'widget: b'],
+  ]
+  clusterSetup(live, [['acme-3', 'widget: c']], { clusterRuns: 3 })
+  expect(newRuns()).toHaveLength(1)
+  clusterSetup([live[0]!], [['acme-3', 'widget: c']], { clusterRuns: 1 })
+  expect(newRuns()).toHaveLength(0)
+  expect(skipRow('acme-3')).toBe('cluster widget: 1 live runs')
+})
+
 // --- claude-factory-nwlh.2: the filing guard holds overflow beads ---
 
 type FBead = {
@@ -2003,7 +2086,10 @@ function filingReset(all: FBead[]) {
   const r = repo()
   fakeFilingBd(all)
   fakeGuardHerdr()
-  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+  writeFileSync(
+    join(ghome, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', clusterRuns: 20 }]),
+  )
 }
 
 const stations = ['review', 'security', 'plan']
@@ -2192,7 +2278,13 @@ test('auto-queue does not re-queue a held bead after the 24h filing window', () 
   writeFileSync(
     join(ghome, 'rigs.json'),
     JSON.stringify([
-      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+      {
+        name: 'a',
+        repo: repo(),
+        factory: 'lifecycle',
+        clusterRuns: 20,
+        autoQueue: { minPriority: 4, perHour: 10 },
+      },
     ]),
   )
   gfactory(['beads'])
@@ -2213,7 +2305,13 @@ test('auto-queue does not re-queue a held or mark-only bead; factory queue still
   writeFileSync(
     join(ghome, 'rigs.json'),
     JSON.stringify([
-      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+      {
+        name: 'a',
+        repo: repo(),
+        factory: 'lifecycle',
+        clusterRuns: 20,
+        autoQueue: { minPriority: 4, perHour: 10 },
+      },
     ]),
   )
   gfactory(['beads']) // pass 1: w-7 held, w-8 marked
