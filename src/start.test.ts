@@ -296,6 +296,31 @@ test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refus
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
 })
 
+test('start <factory>@constructor (an Object.prototype key) fails as an unknown station and creates nothing (claude-factory-dax)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const out = run(['start', `${factoryFixture()}@constructor`, r, 'a goal'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('no station "constructor"')
+  const runs = join(home, 'runs')
+  expect(existsSync(runs) ? readdirSync(runs) : []).toHaveLength(0)
+})
+
+test('fork <run> constructor (an Object.prototype key) prints the usage line (claude-factory-dax)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const started = run(['start', factoryFixture(), r, 'a goal'])
+  expect(started.code).toBe(0)
+  const id = readdirSync(join(home, 'runs'))[0]!
+  const out = run(['fork', id, 'constructor'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('usage: factory fork')
+})
+
 // claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
 // person must run `factory retry` to free it. A stuck run must not fill FACTORY_MAX_RUNS, the
 // town cap. The person already holds the run, the same way as a wait or a gate. The control
