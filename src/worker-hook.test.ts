@@ -10731,6 +10731,8 @@ test.each([
   `gh pr merge 12 --merge --match-head-commit ${SHA} --`,
   `gh pr merge 12 --merge --match-head-commit ${SHA} >f`,
   `gh pr merge 12 --merge --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget --repo=acme/other`,
   `gh pr merge 12 --merge --match-head-commit ${SHA} -R $REPO`,
   `gh pr merge 12 --merge --match-head-commit ${SHA} -R widget`,
   `gh -R acme/widget pr merge 12 --merge --match-head-commit ${SHA}`,
