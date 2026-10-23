@@ -7917,8 +7917,10 @@ const usage = `factory — herdr software factories on xstate
                                      topic over the cap merges its oldest 7+ day old notes down to it;
                                      --dry-run only prints the plan (a dream runs this itself, after it
                                      files the inbox, unless FACTORY_MEMORY_TIERS=0)
-  memory eval                       search quality (recall@5, MRR) over the fixed query set in
-                                     <memory>/.eval.jsonl, and which queries missed
+  memory eval [--self [n] [--seed s]]  search quality (recall@5, MRR) over the fixed query set in
+                                     <memory>/.eval.jsonl, and which queries missed; --self builds n
+                                     cases (default 60) from the notes, each note's first body
+                                     sentence as the query, the same sample for one seed (default 1)
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
   skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
@@ -8277,21 +8279,34 @@ if (import.meta.main && !outboxCmd)
             }
           }
         } else if (sub === 'eval') {
-          const cases = memory.readEvalCases(MEMORY)
+          // --self [n] [--seed s]: cases from the notes themselves, a baseline with no curated set
+          const at = (k: string) => (words.includes(k) ? words[words.indexOf(k) + 1] : undefined)
+          const self = words.includes('--self')
+          const raw = at('--self')
+          const n = Number(raw === undefined || raw.startsWith('--') ? 60 : raw)
+          const seed = Number(at('--seed') ?? 1)
+          if (self && !(Number.isInteger(n) && n > 0))
+            fail('usage: factory memory eval --self [n] [--seed s]')
+          if (!Number.isInteger(seed)) fail('usage: factory memory eval --self [n] [--seed s]')
+          const cases = self
+            ? memory.selfCases(memory.walk(MEMORY).notes, n, seed)
+            : memory.readEvalCases(MEMORY)
           if (!cases.length)
             fail(
-              `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary"}`,
+              self
+                ? `no notes with a body in ${MEMORY} to build cases from`
+                : `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary"}, or run eval --self`,
             )
           const { recall, mrr, misses } = await memory.evaluate(MEMORY, cases)
           console.log(
             [
-              `recall@5: ${(recall * 100).toFixed(0)}%  mrr: ${mrr.toFixed(2)}  (${cases.length} queries)`,
+              `recall@5 ${recall.toFixed(2)}  mrr ${mrr.toFixed(2)}  n=${cases.length}`,
               ...misses.map(m => `miss: "${m.query}" expected "${m.expect}"`),
             ].join('\n'),
           )
         } else
           fail(
-            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval`,
+            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
           )
         break
       }

@@ -1,0 +1,52 @@
+{
+  "cursor": 0,
+  "snapshot": {
+    "status": "active",
+    "value": "done",
+    "historyValue": {},
+    "context": {
+      "seq": 2,
+      "attempt": 1,
+      "pane": null,
+      "session": null,
+      "resumes": 0,
+      "startedAt": 0,
+      "nudgedAt": 0,
+      "nudges": 0,
+      "retryAt": 0,
+      "budget": 20,
+      "wakeAt": 0,
+      "error": null,
+      "mail": {
+        "implement": [],
+        "manager": [
+          {
+            "from": "implement",
+            "text": "exported parseDate",
+            "at": 1757007200000
+          }
+        ]
+      },
+      "seen": {
+        "implement": 0
+      },
+      "log": [
+        {
+          "node": "implement",
+          "attempt": 1,
+          "outcome": "failed",
+          "summary": "typecheck fails: TS2305 module \"./util\" has no exported member \"parseDate\" (attempt 1)",
+          "at": 1757003600000
+        },
+        {
+          "node": "implement",
+          "attempt": 1,
+          "outcome": "ready",
+          "summary": "exported parseDate",
+          "at": 1757007200000
+        }
+      ]
+    },
+    "children": {}
+  }
+}

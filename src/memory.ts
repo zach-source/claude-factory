@@ -522,6 +522,35 @@ export function evalScore(cases: EvalCase[], results: string[][]): EvalResult {
   }
 }
 
+/** a seeded PRNG (mulberry32): the same seed samples the same notes, so two evals compare */
+const rng = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
+
+/**
+ * pure: n cases built from the notes themselves, for a store with no curated .eval.jsonl
+ * (claude-factory-9l7). The query is a note's first body sentence, the target is that note. `expect`
+ * is the path plus a space, because evaluate() matches against "<path> <summary>".
+ */
+export function selfCases(notes: Note[], n: number, seed = 1): EvalCase[] {
+  const pool = notes
+    .map(note => {
+      const line = note.body.split('\n')[0]!.trim()
+      return { note, query: (/^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line).trim() }
+    })
+    .filter(c => c.query)
+    .sort((a, b) => (a.note.path < b.note.path ? -1 : 1))
+  const next = rng(seed)
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j]!, pool[i]!]
+  }
+  return pool.slice(0, n).map(c => ({ query: c.query, expect: `${c.note.path} `, rig: c.note.rig }))
+}
+
 /** runs the fixed query set against the real store and scores it: what `factory memory eval` reports */
 export async function evaluate(dir: string, cases: EvalCase[], limit = 5): Promise<EvalResult> {
   const results: string[][] = []

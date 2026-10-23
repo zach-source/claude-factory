@@ -42,6 +42,7 @@ import {
   rejectSkill,
   resolvePath,
   same,
+  selfCases,
   type ShortCandidate,
   skillsDir,
   skillSources,
@@ -1781,6 +1782,55 @@ test('evaluate() runs the fixed query set against a real store through search()'
   expect(r.recall).toBe(1)
   expect(r.misses).toEqual([])
 }, 60_000)
+
+const note = (path: string, body: string): Note => ({ path, summary: `s ${path}`, body })
+
+test('selfCases: one case per sampled note, its first body sentence as the query, its path as the target', () => {
+  const notes = [
+    note('b/two.md', 'Second note. More text.'),
+    note('a/one.md', 'First note here! Then more.'),
+    note('c/empty.md', ''), // no body: no query to ask, so never sampled
+    note('d/three.md', 'Third note\nwith a second line.'),
+  ]
+  const all = selfCases(notes, 10, 1)
+  expect(all.map(c => c.expect).sort()).toEqual(['a/one.md ', 'b/two.md ', 'd/three.md '])
+  expect(all.find(c => c.expect === 'a/one.md ')?.query).toBe('First note here!')
+  expect(all.find(c => c.expect === 'd/three.md ')?.query).toBe('Third note')
+  expect(selfCases(notes, 2, 1)).toHaveLength(2)
+  // the same seed gives the same sample whatever order walk() returned the notes in
+  expect(selfCases([...notes].reverse(), 2, 7)).toEqual(selfCases(notes, 2, 7))
+  const picks = new Set([1, 2, 3, 4, 5, 6, 7, 8].map(s => selfCases(notes, 1, s)[0]!.expect))
+  expect(picks.size).toBeGreaterThan(1) // another seed samples another note
+  expect(selfCases([], 5, 1)).toEqual([])
+})
+
+test('the memory-lifecycle fixture holds every note kind, a usage history and 3 runs with one failure', () => {
+  const root = join(import.meta.dir, 'fixtures', 'memory-lifecycle')
+  const { notes } = walk(join(root, 'memory'))
+  expect(new Set(notes.map(n => n.kind))).toEqual(new Set(['fact', 'rule', 'recipe', undefined]))
+  expect(notes.some(n => n.until)).toBe(true)
+  expect(notes.some(n => n.superseded)).toBe(true)
+  const events = readFileSync(join(root, 'memory', '.usage.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+  for (const k of ['shown', 'helped', 'confirmed', 'contradicted'])
+    expect(events.some(l => k in JSON.parse(l))).toBe(true)
+  const runs = readdirSync(join(root, 'runs')).map(id => {
+    const { snapshot } = JSON.parse(readFileSync(join(root, 'runs', id, 'state.json'), 'utf8'))
+    return {
+      value: snapshot.value,
+      log: snapshot.context.log as { node: string; outcome: string; summary: string }[],
+    }
+  })
+  expect(runs.map(r => (typeof r.value === 'string' ? r.value : 'working')).sort()).toEqual([
+    'aborted',
+    'done',
+    'working',
+  ])
+  const failures = runs.flatMap(r => r.log.filter(e => e.outcome === 'failed'))
+  expect(failures).toHaveLength(3)
+  expect(new Set(failures.map(e => e.summary.replace(/\(attempt \d+\)/, '')))).toHaveProperty('size', 1)
+})
 
 test('dreamPrompt names the long tier and the id rule, and adds the promotion, duplicate, unsafe and over-cap sections', () => {
   const empty = dreamPrompt('/tmp/memory', [], [], [])
