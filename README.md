@@ -1114,6 +1114,14 @@ rows = [
   manager the new, changed and reaped ones, and it reads each and runs `factory skills install
 <name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
   are in the memory's git history like its notes.
+- **Learning ladder**: when one station fails the same way in 3 or more runs, or an inbox note
+  repeats a CORE.md line, the dream writes at most 3 proposals per pass to
+  `memory/.proposals/<name>.md`. Each names a rung: `core` (a CORE.md line), `instruction` (a
+  station or worker instruction), `skill` or `check`. The next tick mails the manager once for each
+  new set. `factory proposals` lists them. `factory proposals install <name>` adds a core line to
+  CORE.md. For a higher rung it files a bead labeled `human` in the factory's own rig (or
+  `--rig <name>`), and it changes no factory code. `factory proposals reject <name> <why>` sends
+  the reason to the dream's inbox.
 - **Tokens**: `factory metrics --tokens` shows what the workers spent, by station and model. It
   shows input, cache write, cache read and output tokens, the cache hit rate and a cost estimate in
   USD. It also shows the manager's patrol, pm, briefer and dream sessions. It reads the usage that

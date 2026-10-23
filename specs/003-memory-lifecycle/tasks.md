@@ -55,7 +55,7 @@ description: "Task list for the memory lifecycle (compress, age, learn)"
 **Goal**: the dream proposes rules, and the manager or a person installs or rejects them. **Independent test**: quickstart step 7. **Needs**: US3.
 
 - [x] T016 [US4] A pure `failureClasses()`, a dream prompt section, and at most 3 `.proposals/<name>.md` per dream (claude-factory-3u1.3.1)
-- [ ] T017 [US4] `factory proposals` list/install/reject plus manager mail, in `src/cli.ts`. A rung above core files a bead and never edits factory code (claude-factory-3u1.3.2)
+- [x] T017 [US4] `factory proposals` list/install/reject plus manager mail, in `src/cli.ts`. A rung above core files a bead and never edits factory code (claude-factory-3u1.3.2)
 - [ ] T018 [US4] A `demote` decision for a core fact that keeps being contradicted, in `src/memory.ts` (claude-factory-3u1.3.3)
 
 ## Phase 7: User Story 5 — the owner can tell whether memory works (P3)

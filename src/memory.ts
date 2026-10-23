@@ -1818,6 +1818,70 @@ export function proposals(dir: string) {
       }
     })
 }
+/** CORE.md with `- line` at the end of its top part, before the first `## ` section (claude-factory-3u1.3.2) */
+export function withCoreLine(core: string, line: string): string {
+  const lines = core.split('\n')
+  const i = lines.findIndex(l => l.startsWith('## '))
+  if (i < 0) return `${core.trimEnd()}${core.trim() ? '\n' : ''}- ${line}\n`
+  const top = lines.slice(0, i).join('\n').trimEnd()
+  return `${top ? `${top}\n` : ''}- ${line}\n\n${lines.slice(i).join('\n')}`
+}
+/** text with frontmatter `key: value` set, added at the end of the block when it is not there */
+export function withFrontmatter(text: string, key: string, value: string): string {
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
+  if (!m) return `---\n${key}: ${value}\n---\n${text}`
+  const meta = m[1]!.split('\n')
+  const at = meta.findIndex(l => l.startsWith(`${key}:`))
+  if (at >= 0) meta[at] = `${key}: ${value}`
+  else meta.push(`${key}: ${value}`)
+  return `---\n${meta.join('\n')}\n---\n${text.slice(m[0].length)}`
+}
+const pendingProposal = (dir: string, name: string) => {
+  const p = /^[a-z0-9][a-z0-9-]*$/.test(name) && proposals(dir).find(x => x.name === name)
+  if (!p || p.status !== 'pending')
+    throw new Error(`no pending proposal ${name}: factory proposals lists them`)
+  return p
+}
+/** sets frontmatter fields on a pending proposal; the caller checked it with pendingProposal() */
+const markProposal = (file: string, fields: Record<string, string>) =>
+  writeFileSync(
+    file,
+    Object.entries(fields).reduce((t, [k, v]) => withFrontmatter(t, k, v), readFileSync(file, 'utf8')),
+  )
+/** rung core: the change becomes a CORE.md line (FR-020). Any higher rung throws: a person installs it through a bead */
+export function installCoreProposal(dir: string, name: string) {
+  const p = pendingProposal(dir, name)
+  if (p.rung !== 'core') throw new Error(`${name} is rung ${p.rung}: it files a bead for a person`)
+  const core = join(dir, 'CORE.md')
+  writeFileSync(core, withCoreLine(existsSync(core) ? readFileSync(core, 'utf8') : '', p.change))
+  markProposal(p.file, { status: 'installed' })
+}
+/** a rung above core: marks it installed with the bead a person works it from; never touches factory code */
+export function installProposalAsBead(
+  dir: string,
+  name: string,
+  file: (p: ReturnType<typeof proposals>[0]) => string,
+) {
+  const p = pendingProposal(dir, name)
+  const bead = file(p)
+  markProposal(p.file, { status: 'installed', bead })
+  return bead
+}
+/** the reason goes to the inbox, so the dream does not propose it again as it was (FR-021) */
+export function rejectProposal(dir: string, name: string, why: string) {
+  markProposal(pendingProposal(dir, name).file, { status: 'rejected' })
+  return add(dir, {
+    summary: `The manager rejected the proposal ${name}: ${why}`,
+    from: 'manager',
+    body: `Do not propose it again as it was. ${why}`,
+  })
+}
+/** the manager's message for a set of pending proposals (FR-019) */
+export const proposalMailText = (pending: ReturnType<typeof proposals>, cli: string) =>
+  [
+    `The dream proposed ${pending.length} change(s) one rung up the learning ladder. Read each file, then \`${cli} proposals install <name>\` (rung core adds the CORE.md line; a higher rung files a bead for a person) or \`${cli} proposals reject <name> <why>\`:`,
+    ...pending.map(p => `- ${p.name} (rung ${p.rung}, ${p.target}): ${p.change} (${p.file})`),
+  ].join('\n')
 /** the new proposal names past PROPOSAL_CAP, last by name: the dream wrote more than it may */
 export const proposalsOverCap = (before: string[], after: string[], cap = PROPOSAL_CAP) =>
   after

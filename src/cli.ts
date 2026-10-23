@@ -2998,6 +2998,17 @@ function skillMail(now: number) {
   return [{ run: 'factory', from: 'dream', text, at: now }]
 }
 
+/** the manager hears once of each set of pending proposals, like skillMail (claude-factory-3u1.3.2, FR-019) */
+function proposalMail(now: number) {
+  const file = join(HOME, 'proposals.json')
+  const pending = memory.proposals(MEMORY).filter(p => p.status === 'pending')
+  const key = JSON.stringify(pending.map(p => p.name))
+  if (key === (existsSync(file) ? readFileSync(file, 'utf8') : '[]')) return []
+  writeFileSync(file, key)
+  if (!pending.length) return []
+  return [{ run: 'factory', from: 'dream', text: memory.proposalMailText(pending, CLI), at: now }]
+}
+
 const commitMemory = (message: string) => {
   git(MEMORY, 'add', '-A')
   if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
@@ -4337,6 +4348,7 @@ async function tick(isPatrol = false) {
       }
     }
     out.manager.push(...skillMail(now))
+    out.manager.push(...proposalMail(now))
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
     out.manager.push(...tokenDigestMail(now))
@@ -7960,6 +7972,9 @@ const usage = `factory — herdr software factories on xstate
   skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
                                      (each tick starts one a day)
+  proposals [install <n> [--rig r] | reject <n> <why>]  the dream's learning-ladder proposals: rung core
+                                     installs a CORE.md line; a higher rung files a bead in the factory's
+                                     own rig (or --rig r) for a person
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   watch                              one pass of the pull request watch that wakes a parked station (each
                                      tick starts one, at most once a minute)
@@ -8397,6 +8412,49 @@ if (import.meta.main && !outboxCmd)
           commitMemory(`the manager rejected the skill ${name}`)
           console.log(`rejected ${name}; the dream reads why`)
         } else fail('skills [install <name> | reject <name> <why>]')
+        break
+      }
+      case 'proposals': {
+        const rigName = args.includes('--rig') ? args.splice(args.indexOf('--rig'), 2)[1] : undefined
+        const [verb, name, ...why] = args
+        const usage = 'proposals [install <name> [--rig r] | reject <name> <why>]'
+        if (!verb) {
+          const pending = memory.proposals(MEMORY).filter(p => p.status === 'pending')
+          console.log(
+            pending.map(p => `${p.name}  ${p.rung}  ${p.target}: ${p.change}`).join('\n') ||
+              'no pending proposals',
+          )
+        } else if (verb === 'install' && name) {
+          const p = memory.proposals(MEMORY).find(x => x.name === name)
+          if (p?.rung === 'core') {
+            memory.installCoreProposal(MEMORY, name)
+            commitMemory(`installed the proposal ${name} as a CORE.md line`)
+            console.log(`installed ${name}: CORE.md now says "${p.change}"`)
+            break
+          }
+          // FR-020: a rung above core is a bead for a person, filed in the factory's own rig; no code changes here
+          const rig = rigName ? rigs().find(r => r.name === rigName) : rigOf(ROOT)
+          if (!rig)
+            fail(
+              `no rig ${rigName ? `named ${rigName}` : `holds the factory's own repo ${ROOT}`}: pass --rig <name>`,
+            )
+          const bead = memory.installProposalAsBead(MEMORY, name, x =>
+            beads(rig!.repo, 'factory/proposals').createUnlabeled(
+              `memory proposal ${x.name}: ${x.change}`.slice(0, 200),
+              readFileSync(x.file, 'utf8'),
+              { memory_proposal: x.name },
+              '-l',
+              'human',
+            ),
+          )
+          commitMemory(`filed the proposal ${name} as ${bead}`)
+          console.log(`filed ${name} (rung ${p?.rung}) as ${bead} in ${rig!.name}, for a person`)
+        } else if (verb === 'reject' && name) {
+          if (!why.length) fail(`${usage}: the dream learns from the reason`)
+          memory.rejectProposal(MEMORY, name, why.join(' '))
+          commitMemory(`rejected the proposal ${name}`)
+          console.log(`rejected ${name}; the dream reads why`)
+        } else fail(usage)
         break
       }
       case 'loop': {
