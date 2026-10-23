@@ -811,7 +811,7 @@ export function activation(events: UsageEvent[], now: number): number {
 export const helpedBy = (from: string | undefined, env: Record<string, string | undefined>) =>
   from || (env.FACTORY_RUN && env.FACTORY_STATION ? `${env.FACTORY_RUN}/${env.FACTORY_STATION}` : undefined)
 /** one journal entry, cut down to what helpOk() needs */
-export type AttemptOutcome = { run: string; node: string; at: number; outcome: string }
+export type AttemptOutcome = { run: string; node: string; at: number; outcome: string; summary?: string }
 /** whether a help's attempt ended green, from its `by` and `at`; undefined when unknown */
 export type OkOf = (by: string | undefined, at: number) => boolean | undefined
 // ponytail: a fixed list of red outcomes; a factory with its own failure edge names must add them here
@@ -1763,6 +1763,83 @@ export function patrolActivity(lines: string[], since: number): string[] {
   return out.sort((a, b) => a.at - b.at).map(o => o.line)
 }
 
+// The learning ladder (claude-factory-3u1.3.1, FR-018, research R8): note -> CORE line -> station or
+// worker instruction -> skill or checklist -> mechanical check. The dream proposes a step up; a person
+// or the manager installs or rejects it (`factory proposals`).
+export const PROPOSAL_CAP = 3 // at most this many new proposals per dream
+export const proposalsDir = (dir: string) => join(dir, '.proposals')
+export type FailureClass = { station: string; reason: string; runs: string[] }
+const FAILURE_RUNS = 3
+/** a report's first sentence, lowercased, with every word that holds a digit (ids, counts, exit codes) cut */
+// ponytail: the first sentence only; reasons that differ in wording stay apart, embeddings if that misses classes
+export const normalizeReason = (summary: string) =>
+  summary
+    .split(/[.!?](?:\s|$)|\n/)[0]!
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(w => w && !/\d/.test(w))
+    .join(' ')
+/** each (station, normalized reason) that ended red in FAILURE_RUNS (3) or more distinct runs, most runs first */
+export function failureClasses(journal: AttemptOutcome[]): FailureClass[] {
+  const groups = new Map<string, FailureClass>()
+  for (const e of journal) {
+    if (!RED_OUTCOMES.has(e.outcome)) continue
+    const reason = normalizeReason(e.summary ?? '')
+    const key = `${e.node}\0${reason}`
+    const g = groups.get(key) ?? groups.set(key, { station: e.node, reason, runs: [] }).get(key)!
+    if (!g.runs.includes(e.run)) g.runs.push(e.run)
+  }
+  return [...groups.values()]
+    .filter(g => g.runs.length >= FAILURE_RUNS)
+    .sort((a, b) => b.runs.length - a.runs.length || a.station.localeCompare(b.station))
+}
+/** every proposal the dream wrote, by name: its frontmatter and the first line of its change */
+export function proposals(dir: string) {
+  const root = proposalsDir(dir)
+  if (!existsSync(root)) return []
+  return readdirSync(root)
+    .filter(f => f.endsWith('.md'))
+    .sort()
+    .map(f => {
+      const text = readFileSync(join(root, f), 'utf8')
+      const field = (k: string) => new RegExp(`^${k}:\\s*(.*)$`, 'm').exec(text)?.[1]?.trim() ?? ''
+      const body = text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+      return {
+        name: f.slice(0, -3),
+        rung: field('rung'),
+        target: field('target'),
+        status: field('status'),
+        change:
+          body
+            .split('\n')
+            .find(l => l.trim())
+            ?.trim() ?? '',
+        file: join(root, f),
+      }
+    })
+}
+/** the new proposal names past PROPOSAL_CAP, last by name: the dream wrote more than it may */
+export const proposalsOverCap = (before: string[], after: string[], cap = PROPOSAL_CAP) =>
+  after
+    .filter(n => !before.includes(n))
+    .sort()
+    .slice(cap)
+/** inbox notes that say what a CORE.md line already says: a lesson the core did not keep (SC-008) */
+export async function relearned(dir: string): Promise<string[]> {
+  const inbox = walk(dir).notes.filter(n => topicOf(n) === 'inbox')
+  const core = coreNotes(dir)
+  if (!inbox.length || !core.length) return []
+  // its own cache file: vectors() rewrites the file it is given to hold only these notes
+  const vec = await vectors(dir, [...inbox, ...core], n => n.summary, '.index.json.relearned')
+  return inbox.flatMap(n => {
+    const best = core
+      .filter(c => !c.rig || !n.rig || c.rig === n.rig)
+      .map(c => ({ c, score: dot(vec(n), vec(c)) }))
+      .sort((a, b) => b.score - a.score)[0]
+    return best && best.score >= SAME ? [`- ${n.path} re-learns CORE.md: ${best.c.summary}`] : []
+  })
+}
+
 export const dreamPrompt = (
   dir: string,
   journal: string[],
@@ -1774,6 +1851,11 @@ export const dreamPrompt = (
   unsafe: string[] = [],
   overCap: string[] = [],
   topicCap: number = TOPIC_CAP,
+  learn: { failures: FailureClass[]; relearned: string[]; proposals: string[] } = {
+    failures: [],
+    relearned: [],
+    proposals: [],
+  },
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three tiers:
@@ -1795,6 +1877,7 @@ This pass:
 7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry: keep the older id, add the removed entry's id to the kept entry's \`"aliases"\` list in its id line's JSON (so its usage count carries over; start the list if it has none), then delete the removed entry's heading, id line and body.
 8. Unsafe LONG.md files below: each holds text before its first \`## summary\` + id comment that a tiering pass cannot place in any entry, so it cannot merge a new note into that topic until you fix it. Rewrite the file by hand: either give that text its own \`## summary\` heading and an id comment, or delete it when it says nothing worth keeping.
 9. Topics over the short-note cap below: merge or drop notes in each one until it holds ${topicCap} or fewer. The tiering pass after you finish merges each topic's oldest notes once they are 7 days old or more, used or not, but it never drops one; where a note is under 7 days old, you decide what to merge or drop now.
+10. Proposals, one rung up the learning ladder: note, then a CORE.md line (rung \`core\`), then a line in a station's or the worker's instructions (\`instruction\`), then a skill or checklist (\`skill\`), then a mechanical check (\`check\`). For each failure class below (one station failing one way in 3 or more runs) and each re-learned lesson (an inbox note that repeats a CORE.md line, so the line did not change behavior), write at most 3 new proposals in all, the strongest first, as ${proposalsDir(dir)}/<name>.md: a kebab-case name, frontmatter \`rung:\` (core, instruction, skill or check: one rung above where the lesson lives now), \`target:\` (CORE.md, station:<name>, worker-system or a skill name), \`status: pending\`, \`evidence:\` (a JSON list of run ids and note paths), \`created:\` (today, YYYY-MM-DD); then the body: the exact line or change to install, and why. Skip one that an existing proposal below already covers, or that an inbox note says was rejected and why. Never edit factory code: a person installs the higher rungs.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
 
 ## Manager skills (name: uses, last used: description)
@@ -1817,6 +1900,15 @@ ${unsafe.join('\n') || '(none)'}
 
 ## Topics over the short-note cap
 ${overCap.join('\n') || '(none)'}
+
+## Failure classes (station: normalized reason (runs))
+${learn.failures.map(f => `- ${f.station}: ${f.reason} (${f.runs.length} runs: ${f.runs.join(', ')})`).join('\n') || '(none)'}
+
+## Re-learned lessons (an inbox note that repeats a CORE.md line)
+${learn.relearned.join('\n') || '(none)'}
+
+## Existing proposals (name (status, rung))
+${learn.proposals.join('\n') || '(none)'}
 
 ## Closed beads this memory names
 ${closed.join('\n') || '(none)'}

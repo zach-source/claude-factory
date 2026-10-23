@@ -2953,7 +2953,9 @@ const outcomesSince = (since: number): memory.AttemptOutcome[] =>
   runIds().flatMap(id => {
     try {
       const { log } = readJson<Saved>(join(runDir(id), 'state.json')).snapshot.context
-      return log.filter(e => e.at > since).map(e => ({ run: id, node: e.node, at: e.at, outcome: e.outcome }))
+      return log
+        .filter(e => e.at > since)
+        .map(e => ({ run: id, node: e.node, at: e.at, outcome: e.outcome, summary: e.summary }))
     } catch {
       return [] // removed mid-read
     }
@@ -3209,6 +3211,7 @@ async function dream() {
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
     const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
+    const proposalsBefore = memory.proposals(MEMORY)
     // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
     // again, each time it skips a merge into one of them
     const unsafe = memory.unsafeLongTopics(MEMORY).map(u => `- ${u.reason}`)
@@ -3226,6 +3229,12 @@ async function dream() {
       unsafe,
       overCap,
       memory.envTopicCap(),
+      {
+        // every run still in the home, not only since the last dream: a class builds up over days
+        failures: memory.failureClasses(outcomesSince(0)),
+        relearned: await memory.relearned(MEMORY),
+        proposals: proposalsBefore.map(p => `- ${p.name} (${p.status}, rung ${p.rung})`),
+      },
     )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
@@ -3241,6 +3250,14 @@ async function dream() {
     writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
     storeDreamUsage(start)
     if (p.exitCode !== 0) return said
+    // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
+    const overProposals = memory.proposalsOverCap(
+      proposalsBefore.map(p => p.name),
+      memory.proposals(MEMORY).map(p => p.name),
+    )
+    for (const name of overProposals) rmSync(join(memory.proposalsDir(MEMORY), `${name}.md`))
+    if (overProposals.length)
+      appendFileSync(join(HOME, 'dream.log'), `dropped proposals over the cap: ${overProposals.join(', ')}\n`)
     git(MEMORY, 'add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
     // through the alias it left on the entry that absorbed it (claude-factory-59r.11).
