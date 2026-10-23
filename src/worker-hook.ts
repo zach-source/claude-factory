@@ -4490,7 +4490,7 @@ function prReviewApproves(words: string[]): boolean {
       continue
     }
     if (w === '-c' || w === '--comment' || w === '-r' || w === '--request-changes') mode = true
-    else if (w === '-a' || w === '--approve' || w.startsWith('--approve=')) return true
+    else if (w === '--approve' || w.startsWith('--approve=')) return true
     else if (/^-[^-]/.test(w) && w.includes('a')) return true
     else if (dynamicWord(w)) return true
   }
