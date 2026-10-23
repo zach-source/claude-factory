@@ -7,6 +7,7 @@ import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
   brief,
+  vmBeads,
   clipFactsJson,
   clipReport,
   CONFIG_SYNC,
@@ -51,7 +52,6 @@ import {
   clusterCap,
   slot,
   shipBriefLines,
-  vmBeads,
   withoutFleet,
   type RigFacts,
 } from './cli'
@@ -1920,14 +1920,6 @@ test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
   expect(clusterCap({ clusterRuns: 3 })).toBe(3)
   for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
 })
-
-test('vmBeads: a bead run or a ship run in a repo with beads gets the rig bd store in its VM', () => {
-  expect(vmBeads({ ship: true }, true)).toBe(true)
-  expect(vmBeads({ bead: 'fx-1' }, true)).toBe(true)
-  expect(vmBeads({}, true)).toBe(false)
-  expect(vmBeads({ ship: true }, false)).toBe(false)
-})
-
 test('shipBriefLines: only a ship run in a repo with beads gets the host queue', () => {
   const repo = mkdtempSync(join(tmpdir(), 'ship-brief-'))
   const bin = mkdtempSync(join(tmpdir(), 'ship-brief-bin-'))
@@ -1942,4 +1934,11 @@ test('shipBriefLines: only a ship run in a repo with beads gets the host queue',
   } finally {
     process.env.PATH = path
   }
+})
+
+// claude-factory-pfc8: an AX ship run has no bead, yet its queue station reads the ship queue from bd
+test('vmBeads gives the VM beads for a run with a bead and for a ship run', () => {
+  expect(vmBeads({ bead: 'app-1' })).toBe(true)
+  expect(vmBeads({ ship: true })).toBe(true)
+  expect(vmBeads({})).toBe(false)
 })
