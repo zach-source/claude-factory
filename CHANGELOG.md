@@ -461,6 +461,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `factory dispatch` and `factory start` look up station names as own keys (claude-factory-dax). Before, the label `station:constructor` passed the station check through the prototype chain. The run then started at the factory start station.
 - Fix: the requeue cap treats a non-numeric `requeues` value as at the cap (claude-factory-yo9). Before, `x` or `NaN` read as NaN, `NaN >= REQUEUE_MAX` was false, and `requeue()` wrote NaN back. Now `track()` defers the bead, and `requeue()` reads a non-finite count as 0.
 - Change: lifecycle prompts cut the rework loop (claude-factory-2ida). Implement ends its ready report with a `Self-check:` block. Review, security and check share one blocking-scope rule. A gap that main also has goes to Not blocking and a filed bead. Plan names the proof and the negative rows for each AC.
+- New: dispatch holds overflow beads that factory workers file (claude-factory-nwlh.2). In one 24h window, a cluster keeps 6 top-level beads and a run/station keeps 3. A bead past a cap loses `factory`, gains `held:cluster:<key>` or `held:station`, and gets one comment. The marks are in `filing-guard.json`. `factory queue` removes the `held:*` label and releases the bead.
 
 ## 0.13.0 (2026-10-18)
 

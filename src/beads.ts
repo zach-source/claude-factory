@@ -372,7 +372,7 @@ export const beads = (repo: string, actor: string) => ({
    */
   queue: (id: string, station?: string) => {
     const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(
-      l => l.startsWith('factory:') || l.startsWith('station:'),
+      l => l.startsWith('factory:') || l.startsWith('station:') || l.startsWith('held:'),
     )
     return must(
       bd(

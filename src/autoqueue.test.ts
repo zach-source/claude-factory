@@ -53,6 +53,8 @@ test('never picks a parent, epic, child, held, assigned or station-filed bead', 
     bead('mine', { assignee: 'someone' }),
     bead('swept', { created_by: 'factory/sweeps-r1/monitor' }),
     bead('guard'),
+    bead('heldc', { labels: ['held:cluster:worker-hook'] }),
+    bead('helds', { labels: ['held:station'] }),
     bead('low', { priority: 4 }),
     bead('ok'),
   ]

@@ -167,7 +167,7 @@ function fakeBdTwo(p1: number, p2: number, by1?: string) {
     'case "$1" in',
     `  ready) printf '%s' '${beads}';;`,
     "  children) printf '%s' '[]';;",
-    "  list) printf '%s' '[]';;", // the flood guard's b.every() (claude-factory-8pc.5): no sweep-filed beads here
+    `  list) printf '%s' '${beads}';;`, // b.every() answers the same beads: the filing guard drops a factory-filed ready bead that list never named (claude-factory-nwlh.2)
     '  dolt) echo "No remotes configured";;',
     '  *) exit 0;;',
     'esac',
@@ -1915,4 +1915,321 @@ test('a bead moves lifecycle -> release with no hand factory start (A8)', () => 
     true,
   )
   expect(calls.some(l => l.startsWith('bd update acme-1') && l.includes('--claim'))).toBe(true) // run 2 claimed it
+})
+
+// --- claude-factory-nwlh.2: the filing guard holds overflow beads ---
+
+type FBead = {
+  id: string
+  title: string
+  created_by: string
+  hoursAgo: number
+  parent?: string
+  labels?: string[]
+  status?: string
+}
+
+/** a fake bd for the filing guard. `list` answers `all`; `ready` answers each bead that still
+ * carries `factory` (an `update --remove-label factory` writes a removed-<id> marker, an
+ * `update --add-label factory` clears it); `update` and `comment` exit 1 for an id with a
+ * fail-<id> marker; `show` answers the labels an `update` added. */
+function fakeFilingBd(all: FBead[]) {
+  mkdirSync(gbin, { recursive: true })
+  const full = all.map(b => ({
+    id: b.id,
+    title: b.title,
+    created_by: b.created_by,
+    created_at: new Date(Date.now() - b.hoursAgo * 3600_000).toISOString(),
+    ...(b.parent && { parent: b.parent }),
+    labels: b.labels ?? ['factory'],
+    ...(b.status && { status: b.status }),
+  }))
+  const readyCase = full
+    .filter(b => b.labels.includes('factory') && b.status !== 'closed')
+    .map(
+      b =>
+        `    if [ ! -f "${gdir}/removed-${b.id}" ]; then out="$out$sep{\\"id\\":\\"${b.id}\\",\\"title\\":\\"t\\",\\"labels\\":[\\"factory\\"]}"; sep=","; fi`,
+    )
+    .join('\n')
+  const unqueuedCase = full
+    .filter(b => b.status !== 'closed')
+    .map(b => {
+      const entry = `{\\"id\\":\\"${b.id}\\",\\"title\\":\\"t\\",\\"priority\\":1,\\"created_at\\":\\"${b.created_at}\\",\\"labels\\":${JSON.stringify(b.labels.filter(l => l !== 'factory')).replace(/"/g, '\\\\"')}}`
+      const guard = b.labels.includes('factory') ? `[ -f "${gdir}/removed-${b.id}" ] && ` : ''
+      return `    ${guard}{ out="$out$sep${entry}"; sep=","; }`
+    })
+    .join('\n')
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify(full)}';;`,
+    '  ready)',
+    // `ready` without --label is the auto-queue's read: open beads that carry no `factory` label now
+    '    out="["',
+    '    sep=""',
+    `    case " $* " in *" --label "*) ;; *)`,
+    unqueuedCase,
+    '    out="$out]"; printf \'%s\' "$out"; exit 0;; esac',
+    readyCase,
+    // a bead filed after `list` ran: ready names it, list never did
+    `    if [ -f "${gdir}/midpass" ]; then out="$out$sep{\\"id\\":\\"m-1\\",\\"title\\":\\"t\\",\\"created_by\\":\\"factory/run9/plan\\",\\"labels\\":[\\"factory\\"]}"; fi`,
+    '    out="$out]"',
+    '    printf \'%s\' "$out";;',
+    '  update|comment)',
+    `    id="$2"`,
+    // only a hold (comment, or update adding held:*) fails: a start's own `update --claim` must not
+    `    case "$1 $*" in "comment "*|*"--add-label held:"*) if [ -f "${gdir}/fail-$id" ]; then exit 1; fi;; esac`,
+    '    if [ "$1" = update ]; then',
+    `      case " $* " in *" --remove-label factory "*) touch "${gdir}/removed-$id";; esac`,
+    `      case " $* " in *" --add-label factory "*) rm -f "${gdir}/removed-$id";; esac`,
+    '    fi',
+    '    exit 0;;',
+    `  show) printf '%s' '[{"id":"x","title":"t","labels":["held:cluster:worker-hook","held:station"]}]';;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+function filingReset(all: FBead[]) {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeFilingBd(all)
+  fakeGuardHerdr()
+  writeFileSync(join(ghome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
+}
+
+const stations = ['review', 'security', 'plan']
+/** the 2026-10-16/17 replay: 9 worker-hook beads from 9 runs (oldest w-1), plus one by a person */
+const replayBeads = (): FBead[] => [
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => ({
+    id: `w-${i}`,
+    title: `worker-hook: bypass number ${i}`,
+    created_by: `factory/run${i}/${stations[i % 3]}`,
+    hoursAgo: 11 - i,
+  })),
+  { id: 'p-1', title: 'worker-hook: from a person', created_by: 'ztaylor', hoursAgo: 0.5 },
+]
+const fCalls = () => readFileSync(gCallsLog, 'utf8').trim().split('\n')
+const startedBeads = () => gRunDirs().map(gBeadOf)
+const dispatchRows = () =>
+  JSON.parse(readFileSync(join(ghome, 'dispatch.json'), 'utf8')) as {
+    id: string
+    skip?: string
+    error?: string
+  }[]
+const nextPass = () => rmSync(join(ghome, 'dispatch.stamp'), { force: true })
+
+test('the filing guard holds the 7th worker-hook bead and starts none after it', () => {
+  filingReset(replayBeads())
+  expect(gfactory(['beads']).code).toBe(0)
+  const started = startedBeads()
+  for (const id of ['w-7', 'w-8', 'w-9']) {
+    expect(started).not.toContain(id)
+    expect(
+      fCalls().filter(
+        l =>
+          l.startsWith(`bd update ${id} `) &&
+          l.includes('--remove-label factory') &&
+          l.includes('--add-label held:cluster:worker-hook'),
+      ),
+    ).toHaveLength(1)
+    expect(fCalls().filter(l => l.startsWith(`bd comment ${id} `))).toHaveLength(1)
+    expect(dispatchRows().filter(r => r.id === id && r.skip?.startsWith('filing guard'))).toHaveLength(1)
+  }
+  expect(started.sort()).toEqual(['p-1', 'w-1', 'w-2', 'w-3', 'w-4', 'w-5', 'w-6'])
+  expect(fCalls().some(l => /^bd update (w-[1-6]|p-1) .*--remove-label factory/.test(l))).toBe(false)
+  expect(fCalls().find(l => l.startsWith('bd comment w-7 '))).toContain('factory queue a w-7')
+})
+
+test('the filing guard holds the 4th bead of one run and station', () => {
+  filingReset(
+    [1, 2, 3, 4].map(i => ({
+      id: `w-${i}`,
+      title: `widget-${i}: thing ${i}`,
+      created_by: 'factory/run1/plan',
+      hoursAgo: 5 - i,
+    })),
+  )
+  expect(gfactory(['beads']).code).toBe(0)
+  expect(fCalls().filter(l => /^bd update w-4 .*--add-label held:station( |$)/.test(l))).toHaveLength(1)
+  expect(fCalls().some(l => /^bd update w-[123] .*--remove-label factory/.test(l))).toBe(false)
+  expect(startedBeads()).not.toContain('w-4')
+})
+
+test('a second pass makes no new hold call: the mark in filing-guard.json stands', () => {
+  filingReset(replayBeads())
+  gfactory(['beads'])
+  expect(JSON.parse(readFileSync(join(ghome, 'filing-guard.json'), 'utf8')).a).toHaveProperty('w-7')
+  const before = fCalls().length
+  nextPass()
+  gfactory(['beads'])
+  const after = fCalls().slice(before)
+  expect(after.length).toBeGreaterThan(0)
+  expect(after.filter(l => /^bd (update|comment) w-[789] /.test(l))).toHaveLength(0)
+})
+
+test('the filing guard fails closed: a failed relabel starts nothing, leaves no mark, and retries', () => {
+  filingReset(replayBeads())
+  writeFileSync(join(gdir, 'fail-w-7'), '')
+  gfactory(['beads'])
+  expect(startedBeads()).not.toContain('w-7')
+  expect(dispatchRows().some(r => r.id === 'w-7' && r.error)).toBe(true)
+  expect(
+    existsSync(join(ghome, 'filing-guard.json'))
+      ? readFileSync(join(ghome, 'filing-guard.json'), 'utf8')
+      : '',
+  ).not.toContain('w-7')
+  rmSync(join(gdir, 'fail-w-7'))
+  nextPass()
+  gfactory(['beads'])
+  expect(fCalls().filter(l => /^bd comment w-7 /.test(l))).toHaveLength(1)
+  expect(startedBeads()).not.toContain('w-7')
+})
+
+test('a re-queued held bead starts and is not held again', () => {
+  filingReset(replayBeads())
+  gfactory(['beads'])
+  expect(startedBeads()).not.toContain('w-7')
+  const q = gfactory(['queue', 'a', 'w-7'])
+  expect(q.code).toBe(0)
+  const update = fCalls().filter(l => l.startsWith('bd update w-7 ') && l.includes('--add-label factory'))
+  expect(update).toHaveLength(1)
+  expect(update[0]).toContain('--remove-label held:cluster:worker-hook')
+  expect(update[0]).toContain('--remove-label held:station')
+  const before = fCalls().length
+  nextPass()
+  gfactory(['beads'])
+  expect(startedBeads()).toContain('w-7')
+  expect(
+    fCalls()
+      .slice(before)
+      .some(l => /^bd (update|comment) w-7 .*(held|remove-label factory)/.test(l)),
+  ).toBe(false)
+})
+
+test('a factory-filed bead that only ready names (filed mid-pass) does not start', () => {
+  filingReset(replayBeads().slice(0, 2))
+  writeFileSync(join(gdir, 'midpass'), '')
+  gfactory(['beads'])
+  expect(startedBeads()).not.toContain('m-1')
+  expect(startedBeads()).toContain('w-1')
+  expect(dispatchRows().some(r => r.id === 'm-1' && r.skip === 'filing guard: filed mid-pass')).toBe(true)
+})
+
+test('the filing guard leaves child, sweep-filed and person beads alone', () => {
+  const kids = [1, 2, 3, 4, 5, 6, 7].map(i => ({
+    id: `w-0.${i}`,
+    title: `task ${i}`,
+    created_by: 'factory/run0/plan',
+    hoursAgo: 8 - i,
+  }))
+  const sweeps = [1, 2, 3, 4, 5, 6, 7].map(i => ({
+    id: `s-${i}`,
+    title: `worker-hook: sweep ${i}`,
+    created_by: `factory/sweeps-r${i}/maintain`,
+    hoursAgo: 8 - i,
+    labels: ['factory', 'sweep:maintain'],
+  }))
+  const people = [1, 2, 3, 4, 5, 6, 7].map(i => ({
+    id: `h-${i}`,
+    title: `worker-hook: person ${i}`,
+    created_by: 'ztaylor',
+    hoursAgo: 8 - i,
+  }))
+  filingReset([...kids, ...sweeps, ...people])
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd (update|comment) (w-0\.|h-)\S* .*(held:|filing)/.test(l))).toBe(false)
+  expect(fCalls().some(l => /^bd update s-\d .*held:/.test(l))).toBe(false)
+  expect(
+    existsSync(join(ghome, 'filing-guard.json'))
+      ? readFileSync(join(ghome, 'filing-guard.json'), 'utf8')
+      : '',
+  ).not.toMatch(/w-0|h-|s-/)
+})
+
+test('a closed bead uses a cluster slot: the 7th stays held, the closed one gets no write', () => {
+  const beads = replayBeads()
+  beads[1]!.status = 'closed' // w-2
+  beads[7]!.status = 'closed' // w-8: past the cap, closed
+  filingReset(beads)
+  gfactory(['beads'])
+  // w-2 closed still uses a slot, so w-6 is the 6th and w-7 is the 7th: held
+  expect(fCalls().filter(l => /^bd update w-7 .*--add-label held:cluster:worker-hook/.test(l))).toHaveLength(
+    1,
+  )
+  expect(fCalls().some(l => /^bd (update|comment) w-[28] /.test(l))).toBe(false)
+  expect(startedBeads()).not.toContain('w-7')
+})
+
+test('a past-cap bead with no factory label gets a mark only; factory queue later starts it', () => {
+  const beads = replayBeads()
+  beads[6]!.labels = ['pm-proposal'] // w-7
+  filingReset(beads)
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd (update|comment) w-7 .*(held:|filing)/.test(l))).toBe(false)
+  expect(dispatchRows().some(r => r.id === 'w-7' && r.skip?.startsWith('filing guard'))).toBe(false)
+  expect(JSON.parse(readFileSync(join(ghome, 'filing-guard.json'), 'utf8')).a).toHaveProperty('w-7')
+  expect(startedBeads()).not.toContain('w-7')
+  // factory queue adds the label; the mark keeps the guard from holding it
+  beads[6]!.labels = ['factory']
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(startedBeads()).toContain('w-7')
+})
+
+test('auto-queue does not re-queue a held bead after the 24h filing window', () => {
+  const beads = replayBeads().map((b, i) => (i < 6 ? { ...b, status: 'closed' } : b))
+  filingReset(beads)
+  writeFileSync(
+    join(ghome, 'rigs.json'),
+    JSON.stringify([
+      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+    ]),
+  )
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd update w-7 .*held:cluster/.test(l))).toBe(true)
+  beads[6]!.labels = ['held:cluster:worker-hook']
+  beads[6]!.hoursAgo = 30
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd update w-7 .*--add-label factory/.test(l))).toBe(false)
+  expect(startedBeads()).not.toContain('w-7')
+})
+
+test('auto-queue does not re-queue a held or mark-only bead; factory queue still releases it', () => {
+  const beads = replayBeads().map((b, i) => (i < 6 ? { ...b, status: 'closed' } : b))
+  beads[7]!.labels = ['pm-proposal'] // w-8: past the cap, not factory-queued
+  filingReset(beads)
+  writeFileSync(
+    join(ghome, 'rigs.json'),
+    JSON.stringify([
+      { name: 'a', repo: repo(), factory: 'lifecycle', autoQueue: { minPriority: 4, perHour: 10 } },
+    ]),
+  )
+  gfactory(['beads']) // pass 1: w-7 held, w-8 marked
+  expect(fCalls().some(l => /^bd update w-7 .*held:cluster/.test(l))).toBe(true)
+  beads[6]!.labels = ['held:cluster:worker-hook'] // what bd lists now
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(fCalls().some(l => /^bd update w-[78] .*--add-label factory/.test(l))).toBe(false)
+  expect(startedBeads()).not.toContain('w-7')
+  expect(startedBeads()).not.toContain('w-8')
+  // released: factory is back, so the marked bead starts
+  beads[6]!.labels = ['factory']
+  rmSync(join(gdir, 'removed-w-7'), { force: true })
+  fakeFilingBd(beads)
+  nextPass()
+  gfactory(['beads'])
+  expect(startedBeads()).toContain('w-7')
 })
