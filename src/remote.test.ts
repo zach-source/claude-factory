@@ -1396,6 +1396,10 @@ test("a launch stores the origin's GitHub owner in the side file and sends the m
     sh(worktree, 'git', 'add', '.')
     sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
     sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    if (path.startsWith('github.com/')) {
+      sh(worktree, 'git', 'remote', 'set-url', '--push', 'origin', origin)
+      sh(worktree, 'git', 'remote', 'set-url', 'origin', `https://${path}`)
+    }
     const runDir = join(home, 'runs', id)
     mkdirSync(join(runDir, 'prompts'), { recursive: true })
     writeFileSync(join(home, 'dream.stamp'), '')

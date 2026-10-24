@@ -7386,14 +7386,14 @@ async function backlog() {
 /** a repo's origin remote, split into the owner and name: `gh search prs --owner` and the run's own repo
  * for role()'s `sameRepo`. On GitLab the owner is the namespace (group/sub) and the name the project.
  * undefined when there is no origin (neither a GitHub nor a GitLab remote, or none) */
-function originRef(
+export function originRef(
   repoPath: string,
 ): { owner: string; repo: string; forge: ForgeKind; host: string } | undefined {
   const p = Bun.spawnSync(['git', '-C', repoPath, 'remote', 'get-url', 'origin'])
   if (p.exitCode !== 0) return undefined
   const url = p.stdout.toString().trim()
-  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(url)
-  if (m) return { owner: m[1]!, repo: m[2]!, forge: 'github', host: 'github.com' }
+  const slug = githubSlug(url)?.split('/')
+  if (slug) return { owner: slug[0]!, repo: slug[1]!, forge: 'github', host: 'github.com' }
   const remote = parseRemote(url)
   if (!remote || forgeOf(remote.host, glabKnows) !== 'gitlab') return undefined
   const parts = remote.path.split('/')
