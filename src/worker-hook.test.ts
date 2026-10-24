@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  APPROVE_REASON,
   baseWord,
   baseWordForTest,
   dynamicHeadDenyForTest,
@@ -10779,3 +10780,138 @@ test.each([
 ])('the pass form gives MERGE_REASON at gate %j', gate => {
   expect(merge(`gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`, gate)).toBe(MERGE_REASON)
 })
+||||||| b141a00
+
+// claude-factory-0gww.3: only a reviewer-gated station (review, security, check, with
+// FACTORY_GH_REVIEWER=1) may submit an approving GitHub review. Everywhere else the hook allows
+// a gh call that can create a review only when it proves from literal words that it is no approval.
+const APPROVE_DENY = [
+  'gh pr review 5 --approve',
+  'gh pr review 5 -a',
+  'gh pr review -a 5 -b ok',
+  'gh pr review 5 --approve=true',
+  'gh pr review 5 -ac',
+  'gh pr review 5 -c -a',
+  'gh pr review 5 -c --approve=true',
+  'gh pr review 5 -c -ac',
+  'gh pr review 5 -c $FLAG',
+  'gh --bogus pr review 5 --approve',
+  'gh pr review 5',
+  'gh pr review 5 -b ok',
+  'gh pr review 5 --comment --approve',
+  'gh pr review 5 $FLAG',
+  'gh -R o/r pr review 5 --approve',
+  'gh pr --repo o/r review 5 --approve',
+  'gh pr --bogus review 5 --approve',
+  "bash -lc 'gh pr review 5 --approve'",
+  'sudo gh pr review 5 --approve',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -fevent=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -F event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews --raw-field=event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -f event=comment',
+  'gh api repos/o/r/pulls/5/reviews -f event=COMMENT -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews/9/events -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews/9/events -X POST',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=$E',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=@ev.txt',
+  'gh api -X POST repos/o/r/pulls%2F5/reviews -f event=APPROVE',
+  'gh api -X POST repos/o/r/pulls/5/reviews/ -f event=APPROVE',
+  'gh api -X POST repos/o/r/pulls/5/reviews#x -f event=APPROVE',
+  'gh api -X POST https://api.github.com/repos/o/r/pulls/5/reviews -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews --input approve.json',
+  'gh api repos/o/r/pulls/5/reviews --input missing.json',
+  'gh api repos/o/r/pulls/5/reviews --input notjson.json',
+  'gh api graphql -f query=\'mutation { addPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }\'',
+  'gh api graphql -f query=\'mutation { submitPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }\'',
+  'gh api graphql -f query=@q.graphql',
+]
+const APPROVE_ALLOW = [
+  'gh pr review 5 --comment --body-file f',
+  'gh pr review 5 -c -b ok',
+  'gh pr review 5 --request-changes -b x',
+  'gh pr review 5 -r -b x',
+  'gh pr review 5 -c -b "$MSG"',
+  'gh pr view 5',
+  'gh api repos/o/r/pulls/5/reviews',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=COMMENT -F body=@f',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=REQUEST_CHANGES -f body=x',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f body=x',
+  'gh api repos/o/r/pulls/5/reviews --input review.json',
+  'gh api repos/o/r/pulls/5/comments -f body=x',
+  'gh api repos/o/r/pulls/5/reviews/9/events -f event=COMMENT',
+]
+const APPROVE_FILES: Record<string, string> = {
+  'approve.json': '{"event":"APPROVE","body":"x"}',
+  'review.json': '{"event":"COMMENT","body":"x"}',
+  'notjson.json': 'event=APPROVE',
+  'q.graphql': 'mutation { addPullRequestReview(input: {}) { clientMutationId } }',
+}
+const approveGate = (g: HookGate = {}): HookGate => ({ readFile: p => APPROVE_FILES[p], ...g })
+
+for (const g of [
+  {},
+  { station: 'implement' },
+  { station: 'review' },
+  { station: 'release' },
+  { station: 'plan', reviewer: false },
+]) {
+  test.each(APPROVE_DENY)(
+    `denyReason denies %j for gate ${JSON.stringify(g)} (claude-factory-0gww.3)`,
+    cmd => {
+      expect(denyReason(cmd, undefined, undefined, approveGate(g))).toBe(APPROVE_REASON)
+    },
+  )
+  test.each(APPROVE_ALLOW)(
+    `denyReason allows %j for gate ${JSON.stringify(g)} (claude-factory-0gww.3)`,
+    cmd => {
+      expect(denyReason(cmd, undefined, undefined, approveGate(g))).toBeUndefined()
+    },
+  )
+}
+
+test.each(APPROVE_DENY.filter(c => !c.includes('$') && !c.includes('%2F')))(
+  'denyReason allows %j inside the reviewer gate (claude-factory-0gww.3)',
+  cmd => {
+    const r = denyReason(cmd, undefined, undefined, approveGate({ station: 'review', reviewer: true }))
+    // a malformed or unreadable form may still deny, with another reason, but never with APPROVE_REASON
+    expect(r).not.toBe(APPROVE_REASON)
+  },
+)
+
+test('an existing gh alias that expands to pr review --approve is denied outside the reviewer gate (claude-factory-0gww.3)', () => {
+  const gate = approveGate({ ghAliases: () => new Map([['ap', 'pr review --approve']]) })
+  expect(denyReason('gh ap 5', undefined, undefined, gate)).toBe(APPROVE_REASON)
+  expect(denyReason('gh ap 5', undefined, undefined, { ...gate, reviewer: true })).toBeUndefined()
+})
+
+test('run as `bun src/worker-hook.ts`, an approve call is allowed only with FACTORY_GH_REVIEWER=1 at a reviewer station (claude-factory-0gww.3)', async () => {
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'gh pr review 5 --approve' } })
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.FACTORY_GH_REVIEWER
+  const denied = {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: APPROVE_REASON,
+    },
+  }
+  for (const e of [
+    { FACTORY_FROM: 'review' },
+    { FACTORY_FROM: 'review', FACTORY_GH_REVIEWER: '0' },
+    { FACTORY_FROM: 'review', FACTORY_GH_REVIEWER: 'true' },
+    { FACTORY_FROM: 'implement', FACTORY_GH_REVIEWER: '1' },
+    { FACTORY_FROM: 'release', FACTORY_GH_REVIEWER: '1' },
+    { FACTORY_FROM: 'Review', FACTORY_GH_REVIEWER: '1' },
+  ]) {
+    const r = await run(input, { ...env, ...e })
+    expect(JSON.parse(r.out.trim())).toEqual(denied)
+  }
+  for (const from of ['review', 'security', 'check']) {
+    expect(await run(input, { ...env, FACTORY_FROM: from, FACTORY_GH_REVIEWER: '1' })).toEqual({
+      out: '',
+      code: 0,
+    })
+  }
+}, 20_000)

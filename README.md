@@ -200,6 +200,28 @@ missing, or when you ask for more.
 A person still decides every gate, with `factory decide`. The briefer cannot run it.
 `tool.call` denies it outright. To turn off the briefer, set `briefer` to `false` in the plugin's `userConfig`.
 
+A hidden `reviewer` subagent starts once for each pending skill and `.proposals/` item that has no
+verdict. It has no tool at all. The factory CLI gives it the text of one item:
+
+- `factory review facts <key>` prints the item's kind, name, change and text (16384 characters at most).
+  A key that is unknown or stale (the text changed) exits 1.
+- The reviewer answers with one fenced `json` block: `recommendation` is exactly `install` or `reject`,
+  and `why` is one line of 300 characters or fewer.
+- `factory review set <key> <file>` parses the answer strictly and keeps it in `<home>/reviews.json`.
+  It refuses a key that has a verdict already.
+
+The key is `kind:name:sha12`. The `sha12` is the first 12 hex characters of the SHA-256 of the reviewed
+text, so a skill that changes gets a new review. The mod writes one line for each attempt to
+`<home>/review-log.jsonl`, and the manager's token report counts the turns under the name `reviewer`.
+A failed attempt is logged and never retried for that key in the same session.
+
+`factory skills` (JSON) and `factory proposals` show the verdict. The patrol prompt has a
+"Proposals to review" section with one line for each item, and a new verdict wakes the patrol once.
+The verdict only advises. The manager or the person runs `factory skills install` or
+`factory proposals install`. The reviewer cannot: `tool.call` denies every Bash command from it. `tool.call`
+also denies `factory skills|proposals install|reject` for any subagent, and the CLI refuses those
+verbs when `FACTORY_PATROL` is set. To turn off the reviewer, set `reviewer` to `false` in the plugin's `userConfig`.
+
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
 (a fresh session per visit, a durable identity in the run), each repo the factory works is
@@ -792,9 +814,27 @@ memory/
   `factory memory search [--rig r] <query>` (local embeddings, bge-small, no service; a note
   ranks by its own match and its topic's, a long or fact note ranks slightly above a short one
   on a near-tie, and another rig's notes never show) and
-  `factory memory add [--rig r] [--from run/station] <summary> [body]`. The manager searches
-  it before answering a worker and saves the person's decisions that later runs should follow.
-  `factory memory helped [--from run/station] <note>` marks a note that saved a worker time;
+  `factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--supersedes <note path>] <summary> [body]`.
+  The manager searches it before answering a worker and saves the person's decisions that later
+  runs should follow.
+- Each new note must have a kind, or `memory add` exits 2 with its usage text:
+  - `fact`: a verified, reusable lesson.
+  - `rule`: a convention or a requirement.
+  - `recipe`: a command sequence that works.
+
+  A note that names a bead id or a PR must also have `--until`, unless it is a recipe. The note
+  then retires when that bead closes, that PR merges or closes, or that date passes. The status of
+  the bead or PR stays in its own tracker. If a note is wrong, add the correct note with
+  `--supersedes <old note path>`. The old note gets `superseded:`, and the next tier pass archives
+  it. A duplicate add prints `already noted` and logs `confirmed` on the existing note.
+
+  ```
+  factory memory add --kind rule "push the tracker after each close" "a local close is not seen on other machines until the push"
+  factory memory add --kind fact --until example-ab1 "the timing test flakes under load" "rerun the failed job once; example-ab1 tracks the fix"
+  factory memory add --kind recipe "confirm a deploy with rollout status" "kubectl rollout status deployment/web -n example --timeout=120s"
+  factory memory add --kind fact --supersedes ci/old-cache.md "the build cache keys on the lockfile hash" "a lockfile change makes a new cache"
+  ```
+  `factory memory helped --from run/station <note>` marks a note that saved a worker time;
   with how often searches return each note, it is what the dream orders by.
 - **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
   edit inside the memory: it files the inbox under topics, merges duplicates, drops what is
@@ -811,9 +851,14 @@ memory/
   (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
-  topic's `LONG.md` once the note is 7 days old and was shown or helped at least once, and
-  archives a short note into `.archive/<topic>.md` once it is 30 days unused and never helped, or
-  once it was never shown at all and is 14 days old (or marked `superseded:` outright). Both
+  topic's `LONG.md` once the note is 7 days old and its activation is above θm, and archives a
+  short note into `.archive/<topic>.md` once it is 14 days old and its activation is below θa, or
+  it was never shown at all (or marked `superseded:` outright). Activation is
+  `ln(Σ w · t_days^-0.5)` over the last 90 days of usage events: helped 1.0 (0.3 for a failed
+  attempt), confirmed 1.0, shown 0.15, contradicted −1.0. θm and θa are −3.6 (about one show 30
+  days ago), and θc, the promote limit for a LONG.md entry helped across 3 runs, is 0. Set
+  `FACTORY_MEMORY_THETA_MERGE`, `FACTORY_MEMORY_THETA_ARCHIVE` or `FACTORY_MEMORY_THETA_PROMOTE`
+  to change one. Both
   usage-based archive rules wait until the store holds at least 14 days of usage history, so a new
   or lost `.usage.jsonl` cannot be misread as "never shown." A pass archives at most
   `FACTORY_MEMORY_ARCHIVE_CAP` notes (default 25), oldest first across every topic; the rest are
@@ -821,8 +866,16 @@ memory/
   anything. A merge keeps the note's usage count under its new `<topic>/LONG.md#<id>` path,
   through `.renames.jsonl`, so a later `factory memory helped <old path>` still resolves and
   nothing helped is lost. `--dry-run` prints the plan without writing.
+- Each dream ends `dream.log` with one metrics line, for example
+  `metrics: notes 9 (beads 2, ci 4)  archived 0  retired 1  kind 75%  cites-without-until 12%`.
+  It gives the notes in each topic, the notes this pass archived and retired, the share of short
+  notes with a `kind`, and the share that cite a bead or PR with no `until`.
 - `factory memory eval` runs a fixed query set (`<memory>/.eval.jsonl`) through search and prints
   recall@5 and MRR, with which queries missed: how to tell that tiering did not cost search quality.
+  `factory memory eval --self [n] [--seed s]` needs no `.eval.jsonl`. It samples n notes (default 60,
+  seed 1), asks each note's first body sentence, and expects that note back. A curated case can
+  carry `"category": "update" | "temporal" | "abstain"`, and eval then prints a score for each
+  category. An `abstain` case has no `expect`: it is a hit only when search returns nothing.
 
 ## Pull request labels
 
@@ -1087,11 +1140,20 @@ rows = [
   reaping. The dream writes proposals to `memory/.manager/skills/` (Claude Code refuses an
   unattended write under `.claude/`), and nothing installs on its own: the next tick mails the
   manager the new, changed and reaped ones, and it reads each and runs `factory skills install
-<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
-  are in the memory's git history like its notes.
+<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). A hidden
+  reviewer subagent first records an `install` or `reject` recommendation with a reason, and
+  `factory skills` shows it. It only advises. Skills are in the memory's git history like its notes.
+- **Learning ladder**: when one station fails the same way in 3 or more runs, or an inbox note
+  repeats a CORE.md line, the dream writes at most 3 proposals per pass to
+  `memory/.proposals/<name>.md`. Each names a rung: `core` (a CORE.md line), `instruction` (a
+  station or worker instruction), `skill` or `check`. The next tick mails the manager once for each
+  new set. `factory proposals` lists them. `factory proposals install <name>` adds a core line to
+  CORE.md. For a higher rung it files a bead labeled `human` in the factory's own rig (or
+  `--rig <name>`), and it changes no factory code. `factory proposals reject <name> <why>` sends
+  the reason to the dream's inbox. The list shows the reviewer's recommendation after each line.
 - **Tokens**: `factory metrics --tokens` shows what the workers spent, by station and model. It
   shows input, cache write, cache read and output tokens, the cache hit rate and a cost estimate in
-  USD. It also shows the manager's patrol, pm, briefer and dream sessions. It reads the usage that
+  USD. It also shows the manager's patrol, pm, briefer, reviewer and dream sessions. It reads the usage that
   each run stores (`runs/<id>/usage.jsonl`, copied to the run's `metrics.jsonl` line by
   `factory rm`) and `manager-usage.jsonl`. It reads no transcript, so a removed run still counts.
   `--json` adds a `tokens` object. A run that ended before this change has no usage.

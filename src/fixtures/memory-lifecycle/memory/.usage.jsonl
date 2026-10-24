@@ -1,0 +1,9 @@
+{"path":"beads/lock.md","at":1757000000000,"shown":1}
+{"path":"beads/lock.md","at":1757086400000,"helped":1,"by":"example-run-a/implement","ok":true}
+{"path":"beads/lock.md","at":1757172800000,"confirmed":1,"by":"example-run-b/implement"}
+{"path":"beads/sync.md","at":1757259200000,"shown":1}
+{"path":"deploy/rollout.md","at":1757345600000,"shown":1}
+{"path":"deploy/rollout.md","at":1757432000000,"helped":1,"by":"example-run-c/implement","ok":false}
+{"path":"ci/old-cache.md","at":1757518400000,"contradicted":1,"by":"example-run-b/implement"}
+{"path":"ci/cache.md","at":1757518400000,"shown":1}
+{"path":"ci/timing.md","at":1757691200000,"shown":1}

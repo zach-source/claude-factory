@@ -62,6 +62,10 @@ const blockingScope = `A finding blocks only when it is one of these kinds:
 3. The defect is a sibling site of a defect that the diff fixes, or of an earlier round's finding.
 A finding outside this branch's diff never makes the verdict changes, unless it is kind 1 or 3 or the diff makes it reachable (kind 2). A gap that origin/main also has, that no acceptance criterion names and that is not kind 2 or 3 does not block: list it under 'Not blocking' and file it as separate work. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (\`--deps discovered-from:<run bead>\`, see Tracking). Only a person, or triage or plan on the run's own bead, sets P0 or P1. Each blocking finding names its kind: 1, 2 or 3.`
 
+// review, security and check interpolate this: how the verdict reaches the pull request. When FACTORY_GH_REVIEWER is 1
+// the task runs with the reviewer identity's token, and the worker hook allows the approving call
+const postVerdict = `If \`printenv FACTORY_GH_REVIEWER\` prints 1, you run as the reviewer identity, and your review counts toward the merge rules. Read \`gh pr view <n> --json author,headRefOid\`. If the author is the reviewer identity, or headRefOid is not the commit you reviewed, or the head holds a commit that you made, do not approve: review the new head, or post a comment. Else post the verdict with \`gh api -X POST repos/<owner>/<repo>/pulls/<n>/reviews -f commit_id=<the SHA you reviewed> -f event=APPROVE -F body=@<file written with the Write tool>\`: event=APPROVE when you report approve (also when you report security), event=REQUEST_CHANGES when you report changes. Put every finding in the body at its file and line. If that variable is not 1, run \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).`
+
 export default {
   name: 'lifecycle',
   start: 'triage',
@@ -152,7 +156,7 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 3. Break each new branch, error path and guard alone. See a test fail. Then restore it.
 4. After your last code change, read again each doc, comment, docstring and pull request line that the diff touches or that names a changed symbol (grep for it). Check each claim against the code, and run each command you documented exactly as written. Keep each doc block directly above its function.
 5. After a send-back, read the whole delta since the last reviewed head (\`git diff <reviewed sha>..HEAD\`) for defects that your fixes added. Grep for the siblings of each finding.
-6. Add no changelog entry and no version bump: the ship release adds them.
+6. Add no changelog entry and no version bump: the repo's release step writes the changelog at release time.
 Close every task of this run (see Tracking). Push the branch and open it as a draft pull request if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
 Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
@@ -177,7 +181,7 @@ Report green with the evidence, or red with a numbered list of every failure, th
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 ${blockingScope}
-Post the review on the pull request: implement opens it as a draft; push the branch and open one yourself if this run still has none. Then \`gh pr review --comment\` with the verdict and every finding at its file and line (GitHub refuses approve and request-changes on a pull request the same account opened).
+Post the review on the pull request: implement opens it as a draft; push the branch and open one yourself if this run still has none. ${postVerdict}
 Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: { to: 'done', ship: true }, changes: 'implement', security: 'security' },
     },
@@ -195,7 +199,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       prompt: `Security review of the branch's diff, thinking as an attacker: authentication and authorization, input validation and injection, secrets, crypto, SSRF, deserialization, dependency risk, infrastructure permissions, sensitive data in logs. Check it against the plan's risk section, or triage's summary on a small run. Change no code.
 ${blockingScope}
 A high or critical finding that origin/main also has and that is not kind 1, 2 or 3 does not block, but name it in the report as a high or critical finding for a person to prioritize.
-Post it on the pull request the way review does.
+Post it on the pull request. ${postVerdict}
 Report approve, or changes with each finding, its severity and its fix, each also recorded as a bug task of this run (see Tracking).`,
       next: { approve: { to: 'done', ship: true }, changes: 'implement' },
     },
@@ -217,7 +221,7 @@ If the work proves bigger than small (more files, a security-sensitive surface, 
 Run the repo's full pipeline: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Then try to fail it: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard, branch and error path and see a test fail; check that each claim in a changed doc or docstring matches the code, and each documented command runs as written. For a change to .factory/, run the factory check on every changed file.
 Then review the diff as you would before a merge: correctness, the tests' quality, simplicity, naming, backward compatibility. A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 ${blockingScope}
-Push the branch and open it as a draft pull request if this run has none yet, then \`gh pr review --comment\` with the verdict and every finding at its file and line. Leave the pull request a draft; ship marks it ready.
+Push the branch and open it as a draft pull request if this run has none yet, then post the verdict. ${postVerdict} Leave the pull request a draft; ship marks it ready.
 Report approve; or changes with one numbered list of every failure and finding, found in one pass over the whole diff, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the diff or the bead is security-sensitive (auth, secrets, crypto, input parsing, permissions, infrastructure access, or the label \`security\`), or the diff changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/main...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: { to: 'done', ship: true }, changes: 'quick', security: 'security' },
     },
