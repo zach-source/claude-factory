@@ -774,6 +774,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         head: polled.head,
         bytes: polled.bytes,
         egress: polled.egress,
+        limit: polled.limit,
       }
 }
 
@@ -1796,40 +1797,62 @@ const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at mo
 type TokenSwapState = { at: number; until: number }
 
 /**
- * This function runs a command. A rig sets the command in FACTORY_AX_TOKEN_SWAP. The function
- * runs the command one time for each refusal. It then sends mail to the manager. The mail
- * names the live slot.
+ * This function runs a swap command. A rig sets the Claude command in FACTORY_AX_TOKEN_SWAP and the Codex command in
+ * FACTORY_AX_CODEX_TOKEN_SWAP. The function runs the command one time for each refusal. It then sends mail to the
+ * manager. The mail names the live slot (Claude) or the live label (Codex).
  *
- * Workers of one runner use the same vault token. One file per runner stops a second run for
+ * Workers of one runner use the same vault token. One file per runner and harness stops a second run for
  * the same refusal. If there is no command, the function waits for the reset. The function
  * also waits for the reset if the command fails.
  */
-function runTokenSwap(
+export function runTokenSwap(
   hit: { at: number; resetsAt: number },
   now: number,
   runnerName: string,
   send: (e: Input) => void,
   node: string,
+  harness: 'claude' | 'codex' = 'claude',
+  home = HOME,
 ): number {
-  const cmd = process.env.FACTORY_AX_TOKEN_SWAP
+  const codex = harness === 'codex'
+  const cmd = codex ? process.env.FACTORY_AX_CODEX_TOKEN_SWAP : process.env.FACTORY_AX_TOKEN_SWAP
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
-  const file = join(HOME, `token-swap-${runnerName}.json`)
+  const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
   const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
   if (!needsSwap(hit, state)) return state!.until
   const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
   const ok = p.exitCode === 0
   if (ok) {
-    const slot = /slot (\S+) is live/.exec(p.stdout.toString())?.[1] ?? '?'
+    const live = (codex ? /label (\S+) is live/ : /slot (\S+) is live/).exec(p.stdout.toString())?.[1] ?? '?'
     send({
       type: 'MAIL',
       from: node,
       to: 'manager',
-      text: `Swapped the Claude token for ${runnerName} workers: slot ${slot} is live; they go on once the vault refreshes.`,
+      text: `Swapped the ${codex ? 'Codex' : 'Claude'} token for ${runnerName} workers: ${codex ? 'label' : 'slot'} ${live} is live; they go on once the vault refreshes.`,
     })
   }
   const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
   writeJson(file, { at: hit.at, until } satisfies TokenSwapState)
   return until
+}
+
+const CODEX_REFRESH_MS = 12 * 3_600_000 // an access token lasts about 10 days; ccswitch renews under 24 h left
+/**
+ * Run FACTORY_AX_CODEX_TOKEN_SWAP when the last run is 12 hours old or older, so the live field is never stale.
+ * It shares its state file with runTokenSwap. With no command, it does nothing. After a failed run it tries again
+ * in one hour.
+ */
+export function refreshCodexToken(now: number, runnerName: string, home = HOME) {
+  const cmd = process.env.FACTORY_AX_CODEX_TOKEN_SWAP
+  if (!cmd) return
+  const file = join(home, `token-swap-${runnerName}-codex.json`)
+  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  if (state && now - state.at < CODEX_REFRESH_MS) return
+  const ok = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode === 0
+  writeJson(file, {
+    at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
+    until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
+  } satisfies TokenSwapState)
 }
 
 /** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5 */
@@ -2370,19 +2393,23 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         ? tailOf(run.worktree, c.session)
         : ''
       : (info?.tail ?? '')
-  const hit = limitHit(tail)
+  const isCodex = harnessOf(agentOfNode(run, def, node)) === 'codex'
+  if (isCodex && !runner.local) refreshCodexToken(now, runner.name)
+  const hit = isCodex && !runner.local ? (info?.limit ?? null) : limitHit(tail)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
     // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,
     // runTokenSwap moves to a new slot, and the worker goes on when the vault refreshes. With no swap
     // command, the worker waits for the reset, and the nudge below then gives it its next turn.
-    const until = runner.local ? swapAccount(hit, now) : runTokenSwap(hit, now, runner.name, send, node)
+    const until = runner.local
+      ? swapAccount(hit, now)
+      : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
       const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
         const text = runner.local
           ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
-          : `The Claude token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
+          : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
         send({ type: 'MAIL', from: node, to: 'manager', text })
         writeJson(paged, until)
       }
