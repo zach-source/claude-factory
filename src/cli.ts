@@ -1155,7 +1155,7 @@ function remembered(run: Run, node: string) {
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
-    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station; when a note proved wrong, add one saying so. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
 }
@@ -2958,6 +2958,19 @@ const journalSince = (since: number) =>
     .slice(-300)
     .map(e => e.line)
 
+/** each run's journal entries since, for memory.helpOk(): a help from a red attempt weighs less */
+const outcomesSince = (since: number): memory.AttemptOutcome[] =>
+  runIds().flatMap(id => {
+    try {
+      const { log } = readJson<Saved>(join(runDir(id), 'state.json')).snapshot.context
+      return log
+        .filter(e => e.at > since)
+        .map(e => ({ run: id, node: e.node, at: e.at, outcome: e.outcome, summary: e.summary }))
+    } catch {
+      return [] // removed mid-read
+    }
+  })
+
 /** what the manager did since, from its sessions' transcripts, and its skills with their uses */
 function managerSince(since: number) {
   const file = join(HOME, 'manager-sessions.json')
@@ -2993,6 +3006,17 @@ function skillMail(now: number) {
     ...pending.map(p => `- ${p.name} (${p.change}): ${p.description} (${p.file})`),
   ].join('\n')
   return [{ run: 'factory', from: 'dream', text, at: now }]
+}
+
+/** the manager hears once of each set of pending proposals, like skillMail (claude-factory-3u1.3.2, FR-019) */
+function proposalMail(now: number) {
+  const file = join(HOME, 'proposals.json')
+  const pending = memory.proposals(MEMORY).filter(p => p.status === 'pending')
+  const key = JSON.stringify(pending.map(p => p.name))
+  if (key === (existsSync(file) ? readFileSync(file, 'utf8') : '[]')) return []
+  writeFileSync(file, key)
+  if (!pending.length) return []
+  return [{ run: 'factory', from: 'dream', text: memory.proposalMailText(pending, CLI), at: now }]
 }
 
 const commitMemory = (message: string) => {
@@ -3208,6 +3232,7 @@ async function dream() {
     const start = Date.now()
     const before = git(MEMORY, 'rev-parse', 'HEAD')
     const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
+    const proposalsBefore = memory.proposals(MEMORY)
     // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
     // again, each time it skips a merge into one of them
     const unsafe = memory.unsafeLongTopics(MEMORY).map(u => `- ${u.reason}`)
@@ -3225,6 +3250,12 @@ async function dream() {
       unsafe,
       overCap,
       memory.envTopicCap(),
+      {
+        // every run still in the home, not only since the last dream: a class builds up over days
+        failures: memory.failureClasses(outcomesSince(0)),
+        relearned: await memory.relearned(MEMORY),
+        proposals: proposalsBefore.map(p => `- ${p.name} (${p.status}, rung ${p.rung})`),
+      },
     )
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = Bun.spawnSync(
@@ -3240,6 +3271,14 @@ async function dream() {
     writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
     storeDreamUsage(start)
     if (p.exitCode !== 0) return said
+    // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
+    const overProposals = memory.proposalsOverCap(
+      proposalsBefore.map(p => p.name),
+      memory.proposals(MEMORY).map(p => p.name),
+    )
+    for (const name of overProposals) rmSync(join(memory.proposalsDir(MEMORY), `${name}.md`))
+    if (overProposals.length)
+      appendFileSync(join(HOME, 'dream.log'), `dropped proposals over the cap: ${overProposals.join(', ')}\n`)
     git(MEMORY, 'add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
     // through the alias it left on the entry that absorbed it (claude-factory-59r.11).
@@ -3257,7 +3296,9 @@ async function dream() {
     }
     // logged before applyTiers runs: applyTiers reads usage fresh, so a note the dream renamed must
     // already resolve to its new path, or it looks never used and risks archive (claude-factory-59r.10)
-    memory.compact(MEMORY, renamed)
+    // each help since the last dream gets its attempt's outcome as it folds (claude-factory-3u1.2.4)
+    const outcomes = outcomesSince(since)
+    memory.compact(MEMORY, renamed, Date.now(), (by, at) => memory.helpOk(outcomes, by, at))
     git(MEMORY, 'add', '-A')
     // committed even when it changed nothing, and dated when it began: what was journaled meanwhile is the next one's
     git(
@@ -3269,6 +3310,7 @@ async function dream() {
       '-m',
       `dream: ${said}`,
     )
+    let pass = { archived: 0, retired: 0 } // the tier pass's archives, for the metrics line below
     if (process.env.FACTORY_MEMORY_TIERS !== '0') {
       const filesBefore = memory.mdFileCount(MEMORY)
       // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2):
@@ -3290,7 +3332,10 @@ async function dream() {
         '-m',
         compactMessage(tiers, filesBefore, memory.mdFileCount(MEMORY)),
       )
+      pass = tiers
     }
+    // after every write of this dream, so the numbers describe what the next worker searches
+    appendFileSync(join(HOME, 'dream.log'), memory.lifecycleMetrics(memory.walk(MEMORY).notes, pass) + '\n')
     return said
   } finally {
     release()
@@ -4313,6 +4358,7 @@ async function tick(isPatrol = false) {
       }
     }
     out.manager.push(...skillMail(now))
+    out.manager.push(...proposalMail(now))
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
     out.manager.push(...tokenDigestMail(now))
@@ -7918,21 +7964,27 @@ const usage = `factory — herdr software factories on xstate
   memory add ${MEMORY_ADD_USAGE}   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping;
                                      a note that names a bead or PR needs --until unless --kind recipe
-  memory helped [--from run/station] <note path...>  a note helped: the dream ranks notes by this
-  memory compact [--dry-run]        merge old, used short notes into LONG.md; archive one that was never
-                                     shown and is 14+ days old, or never helped and unused 30+ days (both
+  memory helped --from run/station <note path...>  a note helped: the dream ranks notes by this
+  memory compact [--dry-run]        merge 7+ day old short notes above θm into LONG.md; archive a 14+ day
+                                     old one never shown, or below θa (FACTORY_MEMORY_THETA_* change θ; both
                                      wait for 14 days of usage history first); FACTORY_MEMORY_ARCHIVE_CAP
                                      caps archives per pass (default 25), oldest first, the rest held;
                                      FACTORY_MEMORY_TOPIC_CAP caps short notes per topic (default 15): a
                                      topic over the cap merges its oldest 7+ day old notes down to it;
                                      --dry-run only prints the plan (a dream runs this itself, after it
                                      files the inbox, unless FACTORY_MEMORY_TIERS=0)
-  memory eval                       search quality (recall@5, MRR) over the fixed query set in
-                                     <memory>/.eval.jsonl, and which queries missed
+  memory eval [--self [n] [--seed s]]  search quality (recall@5, MRR) over the fixed query set in
+                                     <memory>/.eval.jsonl, and which queries missed, one line per
+                                     case category (update, temporal, abstain); --self builds n
+                                     cases (default 60) from the notes, each note's first body
+                                     sentence as the query, the same sample for one seed (default 1)
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
   skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
                                      (each tick starts one a day)
+  proposals [install <n> [--rig r] | reject <n> <why>]  the dream's learning-ladder proposals: rung core
+                                     installs a CORE.md line; a higher rung files a bead in the factory's
+                                     own rig (or --rig r) for a person
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   watch                              one pass of the pull request watch that wakes a parked station (each
                                      tick starts one, at most once a minute)
@@ -8232,7 +8284,14 @@ if (import.meta.main && !outboxCmd)
           const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
           const bad = paths.filter(p => p.startsWith('..') || !memory.noteExists(MEMORY, p))
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
-          memory.use(MEMORY, paths, 'helped', Date.now(), from)
+          const by = memory.helpedBy(from, process.env)
+          if (!by) {
+            console.error('factory memory helped: name the run it helped: --from run/station')
+            console.error('usage: factory memory helped --from run/station <note path...>')
+            process.exitCode = 2
+            break
+          }
+          memory.use(MEMORY, paths, 'helped', Date.now(), by)
           console.log(`noted: ${paths.join(', ')}`)
         } else if (sub === 'compact') {
           const dryRun = words.includes('--dry-run')
@@ -8280,21 +8339,39 @@ if (import.meta.main && !outboxCmd)
             }
           }
         } else if (sub === 'eval') {
-          const cases = memory.readEvalCases(MEMORY)
+          // --self [n] [--seed s]: cases from the notes themselves, a baseline with no curated set
+          const at = (k: string) => (words.includes(k) ? words[words.indexOf(k) + 1] : undefined)
+          const self = words.includes('--self')
+          const raw = at('--self')
+          const n = Number(raw === undefined || raw.startsWith('--') ? 60 : raw)
+          const seed = Number(at('--seed') ?? 1)
+          if (self && !(Number.isInteger(n) && n > 0))
+            fail('usage: factory memory eval --self [n] [--seed s]')
+          if (!Number.isInteger(seed)) fail('usage: factory memory eval --self [n] [--seed s]')
+          const cases = self
+            ? memory.selfCases(memory.walk(MEMORY).notes, n, seed)
+            : memory.readEvalCases(MEMORY)
           if (!cases.length)
             fail(
-              `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary"}`,
+              self
+                ? `no notes with a body in ${MEMORY} to build cases from`
+                : `no fixed query set at ${memory.evalFile(MEMORY)}: one JSON line each, {"query":"...","expect":"a substring of the note's path or summary","category":"update|temporal|abstain (optional)"}, or run eval --self`,
             )
-          const { recall, mrr, misses } = await memory.evaluate(MEMORY, cases)
+          const { recall, mrr, misses, categories } = await memory.evaluate(MEMORY, cases)
+          const line = (s: memory.EvalScore) =>
+            `recall@5 ${s.recall.toFixed(2)}  mrr ${s.mrr.toFixed(2)}  n=${s.n}`
           console.log(
             [
-              `recall@5: ${(recall * 100).toFixed(0)}%  mrr: ${mrr.toFixed(2)}  (${cases.length} queries)`,
-              ...misses.map(m => `miss: "${m.query}" expected "${m.expect}"`),
+              line({ recall, mrr, n: cases.length }),
+              ...Object.entries(categories).map(([k, s]) => `  ${k} ${line(s)}`),
+              ...misses.map(
+                m => `miss: "${m.query}" expected ${m.expect === undefined ? 'no match' : `"${m.expect}"`}`,
+              ),
             ].join('\n'),
           )
         } else
           fail(
-            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval`,
+            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
           )
         break
       }
@@ -8345,6 +8422,49 @@ if (import.meta.main && !outboxCmd)
           commitMemory(`the manager rejected the skill ${name}`)
           console.log(`rejected ${name}; the dream reads why`)
         } else fail('skills [install <name> | reject <name> <why>]')
+        break
+      }
+      case 'proposals': {
+        const rigName = args.includes('--rig') ? args.splice(args.indexOf('--rig'), 2)[1] : undefined
+        const [verb, name, ...why] = args
+        const usage = 'proposals [install <name> [--rig r] | reject <name> <why>]'
+        if (!verb) {
+          const pending = memory.proposals(MEMORY).filter(p => p.status === 'pending')
+          console.log(
+            pending.map(p => `${p.name}  ${p.rung}  ${p.target}: ${p.change}`).join('\n') ||
+              'no pending proposals',
+          )
+        } else if (verb === 'install' && name) {
+          const p = memory.proposals(MEMORY).find(x => x.name === name)
+          if (p?.rung === 'core') {
+            memory.installCoreProposal(MEMORY, name)
+            commitMemory(`installed the proposal ${name} as a CORE.md line`)
+            console.log(`installed ${name}: CORE.md now says "${p.change}"`)
+            break
+          }
+          // FR-020: a rung above core is a bead for a person, filed in the factory's own rig; no code changes here
+          const rig = rigName ? rigs().find(r => r.name === rigName) : rigOf(ROOT)
+          if (!rig)
+            fail(
+              `no rig ${rigName ? `named ${rigName}` : `holds the factory's own repo ${ROOT}`}: pass --rig <name>`,
+            )
+          const bead = memory.installProposalAsBead(MEMORY, name, x =>
+            beads(rig!.repo, 'factory/proposals').createUnlabeled(
+              `memory proposal ${x.name}: ${x.change}`.slice(0, 200),
+              readFileSync(x.file, 'utf8'),
+              { memory_proposal: x.name },
+              '-l',
+              'human',
+            ),
+          )
+          commitMemory(`filed the proposal ${name} as ${bead}`)
+          console.log(`filed ${name} (rung ${p?.rung}) as ${bead} in ${rig!.name}, for a person`)
+        } else if (verb === 'reject' && name) {
+          if (!why.length) fail(`${usage}: the dream learns from the reason`)
+          memory.rejectProposal(MEMORY, name, why.join(' '))
+          commitMemory(`rejected the proposal ${name}`)
+          console.log(`rejected ${name}; the dream reads why`)
+        } else fail(usage)
         break
       }
       case 'loop': {

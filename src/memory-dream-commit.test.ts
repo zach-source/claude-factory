@@ -82,6 +82,11 @@ for (const [label, tiersEnv] of [
     // A1: nothing left to commit right after dream()
     expect(gitMemory('status', '--porcelain')).toBe('')
 
+    // FR-024 (claude-factory-3u1.4.2): each dream logs its lifecycle metrics, tiers on or off
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).toMatch(
+      /^metrics: notes 1 \(topic 1\) {2}archived 0 {2}retired 0 {2}kind 0% {2}cites-without-until 0%$/m,
+    )
+
     // A3: the gitignore tracks .usage.jsonl and .renames.jsonl; only .index.json* and the compact
     // temp file stay ignored
     expect(readFileSync(join(home, 'memory', '.gitignore'), 'utf8')).toBe('.index.json*\n.usage.jsonl.tmp\n')

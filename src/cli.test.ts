@@ -959,6 +959,8 @@ test("brief()'s memory section tells a worker to pass --kind on memory add (clau
   const text = brief(run, def, 'implement', c, [])
   expect(text).toContain('memory add --from r1/implement --kind fact|rule|recipe')
   expect(text).toContain('--until')
+  // a note that proved wrong is replaced, not left beside its fix (claude-factory-3u1.1.5)
+  expect(text).toContain('--supersedes <old note path>')
 })
 
 // claude-factory-wnm (A10): a requeue edge can hand the same bead to a later run, in another
@@ -1746,7 +1748,7 @@ test('memory helped on a real note still exits 0 and logs it', () => {
   const home = freshMemoryAddHome('helped-real-note')
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
   writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
-  const r = runMemoryHelped(home, ['beads/x.md'])
+  const r = runMemoryHelped(home, ['--from', 'r1/verify', 'beads/x.md'])
   expect(r.code).toBe(0)
   expect(r.out).toContain('noted:')
   expect(usageLinesOf(home).map(l => l.path)).toEqual(['beads/x.md'])
