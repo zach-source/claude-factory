@@ -1336,7 +1336,8 @@ export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
   egress.some(e => e.hosts.includes('api.openai.com')) ? 'apikey' : 'chatgpt'
 /**
  * a codex worker in a VM: in API-key mode the rig's own rule for api.openai.com stands. In ChatGPT mode its policy
- * opens only chatgpt.com's codex and usage paths (not /backend-api in general: that holds the person's chats),
+ * opens only chatgpt.com's /backend-api/codex/ paths (not /backend-api in general: that holds the person's chats;
+ * Substrate accepts only path prefixes that start and end with /),
  * and the gateway injects the access token and account id from the vault keys CODEX_CHATGPT and CODEX_CHATGPT_ACCOUNT
  */
 export const codexEgress = (egress: Egress[] = []) =>
@@ -1346,7 +1347,7 @@ export const codexEgress = (egress: Egress[] = []) =>
         ...egress,
         {
           hosts: ['chatgpt.com'],
-          pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/usage'],
+          pathPrefixes: ['/backend-api/codex/'],
           headers: [
             { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
             { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },

@@ -1435,6 +1435,14 @@ test('the ChatGPT egress rule becomes two header injections on chatgpt.com paths
   expect(find('')).toEqual({ hostnames: ['chatgpt.com'], pathPrefixes: ['/backend-api/codex/'] })
 })
 
+test('every egress pathPrefixes entry starts and ends with /', () => {
+  const rule = { hosts: ['chatgpt.com'], pathPrefixes: ['/backend-api/codex/'], key: 'K' }
+  const all = [...ax.egressPolicy('v', [rule]).rules, ...ax.egressPolicy('v', []).rules] as any[]
+  const prefixes = all.flatMap(r => r.https?.pathPrefixes ?? [])
+  expect(prefixes.length).toBeGreaterThan(0)
+  for (const p of prefixes) expect(p).toMatch(/^\/.*\/$/)
+})
+
 test('a ChatGPT-mode codex task has no API-key env, and its inputs hold only placeholders', () => {
   writeFileSync(join(dir, 'actor'), '')
   process.env.FACTORY_AX_VAULT = 'factory'

@@ -273,7 +273,7 @@ test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi 
 
 const CHATGPT_RULE = {
   hosts: ['chatgpt.com'],
-  pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/usage'],
+  pathPrefixes: ['/backend-api/codex/'],
   headers: [
     { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
     { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
@@ -295,9 +295,9 @@ test('a VM codex worker uses ChatGPT mode, unless the rig names api.openai.com o
 
 test('the ChatGPT rule leaves out the wham task and remote paths', () => {
   const rule = codexEgress().find(e => e.hosts.includes('chatgpt.com'))!
-  for (const path of ['/backend-api/wham/tasks', '/backend-api/wham/remote'])
+  for (const path of ['/backend-api/wham/tasks', '/backend-api/wham/remote', '/backend-api/wham/usage'])
     expect(rule.pathPrefixes!.some(p => path.startsWith(p))).toBe(false)
-  expect(rule.pathPrefixes!.some(p => '/backend-api/wham/usage'.startsWith(p))).toBe(true)
+  expect(rule.pathPrefixes!.some(p => '/backend-api/codex/responses'.startsWith(p))).toBe(true)
 })
 
 test('a codex limit and a Claude limit page through separate files', () => {
