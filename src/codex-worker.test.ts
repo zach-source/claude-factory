@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axCodexRefused, codexAuth, codexEgress, codexWorker, vmCodexHome } from './cli'
+import { axCodexRefused, codexAuth, codexEgress, codexWorker, limitPagedFile, vmCodexHome } from './cli'
 import { command } from './harness'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
@@ -273,7 +273,7 @@ test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi 
 
 const CHATGPT_RULE = {
   hosts: ['chatgpt.com'],
-  pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/'],
+  pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/usage'],
   headers: [
     { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
     { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
@@ -291,6 +291,19 @@ test('a VM codex worker uses ChatGPT mode, unless the rig names api.openai.com o
   const mine = [{ hosts: ['chatgpt.com'], key: 'MINE' }]
   expect(codexEgress(mine)).toBe(mine)
   expect(codexAuth(mine)).toBe('chatgpt')
+})
+
+test('the ChatGPT rule leaves out the wham task and remote paths', () => {
+  const rule = codexEgress().find(e => e.hosts.includes('chatgpt.com'))!
+  for (const path of ['/backend-api/wham/tasks', '/backend-api/wham/remote'])
+    expect(rule.pathPrefixes!.some(p => path.startsWith(p))).toBe(false)
+  expect(rule.pathPrefixes!.some(p => '/backend-api/wham/usage'.startsWith(p))).toBe(true)
+})
+
+test('a codex limit and a Claude limit page through separate files', () => {
+  const vm = { name: 'ax' }
+  expect(limitPagedFile(vm, true)).not.toBe(limitPagedFile(vm, false))
+  expect(limitPagedFile({ ...vm, local: true }, true)).toMatch(/limit-paged\.json$/)
 })
 
 test('the ChatGPT rule is path-limited and names no API-key host or key', () => {

@@ -1346,7 +1346,7 @@ export const codexEgress = (egress: Egress[] = []) =>
         ...egress,
         {
           hosts: ['chatgpt.com'],
-          pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/'],
+          pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/usage'],
           headers: [
             { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
             { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
@@ -2246,12 +2246,16 @@ export function stalled(unchangedMs: number, isNudged: boolean) {
   return unchangedMs >= 2 * STALL_MS ? 'fail' : null
 }
 
+/** a VM's codex token and Claude token have separate limits: a codex limit must not hide a Claude one */
+export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
+  join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
-function facts(run: Run, c: Ctx, now: number): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
+function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
   const p = progressOf(run)
   const runner = runnerOf(c.pane)
-  const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
+  const paged = limitPagedFile(runner, codex)
   const until = existsSync(paged) ? readJson<number>(paged) : 0
   return {
     inMin: Math.floor((now - c.startedAt) / 60_000),
@@ -2405,7 +2409,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       ? swapAccount(hit, now)
       : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
-      const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
+      const paged = limitPagedFile(runner, isCodex)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
         const text = runner.local
           ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
@@ -2747,7 +2751,9 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   return {
     row: {
       ...row(run, def, actor.getSnapshot().value, ctx(), agent, error),
-      ...(sub === 'working' && !def.nodes[node]?.gate && facts(run, ctx(), now)),
+      ...(sub === 'working' &&
+        !def.nodes[node]?.gate &&
+        facts(run, ctx(), now, harnessOf(agentOfNode(run, def, node)) === 'codex')),
     },
     manager: manager.map(m => ({ run: run.id, ...m })),
   }
