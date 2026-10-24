@@ -10780,7 +10780,6 @@ test.each([
 ])('the pass form gives MERGE_REASON at gate %j', gate => {
   expect(merge(`gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`, gate)).toBe(MERGE_REASON)
 })
-||||||| b141a00
 
 // claude-factory-0gww.3: only a reviewer-gated station (review, security, check, with
 // FACTORY_GH_REVIEWER=1) may submit an approving GitHub review. Everywhere else the hook allows
