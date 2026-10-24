@@ -228,6 +228,28 @@ export type FactoryPmLogEntry = {
   error?: string
 }
 
+/** one pending skill or proposal with no verdict yet: an item of `factory tick`'s `reviews` field
+ * (mirrors `ReviewItem` in src/memory.ts, without its text) (claude-factory-ag2). */
+export type FactoryReviewItem = {
+  key: string
+  kind: 'skill' | 'proposal'
+  name: string
+  change: string
+}
+
+/** one reviewer attempt's outcome, appended to `<home>/review-log.jsonl`, capped at 50 lines
+ * (claude-factory-ag2). `key` is the item's own key (`reviewKey()`, src/memory.ts). `error` is set
+ * when the facts call, the spawn, the answer or `factory review set` failed. */
+export type FactoryReviewLogEntry = {
+  at: number
+  key: string
+  agentId?: string
+  reason?: string
+  durationMs: number
+  tokens?: number
+  error?: string
+}
+
 /** one briefer subagent attempt's outcome. register.tsx's briefer `turn.complete` branch, and
  * `briefNow` itself on a failed facts gather, spawn deny or spawn throw, append one of these to
  * `<home>/brief-log.jsonl`, capped at 50 lines (claude-factory-2u2). `key` is the gate visit's own
