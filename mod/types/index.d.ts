@@ -237,6 +237,13 @@ export type FactoryReviewItem = {
   change: string
 }
 
+/** a pending item as the patrol shows it: an item of `factory tick`'s `reviews` field (no verdict) or
+ * its `reviewed` field (with one). The manager or the person confirms the verdict. */
+export type FactoryReviewRow = FactoryReviewItem & {
+  recommendation?: 'install' | 'reject'
+  why?: string
+}
+
 /** one reviewer attempt's outcome, appended to `<home>/review-log.jsonl`, capped at 50 lines
  * (claude-factory-ag2). `key` is the item's own key (`reviewKey()`, src/memory.ts). `error` is set
  * when the facts call, the spawn, the answer or `factory review set` failed. */

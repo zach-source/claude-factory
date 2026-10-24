@@ -32,6 +32,7 @@ function reviewerMocks(
     setOk?: boolean
     calls?: string[][]
     omitReviews?: boolean
+    reviewed?: readonly unknown[]
   },
 ) {
   const files = new Map<string, string>()
@@ -49,6 +50,7 @@ function reviewerMocks(
         runs: [],
         halt: opts.halt,
         ...(opts.omitReviews ? {} : { reviews: opts.reviews?.() ?? [] }),
+        reviewed: opts.reviewed ?? [],
       })
       return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
     }
@@ -359,6 +361,27 @@ test(
     expect(spawns).toHaveLength(2)
   },
 )
+
+test("a tick's reviewed item reaches the patrol prompt, and wakes the patrol once", SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  reviewerMocks(on, {
+    reviews: () => [],
+    reviewed: [{ ...item('a'), recommendation: 'reject', why: 'Runs rm -rf.' }],
+  })
+  const prompts: string[] = []
+  on('agent.spawn', ($, e) => {
+    const ev = e as unknown as { subagent_type: string; prompt: string }
+    if (ev.subagent_type === 'factory:patrol') prompts.push(ev.prompt)
+    return { model: 'sonnet' } as never
+  })
+  on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await clock.advance(30_000)
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]).toContain('Proposals to review:')
+  expect(prompts[0]).toContain('- skill a (new): reviewer says reject: Runs rm -rf.')
+})
 
 // ---- claude-factory-ag2.5: tool.call denies ----
 

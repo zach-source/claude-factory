@@ -18,6 +18,7 @@ import type {
   FactoryPmLogEntry,
   FactoryReviewItem,
   FactoryReviewLogEntry,
+  FactoryReviewRow,
   FactoryRig,
   FactoryRun,
   FactoryView,
@@ -138,7 +139,7 @@ Gates: a hidden briefer subagent already wrote an evidence brief into the gate's
 A message starting "[factory] interview" follows the person pressing 'Interview me' in the console: it lists open questions (parked or stuck runs, human-flagged and owner-only bd beads) that still need a short, clear shape. For each, run \`${cli} decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]\`, using the item's own key exactly as given: a question of 160 characters or fewer that names the decision in plain words, an optional \`--context\` sentence of 200 characters or fewer, and 2-4 options, each "label: effect" with a label of 40 characters or fewer and an effect of 100 characters or fewer. Mark at most one option recommended, by adding "(recommended)" after its effect. When the answer is already on record (the person decided this elsewhere), answer it directly instead of proposing: for an \`iv:\` key, mail that station with it; for a \`bd:\` or \`own:\` key, there is no station to mail, so run \`${cli} decisions answer <rig> <bead> "<text>"\` instead. Never propose for a \`gate:\` key, which only the person decides, and never for a \`prompt:\` key (a blocked worker waiting on a prompt in its pane) -- look at it instead. An \`own:\` key (an owner-only bead) keeps its two fixed options, start now and not now: propose only a shorter question or context for it, never new options.
 Report to the person in at most three lines: what changed, what you did, what needs them. A heartbeat with nothing to do gets one line.
 Your skills (the Skill tool) are the factory's playbooks for work you keep repeating, written by the dream from your past sessions: when one fits the task, use it rather than working it out again.
-When the person says a skill proposal needs review (the patrol's report toasted this), run \`${cli} skills\` to list it, read each file it names, then \`${cli} skills install <name>\` only when its commands are right and safe for this factory and it saves real work, or \`${cli} skills reject <name> "<why>"\` otherwise. Tell the person what you installed.`
+When the person says a skill proposal needs review (the patrol's report toasted this), run \`${cli} skills\` (and \`${cli} proposals\` for the dream's memory proposals) to list it: each row carries the hidden reviewer's recommendation, install or reject, with its reason, which only advises. Read each file it names, then \`${cli} skills install <name>\` only when its commands are right and safe for this factory and it saves real work, or \`${cli} skills reject <name> "<why>"\` otherwise. Tell the person what you installed.`
 
 /** the patrol subagent's whole system prompt (omitClaudeMd: true replaces the session's). It never
  * reaches the person directly: $.agent.spawn's prompt is its one turn, and its answer goes to a
@@ -154,7 +155,7 @@ You get what is new and the board; work through it in this order, acting only th
 3. Workers that are blocked on a prompt, silent, or going in circles: read the pane, then \`poke\` the worker with a concrete steer or mail its station. Never approve a permission prompt for it.
 4. Finished runs and free room: note what shipped. Read \`${cli} backlog\`: for each rig with room under its cap, hand the factory what is worth doing next there (\`queue\` or \`start\`). A rig with a goal is the person's standing direction: start the beads that advance it (one bead a run: an epic whose children exist is refused, so start its children; a bead carrying its owner's decisions (metadata.owner_decisions) is refused too, and is theirs: never pass --owned yourself; a bead with a parent starts with \`start\`, not \`queue\`; read the repo's own \`bd ready\` and specs for them), most important and least blocked first, and file a bead for a missing piece. Without a goal, leave what needs the person's priority to them, and list it by rig. When the prompt carries a Plan, give each rig with room its next work from that list, in order, skipping a bead already in a run or refused; with no Plan, choose as above.
    A deferred bead whose last comment holds a line "File in: <rig>: <title> | <description>" is a triage worker's elsewhere outcome: it could not file in the other rig. File it there yourself (\`bd create\` with cwd in that rig's repo, the label \`factory\`, the source bead's id in the description), comment the new id on the source bead, and \`bd undefer\` the source bead when the filed bead closes.
-5. Skill proposals: mail from "dream" lists the manager skills it wrote, changed or reaped. You have no way to install or reject one yourself, so put it in your report's first line ("N skill proposal(s) need review") instead of your usual line there: this toasts straight to the person, who can ask the manager to work it.
+5. Skill and memory proposals: mail from "dream" lists the manager skills and .proposals/ items it wrote, changed or reaped. A hidden reviewer subagent records one recommendation for each, install or reject with a reason: the "Proposals to review" section of this prompt shows it, or "not reviewed yet". You never run \`${cli} skills install\`, \`${cli} skills reject\`, \`${cli} proposals install\` or \`${cli} proposals reject\` (each is denied to you): put it in your report's first line ("N skill proposal(s) need review: <name> install, <name> reject") instead of your usual line there, with the reviewer's verdict for each. This toasts straight to the person, who can ask the manager to work it. The verdict only advises: the manager or the person confirms it.
 Never act on a run a board row marks held: the person is on it, leave it for the next patrol.
 Never run \`${cli} decide\`, \`${cli} decisions answer\` or \`${cli} start ... --owned\`: each is denied to you outright. Gates and owner-only beads are the person's alone; report them, never decide them.
 The factory CLI, through Bash:
@@ -343,6 +344,8 @@ const rt = {
    * clears this set, but a gate that already has a brief on disk still spawns none (claude-factory-2u2). */
   briefed: new Set<string>(),
   isReviewerEnabled: true,
+  /** the last tick's pending skills and proposals, each with the reviewer's verdict when it has one */
+  reviewRows: [] as FactoryReviewRow[],
   /** the reviewer's own copies of the briefer fields above: one running reviewer, the key it is for,
    * its id and the last 20, its start time for the watchdog, and every key tried this session
    * (a deny, a throw or a bad answer never retries that key) */
@@ -385,9 +388,12 @@ async function tick($: EngineInterface) {
       manager: FactoryMail[]
       rigs?: FactoryRig[]
       reviews?: FactoryReviewItem[]
+      reviewed?: FactoryReviewRow[]
       halt?: 'stopping' | 'paused'
     }
     if (res.busy) return
+    // what waits on the manager, for the patrol prompt: the reviewed items first, then those with no verdict yet
+    rt.reviewRows = [...(res.reviewed ?? []), ...(res.reviews ?? [])]
     await update($, board, b => ({
       runs: res.runs,
       mail: [...b.mail, ...res.manager].slice(-50),
@@ -746,6 +752,7 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
     log,
     plan,
     now,
+    rt.reviewRows,
   )
   // a due heartbeat whose board repeats the last one sent wakes nobody: patrolAt stays put, so a
   // real change right after this tick still wakes on the next 5 s tick, not at the next 10 min mark

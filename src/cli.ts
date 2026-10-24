@@ -2484,6 +2484,15 @@ const verdictOf = (kind: 'skill' | 'proposal', name: string) => {
   return item ? store[item.key] : undefined
 }
 
+/** each pending skill and proposal that has a verdict, without its text */
+const reviewedItems = () => {
+  const store = readReviews()
+  return memory.reviewItems(MEMORY).flatMap(({ text: _text, ...i }) => {
+    const v = store[i.key]
+    return v ? [{ ...i, recommendation: v.recommendation, why: v.why }] : []
+  })
+}
+
 /** the stored brief for this run's current gate visit, or undefined when the briefer has not written one yet */
 const gateBriefOf = (id: string, startedAt: number): string | undefined => {
   try {
@@ -4354,6 +4363,8 @@ async function tick(isPatrol = false) {
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
       // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
       reviews: memory.pendingReviews(MEMORY, readReviews()).map(({ text: _text, ...r }) => r),
+      // the pending ones that have one: the patrol shows each verdict until the manager acts
+      reviewed: reviewedItems(),
     }
     const halt = halted()
     for (const id of runIds()) {

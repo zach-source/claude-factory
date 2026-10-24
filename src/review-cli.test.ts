@@ -93,7 +93,27 @@ test('the listings and the tick carry the verdict', () => {
   expect(rows[0]).toMatchObject({ name: 'sk', recommendation: 'reject', why: 'Unsafe command.' })
   expect(run(['proposals']).out).toContain('pr  core  CORE.md: Run prettier.')
   expect(run(['proposals']).out).toContain('reviewer: install, Matches 3 failures.')
-  expect(JSON.parse(run(['tick']).out).reviews).toEqual([])
+  const t = JSON.parse(run(['tick']).out)
+  expect(t.reviews).toEqual([])
+  // the items that wait on the manager keep their verdict in the tick, for the patrol
+  expect(t.reviewed).toEqual([
+    {
+      key: sk,
+      kind: 'skill',
+      name: 'sk',
+      change: 'new',
+      recommendation: 'reject',
+      why: 'Unsafe command.',
+    },
+    {
+      key: pk,
+      kind: 'proposal',
+      name: 'pr',
+      change: 'pending',
+      recommendation: 'install',
+      why: 'Matches 3 failures.',
+    },
+  ])
 })
 
 test('a skill with no verdict has none in the listing', () => {

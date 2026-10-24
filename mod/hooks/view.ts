@@ -7,6 +7,7 @@ import type {
   FactoryPlanFinding,
   FactoryPlanItem,
   FactoryPrs,
+  FactoryReviewRow,
   FactoryRig,
   FactoryRigPlan,
   FactoryRun,
@@ -230,6 +231,7 @@ export const clockOf = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 const idleKey = (r: FactoryRun) => `idle:${r.rig}`
+const verdictKey = (r: FactoryReviewRow) => `verdict:${r.key}`
 const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 
 /** one manager message, across ticks: a run's mail is told apart by when it was sent */
@@ -461,8 +463,11 @@ export function patrol(
   log: readonly string[] = [],
   plan?: FactoryPlan,
   now: number = Date.now(),
+  reviews: readonly FactoryReviewRow[] = [],
 ) {
   const live = runs.filter(isRunLive)
+  // a verdict the patrol has not told yet is news, like a new idle rig (claude-factory-ag2)
+  const newVerdicts = reviews.filter(r => r.recommendation && !seen.has(verdictKey(r)))
   const blockedAll = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
   const blocked = blockedAll.filter(r => !hold.has(r.id))
   const mailOut = mail.filter(m => !hold.has(m.run))
@@ -473,7 +478,7 @@ export function patrol(
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
   // ponytail: told once per rig for the session; a rig that idles again later waits for a restart or other news
   const idle = runs.filter(r => r.idle && !seen.has(idleKey(r)))
-  const noNews = !mailOut.length && !blocked.length && !idle.length
+  const noNews = !mailOut.length && !blocked.length && !idle.length && !newVerdicts.length
   if (noNews && !(isDue && (isWorking || hasRoom))) return null
 
   const held = (r: FactoryRun) => (hold.has(r.id) ? ', held: the person is on it, leave it' : '')
@@ -501,7 +506,24 @@ export function patrol(
     ...mailOut.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
     ...idle.map(r => `- rig ${r.rig}: idle, ${r.idle}. Set it a goal or queue beads for it.`),
+    ...newVerdicts.map(
+      r => `- reviewer: ${r.kind} ${r.name} is ${r.recommendation}: ${line(r.why ?? '', 300)}`,
+    ),
   ]
+  // every item that waits on the manager, with the reviewer's verdict or none yet; the section is
+  // text only, the same as the plan: the manager or the person confirms (claude-factory-ag2)
+  const reviewSection = reviews.length
+    ? `Proposals to review:\n${reviews
+        .map(
+          r =>
+            `- ${r.kind} ${r.name} (${r.change}): ${
+              r.recommendation
+                ? `reviewer says ${r.recommendation}: ${line(r.why ?? '', 300)}`
+                : 'not reviewed yet'
+            }`,
+        )
+        .join('\n')}`
+    : undefined
   // one line per rig with a live run or a goal, so a compacted transcript keeps this even without the board
   const rigLine = (g: FactoryRig) => {
     const s = rigStats(g, runs)
@@ -520,10 +542,17 @@ export function patrol(
       ? `New:\n${news.join('\n')}`
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
     state,
+    ...(reviewSection ? [reviewSection] : []),
     ...(plannedWork ? [plannedWork] : []),
     ...(log.length ? [`Earlier patrols:\n${log.map(a => `- ${a}`).join('\n')}`] : []),
   ].join('\n')
-  return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state, sig, kept }
+  return {
+    text,
+    keys: [...blocked.map(blockKey), ...idle.map(idleKey), ...newVerdicts.map(verdictKey)],
+    board: state,
+    sig,
+    kept,
+  }
 }
 
 /** "patrol 3m ago", drawn in the header and the band; '' before any patrol has run */
