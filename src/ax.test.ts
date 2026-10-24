@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
+import { vmCodexHome } from './cli'
 import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
 
@@ -1432,6 +1433,46 @@ test('the ChatGPT egress rule becomes two header injections on chatgpt.com paths
     },
   })
   expect(find('')).toEqual({ hostnames: ['chatgpt.com'], pathPrefixes: ['/backend-api/codex/'] })
+})
+
+test('a ChatGPT-mode codex task has no API-key env, and its inputs hold only placeholders', () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    ax.launch({
+      name: 't4',
+      repo: 'r',
+      branch: 'b',
+      image: 'i',
+      brief: 'x',
+      harness: 'codex',
+      codexAuth: 'chatgpt',
+      codexHome: vmCodexHome({}, [], [], 'chatgpt'),
+      env: {},
+    })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env: Record<string, string> = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.FACTORY_HARNESS).toBe('codex')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.CODEX_API_KEY).toBeUndefined()
+    const files = JSON.parse(env.FACTORY_CODEX_HOME_FILES!)
+    const auth = JSON.parse(files['auth.json'])
+    expect(Object.keys(auth.tokens).sort()).toEqual([
+      'access_token',
+      'account_id',
+      'id_token',
+      'refresh_token',
+    ])
+    expect(auth.tokens.refresh_token).toBe('placeholder')
+    expect(auth.tokens.account_id).toBe('placeholder')
+    expect(auth.tokens.access_token.split('.')[2]).toBe('placeholder')
+    expect(auth.tokens.id_token.split('.')[2]).toBe('placeholder')
+    expect(JSON.stringify(task)).not.toMatch(/CODEX_CHATGPT/)
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
 })
 
 test("a station's model reads codex's -m too, and pi's provider", () => {

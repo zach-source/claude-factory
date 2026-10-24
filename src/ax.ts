@@ -102,6 +102,8 @@ export type Launch = {
   claudeFlags?: string[]
   /** a codex worker's CODEX_HOME files by name (cli.ts vmCodexHome); serve writes them before the first turn */
   codexHome?: Record<string, string>
+  /** a codex worker logs in with an API key (placeholder env keys) or with ChatGPT (auth.json, no key in the env) */
+  codexAuth?: 'apikey' | 'chatgpt'
   env: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
@@ -500,7 +502,8 @@ export const launch = (l: Launch) => {
     ...(process.env.FACTORY_AX_VAULT && {
       // each agent sends its key as `Authorization: Bearer`; the rig's egress rule names the vault key behind it
       ...((l.harness ?? 'claude') === 'claude' && { CLAUDE_CODE_OAUTH_TOKEN: 'placeholder' }),
-      ...(l.harness === 'codex' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
+      ...(l.harness === 'codex' &&
+        l.codexAuth !== 'chatgpt' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
       GIT_CONFIG_COUNT: l.gitlabHost ? '2' : '1',

@@ -1442,7 +1442,10 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     claudeFlags:
       harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
     codexHome:
-      harness === 'codex' ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
+      harness === 'codex'
+        ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig), codexAuth(rig?.egress))
+        : undefined,
+    codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
     gitlabHost,
     env: {
       ...env,
@@ -1546,14 +1549,53 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
  * from the image's own worker-hook.ts. config.toml sets the compaction limit and trusts the repo. `serve` writes
  * them, adds AGENTS.md from the image's worker rules and checks the guard before the first turn (claude-factory-72dq).
  */
-export function vmCodexHome(def: Pick<Factory, 'maxContextK'>, contexts?: string[], branches?: string[]) {
+export function vmCodexHome(
+  def: Pick<Factory, 'maxContextK'>,
+  contexts?: string[],
+  branches?: string[],
+  auth: 'apikey' | 'chatgpt' = 'apikey',
+) {
   const hook = denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches)
+  const chatgpt = auth === 'chatgpt'
   return {
     'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
     'config.toml':
-      `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
-      `[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
-  }
+      `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n` +
+      (chatgpt ? 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' : '') +
+      `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
+    ...(chatgpt && { 'auth.json': placeholderAuth() }),
+  } as { 'hooks.json': string; 'config.toml': string; 'auth.json'?: string }
+}
+
+/**
+ * The auth.json of a ChatGPT-mode VM codex. Every token in it is a placeholder: codex reads the claims without a
+ * signature check and does not refresh before exp, and the gateway swaps the real access token and account id into
+ * the request headers. The JWTs are built here so that no token-like string sits in the source.
+ */
+function placeholderAuth() {
+  const jwt = (claims: object) =>
+    [{ alg: 'none', typ: 'JWT' }, claims]
+      .map(p => Buffer.from(JSON.stringify(p)).toString('base64url'))
+      .concat('placeholder')
+      .join('.')
+  return JSON.stringify({
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: jwt({
+        email: 'codex@factory.invalid',
+        'https://api.openai.com/auth': {
+          chatgpt_plan_type: 'pro',
+          chatgpt_user_id: 'placeholder',
+          chatgpt_account_id: 'placeholder',
+        },
+      }),
+      access_token: jwt({ exp: 4102444800 }),
+      refresh_token: 'placeholder',
+      account_id: 'placeholder',
+    },
+    last_refresh: new Date().toISOString(),
+  })
 }
 
 /** the note a resumed worker is sent, written where its launch reads it */

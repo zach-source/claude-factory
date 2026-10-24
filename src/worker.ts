@@ -996,7 +996,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000) {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
   for (const [name, text] of Object.entries(JSON.parse(files) as Record<string, string>))
-    writeFileSync(join(dir, basename(name)), text)
+    writeFileSync(join(dir, basename(name)), text, { mode: 0o600 })
   writeFileSync(
     join(dir, 'AGENTS.md'),
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +

@@ -214,6 +214,48 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   )
 })
 
+const claims = (jwt: string) => JSON.parse(Buffer.from(jwt.split('.')[1]!, 'base64url').toString())
+
+test('a ChatGPT-mode VM codex home holds a placeholder auth.json that codex accepts', () => {
+  const h = vmCodexHome({ maxContextK: 150 }, [], [], 'chatgpt')
+  expect(Object.keys(h).sort()).toEqual(['auth.json', 'config.toml', 'hooks.json'])
+  const auth = JSON.parse(h['auth.json']!)
+  expect(auth.auth_mode).toBe('chatgpt')
+  expect(auth.OPENAI_API_KEY).toBeNull()
+  expect(auth.tokens.refresh_token).toBe('placeholder')
+  expect(auth.tokens.account_id).toBe('placeholder')
+  expect(Number.isNaN(Date.parse(auth.last_refresh))).toBe(false)
+  const id = claims(auth.tokens.id_token)
+  expect(id.email).toBe('codex@factory.invalid')
+  expect(id['https://api.openai.com/auth']).toEqual({
+    chatgpt_plan_type: 'pro',
+    chatgpt_user_id: 'placeholder',
+    chatgpt_account_id: 'placeholder',
+  })
+  expect(claims(auth.tokens.access_token).exp).toBe(4102444800)
+  for (const t of [auth.tokens.id_token, auth.tokens.access_token]) expect(t.split('.')).toHaveLength(3)
+  expect(h['config.toml']).toContain('forced_login_method = "chatgpt"')
+  expect(h['config.toml']).toContain('cli_auth_credentials_store = "file"')
+  // api-key mode: unchanged
+  const k = vmCodexHome({ maxContextK: 150 })
+  expect(k['auth.json']).toBeUndefined()
+  expect(k['config.toml']).not.toContain('forced_login_method')
+})
+
+test('codex login status accepts the placeholder auth.json', () => {
+  const codex = Bun.which('codex')
+  if (!codex) return
+  const home = mkdtempSync(join(tmpdir(), 'codex-login-'))
+  try {
+    for (const [n, t] of Object.entries(vmCodexHome({ maxContextK: 150 }, [], [], 'chatgpt')))
+      writeFileSync(join(home, n), t)
+    const p = Bun.spawnSync([codex, 'login', 'status'], { env: { ...process.env, CODEX_HOME: home } })
+    expect(`${p.stdout}${p.stderr}`).toContain('Logged in using ChatGPT')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi always', () => {
   const keep = process.env.FACTORY_AX_CODEX
   try {
