@@ -1929,6 +1929,66 @@ export const proposalMailText = (pending: ReturnType<typeof proposals>, cli: str
     `The dream proposed ${pending.length} change(s) one rung up the learning ladder. Read each file, then \`${cli} proposals install <name>\` (rung core adds the CORE.md line; a higher rung files a bead for a person) or \`${cli} proposals reject <name> <why>\`:`,
     ...pending.map(p => `- ${p.name} (rung ${p.rung}, ${p.target}): ${p.change} (${p.file})`),
   ].join('\n')
+// The reviewer (claude-factory-ag2): a mod subagent recommends install or reject for each pending skill and
+// proposal. The verdict lives in <home>/reviews.json, never in the skill or proposal file: install copies it.
+export type Review = { recommendation: 'install' | 'reject'; why: string; at: string }
+export type ReviewItem = {
+  key: string
+  kind: 'skill' | 'proposal'
+  name: string
+  change: string
+  text: string
+}
+/** kind:name:sha12 — the first 12 hex of the text's sha256, so a changed text is a new key and a new review */
+export const reviewKey = (kind: string, name: string, text: string) =>
+  `${kind}:${name}:${createHash('sha256').update(text).digest('hex').slice(0, 12)}`
+/** every pending skill (new, changed or reaped) and pending proposal, with the text the reviewer reads */
+export function reviewItems(dir: string): ReviewItem[] {
+  const skillItems = pendingSkills(dir).map(s => {
+    const text = `${s.change}\n${skillText(skillSources(dir), s.name) ?? skillText(skillsDir(dir), s.name) ?? ''}`
+    return {
+      key: reviewKey('skill', s.name, text),
+      kind: 'skill' as const,
+      name: s.name,
+      change: s.change,
+      text,
+    }
+  })
+  const proposalItems = proposals(dir)
+    .filter(p => p.status === 'pending')
+    .map(p => {
+      const text = readFileSync(p.file, 'utf8')
+      return {
+        key: reviewKey('proposal', p.name, text),
+        kind: 'proposal' as const,
+        name: p.name,
+        change: 'pending',
+        text,
+      }
+    })
+  return [...skillItems, ...proposalItems]
+}
+/** the items that have no verdict in `store` yet */
+export const pendingReviews = (dir: string, store: Record<string, Review>) =>
+  reviewItems(dir).filter(i => !store[i.key])
+/** the answer's last fenced json block as a verdict: recommendation exactly install or reject, a non-empty why on one line, 300 chars at most; anything else throws */
+export function parseReview(answer: string): Pick<Review, 'recommendation' | 'why'> {
+  const blocks = [...answer.matchAll(/```json\s*\n([\s\S]*?)\n\s*```/g)]
+  const raw = blocks.at(-1)?.[1]
+  if (raw === undefined) throw new Error('no fenced json block in the answer')
+  const o = JSON.parse(raw) as { recommendation?: unknown; why?: unknown }
+  if (!o || typeof o !== 'object') throw new Error('the answer is not a json object')
+  if (o.recommendation !== 'install' && o.recommendation !== 'reject')
+    throw new Error('recommendation must be exactly install or reject')
+  if (typeof o.why !== 'string' || !o.why.trim()) throw new Error('why must be a non-empty string')
+  // eslint-disable-next-line no-control-regex
+  const why = o.why
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300)
+  return { recommendation: o.recommendation, why }
+}
 /** CORE.md without its first bullet that reads `line` (claude-factory-3u1.3.3) */
 export function withoutCoreLine(core: string, line: string): string {
   const lines = core.split('\n')
