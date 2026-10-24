@@ -1330,11 +1330,28 @@ export function axCodexRefused(agent: string) {
       'the ax runner runs codex only with FACTORY_AX_CODEX=1: set it with an image that has the codex guard',
     )
 }
-/** a codex worker in a VM calls the OpenAI API: its policy opens api.openai.com with the vault key OPENAI, unless the rig already names that host */
+/** a VM codex worker uses the API key only when its rig names api.openai.com; else it logs in with ChatGPT */
+export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
+  egress.some(e => e.hosts.includes('api.openai.com')) ? 'apikey' : 'chatgpt'
+/**
+ * a codex worker in a VM: in API-key mode the rig's own rule for api.openai.com stands. In ChatGPT mode its policy
+ * opens only chatgpt.com's codex and usage paths (not /backend-api in general: that holds the person's chats),
+ * and the gateway injects the access token and account id from the vault keys CODEX_CHATGPT and CODEX_CHATGPT_ACCOUNT
+ */
 export const codexEgress = (egress: Egress[] = []) =>
-  egress.some(e => e.hosts.includes('api.openai.com'))
+  codexAuth(egress) === 'apikey' || egress.some(e => e.hosts.includes('chatgpt.com'))
     ? egress
-    : [...egress, { hosts: ['api.openai.com'], key: 'OPENAI' }]
+    : [
+        ...egress,
+        {
+          hosts: ['chatgpt.com'],
+          pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/'],
+          headers: [
+            { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+            { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+          ],
+        },
+      ]
 
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()

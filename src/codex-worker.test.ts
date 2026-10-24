@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axCodexRefused, codexEgress, codexWorker, vmCodexHome } from './cli'
+import { axCodexRefused, codexAuth, codexEgress, codexWorker, vmCodexHome } from './cli'
 import { command } from './harness'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
@@ -229,12 +229,33 @@ test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi 
   }
 })
 
-test('a VM codex worker reaches api.openai.com with the OPENAI key, unless the rig names the host', () => {
-  expect(codexEgress()).toEqual([{ hosts: ['api.openai.com'], key: 'OPENAI' }])
+const CHATGPT_RULE = {
+  hosts: ['chatgpt.com'],
+  pathPrefixes: ['/backend-api/codex/', '/backend-api/wham/'],
+  headers: [
+    { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+    { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+  ],
+}
+
+test('a VM codex worker uses ChatGPT mode, unless the rig names api.openai.com or chatgpt.com', () => {
+  expect(codexEgress()).toEqual([CHATGPT_RULE])
   const pypi = { hosts: ['pypi.org'] }
-  expect(codexEgress([pypi])).toEqual([pypi, { hosts: ['api.openai.com'], key: 'OPENAI' }])
+  expect(codexEgress([pypi])).toEqual([pypi, CHATGPT_RULE])
+  expect(codexAuth([pypi])).toBe('chatgpt')
   const own = [{ hosts: ['api.openai.com'], key: 'OPENAI_ZS' }]
   expect(codexEgress(own)).toBe(own)
+  expect(codexAuth(own)).toBe('apikey')
+  const mine = [{ hosts: ['chatgpt.com'], key: 'MINE' }]
+  expect(codexEgress(mine)).toBe(mine)
+  expect(codexAuth(mine)).toBe('chatgpt')
+})
+
+test('the ChatGPT rule is path-limited and names no API-key host or key', () => {
+  const rule = codexEgress().find(e => e.hosts.includes('chatgpt.com'))!
+  expect(rule.pathPrefixes!.length).toBeGreaterThan(0)
+  const all = JSON.stringify(codexEgress())
+  for (const bad of ['auth.openai.com', 'api.openai.com', 'OPENAI"']) expect(all).not.toContain(bad)
 })
 
 test('the probe runs the agent own executable, not codex from PATH', () => {

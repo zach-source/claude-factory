@@ -1402,6 +1402,38 @@ test("a codex task gets its harness, its extra egress and OpenAI's placeholder k
   }
 })
 
+test('the ChatGPT egress rule becomes two header injections on chatgpt.com paths, none without a vault', () => {
+  const rule = {
+    hosts: ['chatgpt.com'],
+    pathPrefixes: ['/backend-api/codex/'],
+    headers: [
+      { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+      { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+    ],
+  }
+  const find = (vault: string) =>
+    (ax.egressPolicy(vault, [rule]).rules as any[]).find(r => r.https.hostnames[0] === 'chatgpt.com').https
+  expect(find('v')).toEqual({
+    hostnames: ['chatgpt.com'],
+    pathPrefixes: ['/backend-api/codex/'],
+    effects: {
+      replaceHeaders: [
+        {
+          header: 'Authorization',
+          prefix: 'Bearer ',
+          credentialUri: 'ate-secret://agent-vault/v/CODEX_CHATGPT',
+        },
+        {
+          header: 'ChatGPT-Account-ID',
+          prefix: '',
+          credentialUri: 'ate-secret://agent-vault/v/CODEX_CHATGPT_ACCOUNT',
+        },
+      ],
+    },
+  })
+  expect(find('')).toEqual({ hostnames: ['chatgpt.com'], pathPrefixes: ['/backend-api/codex/'] })
+})
+
 test("a station's model reads codex's -m too, and pi's provider", () => {
   expect(ax.modelOf('codex --dangerously-bypass-approvals-and-sandbox -m o3')).toBe('o3')
   expect(ax.modelOf('pi --provider anthropic --model claude-x')).toBe('claude-x')
