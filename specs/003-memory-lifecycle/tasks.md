@@ -67,8 +67,8 @@ description: "Task list for the memory lifecycle (compress, age, learn)"
 
 ## Phase 8: Polish
 
-- [ ] T021 Run the quickstart end to end on a copy of a factory home; record the before/after numbers (disk, % notes with `kind`, % citing a bead/PR without `until`, recall@5) on `claude-factory-3u1`
-- [ ] T022 `npm test`, typecheck, and prettier on the touched lines only
+- [x] T021 Run the quickstart end to end on a copy of a factory home; record the before/after numbers (disk, % notes with `kind`, % citing a bead/PR without `until`, recall@5) on `claude-factory-3u1`
+- [x] T022 `npm test`, typecheck, and prettier on the touched lines only
 
 ## Dependencies
 
