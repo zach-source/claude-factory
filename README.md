@@ -307,11 +307,17 @@ Use `--protected-branch` to add one branch. Repeat the flag to add more branches
 factory rig add ax ~/repos/ax --protected-branch acme-deploy
 ```
 
+A person can give a rig merge authority with `factory rig add <name> <repo> ship ... --merge-authority`.
+`rig add` replaces the whole rig, so repeat the current flags. Only the ship factory's `release`
+station then merges, and only with this form: `gh pr merge <number> --merge --match-head-commit <40-hex SHA> -R <owner/repo>`
+(`-R` is required and must name the rig's own repo, read from its origin remote at launch). The hook denies every other merge form there. Every other rig and station
+keeps the deny below. The rig takes the setting at the next worker launch.
+
 A worker's PreToolUse hook denies these commands:
 
 - a `git push` to a protected branch, to `main` or `master`, or to the branch that `origin/HEAD` names
 - a `git -c alias.<name>=push` definition: a worker never needs a throwaway push alias
-- `gh pr merge`, also with `--auto` and `--admin`
+- `gh pr merge`, also with `--auto` and `--admin` (except the one form above)
 - the GraphQL mutation that turns on a pull request's auto-merge
 - a REST or GraphQL call that writes a ref or a file straight to a protected branch (a `git/refs`
   update or delete, a `contents` write with no `branch` field or a protected one, and the

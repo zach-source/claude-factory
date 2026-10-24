@@ -26,6 +26,7 @@ import {
   HEREDOC_REASON,
   LIVE_REASON,
   LONG_COMMAND_REASON,
+  MERGE_FORM_REASON,
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
@@ -3405,6 +3406,7 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   ["env - -S 'git push origin main'", 'PUSH_DIR_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {
+  MERGE_FORM_REASON,
   MERGE_REASON,
   READY_REASON,
   PUSH_DIR_REASON,
@@ -10682,6 +10684,102 @@ test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{f
     expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
   },
 )
+
+// claude-factory-l3tl: a rig can give the ship release station one strict `gh pr merge` form.
+const SHA = 'a'.repeat(40)
+const MERGE_GATE: HookGate = {
+  mergeAuthority: 'acme/widget',
+  factory: 'ship',
+  station: 'release',
+  ghAliases: () => new Map([['mm', 'pr merge']]),
+}
+const merge = (cmd: string, gate: HookGate = MERGE_GATE) => denyReason(cmd, '/root/repo', undefined, gate)
+
+test.each([
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr merge --match-head-commit ${SHA} --merge 12 -R acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit=${SHA} -R acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --repo=acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --repo acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R ACME/Widget`,
+  `env FOO=1 gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+])('ship release with merge authority allows %j', cmd => {
+  expect(merge(cmd)).toBeUndefined()
+})
+
+test.each([
+  `gh pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R zach-source/claude-factory`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --repo=acme/other`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget2`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widge`,
+  `GH_REPO=acme/other gh pr merge 12 --merge --match-head-commit ${SHA}`,
+  `cd /root/other && gh pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge`,
+  `gh pr merge 12 --merge --squash --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --rebase --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --admin --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --auto --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --disable-auto --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge -d --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --body x --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge -b x --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --subject x --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge -t x --match-head-commit ${SHA}`,
+  `gh pr merge 12 -m --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit abc123`,
+  `gh pr merge 12 --merge --match-head-commit ${'A'.repeat(40)}`,
+  'gh pr merge 12 --merge --match-head-commit $SHA',
+  'gh pr merge 12 --merge --match-head-commit `git rev-parse HEAD`',
+  `gh pr merge 12 --merge --match-head-commit ${'a'.repeat(39)}*`,
+  `gh pr merge 12 13 --merge --match-head-commit ${SHA}`,
+  `gh pr merge https://github.com/acme/widget/pull/12 --merge --match-head-commit ${SHA}`,
+  `gh pr merge my-branch --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} >f`,
+  `gh pr merge 12 --merge --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget --repo=acme/other`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R $REPO`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R widget`,
+  `gh -R acme/widget pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh --repo acme/widget pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh pr -R acme/widget merge 12 --merge --match-head-commit ${SHA}`,
+  `gh mm 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr '' merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr - merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh '' pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+])('ship release with merge authority gives the form reason for %j', cmd => {
+  expect(merge(cmd)).toBe(MERGE_FORM_REASON)
+})
+
+test.each(['gh repo sync', 'gh api -X PUT repos/o/r/pulls/5/merge', 'gh api repos/o/r/merges -f base=main'])(
+  'ship release with merge authority still gives MERGE_REASON for %j',
+  cmd => {
+    expect(merge(cmd)).toBe(MERGE_REASON)
+  },
+)
+
+test.each([
+  { ...MERGE_GATE, mergeAuthority: undefined },
+  { ...MERGE_GATE, mergeAuthority: true as unknown as string },
+  { ...MERGE_GATE, mergeAuthority: '' },
+  { ...MERGE_GATE, mergeAuthority: 'widget' },
+  { ...MERGE_GATE, mergeAuthority: 'acme/widget extra' },
+  { ...MERGE_GATE, factory: 'lifecycle' },
+  { ...MERGE_GATE, factory: undefined },
+  { ...MERGE_GATE, factory: '' },
+  { ...MERGE_GATE, factory: 'ship ' },
+  { ...MERGE_GATE, factory: 'Ship' },
+  { ...MERGE_GATE, station: 'deploy' },
+  { ...MERGE_GATE, station: 'implement' },
+  { ...MERGE_GATE, station: undefined },
+  { ...MERGE_GATE, station: 'release ' },
+])('the pass form gives MERGE_REASON at gate %j', gate => {
+  expect(merge(`gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`, gate)).toBe(MERGE_REASON)
+})
 
 // claude-factory-0gww.3: only a reviewer-gated station (review, security, check, with
 // FACTORY_GH_REVIEWER=1) may submit an approving GitHub review. Everywhere else the hook allows

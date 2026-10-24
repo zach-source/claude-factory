@@ -1006,9 +1006,22 @@ const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-dig
  * verbatim, under its own section, so a step it reserves for the person (a skip list, say) binds every
  * station, not only the manager patrol that reads rigs.json directly. No rules and no goal: no output.
  */
-export function ruleLines(def: Pick<Factory, 'rules'>, rigGoal?: string, personOnly?: string[]): string[] {
+export function ruleLines(
+  def: Pick<Factory, 'rules'> & { name?: string },
+  rigGoal?: string,
+  personOnly?: string[],
+  merge?: boolean,
+): string[] {
   return [
     ...(def.rules ? ['', '## House rules', def.rules.trim()] : []),
+    // claude-factory-l3tl: a person gave this rig merge authority; only the ship factory's release station uses it
+    ...(merge && def.name === 'ship'
+      ? [
+          '',
+          '## Merge authority',
+          'A person gave this rig merge authority. The ship release station (and no other station) merges each queued pull request that is ready, has green CI and has passed reviews, with exactly: gh pr merge <number> --merge --match-head-commit <head SHA> -R <owner/repo of this rig> (-R is required). Never use --admin, --squash, --rebase or --auto. This overrides the House rule that only a person merges, for that one command.',
+        ]
+      : []),
     ...(rigGoal
       ? [
           '',
@@ -1039,7 +1052,12 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
     `This run follows the factory pinned when it started (${run.factoryFrom ?? run.factory}): changes to ${OWN}/ on any branch reach only runs that start after they merge. Check an edited factory file with ${CLI} check <file>.`,
-    ...ruleLines(def, rigOf(run.repo)?.goal, personOnlyContexts(rigOf(run.repo))),
+    ...ruleLines(
+      def,
+      rigOf(run.repo)?.goal,
+      personOnlyContexts(rigOf(run.repo)),
+      !!mergeAuthority(rigOf(run.repo)),
+    ),
     '',
     ...remembered(run, node),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
@@ -1286,6 +1304,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
       ...['--label', `${node}#${c.attempt}`, '--no-focus'],
       ...['--env', `FACTORY_FROM=${node}`, '--env', `FACTORY_HOME=${HOME}`],
+      ...['--env', `FACTORY_DEF_NAME=${def.name}`],
       ...['--env', `BEADS_ACTOR=${actorOf(run.id)}/${node}`],
     )
   let created
@@ -1423,14 +1442,19 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     harness: harness!,
     provider: ax.providerOf(agent),
     claudeFlags:
-      harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
+      harness === 'claude'
+        ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        : undefined,
     codexHome:
-      harness === 'codex' ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
+      harness === 'codex'
+        ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        : undefined,
     gitlabHost,
     env: {
       ...env,
       ...rig?.env,
       FACTORY_FROM: node,
+      FACTORY_DEF_NAME: def.name,
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
       ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
@@ -1471,9 +1495,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * When the list is not empty, the hook's own argv carries it: `--person-only-contexts a,b`.
  * `branches` names branches, over main and master, the rig reserves for a person's push
  * (claude-factory-zl5). Its own argv is `--protected-branches a,b`.
+ * `merge` is the rig's owner/repo (claude-factory-l3tl). It adds `--merge-authority owner/repo`: the hook then lets the ship
+ * release station run one strict `gh pr merge` form, for that repo only (-R required).
  * An older VM image's hook copy ignores argv it does not know.
  */
-const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[]) => ({
+const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) => ({
   matcher: 'Bash',
   hooks: [
     {
@@ -1483,6 +1509,7 @@ const denyHook = (bun: string, file: string, contexts?: string[], branches?: str
         sq(file),
         ...(contexts?.length ? ['--person-only-contexts', sq(contexts.join(','))] : []),
         ...(branches?.length ? ['--protected-branches', sq(branches.join(','))] : []),
+        ...(merge ? ['--merge-authority', sq(merge)] : []),
       ].join(' '),
       timeout: 10,
     },
@@ -1500,7 +1527,12 @@ const denyHook = (bun: string, file: string, contexts?: string[], branches?: str
  * It gets one hook. The hook is the same deny-rm PreToolUse hook that a laptop worker gets (claude-factory-cr6, claude-factory-99d).
  * The VM image runs its own copy of `worker-hook.ts`, at `${ax.FACTORY_DIR}/src/worker-hook.ts`.
  */
-export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: string[], branches?: string[]) {
+export function vmClaudeFlags(
+  def: Pick<Factory, 'maxContextK'>,
+  contexts?: string[],
+  branches?: string[],
+  merge?: string,
+) {
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
     autoMemoryEnabled: false,
@@ -1513,7 +1545,7 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
     disableBundledSkills: true,
     hooks: {
       PreToolUse: [
-        denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches),
+        denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge),
       ],
     },
   }
@@ -1529,8 +1561,19 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
  * from the image's own worker-hook.ts. config.toml sets the compaction limit and trusts the repo. `serve` writes
  * them, adds AGENTS.md from the image's worker rules and checks the guard before the first turn (claude-factory-72dq).
  */
-export function vmCodexHome(def: Pick<Factory, 'maxContextK'>, contexts?: string[], branches?: string[]) {
-  const hook = denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches)
+export function vmCodexHome(
+  def: Pick<Factory, 'maxContextK'>,
+  contexts?: string[],
+  branches?: string[],
+  merge?: string,
+) {
+  const hook = denyHook(
+    '/usr/local/bin/bun',
+    `${ax.FACTORY_DIR}/src/worker-hook.ts`,
+    contexts,
+    branches,
+    merge,
+  )
   return {
     'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
     'config.toml':
@@ -1797,6 +1840,7 @@ export const workerSettings = (
   personOnly?: string[],
   branches?: string[],
   keep: string[] = [],
+  merge?: string,
 ) => {
   const names = ['asd-ste100', ...keep]
   const ste = Object.entries(user.enabledPlugins ?? {}).filter(
@@ -1806,7 +1850,7 @@ export const workerSettings = (
     ...user.hooks,
     PreToolUse: [
       ...(user.hooks?.PreToolUse ?? []),
-      denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly, branches),
+      denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly, branches, merge),
     ],
   }
   return {
@@ -1866,7 +1910,7 @@ export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSe
 /**
  * These flags give a Claude worker its own settings, system prompt and tools.
  * FACTORY_LEAN=0 turns them off.
- * A rig with `personOnlyContexts` or `protectedBranches` gets its own file, `worker-settings-<rig.name>.json`
+ * A rig with `personOnlyContexts`, `protectedBranches` or `mergeAuthority` gets its own file, `worker-settings-<rig.name>.json`
  * (claude-factory-25z, claude-factory-zl5).
  * Without this, every rig would share one `worker-settings.json`.
  * A launch for a different rig writes that shared file with no argv.
@@ -1874,7 +1918,7 @@ export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSe
  */
 export function workerFlags(
   def: Pick<Factory, 'maxContextK'>,
-  rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches'>,
+  rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
   home = HOME,
 ) {
   if (process.env.FACTORY_LEAN === '0') return ` --settings '${JSON.stringify(withoutFleet())}'`
@@ -1886,15 +1930,18 @@ export function workerFlags(
   }
   const contexts = personOnlyContexts(rig)
   const branches = protectedBranches(rig)
+  const merge = mergeAuthority(rig)
   const file = join(
     home,
-    contexts?.length || branches?.length ? `worker-settings-${rig!.name}.json` : 'worker-settings.json',
+    contexts?.length || branches?.length || merge
+      ? `worker-settings-${rig!.name}.json`
+      : 'worker-settings.json',
   )
   const keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean)
-  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep)
+  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep, merge)
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
   const prompt = join(home, 'worker-system.md')
@@ -1940,7 +1987,7 @@ export function codexWorker(
   def: Pick<Factory, 'maxContextK'>,
   node: string,
   agent: string,
-  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches'>,
+  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
   o: { hookFile?: string; userHome?: string; dir?: string; timeoutMs?: number } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
@@ -1963,7 +2010,13 @@ export function codexWorker(
   } catch {
     // no user hooks, or not JSON: the deny hook is the only one
   }
-  const hook = denyHook(process.execPath, hookFile, personOnlyContexts(rig), protectedBranches(rig))
+  const hook = denyHook(
+    process.execPath,
+    hookFile,
+    personOnlyContexts(rig),
+    protectedBranches(rig),
+    mergeAuthority(rig),
+  )
   writeJson(join(dir, 'hooks.json'), {
     hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), hook] },
   })
@@ -5335,6 +5388,12 @@ export type Rig = {
    * `origin/HEAD` names, no matter what this list holds.
    */
   protectedBranches?: string[]
+  /**
+   * opts this rig into merge authority (claude-factory-l3tl). A person sets it with
+   * `factory rig add --merge-authority`. Only the literal true counts.
+   * The ship factory's release station may then run one strict `gh pr merge` form.
+   */
+  mergeAuthority?: boolean
   /** opts this rig into the Linear pull loop (claude-factory-b6c).
    * It names the rig's team(s).
    * It also names the project and label names that route an issue to it (claude-factory-b6c.18). */
@@ -5491,6 +5550,20 @@ const protectedBranches = (rig?: Pick<Rig, 'protectedBranches'>): string[] | und
   Array.isArray(rig?.protectedBranches) && rig.protectedBranches.every(b => typeof b === 'string')
     ? rig.protectedBranches
     : undefined
+/**
+ * the rig's owner/repo (from its origin remote) when `rig.mergeAuthority` is the literal true
+ * (a hand-edited rigs.json cannot loosen it), else undefined. No readable origin gives undefined: no merge.
+ */
+const mergeAuthority = (rig?: Pick<Rig, 'mergeAuthority'> & { repo?: string }): string | undefined => {
+  if (rig?.mergeAuthority !== true || !rig.repo) return undefined
+  try {
+    return git(expand(rig.repo), 'remote', 'get-url', 'origin').match(
+      /[:/]([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/,
+    )?.[1]
+  } catch {
+    return undefined
+  }
+}
 const expand = (path: string) => resolve(path.replace(/^~(?=\/|$)/, homedir()))
 const toplevel = (path: string) => git(expand(path), 'rev-parse', '--show-toplevel')
 /** a rig's name stands for its repo wherever a command takes one; a path says so (`/`, `.` or `~`) */
@@ -7197,6 +7270,7 @@ async function defineRig(
     egress,
     personOnlyContext,
     protectedBranch,
+    mergeAuthority: merge,
     linear,
     linearProjects,
     linearLabels,
@@ -7212,6 +7286,7 @@ async function defineRig(
     egress?: string[]
     personOnlyContext?: string[]
     protectedBranch?: string[]
+    mergeAuthority?: boolean
     linear?: string
     linearProjects?: string
     linearLabels?: string
@@ -7300,6 +7375,7 @@ async function defineRig(
     if (bad.length) fail(`--protected-branch is a branch name, letters/digits/._/- (not "${bad[0]}")`)
     rig.protectedBranches = protectedBranch
   }
+  if (merge) rig.mergeAuthority = true
   if (linear !== undefined) {
     try {
       const team = parseLinearTeams(linear)
@@ -8903,11 +8979,13 @@ if (import.meta.main && !outboxCmd)
           personOnlyContext.push(opt('--person-only-context') ?? '')
         const protectedBranch: string[] = []
         while (args.includes('--protected-branch')) protectedBranch.push(opt('--protected-branch') ?? '')
+        const mergeAuth = args.includes('--merge-authority')
+        if (mergeAuth) args.splice(args.indexOf('--merge-authority'), 1)
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -8921,6 +8999,7 @@ if (import.meta.main && !outboxCmd)
             egress,
             personOnlyContext,
             protectedBranch,
+            mergeAuthority: mergeAuth,
             linear,
             linearProjects,
             linearLabels,
@@ -8975,6 +9054,8 @@ if (import.meta.main && !outboxCmd)
               console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
             if (protectedBranches(r)?.length)
               console.log(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
+            if (r.mergeAuthority === true)
+              console.log(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
             if (r.mcp) console.log(`  mcp: ${r.mcp}`)
             for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
             if (r.linear) {
