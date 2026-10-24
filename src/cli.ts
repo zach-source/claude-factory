@@ -2478,6 +2478,31 @@ const gateBriefsFile = () => join(HOME, 'gate-briefs.json')
 const readGateBriefs = (): GateBriefsFile =>
   existsSync(gateBriefsFile()) ? readJson<GateBriefsFile>(gateBriefsFile()) : {}
 
+/** `HOME/reviews.json`: the reviewer's verdict for each skill and proposal text, keyed by `memory.reviewKey` (claude-factory-ag2). */
+const reviewsFile = () => join(HOME, 'reviews.json')
+const readReviews = (): Record<string, memory.Review> => {
+  try {
+    return existsSync(reviewsFile()) ? readJson<Record<string, memory.Review>>(reviewsFile()) : {}
+  } catch {
+    return {} // a corrupt reviews.json must not break the tick
+  }
+}
+/** the verdict for a skill or proposal as it stands now, or undefined */
+const verdictOf = (kind: 'skill' | 'proposal', name: string) => {
+  const store = readReviews()
+  const item = memory.reviewItems(MEMORY).find(i => i.kind === kind && i.name === name)
+  return item ? store[item.key] : undefined
+}
+
+/** each pending skill and proposal that has a verdict, without its text */
+const reviewedItems = () => {
+  const store = readReviews()
+  return memory.reviewItems(MEMORY).flatMap(({ text: _text, ...i }) => {
+    const v = store[i.key]
+    return v ? [{ ...i, recommendation: v.recommendation, why: v.why }] : []
+  })
+}
+
 /** the stored brief for this run's current gate visit, or undefined when the briefer has not written one yet */
 const gateBriefOf = (id: string, startedAt: number): string | undefined => {
   try {
@@ -4346,6 +4371,10 @@ async function tick(isPatrol = false) {
       manager: [] as (Mail & { run: string })[],
       // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
+      // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
+      reviews: memory.pendingReviews(MEMORY, readReviews()).map(({ text: _text, ...r }) => r),
+      // the pending ones that have one: the patrol shows each verdict until the manager acts
+      reviewed: reviewedItems(),
     }
     const halt = halted()
     for (const id of runIds()) {
@@ -7517,6 +7546,44 @@ async function gateBriefSet(key: string | undefined, filePath: string | undefine
   console.log(`brief set for ${key}`)
 }
 
+/** `factory review facts <key>` gathers what the reviewer reads for one pending skill or proposal
+ * (claude-factory-ag2). The reviewer has no tool: the mod passes this text to it. It exits 1 for a key
+ * that is unknown or stale (the text changed since the key was made). */
+function reviewFacts(key: string | undefined) {
+  const item = memory.reviewItems(MEMORY).find(i => i.key === key)
+  if (!item) fail(`no pending item with key "${key}": it is reviewed, changed or gone`)
+  const installedFile = join(memory.skillsDir(MEMORY), item!.name, 'SKILL.md')
+  const installed =
+    item!.kind === 'skill' && existsSync(installedFile)
+      ? clip(readFileSync(installedFile, 'utf8'), 16384)
+      : undefined
+  const { key: k, kind, name, change, text } = item!
+  return {
+    key: k,
+    kind,
+    name,
+    change,
+    text: clip(text, 16384),
+    ...(installed === undefined ? {} : { installed }),
+  }
+}
+
+/** `factory review set <key> <file>` is the reviewer's only write (claude-factory-ag2).
+ * It refuses a worker or patrol env, a stale or unknown key, and a key that has a verdict already.
+ * `memory.parseReview` parses the model's answer strictly: it is built from untrusted dream text. */
+function reviewSet(key: string | undefined, filePath: string | undefined) {
+  if (process.env.FACTORY_FROM) fail('a worker cannot set a review: only the reviewer may')
+  if (process.env.FACTORY_PATROL) fail('a patrol cannot set a review: leave it for the reviewer')
+  if (!key || !filePath) fail('usage: factory review set <key> <file>')
+  if (!memory.reviewItems(MEMORY).some(i => i.key === key)) fail(`no pending item with key "${key}"`)
+  const store = readReviews()
+  if (store[key!]) fail(`"${key}" has a recommendation already`)
+  if (!existsSync(filePath!)) fail(`no file ${filePath}`)
+  store[key!] = { ...memory.parseReview(readFileSync(filePath!, 'utf8')), at: new Date().toISOString() }
+  writeJson(reviewsFile(), store)
+  console.log(`review set for ${key}: ${store[key!]!.recommendation}`)
+}
+
 /**
  * every run's own pull requests (AC1): mentions out of its reports and mail, corroborated by its rig's
  * branch listing or a search for its bead, kept and refreshed in runs/<id>/prs.json so a restart loses
@@ -7944,6 +8011,10 @@ const usage = `factory — herdr software factories on xstate
                                      pm (writes plan-facts.json); set <file> reads the pm's answer, writes
                                      plan.json and files findings/proposals as beads; show (or bare plan)
                                      prints the plan as text
+  review facts <key> | set <key> <file>   the reviewer of the dream's skill and .proposals/ items: facts
+                                     prints one item's text as JSON; set stores the reviewer's verdict
+                                     (install or reject, and why) in reviews.json. A patrol cannot run
+                                     skills or proposals install or reject
   gate-brief facts <run> | set <key> <file>   the gate briefer: facts gathers one gate's PR, verify and
                                      review/security facts as JSON; set <key> <file> stores the briefer's
                                      cleaned text in gate-briefs.json, for the gate's Interview item
@@ -8411,7 +8482,22 @@ if (import.meta.main && !outboxCmd)
       }
       case 'skills': {
         const [verb, name, ...why] = args
-        if (!verb) console.log(JSON.stringify(memory.pendingSkills(MEMORY), null, 2))
+        // a patrol subagent has a Bash tool: the manager or the person decides, never a subagent
+        if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_PATROL)
+          fail(`a patrol cannot ${verb} a skill: leave it for the manager`)
+        if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_FROM)
+          fail(`a worker cannot ${verb} a skill: mail the manager instead`)
+        if (!verb)
+          console.log(
+            JSON.stringify(
+              memory.pendingSkills(MEMORY).map(p => {
+                const v = verdictOf('skill', p.name)
+                return v ? { ...p, recommendation: v.recommendation, why: v.why } : p
+              }),
+              null,
+              2,
+            ),
+          )
         else if (verb === 'install') {
           memory.installSkill(MEMORY, name ?? fail('skills install <name>'))
           commitMemory(`the manager installed the skill ${name}`)
@@ -8431,9 +8517,17 @@ if (import.meta.main && !outboxCmd)
         if (!verb) {
           const pending = memory.proposals(MEMORY).filter(p => p.status === 'pending')
           console.log(
-            pending.map(p => `${p.name}  ${p.rung}  ${p.target}: ${p.change}`).join('\n') ||
-              'no pending proposals',
+            pending
+              .map(p => {
+                const v = verdictOf('proposal', p.name)
+                return `${p.name}  ${p.rung}  ${p.target}: ${p.change}${v ? `  (reviewer: ${v.recommendation}, ${v.why})` : ''}`
+              })
+              .join('\n') || 'no pending proposals',
           )
+        } else if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_PATROL) {
+          fail(`a patrol cannot ${verb} a proposal: leave it for the manager`)
+        } else if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_FROM) {
+          fail(`a worker cannot ${verb} a proposal: mail the manager instead`)
         } else if (verb === 'install' && name) {
           const p = memory.proposals(MEMORY).find(x => x.name === name)
           if (p?.rung === 'core') {
@@ -8593,6 +8687,13 @@ if (import.meta.main && !outboxCmd)
       case 'advisories': {
         if (args[0] !== 'file') fail('unknown advisories command: file <path>')
         advisoriesFileCmd(args[1])
+        break
+      }
+      case 'review': {
+        const [sub, a1, a2] = args
+        if (sub === 'facts') console.log(JSON.stringify(reviewFacts(a1)))
+        else if (sub === 'set') reviewSet(a1, a2)
+        else fail('review facts <key> | set <key> <file>')
         break
       }
       case 'gate-brief': {

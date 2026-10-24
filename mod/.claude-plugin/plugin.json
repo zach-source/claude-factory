@@ -24,6 +24,12 @@
       "title": "Let a hidden briefer subagent write each gate's evidence brief",
       "description": "On: once for each gate visit, a hidden 'briefer' subagent reads the pull request, the verify and review summaries, and the run's goal, then writes a brief of 8 lines or fewer into the gate's decision item. It has no Bash: the factory CLI gathers the facts first and stores the cleaned brief after. The person still runs `factory decide`; the briefer never can. Off: the Interview tab's gate item shows no brief.",
       "default": true
+    },
+    "reviewer": {
+      "type": "boolean",
+      "title": "Let a hidden reviewer subagent recommend install or reject for each dream skill and proposal",
+      "description": "On: for each pending skill and .proposals/ item, a hidden 'reviewer' subagent reads its text and records one recommendation (install or reject, with a reason) in reviews.json. It has no tool at all, so it can run no command; the factory CLI gathers the text first and stores the answer after. The patrol report shows the recommendation. The manager or the person still runs `factory skills install` or `factory proposals install`; the reviewer never can. Off: no recommendation.",
+      "default": true
     }
   }
 }

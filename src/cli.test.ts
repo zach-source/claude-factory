@@ -619,7 +619,7 @@ test('the manager and the mod subagents name a full model id, never an alias', (
   expect(c[c.indexOf('--model') + 1]).toBe('claude-opus-5-5')
   const src = readFileSync(new URL('../mod/hooks/register.tsx', import.meta.url), 'utf8')
   const models = [...src.matchAll(/^\s+model: '([^']+)'/gm)].map(m => m[1])
-  expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])
+  expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5'])
 })
 
 test("workers commit as the factory home's own git identity, crediting factory.coauthor", () => {

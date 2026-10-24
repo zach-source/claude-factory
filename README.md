@@ -200,6 +200,28 @@ missing, or when you ask for more.
 A person still decides every gate, with `factory decide`. The briefer cannot run it.
 `tool.call` denies it outright. To turn off the briefer, set `briefer` to `false` in the plugin's `userConfig`.
 
+A hidden `reviewer` subagent starts once for each pending skill and `.proposals/` item that has no
+verdict. It has no tool at all. The factory CLI gives it the text of one item:
+
+- `factory review facts <key>` prints the item's kind, name, change and text (16384 characters at most).
+  A key that is unknown or stale (the text changed) exits 1.
+- The reviewer answers with one fenced `json` block: `recommendation` is exactly `install` or `reject`,
+  and `why` is one line of 300 characters or fewer.
+- `factory review set <key> <file>` parses the answer strictly and keeps it in `<home>/reviews.json`.
+  It refuses a key that has a verdict already.
+
+The key is `kind:name:sha12`. The `sha12` is the first 12 hex characters of the SHA-256 of the reviewed
+text, so a skill that changes gets a new review. The mod writes one line for each attempt to
+`<home>/review-log.jsonl`, and the manager's token report counts the turns under the name `reviewer`.
+A failed attempt is logged and never retried for that key in the same session.
+
+`factory skills` (JSON) and `factory proposals` show the verdict. The patrol prompt has a
+"Proposals to review" section with one line for each item, and a new verdict wakes the patrol once.
+The verdict only advises. The manager or the person runs `factory skills install` or
+`factory proposals install`. The reviewer cannot: `tool.call` denies every Bash command from it. `tool.call`
+also denies `factory skills|proposals install|reject` for any subagent, and the CLI refuses those
+verbs when `FACTORY_PATROL` is set. To turn off the reviewer, set `reviewer` to `false` in the plugin's `userConfig`.
+
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
 (a fresh session per visit, a durable identity in the run), each repo the factory works is
@@ -1112,8 +1134,9 @@ rows = [
   reaping. The dream writes proposals to `memory/.manager/skills/` (Claude Code refuses an
   unattended write under `.claude/`), and nothing installs on its own: the next tick mails the
   manager the new, changed and reaped ones, and it reads each and runs `factory skills install
-<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
-  are in the memory's git history like its notes.
+<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). A hidden
+  reviewer subagent first records an `install` or `reject` recommendation with a reason, and
+  `factory skills` shows it. It only advises. Skills are in the memory's git history like its notes.
 - **Learning ladder**: when one station fails the same way in 3 or more runs, or an inbox note
   repeats a CORE.md line, the dream writes at most 3 proposals per pass to
   `memory/.proposals/<name>.md`. Each names a rung: `core` (a CORE.md line), `instruction` (a
@@ -1121,10 +1144,10 @@ rows = [
   new set. `factory proposals` lists them. `factory proposals install <name>` adds a core line to
   CORE.md. For a higher rung it files a bead labeled `human` in the factory's own rig (or
   `--rig <name>`), and it changes no factory code. `factory proposals reject <name> <why>` sends
-  the reason to the dream's inbox.
+  the reason to the dream's inbox. The list shows the reviewer's recommendation after each line.
 - **Tokens**: `factory metrics --tokens` shows what the workers spent, by station and model. It
   shows input, cache write, cache read and output tokens, the cache hit rate and a cost estimate in
-  USD. It also shows the manager's patrol, pm, briefer and dream sessions. It reads the usage that
+  USD. It also shows the manager's patrol, pm, briefer, reviewer and dream sessions. It reads the usage that
   each run stores (`runs/<id>/usage.jsonl`, copied to the run's `metrics.jsonl` line by
   `factory rm`) and `manager-usage.jsonl`. It reads no transcript, so a removed run still counts.
   `--json` adds a `tokens` object. A run that ended before this change has no usage.
