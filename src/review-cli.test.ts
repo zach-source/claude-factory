@@ -144,6 +144,22 @@ test('under FACTORY_PATROL every install, reject and review set verb refuses and
   expect(run(['proposals'], { FACTORY_PATROL: '1' }).code).toBe(0)
 })
 
+test('under FACTORY_FROM (a worker) install and reject refuse and change nothing', () => {
+  for (const args of [
+    ['skills', 'install', 'sk'],
+    ['skills', 'reject', 'sk', 'why'],
+    ['proposals', 'install', 'pr'],
+    ['proposals', 'reject', 'pr', 'why'],
+  ]) {
+    const r = run(args, { FACTORY_FROM: 'implement' })
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain('worker')
+  }
+  expect(existsSync(join(mem, '.manager', '.claude', 'skills', 'sk'))).toBe(false)
+  expect(readFileSync(join(mem, 'CORE.md'), 'utf8')).toBe('- an old line\n')
+  expect(readFileSync(join(mem, '.proposals', 'pr.md'), 'utf8')).toContain('status: pending')
+})
+
 test('without FACTORY_PATROL install still works', () => {
   expect(run(['skills', 'install', 'sk']).code).toBe(0)
   expect(existsSync(join(mem, '.manager', '.claude', 'skills', 'sk', 'SKILL.md'))).toBe(true)

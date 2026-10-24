@@ -8475,6 +8475,8 @@ if (import.meta.main && !outboxCmd)
         // a patrol subagent has a Bash tool: the manager or the person decides, never a subagent
         if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_PATROL)
           fail(`a patrol cannot ${verb} a skill: leave it for the manager`)
+        if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_FROM)
+          fail(`a worker cannot ${verb} a skill: mail the manager instead`)
         if (!verb)
           console.log(
             JSON.stringify(
@@ -8514,6 +8516,8 @@ if (import.meta.main && !outboxCmd)
           )
         } else if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_PATROL) {
           fail(`a patrol cannot ${verb} a proposal: leave it for the manager`)
+        } else if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_FROM) {
+          fail(`a worker cannot ${verb} a proposal: mail the manager instead`)
         } else if (verb === 'install' && name) {
           const p = memory.proposals(MEMORY).find(x => x.name === name)
           if (p?.rung === 'core') {
