@@ -617,3 +617,22 @@ test('every station model id of every factory resolves to a known id', async () 
   expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
   expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
 })
+
+test('claude-factory-0gww.4: review, security and check approve or request changes as the reviewer identity on the exact head, with a comment fallback', () => {
+  for (const node of ['review', 'security', 'check']) {
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
+    for (const needle of [
+      'FACTORY_GH_REVIEWER',
+      'commit_id',
+      'event=APPROVE',
+      'event=REQUEST_CHANGES',
+      'gh pr view <n> --json author,headRefOid',
+      'the author is the reviewer identity',
+      'headRefOid is not the commit you reviewed',
+      'gh pr review --comment',
+    ])
+      expect(prompt).toContain(needle)
+  }
+  for (const node of ['plan', 'implement', 'quick', 'verify'])
+    expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
+})
