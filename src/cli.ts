@@ -774,6 +774,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         head: polled.head,
         bytes: polled.bytes,
         egress: polled.egress,
+        limit: polled.limit,
       }
 }
 
@@ -1330,11 +1331,29 @@ export function axCodexRefused(agent: string) {
       'the ax runner runs codex only with FACTORY_AX_CODEX=1: set it with an image that has the codex guard',
     )
 }
-/** a codex worker in a VM calls the OpenAI API: its policy opens api.openai.com with the vault key OPENAI, unless the rig already names that host */
+/** a VM codex worker uses the API key only when its rig names api.openai.com; else it logs in with ChatGPT */
+export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
+  egress.some(e => e.hosts.includes('api.openai.com')) ? 'apikey' : 'chatgpt'
+/**
+ * a codex worker in a VM: in API-key mode the rig's own rule for api.openai.com stands. In ChatGPT mode its policy
+ * opens only chatgpt.com's /backend-api/codex/ paths (not /backend-api in general: that holds the person's chats;
+ * Substrate accepts only path prefixes that start and end with /),
+ * and the gateway injects the access token and account id from the vault keys CODEX_CHATGPT and CODEX_CHATGPT_ACCOUNT
+ */
 export const codexEgress = (egress: Egress[] = []) =>
-  egress.some(e => e.hosts.includes('api.openai.com'))
+  codexAuth(egress) === 'apikey' || egress.some(e => e.hosts.includes('chatgpt.com'))
     ? egress
-    : [...egress, { hosts: ['api.openai.com'], key: 'OPENAI' }]
+    : [
+        ...egress,
+        {
+          hosts: ['chatgpt.com'],
+          pathPrefixes: ['/backend-api/codex/'],
+          headers: [
+            { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+            { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+          ],
+        },
+      ]
 
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
@@ -1425,7 +1444,10 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     claudeFlags:
       harness === 'claude' ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
     codexHome:
-      harness === 'codex' ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig)) : undefined,
+      harness === 'codex'
+        ? vmCodexHome(def, personOnlyContexts(rig), protectedBranches(rig), codexAuth(rig?.egress))
+        : undefined,
+    codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
     gitlabHost,
     env: {
       ...env,
@@ -1529,14 +1551,53 @@ export function vmClaudeFlags(def: Pick<Factory, 'maxContextK'>, contexts?: stri
  * from the image's own worker-hook.ts. config.toml sets the compaction limit and trusts the repo. `serve` writes
  * them, adds AGENTS.md from the image's worker rules and checks the guard before the first turn (claude-factory-72dq).
  */
-export function vmCodexHome(def: Pick<Factory, 'maxContextK'>, contexts?: string[], branches?: string[]) {
+export function vmCodexHome(
+  def: Pick<Factory, 'maxContextK'>,
+  contexts?: string[],
+  branches?: string[],
+  auth: 'apikey' | 'chatgpt' = 'apikey',
+) {
   const hook = denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches)
+  const chatgpt = auth === 'chatgpt'
   return {
     'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
     'config.toml':
-      `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
-      `[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
-  }
+      `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n` +
+      (chatgpt ? 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' : '') +
+      `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
+    ...(chatgpt && { 'auth.json': placeholderAuth() }),
+  } as { 'hooks.json': string; 'config.toml': string; 'auth.json'?: string }
+}
+
+/**
+ * The auth.json of a ChatGPT-mode VM codex. Every token in it is a placeholder: codex reads the claims without a
+ * signature check and does not refresh before exp, and the gateway swaps the real access token and account id into
+ * the request headers. The JWTs are built here so that no token-like string sits in the source.
+ */
+function placeholderAuth() {
+  const jwt = (claims: object) =>
+    [{ alg: 'none', typ: 'JWT' }, claims]
+      .map(p => Buffer.from(JSON.stringify(p)).toString('base64url'))
+      .concat('placeholder')
+      .join('.')
+  return JSON.stringify({
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: jwt({
+        email: 'codex@factory.invalid',
+        'https://api.openai.com/auth': {
+          chatgpt_plan_type: 'pro',
+          chatgpt_user_id: 'placeholder',
+          chatgpt_account_id: 'placeholder',
+        },
+      }),
+      access_token: jwt({ exp: 4102444800 }),
+      refresh_token: 'placeholder',
+      account_id: 'placeholder',
+    },
+    last_refresh: new Date().toISOString(),
+  })
 }
 
 /** the note a resumed worker is sent, written where its launch reads it */
@@ -1737,40 +1798,62 @@ const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at mo
 type TokenSwapState = { at: number; until: number }
 
 /**
- * This function runs a command. A rig sets the command in FACTORY_AX_TOKEN_SWAP. The function
- * runs the command one time for each refusal. It then sends mail to the manager. The mail
- * names the live slot.
+ * This function runs a swap command. A rig sets the Claude command in FACTORY_AX_TOKEN_SWAP and the Codex command in
+ * FACTORY_AX_CODEX_TOKEN_SWAP. The function runs the command one time for each refusal. It then sends mail to the
+ * manager. The mail names the live slot (Claude) or the live label (Codex).
  *
- * Workers of one runner use the same vault token. One file per runner stops a second run for
+ * Workers of one runner use the same vault token. One file per runner and harness stops a second run for
  * the same refusal. If there is no command, the function waits for the reset. The function
  * also waits for the reset if the command fails.
  */
-function runTokenSwap(
+export function runTokenSwap(
   hit: { at: number; resetsAt: number },
   now: number,
   runnerName: string,
   send: (e: Input) => void,
   node: string,
+  harness: 'claude' | 'codex' = 'claude',
+  home = HOME,
 ): number {
-  const cmd = process.env.FACTORY_AX_TOKEN_SWAP
+  const codex = harness === 'codex'
+  const cmd = codex ? process.env.FACTORY_AX_CODEX_TOKEN_SWAP : process.env.FACTORY_AX_TOKEN_SWAP
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
-  const file = join(HOME, `token-swap-${runnerName}.json`)
+  const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
   const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
   if (!needsSwap(hit, state)) return state!.until
   const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
   const ok = p.exitCode === 0
   if (ok) {
-    const slot = /slot (\S+) is live/.exec(p.stdout.toString())?.[1] ?? '?'
+    const live = (codex ? /label (\S+) is live/ : /slot (\S+) is live/).exec(p.stdout.toString())?.[1] ?? '?'
     send({
       type: 'MAIL',
       from: node,
       to: 'manager',
-      text: `Swapped the Claude token for ${runnerName} workers: slot ${slot} is live; they go on once the vault refreshes.`,
+      text: `Swapped the ${codex ? 'Codex' : 'Claude'} token for ${runnerName} workers: ${codex ? 'label' : 'slot'} ${live} is live; they go on once the vault refreshes.`,
     })
   }
   const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
   writeJson(file, { at: hit.at, until } satisfies TokenSwapState)
   return until
+}
+
+const CODEX_REFRESH_MS = 12 * 3_600_000 // an access token lasts about 10 days; ccswitch renews under 24 h left
+/**
+ * Run FACTORY_AX_CODEX_TOKEN_SWAP when the last run is 12 hours old or older, so the live field is never stale.
+ * It shares its state file with runTokenSwap. With no command, it does nothing. After a failed run it tries again
+ * in one hour.
+ */
+export function refreshCodexToken(now: number, runnerName: string, home = HOME) {
+  const cmd = process.env.FACTORY_AX_CODEX_TOKEN_SWAP
+  if (!cmd) return
+  const file = join(home, `token-swap-${runnerName}-codex.json`)
+  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  if (state && now - state.at < CODEX_REFRESH_MS) return
+  const ok = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode === 0
+  writeJson(file, {
+    at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
+    until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
+  } satisfies TokenSwapState)
 }
 
 /** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5 */
@@ -2164,12 +2247,16 @@ export function stalled(unchangedMs: number, isNudged: boolean) {
   return unchangedMs >= 2 * STALL_MS ? 'fail' : null
 }
 
+/** a VM's codex token and Claude token have separate limits: a codex limit must not hide a Claude one */
+export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
+  join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
-function facts(run: Run, c: Ctx, now: number): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
+function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
   const p = progressOf(run)
   const runner = runnerOf(c.pane)
-  const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
+  const paged = limitPagedFile(runner, codex)
   const until = existsSync(paged) ? readJson<number>(paged) : 0
   return {
     inMin: Math.floor((now - c.startedAt) / 60_000),
@@ -2311,19 +2398,23 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         ? tailOf(run.worktree, c.session)
         : ''
       : (info?.tail ?? '')
-  const hit = limitHit(tail)
+  const isCodex = harnessOf(agentOfNode(run, def, node)) === 'codex'
+  if (isCodex && !runner.local) refreshCodexToken(now, runner.name)
+  const hit = isCodex && !runner.local ? (info?.limit ?? null) : limitHit(tail)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
     // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,
     // runTokenSwap moves to a new slot, and the worker goes on when the vault refreshes. With no swap
     // command, the worker waits for the reset, and the nudge below then gives it its next turn.
-    const until = runner.local ? swapAccount(hit, now) : runTokenSwap(hit, now, runner.name, send, node)
+    const until = runner.local
+      ? swapAccount(hit, now)
+      : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
-      const paged = join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}.json`)
+      const paged = limitPagedFile(runner, isCodex)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
         const text = runner.local
           ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
-          : `The Claude token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
+          : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
         send({ type: 'MAIL', from: node, to: 'manager', text })
         writeJson(paged, until)
       }
@@ -2661,7 +2752,9 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   return {
     row: {
       ...row(run, def, actor.getSnapshot().value, ctx(), agent, error),
-      ...(sub === 'working' && !def.nodes[node]?.gate && facts(run, ctx(), now)),
+      ...(sub === 'working' &&
+        !def.nodes[node]?.gate &&
+        facts(run, ctx(), now, harnessOf(agentOfNode(run, def, node)) === 'codex')),
     },
     manager: manager.map(m => ({ run: run.id, ...m })),
   }

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# This script puts a ChatGPT login for Codex into the op item that agent-vault reads. The Codex workers in AX
+# use the access token and the account id. The gateway adds both to each request to chatgpt.com. The VM never
+# holds them.
+#
+# The source is a ccswitch session that ccswitch keeps fresh: Codex-Token-<email>
+# (create it once with: ccswitch token create --codex <email>). This script never uses your own
+# Codex-Account-<label> profiles. Your interactive codex refreshes those, and a second refresher would spend
+# their single-use refresh tokens. This script never writes a refresh token or an auth.json file to the item.
+#
+#   codex-token          Show the share of the usage limit that each label has used. Show which label is live.
+#   codex-token use E    Make label E (an email) live.
+#   codex-token best     Make live the label with the lowest use, if it is under 100 percent.
+#
+# You must set these variables. This public script has no private default for them.
+#
+#   CODEX_TOKEN_ITEM           The op item for the live login.
+#   CODEX_TOKEN_VAULT          The vault of that item.
+#   CODEX_TOKEN_LIVE_FIELD     The field that agent-vault reads for the access token (vault key CODEX_CHATGPT).
+#   CODEX_TOKEN_ACCOUNT_FIELD  The field for the account id (vault key CODEX_CHATGPT_ACCOUNT).
+#   CODEX_TOKEN_ACTIVE_FIELD   The field that shows which label is live.
+#   CODEX_TOKEN_LABELS         The emails of the ccswitch sessions, in priority order, separated by spaces.
+#
+# For op auth, see claude-token: a writer service account in OP_SERVICE_ACCOUNT_TOKEN, or your own op sign-in.
+#
+# This script does not print a token.
+set -euo pipefail
+
+for v in CODEX_TOKEN_ITEM CODEX_TOKEN_VAULT CODEX_TOKEN_LIVE_FIELD CODEX_TOKEN_ACCOUNT_FIELD CODEX_TOKEN_ACTIVE_FIELD CODEX_TOKEN_LABELS; do
+  [ -n "${!v:-}" ] || { echo "codex-token: $v is not set" >&2; exit 1; }
+done
+I=$CODEX_TOKEN_ITEM
+V=$CODEX_TOKEN_VAULT
+USAGE=https://chatgpt.com/backend-api/wham/usage
+
+session() { # the auth.json of the ccswitch session for label $1, on stdout
+  ccswitch token get --codex "$1" 2>/dev/null || { echo "codex-token: no ccswitch session for $1" >&2; return 1; }
+}
+exp_of() { # the exp claim of the JWT $1; empty when it has none
+  printf '%s' "$1" | cut -d. -f2 | tr '_-' '/+' | jq -R -r '@base64d | fromjson | .exp // empty' 2>/dev/null || true
+}
+used() { # prints the highest used percent of the two windows for label $1; fails when the usage call fails
+  local j t a
+  j=$(session "$1") || return 1
+  t=$(jq -r '.tokens.access_token // empty' <<<"$j")
+  a=$(jq -r '.tokens.account_id // empty' <<<"$j")
+  [ -n "$t" ] && [ -n "$a" ] || return 1
+  printf 'authorization: Bearer %s\nchatgpt-account-id: %s\n' "$t" "$a" |
+    curl -sf -H @- "$USAGE" |
+    jq -r '[.rate_limit.primary_window.used_percent, .rate_limit.secondary_window.used_percent] | map(select(. != null)) | if length == 0 then empty else max end'
+}
+use() {
+  local j t a e
+  j=$(session "$1") || exit 1
+  t=$(jq -r '.tokens.access_token // empty' <<<"$j")
+  a=$(jq -r '.tokens.account_id // empty' <<<"$j")
+  { [ -n "$t" ] && [ -n "$a" ]; } || { echo "codex-token: the session for $1 has no access token or account id" >&2; exit 1; }
+  e=$(exp_of "$t")
+  { [ -n "$e" ] && [ "$e" -gt $(($(date +%s) + 3600)) ]; } ||
+    { echo "codex-token: the access token of $1 expires within an hour, or has no exp" >&2; exit 1; }
+  op item edit "$I" --vault "$V" \
+    "${CODEX_TOKEN_LIVE_FIELD}[concealed]=$t" "${CODEX_TOKEN_ACCOUNT_FIELD}[concealed]=$a" "${CODEX_TOKEN_ACTIVE_FIELD}[concealed]=$1" \
+    >/dev/null 2>&1 || { echo "codex-token: couldn't update the item" >&2; exit 1; }
+  echo "label $1 is live; agent-vault picks it up within its refresh interval"
+}
+case "${1:-}" in
+  use) [ -n "${2:-}" ] || { echo "usage: codex-token use <email>" >&2; exit 1; }; use "$2" ;;
+  best)
+    pick=$(for l in $CODEX_TOKEN_LABELS; do p=$(used "$l" || true); if [ -n "$p" ]; then echo "$p $l"; fi; done |
+      awk '$1 < 100' | sort -s -n -k1,1 | head -1 | awk '{print $2}')
+    [ -n "$pick" ] || { echo "codex-token: no label is under its limit" >&2; exit 1; }
+    use "$pick" ;;
+  *)
+    live=$(op item get "$I" --vault "$V" --format json | jq -r --arg l "$CODEX_TOKEN_ACTIVE_FIELD" '.fields[] | select(.label == $l) | .value // ""')
+    printf '%-40s %-8s %s\n' label used live
+    for l in $CODEX_TOKEN_LABELS; do
+      printf '%-40s %-8s %s\n' "$l" "$(used "$l" || echo '?')" "$([ "$l" = "$live" ] && echo '*' || true)"
+    done ;;
+esac

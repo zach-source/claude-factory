@@ -59,6 +59,10 @@ export type Egress = {
   prefix?: string
   port?: number
   http?: boolean
+  /** only these request paths (needs a Substrate with egress pathPrefixes live) */
+  pathPrefixes?: string[]
+  /** several injections on one rule, instead of key, header and prefix */
+  headers?: { header: string; prefix: string; key: string }[]
 }
 
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i
@@ -98,6 +102,8 @@ export type Launch = {
   claudeFlags?: string[]
   /** a codex worker's CODEX_HOME files by name (cli.ts vmCodexHome); serve writes them before the first turn */
   codexHome?: Record<string, string>
+  /** a codex worker logs in with an API key (placeholder env keys) or with ChatGPT (auth.json, no key in the env) */
+  codexAuth?: 'apikey' | 'chatgpt'
   env: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
@@ -218,6 +224,8 @@ export type Poll = {
   log?: string
   /** an egress-gateway outage serve is retrying a turn through: see worker.ts egressFailure */
   egress?: { since: number; tries: number; last: string }
+  /** a codex turn that ended on a usage limit: see worker.ts codexLimit */
+  limit?: { at: number; kind: string; resetsAt: number }
 }
 
 function ax(args: string[], stdin?: string, timeout = 30_000) {
@@ -397,12 +405,17 @@ export function egressPolicy(
     key: string,
     port?: number,
     pathPrefixes?: string[],
+    more: { header: string; prefix: string; key: string }[] = [{ header, prefix, key }],
   ) => ({
     https: {
       hostnames,
       ...(port && { ports: { numbers: [port] } }),
       ...(pathPrefixes && { pathPrefixes }),
-      ...(vault && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
+      ...(vault && {
+        effects: {
+          replaceHeaders: more.map(m => ({ header: m.header, prefix: m.prefix, credentialUri: uri(m.key) })),
+        },
+      }),
     },
   })
   const own = githubOwner && Object.hasOwn(GITHUB_OWNER_KEYS, githubOwner) && GITHUB_OWNER_KEYS[githubOwner]
@@ -432,10 +445,19 @@ export function egressPolicy(
       // change every devenv's derivation, and so miss the rig's cached devenv
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } },
       ...(gate ? [gateRule(gate)] : []),
-      ...(gate ? stripRegistryHosts(extra) : extra).map(({ hosts, key, header, prefix, port, http }) =>
-        key
-          ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port)
-          : { [http ? 'http' : 'https']: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) } },
+      ...(gate ? stripRegistryHosts(extra) : extra).map(
+        ({ hosts, key, header, prefix, port, http, pathPrefixes, headers }) =>
+          headers?.length
+            ? rule(hosts, '', '', '', port, pathPrefixes, headers)
+            : key
+              ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port, pathPrefixes)
+              : {
+                  [http ? 'http' : 'https']: {
+                    hostnames: hosts,
+                    ...(port && { ports: { numbers: [port] } }),
+                    ...(pathPrefixes && { pathPrefixes }),
+                  },
+                },
       ),
     ],
   }
@@ -482,7 +504,8 @@ export const launch = (l: Launch) => {
     ...(process.env.FACTORY_AX_VAULT && {
       // each agent sends its key as `Authorization: Bearer`; the rig's egress rule names the vault key behind it
       ...((l.harness ?? 'claude') === 'claude' && { CLAUDE_CODE_OAUTH_TOKEN: 'placeholder' }),
-      ...(l.harness === 'codex' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
+      ...(l.harness === 'codex' &&
+        l.codexAuth !== 'chatgpt' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
       GIT_CONFIG_COUNT: l.gitlabHost ? '2' : '1',

@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axCodexRefused, codexEgress, codexWorker, vmCodexHome } from './cli'
+import { axCodexRefused, codexAuth, codexEgress, codexWorker, limitPagedFile, vmCodexHome } from './cli'
 import { command } from './harness'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
@@ -214,6 +214,48 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   )
 })
 
+const claims = (jwt: string) => JSON.parse(Buffer.from(jwt.split('.')[1]!, 'base64url').toString())
+
+test('a ChatGPT-mode VM codex home holds a placeholder auth.json that codex accepts', () => {
+  const h = vmCodexHome({ maxContextK: 150 }, [], [], 'chatgpt')
+  expect(Object.keys(h).sort()).toEqual(['auth.json', 'config.toml', 'hooks.json'])
+  const auth = JSON.parse(h['auth.json']!)
+  expect(auth.auth_mode).toBe('chatgpt')
+  expect(auth.OPENAI_API_KEY).toBeNull()
+  expect(auth.tokens.refresh_token).toBe('placeholder')
+  expect(auth.tokens.account_id).toBe('placeholder')
+  expect(Number.isNaN(Date.parse(auth.last_refresh))).toBe(false)
+  const id = claims(auth.tokens.id_token)
+  expect(id.email).toBe('codex@factory.invalid')
+  expect(id['https://api.openai.com/auth']).toEqual({
+    chatgpt_plan_type: 'pro',
+    chatgpt_user_id: 'placeholder',
+    chatgpt_account_id: 'placeholder',
+  })
+  expect(claims(auth.tokens.access_token).exp).toBe(4102444800)
+  for (const t of [auth.tokens.id_token, auth.tokens.access_token]) expect(t.split('.')).toHaveLength(3)
+  expect(h['config.toml']).toContain('forced_login_method = "chatgpt"')
+  expect(h['config.toml']).toContain('cli_auth_credentials_store = "file"')
+  // api-key mode: unchanged
+  const k = vmCodexHome({ maxContextK: 150 })
+  expect(k['auth.json']).toBeUndefined()
+  expect(k['config.toml']).not.toContain('forced_login_method')
+})
+
+test('codex login status accepts the placeholder auth.json', () => {
+  const codex = Bun.which('codex')
+  if (!codex) return
+  const home = mkdtempSync(join(tmpdir(), 'codex-login-'))
+  try {
+    for (const [n, t] of Object.entries(vmCodexHome({ maxContextK: 150 }, [], [], 'chatgpt')))
+      writeFileSync(join(home, n), t)
+    const p = Bun.spawnSync([codex, 'login', 'status'], { env: { ...process.env, CODEX_HOME: home } })
+    expect(`${p.stdout}${p.stderr}`).toContain('Logged in using ChatGPT')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi always', () => {
   const keep = process.env.FACTORY_AX_CODEX
   try {
@@ -229,12 +271,46 @@ test('the ax runner takes codex only with FACTORY_AX_CODEX=1, and claude and pi 
   }
 })
 
-test('a VM codex worker reaches api.openai.com with the OPENAI key, unless the rig names the host', () => {
-  expect(codexEgress()).toEqual([{ hosts: ['api.openai.com'], key: 'OPENAI' }])
+const CHATGPT_RULE = {
+  hosts: ['chatgpt.com'],
+  pathPrefixes: ['/backend-api/codex/'],
+  headers: [
+    { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+    { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+  ],
+}
+
+test('a VM codex worker uses ChatGPT mode, unless the rig names api.openai.com or chatgpt.com', () => {
+  expect(codexEgress()).toEqual([CHATGPT_RULE])
   const pypi = { hosts: ['pypi.org'] }
-  expect(codexEgress([pypi])).toEqual([pypi, { hosts: ['api.openai.com'], key: 'OPENAI' }])
+  expect(codexEgress([pypi])).toEqual([pypi, CHATGPT_RULE])
+  expect(codexAuth([pypi])).toBe('chatgpt')
   const own = [{ hosts: ['api.openai.com'], key: 'OPENAI_ZS' }]
   expect(codexEgress(own)).toBe(own)
+  expect(codexAuth(own)).toBe('apikey')
+  const mine = [{ hosts: ['chatgpt.com'], key: 'MINE' }]
+  expect(codexEgress(mine)).toBe(mine)
+  expect(codexAuth(mine)).toBe('chatgpt')
+})
+
+test('the ChatGPT rule leaves out the wham task and remote paths', () => {
+  const rule = codexEgress().find(e => e.hosts.includes('chatgpt.com'))!
+  for (const path of ['/backend-api/wham/tasks', '/backend-api/wham/remote', '/backend-api/wham/usage'])
+    expect(rule.pathPrefixes!.some(p => path.startsWith(p))).toBe(false)
+  expect(rule.pathPrefixes!.some(p => '/backend-api/codex/responses'.startsWith(p))).toBe(true)
+})
+
+test('a codex limit and a Claude limit page through separate files', () => {
+  const vm = { name: 'ax' }
+  expect(limitPagedFile(vm, true)).not.toBe(limitPagedFile(vm, false))
+  expect(limitPagedFile({ ...vm, local: true }, true)).toMatch(/limit-paged\.json$/)
+})
+
+test('the ChatGPT rule is path-limited and names no API-key host or key', () => {
+  const rule = codexEgress().find(e => e.hosts.includes('chatgpt.com'))!
+  expect(rule.pathPrefixes!.length).toBeGreaterThan(0)
+  const all = JSON.stringify(codexEgress())
+  for (const bad of ['auth.openai.com', 'api.openai.com', 'OPENAI"']) expect(all).not.toContain(bad)
 })
 
 test('the probe runs the agent own executable, not codex from PATH', () => {
