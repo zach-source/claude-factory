@@ -1573,6 +1573,8 @@ export function vmCodexHome(
  * The auth.json of a ChatGPT-mode VM codex. Every token in it is a placeholder: codex reads the claims without a
  * signature check and does not refresh before exp, and the gateway swaps the real access token and account id into
  * the request headers. The JWTs are built here so that no token-like string sits in the source.
+ * There is no tokens.account_id on purpose. With it, codex 0.160.1 calls chatgpt.com wham/accounts/check before each
+ * turn and needs an entry with the same id, so a placeholder id fails. Without it, codex skips that call.
  */
 function placeholderAuth() {
   const jwt = (claims: object) =>
@@ -1594,7 +1596,6 @@ function placeholderAuth() {
       }),
       access_token: jwt({ exp: 4102444800 }),
       refresh_token: 'placeholder',
-      account_id: 'placeholder',
     },
     last_refresh: new Date().toISOString(),
   })

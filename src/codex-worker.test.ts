@@ -223,7 +223,8 @@ test('a ChatGPT-mode VM codex home holds a placeholder auth.json that codex acce
   expect(auth.auth_mode).toBe('chatgpt')
   expect(auth.OPENAI_API_KEY).toBeNull()
   expect(auth.tokens.refresh_token).toBe('placeholder')
-  expect(auth.tokens.account_id).toBe('placeholder')
+  // codex 0.160.1 runs wham/accounts/check workspace routing only when tokens.account_id is set; the gateway adds the header
+  expect('account_id' in auth.tokens).toBe(false)
   expect(Number.isNaN(Date.parse(auth.last_refresh))).toBe(false)
   const id = claims(auth.tokens.id_token)
   expect(id.email).toBe('codex@factory.invalid')
@@ -295,7 +296,14 @@ test('a VM codex worker uses ChatGPT mode, unless the rig names api.openai.com o
 
 test('the ChatGPT rule leaves out the wham task and remote paths', () => {
   const rule = codexEgress().find(e => e.hosts.includes('chatgpt.com'))!
-  for (const path of ['/backend-api/wham/tasks', '/backend-api/wham/remote', '/backend-api/wham/usage'])
+  for (const path of [
+    '/backend-api/wham/accounts/check',
+    '/backend-api/wham/accounts/',
+    '/backend-api/wham/tasks',
+    '/backend-api/wham/remote',
+    '/backend-api/wham/usage',
+    '/backend-api/me',
+  ])
     expect(rule.pathPrefixes!.some(p => path.startsWith(p))).toBe(false)
   expect(rule.pathPrefixes!.some(p => '/backend-api/codex/responses'.startsWith(p))).toBe(true)
 })
