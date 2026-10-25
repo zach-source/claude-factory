@@ -947,11 +947,17 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 ```sh
 /plugin marketplace add <path or git URL of this repo>
 /plugin install beads-remote@claude-factory
+/plugin install factory-rig@claude-factory
 ```
 
 - **beads-remote**: a skill and script that make a repo's beads sync through its git remote on
   any host (GitLab, GitHub, any git), or bring a remote's beads into a fresh clone. What a repo
   needs before `factory rig add` on a new machine.
+- **factory-rig**: skills for a Claude session in a rig repo, on any machine that syncs the rig's
+  beads. `factory-handoff` writes a bead that a worker can start from and queues it.
+  `factory-prioritize` changes the queue order, holds or unqueues a bead, and tells a live run.
+  `factory-status` shows the rig's runs, its ship queue and what waits on you. Each skill uses the
+  factory CLI when the factory home is on the same machine, and bd alone when it is not.
 
 ## Define a factory
 

@@ -11,6 +11,11 @@
       "name": "beads-remote",
       "source": "./plugins/beads-remote",
       "description": "Sync a repo's beads (bd) through its git remote on any host: GitLab, GitHub or any git."
+    },
+    {
+      "name": "factory-rig",
+      "source": "./plugins/factory-rig",
+      "description": "Work with a claude-factory from a rig repo session: hand off work, reprioritize the queue, and see what the factory is doing."
     }
   ]
 }
