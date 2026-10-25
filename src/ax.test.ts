@@ -1467,11 +1467,7 @@ test('a ChatGPT-mode codex task has no API-key env, and its inputs hold only pla
     expect(env.CODEX_API_KEY).toBeUndefined()
     const files = JSON.parse(env.FACTORY_CODEX_HOME_FILES!)
     const auth = JSON.parse(files['auth.json'])
-    expect(Object.keys(auth.tokens).sort()).toEqual([
-      'access_token',
-      'id_token',
-      'refresh_token',
-    ])
+    expect(Object.keys(auth.tokens).sort()).toEqual(['access_token', 'id_token', 'refresh_token'])
     expect(auth.tokens.refresh_token).toBe('placeholder')
     expect(auth.tokens.access_token.split('.')[2]).toBe('placeholder')
     expect(auth.tokens.id_token.split('.')[2]).toBe('placeholder')
