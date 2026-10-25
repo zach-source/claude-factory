@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: the `factory-rig` plugin, with three skills for a Claude session in a rig repo. `factory-handoff` writes a bead that a worker can start from (why, what, acceptance, the branch in progress, owner decisions) and queues it. `factory-prioritize` changes what the factory does next: priority, queue or unqueue, hold, and a message to a live run. `factory-status` shows the rig's runs, its ship queue and what waits on the person. Each skill uses the factory CLI when the factory home is on the same machine, and bd with `bd dolt push` when the manager runs on another machine. Install it with `/plugin install factory-rig@claude-factory`.
+
 ## 0.15.0 (2026-10-24)
 
 - New: a hidden `reviewer` subagent recommends `install` or `reject` for each pending dream skill and `.proposals/` item (claude-factory-ag2). It has no tool. `factory review facts <key>` gives it the item text, and `factory review set <key> <file>` keeps its parsed answer in `reviews.json`. `factory skills`, `factory proposals` and the tick show the verdict. No subagent can install or reject. Set the plugin option `reviewer` to false to turn it off.

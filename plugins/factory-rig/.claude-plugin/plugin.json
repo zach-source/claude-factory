@@ -1,0 +1,8 @@
+{
+  "name": "factory-rig",
+  "version": "0.1.0",
+  "description": "Work with a claude-factory from a rig repo's own session: hand off work, reprioritize the queue, and see what the factory is doing.",
+  "author": {
+    "name": "ztaylor"
+  }
+}
