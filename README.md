@@ -643,11 +643,12 @@ can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise 
 The default worker and the dream start from `FACTORY_CLAUDE` too, and its executable is treated
 as Claude.
 
-Lifecycle sends a share of runs to Codex. Two share params set it: `codex_share` for `implement` and
-`verify` (default `0.3`), and `codex_security_share` for `security` (default `0.3`). A hash of the run id
-picks the harness, so one run keeps its harness at every station and attempt. Two params set the
-Codex models: `codex_exec_model` (default `gpt-6.1-sol`) and `codex_security_model` (default
-`gpt-6-astra`). Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
+Lifecycle sends a share of runs to Codex. Three share params set it: `codex_share` for `implement` and
+`verify` (default `0.3`), `codex_security_share` for `security` (default `0.3`), and `codex_judge_share` for
+`plan` and `review` (default `0`, so off). `check` and `incident` never go to Codex. A hash of the run id
+picks the harness, so one run keeps its harness at every station and attempt. Three params set the
+Codex models: `codex_exec_model` (default `gpt-6.1-sol`), `codex_security_model` (default
+`gpt-6-astra`) and `codex_judge_model` (default `gpt-6-astra`). Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
 that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent` never gets Codex. A station on the `ax` runner gets the split only with
 `FACTORY_AX_CODEX=1`. There Codex logs in with a ChatGPT subscription by default (the gateway holds
 the token, see `docs/remote-runner.md`). It uses an API key when the rig names `api.openai.com`. `factory metrics` shows the launches for each station by

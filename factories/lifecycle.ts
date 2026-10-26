@@ -37,10 +37,12 @@ const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 const FABLE = claude('security_model')
 // A share of runs launch implement, verify and security as codex (cli.ts splitPick). A rig sets the share
-// to 0 to turn the tier off. Judge stations (plan, review, check, incident) never go to codex.
+// to 0 to turn the tier off. plan and review (design and review) go to codex only when a rig sets
+// codex_judge_share; check and incident never do.
 const codex = (model: string) => `{codex} -m '{${model}}'`
 const CODEX_EXEC = codex('codex_exec_model')
 const CODEX_SECURITY = codex('codex_security_model')
+const CODEX_JUDGE = codex('codex_judge_model')
 // stations that read or change production need the laptop's kubectl, cluster access and network, which a
 // rig's VM workers (--runner ax) do not have: they stay in herdr panes whatever the rig's runner
 const LAPTOP = 'herdr'
@@ -80,6 +82,8 @@ export default {
     codex_security_model: 'gpt-6-astra', // codex in place of security_model
     codex_share: '0.3', // share of runs whose implement and verify use codex; 0 turns it off
     codex_security_share: '0.3', // share of runs whose security uses codex; 0 turns it off
+    codex_judge_model: 'gpt-6-astra', // codex in place of judge_model at plan and review
+    codex_judge_share: '0', // share of runs whose plan and review use codex; off until a rig sets it
   },
   backoffSec: 60,
   maxSteps: 24,
@@ -115,6 +119,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
     // ── shaping: what to build, measured or pinned first ─────────────────────
     plan: {
       agent: OPUS,
+      split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
       prompt: `Write the spec every later station works from: your summary is that spec. Cover:
 1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them. Each AC names the test or command that proves it, and its negative rows (the inputs that must stay denied or allowed). For a guard, validator or parser, define the class as one fail-closed rule, not as a list of forms, and name the forms that are out of scope.
@@ -175,6 +180,7 @@ Report green with the evidence, or red with a numbered list of every failure, th
     },
     review: {
       agent: OPUS,
+      split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
       onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto

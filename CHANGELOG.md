@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: lifecycle `plan` and `review` can run on Codex (claude-factory-6w27). The new params are `codex_judge_model` (default `gpt-6-astra`) and `codex_judge_share` (default `0`, so off). If a rig sets the share, that share of its runs use Codex at both stations. `check` and `incident` stay on Claude.
 - Fix: a codex worker can run in a repo whose `.codex` dir is the one that `bd init` writes (claude-factory-8cu6). That dir turns on only `features.hooks` and runs only `bd codex-hook <event>` at SessionStart, UserPromptSubmit, PreCompact and PostCompact. The guard still refuses every other `.codex` dir, on the laptop and in the VM.
 - New: every worker backend gets the worker plugins' skills (constitution I; claude-factory-fxu, claude-factory-qo6i, claude-factory-hg9o):
   - The worker image holds the `asd-ste100` plugin at `/opt/plugins/asd-ste100`, from `zach-source/claude-marketplace` at a pinned commit (`MARKETPLACE_COMMIT`). It also holds `python3` for the plugin's hooks.
