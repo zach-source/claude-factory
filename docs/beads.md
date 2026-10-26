@@ -328,6 +328,30 @@ If a rig's pull fails, the factory mails the manager once for that error. If a l
 
 `$FACTORY_HOME/linear-sync.json` keeps each rig's last result. The factory cuts an error in this file to 200 characters. It replaces every secret value with `***`.
 
+## Filing guard and cluster limit
+
+Workers can file many beads. The filing guard limits this. Dispatch checks the beads that runs filed.
+
+| Limit        | Default  | What it caps                                       |
+| ------------ | -------- | -------------------------------------------------- |
+| `clusterCap` | 6 beads  | Beads filed for one cluster in the window.         |
+| `stationCap` | 3 beads  | Beads that one run and station file in the window. |
+| `windowMs`   | 24 hours | The time span that the two caps count.             |
+
+These three values are defaults in `src/filing-guard.ts`. They are not `rigs.json` settings. There is no `filing` key in `rigs.json`.
+
+A bead over a cap loses the `factory` label. It gets the label `held:cluster:<key>` or `held:station`, and one comment. The guard keeps its marks in `filing-guard.json` in the factory home.
+
+To release a held bead, run `factory queue <rig|repo> <id>`. The command removes the `held:*` label and queues the bead again. The mark stays, so the guard does not hold the bead a second time.
+
+The `clusterRuns` setting in `rigs.json` is a different limit. It is the most live runs that one cluster can hold in the rig. It must be a positive integer. The default is 2. Other values give the default.
+
+```json
+[{ "name": "app", "repo": "acme/widget", "clusterRuns": 3 }]
+```
+
+The pm pass (`factory plan`) reports a `file-churn` finding when one file changes in 8 or more merged pull requests in 48 hours. It reports at most 5 files. The finding asks the person a design question. It files one `human`-labeled proposal bead for each file, at most 3 for each rig in one pass. A new count does not file a second bead.
+
 ## Hygiene sweep
 
 Once a day, `factory tick` runs the `hygiene` sweep for each rig. The pass is code. It uses no model

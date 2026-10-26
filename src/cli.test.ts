@@ -1922,6 +1922,48 @@ test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
   for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
 })
 
+// claude-factory-l3tl: an opted-in rig gets its own settings file, with --merge-authority on the hook's argv
+test("workerFlags carries --merge-authority only for a rig with mergeAuthority true, in the rig's own file", () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
+  const clone = join(home, 'clone')
+  Bun.spawnSync(['git', 'init', '-q', clone])
+  Bun.spawnSync(['git', '-C', clone, 'remote', 'add', 'origin', 'git@github.com:acme/widget.git'])
+  const bare = join(home, 'bare')
+  Bun.spawnSync(['git', 'init', '-q', bare])
+  const acme = { name: 'acme', repo: clone, mergeAuthority: true }
+  const noOrigin = { name: 'nogit', repo: bare, mergeAuthority: true }
+  const web = { name: 'web', repo: clone }
+  const loose = { name: 'loose', repo: clone, mergeAuthority: 'yes' as unknown as boolean }
+  expect(workerFlags({ maxContextK: 200 }, acme, home)).toContain(join(home, 'worker-settings-acme.json'))
+  expect(workerFlags({ maxContextK: 200 }, web, home)).toContain(join(home, 'worker-settings.json'))
+  expect(workerFlags({ maxContextK: 200 }, noOrigin, home)).toContain(join(home, 'worker-settings.json'))
+  expect(workerFlags({ maxContextK: 200 }, loose, home)).toContain(join(home, 'worker-settings.json'))
+  const cmd = (f: string) =>
+    JSON.parse(readFileSync(join(home, f), 'utf8')).hooks.PreToolUse.at(-1).hooks[0].command as string
+  expect(cmd('worker-settings-acme.json')).toMatch(/worker-hook\.ts' --merge-authority 'acme\/widget'$/)
+  expect(cmd('worker-settings.json')).not.toContain('merge-authority')
+})
+
+// claude-factory-l3tl: the merge-authority rule shows only for the ship factory on an opted-in rig
+test('ruleLines adds the Merge authority section only for the ship factory and an opted-in rig', () => {
+  const ship = { name: 'ship', rules: '- rule one' }
+  const text = ruleLines(ship, undefined, undefined, true).join('\n')
+  expect(text).toContain('## Merge authority')
+  expect(text).toContain('--match-head-commit')
+  expect(ruleLines(ship, undefined, undefined, false)).toEqual(ruleLines(ship))
+  expect(ruleLines(ship)).not.toContain('## Merge authority')
+  expect(ruleLines({ name: 'lifecycle', rules: '- rule one' }, undefined, undefined, true)).toEqual(
+    ruleLines({ rules: '- rule one' }),
+  )
+})
+
+test('the ship release prompt merges only under a Merge authority section; deploy never merges', async () => {
+  const { default: ship } = await import('../factories/ship')
+  expect(ship.nodes.release.prompt).toContain('"Merge authority" section')
+  expect(ship.nodes.release.prompt).toContain('Without that section, you never merge')
+  expect(ship.nodes.deploy.prompt).toContain('you never merge it yourself')
+})
+
 // claude-factory-pfc8: an AX ship run has no bead, yet its queue station reads the ship queue from bd
 test('vmBeads gives the VM beads for a run with a bead and for a ship run', () => {
   expect(vmBeads({ bead: 'app-1' })).toBe(true)
