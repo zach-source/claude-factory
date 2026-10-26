@@ -583,18 +583,21 @@ test('triage rollout requeues into the release factory; decision defers at plan;
   expect(walk(lifecycle, ['reject']).snapshot.context.log.at(-1)).toMatchObject({ outcome: 'reject' })
 })
 
-test('only implement, verify and security split to codex, and the exec tier never gets the security model', () => {
+test('implement, verify, security, plan and review split to codex, and the exec tier never gets the security model', () => {
   const lc = lifecycle as Factory
   const split = Object.entries(lc.nodes)
     .filter(([, n]) => n.split)
     .map(([id, n]) => [id, n.split!.share, n.split!.agent])
   expect(split).toEqual([
+    ['plan', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
     ['implement', 'codex_share', "{codex} -m '{codex_exec_model}'"],
     ['verify', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['review', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
     ['security', 'codex_security_share', "{codex} -m '{codex_security_model}'"],
   ])
-  for (const id of ['plan', 'review', 'check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
+  for (const id of ['check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
   expect(lc.params!.codex_share).toBe('0.3')
+  expect(lc.params!.codex_judge_share).toBe('0') // a rig turns the codex judge tier on itself
   expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
   validate(lifecycle as Factory)
 })
@@ -619,6 +622,7 @@ test('every station model id of every factory resolves to a known id', async () 
   }
   expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
   expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
+  expect(modelOf(fill(lc.nodes.review!.split!.agent, lc.params!))).toBe('gpt-6-astra')
 })
 
 test('claude-factory-0gww.4: review, security and check approve or request changes as the reviewer identity on the exact head, with a comment fallback', () => {
