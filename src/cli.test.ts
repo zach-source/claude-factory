@@ -737,7 +737,7 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text).toContain('2>/dev/null')
   expect(text).toContain('git checkout -- <file>')
   expect(text).toContain('git status --short')
-  expect(text.length).toBeLessThan(3600)
+  expect(text.length).toBeLessThan(4800)
 })
 
 // mv9: tells a worker to write in ASD-STE100 and to load the plugin's skill before long text, without
@@ -746,7 +746,16 @@ test('the worker system prompt tells a worker to write in ASD-STE100 and load th
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
   expect(text).toContain('ASD-STE100')
   expect(text).toContain('asd-ste100 skill')
-  expect(text.length).toBeLessThan(3600)
+  expect(text.length).toBeLessThan(4800)
+})
+
+// wzy6: the ponytail rules go in the one file every backend reads (Claude's system prompt, codex's AGENTS.md),
+// on the laptop and in the VM, so no worker depends on a plugin that only the laptop has (constitution I)
+test('the worker system prompt carries the ponytail rules', () => {
+  const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
+  expect(text).toContain('# Ponytail')
+  expect(text).toContain('`ponytail:` comment')
+  expect(text).toContain('trust boundary')
 })
 
 test('a rig with no goal and no ready beads is idle', () => {
