@@ -157,6 +157,23 @@ test('FACTORY_AX_CAPABILITIES empty leaves spec.capabilities out, for an AX with
   }
 })
 
+test("a rig's sandboxClass reaches spec.sandboxClass; absent, the field stays out for an AX without it", () => {
+  ax.launch({
+    name: 'f-r1-3',
+    repo: 'r',
+    branch: 'b',
+    image: 'i',
+    brief: 'x',
+    env: {},
+    sandboxClass: 'microvm',
+  })
+  const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+  expect(task.spec.sandboxClass).toBe('microvm')
+  ax.launch({ name: 'f-r1-4', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
+  const plain = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+  expect(plain.spec.sandboxClass).toBeUndefined()
+})
+
 test("a task's egress policy is one try: refused until its actor shows, then in", () => {
   expect(ax.createPolicy('f-r1-1')).toBe(false)
   expect(ax.createPolicy('f-r1-1')).toBe(true)

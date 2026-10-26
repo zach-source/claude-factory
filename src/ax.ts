@@ -107,7 +107,12 @@ export type Launch = {
   env: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
+  /** the rig's AX sandbox class (Rig.sandboxClass); AX's gvisor default when absent */
+  sandboxClass?: SandboxClass
 }
+
+/** AX's spec.sandboxClass: microvm runs the task in a Cloud Hypervisor guest with a real kernel, where Nix builds work */
+export type SandboxClass = 'gvisor' | 'microvm'
 
 /** the Task and its Workspace as a multi-document manifest; JSON is YAML, so no YAML library */
 export function manifest(l: Launch) {
@@ -149,6 +154,8 @@ export function manifest(l: Launch) {
       debug: true,
       // so serve can run as the image's worker user instead of root (worker.ts asWorker)
       ...(CAPABILITIES().length && { capabilities: CAPABILITIES() }),
+      // only when set: an AX without spec.sandboxClass refuses the field
+      ...(l.sandboxClass && { sandboxClass: l.sandboxClass }),
     },
   }
   return [workspace, task].map(d => JSON.stringify(d, null, 2)).join('\n---\n')
