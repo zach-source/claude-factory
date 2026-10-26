@@ -1,9 +1,12 @@
 import { expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
-import { ruleLines } from '../src/cli'
+import { join } from 'node:path'
+import { modelOf } from '../src/ax'
+import { loadFactory, ruleLines } from '../src/cli'
 import {
   compile,
+  fill,
   isPrWait,
   repeatQuestion,
   timeoutOf,
@@ -15,6 +18,7 @@ import {
 import lifecycle from './lifecycle'
 import release from './release'
 import ship from './ship'
+import sweeps from './sweeps'
 
 const PR = 'https://github.com/acme/widget/pull/42'
 
@@ -383,6 +387,28 @@ test('small AC7/AC8: triage names the small route and its exclusions; the ship d
   expect(ship.nodes.deploy!.prompt).toContain('docs-only')
 })
 
+// claude-factory-53tf: review's security outcome leaves the loop, so it never counts toward review's cap.
+test('review security reports (4-7) with security changes between go to security, never re-plan (53tf)', () => {
+  // a long maxSteps: seven loops would use up the default launch budget of 20
+  const actor = createActor(compile({ ...lifecycle, maxSteps: 200 })).start()
+  let now = 0
+  const report = (outcome: string) => {
+    const { seq } = actor.getSnapshot().context
+    actor.send({ type: 'DONE', seq, outcome, summary: `${outcome} ${now}`, at: ++now })
+  }
+  for (let i = 1; i <= 7; i++) {
+    actor.send({ type: 'GOTO', node: 'review', at: now })
+    report('security')
+    expect(where(actor.getSnapshot().value)[0]).toBe('security')
+    actor.send({ type: 'GOTO', node: 'security', at: now })
+    report('changes')
+    expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+  }
+  const ctx = actor.getSnapshot().context
+  expect(ctx.log.some(e => e.replan)).toBe(false)
+  expect(ctx.mail.plan ?? []).toEqual([])
+})
+
 // claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,
 // instead of holding for a hand goto; a second cap in the same run still holds for the manager.
 test("review's round cap re-plans to plan with the findings, then holds on a second cap (claude-factory-qgz AC1-AC3, AC7)", () => {
@@ -499,12 +525,116 @@ test('a manager goto plan between two verify reds breaks the repeat streak (clau
   expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
 })
 
-test('review, security and check prompts hold the out-of-diff rule (claude-factory-nwlh.4)', () => {
+test('implement runs a numbered self-check and reports a Self-check block (2ida AC1, AC2)', () => {
+  const p = lifecycle.nodes.implement!.prompt
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.']) expect(p).toContain(`\n${n} `)
+  expect(p).toContain('the whole test suite')
+  expect(p).toContain('AC table')
+  expect(p).toContain('git diff <reviewed sha>..HEAD')
+  expect(p).toContain('Add no changelog entry')
+  expect(p).not.toContain('the ship release adds them')
+  expect(p).toContain('writes the changelog at release time')
+  expect(p).toContain("'Self-check:'")
+  expect(p).toContain('Close every task of this run')
+})
+
+test('review, security and check share one blocking-scope rule (2ida AC3, AC4)', () => {
   for (const n of ['review', 'security', 'check'] as const) {
     const p = lifecycle.nodes[n]!.prompt
+    expect(p).toContain('A finding blocks only when it is one of these')
+    expect(p).toContain('makes an existing defect reachable or enabled')
+    expect(p).toContain('Not blocking')
+    expect(p).toContain('discovered-from:')
     expect(p).toContain("outside this branch's diff never makes the verdict changes")
     expect(p).toContain('bd search')
     expect(p).toContain('P2 or lower')
     expect(p).toContain('sets P0 or P1')
+    expect(p).toContain('and that is not kind 2 or 3 does not block')
   }
+  expect(lifecycle.nodes.security!.prompt).not.toContain('P1 or higher')
+  expect(lifecycle.nodes.security!.prompt).toContain('for a person to prioritize')
+  expect(lifecycle.nodes.security!.prompt).toContain('that is not kind 1, 2 or 3 does not block')
+})
+
+test('plan names the proof for each AC, negative rows and a fail-closed class rule (2ida AC5)', () => {
+  const p = lifecycle.nodes.plan!.prompt
+  expect(p).toContain('the test or command that proves it')
+  expect(p).toContain('negative rows')
+  expect(p).toContain('one fail-closed rule')
+  expect(p).toContain('out of scope')
+})
+
+test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
+  const decision = { to: 'done', defer: { station: 'plan' } }
+  expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
+  expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
+  for (const n of ['triage', 'plan', 'implement'] as const)
+    expect(lifecycle.nodes[n].next.decision).toEqual(decision)
+  expect(lifecycle.nodes.implement!.prompt).toContain('open no new pull request')
+  expect(lifecycle.nodes.implement!.prompt).toContain('earlier run opened')
+  expect(release.start).toBe('recipe')
+  expect(walk(lifecycle, ['rollout']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['elsewhere']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['decision']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['decision'], 'plan').visited).toEqual(['plan', 'done'])
+  expect(walk(lifecycle, ['decision'], 'implement').visited).toEqual(['implement', 'done'])
+  expect(walk(lifecycle, ['build']).visited).toEqual(['triage', 'plan'])
+  expect(walk(lifecycle, ['reject']).snapshot.context.log.at(-1)).toMatchObject({ outcome: 'reject' })
+})
+
+test('only implement, verify and security split to codex, and the exec tier never gets the security model', () => {
+  const lc = lifecycle as Factory
+  const split = Object.entries(lc.nodes)
+    .filter(([, n]) => n.split)
+    .map(([id, n]) => [id, n.split!.share, n.split!.agent])
+  expect(split).toEqual([
+    ['implement', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['verify', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['security', 'codex_security_share', "{codex} -m '{codex_security_model}'"],
+  ])
+  for (const id of ['plan', 'review', 'check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
+  expect(lc.params!.codex_share).toBe('0.3')
+  expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
+  validate(lifecycle as Factory)
+})
+
+test('every station model id of every factory resolves to a known id', async () => {
+  const lc = lifecycle as Factory
+  const known = [
+    'claude-sonnet-5-5[1m]',
+    'claude-opus-5-5[1m]',
+    'claude-fable-5-1',
+    'gpt-6.1-sol',
+    'gpt-6-astra',
+  ]
+  const rework = await loadFactory(join(import.meta.dir, 'rework.yaml'))
+  for (const def of [lifecycle, ship, release, sweeps, rework] as Factory[]) {
+    for (const node of Object.values(def.nodes)) {
+      for (const cmd of [node.agent ?? def.agent, node.split?.agent]) {
+        if (!cmd) continue
+        expect(known).toContain(modelOf(fill(cmd, def.params ?? {}))!)
+      }
+    }
+  }
+  expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
+  expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
+})
+
+test('claude-factory-0gww.4: review, security and check approve or request changes as the reviewer identity on the exact head, with a comment fallback', () => {
+  for (const node of ['review', 'security', 'check']) {
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
+    for (const needle of [
+      'FACTORY_GH_REVIEWER',
+      'commit_id',
+      'event=APPROVE',
+      'event=REQUEST_CHANGES',
+      'gh pr view <n> --json author,headRefOid',
+      'the author is the reviewer identity',
+      'headRefOid is not the commit you reviewed',
+      'gh pr review --comment',
+    ])
+      expect(prompt).toContain(needle)
+  }
+  for (const node of ['plan', 'implement', 'quick', 'verify'])
+    expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
 })

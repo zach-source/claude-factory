@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
+import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
 
 const dir = join(tmpdir(), `ax-${process.pid}`)
@@ -51,7 +52,7 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'bctl'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -103,7 +104,7 @@ test('task names are RFC 1123 labels that keep the seq', () => {
 })
 
 test("a station's model comes from its herdr agent command", () => {
-  expect(ax.modelOf(`claude-smart --new --model 'claude-sonnet-5[1m]'`)).toBe('claude-sonnet-5[1m]')
+  expect(ax.modelOf(`claude-smart --new --model 'claude-sonnet-5-5[1m]'`)).toBe('claude-sonnet-5-5[1m]')
   expect(ax.modelOf('claude-smart --new --dangerously-skip-permissions')).toBeUndefined()
 })
 
@@ -248,6 +249,67 @@ test('a worker of a zach-source rig gets the zach-source keys on the unprefixed 
   expect(plainKeys('zach-source')).toEqual(['GITHUB_ZS', 'GITHUB_ZS_BASIC'])
   expect(plainKeys('acme')).toEqual(['GITHUB', 'GITHUB_BASIC'])
   expect(plainKeys()).toEqual(['GITHUB', 'GITHUB_BASIC'])
+})
+
+test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else changes', () => {
+  const keys = (owner?: string, reviewer?: boolean) =>
+    (ax.egressPolicy('v', [], undefined, undefined, owner, undefined, reviewer).rules as any[])
+      .filter(r => /github\.com/.test(r.https.hostnames[0]))
+      .map(r => [r.https.pathPrefixes?.[0] ?? '', keyOf(r)])
+  expect(keys('acme', true)).toEqual([
+    ['', 'GITHUB_REVIEWER'],
+    ['', 'GITHUB_BASIC'],
+    ['/repos/zach-source/', 'GITHUB_ZS'],
+    ['/zach-source/', 'GITHUB_ZS_BASIC'],
+  ])
+  expect(keys('zach-source', true)).toEqual([
+    ['', 'GITHUB_REVIEWER'],
+    ['', 'GITHUB_ZS_BASIC'],
+    ['/repos/zach-source/', 'GITHUB_REVIEWER'],
+    ['/zach-source/', 'GITHUB_ZS_BASIC'],
+  ])
+  expect(keys('acme', true).slice(2)).toEqual(keys('acme', false).slice(2))
+  expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
+  expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
+    ax.egressPolicy('v', [], undefined, undefined, 'acme'),
+  )
+  expect(ax.egressPolicy('', [], undefined, undefined, 'acme', undefined, true)).toEqual(ax.egressPolicy(''))
+  expect(
+    JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
+  ).not.toContain('REVIEWER')
+})
+
+test('reviewerTask is true only for review, security and check with the vault and a matching owner flag', () => {
+  const env = { FACTORY_AX_VAULT: 'v', FACTORY_AX_REVIEWER_OWNER: 'acme' }
+  for (const n of ['review', 'security', 'check']) expect(ax.reviewerTask(n, 'acme', env)).toBe(true)
+  for (const n of [
+    'implement',
+    'plan',
+    'verify',
+    'triage',
+    'quick',
+    'release',
+    'incident',
+    'Review',
+    ' review',
+  ])
+    expect(ax.reviewerTask(n, 'acme', env)).toBe(false)
+  expect(ax.reviewerTask('review', 'other', env)).toBe(false)
+  expect(ax.reviewerTask('review', undefined, env)).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { ...env, FACTORY_AX_REVIEWER_OWNER: '' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_VAULT: 'v' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_REVIEWER_OWNER: 'acme' })).toBe(false)
+})
+
+test('createPolicy passes the reviewer flag to the policy', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t4', [], undefined, 'acme', undefined, true)
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).toContain('factory/GITHUB_REVIEWER')
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
 })
 
 test('createPolicy passes the rig owner to the policy', () => {
@@ -980,11 +1042,18 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
   // stdin, never argv, since a prompt over Linux's MAX_ARG_STRLEN (131072 bytes) made posix_spawn fail with
   // ENAMETOOLONG (claude-factory-kcg)
   expect(worker.turnArgv('codex', { model: 'o3' })).toEqual([
-    ...['codex', 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
-    ...['-m', 'o3', '--', '-'],
+    ...['codex', ...CODEX_GUARD_FLAGS, 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...['--skip-git-repo-check', '-m', 'o3', '--', '-'],
   ])
   expect(worker.turnArgv('codex', { session: 'th-1' })).toEqual([
-    ...['codex', 'exec', 'resume', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...[
+      'codex',
+      ...CODEX_GUARD_FLAGS,
+      'exec',
+      'resume',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ],
     ...['--skip-git-repo-check', '--', 'th-1', '-'],
   ])
   expect(worker.turnArgv('pi', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
@@ -1053,6 +1122,7 @@ test('a codex worker briefs once, then resumes the thread its first turn named',
   writeFileSync(
     codex,
     `#!/bin/sh
+case "$*" in *'features list') printf 'hooks stable true\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; exit;; esac
 echo "$*" >> ${dir}/codex.log
 n=$(ls ${dir}/codex.stdin.* 2>/dev/null | wc -l)
 cat > ${dir}/codex.stdin.$n
@@ -1068,6 +1138,8 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
     FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CODEX_HOME: join(own, 'codex'),
+    FACTORY_CODEX_HOME_FILES: '{}',
   })
   delete process.env.FACTORY_REPO
   delete process.env.FACTORY_CA
@@ -1077,7 +1149,7 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
     await worker.serve('o3', { once: true })
     const turns = readFileSync(join(dir, 'codex.log'), 'utf8').trim().split('\n')
     expect(turns[0]).toEndWith('-m o3 -- -') // no prompt text on argv: '-' reads it from stdin
-    expect(turns[1]).toStartWith('exec resume --json')
+    expect(turns[1]).toContain(' exec resume --json')
     expect(turns[1]).toEndWith('-m o3 -- th-1 -')
     expect(readFileSync(join(dir, 'codex.stdin.0'), 'utf8')).toBe('codex brief')
     expect(readFileSync(join(dir, 'codex.stdin.1'), 'utf8')).toBe('more')
@@ -1592,7 +1664,7 @@ test('launchManager applies the manager task with its command and env, then retr
       FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
     })
     delete process.env.FACTORY_AX_IMAGE
-    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
+    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], [], { waitMs: 0 })
     expect(r).toEqual({ name: 'f-manager', policy: true })
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
@@ -1632,6 +1704,13 @@ test('launchManager applies the manager task with its command and env, then retr
   }
 })
 
+test('managerEnv sets the token swap to a broker POST only when the broker is set', () => {
+  expect(ax.managerEnv({}).FACTORY_AX_TOKEN_SWAP).toBeUndefined()
+  expect(
+    ax.managerEnv({ FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080/' }).FACTORY_AX_TOKEN_SWAP,
+  ).toBe('curl -sSf -m 25 -X POST http://broker.example.svc:8080/token/best')
+})
+
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
   expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
@@ -1650,11 +1729,39 @@ printf 'curl %s\\n' "$*" >> ${calls}
 case "$*" in
   *PUT*) cat > ${dir}/policy; printf 'created\\n201' ;;
   */ca*) printf 'CA-FROM-BROKER\\n200' ;;
+  */controller*) cat ${dir}/bctl ;;
   *) printf 'no\\n502' ;;
 esac
 `,
 )
 chmodSync(curl, 0o755)
+
+test('with FACTORY_POLICY_BROKER set, unavailable() asks the broker and does not run kubectl', () => {
+  const ready = {
+    metadata: { generation: 3 },
+    spec: { replicas: 1 },
+    status: { observedGeneration: 3, readyReplicas: 1, availableReplicas: 1 },
+  }
+  const saved = [process.env.FACTORY_POLICY_BROKER, process.env.FACTORY_CURL]
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+  process.env.FACTORY_CURL = curl
+  try {
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(ready) + '\n200')
+    expect(ax.unavailable()).toBeUndefined()
+    expect(logged().some(l => l.startsWith('kubectl'))).toBe(false)
+    expect(logged().at(-1)).toContain('http://broker.example.svc:8080/controller')
+    const notReady = { ...ready, status: { ...ready.status, readyReplicas: 0 } }
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(notReady) + '\n200')
+    expect(ax.unavailable()).toContain('is not ready at its current generation')
+    writeFileSync(join(dir, 'bctl'), 'controller: boom\n502')
+    expect(ax.unavailable()).toContain('could not be observed')
+  } finally {
+    if (saved[0] === undefined) delete process.env.FACTORY_POLICY_BROKER
+    else process.env.FACTORY_POLICY_BROKER = saved[0]
+    if (saved[1] === undefined) delete process.env.FACTORY_CURL
+    else process.env.FACTORY_CURL = saved[1]
+  }
+})
 
 test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and kubectl is not run', () => {
   process.env.FACTORY_CURL = curl
@@ -1681,4 +1788,151 @@ test('routerAddress gives host:port of the router URL, port 80 by default, and n
   expect(ax.routerAddress('http://r.example.svc:8081')).toBe('r.example.svc:8081')
   expect(ax.routerAddress('r.example.svc:80')).toBeUndefined()
   expect(ax.routerAddress(undefined)).toBeUndefined()
+})
+
+test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none without one', () => {
+  const rig = (name: string, url?: string, egress?: ax.Egress[]) => ({
+    name,
+    ...(url && { beadsRemote: { name: 'origin', url, user: 'u' } }),
+    ...(egress && { egress }),
+  })
+  const rigs = [
+    rig('a', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/widget'),
+    rig('b', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/other'),
+    rig('c', 'https://dolt.example.com/acme/x'),
+    rig('d'),
+    rig('e', 'not a url'),
+    rig('f', 'http://plain.example.com:50051/x'),
+  ]
+  const dolt = (hosts: string[], port: number) => ({
+    hosts,
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+    port,
+  })
+  expect(ax.managerEgress({}, rigs)).toEqual([
+    { hosts: ['claude.ai'] },
+    dolt(['beads-dolt.beads.svc.cluster.local'], 50051),
+    dolt(['dolt.example.com'], 443),
+  ])
+  const own = rig('g', 'https://own.example.com:8443/x', [
+    { hosts: ['own.example.com'], port: 8443, key: 'ACME_DOLT', header: 'X-Auth', prefix: 'T ' },
+  ])
+  expect(ax.managerEgress({}, [own])[1]).toEqual({
+    hosts: ['own.example.com'],
+    key: 'ACME_DOLT',
+    header: 'X-Auth',
+    prefix: 'T ',
+    port: 8443,
+  })
+  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }])
+})
+
+test('managerEgress adds the Linear rule only for a rig with --linear', () => {
+  const linear = { linear: { team: 't' } }
+  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [linear])).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
+  ])
+})
+
+test('serve writes a codex worker home and fails closed when the guard is off (claude-factory-72dq)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-codex-'))
+  const repo = join(tmp, 'repo')
+  const home = join(tmp, 'codex')
+  const features = join(tmp, 'features.txt')
+  const on =
+    'hooks stable true\nunified_exec stable true\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
+  writeFileSync(features, on)
+  const fake = join(tmp, 'fake-codex')
+  writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(tmp, 'argv')}'\ncat '${features}'\n`, {
+    mode: 0o755,
+  })
+  mkdirSync(repo)
+  const keep = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: fake,
+    FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', '../config.toml': 'x = 1\n' }),
+  })
+  try {
+    worker.codexHome(home)
+    expect(readdirSync(home).sort()).toEqual(['AGENTS.md', 'config.toml', 'hooks.json'])
+    expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
+    expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(
+      readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+    )
+    expect(readFileSync(join(tmp, 'argv'), 'utf8').trim().split('\n')).toEqual([
+      ...CODEX_GUARD_FLAGS,
+      'features',
+      'list',
+    ])
+    writeFileSync(features, on.replace('hooks stable true', 'hooks stable false'))
+    expect(() => worker.codexHome(home)).toThrow('hooks is not on')
+    writeFileSync(features, on.replace('multi_agent stable false', 'multi_agent stable true'))
+    expect(() => worker.codexHome(home)).toThrow('multi_agent')
+    writeFileSync(features, on)
+    mkdirSync(join(repo, '.codex'))
+    expect(() => worker.codexHome(home)).toThrow('would add project config')
+    rmSync(join(repo, '.codex'), { recursive: true })
+    delete process.env.FACTORY_CODEX_HOME_FILES
+    expect(() => worker.codexHome(home)).toThrow('FACTORY_CODEX_HOME_FILES')
+    process.env.FACTORY_HARNESS = 'claude'
+    expect(() => worker.codexHome(join(tmp, 'none'))).not.toThrow()
+    expect(existsSync(join(tmp, 'none'))).toBe(false)
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
+    Object.assign(process.env, keep)
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('a session cut off mid-turn resumes with a note naming the cut-off call; an idle one does not (claude-factory-p0yt)', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-resume-'))
+  const own = join(tmp, 'own')
+  const repo = join(tmp, 'repo')
+  const conf = join(tmp, 'claude')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const projects = join(conf, 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'))
+  mkdirSync(projects, { recursive: true })
+  const use = { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git push origin HEAD' } }
+  writeFileSync(
+    join(projects, 's-1.jsonl'),
+    JSON.stringify({ type: 'assistant', message: { content: [use] } }) + '\n',
+  )
+  const claude = join(tmp, 'claude-bin')
+  writeFileSync(
+    claude,
+    `#!/bin/sh\nn=$(ls ${tmp}/stdin.* 2>/dev/null | wc -l)\ncat > ${tmp}/stdin.$n\necho '{"session_id":"s-1"}'\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_HARNESS: 'claude',
+    FACTORY_CLAUDE: claude,
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CLAUDE_CONFIG_DIR: conf,
+  })
+  for (const k of ['FACTORY_REPO', 'FACTORY_CA', 'FACTORY_BRIEF', 'FACTORY_CLAUDE_FLAGS'])
+    delete process.env[k]
+  try {
+    writeFileSync(join(own, 'state.json'), JSON.stringify({ status: 'working', session: 's-1', pid: 1 }))
+    await worker.serve(undefined, { once: true })
+    const note = readFileSync(join(tmp, 'stdin.0'), 'utf8')
+    expect(note).toStartWith('[factory] Your VM restarted')
+    expect(note).toContain('`git push origin HEAD`')
+    expect(note).toContain('may have taken effect')
+    // idle when it stopped: nothing was cut off, so no note
+    await worker.serve(undefined, { once: true })
+    expect(existsSync(join(tmp, 'stdin.1'))).toBe(false)
+  } finally {
+    process.env = saved
+    rmSync(tmp, { recursive: true, force: true })
+  }
 })

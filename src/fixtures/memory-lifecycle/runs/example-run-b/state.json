@@ -1,0 +1,38 @@
+{
+  "cursor": 0,
+  "snapshot": {
+    "status": "active",
+    "value": "aborted",
+    "historyValue": {},
+    "context": {
+      "seq": 2,
+      "attempt": 1,
+      "pane": null,
+      "session": null,
+      "resumes": 0,
+      "startedAt": 0,
+      "nudgedAt": 0,
+      "nudges": 0,
+      "retryAt": 0,
+      "budget": 20,
+      "wakeAt": 0,
+      "error": null,
+      "mail": {
+        "implement": []
+      },
+      "seen": {
+        "implement": 0
+      },
+      "log": [
+        {
+          "node": "implement",
+          "attempt": 1,
+          "outcome": "failed",
+          "summary": "typecheck fails: TS2305 module \"./util\" has no exported member \"parseDate\" (attempt 7)",
+          "at": 1757090000000
+        }
+      ]
+    },
+    "children": {}
+  }
+}

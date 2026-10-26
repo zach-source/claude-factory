@@ -127,6 +127,16 @@ export const READY_REASON =
   'review. Keep the pull request a draft here; report its link in your summary. Release marks it ' +
   'ready after verify, review and security pass. Do not retry this command.'
 
+// claude-factory-0gww.3: the stations that may run as the reviewer identity (the same names as REVIEWER_STATIONS in ax.ts)
+const REVIEWER_STATIONS = ['review', 'security', 'check']
+
+// claude-factory-0gww.3
+export const APPROVE_REASON =
+  'The factory denies this command: only a review, security or check station that runs as the ' +
+  'reviewer identity may approve a pull request. Here, post a comment review: gh pr review N ' +
+  '--comment --body-file f, or --request-changes. This hook also denies a gh call that creates a ' +
+  'review with an event it cannot read. Do not retry this command.'
+
 // claude-factory-zl5.22
 export const ALIAS_REASON =
   'The factory denies this command: gh alias set and git config alias.<name> name another ' +
@@ -338,6 +348,8 @@ export const DYNAMIC_VERB_REASON =
 export interface HookGate {
   /** the running station, from FACTORY_FROM. Only the release station may mark a pull request ready. */
   station?: string
+  /** true when FACTORY_GH_REVIEWER is 1 and the station is a reviewer station: only then may a gh call approve a pull request (claude-factory-0gww.3) */
+  reviewer?: boolean
   /** branch names a worker never pushes to directly; defaults to main and master when unset or empty */
   protectedBranches?: string[]
   /** This field holds the tool call's own cwd (`i.cwd`). It is not the worktree root.
@@ -4415,6 +4427,76 @@ function ghApiReadyDenied(apiArgs: string[], gate: HookGate): boolean {
 // So a percent-encoded slash after `heads` (`heads%2Fmain`) matches the same as a literal one (`heads/main`).
 // The raw, still-encoded path has no `/` there. A match against the raw text misses this path.
 const REF_HEADS_PATH = /\/git\/refs?\/heads\/([^?#]+)/
+// claude-factory-0gww.3: a GraphQL mutation name that creates or submits a pull request review
+const REVIEW_MUTATIONS = ['addPullRequestReview', 'submitPullRequestReview']
+// a REST path that creates a review, or submits a pending one
+const REVIEWS_PATH = /(^|\/)pulls\/[^/]+\/reviews(\/[^/]+\/events)?$/
+// the only review events that are no approval
+const SAFE_REVIEW_EVENTS = new Set(['COMMENT', 'REQUEST_CHANGES'])
+
+/**
+ * claude-factory-0gww.3: true when a `gh api` call can approve a pull request and this hook cannot prove it does not.
+ * GraphQL: the query names `addPullRequestReview` or `submitPullRequestReview` (an unreadable query denies too).
+ * REST: a non-GET call to `.../pulls/<n>/reviews` or `.../pulls/<n>/reviews/<id>/events` is allowed only when every
+ * `event` value is literally `COMMENT` or `REQUEST_CHANGES`. A call to the create path with no event makes a pending
+ * review, which is no approval. A submit path with no event, a shell expansion, an `@file` value, or an `--input`
+ * body that is unreadable, not JSON, or has another event: deny.
+ */
+function ghApiReviewDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint) return false
+  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, REVIEW_MUTATIONS)
+  const path = decodeApiPath(normalizeEndpoint(endpoint))
+  if (path === undefined) return true
+  const match = REVIEWS_PATH.exec(path)
+  if (!match) return false
+  const fields = ghApiFields(apiArgs)
+  const inputFile = flagValue(apiArgs, new Set(['--input']))
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  if ((method || (fields.length > 0 || inputFile !== undefined ? 'POST' : 'GET')) === 'GET') return false
+  const events = fields.filter(f => f.name === 'event').map(f => f.value)
+  if (inputFile !== undefined) {
+    const content = SHELL_UNSAFE.test(inputFile) ? undefined : gate.readFile?.(inputFile)
+    if (content === undefined) return true
+    try {
+      const body: unknown = JSON.parse(content)
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return true
+      const event = (body as { event?: unknown }).event
+      if (event !== undefined) {
+        if (typeof event !== 'string') return true
+        events.push(event)
+      }
+    } catch {
+      return true
+    }
+  }
+  if (events.length === 0) return match[2] !== undefined
+  return events.some(e => !SAFE_REVIEW_EVENTS.has(e))
+}
+
+/**
+ * claude-factory-0gww.3: true when a `gh pr review` call (`words`: its arguments after `review`) can approve.
+ * It is allowed only with a literal `-c`, `--comment`, `-r` or `--request-changes`, and with no `-a`, `--approve`,
+ * `--approve=...`, short cluster that holds `a`, or shell expansion in a flag position. The word after a value flag is data.
+ */
+function prReviewApproves(words: string[]): boolean {
+  let mode = false
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--') break
+    if (['-b', '--body', '-F', '--body-file', '-R', '--repo'].includes(w)) {
+      i++
+      continue
+    }
+    if (w === '-c' || w === '--comment' || w === '-r' || w === '--request-changes') mode = true
+    else if (w === '--approve' || w.startsWith('--approve=')) return true
+    else if (/^-[^-]/.test(w) && w.includes('a')) return true
+    else if (dynamicWord(w)) return true
+  }
+  return !mode
+}
+
 // a REST path that creates a new ref. The caller names the new ref in a `ref` field.
 // claude-factory-zl5.25: `normalizeEndpoint` already strips a `?query` and `#fragment`, so this
 // pattern no longer needs to match one.
@@ -4730,6 +4812,14 @@ function ghReasonOn(
     if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
     return gate.station === 'release' ? undefined : READY_REASON
   }
+  if (
+    verb === 'pr' &&
+    sub === 'review' &&
+    !gate.reviewer &&
+    prReviewApproves(rest.slice(subScan.index + 1))
+  ) {
+    return APPROVE_REASON
+  }
   if (verb === 'api') {
     // claude-factory-zl5.16: this splits a clustered short flag (`-iXPUT`, `-if`) into separate
     // words. Every check below already reads these words, so this runs first.
@@ -4737,6 +4827,7 @@ function ghReasonOn(
     if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
     if (ghApiReadyDenied(apiArgs, gate)) return gate.station === 'release' ? undefined : READY_REASON
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
+    if (!gate.reviewer && ghApiReviewDenied(apiArgs, gate)) return APPROVE_REASON
 
     // claude-factory-p43v.11: a dynamic endpoint or method can still hide a merge or push call
     // that the 3 literal checks above miss, because they compare the word's raw, unresolved
@@ -4768,6 +4859,9 @@ function ghReasonOn(
       return gate.station === 'release' ? undefined : READY_REASON
     }
     if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
+    if (!gate.reviewer && verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['review']))) {
+      if (prReviewApproves(rest)) return APPROVE_REASON
+    }
   }
   if (uncertain) {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return MERGE_REASON
@@ -4778,6 +4872,13 @@ function ghReasonOn(
     // probe today reaches a real `gh pr checkout` call this way: real gh exits with code 1
     // on the unknown flag first. This word scan still sets `branchChange`, fail closed.
     if (hasMutatingWordBeforeDashDash(tail, new Set(['checkout']))) state.branchChange = true
+    if (
+      !gate.reviewer &&
+      hasMutatingWordBeforeDashDash(tail, new Set(['review'])) &&
+      prReviewApproves(tail)
+    ) {
+      return APPROVE_REASON
+    }
   }
   return undefined
 }
@@ -6539,6 +6640,31 @@ const DYNAMIC_COMMAND_TRIGGER = new Set([
   'api',
 ])
 
+const TRIGGER_ALT = [...DYNAMIC_COMMAND_TRIGGER].join('|')
+const DYN_EXP = /\$\{[^{}]*\}|\$[a-z_]\w*|\$[@*#?!$0-9-]/g
+const DYN_END_R1 = new RegExp(`(?:^|-)(?:${TRIGGER_ALT})$`)
+const DYN_END_R2 = new RegExp(`.(?:${TRIGGER_ALT})$`)
+
+/**
+ * claude-factory-ycaq: `$G-push` runs the `git-push` binary when `$G` holds a git-core path.
+ * The dashed-binary rule cannot read a dynamic word. This function treats every expansion as
+ * possibly empty. It drops quotes and backslashes and makes the word lowercase (APFS is
+ * case-blind). R1: remove every expansion. Deny when the text left ends in a verb at the start
+ * or after a dash. R2: the tokenizer drops quotes, so `"$G"push` reads as the bare name `$Gpush`.
+ * For each bare name, deny when the name and the rest end in any char and a verb. The caller runs
+ * this in the late fallback, so a real command reason (glued IFS push) wins.
+ */
+function dynamicDashedVerb(w: string): boolean {
+  const s = w.replace(/\\\n/g, '').replace(/\\/g, '').replace(/["']/g, '').toLowerCase()
+  if (DYN_END_R1.test(s.replace(DYN_EXP, ''))) return true
+  for (const m of s.matchAll(/\$([a-z_]\w*)/g)) {
+    const name = m[1]!
+    const rest = s.slice(m.index! + m[0].length)
+    if (DYN_END_R2.test(name + rest.replace(DYN_EXP, ''))) return true
+  }
+  return false
+}
+
 /**
  * claude-factory-clcc: bash and zsh expand a glob in the command word, so `/bin/[r]m -rf /` runs
  * rm. A word is a glob command word when it holds `*`, `?` or a `[..]` pair. A lone `[` or `[[`
@@ -7918,8 +8044,9 @@ function replaceGluedSubstitutions(command: string, fill = ' '): string {
 // an escaped or single-quoted "${" from a real one. This reads the raw text. An unquoted, unescaped
 // ${...} (close brace by depth, only "${" adds depth) or bare $NAME / $special glued to other text
 // becomes a space. Double-quoted text is not split by the shell, so it stays. An unclosed span
-// replaces only the "${".
-function replaceGluedExpansions(command: string): string {
+// replaces only the "${". In keep mode, only an exact $IFS or ${IFS} becomes a space. Every other glued
+// span stays as typed, so a head word such as g${X:-it} stays dynamic and the dynamic verb rule sees it.
+function replaceGluedExpansions(command: string, keep = false): string {
   let out = ''
   let q = ''
   const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)
@@ -7969,13 +8096,16 @@ function replaceGluedExpansions(command: string): string {
       out += c
       continue
     }
+    const span = command.slice(i, end)
     if (isSpace(command[i - 1]) && isSpace(command[end])) {
-      out += command.slice(i, end)
-    } else out += ' '
+      out += span
+    } else if (!keep || span === '$IFS' || span === '${IFS}') out += ' '
+    else out += span
     i = end - 1
   }
   return out
 }
+const IFS_MOD_SPAN_RE = /\$\{IFS[^A-Za-z0-9_}]|\$\{[^}]*\$\{?IFS(?![A-Za-z0-9_])/
 
 function quoteWord(w: string): string {
   return "'" + w.replace(/'/g, "'\\''") + "'"
@@ -8036,7 +8166,7 @@ function denyAt(
       if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
   }
-  const late: { reason?: string; glued?: string } = {}
+  const late: { reason?: string; glued?: string; kept?: string } = {}
   return (
     denyAtScan(
       command,
@@ -8052,6 +8182,7 @@ function denyAt(
       outerVars,
     ) ??
     late.glued ??
+    late.kept ??
     late.reason
   )
 }
@@ -8065,7 +8196,7 @@ function denyAtScan(
   state: ScanState,
   movedBefore: boolean,
   ghConfigMovedBefore: boolean,
-  late: { reason?: string; glued?: string },
+  late: { reason?: string; glued?: string; kept?: string },
   aliasStack: readonly string[],
   outerVars?: VarTable,
 ): string | undefined {
@@ -8135,6 +8266,15 @@ function denyAtScan(
       const split = denyAt(raw, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
       if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.glued ??= split
     }
+  }
+  // claude-factory-y094: read the command with only each glued $IFS or ${IFS} as a space.
+  if (command.includes('$')) {
+    const kept = replaceGluedExpansions(command, true)
+    if (kept !== command) {
+      const split = denyAt(kept, root, personOnly, g, depth + 1, state, movedSoFar, ghConfigMovedSoFar)
+      if (split && split !== HEREDOC_REASON && split !== COMMENT_REASON) late.kept ??= split
+    }
+    if (IFS_MOD_SPAN_RE.test(command) && command.split('$').length > 2) late.kept ??= DYNAMIC_VERB_REASON
   }
   if (quoteInfo.heredoc) late.reason ??= HEREDOC_REASON
   if (quoteInfo.comment) late.reason ??= COMMENT_REASON
@@ -8378,6 +8518,9 @@ function denyAtScan(
     const info = realCommandInfo(words)
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
+    for (const c of [cmd, realCommandInfo(dropRedirectWords(words)).cmd])
+      if (c.length && dynamicCommandWord(c[0]!) && dynamicDashedVerb(c[0]!))
+        late.reason ??= DYNAMIC_VERB_REASON
     // k8iz: true when the miqy table read this pure $NAME head's value, so the late deny skips it.
     let headValueRead = false
     // The older dynamic-word scan keeps its own reason when it denies first.
@@ -8836,6 +8979,26 @@ export function shellSnapshotAliases(dir: string): Map<string, string | null> | 
   return table
 }
 
+// Claude's Bash tool runs a call for 2 min when it names no timeout
+const BASH_DEFAULT_MS = 120_000
+// the least a clamped call still gets, so a report or a commit runs even past the deadline
+const CLAMP_FLOOR_MS = 30_000
+
+/**
+ * A Bash call's timeout cut to what is left before the station's deadline (FACTORY_DEADLINE, ms), or undefined
+ * when the call already ends in time. A command then ends before the run fails, and the worker still has
+ * its turn to commit and report (claude-factory-p0yt). A background call has no timeout to clamp.
+ */
+export function clampTimeout(
+  input: { timeout?: number; run_in_background?: boolean },
+  deadline: number,
+  now: number,
+) {
+  if (input.run_in_background || !Number.isFinite(deadline)) return undefined
+  const left = Math.max(CLAMP_FLOOR_MS, deadline - now)
+  return left < (input.timeout ?? BASH_DEFAULT_MS) ? left : undefined
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -8844,7 +9007,11 @@ async function main() {
   } catch {
     return
   }
-  const i = input as { tool_name?: string; cwd?: string; tool_input?: { command?: string } }
+  const i = input as {
+    tool_name?: string
+    cwd?: string
+    tool_input?: { command?: string; timeout?: number; run_in_background?: boolean }
+  }
   if (i?.tool_name !== 'Bash') return
   // Claude Code sets CLAUDE_PROJECT_DIR to the worktree root for a hook; input.cwd can be a
   // subdir of it after a `cd`, so it is only the second choice for root.
@@ -8857,6 +9024,8 @@ async function main() {
   const protectedBranches = argp >= 0 ? process.argv[argp + 1]?.split(',').filter(Boolean) : undefined
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
+    reviewer:
+      process.env.FACTORY_GH_REVIEWER === '1' && REVIEWER_STATIONS.includes(process.env.FACTORY_FROM ?? ''),
     protectedBranches,
     headOf: (dir, timeoutMs) =>
       gitSymbolicRef(['-C', dir ?? root, 'symbolic-ref', '--short', 'HEAD'], timeoutMs),
@@ -8889,7 +9058,23 @@ async function main() {
     cwd: i.cwd,
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
-  if (!reason) return
+  if (!reason) {
+    const timeout = process.env.FACTORY_DEADLINE
+      ? clampTimeout(i.tool_input ?? {}, Number(process.env.FACTORY_DEADLINE), Date.now())
+      : undefined
+    if (timeout)
+      console.log(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            permissionDecisionReason: `the station's deadline is ${Math.round(timeout / 1000)} s away: timeout cut to that`,
+            updatedInput: { ...i.tool_input, timeout },
+          },
+        }),
+      )
+    return
+  }
   console.log(
     JSON.stringify({
       hookSpecificOutput: {

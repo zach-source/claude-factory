@@ -7,6 +7,7 @@ import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
   brief,
+  vmBeads,
   clipFactsJson,
   clipReport,
   CONFIG_SYNC,
@@ -30,6 +31,8 @@ import {
   loadFactory,
   ownCopy,
   paramsOf,
+  pickAgent,
+  splitPick,
   reapable,
   progressNow,
   progressSig,
@@ -38,6 +41,7 @@ import {
   reworkGoal,
   ruleLines,
   selfUpdateMail,
+  tokenDigestMail,
   stalled,
   swapUntil,
   workerFlags,
@@ -45,6 +49,7 @@ import {
   WORKER_TOOLS,
   commitIdentity,
   room,
+  clusterCap,
   slot,
   withoutFleet,
   type RigFacts,
@@ -559,6 +564,64 @@ test("the manager's --tools carries Agent, so the mod can spawn a patrol subagen
   expect(managerCommand()[i + 1]!.split(',')).toContain('Agent')
 })
 
+const splitDef = {
+  name: 'x',
+  start: 'a',
+  agent: 'claude',
+  params: { codex: 'codex', codex_share: '0.3', other_share: '0.3' },
+  nodes: {
+    a: { prompt: '', next: { ok: 'done' }, split: { agent: '{codex}', share: 'codex_share' } },
+    b: { prompt: '', next: { ok: 'done' }, split: { agent: '{codex}', share: 'other_share' } },
+    c: { prompt: '', next: { ok: 'done' } },
+  },
+}
+const ids = Array.from({ length: 10000 }, (_, i) => `run-${i}`)
+const codexCount = (
+  rig: object | undefined,
+  env: Record<string, string> = {},
+  runner = 'herdr',
+  node = 'a',
+) => ids.filter(id => pickAgent(id, splitDef, node, rig, runner, env) === 'codex').length
+
+test('a split pick is stable per run, and each share param picks on its own', () => {
+  for (const id of ids.slice(0, 200))
+    expect(pickAgent(id, splitDef, 'a', undefined, 'herdr', {})).toBe(
+      pickAgent(id, splitDef, 'a', undefined, 'herdr', {}),
+    )
+  const n = codexCount(undefined)
+  expect(n).toBeGreaterThan(2500)
+  expect(n).toBeLessThan(3500)
+  const both = ids.filter(
+    id => splitPick(id, 'codex_share', '0.3') && splitPick(id, 'other_share', '0.3'),
+  ).length
+  expect(both).toBeLessThan(n * 0.6)
+  expect(pickAgent('run-1', splitDef, 'c', undefined, 'herdr', {})).toBe('claude')
+})
+
+test('share 0 never picks codex, share 1 always does, a bad share is 0', () => {
+  expect(codexCount({ params: { codex_share: '0' } })).toBe(0)
+  expect(codexCount(undefined, { FACTORY_CODEX_SHARE: '0' })).toBe(0)
+  expect(codexCount({ params: { codex_share: '1' } })).toBe(10000)
+  for (const bad of ['abc', '-1', '2', 'NaN']) expect(codexCount({ params: { codex_share: bad } })).toBe(0)
+  expect(codexCount({ params: { codex_share: '0' } }, {}, 'herdr', 'b')).toBeGreaterThan(2500)
+})
+
+test('the ax runner gets the split agent only with FACTORY_AX_CODEX=1; a rig agent never does', () => {
+  expect(codexCount({ params: { codex_share: '1' } }, {}, 'ax')).toBe(0)
+  expect(codexCount({ params: { codex_share: '1' } }, { FACTORY_AX_CODEX: '1' }, 'ax')).toBe(10000)
+  expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: { codex_share: '1' } }, 'herdr', {})).toBe(
+    'pi',
+  )
+})
+
+test('the manager and the mod subagents name a full model id, never an alias', () => {
+  const c = managerCommand()
+  expect(c[c.indexOf('--model') + 1]).toBe('claude-opus-5-5')
+  const src = readFileSync(new URL('../mod/hooks/register.tsx', import.meta.url), 'utf8')
+  const models = [...src.matchAll(/^\s+model: '([^']+)'/gm)].map(m => m[1])
+  expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5'])
+})
+
 test("workers commit as the factory home's own git identity, crediting factory.coauthor", () => {
   const home = mkdtempSync(join(tmpdir(), 'factory-id-'))
   expect(commitIdentity(home)).toEqual({ env: {}, rule: '' }) // not a repo: the rig's own config
@@ -896,6 +959,8 @@ test("brief()'s memory section tells a worker to pass --kind on memory add (clau
   const text = brief(run, def, 'implement', c, [])
   expect(text).toContain('memory add --from r1/implement --kind fact|rule|recipe')
   expect(text).toContain('--until')
+  // a note that proved wrong is replaced, not left beside its fix (claude-factory-3u1.1.5)
+  expect(text).toContain('--supersedes <old note path>')
 })
 
 // claude-factory-wnm (A10): a requeue edge can hand the same bead to a later run, in another
@@ -1165,6 +1230,50 @@ test('selfUpdateMail mails a repeated refusal again once a no-op sits between th
   const again = selfUpdateMail(4, home)
   expect(again).toHaveLength(1)
   expect(again[0]!.text).toContain('a dirty tree')
+})
+
+test('tokenDigestMail mails the token digest once a week, from factory', () => {
+  const D = 86_400_000
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  const digest = () => 'tokens: X'
+  const first = tokenDigestMail(0, home, digest)
+  expect(first).toHaveLength(1)
+  expect(first[0]!.from).toBe('factory')
+  expect(first[0]!.text.startsWith('factory weekly token digest, last 7d:')).toBe(true)
+  expect(first[0]!.text).toContain('tokens: X')
+  expect(tokenDigestMail(6 * D, home, digest)).toHaveLength(0)
+  expect(tokenDigestMail(7 * D, home, digest)).toHaveLength(1)
+})
+
+test('tokenDigestMail mails nothing for an empty digest but moves the date', () => {
+  const D = 86_400_000
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  expect(tokenDigestMail(0, home, () => '')).toHaveLength(0)
+  expect(tokenDigestMail(D, home, () => 'tokens: X')).toHaveLength(0)
+  expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(0)
+})
+
+test('tokenDigestMail returns [] when the digest throws, and the date is written first', () => {
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  expect(
+    tokenDigestMail(5, home, () => {
+      throw new Error('boom')
+    }),
+  ).toEqual([])
+  expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(5)
+})
+
+test('tokenDigestMail does nothing when FACTORY_TOKEN_DIGEST=0', () => {
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  const was = process.env.FACTORY_TOKEN_DIGEST
+  process.env.FACTORY_TOKEN_DIGEST = '0'
+  try {
+    expect(tokenDigestMail(0, home, () => 'tokens: X')).toHaveLength(0)
+    expect(existsSync(join(home, 'token-digest.json'))).toBe(false)
+  } finally {
+    if (was === undefined) delete process.env.FACTORY_TOKEN_DIGEST
+    else process.env.FACTORY_TOKEN_DIGEST = was
+  }
 })
 
 // ---- clipFactsJson (claude-factory-dun.25) ----
@@ -1639,7 +1748,7 @@ test('memory helped on a real note still exits 0 and logs it', () => {
   const home = freshMemoryAddHome('helped-real-note')
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
   writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
-  const r = runMemoryHelped(home, ['beads/x.md'])
+  const r = runMemoryHelped(home, ['--from', 'r1/verify', 'beads/x.md'])
   expect(r.code).toBe(0)
   expect(r.out).toContain('noted:')
   expect(usageLinesOf(home).map(l => l.path)).toEqual(['beads/x.md'])
@@ -1806,4 +1915,16 @@ test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file fi
     }
   }
   rmSync(dir, { recursive: true })
+})
+
+test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
+  expect(clusterCap({ clusterRuns: 3 })).toBe(3)
+  for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
+})
+
+// claude-factory-pfc8: an AX ship run has no bead, yet its queue station reads the ship queue from bd
+test('vmBeads gives the VM beads for a run with a bead and for a ship run', () => {
+  expect(vmBeads({ bead: 'app-1' })).toBe(true)
+  expect(vmBeads({ ship: true })).toBe(true)
+  expect(vmBeads({})).toBe(false)
 })

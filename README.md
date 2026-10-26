@@ -200,6 +200,28 @@ missing, or when you ask for more.
 A person still decides every gate, with `factory decide`. The briefer cannot run it.
 `tool.call` denies it outright. To turn off the briefer, set `briefer` to `false` in the plugin's `userConfig`.
 
+A hidden `reviewer` subagent starts once for each pending skill and `.proposals/` item that has no
+verdict. It has no tool at all. The factory CLI gives it the text of one item:
+
+- `factory review facts <key>` prints the item's kind, name, change and text (16384 characters at most).
+  A key that is unknown or stale (the text changed) exits 1.
+- The reviewer answers with one fenced `json` block: `recommendation` is exactly `install` or `reject`,
+  and `why` is one line of 300 characters or fewer.
+- `factory review set <key> <file>` parses the answer strictly and keeps it in `<home>/reviews.json`.
+  It refuses a key that has a verdict already.
+
+The key is `kind:name:sha12`. The `sha12` is the first 12 hex characters of the SHA-256 of the reviewed
+text, so a skill that changes gets a new review. The mod writes one line for each attempt to
+`<home>/review-log.jsonl`, and the manager's token report counts the turns under the name `reviewer`.
+A failed attempt is logged and never retried for that key in the same session.
+
+`factory skills` (JSON) and `factory proposals` show the verdict. The patrol prompt has a
+"Proposals to review" section with one line for each item, and a new verdict wakes the patrol once.
+The verdict only advises. The manager or the person runs `factory skills install` or
+`factory proposals install`. The reviewer cannot: `tool.call` denies every Bash command from it. `tool.call`
+also denies `factory skills|proposals install|reject` for any subagent, and the CLI refuses those
+verbs when `FACTORY_PATROL` is set. To turn off the reviewer, set `reviewer` to `false` in the plugin's `userConfig`.
+
 The roles follow [Gas Town](https://github.com/steveyegge/gastown): the manager is the
 Mayor (your one point of contact, which hands out the work), station workers are polecats
 (a fresh session per visit, a durable identity in the run), each repo the factory works is
@@ -231,7 +253,7 @@ the person binds every station, not only the manager.
 factory rig add web ~/repos/web --max 4                     # all of factories/sweeps.ts's sweeps
 factory rig add app ~/repos/app --max 3 --sweeps none --goal finish the v2 features
 factory rig add infra ~/repos/infra lifecycle --max 2 --sweeps monitor --slo "kubectl get pods -n infra | grep -v Running"
-factory rig add docs ~/repos/docs review-loop --sweeps none
+factory rig add docs ~/repos/docs rework --sweeps none
 factory rig add gitops ~/repos/gitops --sweeps drift --drift "flux get kustomizations -A; flux get helmreleases -A"
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig rm docs                                         # nothing new starts; its runs carry on
@@ -241,6 +263,16 @@ A rig's name stands for its repo in every command (`start lifecycle web ...`, `q
 fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
 redefine a rig with `rig add`; there is one rig per repo.
+
+A rig starts only beads with the `factory` label. To keep a rig busy from its unlabeled ready
+beads, set `autoQueue` in `rigs.json`, for example `"autoQueue": { "minPriority": 2, "perHour": 3 }`.
+When the rig has room and no labeled bead to start, dispatch takes up to `perHour` beads in a
+rolling hour. It takes only leaf beads (no parent, no open child, not an epic) with no assignee, a
+priority of `minPriority` or higher urgency (0 is the highest), and no `rejected`, `owner`,
+`human` or `ship` label. It skips beads that a sweep filed and beads the flood guard holds. The
+best come first: priority, then oldest. Each pick gets the labels `factory` and `auto-queued`, and
+starts as a normal run. The picks of the last hour are in `auto-queue.json`. Without `autoQueue`
+the rig works as before.
 
 A rig can name kube contexts that only a person can change. Use `--person-only-context` to
 add one. Repeat the flag to add more contexts.
@@ -606,6 +638,15 @@ can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise 
 The default worker and the dream start from `FACTORY_CLAUDE` too, and its executable is treated
 as Claude.
 
+Lifecycle sends a share of runs to Codex. Two share params set it: `codex_share` for `implement` and
+`verify` (default `0.3`), and `codex_security_share` for `security` (default `0.3`). A hash of the run id
+picks the harness, so one run keeps its harness at every station and attempt. Two params set the
+Codex models: `codex_exec_model` (default `gpt-6.1-sol`) and `codex_security_model` (default
+`gpt-6-astra`). Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
+that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent`, and every
+station on the `ax` runner, never gets Codex. `factory metrics` shows the launches for each station by
+harness and model.
+
 ```sh
 factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-and-sandbox"
 factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none
@@ -655,8 +696,12 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 | -------- | ------------- | -------------------------------------- |
 | monitor  | every 30 min  | a rig's `--slo '<read-only command>'` |
 | drift    | hourly        | a rig's `--drift '<read-only command>'` (a GitOps rig) |
+| ci       | every 2 h     | `gh` logged in on the laptop; a model runs only when main CI is red |
+| flakes   | weekly        | `gh` logged in on the laptop; a model runs only when a test flaked |
 | maintain | daily         | nothing extra                          |
+| advisories | weekly      | nothing extra (see below)              |
 | improve  | daily, rotating refactor, performance, cost and factory-health lens | nothing extra |
+| hygiene  | daily, in code (no model, no run); proposes closes, never closes | nothing extra |
 
 `factory tick` starts one run per due `(rig, sweep)` pass, at most every `FACTORY_SWEEP_MS`
 (default 300000ms); `FACTORY_SWEEPS=0` turns this off. Each pass goes straight to `done`: it
@@ -672,15 +717,61 @@ bead; a manifest image behind its source repo's latest release gets a bump bead 
 `factory` label. Each resource has one open bead, labeled `drift:<key>`; each image tag has one bead, even a closed one. Start a pass by hand with
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
-**Flood guard**: a sweep-filed bead carries the label `sweep:<name>` (for example
-`sweep:maintain`). Each rig keeps at most 5 such beads in any 24-hour window. A bead with a
+`ci` and `flakes` read GitHub Actions on the laptop with `gh`. They start no run unless they find
+new work. `ci` lists the default branch's runs. Each workflow with a red newest run gets the key
+`ci-red:<workflow id>-<first failing SHA, 7 characters>`. If every key is a label on an open bead,
+nothing starts. If not, one run files ONE P1 bead with the labels `factory`, `station:plan` and
+`sweep-queue:main-ci-red`.
+
+`flakes` reads up to 1000 runs of the default branch from the past 7 days. A run is flaky when the same SHA passed
+and failed, or passed on a re-run. The factory reads the failed logs of at most 10 flaky runs.
+It keeps only test ids of 1 to 200 printable ASCII characters. A test that failed in 2 or more
+flaky runs gets one bead, `quarantine + fix flaky test: <id>`, with the label `flake:<12 hex>`.
+A pass files at most 3. A test that failed in 3 or more runs also gets `factory`, `station:plan`
+and `sweep-queue:flaky-test`. Each pass writes one line to `sweeps.jsonl`. The `action` is
+`green`, `tracked` (`ci`), `quiet` (`flakes`), `started` or `error`. `error` means a `gh` or `bd`
+call failed: no run starts, and the next pass waits for the cadence.
+
+**Flood guard**: the guard finds a sweep-filed bead by who filed it (the `created_by` field),
+not by a label. A worker cannot dodge the cap by setting a label. Dispatch adds the label
+`sweep:<name>` (for example `sweep:maintain`) after it scores the bead. The guard never reads
+that label. Each rig keeps at most 5 such beads in any 24-hour window. A later bead
+that day still gets filed, but it waits for a person instead of starting on its own. A bead with a
 `sweep-queue:*` label counts only the earlier beads with such a label, so an unlabeled drift
-bump bead takes no place from a later incident. A later bead
-that day still gets filed, but it waits for a person instead of starting on its own. A kept
+bump bead takes no place from a later incident. A kept
 bead keeps the `factory` label, and starts on its own, only when it also carries
-`sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every
-other kept bead loses the `factory` label too and waits for a person, the same as a later
-bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label.
+`sweep-queue:incident`, `sweep-queue:main-ci-red`, `sweep-queue:critical-advisory` or
+`sweep-queue:flaky-test`. Every other kept bead loses the `factory` label too and waits for a person, the same as a later
+bead. The [Backlog tab](#backlog-key-2) groups beads by their `sweep:<name>` label. This is the only use of that label.
+
+**Hygiene**: the `hygiene` sweep runs in code once a day for each rig. It starts no run. It finds
+open beads that a merged PR already shipped, duplicates, orphans, deferred beads with no owner and
+stale beads. It adds the label `stale?` and the comment `proposed close: <kind>: <evidence>` to
+each, and files one digest bead. It never closes a bead. `factory hygiene <rig>` prints what a pass
+would propose and writes nothing. `FACTORY_HYGIENE=0` turns the pass off. See
+[Hygiene sweep](docs/beads.md#hygiene-sweep).
+
+**Advisories sweep**: once a week, on the laptop, a model reads the Dependabot alerts
+(`gh api repos/<owner>/<repo>/dependabot/alerts`) and the audit tool of each lockfile. It writes
+the result to `.scratch/advisories.json`. The model never files a bead. The command
+`factory advisories file <path>` checks the file and files the beads. It refuses to run unless
+`BEADS_ACTOR` is an advisories sweep run, so the flood guard applies to every bead.
+
+- One bead for each advisory id (GHSA or CVE). A bead stores one `adv_<id>` metadata key for its
+  id and one for each alias. The command skips an id when any bead, a closed bead included,
+  holds its key.
+- A critical or high advisory gets the labels `factory`, `station:plan` and
+  `sweep-queue:critical-advisory` (P1 critical, P2 high) when the fix is not a major bump. A
+  fix is a major bump when the major version rises, or, for a `0.x` version, when the minor
+  version rises (`4.17.20` to `5.0.0`, `0.3.1` to `0.4.0`, `node:18` to `node:20`). A major bump,
+  an unknown installed version or no fix gives a held bead with none of these labels.
+- Medium and low advisories go in one open digest bead for each rig (metadata
+  `advisory_digest=<repo>`), with no `factory` label. Each pass writes its description again.
+- If the Dependabot read gets 403 or 404, the command files one bead with the label `human`,
+  titled `Enable Dependabot alerts on <repo>`. It shows in the Interview tab. The factory never
+  enables alerts. The owner does this step.
+- The input is untrusted. The command refuses the whole file when one field does not match its
+  pattern. A bead holds only checked fields and a fixed advisory URL, never advisory text.
 
 A pinned run from before this design (`claude-factory-8pc`) still loads its own copy of the
 sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
@@ -727,9 +818,27 @@ memory/
   `factory memory search [--rig r] <query>` (local embeddings, bge-small, no service; a note
   ranks by its own match and its topic's, a long or fact note ranks slightly above a short one
   on a near-tie, and another rig's notes never show) and
-  `factory memory add [--rig r] [--from run/station] <summary> [body]`. The manager searches
-  it before answering a worker and saves the person's decisions that later runs should follow.
-  `factory memory helped [--from run/station] <note>` marks a note that saved a worker time;
+  `factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--supersedes <note path>] <summary> [body]`.
+  The manager searches it before answering a worker and saves the person's decisions that later
+  runs should follow.
+- Each new note must have a kind, or `memory add` exits 2 with its usage text:
+  - `fact`: a verified, reusable lesson.
+  - `rule`: a convention or a requirement.
+  - `recipe`: a command sequence that works.
+
+  A note that names a bead id or a PR must also have `--until`, unless it is a recipe. The note
+  then retires when that bead closes, that PR merges or closes, or that date passes. The status of
+  the bead or PR stays in its own tracker. If a note is wrong, add the correct note with
+  `--supersedes <old note path>`. The old note gets `superseded:`, and the next tier pass archives
+  it. A duplicate add prints `already noted` and logs `confirmed` on the existing note.
+
+  ```
+  factory memory add --kind rule "push the tracker after each close" "a local close is not seen on other machines until the push"
+  factory memory add --kind fact --until example-ab1 "the timing test flakes under load" "rerun the failed job once; example-ab1 tracks the fix"
+  factory memory add --kind recipe "confirm a deploy with rollout status" "kubectl rollout status deployment/web -n example --timeout=120s"
+  factory memory add --kind fact --supersedes ci/old-cache.md "the build cache keys on the lockfile hash" "a lockfile change makes a new cache"
+  ```
+  `factory memory helped --from run/station <note>` marks a note that saved a worker time;
   with how often searches return each note, it is what the dream orders by.
 - **The dream** (`factory dream`; each tick starts one a day) is a headless Claude that can only
   edit inside the memory: it files the inbox under topics, merges duplicates, drops what is
@@ -746,9 +855,14 @@ memory/
   (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
-  topic's `LONG.md` once the note is 7 days old and was shown or helped at least once, and
-  archives a short note into `.archive/<topic>.md` once it is 30 days unused and never helped, or
-  once it was never shown at all and is 14 days old (or marked `superseded:` outright). Both
+  topic's `LONG.md` once the note is 7 days old and its activation is above θm, and archives a
+  short note into `.archive/<topic>.md` once it is 14 days old and its activation is below θa, or
+  it was never shown at all (or marked `superseded:` outright). Activation is
+  `ln(Σ w · t_days^-0.5)` over the last 90 days of usage events: helped 1.0 (0.3 for a failed
+  attempt), confirmed 1.0, shown 0.15, contradicted −1.0. θm and θa are −3.6 (about one show 30
+  days ago), and θc, the promote limit for a LONG.md entry helped across 3 runs, is 0. Set
+  `FACTORY_MEMORY_THETA_MERGE`, `FACTORY_MEMORY_THETA_ARCHIVE` or `FACTORY_MEMORY_THETA_PROMOTE`
+  to change one. Both
   usage-based archive rules wait until the store holds at least 14 days of usage history, so a new
   or lost `.usage.jsonl` cannot be misread as "never shown." A pass archives at most
   `FACTORY_MEMORY_ARCHIVE_CAP` notes (default 25), oldest first across every topic; the rest are
@@ -756,8 +870,16 @@ memory/
   anything. A merge keeps the note's usage count under its new `<topic>/LONG.md#<id>` path,
   through `.renames.jsonl`, so a later `factory memory helped <old path>` still resolves and
   nothing helped is lost. `--dry-run` prints the plan without writing.
+- Each dream ends `dream.log` with one metrics line, for example
+  `metrics: notes 9 (beads 2, ci 4)  archived 0  retired 1  kind 75%  cites-without-until 12%`.
+  It gives the notes in each topic, the notes this pass archived and retired, the share of short
+  notes with a `kind`, and the share that cite a bead or PR with no `until`.
 - `factory memory eval` runs a fixed query set (`<memory>/.eval.jsonl`) through search and prints
   recall@5 and MRR, with which queries missed: how to tell that tiering did not cost search quality.
+  `factory memory eval --self [n] [--seed s]` needs no `.eval.jsonl`. It samples n notes (default 60,
+  seed 1), asks each note's first body sentence, and expects that note back. A curated case can
+  carry `"category": "update" | "temporal" | "abstain"`, and eval then prints a score for each
+  category. An `abstain` case has no `expect`: it is a hit only when search returns nothing.
 
 ## Pull request labels
 
@@ -835,19 +957,25 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 ```sh
 /plugin marketplace add <path or git URL of this repo>
 /plugin install beads-remote@claude-factory
+/plugin install factory-rig@claude-factory
 ```
 
 - **beads-remote**: a skill and script that make a repo's beads sync through its git remote on
   any host (GitLab, GitHub, any git), or bring a remote's beads into a fresh clone. What a repo
   needs before `factory rig add` on a new machine.
+- **factory-rig**: skills for a Claude session in a rig repo, on any machine that syncs the rig's
+  beads. `factory-handoff` writes a bead that a worker can start from and queues it.
+  `factory-prioritize` changes the queue order, holds or unqueues a bead, and tells a live run.
+  `factory-status` shows the rig's runs, its ship queue and what waits on you. Each skill uses the
+  factory CLI when the factory home is on the same machine, and bd alone when it is not.
 
 ## Define a factory
 
-`factories/<name>.ts` exports a graph ([review-loop](factories/review-loop.ts)):
+`factories/<name>.ts` exports a graph ([release](factories/release.ts)):
 
 ```ts
 export default {
-  name: 'review-loop',
+  name: 'implement-review',
   start: 'implement',
   nodes: {
     implement: { prompt: '...', next: { ready: 'review' } },
@@ -858,7 +986,7 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3), `onRounds` (a node for a re-plan at the round cap, below),
+the manager; lifecycle's review has 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `onRounds` (a node for a re-plan at the round cap, below),
 `repeatMail` (an outcome that mails the manager on a repeat, below), `gate: true` for a station the
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
@@ -869,7 +997,19 @@ queue, until someone queues it again). It can instead carry `requeue: true`, or
 `requeue: { factory?, station? }`. Either way the bead stays open, ready and `factory`-labeled.
 The next dispatch starts it in the factory and station the `requeue` object names, or in the
 labels the worker already set when `requeue` is `true` (claude-factory-wnm; see "The backlog
-dispatches itself" above).
+dispatches itself" above). A `defer` edge can also name a station: `defer: { station: 'plan' }`.
+It defers the bead and swaps its `station:*` label. The run after a `bd undefer` starts at that
+station. The station must be a node of the same factory.
+
+Lifecycle's triage has three outcomes that end the run at once (claude-factory-502):
+
+- `rollout`: the goal is to ship pull requests that are already open or merged. The bead requeues
+  into the `release` factory.
+- `decision`: the work needs a person's choice. The worker puts the question on the bead. The run
+  ends deferred. `bd undefer` starts it again at `plan`. Plan and implement also report `decision`.
+- `elsewhere`: the work belongs in another rig's repo. The worker files the bead there and
+  comments its id on this bead. The run ends deferred. A worker that cannot reach that repo writes
+  a `File in:` line, and the manager files the bead.
 
 `onRounds` names the node that takes the first capped report, instead of the manager. The run
 carries the round's findings to that node. A second capped report in the same run still goes to
@@ -1010,10 +1150,26 @@ rows = [
   reaping. The dream writes proposals to `memory/.manager/skills/` (Claude Code refuses an
   unattended write under `.claude/`), and nothing installs on its own: the next tick mails the
   manager the new, changed and reaped ones, and it reads each and runs `factory skills install
-<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). Skills
-  are in the memory's git history like its notes.
-- **Tokens**: `factory metrics --tokens` adds what the live runs' workers spent, by station,
-  from their Claude transcripts.
+<name>` or `factory skills reject <name> <why>` (the reason goes to the dream's inbox). A hidden
+  reviewer subagent first records an `install` or `reject` recommendation with a reason, and
+  `factory skills` shows it. It only advises. Skills are in the memory's git history like its notes.
+- **Learning ladder**: when one station fails the same way in 3 or more runs, or an inbox note
+  repeats a CORE.md line, the dream writes at most 3 proposals per pass to
+  `memory/.proposals/<name>.md`. Each names a rung: `core` (a CORE.md line), `instruction` (a
+  station or worker instruction), `skill` or `check`. The next tick mails the manager once for each
+  new set. `factory proposals` lists them. `factory proposals install <name>` adds a core line to
+  CORE.md. For a higher rung it files a bead labeled `human` in the factory's own rig (or
+  `--rig <name>`), and it changes no factory code. `factory proposals reject <name> <why>` sends
+  the reason to the dream's inbox. The list shows the reviewer's recommendation after each line.
+- **Tokens**: `factory metrics --tokens` shows what the workers spent, by station and model. It
+  shows input, cache write, cache read and output tokens, the cache hit rate and a cost estimate in
+  USD. It also shows the manager's patrol, pm, briefer, reviewer and dream sessions. It reads the usage that
+  each run stores (`runs/<id>/usage.jsonl`, copied to the run's `metrics.jsonl` line by
+  `factory rm`) and `manager-usage.jsonl`. It reads no transcript, so a removed run still counts.
+  `--json` adds a `tokens` object. A run that ended before this change has no usage.
+  The tick also mails the manager this table for the last 7 days once a week
+  (`HOME/token-digest.json` holds the date). `FACTORY_TOKEN_DIGEST=0` turns the mail off.
+  `FACTORY_TOKEN_DIGEST_MS` sets the period.
 - **Quarterbacking**: `decide`, `retry`, `goto <station|done>`, `abort`, `fork <run>
 <station> [note]` (try another approach on a copy), `rm` (finished runs; the branch
   stays). `start` and `fork` refuse past `FACTORY_MAX_RUNS` (16) runs holding a worker.

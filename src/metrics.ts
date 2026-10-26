@@ -11,6 +11,8 @@ export type RunRecord = {
   createdAt: number
   log: Entry[]
   requeued?: boolean
+  /** the run's worker sessions' spend. An older metrics.jsonl line has none: it reads as [] */
+  sessions?: Usage[]
 }
 
 const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])
@@ -230,60 +232,301 @@ export function precheckStats(lines: Pick<PrecheckLine, 'kind'>[]) {
   return { skipped: mergedPr + liveRun, mergedPr, liveRun, failOpen }
 }
 
-/** one Claude worker session's spend, from its transcript */
-export type Session = { run: string; node: string; turns: number; tokens: number; out: number; peak: number }
+/** one line of HOME/launches.jsonl: a worker launch, with the harness and model it ran */
+export type LaunchLine = {
+  at: number
+  run: string
+  rig: string
+  node: string
+  seq: number
+  harness: string
+  model: string
+  resume: boolean
+}
+
+/** reads HOME/launches.jsonl: this drops a malformed line and a line with no station or harness */
+export const parseLaunchLines = (text: string) =>
+  (parsePrecheckLines(text) as unknown as LaunchLine[]).filter(
+    l => typeof l?.node === 'string' && typeof l.harness === 'string',
+  )
+
+/** launches per station, by "harness model" */
+export function launchStats(lines: Pick<LaunchLine, 'node' | 'harness' | 'model'>[]) {
+  const out: Record<string, Record<string, number>> = {}
+  for (const l of lines) {
+    const key = `${l.harness} ${l.model ?? '?'}`
+    const station = (out[l.node] ??= {})
+    station[key] = (station[key] ?? 0) + 1
+  }
+  return out
+}
+
+/** one line a station: its launches by harness and model; empty when there are none */
+export const renderLaunches = (stats: ReturnType<typeof launchStats>) =>
+  Object.entries(stats)
+    .map(
+      ([node, by]) =>
+        `${node}: ${Object.keys(by)
+          .sort()
+          .map(k => `${k} ${by[k]}`)
+          .join(', ')}`,
+    )
+    .join('\n')
+
+/** one Claude worker session's spend with one model, from its transcript. `input` is the fresh
+ * input, `cacheWrite` the cache creation and `cacheRead` the cache hits: their prices differ.
+ * `peak` is the biggest context one turn re-sent. */
+export type Usage = {
+  node: string
+  seq: number
+  session: string
+  model: string
+  input: number
+  cacheWrite: number
+  cacheRead: number
+  output: number
+  turns: number
+  peak: number
+}
 
 /**
- * a transcript's spend: every turn re-sends its context (input, cache writes and reads) and adds its output.
- * Claude Code writes a turn once per content block, under one message id, so each id counts once
+ * a transcript's spend, one row for each model. Claude Code writes a turn once per content block,
+ * under one message id, so each id counts once. The session's subagent transcripts (`subs`) add their
+ * tokens under their own model; they leave `turns` and `peak` alone.
  */
-export function sessionOf(lines: string[], run: string, nodeOfSeq: (seq: number) => string): Session {
-  const seen = new Set<string>()
-  const s: Session = { run, node: '?', turns: 0, tokens: 0, out: 0, peak: 0 }
-  for (const line of lines) {
-    if (!line) continue
-    let e: { type?: string; message?: { id?: string; content?: unknown; usage?: Record<string, number> } }
-    try {
-      e = JSON.parse(line)
-    } catch {
-      continue
+export function sessionOf(
+  lines: string[],
+  run: string,
+  nodeOfSeq: (seq: number) => string,
+  session = '',
+  subs: string[][] = [],
+): Usage[] {
+  const rows = new Map<string, Usage>()
+  let node = '?'
+  let seq = 0
+  const add = (ls: string[], main: boolean) => {
+    const seen = new Set<string>()
+    for (const line of ls) {
+      if (!line) continue
+      let e: {
+        type?: string
+        message?: { id?: string; model?: string; content?: unknown; usage?: Record<string, number> }
+      }
+      try {
+        e = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (main && node === '?' && e.type === 'user') {
+        const text =
+          typeof e.message?.content === 'string' ? e.message.content : JSON.stringify(e.message?.content)
+        const m = new RegExp(`${run} (\\d+) <outcome>`).exec(text ?? '') // the brief's report line names its seq
+        if (m) {
+          seq = Number(m[1])
+          node = nodeOfSeq(seq)
+        }
+      }
+      const u = e.message?.usage
+      if (e.type !== 'assistant' || !u || seen.has(e.message!.id ?? '')) continue
+      seen.add(e.message!.id ?? '')
+      const model = e.message?.model ?? '?'
+      const r = rows.get(model) ?? {
+        node,
+        seq,
+        session,
+        model,
+        input: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 0,
+        turns: 0,
+        peak: 0,
+      }
+      rows.set(model, r)
+      r.input += u.input_tokens ?? 0
+      r.cacheWrite += u.cache_creation_input_tokens ?? 0
+      r.cacheRead += u.cache_read_input_tokens ?? 0
+      r.output += u.output_tokens ?? 0
+      if (main) {
+        r.turns++
+        r.peak = Math.max(
+          r.peak,
+          (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+        )
+      }
     }
-    if (s.node === '?' && e.type === 'user') {
-      const text =
-        typeof e.message?.content === 'string' ? e.message.content : JSON.stringify(e.message?.content)
-      const m = new RegExp(`${run} (\\d+) <outcome>`).exec(text ?? '') // the brief's report line names its seq
-      if (m) s.node = nodeOfSeq(Number(m[1]))
-    }
-    const u = e.message?.usage
-    if (e.type !== 'assistant' || !u || seen.has(e.message!.id ?? '')) continue
-    seen.add(e.message!.id ?? '')
-    const context =
-      (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0)
-    s.turns++
-    s.tokens += context + (u.output_tokens ?? 0)
-    s.out += u.output_tokens ?? 0
-    s.peak = Math.max(s.peak, context)
   }
-  return s
+  add(lines, true)
+  for (const sub of subs) add(sub, false)
+  return [...rows.values()].map(r => ({ ...r, node, seq })) // the brief line can come after the first turn
 }
+
+const NUMS = ['input', 'cacheWrite', 'cacheRead', 'output', 'turns', 'peak'] as const
+
+/**
+ * the usage rows an AX worker sent with its report. The laptop does not trust the VM: its agent can
+ * write its own outbox. Keep at most 20 rows. Keep only well-formed rows. Take node and seq from the
+ * laptop's own record of the task. A bad or missing value gives fewer rows, never an error.
+ */
+export function validUsage(raw: unknown, node: string, seq: number): Usage[] {
+  if (!Array.isArray(raw) || raw.length > 20) return []
+  return raw.flatMap((r: Record<string, unknown> | null) => {
+    if (!r || typeof r !== 'object') return []
+    const { model, session } = r
+    if (typeof model !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(model)) return []
+    if (typeof session !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(session)) return []
+    const n = NUMS.map(k => r[k])
+    if (!n.every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e12)) return []
+    return [{ node, seq, session, model, ...Object.fromEntries(NUMS.map((k, i) => [k, n[i]])) } as Usage]
+  })
+}
+
+/** a Usage row's tokens, all types */
+export const tokensOf = (u: Usage) => u.input + u.cacheWrite + u.cacheRead + u.output
 
 const mtok = (n: number) => `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)}M`
 
-/** tokens by station, and per run and per shipped run */
-export function renderTokens(sessions: Session[], shipped: Set<string>) {
-  const total = sessions.reduce((a, s) => a + s.tokens, 0)
-  const runs = new Set(sessions.map(s => s.run))
-  const ofShipped = sessions.filter(s => shipped.has(s.run)).reduce((a, s) => a + s.tokens, 0)
+export type StoredUsage = Usage & { run: string }
+/** one manager subagent turn (or one dream), from manager-usage.jsonl */
+export type ManagerUsage = {
+  name: string
+  at: number
+  model: string
+  input: number
+  cacheWrite: number
+  cacheRead: number
+  output: number
+  turns?: number
+  peak?: number
+}
+
+/** USD per million tokens, by model family. A cache write costs 1.25x the input price, a cache read 0.1x */
+export const PRICES: Record<string, { in: number; out: number }> = {
+  opus: { in: 5, out: 25 },
+  sonnet: { in: 3, out: 15 },
+  haiku: { in: 1, out: 5 },
+}
+
+type Tok = { input: number; cacheWrite: number; cacheRead: number; output: number }
+
+/** the estimate in USD; null for a model that is in no family of PRICES */
+export function costOf(t: Tok, model: string) {
+  const family = Object.keys(PRICES).find(k => model.toLowerCase().includes(k))
+  if (!family) return null
+  const p = PRICES[family]!
+  return (t.input * p.in + t.cacheWrite * p.in * 1.25 + t.cacheRead * p.in * 0.1 + t.output * p.out) / 1e6
+}
+
+/** the share of the context a turn re-sent that came from the cache; null when there was no context */
+export const hitRate = (t: Tok) => {
+  const context = t.input + t.cacheWrite + t.cacheRead
+  return context ? t.cacheRead / context : null
+}
+
+type Sum = Tok & { sessions: number; turns: number; peak: number; cost: number; unpriced: number }
+
+/** the totals of some rows. `cost` adds only the models that have a price; `unpriced` counts the rest */
+function sumOf(
+  rows: (Tok & { model: string; turns?: number; peak?: number })[],
+  sessions = rows.length,
+): Sum {
+  const s: Sum = {
+    input: 0,
+    cacheWrite: 0,
+    cacheRead: 0,
+    output: 0,
+    sessions,
+    turns: 0,
+    peak: 0,
+    cost: 0,
+    unpriced: 0,
+  }
+  for (const r of rows) {
+    s.input += r.input
+    s.cacheWrite += r.cacheWrite
+    s.cacheRead += r.cacheRead
+    s.output += r.output
+    s.turns += r.turns ?? 0
+    s.peak = Math.max(s.peak, r.peak ?? 0)
+    const c = costOf(r, r.model)
+    if (c === null) s.unpriced++
+    else s.cost += c
+  }
+  return s
+}
+const allOf = (t: Tok) => t.input + t.cacheWrite + t.cacheRead + t.output
+const sessionsIn = (rows: StoredUsage[]) => new Set(rows.map(u => `${u.run}\0${u.session}`)).size
+
+/**
+ * everything `factory metrics --tokens` shows, from the stored rows only: totals, each station and model
+ * (with the tokens of a shipped run), and each manager name
+ */
+export function tokensReport(rows: StoredUsage[], shipped: Set<string>, manager: ManagerUsage[] = []) {
+  const runs = new Set(rows.map(u => u.run))
+  const total = sumOf(rows, sessionsIn(rows))
+  const inShipped = rows.filter(u => shipped.has(u.run))
+  const group = <T extends Tok & { model: string; turns?: number; peak?: number }>(
+    xs: T[],
+    key: (x: T) => string,
+  ) => [...Map.groupBy(xs, key)].map(([k, v]) => ({ key: k, rows: v }))
+  return {
+    runs: runs.size,
+    shippedRuns: shipped.size,
+    total: { ...total, tokens: allOf(total), hitRate: hitRate(total) },
+    tokensPerRun: allOf(total) / Math.max(1, runs.size),
+    tokensPerShippedRun: shipped.size ? allOf(sumOf(inShipped)) / shipped.size : null,
+    stations: group(rows, u => `${u.node}\0${u.model}`)
+      .map(g => {
+        const [node, model] = g.key.split('\0') as [string, string]
+        const sum = sumOf(g.rows, sessionsIn(g.rows))
+        const ship = sumOf(g.rows.filter(u => shipped.has(u.run)))
+        return {
+          node,
+          model,
+          ...sum,
+          tokens: allOf(sum),
+          hitRate: hitRate(sum),
+          cost: costOf(sum, model),
+          perShippedRun: shipped.size ? allOf(ship) / shipped.size : null,
+        }
+      })
+      .sort((a, b) => b.tokens - a.tokens),
+    manager: group(manager, m => `${m.name}\0${m.model}`)
+      .map(g => {
+        const [name, model] = g.key.split('\0') as [string, string]
+        const sum = sumOf(g.rows)
+        return { name, model, ...sum, tokens: allOf(sum), hitRate: hitRate(sum), cost: costOf(sum, model) }
+      })
+      .sort((a, b) => b.tokens - a.tokens),
+  }
+}
+
+const pct = (r: number | null) => (r === null ? '-' : `${Math.round(r * 100)}%`)
+const usd = (c: number | null) => (c === null ? '-' : `$${c.toFixed(2)}`)
+
+/** the text of `tokensReport`: totals with cache hit rate and cost, a table by station and model, the manager's names */
+export function renderTokens(rows: StoredUsage[], shipped: Set<string>, manager: ManagerUsage[] = []) {
+  const r = tokensReport(rows, shipped, manager)
+  const t = r.total
   const lines = [
-    `tokens: ${mtok(total)} over ${sessions.length} worker sessions in ${runs.size} runs; ${mtok(total / Math.max(1, runs.size))} a run, ${shipped.size ? mtok(ofShipped / shipped.size) : '-'} a shipped run`,
-    '  station      sessions   tokens  median/session  turns/session  peak context',
+    `tokens: ${mtok(t.tokens)} over ${t.sessions} worker sessions in ${r.runs} runs; ${mtok(r.tokensPerRun)} a run, ${r.tokensPerShippedRun === null ? '-' : mtok(r.tokensPerShippedRun)} a shipped run`,
+    `  input ${mtok(t.input)}  cache write ${mtok(t.cacheWrite)}  cache read ${mtok(t.cacheRead)}  output ${mtok(t.output)}; cache hit rate ${pct(t.hitRate)}; cost ~${usd(t.cost)}${t.unpriced ? ` (${t.unpriced} rows of an unknown model not priced)` : ''}`,
+    '  station      model                  sessions   tokens  input  c.write  c.read  output  hit    cost  /shipped run  turns/session  peak context',
   ]
-  const by = Map.groupBy(sessions, s => s.node)
-  for (const [node, ss] of [...by].sort(
-    (a, b) => b[1].reduce((x, s) => x + s.tokens, 0) - a[1].reduce((x, s) => x + s.tokens, 0),
-  ))
+  for (const s of r.stations)
     lines.push(
-      `  ${node.padEnd(12)} ${String(ss.length).padStart(8)}  ${mtok(ss.reduce((a, s) => a + s.tokens, 0)).padStart(7)}  ${mtok(median(ss.map(s => s.tokens))!).padStart(14)}  ${String(Math.round(ss.reduce((a, s) => a + s.turns, 0) / ss.length)).padStart(13)}  ${`${Math.round(Math.max(...ss.map(s => s.peak)) / 1000)}k`.padStart(12)}`,
+      `  ${s.node.padEnd(12)} ${s.model.padEnd(22)} ${String(s.sessions).padStart(7)}  ${mtok(s.tokens).padStart(7)}  ${mtok(s.input).padStart(5)}  ${mtok(s.cacheWrite).padStart(7)}  ${mtok(s.cacheRead).padStart(6)}  ${mtok(s.output).padStart(6)}  ${pct(s.hitRate).padStart(3)}  ${usd(s.cost).padStart(7)}  ${(s.perShippedRun === null ? '-' : mtok(s.perShippedRun)).padStart(12)}  ${String(Math.round(s.turns / Math.max(1, s.sessions))).padStart(13)}  ${`${Math.round(s.peak / 1000)}k`.padStart(12)}`,
     )
+  if (r.manager.length) {
+    lines.push(
+      '',
+      'manager sessions:',
+      '  name       model                  rows    tokens  input  c.write  c.read  output  hit    cost',
+    )
+    for (const m of r.manager)
+      lines.push(
+        `  ${m.name.padEnd(10)} ${m.model.padEnd(22)} ${String(m.sessions).padStart(5)}  ${mtok(m.tokens).padStart(7)}  ${mtok(m.input).padStart(5)}  ${mtok(m.cacheWrite).padStart(7)}  ${mtok(m.cacheRead).padStart(6)}  ${mtok(m.output).padStart(6)}  ${pct(m.hitRate).padStart(3)}  ${usd(m.cost).padStart(7)}`,
+      )
+  }
   return lines.join('\n')
 }

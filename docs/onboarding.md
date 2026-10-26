@@ -247,6 +247,15 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 
 The console also has a `stop` button and a `resume` button.
 
+### Attach to the AX manager
+
+If the manager runs in the AX task `f-manager`, use these commands on the laptop:
+
+- `factory attach` prints the manager pane once. `factory attach --follow` prints it again every 3 seconds.
+- `factory say <text...>` types the text and Enter into the manager pane.
+
+To stop, press Ctrl-C. This stops only the command on the laptop. The manager keeps running, because it is the AX task `f-manager`. `ax ssh` has no PTY, so `factory attach` shows a snapshot and not a keyboard. To read another pane, set `FACTORY_AX_MANAGER_PANE` to an id from `herdr pane list`. This command runs in the AX task, not on the laptop. See [remote-runner.md](remote-runner.md).
+
 ### Where the state lives
 
 All files are under the factory directory (`FACTORY_HOME`). The factory has no log file for the tick. The manager session shows the tick messages.
@@ -265,7 +274,7 @@ All files are under the factory directory (`FACTORY_HOME`). The factory has no l
 
 - **Remote runner.** A rig can run its workers in AX microVMs on a Kubernetes cluster. Add `--runner ax` to `rig add`. Read [remote-runner.md](remote-runner.md).
 - **GitLab rigs.** If the origin of a rig is GitLab, `factory prs` and the PRs tab show its merge requests. Sign in to `glab`. Workers still open and watch pull requests with `gh` only.
-- **Memory.** Workers share what they learn. Use `factory memory search [--rig r] <query...>` to find a note. Use `factory memory add [--rig r] <summary> [body...]` to save one. `factory dream` cleans the memory. A tick starts one dream each day.
+- **Memory.** Workers share what they learn. Use `factory memory search [--rig r] <query...>` to find a note. Use `factory memory add [--rig r] --kind fact|rule|recipe <summary> [body...]` to save one. A note that names a bead or a PR also needs `--until <bead|owner/repo#N|YYYY-MM-DD>`, unless its kind is `recipe`. To replace a wrong note, add the correct one with `--supersedes <old note path>`. `factory dream` cleans the memory. A tick starts one dream each day.
 - **Your own factory.** Run `factory adopt <repo>` to copy the lifecycle template to `<repo>/.factory/lifecycle.ts`. Run `factory check <file>` to validate a factory file.
 - **Metrics.** Run `factory metrics [--rig r] [--since 7d] [--json]`.
 - **Other agents.** Use `--agent` to run a rig with `codex` or `pi`, and `--mcp` to give workers MCP servers.

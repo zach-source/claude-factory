@@ -17,8 +17,10 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { CODEX_GUARD_FLAGS, codexFeaturesBad, cutOffCall, cutOffNote } from './harness'
 import { rmSafe } from './home-guard'
+import { sessionOf, type Usage } from './metrics'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -45,8 +47,42 @@ const alive = (pid: number) => {
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
-export function queue(argv: string[]) {
-  appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
+export function queue(argv: string[], usage?: Usage[]) {
+  appendFileSync(
+    outbox(),
+    JSON.stringify({
+      argv,
+      from: process.env.FACTORY_FROM,
+      at: Date.now(),
+      ...(usage?.length && { usage }),
+    }) + '\n',
+  )
+}
+
+/**
+ * what this VM's Claude session spent, with its subagents, for the report to carry. The laptop cannot
+ * read the VM's transcripts. A worker with no Claude transcript (codex, pi) gives none. Never throws.
+ */
+export function usageOfSession(run: string): Usage[] {
+  try {
+    const session = state()?.session
+    if (!session || !/^[A-Za-z0-9-]+$/.test(session)) return []
+    const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
+    const dir = readdirSync(projects)
+      .map(d => join(projects, d))
+      .find(d => existsSync(join(d, `${session}.jsonl`)))
+    if (!dir) return []
+    const read = (f: string) => readFileSync(f, 'utf8').split('\n')
+    const subDir = join(dir, session, 'subagents')
+    const subs = existsSync(subDir)
+      ? readdirSync(subDir)
+          .filter(g => g.endsWith('.jsonl'))
+          .map(g => read(join(subDir, g)))
+      : []
+    return sessionOf(read(join(dir, `${session}.jsonl`)), run, () => '?', session, subs)
+  } catch {
+    return []
+  }
 }
 
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
@@ -266,6 +302,8 @@ export function turnArgv(
     case 'codex':
       return [
         process.env.FACTORY_CODEX ?? 'codex',
+        // the deny hook on, the features that skip it off (codexHome checks they hold)
+        ...CODEX_GUARD_FLAGS,
         ...['exec', ...(o.session ? ['resume'] : [])],
         ...['--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
         ...model('-m'),
@@ -942,6 +980,43 @@ export function trustCA() {
 }
 
 /**
+ * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
+ * and AGENTS.md from this image's worker rules. It fails closed, as a pane's launch does (cli.ts codexWorker):
+ * a .codex directory in the repo would add project config, and `codex features list` must show the guard on
+ * (claude-factory-72dq).
+ */
+export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000) {
+  if (harness() !== 'codex') return
+  const files = process.env.FACTORY_CODEX_HOME_FILES
+  if (!files || !dir)
+    throw new Error('a codex worker needs FACTORY_CODEX_HOME_FILES and CODEX_HOME from the laptop')
+  const local = join(repo(), '.codex')
+  if (existsSync(local))
+    throw new Error(`a codex worker keeps the deny hook on: ${local} would add project config`)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  for (const [name, text] of Object.entries(JSON.parse(files) as Record<string, string>))
+    writeFileSync(join(dir, basename(name)), text)
+  writeFileSync(
+    join(dir, 'AGENTS.md'),
+    readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
+      readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+  )
+  const p = Bun.spawnSync([process.env.FACTORY_CODEX ?? 'codex', ...CODEX_GUARD_FLAGS, 'features', 'list'], {
+    env: { ...process.env, CODEX_HOME: dir },
+    stdin: 'ignore',
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
+  })
+  const bad = p.exitedDueToTimeout
+    ? 'codex features list timed out'
+    : p.exitCode !== 0
+      ? 'codex features list failed'
+      : codexFeaturesBad(p.stdout.toString())
+  if (bad) throw new Error(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
+}
+
+/**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
  * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
  */
@@ -1002,6 +1077,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
+  codexHome()
   const services = await startServices()
   let session = prior?.session
   let egress: Egress | undefined = prior?.egress
@@ -1032,6 +1108,10 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
       onSession,
       egress,
     )
+  } else if (prior?.status === 'working') {
+    // the VM stopped mid-turn (a restart, a suspend): say so, and name the call it cut off (claude-factory-p0yt)
+    set('working')
+    session = await turnWithRetry(resumeNote(session), model, session, onEgress, onSession, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
@@ -1115,6 +1195,37 @@ export function lastTurn(session?: string) {
     if (existsSync(file)) return lastAssistant(file)
   }
   return lastAssistant(join(own(), 'claude.jsonl'))
+}
+
+/**
+ * the turn a session resumed mid-turn gets first. Before it, a VM that restarted during the brief went idle
+ * with nothing to do, and the run waited for its deadline (claude-factory-p0yt)
+ */
+export function resumeNote(session: string) {
+  const call = harness() === 'claude' ? cutOffCall(transcriptTail(session)) : undefined
+  return (
+    `[factory] Your VM restarted and this session was resumed.${cutOffNote(call)} Carry on where you left off: ` +
+    `check git status and git log first. When finished, report exactly once, as your brief says.`
+  )
+}
+
+/** the end of a Claude session's transcript, else of the turn stream; empty when neither is there */
+function transcriptTail(session: string) {
+  const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+  for (const f of [file, join(own(), 'claude.jsonl')]) {
+    try {
+      const size = statSync(f).size
+      const buf = Buffer.alloc(Math.min(size, 512 * 1024))
+      const fd = openSync(f, 'r')
+      readSync(fd, buf, 0, buf.length, size - buf.length)
+      closeSync(fd)
+      return buf.toString()
+    } catch {
+      // not there: try the next
+    }
+  }
+  return ''
 }
 
 export function prompt(base64: string) {

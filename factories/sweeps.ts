@@ -8,13 +8,18 @@ import type { Factory } from '../src/machine'
 //   monitor   production watch, read-only, every 30 min, on a rig with a `--slo` command set
 //   drift     GitOps drift watch, read-only, hourly, on a rig with a `--drift` command set
 //   maintain  dependency, advisory and docs maintenance, once a day
+//   ci        red main-branch CI, every 2 h; a run starts only when `sweep()` finds a new red
+//   flakes    flaky tests of the last 7 days, once a week; a run starts only when it finds a candidate
+//   advisories  dependency and base-image CVEs, once a week; `factory advisories file` does the filing
+//   maintain  dependency, end-of-life runtime and docs maintenance, once a day
 //   improve   refactor, performance, cost and factory-health review, once a day, lens in rotation
+//   hygiene   proposes closing shipped, duplicate and stale beads, once a day, in code (no model, no run)
 //
 // Each pass files what it finds as separate work in the backlog. The flood guard
 // (src/sweeps.ts's `sweepGuard`, applied in `dispatch()`) caps every rig at 5 sweep-filed beads in
 // any 24 hour window. It starts a kept bead on its own only when the bead carries
-// `sweep-queue:incident`, `sweep-queue:main-ci-red` or `sweep-queue:critical-advisory`. Every other
-// bead waits for a person.
+// `sweep-queue:incident`, `sweep-queue:main-ci-red`, `sweep-queue:critical-advisory` or
+// `sweep-queue:flaky-test`. Every other bead waits for a person.
 //
 // This file is self-contained. It does not import from lifecycle.ts. This lets `ownCopy` and
 // `factory adopt` copy it into a repo on its own.
@@ -42,7 +47,7 @@ const guardNote = (station: string) =>
   `The factory labels what you file sweep:${station}, and keeps at most 5 such beads for this rig in ` +
   `any 24 hour window; a later finding still gets filed, just held for a person instead of started. ` +
   `It starts a kept one on its own only when it also carries sweep-queue:incident, ` +
-  `sweep-queue:main-ci-red or sweep-queue:critical-advisory: label a finding one of those only when ` +
+  `sweep-queue:main-ci-red, sweep-queue:critical-advisory or sweep-queue:flaky-test: label a finding one of those only when ` +
   `it earns it. Every other finding waits for a person to prioritize.`
 
 export default {
@@ -59,6 +64,14 @@ export default {
   maxSteps: 24,
   rules,
   nodes: {
+    // sweep() in src/cli.ts handles this station in code (src/hygiene.ts). It starts no run and
+    // never closes a bead. The prompt only keeps the node valid.
+    hygiene: {
+      everyMin: 1440,
+      timeoutMin: 5,
+      prompt: 'Code-only pass: the factory runs it itself and starts no worker here. Report filed.',
+      next: { filed: 'done' },
+    },
     monitor: {
       runner: LAPTOP,
       everyMin: 30,
@@ -82,13 +95,48 @@ ${guardNote('drift')}
 Report filed with the resources you checked, what you filed and what you commented on.`,
       next: { filed: 'done' },
     },
+    ci: {
+      runner: LAPTOP,
+      everyMin: 120,
+      timeoutMin: 20,
+      prompt: `One pass on a red main branch. The factory read the CI runs of the default branch before it started you. Your inbox holds one line for each red workflow that no open bead tracks yet: its key (ci-red:<workflow id>-<first failing SHA, 7 characters>), the workflow name, the first failing SHA and the URL of the newest run. The mail holds no log text.
+Read the failing run's log (\`gh run view <id> --log-failed\`) and find the cause. File ONE bead for all the keys in your inbox: \`bd create -t bug -p 1\`, with the labels factory, station:plan, sweep-queue:main-ci-red and every key from the mail. Put the diagnosis, the first failing SHA and the run URLs in its description. Do not file a second bead for the same keys.
+${guardNote('ci')}
+Report filed with the keys and the bead id.`,
+      next: { filed: 'done' },
+    },
+    flakes: {
+      runner: LAPTOP,
+      everyMin: 10080,
+      timeoutMin: 30,
+      prompt: `One weekly pass on flaky tests. The factory read the last 7 days of CI runs of the default branch before it started you. Your inbox holds up to three candidates, each a test that failed in 2 or more runs that later passed: its id, its key (flake:<12 hex characters>), the number of flaky runs n, queue (true or false) and the run URLs. The mail holds no log text.
+File one bead for each candidate: title \`quarantine + fix flaky test: <id>\`, \`bd create -t bug -p 2\`, with the candidate's key as a label. Put the evidence (the run URLs and the failure you read in the log) in the description. Add the labels factory, station:plan and sweep-queue:flaky-test only when the candidate has queue true. Without queue, file the bead with no factory label.
+${guardNote('flakes')}
+Report filed with the ids and the beads you filed.`,
+      next: { filed: 'done' },
+    },
     maintain: {
       everyMin: 1440,
       timeoutMin: 60,
-      prompt: `One pass of maintenance. Look for, most urgent first: security advisories on dependencies and base images; failing or flaky tests and CI jobs; deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code.
-File each item worth doing as separate work, at most five per pass, skipping what is already tracked. A security advisory starts on its own at the plan station, labeled sweep-queue:critical-advisory; a red main-branch CI run starts on its own at the plan station too, labeled sweep-queue:main-ci-red; everything else is for a person to prioritize.
+      prompt: `One pass of maintenance. Look for, most urgent first: deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code. The ci and flakes sweeps own red main-branch CI and flaky tests: do not file those.
+File each item worth doing as separate work, at most five per pass, skipping what is already tracked. The advisories sweep owns security advisories; do not file them. Everything else is for a person to prioritize.
 ${guardNote('maintain')}
 Report filed with what you filed and what you skipped on purpose.`,
+      next: { filed: 'done' },
+    },
+    advisories: {
+      runner: LAPTOP, // the person's gh reads Dependabot alerts, and the live bin/factory has the filing command
+      everyMin: 10080,
+      timeoutMin: 45,
+      prompt: `One pass of the advisories sweep: dependency and base-image CVEs. You only collect. A command does the dedupe and the filing.
+1. Dependabot: \`gh api --paginate 'repos/<owner>/<repo>/dependabot/alerts?state=open'\`. If it answers 403 or 404, set dependabot to "off". A person must enable the alerts; you never do.
+2. Also run the audit tool of each lockfile: \`bun audit --json\`, \`npm audit --json\`, \`govulncheck -json\`, \`pip-audit -f json\`. On a GitOps rig, scan the image refs with trivy or grype if installed; if not, write "image scan skipped" in your report.
+3. Read the installed version of each package from the lockfile. Use null when you cannot find it, and null for a missing fix.
+4. Write .scratch/advisories.json: {"repo":"<owner>/<repo>","dependabot":"ok"|"off","advisories":[{"id":"GHSA-...|CVE-...","aliases":[],"severity":"critical|high|medium|low","package":"","ecosystem":"","installed":"1.2.3"|null,"fixed":"1.2.4"|null,"source":"dependabot|bun-audit|...","manifest":"bun.lock"}]}. Copy no free text (summary, description) into it: the command refuses a bad field and files nothing.
+5. Run \`factory advisories file .scratch/advisories.json\`. It skips every advisory id already filed, files critical and high ones (a major-version bump is held for a person, with no auto-start label), and puts medium and low ones in one digest bead. Never file an advisory bead by hand, and never set a label on one.
+No lockfile and no image refs: report filed 0.
+${guardNote('advisories')}
+Report filed with the command's last line (filed N, queued, held, digest rows, owner step).`,
       next: { filed: 'done' },
     },
     improve: {

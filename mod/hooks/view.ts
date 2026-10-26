@@ -7,6 +7,7 @@ import type {
   FactoryPlanFinding,
   FactoryPlanItem,
   FactoryPrs,
+  FactoryReviewRow,
   FactoryRig,
   FactoryRigPlan,
   FactoryRun,
@@ -230,6 +231,7 @@ export const clockOf = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 const idleKey = (r: FactoryRun) => `idle:${r.rig}`
+const verdictKey = (r: FactoryReviewRow) => `verdict:${r.key}`
 const blockKey = (r: FactoryRun) => `${r.id}:${r.node}:${r.since}`
 
 /** one manager message, across ticks: a run's mail is told apart by when it was sent */
@@ -461,8 +463,11 @@ export function patrol(
   log: readonly string[] = [],
   plan?: FactoryPlan,
   now: number = Date.now(),
+  reviews: readonly FactoryReviewRow[] = [],
 ) {
   const live = runs.filter(isRunLive)
+  // a verdict the patrol has not told yet is news, like a new idle rig (claude-factory-ag2)
+  const newVerdicts = reviews.filter(r => r.recommendation && !seen.has(verdictKey(r)))
   const blockedAll = live.filter(r => r.agent === 'blocked' && !seen.has(blockKey(r)))
   const blocked = blockedAll.filter(r => !hold.has(r.id))
   const mailOut = mail.filter(m => !hold.has(m.run))
@@ -473,7 +478,7 @@ export function patrol(
   const hasRoom = goals.some(g => busy(g) < (g.maxRuns ?? Infinity))
   // ponytail: told once per rig for the session; a rig that idles again later waits for a restart or other news
   const idle = runs.filter(r => r.idle && !seen.has(idleKey(r)))
-  const noNews = !mailOut.length && !blocked.length && !idle.length
+  const noNews = !mailOut.length && !blocked.length && !idle.length && !newVerdicts.length
   if (noNews && !(isDue && (isWorking || hasRoom))) return null
 
   const held = (r: FactoryRun) => (hold.has(r.id) ? ', held: the person is on it, leave it' : '')
@@ -501,7 +506,24 @@ export function patrol(
     ...mailOut.map(m => `- ${m.run} / ${m.from}: ${line(m.text, 300)}`),
     ...blocked.map(r => `- ${r.id} / ${r.node}: its worker (pane ${r.pane}) is waiting on a prompt`),
     ...idle.map(r => `- rig ${r.rig}: idle, ${r.idle}. Set it a goal or queue beads for it.`),
+    ...newVerdicts.map(
+      r => `- reviewer: ${r.kind} ${r.name} is ${r.recommendation}: ${line(r.why ?? '', 300)}`,
+    ),
   ]
+  // every item that waits on the manager, with the reviewer's verdict or none yet; the section is
+  // text only, the same as the plan: the manager or the person confirms (claude-factory-ag2)
+  const reviewSection = reviews.length
+    ? `Proposals to review:\n${reviews
+        .map(
+          r =>
+            `- ${r.kind} ${r.name} (${r.change}): ${
+              r.recommendation
+                ? `reviewer says ${r.recommendation}: ${line(r.why ?? '', 300)}`
+                : 'not reviewed yet'
+            }`,
+        )
+        .join('\n')}`
+    : undefined
   // one line per rig with a live run or a goal, so a compacted transcript keeps this even without the board
   const rigLine = (g: FactoryRig) => {
     const s = rigStats(g, runs)
@@ -520,10 +542,17 @@ export function patrol(
       ? `New:\n${news.join('\n')}`
       : 'Heartbeat: nothing new was reported. Check that every working station is making progress.',
     state,
+    ...(reviewSection ? [reviewSection] : []),
     ...(plannedWork ? [plannedWork] : []),
     ...(log.length ? [`Earlier patrols:\n${log.map(a => `- ${a}`).join('\n')}`] : []),
   ].join('\n')
-  return { text, keys: [...blocked.map(blockKey), ...idle.map(idleKey)], board: state, sig, kept }
+  return {
+    text,
+    keys: [...blocked.map(blockKey), ...idle.map(idleKey), ...newVerdicts.map(verdictKey)],
+    board: state,
+    sig,
+    kept,
+  }
 }
 
 /** "patrol 3m ago", drawn in the header and the band; '' before any patrol has run */
@@ -692,8 +721,17 @@ export type Interview = {
   /** other open items that ask the same decision. `mergeSame` folds them into this one. An answer also goes
    * down the path of each member. */
   also?: Interview[]
+  /** the exact owner-only command a parked run waits on ("parked, waiting on: <step>"). Such an item never merges. */
+  step?: string
   at: number
 }
+
+/** the command or step a run asks the person to do: what follows "parked, waiting on:" in its report */
+export const ownerStep = (text: string): string | undefined =>
+  text
+    .match(/parked,\s+waiting\s+on:[ \t]*(.+)/i)?.[1]
+    ?.replace(/\s+/g, ' ')
+    .trim()
 
 /** `factory decisions`' shape: a rig's open bd decisions, or what stopped it reading them */
 export type Decision = {
@@ -868,6 +906,7 @@ export function interviews(runs: readonly FactoryRun[], answered: Record<string,
       details: raw,
       needsProposal: needsProposalOf(!!a.question, question, options),
       hasOwnQuestion: !!a.question,
+      step: parked ? ownerStep(raw) : undefined,
       at,
     })
   }
@@ -933,7 +972,7 @@ export function beadInterviews(
  * stand-in line can repeat across unrelated runs parked at the same station. Merging those would answer one
  * run's question for another.
  *
- * A gate or a blocked-on-prompt item never merges. Each stays its own item.
+ * A gate, a blocked-on-prompt item or an owner step (`step`) never merges. Each stays its own item.
  *
  * The oldest member is the visible item, and it keeps its key. The other members fold into `also`. An answer
  * to the item still reaches each member down its own path. For a run, the path is mail, then retry or abort.
@@ -948,7 +987,7 @@ export function mergeSame(items: readonly Interview[]): Interview[] {
   const groups = new Map<string, Interview[]>()
   const solo: Interview[] = []
   for (const iv of items) {
-    if (iv.kind === 'gate' || iv.kind === 'prompt') {
+    if (iv.kind === 'gate' || iv.kind === 'prompt' || iv.step) {
       solo.push(iv)
       continue
     }

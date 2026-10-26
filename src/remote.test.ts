@@ -927,8 +927,8 @@ test('rig add --egress and --agent are for a runner that can take them', () => {
   expect(add('--egress', 'api.openai.com=OPENAI').err).toContain('add --runner ax')
   expect(add('--runner', 'ax', '--egress', 'https://x.com').err).toContain('not a hostname')
   expect(add('--runner', 'ax', '--egress', 'api.openai.com=openai').err).toContain('SCREAMING_SNAKE_CASE')
-  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude or pi')
-  expect(add('--runner', 'ax', '--agent', 'codex -m o3').err).toContain('claude-factory-72dq')
+  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude, codex or pi')
+  expect(add('--runner', 'ax', '--agent', 'codex -m o3').err).toContain('FACTORY_AX_CODEX=1')
   expect(add('--runner', 'ax', '--mcp', join(dir, 'mcp.json')).err).toContain('--mcp does not reach')
   const ok = add(
     ...['--runner', 'ax', '--agent', 'pi', '--egress', 'api.openai.com=OPENAI'],
@@ -1558,6 +1558,27 @@ describe('an AX worker that never started', () => {
     rmSync(join(home, 'runs', id), { recursive: true })
   })
 
+  test('a retried policy uses the reviewer key only when the side file says reviewer (claude-factory-0gww.2)', () => {
+    const sent = join(dir, 'rv-retry-sent')
+    const kubectl = join(dir, 'capture-rv-retry')
+    for (const [id, reviewer] of [
+      ['rvretry-yes', true],
+      ['rvretry-old', undefined],
+    ] as const) {
+      launchedAfterFail(id, 'old failure', 120)
+      writeFileSync(
+        kubectl,
+        `#!/bin/sh\ncase "$*" in *"get deployment ax-controller"*) exec ${readyController()} "$@" ;; esac\ncat > ${sent}\n`,
+      )
+      chmodSync(kubectl, 0o755)
+      cluster('Running', { status: 'working', lines: [] })
+      setSide(id, { policy: false, egress: [], githubOwner: 'acme', ...(reviewer && { reviewer }) })
+      factory(['tick'], { FACTORY_KUBECTL: kubectl, FACTORY_AX_VAULT: 'factory' })
+      expect(readFileSync(sent, 'utf8').includes('GITHUB_REVIEWER')).toBe(!!reviewer)
+      rmSync(join(home, 'runs', id), { recursive: true })
+    }
+  })
+
   test("a retried egress policy keeps the task's GitHub owner, so a zach-source rig keeps its keys", () => {
     const sent = join(dir, 'policy-sent')
     const kubectl = join(dir, 'capture-create')
@@ -1611,4 +1632,193 @@ esac
     expect(lastFail(id)).toBe('no report within 45 min')
     rmSync(join(home, 'runs', id), { recursive: true })
   })
+})
+
+test('a reviewer station of a rig whose owner is FACTORY_AX_REVIEWER_OWNER gets the reviewer key, the env and the brief line; others do not (claude-factory-0gww.2)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+    return p.stdout.toString().trim()
+  }
+  mkdirSync(dir, { recursive: true })
+  const sent = join(dir, 'rv-policy-sent')
+  const applied = join(dir, 'rv-applied')
+  const kubectl = join(dir, 'capture-rv')
+  writeFileSync(
+    kubectl,
+    `#!/bin/sh\ncase "$*" in *create*) cat > ${sent} ;; *) exec ${readyController()} "$@" ;; esac\n`,
+  )
+  chmodSync(kubectl, 0o755)
+  const cases = [
+    ['rv1', 'review', 'acme', 'acme', true],
+    ['rv2', 'security', 'acme', 'acme', true],
+    ['rv3', 'check', 'acme', 'acme', true],
+    ['rv4', 'implement', 'acme', 'acme', false],
+    ['rv5', 'review', 'acme', 'other', false],
+    ['rv6', 'review', 'acme', undefined, false],
+  ] as const
+  for (const [id, node, owner, flag, reviewer] of cases) {
+    rmSync(sent, { force: true })
+    rmSync(applied, { force: true })
+    const rdef: Factory = {
+      name: 'one',
+      start: node,
+      nodes: { [node]: { prompt: 'do', next: { ready: 'done' } } },
+    }
+    const origin = join(dir, id, `github.com/${owner}/widget.git`)
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(rdef)}`)
+    const run = { id, factory: join(runDir, 'factory.ts'), repo: worktree, goal: 'g', ws: 'w1', worktree }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(rdef)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    // the cluster fake, but it keeps the manifest that ax apply reads on stdin
+    writeFileSync(
+      join(dir, 'ax'),
+      `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "apply -f") cat > ${applied} ;;
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*) cat ${dir}/ssh ;;
+esac
+`,
+    )
+    const out = factory(['tick'], {
+      FACTORY_AX_IMAGE: 'img',
+      FACTORY_KUBECTL: kubectl,
+      FACTORY_AX_VAULT: 'factory',
+      ...(flag && { FACTORY_AX_REVIEWER_OWNER: flag }),
+    }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    const sideName = readdirSync(runDir).find(f => /^f-.*\.json$/.test(f))!
+    const side = JSON.parse(readFileSync(join(runDir, sideName), 'utf8'))
+    const policy = readFileSync(sent, 'utf8')
+    const brief = readFileSync(join(runDir, sideName.replace(/\.json$/, '.brief.md')), 'utf8')
+    expect(side.reviewer).toBe(reviewer ? true : undefined)
+    expect(policy.includes('GITHUB_REVIEWER')).toBe(reviewer)
+    expect(readFileSync(applied, 'utf8').includes('FACTORY_GH_REVIEWER')).toBe(reviewer)
+    expect(brief.includes('reviewer identity')).toBe(reviewer)
+    rmSync(runDir, { recursive: true })
+  }
+}, 90_000) // git clones and whole ticks
+
+// claude-factory-hr94: an AX worker sends its usage with its report
+const usageRow = (over: Record<string, unknown> = {}) => ({
+  session: 's1',
+  model: 'claude-opus-4-7',
+  input: 1,
+  cacheWrite: 2,
+  cacheRead: 300,
+  output: 4,
+  turns: 5,
+  peak: 303,
+  ...over,
+})
+const storedRows = (id: string) =>
+  readFileSync(join(home, 'runs', id, 'usage.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+
+test("inside a VM, a report carries the session's usage, subagents included (hr94 AC6)", () => {
+  mkdirSync(dir, { recursive: true })
+  const own = join(dir, 'vm-own')
+  const claudeHome = join(dir, 'vm-claude')
+  mkdirSync(join(claudeHome, 'projects', 'p', 'sess-9', 'subagents'), { recursive: true })
+  mkdirSync(own, { recursive: true })
+  writeFileSync(join(own, 'state.json'), JSON.stringify({ status: 'working', session: 'sess-9', pid: 1 }))
+  const turn = (id: string, model: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { id, model, usage: { input_tokens: 1, cache_read_input_tokens: 9, output_tokens: 2 } },
+    })
+  writeFileSync(join(claudeHome, 'projects', 'p', 'sess-9.jsonl'), turn('a', 'claude-opus-4-7') + '\n')
+  writeFileSync(
+    join(claudeHome, 'projects', 'p', 'sess-9', 'subagents', 'agent-1.jsonl'),
+    turn('b', 'claude-haiku-5-5') + '\n',
+  )
+  const outbox = join(dir, 'outbox-usage.jsonl')
+  const env = {
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'a',
+    FACTORY_WORKER_DIR: own,
+    CLAUDE_CONFIG_DIR: claudeHome,
+  }
+  expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)
+  const line = JSON.parse(readFileSync(outbox, 'utf8').trim())
+  expect(line.argv).toEqual(['report', 'r1', '1', 'ready', 'done'])
+  expect(line.usage.map((u: { model: string }) => u.model).sort()).toEqual([
+    'claude-haiku-5-5',
+    'claude-opus-4-7',
+  ])
+  expect(line.usage[0]).toMatchObject({ session: 'sess-9', input: 1, cacheRead: 9, output: 2 })
+})
+
+test("a replayed AX report stores the VM's usage as its station, and bad usage never refuses the report (hr94 AC6, AC7)", () => {
+  const seq = launched('ru1')
+  const rows = [
+    usageRow({ node: 'evil', seq: 99 }), // node and seq come from the laptop, not the VM
+    usageRow({ model: 'bad model!' }),
+    usageRow({ session: 's2', cacheRead: NaN }),
+    usageRow({ session: 's3', output: -1 }),
+    usageRow({ session: 's4', peak: 1e13 }),
+    usageRow({ session: 's5', turns: 1.5 }),
+    usageRow({ session: 's6', model: 'claude-haiku-5-5' }),
+    'junk',
+  ]
+  const report = JSON.stringify({
+    argv: ['report', 'ru1', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 1,
+    usage: rows,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+  expect(factory(['tick']).code).toBe(0)
+  expect(inbox('ru1')).toContain('"outcome":"ready"')
+  const stored = storedRows('ru1')
+  expect(stored.map(r => [r.session, r.model, r.node, r.seq])).toEqual([
+    ['s1', 'claude-opus-4-7', 'a', seq],
+    ['s6', 'claude-haiku-5-5', 'a', seq],
+  ])
+  rmSync(join(home, 'runs', 'ru1'), { recursive: true })
+})
+
+test('AX usage with 21 rows, or not an array, is ignored and the report still lands (hr94 AC7)', () => {
+  for (const [id, usage] of [
+    ['ru2', Array.from({ length: 21 }, () => usageRow())],
+    ['ru3', 'lots'],
+  ] as const) {
+    const seq = launched(id)
+    const report = JSON.stringify({
+      argv: ['report', id, String(seq), 'ready', 'x'],
+      from: 'a',
+      at: 1,
+      usage,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+    expect(factory(['tick']).code).toBe(0)
+    expect(inbox(id)).toContain('"outcome":"ready"')
+    expect(existsSync(join(home, 'runs', id, 'usage.jsonl'))).toBe(false)
+    rmSync(join(home, 'runs', id), { recursive: true })
+  }
 })
