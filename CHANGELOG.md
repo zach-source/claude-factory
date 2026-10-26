@@ -7,6 +7,7 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - New: the `factory-rig` plugin, with three skills for a Claude session in a rig repo. `factory-handoff` writes a bead that a worker can start from (why, what, acceptance, the branch in progress, owner decisions) and queues it. `factory-prioritize` changes what the factory does next: priority, queue or unqueue, hold, and a message to a live run. `factory-status` shows the rig's runs, its ship queue and what waits on the person. Each skill uses the factory CLI when the factory home is on the same machine, and bd with `bd dolt push` when the manager runs on another machine. Install it with `/plugin install factory-rig@claude-factory`.
+- Docs: `docs/beads.md` describes the filing guard (caps 6, 3 and 24 hours), the `clusterRuns` rig setting (default 2), the `file-churn` finding and how to release a held bead with `factory queue` (claude-factory-nwlh.6).
 
 ## 0.15.0 (2026-10-24)
 
