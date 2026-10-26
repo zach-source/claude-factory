@@ -8,7 +8,7 @@ const SLOW = { timeoutMs: 30_000 }
 const TICK = {
   manager: [],
   rigs: [{ name: 'api', repo: '/w/api', factory: 'lifecycle', maxRuns: 5, goal: 'ship it' }],
-  runs: [{ id: 'r1', rig: 'api', node: 'implement', sub: 'working', goal: 'g' }],
+  runs: [{ id: 'r1', rig: 'api', node: 'implement', sub: 'working', goal: 'g', model: 'gpt-6.1-sol' }],
 }
 
 async function mountBoard($: any, on: any, rigs: unknown[] = TICK.rigs) {
@@ -126,7 +126,7 @@ test(
 )
 
 test(
-  'the runners tab groups rigs and live runs by runner, an ax rig with its sandbox class',
+  'the runners tab groups rigs and live runs by runner, an ax rig with its sandbox class, each run with its model',
   SLOW,
   async ($, on) => {
     await mountBoard($, on, [
@@ -147,6 +147,8 @@ test(
     expect(drawn).toContain('"key":"runners-ax"')
     expect(drawn).toContain('vm (microvm) (off)')
     expect(drawn).toContain('"key":"runners-run-r1"')
+    expect(drawn).toContain('"key":"runners-model-r1"')
+    expect(drawn).toContain('gpt-6.1-sol')
     await ui.unmount()
   },
 )

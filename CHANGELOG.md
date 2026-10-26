@@ -6,7 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
-- New: the console has a Runners tab (key 7; claude-factory-oulo). It has one section for each runner (`herdr`, `ax`). Each section lists the runner's rigs, with the sandbox class and `(off)` for `maxRuns` 0, and its live runs with rig, station and pane.
+- New: the console has a Runners tab (key 7; claude-factory-oulo). It has one section for each runner (`herdr`, `ax`). Each section lists the runner's rigs, with the sandbox class and `(off)` for `maxRuns` 0, and its live runs with rig, station, model and pane. `factory tick` and `factory show` rows have a new `model` field: the model of the station's worker.
 - New: lifecycle `plan` and `review` can run on Codex (claude-factory-6w27). The new params are `codex_judge_model` (default `gpt-6-astra`) and `codex_judge_share` (default `0`, so off). If a rig sets the share, that share of its runs use Codex at both stations. `check` and `incident` stay on Claude.
 - Fix: a codex worker can run in a repo whose `.codex` dir is the one that `bd init` writes (claude-factory-8cu6). That dir turns on only `features.hooks` and runs only `bd codex-hook <event>` at SessionStart, UserPromptSubmit, PreCompact and PostCompact. The guard still refuses every other `.codex` dir, on the laptop and in the VM.
 - New: every worker backend gets the worker plugins' skills (constitution I; claude-factory-fxu, claude-factory-qo6i, claude-factory-hg9o):

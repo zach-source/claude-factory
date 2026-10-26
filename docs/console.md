@@ -240,7 +240,7 @@ data comes from `factory tick`.
 A section header shows the runner's rig count, its busy runs and its live runs. Below it, a
 line lists the rigs on that runner. A rig shows its sandbox class (for example `microvm`) when
 it has one, and `(off)` when its `maxRuns` is 0. Then each live run has one row: its id, rig,
-station and state, and pane (`ax://<task>` for a VM worker).
+station and state, model, and pane (`ax://<task>` for a VM worker).
 
 A run goes to its rig's runner. A run with no rig goes to `ax` if its pane is an `ax://`
 task, and to `herdr` if not.

@@ -328,6 +328,8 @@ export type Row = {
   attempts?: number
   pane?: string | null
   agent?: string | null
+  /** the model its station's worker runs (the agent command's --model or -m); absent at a gate or with no model flag */
+  model?: string
   ws?: string
   error?: string | null
   last?: Entry
@@ -2751,6 +2753,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     attempts: 1 + retries,
     pane: c.pane,
     agent,
+    ...(n && !n.gate && { model: ax.modelOf(agentOfNode(run, def, node)) }),
     ws: run.ws,
     error: error ?? c.error,
     ...(c.log.length && { last: { ...c.log.at(-1)!, summary: clip(c.log.at(-1)!.summary, 400) } }),
