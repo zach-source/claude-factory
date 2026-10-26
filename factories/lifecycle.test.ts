@@ -355,7 +355,7 @@ test('small AC3: check changes loops back through quick; quick full joins the fu
   expect(lifecycle.nodes.check!.rounds).toBe(3)
 })
 
-test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for security; quick is Sonnet, check is Opus', () => {
+test('small AC4/AC5/AC6: check marks an approved PR ready and promises a diff summary for security; quick is Sonnet, check is Opus', () => {
   const check = lifecycle.nodes.check!
   for (const needle of [
     'draft',
@@ -366,8 +366,9 @@ test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for sec
     '+N more',
   ])
     expect(check.prompt).toContain(needle)
-  expect(check.prompt).not.toContain('mark it ready')
-  expect(check.prompt).toContain('ship marks it ready')
+  // claude-factory-usp5: the approving station marks the pull request ready, not only ship
+  expect(check.prompt).toContain('mark the pull request ready: \`gh pr ready <n> -R <owner>/<repo>\`')
+  expect(check.prompt).toContain('Do not mark it ready when you report changes or security')
   expect(ship.nodes.release.prompt).toContain('mark it ready')
   expect(check.agent).toContain('{judge_model}')
   expect((lifecycle as Factory).nodes.quick!.agent).toBeUndefined()

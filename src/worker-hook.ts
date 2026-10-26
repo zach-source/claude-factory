@@ -26,9 +26,9 @@
  * GitHub's admin bypass lets a worker merge, even under a ruleset that needs a review.
  * Before this guard, two pull requests merged before their review ran (ax-aw1).
  *
- * It also denies `gh pr ready` outside the release station (claude-factory-zl5.2).
- * Implement opens a pull request as a draft. Only release marks it ready for review, once verify,
- * review and security pass. `gh pr ready --undo` (back to draft) is always allowed.
+ * It also denies `gh pr ready` outside the release station and the approving stations (review,
+ * security, check) (claude-factory-zl5.2, claude-factory-usp5). Implement opens a pull request as a
+ * draft. The station that approves it marks it ready. `gh pr ready --undo` (back to draft) is always allowed.
  *
  * It also denies a `git push` to a protected branch (claude-factory-zl5.3).
  * A protected branch is main or master: the rig's default branch.
@@ -127,17 +127,21 @@ export const MERGE_REASON =
 export const MERGE_FORM_REASON =
   'The factory denies this command: this rig gives the ship release station merge authority, but ' +
   'only one form. Run exactly: gh pr merge <number> --merge --match-head-commit <40-hex head SHA>, ' +
-  'with -R set to the owner/repo of this rig (required). Use no other flag, no URL, no variable and no alias. ' +
+  'with -R set to the owner/repo of this rig (required). Add --auto for a repo with a merge queue. ' +
+  'Use no other flag, no URL, no variable and no alias. ' +
   'Do not retry this exact command.'
 
 // claude-factory-zl5.2
 export const READY_REASON =
-  'The factory denies this command: only the release station marks a pull request ready for ' +
-  'review. Keep the pull request a draft here; report its link in your summary. Release marks it ' +
-  'ready after verify, review and security pass. Do not retry this command.'
+  'The factory denies this command: only the station that approves a pull request (review, ' +
+  'security, check) or release marks it ready for review. Keep the pull request a draft here; ' +
+  'report its link in your summary. Do not retry this command.'
 
 // claude-factory-0gww.3: the stations that may run as the reviewer identity (the same names as REVIEWER_STATIONS in ax.ts)
 const REVIEWER_STATIONS = ['review', 'security', 'check']
+// claude-factory-usp5: the approving stations and release may mark a pull request ready
+const mayReady = (gate: HookGate) =>
+  gate.station === 'release' || REVIEWER_STATIONS.includes(gate.station ?? '')
 
 // claude-factory-0gww.3
 export const APPROVE_REASON =
@@ -4799,6 +4803,7 @@ function prMergeReason(
   if (aliasDepth !== 0 || skipBlank || tail[0] !== 'pr' || tail[1] !== 'merge') return MERGE_FORM_REASON
   let num = false
   let merge = false
+  let auto = false
   let sha = false
   let repo = false
   const w = tail.slice(2)
@@ -4806,6 +4811,8 @@ function prMergeReason(
     const a = w[k]!
     if (MERGE_PR_NUMBER.test(a) && !num) num = true
     else if (a === '--merge' && !merge) merge = true
+    // claude-factory-usp5: --auto enqueues on a repo with a merge queue; the ruleset still needs its review
+    else if (a === '--auto' && !auto) auto = true
     else if ((a === '--match-head-commit' || a.startsWith('--match-head-commit=')) && !sha) {
       const v = a.includes('=') ? a.slice(a.indexOf('=') + 1) : w[++k]
       if (v === undefined || !MERGE_SHA.test(v)) return MERGE_FORM_REASON
@@ -4880,7 +4887,7 @@ function ghReasonOn(
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
   if (verb === 'pr' && sub === 'ready') {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
-    return gate.station === 'release' ? undefined : READY_REASON
+    return mayReady(gate) ? undefined : READY_REASON
   }
   if (
     verb === 'pr' &&
@@ -4895,7 +4902,7 @@ function ghReasonOn(
     // words. Every check below already reads these words, so this runs first.
     const apiArgs = expandGhShortClusters(tail.slice(vi + 1))
     if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
-    if (ghApiReadyDenied(apiArgs, gate)) return gate.station === 'release' ? undefined : READY_REASON
+    if (ghApiReadyDenied(apiArgs, gate)) return mayReady(gate) ? undefined : READY_REASON
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
     if (!gate.reviewer && ghApiReviewDenied(apiArgs, gate)) return APPROVE_REASON
 
@@ -4926,7 +4933,7 @@ function ghReasonOn(
     if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return mergeDenyReason(gate)
     if (verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['ready']))) {
       if (hasMutatingWordBeforeDashDash(rest, new Set(['--undo']))) return undefined
-      return gate.station === 'release' ? undefined : READY_REASON
+      return mayReady(gate) ? undefined : READY_REASON
     }
     if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
     if (!gate.reviewer && verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['review']))) {
@@ -4936,7 +4943,7 @@ function ghReasonOn(
   if (uncertain) {
     if (hasMutatingWordBeforeDashDash(tail, new Set(['merge', 'sync']))) return mergeDenyReason(gate)
     if (hasMutatingWordBeforeDashDash(tail, new Set(['ready'])))
-      return gate.station === 'release' ? undefined : READY_REASON
+      return mayReady(gate) ? undefined : READY_REASON
     // claude-factory-c63.10: an unknown global flag can hide the `pr` word the same way it
     // hides `verb` above, so a plain word scan for `checkout` is the only check left. No
     // probe today reaches a real `gh pr checkout` call this way: real gh exits with code 1
