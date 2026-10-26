@@ -87,6 +87,9 @@ COPY factories factories
 # and serve never runs. The manager's Claude also loads it as a plugin dir: join(ROOT, 'mod') in src/cli.ts
 COPY mod mod
 RUN ln -s /opt/factory/bin/factory /usr/local/bin/factory
+# memory search's embedding model, in transformers' cache under node_modules: a VM cannot download it through the
+# egress gateway (TLS fails), so without it `factory memory search` fails in every worker (claude-factory-2yvv)
+RUN bun -e "await (await import('./src/memory.ts')).fetchModel()"
 
 # workers commit as the factory; Substrate's egress gateway puts the real keys in on the way out. Root (an `ax ssh`
 # shell) may read the worker's repos without git's dubious-ownership refusal

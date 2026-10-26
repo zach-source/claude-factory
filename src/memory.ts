@@ -434,6 +434,8 @@ async function embed(texts: string[]) {
     out.push(...(await embedder!(texts.slice(i, i + 32), { pooling: 'cls', normalize: true })).tolist())
   return out
 }
+/** download the model into transformers' cache: the worker image runs it at build, since a VM cannot fetch it */
+export const fetchModel = () => embed(['warm'])
 
 type Index = { model: string; vecs: Record<string, { hash: string; vec: number[] }> }
 const textOf = (n: Note) => `${n.summary}\n${n.body}`.slice(0, 2000) // bge reads 512 tokens
