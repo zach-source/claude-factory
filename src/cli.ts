@@ -104,6 +104,7 @@ import {
   CODEX_UNGUARDED,
   claudeCommand,
   codexFeaturesBad,
+  beadsOnlyCodexDir,
   codexSkills,
   command,
   cutOffCall,
@@ -2148,9 +2149,10 @@ export function codexWorker(
   if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
   const off = codexGuardOff(agent)
   if (off) fail(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
-  // the home trusts the worktree so codex shows no folder prompt; a .codex entry there would load unguarded config
+  // the home trusts the worktree so codex shows no folder prompt; a .codex entry there would load unguarded config,
+  // unless it is the one `bd init` writes (claude-factory-8cu6)
   for (let d = resolve(run.worktree); ; d = dirname(d)) {
-    if (existsSync(join(d, '.codex')))
+    if (existsSync(join(d, '.codex')) && !beadsOnlyCodexDir(join(d, '.codex')))
       fail(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
     if (existsSync(join(d, '.git')) || dirname(d) === d) break
   }

@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import {
+  cpSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -192,6 +193,9 @@ test('a codex launch refuses when the worktree holds a .codex entry', () => {
   expect(() => f.make()).toThrow('.codex')
   rmSync(join(f.run.worktree, '.codex'), { recursive: true })
   mkdirSync(join(f.run.worktree, '.git'), { recursive: true })
+  expect(() => f.make()).not.toThrow()
+  // claude-factory-8cu6: the .codex that bd init writes is allowed
+  cpSync(join(ROOT, 'src', 'fixtures', 'bd-codex'), join(f.run.worktree, '.codex'), { recursive: true })
   expect(() => f.make()).not.toThrow()
 })
 
