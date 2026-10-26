@@ -648,8 +648,9 @@ Lifecycle sends a share of runs to Codex. Two share params set it: `codex_share`
 picks the harness, so one run keeps its harness at every station and attempt. Two params set the
 Codex models: `codex_exec_model` (default `gpt-6.1-sol`) and `codex_security_model` (default
 `gpt-6-astra`). Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
-that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent`, and every
-station on the `ax` runner, never gets Codex. `factory metrics` shows the launches for each station by
+that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent` never gets Codex. A station on the `ax` runner gets the split only with
+`FACTORY_AX_CODEX=1`. There Codex logs in with a ChatGPT subscription by default (the gateway holds
+the token, see `docs/remote-runner.md`). It uses an API key when the rig names `api.openai.com`. `factory metrics` shows the launches for each station by
 harness and model.
 
 ```sh
@@ -953,11 +954,17 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 ```sh
 /plugin marketplace add <path or git URL of this repo>
 /plugin install beads-remote@claude-factory
+/plugin install factory-rig@claude-factory
 ```
 
 - **beads-remote**: a skill and script that make a repo's beads sync through its git remote on
   any host (GitLab, GitHub, any git), or bring a remote's beads into a fresh clone. What a repo
   needs before `factory rig add` on a new machine.
+- **factory-rig**: skills for a Claude session in a rig repo, on any machine that syncs the rig's
+  beads. `factory-handoff` writes a bead that a worker can start from and queues it.
+  `factory-prioritize` changes the queue order, holds or unqueues a bead, and tells a live run.
+  `factory-status` shows the rig's runs, its ship queue and what waits on you. Each skill uses the
+  factory CLI when the factory home is on the same machine, and bd alone when it is not.
 
 ## Define a factory
 

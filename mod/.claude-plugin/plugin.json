@@ -1,6 +1,6 @@
 {
   "name": "factory",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Run herdr software factories through this session: it ticks every run, runs a hidden patrol subagent as its manager, and draws a live console.",
   "author": {
     "name": "ztaylor"

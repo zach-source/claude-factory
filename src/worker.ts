@@ -996,7 +996,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000) {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
   for (const [name, text] of Object.entries(JSON.parse(files) as Record<string, string>))
-    writeFileSync(join(dir, basename(name)), text)
+    writeFileSync(join(dir, basename(name)), text, { mode: 0o600 })
   writeFileSync(
     join(dir, 'AGENTS.md'),
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
@@ -1128,9 +1128,46 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   }
 }
 
+/**
+ * Find the usage limit that ended a codex turn. Read the last turn.failed or error line of `codex exec --json`
+ * output. It is a limit when the message says "You've hit your usage limit" (curly or plain apostrophe).
+ * A later turn.completed, any other failure or a cut first line gives null. `at` is the time of the last write.
+ */
+export function codexLimit(out: string, at = Date.now()) {
+  for (const line of out.split('\n').reverse()) {
+    try {
+      const e = JSON.parse(line)
+      if (e.type === 'turn.completed') return null
+      if (e.type !== 'turn.failed' && e.type !== 'error') continue
+      const text = String(e.type === 'error' ? e.message : e.error?.message)
+      return /hit your usage limit/i.test(text) ? { at, kind: 'usage', resetsAt: 0 } : null
+    } catch {
+      // not a JSON line: the cut first line of the tail
+    }
+  }
+  return null
+}
+
+/** the usage limit in the last 64 KiB of the codex stream; null for another harness or no stream yet */
+function codexLimitNow() {
+  if (harness() !== 'codex') return null
+  try {
+    const file = join(own(), 'codex.jsonl')
+    const { size, mtimeMs } = statSync(file)
+    const buf = Buffer.alloc(Math.min(size, 64 * 1024))
+    const fd = openSync(file, 'r')
+    readSync(fd, buf, 0, buf.length, size - buf.length)
+    closeSync(fd)
+    return codexLimit(buf.toString(), mtimeMs)
+  } catch {
+    return null
+  }
+}
+
 /** the laptop's view: the worker's state and the outbox past its cursor */
 export function poll(cursor: number) {
   const s = state()
+  const limit = codexLimitNow()
   const lines = existsSync(outbox()) ? readFileSync(outbox(), 'utf8').split('\n').filter(Boolean) : []
   return {
     status: !s || !alive(s.pid) ? 'exited' : s.status,
@@ -1141,6 +1178,7 @@ export function poll(cursor: number) {
     bytes: streamBytes(),
     log: logTail(),
     ...(s?.egress && { egress: s.egress }),
+    ...(limit && { limit }),
   }
 }
 
