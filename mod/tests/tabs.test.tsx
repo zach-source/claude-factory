@@ -29,7 +29,7 @@ async function mountBoard($: any, on: any, rigs: unknown[] = TICK.rigs) {
 }
 
 test(
-  'the tab bar is Board..Interview on contiguous hotkeys 1-6, with exactly those 6 tabs and no Run tab',
+  'the tab bar is Board..Runners on contiguous hotkeys 1-7, with exactly those 7 tabs and no Run tab',
   SLOW,
   async ($, on) => {
     await mountBoard($, on)
@@ -52,12 +52,12 @@ test(
         ['Rigs', '4'],
         ['PRs', '5'],
         ['Interview', '6'],
+        ['Runners', '7'],
       ])
         expect(drawn).toContain(`"label":"${label}","hotkey":"${key}"`)
-      // exactly 6 tab buttons: Run folded into Board
-      expect((drawn.match(/"key":"tab-/g) ?? []).length).toBe(6)
-      expect(drawn).toContain('1-6 views')
-      expect(drawn).not.toContain('1-7 views')
+      // exactly 7 tab buttons: Run folded into Board
+      expect((drawn.match(/"key":"tab-/g) ?? []).length).toBe(7)
+      expect(drawn).toContain('1-7 views')
       await ui.unmount()
     }
   },
@@ -122,5 +122,31 @@ test(
       expect(drawn).not.toContain('"key":"rigs-linear-none"')
       await ui.unmount()
     }
+  },
+)
+
+test(
+  'the runners tab groups rigs and live runs by runner, an ax rig with its sandbox class',
+  SLOW,
+  async ($, on) => {
+    await mountBoard($, on, [
+      { name: 'api', repo: '/w/api', factory: 'lifecycle' },
+      { name: 'vm', repo: '/w/vm', factory: 'lifecycle', runner: 'ax', sandboxClass: 'microvm', maxRuns: 0 },
+    ])
+    await $.command.run({ command: 'factory', args: 'runners' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('"key":"runners-herdr"')
+    expect(drawn).toContain('"key":"runners-ax"')
+    expect(drawn).toContain('vm (microvm) (off)')
+    expect(drawn).toContain('"key":"runners-run-r1"')
+    await ui.unmount()
   },
 )

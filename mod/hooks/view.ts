@@ -282,6 +282,19 @@ const isRunLive = (r: Pick<FactoryRun, 'node'>) => !!r.node && r.node !== 'done'
 /** a run holding a worker: neither waiting on a timer nor at a gate */
 const isBusy = (r: FactoryRun) => isRunLive(r) && r.sub !== 'waiting' && !r.gate
 
+/** the live runs and rigs on each runner, herdr first: a run goes by its rig's runner, else by its pane */
+export function byRunner(rigs: readonly FactoryRig[], runs: readonly FactoryRun[]) {
+  const runnerOf = new Map(rigs.map(g => [g.name, g.runner ?? 'herdr']))
+  const groups = new Map<string, { rigs: FactoryRig[]; runs: FactoryRun[] }>([
+    ['herdr', { rigs: [], runs: [] }],
+  ])
+  const group = (name: string) => groups.get(name) ?? groups.set(name, { rigs: [], runs: [] }).get(name)!
+  for (const g of rigs) group(g.runner ?? 'herdr').rigs.push(g)
+  for (const r of runs.filter(isRunLive))
+    group(runnerOf.get(r.rig ?? '') ?? (r.pane?.startsWith('ax://') ? 'ax' : 'herdr')).runs.push(r)
+  return [...groups].map(([name, g]) => ({ name, ...g, busy: g.runs.filter(isBusy).length }))
+}
+
 /** one rig at a glance: its live runs by station, what needs the person, what has ended */
 export function rigStats(rig: Pick<FactoryRig, 'name' | 'maxRuns'>, runs: readonly FactoryRun[]) {
   const mine = runs.filter(r => r.rig === rig.name)
