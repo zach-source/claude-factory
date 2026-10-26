@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Changed: the ship `release` station adds `--auto` to its merge command when the repo's ruleset needs an approving review, not only when the repo has a merge queue. GitHub then merges the pull request after the owner approves it. If the repo does not allow auto-merge, the station stops and names that owner-only setting.
 - Changed: the station that approves a pull request (`review`, `security` or `check`) now marks it ready (claude-factory-usp5). Before, every pull request stayed a draft until the ship `release` station. Implement and the other stations still cannot run `gh pr ready`.
 - New: on a rig with merge authority, the ship `release` station can add `--auto` to its merge command (claude-factory-usp5). On a repo with a merge queue, this puts the pull request in the queue. GitHub merges it only after the ruleset's review and checks pass.
 - New: a person can give one rig merge authority with `factory rig add ... --merge-authority`. Then the `release` station of the `ship` factory in that rig can run `gh pr merge <n> --merge --match-head-commit <sha>`. Every other rig and station keeps the deny. This change enables no rig (claude-factory-l3tl).
