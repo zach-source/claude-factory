@@ -19,6 +19,7 @@ Today the factory is a CLI with files in one factory home. Three things hold the
   - the reviewer
 
   If that session stops, the factory stops.
+
 - **The laptop pulls from VM workers.** A VM worker cannot reach the factory. It writes `report`, `mail` and `memory add` lines to an outbox file. On each tick, the laptop reads the outbox with `ax ssh <task> -- factory worker poll`. Only three commands can go through the outbox.
 - **The state is files with directory locks.** Only one CLI process at a time can tick (`tick.lock`). Some shared files (`decisions.json`, `plan.json`, `gate-briefs.json`) have no lock.
 
@@ -33,16 +34,16 @@ Epic claude-factory-vffe fixes the first, third and fourth gaps inside the curre
 
 ## Decisions (owner, 2026-10-26)
 
-| Topic | Decision |
-|---|---|
-| Where the server runs | On the AX cluster, next to the workers. The laptop and the console are clients. |
-| What drives the manager | A plain-code loop in the server does the ticks, timers and rules. Each judgment step (patrol, pm, briefer, reviewer, dream) is an agent call: headless Claude Code (`claude -p`) with a small tool set. The owner chose this over the Agent SDK on 2026-10-26, because the SDK docs ask for an API key and the owner uses the subscription tokens. |
-| How a worker proves who it is | By its AX task identity. The owner asked for AX task mTLS. AX does not issue task certificates yet (its roadmap item "SPIFFE Identity for Tasks"), and its egress gateway decrypts all VM HTTPS. Thus step 1 uses a signed per-task token, and a later step uses the AX task SVID (plan research R1, 2026-10-26). |
-| Laptop herdr workers | Retire the herdr runner. The four laptop rigs move to AX, so every worker uses the same path and the same identity. |
-| Credential for the manager's agent steps | The subscription OAuth tokens that the workers use (the token slots that `ax-token best` swaps). The steps share the weekly limits with the workers. |
-| Where the state lives | In Dolt, next to the beads data. |
+| Topic                                    | Decision                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Where the server runs                    | On the AX cluster, next to the workers. The laptop and the console are clients.                                                                                                                                                                                                                                                                                                                                 |
+| What drives the manager                  | A plain-code loop in the server does the ticks, timers and rules. Each judgment step (patrol, pm, briefer, reviewer, dream) is an agent call: headless Claude Code (`claude -p`) with a small tool set. The owner chose this over the Agent SDK on 2026-10-26, because the SDK docs ask for an API key and the owner uses the subscription tokens.                                                              |
+| How a worker proves who it is            | By its AX task identity. The owner asked for AX task mTLS. AX does not issue task certificates yet (its roadmap item "SPIFFE Identity for Tasks"), and its egress gateway decrypts all VM HTTPS. Thus step 1 uses a signed per-task token, and a later step uses the AX task SVID (plan research R1, 2026-10-26).                                                                                               |
+| Factory modes                            | Two modes, both supported (owner, 2026-10-26; this replaces the earlier choice to retire herdr). **Local mode** is today's factory: a Claude Code session with the `mod` plugin is the manager, the state is files on the laptop, and workers run in herdr panes or AX tasks. **Server mode** is this feature. Each factory home runs in one mode. The owner can run one factory in each mode at the same time. |
+| Credential for the manager's agent steps | The subscription OAuth tokens that the workers use (the token slots that `ax-token best` swaps). The steps share the weekly limits with the workers.                                                                                                                                                                                                                                                            |
+| Where the state lives                    | In Dolt, next to the beads data.                                                                                                                                                                                                                                                                                                                                                                                |
 
-## User Scenarios & Testing *(mandatory)*
+## User Scenarios & Testing _(mandatory)_
 
 ### User Story 1 - A VM worker calls the factory directly (Priority: P1)
 
@@ -121,6 +122,22 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 1. **Given** a copy of the factory home, **When** the migration runs, **Then** each run, mail line, decision and usage row is in Dolt. A count check passes for each kind.
 2. **Given** the migration ran, **When** the person asks for the state at an earlier time, **Then** Dolt history gives it.
 
+### User Story 6 - The local mode stays supported (Priority: P2)
+
+The person can still run a factory on the laptop, with the manager as a Claude Code session, as today. This mode keeps herdr workers and AX workers. It gets the fixes that this feature makes for AX runs, and it uses the same CLI commands.
+
+**Why this priority**: Some repos need laptop workers (herdr panes), and a local factory needs no cluster resources.
+
+**Independent Test**: With `FACTORY_SERVER` not set, start `bin/up` on a local home. One herdr rig and one AX rig each finish a run.
+
+**Acceptance Scenarios**:
+
+1. **Given** a local-mode factory, **When** a herdr worker and an AX worker report, **Then** both runs move to their next station, as today.
+2. **Given** a local-mode AX worker, **When** it runs `factory memory search`, **Then** it gets notes from a memory snapshot that the launch sent to the task (FR-020).
+3. **Given** the same commit of the factory, **When** the person runs it in local mode and in server mode, **Then** the CLI commands and the worker prompts are the same, except the server address.
+
+---
+
 ### Edge Cases
 
 - **The server is down when a worker calls it.** The worker CLI retries with backoff for a limited time. Then it keeps the call in a local outbox file. The server reads that file on recovery. A report must never be lost.
@@ -129,9 +146,9 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 - **A VM worker is steered by text it read.** Its identity limits it to its own run and station. It cannot decide a gate, start a run or change a rig.
 - **A judgment step hits a usage limit.** The server marks the step as waiting until the limit lifts. The other steps continue.
 - **A run is live during the cutover.** The cutover must not lose or double-apply a report from a run that started before it.
-- **A laptop rig's repo cannot build in AX yet.** Its move to AX waits until its devenv or image works in a VM (FR-014). Until then it stays on the current laptop factory.
+- **A rig needs laptop workers.** It stays in a local-mode factory (FR-014).
 
-## Requirements *(mandatory)*
+## Requirements _(mandatory)_
 
 ### Functional Requirements
 
@@ -148,10 +165,13 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 - **FR-011**: Client calls from the person MUST need an identity that a worker identity cannot give.
 - **FR-012**: The server MUST store the factory state in Dolt, with history. Memory notes MUST stay readable as Markdown files.
 - **FR-013**: The server MUST record token usage for every worker harness (Claude, codex, pi), with the model name.
-- **FR-014**: All workers MUST run in AX tasks. The herdr runner MUST be retired after the four laptop rigs run on AX.
+- **FR-014**: The herdr runner MUST stay supported in local mode. A server-mode factory MUST run only AX rigs. Each rig MUST belong to one factory home.
 - **FR-015**: The manager's agent steps MUST use the subscription OAuth tokens that the workers use. When a token reaches its usage limit, the server MUST swap to another token slot, as `ax-token best` does, or wait until the limit lifts.
-- **FR-016**: The cutover MUST happen in steps that each leave a working factory. The person MUST be able to go back to the laptop manager after each step.
-- **FR-017**: The design MUST keep constitution I (worker parity): every worker gets the same API, skills and memory access, on every runner.
+- **FR-016**: The cutover MUST happen in steps that each leave a working factory. The person MUST be able to go back to the local mode after each step. The local mode MUST stay supported after the last step.
+- **FR-017**: The design MUST keep constitution I (worker parity) in each mode: every worker gets the same API, skills and memory access, on every runner of that mode.
+- **FR-018**: Both modes MUST use one codebase and the same CLI commands. A worker prompt MUST NOT differ by mode, except the server address.
+- **FR-019**: The prompts of the manager steps (patrol, pm, briefer, reviewer, dream) MUST come from one source. The `mod` subagents in local mode and the `claude -p` steps in server mode MUST read the same prompts.
+- **FR-020**: In local mode, an AX worker MUST get memory search from a memory snapshot that the launch sends to the task (epic claude-factory-vffe, child .4).
 
 ### Key Entities
 
@@ -162,7 +182,7 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 - **Client**: the console, the CLI or a Claude Code session that acts for the person.
 - **Factory state**: runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and the memory index, in Dolt.
 
-## Success Criteria *(mandatory)*
+## Success Criteria _(mandatory)_
 
 ### Measurable Outcomes
 
@@ -173,6 +193,7 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 - **SC-005**: Patrol, pm and briefer run on their intervals for 7 days with no Claude Code session open.
 - **SC-006**: 0 lost reports and 0 double-applied reports across the cutover, checked against the run logs.
 - **SC-007**: Token usage rows exist for 100% of codex and pi stations after the change.
+- **SC-008**: The CLI and `mod` test suites pass in both modes in CI: one time against a local home, and one time against a test server.
 
 ## Assumptions
 

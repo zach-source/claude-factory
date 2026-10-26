@@ -19,16 +19,16 @@ Workers call this API. The caller is a worker CLI (`factory report|mail|memory|u
 
 ## Endpoints
 
-| Method and path | Body | Replaces | Rules |
-|---|---|---|---|
-| `POST /v1/report` | `{outcome, summary}` | `factory report <run> <seq> <outcome> <summary>` | The run, node and seq come from the token. The outcome must be an edge of the node. A gate node takes no report. The beads push must succeed before the CLI calls (unchanged worker-side rule). |
-| `POST /v1/mail` | `{to, text}` | `factory mail <run> <to> <text>` | `to` is `manager` or a node of the same run. |
-| `GET /v1/memory/search?q=&rig=` | | `factory memory search` | Answers the same notes, in the same text format, as the laptop CLI. Records `shown` events with `from=<run>/<node>`. |
-| `POST /v1/memory/add` | `{kind, summary, body, until?, supersedes?, rig?}` | `factory memory add` | The server sets `from=<run>/<node>`. The current gate checks (kind, until, supersedes) apply. |
-| `POST /v1/memory/helped` | `{paths: [...]}` | `factory memory helped` | Each path must be inside the memory store. The server sets `from=<run>/<node>`. |
-| `POST /v1/usage` | `{harness, model, session, input, cacheWrite, cacheRead, output}` | the `usage` field of an outbox report | One row for each session and model. The CLI sends it before the report. |
-| `POST /v1/progress` | `{note}` | `progress.json` | Optional. |
-| `GET /v1/prompt?after=<n>` | | `worker prompt` files sent by `ax.put` | Long poll. The answer is the next prompt for this station, or 204 after 30 s. |
+| Method and path                 | Body                                                              | Replaces                                         | Rules                                                                                                                                                                                           |
+| ------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/report`               | `{outcome, summary}`                                              | `factory report <run> <seq> <outcome> <summary>` | The run, node and seq come from the token. The outcome must be an edge of the node. A gate node takes no report. The beads push must succeed before the CLI calls (unchanged worker-side rule). |
+| `POST /v1/mail`                 | `{to, text}`                                                      | `factory mail <run> <to> <text>`                 | `to` is `manager` or a node of the same run.                                                                                                                                                    |
+| `GET /v1/memory/search?q=&rig=` |                                                                   | `factory memory search`                          | Answers the same notes, in the same text format, as the laptop CLI. Records `shown` events with `from=<run>/<node>`.                                                                            |
+| `POST /v1/memory/add`           | `{kind, summary, body, until?, supersedes?, rig?}`                | `factory memory add`                             | The server sets `from=<run>/<node>`. The current gate checks (kind, until, supersedes) apply.                                                                                                   |
+| `POST /v1/memory/helped`        | `{paths: [...]}`                                                  | `factory memory helped`                          | Each path must be inside the memory store. The server sets `from=<run>/<node>`.                                                                                                                 |
+| `POST /v1/usage`                | `{harness, model, session, input, cacheWrite, cacheRead, output}` | the `usage` field of an outbox report            | One row for each session and model. The CLI sends it before the report.                                                                                                                         |
+| `POST /v1/progress`             | `{note}`                                                          | `progress.json`                                  | Optional.                                                                                                                                                                                       |
+| `GET /v1/prompt?after=<n>`      |                                                                   | `worker prompt` files sent by `ax.put`           | Long poll. The answer is the next prompt for this station, or 204 after 30 s.                                                                                                                   |
 
 ## Not allowed for a worker token
 

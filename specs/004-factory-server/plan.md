@@ -26,19 +26,19 @@ The CLI keeps its commands. With `FACTORY_SERVER` set, the CLI is a client. With
 
 **Performance Goals**: A report moves its run within 10 s (SC-003). The server ticks every 5 s, as the console does today, with 28 live runs (the AX pool size).
 
-**Constraints**: One writer at a time (FR-007). No report lost or applied two times across a restart or the cutover (SC-006). A way back to the laptop manager after each step (FR-016). Constitution I.
+**Constraints**: One writer at a time (FR-007). No report lost or applied two times across a restart or the cutover (SC-006). Both modes stay supported: local and server (FR-014, FR-016, FR-018). Constitution I.
 
 **Scale/Scope**: 12 rigs, up to 28 live runs, about 1,500 runs kept, 279 memory files.
 
 ## Constitution Check
 
-*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+_GATE: Must pass before Phase 0 research. Re-check after Phase 1 design._
 
-| Principle I rule | Check | Result |
-|---|---|---|
-| All workers get the same skills, rules and MCP servers | The server does not change how a worker gets skills or rules. The worker image and `worker-system.md` stay the one source. | Pass |
-| No skill or access through a path that only one backend or runner has | The worker API is the same for Claude, codex and pi workers, because the factory CLI calls it, not the harness. Memory search and helped now reach VM workers, which closes a gap that exists today. | Pass |
-| A change for one runner must reach all runners in the same change, or file a bead for each gap | The herdr runner cannot reach the server. Step S1 moves the four laptop rigs to AX before the cutover (research R8), and step S7 retires herdr. Until S1 is done, the cutover (S2) does not start. | Pass, with an order rule |
+| Principle I rule                                                                               | Check                                                                                                                                                                                                                                                     | Result                                               |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| All workers get the same skills, rules and MCP servers                                         | The server does not change how a worker gets skills or rules. The worker image and `worker-system.md` stay the one source.                                                                                                                                | Pass                                                 |
+| No skill or access through a path that only one backend or runner has                          | The worker API is the same for Claude, codex and pi workers, because the factory CLI calls it, not the harness. Memory search and helped now reach VM workers, which closes a gap that exists today.                                                      | Pass                                                 |
+| A change for one runner must reach all runners in the same change, or file a bead for each gap | Each mode gives all of its workers one path (research R8). Local mode: herdr and AX workers use the CLI and the outbox, and an AX worker gets a memory snapshot (FR-020). Server mode: AX workers only, all through the worker API. A rig is in one mode. | Pass, with one rule: a herdr rig stays in local mode |
 
 Re-check after Phase 1: the contracts give every endpoint to every harness. The usage endpoint takes `harness` as a field, so codex and pi usage go through the same path (FR-013). Pass.
 
@@ -71,7 +71,8 @@ src/
 ├── worker.ts            # changed: report, mail and memory calls go to the API; the outbox is the fallback
 ├── ax.ts                # changed: egressPolicy adds the factory server rule for every task
 └── store/               # step S6 only: the Dolt adapter and `factory migrate dolt`
-mod/hooks/register.tsx   # changed: no timers when FACTORY_SERVER is set
+mod/hooks/register.tsx   # changed: server mode (FACTORY_SERVER set) runs no timers; local mode is unchanged
+src/steps/*.md           # new: one prompt for each manager step, read by the mod and by steps.ts (FR-019)
 deploy/server.yaml       # new: Namespace, ServiceAccount, RBAC, PVC, Deployment, Service, NetworkPolicy
 Dockerfile.server        # new: oven/bun:1.3.13-debian plus claude, git, gh, bd, dolt, ax, kubectl
 ```
@@ -82,17 +83,17 @@ Dockerfile.server        # new: oven/bun:1.3.13-debian plus claude, git, gh, bd,
 
 Each step is a separate PR set with its own check. After each step the factory works, and the owner can go back.
 
-| Step | What | Check | Way back |
-|---|---|---|---|
-| S0 | Spikes: (a) an `https` egress rule from a VM to an in-cluster Service with a cluster-CA certificate; (b) `Bun.SQL` against Dolt; (c) one judgment step as `claude -p` with JSON output and usage; (d) `Bun.serve` with `requestCert` on a second port. | Each spike has a short note in research.md. | None needed. |
-| S1 | Move the four laptop rigs to AX. Fix `createRun` so that an AX run needs no herdr. Replace the laptop worktree with a clone cache for AX runs. | Each laptop rig finishes one run on AX. | Set the rig runner back to herdr. |
-| S2 | Deploy the server on the cluster with the current home copied to the PVC (the `manager-home` backup branch). The server ticks and runs the AX runner. Workers still use the outbox; the server polls it, as the laptop does now. The laptop CLI and console use `FACTORY_SERVER`. | Quickstart 4, 5, 6 and 7. | Copy the home back from the PVC backup and run `bin/up`. |
-| S3 | The worker API: tokens, report, mail, memory search, add, helped, usage, prompt. The worker CLI calls it. The outbox stays as the fallback. | Quickstart 1, 2 and 3. Epic claude-factory-vffe .4 closes. | Unset the server rule in the egress policy; workers fall back to the outbox. |
-| S4 | Judgment steps in the server: patrol, pm, briefer, reviewer, dream, each as `claude -p` with a token slot. The `mod` plugin stops its timers when `FACTORY_SERVER` is set. | Quickstart 4 (patrol rows). SC-005 over 7 days. | Unset `FACTORY_SERVER` in the manager session; the mod timers run again. |
-| S5 | Beads primary on the fleet Dolt server. The server runs bd against it; the laptop bd pulls and pushes. Needs dm-g14 (fleet Dolt 2.5.0). | `bd ready` on the laptop and in the server agree for each rig. | Point the rigs back at the laptop shared server. |
-| S6 | State to Dolt: the adapter in `src/store/` and `factory migrate dolt`, as in data-model.md. | The count checks in the migration. `factory status`, `metrics` and `memory search` match before and after. | The file home on the PVC stays as it was before the migration. |
-| S7 | Retire the herdr runner. | No rig names `herdr`. | Git revert. |
-| S8 | When AX issues task SVIDs, the gateway connects with them, and the server accepts the SPIFFE ID in place of the token. | Quickstart 2 with an SVID and no token. | Tokens stay accepted until the owner removes them. |
+| Step | What                                                                                                                                                                                                                                                                                                            | Check                                                                                                        | Way back                                                                     |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| S0   | Spikes: (a) an `https` egress rule from a VM to an in-cluster Service with a cluster-CA certificate; (b) `Bun.SQL` against Dolt; (c) one judgment step as `claude -p` with JSON output and usage; (d) `Bun.serve` with `requestCert` on a second port.                                                          | Each spike has a short note in research.md.                                                                  | None needed.                                                                 |
+| S1   | Make AX runs independent of the laptop, in both modes: `createRun` skips herdr for an AX rig, and a clone cache replaces the laptop worktree. Send a memory snapshot to each AX task in local mode (vffe.4).                                                                                                    | An AX run in local mode finishes with herdr stopped, and its worker gets notes from `factory memory search`. | Git revert.                                                                  |
+| S2   | Deploy the server on the cluster. Split the home: the AX rigs move to a server home on the PVC, and the herdr rigs stay in the local home. The server ticks and runs the AX runner. Workers still use the outbox; the server polls it, as the laptop does now. The laptop CLI and console use `FACTORY_SERVER`. | Quickstart 4, 5, 6 and 7.                                                                                    | Copy the home back from the PVC backup and run `bin/up`.                     |
+| S3   | The worker API: tokens, report, mail, memory search, add, helped, usage, prompt. The worker CLI calls it. The outbox stays as the fallback.                                                                                                                                                                     | Quickstart 1, 2 and 3. Epic claude-factory-vffe .4 closes.                                                   | Unset the server rule in the egress policy; workers fall back to the outbox. |
+| S4   | Judgment steps in the server: patrol, pm, briefer, reviewer, dream, each as `claude -p` with a token slot. The `mod` plugin stops its timers when `FACTORY_SERVER` is set.                                                                                                                                      | Quickstart 4 (patrol rows). SC-005 over 7 days.                                                              | Unset `FACTORY_SERVER` in the manager session; the mod timers run again.     |
+| S5   | Beads primary on the fleet Dolt server. The server runs bd against it; the laptop bd pulls and pushes. Needs dm-g14 (fleet Dolt 2.5.0).                                                                                                                                                                         | `bd ready` on the laptop and in the server agree for each rig.                                               | Point the rigs back at the laptop shared server.                             |
+| S6   | State to Dolt: the adapter in `src/store/` and `factory migrate dolt`, as in data-model.md.                                                                                                                                                                                                                     | The count checks in the migration. `factory status`, `metrics` and `memory search` match before and after.   | The file home on the PVC stays as it was before the migration.               |
+| S7   | Run the CLI and `mod` test suites in both modes in CI (SC-008).                                                                                                                                                                                                                                                 | The CI job passes for each mode.                                                                             | None needed.                                                                 |
+| S8   | When AX issues task SVIDs, the gateway connects with them, and the server accepts the SPIFFE ID in place of the token.                                                                                                                                                                                          | Quickstart 2 with an SVID and no token.                                                                      | Tokens stay accepted until the owner removes them.                           |
 
 ## Owner steps
 

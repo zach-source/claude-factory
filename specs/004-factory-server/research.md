@@ -10,11 +10,13 @@ Phase 0 of the plan. Each item gives the decision, the reason and the alternativ
 - Later step: AX issues each task an X.509 SVID (AX `docs/roadmap.md`, "SPIFFE Identity for Tasks"). The egress gateway makes its upstream connection to the factory server with the task's SVID. The server accepts the SPIFFE ID in place of the token, and maps it to the task name.
 
 **Rationale**:
+
 - The AX egress gateway decrypts every HTTPS request from a VM and makes its own upstream TLS connection (`src/ax.ts:289-290`, `src/worker.ts:990,1040`, `docs/remote-runner.md:174`). A client certificate in the VM reaches the gateway, not the server. Per-task mTLS from the VM cannot work as AX works today.
 - AX has no task identity today. Its roadmap names SPIFFE task identity as future work.
 - A token in the task env gives the same scope as a per-task key in the task: the VM holds the secret in both cases, and both allow only that run, station and seq.
 
 **Alternatives considered**:
+
 - TLS passthrough in the gateway for the factory host: keeps VM-side mTLS, but removes gateway inspection for that host and needs gateway work first.
 - A per-task secret header that the gateway injects from the vault (as `DOLT_BASIC`): the VM never sees it, but agent-vault has no per-task keys today.
 
@@ -49,16 +51,16 @@ Phase 0 of the plan. Each item gives the decision, the reason and the alternativ
 
 The code map lists what a tick for an AX run uses from the laptop. Each item needs a server form:
 
-| Laptop dependency | Use today | Server form |
-|---|---|---|
-| herdr | `createRun` makes a herdr worktree for every run, AX too, and fails without herdr (`src/cli.ts:5354-5373`) | Skip herdr for an AX rig. This is a fix in the current code (step S1). |
-| The laptop worktree | The push source before a launch and the pull target after a report (`src/cli.ts:1397-1414`, `:746`), and the bd sync dir | A clone cache for each rig on the PVC. |
-| Rig `repo` paths | Local checkouts | A clone URL in the rig. `mapRigs` already rewrites paths when `FACTORY_IN_AX=1` (`src/axrepos.ts:24-26`). |
-| `gh` | The laptop's gh login (`src/cli.ts:2905`, `:3377`, `:4275`, others) | A GitHub token in a Secret. A GitHub App needs an owner step. |
-| bd | The laptop shared Dolt server; sync with `CALL DOLT_PUSH/PULL` (`src/cli.ts:550-571`) | The fleet Dolt server is the primary copy (owner decision). The server runs bd against it. |
-| Linear | The macOS Keychain (`src/linear.ts:108-150`) | A Secret. |
-| Self-update, config sync, home backup | Git in the laptop checkout (`src/selfupdate.ts`, `src/cli.ts:3799-3814`, `src/homebackup.ts`) | Self-update becomes an image roll. Config sync and home backup run from the PVC. |
-| `kubectl`, `ax` | The laptop kube context | The server's ServiceAccount. Policies go through the broker, as for the AX manager. |
+| Laptop dependency                     | Use today                                                                                                                | Server form                                                                                               |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| herdr                                 | `createRun` makes a herdr worktree for every run, AX too, and fails without herdr (`src/cli.ts:5354-5373`)               | Skip herdr for an AX rig. This is a fix in the current code (step S1).                                    |
+| The laptop worktree                   | The push source before a launch and the pull target after a report (`src/cli.ts:1397-1414`, `:746`), and the bd sync dir | A clone cache for each rig on the PVC.                                                                    |
+| Rig `repo` paths                      | Local checkouts                                                                                                          | A clone URL in the rig. `mapRigs` already rewrites paths when `FACTORY_IN_AX=1` (`src/axrepos.ts:24-26`). |
+| `gh`                                  | The laptop's gh login (`src/cli.ts:2905`, `:3377`, `:4275`, others)                                                      | A GitHub token in a Secret. A GitHub App needs an owner step.                                             |
+| bd                                    | The laptop shared Dolt server; sync with `CALL DOLT_PUSH/PULL` (`src/cli.ts:550-571`)                                    | The fleet Dolt server is the primary copy (owner decision). The server runs bd against it.                |
+| Linear                                | The macOS Keychain (`src/linear.ts:108-150`)                                                                             | A Secret.                                                                                                 |
+| Self-update, config sync, home backup | Git in the laptop checkout (`src/selfupdate.ts`, `src/cli.ts:3799-3814`, `src/homebackup.ts`)                            | Self-update becomes an image roll. Config sync and home backup run from the PVC.                          |
+| `kubectl`, `ax`                       | The laptop kube context                                                                                                  | The server's ServiceAccount. Policies go through the broker, as for the AX manager.                       |
 
 ## R6. State store
 
@@ -70,8 +72,19 @@ The code map lists what a tick for an AX run uses from the laptop. Each item nee
 
 ## R7. The console and the CLI
 
-**Decision**: The CLI gets one switch. When `FACTORY_SERVER` is set, each command calls the client API. When it is not set, the CLI works on the local factory home, as today. The `mod` plugin calls the CLI (`mod/hooks/register.tsx:362-367`), so the console works through the server with no change to its views. Its timers (tick, patrol, pm, briefer, reviewer) stop when `FACTORY_SERVER` is set, because the server runs them.
+**Decision**: The CLI gets one switch. When `FACTORY_SERVER` is set, each command calls the client API. When it is not set, the CLI works on the local factory home, as today. The `mod` plugin calls the CLI (`mod/hooks/register.tsx:362-367`), so the console works through the server with no change to its views. Its timers (tick, patrol, pm, briefer, reviewer) stop when `FACTORY_SERVER` is set, because the server runs them. In local mode the timers run, as today.
 
-## R8. Order of the laptop rigs and the server
+## R8. Two modes
 
-**Finding**: Constitution I needs one worker path. After the cutover the laptop has no factory home, so a laptop herdr worker has nowhere to report. The four laptop rigs must move to AX before the cutover (step S1), or stop them during the cutover.
+**Decision**: The factory supports two modes (owner, 2026-10-26):
+
+- **Local mode**: today's factory. A Claude Code session with the `mod` plugin is the manager. The state is files on the laptop. Workers run in herdr panes or AX tasks.
+- **Server mode**: this feature. The server on the cluster is the manager. Workers run only in AX tasks.
+
+Each factory home runs in one mode, and each rig belongs to one home. The owner can run one factory of each mode at the same time.
+
+**Rationale**: Some repos need laptop workers, and a local factory needs no cluster resources. The CLI switch in R7 already gives both modes from one codebase.
+
+**Constitution I in each mode**: a herdr worker cannot reach the server, so herdr rigs stay in local mode. In local mode, an AX worker cannot reach the laptop. Thus the launch sends it a memory snapshot for `factory memory search` (epic claude-factory-vffe, child .4).
+
+**Alternatives considered**: retire herdr and move all rigs to AX (the earlier plan). The owner chose to keep both modes.

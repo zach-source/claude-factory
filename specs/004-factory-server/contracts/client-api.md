@@ -11,27 +11,27 @@ The person's clients call this API: the console (the `mod` plugin), the factory 
 
 ## Read endpoints
 
-| Method and path | Answers | Replaces |
-|---|---|---|
-| `GET /v1/board` | The tick rows: runs, rigs, halt, mail, staleness. The same JSON as `factory tick` prints. | `factory tick` |
-| `GET /v1/runs/<id>` | The same JSON as `factory show <id>`. | `factory show` |
-| `GET /v1/status` | The same text as `factory status`. | `factory status` |
-| `GET /v1/prs`, `/v1/backlog`, `/v1/metrics`, `/v1/decisions`, `/v1/plan` | The same JSON or text as the CLI command of that name. | the CLI commands |
-| `GET /v1/events?after=<id>` | Server-sent events: one event for each board change. | the console's 5 s poll |
+| Method and path                                                          | Answers                                                                                   | Replaces               |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ---------------------- |
+| `GET /v1/board`                                                          | The tick rows: runs, rigs, halt, mail, staleness. The same JSON as `factory tick` prints. | `factory tick`         |
+| `GET /v1/runs/<id>`                                                      | The same JSON as `factory show <id>`.                                                     | `factory show`         |
+| `GET /v1/status`                                                         | The same text as `factory status`.                                                        | `factory status`       |
+| `GET /v1/prs`, `/v1/backlog`, `/v1/metrics`, `/v1/decisions`, `/v1/plan` | The same JSON or text as the CLI command of that name.                                    | the CLI commands       |
+| `GET /v1/events?after=<id>`                                              | Server-sent events: one event for each board change.                                      | the console's 5 s poll |
 
 ## Action endpoints
 
 Each action endpoint takes `Idempotency-Key`, as in the worker API.
 
-| Method and path | Body | Replaces |
-|---|---|---|
-| `POST /v1/runs/<id>/decide` | `{outcome, note}` | `factory decide` |
-| `POST /v1/runs/<id>/mail` | `{to, text}` | `factory mail` from the person |
-| `POST /v1/runs/<id>/goto`, `/abort` | | `factory goto`, `factory rm` |
-| `POST /v1/start` | `{factory, rig, goal, station?, bead?}` | `factory start` |
-| `POST /v1/halt` | `{mode: "stop" or "resume"}` | `factory stop`, `factory resume` |
-| `POST /v1/decisions/<key>/answer` | `{text}` | `factory decisions answer` |
-| `PUT /v1/rigs/<name>`, `DELETE /v1/rigs/<name>` | the rig fields | `factory rig add`, `factory rig rm` |
+| Method and path                                 | Body                                    | Replaces                            |
+| ----------------------------------------------- | --------------------------------------- | ----------------------------------- |
+| `POST /v1/runs/<id>/decide`                     | `{outcome, note}`                       | `factory decide`                    |
+| `POST /v1/runs/<id>/mail`                       | `{to, text}`                            | `factory mail` from the person      |
+| `POST /v1/runs/<id>/goto`, `/abort`             |                                         | `factory goto`, `factory rm`        |
+| `POST /v1/start`                                | `{factory, rig, goal, station?, bead?}` | `factory start`                     |
+| `POST /v1/halt`                                 | `{mode: "stop" or "resume"}`            | `factory stop`, `factory resume`    |
+| `POST /v1/decisions/<key>/answer`               | `{text}`                                | `factory decisions answer`          |
+| `PUT /v1/rigs/<name>`, `DELETE /v1/rigs/<name>` | the rig fields                          | `factory rig add`, `factory rig rm` |
 
 ## Rules kept from today
 

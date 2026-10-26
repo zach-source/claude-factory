@@ -23,6 +23,7 @@ factory memory search "hello"     # prints notes, not "nothing in ... yet"
 ```
 
 Expected:
+
 - The search prints the same top 5 notes as the laptop gives for "hello" with no `FACTORY_SERVER`.
 - After the worker reports, `factory show <run>` shows the next station within 10 s.
 - `SELECT kind, status FROM worker_calls WHERE run = '<run>'` shows the search, any helped call and the report, all `applied`.
@@ -71,8 +72,12 @@ Scale the Deployment to 2 for 1 min, then back to 1.
 
 Expected: the `lease` row names one pod for that whole minute. The second pod logs "lease held" and does not tick.
 
-## 7. Go back to the laptop (FR-016)
+## 7. Local mode (US6, FR-016, FR-018)
 
-Unset `FACTORY_SERVER` and start the laptop manager with `bin/up`.
+Unset `FACTORY_SERVER` and start the laptop manager with `bin/up` on a local home that has one herdr rig and one AX rig.
 
-Expected: the laptop manager works on its own factory home, as before the cutover. Do this check after each cutover step.
+Expected:
+
+- Each rig finishes one run, as before this feature.
+- In the AX task, `factory memory search "hello"` prints notes from the launch snapshot.
+- Do this check after each cutover step.
