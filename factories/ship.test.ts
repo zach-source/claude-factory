@@ -175,6 +175,13 @@ test('release keeps version bump, description and ready steps (debg AC3)', () =>
   expect(p).toContain('You never run them')
 })
 
+test('release adds --auto when the ruleset needs a review or a merge queue (claude-factory-usp5)', () => {
+  const p = ship.nodes.release.prompt
+  expect(p).toContain('required_approving_review_count above 0')
+  expect(p).toContain('merge_queue')
+  expect(p).toContain('Allow auto-merge')
+})
+
 test('queue resolves a BUILD.bazel-only conflict with gazelle and keeps it (debg AC4, AC5)', () => {
   const [step1, step2] = ship.nodes.queue.prompt.split('\n2. ') as [string, string]
   expect(step1).toContain('BUILD.bazel')
