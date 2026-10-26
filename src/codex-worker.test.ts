@@ -217,7 +217,7 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
 const claims = (jwt: string) => JSON.parse(Buffer.from(jwt.split('.')[1]!, 'base64url').toString())
 
 test('a ChatGPT-mode VM codex home holds a placeholder auth.json that codex accepts', () => {
-  const h = vmCodexHome({ maxContextK: 150 }, [], [], 'chatgpt')
+  const h = vmCodexHome({ maxContextK: 150 }, [], [], undefined, 'chatgpt')
   expect(Object.keys(h).sort()).toEqual(['auth.json', 'config.toml', 'hooks.json'])
   const auth = JSON.parse(h['auth.json']!)
   expect(auth.auth_mode).toBe('chatgpt')
@@ -248,7 +248,7 @@ test('codex login status accepts the placeholder auth.json', () => {
   if (!codex) return
   const home = mkdtempSync(join(tmpdir(), 'codex-login-'))
   try {
-    for (const [n, t] of Object.entries(vmCodexHome({ maxContextK: 150 }, [], [], 'chatgpt')))
+    for (const [n, t] of Object.entries(vmCodexHome({ maxContextK: 150 }, [], [], undefined, 'chatgpt')))
       writeFileSync(join(home, n), t)
     const p = Bun.spawnSync([codex, 'login', 'status'], { env: { ...process.env, CODEX_HOME: home } })
     expect(`${p.stdout}${p.stderr}`).toContain('Logged in using ChatGPT')

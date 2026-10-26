@@ -1455,7 +1455,7 @@ test('a ChatGPT-mode codex task has no API-key env, and its inputs hold only pla
       brief: 'x',
       harness: 'codex',
       codexAuth: 'chatgpt',
-      codexHome: vmCodexHome({}, [], [], 'chatgpt'),
+      codexHome: vmCodexHome({}, [], [], undefined, 'chatgpt'),
       env: {},
     })
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
