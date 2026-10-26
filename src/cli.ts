@@ -1476,6 +1476,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
         : undefined,
     codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
     gitlabHost,
+    sandboxClass: rig?.sandboxClass,
     env: {
       ...env,
       ...rig?.env,
@@ -5463,6 +5464,12 @@ export type Rig = {
   egress?: Egress[]
   /** env for its VM workers (the ax runner), over FACTORY_AX_ENV's: FACTORY_BAZELRC, say, for a remote cache */
   env?: Record<string, string>
+  /**
+   * the AX sandbox class its VM workers (the ax runner) run in (ax-3hy). `microvm` for a repo whose
+   * workers build with Nix, which fails under gVisor; AX's gvisor default when absent. The cluster
+   * needs a microvm WorkerPool. Edit rigs.json by hand
+   */
+  sandboxClass?: ax.SandboxClass
   /**
    * a Dolt server VMs share the rig's beads through, instead of the repo's GitHub origin: `name` is the remote
    * in the laptop's store, `url` the address a VM reaches it at (through the egress gateway, which injects the
