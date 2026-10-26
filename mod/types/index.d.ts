@@ -75,6 +75,10 @@ export type FactoryRig = {
   maxRuns?: number
   sweeps?: string[]
   goal?: string
+  /** where its workers run (src/runner.ts): herdr panes on the laptop when absent, or ax VMs */
+  runner?: string
+  /** the AX sandbox class of its VM workers: gvisor when absent */
+  sandboxClass?: string
   /** this rig's Linear routing (claude-factory-b6c, claude-factory-b6c.18); absent when the rig has no Linear pull */
   linear?: { team: string[]; projects?: string[]; labels?: string[] }
   /** this rig's last Linear pull, added by `factory tick` from `linear-sync.json` */
@@ -146,7 +150,7 @@ export type FactoryPrs = {
   }[]
 }[]
 
-export type FactoryView = 'board' | 'backlog' | 'mail' | 'prs' | 'rigs' | 'interview'
+export type FactoryView = 'board' | 'backlog' | 'mail' | 'prs' | 'rigs' | 'interview' | 'runners'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
   mail: string

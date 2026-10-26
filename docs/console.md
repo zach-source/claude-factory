@@ -2,7 +2,7 @@
 
 The console shows every run. It sits beside the chat. Type `/factory` to open it.
 
-Keys 1-6 switch tabs. Press `tab` to move between controls. Press `enter` to press the
+Keys 1-7 switch tabs. Press `tab` to move between controls. Press `enter` to press the
 focused control. Press `esc` to go back to the prompt.
 
 The header shows four counts, when they are not zero: runs working, runs awaiting you,
@@ -230,3 +230,18 @@ to the same question in the same rig. Answering that row answers every run or be
 
 Use Interview to see every open question across every rig in one list, instead of checking
 Board, Mail, and Rigs in turn.
+
+## Runners (key 7)
+
+The Runners tab shows where the workers run. It has one section for each runner: `herdr`
+(panes on this machine) and each other runner that a rig names, for example `ax` (VMs). The
+data comes from `factory tick`.
+
+A section header shows the runner's rig count, its busy runs and its live runs. Below it, a
+line lists the rigs on that runner. A rig shows its sandbox class (for example `microvm`) when
+it has one, and `(off)` when its `maxRuns` is 0. Then each live run has one row: its id, rig,
+station and state, and pane (`ax://<task>` for a VM worker).
+
+A run goes to its rig's runner. A run with no rig goes to `ax` if its pane is an `ax://`
+task, and to `herdr` if not.
+

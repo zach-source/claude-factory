@@ -23,6 +23,7 @@ import {
   briefContext,
   byState,
   blockers,
+  byRunner,
   clockOf,
   counts,
   dur,
@@ -105,6 +106,7 @@ const TABS: [FactoryView, string, string][] = [
   ['rigs', 'Rigs', '4'],
   ['prs', 'PRs', '5'],
   ['interview', 'Interview', '6'],
+  ['runners', 'Runners', '7'],
 ]
 
 /** a column that keeps its width: ids, badges and times never shrink, so free text beside them truncates instead */
@@ -1275,9 +1277,41 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
   )
 }
 
+/** where the workers run: for each runner its rigs, then its live runs with their station and pane */
+export function runnersView(p: Base, board: FactoryBoard) {
+  const { Box, Text } = p.ui
+  return (
+    <Box key="runners" flexDirection="column">
+      {byRunner(board.rigs ?? [], board.runs).map(g => (
+        <Box key={`runners-${g.name}`} flexDirection="column" marginBottom={1}>
+          {rule(p, g.name, `${g.rigs.length} rigs · ${g.busy} busy · ${g.runs.length} live`)}
+          <Text dimColor wrap="wrap">
+            {g.rigs.length
+              ? g.rigs
+                  .map(
+                    r =>
+                      `${r.name}${r.sandboxClass ? ` (${r.sandboxClass})` : ''}${r.maxRuns === 0 ? ' (off)' : ''}`,
+                  )
+                  .join(' · ')
+              : 'no rigs'}
+          </Text>
+          {g.runs.map(r => (
+            <Box key={`runners-run-${r.id}`} gap={1}>
+              {cell(p, `runners-id-${r.id}`, r.id, { color: 'cyan' })}
+              {cell(p, `runners-rig-${r.id}`, r.rig ?? '-', { color: 'magenta' })}
+              {cell(p, `runners-node-${r.id}`, `${r.node}/${r.sub ?? ''}`)}
+              {rest(p, `runners-pane-${r.id}`, r.pane ?? '-', { dimColor: true })}
+            </Box>
+          ))}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-6 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-7 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */

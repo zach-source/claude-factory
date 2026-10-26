@@ -26,6 +26,7 @@ import type {
 import {
   backlogView,
   rigsView,
+  runnersView,
   band,
   boardView,
   footer,
@@ -130,7 +131,7 @@ const draft = atom(
     answered: {},
   } as FactoryDraft,
 )
-const VIEWS = new Set<string>(['board', 'backlog', 'mail', 'prs', 'rigs', 'interview'])
+const VIEWS = new Set<string>(['board', 'backlog', 'mail', 'prs', 'rigs', 'interview', 'runners'])
 
 const manual = (cli: string) => `## Software factory manager
 You run this session's herdr software factories, and the person runs them through you: they tell you what they want, you turn it into runs, keep the runs moving, and bring them only the decisions that are theirs. Each run is an xstate machine over a graph of stations; every station is worked by its own Claude session (a worker) in a herdr tab of the run's git worktree, and the outcome it reports routes the run along the graph. The runtime ticks every few seconds: it launches workers, resumes a lost session once, nudges an idle worker twice before failing it, and retries with backoff. A hidden patrol subagent, not this session, answers mail, works stuck stations and starts backlog work on its own timer; you see only what is the person's to decide. A hidden pm subagent also ranks each rig's next work on its own timer; its proposals (a priority, a goal or an owner-only change) reach the person as a decision item in the Interview tab, never applied by either of you.
@@ -1850,7 +1851,9 @@ export const register: Register = (on, options) => {
               ? rigsView(p, b, pl, rt.pmBlocked)
               : shown === 'interview'
                 ? interviewView(p, b, dr, dec)
-                : boardView(p, b, dr, sel, d, tail)
+                : shown === 'runners'
+                  ? runnersView(p, b)
+                  : boardView(p, b, dr, sel, d, tail)
     return (
       <Box flexDirection="column">
         {header(p, b, samples, shown, lp, pl)}
