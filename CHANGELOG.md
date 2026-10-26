@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: the ponytail rules are in `src/worker-system.md` (claude-factory-wzy6). Every Claude and codex worker now gets them, on the laptop and on AX. Before, only a laptop Claude worker got them, through the ponytail plugin. Rebuild the worker image to give them to AX workers.
+- New: `.specify/memory/constitution.md` holds principle I, Worker Parity. All workers must receive the same skills, rules and MCP servers on every backend and runner. The file lists the known gaps, and beads track them (claude-factory-fxu, claude-factory-qo6i, claude-factory-hg9o).
 - New: a rig can run its AX workers in a micro-VM (ax-3hy). Set `"sandboxClass": "microvm"` on the rig in `rigs.json` by hand. The Task then sets AX's `spec.sandboxClass`, and Substrate runs it in a Cloud Hypervisor guest with a real Linux kernel. Use it for a repo whose workers build with Nix, because Nix builds fail under gVisor. The cluster needs a microvm WorkerPool, and AX must know the field. Without the setting, the Task leaves the field out and AX uses gVisor.
 - Changed: the ship `release` station adds `--auto` to its merge command when the repo's ruleset needs an approving review, not only when the repo has a merge queue. GitHub then merges the pull request after the owner approves it. If the repo does not allow auto-merge, the station stops and names that owner-only setting.
 - Changed: the station that approves a pull request (`review`, `security` or `check`) now marks it ready (claude-factory-usp5). Before, every pull request stayed a draft until the ship `release` station. Implement and the other stations still cannot run `gh pr ready`.
