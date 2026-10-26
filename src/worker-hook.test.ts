@@ -999,7 +999,8 @@ test('denyReason denies a merge command behind a stack of eval words, fast', () 
 
 // claude-factory-zl5.2: only the release station marks a pull request ready for review. implement,
 // review, verify and no station at all (undefined) all deny it the same way.
-const NON_RELEASE_STATIONS = [undefined, 'implement', 'review', 'verify']
+// claude-factory-usp5: review, security and check approve, so they may mark ready; these may not
+const NON_RELEASE_STATIONS = [undefined, 'implement', 'plan', 'verify', 'quick']
 const READY_COMMANDS = [
   'gh pr ready 5',
   'gh pr ready',
@@ -1016,9 +1017,11 @@ for (const station of NON_RELEASE_STATIONS) {
   })
 }
 
-test.each(READY_COMMANDS)('denyReason allows %j at the release station', cmd => {
-  expect(denyReason(cmd, undefined, undefined, { station: 'release' })).toBeUndefined()
-})
+for (const station of ['release', 'review', 'security', 'check']) {
+  test.each(READY_COMMANDS)(`denyReason allows %j at station ${station} (claude-factory-usp5)`, cmd => {
+    expect(denyReason(cmd, undefined, undefined, { station })).toBeUndefined()
+  })
+}
 
 // claude-factory-zl5.2: gh pr ready --undo (back to draft) is always allowed, at every station.
 const UNDO_COMMANDS = ['gh pr ready --undo', 'gh pr ready 5 --undo', 'gh pr ready --undo 5']
@@ -10703,6 +10706,9 @@ test.each([
   `gh pr merge 12 --merge --match-head-commit ${SHA} --repo acme/widget`,
   `gh pr merge 12 --merge --match-head-commit ${SHA} -R ACME/Widget`,
   `env FOO=1 gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  // claude-factory-usp5: --auto enqueues on a merge-queue repo
+  `gh pr merge 12 --merge --auto --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr merge 12 --auto --merge --match-head-commit ${SHA} -R acme/widget`,
 ])('ship release with merge authority allows %j', cmd => {
   expect(merge(cmd)).toBeUndefined()
 })
@@ -10721,6 +10727,8 @@ test.each([
   `gh pr merge 12 --merge --rebase --match-head-commit ${SHA}`,
   `gh pr merge 12 --merge --admin --match-head-commit ${SHA}`,
   `gh pr merge 12 --merge --auto --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --auto --auto --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr merge 12 --auto --match-head-commit ${SHA} -R acme/widget`,
   `gh pr merge 12 --merge --disable-auto --match-head-commit ${SHA}`,
   `gh pr merge 12 --merge -d --match-head-commit ${SHA}`,
   `gh pr merge 12 --merge --delete-branch --match-head-commit ${SHA}`,

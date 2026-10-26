@@ -310,7 +310,7 @@ factory rig add ax ~/repos/ax --protected-branch acme-deploy
 A person can give a rig merge authority with `factory rig add <name> <repo> ship ... --merge-authority`.
 `rig add` replaces the whole rig, so repeat the current flags. Only the ship factory's `release`
 station then merges, and only with this form: `gh pr merge <number> --merge --match-head-commit <40-hex SHA> -R <owner/repo>`
-(`-R` is required and must name the rig's own repo, read from its origin remote at launch). The hook denies every other merge form there. Every other rig and station
+(`-R` is required and must name the rig's own repo, read from its origin remote at launch). On a repo with a merge queue, the station adds `--auto`: this puts the pull request in the queue, and GitHub merges it only after the ruleset's review and checks pass. The hook denies every other merge form there. Every other rig and station
 keeps the deny below. The rig takes the setting at the next worker launch.
 
 A worker's PreToolUse hook denies these commands:
@@ -322,7 +322,7 @@ A worker's PreToolUse hook denies these commands:
 - a REST or GraphQL call that writes a ref or a file straight to a protected branch (a `git/refs`
   update or delete, a `contents` write with no `branch` field or a protected one, and the
   `createCommitOnBranch`, `updateRef`, `updateRefs` and `deleteRef` GraphQL mutations)
-- `gh pr ready`, except in the release station (ship's `release`)
+- `gh pr ready`, except in the stations that approve a pull request (`review`, `security`, `check`) and ship's `release`. The approving station marks the pull request ready when it reports approve.
 - a `HEAD` push in the same command as a branch change. The push can use one of these forms:
   - a bare `git push`
   - `git push <remote> HEAD`
