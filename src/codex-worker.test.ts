@@ -210,7 +210,7 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   expect(cmd).toContain("--person-only-contexts 'acme'")
   expect(cmd).toContain("--protected-branches 'release'")
   expect(h['config.toml']).toBe(
-    'model_auto_compact_token_limit = 300000\n\n[projects."/workspace/w/repo"]\ntrust_level = "trusted"\n',
+    'model_auto_compact_token_limit = 300000\nallow_login_shell = false\n\n[projects."/workspace/w/repo"]\ntrust_level = "trusted"\n',
   )
 })
 
