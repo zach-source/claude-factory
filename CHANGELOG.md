@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: a person can give one rig merge authority with `factory rig add ... --merge-authority`. Then the `release` station of the `ship` factory in that rig can run `gh pr merge <n> --merge --match-head-commit <sha>`. Every other rig and station keeps the deny. This change enables no rig (claude-factory-l3tl).
 - New: the `factory-rig` plugin, with three skills for a Claude session in a rig repo. `factory-handoff` writes a bead that a worker can start from (why, what, acceptance, the branch in progress, owner decisions) and queues it. `factory-prioritize` changes what the factory does next: priority, queue or unqueue, hold, and a message to a live run. `factory-status` shows the rig's runs, its ship queue and what waits on the person. Each skill uses the factory CLI when the factory home is on the same machine, and bd with `bd dolt push` when the manager runs on another machine. Install it with `/plugin install factory-rig@claude-factory`.
 
 ## 0.15.0 (2026-10-24)
