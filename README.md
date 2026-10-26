@@ -642,8 +642,9 @@ Lifecycle sends a share of runs to Codex. Two share params set it: `codex_share`
 picks the harness, so one run keeps its harness at every station and attempt. Two params set the
 Codex models: `codex_exec_model` (default `gpt-6.1-sol`) and `codex_security_model` (default
 `gpt-6-astra`). Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
-that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent`, and every
-station on the `ax` runner, never gets Codex. `factory metrics` shows the launches for each station by
+that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent` never gets Codex. A station on the `ax` runner gets the split only with
+`FACTORY_AX_CODEX=1`. There Codex logs in with a ChatGPT subscription by default (the gateway holds
+the token, see `docs/remote-runner.md`). It uses an API key when the rig names `api.openai.com`. `factory metrics` shows the launches for each station by
 harness and model.
 
 ```sh
