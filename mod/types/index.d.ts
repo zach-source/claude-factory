@@ -9,6 +9,8 @@ export type FactoryRun = {
   attempts?: number
   pane?: string | null
   agent?: string | null
+  /** the model its station's worker runs; absent at a gate or when the agent command names none */
+  model?: string
   error?: string | null
   last?: FactoryEntry
   /** set while the run waits at a gate for the person */

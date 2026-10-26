@@ -1300,6 +1300,7 @@ export function runnersView(p: Base, board: FactoryBoard) {
               {cell(p, `runners-id-${r.id}`, r.id, { color: 'cyan' })}
               {cell(p, `runners-rig-${r.id}`, r.rig ?? '-', { color: 'magenta' })}
               {cell(p, `runners-node-${r.id}`, `${r.node}/${r.sub ?? ''}`)}
+              {cell(p, `runners-model-${r.id}`, r.model ?? '-', { color: 'green' })}
               {rest(p, `runners-pane-${r.id}`, r.pane ?? '-', { dimColor: true })}
             </Box>
           ))}
