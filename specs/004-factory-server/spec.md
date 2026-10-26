@@ -36,9 +36,9 @@ Epic claude-factory-vffe fixes the first, third and fourth gaps inside the curre
 | Topic | Decision |
 |---|---|
 | Where the server runs | On the AX cluster, next to the workers. The laptop and the console are clients. |
-| What drives the manager | A plain-code loop in the server does the ticks, timers and rules. Each judgment step (patrol, pm, briefer, reviewer, dream) is an agent call. The call uses the Claude Agent SDK and a small tool set. |
-| How a worker proves who it is | Mutual TLS. Each AX task gets its own client certificate. |
-| Laptop herdr workers | Retire the herdr runner. The four laptop rigs move to AX, so every worker uses the same path and mTLS. |
+| What drives the manager | A plain-code loop in the server does the ticks, timers and rules. Each judgment step (patrol, pm, briefer, reviewer, dream) is an agent call: headless Claude Code (`claude -p`) with a small tool set. The owner chose this over the Agent SDK on 2026-10-26, because the SDK docs ask for an API key and the owner uses the subscription tokens. |
+| How a worker proves who it is | By its AX task identity. The owner asked for AX task mTLS. AX does not issue task certificates yet (its roadmap item "SPIFFE Identity for Tasks"), and its egress gateway decrypts all VM HTTPS. Thus step 1 uses a signed per-task token, and a later step uses the AX task SVID (plan research R1, 2026-10-26). |
+| Laptop herdr workers | Retire the herdr runner. The four laptop rigs move to AX, so every worker uses the same path and the same identity. |
 | Credential for the manager's agent steps | The subscription OAuth tokens that the workers use (the token slots that `ax-token best` swaps). The steps share the weekly limits with the workers. |
 | Where the state lives | In Dolt, next to the beads data. |
 
@@ -124,9 +124,9 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 ### Edge Cases
 
 - **The server is down when a worker calls it.** The worker CLI retries with backoff for a limited time. Then it keeps the call in a local outbox file. The server reads that file on recovery. A report must never be lost.
-- **A worker certificate expires during a long station.** The certificate lives longer than the longest station time limit, or the worker can renew it.
+- **A worker identity expires during a long station.** It lives longer than the longest station time limit, or the worker can renew it.
 - **A worker sends a call for an old attempt (stale seq).** The server refuses it, as `factory report` does today.
-- **A VM worker is steered by text it read.** Its certificate limits it to its own run and station. It cannot decide a gate, start a run or change a rig.
+- **A VM worker is steered by text it read.** Its identity limits it to its own run and station. It cannot decide a gate, start a run or change a rig.
 - **A judgment step hits a usage limit.** The server marks the step as waiting until the limit lifts. The other steps continue.
 - **A run is live during the cutover.** The cutover must not lose or double-apply a report from a run that started before it.
 - **A laptop rig's repo cannot build in AX yet.** Its move to AX waits until its devenv or image works in a VM (FR-014). Until then it stays on the current laptop factory.
@@ -137,15 +137,15 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 
 - **FR-001**: The factory MUST run as one long-lived server process on the AX cluster. This process ticks the runs and runs the manager's timers.
 - **FR-002**: The server MUST give workers an API for: report, mail, memory search, memory add, memory helped, usage and progress. This API replaces the VM outbox and the `ax ssh` poll.
-- **FR-003**: The server MUST identify each AX worker by a client certificate that names its run, station and attempt (seq). The server MUST refuse a call outside that scope: another run, another station, or an old seq.
+- **FR-003**: The server MUST identify each AX worker by its AX task, which names its run, station and attempt (seq). The proof is a signed per-task token now, and the AX task SVID when AX issues one. The server MUST refuse a call outside that scope: another run, another station, or an old seq.
 - **FR-004**: The factory CLI in a worker MUST use the API with no change to the commands that the worker prompt names. `factory report <run> <seq> <outcome> <summary>` keeps its syntax.
 - **FR-005**: If the server cannot be reached, the worker CLI MUST keep each call and deliver it later. A report MUST NOT be lost or applied two times.
 - **FR-006**: The server MUST keep the current rules for worker calls: a report needs a successful beads push, a gate takes no report, and outcome names must match the station.
 - **FR-007**: Only one server process at a time MUST write the factory state.
-- **FR-008**: The server MUST run patrol, pm, briefer, reviewer and dream as agent steps with the Claude Agent SDK. Each step MUST have a fixed tool set, a time limit and a log entry.
+- **FR-008**: The server MUST run patrol, pm, briefer, reviewer and dream as agent steps with headless Claude Code (`claude -p`). Each step MUST have a fixed tool set, a time limit and a log entry.
 - **FR-009**: No agent step MUST be able to decide a gate. Only the person decides a gate.
 - **FR-010**: The server MUST give clients (the console, the CLI, a Claude Code session) an API to read the board, runs, mail, decisions, plans and PRs. The server MUST also accept the person's actions: decide, mail, answer, start, stop, resume.
-- **FR-011**: Client calls from the person MUST need an identity that a worker certificate cannot give.
+- **FR-011**: Client calls from the person MUST need an identity that a worker identity cannot give.
 - **FR-012**: The server MUST store the factory state in Dolt, with history. Memory notes MUST stay readable as Markdown files.
 - **FR-013**: The server MUST record token usage for every worker harness (Claude, codex, pi), with the model name.
 - **FR-014**: All workers MUST run in AX tasks. The herdr runner MUST be retired after the four laptop rigs run on AX.
@@ -156,7 +156,7 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 ### Key Entities
 
 - **Factory server**: the one process that owns the state, ticks the runs and runs the manager timers.
-- **Worker identity**: a certificate for one AX task. It names the run, the station and the seq. It expires.
+- **Worker identity**: the identity of one AX task, proved by a signed token (later an SVID). It names the run, the station and the seq. It expires.
 - **Worker call**: one request from a worker: a report, mail, memory call, usage or progress. It has an id, so a retry is not applied two times.
 - **Agent step**: one judgment job (patrol, pm, briefer, reviewer, dream). It has a tool set, a time limit, a model, and a log entry with its usage.
 - **Client**: the console, the CLI or a Claude Code session that acts for the person.
@@ -179,7 +179,7 @@ The runs, mail, decisions, plans, gate briefs, reviews, metrics, usage and memor
 - The AX cluster can run a long-lived Deployment with a persistent volume, and VM workers can reach it on the cluster network through their egress policy.
 - The beads Dolt server on the cluster can hold one more database for the factory state, or the factory can run its own Dolt server.
 - The policy broker (`factory broker serve`) and the package gate already run as in-cluster HTTP services. The factory server follows their pattern.
-- The AX task launch can mount a per-task certificate and key, as it mounts the CA today.
+- The AX task launch can put a per-task token in the task env, as it puts `FACTORY_CA` there today.
 - The console stays a Claude Code plugin in the first release. It becomes a thin client that calls the server.
 - The memory notes stay in their own git repository, with the server as the only writer. Only the memory index and usage events move to Dolt.
 - Epic claude-factory-vffe ships first. It fixes the measured gaps in the current design while this feature is built.
