@@ -1076,6 +1076,8 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
   ])
   expect(worker.turnArgv('pi', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
+    // claude-factory-hg9o: the image's worker rules (no /opt/plugins here, so no --skill)
+    ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-system\.md$/)],
     ...['--provider', 'anthropic', '--model', 'm'],
   ])
   expect(worker.turnArgv('claude', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
@@ -1211,8 +1213,9 @@ cat > ${dir}/pi.stdin.$n
     const id = worker.poll(0).session!
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     // no prompt text on argv: it goes on stdin
-    expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id}`)
-    expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id}`)
+    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')}`
+    expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
+    expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(readFileSync(join(dir, 'pi.stdin.0'), 'utf8')).toBe('pi brief')
     expect(readFileSync(join(dir, 'pi.stdin.1'), 'utf8')).toBe('more')
     // pi -p only prints once a turn exits, so own()/pi.jsonl never grows mid-turn: a constant size would look

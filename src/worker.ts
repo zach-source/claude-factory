@@ -18,7 +18,15 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { CODEX_GUARD_FLAGS, codexFeaturesBad, cutOffCall, cutOffNote } from './harness'
+import {
+  CODEX_GUARD_FLAGS,
+  codexFeaturesBad,
+  codexSkills,
+  cutOffCall,
+  cutOffNote,
+  piFlags,
+  VM_PLUGIN_DIRS,
+} from './harness'
 import { rmSafe } from './home-guard'
 import { sessionOf, type Usage } from './metrics'
 
@@ -287,7 +295,14 @@ const harness = (): Harness => (process.env.FACTORY_HARNESS as Harness | undefin
  */
 export function turnArgv(
   h: Harness,
-  o: { model?: string; provider?: string; session?: string; claudeFlags?: string[]; piDir?: string } = {},
+  o: {
+    model?: string
+    provider?: string
+    session?: string
+    claudeFlags?: string[]
+    piDir?: string
+    plugins?: string[]
+  } = {},
 ) {
   const model = (flag: string) => (o.model ? [flag, o.model] : [])
   switch (h) {
@@ -314,6 +329,8 @@ export function turnArgv(
       return [
         process.env.FACTORY_PI ?? 'pi',
         ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
+        // the worker rules and the image's skills, as a Claude or codex worker gets them (constitution I)
+        ...piFlags(join(import.meta.dir, 'worker-system.md'), o.plugins ?? VM_PLUGIN_DIRS),
         ...(o.provider ? ['--provider', o.provider] : []),
         ...model('--model'),
       ]
@@ -981,11 +998,11 @@ export function trustCA() {
 
 /**
  * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
- * and AGENTS.md from this image's worker rules. It fails closed, as a pane's launch does (cli.ts codexWorker):
+ * AGENTS.md from this image's worker rules, and the image's skills (constitution I). It fails closed, as a pane's launch does (cli.ts codexWorker):
  * a .codex directory in the repo would add project config, and `codex features list` must show the guard on
  * (claude-factory-72dq).
  */
-export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000) {
+export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plugins = VM_PLUGIN_DIRS) {
   if (harness() !== 'codex') return
   const files = process.env.FACTORY_CODEX_HOME_FILES
   if (!files || !dir)
@@ -1002,6 +1019,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000) {
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
   )
+  codexSkills(dir, plugins)
   const p = Bun.spawnSync([process.env.FACTORY_CODEX ?? 'codex', ...CODEX_GUARD_FLAGS, 'features', 'list'], {
     env: { ...process.env, CODEX_HOME: dir },
     stdin: 'ignore',
