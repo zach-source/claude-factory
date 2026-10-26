@@ -50,6 +50,45 @@ export function codexSkills(home: string, plugins: string[]) {
   for (const s of skillDirs(plugins)) cpSync(s, join(to, basename(s)), { recursive: true })
 }
 
+// the events `bd init`'s codex hooks use; none of them can run or block a tool call
+const BEADS_CODEX_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact']
+
+/**
+ * true when a repo's .codex dir is the one `bd init` writes and nothing else: config.toml turns on only
+ * `features.hooks`, and hooks.json runs only `bd codex-hook <event>` at the events above. That dir adds no tool
+ * and turns no guard part off, so a codex worker may run with it (claude-factory-8cu6). Any other file, key,
+ * event or command, or a file that does not parse, is not vetted, and the guard still refuses the dir.
+ */
+export function beadsOnlyCodexDir(dir: string) {
+  type Hook = Record<string, unknown>
+  try {
+    if (readdirSync(dir).sort().join() !== 'config.toml,hooks.json') return false
+    const config = Bun.TOML.parse(readFileSync(join(dir, 'config.toml'), 'utf8'))
+    if (JSON.stringify(config) !== '{"features":{"hooks":true}}') return false
+    const file = JSON.parse(readFileSync(join(dir, 'hooks.json'), 'utf8')) as {
+      hooks: Record<string, Hook[]>
+    }
+    if (Object.keys(file).join() !== 'hooks') return false
+    const only = (o: Hook, keys: string[]) => Object.keys(o).every(k => keys.includes(k))
+    return Object.entries(file.hooks).every(
+      ([event, groups]) =>
+        BEADS_CODEX_EVENTS.includes(event) &&
+        groups.every(
+          g =>
+            only(g, ['hooks', 'matcher']) &&
+            (g.hooks as Hook[]).every(
+              h =>
+                only(h, ['type', 'command', 'statusMessage', 'timeout']) &&
+                h.type === 'command' &&
+                h.command === `bd codex-hook ${event}`,
+            ),
+        ),
+    )
+  } catch {
+    return false
+  }
+}
+
 /** pi's flags for the worker rules (a system prompt file) and the plugins' skills (constitution I) */
 export const piFlags = (rules: string, plugins: string[]) => [
   ...['--append-system-prompt', rules],
