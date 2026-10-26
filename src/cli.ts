@@ -1604,8 +1604,11 @@ export function vmCodexHome(
   const chatgpt = auth === 'chatgpt'
   return {
     'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
+    // allow_login_shell = false: a login shell (bash -lc) reads /etc/profile again and drops the PATH and the CA
+    // env that serve set (devenv, nix, egress CA), so tools go missing and TLS fails (claude-factory-wpnx)
     'config.toml':
       `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n` +
+      'allow_login_shell = false\n' +
       (chatgpt ? 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' : '') +
       `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
     ...(chatgpt && { 'auth.json': placeholderAuth() }),
