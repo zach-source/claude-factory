@@ -65,9 +65,14 @@ test('codex takes its extra flags and an env prefix, fresh and on resume', () =>
   )
 })
 
-test('pi resumes by --session and says in the pane that it cannot load MCP', () => {
+// claude-factory-hg9o: pi takes its rules and skills as flags; with no MCP client it refuses a rig's servers
+// rather than run without them (constitution I)
+test('pi resumes by --session, takes env and flags, and refuses MCP', () => {
   expect(command('pi', '/p.md', { session: 'u-1' })).toBe(`pi --session 'u-1' "$(cat '/p.md')"`)
-  expect(command('pi', '/p.md', { mcp })).toStartWith(`echo 'factory: pi has no MCP client`)
+  expect(command('pi', '/p.md', { env: { A: 'b' }, extra: " '--skill' '/s'" })).toBe(
+    `A='b' pi '--skill' '/s' "$(cat '/p.md')"`,
+  )
+  expect(() => command('pi', '/p.md', { mcp })).toThrow('pi has no MCP client')
   expect(command('bun w.ts', "/it's.md")).toBe(`bun w.ts "$(cat '/it'\\''s.md')"`)
 })
 

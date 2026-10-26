@@ -6,6 +6,12 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: every worker backend gets the worker plugins' skills (constitution I; claude-factory-fxu, claude-factory-qo6i, claude-factory-hg9o):
+  - The worker image holds the `asd-ste100` plugin at `/opt/plugins/asd-ste100`, from `zach-source/claude-marketplace` at a pinned commit (`MARKETPLACE_COMMIT`). It also holds `python3` for the plugin's hooks.
+  - An AX Claude worker loads that plugin with `--plugin-dir`.
+  - A codex worker gets the plugin skills in `CODEX_HOME/skills`. On the laptop the skills come from the person's plugins that are on (`asd-ste100` and `FACTORY_WORKER_PLUGINS`). In a VM they come from the image.
+  - A pi worker gets `worker-system.md` with `--append-system-prompt` and each skill with `--skill`. It also gets the commit identity env.
+- Changed: a pi worker with rig MCP servers is refused, because pi has no MCP client. Before, it ran without them. `factory rig add --agent pi --mcp ...` now fails.
 - New: the ponytail rules are in `src/worker-system.md` (claude-factory-wzy6). Every Claude and codex worker now gets them, on the laptop and on AX. Before, only a laptop Claude worker got them, through the ponytail plugin. Rebuild the worker image to give them to AX workers.
 - New: `.specify/memory/constitution.md` holds principle I, Worker Parity. All workers must receive the same skills, rules and MCP servers on every backend and runner. The file lists the known gaps, and beads track them (claude-factory-fxu, claude-factory-qo6i, claude-factory-hg9o).
 - New: a rig can run its AX workers in a micro-VM (ax-3hy). Set `"sandboxClass": "microvm"` on the rig in `rigs.json` by hand. The Task then sets AX's `spec.sandboxClass`, and Substrate runs it in a Cloud Hypervisor guest with a real Linux kernel. Use it for a repo whose workers build with Nix, because Nix builds fail under gVisor. The cluster needs a microvm WorkerPool, and AX must know the field. Without the setting, the Task leaves the field out and AX uses gVisor.

@@ -45,6 +45,8 @@ import {
   stalled,
   swapUntil,
   workerFlags,
+  piWorker,
+  userPluginDirs,
   workerSettings,
   WORKER_TOOLS,
   commitIdentity,
@@ -1978,4 +1980,53 @@ test('vmBeads gives the VM beads for a run with a bead and for a ship run', () =
   expect(vmBeads({ bead: 'app-1' })).toBe(true)
   expect(vmBeads({ ship: true })).toBe(true)
   expect(vmBeads({})).toBe(false)
+})
+
+// claude-factory-qo6i: codex and pi workers get the skills of the plugins a Claude worker keeps (constitution I).
+// Claude Code keeps a plugin at its installPath, or (a directory marketplace) in the marketplace's own dir
+test('userPluginDirs finds an on worker plugin at its installPath or in its directory marketplace', () => {
+  const c = mkdtempSync(join(tmpdir(), 'plugins-'))
+  const cached = join(c, 'cache', 'p')
+  const market = join(c, 'market')
+  mkdirSync(join(c, 'plugins'), { recursive: true })
+  mkdirSync(cached, { recursive: true })
+  mkdirSync(join(market, '.claude-plugin'), { recursive: true })
+  mkdirSync(join(market, 'claude', 'ste'), { recursive: true })
+  writeFileSync(
+    join(c, 'settings.json'),
+    JSON.stringify({ enabledPlugins: { 'pony@p': true, 'ste@m': true, 'off@p': false, 'other@p': true } }),
+  )
+  writeFileSync(
+    join(c, 'plugins', 'installed_plugins.json'),
+    JSON.stringify({
+      plugins: {
+        'pony@p': [{ installPath: cached }],
+        'ste@m': [{ installPath: join(c, 'gone') }],
+        'off@p': [{ installPath: cached }],
+      },
+    }),
+  )
+  writeFileSync(
+    join(c, 'plugins', 'known_marketplaces.json'),
+    JSON.stringify({ m: { installLocation: market } }),
+  )
+  writeFileSync(
+    join(market, '.claude-plugin', 'marketplace.json'),
+    JSON.stringify({ plugins: [{ name: 'ste', source: './claude/ste' }] }),
+  )
+  expect(userPluginDirs(['pony', 'ste', 'off'], c)).toEqual([cached, join(market, 'claude', 'ste')])
+  expect(userPluginDirs(['pony'], join(c, 'none'))).toEqual([])
+})
+
+// claude-factory-hg9o: a pi worker gets the worker rules a Claude worker gets, and the plugins' skills
+test('piWorker appends the worker rules to pi and passes each plugin skill', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pi-home-'))
+  const plugin = join(home, 'plugin')
+  mkdirSync(join(plugin, 'skills', 'ste'), { recursive: true })
+  const { extra } = piWorker(home, [plugin])
+  const rules = join(home, 'worker-system.md')
+  expect(extra).toBe(` '--append-system-prompt' '${rules}' '--skill' '${join(plugin, 'skills', 'ste')}'`)
+  expect(readFileSync(rules, 'utf8')).toStartWith(
+    readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
+  )
 })

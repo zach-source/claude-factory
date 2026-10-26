@@ -104,12 +104,15 @@ import {
   CODEX_UNGUARDED,
   claudeCommand,
   codexFeaturesBad,
+  codexSkills,
   command,
   cutOffCall,
   cutOffNote,
   harnessOf,
+  piFlags,
   readMcp,
   sq,
+  VM_PLUGIN_DIRS,
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
@@ -1548,7 +1551,7 @@ const denyHook = (bun: string, file: string, contexts?: string[], branches?: str
  * It keeps the same tools. It does not use the laptop's own settings or project-level mods.
  *
  * It leaves out the laptop's own items: the user's hooks, the user's env, the plugin dirs, the global `CLAUDE.md`.
- * So a VM worker gets no `asd-ste100` plugin and no STE env. claude-factory-fxu tracks that gap.
+ * It gets the image's plugins (`asd-ste100`) by `--plugin-dir` instead of the person's (claude-factory-fxu).
  * `disableBundledSkills` turns off the bundled-skill list of `Skill`. No skill in the VM earns that cost yet.
  *
  * It gets one hook. The hook is the same deny-rm PreToolUse hook that a laptop worker gets (claude-factory-cr6, claude-factory-99d).
@@ -1580,6 +1583,8 @@ export function vmClaudeFlags(
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
     ...['--settings', JSON.stringify(settings)],
     ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
+    // the image's plugins, as a laptop worker gets the person's (constitution I, claude-factory-fxu)
+    ...VM_PLUGIN_DIRS.flatMap(d => ['--plugin-dir', d]),
   ]
 }
 
@@ -1930,7 +1935,7 @@ export const workerSettings = (
   keep: string[] = [],
   merge?: string,
 ) => {
-  const names = ['asd-ste100', ...keep]
+  const names = workerPluginNames(keep)
   const ste = Object.entries(user.enabledPlugins ?? {}).filter(
     ([k, v]) => v && names.includes(k.split('@')[0]!),
   )
@@ -1990,6 +1995,54 @@ export const commitIdentity = (home: string) => {
       : '',
   }
 }
+/** the plugins a worker keeps (enabledPlugins key names before the @): asd-ste100 and FACTORY_WORKER_PLUGINS */
+const workerPluginNames = (
+  keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
+) => ['asd-ste100', ...keep]
+
+/**
+ * the dirs of the person's worker plugins that are on, so a codex or pi worker gets the skills a Claude worker
+ * gets from enabledPlugins (constitution I). Claude Code keeps a plugin at its installPath, or, from a directory
+ * marketplace, in the marketplace's own dir. A plugin that is off or not found adds no dir.
+ */
+export function userPluginDirs(
+  names = workerPluginNames(),
+  claudeDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+) {
+  const read = <T>(f: string): T | undefined => {
+    try {
+      return readJson<T>(f)
+    } catch {
+      return undefined
+    }
+  }
+  type Installed = { plugins?: Record<string, { installPath?: string }[]> }
+  type Market = Record<string, { installLocation?: string }>
+  const on = read<{ enabledPlugins?: Record<string, boolean> }>(
+    join(claudeDir, 'settings.json'),
+  )?.enabledPlugins
+  const installed = read<Installed>(join(claudeDir, 'plugins', 'installed_plugins.json'))?.plugins ?? {}
+  const markets = read<Market>(join(claudeDir, 'plugins', 'known_marketplaces.json')) ?? {}
+  return Object.entries(on ?? {})
+    .filter(([key, v]) => v && names.includes(key.split('@')[0]!))
+    .flatMap(([key]) => {
+      const [name, market] = key.split('@') as [string, string | undefined]
+      const path = installed[key]?.[0]?.installPath
+      if (path && existsSync(path)) return [path]
+      const root = market ? markets[market]?.installLocation : undefined
+      if (!root) return []
+      const list = read<{ plugins?: { name: string; source?: string }[] }>(
+        join(root, '.claude-plugin', 'marketplace.json'),
+      )
+      const source = list?.plugins?.find(p => p.name === name)?.source
+      const dir = typeof source === 'string' ? join(root, source) : undefined
+      return dir && existsSync(dir) ? [dir] : []
+    })
+}
+
 // what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn.
 // ToolSearch keeps MCP tools deferred: without it every MCP server's tools load into every turn (~60k)
 // Skill lets a worker run the asd-ste100 skill (workerSettings carries that one plugin over)
@@ -2025,10 +2078,7 @@ export function workerFlags(
       ? `worker-settings-${rig!.name}.json`
       : 'worker-settings.json',
   )
-  const keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
+  const keep = workerPluginNames().slice(1)
   const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep, merge)
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
@@ -2065,6 +2115,22 @@ function codexGuardOff(agent: string): string | undefined {
 }
 
 /**
+ * A pi worker's rules and skills: the worker rules (as a Claude worker gets them) appended to pi's system prompt,
+ * and the person's worker plugins' skills by --skill (constitution I). It commits as the factory home says.
+ */
+export function piWorker(home = HOME, plugins = userPluginDirs()) {
+  const id = commitIdentity(home)
+  const rules = join(home, 'worker-system.md')
+  writeFileSync(rules, readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') + id.rule)
+  return {
+    env: id.env as Record<string, string>,
+    extra: piFlags(rules, plugins)
+      .map(a => ` ${sq(a)}`)
+      .join(''),
+  }
+}
+
+/**
  * A codex worker gets its own CODEX_HOME at <run dir>/codex/<node>, never the person's ~/.codex. It holds
  * config.toml (context limit), hooks.json (the person's hooks, then the deny hook last), AGENTS.md (the worker
  * rules) and an auth.json link. Codex has the PreToolUse hook, so worker-hook.ts runs as it is. Fail closed:
@@ -2076,7 +2142,7 @@ export function codexWorker(
   node: string,
   agent: string,
   rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
-  o: { hookFile?: string; userHome?: string; dir?: string; timeoutMs?: number } = {},
+  o: { hookFile?: string; userHome?: string; dir?: string; timeoutMs?: number; plugins?: string[] } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
   if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
@@ -2120,6 +2186,7 @@ export function codexWorker(
       readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8') +
       id.rule,
   )
+  codexSkills(dir, o.plugins ?? userPluginDirs())
   // one token store: codex rotates a ChatGPT refresh token, and a copy that refreshes would stale the person's own
   const auth = join(user, 'auth.json')
   const link = join(dir, 'auth.json')
@@ -2157,10 +2224,13 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
+  const h = harnessOf(agent)
   const setup =
-    harnessOf(agent) === 'codex'
+    h === 'codex'
       ? codexWorker(run, def, node, agent, rig)
-      : { extra: workerFlags(def, rig), env: { FACTORY_DEADLINE: deadlineOf(def, node, c) } }
+      : h === 'pi'
+        ? piWorker()
+        : { extra: workerFlags(def, rig), env: { FACTORY_DEADLINE: deadlineOf(def, node, c) } }
   return command(agent, prompt, {
     session,
     ...setup,
@@ -7413,6 +7483,8 @@ async function defineRig(
   const remote = runners[rig.runner ?? DEFAULT_RUNNER]!.local === false
   if (remote && mcp !== undefined)
     fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
+  if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'pi')
+    fail('--mcp does not reach a pi worker: pi has no MCP client (constitution I)')
   if (remote && agent !== undefined && !harnessOf(agent))
     fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
   if (remote && agent !== undefined) axCodexRefused(agent)

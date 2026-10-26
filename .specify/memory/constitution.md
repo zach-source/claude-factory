@@ -15,6 +15,9 @@ All workers must receive the same skills, rules and MCP servers. This applies to
 
 This constitution has priority over other practices in this repo. Each PR and review must make sure that the change obeys it. To change the constitution, open a PR that gives the reason and updates the version.
 
-Known gaps on 2026-10-26: AX Claude workers get no `asd-ste100` plugin (claude-factory-fxu). Codex workers get no `asd-ste100` skill. pi workers get no `worker-system.md`. A pi worker runs without the rig MCP servers (src/harness.ts warns and goes on). A laptop Claude worker also gets the plugins in `FACTORY_WORKER_PLUGINS`.
+Known gaps on 2026-10-26 (after claude-factory-fxu, claude-factory-qo6i and claude-factory-hg9o):
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-26 | **Last Amended**: 2026-10-26
+- The `asd-ste100` hooks (the session brief and the score check) run only for Claude workers. Codex and pi workers get its skill and the STE rule in `worker-system.md`, but not its hooks.
+- A VM worker always gets the image's plugins. A laptop worker gets a plugin only when the person has it on.
+
+**Version**: 1.0.1 | **Ratified**: 2026-10-26 | **Last Amended**: 2026-10-26

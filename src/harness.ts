@@ -1,7 +1,7 @@
 // The coding agents a station's worker can run as. herdr detects each in its pane (status, session),
 // so the runner watches them all the same way; they differ only in how a launch, a resume and an
 // MCP config are spelled on the command line.
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 export type Harness = 'claude' | 'codex' | 'pi'
@@ -23,6 +23,38 @@ const exeOf = (cmd: string) => basename(cmd.trim().split(/\s+/)[0] ?? '')
  * another wrapper) and its own flags. Read on each call, so a factory follows its environment.
  */
 export const claudeCommand = () => process.env.FACTORY_CLAUDE?.trim() || 'claude-smart --new --no-channels'
+
+/** the plugins in the worker image (Dockerfile.worker): every VM worker gets them, on every backend (constitution I) */
+export const VM_PLUGIN_DIRS = ['/opt/plugins/asd-ste100']
+
+/** the skill dirs (<plugin>/skills/<name>) of these plugin dirs; a plugin with no skills adds none */
+export const skillDirs = (plugins: string[]) =>
+  plugins.flatMap(p => {
+    try {
+      return readdirSync(join(p, 'skills'), { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => join(p, 'skills', d.name))
+    } catch {
+      return []
+    }
+  })
+
+/**
+ * puts the plugins' skills in a codex home's skills dir, where codex finds them at start (constitution I). It
+ * copies, not links: a link out of the home lets codex write into the person's plugin. The rm first clears a
+ * read-only copy (a Nix store source) that a resume would not overwrite.
+ */
+export function codexSkills(home: string, plugins: string[]) {
+  const to = join(home, 'skills')
+  rmSync(to, { recursive: true, force: true })
+  for (const s of skillDirs(plugins)) cpSync(s, join(to, basename(s)), { recursive: true })
+}
+
+/** pi's flags for the worker rules (a system prompt file) and the plugins' skills (constitution I) */
+export const piFlags = (rules: string, plugins: string[]) => [
+  ...['--append-system-prompt', rules],
+  ...skillDirs(plugins).flatMap(s => ['--skill', s]),
+]
 
 /** the harness a worker command runs, from its first word; null for anything else (a script, a fake) */
 export function harnessOf(agent: string): Harness | null {
@@ -128,8 +160,8 @@ export const codexMcp = (servers: Record<string, McpServer>) =>
 
 /**
  * the shell line that starts a worker on the prompt file, or resumes its session with the prompt as
- * the next turn. `extra` is flags put after the agent's own (Claude's --settings, codex's guard flags).
- * `env` is a VAR=value prefix for claude and codex (FACTORY_DEADLINE; CODEX_HOME).
+ * the next turn. `extra` is flags put after the agent's own (Claude's --settings, codex's guard flags, pi's rules and skills).
+ * `env` is a VAR=value prefix (FACTORY_DEADLINE; CODEX_HOME; the commit identity).
  */
 export function command(
   agent: string,
@@ -154,10 +186,11 @@ export function command(
       return `${env}${exe} resume${rest.length ? ` ${rest.join(' ')}` : ''}${flags} ${sq(session)} ${text}`
     }
     case 'pi': {
-      // ponytail: pi has no MCP client of its own; say so in the pane rather than drop the config silently.
+      // pi has no MCP client of its own, and a worker never runs without its rig's servers (constitution I).
       // A pi MCP extension (e.g. pi-mcp-adapter) passed in the rig's --agent would cover it.
-      const warn = mcp ? `echo ${sq(`factory: pi has no MCP client, so ${mcp.file} is not loaded`)}; ` : ''
-      return `${warn}${agent}${session ? ` --session ${sq(session)}` : ''} ${text}`
+      if (mcp)
+        throw new Error(`pi has no MCP client, so a pi worker cannot load ${mcp.file}: use claude or codex`)
+      return `${env}${agent}${o.extra ?? ''}${session ? ` --session ${sq(session)}` : ''} ${text}`
     }
     default:
       return `${agent} ${text}`

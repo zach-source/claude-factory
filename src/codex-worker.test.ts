@@ -51,6 +51,7 @@ function fixture(maxContextK = 200) {
         hookFile: join(ROOT, 'src', 'worker-hook.ts'),
         userHome: user,
         dir,
+        plugins: [],
         ...o,
       },
     )
@@ -91,6 +92,21 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   ])
     expect(after).toContain(flag)
   expect(f.make().extra).toBe(extra) // a resume writes the same home again
+})
+
+// claude-factory-qo6i: a codex worker gets the skills a Claude worker gets from its plugins (constitution I);
+// a resume copies them again over a read-only copy (a Nix store source)
+test('a codex worker home holds the worker plugins skills, and a resume copies them again', () => {
+  const f = fixture()
+  const plugin = join(f.tmp, 'plugin')
+  mkdirSync(join(plugin, 'skills', 'ste', 'scripts'), { recursive: true })
+  writeFileSync(join(plugin, 'skills', 'ste', 'SKILL.md'), '---\nname: ste\n---\n', { mode: 0o444 })
+  writeFileSync(join(plugin, 'skills', 'ste', 'scripts', 'look.py'), 'x', { mode: 0o444 })
+  f.make(undefined, { plugins: [plugin] })
+  f.make(undefined, { plugins: [plugin] })
+  expect(readdirSync(join(f.dir, 'skills'))).toEqual(['ste'])
+  expect(readFileSync(join(f.dir, 'skills', 'ste', 'SKILL.md'), 'utf8')).toContain('name: ste')
+  expect(readdirSync(join(f.dir, 'skills', 'ste', 'scripts'))).toEqual(['look.py'])
 })
 
 test('with no person auth file there is no auth.json, and the context limit has a floor', () => {
