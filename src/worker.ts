@@ -19,6 +19,7 @@ import {
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import {
+  beadsOnlyCodexDir,
   CODEX_GUARD_FLAGS,
   codexFeaturesBad,
   codexSkills,
@@ -999,7 +1000,7 @@ export function trustCA() {
 /**
  * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
  * AGENTS.md from this image's worker rules, and the image's skills (constitution I). It fails closed, as a pane's launch does (cli.ts codexWorker):
- * a .codex directory in the repo would add project config, and `codex features list` must show the guard on
+ * a .codex directory in the repo would add project config (all but the one `bd init` writes), and `codex features list` must show the guard on
  * (claude-factory-72dq).
  */
 export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plugins = VM_PLUGIN_DIRS) {
@@ -1008,7 +1009,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
   if (!files || !dir)
     throw new Error('a codex worker needs FACTORY_CODEX_HOME_FILES and CODEX_HOME from the laptop')
   const local = join(repo(), '.codex')
-  if (existsSync(local))
+  if (existsSync(local) && !beadsOnlyCodexDir(local))
     throw new Error(`a codex worker keeps the deny hook on: ${local} would add project config`)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)

@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1972,6 +1973,10 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     writeFileSync(features, on)
     mkdirSync(join(repo, '.codex'))
     expect(() => worker.codexHome(home)).toThrow('would add project config')
+    rmSync(join(repo, '.codex'), { recursive: true })
+    // claude-factory-8cu6: the .codex that bd init writes is allowed in the VM too
+    cpSync(join(import.meta.dir, 'fixtures', 'bd-codex'), join(repo, '.codex'), { recursive: true })
+    expect(() => worker.codexHome(home)).not.toThrow()
     rmSync(join(repo, '.codex'), { recursive: true })
     delete process.env.FACTORY_CODEX_HOME_FILES
     expect(() => worker.codexHome(home)).toThrow('FACTORY_CODEX_HOME_FILES')
