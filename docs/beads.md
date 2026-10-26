@@ -347,10 +347,10 @@ To release a held bead, run `factory queue <rig|repo> <id>`. The command removes
 The `clusterRuns` setting in `rigs.json` is a different limit. It is the most live runs that one cluster can hold in the rig. It must be a positive integer. The default is 2. Other values give the default.
 
 ```json
-{ "app": { "clusterRuns": 3 } }
+[{ "name": "app", "repo": "acme/widget", "clusterRuns": 3 }]
 ```
 
-The plan station reports a `file-churn` finding when one file changes in 8 or more merged pull requests in 48 hours. It reports at most 5 files. The finding asks the person a design question. It files one bead for each file. A new count does not file a second bead.
+The pm pass (`factory plan`) reports a `file-churn` finding when one file changes in 8 or more merged pull requests in 48 hours. It reports at most 5 files. The finding asks the person a design question. It files one `human`-labeled proposal bead for each file, at most 3 for each rig in one pass. A new count does not file a second bead.
 
 ## Hygiene sweep
 
