@@ -2347,13 +2347,14 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const h = harnessOf(agent)
+  const skills = workerSkills(def, def.nodes[node]!, rig)
   const setup =
     h === 'codex'
-      ? codexWorker(run, def, node, agent, rig)
+      ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)) })
       : h === 'pi'
-        ? piWorker()
+        ? piWorker(HOME, userPluginDirs(workerPluginNames(skills)))
         : {
-            extra: workerFlags(def, rig, HOME, workerSkills(def, def.nodes[node]!, rig), node),
+            extra: workerFlags(def, rig, HOME, skills, node),
             env: { FACTORY_DEADLINE: deadlineOf(def, node, c) },
           }
   return command(agent, prompt, {

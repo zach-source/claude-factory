@@ -2148,6 +2148,7 @@ test('userPluginDirs finds an on worker plugin at its installPath or in its dire
   )
   expect(userPluginDirs(['pony', 'ste', 'off'], c)).toEqual([cached, join(market, 'claude', 'ste')])
   expect(userPluginDirs(['pony'], join(c, 'none'))).toEqual([])
+  expect(userPluginDirs([], c)).toEqual([]) // a station with no skills gets no plugin dir
 })
 
 // claude-factory-hg9o: a pi worker gets the worker rules a Claude worker gets, and the plugins' skills
