@@ -7,6 +7,7 @@ import {
   compile,
   failClass,
   failingAcIds,
+  gotoRefusal,
   isNoWorker,
   isParkedOn,
   isPrWait,
@@ -48,7 +49,7 @@ function run(d = def) {
     return actor.getSnapshot()
   }
   const now = () => createActor(machine, { snapshot: snap }).start().getSnapshot()
-  return { send, now }
+  return { send, now, saved: () => JSON.parse(JSON.stringify(snap)) as Snapshot<unknown> }
 }
 
 test('loop graph routes outcomes and carries summaries as mail', () => {
@@ -1296,5 +1297,34 @@ describe('an outage hold parks the station and spends no attempt', () => {
     const s = send({ type: 'FAIL', seq: 1, reason: 'egress gateway: model API unreachable', at: 1000 })
     expect(where(s.value)).toEqual(['implement', 'backoff'])
     expect(s.context.log.at(-1)?.outcome).toBe('fail')
+  })
+})
+
+describe('gotoRefusal (claude-factory-7dd)', () => {
+  const refusal = (r: ReturnType<typeof run>, d: Factory, node: string, pending: Ev[] = []) =>
+    gotoRefusal(d, r.saved(), pending, node, 99)
+
+  test('a review held by rounds can go to implement', () => {
+    const d: Factory = { ...def, nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 1 } } }
+    const r = run(d)
+    r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'a', at: 1 })
+    r.send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'b', at: 2 })
+    r.send({ type: 'DONE', seq: 3, outcome: 'ready', summary: 'c', at: 3 })
+    r.send({ type: 'DONE', seq: 4, outcome: 'changes', summary: 'd', at: 4 })
+    expect(where(r.now().value)).toEqual(['review', 'stuck'])
+    expect(refusal(r, d, 'implement')).toBeNull()
+  })
+
+  test('a budget hold refuses goto; a pending RETRY refills it; goto done is fine', () => {
+    const d: Factory = { ...def, maxSteps: 2 }
+    const r = run(d)
+    r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'a', at: 1 })
+    r.send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'b', at: 2 })
+    expect(where(r.now().value)).toEqual(['implement', 'stuck'])
+    const before = r.saved()
+    expect(refusal(r, d, 'review')).toContain('step budget used up')
+    expect(refusal(r, d, 'review', [{ type: 'RETRY', at: 5 }])).toBeNull()
+    expect(refusal(r, d, 'done')).toBeNull()
+    expect(r.saved()).toEqual(before)
   })
 })
