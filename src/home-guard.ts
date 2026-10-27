@@ -21,10 +21,19 @@ export function homes(): string[] {
   return [...new Set([homedir(), process.env.HOME].filter((h): h is string => !!h).map(h => resolve(h)))]
 }
 
-/** true for `/`, a home dir and every dir above a home dir */
+/**
+ * The APFS full case fold: ASCII lower case, else upper then lower case, so U+017F and the sharp s
+ * fold as the file system folds them. It runs on every OS (fail closed).
+ */
+const fold = (s: string) => (/[^\x00-\x7f]/.test(s) ? s.toUpperCase().toLowerCase() : s.toLowerCase())
+
+/** true for `/`, a home dir and every dir above a home dir, by case-folded compare */
 export function protectedPath(p: string, protect = homes()): boolean {
-  const r = resolve(p)
-  return protect.some(h => r === h || h.startsWith(r.endsWith(sep) ? r : r + sep))
+  const r = fold(resolve(p))
+  return protect.some(h => {
+    const f = fold(h)
+    return r === f || f.startsWith(r.endsWith(sep) ? r : r + sep)
+  })
 }
 
 /** rmSync, but it throws on `/`, $HOME or a parent of $HOME */
@@ -48,12 +57,16 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /** a regex for a whole-home word: ~, $HOME, ${HOME}, a home path or a dir above it (not `/`) */
 function homeWord(protect: string[]): RegExp {
   const paths = new Set<string>()
-  for (const h of protect) for (let d = h; d !== dirname(d); d = dirname(d)) paths.add(d)
-  const alts = ['~', String.raw`\$HOME`, String.raw`\$\{HOME\}`, ...[...paths].map(escape)]
+  for (const h of protect) for (let d = h; d !== dirname(d); d = dirname(d)) paths.add(fold(d))
+  const alts = ['~', String.raw`\$home`, String.raw`\$\{home\}`, ...[...paths].map(escape)]
   return new RegExp(`${LEAD}(?:${alts.join('|')})${TAIL}`)
 }
 
-const hits = (text: string, word: RegExp) => DELETE.test(text) && (word.test(text) || API.test(text))
+// The word regex holds folded text, so it tests folded text. DELETE and API also test the original: rmSync is case-sensitive.
+const hits = (text: string, word: RegExp) => {
+  const f = fold(text)
+  return (DELETE.test(text) || DELETE.test(f)) && (word.test(f) || API.test(text))
+}
 
 // a word that names a script file: a script extension, or a ./ or / path
 const SCRIPT =

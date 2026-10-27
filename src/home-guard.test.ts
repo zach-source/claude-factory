@@ -103,7 +103,8 @@ describe('rmSafe', () => {
     for (const p of ['/', '/Users', '/Users/', '/Users/pat', '/Users/pat/', '/Users/pat/a/..'])
       expect(protectedPath(p, H)).toBe(true)
     for (const p of ['/users/pat', '/USERS', '/Uſers/PAT/']) expect(protectedPath(p, H)).toBe(true)
-    for (const p of ['/users/pat/a', '/users/patx', '/Users/pat/a', '/Users/patx', '/tmp']) expect(protectedPath(p, H)).toBe(false)
+    for (const p of ['/users/pat/a', '/users/patx', '/Users/pat/a', '/Users/patx', '/tmp'])
+      expect(protectedPath(p, H)).toBe(false)
   })
 
   // never call rmSafe on the real home dir in a test: a broken guard would delete it. $HOME points
