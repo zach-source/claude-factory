@@ -26,7 +26,7 @@ import {
   cutOffCall,
   cutOffNote,
   piFlags,
-  VM_PLUGIN_DIRS,
+  VM_PLUGINS,
 } from './harness'
 import { rmSafe } from './home-guard'
 import { sessionOf, type Usage } from './metrics'
@@ -338,7 +338,7 @@ export function turnArgv(
         process.env.FACTORY_PI ?? 'pi',
         ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
         // the worker rules and the image's skills, as a Claude or codex worker gets them (constitution I)
-        ...piFlags(join(import.meta.dir, 'worker-system.md'), o.plugins ?? VM_PLUGIN_DIRS),
+        ...piFlags(join(import.meta.dir, 'worker-system.md'), o.plugins ?? imagePlugins()),
         ...(o.provider ? ['--provider', o.provider] : []),
         ...model('--model'),
       ]
@@ -1007,12 +1007,24 @@ export function trustCA() {
 }
 
 /**
+ * The image's plugin dirs for this worker. FACTORY_SKILLS is the laptop's list of the station's skills:
+ * an empty list gives none, and an unset one (an older laptop) gives all of them.
+ */
+export const imagePlugins = (skills = process.env.FACTORY_SKILLS) =>
+  skills === undefined
+    ? Object.values(VM_PLUGINS)
+    : skills
+        .split(',')
+        .filter(Boolean)
+        .flatMap(s => VM_PLUGINS[s] ?? [])
+
+/**
  * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
  * AGENTS.md from this image's worker rules, and the image's skills (constitution I). It fails closed, as a pane's launch does (cli.ts codexWorker):
  * a .codex directory in the repo would add project config (all but the one `bd init` writes), and `codex features list` must show the guard on
  * (claude-factory-72dq).
  */
-export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plugins = VM_PLUGIN_DIRS) {
+export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plugins = imagePlugins()) {
   if (harness() !== 'codex') return
   const files = process.env.FACTORY_CODEX_HOME_FILES
   if (!files || !dir)
