@@ -2612,6 +2612,12 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       ? swapAccount(hit, now)
       : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
+      // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
+      if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
+        const reason = `usage limit (${hit.kind}) until ${new Date(until).toISOString()}`
+        send({ type: 'FAIL', seq: c.seq, reason, hold: until })
+        return 'usage limit'
+      }
       const paged = limitPagedFile(runner, isCodex)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
         const text = runner.local
