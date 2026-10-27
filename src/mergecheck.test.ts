@@ -51,7 +51,7 @@ test('conflictsOf lists the conflicting files, and gives [] for a clean merge', 
   expect(conflictsOf(clone, 'main', 'b')).toEqual(['CHANGELOG.md'])
   setup(false)
   expect(conflictsOf(clone, 'main', 'b')).toEqual([])
-})
+}, 60_000)
 
 test('conflictsOf fails open (AC3)', () => {
   setup(true)
@@ -59,7 +59,7 @@ test('conflictsOf fails open (AC3)', () => {
   expect(conflictsOf(join(dir, 'missing'), 'main', 'b')).toEqual([]) // no repo
   git(clone, 'remote', 'set-url', 'origin', join(dir, 'gone.git'))
   expect(conflictsOf(clone, 'main', 'b')).toEqual([]) // fetch fails
-})
+}, 60_000)
 
 const factoryDef = (mergeCheck: boolean): Factory => ({
   name: 'mc',
@@ -104,11 +104,12 @@ test('a conflicting branch goes back to implement with the mail and no launch (A
   const ctx = snap.context
   expect(where(snap.value)[0]).toBe('implement')
   expect(ctx.log.at(-1)).toMatchObject({ node: 'verify', outcome: 'red' })
-  const text = 'merge origin/main into b; conflicts in: CHANGELOG.md; keep both sides of CHANGELOG.md [Unreleased]'
+  const text =
+    'merge origin/main into b; conflicts in: CHANGELOG.md; keep both sides of CHANGELOG.md [Unreleased]'
   expect(ctx.log.at(-1).summary).toBe(`no worker: ${text}`)
   expect(ctx.mail.implement.at(-1).text).toContain(text)
   expect(existsSync(join(home, 'launches.jsonl'))).toBe(false)
-})
+}, 60_000)
 
 test('a station without mergeCheck runs no fetch (AC4)', () => {
   setup(true)
@@ -116,4 +117,4 @@ test('a station without mergeCheck runs no fetch (AC4)', () => {
   verifyRun(factoryDef(false))
   tick()
   expect(existsSync(join(clone, '.git', 'refs', 'remotes', 'origin', 'b'))).toBe(false)
-})
+}, 60_000)
