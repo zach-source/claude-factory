@@ -101,7 +101,7 @@ How the run's end settles the bead:
 
 | The run                                   | The bead                                                                                                                             |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| shipped, or finished another way          | closed, with the last report as the reason                                                                                           |
+| shipped, or finished another way          | closed, with the last report as the reason. Each parent whose children are now all closed closes too, with a comment that names the run. A ship-labelled, deferred or held parent stays open |
 | held for you, or aborted                  | deferred and unassigned. `bd undefer <id>` hands it back to the factory                                                              |
 | ended on a `defer: { station }` edge      | deferred and unassigned, like a held run. Each `station:*` label is swapped for `station:<name>`, and the `factory` label is added if the bead lacks it, so `bd undefer <id>` starts the next run at that station. `factory:*` labels stay. A Linear-sourced bead gets a plain defer, with no label change |
 | rejected by a station (not the factory's) | open and ready, `factory` swapped for `rejected`, metadata `rejected_by`, `rejected_at`, `reject_reason`. Queue it again or close it |

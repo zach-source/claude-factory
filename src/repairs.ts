@@ -1,7 +1,7 @@
 // Repairs in code, not in prompts: a bead whose work is plainly done or dead gets closed or
 // deferred by the factory. `repairs` is pure: it decides. cli.ts's `repairPass` does the effects.
 import { findings } from './plan'
-import { SHIP, REJECTED, shipBranchOf, type Bead } from './beads'
+import { SHIP, REJECTED, parentOf, shipBranchOf, type Bead } from './beads'
 
 export type PrFact = {
   number: number
@@ -98,4 +98,26 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
       out.push({ kind: 'unship', id: b.id, reason: `${pr.url} was closed unmerged` })
   }
   return out
+}
+
+/**
+ * Find the ancestors of `id` to close after the factory closes `id`. Nearest first.
+ * `closed` holds the ids that the factory closed in this pass. It wins over a stale `status`.
+ * The bars are the bars of epic-done-open (a ship-labelled or deferred parent stays open).
+ * A parent with an assignee also stays open, because bd refuses to close it.
+ * The walk stops at the first parent that stays open.
+ */
+export function closableParents(every: Bead[], closed: Set<string>, id: string): string[] {
+  const done = new Set(closed)
+  const out: string[] = []
+  for (let cur = id; ;) {
+    const pid = parentOf(every.find(b => b.id === cur) ?? { id: cur, title: '', status: 'open' })
+    const p = pid ? every.find(b => b.id === pid) : undefined
+    if (!p || done.has(p.id) || p.status === 'closed' || p.status === 'deferred') return out
+    if (p.labels?.includes(SHIP) || p.assignee) return out
+    if (every.some(b => parentOf(b) === p.id && b.status !== 'closed' && !done.has(b.id))) return out
+    done.add(p.id)
+    out.push(p.id)
+    cur = p.id
+  }
 }

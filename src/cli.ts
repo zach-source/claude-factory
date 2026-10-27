@@ -120,7 +120,7 @@ import {
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
-import { REPAIR_CAP, repairs, type PrFact } from './repairs'
+import { REPAIR_CAP, closableParents, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import * as gc from './gc'
@@ -3166,6 +3166,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
+    else closeParents(b, run.repo, id, `run ${run.id}`)
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
@@ -7247,7 +7248,8 @@ async function liveByBead() {
   return out
 }
 
-const repairsFile = () => join(HOME, 'repairs.jsonl')
+// FACTORY_REPAIRS_LOG lets a test write elsewhere: the import sets HOME once, and bun shares the module cache
+const repairsFile = () => process.env.FACTORY_REPAIRS_LOG ?? join(HOME, 'repairs.jsonl')
 
 /**
  * Closes or defers beads whose work is plainly done or dead, and releases claims that no live run
@@ -7257,6 +7259,41 @@ const repairsFile = () => join(HOME, 'repairs.jsonl')
  */
 const isFresh = (stamp: string, ms: number) => existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < ms
 
+/**
+ * Close each ancestor of `id` whose children are all closed, nearest first, after the factory
+ * closed `id`. It never throws: a throw out of `track` would leave the run unsettled.
+ * The reason text must stay "every child is closed", because the reship repair matches on it.
+ */
+export function closeParents(
+  b: ReturnType<typeof beads>,
+  repo: string,
+  id: string,
+  by: string,
+  closed = new Set([id]),
+) {
+  try {
+    for (const p of closableParents(b.every(), closed, id)) {
+      if (!b.close(p, 'every child is closed')) return
+      closed.add(p)
+      b.comment(p, `${by} closed ${id}; every child of this bead is closed, so the factory closed it`)
+      const at = new Date().toISOString()
+      const row = {
+        at,
+        rig: rigOf(repo)?.name,
+        kind: 'close',
+        id: p,
+        reason: 'every child is closed',
+        by,
+        child: id,
+      }
+      appendFileSync(repairsFile(), JSON.stringify(row) + '\n')
+      console.log(`${at} close parent ${p} (${by} closed ${id})`)
+    }
+  } catch (err) {
+    console.error(`${new Date().toISOString()} close parents of ${id}: ${(err as Error).message}`)
+  }
+}
+
 async function repairPass() {
   if (halted()) return
   const live = new Set((await liveByBead()).keys())
@@ -7265,6 +7302,7 @@ async function repairPass() {
       if (!hasBeads(rig.repo)) continue
       const b = beads(rig.repo, 'factory')
       const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
+      const closed = new Set<string>()
       for (const r of todo) {
         const done =
           r.kind === 'close'
@@ -7280,6 +7318,10 @@ async function repairPass() {
         const at = new Date().toISOString()
         appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')
         console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
+        if (r.kind === 'close') {
+          closed.add(r.id)
+          closeParents(b, rig.repo, r.id, 'the repair pass', closed)
+        }
       }
     } catch (err) {
       console.error(`${new Date().toISOString()} repairs for ${rig.name}: ${(err as Error).message}`)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Bead } from './beads'
-import { repairs, type PrFact } from './repairs'
+import { closableParents, repairs, type PrFact } from './repairs'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: id, status: 'open', ...extra })
 const pr = (number: number, state: string, extra: Partial<PrFact> = {}): PrFact => ({
@@ -140,5 +140,45 @@ describe('repairs', () => {
       const b = qbi3({ metadata: { ship_run: 'run-1', ship_branch: 'factory/x' } })
       expect(run([b], [pr(9, 'OPEN', { headRefName: 'factory/x' })]).map(r => r.kind)).toEqual(['reship'])
     })
+  })
+})
+
+describe('closableParents', () => {
+  const closed = (id: string) => new Set([id])
+  const kids = (extra: Partial<Bead> = {}) => [
+    bead('p', extra),
+    bead('p.1'),
+    bead('p.2', { status: 'closed' }),
+  ]
+  test('closes the whole chain, nearest first', () => {
+    const every = [bead('g'), bead('g.1'), bead('g.1.1'), bead('g.1.2', { status: 'closed' })]
+    expect(closableParents(every, closed('g.1.1'), 'g.1.1')).toEqual(['g.1', 'g'])
+    expect(closableParents([bead('p'), bead('p.1')], closed('p.1'), 'p.1')).toEqual(['p'])
+  })
+  test('the closed set counts even when the listing is stale', () => {
+    const every = [bead('p'), bead('p.1'), bead('p.2')]
+    expect(closableParents(every, closed('p.1'), 'p.1')).toEqual([])
+    expect(closableParents(every, new Set(['p.1', 'p.2']), 'p.2')).toEqual(['p'])
+  })
+  test('an open sibling stops the walk', () => {
+    expect(closableParents([...kids(), bead('p.3')], closed('p.1'), 'p.1')).toEqual([])
+    expect(closableParents(kids(), closed('p.1'), 'p.1')).toEqual(['p'])
+  })
+  test('a deferred, ship, held or closed parent stops the walk', () => {
+    for (const extra of [
+      { status: 'deferred' },
+      { labels: ['ship'] },
+      { assignee: 'w' },
+      { status: 'closed' },
+    ] satisfies Partial<Bead>[])
+      expect(closableParents(kids(extra), closed('p.1'), 'p.1')).toEqual([])
+  })
+  test('a missing parent and a bead with no parent give nothing', () => {
+    expect(closableParents([bead('p.1')], closed('p.1'), 'p.1')).toEqual([])
+    expect(closableParents([bead('x')], closed('x'), 'x')).toEqual([])
+  })
+  test('an open child of the grandparent leaves only the parent', () => {
+    const every = [bead('g'), bead('g.1'), bead('g.2'), bead('g.1.1')]
+    expect(closableParents(every, closed('g.1.1'), 'g.1.1')).toEqual(['g.1'])
   })
 })
