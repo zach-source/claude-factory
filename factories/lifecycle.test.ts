@@ -709,7 +709,7 @@ test('triage sends live-read-only beads on a VM to decision (pt4r AC1/AC2)', () 
 })
 
 test('claude-factory-ocox AC1: a house rule says implement and quick open drafts only and names who marks ready', () => {
-  const line = lifecycle.rules!.split('\n').find((l) => l.includes('gh pr create --draft'))
+  const line = lifecycle.rules!.split('\n').find(l => l.includes('gh pr create --draft'))
   expect(line).toBeDefined()
   for (const needle of [
     'implement and quick',
