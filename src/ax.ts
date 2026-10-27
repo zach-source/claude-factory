@@ -710,6 +710,47 @@ export function routerAddress(url?: string) {
   }
 }
 
+type DoltRig = { beadsRemote?: { url: string }; egress?: Egress[] }
+
+/**
+ * The Dolt rule for the https beadsRemote of a rig.
+ * The key, header and prefix come from the rig's own keyed rule for that host and port.
+ * If the rig has none, the key is DOLT_BASIC.
+ */
+function doltRule(r: DoltRig): (Egress & { port: number }) | undefined {
+  try {
+    const u = r.beadsRemote ? new URL(r.beadsRemote.url) : null
+    if (!u?.hostname || u.protocol !== 'https:') return undefined
+    const port = Number(u.port) || 443
+    const own = r.egress?.find(
+      e => e.key && e.hosts.includes(u.hostname) && (e.port ?? 443) === port && !e.http,
+    )
+    return {
+      hosts: [u.hostname],
+      key: own?.key ?? 'DOLT_BASIC',
+      header: own ? (own.header ?? 'Authorization') : 'Authorization',
+      prefix: own ? (own.prefix ?? 'Bearer ') : 'Basic ',
+      port,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * This adds the Dolt rule of the rig's own beadsRemote to the egress of a worker. The VM then can clone its beads.
+ * It adds no other host.
+ * If the egress has a keyed rule for that host and port, it does not change.
+ */
+export function withDoltEgress(egress: Egress[] | undefined, rig?: DoltRig): Egress[] | undefined {
+  const rule = rig && doltRule(rig)
+  if (!rule) return egress
+  const has = egress?.some(
+    e => e.key && rule.hosts.every(h => e.hosts.includes(h)) && (e.port ?? 443) === rule.port && !e.http,
+  )
+  return has ? egress : [...(egress ?? []), rule]
+}
+
 /**
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
@@ -732,21 +773,8 @@ export function managerEgress(
   // none. The key, header and prefix come from the rig's own egress entry for that host:port, else DOLT_BASIC
   const dolt = new Map<string, Egress>()
   for (const r of rigs) {
-    try {
-      const u = r.beadsRemote ? new URL(r.beadsRemote.url) : null
-      if (!u?.hostname || u.protocol !== 'https:') continue
-      const port = Number(u.port) || 443
-      const own = r.egress?.find(
-        e => e.key && e.hosts.includes(u.hostname) && (e.port ?? 443) === port && !e.http,
-      )
-      dolt.set(`${u.hostname}:${port}`, {
-        hosts: [u.hostname],
-        key: own?.key ?? 'DOLT_BASIC',
-        header: own ? (own.header ?? 'Authorization') : 'Authorization',
-        prefix: own ? (own.prefix ?? 'Bearer ') : 'Basic ',
-        port,
-      })
-    } catch {}
+    const rule = doltRule(r)
+    if (rule) dolt.set(`${rule.hosts.join()}:${rule.port}`, rule)
   }
   // Linear sends its raw key, so the prefix is empty
   const linear = rigs.some(r => r.linear)
