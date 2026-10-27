@@ -293,6 +293,7 @@ export type LongEntry = {
   rig?: string
   from?: string
   at?: string
+  until?: string
   aliases?: string[]
   body: string
 }
@@ -301,13 +302,14 @@ const LONG_HEADER = '---\ntier: long\n---\n'
 // JSON, not `key: value` pairs split on whitespace: `from:` holds a real run id list like "r1/x, r2/y",
 // commas and all, and a bare \S+ field split lost everything after the first space (claude-factory-59r.8)
 const LONG_ID = /^<!--\s*id:\s*(\{.*\})\s*-->\s*$/
-type LongMeta = { id: string; rig?: string; from?: string; at?: string; aliases?: string[] }
+type LongMeta = { id: string; rig?: string; from?: string; at?: string; until?: string; aliases?: string[] }
 const encodeId = (e: LongEntry): string =>
   JSON.stringify({
     id: e.id,
     ...(e.rig ? { rig: e.rig } : {}),
     ...(e.from ? { from: e.from } : {}),
     ...(e.at ? { at: e.at } : {}),
+    ...(e.until ? { until: e.until } : {}),
     ...(e.aliases?.length ? { aliases: e.aliases } : {}),
   })
 const decodeId = (line: string): LongMeta | null => {
@@ -353,6 +355,7 @@ export function parseLong(text: string): LongEntry[] {
       rig: meta.rig,
       from: meta.from,
       at: meta.at,
+      until: meta.until,
       aliases: meta.aliases,
       body: rest.trim(),
     }
@@ -377,6 +380,7 @@ export function walk(dir: string) {
             rig: e.rig,
             from: e.from,
             at: e.at,
+            until: e.until,
             body: e.body,
             tier: 'long',
           })
@@ -1630,6 +1634,7 @@ export function applyTiers(
         rig: note.rig,
         from: note.from,
         at: note.at,
+        until: note.until,
         body: note.body,
       })
       writeFileSync(longFile, formatLong(existing))
