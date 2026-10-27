@@ -733,7 +733,7 @@ export function outline(dir: string, rig?: string) {
     .filter(t => t !== 'inbox')
     .sort()
     .map(t => `- ${t} (${count(t)}): ${topics.get(t)?.summary ?? ''}`.trimEnd())
-    .map(l => (l.length > 150 ? `${l.slice(0, 149)}…` : l))
+    .map(l => (l.length > 100 ? `${l.slice(0, 99)}…` : l))
   const inbox = count('inbox')
   return { core, topics: inbox ? [...lines, `- inbox (${inbox}): new notes, not yet filed`] : lines }
 }

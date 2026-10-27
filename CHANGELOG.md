@@ -30,7 +30,7 @@ minor release may change the factory format, the CLI or the run state.
 - Changed: the lifecycle plan station keeps tests and the change that turns them green in one pull request, or orders the beads. It does not plan a pull request with red required checks by design (claude-factory-9hzj).
 - Changed: `src/worker-system.md` has a new Bash rule (claude-factory-kwnt). Before a loop, a shell function, a `VAR=value` prefix, a variable command word or a `cd` chain, a worker writes the steps to `.scratch/<name>.sh` and runs that file. The worker hook denies those forms inline.
 - Fix: the home guard folds case, so forms that APFS treats as equal now deny (claude-factory-99jt). Examples are `/users/acme` and a long-s form of `/Users`. The guard also reads an upper-case delete word (`MV`, `RM`).
-- Fix: the memory topic list in a brief clips each topic line to 150 characters. The list was about 30 KB (claude-factory-z9m4).
+- Fix: the memory topic list in a brief clips each topic line to 100 characters. The list was about 30 KB (claude-factory-z9m4).
 
 ## 0.15.0 (2026-10-24)
 
