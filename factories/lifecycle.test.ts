@@ -749,7 +749,7 @@ test('claude-factory-ocox AC2/AC3 + ye1v AC5: plain gh pr ready only in review, 
 
 test('claude-factory-ye1v AC1/AC2: implement and quick go back to draft before a push and list unreviewed SHAs', () => {
   for (const id of ['implement', 'quick']) {
-    const p = lifecycle.nodes[id]!.prompt
+    const p = (lifecycle.nodes as Record<string, { prompt: string }>)[id]!.prompt
     for (const s of [
       'gh pr view <n> --json isDraft',
       'gh pr ready <n> --undo',
@@ -767,7 +767,7 @@ test('claude-factory-ye1v AC1/AC2: implement and quick go back to draft before a
 
 test('claude-factory-ye1v AC3: approvers name the reviewed head and mark ready only at that head', () => {
   for (const id of ['review', 'security', 'check']) {
-    const p = lifecycle.nodes[id]!.prompt
+    const p = (lifecycle.nodes as Record<string, { prompt: string }>)[id]!.prompt
     expect(p, id).toContain('Reviewed head: <full SHA>')
     expect(p, id).toContain('headRefOid equals the SHA you reviewed')
   }
