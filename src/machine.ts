@@ -1,7 +1,7 @@
 // A factory definition compiled to an xstate machine. Pure: no I/O, every
 // event carries its own `at`, so a run is a fold over its events and the
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
-import { assign, setup } from 'xstate'
+import { assign, createActor, setup, type Snapshot } from 'xstate'
 import { NAME } from './beads'
 
 /**
@@ -1075,6 +1075,25 @@ export function reach(def: Factory) {
 }
 
 export const unread = (c: Ctx, box: string) => (c.mail[box] ?? []).slice(c.seen[box] ?? 0)
+
+/**
+ * Why a goto to `node` would not move the run, or null if it would. It replays the pending inbox
+ * events and then the GOTO on a copy of the saved snapshot: the same steps the next tick takes.
+ */
+export function gotoRefusal(
+  def: Factory,
+  snapshot: Snapshot<unknown>,
+  pending: Ev[],
+  node: string,
+  at: number,
+): string | null {
+  const actor = createActor(compile(def), { snapshot: structuredClone(snapshot) }).start()
+  for (const e of pending) actor.send(e)
+  actor.send({ type: 'GOTO', node, at })
+  const [to, sub] = where(actor.getSnapshot().value)
+  if (to === node && sub !== 'stuck') return null
+  return `${to}/${sub}: ${actor.getSnapshot().context.error ?? 'goto did not move the run'}`
+}
 
 /** 'implement.working' -> ['implement', 'working']; 'done' -> ['done', ''] */
 export function where(value: unknown): [string, string] {
