@@ -667,3 +667,20 @@ test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle s
     'Add no changelog entry and no version bump',
   )
 })
+
+// claude-factory-pt4r: a bead whose ACs are all live reads goes to decision on a VM, not to plan.
+test('triage sends live-read-only beads on a VM to decision (pt4r AC1/AC2)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'live read',
+    'kubectl get',
+    'Mimir query',
+    'needs no code',
+    'Classify it decision',
+    'name the exact reads',
+    'laptop runner',
+  ])
+    expect(p).toContain(s)
+  expect(lifecycle.nodes.triage!.next.decision).toEqual({ to: 'done', defer: { station: 'plan' } })
+  expect(lifecycle.nodes.triage!.next.build).toBe('plan')
+})
