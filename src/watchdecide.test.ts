@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import {
+  conflictText,
   ghNotes,
   isChangeRequest,
   isPerson,
@@ -229,4 +230,75 @@ test('claude-factory-61pu AC7: held mail ends the repark; the timer starts the w
   expect(kind({ now: min(480), held: false })).toBe('repark')
   // a change still wakes a held park
   expect(kind({ now: min(480), held: true, prs: [pr({ state: 'MERGED', mergedAt: iso(5) })] })).toBe('wake')
+})
+
+// the conflict wake: an open pull request on the run's own branch that GitHub reports CONFLICTING
+const BRANCH = 'factory/run1'
+const conflicting = (over: Partial<WatchedPr> = {}) =>
+  pr({ mergeable: 'CONFLICTING', headRefName: BRANCH, baseRefName: 'main', ...over })
+const cin = (over: Partial<DecideInput> = {}) => input({ prs: [conflicting()], branch: BRANCH, ...over })
+
+test('conflict wake: own-branch open CONFLICTING pull request wakes with the conflict text (AC1)', () => {
+  const d = watchDecide(cin())
+  expect(d).toMatchObject({ kind: 'wake', url: URL, text: conflictText(conflicting()) })
+  const t = (d as { text: string }).text
+  for (const s of [URL, 'CONFLICTING', 'aaaaaaa', 'Merge origin/main, resolve, push']) expect(t).toContain(s)
+  expect(watchDecide(cin({ prs: [conflicting({ headRefName: `${BRANCH}-2` })] }))?.kind).toBe('wake')
+})
+
+test('conflict wake: any other value changes nothing (AC2)', () => {
+  const none = (over: Partial<WatchedPr>) => expect(watchDecide(cin({ prs: [conflicting(over)] }))).toBeNull()
+  none({ mergeable: 'UNKNOWN' })
+  none({ mergeable: 'MERGEABLE' })
+  none({ mergeable: undefined })
+  none({ mergeable: 1 as unknown as string })
+  none({ mergeable: 'conflicting' })
+  none({ headRefName: 'factory/other-run' })
+  none({ headRefName: 'factory/run10' })
+  none({ headRefName: 'zach/feature' })
+  none({ headRefName: undefined })
+  none({ headRefOid: undefined })
+  expect(watchDecide(cin({ branch: undefined }))).toBeNull()
+  const merged = watchDecide(cin({ prs: [conflicting({ state: 'MERGED', updatedAt: iso(5) })] }))
+  expect(merged).toMatchObject({ kind: 'wake' })
+  expect((merged as { text: string }).text).toContain('it is merged')
+})
+
+test('conflict wake: once mailed, it does not repeat; a new head wakes by the head rule (AC3)', () => {
+  const text = conflictText(conflicting())
+  expect(watchDecide(cin({ mailed: [text] }))).toBeNull()
+  const d = watchDecide(cin({ mailed: [text], prs: [conflicting({ headRefOid: 'bbbbbbb2' })] }))
+  expect(d).toMatchObject({ kind: 'wake' })
+  expect((d as { text: string }).text).toContain('new head commit bbbbbbb')
+  expect(watchDecide(cin({ mailed: [conflictText(conflicting({ headRefOid: 'ccccccc3' }))] }))?.kind).toBe(
+    'wake',
+  )
+})
+
+test('conflict wake: hold and changes keep their order (AC4)', () => {
+  expect(watchDecide(cin({ prs: [conflicting({ state: 'CLOSED', updatedAt: iso(5) })] }))?.kind).toBe('hold')
+  const n = note({ changesRequested: true, at: min(5) })
+  expect(watchDecide(cin({ prs: [conflicting({ notes: [n] })] }))?.kind).toBe('changes')
+})
+
+test('conflict wake: UNKNOWN first, CONFLICTING two minutes later (AC5)', () => {
+  expect(watchDecide(cin({ prs: [conflicting({ mergeable: 'UNKNOWN' })] }))).toBeNull()
+  expect(watchDecide(cin({ now: min(32) }))?.kind).toBe('wake')
+})
+
+test('conflictText never assumes main and filters the base name', () => {
+  expect(conflictText(conflicting({ baseRefName: 'release/1.2' }))).toContain(
+    'Merge origin/release/1.2, resolve',
+  )
+  const odd = conflictText(conflicting({ baseRefName: 'x; rm -rf' }))
+  expect(odd).toContain('with its base branch')
+  expect(odd).toContain('Merge its base branch, resolve, push.')
+  expect(conflictText(conflicting({ baseRefName: undefined }))).toContain('its base branch')
+})
+
+test('conflict wake: held mail does not hide it, and a mailed one leaves the held rule alone (AC11)', () => {
+  expect(watchDecide(cin({ held: true, now: min(480) }))?.kind).toBe('wake')
+  const mailed = [conflictText(conflicting())]
+  expect(watchDecide(cin({ held: true, now: min(480), mailed }))).toBeNull()
+  expect(watchDecide(cin({ held: false, now: min(480), mailed }))?.kind).toBe('repark')
 })

@@ -1115,7 +1115,11 @@ rows = [
   pull requests, the factory watches them (`gh` or `glab`, every minute). It mails the station
   once a real change happens after the park: a new head commit, a merge, a close, or a review
   or comment by a person (an owner, member or collaborator, never a bot). A bot comment, a CI
-  status or a label changes only `updatedAt` and wakes nothing. Two cases start no worker. If
+  status or a label changes only `updatedAt` and wakes nothing. The watch also wakes the
+  station once for each head commit when a linked open pull request on the run's own
+  `factory/<run id>` branch is `CONFLICTING` with its base. GitHub builds no CI for such a
+  head, so the mail tells the station to merge the base branch and push. A pull request that
+  GitHub reports as `UNKNOWN` is read again on the next pass. Two cases start no worker. If
   every linked pull request closes without a merge and the station has a `hold` outcome, the
   watch routes `hold` and the run ends. If a person asks for changes on an open pull request
   (a CHANGES_REQUESTED review, or a comment that starts with `/changes`) and the station has

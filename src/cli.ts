@@ -7569,7 +7569,7 @@ async function watchPass() {
             'view',
             url,
             '--json',
-            'state,isDraft,reviewDecision,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments',
+            'state,isDraft,reviewDecision,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments,mergeable,headRefName,baseRefName',
           ],
           { cwd, timeout: 60_000 },
         )
@@ -7585,6 +7585,10 @@ async function watchPass() {
             mergedAt: j.mergedAt,
             closedAt: j.closedAt,
             notes: ghNotes(j),
+            ...(['mergeable', 'headRefName', 'baseRefName'] as const).reduce(
+              (o, k) => (typeof j[k] === 'string' ? { ...o, [k]: j[k] } : o),
+              {},
+            ),
           }
         }
       } catch {
@@ -7682,6 +7686,21 @@ async function watchPass() {
           canHold: !!def.nodes[node]?.next.hold,
           canChange: !!def.nodes[node]?.next.changes,
           held: !!def.nodes[node]?.holdMail && (c.mail[node] ?? []).some(m => m.at > parked.at),
+          branch: `factory/${id}`,
+          mailed: [
+            ...(c.mail[node] ?? []).filter(m => m.from === 'factory').map(m => m.text),
+            // mail this watch posted that the next tick has not drained yet
+            ...inboxLines(id)
+              .slice(readJson<Saved>(join(runDir(id), 'state.json')).cursor)
+              .flatMap(l => {
+                try {
+                  const e = JSON.parse(l)
+                  return e.type === 'MAIL' && e.from === 'factory' && e.to === node ? [String(e.text)] : []
+                } catch {
+                  return []
+                }
+              }),
+          ],
         })
         if (!d) continue
         const iso = new Date(now).toISOString()
