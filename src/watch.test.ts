@@ -544,7 +544,7 @@ test('MERGEABLE, another branch and a failed gh mail nothing (conflict AC9)', ()
   expect(watchJson().errors).toBe(1)
 })
 
-const MR_URL ='https://gitlab.example.com/acme/widget/-/merge_requests/9'
+const MR_URL = 'https://gitlab.example.com/acme/widget/-/merge_requests/9'
 
 /** a fake glab: `glab api ... <path>` answers the control files for the MR, its approvals and its notes */
 function fakeGlab(mr: object, notes: object[]) {

@@ -270,7 +270,9 @@ test('conflict wake: once mailed, it does not repeat; a new head wakes by the he
   const d = watchDecide(cin({ mailed: [text], prs: [conflicting({ headRefOid: 'bbbbbbb2' })] }))
   expect(d).toMatchObject({ kind: 'wake' })
   expect((d as { text: string }).text).toContain('new head commit bbbbbbb')
-  expect(watchDecide(cin({ mailed: [conflictText(conflicting({ headRefOid: 'ccccccc3' }))] }))?.kind).toBe('wake')
+  expect(watchDecide(cin({ mailed: [conflictText(conflicting({ headRefOid: 'ccccccc3' }))] }))?.kind).toBe(
+    'wake',
+  )
 })
 
 test('conflict wake: hold and changes keep their order (AC4)', () => {
@@ -285,7 +287,9 @@ test('conflict wake: UNKNOWN first, CONFLICTING two minutes later (AC5)', () => 
 })
 
 test('conflictText never assumes main and filters the base name', () => {
-  expect(conflictText(conflicting({ baseRefName: 'release/1.2' }))).toContain('Merge origin/release/1.2, resolve')
+  expect(conflictText(conflicting({ baseRefName: 'release/1.2' }))).toContain(
+    'Merge origin/release/1.2, resolve',
+  )
   const odd = conflictText(conflicting({ baseRefName: 'x; rm -rf' }))
   expect(odd).toContain('with its base branch')
   expect(odd).toContain('Merge its base branch, resolve, push.')
