@@ -667,7 +667,7 @@ const prompted = () =>
   called()
     .split('\n')
     .filter(l => l.includes('worker prompt '))
-    .map(l => Buffer.from(l.split('worker prompt ')[1], 'base64').toString())
+    .map(l => Buffer.from(l.split('worker prompt ')[1] ?? '', 'base64').toString())
     .join('\n')
 /** a weekly-limit refusal with no quotaLimits (claude-factory-s6b8), whose reset is two days away, as serve prints it */
 function weeklyRefusal() {

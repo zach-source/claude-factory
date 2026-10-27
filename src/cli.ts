@@ -1739,7 +1739,7 @@ export function resetsAtFromText(text: string, after: number) {
   const m =
     /resets (?:([A-Za-z]{3})[a-z]* (\d{1,2})(?:, | at ))?(\d{1,2})(?::(\d\d))?\s?([ap]m) \(UTC\)/i.exec(text)
   if (!m) return 0
-  const hour = (Number(m[3]) % 12) + (m[5].toLowerCase() === 'pm' ? 12 : 0)
+  const hour = (Number(m[3]) % 12) + (m[5]?.toLowerCase() === 'pm' ? 12 : 0)
   const min = Number(m[4] ?? 0)
   const day = new Date(after)
   const year = day.getUTCFullYear()
