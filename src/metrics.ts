@@ -17,7 +17,7 @@ export type RunRecord = {
 
 const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])
 /** deploy's only outcomes that mean the change shipped; blocked, changes and hold are not a ship */
-const SHIPPED_OUTCOMES = new Set(['deployed', 'published'])
+const SHIPPED_OUTCOMES = new Set(['deployed', 'unsure', 'published'])
 const HOUR = 3_600_000
 
 /** the id carries the run's creation time: `${name}-${Date.now().toString(36)}xx` */
