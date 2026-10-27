@@ -2022,8 +2022,8 @@ export const HAIKU = 'claude-haiku-5-5'
  * It keeps the user's hooks (secret guards, herdr's session hook) and env, and skips every permission prompt.
  * It compacts well past the handoff limit too, only as a backstop.
  * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
- * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
- * `keep` adds more plugins by name (the enabledPlugins key before `@`): FACTORY_WORKER_PLUGINS, comma-separated.
+ * Only the plugins in `names` stay in (the enabledPlugins key before `@`): the station's skills, and the person's FACTORY_WORKER_PLUGINS.
+ * `disableBundledSkills` keeps their skills alone.
  * `hooks.PreToolUse` keeps the user's own entries first and adds the deny-rm hook last (claude-factory-cr6, claude-factory-99d).
  */
 export const workerSettings = (
@@ -2036,10 +2036,9 @@ export const workerSettings = (
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
   personOnly?: string[],
   branches?: string[],
-  keep: string[] = [],
+  names: string[] = [],
   merge?: string,
 ) => {
-  const names = workerPluginNames(keep)
   const ste = Object.entries(user.enabledPlugins ?? {}).filter(
     ([k, v]) => v && names.includes(k.split('@')[0]!),
   )
@@ -2099,13 +2098,14 @@ export const commitIdentity = (home: string) => {
       : '',
   }
 }
-/** the plugins a worker keeps (enabledPlugins key names before the @): asd-ste100 and FACTORY_WORKER_PLUGINS */
-const workerPluginNames = (
-  keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
+/** the plugins a worker keeps (enabledPlugins key names before the @): the station's skills and FACTORY_WORKER_PLUGINS */
+const workerPluginNames = (skills: string[] = ['asd-ste100']) => [
+  ...skills,
+  ...(process.env.FACTORY_WORKER_PLUGINS ?? '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
-) => ['asd-ste100', ...keep]
+]
 
 /**
  * the dirs of the person's worker plugins that are on, so a codex or pi worker gets the skills a Claude worker
@@ -2165,6 +2165,8 @@ export function workerFlags(
   def: Pick<Factory, 'maxContextK'>,
   rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
   home = HOME,
+  skills: string[] = [],
+  station = '',
 ) {
   if (process.env.FACTORY_LEAN === '0') return ` --settings '${JSON.stringify(withoutFleet())}'`
   let user = {}
@@ -2176,14 +2178,29 @@ export function workerFlags(
   const contexts = personOnlyContexts(rig)
   const branches = protectedBranches(rig)
   const merge = mergeAuthority(rig)
+  // one file for each skill set, so two stations of a rig never write the same file with different plugins
+  const set = skills.length ? `--${skills.join('+')}` : ''
   const file = join(
     home,
     contexts?.length || branches?.length || merge
-      ? `worker-settings-${rig!.name}.json`
-      : 'worker-settings.json',
+      ? `worker-settings-${rig!.name}${set}.json`
+      : `worker-settings${set}.json`,
   )
-  const keep = workerPluginNames().slice(1)
-  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep, merge)
+  const on = (user as { enabledPlugins?: Record<string, boolean> }).enabledPlugins ?? {}
+  for (const k of skills)
+    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
+      console.warn(
+        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
+      )
+  const settings = workerSettings(
+    user,
+    def.maxContextK ?? 200,
+    undefined,
+    contexts,
+    branches,
+    workerPluginNames(skills),
+    merge,
+  )
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
   const prompt = join(home, 'worker-system.md')
@@ -2335,7 +2352,10 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
       ? codexWorker(run, def, node, agent, rig)
       : h === 'pi'
         ? piWorker()
-        : { extra: workerFlags(def, rig), env: { FACTORY_DEADLINE: deadlineOf(def, node, c) } }
+        : {
+            extra: workerFlags(def, rig, HOME, workerSkills(def, def.nodes[node]!, rig), node),
+            env: { FACTORY_DEADLINE: deadlineOf(def, node, c) },
+          }
   return command(agent, prompt, {
     session,
     ...setup,

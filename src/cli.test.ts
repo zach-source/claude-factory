@@ -493,8 +493,13 @@ test('a worker keeps asd-ste100 and the plugins the factory names, and no other'
   const user = {
     enabledPlugins: { 'asd-ste100@m': true, 'ponytail@ponytail': true, 'other@x': true, 'ponytailx@y': true },
   }
-  expect(Object.keys(workerSettings(user, 200).enabledPlugins!)).toEqual(['asd-ste100@m'])
-  const kept = workerSettings(user, 200, undefined, undefined, undefined, ['ponytail']).enabledPlugins!
+  const ste: [undefined, undefined, undefined, string[]] = [undefined, undefined, undefined, ['asd-ste100']]
+  expect(Object.keys(workerSettings(user, 200, ...ste).enabledPlugins!)).toEqual(['asd-ste100@m'])
+  expect(workerSettings(user, 200).enabledPlugins).toBeUndefined()
+  const kept = workerSettings(user, 200, undefined, undefined, undefined, [
+    'asd-ste100',
+    'ponytail',
+  ]).enabledPlugins!
   expect(Object.keys(kept).sort()).toEqual(['asd-ste100@m', 'ponytail@ponytail'])
   const off = { enabledPlugins: { 'ponytail@ponytail': false } }
   expect(
@@ -518,6 +523,47 @@ test("workerFlags writes a rig's own worker-settings-<rig>.json when it has pers
   const webSettings = JSON.parse(readFileSync(join(home, 'worker-settings.json'), 'utf8'))
   expect(acmeSettings.hooks.PreToolUse.at(-1).hooks[0].command).toContain("--person-only-contexts 'acme-ctx'")
   expect(webSettings.hooks.PreToolUse.at(-1).hooks[0].command).not.toContain('--person-only-contexts')
+})
+
+test('workerFlags writes one settings file for each skill set, and warns when a listed skill is off', () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-skills-'))
+  const claude = mkdtempSync(join(tmpdir(), 'claude-cfg-'))
+  const wasDir = process.env.CLAUDE_CONFIG_DIR
+  const warn = console.warn
+  const warned: string[] = []
+  console.warn = (m: string) => void warned.push(m)
+  try {
+    process.env.CLAUDE_CONFIG_DIR = claude
+    writeFileSync(
+      join(claude, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'asd-ste100@m': true, 'acme-other@m': true } }),
+    )
+    const def = { maxContextK: 200 }
+    const none = workerFlags(def, { name: 'web' }, home, [], 'verify')
+    const ste = workerFlags(def, { name: 'web' }, home, ['asd-ste100'], 'plan')
+    expect(none).toContain(join(home, 'worker-settings.json'))
+    expect(ste).toContain(join(home, 'worker-settings--asd-ste100.json'))
+    const read = (f: string) => JSON.parse(readFileSync(join(home, f), 'utf8'))
+    expect(read('worker-settings.json').enabledPlugins).toBeUndefined()
+    expect(read('worker-settings--asd-ste100.json').enabledPlugins).toEqual({ 'asd-ste100@m': true })
+    const acme = { name: 'acme', personOnlyContexts: ['acme-ctx'] }
+    expect(workerFlags(def, acme, home, ['asd-ste100'], 'plan')).toContain(
+      join(home, 'worker-settings-acme--asd-ste100.json'),
+    )
+    expect(warned).toEqual([])
+    writeFileSync(
+      join(claude, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'asd-ste100@m': false } }),
+    )
+    workerFlags(def, { name: 'web' }, home, ['asd-ste100'], 'plan')
+    expect(warned).toHaveLength(1)
+    expect(warned[0]).toContain('asd-ste100')
+    expect(warned[0]).toContain('plan')
+  } finally {
+    console.warn = warn
+    if (wasDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = wasDir
+  }
 })
 
 // claude-factory-25z.2: a rig's personOnlyContexts reaches the deny hook's own argv, so it can refuse a
@@ -587,13 +633,18 @@ test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it 
       'warp@claude-code-warp': true,
     },
   }
-  const w = workerSettings(user, 200)
+  const w = workerSettings(user, 200, undefined, undefined, undefined, ['asd-ste100'])
   expect(w.enabledPlugins).toEqual({ 'asd-ste100@agent-marketplace': true })
   expect(w.disableBundledSkills).toBe(true)
   expect(w.env).toMatchObject({ STE_VOCAB_PATH: '/v', STE_JEV_URL: 'https://j' })
   // no enabledPlugins key at all when the user has none, or asd-ste100 is off
   expect('enabledPlugins' in workerSettings({ enabledPlugins: { p: true } }, 200)).toBe(false)
-  expect('enabledPlugins' in workerSettings({ enabledPlugins: { 'asd-ste100@m': false } }, 200)).toBe(false)
+  expect(
+    'enabledPlugins' in
+      workerSettings({ enabledPlugins: { 'asd-ste100@m': false } }, 200, undefined, undefined, undefined, [
+        'asd-ste100',
+      ]),
+  ).toBe(false)
   expect('enabledPlugins' in workerSettings({}, 200)).toBe(false)
 })
 
