@@ -21,6 +21,10 @@ export type WatchedPr = {
   state: string
   updatedAt: string
   headRefOid?: string
+  /** GitHub's merge check: MERGEABLE, CONFLICTING or UNKNOWN (not computed yet) */
+  mergeable?: string
+  headRefName?: string
+  baseRefName?: string
   mergedAt?: string
   closedAt?: string
   notes?: Note[]
@@ -112,6 +116,20 @@ export type DecideInput = {
   /** the station has these outcomes */
   canHold: boolean
   canChange: boolean
+  /** the run's own branch (factory/<run id>): only a pull request on it gets the conflict wake */
+  branch?: string
+  /** the texts the station's mail box already holds from the factory */
+  mailed?: string[]
+}
+
+/** the mail for a pull request that conflicts with its base: GitHub builds no CI ref for it */
+export function conflictText(p: WatchedPr) {
+  const base = /^[A-Za-z0-9._/-]+$/.test(p.baseRefName ?? '') ? p.baseRefName! : ''
+  return (
+    `[factory] ${p.url} is CONFLICTING with ${base || 'its base branch'} at head ${(p.headRefOid ?? '').slice(0, 7)}, ` +
+    `so GitHub builds no pull merge ref and no CI can start. ` +
+    `${base ? `Merge origin/${base}` : 'Merge its base branch'}, resolve, push.`
+  )
 }
 
 const clip = (s: string) => (s.length > BODY_CLIP ? s.slice(0, BODY_CLIP) : s)
@@ -165,6 +183,15 @@ export function watchDecide(i: DecideInput): Decision | null {
       return wake(p, `it has a new head commit ${p.headRefOid.slice(0, 7)} (was ${was.slice(0, 7)})`)
     const note = (p.notes ?? []).find(n => n.person && after(n))
     if (note) return wake(p, `a person reviewed or commented on it at ${new Date(note.at).toISOString()}`)
+  }
+  // an open pull request on the run's own branch that conflicts: no CI can start, so waiting is pointless
+  for (const p of prs) {
+    if (p.state !== 'OPEN' || p.mergeable !== 'CONFLICTING' || !p.headRefOid) continue
+    if (!i.branch || !p.headRefName) continue
+    if (p.headRefName !== i.branch && !p.headRefName.startsWith(`${i.branch}-`)) continue
+    const text = conflictText(p)
+    if (i.mailed?.includes(text)) continue
+    return { kind: 'wake', text, url: p.url, state: p.state }
   }
   if (!prs.some(p => p.state === 'OPEN') && (i.isPreLaunch || i.now - parkedAt >= i.plainMin * 60_000))
     return {
