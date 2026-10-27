@@ -1202,6 +1202,20 @@ test("Claude's trust dialog does not hold an AX rig's run: the VM runs the agent
   rmSync(runDir, { recursive: true })
 })
 
+test('a replayed memory add carries the run id in --from', () => {
+  const argv = ['memory', 'add', '--from', 'x', '--kind', 'fact', 's', 'b']
+  expect(replayable(argv, { node: 'plan', seq: 1 }, 'r1')).toEqual([
+    'memory',
+    'add',
+    '--kind',
+    'fact',
+    's',
+    'b',
+    '--from',
+    'r1/plan',
+  ])
+})
+
 test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them first", () => {
   expect(replayable(['bd', 'close', 'x-1'], { node: 'a', seq: 1 }, 'r1')).toBeNull()
   const vm = join(dir, 'vm-sync')
