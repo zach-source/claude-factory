@@ -151,6 +151,7 @@ import * as broker from './broker'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
+import { signingProbe } from './signing'
 import {
   createdAt,
   fate,
@@ -6332,6 +6333,7 @@ async function dispatch() {
   const autoHistory: Record<string, number[]> = existsSync(autoQueueFile())
     ? readJson<Record<string, number[]>>(autoQueueFile())
     : {}
+  let signing: ReturnType<typeof signingProbe> | undefined // claude-factory-8je: one probe a pass
   for (const rig of rigs()) {
     if (!hasBeads(rig.repo)) continue // claude-factory-toml: a rig with no .beads store has no beads steps
     // claude-factory-2rik: why each ready bead did not start, so dispatch.json can name it
@@ -6561,6 +6563,24 @@ async function dispatch() {
       // `freshPlan.rigs[rig.name]` would resolve a rig named, for example, `constructor` to an
       // inherited `Object.prototype` value instead of `undefined` (claude-factory-dun.18).
       const candidates = plan.orderByPlan(eligible, plan.rigPlanOf(freshPlan, rig.name))
+      // claude-factory-8je: a local run must commit. If the commit cannot sign, the run parks. Probe
+      // once each pass, in the first local rig that has work. ponytail: the signing agent is shared by
+      // the host, so one repo stands for all. Upgrade path: one memo for each repo, if rigs get
+      // different signing configs.
+      if (runners[rig.runner ?? DEFAULT_RUNNER]?.local && (candidates.length || autoQueueOf(rig))) {
+        if (!signing) {
+          signing = signingProbe(rig.repo)
+          if (!signing.ok)
+            errors.push({
+              id: 'signing',
+              error: `commit signing failed: ${signing.error}. Unlock the signing agent (or fix it); local runs wait. No unsigned fallback.`,
+            })
+        }
+        if (!signing.ok) {
+          for (const x of candidates) skips.set(x.id, 'commit signing down')
+          continue
+        }
+      }
       // claude-factory-x9ai.5: no labeled bead to start and room left: take the best unlabeled leaf beads
       const auto = autoQueueOf(rig)
       if (auto && !candidates.length) {
