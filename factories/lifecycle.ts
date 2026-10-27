@@ -105,6 +105,7 @@ export default {
 - decision: the work cannot go on without a person's decision. Put the question on the bead (a bd comment) and end the summary with a \`Question:\` line and an \`Options:\` line. The run ends deferred. \`bd undefer\` starts it again at plan.
 - elsewhere: the change belongs in another rig's repo. File the bead there: run bd create with your cwd in that rig's repo (see \`factory rig\`), the label \`factory\`, and this bead's id in its description. Then comment the new id on this bead. If you cannot reach that repo (a VM worker), put one line \`File in: <rig>: <title> | <description>\` in the summary for the manager. The run ends deferred.
 - reject: unclear, already tracked (a run in \`factory status\`, an open issue), or not worth doing; say why
+If the goal is a red main or a CI job red on main, run \`gh pr list --state open --search '<failing file or test> in:title,body'\` and \`factory status\`. If an open PR or a live run already fixes it, reject as already tracked and name that PR.
 Summary: the goal restated as a testable outcome, its constraints, and the files and systems involved.`,
       next: {
         rollout: { to: 'done', requeue: { factory: 'release' } },

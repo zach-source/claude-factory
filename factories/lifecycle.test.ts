@@ -565,6 +565,17 @@ test('plan names the proof for each AC, negative rows and a fail-closed class ru
   expect(p).toContain('out of scope')
 })
 
+test('triage rejects a second fix for a red main (claude-factory-yhf5)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'gh pr list --state open --search',
+    'in:title,body',
+    'factory status',
+    'reject as already tracked and name that PR',
+  ])
+    expect(p).toContain(s)
+})
+
 test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
   const decision = { to: 'done', defer: { station: 'plan' } }
   expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
