@@ -501,7 +501,50 @@ test('a failed gh view posts no route and no re-park (5wav AC6)', () => {
   expect(watchJson().errors).toBe(1)
 })
 
-const MR_URL = 'https://gitlab.example.com/acme/widget/-/merge_requests/9'
+const conflictJson = (over: Record<string, unknown> = {}) =>
+  prJson({ mergeable: 'CONFLICTING', headRefName: 'factory/r1', baseRefName: 'main', ...over })
+const CONFLICT_TEXT = `[factory] ${PR} is CONFLICTING with main at head aaa1111, so GitHub builds no pull merge ref and no CI can start. Merge origin/main, resolve, push.`
+
+test('a conflicting pull request on the run branch mails the station once (conflict AC6, AC7)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson()
+  factory(['watch'])
+  expect(ghCallCount()[0]).toContain('mergeable,headRefName,baseRefName')
+  const mail = inboxOf('r1').filter(e => e.type === 'MAIL')
+  expect(mail).toHaveLength(1)
+  expect(mail[0]).toMatchObject({ from: 'factory', to: 'deploy', text: CONFLICT_TEXT })
+  expect(watchJson().woke).toMatchObject([{ run: 'r1', node: 'deploy', url: PR, state: 'OPEN' }])
+  factory(['watch'])
+  expect(inboxOf('r1').filter(e => e.type === 'MAIL')).toHaveLength(1)
+})
+
+test('UNKNOWN mails nothing; CONFLICTING on the next pass mails (conflict AC8)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson({ mergeable: 'UNKNOWN' })
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  conflictJson()
+  factory(['watch'])
+  expect(inboxOf('r1').filter(e => e.type === 'MAIL')).toHaveLength(1)
+})
+
+test('MERGEABLE, another branch and a failed gh mail nothing (conflict AC9)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson({ mergeable: 'MERGEABLE' })
+  factory(['watch'])
+  conflictJson({ headRefName: 'factory/someone-else' })
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  rmSync(prState, { force: true })
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  expect(watchJson().errors).toBe(1)
+})
+
+const MR_URL ='https://gitlab.example.com/acme/widget/-/merge_requests/9'
 
 /** a fake glab: `glab api ... <path>` answers the control files for the MR, its approvals and its notes */
 function fakeGlab(mr: object, notes: object[]) {
