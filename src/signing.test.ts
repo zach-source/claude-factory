@@ -8,12 +8,20 @@ import { signingProbe } from './signing'
 let dir = ''
 let repo = ''
 beforeEach(() => {
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null' // the host's own commit.gpgsign must not leak in
+  process.env.GIT_CONFIG_SYSTEM = '/dev/null'
   dir = mkdtempSync(join(tmpdir(), 'signing-test-'))
   repo = join(dir, 'repo')
   mkdirSync(repo)
   Bun.spawnSync(['git', '-C', repo, 'init', '-q'])
+  Bun.spawnSync(['git', '-C', repo, 'config', 'user.name', 't'])
+  Bun.spawnSync(['git', '-C', repo, 'config', 'user.email', 't@t'])
 })
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+afterEach(() => {
+  delete process.env.GIT_CONFIG_GLOBAL
+  delete process.env.GIT_CONFIG_SYSTEM
+  rmSync(dir, { recursive: true, force: true })
+})
 
 const cfg = (k: string, v: string) => Bun.spawnSync(['git', '-C', repo, 'config', k, v])
 const objects = () => Bun.spawnSync(['git', '-C', repo, 'count-objects']).stdout.toString()
