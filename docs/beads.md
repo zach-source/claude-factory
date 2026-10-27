@@ -147,6 +147,8 @@ Two cases show as the rig's error on the board: a remote that nobody has pushed 
 
 `$FACTORY_HOME/dispatch.json` has one row `{ id, rig, skip }` for each ready bead that the last dispatch pass did not start. `skip` is the reason, for example `child of <parent>`, `assigned to <name>`, `open children`, `rig full 1/1` or `town full 16/16`. A full rig has one row with the id `rig:<name>`. The board does not show these rows.
 
+Each pass probes commit signing once, if a local rig has a bead to start and `commit.gpgsign` is on. The probe signs an empty commit in a temp object directory (10 s limit). If it fails, dispatch starts no local run, and each held bead gets the skip `commit signing down`. AX rigs are not held. Dispatch also writes one row `{ id: 'signing', error }` that the board shows. The row goes away on the first pass where the probe passes. Dispatch never falls back to an unsigned commit.
+
 A `factory` child whose parent has no `factory` label and no live run starts on its own run. A child of a `factory` parent rides in the parent's run.
 
 `node_id` matters only for `bd reclaim`: bd keeps a claim's lease on the machine that granted it, and with `node_id` set, a reaper on another machine skips it. Machines that use one Dolt server are one replica and share one `node_id`, or leave it unset.
