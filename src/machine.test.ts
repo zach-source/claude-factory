@@ -502,6 +502,18 @@ test('capReplanMail clips each round so the whole mail stays under 24000 chars p
   expect(text.length).toBeLessThan(24_000 + 1_000) // 3 rounds clipped to floor(24000/3) each, plus the header
 })
 
+test('validate refuses a mergeCheck not in next, or on a gate; accepts one in next', () => {
+  const g = (a: object) =>
+    ({ name: 'x', start: 'a', nodes: { a, b: { prompt: 'x', next: { ok: 'a' } } } }) as unknown as Factory
+  expect(() => validate(g({ prompt: 'x', next: { ok: 'b' }, mergeCheck: 'nope' }))).toThrow(
+    'a: mergeCheck "nope" is not an outcome in next',
+  )
+  expect(() => validate(g({ prompt: 'x', gate: true, next: { ok: 'b' }, mergeCheck: 'ok' }))).toThrow(
+    'a: a gate has no worker, so no mergeCheck',
+  )
+  expect(() => validate(g({ prompt: 'x', next: { ok: 'b' }, mergeCheck: 'ok' }))).not.toThrow()
+})
+
 // claude-factory-qgz AC5: validate refuses each broken onRounds and a repeatMail that is not an outcome.
 test('validate refuses onRounds with no rounds, to an unknown node, to done, or to itself; and repeatMail not in next', () => {
   const graph = (node: object) => ({ name: 'x', start: 'a', nodes: { a: node } }) as unknown as Factory
