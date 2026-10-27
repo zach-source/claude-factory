@@ -35,6 +35,10 @@ In the manager session:
 /factory start lifecycle@improve my-app keep improving it
 /factory                      # the board: runs, stations, workers, gates, manager mail
 /factory status <run>         # one run's full journal
+                               # `factory status` (no run) adds a line "restart factory manager" when the live manager
+                               # started with an older launch command than the code on disk (<home>/manager.json);
+                               # the manager gets one mail for each launch. A restart cuts the session, so you decide:
+                               # factory manager --resume <session>
 /factory interview            # questions from runs stuck or parked on your direction; your answer goes to the run
                                # 'Interview me' in the panel also sweeps every rig's gates, bd decisions and blocked
                                # workers in; the manager proposes options for anything still bare, except gates
