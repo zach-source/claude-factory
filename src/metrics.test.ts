@@ -594,5 +594,7 @@ test('launchStats counts launches per station by harness and model, and skips ba
 
 test('a deploy unsure still counts as shipped, a failed one does not (claude-factory-ee7 AC6)', () => {
   expect(fate({ id: 'a', node: 'soak', createdAt: 0, log: [e('deploy', 'unsure', 1)] })).toBe('shipped')
-  expect(fate({ id: 'a', node: 'rollback', createdAt: 0, log: [e('deploy', 'failed', 1)] })).not.toBe('shipped')
+  expect(fate({ id: 'a', node: 'rollback', createdAt: 0, log: [e('deploy', 'failed', 1)] })).not.toBe(
+    'shipped',
+  )
 })

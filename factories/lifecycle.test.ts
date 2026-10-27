@@ -761,9 +761,13 @@ test("deploy and rollout must see the change's own live output; not fired yet is
   ] as const) {
     const p = promptOf(def, node)
     expect(p, node).toContain('own output')
-    expect(p, node).toContain('the file it writes, the log line it prints, or the process or subagent it starts')
+    expect(p, node).toContain(
+      'the file it writes, the log line it prints, or the process or subagent it starts',
+    )
     expect(p, node).toMatch(/not fired yet[^.]*unsure|unsure[^.]*not fired yet/)
-    expect(def.nodes[node].next).toMatchObject({ unsure: { to: 'soak', delayMin: 15 } })
+    expect((def.nodes as Record<string, { next: unknown }>)[node]!.next).toMatchObject({
+      unsure: { to: 'soak', delayMin: 15 },
+    })
   }
 })
 
