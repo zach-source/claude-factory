@@ -394,6 +394,10 @@ export const isMailHeld = (c: Ctx, node: string, holds?: boolean) =>
   isParked(c, node) &&
   prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0
 
+/** whether the station is parked by a blocked report that links this pull or merge request */
+export const isParkedOn = (c: Ctx, node: string, url: string) =>
+  isParked(c, node) && [...prsIn(c.log.at(-1)!.summary), ...mrsIn(c.log.at(-1)!.summary)].includes(url)
+
 /** the kind of failure a reason names when retrying it unchanged is unlikely to help: the worker went silent */
 export const failClass = (reason: string) =>
   /^no report within/.test(reason)

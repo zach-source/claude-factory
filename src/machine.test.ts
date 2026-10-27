@@ -8,6 +8,7 @@ import {
   failClass,
   failingAcIds,
   isNoWorker,
+  isParkedOn,
   isPrWait,
   mrsIn,
   parkDelayMin,
@@ -1179,6 +1180,13 @@ test('plain mail still starts a worker: no holdMail, no PR link, or a lifecycle 
   send({ type: 'BLOCKED', seq: 1, reason: 'waiting on ' + PR, at: 20 })
   const m = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'hi', at: 30 })
   expect(where(m.value)).toEqual(['implement', 'working'])
+})
+
+test('isParkedOn: only the PR the last blocked report links (61pu AC11)', () => {
+  const { s } = blockOn(holdGraph(), 'waiting on ' + PR)
+  expect(isParkedOn(s.context, 'deploy', PR)).toBe(true)
+  expect(isParkedOn(s.context, 'deploy', 'https://github.com/acme/widget/pull/8')).toBe(false)
+  expect(isParkedOn(s.context, 'other', PR)).toBe(false)
 })
 
 test('validate refuses holdMail on a gate', () => {

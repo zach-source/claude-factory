@@ -33,7 +33,9 @@ import {
   extend,
   fill,
   hasShipEdge,
+  isMailHeld,
   isParked,
+  isParkedOn,
   isPrWait,
   WORKER_OUTCOMES,
   parkDelayMin,
@@ -3064,9 +3066,9 @@ export const shipStarts = (repos: string[], queued: (repo: string) => number, li
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
-      const { run, value } = current(id)
+      const { run, value, c } = current(id)
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0] }] : []
+      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0], c }] : []
     } catch {
       return [] // removed mid-pass
     }
@@ -7160,7 +7162,15 @@ async function labelPass() {
           const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
           forge.unlabel(pr, reworkLabels(pr))
           const ships = liveShipRuns().filter(s => s.run.repo === rig.repo)
-          for (const s of ships) post(s.run.id, { type: 'MAIL', from: 'factory', to: s.node, text })
+          // only a station that waits on this very PR wakes at once; any other holds the mail
+          for (const s of ships)
+            post(s.run.id, {
+              type: 'MAIL',
+              from: 'factory',
+              to: s.node,
+              text,
+              ...(isParkedOn(s.c, s.node, pr.url) && { wake: true as const }),
+            })
           // no live ship run to hear it: the bead keeps the ask, and the next ship run reads it
           if (!ships.length) beads(rig.repo, 'factory').comment(queuedBead.id, text)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
@@ -8334,7 +8344,7 @@ const usage = `factory — herdr software factories on xstate
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
   decide <run> <outcome> [note...]   the person: answer a gate station
-  mail <run> <node|manager> <text...>         drop a message in a mailbox
+  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
@@ -9058,17 +9068,30 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'mail': {
-        const [id, to, ...text] = args
+        // --wake comes right after the box; in a later word it stays text
+        const [id, to, ...rest] = args
+        const wake = rest[0] === '--wake'
+        const text = wake ? rest.slice(1) : rest
         const run = loadRun(id)
-        const boxes = Object.keys((await loadFactory(run.factory)).nodes).concat('manager')
+        const def = await loadFactory(run.factory)
+        const boxes = Object.keys(def.nodes).concat('manager')
         if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
         post(run.id, {
           type: 'MAIL',
           from: process.env.FACTORY_FROM ?? 'manager',
           to: to!,
           text: text.join(' '),
+          ...(wake && { wake: true as const }),
         })
         console.log(`mailed ${to}`)
+        const { c } = current(run.id)
+        if (!wake && isMailHeld(c, to!, def.nodes[to!]?.holdMail)) {
+          const last = c.log.at(-1)!
+          const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
+          console.log(
+            `held for ${to}: parked on ${urls.join(', ')}; it starts a worker when one changes or at ${new Date(c.wakeAt).toISOString()}; add --wake to start one now`,
+          )
+        }
         break
       }
       case 'poke': {
