@@ -57,6 +57,9 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.
 - .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep a person's merge of the pull request as the gate before anything deploys.`
 
+// implement and quick interpolate this; ship.ts keeps its own copy (it must not import this file) and ship.test.ts pins the two equal
+const botFiles = `In the infra-blocks repo, a bot writes CHANGELOG.md and bumps VERSION, so a pull request must not change them or .devenv. Before each push there, run \`git fetch origin main\`, then \`git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv\`. If it prints a file, run \`git checkout origin/main -- <file>\` (or \`git rm --cached <file>\` when origin/main has no such file), commit, and run the check again. Run the check, the fix, the commit and the push as separate commands. The pull request title is the changelog line, and the bot bumps VERSION.`
+
 // review, security and check interpolate this: one rule for what blocks and where a finding goes
 const blockingScope = `A finding blocks only when it is one of these kinds:
 1. An acceptance criterion fails.
@@ -162,6 +165,7 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 4. After your last code change, read again each doc, comment, docstring and pull request line that the diff touches or that names a changed symbol (grep for it). Check each claim against the code, and run each command you documented exactly as written. Keep each doc block directly above its function.
 5. After a send-back, read the whole delta since the last reviewed head (\`git diff <reviewed sha>..HEAD\`) for defects that your fixes added. Grep for the siblings of each finding.
 6. Add no changelog entry and no version bump: the repo's release step writes the changelog at release time.
+7. ${botFiles}
 Close every task of this run (see Tracking). Push the branch and open it as a draft pull request if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
 Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
@@ -217,6 +221,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
       prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. Merge origin/main, run the formatter and the tests of what you touched, commit.
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request.
+${botFiles}
 If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it.`,
       next: { ready: 'check', full: 'plan', abandon: 'done' },
     },

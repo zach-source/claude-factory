@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { createActor } from 'xstate'
-import { compile, validate, where, type Factory } from '../src/machine'
+import { compile, fill, validate, where, type Factory } from '../src/machine'
+import sweeps from './sweeps'
 import lifecycle from './lifecycle'
 import ship from './ship'
 
@@ -193,4 +194,44 @@ test('queue resolves a BUILD.bazel-only conflict with gazelle and keeps it (debg
   expect(two).toContain('BUILD.bazel')
   expect(two).toMatch(/not (go back|send)/i)
   expect(two).toContain('station:implement')
+})
+
+test('only soak carries the Mimir query form, behind the approval prefix, equal to the monitor copy', () => {
+  const p = (f: { nodes: Record<string, unknown> }, id: string) => (f.nodes[id] as { prompt: string }).prompt
+  const line = (s: string) => s.slice(s.indexOf('Mimir reads:'), s.indexOf('looks the same as no data.') + 26)
+  const soak = p(ship, 'soak')
+  expect(soak).toContain('Read-only. Only when the person approved a Mimir read for this soak')
+  expect(soak).toContain('[factory mail] from the manager): Mimir reads:')
+  expect(line(soak).length).toBeGreaterThan(300)
+  expect(line(soak)).toBe(line(p(sweeps, 'monitor')))
+  for (const id of ['queue', 'release', 'deploy', 'rollback', 'postmortem'])
+    expect(p(ship, id), id).not.toContain('X-Scope-OrgID')
+  expect(fill(soak, {})).toBe(soak)
+  expect(soak).not.toMatch(new RegExp(['stig' + 'en', 'spin' + 'dle'].join('|'), 'i'))
+})
+
+const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"
+const BOT_TOKENS = [
+  'In the infra-blocks repo',
+  BOT_CMD,
+  'git checkout origin/main -- <file>',
+  'git rm --cached <file>',
+  'run the check again',
+  'separate commands',
+  'The pull request title is the changelog line',
+]
+const botText = (p: string) =>
+  p.slice(p.indexOf('In the infra-blocks repo'), p.indexOf('bumps VERSION.') + 'bumps VERSION.'.length)
+
+test('infra-blocks pre-push bot-file check is in exactly the ship queue and release, equal to lifecycle', () => {
+  const nodes = (ship as Factory).nodes
+  const holders = Object.entries(nodes)
+    .filter(([, n]) => (n.prompt ?? '').includes(BOT_CMD))
+    .map(([name]) => name)
+    .sort()
+  expect(holders).toEqual(['queue', 'release'])
+  for (const name of holders) for (const t of BOT_TOKENS) expect(nodes[name]!.prompt).toContain(t)
+  const want = botText((lifecycle as Factory).nodes.implement!.prompt!)
+  expect(want.length).toBeGreaterThan(100)
+  for (const name of holders) expect(botText(nodes[name]!.prompt!)).toBe(want)
 })
