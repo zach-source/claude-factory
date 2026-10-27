@@ -119,7 +119,7 @@ import {
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
-import { REPAIR_CAP, repairs, type PrFact } from './repairs'
+import { REPAIR_CAP, closableParents, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import * as gc from './gc'
@@ -3165,6 +3165,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
+    else closeParents(b, run.repo, id, `run ${run.id}`)
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
@@ -7255,6 +7256,33 @@ const repairsFile = () => join(HOME, 'repairs.jsonl')
  * which `factory digest` reads. The beads pass calls it.
  */
 const isFresh = (stamp: string, ms: number) => existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < ms
+
+/**
+ * Close each ancestor of `id` whose children are all closed, nearest first, after the factory
+ * closed `id`. It never throws: a throw out of `track` would leave the run unsettled.
+ * The reason text must stay "every child is closed", because the reship repair matches on it.
+ */
+export function closeParents(
+  b: ReturnType<typeof beads>,
+  repo: string,
+  id: string,
+  by: string,
+  closed = new Set([id]),
+) {
+  try {
+    for (const p of closableParents(b.every(), closed, id)) {
+      if (!b.close(p, 'every child is closed')) return
+      closed.add(p)
+      b.comment(p, `${by} closed ${id}; every child of this bead is closed, so the factory closed it`)
+      const at = new Date().toISOString()
+      const row = { at, rig: rigOf(repo)?.name, kind: 'close', id: p, reason: 'every child is closed', by, child: id }
+      appendFileSync(repairsFile(), JSON.stringify(row) + '\n')
+      console.log(`${at} close parent ${p} (${by} closed ${id})`)
+    }
+  } catch (err) {
+    console.error(`${new Date().toISOString()} close parents of ${id}: ${(err as Error).message}`)
+  }
+}
 
 async function repairPass() {
   if (halted()) return

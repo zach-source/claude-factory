@@ -27,12 +27,14 @@ const run = {
 const ctx = (summary: string, outcome = 'approve') =>
   ({ log: [{ node: 'review', attempt: 1, outcome, summary, at: 1 }] }) as unknown as Ctx
 
-const fakeBd = (name: string, labels: string[]) => {
+const fakeBd = (name: string, labels: string[], list = '') => {
   const bin = join(tmpdir(), `${name}-${process.pid}`)
   mkdirSync(bin, { recursive: true })
   const log = join(bin, 'calls')
   const show = join(bin, 'show.json')
+  const listOut = join(bin, 'list.json')
   writeFileSync(show, JSON.stringify([{ id: 'fx-1', title: 't', labels }]))
+  writeFileSync(listOut, list)
   writeFileSync(log, '')
   writeFileSync(
     join(bin, 'bd'),
@@ -42,6 +44,7 @@ const fakeBd = (name: string, labels: string[]) => {
       'case "$1" in',
       `  show) cat ${show};;`,
       `  children) echo '[]';;`,
+      `  list) cat ${listOut};;`,
       'esac',
     ].join('\n'),
   )
@@ -100,6 +103,44 @@ test('a run that ends on a plain edge still closes its bead', () => {
   } finally {
     process.env.PATH = path
   }
+})
+
+const plain = { ...def, nodes: { review: { prompt: '', next: { approve: 'done' } } } } satisfies Factory
+const trackPlain = (list: string, c = ctx(`approve ${PR}`)) => {
+  const f = fakeBd(`fake-bd-parent-${Math.random().toString(36).slice(2)}`, ['factory'], list)
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const t: Track = { mirrored: 1, beatAt: 0, isSettled: false }
+    track({ ...run, bead: 'fx-1.1' }, plain, { done: '' }, c, t, Date.now())
+    return { calls: f.calls(), t }
+  } finally {
+    process.env.PATH = path
+  }
+}
+const bead = (id: string, status = 'open') => ({ id, title: id, status })
+
+test('a run that closes the last child also closes its parent, with a comment that cites the run', () => {
+  const { calls } = trackPlain(JSON.stringify([bead('fx-1'), bead('fx-1.1'), bead('fx-1.2', 'closed')]))
+  expect(calls.some(c => c.startsWith('close fx-1.1'))).toBe(true)
+  expect(calls.filter(c => c.startsWith('close fx-1 --reason every child is closed'))).toHaveLength(1)
+  const comment = calls.filter(c => c.startsWith('comment fx-1 '))
+  expect(comment).toHaveLength(1)
+  expect(comment[0]).toContain('run run-1')
+  expect(comment[0]).toContain('fx-1.1')
+})
+
+test('an open sibling leaves the parent alone', () => {
+  const { calls } = trackPlain(JSON.stringify([bead('fx-1'), bead('fx-1.1'), bead('fx-1.2')]))
+  expect(calls.some(c => c.startsWith('close fx-1 '))).toBe(false)
+  expect(calls.some(c => c.startsWith('comment fx-1 '))).toBe(false)
+})
+
+test('a bd list that prints junk does not stop the run settling or defer the bead', () => {
+  const { calls, t } = trackPlain('not json')
+  expect(t.isSettled).toBe(true)
+  expect(calls.some(c => c.startsWith('defer '))).toBe(false)
+  expect(calls.some(c => c.startsWith('close fx-1.1'))).toBe(true)
 })
 
 test('hasShipEdge finds a ship edge and nothing else', () => {
