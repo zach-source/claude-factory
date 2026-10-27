@@ -525,6 +525,27 @@ test("a tick replays memory helped as the worker's station, and refuses a path o
   rmSync(memDir, { recursive: true })
 })
 
+test('memory search --from logs shown with the run and station; without it, no by', () => {
+  const memDir = join(home, 'memory')
+  mkdirSync(join(memDir, 'topic'), { recursive: true })
+  writeFileSync(
+    join(memDir, 'topic', 'n.md'),
+    '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
+  )
+  const usage = join(memDir, '.usage.jsonl')
+  const rows = () =>
+    readFileSync(usage, 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+  expect(factory(['memory', 'search', '--from', 'r1/plan', 'dolt lock']).code).toBe(0)
+  expect(rows()).toHaveLength(1)
+  expect(rows()[0]).toMatchObject({ path: 'topic/n.md', shown: 1, by: 'r1/plan' })
+  expect(factory(['memory', 'search', 'dolt lock']).code).toBe(0)
+  expect(rows()[1].by).toBeUndefined()
+  rmSync(memDir, { recursive: true })
+}, 60_000)
+
 test('a report appended after the worker deletes its already-replayed probes still replays (claude-factory-4x1)', () => {
   const seq = launched('r8')
   const probe1 = JSON.stringify({ argv: ['mail', 'r8', 'manager', 'probe one'], from: 'a', at: 1 })

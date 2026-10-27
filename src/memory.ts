@@ -493,6 +493,7 @@ export async function search(
 ) {
   const { notes, topics } = walk(dir)
   const all = [...notes, ...coreNotes(dir)]
+  if (!all.length) return []
   const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])
   const events = usageEvents(dir)
@@ -878,7 +879,7 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}, okOf?: 
     if (Array.isArray(u.keys)) for (const k of u.keys) t.keys.add(k)
     else if (typeof u.runs === 'number')
       t.runsBase += u.runs // a pre-claude-factory-59r.17 folded line: no keys to recover
-    else t.keys.add(runKey(u.by, u.at))
+    else if (!(u.shown && !u.helped && !u.confirmed && !u.contradicted)) t.keys.add(runKey(u.by, u.at))
     if (Array.isArray(u.events)) for (const [at, kind, w] of u.events) t.events.push({ at, kind, w })
     else if (typeof u.runs !== 'number')
       for (const kind of ['shown', 'helped', 'confirmed', 'contradicted'] as const)

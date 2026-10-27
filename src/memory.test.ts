@@ -305,6 +305,28 @@ test('semantic search finds the note that means the query, not the one that shar
   expect(top!.note.summary).toContain('stalls every repo')
 }, 60_000)
 
+test('a shown-only line adds no run; a helped line from another run does', () => {
+  const dir = join(tmpdir(), `memory-shown-runs-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const day = 24 * 3600 * 1000
+  use(dir, ['n.md'], 'shown', day, 'r1/a')
+  use(dir, ['n.md'], 'shown', 2 * day, 'r2/a')
+  use(dir, ['n.md'], 'helped', 3 * day, 'r3/b')
+  const u = usage(dir).get('n.md')!
+  expect(u.shown).toBe(2)
+  expect(u.runs).toBe(1)
+})
+
+test('search on a dir with no notes returns nothing without loading the model', async () => {
+  const dir = join(tmpdir(), `memory-search-empty-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const t = Date.now()
+  expect(await search(dir, 'anything')).toEqual([])
+  expect(Date.now() - t).toBeLessThan(500)
+})
+
 test('usage follows a note the dream files, and is dropped with a note it removes', () => {
   const dir = join(tmpdir(), `memory-usage-${process.pid}`)
   rmSync(dir, { recursive: true, force: true })

@@ -8631,6 +8631,8 @@ if (import.meta.main && !outboxCmd)
             MEMORY,
             found.map(f => f.note.path),
             'shown',
+            Date.now(),
+            from,
           )
           console.log(
             found
