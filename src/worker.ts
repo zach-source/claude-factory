@@ -625,7 +625,7 @@ export function loadDevenv() {
   if (made.exitCode !== 0)
     return void console.error(`devenv print-dev-env: ${made.stderr.toString().trim().slice(-2000)}`)
   // the script ends with 'eval ${shellHook:-}', which runs enterShell: drop it
-  writeFileSync(script, made.stdout.toString().replace(/^[ \t]*eval \$\{shellHook:-\}[ \t]*$/gm, ''))
+  writeFileSync(script, made.stdout.toString().replace(/^[ \t]*eval "?\$\{shellHook:-\}"?[ \t]*$/gm, ''))
   const dumped = Bun.spawnSync(
     ['bash', '-c', `e=$(command -v env); . '${script}' >/dev/null 2>&1; "$e" -0`],
     { cwd: repo(), env },

@@ -1035,7 +1035,7 @@ test('loadDevenv does not run the devenv enterShell (shellHook)', () => {
   writeFileSync(join(repo, 'devenv.nix'), '{ }\n')
   writeFileSync(
     join(bin, 'devenv'),
-    `#!/bin/sh\necho "export GOROOT=/nix/go2; shellHook='touch ${marker}'; export shellHook"\necho 'eval \${shellHook:-}'\n`,
+    `#!/bin/sh\necho "export GOROOT=/nix/go2; shellHook='touch ${marker}'; export shellHook"\necho 'eval \${shellHook:-}'\necho 'eval "\${shellHook:-}"'\n`,
     { mode: 0o755 },
   )
   const saved = { ...process.env }
