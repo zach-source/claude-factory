@@ -1198,3 +1198,91 @@ test('validate refuses holdMail on a gate', () => {
     }),
   ).toThrow('g: a gate has no worker, so no mail to hold')
 })
+
+describe('an outage hold parks the station and spends no attempt', () => {
+  const MIN = 60_000
+  const hold = (seq: number, at: number, h = 0) =>
+    ({ type: 'FAIL', seq, reason: 'egress gateway: model API unreachable', hold: h, at }) as Ev
+
+  test('three holds do not reach stuck, and the attempt stays 1', () => {
+    const { send } = run()
+    let at = 1000
+    let s = send(hold(1, at))
+    for (let i = 2; i <= 3; i++) {
+      expect(where(s.value)).toEqual(['implement', 'waiting'])
+      at = s.context.wakeAt
+      s = send({ type: 'TICK', at })
+      expect(where(s.value)).toEqual(['implement', 'working'])
+      expect(s.context).toMatchObject({ attempt: 1, seq: i })
+      s = send(hold(i, at))
+    }
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    expect(s.context.attempt).toBe(1)
+    expect(s.context.log.map(e => `${e.outcome}:${e.attempt}`)).toEqual(['outage:1', 'outage:1', 'outage:1'])
+  })
+
+  test('the wait doubles up to 120 min, and a later hold wins', () => {
+    const { send } = run()
+    let at = 1000
+    const waits: number[] = []
+    let s = send(hold(1, at))
+    for (let i = 1; i <= 3; i++) {
+      waits.push((s.context.wakeAt - at) / MIN)
+      at = s.context.wakeAt
+      s = send({ type: 'TICK', at })
+      s = send(hold(i + 1, at))
+    }
+    waits.push((s.context.wakeAt - at) / MIN)
+    expect(waits).toEqual([15, 30, 60, 120])
+    expect(where(send({ type: 'TICK', at: s.context.wakeAt - 1 }).value)).toEqual(['implement', 'waiting'])
+
+    const { send: send2 } = run()
+    const later = 10 * 60 * MIN
+    expect(send2(hold(1, 1000, later)).context.wakeAt).toBe(later)
+  })
+
+  test('the 5th hold in a row spends an attempt; a fail restarts the streak', () => {
+    const { send } = run()
+    let at = 1000
+    let s = send(hold(1, at))
+    for (let i = 2; i <= 5; i++) {
+      at = s.context.wakeAt
+      send({ type: 'TICK', at })
+      s = send(hold(i, at))
+    }
+    expect(where(s.value)).toEqual(['implement', 'backoff'])
+    expect(s.context.log.at(-1)?.outcome).toBe('fail')
+
+    const r = run()
+    let t = 1000
+    let x = r.send(hold(1, t))
+    t = x.context.wakeAt
+    r.send({ type: 'TICK', at: t })
+    x = r.send({ type: 'FAIL', seq: 2, reason: 'crashed', at: t })
+    expect(where(x.value)).toEqual(['implement', 'backoff'])
+    t = x.context.retryAt
+    r.send({ type: 'TICK', at: t })
+    x = r.send(hold(3, t))
+    expect(x.context.wakeAt - t).toBe(15 * MIN)
+  })
+
+  test('only the first hold of a streak mails the manager, from the factory', () => {
+    const { send } = run()
+    let s = send(hold(1, 1000))
+    const mails = () => s.context.mail.manager ?? []
+    expect(mails()).toHaveLength(1)
+    expect(mails()[0]).toMatchObject({ from: 'factory' })
+    expect(mails()[0]?.text).toContain('held, not failed')
+    const at = s.context.wakeAt
+    send({ type: 'TICK', at })
+    s = send(hold(2, at))
+    expect(mails()).toHaveLength(1)
+  })
+
+  test('a FAIL without hold behaves as before', () => {
+    const { send } = run()
+    const s = send({ type: 'FAIL', seq: 1, reason: 'egress gateway: model API unreachable', at: 1000 })
+    expect(where(s.value)).toEqual(['implement', 'backoff'])
+    expect(s.context.log.at(-1)?.outcome).toBe('fail')
+  })
+})

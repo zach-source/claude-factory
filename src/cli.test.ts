@@ -18,6 +18,7 @@ import {
   isTrusted,
   labelAction,
   lastContext,
+  holdFloor,
   limitHit,
   managerCommand,
   needsSwap,
@@ -2029,4 +2030,23 @@ test('piWorker appends the worker rules to pi and passes each plugin skill', () 
   expect(readFileSync(rules, 'utf8')).toStartWith(
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
   )
+})
+
+test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {
+  const stopped = 'worker stopped without reporting'
+  const hit = { at: 5000, resetsAt: 90_000 }
+  expect(holdFloor('egress gateway: model API unreachable since x (3 retries): y', null, 0, 1000, 2000)).toBe(
+    0,
+  )
+  expect(holdFloor(stopped, hit, 70_000, 1000, 2000)).toBe(90_000)
+  expect(holdFloor(stopped, hit, 95_000, 1000, 2000)).toBe(95_000)
+  expect(holdFloor(stopped, null, 70_000, 1000, 2000)).toBe(70_000) // the page is still active
+  // not an outage
+  expect(holdFloor(stopped, null, 1500, 1000, 2000)).toBeNull() // the page has passed
+  expect(holdFloor(stopped, hit, 0, 9000, 20_000)).toBeNull() // an older attempt's limit
+  expect(holdFloor('no report within 60 min', hit, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('stalled: no output for 30 min', hit, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('worker never started on AX after 5 min: x', null, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('worker pane x was closed', null, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('see egress gateway: model API unreachable', null, 0, 1000, 2000)).toBeNull()
 })

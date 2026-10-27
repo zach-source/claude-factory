@@ -245,7 +245,9 @@ export type Ev = At &
     /** a worker brought back after the factory was stopped: its clock and its nudges start over */
     | { type: 'RESUMED'; seq: number; pane: string }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
-    | { type: 'FAIL'; seq: number; reason: string }
+    /** `hold`: the reconciler saw an outage (egress down, a usage limit), not a fault of the work. It is the earliest
+     * wake time in ms. The station parks and spends no attempt, for OUTAGE_HOLDS holds in a row. Only the reconciler sets it. */
+    | { type: 'FAIL'; seq: number; reason: string; hold?: number }
     /** the worker's context grew too long: a fresh worker carries on from its notes, spending no attempt */
     | { type: 'HANDOFF'; seq: number; summary: string }
     /** the worker waits on something outside the run (a person, another run, a review): park, spend no attempt */
@@ -397,6 +399,16 @@ export const isMailHeld = (c: Ctx, node: string, holds?: boolean) =>
 /** whether the station is parked by a blocked report that links this pull or merge request */
 export const isParkedOn = (c: Ctx, node: string, url: string) =>
   isParked(c, node) && [...prsIn(c.log.at(-1)!.summary), ...mrsIn(c.log.at(-1)!.summary)].includes(url)
+
+/** how many outage holds in a row a station gets before the outage fails like any other fault */
+export const OUTAGE_HOLDS = 4
+export const OUTAGE_HOLD_MIN = 15
+/** the outage holds a node made in a row, newest first: any other entry ends the streak */
+export const outageStreak = (c: Ctx, node: string) => {
+  let n = 0
+  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node && c.log[i]?.outcome === 'outage'; i--) n++
+  return n
+}
 
 /** the kind of failure a reason names when retrying it unchanged is unlikely to help: the worker went silent */
 export const failClass = (reason: string) =>
@@ -899,6 +911,32 @@ export function compile(def: Factory) {
               }),
             },
             FAIL: [
+              {
+                guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                  isCurrent({ context, event }) &&
+                  (event as Extract<Ev, { type: 'FAIL' }>).hold !== undefined &&
+                  outageStreak(context, id) < OUTAGE_HOLDS,
+                target: 'waiting',
+                actions: assign(({ context, event }) => {
+                  const { reason, at, hold } = event as Extract<Ev, { type: 'FAIL' }>
+                  const streak = outageStreak(context as Ctx, id)
+                  // 15, 30, 60, then 120 min at the last of OUTAGE_HOLDS holds
+                  const wakeAt = Math.max(hold ?? 0, at + OUTAGE_HOLD_MIN * 2 ** streak * 60_000)
+                  const text = `${id} is held, not failed: ${reason}. It spent no attempt and starts again at ${new Date(wakeAt).toISOString()}.`
+                  return {
+                    log: [
+                      ...context.log,
+                      { node: id, attempt: context.attempt, outcome: 'outage', summary: reason, at },
+                    ],
+                    mail:
+                      streak === 0
+                        ? post(context.mail, 'manager', { from: 'factory', text, at })
+                        : context.mail,
+                    pane: null,
+                    wakeAt,
+                  }
+                }),
+              },
               {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                   isCurrent({ context, event }) &&
