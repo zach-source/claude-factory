@@ -31,6 +31,9 @@ const factory = (args: string[]) => {
       PATH: `${bin}:${laptop.PATH}`,
       CLAUDE_CONFIG_DIR: claudeConfig,
       FACTORY_SELF_UPDATE: '0',
+      GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
+      GIT_CONFIG_KEY_0: 'commit.gpgsign',
+      GIT_CONFIG_VALUE_0: 'false',
     },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
@@ -360,6 +363,9 @@ function pfactory(args: string[], extraEnv: Record<string, string> = {}) {
       PATH: `${pbin}:${laptop.PATH}`,
       CLAUDE_CONFIG_DIR: pClaudeConfig,
       FACTORY_SELF_UPDATE: '0',
+      GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
+      GIT_CONFIG_KEY_0: 'commit.gpgsign',
+      GIT_CONFIG_VALUE_0: 'false',
       ...extraEnv,
     },
   })
@@ -783,6 +789,9 @@ function gfactory(args: string[], env: Record<string, string> = {}) {
       PATH: `${gbin}:${laptop.PATH}`,
       CLAUDE_CONFIG_DIR: gClaudeConfig,
       FACTORY_SELF_UPDATE: '0',
+      GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
+      GIT_CONFIG_KEY_0: 'commit.gpgsign',
+      GIT_CONFIG_VALUE_0: 'false',
       ...env,
     },
   })
