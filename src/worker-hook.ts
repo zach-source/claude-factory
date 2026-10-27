@@ -1,4 +1,7 @@
 /**
+ * A second entry of this hook (matcher Write|Edit|MultiEdit|NotebookEdit) runs `fileWriteReason`
+ * on the tool's file path (claude-factory-g4du). The Bash text rules below do not see those tools.
+ *
  * This PreToolUse hook for Bash denies `rm -r` and `rm -rf` in all spellings or wrappers.
  * It denies a chain of commands that holds a `cd` command and an `rm` command.
  * It denies an `rm` command with a target that holds a `$variable` expansion or a glob.
@@ -64,9 +67,9 @@
  * Claude Code's own prompt stays the backstop.
  */
 
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join as joinPath, posix, resolve as resolvePath } from 'node:path'
+import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
 import { homeReason } from './home-guard'
 
 export const REASON =
@@ -476,7 +479,7 @@ export interface HookGate {
  * when `globalGitConfig` is true and `gitWord` is true. `gitWord` comes from the dequoted segment
  * words, so `"gi"t` counts. `hasDangerousConfigEnv` reads it too.
  * Residual, not fixed: a path built from a shell variable (`F=~/.gitconfig; echo x >> $F`), a
- * Write or Edit tool write (claude-factory-ak7), a `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`).
+ * `.git/config` write alone (claude-factory-cpn), and a directory copy with no path operand (`cp -R /r/acme/dot/. ~/`, `tar -xf x.tar -C ~`).
  * Fix for the whole class: claude-factory-yoib (a push-time read of the effective git config).
  */
 interface ScanState {
@@ -9076,6 +9079,53 @@ export function clampTimeout(
   return left < (input.timeout ?? BASH_DEFAULT_MS) ? left : undefined
 }
 
+export const FILE_WRITE_REASON =
+  "The factory denies this file write: it targets a .git dir, the global git config or Claude Code's shell-snapshots folder. A worker never needs to write these. Use git commands for repo state."
+
+/** True when the path parts (lower case) name a .git component, a git config file or a shell-snapshots folder. */
+function protectedParts(parts: string[], xdg: string[]): boolean {
+  const n = parts.length
+  const last = parts[n - 1]
+  if (parts.includes('.git') || parts.includes('shell-snapshots')) return true
+  if (last === '.gitconfig' || last === 'gitconfig') return true
+  if (n >= 2 && last === 'config' && parts[n - 2] === 'git') return true
+  if (parts.some((p, k) => p === '.config' && parts[k + 1] === 'git')) return true
+  return xdg.length > 0 && xdg.every((p, k) => parts[k] === p) && parts[xdg.length] === 'git'
+}
+
+/**
+ * claude-factory-g4du: the reason to deny a Write, Edit, MultiEdit or NotebookEdit of `path`, or undefined.
+ * It fails closed on a missing, empty, NUL or ~user path. It checks the lexical path and the real path
+ * (the nearest existing ancestor through realpath), in lower case, so a symlink or a case change does not pass.
+ * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config,
+ * codex apply_patch (claude-factory-qn8a.22), and the hook source and settings (claude-factory-qn8a.21).
+ */
+export function fileWriteReason(
+  path: unknown,
+  cwd: string,
+  env: { home: string; xdg?: string | undefined } = { home: homedir(), xdg: process.env.XDG_CONFIG_HOME },
+): string | undefined {
+  if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
+    return FILE_WRITE_REASON
+  const abs = resolvePath(cwd, path === '~' || path.startsWith('~/') ? env.home + path.slice(1) : path)
+  const split = (x: string) => x.toLowerCase().split(sep).filter(Boolean)
+  const xdg = env.xdg ? split(resolvePath(env.xdg)) : []
+  let real = abs
+  const rest: string[] = []
+  for (;;) {
+    try {
+      real = joinPath(realpathSync(real), ...rest)
+      break
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if ((code !== 'ENOENT' && code !== 'ENOTDIR') || dirname(real) === real) return FILE_WRITE_REASON
+      rest.unshift(real.slice(dirname(real).length + 1))
+      real = dirname(real)
+    }
+  }
+  return protectedParts(split(abs), xdg) || protectedParts(split(real), xdg) ? FILE_WRITE_REASON : undefined
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -9087,7 +9137,30 @@ async function main() {
   const i = input as {
     tool_name?: string
     cwd?: string
-    tool_input?: { command?: string; timeout?: number; run_in_background?: boolean }
+    tool_input?: {
+      command?: string
+      timeout?: number
+      run_in_background?: boolean
+      file_path?: unknown
+      notebook_path?: unknown
+    }
+  }
+  if (i?.tool_name && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(i.tool_name)) {
+    const reason = fileWriteReason(
+      i.tool_input?.file_path ?? i.tool_input?.notebook_path,
+      i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+    )
+    if (reason)
+      console.log(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: reason,
+          },
+        }),
+      )
+    return
   }
   if (i?.tool_name !== 'Bash') return
   // Claude Code sets CLAUDE_PROJECT_DIR to the worktree root for a hook; input.cwd can be a

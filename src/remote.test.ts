@@ -1262,8 +1262,8 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     // claude-factory-cr6: the same deny-rm-rf PreToolUse hook a laptop worker gets, run from the VM image
     hooks: {
       PreToolUse: [
-        {
-          matcher: 'Bash',
+        ...['Bash', 'Write|Edit|MultiEdit|NotebookEdit'].map(matcher => ({
+          matcher,
           hooks: [
             {
               type: 'command',
@@ -1271,7 +1271,7 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
               timeout: 10,
             },
           ],
-        },
+        })),
       ],
     },
   })
@@ -1297,6 +1297,7 @@ test("vmClaudeFlags carries a rig's personOnlyContexts on the deny hook's own ar
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
     "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --person-only-contexts 'acme'",
   )
+  expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // no list: today's command, unchanged
   expect(vmClaudeFlags({ maxContextK: 150 })).toEqual(vmClaudeFlags({ maxContextK: 150 }, []))
 })
@@ -1308,6 +1309,7 @@ test("vmClaudeFlags carries a rig's protectedBranches on the deny hook's own arg
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
     "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --protected-branches 'acme-deploy'",
   )
+  expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // both lists together: person-only-contexts first, then protected-branches
   const both = vmClaudeFlags({ maxContextK: 150 }, ['ctx'], ['acme-deploy'])
   const bothSettings = JSON.parse(both[both.indexOf('--settings') + 1]!)
