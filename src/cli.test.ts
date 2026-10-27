@@ -2302,7 +2302,7 @@ test('managerStale says restart only for a live manager with an older launch com
 test('status prints the manager line, and only without a run id (claude-factory-772)', () => {
   const src = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8')
   const body = src.slice(src.indexOf('async function status('))
-  expect(body.slice(0, body.indexOf('\n}\n'))).toMatch(/!id[\s\S]*managerStale\(HOME/)
+  expect(body.slice(0, body.indexOf('\n}\n'))).toContain('!id && managerStale(HOME')
 })
 
 test('managerStaleMail mails once for each launch, from the factory (claude-factory-772)', () => {
