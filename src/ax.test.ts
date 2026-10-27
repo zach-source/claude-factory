@@ -929,6 +929,36 @@ test('a rig with no Dolt remote bootstraps its beads from the git origin through
   }
 })
 
+test("a failed bd bootstrap shows bd's last error line, not its metrics notice or a URL", () => {
+  const own = join(dir, 'own-beads-fail')
+  const bd = join(dir, 'bd-boot-fail')
+  writeFileSync(
+    bd,
+    `#!/bin/sh\necho 'Thanks for using bd! Metrics help us improve.' >&2\necho 'Error: Bootstrap failed: clone from remote: dolt clone https://dolt.example.com:50051/x: Error 1105: transport: authentication handshake failed: EOF' >&2\nexit 1\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_BEADS_REMOTE: 'https://dolt.example.com:50051/x',
+    FACTORY_BD: bd,
+  })
+  try {
+    let msg = ''
+    try {
+      worker.setupBeads()
+    } catch (e) {
+      msg = (e as Error).message
+    }
+    expect(msg).toContain('authentication handshake failed: EOF')
+    expect(msg).not.toContain('Thanks for using bd')
+    expect(msg).not.toContain('https://')
+  } finally {
+    process.env = saved
+  }
+})
+
 test('a rig with no Dolt remote and an origin with no refs/dolt/data gets no store', () => {
   const own = join(dir, 'own-beads-noref')
   const bd = join(dir, 'bd-boot-noref')
@@ -2035,4 +2065,26 @@ test('a session cut off mid-turn resumes with a note naming the cut-off call; an
     process.env = saved
     rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+test("withDoltEgress adds the Dolt rule of the rig's own https beadsRemote, and nothing else", () => {
+  const rule = {
+    hosts: ['beads-dolt.example'],
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+    port: 50051,
+  }
+  const remote = { url: 'https://beads-dolt.example:50051/db' }
+  const other = [{ hosts: ['github.com'], key: 'GITHUB_BASIC' }]
+  expect(ax.withDoltEgress(other, { beadsRemote: remote, egress: other })).toEqual([...other, rule])
+  expect(ax.withDoltEgress(undefined, { beadsRemote: remote })).toEqual([rule])
+  expect(ax.withDoltEgress(other, { egress: other })).toEqual(other)
+  expect(ax.withDoltEgress(other, undefined)).toEqual(other)
+  expect(ax.withDoltEgress(other, { beadsRemote: { url: 'http://beads-dolt.example:50051/db' } })).toEqual(
+    other,
+  )
+  expect(ax.withDoltEgress(other, { beadsRemote: { url: 'not a url' } })).toEqual(other)
+  const own = [{ hosts: ['beads-dolt.example'], key: 'MY_DOLT', port: 50051 }]
+  expect(ax.withDoltEgress(own, { beadsRemote: remote, egress: own })).toEqual(own)
 })
