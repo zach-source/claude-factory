@@ -1,10 +1,15 @@
-import { expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { beforeAll, expect, test } from 'bun:test'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beads } from './beads'
 import { closeParents, shipPrOf, track, type Track } from './cli'
 import { hasShipEdge, type Ctx, type Factory } from './machine'
+
+const repairsLog = join(mkdtempSync(join(tmpdir(), 'repairs-')), 'repairs.jsonl')
+beforeAll(() => {
+  process.env.FACTORY_REPAIRS_LOG = repairsLog
+})
 
 const PR = 'https://github.com/acme/widget/pull/42'
 const def = {
@@ -129,6 +134,8 @@ test('a run that closes the last child also closes its parent, with a comment th
   expect(comment).toHaveLength(1)
   expect(comment[0]).toContain('run run-1')
   expect(comment[0]).toContain('fx-1.1')
+  const row = JSON.parse(readFileSync(repairsLog, 'utf8').trim().split('\n').pop()!)
+  expect(row).toMatchObject({ kind: 'close', id: 'fx-1', child: 'fx-1.1', by: 'run run-1' })
 })
 
 test('an open sibling leaves the parent alone', () => {

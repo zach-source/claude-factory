@@ -7248,7 +7248,8 @@ async function liveByBead() {
   return out
 }
 
-const repairsFile = () => join(HOME, 'repairs.jsonl')
+// FACTORY_REPAIRS_LOG lets a test write elsewhere: the import sets HOME once, and bun shares the module cache
+const repairsFile = () => process.env.FACTORY_REPAIRS_LOG ?? join(HOME, 'repairs.jsonl')
 
 /**
  * Closes or defers beads whose work is plainly done or dead, and releases claims that no live run
