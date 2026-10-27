@@ -1734,16 +1734,57 @@ function tailOf(worktree: string, session: string) {
   }
 }
 
-/** the usage limit that refused a Claude transcript's last turn: when, which (seven_day, five_hour) and when it resets, in ms */
+/** the first UTC time after `after` that a "resets [Mon D, | Mon D at ]h[:mm]am (UTC)" notice names, in ms; 0 for no match or another zone */
+export function resetsAtFromText(text: string, after: number) {
+  const m =
+    /resets (?:([A-Za-z]{3})[a-z]* (\d{1,2})(?:, | at ))?(\d{1,2})(?::(\d\d))?\s?([ap]m) \(UTC\)/i.exec(text)
+  if (!m) return 0
+  const hour = (Number(m[3]) % 12) + (m[5].toLowerCase() === 'pm' ? 12 : 0)
+  const min = Number(m[4] ?? 0)
+  const day = new Date(after)
+  const year = day.getUTCFullYear()
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+  const mon = m[1] ? months.indexOf(m[1].toLowerCase()) : day.getUTCMonth()
+  if (mon < 0) return 0
+  for (let i = 0; i < 2; i++) {
+    const t = m[1]
+      ? Date.UTC(year + i, mon, Number(m[2]), hour, min)
+      : Date.UTC(year, mon, day.getUTCDate() + i, hour, min)
+    if (t > after) return t
+  }
+  return 0
+}
+
+/** the usage limit or login failure that refused a Claude transcript's last turn: when, which (seven_day, five_hour, usage, auth) and when it resets, in ms (0: unknown) */
 export function limitHit(tail: string) {
   for (const line of tail.split('\n').reverse()) {
     if (!line.includes('"type":"assistant"')) continue
     try {
       const e = JSON.parse(line)
       if (e.type !== 'assistant') continue
-      if (e.error !== 'rate_limit' || e.quotaLimits?.status !== 'rejected') return null
-      const kind: string = e.quotaLimits.rateLimitType ?? 'usage'
-      return { at: Date.parse(e.timestamp), kind, resetsAt: (e.quotaLimits.resetsAt ?? 0) * 1000 }
+      const at = Date.parse(e.timestamp)
+      if (e.error === 'authentication_failed' || e.apiErrorStatus === 401)
+        return { at, kind: 'auth', resetsAt: 0 }
+      if (e.error !== 'rate_limit') return null
+      if (e.quotaLimits?.status === 'rejected')
+        return {
+          at,
+          kind: String(e.quotaLimits.rateLimitType ?? 'usage'),
+          resetsAt: (e.quotaLimits.resetsAt ?? 0) * 1000,
+        }
+      const c = e.message?.content
+      const text =
+        typeof c === 'string'
+          ? c
+          : Array.isArray(c)
+            ? c.map((p: { text?: string }) => p?.text ?? '').join('\n')
+            : ''
+      const kind = /weekly/i.test(text)
+        ? 'seven_day'
+        : /session limit|5-hour|five.hour/i.test(text)
+          ? 'five_hour'
+          : 'usage'
+      return { at, kind, resetsAt: resetsAtFromText(text, at) }
     } catch {
       // the first line of the tail is cut
     }
