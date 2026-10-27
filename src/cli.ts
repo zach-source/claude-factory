@@ -9476,7 +9476,11 @@ if (import.meta.main && !outboxCmd)
       }
       case 'retry': {
         const { run, value, c } = current(args[0])
-        const [node] = where(value)
+        const [node, sub] = where(value)
+        if (sub !== 'stuck')
+          fail(
+            `${run.id} is at ${node}${sub ? `/${sub}` : ''}, not stuck: RETRY only applies to a stuck station; run ${CLI} goto ${run.id} ${node} to restart it`,
+          )
         const runner = c.pane ? runnerOf(c.pane) : runnerOfStation(run, await loadFactory(run.factory), node)
         const unavailable = runner.name === 'ax' ? ax.unavailable() : undefined
         if (unavailable) fail(unavailable)
