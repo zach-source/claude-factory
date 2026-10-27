@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { createActor } from 'xstate'
-import { compile, validate, where, type Factory } from '../src/machine'
+import { compile, fill, validate, where, type Factory } from '../src/machine'
+import sweeps from './sweeps'
 import lifecycle from './lifecycle'
 import ship from './ship'
 
@@ -199,6 +200,20 @@ test('queue resolves a BUILD.bazel-only conflict with gazelle and keeps it (debg
   expect(two).toContain('BUILD.bazel')
   expect(two).toMatch(/not (go back|send)/i)
   expect(two).toContain('station:implement')
+})
+
+test('only soak carries the Mimir query form, behind the approval prefix, equal to the monitor copy', () => {
+  const p = (f: { nodes: Record<string, unknown> }, id: string) => (f.nodes[id] as { prompt: string }).prompt
+  const line = (s: string) => s.slice(s.indexOf('Mimir reads:'), s.indexOf('looks the same as no data.') + 26)
+  const soak = p(ship, 'soak')
+  expect(soak).toContain('Read-only. Only when the person approved a Mimir read for this soak')
+  expect(soak).toContain('[factory mail] from the manager): Mimir reads:')
+  expect(line(soak).length).toBeGreaterThan(300)
+  expect(line(soak)).toBe(line(p(sweeps, 'monitor')))
+  for (const id of ['queue', 'release', 'deploy', 'rollback', 'postmortem'])
+    expect(p(ship, id), id).not.toContain('X-Scope-OrgID')
+  expect(fill(soak, {})).toBe(soak)
+  expect(soak).not.toMatch(new RegExp(['stig' + 'en', 'spin' + 'dle'].join('|'), 'i'))
 })
 
 const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"

@@ -39,6 +39,13 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.
 - .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep a person's merge of the pull request as the gate before anything deploys.`
 
+/** the Mimir query form the worker hook allows; ship.ts keeps its own copy (a test keeps them equal) */
+const mimirRead =
+  `Mimir reads: if this rig's metrics are in Mimir behind a mimir-gateway pod, query it with ` +
+  `\`kubectl -n monitoring exec <mimir-gateway pod> -c gateway -- wget -q -O- --header='X-Scope-OrgID: <tenant>' --post-data='query=<PromQL>' 'http://localhost:8080/prometheus/api/v1/query'\`, ` +
+  `one query per Bash call. Use a concrete metric name: no '?query=' URL and no \`{...}\` selector, because the worker hook denies both. ` +
+  `Factory memory names the tenant. Without the X-Scope-OrgID header, every result reads empty, which looks the same as no data.`
+
 /** every pass's shared closing paragraph: the flood guard's rules, so each worker knows why a finding
  * may wait, and never tries to force one through by hand */
 const guardNote = (station: string) =>
@@ -76,6 +83,7 @@ export default {
       timeoutMin: 20,
       prompt: `One pass of production watch, read-only. The rig's \`--slo\` command ran before you started: its output is in your inbox, clipped to 4 KiB. It ran only because it changed since the last pass; an unchanged read starts no run at all. Read SLOs and error budgets, alert states, error rates and new error types, latency, saturation, failing jobs, certificate and quota expiry, and the health of recent deploys from it, against the previous passes in the journal.
 File what hurts users now as separate work that starts on its own at the incident station, at priority 0, labeled sweep-queue:incident. File defects that can wait as separate work for a person to prioritize. Never file what is already tracked or running.
+${mimirRead}
 ${guardNote('monitor')}
 Report filed with the key numbers, which the next pass compares against, and what you filed.`,
       next: { filed: 'done' },

@@ -1,5 +1,12 @@
 import type { Factory } from '../src/machine'
 
+/** the Mimir query form the worker hook allows; sweeps.ts keeps its own copy (a test keeps them equal) */
+const mimirRead =
+  `Mimir reads: if this rig's metrics are in Mimir behind a mimir-gateway pod, query it with ` +
+  `\`kubectl -n monitoring exec <mimir-gateway pod> -c gateway -- wget -q -O- --header='X-Scope-OrgID: <tenant>' --post-data='query=<PromQL>' 'http://localhost:8080/prometheus/api/v1/query'\`, ` +
+  `one query per Bash call. Use a concrete metric name: no '?query=' URL and no \`{...}\` selector, because the worker hook denies both. ` +
+  `Factory memory names the tenant. Without the X-Scope-OrgID header, every result reads empty, which looks the same as no data.`
+
 // The ship workflow: one long-lived run for each rig. Work runs (factories/lifecycle.ts) end on a
 // `ship` edge when review, check or security approves. The runner then labels the bead `ship` (open,
 // no `factory` label, so dispatch skips it) and records ship_at, ship_run, ship_branch and ship_pr.
@@ -92,7 +99,7 @@ Report deployed with the version, the time and the baseline; published when the 
     soak: {
       runner: LAPTOP,
       timeoutMin: 30,
-      prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only.
+      prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only. Only when the person approved a Mimir read for this soak (the bead's description, a person's own comment on it, or a [factory mail] from the manager): ${mimirRead}
 Report healthy when it holds, after you close its bead with \`bd close <bead>\`; resolved instead when a rollback went before this soak, so it gets a postmortem: this ship run's own rollback, or one that the bead's comments (\`bd show <bead>\`) or its work run's incident report describe; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
       next: {
         healthy: { to: 'queue', delayMin: 1 },
