@@ -2379,6 +2379,24 @@ export function stalled(unchangedMs: number, isNudged: boolean) {
   return unchangedMs >= 2 * STALL_MS ? 'fail' : null
 }
 
+/**
+ * This function gives the earliest wake time (ms) of an outage hold. It gives null when the work failed.
+ * An egress outage gives 0. A worker can stop without a report. If a limit refusal came after the attempt
+ * started, or the runner's limit page is active, the function gives the later of the page and the reset time.
+ */
+export function holdFloor(
+  reason: string,
+  hit: { at: number; resetsAt: number } | null,
+  pagedUntil: number,
+  startedAt: number,
+  now: number,
+): number | null {
+  if (reason.startsWith('egress gateway: model API unreachable')) return 0
+  if (reason !== 'worker stopped without reporting') return null
+  if (hit && hit.at > startedAt) return Math.max(pagedUntil, hit.resetsAt)
+  return pagedUntil > now ? pagedUntil : null
+}
+
 /** a VM's codex token and Claude token have separate limits: a codex limit must not hide a Claude one */
 export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
   join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
@@ -2584,6 +2602,14 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const egressReason =
     egress &&
     `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${clip(egress.last, 200)}`
+  const limitPage = limitPagedFile(runner, isCodex)
+  const pagedUntil = existsSync(limitPage) ? readJson<number>(limitPage) : 0
+  // an outage is held, not failed: the machine spends no attempt on it (claude-factory-dhof). Only this
+  // reconciler sets hold; a worker's own report never does.
+  const failOutage = (reason: string) => {
+    const hold = holdFloor(reason, hit, pagedUntil, c.startedAt, now)
+    send({ type: 'FAIL', seq: c.seq, reason, ...(hold === null ? {} : { hold }) })
+  }
   if (status === 'working') send({ type: 'WORKING', seq: c.seq })
   // every turn re-reads the whole context: past the limit the worker hands off to a fresh one
   const maxK = def.maxContextK ?? 200
@@ -2622,18 +2648,14 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   )
   if (status === null) send({ type: 'FAIL', seq: c.seq, reason: `worker pane ${c.pane} was closed` })
   // serve already spent its own budget retrying: fail now, named, instead of nudging a known cause
-  else if (egressReason && !isAsking && (status === 'idle' || status === 'done'))
-    send({ type: 'FAIL', seq: c.seq, reason: egressReason })
+  else if (egressReason && !isAsking && (status === 'idle' || status === 'done')) failOutage(egressReason)
   else if (due === 'fail')
-    send({
-      type: 'FAIL',
-      seq: c.seq,
-      reason:
-        egressReason ??
+    failOutage(
+      egressReason ??
         (info?.pending
           ? `worker never started on AX after ${timeoutMin} min: ${info.pending}`
           : `no report within ${timeoutMin} min`),
-    })
+    )
   else if (stall === 'fail') {
     const min = Math.round((now - seen.at) / 60_000)
     const last = tail.trimEnd().split('\n').at(-1) ?? ''
@@ -2667,8 +2689,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     // a worker waiting on its own build answers a nudge and goes idle again: give it longer each time
     now - Math.max(c.startedAt, c.nudgedAt) > GRACE_MS * 2 ** c.nudges
   ) {
-    if (c.nudges >= NUDGES)
-      send({ type: 'FAIL', seq: c.seq, reason: egressReason ?? 'worker stopped without reporting' })
+    if (c.nudges >= NUDGES) failOutage(egressReason ?? 'worker stopped without reporting')
     else {
       const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
       runner.deliver(
