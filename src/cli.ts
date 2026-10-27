@@ -1595,7 +1595,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 }
 
 /**
- * A PreToolUse entry that runs `bun` on `file`. It denies rm -r/-rf, a cd+rm chain, an rm with a
+ * Two PreToolUse entries that run `bun` on `file`: one for Bash, one for the file tools (claude-factory-g4du). It denies rm -r/-rf, a cd+rm chain, an rm with a
  * $variable or glob target, and an rm outside the worktree root. It gives a reason.
  * `contexts` names kube contexts the rig reserves for a person alone (claude-factory-25z).
  * When the list is not empty, the hook's own argv carries it: `--person-only-contexts a,b`.
@@ -1605,9 +1605,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * release station run one strict `gh pr merge` form, for that repo only (-R required).
  * An older VM image's hook copy ignores argv it does not know.
  */
-const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) => ({
-  matcher: 'Bash',
-  hooks: [
+const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) => {
+  const hooks = [
     {
       type: 'command',
       command: [
@@ -1619,8 +1618,12 @@ const denyHook = (bun: string, file: string, contexts?: string[], branches?: str
       ].join(' '),
       timeout: 10,
     },
-  ],
-})
+  ]
+  return [
+    { matcher: 'Bash', hooks },
+    { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks },
+  ]
+}
 
 /**
  * The part of `workerFlags` that applies in a VM sets the worker system prompt. It turns off auto memory. It sets a compaction backstop.
@@ -1652,7 +1655,7 @@ export function vmClaudeFlags(
     disableBundledSkills: true,
     hooks: {
       PreToolUse: [
-        denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge),
+        ...denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge),
       ],
     },
   }
@@ -1686,7 +1689,7 @@ export function vmCodexHome(
   )
   const chatgpt = auth === 'chatgpt'
   return {
-    'hooks.json': JSON.stringify({ hooks: { PreToolUse: [hook] } }),
+    'hooks.json': JSON.stringify({ hooks: { PreToolUse: hook } }),
     // allow_login_shell = false: a login shell (bash -lc) reads /etc/profile again and drops the PATH and the CA
     // env that serve set (devenv, nix, egress CA), so tools go missing and TLS fails (claude-factory-wpnx)
     'config.toml':
@@ -2060,7 +2063,7 @@ export const workerSettings = (
     ...user.hooks,
     PreToolUse: [
       ...(user.hooks?.PreToolUse ?? []),
-      denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly, branches, merge),
+      ...denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly, branches, merge),
     ],
   }
   return {
@@ -2308,7 +2311,7 @@ export function codexWorker(
     mergeAuthority(rig),
   )
   writeJson(join(dir, 'hooks.json'), {
-    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), hook] },
+    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), ...hook] },
   })
   writeFileSync(
     join(dir, 'config.toml'),

@@ -9100,7 +9100,7 @@ function protectedParts(parts: string[], xdg: string[]): boolean {
 export function fileWriteReason(
   path: unknown,
   cwd: string,
-  env: { home: string; xdg?: string } = { home: homedir(), xdg: process.env.XDG_CONFIG_HOME },
+  env: { home: string; xdg?: string | undefined } = { home: homedir(), xdg: process.env.XDG_CONFIG_HOME },
 ): string | undefined {
   if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
     return FILE_WRITE_REASON
