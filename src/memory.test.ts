@@ -131,6 +131,11 @@ test('a LONG.md entry keeps its id, rig, from, at and body through a write and a
   expect(formatLong(entries)).toContain('tier: long')
 })
 
+test('a LONG.md entry round-trips its until: marker', () => {
+  const entries: LongEntry[] = [{ id: 'x', summary: 'x', until: '2099-01-01', body: 'b' }]
+  expect(parseLong(formatLong(entries))).toEqual(entries)
+})
+
 test('a LONG.md entry round-trips a from: with real-shaped commas and spaces, and a merge alias', () => {
   const entries: LongEntry[] = [
     {
@@ -1149,6 +1154,22 @@ test('applyTiers() merges an old, used short note into LONG.md and keeps its usa
 
   compact(dir, renamed)
   expect(usage(dir).get('beads/LONG.md#bd-init-locks-every-repo')?.helped).toBe(1)
+})
+
+test('applyTiers() keeps a merged note until: marker in LONG.md', () => {
+  const dir = join(tmpdir(), `memory-apply-until-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(
+    join(dir, 'beads', 'lock.md'),
+    format({ summary: 'bd init locks every repo', at: '2026-10-07', until: '2099-01-01', body: 'why' }),
+  )
+  use(dir, ['beads/lock.md'], 'helped', now - 1000)
+  expect(applyTiers(dir, { now }).merged).toBe(1)
+  const text = readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')
+  expect(text).toContain('2099-01-01')
+  expect(parseLong(text)[0]?.until).toBe('2099-01-01')
 })
 
 test('applyTiers() archives a never-helped, long-stale short note, and a superseded one outright', () => {
