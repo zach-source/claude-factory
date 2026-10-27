@@ -27,6 +27,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `factory memory search` works in an AX worker (claude-factory-2yvv). The worker image now holds the embedding model `Xenova/bge-small-en-v1.5`. Before, the search downloaded the model on first use, and the VM got a TLS error. Rebuild the worker image to get this fix.
 - Docs: `docs/beads.md` describes the filing guard (caps 6, 3 and 24 hours), the `clusterRuns` rig setting (default 2), the `file-churn` finding and how to release a held bead with `factory queue` (claude-factory-nwlh.6).
 - Changed: four stations now add a pre-push check for the infra-blocks repo (claude-factory-kwb8). They are `implement` and `quick` in `lifecycle`, and `queue` and `release` in `ship`. A worker runs `git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv`. If it prints a file, the worker reverts that file. A bot writes those files in that repo.
+- Changed: the lifecycle plan station keeps tests and the change that turns them green in one pull request, or orders the beads. It does not plan a pull request with red required checks by design (claude-factory-9hzj).
 - Changed: `src/worker-system.md` has a new Bash rule (claude-factory-kwnt). Before a loop, a shell function, a `VAR=value` prefix, a variable command word or a `cd` chain, a worker writes the steps to `.scratch/<name>.sh` and runs that file. The worker hook denies those forms inline.
 
 ## 0.15.0 (2026-10-24)

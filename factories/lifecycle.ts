@@ -132,7 +132,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
 5. Rollout and rollback: flags, migration order, how to undo it.
 6. Observability: the metrics, logs or checks that prove it works in production; the ship run's soak reads them.
-7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary.
+7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary. If this bead's tests stay red until the change of another bead lands, plan both in one pull request (the tests commit first, then the change), or make this bead depend on the other bead. Do not plan a pull request that ships with red required checks by design.
 For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned. For a change to the factory itself (.factory/), the acceptance criteria say what future runs will do differently and how that shows in their journals.
 Commit nothing but an architecture decision record, and only where the repo keeps them.
 When the plan cannot go on without a person's decision, put the question on the bead and report decision, with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.`,

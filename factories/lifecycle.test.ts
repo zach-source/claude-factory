@@ -680,6 +680,17 @@ test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle s
   )
 })
 
+test('plan keeps tests and the change they wait on in one PR, or orders the beads (claude-factory-9hzj AC1)', () => {
+  const prompt = (lifecycle as Factory).nodes.plan!.prompt ?? ''
+  for (const t of [
+    'plan both in one pull request',
+    'the tests commit first, then the change',
+    'make this bead depend on the other bead',
+    'red required checks by design',
+  ])
+    expect(prompt).toContain(t)
+})
+
 // claude-factory-pt4r: a bead whose ACs are all live reads goes to decision on a VM, not to plan.
 test('triage sends live-read-only beads on a VM to decision (pt4r AC1/AC2)', () => {
   const p = lifecycle.nodes.triage!.prompt
