@@ -31,6 +31,7 @@ minor release may change the factory format, the CLI or the run state.
 - Changed: `src/worker-system.md` has a new Bash rule (claude-factory-kwnt). Before a loop, a shell function, a `VAR=value` prefix, a variable command word or a `cd` chain, a worker writes the steps to `.scratch/<name>.sh` and runs that file. The worker hook denies those forms inline.
 - Fix: the home guard folds case, so forms that APFS treats as equal now deny (claude-factory-99jt). Examples are `/users/acme` and a long-s form of `/Users`. The guard also reads an upper-case delete word (`MV`, `RM`).
 - Fix: the memory topic list in a brief clips each topic line to 100 characters. The list was about 30 KB (claude-factory-z9m4).
+- Fix: the worker hook now guards the Write, Edit, MultiEdit and NotebookEdit tools. It denies a path with a `.git` or `shell-snapshots` component, and the global git config (claude-factory-g4du).
 
 ## 0.15.0 (2026-10-24)
 
