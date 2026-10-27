@@ -129,6 +129,8 @@ export type Node = {
    * laptop (its kubectl, its network, production) stays on herdr when the rig sends its workers to VMs
    */
   runner?: string
+  /** skills this station's worker gets, on top of the factory's and the rig's (cli.ts workerSkills) */
+  skills?: string[]
   /**
    * No worker starts here while the arriving report names a pull or merge request. The run parks
    * instead, the same way a worker's own blocked report does. The watch wakes it on a merge, a close, or
@@ -177,6 +179,8 @@ export type Factory = {
   maxContextK?: number
   /** house rules every worker's brief carries */
   rules?: string
+  /** skills every station's worker gets (names in harness.ts VM_PLUGINS); absent: `asd-ste100` */
+  skills?: string[]
   nodes: Record<string, Node>
 }
 

@@ -54,6 +54,7 @@ import {
   type Ev,
   type Factory,
   type Mail,
+  type Node,
 } from './machine'
 import { ghNotes, watchDecide, type Seen, type WatchedPr } from './watch'
 import {
@@ -116,6 +117,7 @@ import {
   readMcp,
   sq,
   VM_PLUGIN_DIRS,
+  VM_PLUGINS,
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
@@ -955,8 +957,36 @@ function freshBase(repo: string) {
   const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
   return isBehind ? git(repo, 'rev-parse', ref) : head
 }
+/** the message for a skill the worker image does not have, or none */
+const unknownSkill = (skill: string, where: string) =>
+  Object.hasOwn(VM_PLUGINS, skill)
+    ? []
+    : [`${where}: skill "${skill}" is not ${Object.keys(VM_PLUGINS).join(' or ')}`]
+
+/**
+ * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
+ * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
+ * A rig name outside the worker image refuses here, because a person edits rigs.json by hand.
+ * `loadFactory` checks the other two layers (claude-factory-qda).
+ */
+export function workerSkills(
+  def: Pick<Factory, 'skills'>,
+  node: Pick<Node, 'skills'>,
+  rig?: { skills?: string[] },
+) {
+  const bad = (rig?.skills ?? []).flatMap(s => unknownSkill(s, 'rig'))
+  if (bad.length) fail(bad.join('; '))
+  return [
+    ...new Set([...(def.skills ?? ['asd-ste100']), ...(rig?.skills ?? []), ...(node.skills ?? [])]),
+  ].sort()
+}
 export const loadFactory = async (file: string): Promise<Factory> => {
   const def = validate(await readFactory(file))
+  const badSkills = [
+    ...(def.skills ?? []).flatMap(s => unknownSkill(s, `factory ${def.name}`)),
+    ...Object.entries(def.nodes).flatMap(([id, n]) => (n.skills ?? []).flatMap(s => unknownSkill(s, id))),
+  ]
+  if (badSkills.length) throw new Error(`factory ${def.name}:\n  ${badSkills.join('\n  ')}`)
   const unknown = Object.entries(def.nodes).filter(([, n]) => n.runner && !(n.runner in runners))
   if (unknown.length)
     throw new Error(
@@ -5666,6 +5696,8 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
+  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
+  skills?: string[]
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
   /** MCP servers every worker here loads, a file in Claude's --mcp-config shape ({ mcpServers }) */

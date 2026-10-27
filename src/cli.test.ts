@@ -51,6 +51,7 @@ import {
   piWorker,
   userPluginDirs,
   workerSettings,
+  workerSkills,
   WORKER_TOOLS,
   commitIdentity,
   room,
@@ -268,6 +269,43 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
   writeFileSync(join(dir, 'a.json'), JSON.stringify({ extends: 'b.json' }))
   writeFileSync(join(dir, 'b.json'), JSON.stringify({ extends: 'a.json' }))
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
+})
+
+test('a skills list names only skills the worker image has: factory and station layers refuse the rest', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-'))
+  const tiny = (extra: object) =>
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
+      ...extra,
+    })
+  writeFileSync(join(dir, 'ok.json'), tiny({ skills: ['asd-ste100'] }))
+  expect((await loadFactory(join(dir, 'ok.json'))).skills).toEqual(['asd-ste100'])
+  writeFileSync(join(dir, 'bad.json'), tiny({ skills: ['nope'] }))
+  await expect(loadFactory(join(dir, 'bad.json'))).rejects.toThrow('skill "nope" is not asd-ste100')
+  for (const bad of ['', 'ASD-STE100']) {
+    writeFileSync(join(dir, 'row.json'), tiny({ skills: [bad] }))
+    await expect(loadFactory(join(dir, 'row.json'))).rejects.toThrow(`skill "${bad}"`)
+  }
+  writeFileSync(
+    join(dir, 'node.json'),
+    tiny({ nodes: { work: { prompt: 'x', skills: ['nope'], next: { ok: 'done' } } } }),
+  )
+  await expect(loadFactory(join(dir, 'node.json'))).rejects.toThrow('work: skill "nope" is not asd-ste100')
+})
+
+test('workerSkills is the sorted union of the factory default, the rig and the station', () => {
+  const node = (skills?: string[]) => ({ prompt: 'x', next: {}, skills })
+  const def = (skills?: string[]) => ({ name: 'f', start: 'a', nodes: {}, skills })
+  expect(workerSkills(def(), node(), undefined)).toEqual(['asd-ste100'])
+  expect(workerSkills(def([]), node(), undefined)).toEqual([])
+  expect(workerSkills(def([]), node(['asd-ste100']), undefined)).toEqual(['asd-ste100'])
+  expect(workerSkills(def([]), node(), { skills: ['asd-ste100'] })).toEqual(['asd-ste100'])
+  expect(workerSkills(def(['asd-ste100']), node(['asd-ste100']), { skills: ['asd-ste100'] })).toEqual([
+    'asd-ste100',
+  ])
+  expect(() => workerSkills(def([]), node(), { skills: ['nope'] })).toThrow('skill "nope" is not asd-ste100')
 })
 
 test("a PR's close label closes it, its conflict or rework label reworks it unless it comes from a fork", () => {
