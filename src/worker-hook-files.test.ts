@@ -22,7 +22,8 @@ beforeAll(() => {
 })
 afterAll(() => rmSync(base, { recursive: true }))
 
-const deny = (p: unknown, cwd = '/nowhere', e = env()) => expect(fileWriteReason(p, cwd, e)).toBe(FILE_WRITE_REASON)
+const deny = (p: unknown, cwd = '/nowhere', e = env()) =>
+  expect(fileWriteReason(p, cwd, e)).toBe(FILE_WRITE_REASON)
 const allow = (p: unknown, cwd = '/nowhere', e = env()) => expect(fileWriteReason(p, cwd, e)).toBeUndefined()
 
 test('AC1: a .git path component is denied at any depth, in any case', () => {
@@ -57,7 +58,7 @@ test('AC2: the global git config is denied', () => {
     '/nix/store/x/etc/gitconfig',
   ])
     deny(p)
-  deny(join(xdg, 'git/config'))
+  deny(join(xdg, 'git/ignore'))
   allow(join(xdg, 'other/config'))
   allow(join(root, 'vite.config.ts'))
   allow(join(root, '.config/nvim/init.lua'))
@@ -67,7 +68,7 @@ test('AC2: the global git config is denied', () => {
 })
 
 test('AC2: XDG_CONFIG_HOME is read from env, so an unset value denies nothing extra', () => {
-  allow(join(xdg, 'git/config'), '/nowhere', { home, xdg: undefined })
+  allow(join(xdg, 'git/ignore'), '/nowhere', { home, xdg: undefined })
 })
 
 test('AC3: the shell-snapshots folder is denied', () => {
@@ -100,7 +101,13 @@ const run = async (input: object) => {
   const p = Bun.spawn(['bun', join(import.meta.dir, 'worker-hook.ts')], {
     stdin: new Blob([JSON.stringify(input)]),
     stdout: 'pipe',
-    env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: cfg, CLAUDE_PROJECT_DIR: root, XDG_CONFIG_HOME: '' },
+    env: {
+      ...process.env,
+      HOME: home,
+      CLAUDE_CONFIG_DIR: cfg,
+      CLAUDE_PROJECT_DIR: root,
+      XDG_CONFIG_HOME: '',
+    },
   })
   return (await new Response(p.stdout).text()).trim()
 }
