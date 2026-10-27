@@ -237,6 +237,7 @@ export type Poll = {
 
 function ax(args: string[], stdin?: string, timeout = 30_000) {
   const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
+    env: process.env, // the ax CLI sends AX_AUTH_TOKEN over the loopback tunnel
     stdin: stdin ? Buffer.from(stdin) : undefined,
     timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
   })
@@ -470,6 +471,9 @@ export function egressPolicy(
   }
 }
 
+/** a vault key that only the manager task may use: it gives full AX control, or write access to the backup repo */
+const MANAGER_ONLY_KEY = /"credentialUri":"[^"]*\/(AX_AUTH|GITHUB_BASIC_MANAGER)"/
+
 /**
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
  * One try: the tick that launched the task does not wait, the next ones try again.
@@ -485,6 +489,10 @@ export function createPolicy(
   const policy = JSON.stringify(
     egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer),
   )
+  // the manager and every worker share one vault: a worker policy must not name a manager-only key
+  const key = MANAGER_ONLY_KEY.exec(policy)?.[1]
+  if (key && task !== managerTask())
+    throw new Error(`egress policy for ${task} names manager-only vault key ${key}`)
   if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
@@ -689,6 +697,9 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
     ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
+    // the gateway adds the real token (managerEgress). The VM holds a placeholder. The CLI sends a token only over https
+    ...(env.FACTORY_AX_VAULT &&
+      env[MANAGER_AX_SERVER]?.startsWith('https://') && { AX_AUTH_TOKEN: 'placeholder' }),
     ...(env[MANAGER_BROKER] && {
       FACTORY_POLICY_BROKER: env[MANAGER_BROKER],
       // the swap runs in the broker pod, where the op writer token is; the VM holds none
@@ -761,10 +772,22 @@ export function managerEgress(
   env: Record<string, string | undefined> = process.env,
   rigs: { beadsRemote?: { url: string }; linear?: unknown; egress?: Egress[] }[] = [],
 ): Egress[] {
-  const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap(k => {
+  const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap((k): Egress[] => {
     try {
       const u = env[k] ? new URL(env[k]!) : null
-      return u?.hostname ? [{ hosts: [u.hostname], port: Number(u.port) || 80, http: true }] : []
+      if (!u?.hostname) return []
+      // the AX server's https rule has the gateway add the caller token (vault key AX_AUTH)
+      if (k === MANAGER_AX_SERVER && u.protocol === 'https:')
+        return [
+          {
+            hosts: [u.hostname],
+            port: Number(u.port) || 443,
+            key: 'AX_AUTH',
+            header: 'Authorization',
+            prefix: 'Bearer ',
+          },
+        ]
+      return [{ hosts: [u.hostname], port: Number(u.port) || 80, http: true }]
     } catch {
       return []
     }
