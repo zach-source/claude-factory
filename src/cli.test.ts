@@ -51,6 +51,7 @@ import {
   piWorker,
   userPluginDirs,
   workerSettings,
+  workerSkills,
   WORKER_TOOLS,
   commitIdentity,
   room,
@@ -270,6 +271,43 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
 })
 
+test('a skills list names only skills the worker image has: factory and station layers refuse the rest', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-'))
+  const tiny = (extra: object) =>
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
+      ...extra,
+    })
+  writeFileSync(join(dir, 'ok.json'), tiny({ skills: ['asd-ste100'] }))
+  expect((await loadFactory(join(dir, 'ok.json'))).skills).toEqual(['asd-ste100'])
+  writeFileSync(join(dir, 'bad.json'), tiny({ skills: ['nope'] }))
+  await expect(loadFactory(join(dir, 'bad.json'))).rejects.toThrow('skill "nope" is not asd-ste100')
+  for (const bad of ['', 'ASD-STE100']) {
+    writeFileSync(join(dir, 'row.json'), tiny({ skills: [bad] }))
+    await expect(loadFactory(join(dir, 'row.json'))).rejects.toThrow(`skill "${bad}"`)
+  }
+  writeFileSync(
+    join(dir, 'node.json'),
+    tiny({ nodes: { work: { prompt: 'x', skills: ['nope'], next: { ok: 'done' } } } }),
+  )
+  await expect(loadFactory(join(dir, 'node.json'))).rejects.toThrow('work: skill "nope" is not asd-ste100')
+})
+
+test('workerSkills is the sorted union of the factory default, the rig and the station', () => {
+  const node = (skills?: string[]) => ({ prompt: 'x', next: {}, skills })
+  const def = (skills?: string[]) => ({ name: 'f', start: 'a', nodes: {}, skills })
+  expect(workerSkills(def(), node(), undefined)).toEqual(['asd-ste100'])
+  expect(workerSkills(def([]), node(), undefined)).toEqual([])
+  expect(workerSkills(def([]), node(['asd-ste100']), undefined)).toEqual(['asd-ste100'])
+  expect(workerSkills(def([]), node(), { skills: ['asd-ste100'] })).toEqual(['asd-ste100'])
+  expect(workerSkills(def(['asd-ste100']), node(['asd-ste100']), { skills: ['asd-ste100'] })).toEqual([
+    'asd-ste100',
+  ])
+  expect(() => workerSkills(def([]), node(), { skills: ['nope'] })).toThrow('skill "nope" is not asd-ste100')
+})
+
 test("a PR's close label closes it, its conflict or rework label reworks it unless it comes from a fork", () => {
   const pr = (labels: string[], isCrossRepository = false) => ({
     number: 7,
@@ -455,8 +493,13 @@ test('a worker keeps asd-ste100 and the plugins the factory names, and no other'
   const user = {
     enabledPlugins: { 'asd-ste100@m': true, 'ponytail@ponytail': true, 'other@x': true, 'ponytailx@y': true },
   }
-  expect(Object.keys(workerSettings(user, 200).enabledPlugins!)).toEqual(['asd-ste100@m'])
-  const kept = workerSettings(user, 200, undefined, undefined, undefined, ['ponytail']).enabledPlugins!
+  const ste: [undefined, undefined, undefined, string[]] = [undefined, undefined, undefined, ['asd-ste100']]
+  expect(Object.keys(workerSettings(user, 200, ...ste).enabledPlugins!)).toEqual(['asd-ste100@m'])
+  expect(workerSettings(user, 200).enabledPlugins).toBeUndefined()
+  const kept = workerSettings(user, 200, undefined, undefined, undefined, [
+    'asd-ste100',
+    'ponytail',
+  ]).enabledPlugins!
   expect(Object.keys(kept).sort()).toEqual(['asd-ste100@m', 'ponytail@ponytail'])
   const off = { enabledPlugins: { 'ponytail@ponytail': false } }
   expect(
@@ -480,6 +523,47 @@ test("workerFlags writes a rig's own worker-settings-<rig>.json when it has pers
   const webSettings = JSON.parse(readFileSync(join(home, 'worker-settings.json'), 'utf8'))
   expect(acmeSettings.hooks.PreToolUse.at(-1).hooks[0].command).toContain("--person-only-contexts 'acme-ctx'")
   expect(webSettings.hooks.PreToolUse.at(-1).hooks[0].command).not.toContain('--person-only-contexts')
+})
+
+test('workerFlags writes one settings file for each skill set, and warns when a listed skill is off', () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-skills-'))
+  const claude = mkdtempSync(join(tmpdir(), 'claude-cfg-'))
+  const wasDir = process.env.CLAUDE_CONFIG_DIR
+  const warn = console.warn
+  const warned: string[] = []
+  console.warn = (m: string) => void warned.push(m)
+  try {
+    process.env.CLAUDE_CONFIG_DIR = claude
+    writeFileSync(
+      join(claude, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'asd-ste100@m': true, 'acme-other@m': true } }),
+    )
+    const def = { maxContextK: 200 }
+    const none = workerFlags(def, { name: 'web' }, home, [], 'verify')
+    const ste = workerFlags(def, { name: 'web' }, home, ['asd-ste100'], 'plan')
+    expect(none).toContain(join(home, 'worker-settings.json'))
+    expect(ste).toContain(join(home, 'worker-settings--asd-ste100.json'))
+    const read = (f: string) => JSON.parse(readFileSync(join(home, f), 'utf8'))
+    expect(read('worker-settings.json').enabledPlugins).toBeUndefined()
+    expect(read('worker-settings--asd-ste100.json').enabledPlugins).toEqual({ 'asd-ste100@m': true })
+    const acme = { name: 'acme', personOnlyContexts: ['acme-ctx'] }
+    expect(workerFlags(def, acme, home, ['asd-ste100'], 'plan')).toContain(
+      join(home, 'worker-settings-acme--asd-ste100.json'),
+    )
+    expect(warned).toEqual([])
+    writeFileSync(
+      join(claude, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'asd-ste100@m': false } }),
+    )
+    workerFlags(def, { name: 'web' }, home, ['asd-ste100'], 'plan')
+    expect(warned).toHaveLength(1)
+    expect(warned[0]).toContain('asd-ste100')
+    expect(warned[0]).toContain('plan')
+  } finally {
+    console.warn = warn
+    if (wasDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = wasDir
+  }
 })
 
 // claude-factory-25z.2: a rig's personOnlyContexts reaches the deny hook's own argv, so it can refuse a
@@ -549,13 +633,18 @@ test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it 
       'warp@claude-code-warp': true,
     },
   }
-  const w = workerSettings(user, 200)
+  const w = workerSettings(user, 200, undefined, undefined, undefined, ['asd-ste100'])
   expect(w.enabledPlugins).toEqual({ 'asd-ste100@agent-marketplace': true })
   expect(w.disableBundledSkills).toBe(true)
   expect(w.env).toMatchObject({ STE_VOCAB_PATH: '/v', STE_JEV_URL: 'https://j' })
   // no enabledPlugins key at all when the user has none, or asd-ste100 is off
   expect('enabledPlugins' in workerSettings({ enabledPlugins: { p: true } }, 200)).toBe(false)
-  expect('enabledPlugins' in workerSettings({ enabledPlugins: { 'asd-ste100@m': false } }, 200)).toBe(false)
+  expect(
+    'enabledPlugins' in
+      workerSettings({ enabledPlugins: { 'asd-ste100@m': false } }, 200, undefined, undefined, undefined, [
+        'asd-ste100',
+      ]),
+  ).toBe(false)
   expect('enabledPlugins' in workerSettings({}, 200)).toBe(false)
 })
 
@@ -785,12 +874,52 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text.length).toBeLessThan(4800)
 })
 
-// mv9: tells a worker to write in ASD-STE100 and to load the plugin's skill before long text, without
-// copying the plugin's own rules into this file (that text would drift from the plugin)
-test('the worker system prompt tells a worker to write in ASD-STE100 and load the asd-ste100 skill first', () => {
+// mv9, claude-factory-qda: the brief of a station with asd-ste100 tells the worker to write in ASD-STE100 and to
+// load the plugin's skill before long text, without copying the plugin's own rules (that text would drift).
+// The worker system prompt no longer says it: a station without the skill must not read it
+test('the brief names the station skills: asd-ste100 tells a worker to write in ASD-STE100, an empty set adds nothing', () => {
+  const def = (skills?: string[]) => ({
+    name: 'f',
+    start: 'implement',
+    skills,
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  })
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-qda-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-qda-test',
+    branch: 'b',
+  }
+  const withSte = brief(run, def(), 'implement', c, [])
+  expect(withSte).toContain('## Skills')
+  expect(withSte).toContain('ASD-STE100')
+  expect(withSte).toContain('asd-ste100 skill')
+  const none = brief(run, def([]), 'implement', c, [])
+  expect(none).not.toContain('## Skills')
+  expect(none).not.toContain('asd-ste100 skill')
+  expect(none).not.toContain('Write every text a person reads')
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
-  expect(text).toContain('ASD-STE100')
-  expect(text).toContain('asd-ste100 skill')
+  expect(text).not.toContain('asd-ste100')
   expect(text.length).toBeLessThan(4800)
 })
 
@@ -2059,6 +2188,7 @@ test('userPluginDirs finds an on worker plugin at its installPath or in its dire
   )
   expect(userPluginDirs(['pony', 'ste', 'off'], c)).toEqual([cached, join(market, 'claude', 'ste')])
   expect(userPluginDirs(['pony'], join(c, 'none'))).toEqual([])
+  expect(userPluginDirs([], c)).toEqual([]) // a station with no skills gets no plugin dir
 })
 
 // claude-factory-hg9o: a pi worker gets the worker rules a Claude worker gets, and the plugins' skills

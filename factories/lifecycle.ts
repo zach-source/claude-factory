@@ -51,7 +51,7 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
 - Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production. Nobody pushes the default branch directly; a rollback that reverts code opens a pull request for a person to merge instead. Nobody force-pushes.
 - Production is read-only for every station but deploy and rollback.
-- Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when the bead's description, a person's own comment on it, or a [factory mail] from the manager says the person approved that exact step; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
+- Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step. The bead's description records no author, so it never counts as approval; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
 - implement and quick open a pull request only as a draft (\`gh pr create --draft\`) and never run \`gh pr ready\`. Only an approving station (review, security and check, on approve) or ship release marks it ready. Why: the owner merges a ready green pull request within minutes, before verify and review.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, pull request, deploy state) and never repeat an external action that already happened.
@@ -92,6 +92,8 @@ export default {
   backoffSec: 60,
   maxSteps: 24,
   rules,
+  // a station gets asd-ste100 only when it writes text a person reads (claude-factory-qda)
+  skills: [],
   nodes: {
     // ── intake ───────────────────────────────────────────────────────────────
     triage: {
@@ -123,6 +125,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 
     // ── shaping: what to build, measured or pinned first ─────────────────────
     plan: {
+      skills: ['asd-ste100'],
       agent: OPUS,
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
@@ -157,6 +160,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
 
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
+      skills: ['asd-ste100'],
       split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
@@ -186,6 +190,7 @@ Report green with the evidence, or red with a numbered list of every failure, th
       next: { green: 'review', red: 'implement' },
     },
     review: {
+      skills: ['asd-ste100'],
       agent: OPUS,
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
@@ -199,6 +204,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       next: { approve: { to: 'done', ship: true }, changes: 'implement', security: 'security' },
     },
     security: {
+      skills: ['asd-ste100'],
       agent: FABLE,
       split: { agent: CODEX_SECURITY, share: 'codex_security_share' },
       timeoutMin: 45,
@@ -219,6 +225,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
 
     // ── the small route: a tiny, docs-only or test-only change skips plan and a separate review ──────
     quick: {
+      skills: ['asd-ste100'],
       timeoutMin: 60,
       prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. Merge origin/main, run the formatter and the tests of what you touched, commit.
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
@@ -228,6 +235,7 @@ If the work proves bigger than small (more files, a security-sensitive surface, 
       next: { ready: 'check', full: 'plan', abandon: 'done' },
     },
     check: {
+      skills: ['asd-ste100'],
       agent: OPUS,
       timeoutMin: 60,
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
@@ -242,6 +250,7 @@ Report approve; or changes with one numbered list of every failure and finding, 
 
     // ── undo it: a rollback, from an incident. Release, deploy and soak live in factories/ship.ts ──
     rollback: {
+      skills: ['asd-ste100'],
       runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
@@ -252,6 +261,7 @@ Report recovered with what you did, the evidence of recovery, the revert pull re
 
     // ── incidents ────────────────────────────────────────────────────────────
     incident: {
+      skills: ['asd-ste100'],
       runner: LAPTOP,
       agent: OPUS,
       timeoutMin: 30,

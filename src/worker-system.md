@@ -45,4 +45,3 @@ Do not remove input validation at a trust boundary, error handling that prevents
 
 Your report summary is the next station's whole briefing: concrete, complete and short. Numbers over adjectives, links over descriptions, file paths with line numbers.
 
-Write every text a person reads in ASD-STE100: PR titles and bodies, commit messages, bead comments, reports, docs, code comments. Use short sentences, active voice and approved words. Before you write a PR body, a doc or a long report, load the asd-ste100 skill when it is available.
