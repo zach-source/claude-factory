@@ -116,7 +116,7 @@ import {
   piFlags,
   readMcp,
   sq,
-  VM_PLUGIN_DIRS,
+  VM_PLUGINS,
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
@@ -956,8 +956,36 @@ function freshBase(repo: string) {
   const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
   return isBehind ? git(repo, 'rev-parse', ref) : head
 }
+/** the message for a skill the worker image does not have, or none */
+const unknownSkill = (skill: string, where: string) =>
+  Object.hasOwn(VM_PLUGINS, skill)
+    ? []
+    : [`${where}: skill "${skill}" is not ${Object.keys(VM_PLUGINS).join(' or ')}`]
+
+/**
+ * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
+ * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
+ * A rig name outside the worker image refuses here, because a person edits rigs.json by hand.
+ * `loadFactory` checks the other two layers (claude-factory-qda).
+ */
+export function workerSkills(
+  def: { skills?: string[] },
+  node: { skills?: string[] },
+  rig?: { skills?: string[] },
+) {
+  const bad = (rig?.skills ?? []).flatMap(s => unknownSkill(s, 'rig'))
+  if (bad.length) fail(bad.join('; '))
+  return [
+    ...new Set([...(def.skills ?? ['asd-ste100']), ...(rig?.skills ?? []), ...(node.skills ?? [])]),
+  ].sort()
+}
 export const loadFactory = async (file: string): Promise<Factory> => {
   const def = validate(await readFactory(file))
+  const badSkills = [
+    ...(def.skills ?? []).flatMap(s => unknownSkill(s, `factory ${def.name}`)),
+    ...Object.entries(def.nodes).flatMap(([id, n]) => (n.skills ?? []).flatMap(s => unknownSkill(s, id))),
+  ]
+  if (badSkills.length) throw new Error(`factory ${def.name}:\n  ${badSkills.join('\n  ')}`)
   const unknown = Object.entries(def.nodes).filter(([, n]) => n.runner && !(n.runner in runners))
   if (unknown.length)
     throw new Error(
@@ -1048,6 +1076,16 @@ export function ruleLines(
   ]
 }
 
+/** what a station's skills are for, by name (a name needs a line here; workerSkills accepts only image plugins) */
+const SKILL_USE: Record<string, string> = {
+  'asd-ste100':
+    'Write every text a person reads in ASD-STE100: PR titles and bodies, commit messages, bead comments, reports, docs, code comments. Use short sentences, active voice and approved words. Before you write a PR body, a doc or a long report, load the asd-ste100 skill.',
+}
+const skillLines = (skills: string[]) =>
+  skills.length
+    ? ['', '## Skills', ...skills.map(s => `- ${s}: ${SKILL_USE[s] ?? 'load it when it applies'}`)]
+    : []
+
 export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[], notes = '') {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
@@ -1068,6 +1106,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       personOnlyContexts(rigOf(run.repo)),
       !!mergeAuthority(rigOf(run.repo)),
     ),
+    ...skillLines(workerSkills(def, n, rigOf(run.repo))),
     '',
     ...remembered(run, node, notes),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
@@ -1415,6 +1454,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
+  const skills = workerSkills(def, def.nodes[node]!, rig)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   axCodexRefused(agent)
   const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
@@ -1499,7 +1539,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     provider: ax.providerOf(agent),
     claudeFlags:
       harness === 'claude'
-        ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig), skills)
         : undefined,
     codexHome:
       harness === 'codex'
@@ -1519,6 +1559,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       ...rig?.env,
       FACTORY_FROM: node,
       FACTORY_DEF_NAME: def.name,
+      FACTORY_SKILLS: skills.join(','),
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
       ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
@@ -1585,7 +1626,7 @@ const denyHook = (bun: string, file: string, contexts?: string[], branches?: str
  * It keeps the same tools. It does not use the laptop's own settings or project-level mods.
  *
  * It leaves out the laptop's own items: the user's hooks, the user's env, the plugin dirs, the global `CLAUDE.md`.
- * It gets the image's plugins (`asd-ste100`) by `--plugin-dir` instead of the person's (claude-factory-fxu).
+ * It gets the station's skills from the image's plugins by `--plugin-dir` instead of the person's (claude-factory-fxu, claude-factory-qda).
  * `disableBundledSkills` turns off the bundled-skill list of `Skill`. No skill in the VM earns that cost yet.
  *
  * It gets one hook. The hook is the same deny-rm PreToolUse hook that a laptop worker gets (claude-factory-cr6, claude-factory-99d).
@@ -1596,6 +1637,7 @@ export function vmClaudeFlags(
   contexts?: string[],
   branches?: string[],
   merge?: string,
+  skills: string[] = Object.keys(VM_PLUGINS),
 ) {
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
@@ -1618,7 +1660,7 @@ export function vmClaudeFlags(
     ...['--settings', JSON.stringify(settings)],
     ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
     // the image's plugins, as a laptop worker gets the person's (constitution I, claude-factory-fxu)
-    ...VM_PLUGIN_DIRS.flatMap(d => ['--plugin-dir', d]),
+    ...skills.flatMap(k => ['--plugin-dir', VM_PLUGINS[k]!]),
   ]
 }
 
@@ -1993,8 +2035,8 @@ export const HAIKU = 'claude-haiku-5-5'
  * It keeps the user's hooks (secret guards, herdr's session hook) and env, and skips every permission prompt.
  * It compacts well past the handoff limit too, only as a backstop.
  * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
- * One plugin stays in: `asd-ste100`, so the worker still writes in ASD-STE100; `disableBundledSkills` keeps its skill alone.
- * `keep` adds more plugins by name (the enabledPlugins key before `@`): FACTORY_WORKER_PLUGINS, comma-separated.
+ * Only the plugins in `names` stay in (the enabledPlugins key before `@`): the station's skills, and the person's FACTORY_WORKER_PLUGINS.
+ * `disableBundledSkills` keeps their skills alone.
  * `hooks.PreToolUse` keeps the user's own entries first and adds the deny-rm hook last (claude-factory-cr6, claude-factory-99d).
  */
 export const workerSettings = (
@@ -2007,10 +2049,9 @@ export const workerSettings = (
   globalClaudeMd = join(homedir(), '.claude', 'CLAUDE.md'),
   personOnly?: string[],
   branches?: string[],
-  keep: string[] = [],
+  names: string[] = [],
   merge?: string,
 ) => {
-  const names = workerPluginNames(keep)
   const ste = Object.entries(user.enabledPlugins ?? {}).filter(
     ([k, v]) => v && names.includes(k.split('@')[0]!),
   )
@@ -2070,13 +2111,14 @@ export const commitIdentity = (home: string) => {
       : '',
   }
 }
-/** the plugins a worker keeps (enabledPlugins key names before the @): asd-ste100 and FACTORY_WORKER_PLUGINS */
-const workerPluginNames = (
-  keep = (process.env.FACTORY_WORKER_PLUGINS ?? '')
+/** the plugins a worker keeps (enabledPlugins key names before the @): the station's skills and FACTORY_WORKER_PLUGINS */
+const workerPluginNames = (skills: string[] = ['asd-ste100']) => [
+  ...skills,
+  ...(process.env.FACTORY_WORKER_PLUGINS ?? '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
-) => ['asd-ste100', ...keep]
+]
 
 /**
  * the dirs of the person's worker plugins that are on, so a codex or pi worker gets the skills a Claude worker
@@ -2136,6 +2178,8 @@ export function workerFlags(
   def: Pick<Factory, 'maxContextK'>,
   rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
   home = HOME,
+  skills: string[] = [],
+  station = '',
 ) {
   if (process.env.FACTORY_LEAN === '0') return ` --settings '${JSON.stringify(withoutFleet())}'`
   let user = {}
@@ -2147,14 +2191,29 @@ export function workerFlags(
   const contexts = personOnlyContexts(rig)
   const branches = protectedBranches(rig)
   const merge = mergeAuthority(rig)
+  // one file for each skill set, so two stations of a rig never write the same file with different plugins
+  const set = skills.length ? `--${skills.join('+')}` : ''
   const file = join(
     home,
     contexts?.length || branches?.length || merge
-      ? `worker-settings-${rig!.name}.json`
-      : 'worker-settings.json',
+      ? `worker-settings-${rig!.name}${set}.json`
+      : `worker-settings${set}.json`,
   )
-  const keep = workerPluginNames().slice(1)
-  const settings = workerSettings(user, def.maxContextK ?? 200, undefined, contexts, branches, keep, merge)
+  const on = (user as { enabledPlugins?: Record<string, boolean> }).enabledPlugins ?? {}
+  for (const k of skills)
+    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
+      console.warn(
+        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
+      )
+  const settings = workerSettings(
+    user,
+    def.maxContextK ?? 200,
+    undefined,
+    contexts,
+    branches,
+    workerPluginNames(skills),
+    merge,
+  )
   const id = commitIdentity(home)
   writeJson(file, { ...settings, env: { ...settings.env, ...id.env } })
   const prompt = join(home, 'worker-system.md')
@@ -2301,12 +2360,16 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const h = harnessOf(agent)
+  const skills = workerSkills(def, def.nodes[node]!, rig)
   const setup =
     h === 'codex'
-      ? codexWorker(run, def, node, agent, rig)
+      ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)) })
       : h === 'pi'
-        ? piWorker()
-        : { extra: workerFlags(def, rig), env: { FACTORY_DEADLINE: deadlineOf(def, node, c) } }
+        ? piWorker(HOME, userPluginDirs(workerPluginNames(skills)))
+        : {
+            extra: workerFlags(def, rig, HOME, skills, node),
+            env: { FACTORY_DEADLINE: deadlineOf(def, node, c) },
+          }
   return command(agent, prompt, {
     session,
     ...setup,
@@ -5293,7 +5356,11 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
   // issue.
   // `LINEAR_SKEW_MS` moves the cutoff back from `lastGoodAt`. This covers clock drift between this
   // process and Linear's own clock, so the cutoff does not skip an issue for good (claude-factory-b6c.26).
-  const since = force || !prior?.lastGoodAt ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
+  // A changed routing config (team, projects, labels) also skips the cutoff: issues that now route
+  // here may be older than the cutoff (claude-factory-dvg).
+  const routing = JSON.stringify([rig.linear!.team, rig.linear!.projects ?? [], rig.linear!.labels ?? []])
+  const since =
+    force || !prior?.lastGoodAt || prior.routing !== routing ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
   let secrets: string[] = []
   try {
     const apiKey = await linearAuth(secrets, process.env, linearConnectCache)
@@ -5347,6 +5414,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
         ...(strip.unstripped.length && { unstripped: strip.unstripped }),
         ...(nextBaseline && { baseline: nextBaseline }),
         ...(prior?.lastGoodAt && { lastGoodAt: prior.lastGoodAt }), // a failed pull must not move this
+        ...(prior?.routing && { routing: prior.routing }), // keep the old one: the next pass still drops the cutoff
         ...(truncated && { truncated }),
       }
       return
@@ -5359,6 +5427,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
       updated: outcome.updated,
       stripped: strip.stripped,
       lastGoodAt: at,
+      routing,
       ...(strip.unstripped.length && { unstripped: strip.unstripped }),
       ...(nextBaseline && { baseline: nextBaseline }),
       ...(listErr && { error: redact(`label list after the pull: ${listErr}`, secrets) }),
@@ -5371,6 +5440,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
       ...(retry.length && { unstripped: retry }),
       ...(baseline && { baseline }), // nothing resolved this attempt: carry the open baseline forward
       ...(prior?.lastGoodAt && { lastGoodAt: prior.lastGoodAt }), // a failed attempt must not move this
+      ...(prior?.routing && { routing: prior.routing }),
     }
   }
 }
@@ -5667,6 +5737,8 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
+  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
+  skills?: string[]
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
   /** MCP servers every worker here loads, a file in Claude's --mcp-config shape ({ mcpServers }) */
@@ -5749,6 +5821,8 @@ export type LinearSyncState = {
    * `--force`, and a rig's first pass, read every routed issue regardless of this field.
    */
   lastGoodAt?: number
+  /** fingerprint of the rig's Linear team, projects and labels at the last good pull. A change drops the cutoff. */
+  routing?: string
   /** this pass's Linear issue listing stopped at the 50-page cap, so `unrouted` and the
    * `updatedAt` cutoff above may undercount the team's real issues (claude-factory-b6c.24) */
   truncated?: boolean

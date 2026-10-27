@@ -22,7 +22,7 @@ WORKDIR /ax
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /ax-cli ./cmd/ax
 
 # the plugins every VM worker gets (constitution I: the same skills on every backend and runner), from the public
-# marketplace at a pinned commit. harness.ts VM_PLUGIN_DIRS names where they land
+# marketplace at a pinned commit. harness.ts VM_PLUGINS names where they land
 FROM golang:1.27-bookworm AS plugins
 ARG MARKETPLACE_COMMIT=f044bf15bc1a7e02534d9a7c4a4b61ae461495d4
 RUN git clone https://github.com/zach-source/claude-marketplace /m && git -C /m checkout ${MARKETPLACE_COMMIT}
