@@ -60,6 +60,7 @@ export default {
   rules,
   nodes: {
     queue: {
+      runner: LAPTOP,
       timeoutMin: 75,
       prompt: `You own this rig's ship queue. Read it first: \`factory ship <rig>\` prints the open beads labeled ship, oldest handoff first, with the pull request, the run and the age of each. The first line is the next pull request to merge. Each bead's metadata holds ship_pr and ship_branch. Change nothing before you have read it all.
 1. Go through every queued pull request in merge order (the order of \`factory ship <rig>\`). Keep each one that is green and has no conflict with origin/main current: when its branch is behind, merge origin/main into it (a merge commit, pushed to the branch). Never rebase and never force-push. Resolve a conflict only when the fix is small and plain. A conflict is plain when every conflicted file is a gazelle-managed BUILD.bazel: take main's copy of each (\`git checkout origin/main -- <file>\`), run \`bazelisk run //:gazelle -- <dirs>\` for the directories of those files (use bazelisk, because the repo's .bazelversion can need a newer Bazel than the host bazel), build those directories, commit the merge and push it (a merge commit, no rebase, no force-push). Any other conflicted file keeps the rule above. Re-run the tests after any merge that changed something. Check each one against main and against the ones before it with \`git merge-tree\`. ${botFiles}
