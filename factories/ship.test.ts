@@ -194,3 +194,28 @@ test('queue resolves a BUILD.bazel-only conflict with gazelle and keeps it (debg
   expect(two).toMatch(/not (go back|send)/i)
   expect(two).toContain('station:implement')
 })
+
+const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"
+const BOT_TOKENS = [
+  'In the infra-blocks repo',
+  BOT_CMD,
+  'git checkout origin/main -- <file>',
+  'git rm --cached <file>',
+  'run the check again',
+  'separate commands',
+  'The pull request title is the changelog line',
+]
+const botText = (p: string) => p.slice(p.indexOf('In the infra-blocks repo'), p.indexOf('bumps VERSION.') + 'bumps VERSION.'.length)
+
+test('infra-blocks pre-push bot-file check is in exactly the ship queue and release, equal to lifecycle', () => {
+  const nodes = (ship as Factory).nodes
+  const holders = Object.entries(nodes)
+    .filter(([, n]) => (n.prompt ?? '').includes(BOT_CMD))
+    .map(([name]) => name)
+    .sort()
+  expect(holders).toEqual(['queue', 'release'])
+  for (const name of holders) for (const t of BOT_TOKENS) expect(nodes[name]!.prompt).toContain(t)
+  const want = botText((lifecycle as Factory).nodes.implement!.prompt!)
+  expect(want.length).toBeGreaterThan(100)
+  for (const name of holders) expect(botText(nodes[name]!.prompt!)).toBe(want)
+})

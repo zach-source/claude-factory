@@ -643,3 +643,24 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
   for (const node of ['plan', 'implement', 'quick', 'verify'])
     expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
 })
+
+const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"
+const BOT_TOKENS = [
+  'In the infra-blocks repo',
+  BOT_CMD,
+  'git checkout origin/main -- <file>',
+  'git rm --cached <file>',
+  'run the check again',
+  'separate commands',
+  'The pull request title is the changelog line',
+]
+
+test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle stations', () => {
+  const holders = Object.entries((lifecycle as Factory).nodes)
+    .filter(([, n]) => (n.prompt ?? '').includes(BOT_CMD))
+    .map(([name]) => name)
+    .sort()
+  expect(holders).toEqual(['implement', 'quick'])
+  for (const name of holders) for (const t of BOT_TOKENS) expect((lifecycle as Factory).nodes[name]!.prompt).toContain(t)
+  expect((lifecycle as Factory).nodes.implement!.prompt).toContain('Add no changelog entry and no version bump')
+})
