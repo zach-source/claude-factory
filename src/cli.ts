@@ -521,7 +521,7 @@ function loadSeen(
 
 /**
  * the factory command a VM worker's outbox line may run here, as its station: a report on its own attempt,
- * mail on its own run, memory add. null for anything else (decide, goto, start...): the VM's agent writes the
+ * mail on its own run, memory add and helped. null for anything else (decide, goto, start...): the VM's agent writes the
  * outbox, and it may be steered by what it read.
  */
 export function replayable(
@@ -532,9 +532,9 @@ export function replayable(
   const [cmd, id, seq] = argv
   if (cmd === 'report' && id === run && seq === String(side.seq)) return argv
   if (cmd === 'mail' && id === run) return argv
-  if (cmd === 'memory' && id === 'add') {
+  if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
-    return ['memory', 'add', ...rest, '--from', `${run}/${side.node}`]
+    return ['memory', id, ...rest, '--from', `${run}/${side.node}`]
   }
   return null
 }
@@ -733,7 +733,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     if (!p)
       ax.prompt(
         task,
-        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails and adds memory`,
+        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
       )
     else if (p.exitCode !== 0)
       ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
@@ -8454,12 +8454,16 @@ In a repo with .beads, every run works a bead: the one its goal names, or a new 
 const outboxCmd =
   import.meta.main &&
   !!process.env.FACTORY_OUTBOX &&
-  (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && args[0] === 'add'))
+  (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && (args[0] === 'add' || args[0] === 'helped')))
 // `--help`/`-h` and malformed args never reach the outbox: before this, `report --help` queued a fake report
 // indistinguishable from a real one (claude-factory-4x1)
 const outboxOk = outboxCmd ? worker.outboxUsage(cmd!, args) : null
 if (outboxOk === 'help')
-  console.log(worker.OUTBOX_USAGE[cmd === 'memory' ? 'memory' : cmd === 'mail' ? 'mail' : 'report'])
+  console.log(
+    worker.OUTBOX_USAGE[
+      cmd === 'memory' ? (args[0] === 'helped' ? 'helped' : 'memory') : cmd === 'mail' ? 'mail' : 'report'
+    ],
+  )
 else if (outboxOk) {
   console.error(outboxOk)
   process.exit(1)

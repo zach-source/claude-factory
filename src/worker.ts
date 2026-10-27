@@ -101,6 +101,7 @@ export const OUTBOX_USAGE = {
   mail: 'usage: factory mail <run> <node|manager> <text...>',
   memory:
     'usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]',
+  helped: 'usage: factory memory helped --from run/station <note path...>',
 }
 
 /**
@@ -127,6 +128,11 @@ export function outboxUsage(cmd: string, args: string[]): 'help' | string | null
     if (helpAt([args[1]])) return 'help'
     if (!args[1]) return OUTBOX_USAGE.memory
     return null
+  }
+  if (cmd === 'memory' && args[0] === 'helped') {
+    if (args.slice(1).some(a => a === '--help' || a === '-h')) return 'help'
+    const paths = args.slice(1).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
+    return paths.length ? null : OUTBOX_USAGE.helped
   }
   return null
 }

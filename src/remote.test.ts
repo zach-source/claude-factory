@@ -486,6 +486,45 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
 })
 
+test("a tick replays memory helped as the worker's station, and refuses a path outside the memory dir", () => {
+  launched('r20')
+  const memDir = join(home, 'memory')
+  mkdirSync(join(memDir, 'topic'), { recursive: true })
+  writeFileSync(join(memDir, 'topic', 'n.md'), '---\nsummary: s\n---\nbody\n')
+  const usage = join(memDir, '.usage.jsonl')
+  const line = (argv: string[]) => JSON.stringify({ argv, from: 'a', at: 1 })
+  cluster('Running', {
+    status: 'working',
+    lines: [line(['memory', 'helped', '--from', 'forged/x', 'topic/n.md'])],
+  })
+  factory(['tick'])
+  const rows = readFileSync(usage, 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ path: 'topic/n.md', helped: 1, by: 'r20/a' })
+  expect(called()).not.toContain('worker prompt')
+  factory(['tick']) // nothing replays twice
+  expect(readFileSync(usage, 'utf8').trim().split('\n')).toHaveLength(1)
+
+  rmSync(usage)
+  cluster('Running', {
+    status: 'working',
+    lines: [
+      line(['memory', 'helped', '../../etc/passwd']),
+      line(['memory', 'helped', '/etc/passwd']),
+      line(['memory', 'helped', 'topic/missing.md']),
+    ],
+  })
+  rmSync(join(home, 'runs', 'r20', 't.seen'))
+  factory(['tick'])
+  expect(existsSync(usage)).toBe(false)
+  expect(called().match(/worker prompt/g)).toHaveLength(3) // each refusal told to the worker
+  rmSync(join(home, 'runs', 'r20'), { recursive: true })
+  rmSync(memDir, { recursive: true })
+})
+
 test('a report appended after the worker deletes its already-replayed probes still replays (claude-factory-4x1)', () => {
   const seq = launched('r8')
   const probe1 = JSON.stringify({ argv: ['mail', 'r8', 'manager', 'probe one'], from: 'a', at: 1 })
@@ -1200,6 +1239,56 @@ test("Claude's trust dialog does not hold an AX rig's run: the VM runs the agent
   expect(row.agent).not.toBe('awaiting trust')
   expect(row.error).toContain('FACTORY_AX_IMAGE')
   rmSync(runDir, { recursive: true })
+})
+
+test('a replayed memory helped carries the run id in --from; other memory words are not replayable', () => {
+  const side = { node: 'plan', seq: 1 }
+  expect(replayable(['memory', 'helped', '--from', 'forged/x', 'p'], side, 'r1')).toEqual([
+    'memory',
+    'helped',
+    'p',
+    '--from',
+    'r1/plan',
+  ])
+  expect(replayable(['memory', 'helped', 'p', '--from'], side, 'r1')).toEqual([
+    'memory',
+    'helped',
+    'p',
+    '--from',
+    'r1/plan',
+  ])
+  for (const sub of ['search', 'compact', 'dream', 'confirmed'])
+    expect(replayable(['memory', sub, 'x'], side, 'r1')).toBeNull()
+})
+
+test('inside a VM, memory helped queues; help and no path queue nothing', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-helped.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  for (const args of [
+    ['memory', 'helped', '--help'],
+    ['memory', 'helped', '-h'],
+  ]) {
+    const r = factory(args, env)
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('usage: factory memory helped')
+  }
+  for (const args of [
+    ['memory', 'helped'],
+    ['memory', 'helped', '--from', 'r/a'],
+  ])
+    expect(factory(args, env).code).toBe(1)
+  expect(existsSync(outbox)).toBe(false)
+  const r = factory(['memory', 'helped', '--from', 'x', 'topic/n.md'], env)
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('queued for the factory')
+  expect(JSON.parse(readFileSync(outbox, 'utf8').trim()).argv).toEqual([
+    'memory',
+    'helped',
+    '--from',
+    'x',
+    'topic/n.md',
+  ])
 })
 
 test('a replayed memory add carries the run id in --from', () => {
