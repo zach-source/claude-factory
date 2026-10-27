@@ -7241,7 +7241,7 @@ async function watchPass() {
             'view',
             url,
             '--json',
-            'state,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments',
+            'state,isDraft,reviewDecision,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments',
           ],
           { cwd, timeout: 60_000 },
         )
@@ -7250,6 +7250,8 @@ async function watchPass() {
           v = {
             url,
             state: j.state,
+            isDraft: typeof j.isDraft === 'boolean' ? j.isDraft : undefined,
+            reviewDecision: typeof j.reviewDecision === 'string' ? j.reviewDecision : undefined,
             updatedAt: j.updatedAt,
             headRefOid: j.headRefOid,
             mergedAt: j.mergedAt,
@@ -7322,11 +7324,18 @@ async function watchPass() {
           store[key] = {
             heads: Object.fromEntries(prs.flatMap(p => (p.headRefOid ? [[p.url, p.headRefOid]] : []))),
             changes: Object.fromEntries(prs.map(p => [p.url, !!p.changesRequested])),
+            drafts: Object.fromEntries(prs.flatMap(p => (p.isDraft === undefined ? [] : [[p.url, p.isDraft]]))),
+            decisions: Object.fromEntries(
+              prs.flatMap(p => (p.reviewDecision === undefined ? [] : [[p.url, p.reviewDecision]])),
+            ),
           }
         else
           // a URL whose first view failed gets its baseline at its first good view
           for (const p of prs) {
             if (p.headRefOid && !(p.url in seen.heads)) seen.heads[p.url] = p.headRefOid
+            if (seen.drafts && p.isDraft !== undefined && !(p.url in seen.drafts)) seen.drafts[p.url] = p.isDraft
+            if (seen.decisions && p.reviewDecision !== undefined && !(p.url in seen.decisions))
+              seen.decisions[p.url] = p.reviewDecision
             if (seen.changes && !(p.url in seen.changes)) seen.changes[p.url] = !!p.changesRequested
           }
         const now = Date.now()
@@ -7341,11 +7350,12 @@ async function watchPass() {
           seen,
           canHold: !!def.nodes[node]?.next.hold,
           canChange: !!def.nodes[node]?.next.changes,
+          held: !!def.nodes[node]?.holdMail && (c.mail[node] ?? []).some(m => m.at > parked.at),
         })
         if (!d) continue
         const iso = new Date(now).toISOString()
         if (d.kind === 'wake') {
-          post(id, { type: 'MAIL', from: 'factory', to: node, text: d.text })
+          post(id, { type: 'MAIL', from: 'factory', to: node, text: d.text, wake: true })
           console.log(`${iso} ${id}: waking ${node}: ${d.text}`)
           const trigger = prs.find(p => p.url === d.url) ?? prs[0]
           if (trigger) woke.push({ run: id, node, url: trigger.url, state: trigger.state, at: now })

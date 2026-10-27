@@ -389,7 +389,7 @@ export const isParked = (c: Ctx, node: string) => {
 }
 
 /** a holdMail station parked on a pull or merge request: plain mail waits in its box */
-export const isHeld = (c: Ctx, node: string, holds?: boolean) =>
+export const isMailHeld = (c: Ctx, node: string, holds?: boolean) =>
   !!holds &&
   isParked(c, node) &&
   prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0
@@ -683,7 +683,7 @@ export function compile(def: Factory) {
                   event.type === 'MAIL' &&
                   event.to === id &&
                   isParked(context, id) &&
-                  (!!event.wake || !isHeld(context, id, node.holdMail)),
+                  (!!event.wake || !isMailHeld(context, id, node.holdMail)),
                 target: 'working',
                 actions: assign(withMail),
               },

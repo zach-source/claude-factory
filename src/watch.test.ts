@@ -153,6 +153,16 @@ test('a merge after the park wakes the station at once (AC3)', () => {
   expect(watchJson.woke[0]).toMatchObject({ run: 'r1', node: 'deploy', url: PR })
 })
 
+test('the watch wake mail has wake true, so a PR change starts a holdMail station (61pu AC6)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'MERGED', updatedAt: iso(1 * 60_000) }))
+  parkedRun('r1', repo(), f)
+  factory(['watch'])
+  expect(mailOf('r1')[0]).toMatchObject({ from: 'factory', wake: true })
+})
+
 test('a merge that predates a pre-launch park still wakes it at once, not out its plain park wait (AC3)', () => {
   reset()
   const f = join(dir, 'ship.json')
