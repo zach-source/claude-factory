@@ -660,6 +660,46 @@ test("a usage limit is read from the transcript's last turn, and the next accoun
     resetsAt: 1_800_000_000_000,
   })
   expect(limitHit([refused, turn({})].join('\n'))).toBeNull() // it went on since
+  const text = (t: string, extra: object = {}, ts = '2026-10-24T00:07:25.000Z') =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: ts,
+      error: 'rate_limit',
+      apiErrorStatus: 429,
+      isApiErrorMessage: true,
+      message: { content: [{ type: 'text', text: t }] },
+      ...extra,
+    })
+  expect(limitHit(text("You've hit your weekly limit · resets Oct 28, 2am (UTC)"))).toEqual({
+    at: Date.parse('2026-10-24T00:07:25.000Z'),
+    kind: 'seven_day',
+    resetsAt: Date.parse('2026-10-28T02:00:00Z'),
+  })
+  const session = "You've hit your session limit · resets 10am (UTC)"
+  expect(limitHit(text(session, {}, '2026-10-24T08:00:00Z'))).toMatchObject({
+    kind: 'five_hour',
+    resetsAt: Date.parse('2026-10-24T10:00:00Z'),
+  })
+  expect(limitHit(text(session, {}, '2026-10-24T11:00:00Z'))?.resetsAt).toBe(
+    Date.parse('2026-10-25T10:00:00Z'),
+  )
+  expect(limitHit(text('resets Jan 2, 3:30am (UTC)', {}, '2026-12-30T00:00:00Z'))?.resetsAt).toBe(
+    Date.parse('2027-01-02T03:30:00Z'),
+  )
+  expect(limitHit(text('weekly limit resets Oct 10 at 9pm (America/New_York)'))).toMatchObject({
+    kind: 'seven_day',
+    resetsAt: 0,
+  })
+  expect(limitHit(text('slow down'))).toMatchObject({ kind: 'usage', resetsAt: 0 })
+  expect(limitHit(text('x', { error: 'authentication_failed' }))).toMatchObject({ kind: 'auth', resetsAt: 0 })
+  expect(
+    limitHit(text('OAuth token revoked', { error: 'invalid_request', apiErrorStatus: 401 })),
+  ).toMatchObject({ kind: 'auth' })
+  for (const s of [403, 500, 529])
+    expect(limitHit(text('x', { error: 'server_error', apiErrorStatus: s }))).toBeNull()
+  expect(limitHit(text('x', { error: undefined }))).toBeNull()
+  expect(limitHit(JSON.stringify({ type: 'user' }))).toBeNull()
+  expect(servedAt(text('x'))).toBe(0)
   expect(servedAt([refused, turn({})].join('\n'))).toBeGreaterThan(0)
   expect(servedAt([turn({}), refused].join('\n'))).toBe(0)
   expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9 }, 5)).toBe('c')

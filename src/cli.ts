@@ -1416,7 +1416,12 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const harness = harnessOf(agent)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   axCodexRefused(agent)
-  const egress = harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress
+  const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
+  // the VM clones its beads from the rig's beadsRemote: its egress needs that Dolt rule
+  const egress = ax.withDoltEgress(
+    harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress,
+    hasRunBeads ? rig : undefined,
+  )
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1476,7 +1481,6 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
         ]
       : []),
   ].join('\n')
-  const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
   // Substrate takes no env value past 32 KiB, and a brief with its bead's spec can pass that: it goes over
   // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
   // beadsRemote or else the repo's GitHub origin
@@ -1758,16 +1762,57 @@ function tailOf(worktree: string, session: string) {
   }
 }
 
-/** the usage limit that refused a Claude transcript's last turn: when, which (seven_day, five_hour) and when it resets, in ms */
+/** the first UTC time after `after` that a "resets [Mon D, | Mon D at ]h[:mm]am (UTC)" notice names, in ms; 0 for no match or another zone */
+export function resetsAtFromText(text: string, after: number) {
+  const m =
+    /resets (?:([A-Za-z]{3})[a-z]* (\d{1,2})(?:, | at ))?(\d{1,2})(?::(\d\d))?\s?([ap]m) \(UTC\)/i.exec(text)
+  if (!m) return 0
+  const hour = (Number(m[3]) % 12) + (m[5]?.toLowerCase() === 'pm' ? 12 : 0)
+  const min = Number(m[4] ?? 0)
+  const day = new Date(after)
+  const year = day.getUTCFullYear()
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+  const mon = m[1] ? months.indexOf(m[1].toLowerCase()) : day.getUTCMonth()
+  if (mon < 0) return 0
+  for (let i = 0; i < 2; i++) {
+    const t = m[1]
+      ? Date.UTC(year + i, mon, Number(m[2]), hour, min)
+      : Date.UTC(year, mon, day.getUTCDate() + i, hour, min)
+    if (t > after) return t
+  }
+  return 0
+}
+
+/** the usage limit or login failure that refused a Claude transcript's last turn: when, which (seven_day, five_hour, usage, auth) and when it resets, in ms (0: unknown) */
 export function limitHit(tail: string) {
   for (const line of tail.split('\n').reverse()) {
     if (!line.includes('"type":"assistant"')) continue
     try {
       const e = JSON.parse(line)
       if (e.type !== 'assistant') continue
-      if (e.error !== 'rate_limit' || e.quotaLimits?.status !== 'rejected') return null
-      const kind: string = e.quotaLimits.rateLimitType ?? 'usage'
-      return { at: Date.parse(e.timestamp), kind, resetsAt: (e.quotaLimits.resetsAt ?? 0) * 1000 }
+      const at = Date.parse(e.timestamp)
+      if (e.error === 'authentication_failed' || e.apiErrorStatus === 401)
+        return { at, kind: 'auth', resetsAt: 0 }
+      if (e.error !== 'rate_limit') return null
+      if (e.quotaLimits?.status === 'rejected')
+        return {
+          at,
+          kind: String(e.quotaLimits.rateLimitType ?? 'usage'),
+          resetsAt: (e.quotaLimits.resetsAt ?? 0) * 1000,
+        }
+      const c = e.message?.content
+      const text =
+        typeof c === 'string'
+          ? c
+          : Array.isArray(c)
+            ? c.map((p: { text?: string }) => p?.text ?? '').join('\n')
+            : ''
+      const kind = /weekly/i.test(text)
+        ? 'seven_day'
+        : /session limit|5-hour|five.hour/i.test(text)
+          ? 'five_hour'
+          : 'usage'
+      return { at, kind, resetsAt: resetsAtFromText(text, at) }
     } catch {
       // the first line of the tail is cut
     }
@@ -1909,7 +1954,7 @@ export function runTokenSwap(
     const live = (codex ? /label (\S+) is live/ : /slot (\S+) is live/).exec(p.stdout.toString())?.[1] ?? '?'
     send({
       type: 'MAIL',
-      from: node,
+      from: 'factory',
       to: 'manager',
       text: `Swapped the ${codex ? 'Codex' : 'Claude'} token for ${runnerName} workers: ${codex ? 'label' : 'slot'} ${live} is live; they go on once the vault refreshes.`,
     })
@@ -2595,12 +2640,18 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       ? swapAccount(hit, now)
       : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
+      // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
+      if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
+        const reason = `usage limit (${hit.kind}) until ${new Date(until).toISOString()}`
+        send({ type: 'FAIL', seq: c.seq, reason, hold: until })
+        return 'usage limit'
+      }
       const paged = limitPagedFile(runner, isCodex)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
         const text = runner.local
           ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
           : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
-        send({ type: 'MAIL', from: node, to: 'manager', text })
+        send({ type: 'MAIL', from: 'factory', to: 'manager', text })
         writeJson(paged, until)
       }
       return 'usage limit'

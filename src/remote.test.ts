@@ -722,23 +722,116 @@ test("a task's egress policy is tried again each tick until its actor shows, wit
   rmSync(join(home, 'runs', 'r4'), { recursive: true })
 })
 
-test('a VM worker refused for the usage limit is held until the reset, not nudged', () => {
-  launched('r5')
-  const refused = JSON.stringify({
+/** every prompt sent to the fake ax, decoded: the worker prompt argument is base64 */
+const prompted = () =>
+  called()
+    .split('\n')
+    .filter(l => l.includes('worker prompt '))
+    .map(l => Buffer.from(l.split('worker prompt ')[1] ?? '', 'base64').toString())
+    .join('\n')
+/** a weekly-limit refusal with no quotaLimits (claude-factory-s6b8), whose reset is two days away, as serve prints it */
+function weeklyRefusal() {
+  const reset = new Date(Date.now() + 2 * 86_400_000)
+  reset.setUTCHours(2, 0, 0, 0)
+  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][
+    reset.getUTCMonth()
+  ]
+  const text = `You've hit your weekly limit · resets ${mon} ${reset.getUTCDate()}, 2am (UTC)`
+  const tail = JSON.stringify({
     type: 'assistant',
     timestamp: new Date(Date.now() + 1000).toISOString(),
     error: 'rate_limit',
-    quotaLimits: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Date.now() / 1000 + 3600 },
+    apiErrorStatus: 429,
+    isApiErrorMessage: true,
+    message: { content: [{ type: 'text', text }] },
   })
-  cluster('Running', { status: 'idle', session: 's1', lines: [], tail: refused })
+  return { tail, resetsAt: reset.getTime() }
+}
+
+test('a VM worker refused for a long usage limit parks the station until the reset, not nudged', () => {
+  launched('r5')
+  const { tail, resetsAt } = weeklyRefusal()
+  cluster('Running', { status: 'idle', session: 's1', lines: [], tail })
   factory(['tick']) // learns the session
-  const held = factory(['tick'])
-  expect(JSON.parse(held.out).runs[0]).toMatchObject({ agent: 'usage limit' })
-  expect(readFileSync(join(home, 'runs', 'r5', 'state.json'), 'utf8')).toContain(
-    'at its usage limit (five_hour)',
-  ) // the manager is told
+  factory(['tick'])
+  const state = JSON.parse(readFileSync(join(home, 'runs', 'r5', 'state.json'), 'utf8'))
+  expect(state.snapshot.value).toMatchObject({ a: 'waiting' })
+  expect(state.snapshot.context.wakeAt).toBeGreaterThanOrEqual(resetsAt)
+  expect(state.snapshot.context.attempt).toBe(1)
+  const last = state.snapshot.context.log.at(-1)
+  expect(last.outcome).toBe('outage')
+  expect(last.summary).toStartWith('usage limit (seven_day)')
   expect(called()).not.toContain('worker prompt')
+  expect(called()).toContain('delete')
+  const held = (state.snapshot.context.mail.manager ?? []).filter((m: { text: string }) =>
+    m.text.includes('held, not failed'),
+  )
+  expect(held).toHaveLength(1)
+  expect(held[0].from).toBe('factory')
   rmSync(join(home, 'runs', 'r5'), { recursive: true })
+})
+
+test('a token swap that worked keeps the in-place wait, then the idle worker is nudged and the notice never makes it ask', () => {
+  const runDir = join(home, 'runs', 'r6')
+  const seq = launched('r6')
+  const swap = join(dir, 'swap')
+  writeFileSync(swap, `#!/bin/sh\necho x >> ${join(dir, 'swaps.log')}\necho 'slot 2 is live'\n`)
+  chmodSync(swap, 0o755)
+  rmSync(join(dir, 'swaps.log'), { force: true })
+  const { tail } = weeklyRefusal()
+  cluster('Running', { status: 'idle', session: 's1', lines: [], tail })
+  const env = { FACTORY_AX_TOKEN_SWAP: swap }
+  factory(['tick'], env) // learns the session
+  const waited = factory(['tick'], env)
+  expect(JSON.parse(waited.out).runs[0]).toMatchObject({ agent: 'usage limit' })
+  factory(['tick'], env)
+  expect(readFileSync(join(dir, 'swaps.log'), 'utf8')).toBe('x\n') // once per hit
+  const mid = readFileSync(join(runDir, 'state.json'), 'utf8')
+  expect(mid).not.toContain('"outcome":"outage"')
+  expect(mid).not.toContain('"outcome":"fail"')
+  const mail = (JSON.parse(mid).snapshot.context.mail.manager ?? []) as { from: string; text: string }[]
+  expect(mail.filter(m => m.text.includes('slot 2 is live')).map(m => m.from)).toEqual(['factory'])
+  expect(mail.filter(m => m.text.includes('usage limit')).map(m => m.from)).toEqual(['factory'])
+  // the refresh window ends and the worker has sat idle: it is nudged, not suspended
+  const old = Date.now() - 40 * 60_000
+  const actor = createActor(compile(def), { snapshot: JSON.parse(mid).snapshot }).start()
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: old })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  const swapFile = join(home, 'token-swap-ax.json')
+  writeFileSync(
+    swapFile,
+    JSON.stringify({ ...JSON.parse(readFileSync(swapFile, 'utf8')), until: Date.now() - 1_000 }),
+  )
+  factory(['tick'], env)
+  expect(prompted()).toContain('You have not reported')
+  expect(called()).not.toContain('suspend')
+  rmSync(runDir, { recursive: true })
+  rmSync(join(home, 'token-swap-ax.json'), { force: true })
+  rmSync(join(home, 'limit-paged-ax.json'), { force: true })
+})
+
+test('an idle VM worker with no limit hit is nudged, and the next tick delivers the manager mail', () => {
+  const runDir = join(home, 'runs', 'r95')
+  const seq = launched('r95')
+  const old = Date.now() - 10 * 60_000
+  const actor = createActor(compile(def), {
+    snapshot: JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot,
+  }).start()
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: old })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  cluster('Running', { status: 'idle', session: 's1', lines: [] })
+  factory(['tick'])
+  factory(['mail', 'r95', 'a', 'please check the branch'], { FACTORY_FROM: 'manager' })
+  factory(['tick'])
+  expect(prompted()).toContain('You have not reported')
+  expect(prompted()).toContain('[factory mail from manager]')
+  rmSync(runDir, { recursive: true })
 })
 
 test('an egress outage mails the manager once, spends no idle nudge while serve retries, and fails named once it gives up', () => {

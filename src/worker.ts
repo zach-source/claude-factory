@@ -207,7 +207,8 @@ export function bootstrapBeads(
       env: { ...env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' },
       stderr: 'pipe',
     })
-    if (p.exitCode !== 0) throw new Error(`beads in the VM: ${cmd.join(' ')}: ${p.stderr.toString().trim()}`)
+    if (p.exitCode !== 0)
+      throw new Error(`beads in the VM: ${cmd.join(' ')}: ${lastError(p.stderr.toString())}`)
   }
 }
 
