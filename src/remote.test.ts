@@ -707,7 +707,51 @@ test('an egress outage mails the manager once, spends no idle nudge while serve 
   const state = readFileSync(join(home, 'runs', 'r7', 'state.json'), 'utf8')
   expect(state).toContain('egress gateway: model API unreachable since')
   expect(state).toContain('(5 retries)')
+  // held, not failed: the station waits and keeps its attempt
+  const snap = JSON.parse(state).snapshot
+  expect(snap.value).toMatchObject({ a: 'waiting' })
+  expect(snap.context.attempt).toBe(1)
+  expect(snap.context.log.at(-1)).toMatchObject({ outcome: 'outage', attempt: 1 })
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
+test('a VM worker stopped under an active usage limit page is held, not failed, once its nudges are spent', () => {
+  const runDir = join(home, 'runs', 'r91')
+  const seq = launched('r91')
+  const old = Date.now() - 40 * 60_000
+  const actor = createActor(compile(def), {
+    snapshot: JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot,
+  }).start()
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: old })
+  for (let i = 0; i < 4; i++) actor.send({ type: 'NUDGED', seq, at: old })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  const until = Date.now() + 2 * 3_600_000
+  const page = join(home, 'limit-paged-ax.json')
+  writeFileSync(page, JSON.stringify(until))
+  cluster('Running', { status: 'idle', session: 's1', lines: [] })
+  factory(['tick'])
+  const snap = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot
+  expect(snap.value).toMatchObject({ a: 'waiting' })
+  expect(snap.context.wakeAt).toBeGreaterThanOrEqual(until)
+  expect(snap.context.log.at(-1)).toMatchObject({
+    outcome: 'outage',
+    summary: 'worker stopped without reporting',
+  })
+  rmSync(runDir, { recursive: true })
+  rmSync(page)
+})
+
+test("a worker's own fail report with the egress text spends an attempt: only the reconciler holds", () => {
+  const seq = launched('r92')
+  factory(['report', 'r92', String(seq), 'fail', 'egress gateway: model API unreachable since x'])
+  factory(['tick'])
+  const snap = JSON.parse(readFileSync(join(home, 'runs', 'r92', 'state.json'), 'utf8')).snapshot
+  rmSync(join(home, 'runs', 'r92'), { recursive: true })
+  expect(snap.context.log.at(-1)).toMatchObject({ outcome: 'fail' })
+  expect(snap.context.attempt).toBe(1)
 })
 
 test('a single retry is pluralized in the egress FAIL reason, like the mail already is', () => {
