@@ -165,6 +165,24 @@ test('closeParents shares one closed set: the second close of a pass closes the 
   }
 })
 
+test('closeParents adds each parent it closes to the shared set, so a later close sees it', () => {
+  const list = [bead('g'), bead('g.1'), bead('g.1.1'), bead('g.2')]
+  const f = fakeBd('fake-bd-closeparents-2', ['factory'], JSON.stringify(list))
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    const closed = new Set(['g.1.1'])
+    closeParents(b, tmpdir(), 'g.1.1', 'the repair pass', closed)
+    expect(closed.has('g.1')).toBe(true)
+    closed.add('g.2')
+    closeParents(b, tmpdir(), 'g.2', 'the repair pass', closed)
+    expect(f.calls().filter(c => c.startsWith('close g '))).toHaveLength(1)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
 test('hasShipEdge finds a ship edge and nothing else', () => {
   expect(hasShipEdge(def)).toBe(true)
   expect(hasShipEdge({ nodes: { a: { next: { x: 'done', y: { to: 'done', requeue: true } } } } })).toBe(false)
