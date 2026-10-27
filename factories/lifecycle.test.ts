@@ -736,10 +736,47 @@ test('claude-factory-ocox AC1: a house rule says implement and quick open drafts
     expect(line).toContain(needle)
 })
 
-test('claude-factory-ocox AC2/AC3: gh pr ready appears only in the review, security and check prompts; implement opens a draft', () => {
-  for (const [id, node] of Object.entries(lifecycle.nodes))
-    expect(node.prompt.includes('gh pr ready'), id).toBe(['review', 'security', 'check'].includes(id))
+test('claude-factory-ocox AC2/AC3 + ye1v AC5: plain gh pr ready only in review, security and check; the --undo form only in implement and quick', () => {
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const p = node.prompt
+    expect(p.replaceAll(/gh pr ready <n> --undo/g, '').includes('gh pr ready'), id).toBe(
+      ['review', 'security', 'check'].includes(id),
+    )
+    expect(p.includes('gh pr ready <n> --undo'), id).toBe(['implement', 'quick'].includes(id))
+  }
   expect(lifecycle.nodes.implement!.prompt).toContain('gh pr create --draft')
+})
+
+test('claude-factory-ye1v AC1/AC2: implement and quick go back to draft before a push and list unreviewed SHAs', () => {
+  for (const id of ['implement', 'quick']) {
+    const p = lifecycle.nodes[id]!.prompt
+    for (const s of [
+      'gh pr view <n> --json isDraft',
+      'gh pr ready <n> --undo',
+      'before you push',
+      'do not push',
+      'Unreviewed:',
+      'git log --format=%h <reviewed head>..HEAD',
+      'Reviewed head:',
+      'every report',
+      '+N more',
+    ])
+      expect(p, `${id}: ${s}`).toContain(s)
+  }
+})
+
+test('claude-factory-ye1v AC3: approvers name the reviewed head and mark ready only at that head', () => {
+  for (const id of ['review', 'security', 'check']) {
+    const p = lifecycle.nodes[id]!.prompt
+    expect(p, id).toContain('Reviewed head: <full SHA>')
+    expect(p, id).toContain('headRefOid equals the SHA you reviewed')
+  }
+})
+
+test('claude-factory-ye1v AC4: the house rule allows only the --undo form and requires a draft before a push', () => {
+  const line = lifecycle.rules!.split('\n').find(l => l.includes('gh pr create --draft'))!
+  expect(line).toContain('except `gh pr ready <n> --undo`')
+  expect(line).toContain('is not a draft')
 })
 
 // claude-factory-qda: asd-ste100 goes to the stations that write text people read, and to no other
