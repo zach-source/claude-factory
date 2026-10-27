@@ -1121,3 +1121,72 @@ test('validate checks a node split: its agent params, its share param and its de
   expect(mk(ok, { codex_share: '1' })).not.toThrow()
   expect(mk(ok, {}, true)).toThrow('a gate has no worker, so no split')
 })
+
+// claude-factory-61pu.1: a holdMail station parked on a pull request keeps plain mail in its box.
+// Only a MAIL with wake: true starts a worker.
+const holdGraph = (node: object = { holdMail: true }): Factory => ({
+  name: 'ship',
+  start: 'deploy',
+  nodes: { deploy: { prompt: 'deploy it', next: { deployed: 'done' }, ...node } },
+})
+const blockOn = (g: Factory, reason: string) => {
+  const r = run(g)
+  r.send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 10 })
+  return { ...r, s: r.send({ type: 'BLOCKED', seq: 1, reason, at: 20 }) }
+}
+
+test('plain mail to a holdMail station parked on a pull request stays in the box', () => {
+  const { send, s } = blockOn(holdGraph(), 'waiting on ' + PR)
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  const m = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'Report blocked', at: 30 })
+  expect(where(m.value)).toEqual(['deploy', 'waiting'])
+  expect(m.context.mail.deploy?.at(-1)?.text).toBe('Report blocked')
+})
+
+test('a MAIL with wake starts the worker of a held station, with the held mail in its box', () => {
+  const { send } = blockOn(holdGraph(), 'waiting on ' + PR)
+  send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'nudge', at: 30 })
+  const m = send({ type: 'MAIL', from: 'factory', to: 'deploy', text: 'merged', wake: true, at: 40 })
+  expect(where(m.value)).toEqual(['deploy', 'working'])
+  expect(m.context.mail.deploy?.map(x => x.text)).toEqual(['nudge', 'merged'])
+})
+
+test('a pre-launch PR park of a holdMail station holds plain mail too', () => {
+  const g: Factory = {
+    name: 'ship',
+    start: 'release',
+    nodes: {
+      release: { prompt: 'ship it', next: { ready: 'deploy' } },
+      deploy: { prompt: 'deploy it', awaitsPr: true, holdMail: true, next: { deployed: 'done' } },
+    },
+  }
+  const { send } = run(g)
+  send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'ready ' + PR, at: 1000 })
+  const m = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'hi', at: 2000 })
+  expect(where(m.value)).toEqual(['deploy', 'waiting'])
+})
+
+test('plain mail still starts a worker: no holdMail, no PR link, or a lifecycle station', () => {
+  for (const [g, reason] of [
+    [holdGraph({}), 'waiting on ' + PR],
+    [holdGraph(), 'waiting on the owner'],
+  ] as const) {
+    const { send } = blockOn(g, reason)
+    const m = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'hi', at: 30 })
+    expect(where(m.value)).toEqual(['deploy', 'working'])
+  }
+  const { send } = run()
+  send({ type: 'BLOCKED', seq: 1, reason: 'waiting on ' + PR, at: 20 })
+  const m = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'hi', at: 30 })
+  expect(where(m.value)).toEqual(['implement', 'working'])
+})
+
+test('validate refuses holdMail on a gate', () => {
+  expect(() =>
+    validate({
+      name: 'x',
+      start: 'g',
+      nodes: { g: { prompt: '?', gate: true, holdMail: true, next: { ok: 'done' } } },
+    }),
+  ).toThrow('g: a gate has no worker, so no mail to hold')
+})
