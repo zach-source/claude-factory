@@ -208,6 +208,7 @@ test('release reporting ready with a pull request link parks deploy with no work
 test('a merge or close mail wakes a parked deploy, which then routes every outcome as today (claude-factory-960 AC4)', () => {
   const cases: { outcome: string; next: [string, string] }[] = [
     { outcome: 'deployed', next: ['soak', 'waiting'] },
+    { outcome: 'unsure', next: ['soak', 'waiting'] },
     { outcome: 'published', next: ['queue', 'waiting'] },
     { outcome: 'changes', next: ['queue', 'waiting'] },
     { outcome: 'hold', next: ['queue', 'waiting'] },
@@ -749,4 +750,45 @@ test('lifecycle gives asd-ste100 to its text stations only', () => {
       id,
       text.includes(id) ? ['asd-ste100'] : [],
     ])
+})
+
+const promptOf = (def: Factory, node: string) => (def.nodes[node] as { prompt: string }).prompt
+
+test("deploy and rollout must see the change's own live output; not fired yet is unsure (claude-factory-ee7 AC1, AC2)", () => {
+  for (const [def, node] of [
+    [ship, 'deploy'],
+    [release, 'rollout'],
+  ] as const) {
+    const p = promptOf(def, node)
+    expect(p, node).toContain('own output')
+    expect(p, node).toContain('the file it writes, the log line it prints, or the process or subagent it starts')
+    expect(p, node).toMatch(/not fired yet[^.]*unsure|unsure[^.]*not fired yet/)
+    expect(def.nodes[node].next).toMatchObject({ unsure: { to: 'soak', delayMin: 15 } })
+  }
+})
+
+test('ship deploy parks on a stale manager; release rollout does not (claude-factory-ee7 AC3)', () => {
+  const p = promptOf(ship, 'deploy')
+  for (const word of ['manager.json', 'startedAt', 'argv', 'managerCommand', 'restart the factory manager'])
+    expect(p, word).toContain(word)
+  expect(promptOf(release, 'rollout')).not.toContain('manager.json')
+})
+
+test('soak needs the own output before healthy (claude-factory-ee7 AC4)', () => {
+  for (const def of [ship, release]) {
+    const p = promptOf(def, 'soak')
+    expect(p).toContain('own output')
+    expect(p).toContain('not fired yet')
+  }
+})
+
+test('rollback and soak call an unreproduced cause a hypothesis (claude-factory-ee7 AC5)', () => {
+  for (const [def, node] of [
+    [ship, 'rollback'],
+    [lifecycle, 'rollback'],
+    [release, 'rollback'],
+    [ship, 'soak'],
+    [release, 'soak'],
+  ] as const)
+    expect(promptOf(def, node), node).toContain('hypothesis unless you reproduced it')
 })

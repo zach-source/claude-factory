@@ -243,3 +243,7 @@ test('infra-blocks pre-push bot-file check is in exactly the ship queue and rele
   expect(want.length).toBeGreaterThan(100)
   for (const name of holders) expect(botText(nodes[name]!.prompt!)).toBe(want)
 })
+
+test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () => {
+  expect(walk(ship, ['ready', 'ready', 'unsure']).visited).toEqual(['queue', 'release', 'deploy', 'soak'])
+})
