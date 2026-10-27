@@ -26,6 +26,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: a codex worker on AX now keeps its PATH and its CA file (claude-factory-wpnx). The VM `config.toml` sets `allow_login_shell = false`. Before this fix, codex used a login shell (`bash -lc`) for each command. That shell read `/etc/profile` and reset the PATH and the CA values. Thus the worker did not find `nix`, `go` or `rg`, and `factory memory search` got a TLS error.
 - Fix: `factory memory search` works in an AX worker (claude-factory-2yvv). The worker image now holds the embedding model `Xenova/bge-small-en-v1.5`. Before, the search downloaded the model on first use, and the VM got a TLS error. Rebuild the worker image to get this fix.
 - Docs: `docs/beads.md` describes the filing guard (caps 6, 3 and 24 hours), the `clusterRuns` rig setting (default 2), the `file-churn` finding and how to release a held bead with `factory queue` (claude-factory-nwlh.6).
+- Fix: a station that waits on CI for its own conflicting pull request now wakes (claude-factory-0uve). The park watch reads `mergeable`, `headRefName` and `baseRefName`. The pull request must be open, on the run's `factory/<run id>` branch and `CONFLICTING`. Then the watch mails the station once for each head commit. GitHub builds no CI for a conflicting head, so the station must merge the base branch and push.
 
 ## 0.15.0 (2026-10-24)
 
