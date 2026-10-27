@@ -900,10 +900,8 @@ export function compile(def: Factory) {
                 actions: assign(({ context, event }) => {
                   const { reason, at, hold } = event as Extract<Ev, { type: 'FAIL' }>
                   const streak = outageStreak(context as Ctx, id)
-                  const wakeAt = Math.max(
-                    hold ?? 0,
-                    at + Math.min(OUTAGE_HOLD_MIN * 2 ** streak, 120) * 60_000,
-                  )
+                  // 15, 30, 60, then 120 min at the last of OUTAGE_HOLDS holds
+                  const wakeAt = Math.max(hold ?? 0, at + OUTAGE_HOLD_MIN * 2 ** streak * 60_000)
                   const text = `${id} is held, not failed: ${reason}. It spent no attempt and starts again at ${new Date(wakeAt).toISOString()}.`
                   return {
                     log: [

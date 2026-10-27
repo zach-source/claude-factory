@@ -1144,7 +1144,7 @@ describe('an outage hold parks the station and spends no attempt', () => {
     expect(s.context.log.map(e => `${e.outcome}:${e.attempt}`)).toEqual(['outage:1', 'outage:1', 'outage:1'])
   })
 
-  test('the wait doubles, caps at 120 min, and a later hold wins', () => {
+  test('the wait doubles up to 120 min, and a later hold wins', () => {
     const { send } = run()
     let at = 1000
     const waits: number[] = []
