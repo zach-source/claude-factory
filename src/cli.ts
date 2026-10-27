@@ -6994,6 +6994,19 @@ export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: 
 export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
   queue.find(b => b.metadata?.ship_branch === pr.headRefName || (!!pr.url && b.metadata?.ship_pr === pr.url))
 
+/** the label mail to a ship station: only the station parked on this very PR wakes at once; any other holds it */
+export const labelMail = (
+  s: { c: Parameters<typeof isParkedOn>[0]; node: string },
+  url: string,
+  text: string,
+) => ({
+  type: 'MAIL' as const,
+  from: 'factory' as const,
+  to: s.node,
+  text,
+  ...(isParkedOn(s.c, s.node, url) && { wake: true as const }),
+})
+
 /** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
 export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<typeof beads>, 'unship'>) {
   const owner = queuedOwner({ url, headRefName: '' }, queue)
@@ -7184,14 +7197,7 @@ async function labelPass() {
           forge.unlabel(pr, reworkLabels(pr))
           const ships = liveShipRuns().filter(s => s.run.repo === rig.repo)
           // only a station that waits on this very PR wakes at once; any other holds the mail
-          for (const s of ships)
-            post(s.run.id, {
-              type: 'MAIL',
-              from: 'factory',
-              to: s.node,
-              text,
-              ...(isParkedOn(s.c, s.node, pr.url) && { wake: true as const }),
-            })
+          for (const s of ships) post(s.run.id, labelMail(s, pr.url, text))
           // no live ship run to hear it: the bead keeps the ask, and the next ship run reads it
           if (!ships.length) beads(rig.repo, 'factory').comment(queuedBead.id, text)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)

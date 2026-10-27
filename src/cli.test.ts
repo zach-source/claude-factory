@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
+  labelMail,
   brief,
   vmBeads,
   clipFactsJson,
@@ -2049,4 +2050,13 @@ test('holdFloor holds an egress outage, and a stop only while a usage limit is a
   expect(holdFloor('worker never started on AX after 5 min: x', null, 70_000, 1000, 2000)).toBeNull()
   expect(holdFloor('worker pane x was closed', null, 70_000, 1000, 2000)).toBeNull()
   expect(holdFloor('see egress gateway: model API unreachable', null, 0, 1000, 2000)).toBeNull()
+})
+
+test('label mail wakes only the ship station parked on that very PR (61pu)', () => {
+  const url = 'https://github.com/acme/widget/pull/7'
+  const c = { log: [{ node: 'deploy', outcome: 'blocked', summary: 'waiting on ' + url }] } as never
+  expect(labelMail({ c, node: 'deploy' }, url, 't')).toMatchObject({ wake: true })
+  expect(labelMail({ c, node: 'deploy' }, 'https://github.com/acme/widget/pull/8', 't')).not.toHaveProperty(
+    'wake',
+  )
 })
