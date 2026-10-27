@@ -278,8 +278,10 @@ The factory does these 3 steps every 20 minutes for each rig with the loop on:
    differ. Without the buffer, the cutoff can skip an issue for good. Linear can mark that
    issue as updated shortly before the last good pull.
 
-   Exception: `--force`, or the first pass of a rig, skips the cutoff. Each reads every
-   routed issue.
+   Exception: `--force`, the first pass of a rig, or the first pass after a change to the
+   rig's `--linear-team`, `--linear-projects` or `--linear-labels` value skips the cutoff.
+   Each reads every routed issue. A project rename is not in the rig's config. After a rename,
+   run `factory linear <rig> --force`.
 
    The listing stops after 50 pages (5,000 issues). When a team has more, `factory rig list` and
    the console show `list truncated at the 50-page cap`. Treat the unrouted count and the

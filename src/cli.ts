@@ -5292,7 +5292,11 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
   // issue.
   // `LINEAR_SKEW_MS` moves the cutoff back from `lastGoodAt`. This covers clock drift between this
   // process and Linear's own clock, so the cutoff does not skip an issue for good (claude-factory-b6c.26).
-  const since = force || !prior?.lastGoodAt ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
+  // A changed routing config (team, projects, labels) also skips the cutoff: issues that now route
+  // here may be older than the cutoff (claude-factory-dvg).
+  const routing = JSON.stringify([rig.linear!.team, rig.linear!.projects ?? [], rig.linear!.labels ?? []])
+  const since =
+    force || !prior?.lastGoodAt || prior.routing !== routing ? undefined : prior.lastGoodAt - LINEAR_SKEW_MS
   let secrets: string[] = []
   try {
     const apiKey = await linearAuth(secrets, process.env, linearConnectCache)
@@ -5346,6 +5350,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
         ...(strip.unstripped.length && { unstripped: strip.unstripped }),
         ...(nextBaseline && { baseline: nextBaseline }),
         ...(prior?.lastGoodAt && { lastGoodAt: prior.lastGoodAt }), // a failed pull must not move this
+        ...(prior?.routing && { routing: prior.routing }), // keep the old one: the next pass still drops the cutoff
         ...(truncated && { truncated }),
       }
       return
@@ -5358,6 +5363,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
       updated: outcome.updated,
       stripped: strip.stripped,
       lastGoodAt: at,
+      routing,
       ...(strip.unstripped.length && { unstripped: strip.unstripped }),
       ...(nextBaseline && { baseline: nextBaseline }),
       ...(listErr && { error: redact(`label list after the pull: ${listErr}`, secrets) }),
@@ -5370,6 +5376,7 @@ async function linearSyncOne(rig: Rig, state: Record<string, LinearSyncState>, f
       ...(retry.length && { unstripped: retry }),
       ...(baseline && { baseline }), // nothing resolved this attempt: carry the open baseline forward
       ...(prior?.lastGoodAt && { lastGoodAt: prior.lastGoodAt }), // a failed attempt must not move this
+      ...(prior?.routing && { routing: prior.routing }),
     }
   }
 }
@@ -5748,6 +5755,8 @@ export type LinearSyncState = {
    * `--force`, and a rig's first pass, read every routed issue regardless of this field.
    */
   lastGoodAt?: number
+  /** fingerprint of the rig's Linear team, projects and labels at the last good pull. A change drops the cutoff. */
+  routing?: string
   /** this pass's Linear issue listing stopped at the 50-page cap, so `unrouted` and the
    * `updatedAt` cutoff above may undercount the team's real issues (claude-factory-b6c.24) */
   truncated?: boolean
