@@ -667,3 +667,14 @@ test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle s
     'Add no changelog entry and no version bump',
   )
 })
+
+test('plan keeps tests and the change they wait on in one PR, or orders the beads (claude-factory-9hzj AC1)', () => {
+  const prompt = (lifecycle as Factory).nodes.plan!.prompt ?? ''
+  for (const t of [
+    'plan both in one pull request',
+    'the tests commit first, then the change',
+    'make this bead depend on the other bead',
+    'red required checks by design',
+  ])
+    expect(prompt).toContain(t)
+})
