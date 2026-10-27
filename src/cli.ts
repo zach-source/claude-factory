@@ -7007,6 +7007,23 @@ export const labelMail = (
   ...(isParkedOn(s.c, s.node, url) && { wake: true as const }),
 })
 
+/** a live run owns the PR that got a rework label: remove the label, mail the station, comment on the PR */
+export function reworkOwned(
+  pr: LabeledPr,
+  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0] },
+  io: {
+    unlabel: (pr: LabeledPr, labels: string[]) => unknown
+    comment: (pr: LabeledPr, body: string) => unknown
+    post: (runId: string, ev: ReturnType<typeof labelMail>) => unknown
+  },
+) {
+  const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
+  // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
+  io.unlabel(pr, reworkLabels(pr))
+  io.post(owner.id, labelMail(owner, pr.url, text))
+  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${owner.node}), which owns this.`)
+}
+
 /** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
 export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<typeof beads>, 'unship'>) {
   const owner = queuedOwner({ url, headRefName: '' }, queue)
@@ -7215,13 +7232,8 @@ async function labelPass() {
           })
         } else if (action === 'rework' && runId) {
           const owner = live.find(r => r.id === runId)!
-          const node = owner.node
-          const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
-          // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
-          forge.unlabel(pr, reworkLabels(pr))
-          post(runId, labelMail({ c: owner.c, node }, pr.url, text))
-          forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
-          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
+          reworkOwned(pr, owner, { ...forge, post })
+          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${owner.node}`)
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           forge.unlabel(pr, reworkLabels(pr))
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))

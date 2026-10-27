@@ -7,6 +7,7 @@ import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
   labelMail,
+  reworkOwned,
   brief,
   vmBeads,
   clipFactsJson,
@@ -2060,6 +2061,18 @@ test('label mail wakes only the ship station parked on that very PR (61pu)', () 
     'wake',
   )
   // a rework label on the PR a run owns (rollback parked on its revert PR) mails through the same rule
-  const owner = { id: 'r', node: 'rollback', c, log: (c as { log: never[] }).log }
-  expect(labelMail({ c: owner.c, node: owner.node }, url, 't')).not.toHaveProperty('wake') // node differs from the parked one
+  const owner = { id: 'r', node: 'rollback', c }
+  expect(labelMail(owner, url, 't')).not.toHaveProperty('wake') // node differs from the parked one
+})
+
+test('a rework label on a run-owned PR mails the parked station with wake (61pu.6)', () => {
+  const url = 'https://github.com/acme/widget/pull/7'
+  const c = { log: [{ node: 'deploy', outcome: 'blocked', summary: 'waiting on ' + url }] } as never
+  const pr = { number: 7, url, labels: [{ name: 'rework' }] } as never
+  const sent: unknown[] = []
+  const io = { unlabel: () => 0, comment: () => 0, post: (_id: string, ev: unknown) => sent.push(ev) }
+  reworkOwned(pr, { id: 'r', node: 'deploy', c }, io)
+  expect(sent[0]).toMatchObject({ type: 'MAIL', to: 'deploy', wake: true })
+  reworkOwned(pr, { id: 'r', node: 'rollback', c }, io)
+  expect(sent[1]).not.toHaveProperty('wake')
 })
