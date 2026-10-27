@@ -63,13 +63,16 @@ function swapFixture() {
 test('a Codex token swap uses its own command and state file, mails the label, and leaves Claude alone', () => {
   const f = swapFixture()
   const mail: string[] = []
-  const send = (e: { text?: string }) => void mail.push(e.text ?? '')
+  const from: string[] = []
+  const send = (e: { text?: string; from?: string }) =>
+    void (mail.push(e.text ?? ''), from.push(e.from ?? ''))
   try {
     process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
     process.env.FACTORY_AX_TOKEN_SWAP = 'false'
     const hit = { at: 1_000, resetsAt: 0 }
     expect(runTokenSwap(hit, 5_000, 'ax', send as never, 'implement', 'codex', f.home)).toBe(5_000 + 300_000)
     expect(mail).toHaveLength(1)
+    expect(from).toEqual(['factory']) // a notice, not the station asking: isAsking must stay false
     expect(mail[0]).toContain('Codex')
     expect(mail[0]).toContain('a@acme.test')
     expect(existsSync(join(f.home, 'token-swap-ax-codex.json'))).toBe(true)
