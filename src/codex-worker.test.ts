@@ -71,9 +71,10 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   expect(toml).toContain(`[projects.${JSON.stringify(f.run.worktree)}]\ntrust_level = "trusted"`)
   expect(toml).not.toContain('leak')
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
-  expect(pre).toHaveLength(2)
+  expect(pre).toHaveLength(3)
   expect(pre[0]).toEqual(f.mine)
   expect(pre[1].hooks[0].command).toContain("worker-hook.ts' --person-only-contexts 'acme'")
+  expect(pre[2].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
   const agents = readFileSync(join(f.dir, 'AGENTS.md'), 'utf8')
   expect(agents).toStartWith(readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8'))
   expect(agents).toContain(readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8'))
