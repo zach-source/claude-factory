@@ -46,6 +46,7 @@ import {
   timeoutOf,
   unread,
   validate,
+  gotoRefusal,
   where,
   type Ctx,
   type Edge,
@@ -9395,7 +9396,26 @@ if (import.meta.main && !outboxCmd)
         const run = loadRun(args[0])
         const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
         if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
-        post(run.id, { type: 'GOTO', node: args[1]! })
+        const target = args[1]!
+        const saved = readJson<Saved>(join(runDir(run.id), 'state.json'))
+        const pending = inboxLines(run.id)
+          .slice(saved.cursor)
+          .map(l => JSON.parse(l) as Ev)
+        const queued = pending.find(e => e.type === 'GOTO')
+        if (queued?.type === 'GOTO')
+          fail(
+            `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
+          )
+        const why = gotoRefusal(await loadFactory(run.factory), saved.snapshot, pending, target, Date.now())
+        if (why)
+          fail(
+            `goto ${target} would not move ${run.id}: ${why}` +
+              (why.includes('step budget')
+                ? `; run factory retry ${run.id} to grant more launches first`
+                : ''),
+          )
+        post(run.id, { type: 'GOTO', node: target })
+        console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
         break
       }
       case 'abort':
