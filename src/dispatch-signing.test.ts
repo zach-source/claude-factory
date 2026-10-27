@@ -16,6 +16,8 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 function run(gpgsign: string, program: string) {
   const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
   const conf = [
+    ['user.name', 't'],
+    ['user.email', 't@t'],
     ['commit.gpgsign', gpgsign],
     ['gpg.format', 'ssh'],
     ['user.signingkey', join(dir, 'key.pub')],
@@ -62,14 +64,18 @@ function repo(name: string) {
   return r
 }
 
-/** ready=false: `bd ready` answers no bead */
-function setup(rigs: Record<string, unknown>[], ready = true) {
+/** ready=false: `bd ready` answers no bead; 'unlabeled': one ready leaf without the factory label */
+function setup(rigs: Record<string, unknown>[], ready: boolean | 'unlabeled' = true) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(bin, { recursive: true })
   mkdirSync(join(dir, 'claude-config'), { recursive: true })
   writeFileSync(join(dir, 'claude-config', '.claude.json'), JSON.stringify({ projects: {} }))
   mkdirSync(home, { recursive: true })
-  const beads = JSON.stringify(ready ? [{ id: 'acme-1', title: 't', labels: ['factory'] }] : [])
+  const beads = JSON.stringify(
+    ready
+      ? [{ id: 'acme-1', title: 't', priority: 1, status: 'open', labels: ready === true ? ['factory'] : [] }]
+      : [],
+  )
   writeFileSync(
     join(bin, 'bd'),
     [
@@ -153,6 +159,14 @@ test('no probe runs for a full rig', () => {
   run('true', failing())
   expect(calls()).toBe(0)
   expect(signingRows()).toHaveLength(0)
+})
+
+test('a local autoQueue rig with only an unlabeled bead probes, starts nothing and shows one row', () => {
+  setup([{ name: 'a', autoQueue: { minPriority: 4, perHour: 10 } }], 'unlabeled')
+  run('true', failing())
+  expect(calls()).toBe(1)
+  expect(runDirs()).toHaveLength(0)
+  expect(signingRows()).toHaveLength(1)
 })
 
 test('no probe runs when commit.gpgsign is false, and the run starts', () => {
