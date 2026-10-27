@@ -257,6 +257,16 @@ test('walk() turns each LONG.md entry into one note, skips .archive, and outline
   expect(outline(dir).topics).toEqual(['- beads (3): bd topic'])
 })
 
+test('outline clips a long topic line to 150 characters', () => {
+  const dir = join(tmpdir(), `memory-clip-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'ci'), { recursive: true })
+  writeFileSync(join(dir, 'ci', 'README.md'), format({ summary: 'x'.repeat(1000), body: '' }))
+  const [line] = outline(dir).topics
+  expect(line.length).toBe(150)
+  expect(line.endsWith('…')).toBe(true)
+})
+
 test("search ranks by the note and its topic, and never shows another rig's notes", () => {
   const note = (path: string, rig?: string): Note => ({ path, summary: path, body: '', rig })
   const vecs: Record<string, number[]> = {
