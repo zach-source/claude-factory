@@ -2,7 +2,8 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { shipPrOf, track, type Track } from './cli'
+import { beads } from './beads'
+import { closeParents, shipPrOf, track, type Track } from './cli'
 import { hasShipEdge, type Ctx, type Factory } from './machine'
 
 const PR = 'https://github.com/acme/widget/pull/42'
@@ -141,6 +142,27 @@ test('a bd list that prints junk does not stop the run settling or defer the bea
   expect(t.isSettled).toBe(true)
   expect(calls.some(c => c.startsWith('defer '))).toBe(false)
   expect(calls.some(c => c.startsWith('close fx-1.1'))).toBe(true)
+})
+
+test('closeParents shares one closed set: the second close of a pass closes the parent from a stale list', () => {
+  const f = fakeBd(
+    'fake-bd-closeparents',
+    ['factory'],
+    JSON.stringify([bead('fx-1'), bead('fx-1.1'), bead('fx-1.2')]),
+  )
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    const closed = new Set(['fx-1.1'])
+    closeParents(b, tmpdir(), 'fx-1.1', 'the repair pass', closed)
+    expect(f.calls().some(c => c.startsWith('close fx-1 '))).toBe(false)
+    closed.add('fx-1.2')
+    closeParents(b, tmpdir(), 'fx-1.2', 'the repair pass', closed)
+    expect(f.calls().filter(c => c.startsWith('close fx-1 '))).toHaveLength(1)
+  } finally {
+    process.env.PATH = path
+  }
 })
 
 test('hasShipEdge finds a ship edge and nothing else', () => {

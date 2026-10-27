@@ -7275,7 +7275,15 @@ export function closeParents(
       closed.add(p)
       b.comment(p, `${by} closed ${id}; every child of this bead is closed, so the factory closed it`)
       const at = new Date().toISOString()
-      const row = { at, rig: rigOf(repo)?.name, kind: 'close', id: p, reason: 'every child is closed', by, child: id }
+      const row = {
+        at,
+        rig: rigOf(repo)?.name,
+        kind: 'close',
+        id: p,
+        reason: 'every child is closed',
+        by,
+        child: id,
+      }
       appendFileSync(repairsFile(), JSON.stringify(row) + '\n')
       console.log(`${at} close parent ${p} (${by} closed ${id})`)
     }
@@ -7292,6 +7300,7 @@ async function repairPass() {
       if (!hasBeads(rig.repo)) continue
       const b = beads(rig.repo, 'factory')
       const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
+      const closed = new Set<string>()
       for (const r of todo) {
         const done =
           r.kind === 'close'
@@ -7307,6 +7316,10 @@ async function repairPass() {
         const at = new Date().toISOString()
         appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')
         console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
+        if (r.kind === 'close') {
+          closed.add(r.id)
+          closeParents(b, rig.repo, r.id, 'the repair pass', closed)
+        }
       }
     } catch (err) {
       console.error(`${new Date().toISOString()} repairs for ${rig.name}: ${(err as Error).message}`)
