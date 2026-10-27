@@ -103,6 +103,17 @@ export type Node = {
    * `validate` refuses a `repeatMail` value that is not a key of `next`.
    */
   repeatMail?: string
+  /**
+   * An outcome in `next`.
+   * Before a fresh worker starts, the runner merges origin's default branch and the run's branch
+   * with `git merge-tree`.
+   * If the merge has a text conflict, no worker starts.
+   * The runner reports this outcome at once and names the conflicting files.
+   * If the check fails for any other reason, the worker starts as usual.
+   * `validate` refuses a value that is not a key of `next`.
+   * `validate` refuses this field on a gate.
+   */
+  mergeCheck?: string
   /** worker command for this node, overrides the factory's */
   agent?: string
   /**
@@ -317,6 +328,10 @@ export function validate(def: Factory): Factory {
         node.repeatMail !== undefined &&
           !Object.keys(node.next ?? {}).includes(node.repeatMail) &&
           `${id}: repeatMail "${node.repeatMail}" is not an outcome in next`,
+        node.mergeCheck !== undefined &&
+          !Object.keys(node.next ?? {}).includes(node.mergeCheck) &&
+          `${id}: mergeCheck "${node.mergeCheck}" is not an outcome in next`,
+        node.gate && node.mergeCheck !== undefined && `${id}: a gate has no worker, so no mergeCheck`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&

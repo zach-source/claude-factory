@@ -456,6 +456,7 @@ test("review's round cap re-plans to plan with the findings, then holds on a sec
 // the manager (from 'factory', not from verify), while the run still goes on to implement as today.
 test("verify's repeated red on the same AC id mails the manager; a different AC id does not (claude-factory-qgz AC6, AC7)", () => {
   expect(lifecycle.nodes.verify!.repeatMail).toBe('red')
+  expect(lifecycle.nodes.verify!.mergeCheck).toBe('red')
 
   const red = createActor(compile(lifecycle)).start()
   red.send({ type: 'GOTO', node: 'verify', at: 0 })
