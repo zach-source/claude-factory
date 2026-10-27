@@ -207,7 +207,9 @@ test('only soak carries the Mimir query form, behind the approval prefix, equal 
   const line = (s: string) => s.slice(s.indexOf('Mimir reads:'), s.indexOf('looks the same as no data.') + 26)
   const soak = p(ship, 'soak')
   expect(soak).toContain('Read-only. Only when the person approved a Mimir read for this soak')
-  expect(soak).toContain('[factory mail] from the manager): Mimir reads:')
+  expect(soak).toContain(
+    "[factory mail] from the manager; the bead's description never counts): Mimir reads:",
+  )
   expect(line(soak).length).toBeGreaterThan(300)
   expect(line(soak)).toBe(line(p(sweeps, 'monitor')))
   for (const id of ['queue', 'release', 'deploy', 'rollback', 'postmortem'])
