@@ -26,6 +26,7 @@ writeFileSync(
   fake,
   `#!/bin/sh
 echo "$*" >> ${calls}
+echo "\${AX_AUTH_TOKEN:+set}" >> ${dir}/auth
 case "$3 $4" in
   "apply -f") cat > ${dir}/applied; echo created ;;
   "get task") [ -f ${dir}/get ] && cat ${dir}/get || { echo 'getting task: rpc error: code = NotFound' >&2; exit 1; } ;;
@@ -54,7 +55,7 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'bctl'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'bctl', 'auth'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -2115,4 +2116,122 @@ test("withDoltEgress adds the Dolt rule of the rig's own https beadsRemote, and 
   expect(ax.withDoltEgress(other, { beadsRemote: { url: 'not a url' } })).toEqual(other)
   const own = [{ hosts: ['beads-dolt.example'], key: 'MY_DOLT', port: 50051 }]
   expect(ax.withDoltEgress(own, { beadsRemote: remote, egress: own })).toEqual(own)
+})
+
+test('managerEnv gives an https AX server a placeholder token, and an http one or no vault none', () => {
+  const https = 'https://ax.example.svc:8443'
+  expect(ax.managerEnv({ FACTORY_AX_MANAGER_AX_SERVER: https, FACTORY_AX_VAULT: 'v1' })).toMatchObject({
+    AX_SERVER: https,
+    AX_AUTH_TOKEN: 'placeholder',
+  })
+  for (const env of [
+    { FACTORY_AX_MANAGER_AX_SERVER: 'http://ax.example.svc:8080', FACTORY_AX_VAULT: 'v1' },
+    { FACTORY_AX_MANAGER_AX_SERVER: https },
+    {},
+  ])
+    expect('AX_AUTH_TOKEN' in ax.managerEnv(env)).toBe(false)
+})
+
+test('managerEgress gives an https AX server a keyed rule and no http rule', () => {
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8443' })).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['ax.example.svc'], port: 8443, key: 'AX_AUTH', header: 'Authorization', prefix: 'Bearer ' },
+  ])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc' })[1]).toMatchObject({
+    port: 443,
+    key: 'AX_AUTH',
+  })
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'http://ax.example.svc:8080' })[1]).toEqual({
+    hosts: ['ax.example.svc'],
+    port: 8080,
+    http: true,
+  })
+})
+
+test('launchManager with an https AX server injects AX_AUTH and sets a placeholder token', async () => {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_AX_VAULT: 'v1',
+      FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8443',
+    })
+    delete process.env.FACTORY_AX_MANAGER_BROKER
+    delete process.env.FACTORY_POLICY_BROKER
+    await ax.launchManager('mgr@sha256:abc', [], [], { waitMs: 0 })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.AX_AUTH_TOKEN).toBe('placeholder')
+    expect(env.AX_SERVER).toBe('https://ax.example.svc:8443')
+    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
+    expect(rules.at(-1)).toEqual({
+      https: {
+        hostnames: ['ax.example.svc'],
+        ports: { numbers: [8443] },
+        effects: {
+          replaceHeaders: [
+            {
+              header: 'Authorization',
+              prefix: 'Bearer ',
+              credentialUri: 'ate-secret://agent-vault/v1/AX_AUTH',
+            },
+          ],
+        },
+      },
+    })
+  } finally {
+    process.env = saved
+  }
+})
+
+test('createPolicy refuses a manager-only vault key in a policy for any task but the manager', () => {
+  const saved = { ...process.env }
+  try {
+    process.env.FACTORY_AX_VAULT = 'v1'
+    delete process.env.FACTORY_POLICY_BROKER
+    writeFileSync(join(dir, 'actor'), '')
+    const rule = (key: string) => [{ hosts: ['h.example.svc'], key }]
+    const refused: [string, () => unknown][] = [
+      ['AX_AUTH', () => ax.createPolicy('w1', rule('AX_AUTH'))],
+      [
+        'AX_AUTH',
+        () =>
+          ax.createPolicy('w1', [
+            { hosts: ['h.example.svc'], headers: [{ header: 'X', prefix: '', key: 'AX_AUTH' }] },
+          ]),
+      ],
+      ['GITHUB_BASIC_MANAGER', () => ax.createPolicy('w1', [], undefined, undefined, 'GITHUB_BASIC_MANAGER')],
+    ]
+    for (const [key, run] of refused) {
+      rmSync(calls, { force: true })
+      expect(run).toThrow(key)
+      expect(existsSync(calls)).toBe(false)
+    }
+    process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+    expect(() => ax.createPolicy('w1', rule('AX_AUTH'))).toThrow('AX_AUTH')
+    expect(existsSync(calls)).toBe(false)
+    delete process.env.FACTORY_POLICY_BROKER
+    expect(ax.createPolicy(ax.managerTask(), rule('AX_AUTH'))).toBe(true)
+    for (const key of ['ANTHROPIC', 'GITHUB_BASIC', 'DOLT_BASIC', 'KUBE_READ', 'AX_AUTH_X', 'MY_AX_AUTH'])
+      expect(ax.createPolicy('w2', rule(key))).toBe(true)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('the host ax call inherits AX_AUTH_TOKEN, and the fake records only whether it is set', () => {
+  const saved = process.env.AX_AUTH_TOKEN
+  try {
+    process.env.AX_AUTH_TOKEN = 'e2e-fake'
+    ax.phase('t1')
+    expect(readFileSync(join(dir, 'auth'), 'utf8')).toBe('set\n')
+    rmSync(join(dir, 'auth'), { force: true })
+    delete process.env.AX_AUTH_TOKEN
+    ax.phase('t1')
+    expect(readFileSync(join(dir, 'auth'), 'utf8')).toBe('\n')
+  } finally {
+    if (saved === undefined) delete process.env.AX_AUTH_TOKEN
+    else process.env.AX_AUTH_TOKEN = saved
+  }
 })
