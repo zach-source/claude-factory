@@ -519,6 +519,24 @@ test('a conflicting pull request on the run branch mails the station once (confl
   expect(inboxOf('r1').filter(e => e.type === 'MAIL')).toHaveLength(1)
 })
 
+test('a drained conflict mail is not sent again for the same head (conflict AC7, drained)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson()
+  factory(['watch'])
+  const file = join(home, 'runs', 'r1', 'state.json')
+  const st = JSON.parse(readFileSync(file, 'utf8'))
+  const mail = inboxOf('r1').filter(e => e.type === 'MAIL')
+  st.cursor = inboxOf('r1').length
+  st.snapshot.context.mail.deploy = [
+    ...(st.snapshot.context.mail.deploy ?? []),
+    { from: 'factory', text: mail[0].text, at: Date.now() },
+  ]
+  writeFileSync(file, JSON.stringify(st))
+  factory(['watch'])
+  expect(inboxOf('r1').filter(e => e.type === 'MAIL')).toHaveLength(1)
+})
+
 test('UNKNOWN mails nothing; CONFLICTING on the next pass mails (conflict AC8)', () => {
   reset()
   routeRun('r1')
