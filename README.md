@@ -364,6 +364,15 @@ A worker's PreToolUse hook denies these commands:
 
   Run the write and the push as 2 separate commands.
 
+A second PreToolUse entry runs the same hook for the Write, Edit, MultiEdit and NotebookEdit tools
+(claude-factory-g4du). It denies a `file_path` or `notebook_path` in these cases:
+- the path has a `.git` component
+- the path names the global git config (`.gitconfig`, `gitconfig`, `.config/git/`, `$XDG_CONFIG_HOME/git/`)
+- the path has a `shell-snapshots` component
+- the path is missing, empty or a `~user` path
+
+The hook checks the lexical path and the real path, in lower case. A write inside the worktree passes.
+
 The hook also denies an equivalent, disguised form of each command above:
 
 - a `gh api` call whose endpoint is `/graphql` or a full `https://.../graphql` URL, not only
