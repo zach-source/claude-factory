@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createActor } from 'xstate'
-import { compile, validate, where } from '../src/machine'
+import { compile, fill, validate, where } from '../src/machine'
 import lifecycle from './lifecycle'
 import sweeps from './sweeps'
 
@@ -95,4 +95,16 @@ test('maintain leaves advisories to the advisories sweep and keeps end-of-life r
   const p = sweeps.nodes.maintain.prompt
   expect(p).not.toContain('security advisories on')
   expect(p).toContain('end-of-life runtimes')
+})
+
+test('only the monitor prompt carries the Mimir query form, before the guard note', () => {
+  const p = (id: string) => (sweeps.nodes as Record<string, { prompt: string }>)[id]!.prompt
+  expect(p('monitor')).toContain("--post-data='query=<PromQL>'")
+  expect(p('monitor').indexOf('X-Scope-OrgID')).toBeLessThan(
+    p('monitor').indexOf('The factory labels what you file'),
+  )
+  for (const id of Object.keys(sweeps.nodes).filter(i => i !== 'monitor'))
+    expect(p(id), id).not.toContain('X-Scope-OrgID')
+  expect(fill(p('monitor'), {})).toBe(p('monitor'))
+  expect(p('monitor')).not.toMatch(new RegExp(['stig' + 'en', 'spin' + 'dle'].join('|'), 'i'))
 })
