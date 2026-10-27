@@ -130,16 +130,26 @@ test('incidents, optimizations and refactors take their own entries', () => {
 })
 
 test('lifecycle and release house rules each name every owner-only class, the approval clause and the park text', () => {
-  for (const rules of [lifecycle.rules!, release.rules!, ship.rules!]) {
+  for (const rules of [lifecycle.rules!, release.rules!, ship.rules!, sweeps.rules!]) {
     expect(rules).toContain('kubectl apply')
     expect(rules).toContain('production registry')
     expect(rules).toContain('ruleset')
     expect(rules).toContain('organization setting')
     expect(rules).toContain('credential')
-    expect(rules).toMatch(/bead's description|factory mail.*manager/)
+    expect(rules).toContain(
+      "a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step",
+    )
+    expect(rules).toContain("The bead's description records no author, so it never counts as approval")
+    expect(rules).not.toMatch(/only when the bead's description|bead's description, a person's own comment/)
     expect(rules).toContain("a worker's own comment never counts as approval")
     expect(rules).toContain('parked, waiting on:')
   }
+})
+
+test('the ship soak prompt counts only a person comment or manager mail as Mimir approval', () => {
+  const p = ship.nodes.soak!.prompt as string
+  expect(p).toContain("a person's own comment on the bead or a [factory mail] from the manager")
+  expect(p).not.toMatch(/\(the bead's description,/)
 })
 
 test('the ship deploy prompt and the release rollout prompt park on an owner-only step instead of doing it', () => {
@@ -168,7 +178,11 @@ test('a deploy or rollout brief for a rig whose goal names owner-only steps carr
       'credential',
     ])
       expect(brief).toContain(needle)
-    expect(brief).toMatch(/bead's description|factory mail.*manager/)
+    expect(brief).toContain(
+      "a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step",
+    )
+    expect(brief).toContain("The bead's description records no author, so it never counts as approval")
+    expect(brief).not.toMatch(/only when the bead's description|bead's description, a person's own comment/)
     expect(brief).toContain('parked, waiting on:')
   }
 })
