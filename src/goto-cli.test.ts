@@ -95,7 +95,7 @@ test('AC3: the first goto on a run held by rounds queues one line; one tick move
   expect(g.code).toBe(0)
   expect(g.out.trim()).toBe(`queued goto implement for ${r.id}: the next tick applies it`)
   expect(r.lines().length).toBe(1)
-  expect(factory(['mail', r.id, 'implement', 'x']).code).toBe(0)
+  expect(factory(['mail', r.id, 'implement', 'goto-mail-7dd']).code).toBe(0)
   const herdr = join(dir, 'ok-herdr')
   writeFileSync(
     herdr,
@@ -115,5 +115,5 @@ test('AC3: the first goto on a run held by rounds queues one line; one tick move
   expect(snapshot.value).toEqual({ implement: 'working' })
   expect(snapshot.context.seq).toBe(5)
   const brief = readFileSync(join(r.d, 'prompts', '5-implement.md'), 'utf8')
-  expect(JSON.stringify(snapshot.context.mail.implement) + brief).toContain('x')
+  expect(JSON.stringify(snapshot.context.mail.implement) + brief).toContain('goto-mail-7dd')
 })
