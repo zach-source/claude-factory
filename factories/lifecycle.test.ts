@@ -707,3 +707,22 @@ test('triage sends live-read-only beads on a VM to decision (pt4r AC1/AC2)', () 
   expect(lifecycle.nodes.triage!.next.decision).toEqual({ to: 'done', defer: { station: 'plan' } })
   expect(lifecycle.nodes.triage!.next.build).toBe('plan')
 })
+
+test('claude-factory-ocox AC1: a house rule says implement and quick open drafts only and names who marks ready', () => {
+  const line = lifecycle.rules!.split('\n').find((l) => l.includes('gh pr create --draft'))
+  expect(line).toBeDefined()
+  for (const needle of [
+    'implement and quick',
+    'never run `gh pr ready`',
+    'review, security and check',
+    'ship release',
+    'merges a ready',
+  ])
+    expect(line).toContain(needle)
+})
+
+test('claude-factory-ocox AC2/AC3: gh pr ready appears only in the review, security and check prompts; implement opens a draft', () => {
+  for (const [id, node] of Object.entries(lifecycle.nodes))
+    expect(node.prompt.includes('gh pr ready'), id).toBe(['review', 'security', 'check'].includes(id))
+  expect(lifecycle.nodes.implement!.prompt).toContain('gh pr create --draft')
+})
