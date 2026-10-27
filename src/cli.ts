@@ -534,7 +534,7 @@ export function replayable(
   if (cmd === 'mail' && id === run) return argv
   if (cmd === 'memory' && id === 'add') {
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
-    return ['memory', 'add', ...rest, '--from', side.node]
+    return ['memory', 'add', ...rest, '--from', `${run}/${side.node}`]
   }
   return null
 }
