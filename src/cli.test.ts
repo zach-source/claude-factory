@@ -874,12 +874,52 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text.length).toBeLessThan(4800)
 })
 
-// mv9: tells a worker to write in ASD-STE100 and to load the plugin's skill before long text, without
-// copying the plugin's own rules into this file (that text would drift from the plugin)
-test('the worker system prompt tells a worker to write in ASD-STE100 and load the asd-ste100 skill first', () => {
+// mv9, claude-factory-qda: the brief of a station with asd-ste100 tells the worker to write in ASD-STE100 and to
+// load the plugin's skill before long text, without copying the plugin's own rules (that text would drift).
+// The worker system prompt no longer says it: a station without the skill must not read it
+test('the brief names the station skills: asd-ste100 tells a worker to write in ASD-STE100, an empty set adds nothing', () => {
+  const def = (skills?: string[]) => ({
+    name: 'f',
+    start: 'implement',
+    skills,
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  })
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-qda-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-qda-test',
+    branch: 'b',
+  }
+  const withSte = brief(run, def(), 'implement', c, [])
+  expect(withSte).toContain('## Skills')
+  expect(withSte).toContain('ASD-STE100')
+  expect(withSte).toContain('asd-ste100 skill')
+  const none = brief(run, def([]), 'implement', c, [])
+  expect(none).not.toContain('## Skills')
+  expect(none).not.toContain('asd-ste100 skill')
+  expect(none).not.toContain('Write every text a person reads')
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
-  expect(text).toContain('ASD-STE100')
-  expect(text).toContain('asd-ste100 skill')
+  expect(text).not.toContain('asd-ste100')
   expect(text.length).toBeLessThan(4800)
 })
 

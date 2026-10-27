@@ -1076,6 +1076,16 @@ export function ruleLines(
   ]
 }
 
+/** what a station's skills are for, by name (a name needs a line here; workerSkills accepts only image plugins) */
+const SKILL_USE: Record<string, string> = {
+  'asd-ste100':
+    'Write every text a person reads in ASD-STE100: PR titles and bodies, commit messages, bead comments, reports, docs, code comments. Use short sentences, active voice and approved words. Before you write a PR body, a doc or a long report, load the asd-ste100 skill.',
+}
+const skillLines = (skills: string[]) =>
+  skills.length
+    ? ['', '## Skills', ...skills.map(s => `- ${s}: ${SKILL_USE[s] ?? 'load it when it applies'}`)]
+    : []
+
 export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[], notes = '') {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
@@ -1096,6 +1106,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       personOnlyContexts(rigOf(run.repo)),
       !!mergeAuthority(rigOf(run.repo)),
     ),
+    ...skillLines(workerSkills(def, n, rigOf(run.repo))),
     '',
     ...remembered(run, node, notes),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
