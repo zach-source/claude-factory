@@ -985,7 +985,7 @@ export default {
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
 the manager; lifecycle's review has 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `onRounds` (a node for a re-plan at the round cap, below),
-`repeatMail` (an outcome that mails the manager on a repeat, below), `gate: true` for a station the
+`repeatMail` (an outcome that mails the manager on a repeat, below), `mergeCheck` (an outcome the runner reports when the branch conflicts with the default branch, below), `gate: true` for a station the
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
 worker (lifecycle's `deploy`; see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }`
@@ -1034,6 +1034,13 @@ In the second case, a manager `goto` reaches a node that another node's `onRound
 then reports in between. It has no `replan` entry of its own.
 
 Lifecycle's verify sets `repeatMail` to `red`. Its prompt asks for the `Failing:` line.
+
+`mergeCheck` names an outcome in `next`. Before a fresh worker starts at that station, the runner
+runs `git merge-tree` on origin's default branch and `origin/<run branch>`. If the merge has a text
+conflict, no worker starts. The runner reports the outcome at once. The summary names the
+conflicting files and tells the next station to merge the default branch and keep both sides of
+`CHANGELOG.md`. Each such report uses one step of the budget. If the check fails (a failed fetch, a
+branch not on origin), the worker starts as usual. Lifecycle's verify sets `mergeCheck` to `red`.
 
 `onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
 than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the

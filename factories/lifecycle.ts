@@ -180,6 +180,7 @@ For a refactor: no behavior change; the characterization tests stay untouched an
 Run the full pipeline the repo defines: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Check each acceptance criterion from the plan and say how you verified it. Then try to fail it as review would: \`git merge-tree\` it against origin/main (a conflict is red); break each new guard or comparison and see a test fail; check that each fixture can occur in real data, each claim in a changed doc matches the code, and each documented command runs as written. For an optimization, re-run the baseline's measurement and compare it with the target. For a refactor, confirm the characterization tests are unchanged and green. For a change to .factory/, run the factory check on every changed file.
 Report green with the evidence, or red with a numbered list of every failure, the AC id each one fails, and how to reproduce it, each also recorded as a bug task of this run (see Tracking). End a red report with one line \`Failing: AC2, AC6\` naming only the AC ids that still fail, so a repeat on the same id is easy to spot and a passing AC named elsewhere in the report never counts as one.`,
       repeatMail: 'red', // red twice in a row on the same AC id (the report's own "Failing:" line) mails the manager; the run still goes to implement
+      mergeCheck: 'red', // a conflicting branch goes back to implement with no verify worker
       next: { green: 'review', red: 'implement' },
     },
     review: {
