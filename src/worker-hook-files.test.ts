@@ -10,7 +10,7 @@ let root: string
 let home: string
 let cfg: string
 let xdg: string
-const env = () => ({ home, xdg })
+const env = (): { home: string; xdg?: string | undefined } => ({ home, xdg })
 
 beforeAll(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), 'g4du-')))
