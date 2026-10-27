@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
@@ -44,6 +44,9 @@ import {
   reworkGoal,
   ruleLines,
   selfUpdateMail,
+  managerStale,
+  managerStaleMail,
+  writeManagerLaunch,
   tokenDigestMail,
   stalled,
   swapUntil,
@@ -2245,4 +2248,69 @@ test('a rework label on a run-owned PR mails the parked station with wake (61pu.
   expect(sent[0]).toMatchObject({ type: 'MAIL', to: 'deploy', wake: true })
   reworkOwned(pr, { id: 'r', node: 'rollback', c }, io)
   expect(sent[1]).not.toHaveProperty('wake')
+})
+
+test('managerCommand([], "") holds no per-launch extras and ignores the caller plugin dirs (claude-factory-772)', () => {
+  const env = (c: string[]) => JSON.parse(c[c.indexOf('--settings') + 1]!).env.CLAUDE_CODE_PLUGIN_DIRS
+  expect(env(managerCommand([], 'x/herdr-fleet:y'))).toBe('y')
+  expect(env(managerCommand([], 'y'))).toBe('y')
+  const c = managerCommand([], '')
+  for (const f of ['--resume', '--session-id', '--add-dir']) expect(c).not.toContain(f)
+})
+
+test('writeManagerLaunch stores pid, startedAt and argv in manager.json, mode 0600 (claude-factory-772)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'manager-launch-'))
+  writeManagerLaunch(home, 123, 1000, ['claude', '--tools', 'Bash'])
+  expect(JSON.parse(readFileSync(join(home, 'manager.json'), 'utf8'))).toEqual({
+    pid: 123,
+    startedAt: 1000,
+    argv: ['claude', '--tools', 'Bash'],
+  })
+  expect(statSync(join(home, 'manager.json')).mode & 0o777).toBe(0o600)
+})
+
+test('managerStale says restart only for a live manager with an older launch command (claude-factory-772)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'manager-stale-'))
+  const now = ['claude', '--tools', 'Bash,Agent']
+  const old = ['claude', '--tools', 'Bash']
+  const alive = () => true
+  expect(managerStale(home, now, alive)).toBeNull() // no file
+  writeManagerLaunch(home, 5, 1000, old)
+  const text = managerStale(home, now, alive)!
+  expect(text).toContain('restart factory manager')
+  expect(text).toContain('Agent')
+  expect(managerStale(home, now, () => false)).toBeNull() // dead pid
+  writeManagerLaunch(home, 5, 1000, now)
+  expect(managerStale(home, now, alive)).toBeNull() // equal
+  writeFileSync(join(home, 'manager.json'), 'not json')
+  expect(managerStale(home, now, alive)).toBeNull()
+  writeFileSync(join(home, 'manager.json'), JSON.stringify({ pid: 5, startedAt: 1 }))
+  expect(managerStale(home, now, alive)).toBeNull() // argv missing
+  writeFileSync(join(home, 'manager.json'), JSON.stringify({ pid: 5, startedAt: 1, argv: 'x' }))
+  expect(managerStale(home, now, alive)).toBeNull() // argv not an array
+})
+
+test('status prints the manager line, and only without a run id (claude-factory-772)', () => {
+  const src = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8')
+  const body = src.slice(src.indexOf('async function status('))
+  expect(body.slice(0, body.indexOf('\n}\n'))).toMatch(/!id[\s\S]*managerStale\(HOME/)
+})
+
+test('managerStaleMail mails once for each launch, from the factory (claude-factory-772)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'manager-stale-mail-'))
+  const now = managerCommand([], '')
+  const old = [...now, '--old']
+  const alive = () => true
+  expect(managerStaleMail(1, home, alive)).toEqual([])
+  writeManagerLaunch(home, 5, 1000, now)
+  expect(managerStaleMail(1, home, alive)).toEqual([]) // not stale: no marker
+  expect(existsSync(join(home, 'manager-stale-mailed.json'))).toBe(false)
+  writeManagerLaunch(home, 5, 1000, old)
+  const first = managerStaleMail(2, home, alive)
+  expect(first).toHaveLength(1)
+  expect(first[0]!.from).toBe('factory')
+  expect(first[0]!.run).toBe('factory')
+  expect(managerStaleMail(3, home, alive)).toEqual([])
+  writeManagerLaunch(home, 6, 2000, old)
+  expect(managerStaleMail(4, home, alive)).toHaveLength(1)
 })
