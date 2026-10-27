@@ -530,7 +530,7 @@ test('a drained conflict mail is not sent again for the same head (conflict AC7,
   st.cursor = inboxOf('r1').length
   st.snapshot.context.mail.deploy = [
     ...(st.snapshot.context.mail.deploy ?? []),
-    { from: 'factory', text: mail[0].text, at: Date.now() },
+    { from: 'factory', text: mail[0]!.text, at: Date.now() },
   ]
   writeFileSync(file, JSON.stringify(st))
   factory(['watch'])
