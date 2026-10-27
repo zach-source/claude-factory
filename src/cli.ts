@@ -1926,7 +1926,7 @@ export function runTokenSwap(
     const live = (codex ? /label (\S+) is live/ : /slot (\S+) is live/).exec(p.stdout.toString())?.[1] ?? '?'
     send({
       type: 'MAIL',
-      from: node,
+      from: 'factory',
       to: 'manager',
       text: `Swapped the ${codex ? 'Codex' : 'Claude'} token for ${runnerName} workers: ${codex ? 'label' : 'slot'} ${live} is live; they go on once the vault refreshes.`,
     })
@@ -2617,7 +2617,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         const text = runner.local
           ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
           : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
-        send({ type: 'MAIL', from: node, to: 'manager', text })
+        send({ type: 'MAIL', from: 'factory', to: 'manager', text })
         writeJson(paged, until)
       }
       return 'usage limit'
