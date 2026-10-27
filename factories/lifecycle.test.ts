@@ -661,6 +661,9 @@ test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle s
     .map(([name]) => name)
     .sort()
   expect(holders).toEqual(['implement', 'quick'])
-  for (const name of holders) for (const t of BOT_TOKENS) expect((lifecycle as Factory).nodes[name]!.prompt).toContain(t)
-  expect((lifecycle as Factory).nodes.implement!.prompt).toContain('Add no changelog entry and no version bump')
+  for (const name of holders)
+    for (const t of BOT_TOKENS) expect((lifecycle as Factory).nodes[name]!.prompt).toContain(t)
+  expect((lifecycle as Factory).nodes.implement!.prompt).toContain(
+    'Add no changelog entry and no version bump',
+  )
 })

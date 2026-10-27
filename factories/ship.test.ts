@@ -205,7 +205,8 @@ const BOT_TOKENS = [
   'separate commands',
   'The pull request title is the changelog line',
 ]
-const botText = (p: string) => p.slice(p.indexOf('In the infra-blocks repo'), p.indexOf('bumps VERSION.') + 'bumps VERSION.'.length)
+const botText = (p: string) =>
+  p.slice(p.indexOf('In the infra-blocks repo'), p.indexOf('bumps VERSION.') + 'bumps VERSION.'.length)
 
 test('infra-blocks pre-push bot-file check is in exactly the ship queue and release, equal to lifecycle', () => {
   const nodes = (ship as Factory).nodes
