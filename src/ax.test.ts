@@ -1026,6 +1026,34 @@ test("a cached devenv becomes the worker's environment, keeping the VM's places 
   }
 })
 
+test('loadDevenv does not run the devenv enterShell (shellHook)', () => {
+  const own = join(dir, 'own-devenv2')
+  const repo = join(dir, 'repo-devenv2')
+  const bin = join(dir, 'devenv-bin2')
+  const marker = join(dir, 'enter-shell-ran')
+  for (const d of [own, repo, bin]) mkdirSync(d, { recursive: true })
+  writeFileSync(join(repo, 'devenv.nix'), '{ }\n')
+  writeFileSync(
+    join(bin, 'devenv'),
+    `#!/bin/sh\necho "export GOROOT=/nix/go2; shellHook='touch ${marker}'; export shellHook"\necho 'eval \${shellHook:-}'\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_NIX_CACHE: 'https://cache.example.com:8443/devenv devenv:key=',
+    PATH: `${bin}:${process.env.PATH}`,
+  })
+  try {
+    worker.loadDevenv()
+    expect(process.env.GOROOT).toBe('/nix/go2')
+    expect(existsSync(marker)).toBe(false)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('setup trusts the CA and clones the branch once, retrying while egress is closed', async () => {
   const origin = join(dir, 'origin.git')
   const seed = join(dir, 'seed')

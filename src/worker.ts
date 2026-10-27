@@ -614,6 +614,7 @@ const NOT_DEVENV = new Set([
 /**
  * the repo's devenv.nix, when its rig caches it, as the worker's own environment, so the agent and all it runs
  * have the repo's toolchain without devenv shell, whose enterShell runs the repo's git hooks (minutes of bazel).
+ * It drops print-dev-env's closing 'eval ${shellHook:-}' line, so enterShell does not run here either.
  * Every start: the environment lives only in this process. A devenv that will not load leaves the VM as it was
  */
 export function loadDevenv() {
@@ -623,7 +624,8 @@ export function loadDevenv() {
   const made = Bun.spawnSync(['devenv', 'print-dev-env'], { cwd: repo(), env, stderr: 'pipe' })
   if (made.exitCode !== 0)
     return void console.error(`devenv print-dev-env: ${made.stderr.toString().trim().slice(-2000)}`)
-  writeFileSync(script, made.stdout)
+  // the script ends with 'eval ${shellHook:-}', which runs enterShell: drop it
+  writeFileSync(script, made.stdout.toString().replace(/^[ \t]*eval \$\{shellHook:-\}[ \t]*$/gm, ''))
   const dumped = Bun.spawnSync(
     ['bash', '-c', `e=$(command -v env); . '${script}' >/dev/null 2>&1; "$e" -0`],
     { cwd: repo(), env },
