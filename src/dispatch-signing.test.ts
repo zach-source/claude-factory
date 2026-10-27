@@ -81,7 +81,7 @@ function setup(rigs: Record<string, unknown>[], ready: boolean | 'unlabeled' = t
     [
       '#!/bin/sh',
       'case "$1" in',
-      `  ready) printf '%s' '${beads}';;`,
+      `  ready) case "$*" in *--label*) printf '%s' '${ready === true ? beads : '[]'}';; *) printf '%s' '${beads}';; esac;;`,
       "  children) printf '%s' '[]';;",
       `  list) printf '%s' '${beads}';;`,
       '  dolt) echo "No remotes configured";;',
