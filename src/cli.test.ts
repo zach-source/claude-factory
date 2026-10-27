@@ -2059,4 +2059,7 @@ test('label mail wakes only the ship station parked on that very PR (61pu)', () 
   expect(labelMail({ c, node: 'deploy' }, 'https://github.com/acme/widget/pull/8', 't')).not.toHaveProperty(
     'wake',
   )
+  // a rework label on the PR a run owns (rollback parked on its revert PR) mails through the same rule
+  const owner = { id: 'r', node: 'rollback', c, log: (c as { log: never[] }).log }
+  expect(labelMail({ c: owner.c, node: owner.node }, url, 't')).not.toHaveProperty('wake') // node differs from the parked one
 })

@@ -7130,7 +7130,7 @@ async function labelPass() {
   const live = runIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
-    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log }))
+    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log, c: r.c }))
   for (const rig of rigs()) {
     const cli = (bin: string, args: string[]) => {
       const p = Bun.spawnSync([bin, ...args], { cwd: rig.repo, timeout: 60_000 })
@@ -7214,11 +7214,12 @@ async function labelPass() {
             error: `${pr.url} is labeled ${reworkLabels(pr).join(', ')} but comes from a fork: rework it there`,
           })
         } else if (action === 'rework' && runId) {
-          const node = live.find(r => r.id === runId)!.node
+          const owner = live.find(r => r.id === runId)!
+          const node = owner.node
           const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
           // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
           forge.unlabel(pr, reworkLabels(pr))
-          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
+          post(runId, labelMail({ c: owner.c, node }, pr.url, text))
           forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
