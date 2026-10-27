@@ -136,6 +136,12 @@ export type Node = {
    */
   awaitsPr?: true
   /**
+   * While this station is parked on a pull or merge request (its last log entry is a blocked entry that
+   * links one), plain mail stays in its box and starts no worker. A MAIL with `wake: true` starts one, and
+   * so does the clock. `validate` refuses this field on a gate: a gate has no worker.
+   */
+  holdMail?: true
+  /**
    * Marks this node a sweep station. `sweep()` runs it at most once per `everyMin` minutes, for each
    * rig. No person or other station sends work to it. `validate` requires a value greater than 0.
    * `src/sweeps.ts`'s `sweepNames` function reads every node that carries this field.
@@ -257,7 +263,7 @@ export type Ev = At &
     | { type: 'HANDOFF'; seq: number; summary: string }
     /** the worker waits on something outside the run (a person, another run, a review): park, spend no attempt */
     | { type: 'BLOCKED'; seq: number; reason: string }
-    | { type: 'MAIL'; from: string; to: string; text: string }
+    | { type: 'MAIL'; from: string; to: string; text: string; wake?: true }
     | { type: 'READ'; box: string; seen: number }
     /** the runner's watch took a parked station's outcome from its pull request, with no worker (claude-factory-5wav) */
     | { type: 'ROUTE'; node: string; outcome: string; summary: string }
@@ -311,6 +317,7 @@ export function validate(def: Factory): Factory {
           `${id}: split share "${node.split.share}" must be a number between 0 and 1`,
         node.gate && node.runner && `${id}: a gate has no worker, so no runner`,
         node.gate && node.awaitsPr && `${id}: a gate has no worker, so nothing to hold back`,
+        node.gate && node.holdMail && `${id}: a gate has no worker, so no mail to hold`,
         node.gate && node.onTimeout && `${id}: a gate has no worker, so no onTimeout`,
         node.onTimeout &&
           !(node.onTimeout.timeoutMin > (node.timeoutMin ?? 60)) &&
@@ -397,6 +404,16 @@ export const isParked = (c: Ctx, node: string) => {
   const last = c.log.at(-1)
   return last?.node === node && last.outcome === 'blocked'
 }
+
+/** a holdMail station parked on a pull or merge request: plain mail waits in its box */
+export const isMailHeld = (c: Ctx, node: string, holds?: boolean) =>
+  !!holds &&
+  isParked(c, node) &&
+  prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0
+
+/** whether the station is parked by a blocked report that links this pull or merge request */
+export const isParkedOn = (c: Ctx, node: string, url: string) =>
+  isParked(c, node) && [...prsIn(c.log.at(-1)!.summary), ...mrsIn(c.log.at(-1)!.summary)].includes(url)
 
 /** how many outage holds in a row a station gets before the outage fails like any other fault */
 export const OUTAGE_HOLDS = 4
@@ -694,7 +711,10 @@ export function compile(def: Factory) {
             MAIL: [
               {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
-                  event.type === 'MAIL' && event.to === id && isParked(context, id),
+                  event.type === 'MAIL' &&
+                  event.to === id &&
+                  isParked(context, id) &&
+                  (!!event.wake || !isMailHeld(context, id, node.holdMail)),
                 target: 'working',
                 actions: assign(withMail),
               },

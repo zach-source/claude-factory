@@ -210,3 +210,23 @@ test('AC7: a pull request merged before a worker park never re-parks; the plain 
   expect(kind({ now: min(30), prs: [{ ...merged, updatedAt: iso(20) }] })).toBeUndefined()
   expect(kind({ prs: [] })).toBeUndefined()
 })
+
+test('claude-factory-61pu AC5: a draft or review decision change wakes; equal or missing baseline does not', () => {
+  const seen = (s: object) => ({ seen: { heads: { [URL]: 'aaaaaaa1' }, ...s } })
+  expect(kind({ prs: [pr({ isDraft: false })], ...seen({ drafts: { [URL]: true } }) })).toBe('wake')
+  expect(kind({ prs: [pr({ isDraft: true })], ...seen({ drafts: { [URL]: false } }) })).toBe('wake')
+  expect(kind({ prs: [pr({ isDraft: true })], ...seen({ drafts: { [URL]: true } }) })).toBeUndefined()
+  expect(kind({ prs: [pr({ isDraft: false })], ...seen({}) })).toBeUndefined()
+  const dec = { decisions: { [URL]: 'REVIEW_REQUIRED' } }
+  expect(kind({ prs: [pr({ reviewDecision: 'APPROVED' })], ...seen(dec) })).toBe('wake')
+  expect(kind({ prs: [pr({ reviewDecision: 'REVIEW_REQUIRED' })], ...seen(dec) })).toBeUndefined()
+  expect(kind({ prs: [pr({ reviewDecision: 'APPROVED' })], ...seen({}) })).toBeUndefined()
+  expect(kind({ prs: [pr()], ...seen(dec) })).toBeUndefined()
+})
+
+test('claude-factory-61pu AC7: held mail ends the repark; the timer starts the worker', () => {
+  expect(kind({ now: min(480), held: true })).toBeUndefined()
+  expect(kind({ now: min(480), held: false })).toBe('repark')
+  // a change still wakes a held park
+  expect(kind({ now: min(480), held: true, prs: [pr({ state: 'MERGED', mergedAt: iso(5) })] })).toBe('wake')
+})

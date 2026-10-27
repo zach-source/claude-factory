@@ -75,9 +75,10 @@ test(
     await ui.press({ key: 'iv-opt-iv:r1@1-0' })
     await clock.settle()
     const mail = ran.find(a => a.includes('mail'))
-    expect(mail?.slice(-3)).toEqual([
+    expect(mail?.slice(-4)).toEqual([
       'r1',
       'triage',
+      '--wake',
       'Answering "Which spec wins?": The person chose: the ADR.',
     ])
     expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
@@ -546,7 +547,7 @@ test(
     await clock.settle()
     const mails = ran.filter(a => a.includes('mail'))
     expect(mails).toHaveLength(2)
-    expect(mails.map(a => a.slice(-3)[0])).toEqual(['ra', 'rb']) // one mail to each station
+    expect(mails.map(a => a.slice(-4)[0])).toEqual(['ra', 'rb']) // one mail to each station
     expect(
       mails.every(a => a.slice(-1)[0] === 'Answering "Merge policy?": The person chose: pause merges.'),
     ).toBe(true)
@@ -593,7 +594,7 @@ test(
     await ui.press({ key: 'iv-opt-iv:ra@1-0' }) // 'pause merges'
     await clock.settle()
     const mails = ran.filter(a => a.includes('mail'))
-    expect(mails.map(a => a.slice(-3)[0])).toEqual(['ra', 'rb']) // both attempted, in order
+    expect(mails.map(a => a.slice(-4)[0])).toEqual(['ra', 'rb']) // both attempted, in order
     const drawn = JSON.stringify(await ui.drawn())
     // ra's own answer still recorded, even though rb's mail failed right after it
     expect(drawn).toContain('answered (1)')
@@ -716,7 +717,7 @@ test(
     await clock.settle()
     const mails = ran.filter(a => a.includes('mail'))
     expect(mails).toHaveLength(1)
-    expect(mails[0]!.slice(-3, -1)).toEqual(['s2', 'deploy'])
+    expect(mails[0]!.slice(-4, -2)).toEqual(['s2', 'deploy'])
     expect(mails[0]!.at(-1)).toContain('done, applied')
     await ui.unmount()
   },

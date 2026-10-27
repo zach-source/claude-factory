@@ -205,7 +205,7 @@ test('a merge or close mail wakes a parked deploy, which then routes every outco
     const released = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'waiting'])
-    actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+    actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, wake: true, at: 2000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'working'])
     const deploySeq = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: deploySeq, outcome, summary: outcome, at: 3000 })
@@ -218,7 +218,7 @@ test("a worker's own blocked report at deploy still parks as today, after the pr
   actor.send({ type: 'GOTO', node: 'release', at: 0 })
   const released = actor.getSnapshot().context.seq
   actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
-  actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+  actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, wake: true, at: 2000 })
   const deploySeq = actor.getSnapshot().context.seq
   actor.send({ type: 'BLOCKED', seq: deploySeq, reason: `still waiting on review ${PR}`, at: 3000 })
   const s = actor.getSnapshot()
@@ -566,6 +566,17 @@ test('plan names the proof for each AC, negative rows and a fail-closed class ru
   expect(p).toContain('out of scope')
 })
 
+test('triage rejects a second fix for a red main (claude-factory-yhf5)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'gh pr list --state open --search',
+    'in:title,body',
+    'factory status',
+    'reject as already tracked and name that PR',
+  ])
+    expect(p).toContain(s)
+})
+
 test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
   const decision = { to: 'done', defer: { station: 'plan' } }
   expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
@@ -678,4 +689,21 @@ test('plan keeps tests and the change they wait on in one PR, or orders the bead
     'red required checks by design',
   ])
     expect(prompt).toContain(t)
+})
+
+// claude-factory-pt4r: a bead whose ACs are all live reads goes to decision on a VM, not to plan.
+test('triage sends live-read-only beads on a VM to decision (pt4r AC1/AC2)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'live read',
+    'kubectl get',
+    'Mimir query',
+    'needs no code',
+    'Classify it decision',
+    'name the exact reads',
+    'laptop runner',
+  ])
+    expect(p).toContain(s)
+  expect(lifecycle.nodes.triage!.next.decision).toEqual({ to: 'done', defer: { station: 'plan' } })
+  expect(lifecycle.nodes.triage!.next.build).toBe('plan')
 })

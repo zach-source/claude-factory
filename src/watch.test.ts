@@ -153,6 +153,39 @@ test('a merge after the park wakes the station at once (AC3)', () => {
   expect(watchJson.woke[0]).toMatchObject({ run: 'r1', node: 'deploy', url: PR })
 })
 
+test('the watch wake mail has wake true, so a PR change starts a holdMail station (61pu AC6)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'MERGED', updatedAt: iso(1 * 60_000) }))
+  parkedRun('r1', repo(), f)
+  factory(['watch'])
+  expect(mailOf('r1')[0]).toMatchObject({ from: 'factory', wake: true })
+})
+
+test('factory mail: --wake sets wake; a held box prints the held line; later --wake stays text (61pu AC8)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  const held: Factory = {
+    ...SHIP,
+    nodes: { ...SHIP.nodes, deploy: { ...SHIP.nodes.deploy!, holdMail: true } },
+  }
+  writeFileSync(f, JSON.stringify(held))
+  parkedRun('r1', repo(), f, { def: held })
+  const plain = factory(['mail', 'r1', 'deploy', 'Report', 'blocked'])
+  expect(plain.out).toContain('held for deploy: parked on ' + PR)
+  expect(plain.out).toContain('add --wake to start one now')
+  expect(mailOf('r1').at(-1)).toMatchObject({ text: 'Report blocked' })
+  expect(mailOf('r1').at(-1)).not.toHaveProperty('wake')
+  const woken = factory(['mail', 'r1', 'deploy', '--wake', 'answer'])
+  expect(woken.out).not.toContain('held for')
+  expect(mailOf('r1').at(-1)).toMatchObject({ text: 'answer', wake: true })
+  const late = factory(['mail', 'r1', 'deploy', 'say', '--wake'])
+  expect(mailOf('r1').at(-1)).toMatchObject({ text: 'say --wake' })
+  expect(mailOf('r1').at(-1)).not.toHaveProperty('wake')
+  expect(late.out).toContain('mailed deploy')
+})
+
 test('a merge that predates a pre-launch park still wakes it at once, not out its plain park wait (AC3)', () => {
   reset()
   const f = join(dir, 'ship.json')

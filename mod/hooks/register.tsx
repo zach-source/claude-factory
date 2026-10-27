@@ -1185,7 +1185,7 @@ async function answer($: EngineInterface, m: FactoryMail, kind: 'approve' | 'rej
     d.replies?.[key] ?? '',
   )
   if (!reply) return $.ui.toast(`factory: ${m.run} has ended, nobody would read the answer`)
-  if (!(await act($, ['mail', m.run, reply.to, reply.text]))) return
+  if (!(await act($, ['mail', m.run, reply.to, '--wake', reply.text]))) return
   rt.unsent.push({
     run: m.run,
     from: 'person',
@@ -1244,7 +1244,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
           return await flush(false)
       }
     } else {
-      if (!(await act($, ['mail', member.run!, member.node!, text]))) return await flush(false)
+      if (!(await act($, ['mail', member.run!, member.node!, '--wake', text]))) return await flush(false)
       if (member.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', member.run!])
     }
     rt.unsent.push({

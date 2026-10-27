@@ -23,6 +23,12 @@ function walk(def: Factory, outcomes: string[], at = def.start) {
   return { visited, snapshot: actor.getSnapshot() }
 }
 
+test('queue runs on the laptop like deploy, soak and rollback; release and postmortem keep the rig runner', () => {
+  const runner = (n: string) => (ship.nodes as Record<string, { runner?: string }>)[n]!.runner
+  for (const n of ['queue', 'deploy', 'soak', 'rollback']) expect(runner(n)).toBe('herdr')
+  for (const n of ['release', 'postmortem']) expect(runner(n)).toBeUndefined()
+})
+
 test('ship validates, compiles and starts at queue', () => {
   expect(() => compile(validate(ship))).not.toThrow()
   expect(ship.name).toBe('ship')
