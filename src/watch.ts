@@ -177,7 +177,10 @@ export function watchDecide(i: DecideInput): Decision | null {
       return wake(p, p.isDraft ? 'it is a draft again' : 'it is ready for review')
     const wasDecision = i.seen?.decisions?.[p.url]
     if (p.reviewDecision !== undefined && wasDecision !== undefined && p.reviewDecision !== wasDecision)
-      return wake(p, `its review decision is now ${p.reviewDecision || 'none'} (was ${wasDecision || 'none'})`)
+      return wake(
+        p,
+        `its review decision is now ${p.reviewDecision || 'none'} (was ${wasDecision || 'none'})`,
+      )
     const note = (p.notes ?? []).find(n => n.person && after(n))
     if (note) return wake(p, `a person reviewed or commented on it at ${new Date(note.at).toISOString()}`)
   }

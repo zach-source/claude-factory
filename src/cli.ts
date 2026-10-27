@@ -7334,7 +7334,9 @@ async function watchPass() {
           store[key] = {
             heads: Object.fromEntries(prs.flatMap(p => (p.headRefOid ? [[p.url, p.headRefOid]] : []))),
             changes: Object.fromEntries(prs.map(p => [p.url, !!p.changesRequested])),
-            drafts: Object.fromEntries(prs.flatMap(p => (p.isDraft === undefined ? [] : [[p.url, p.isDraft]]))),
+            drafts: Object.fromEntries(
+              prs.flatMap(p => (p.isDraft === undefined ? [] : [[p.url, p.isDraft]])),
+            ),
             decisions: Object.fromEntries(
               prs.flatMap(p => (p.reviewDecision === undefined ? [] : [[p.url, p.reviewDecision]])),
             ),
@@ -7343,7 +7345,8 @@ async function watchPass() {
           // a URL whose first view failed gets its baseline at its first good view
           for (const p of prs) {
             if (p.headRefOid && !(p.url in seen.heads)) seen.heads[p.url] = p.headRefOid
-            if (seen.drafts && p.isDraft !== undefined && !(p.url in seen.drafts)) seen.drafts[p.url] = p.isDraft
+            if (seen.drafts && p.isDraft !== undefined && !(p.url in seen.drafts))
+              seen.drafts[p.url] = p.isDraft
             if (seen.decisions && p.reviewDecision !== undefined && !(p.url in seen.decisions))
               seen.decisions[p.url] = p.reviewDecision
             if (seen.changes && !(p.url in seen.changes)) seen.changes[p.url] = !!p.changesRequested

@@ -58,6 +58,7 @@ Report ready when at least one queued pull request is current with main and has 
       next: { ready: 'release', again: 'queue', empty: 'done' },
     },
     release: {
+      holdMail: true,
       timeoutMin: 60,
       prompt: `Every child task of the bead must be closed (bd children <bead>). If one is open, report changes and name it. Prepare the release of every queued pull request that the queue reported as current with main and free of conflict, in merge order. For each one, make the pull request title one good changelog line (retitle it with \`gh pr edit <n> -R <repo> --title\` when it is not), add the version bump the repo's conventions call for, update the pull request description with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\` if it is still a draft (the station that approved it usually did). Do not edit CHANGELOG.md in a pull request. The repo's release step writes the changelog at release (tag) time from the merged pull request titles. Wait for CI and read every failing check. Do not mark a pull request ready when it has a conflict or a red check: list it on its own with the reason.
 If your brief has a "Merge authority" section, merge each ready pull request in order, after you re-check that CI is green on its head SHA, that every review passed and that no check is red: \`gh pr merge <n> -R <repo> --merge --match-head-commit <head SHA>\` (-R is required, and it must be the rig's own repo), where the SHA comes from \`gh pr view <n> --json headRefOid\`. Add \`--auto\` when \`gh api repos/<repo>/rules/branches/main\` lists merge_queue, or a pull_request rule with required_approving_review_count above 0: GitHub then merges it (or puts it in the queue) only after the owner's approval and the required checks. Such a pull request counts as handed over for this order; report it as enqueued, not merged, and do not wait for it. If gh refuses \`--auto\` because the repo does not allow auto-merge, stop and list the owner-only step: turn on \"Allow auto-merge\" in the repo settings. Stop at the first pull request that fails a check or that the hook refuses. Then report ready, with the merge SHA of each merged pull request.
@@ -71,6 +72,7 @@ Without that section, you never merge. Report ready when the first pull request 
       // the arrival carries the pull request link (release always names it): the tick waits for the
       // merge, the close, or new activity on that pull request, and spawns no worker until then
       awaitsPr: true,
+      holdMail: true,
       prompt: `Ship the pull request that the queue named, once a person has merged it: their merge is the approval, and you never merge it yourself (never merge a pull request, whatever its state). First check what is already done (merged? tagged? deployed?) and do only what is not.
 A merge approves the change it carries, not an owner-only step (see House rules): a hand-run kubectl or helm apply, an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential change. Do every other step, then park with "parked, waiting on: <the owner step and the exact command>" and a \`Question:\` line asking the person to run it or to approve you running it.
 Not merged yet: if a person requested changes or left comments asking for them, report changes with every point they raised and the evidence in a bead comment; if a person closed it unmerged, take it out of the queue first (\`bd update <bead> --remove-label ship\`, then \`bd defer <bead>\`) and report hold with their reason, if any; otherwise report blocked with the pull request link and what it waits for (the merge, or a required check or queue), so the person is asked; you are woken when it changes. If your inbox says a new pull request joined the queue, report refresh.
@@ -98,6 +100,7 @@ Report healthy when it holds, after you close its bead with \`bd close <bead>\`;
       },
     },
     rollback: {
+      holdMail: true,
       runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
