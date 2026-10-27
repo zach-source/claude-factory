@@ -1392,7 +1392,12 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const harness = harnessOf(agent)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   axCodexRefused(agent)
-  const egress = harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress
+  const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
+  // the VM clones its beads from the rig's beadsRemote: its egress needs that Dolt rule
+  const egress = ax.withDoltEgress(
+    harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress,
+    hasRunBeads ? rig : undefined,
+  )
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1452,7 +1457,6 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
         ]
       : []),
   ].join('\n')
-  const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
   // Substrate takes no env value past 32 KiB, and a brief with its bead's spec can pass that: it goes over
   // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
   // beadsRemote or else the repo's GitHub origin
