@@ -1192,6 +1192,32 @@ test('a changed routing config drops the cutoff; an unchanged one keeps it (clau
   expect(JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8')).a.routing).toContain('"y"')
 })
 
+test('a failed pass after a routing change keeps the old routing, so the next good pass still drops the cutoff (claude-factory-dvg)', () => {
+  const rig = (labels: string[]) => [
+    { name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM], labels } },
+  ]
+  const pulls = () => callLines().filter(l => argvOf(l).startsWith('linear pull'))
+  const backdate = () => {
+    const s = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+    s.a.at = Date.now() - 20 * 60_000 - 1000
+    writeFileSync(join(home, 'linear-sync.json'), JSON.stringify(s))
+  }
+  writeRigs(rig(['x']))
+  factory(['linear'])
+  expect(pulls()).toHaveLength(1)
+
+  writeRigs(rig(['x', 'y']))
+  backdate()
+  writeFileSync(mode, 'error')
+  factory(['linear']) // changed labels, but the pull fails
+  expect(pulls()).toHaveLength(2)
+
+  rmSync(mode, { force: true })
+  backdate()
+  factory(['linear']) // good pass: the old issue must still be read
+  expect(pulls()).toHaveLength(3)
+})
+
 test('linearAuth in the AX manager returns the placeholder and reads no Connect value', async () => {
   const secrets: string[] = []
   expect(await linearAuth(secrets, { FACTORY_IN_AX: '1', FACTORY_NO_KEYCHAIN: '1' })).toBe('placeholder')
