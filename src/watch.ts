@@ -19,6 +19,10 @@ export type Note = {
 export type WatchedPr = {
   url: string
   state: string
+  /** GitHub: the pull request is a draft */
+  isDraft?: boolean
+  /** GitHub: APPROVED, REVIEW_REQUIRED, CHANGES_REQUESTED or empty */
+  reviewDecision?: string
   updatedAt: string
   headRefOid?: string
   mergedAt?: string
@@ -31,6 +35,9 @@ export type WatchedPr = {
 /** what `watchPass` keeps between passes for one park (key: run id and the park's time) */
 export type Seen = {
   heads: Record<string, string>
+  /** isDraft and reviewDecision at the baseline, by URL */
+  drafts?: Record<string, boolean>
+  decisions?: Record<string, string>
   /** GitLab: the merge request asked for changes at the baseline */
   changes?: Record<string, boolean>
   routed?: boolean
@@ -112,6 +119,8 @@ export type DecideInput = {
   /** the station has these outcomes */
   canHold: boolean
   canChange: boolean
+  /** mail waits in the station's box (a holdMail station): a repark would hide it, so the timer ends the park */
+  held?: boolean
 }
 
 const clip = (s: string) => (s.length > BODY_CLIP ? s.slice(0, BODY_CLIP) : s)
@@ -163,6 +172,15 @@ export function watchDecide(i: DecideInput): Decision | null {
     const was = i.seen?.heads[p.url]
     if (p.headRefOid && was && p.headRefOid !== was)
       return wake(p, `it has a new head commit ${p.headRefOid.slice(0, 7)} (was ${was.slice(0, 7)})`)
+    const wasDraft = i.seen?.drafts?.[p.url]
+    if (p.isDraft !== undefined && wasDraft !== undefined && p.isDraft !== wasDraft)
+      return wake(p, p.isDraft ? 'it is a draft again' : 'it is ready for review')
+    const wasDecision = i.seen?.decisions?.[p.url]
+    if (p.reviewDecision !== undefined && wasDecision !== undefined && p.reviewDecision !== wasDecision)
+      return wake(
+        p,
+        `its review decision is now ${p.reviewDecision || 'none'} (was ${wasDecision || 'none'})`,
+      )
     const note = (p.notes ?? []).find(n => n.person && after(n))
     if (note) return wake(p, `a person reviewed or commented on it at ${new Date(note.at).toISOString()}`)
   }
@@ -174,6 +192,7 @@ export function watchDecide(i: DecideInput): Decision | null {
   // nothing changed and every pull request is open: near the timer, park again instead of a worker
   if (
     !i.failed &&
+    !i.held &&
     prs.every(p => p.state === 'OPEN') &&
     i.now >= i.wakeAt - REPARK_LEAD_MIN * 60_000 &&
     !(i.seen?.reparkedUntil && i.now < i.seen.reparkedUntil - REPARK_LEAD_MIN * 60_000)

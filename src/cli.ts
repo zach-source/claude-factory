@@ -33,7 +33,9 @@ import {
   extend,
   fill,
   hasShipEdge,
+  isMailHeld,
   isParked,
+  isParkedOn,
   isPrWait,
   WORKER_OUTCOMES,
   parkDelayMin,
@@ -3094,9 +3096,9 @@ export const shipStarts = (repos: string[], queued: (repo: string) => number, li
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
-      const { run, value } = current(id)
+      const { run, value, c } = current(id)
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0] }] : []
+      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0], c }] : []
     } catch {
       return [] // removed mid-pass
     }
@@ -7029,6 +7031,36 @@ export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: 
 export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
   queue.find(b => b.metadata?.ship_branch === pr.headRefName || (!!pr.url && b.metadata?.ship_pr === pr.url))
 
+/** the label mail to a ship station: only the station parked on this very PR wakes at once; any other holds it */
+export const labelMail = (
+  s: { c: Parameters<typeof isParkedOn>[0]; node: string },
+  url: string,
+  text: string,
+) => ({
+  type: 'MAIL' as const,
+  from: 'factory' as const,
+  to: s.node,
+  text,
+  ...(isParkedOn(s.c, s.node, url) && { wake: true as const }),
+})
+
+/** a live run owns the PR that got a rework label: remove the label, mail the station, comment on the PR */
+export function reworkOwned(
+  pr: LabeledPr,
+  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0] },
+  io: {
+    unlabel: (pr: LabeledPr, labels: string[]) => unknown
+    comment: (pr: LabeledPr, body: string) => unknown
+    post: (runId: string, ev: ReturnType<typeof labelMail>) => unknown
+  },
+) {
+  const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
+  // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
+  io.unlabel(pr, reworkLabels(pr))
+  io.post(owner.id, labelMail(owner, pr.url, text))
+  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${owner.node}), which owns this.`)
+}
+
 /** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
 export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<typeof beads>, 'unship'>) {
   const owner = queuedOwner({ url, headRefName: '' }, queue)
@@ -7152,7 +7184,7 @@ async function labelPass() {
   const live = runIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
-    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log }))
+    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log, c: r.c }))
   for (const rig of rigs()) {
     const cli = (bin: string, args: string[]) => {
       const p = Bun.spawnSync([bin, ...args], { cwd: rig.repo, timeout: 60_000 })
@@ -7218,7 +7250,8 @@ async function labelPass() {
           const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
           forge.unlabel(pr, reworkLabels(pr))
           const ships = liveShipRuns().filter(s => s.run.repo === rig.repo)
-          for (const s of ships) post(s.run.id, { type: 'MAIL', from: 'factory', to: s.node, text })
+          // only a station that waits on this very PR wakes at once; any other holds the mail
+          for (const s of ships) post(s.run.id, labelMail(s, pr.url, text))
           // no live ship run to hear it: the bead keeps the ask, and the next ship run reads it
           if (!ships.length) beads(rig.repo, 'factory').comment(queuedBead.id, text)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
@@ -7235,13 +7268,9 @@ async function labelPass() {
             error: `${pr.url} is labeled ${reworkLabels(pr).join(', ')} but comes from a fork: rework it there`,
           })
         } else if (action === 'rework' && runId) {
-          const node = live.find(r => r.id === runId)!.node
-          const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
-          // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
-          forge.unlabel(pr, reworkLabels(pr))
-          post(runId, { type: 'MAIL', from: 'factory', to: node, text })
-          forge.comment(pr, `Handed to claude-factory run \`${runId}\` (${node}), which owns this.`)
-          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${node}`)
+          const owner = live.find(r => r.id === runId)!
+          reworkOwned(pr, owner, { ...forge, post })
+          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${owner.node}`)
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           forge.unlabel(pr, reworkLabels(pr))
           const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
@@ -7299,7 +7328,7 @@ async function watchPass() {
             'view',
             url,
             '--json',
-            'state,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments',
+            'state,isDraft,reviewDecision,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments',
           ],
           { cwd, timeout: 60_000 },
         )
@@ -7308,6 +7337,8 @@ async function watchPass() {
           v = {
             url,
             state: j.state,
+            isDraft: typeof j.isDraft === 'boolean' ? j.isDraft : undefined,
+            reviewDecision: typeof j.reviewDecision === 'string' ? j.reviewDecision : undefined,
             updatedAt: j.updatedAt,
             headRefOid: j.headRefOid,
             mergedAt: j.mergedAt,
@@ -7380,11 +7411,21 @@ async function watchPass() {
           store[key] = {
             heads: Object.fromEntries(prs.flatMap(p => (p.headRefOid ? [[p.url, p.headRefOid]] : []))),
             changes: Object.fromEntries(prs.map(p => [p.url, !!p.changesRequested])),
+            drafts: Object.fromEntries(
+              prs.flatMap(p => (p.isDraft === undefined ? [] : [[p.url, p.isDraft]])),
+            ),
+            decisions: Object.fromEntries(
+              prs.flatMap(p => (p.reviewDecision === undefined ? [] : [[p.url, p.reviewDecision]])),
+            ),
           }
         else
           // a URL whose first view failed gets its baseline at its first good view
           for (const p of prs) {
             if (p.headRefOid && !(p.url in seen.heads)) seen.heads[p.url] = p.headRefOid
+            if (seen.drafts && p.isDraft !== undefined && !(p.url in seen.drafts))
+              seen.drafts[p.url] = p.isDraft
+            if (seen.decisions && p.reviewDecision !== undefined && !(p.url in seen.decisions))
+              seen.decisions[p.url] = p.reviewDecision
             if (seen.changes && !(p.url in seen.changes)) seen.changes[p.url] = !!p.changesRequested
           }
         const now = Date.now()
@@ -7399,11 +7440,12 @@ async function watchPass() {
           seen,
           canHold: !!def.nodes[node]?.next.hold,
           canChange: !!def.nodes[node]?.next.changes,
+          held: !!def.nodes[node]?.holdMail && (c.mail[node] ?? []).some(m => m.at > parked.at),
         })
         if (!d) continue
         const iso = new Date(now).toISOString()
         if (d.kind === 'wake') {
-          post(id, { type: 'MAIL', from: 'factory', to: node, text: d.text })
+          post(id, { type: 'MAIL', from: 'factory', to: node, text: d.text, wake: true })
           console.log(`${iso} ${id}: waking ${node}: ${d.text}`)
           const trigger = prs.find(p => p.url === d.url) ?? prs[0]
           if (trigger) woke.push({ run: id, node, url: trigger.url, state: trigger.state, at: now })
@@ -8382,7 +8424,7 @@ const usage = `factory — herdr software factories on xstate
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
   decide <run> <outcome> [note...]   the person: answer a gate station
-  mail <run> <node|manager> <text...>         drop a message in a mailbox
+  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
@@ -9106,17 +9148,30 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'mail': {
-        const [id, to, ...text] = args
+        // --wake comes right after the box; in a later word it stays text
+        const [id, to, ...rest] = args
+        const wake = rest[0] === '--wake'
+        const text = wake ? rest.slice(1) : rest
         const run = loadRun(id)
-        const boxes = Object.keys((await loadFactory(run.factory)).nodes).concat('manager')
+        const def = await loadFactory(run.factory)
+        const boxes = Object.keys(def.nodes).concat('manager')
         if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
         post(run.id, {
           type: 'MAIL',
           from: process.env.FACTORY_FROM ?? 'manager',
           to: to!,
           text: text.join(' '),
+          ...(wake && { wake: true as const }),
         })
         console.log(`mailed ${to}`)
+        const { c } = current(run.id)
+        if (!wake && isMailHeld(c, to!, def.nodes[to!]?.holdMail)) {
+          const last = c.log.at(-1)!
+          const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
+          console.log(
+            `held for ${to}: parked on ${urls.join(', ')}; it starts a worker when one changes or at ${new Date(c.wakeAt).toISOString()}; add --wake to start one now`,
+          )
+        }
         break
       }
       case 'poke': {

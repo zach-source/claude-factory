@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
+  labelMail,
+  reworkOwned,
   brief,
   vmBeads,
   clipFactsJson,
@@ -2049,4 +2051,28 @@ test('holdFloor holds an egress outage, and a stop only while a usage limit is a
   expect(holdFloor('worker never started on AX after 5 min: x', null, 70_000, 1000, 2000)).toBeNull()
   expect(holdFloor('worker pane x was closed', null, 70_000, 1000, 2000)).toBeNull()
   expect(holdFloor('see egress gateway: model API unreachable', null, 0, 1000, 2000)).toBeNull()
+})
+
+test('label mail wakes only the ship station parked on that very PR (61pu)', () => {
+  const url = 'https://github.com/acme/widget/pull/7'
+  const c = { log: [{ node: 'deploy', outcome: 'blocked', summary: 'waiting on ' + url }] } as never
+  expect(labelMail({ c, node: 'deploy' }, url, 't')).toMatchObject({ wake: true })
+  expect(labelMail({ c, node: 'deploy' }, 'https://github.com/acme/widget/pull/8', 't')).not.toHaveProperty(
+    'wake',
+  )
+  // a rework label on the PR a run owns (rollback parked on its revert PR) mails through the same rule
+  const owner = { id: 'r', node: 'rollback', c }
+  expect(labelMail(owner, url, 't')).not.toHaveProperty('wake') // node differs from the parked one
+})
+
+test('a rework label on a run-owned PR mails the parked station with wake (61pu.6)', () => {
+  const url = 'https://github.com/acme/widget/pull/7'
+  const c = { log: [{ node: 'deploy', outcome: 'blocked', summary: 'waiting on ' + url }] } as never
+  const pr = { number: 7, url, labels: [{ name: 'rework' }] } as never
+  const sent: unknown[] = []
+  const io = { unlabel: () => 0, comment: () => 0, post: (_id: string, ev: unknown) => sent.push(ev) }
+  reworkOwned(pr, { id: 'r', node: 'deploy', c }, io)
+  expect(sent[0]).toMatchObject({ type: 'MAIL', to: 'deploy', wake: true })
+  reworkOwned(pr, { id: 'r', node: 'rollback', c }, io)
+  expect(sent[1]).not.toHaveProperty('wake')
 })

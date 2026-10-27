@@ -205,7 +205,7 @@ test('a merge or close mail wakes a parked deploy, which then routes every outco
     const released = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'waiting'])
-    actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+    actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, wake: true, at: 2000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'working'])
     const deploySeq = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: deploySeq, outcome, summary: outcome, at: 3000 })
@@ -218,7 +218,7 @@ test("a worker's own blocked report at deploy still parks as today, after the pr
   actor.send({ type: 'GOTO', node: 'release', at: 0 })
   const released = actor.getSnapshot().context.seq
   actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
-  actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+  actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, wake: true, at: 2000 })
   const deploySeq = actor.getSnapshot().context.seq
   actor.send({ type: 'BLOCKED', seq: deploySeq, reason: `still waiting on review ${PR}`, at: 3000 })
   const s = actor.getSnapshot()
