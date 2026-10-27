@@ -3,7 +3,7 @@ import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
 import { join } from 'node:path'
 import { modelOf } from '../src/ax'
-import { loadFactory, ruleLines } from '../src/cli'
+import { loadFactory, ruleLines, workerSkills } from '../src/cli'
 import {
   compile,
   fill,
@@ -725,4 +725,14 @@ test('claude-factory-ocox AC2/AC3: gh pr ready appears only in the review, secur
   for (const [id, node] of Object.entries(lifecycle.nodes))
     expect(node.prompt.includes('gh pr ready'), id).toBe(['review', 'security', 'check'].includes(id))
   expect(lifecycle.nodes.implement!.prompt).toContain('gh pr create --draft')
+})
+
+// claude-factory-qda: asd-ste100 goes to the stations that write text people read, and to no other
+test('lifecycle gives asd-ste100 to its text stations only', () => {
+  const text = ['plan', 'implement', 'review', 'security', 'quick', 'check', 'rollback', 'incident']
+  for (const [id, node] of Object.entries(lifecycle.nodes))
+    expect([id, workerSkills(lifecycle, node as { skills?: string[] })]).toEqual([
+      id,
+      text.includes(id) ? ['asd-ste100'] : [],
+    ])
 })

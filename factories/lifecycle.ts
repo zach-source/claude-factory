@@ -92,6 +92,8 @@ export default {
   backoffSec: 60,
   maxSteps: 24,
   rules,
+  // a station gets asd-ste100 only when it writes text a person reads (claude-factory-qda)
+  skills: [],
   nodes: {
     // ── intake ───────────────────────────────────────────────────────────────
     triage: {
@@ -123,6 +125,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 
     // ── shaping: what to build, measured or pinned first ─────────────────────
     plan: {
+      skills: ['asd-ste100'],
       agent: OPUS,
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
@@ -157,6 +160,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
 
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
+      skills: ['asd-ste100'],
       split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
@@ -186,6 +190,7 @@ Report green with the evidence, or red with a numbered list of every failure, th
       next: { green: 'review', red: 'implement' },
     },
     review: {
+      skills: ['asd-ste100'],
       agent: OPUS,
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
@@ -199,6 +204,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       next: { approve: { to: 'done', ship: true }, changes: 'implement', security: 'security' },
     },
     security: {
+      skills: ['asd-ste100'],
       agent: FABLE,
       split: { agent: CODEX_SECURITY, share: 'codex_security_share' },
       timeoutMin: 45,
@@ -219,6 +225,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
 
     // ── the small route: a tiny, docs-only or test-only change skips plan and a separate review ──────
     quick: {
+      skills: ['asd-ste100'],
       timeoutMin: 60,
       prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. Merge origin/main, run the formatter and the tests of what you touched, commit.
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
@@ -228,6 +235,7 @@ If the work proves bigger than small (more files, a security-sensitive surface, 
       next: { ready: 'check', full: 'plan', abandon: 'done' },
     },
     check: {
+      skills: ['asd-ste100'],
       agent: OPUS,
       timeoutMin: 60,
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
@@ -242,6 +250,7 @@ Report approve; or changes with one numbered list of every failure and finding, 
 
     // ── undo it: a rollback, from an incident. Release, deploy and soak live in factories/ship.ts ──
     rollback: {
+      skills: ['asd-ste100'],
       runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
@@ -252,6 +261,7 @@ Report recovered with what you did, the evidence of recovery, the revert pull re
 
     // ── incidents ────────────────────────────────────────────────────────────
     incident: {
+      skills: ['asd-ste100'],
       runner: LAPTOP,
       agent: OPUS,
       timeoutMin: 30,

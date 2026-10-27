@@ -54,7 +54,6 @@ import {
   type Ev,
   type Factory,
   type Mail,
-  type Node,
 } from './machine'
 import { ghNotes, watchDecide, type Seen, type WatchedPr } from './watch'
 import {
@@ -969,8 +968,8 @@ const unknownSkill = (skill: string, where: string) =>
  * `loadFactory` checks the other two layers (claude-factory-qda).
  */
 export function workerSkills(
-  def: Pick<Factory, 'skills'>,
-  node: Pick<Node, 'skills'>,
+  def: { skills?: string[] },
+  node: { skills?: string[] },
   rig?: { skills?: string[] },
 ) {
   const bad = (rig?.skills ?? []).flatMap(s => unknownSkill(s, 'rig'))
