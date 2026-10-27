@@ -2392,7 +2392,7 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
  */
 // Agent: the mod spawns a patrol subagent through $.agent.spawn; without it, the spawn rejects
 const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill,Agent'
-export const managerCommand = (extra: string[] = []) => [
+export const managerCommand = (extra: string[] = [], dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => [
   'claude',
   '--model',
   'claude-opus-5-5', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
@@ -2407,13 +2407,60 @@ export const managerCommand = (extra: string[] = []) => [
   '--settings',
   JSON.stringify({
     env: {
-      ...withoutFleet().env,
+      ...withoutFleet(dirs).env,
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: HAIKU,
     },
   }),
   ...extra,
 ]
+
+/**
+ * Records the manager's launch in <home>/manager.json. Store the base argv only (managerCommand([], '')):
+ * it holds no per-launch extras and no secret. managerStale compares it with the code on disk.
+ */
+export function writeManagerLaunch(home: string, pid: number, startedAt: number, argv: string[]) {
+  writeJson(join(home, 'manager.json'), { pid, startedAt, argv })
+  chmodSync(join(home, 'manager.json'), 0o600)
+}
+
+const toolsOf = (argv: string[]) => (argv[argv.indexOf('--tools') + 1] ?? '').split(',')
+
+/**
+ * The text that tells a person to restart the manager, or null. It is null when no manager.json
+ * exists or it is unreadable, when its pid is dead, or when its argv equals `current`.
+ * A self-update that changes the launch command does not reach a running manager (claude-factory-772).
+ */
+export function managerStale(home: string, current: string[], alive = isAlive): string | null {
+  const file = join(home, 'manager.json')
+  if (!existsSync(file)) return null
+  let rec: { pid?: number; startedAt?: number; argv?: unknown }
+  try {
+    rec = readJson(file)
+  } catch {
+    return null
+  }
+  if (!rec || typeof rec.pid !== 'number' || !Array.isArray(rec.argv) || !alive(rec.pid)) return null
+  if (JSON.stringify(rec.argv) === JSON.stringify(current)) return null
+  const have = toolsOf(rec.argv as string[])
+  const missing = toolsOf(current).filter(t => !have.includes(t))
+  return (
+    `restart factory manager: its launch command (pid ${rec.pid}, started ${clock(rec.startedAt ?? 0)}) is older than the code on disk; ` +
+    `the running manager does not have the new flags or tools` +
+    (missing.length ? ` (missing tools: ${missing.join(', ')})` : '')
+  )
+}
+
+/** One mail for each manager launch that is stale. The marker holds the startedAt of the last mail. */
+export function managerStaleMail(now: number, home = HOME, alive = isAlive): (Mail & { run: string })[] {
+  const text = managerStale(home, managerCommand([], ''), alive)
+  if (!text) return []
+  const startedAt = readJson<{ startedAt?: number }>(join(home, 'manager.json')).startedAt ?? 0
+  const marker = join(home, 'manager-stale-mailed.json')
+  if (existsSync(marker) && readJson<number>(marker) === startedAt) return []
+  writeJson(marker, startedAt)
+  return [{ run: 'factory', from: 'factory', text, at: now }]
+}
 
 /**
  * runs the manager's Claude until it exits. Its ticks run inside it, so it cannot restart itself: this does.
@@ -2439,6 +2486,7 @@ async function superviseManager(args: string[]) {
       stdio: ['inherit', 'inherit', 'inherit'],
       env: { ...process.env, CLAUDE_CODE_NO_FLICKER: '1' },
     })
+    writeManagerLaunch(HOME, child.pid, startedAt, managerCommand([], ''))
     let isSwapped = false
     const watch = setInterval(() => {
       const tail = tailOf(process.cwd(), session)
@@ -4787,6 +4835,7 @@ async function tick(isPatrol = false) {
     out.manager.push(...proposalMail(now))
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
+    out.manager.push(...managerStaleMail(now))
     out.manager.push(...tokenDigestMail(now))
     // skip rows are for people reading dispatch.json; the board, sidebar and reap() see only the rest
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()).filter(r => !r.skip) : []))
@@ -8399,6 +8448,8 @@ async function status(id: string | undefined) {
         ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
         : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
     )
+  const stale = !id && managerStale(HOME, managerCommand([], ''))
+  if (stale) console.log(stale)
   if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
     const age = backupAge(HOME, Date.now())
     const err = backupError(HOME)
