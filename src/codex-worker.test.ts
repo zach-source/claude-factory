@@ -223,8 +223,10 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   const h = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'])
   expect(Object.keys(h).sort()).toEqual(['config.toml', 'hooks.json'])
   const hook = JSON.parse(h['hooks.json']).hooks.PreToolUse
-  expect(hook).toHaveLength(1)
+  expect(hook).toHaveLength(2)
   expect(hook[0].matcher).toBe('Bash')
+  expect(hook[1].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
+  expect(hook[1].hooks).toEqual(hook[0].hooks)
   const cmd: string = hook[0].hooks[0].command
   expect(cmd).toContain("'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'")
   expect(cmd).toContain("--person-only-contexts 'acme'")

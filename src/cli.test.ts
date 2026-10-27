@@ -480,11 +480,14 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   // claude-factory-cr6: the factory's deny-rm-rf hook comes last, so it never shadows the user's own guard
   expect(pre[1]).toMatchObject({ matcher: 'Bash' })
   expect(pre[1]!.hooks[0]!.command).toMatch(/worker-hook\.ts'$/)
-  expect(pre).toHaveLength(2)
+  // claude-factory-g4du: the same command guards Write, Edit, MultiEdit and NotebookEdit file paths
+  expect(pre[2]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit' })
+  expect(pre[2]!.hooks[0]!.command).toBe(pre[1]!.hooks[0]!.command)
+  expect(pre).toHaveLength(3)
   // workerSettings keeps a hook event other than PreToolUse as the user set it
   expect(w.hooks.SessionStart).toEqual(hooks.SessionStart)
   // a user with no hooks at all gets only the factory's entry
-  expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(1)
+  expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(2)
   expect(w.env).toMatchObject({
     A: '1',
     CLAUDE_CODE_PLUGIN_DIRS: '/y/mine',
