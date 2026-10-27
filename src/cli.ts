@@ -2476,6 +2476,15 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       }
       return 'awaiting trust'
     }
+    if (n.mergeCheck) {
+      const base = defaultBranch(run.repo)
+      const files = conflictsOf(run.repo, base, run.branch)
+      if (files.length) {
+        const summary = `no worker: merge origin/${base} into ${run.branch}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
+        send({ type: 'DONE', seq: c.seq, outcome: n.mergeCheck, summary })
+        return 'merge conflict'
+      }
+    }
     const pane = spawn(run, def, node, c)
     send({ type: 'SPAWNED', seq: c.seq, pane })
     const box = c.mail[node] ?? [] // the brief carried the whole box
@@ -4805,6 +4814,34 @@ function defaultBranch(repo: string): string {
           .replace(/^origin\//, '')
       : ''
   return /^[\w][\w./-]*$/.test(b) ? b : 'main'
+}
+
+/**
+ * The files that conflict when origin's `branch` merges into origin's `base`, in git order.
+ * It gives [] when the merge is clean and on every error (fetch, missing branch, old git).
+ * An error must never stop a worker, so the check fails open.
+ */
+export function conflictsOf(repo: string, base: string, branch: string): string[] {
+  const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
+  const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '-q', 'origin', ref(base), ref(branch)], {
+    env: GIT_NETWORK_ENV,
+    timeout: GIT_NETWORK_TIMEOUT_MS,
+  })
+  if (fetch.exitCode !== 0) return []
+  const p = Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'merge-tree',
+    '--write-tree',
+    '--name-only',
+    `origin/${base}`,
+    `origin/${branch}`,
+  ])
+  if (p.exitCode !== 1) return []
+  const lines = p.stdout.toString().split('\n').slice(1)
+  const end = lines.indexOf('')
+  return [...new Set(end < 0 ? lines : lines.slice(0, end))]
 }
 
 /** one read-only `gh` call on the laptop (claude-factory-q08): a non-zero exit or a timeout throws */
