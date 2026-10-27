@@ -1047,7 +1047,7 @@ export function ruleLines(
   ]
 }
 
-export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[]) {
+export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[], notes = '') {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
   const parked = isParked(c, node) ? c.log.at(-1) : undefined
@@ -1068,7 +1068,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       !!mergeAuthority(rigOf(run.repo)),
     ),
     '',
-    ...remembered(run, node),
+    ...remembered(run, node, notes),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
     '',
     '## Goal',
@@ -1173,7 +1173,7 @@ export const helpedHint = (run: Run, node: string) =>
   `- When a note saved you time or a mistake, say so: ${CLI} memory helped --from ${run.id}/${node} <note path>. That is how the most useful notes rise to the top of what later workers read.`
 
 /** the memory's top two levels, and how to reach the third: search before, add what was learned */
-function remembered(run: Run, node: string) {
+function remembered(run: Run, node: string, notes = '') {
   const rig = rigOf(run.repo)?.name
   const { core, topics } = memory.outline(MEMORY, rig)
   return [
@@ -1182,6 +1182,7 @@ function remembered(run: Run, node: string) {
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
+    ...(notes ? [`- The factory already searched for your goal and station. The closest notes:`, notes] : []),
     `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
@@ -1291,12 +1292,35 @@ function logLaunch(run: Run, node: string, seq: number, agent: string, resume: b
   }
 }
 
+/**
+ * the top notes of a laptop search for the station's goal, as the search prints them; it logs them shown for
+ * run/station. A VM has an empty memory store, so the launch searches for it. '' when nothing is found or
+ * the search fails or times out: the launch goes on without notes
+ */
+function launchNotes(run: Run, node: string) {
+  const rig = rigOf(run.repo)?.name
+  try {
+    const p = Bun.spawnSync(
+      [CLI, 'memory', 'search', ...(rig ? ['--rig', rig] : []), '--from', `${run.id}/${node}`].concat(
+        `${node}: ${clip(run.goal, 2000)}`,
+      ),
+      { env: { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '' }, timeout: 60_000 },
+    )
+    const out = p.exitCode === 0 ? p.stdout.toString().trim() : ''
+    return out.startsWith('nothing in ') ? '' : clip(out, 6000)
+  } catch {
+    return ''
+  }
+}
+
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
   if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
-  const full = () => brief(run, def, node, c, c.mail[node] ?? [])
+  // a resumed session keeps the notes it was launched with; a new brief searches once, however often it is read
+  const notes = session ? '' : launchNotes(run, node)
+  const full = () => brief(run, def, node, c, c.mail[node] ?? [], notes)
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
   if (!session) {
     mkdirSync(dirname(file), { recursive: true })
