@@ -116,7 +116,6 @@ import {
   piFlags,
   readMcp,
   sq,
-  VM_PLUGIN_DIRS,
   VM_PLUGINS,
   writeLaunch,
 } from './harness'
@@ -1444,6 +1443,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
+  const skills = workerSkills(def, def.nodes[node]!, rig)
   if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
   axCodexRefused(agent)
   const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
@@ -1528,7 +1528,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     provider: ax.providerOf(agent),
     claudeFlags:
       harness === 'claude'
-        ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        ? vmClaudeFlags(def, personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig), skills)
         : undefined,
     codexHome:
       harness === 'codex'
@@ -1548,6 +1548,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       ...rig?.env,
       FACTORY_FROM: node,
       FACTORY_DEF_NAME: def.name,
+      FACTORY_SKILLS: skills.join(','),
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
       ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
@@ -1614,7 +1615,7 @@ const denyHook = (bun: string, file: string, contexts?: string[], branches?: str
  * It keeps the same tools. It does not use the laptop's own settings or project-level mods.
  *
  * It leaves out the laptop's own items: the user's hooks, the user's env, the plugin dirs, the global `CLAUDE.md`.
- * It gets the image's plugins (`asd-ste100`) by `--plugin-dir` instead of the person's (claude-factory-fxu).
+ * It gets the station's skills from the image's plugins by `--plugin-dir` instead of the person's (claude-factory-fxu, claude-factory-qda).
  * `disableBundledSkills` turns off the bundled-skill list of `Skill`. No skill in the VM earns that cost yet.
  *
  * It gets one hook. The hook is the same deny-rm PreToolUse hook that a laptop worker gets (claude-factory-cr6, claude-factory-99d).
@@ -1625,6 +1626,7 @@ export function vmClaudeFlags(
   contexts?: string[],
   branches?: string[],
   merge?: string,
+  skills: string[] = Object.keys(VM_PLUGINS),
 ) {
   if (process.env.FACTORY_LEAN === '0') return []
   const settings = {
@@ -1647,7 +1649,7 @@ export function vmClaudeFlags(
     ...['--settings', JSON.stringify(settings)],
     ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
     // the image's plugins, as a laptop worker gets the person's (constitution I, claude-factory-fxu)
-    ...VM_PLUGIN_DIRS.flatMap(d => ['--plugin-dir', d]),
+    ...skills.flatMap(k => ['--plugin-dir', VM_PLUGINS[k]!]),
   ]
 }
 

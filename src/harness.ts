@@ -26,7 +26,6 @@ export const claudeCommand = () => process.env.FACTORY_CLAUDE?.trim() || 'claude
 
 /** the plugins in the worker image (Dockerfile.worker), by skill name: the one registry of known skills (constitution I) */
 export const VM_PLUGINS: Record<string, string> = { 'asd-ste100': '/opt/plugins/asd-ste100' }
-export const VM_PLUGIN_DIRS = Object.values(VM_PLUGINS)
 
 /** the skill dirs (<plugin>/skills/<name>) of these plugin dirs; a plugin with no skills adds none */
 export const skillDirs = (plugins: string[]) =>

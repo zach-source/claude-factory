@@ -1280,6 +1280,16 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
   expect(flags.slice(-2)).toEqual(['--plugin-dir', '/opt/plugins/asd-ste100'])
 })
 
+// claude-factory-qda.4: a station with no skills gets no plugin dir
+test('vmClaudeFlags passes a plugin dir for each skill of the station, and none for an empty set', () => {
+  expect(
+    vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined, ['asd-ste100']).slice(-2),
+  ).toEqual(['--plugin-dir', '/opt/plugins/asd-ste100'])
+  expect(vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined, [])).not.toContain(
+    '--plugin-dir',
+  )
+})
+
 // claude-factory-25z.2: vmClaudeFlags carries the rig's personOnlyContexts to the VM hook's own argv too
 test("vmClaudeFlags carries a rig's personOnlyContexts on the deny hook's own argv", () => {
   const flags = vmClaudeFlags({ maxContextK: 150 }, ['acme'])
