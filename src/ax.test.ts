@@ -2239,3 +2239,31 @@ test('the host ax call inherits AX_AUTH_TOKEN, and the fake records only whether
     else process.env.AX_AUTH_TOKEN = saved
   }
 })
+
+const failedTask = (cond: string) => `status:\n  phase: Failed\n  conditions:\n${cond}`
+test('failureOf reads the first False condition of an ax task as "reason: message"', () => {
+  const msg = 'resuming actor a/b: while running runsc restore: exit status 128'
+  expect(
+    ax.failureOf(
+      failedTask(
+        `  - type: Ready\n    status: "False"\n    reason: ActorResumeFailed\n    message: "${msg}"\n`,
+      ),
+    ),
+  ).toBe(`ActorResumeFailed: ${msg}`)
+  // a False condition with no message: the reason alone
+  expect(ax.failureOf(failedTask('  - type: Ready\n    status: "False"\n    reason: Boom\n'))).toBe('Boom')
+  // the first False one, after a True one
+  expect(
+    ax.failureOf(
+      failedTask(
+        '  - type: A\n    status: "True"\n    reason: Fine\n  - type: Ready\n    status: "False"\n    reason: Bad\n    message: m\n',
+      ),
+    ),
+  ).toBe('Bad: m')
+})
+test('failureOf is undefined for a healthy task, no conditions or YAML that does not parse, and never throws', () => {
+  expect(ax.failureOf(failedTask('  - type: Ready\n    status: "True"\n    reason: Ok\n'))).toBeUndefined()
+  expect(ax.failureOf('status:\n  phase: Running\n')).toBeUndefined()
+  expect(ax.failureOf('a: [unclosed\n  - : :\n\t}{')).toBeUndefined()
+  expect(ax.failureOf('')).toBeUndefined()
+})

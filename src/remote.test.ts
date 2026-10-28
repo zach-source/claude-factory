@@ -2223,3 +2223,42 @@ test('AX usage with 21 rows, or not an array, is ignored and the report still la
     rmSync(join(home, 'runs', id), { recursive: true })
   }
 })
+
+/** the fake cluster with a task in `phase` whose status.conditions hold `conds` (YAML list lines) */
+function clusterConds(phase: string, conds: string) {
+  rmSync(calls, { force: true })
+  writeFileSync(join(dir, 'cond.yaml'), `status:\n  phase: ${phase}\n${conds}`)
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") cat ${dir}/cond.yaml ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+}
+const RESUME_MSG = 'resuming actor f/t: while running runsc restore: exit status 128'
+const RESUME_FAILED = `  conditions:\n  - type: Ready\n    status: "False"\n    reason: ActorResumeFailed\n    message: "${RESUME_MSG}"\n`
+
+test('a Failed task carries its Ready condition into the failure reason, read with one ax get task', () => {
+  launched('r30')
+  clusterConds('Failed', RESUME_FAILED)
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r30')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toContain('ActorResumeFailed')
+  expect(row.error).toContain('runsc restore: exit status 128')
+  expect(readFileSync(join(home, 'runs', 'r30', 't.gone'), 'utf8')).toContain('ActorResumeFailed')
+  expect(called().match(/get task/g)).toHaveLength(1)
+  rmSync(join(home, 'runs', 'r30'), { recursive: true })
+})
+
+test('a Failed task with no condition keeps the bare "phase Failed" reason', () => {
+  launched('r31')
+  clusterConds('Failed', '')
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r31')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toBe('phase Failed')
+  rmSync(join(home, 'runs', 'r31'), { recursive: true })
+})

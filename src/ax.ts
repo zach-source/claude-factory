@@ -164,6 +164,21 @@ export function manifest(l: Launch) {
 /** a task's phase from `ax get task` (YAML): Pending, Running, Suspended, Failed, Terminating; null when gone */
 export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1] ?? null
 
+/**
+ * why a task failed, from its `ax get task` YAML: "<reason>: <message>" of the first status.conditions entry
+ * whose status is "False" (AX writes ActorResumeFailed and the runsc error there). undefined when none; never throws
+ */
+export function failureOf(yaml: string): string | undefined {
+  try {
+    const conds = (Bun.YAML.parse(yaml) as { status?: { conditions?: unknown } } | null)?.status?.conditions
+    const bad = (Array.isArray(conds) ? conds : []).find(c => c?.status === 'False' || c?.status === false)
+    if (!bad?.reason && !bad?.message) return undefined
+    return [bad.reason, bad.message].filter(Boolean).join(': ')
+  } catch {
+    return undefined
+  }
+}
+
 /** Pending tasks cannot start while the shared controller is down; preserve them instead of retrying. */
 export function unavailable(): string | undefined {
   const unknown = 'AX executor unavailable: controller readiness could not be observed'
@@ -555,12 +570,14 @@ export const launch = (l: Launch) => {
   must(['apply', '-f', '-'], manifest({ ...l, env }))
   return `ax://${l.name}`
 }
-export function phase(task: string) {
+/** the task's phase and, when AX says why it failed, that reason: one `ax get task` */
+export function read(task: string): { phase: string | null; failure?: string } {
   const r = ax(['get', 'task', task])
-  if (r.ok) return phaseOf(r.out)
-  if (/not ?found/i.test(r.err)) return null
+  if (r.ok) return { phase: phaseOf(r.out), failure: failureOf(r.out) }
+  if (/not ?found/i.test(r.err)) return { phase: null }
   throw new Error(`ax get task: ${r.err}`)
 }
+export const phase = (task: string) => read(task).phase
 /**
  * a VM command as the worker user, not root: root over `ax ssh` has no DAC_OVERRIDE or CAP_FOWNER (see
  * docs/remote-runner.md), so it cannot write `.factory-worker`, which `serve` gave to WORKER_USER. setpriv

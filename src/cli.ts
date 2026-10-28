@@ -718,7 +718,7 @@ async function syncAsRemoteUser(rig: Rig) {
  */
 function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const task = ax.taskOf(pane)
-  const phase = ax.phase(task)
+  const { phase, failure } = ax.read(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
   if (phase === 'Pending') return { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
   if (phase === 'Suspended') return { status: 'suspended', agent: 'ax' }
@@ -728,7 +728,8 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
     { status: 'gone', failed: clip(why, 500) }
   )
-  if (phase !== 'Running') return gone(`phase ${phase ?? 'not found'}`)
+  if (phase !== 'Running')
+    return gone(`phase ${phase ?? 'not found'}${phase === 'Failed' && failure ? `: ${failure}` : ''}`)
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
