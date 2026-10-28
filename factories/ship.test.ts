@@ -110,7 +110,11 @@ test('queue drafts a ready PR before it pushes a conflict-fix merge, and sends u
   expect(one).toContain('gh pr ready <n> --undo')
   expect(one).toContain('A clean merge needs no undo')
   expect(one.indexOf('gh pr ready <n> --undo')).toBeLessThan(one.indexOf('commit the merge and push it'))
+  expect(one).toContain('If the undo fails, do not push')
   expect(two).toContain('Unreviewed commits:')
+  expect(two).toContain(
+    'only when the latest `Unreviewed commits:` comment is newer than the latest `Reviewed head:` line',
+  )
   expect(two).toContain('bd update <bead> --remove-label ship --add-label factory --add-label station:review')
 })
 
