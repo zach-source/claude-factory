@@ -21,8 +21,15 @@ function run(args: string[], env: Record<string, string>, seedHalt = false, seed
   const ax = join(dir, 'fake-ax')
   writeFileSync(ax, `#!/bin/sh\necho "$@" >> ${axLog}\n`, { mode: 0o755 })
   if (seedHalt) writeFileSync(halt, JSON.stringify({ state: 'stopping', at: 1, told: {}, closed: {} }))
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, FACTORY_PATROL, ...rest } =
-    process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_DEF_NAME,
+    BEADS_ACTOR,
+    FACTORY_PATROL,
+    ...rest
+  } = process.env
   void [FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, FACTORY_PATROL]
   return Bun.spawnSync([CLI, ...args], {
     env: { ...rest, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', FACTORY_AX: ax, ...env },
