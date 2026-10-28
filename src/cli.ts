@@ -3648,6 +3648,7 @@ function compactMessage(
     merged: number
     archived: number
     retired: number
+    trimmed?: number
     flagged: number
     held: number
     skipped: { topic: string; reason: string }[]
@@ -3661,6 +3662,7 @@ function compactMessage(
     `compact: ${tiers.merged} merged, ${tiers.archived} archived` +
     (tiers.held ? `, ${tiers.held} held by the archive cap` : '') +
     (tiers.retired ? `, ${tiers.retired} retired` : '') +
+    (tiers.trimmed ? `, ${tiers.trimmed} long entries trimmed` : '') +
     (tiers.flagged ? `, ${tiers.flagged} flagged` : '') +
     `, ${filesBefore} files -> ${filesAfter} files` +
     (tiers.overCap.length
@@ -3760,7 +3762,10 @@ async function dream() {
       { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
     )
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
-    writeFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
+    // dream.log keeps history: a log past 256 KB moves to dream.log.1 (one old file, replaced each time)
+    const dreamLog = join(HOME, 'dream.log')
+    if (existsSync(dreamLog) && statSync(dreamLog).size > 256 * 1024) renameSync(dreamLog, `${dreamLog}.1`)
+    appendFileSync(dreamLog, `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
     storeDreamUsage(start)
     if (p.exitCode !== 0) return said
     // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote

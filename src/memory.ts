@@ -1096,7 +1096,18 @@ export type ShortCandidate = {
   untilFlag?: string // untilStatus()'s unknown reason: decide() flags the note, but never retires it
 }
 /** a LONG.md entry, with what decide() needs to judge it */
-export type LongCandidate = { path: string; activation: number; runs: number }
+export type LongCandidate = {
+  path: string
+  activation: number
+  runs: number
+  ageDays?: number // since the entry's at:; undefined with no at, so no age rule applies
+  chars?: number // summary + newline + body, the text that search embeds (see LONG_ENTRY_CAP)
+  expired?: boolean // as for a short note: decide() retires the entry
+  expiredReason?: string
+  untilFlag?: string
+}
+export const LONG_ARCHIVE_DAYS = 30 // a long entry this old, with activation below θa, archives
+export const LONG_ENTRY_CAP = 2000 // chars of a long entry that search embeds; a longer entry gets a trim
 /** a CORE.md line (`CORE.md#<hash>`), with how often notes contradicted it in the activation window */
 export type CoreCandidate = { path: string; contradicted: number; activation: number }
 const DEMOTE_CONTRADICTED = 2 // contradicted at least this often, and its activation below θa: demote it
@@ -1110,6 +1121,7 @@ export type Decision =
   | { kind: 'promote'; path: string; reason: string }
   | { kind: 'dedupe'; a: string; b: string; reason: string }
   | { kind: 'retire'; path: string; reason: string }
+  | { kind: 'trim'; path: string; reason: string }
   | { kind: 'flag'; path: string; reason: string }
   | { kind: 'demote'; path: string; reason: string }
 
@@ -1208,13 +1220,43 @@ export function decide(
         reason: `activation ${n.activation.toFixed(2)}, ${age} days old`,
       })
   }
-  for (const e of long)
+  const trims: { path: string; chars: number }[] = []
+  for (const e of long) {
+    if (e.expired) {
+      decisions.push({ kind: 'retire', path: e.path, reason: e.expiredReason ?? 'until marker ended' })
+      continue
+    }
+    if (e.untilFlag) decisions.push({ kind: 'flag', path: e.path, reason: e.untilFlag })
+    if (
+      historyDays >= LONG_ARCHIVE_DAYS &&
+      e.ageDays !== undefined &&
+      e.ageDays >= LONG_ARCHIVE_DAYS &&
+      e.activation < theta.archive
+    ) {
+      decisions.push({
+        kind: 'archive',
+        path: e.path,
+        reason: `activation ${e.activation.toFixed(2)} below ${theta.archive}, ${Math.floor(e.ageDays)} days old`,
+      })
+      continue
+    }
+    if ((e.chars ?? 0) > LONG_ENTRY_CAP) trims.push({ path: e.path, chars: e.chars! })
     if (e.activation > theta.promote && e.runs >= PROMOTE_RUNS)
       decisions.push({
         kind: 'promote',
         path: e.path,
         reason: `activation ${e.activation.toFixed(2)} across ${e.runs} runs`,
       })
+  }
+  // trims have their own cap (archiveCap): the largest entries first, so one pass stays small
+  trims.sort((a, b) => b.chars - a.chars || a.path.localeCompare(b.path))
+  trims.forEach((t, i) =>
+    decisions.push(
+      i < archiveCap
+        ? { kind: 'trim', path: t.path, reason: `${t.chars} chars, over ${LONG_ENTRY_CAP}` }
+        : { kind: 'held', path: t.path, reason: `over the trim cap of ${archiveCap} this pass` },
+    ),
+  )
   // FR-021: a core fact that keeps being contradicted, with too little use for it, goes back to a note
   for (const c of opts.core ?? [])
     if (c.contradicted >= DEMOTE_CONTRADICTED && c.activation < theta.archive)
@@ -1231,7 +1273,8 @@ export function decide(
   // kind; the rest of this pass's archive/retire decisions become `held`, so nothing past the cap is
   // ever written this pass. A retire shares the same cap as archive (AC7): both remove a short note.
   type CappedDecision = Extract<Decision, { kind: 'archive' | 'retire' }>
-  const ageOf = new Map(short.map(n => [n.path, n.ageDays]))
+  const ageOf = new Map<string, number>(short.map(n => [n.path, n.ageDays]))
+  for (const e of long) if (e.ageDays !== undefined) ageOf.set(e.path, e.ageDays)
   const overCap: { d: CappedDecision; i: number }[] = []
   decisions.forEach((d, i) => {
     if (d.kind === 'archive' || d.kind === 'retire') overCap.push({ d, i })
@@ -1298,7 +1341,7 @@ export function planLines(
   const count = (kind: Decision['kind']) => decisions.filter(d => d.kind === kind).length
   const describe = (d: Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
   const header =
-    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('retire')} retire, ` +
+    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('retire')} retire, ${count('trim')} trim, ` +
     `${count('held')} held (cap ${opts.archiveCap}), ${count('flag')} flag, ` +
     `usage history ${Math.floor(opts.historyDays)} days`
   return [header, ...decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`)]
@@ -1550,6 +1593,28 @@ export function applyTiers(
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
       }
     })
+  const cutLine = (topic: string) => `(cut to ${LONG_ENTRY_CAP} chars; full text in .archive/${topic}.md)`
+  const longs: LongCandidate[] = notes
+    .filter(n => n.tier === 'long')
+    .map(n => {
+      const atMs = n.at ? Date.parse(n.at) : NaN
+      const until = n.until && (isDateUntil(n.until) || opts.untilDeps) ? n.until : undefined
+      const verdict = until ? untilStatus(until, now, opts.untilDeps ?? {}) : null
+      return {
+        path: n.path,
+        activation: activation(events.get(n.path) ?? [], now),
+        runs: 0, // promote needs a run count that applyTiers does not gather; it never promotes
+        ageDays: Number.isFinite(atMs) ? (now - atMs) / DAY_MS : undefined,
+        // a summary with no room left for the pointer line cannot shrink: it gets no trim, or every pass would trim it again
+        chars:
+          n.summary.length + 3 + cutLine(n.path.slice(0, n.path.indexOf('/'))).length >= LONG_ENTRY_CAP
+            ? 0
+            : n.summary.length + 1 + n.body.length,
+        expired: verdict?.state === 'ended',
+        expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
+        untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
+      }
+    })
   const coreLines = coreNotes(dir)
   const core: CoreCandidate[] = coreLines.map(n => {
     const recent = (events.get(n.path) ?? []).filter(e => now - e.at <= ACTIVATION_WINDOW_DAYS * DAY_MS)
@@ -1559,7 +1624,7 @@ export function applyTiers(
       activation: activation(recent, now),
     }
   })
-  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap, theta: envTheta(), core })
+  const decisions = decide(short, longs, [], { historyDays, archiveCap, topicCap, theta: envTheta(), core })
   opts.onPlan?.(planLines(decisions, { archiveCap, historyDays }))
   // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
   // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
@@ -1571,7 +1636,9 @@ export function applyTiers(
   let merged = 0
   let archived = 0
   let retired = 0
+  let trimmed = 0
   let demoted = 0
+  const isLongPath = (p: string) => p.includes('/LONG.md#')
   // one topic's remaining short-note count drops by one for every merge this pass writes to disk
   // (not one a skipped, unsafe LONG.md held back) and every archive or retire; overCap below reads this.
   const removedByTopic = new Map<string, number>()
@@ -1596,6 +1663,7 @@ export function applyTiers(
       continue
     }
     if (d.kind !== 'merge' && d.kind !== 'archive' && d.kind !== 'retire') continue
+    if (isLongPath(d.path)) continue // written per topic below
     const note = notes.find(n => n.path === d.path)
     if (!note) continue
     if (d.kind === 'merge') {
@@ -1664,6 +1732,64 @@ export function applyTiers(
       // rule requires helped === 0.
     }
   }
+  // long entries: per topic, the full text goes to .archive/<topic>.md first, then LONG.md is rewritten
+  // once. A trim keeps the entry with a cut body and a pointer to that archive copy.
+  const longByTopic = new Map<string, Decision[]>()
+  for (const d of decisions)
+    if ((d.kind === 'archive' || d.kind === 'retire' || d.kind === 'trim') && isLongPath(d.path)) {
+      const topic = d.path.slice(0, d.path.indexOf('/'))
+      ;(longByTopic.get(topic) ?? longByTopic.set(topic, []).get(topic)!).push(d)
+    }
+  for (const [topic, ds] of longByTopic) {
+    const reason = unsafe.get(topic)
+    if (reason) {
+      if (!skippedTopics.has(topic)) {
+        skippedTopics.add(topic)
+        skipped.push({ topic, reason })
+      }
+      continue
+    }
+    const longFile = join(dir, topic, 'LONG.md')
+    const entries = parseLong(readFileSync(longFile, 'utf8'))
+    const byPath = new Map(ds.map(d => [`${topic}/LONG.md#${(d as { path: string }).path.split('#')[1]}`, d]))
+    const copies: LongEntry[] = []
+    const kept: LongEntry[] = []
+    for (const e of entries) {
+      const d = byPath.get(`${topic}/LONG.md#${e.id}`)
+      if (!d) {
+        kept.push(e)
+        continue
+      }
+      copies.push(e)
+      if (d.kind === 'trim') {
+        const ptr = cutLine(topic)
+        const budget = LONG_ENTRY_CAP - e.summary.length - 1 - ptr.length - 2
+        let cut = e.body.slice(0, Math.max(budget, 0))
+        if (e.body.length > cut.length && e.body[cut.length] !== '\n' && cut.includes('\n'))
+          cut = cut.slice(0, cut.lastIndexOf('\n'))
+        kept.push({ ...e, body: `${cut.trimEnd()}\n\n${ptr}`.trim() })
+        trimmed++
+      } else if (d.kind === 'retire') retired++
+      else archived++
+    }
+    if (opts.dryRun || !copies.length) continue
+    mkdirSync(join(dir, '.archive'), { recursive: true })
+    const archiveFile = join(dir, '.archive', `${topic}.md`)
+    const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
+    writeFileSync(
+      archiveFile,
+      prefix +
+        copies
+          .map(e =>
+            format({ summary: e.summary, rig: e.rig, from: e.from, at: e.at, until: e.until, body: e.body }),
+          )
+          .join(''),
+    )
+    writeFileSync(longFile, formatLong(kept))
+    for (const e of copies)
+      if (byPath.get(`${topic}/LONG.md#${e.id}`)!.kind !== 'trim')
+        rewriteReadmeLink(dir, topic, `${topic}/LONG.md#${e.id}`, `../.archive/${topic}.md`)
+  }
   const flagged = decisions.filter(d => d.kind === 'flag').length
   const held = decisions.filter(d => d.kind === 'held').length
   const totalByTopic = new Map<string, number>()
@@ -1678,6 +1804,7 @@ export function applyTiers(
     merged,
     archived,
     retired,
+    trimmed,
     demoted,
     flagged,
     held,
