@@ -667,6 +667,14 @@ that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig wit
 the token, see `docs/remote-runner.md`). It uses an API key when the rig names `api.openai.com`. `factory metrics` shows the launches for each station by
 harness and model.
 
+Codex keeps `unified_exec` on under `--disable` and `-c`. Its `write_stdin` tool runs a command with no deny
+hook. Only a managed pin turns `unified_exec` off. The factory does not start Codex unless
+`codex features list` shows `unified_exec` as `false` (claude-factory-fzm3). The worker image has the pin.
+On the laptop, the owner must write the pin once:
+`sudo mkdir -p /etc/codex && printf '[features]\nunified_exec = false\n' | sudo tee /etc/codex/requirements.toml`.
+Until `/etc/codex/requirements.toml` exists, the herdr split keeps every run on Claude. A rig with
+`--agent codex` and no pin fails at launch. The pin also turns `write_stdin` off in the owner's own Codex.
+
 ```sh
 factory rig add web ~/repos/web --agent "codex --dangerously-bypass-approvals-and-sandbox"
 factory rig add api ~/repos/api --agent "pi --model anthropic/claude-sonnet-5" --sweeps none

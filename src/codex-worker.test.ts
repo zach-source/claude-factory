@@ -33,8 +33,8 @@ function fixture(maxContextK = 200) {
   const features = join(tmp, 'features.txt')
   writeFileSync(
     features,
-    'hooks stable true\nunified_exec stable true\n' +
-      ['shell_snapshot', 'multi_agent', 'code_mode'].map(x => `${x} stable false\n`).join(''),
+    'hooks stable true\n' +
+      ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode'].map(x => `${x} stable false\n`).join(''),
   )
   const fake = (body: string) => writeFileSync(codexBin, `#!/bin/sh\n${body}`, { mode: 0o755 })
   fake(
@@ -206,7 +206,9 @@ test('a codex launch refuses when codex reports a guard that is not in force', (
     writeFileSync(
       f.features,
       `hooks stable ${hooks}\n` +
-        ['shell_snapshot', 'multi_agent', 'code_mode'].map(x => `${x} stable ${x === on}\n`).join(''),
+        ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
+          .map(x => `${x} stable ${x === on}\n`)
+          .join(''),
     )
   set(false)
   expect(() => f.make()).toThrow('feature check')
@@ -214,6 +216,17 @@ test('a codex launch refuses when codex reports a guard that is not in force', (
     set(true, on)
     expect(() => f.make()).toThrow('feature check')
   }
+  set(true, 'unified_exec')
+  expect(() => f.make()).toThrow('/etc/codex/requirements.toml with [features] unified_exec = false')
+  expect(() => f.make()).toThrow('claude-factory-fzm3')
+  // no unified_exec line counts as not off
+  writeFileSync(
+    f.features,
+    'hooks stable true\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n',
+  )
+  expect(() => f.make()).toThrow('unified_exec is not off')
+  set(true) // hooks on, all four off
+  f.make()
   writeFileSync(f.features, 'shell_snapshot stable false\n') // hooks line missing
   expect(() => f.make()).toThrow('feature check')
   f.fake('exit 3\n')
