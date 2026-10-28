@@ -268,6 +268,8 @@ test('deploy and soak carry the same live-object finding rule: search, comment, 
     'never above P1',
     'Never lower a priority',
     'any bead with the ship label',
+    'The comment and escalation steps do not apply to',
+    'has a held:* label, a rejected label or an owner label, add no label',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
   ])
     expect(want).toContain(t)
