@@ -889,6 +889,15 @@ memory/
   anything. A merge keeps the note's usage count under its new `<topic>/LONG.md#<id>` path,
   through `.renames.jsonl`, so a later `factory memory helped <old path>` still resolves and
   nothing helped is lost. `--dry-run` prints the plan without writing.
+- The same pass keeps `LONG.md` small. It archives a `LONG.md` entry into `.archive/<topic>.md`
+  when the entry is 30 days old, the store holds 30 days of usage history, and its activation is
+  below θa. It retires an entry whose `until` marker ended. It trims an entry of more than 2000
+  characters (what search embeds): the full text goes to `.archive/<topic>.md` first, and the entry
+  keeps its summary and metadata, a body cut at a line end, and a last line that names the archive.
+  A pass trims at most `FACTORY_MEMORY_ARCHIVE_CAP` entries, the largest first. Archives share the
+  archive cap above.
+- `dream.log` keeps the log of every dream. A dream appends to it. When the file is over 256 KB,
+  the next dream moves it to `dream.log.1`, which holds one old file.
 - Each dream ends `dream.log` with one metrics line, for example
   `metrics: notes 9 (beads 2, ci 4)  archived 0  retired 1  kind 75%  cites-without-until 12%`.
   It gives the notes in each topic, the notes this pass archived and retired, the share of short
