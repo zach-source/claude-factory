@@ -80,7 +80,7 @@ test('the window starts at each bead own filing time: a past-cap bead stays held
 test('the station cap also keeps a bead held when the first bead of the run is older than 24h', () => {
   const at = (h: number) => new Date(now - h * 3_600_000).toISOString()
   const v = filingGuard(
-    [25, 2, 1.5, 1].map((h, i) =>
+    [25, 24.5, 24.2, 23.5].map((h, i) =>
       bead(`b${i}`, { title: `t${i}: x`, created_by: 'factory/acme-r1/plan', created_at: at(h) }),
     ),
     now,

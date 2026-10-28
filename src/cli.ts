@@ -6446,7 +6446,9 @@ async function dispatch() {
       }
       // claude-factory-nwlh.2: the filing guard. `filingGuard` (src/filing-guard.ts) scores the
       // top-level beads a factory worker filed (a child bead and a sweep-filed bead are not its
-      // concern; a closed bead uses a slot but gets no write). A bead past a cap loses `factory`, gains `held:cluster:<key>` or
+      // concern; a closed bead uses a slot but gets no write). The guard scores each bead against the
+      // 24h before its own filing time, so a pass with room scores the same as an earlier pass. A bead
+      // past a cap loses `factory`, gains `held:cluster:<key>` or
       // `held:station`, and gets one comment. A mark in filing-guard.json is written only after
       // both calls land. `factory queue` removes the `held:*` label; the mark keeps the guard from
       // holding the bead again. Like the sweep guard, a failed call leaves the bead out of `ready`.

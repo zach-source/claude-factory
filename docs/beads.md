@@ -340,7 +340,7 @@ Workers can file many beads. The filing guard limits this. Dispatch checks the b
 | ------------ | -------- | -------------------------------------------------- |
 | `clusterCap` | 6 beads  | Beads filed for one cluster in the window.         |
 | `stationCap` | 3 beads  | Beads that one run and station file in the window. |
-| `windowMs`   | 24 hours | The time span that the two caps count.             |
+| `windowMs`   | 24 hours | The 24 hours before each bead is filed.            |
 
 These three values are defaults in `src/filing-guard.ts`. They are not `rigs.json` settings. There is no `filing` key in `rigs.json`.
 
