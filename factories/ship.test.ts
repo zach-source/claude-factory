@@ -72,8 +72,46 @@ test('a soak that resolves goes to the postmortem; a soak that regresses rolls b
 })
 
 test('only the release station marks a PR ready: the worker hook allows gh pr ready nowhere else', () => {
+  for (const [id, node] of Object.entries(ship.nodes)) {
+    const stripped = node.prompt.replaceAll('gh pr ready <n> --undo', '')
+    expect(stripped.includes('gh pr ready'), id).toBe(id === 'release')
+    expect(node.prompt.includes('--undo'), id).toBe(id === 'queue' || id === 'release')
+  }
+})
+
+test('release marks a PR ready only when every commit after the Reviewed head is a clean merge from main (claude-factory-9gkc AC1, AC2)', () => {
+  const p = ship.nodes.release.prompt
+  for (const s of [
+    'Reviewed head:',
+    'git merge-base --is-ancestor <reviewed> <head>',
+    'git rev-list <head> ^<reviewed> ^origin/main',
+    'exactly two parents',
+    'git merge-tree --write-tree',
+    'git show -s --format=%T',
+    'A missing line or a non-ancestor reviewed head fails the check',
+    'gh pr ready <n> --undo',
+    'Unreviewed commits:',
+    'report changes',
+  ])
+    expect(p, s).toContain(s)
+  expect(p).not.toContain('^{tree}')
   for (const [id, node] of Object.entries(ship.nodes))
-    expect(node.prompt.includes('gh pr ready'), id).toBe(id === 'release')
+    if (id !== 'release') expect(node.prompt, id).not.toContain('git merge-tree --write-tree <commit>^1')
+  const check = p.indexOf('Reviewed head:')
+  expect(check).toBeGreaterThan(-1)
+  expect(check).toBeLessThan(p.indexOf('mark it ready with `gh pr ready`'))
+  expect(check).toBeLessThan(p.indexOf('gh pr merge'))
+  expect(check).toBeLessThan(p.indexOf('one line for each'))
+})
+
+test('queue drafts a ready PR before it pushes a conflict-fix merge, and sends unreviewed PRs to review (claude-factory-9gkc AC3, AC4)', () => {
+  const [one, two] = ship.nodes.queue.prompt.split('\n2. ') as [string, string]
+  expect(one).toContain('gh pr view <n> --json isDraft')
+  expect(one).toContain('gh pr ready <n> --undo')
+  expect(one).toContain('A clean merge needs no undo')
+  expect(one.indexOf('gh pr ready <n> --undo')).toBeLessThan(one.indexOf('commit the merge and push it'))
+  expect(two).toContain('Unreviewed commits:')
+  expect(two).toContain('bd update <bead> --remove-label ship --add-label factory --add-label station:review')
 })
 
 test('queue can ask for another pass', () => {
