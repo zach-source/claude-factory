@@ -6331,8 +6331,8 @@ async function dispatch() {
     ? readJson<SweepGuardState>(sweepGuardFile())
     : {}
   // Each rig's open bead ids, from this pass's own `b.every()` call (claude-factory-8pc.21).
-  // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A flat 48h
-  // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
+  // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A rig not read
+  // this pass keeps all its marks, so a released bead is not held again.
   const openIds: Record<string, Set<string>> = {}
   // The filing guard's marks (claude-factory-nwlh.2): same shape and rules as the sweep guard's.
   let filingState: SweepGuardState = existsSync(filingGuardFile())
@@ -6762,9 +6762,9 @@ async function dispatch() {
           })
     }
   }
-  writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
+  writeJson(sweepGuardFile(), pruneGuardState(guardState, openIds))
   // Every filing bead keeps its verdict. A rig not read this pass keeps its marks: no age prune.
-  writeJson(filingGuardFile(), pruneGuardState(filingState, Date.now(), openIds, Infinity))
+  writeJson(filingGuardFile(), pruneGuardState(filingState, openIds))
   if (Object.keys(autoHistory).length) writeJson(autoQueueFile(), autoHistory)
   writeJson(dispatchFile(), errors)
 }

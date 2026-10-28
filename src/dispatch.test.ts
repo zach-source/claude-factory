@@ -2494,3 +2494,33 @@ test('a released bead stays released after the rig is unread for more than 48h',
   ).toBe(false)
   expect(startedBeads()).toContain('w-7')
 })
+
+test('claude-factory-z2b1: a re-queued sweep bead stays released after the rig is unread for more than 48h', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeAgedOutBd() // acme-1: 25h old, factory label, so a missing mark means the aged-out loop holds it
+  fakeGuardHerdr()
+  const rigs = (maxRuns: number) =>
+    writeFileSync(
+      join(ghome, 'rigs.json'),
+      JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', maxRuns }]),
+    )
+  // a person re-queued acme-1 after the guard held it; its mark is 49h old
+  writeFileSync(
+    join(ghome, 'sweep-guard.json'),
+    JSON.stringify({ a: { 'acme-1': Date.now() - 49 * 3600_000 } }),
+  )
+  rigs(0) // a full rig is not read, so its marks are not checked
+  gfactory(['beads'])
+  expect(JSON.parse(readFileSync(join(ghome, 'sweep-guard.json'), 'utf8')).a).toHaveProperty('acme-1')
+  rmSync(join(ghome, 'dispatch.stamp'), { force: true })
+  rigs(20)
+  gfactory(['beads'])
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-1\b/.test(l))).toBe(false)
+  expect(calls.some(l => /^bd update acme-1\b.*--remove-label factory\b/.test(l))).toBe(false)
+  expect(existsSync(join(ghome, 'runs'))).toBe(true)
+})
