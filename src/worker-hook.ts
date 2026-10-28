@@ -5040,6 +5040,27 @@ function anyGhReason(
   return undefined
 }
 
+export const FACTORY_CONTROL_REASON =
+  'The factory denies this command: only the person or the manager runs factory say, stop, resume, ' +
+  'start and fork. Mail the manager instead. Do not retry this command.'
+
+// claude-factory-5y7b: the verbs only the person or the manager runs.
+const FACTORY_CONTROL_VERBS = new Set(['say', 'stop', 'resume', 'start', 'fork'])
+
+/**
+ * claude-factory-5y7b: a factory word at any position (after sudo, env, timeout, bash -c) whose next
+ * word is a control verb, or is dynamic, so the guard cannot read it. Same any-position scan as anyGhReason.
+ */
+function anyFactoryControlReason(words: string[]): string | undefined {
+  for (let j = 0; j + 1 < words.length; j++) {
+    if (baseWord(words[j]!) !== 'factory') continue
+    const next = words[j + 1]!
+    if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
+    if (dynamicWord(next)) return DYNAMIC_VERB_REASON
+  }
+  return undefined
+}
+
 // claude-factory-zl5.3: git's own global flags that take a value word (`git -C dir push ...`).
 // The verb search steps past them. GH_VALUE_FLAGS does the same for `gh`.
 //
@@ -8711,6 +8732,8 @@ function denyAtScan(
     // timeout) can push past position 0.
     const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar)
     if (ghFound) return ghFound
+    const controlFound = anyFactoryControlReason(words)
+    if (controlFound) return controlFound
     // claude-factory-zl5.3: the same any-position scan, for a git word a wrapper can push past
     // position 0. claude-factory-68gn: movedSoFar carries an earlier segment's cd/pushd/popd word
     // into this one.
