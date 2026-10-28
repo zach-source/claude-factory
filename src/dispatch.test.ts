@@ -2459,3 +2459,38 @@ test('a past-cap bead stays held when the rig is full until the cluster oldest b
   expect(startedBeads().sort()).toEqual(['w-1', 'w-2', 'w-3', 'w-4', 'w-5', 'w-6'])
   expect(fCalls().some(l => /^bd update w-[1-6] .*--remove-label factory/.test(l))).toBe(false)
 })
+
+test('a released bead stays released after the rig is unread for more than 48h', () => {
+  const held = replayBeads().map(b => (b.id === 'w-7' ? { ...b, labels: ['pm-proposal'] } : b))
+  filingReset(held)
+  const rigs = (maxRuns: number) =>
+    writeFileSync(
+      join(ghome, 'rigs.json'),
+      JSON.stringify([{ name: 'a', repo: repo(), factory: 'lifecycle', clusterRuns: 20, maxRuns }]),
+    )
+  gfactory(['beads'])
+  const file = join(ghome, 'filing-guard.json')
+  expect(JSON.parse(readFileSync(file, 'utf8')).a).toHaveProperty('w-7')
+  // a person queued w-7 and 49h passed; a full rig is not read, so its marks are not checked
+  const old = Date.now() - 49 * 3600_000
+  const aged = JSON.parse(readFileSync(file, 'utf8'))
+  for (const id of Object.keys(aged.a)) aged.a[id] = old
+  writeFileSync(file, JSON.stringify(aged))
+  fakeFilingBd(
+    held.map(b => ({ ...b, hoursAgo: b.hoursAgo + 49, ...(b.id === 'w-7' && { labels: ['factory'] }) })),
+  )
+  rigs(0)
+  nextPass()
+  gfactory(['beads'])
+  expect(JSON.parse(readFileSync(file, 'utf8')).a).toHaveProperty('w-7')
+  const before = fCalls().length
+  rigs(20)
+  nextPass()
+  gfactory(['beads'])
+  expect(
+    fCalls()
+      .slice(before)
+      .some(l => /^bd (update|comment) w-7 .*(held|remove-label factory)/.test(l)),
+  ).toBe(false)
+  expect(startedBeads()).toContain('w-7')
+})

@@ -6763,7 +6763,8 @@ async function dispatch() {
     }
   }
   writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
-  writeJson(filingGuardFile(), pruneGuardState(filingState, Date.now(), openIds))
+  // Every filing bead keeps its verdict. A rig not read this pass keeps its marks: no age prune.
+  writeJson(filingGuardFile(), pruneGuardState(filingState, Date.now(), openIds, Infinity))
   if (Object.keys(autoHistory).length) writeJson(autoQueueFile(), autoHistory)
   writeJson(dispatchFile(), errors)
 }
