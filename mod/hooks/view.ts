@@ -531,7 +531,9 @@ export function patrol(
           r =>
             `- ${r.kind} ${r.name} (${r.change}): ${
               r.recommendation
-                ? `reviewer says ${r.recommendation}: ${line(r.why ?? '', 300)}`
+                ? `reviewer says ${r.recommendation}: ${line(r.why ?? '', 300)}${
+                    r.recommendation === 'install' ? ` -> run: factory ${r.kind}s install ${r.name}` : ''
+                  }`
                 : 'not reviewed yet'
             }`,
         )
