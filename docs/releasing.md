@@ -40,8 +40,25 @@ Do this once. Do it before the first real dispatch of `release.yml`
 
 3. The release job also runs `gh workflow run ci.yml --ref release/vX.Y.Z`. A pull request that `GITHUB_TOKEN` opens starts no `pull_request` run on its own. This step makes the CI checks report on the release PR's head SHA.
 
-4. Wait for the `ci.yml` checks (`test`, `plugin`, `typecheck`, `format`) to go green on
-   the PR.
+4. A person must do two steps before the PR can merge. Agents never approve or merge.
+
+   - The ruleset has `require_extra_approval_for_unattributed_changes`. The bot commit needs a person's review:
+
+     ```sh
+     gh pr review <N> --approve
+     ```
+
+   - The `pull_request` CI run of the PR waits in `action_required`. The green checks of the `workflow_dispatch` run in step 3 do not count toward the PR's check rollup. Without the PR run, the ruleset refuses the merge with `4 of 4 required status checks are expected`. Find the held run and approve it:
+
+     ```sh
+     gh run list --branch release/vX.Y.Z --workflow ci.yml --json databaseId,event,status
+     gh api -X POST repos/zach-source/claude-factory/actions/runs/<RUN_ID>/approve
+     ```
+
+     Use the run with event `pull_request` and status `action_required`.
+
+   Then wait for the `ci.yml` checks (`test`, `plugin`, `typecheck`, `format`) to go green on
+   the PR. `--admin` does not bypass the ruleset, because it has no bypass actors.
 
 5. Merge the PR with the exact head SHA that the checks ran on:
 
