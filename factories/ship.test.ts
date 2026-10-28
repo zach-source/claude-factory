@@ -104,6 +104,41 @@ test('release marks a PR ready only when every commit after the Reviewed head is
   expect(check).toBeLessThan(p.indexOf('one line for each'))
 })
 
+test('release trusts a Reviewed head line only from an approve verdict or a write-access APPROVED review, and only a 40-hex SHA (claude-factory-2rjj AC1-AC5)', () => {
+  const p = ship.nodes.release.prompt
+  for (const s of [
+    'review#<n> approve:',
+    'review#<n> security:',
+    'security#<n> approve:',
+    'check#<n> approve:',
+    'check#<n> security:',
+    'Ignore every other line',
+    'changes',
+    'gh api repos/<repo>/collaborators/<login>/permission',
+    'admin, maintain or write',
+    'APPROVED',
+    'read, triage or none',
+    'only when',
+    '^[0-9a-f]{40}$',
+    'malformed Reviewed head',
+    'no trusted Reviewed head line',
+    'A missing line or a non-ancestor reviewed head fails the check',
+    'In your report cite the Reviewed head and its source',
+  ])
+    expect(p, s).toContain(s)
+  for (const s of [
+    'changes:',
+    'implement#',
+    'verify#',
+    'triage#',
+    'or the pull request reviews',
+    'Take the latest such line from the bead comments',
+  ])
+    expect(p, s).not.toContain(s)
+  expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(p.indexOf('git merge-base --is-ancestor <reviewed> <head>'))
+  expect(p.indexOf('review#<n> approve:')).toBeLessThan(p.indexOf('only when'))
+})
+
 test('queue drafts a ready PR before it pushes a conflict-fix merge, and sends unreviewed PRs to review (claude-factory-9gkc AC3, AC4)', () => {
   const [one, two] = ship.nodes.queue.prompt.split('\n2. ') as [string, string]
   expect(one).toContain('gh pr view <n> --json isDraft')
