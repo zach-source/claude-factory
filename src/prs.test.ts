@@ -1904,3 +1904,96 @@ test('buildPrs on GitHub: list and view go through REST only; a failed check-run
   )
   expect(evilCalls.some(c => c[1]?.includes('/pulls/5'))).toBe(false)
 })
+
+import { githubWatchView } from './prs'
+
+test('githubWatchView: pull, then reviews and comments with --paginate --slurp, flattened; any failed call gives null', async () => {
+  const calls: string[][] = []
+  const answer =
+    (comments: GhResult | null): Gh =>
+    async argv => {
+      calls.push(argv)
+      const path = argv.at(-1)!
+      if (path.endsWith('/pulls/5'))
+        return {
+          code: 0,
+          err: '',
+          out: JSON.stringify({
+            state: 'open',
+            draft: true,
+            updated_at: '2026-10-12T09:00:00Z',
+            mergeable: false,
+            head: { ref: 'factory/x', sha: 'abc' },
+            base: { ref: 'main' },
+          }),
+        }
+      if (path.includes('/reviews?'))
+        return {
+          code: 0,
+          err: '',
+          out: JSON.stringify([
+            [
+              {
+                user: { login: 'a' },
+                author_association: 'MEMBER',
+                state: 'APPROVED',
+                submitted_at: '2026-10-12T09:00:00Z',
+                body: '',
+              },
+            ],
+            [
+              {
+                user: { login: 'b' },
+                author_association: 'NONE',
+                state: 'COMMENTED',
+                submitted_at: '2026-10-12T09:01:00Z',
+                body: '',
+              },
+            ],
+          ]),
+        }
+      return (
+        comments ?? {
+          code: 0,
+          err: '',
+          out: JSON.stringify([
+            [
+              {
+                user: { login: 'a' },
+                author_association: 'OWNER',
+                created_at: '2026-10-12T09:02:00Z',
+                body: 'hi',
+              },
+            ],
+          ]),
+        }
+      )
+    }
+  const v = await githubWatchView(answer(null), 'https://github.com/acme/widget/pull/5', '/tmp')
+  expect(v).toMatchObject({
+    url: 'https://github.com/acme/widget/pull/5',
+    state: 'OPEN',
+    isDraft: true,
+    reviewDecision: 'APPROVED',
+    headRefOid: 'abc',
+    mergeable: 'CONFLICTING',
+    headRefName: 'factory/x',
+    baseRefName: 'main',
+  })
+  expect(v!.notes!.map(n => n.person)).toEqual([true, false, true])
+  expect(calls.map(c => c.join(' ')).sort()).toEqual([
+    'api --paginate --slurp repos/acme/widget/issues/5/comments?per_page=100',
+    'api --paginate --slurp repos/acme/widget/pulls/5/reviews?per_page=100',
+    'api repos/acme/widget/pulls/5',
+  ])
+  expect(
+    await githubWatchView(
+      answer({ code: 1, out: '', err: 'x' }),
+      'https://github.com/acme/widget/pull/5',
+      '/tmp',
+    ),
+  ).toBeNull()
+  calls.length = 0
+  expect(await githubWatchView(answer(null), 'https://github.com/acme/../pull/5', '/tmp')).toBeNull()
+  expect(calls).toEqual([])
+})

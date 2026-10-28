@@ -3,7 +3,7 @@
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
 import { mrsIn, prsIn, type Entry } from './machine'
-import { ghNotes, isPerson, type Note } from './watch'
+import { ghNotes, isPerson, type Note, type WatchedPr } from './watch'
 export { mrsIn }
 
 export type PrSource = 'report' | 'mail' | 'search' | 'branch'
@@ -930,6 +930,40 @@ export async function githubPulls(
     if (list.length < 100) break
   }
   return rows
+}
+
+/** the PR for the park watch: the pull, then its reviews and issue comments, all pages.
+ * Null when any call fails, so the watch never routes on a half view. */
+export async function githubWatchView(gh: Gh, url: string, cwd: string): Promise<WatchedPr | null> {
+  const slug = githubSlugOf(url)
+  if (!slug) return null
+  const path = `repos/${slug}/pulls/${prRef(url)!.number}`
+  const pages = async (p: string): Promise<unknown[] | null> => {
+    const res = await gh(['api', '--paginate', '--slurp', p], { cwd, timeout: 60_000 })
+    const list = res.code === 0 ? asJson(res.out) : null
+    return Array.isArray(list) ? list.flat() : null
+  }
+  const [pull, reviews, comments] = await Promise.all([
+    gh(['api', path], { cwd, timeout: 60_000 }),
+    pages(`${path}/reviews?per_page=100`),
+    pages(`repos/${slug}/issues/${prRef(url)!.number}/comments?per_page=100`),
+  ])
+  const v = pull.code === 0 && reviews && comments ? parseGithubView(pull.out) : null
+  if (!v) return null
+  return {
+    url,
+    state: v.state,
+    isDraft: v.isDraft,
+    reviewDecision: reviewDecisionOf(reviews),
+    updatedAt: v.updatedAt,
+    headRefOid: v.headSha,
+    mergedAt: v.mergedAt,
+    closedAt: v.closedAt,
+    notes: restNotes(reviews, comments),
+    mergeable: v.mergeable,
+    headRefName: v.headRefName || undefined,
+    baseRefName: v.baseRefName,
+  }
 }
 
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh

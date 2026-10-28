@@ -56,7 +56,7 @@ import {
   type Factory,
   type Mail,
 } from './machine'
-import { ghNotes, watchDecide, type Seen, type WatchedPr } from './watch'
+import { watchDecide, type Seen, type WatchedPr } from './watch'
 import {
   actorOf,
   backlogOf,
@@ -180,6 +180,7 @@ import {
   forgeNote,
   forgeOf,
   gitlabForge,
+  githubWatchView,
   gitlabWatchNotes,
   mrsIn,
   onHost,
@@ -7585,35 +7586,7 @@ async function watchPass() {
       if (cache.has(url)) return cache.get(url)!
       let v: WatchedPr | null = null
       try {
-        const p = Bun.spawnSync(
-          [
-            'gh',
-            'pr',
-            'view',
-            url,
-            '--json',
-            'state,isDraft,reviewDecision,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments,mergeable,headRefName,baseRefName',
-          ],
-          { cwd, timeout: 60_000 },
-        )
-        if (p.exitCode === 0) {
-          const j = JSON.parse(p.stdout.toString())
-          v = {
-            url,
-            state: j.state,
-            isDraft: typeof j.isDraft === 'boolean' ? j.isDraft : undefined,
-            reviewDecision: typeof j.reviewDecision === 'string' ? j.reviewDecision : undefined,
-            updatedAt: j.updatedAt,
-            headRefOid: j.headRefOid,
-            mergedAt: j.mergedAt,
-            closedAt: j.closedAt,
-            notes: ghNotes(j),
-            ...(['mergeable', 'headRefName', 'baseRefName'] as const).reduce(
-              (o, k) => (typeof j[k] === 'string' ? { ...o, [k]: j[k] } : o),
-              {},
-            ),
-          }
-        }
+        v = await githubWatchView(spawnGh, url, cwd)
       } catch {
         // a missing binary or unreadable output counts as a failed view
       }
