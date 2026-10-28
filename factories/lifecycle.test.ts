@@ -842,7 +842,12 @@ const NO_BLOCK = [
 
 test('claude-factory-9sji AC1: implement, verify and quick carry the no-block rule', () => {
   for (const [id] of NO_BLOCK)
-    for (const needle of ['ready, merge or hold', 'For the person:', 'another open pull request', 'owner-only'])
+    for (const needle of [
+      'ready, merge or hold',
+      'For the person:',
+      'another open pull request',
+      'owner-only',
+    ])
       expect(promptOf(lifecycle, id), `${id}: ${needle}`).toContain(needle)
 })
 
