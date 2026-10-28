@@ -1010,7 +1010,7 @@ export const loadFactory = async (file: string): Promise<Factory> => {
 const runIds = () =>
   existsSync(join(HOME, 'runs'))
     ? readdirSync(join(HOME, 'runs'), { withFileTypes: true })
-        .filter(d => d.isDirectory() && existsSync(join(HOME, 'runs', d.name, 'run.json'))) // createRun writes run.json last
+        .filter(d => d.isDirectory())
         .map(d => d.name)
         .sort()
     : []
