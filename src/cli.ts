@@ -8954,12 +8954,15 @@ if (import.meta.main && !outboxCmd)
         console.log(JSON.stringify(await tick(true)))
         break
       case 'beads':
+        refuseWorker('beads')
         await beadsPass()
         break
       case 'watch':
+        refuseWorker('watch')
         await watchPass()
         break
       case 'sync':
+        refuseWorker('sync')
         await syncPass()
         break
       case 'broker':
@@ -9229,9 +9232,11 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'dream':
+        refuseWorker('dream')
         console.log(await dream())
         break
       case 'devenv':
+        refuseWorker('devenv')
         console.log(
           devenvPass(
             args.filter(a => a !== '--force'),

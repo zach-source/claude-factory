@@ -5047,7 +5047,7 @@ function anyGhReason(
 
 export const FACTORY_CONTROL_REASON =
   'The factory denies this command: only the person or the manager runs factory say, stop, resume, ' +
-  'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, attach, manager, migrate-to-ax and rig with a sub other than list. ' +
+  'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, beads, watch, sync, dream, devenv, attach, manager, migrate-to-ax and rig with a sub other than list. ' +
   'Mail the manager instead. Do not retry this command.'
 
 // claude-factory-5y7b, claude-factory-3c4w: the verbs only the person or the manager runs.
@@ -5066,6 +5066,11 @@ const FACTORY_CONTROL_VERBS = new Set([
   'self-update',
   'gc',
   'sweep',
+  'beads',
+  'watch',
+  'sync',
+  'dream',
+  'devenv',
   'attach',
   'manager',
   'migrate-to-ax',
