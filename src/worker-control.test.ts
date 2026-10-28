@@ -1,6 +1,6 @@
 // claude-factory-5y7b: a worker cannot run factory say, stop, resume, start or fork.
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -21,8 +21,9 @@ function run(args: string[], env: Record<string, string>, seedHalt = false, seed
   const ax = join(dir, 'fake-ax')
   writeFileSync(ax, `#!/bin/sh\necho "$@" >> ${axLog}\n`, { mode: 0o755 })
   if (seedHalt) writeFileSync(halt, JSON.stringify({ state: 'stopping', at: 1, told: {}, closed: {} }))
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, ...rest } = process.env
-  void [FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR]
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, FACTORY_PATROL, ...rest } =
+    process.env
+  void [FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, FACTORY_PATROL]
   return Bun.spawnSync([CLI, ...args], {
     env: { ...rest, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', FACTORY_AX: ax, ...env },
   })
@@ -124,3 +125,95 @@ for (const [name, env] of [
     expect(runs()).toBe(1)
   })
 }
+
+// claude-factory-3c4w: the other manager-only verbs refuse a worker; some also refuse a patrol
+const inbox = () => join(home, 'runs', 'r1', 'inbox.jsonl')
+const rigsFile = join(home, 'rigs.json')
+const RIGS = '[]'
+const seedAll = () => {
+  seedRun()
+  writeFileSync(rigsFile, RIGS)
+}
+const workerMarkers: Record<string, Record<string, string>> = {
+  FACTORY_FROM: markers.FACTORY_FROM!,
+  'FACTORY_FROM manager': markers['FACTORY_FROM manager']!,
+  FACTORY_DEF_NAME: markers.FACTORY_DEF_NAME!,
+  'FACTORY_RUN own run': { FACTORY_RUN: 'r1' },
+  'BEADS_ACTOR r1': { BEADS_ACTOR: 'factory/r1/implement' },
+}
+const verbRows: { args: string[]; verb: string; patrol: boolean }[] = [
+  { args: ['goto', 'r1', 'done'], verb: 'goto', patrol: false },
+  { args: ['retry', 'r1'], verb: 'retry', patrol: false },
+  { args: ['abort', 'r1'], verb: 'abort', patrol: false },
+  { args: ['rm', 'r1'], verb: 'rm', patrol: false },
+  { args: ['tick'], verb: 'tick', patrol: true },
+  { args: ['attach'], verb: 'attach', patrol: true },
+  { args: ['manager'], verb: 'manager', patrol: true },
+  { args: ['manager', 'host'], verb: 'manager', patrol: true },
+  { args: ['manager', '--ax'], verb: 'manager', patrol: true },
+  { args: ['migrate-to-ax'], verb: 'migrate-to-ax', patrol: true },
+  { args: ['rig', 'add', 'w', dir], verb: 'rig add', patrol: true },
+  { args: ['rig', 'rm', 'w'], verb: 'rig rm', patrol: true },
+]
+/** nothing the verb writes exists after a refusal */
+function untouched() {
+  expect(existsSync(axLog)).toBe(false)
+  expect(readdirSync(home).sort()).toEqual(['rigs.json', 'runs'])
+  expect(readdirSync(join(home, 'runs'))).toEqual(['r1'])
+  expect(readFileSync(rigsFile, 'utf8')).toBe(RIGS)
+  expect(readFileSync(inbox(), 'utf8')).toBe('')
+}
+for (const [name, env] of Object.entries(workerMarkers)) {
+  for (const { args, verb } of verbRows) {
+    test(`${name}: ${args.slice(0, 3).join(' ')} is refused and changes nothing`, () => {
+      const p = run(args, env, false, seedAll)
+      expect(p.exitCode).toBe(1)
+      expect(p.stderr.toString()).toContain(`a worker cannot run factory ${verb} (`)
+      untouched()
+    })
+  }
+}
+for (const { args, verb, patrol } of verbRows) {
+  if (!patrol) continue
+  test(`patrol: ${args.slice(0, 3).join(' ')} is refused and changes nothing`, () => {
+    const p = run(args, { FACTORY_PATROL: '1' }, false, seedAll)
+    expect(p.exitCode).toBe(1)
+    expect(p.stderr.toString()).toContain(`a patrol cannot run factory ${verb}:`)
+    untouched()
+  })
+}
+test('patrol: say is refused and runs no ax', () => {
+  const p = run(['say', 'x'], { FACTORY_PATROL: '1' })
+  expect(p.exitCode).toBe(1)
+  expect(p.stderr.toString()).toContain('a patrol cannot run factory say:')
+  expect(existsSync(axLog)).toBe(false)
+})
+test('patrol: stop is refused and writes no halt.json', () => {
+  const p = run(['stop'], { FACTORY_PATROL: '1' })
+  expect(p.exitCode).toBe(1)
+  expect(p.stderr.toString()).toContain('a patrol cannot run factory stop:')
+  expect(existsSync(halt)).toBe(false)
+})
+test('patrol: resume is refused and keeps halt.json', () => {
+  const p = run(['resume'], { FACTORY_PATROL: '1' }, true)
+  expect(p.exitCode).toBe(1)
+  expect(p.stderr.toString()).toContain('a patrol cannot run factory resume:')
+  expect(existsSync(halt)).toBe(true)
+})
+test('patrol: goto and abort queue their event', () => {
+  expect(run(['goto', 'r1', 'done'], { FACTORY_PATROL: '1' }, false, seedAll).exitCode).toBe(0)
+  expect(readFileSync(inbox(), 'utf8')).toContain('"GOTO"')
+  expect(run(['abort', 'r1'], { FACTORY_PATROL: '1' }, false, seedAll).exitCode).toBe(0)
+  expect(readFileSync(inbox(), 'utf8')).toContain('"ABORT"')
+})
+for (const [name, env] of [...Object.entries(workerMarkers), ['patrol', { FACTORY_PATROL: '1' }]] as const) {
+  for (const args of [['rig'], ['rig', 'list']]) {
+    test(`${name}: ${args.join(' ')} is allowed`, () => {
+      expect(run(args, env, false, seedAll).exitCode).toBe(0)
+    })
+  }
+}
+test('no marker: abort keeps working', () => {
+  expect(run(['abort', 'r1'], {}, false, seedAll).exitCode).toBe(0)
+  expect(readFileSync(inbox(), 'utf8')).toContain('"ABORT"')
+})
