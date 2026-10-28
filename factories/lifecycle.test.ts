@@ -833,3 +833,47 @@ test('rollback and soak call an unreproduced cause a hypothesis (claude-factory-
   ] as const)
     expect(promptOf(def, node), node).toContain('hypothesis unless you reproduced it')
 })
+
+const NO_BLOCK = [
+  ['implement', 'ready', 'verify'],
+  ['verify', 'green', 'review'],
+  ['quick', 'ready', 'check'],
+] as const
+
+test('claude-factory-9sji AC1: implement, verify and quick carry the no-block rule', () => {
+  for (const [id] of NO_BLOCK)
+    for (const needle of ['ready, merge or hold', 'For the person:', 'another open pull request', 'owner-only'])
+      expect(promptOf(lifecycle, id), `${id}: ${needle}`).toContain(needle)
+})
+
+test('claude-factory-9sji AC2: the rule names a forward outcome of each station', () => {
+  for (const [id, outcome, to] of NO_BLOCK) {
+    expect(promptOf(lifecycle, id), id).toContain(`report ${outcome}. Do not report blocked or decision`)
+    expect((lifecycle.nodes[id] as { next: Record<string, unknown> }).next[outcome], id).toBe(to)
+  }
+})
+
+test('claude-factory-9sji AC3: closed tasks and green CI reach review', () => {
+  expect(walk(lifecycle, ['build', 'ready', 'ready', 'green']).visited).toEqual([
+    'triage',
+    'plan',
+    'implement',
+    'verify',
+    'review',
+  ])
+})
+
+test('claude-factory-9sji AC4: only implement, verify and quick carry the rule; it keeps the owner-only park and names no gh pr ready', () => {
+  const carriers: string[] = NO_BLOCK.map(([id]) => id)
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const prompt = (node as { prompt?: unknown }).prompt
+    if (typeof prompt !== 'string') continue
+    expect(prompt.includes('For the person:'), id).toBe(carriers.includes(id))
+  }
+  for (const id of carriers) {
+    expect(promptOf(lifecycle, id), id).toContain('parked, waiting on')
+    expect(promptOf(lifecycle, id), id).toContain('still a failure')
+  }
+  expect(promptOf(lifecycle, 'verify')).toContain('red with a numbered list')
+  expect(promptOf(lifecycle, 'verify')).toContain('Failing:')
+})
