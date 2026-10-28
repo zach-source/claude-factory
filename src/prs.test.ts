@@ -767,6 +767,27 @@ const run = (over: Partial<RunMeta>): RunMeta => ({
   ...over,
 })
 
+/** a GraphQL-shaped view fixture as the REST `pulls/N` answer */
+const asPull = (v: {
+  title: string
+  state: string
+  isDraft: boolean
+  mergeStateStatus: string
+  updatedAt: string
+  headRefName: string
+  body: string
+}) =>
+  JSON.stringify({
+    title: v.title,
+    state: v.state === 'merged' ? 'closed' : v.state,
+    merged_at: v.state === 'merged' ? v.updatedAt : null,
+    draft: v.isDraft,
+    mergeable_state: v.mergeStateStatus.toLowerCase(),
+    updated_at: v.updatedAt,
+    head: { ref: v.headRefName },
+    body: v.body,
+  })
+
 /** a fake `gh` that answers by matching the joined argv against a prefix table; every call is recorded */
 function fakeGh(table: { when: string; reply: GhResult }[], calls: string[][] = []): Gh {
   return async (argv, _opts) => {
@@ -783,11 +804,11 @@ test("buildPrs: a search finds a companion PR in another repo and drops one crea
   const gh = fakeGh(
     [
       {
-        when: 'pr list --state all',
+        when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
         reply: {
           code: 0,
           out: JSON.stringify([
-            { url: 'https://github.com/acme/widget/pull/551', headRefName: `factory/${RUN_ID}` },
+            { html_url: 'https://github.com/acme/widget/pull/551', head: { ref: `factory/${RUN_ID}` } },
           ]),
           err: '',
         },
@@ -804,16 +825,14 @@ test("buildPrs: a search finds a companion PR in another repo and drops one crea
         },
       },
       {
-        when: 'pr view https://github.com/acme/widget/pull/551',
+        when: 'api repos/acme/widget/pulls/551',
         reply: {
           code: 0,
-          out: JSON.stringify({
+          out: asPull({
             title: 'ex-12.3 build',
             state: 'merged',
             isDraft: false,
-            reviewDecision: '',
             mergeStateStatus: 'MERGED',
-            statusCheckRollup: [],
             updatedAt: '2026-10-12T09:00:00Z',
             headRefName: `factory/${RUN_ID}`,
             body: '',
@@ -822,16 +841,14 @@ test("buildPrs: a search finds a companion PR in another repo and drops one crea
         },
       },
       {
-        when: 'pr view https://github.com/acme/widget-deploy/pull/65',
+        when: 'api repos/acme/widget-deploy/pulls/65',
         reply: {
           code: 0,
-          out: JSON.stringify({
+          out: asPull({
             title: 'migrate-stage',
             state: 'open',
             isDraft: true,
-            reviewDecision: '',
             mergeStateStatus: 'CLEAN',
-            statusCheckRollup: [],
             updatedAt: '2026-10-12T09:05:00Z',
             headRefName: 'release/widget-release-2026-10-12',
             body: "carries ex-12.3's re-pin",
@@ -863,18 +880,19 @@ test("buildPrs: a search finds a companion PR in another repo and drops one crea
   const calls2: string[][] = []
   const gh2 = fakeGh(
     [
-      { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
       {
-        when: 'pr view https://github.com/acme/widget-deploy/pull/65',
+        when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+        reply: { code: 0, out: '[]', err: '' },
+      },
+      {
+        when: 'api repos/acme/widget-deploy/pulls/65',
         reply: {
           code: 0,
-          out: JSON.stringify({
+          out: asPull({
             title: 'migrate-stage',
             state: 'open',
             isDraft: true,
-            reviewDecision: '',
             mergeStateStatus: 'CLEAN',
-            statusCheckRollup: [],
             updatedAt: '2026-10-12T09:05:00Z',
             headRefName: 'release/widget-release-2026-10-12',
             body: "carries ex-12.3's re-pin",
@@ -929,18 +947,19 @@ test('buildPrs: a MERGED PR is never viewed again; a failed view on a second cal
   const noList: GhResult = { code: 0, out: '[]', err: '' }
   const gh1 = fakeGh(
     [
-      { when: 'pr list --state all', reply: noList },
       {
-        when: 'pr view https://github.com/acme/widget/pull/551',
+        when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+        reply: noList,
+      },
+      {
+        when: 'api repos/acme/widget/pulls/551',
         reply: {
           code: 0,
-          out: JSON.stringify({
+          out: asPull({
             title: 'ex-12.3',
             state: 'open',
             isDraft: false,
-            reviewDecision: '',
             mergeStateStatus: 'CLEAN',
-            statusCheckRollup: [],
             updatedAt: '2026-10-12T09:00:00Z',
             headRefName: `factory/${RUN_ID}`,
             body: '',
@@ -953,16 +972,19 @@ test('buildPrs: a MERGED PR is never viewed again; a failed view on a second cal
   )
   const r1 = run({ bead: undefined, file: { version: 1, prs: [openPr, mergedPr] } })
   const first = await buildPrs([r1], IS_STATION, gh1, now1)
-  const calledUrls1 = calls1.filter(c => c[0] === 'pr' && c[1] === 'view').map(c => c[2])
-  expect(calledUrls1).toEqual(['https://github.com/acme/widget/pull/551']) // not the merged one
+  const calledUrls1 = calls1.filter(c => /\/pulls\/\d+$/.test(c[1] ?? '')).map(c => c[1])
+  expect(calledUrls1).toEqual(['repos/acme/widget/pulls/551']) // not the merged one
 
   const now2 = now1 + 3 * 60_000 // past the OPEN TTL
   const calls2: string[][] = []
   const gh2 = fakeGh(
     [
-      { when: 'pr list --state all', reply: noList },
       {
-        when: 'pr view https://github.com/acme/widget/pull/551',
+        when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+        reply: noList,
+      },
+      {
+        when: 'api repos/acme/widget/pulls/551',
         reply: { code: 1, out: '', err: 'HTTP 502' },
       },
     ],
@@ -1005,19 +1027,20 @@ test('buildPrs: a MERGED companion PR named only in its gh-viewed body keeps its
   const noList: GhResult = { code: 0, out: '[]', err: '' }
   const noSearch: GhResult = { code: 0, out: '[]', err: '' }
   const gh1 = fakeGh([
-    { when: 'pr list --state all', reply: noList },
+    {
+      when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+      reply: noList,
+    },
     { when: 'search prs --owner', reply: noSearch },
     {
-      when: 'pr view https://github.com/acme/widget-deploy/pull/65',
+      when: 'api repos/acme/widget-deploy/pulls/65',
       reply: {
         code: 0,
-        out: JSON.stringify({
+        out: asPull({
           title: 'migrate-stage tester-trusted-root',
           state: 'merged',
           isDraft: false,
-          reviewDecision: '',
           mergeStateStatus: 'MERGED',
-          statusCheckRollup: [],
           updatedAt: '2026-10-12T09:10:00Z',
           headRefName: 'release/widget-release-2026-10-12', // not the run's own branch
           body: "carries ex-12.3's re-pin", // names the bead only here, in the body
@@ -1035,7 +1058,10 @@ test('buildPrs: a MERGED companion PR named only in its gh-viewed body keeps its
   // this call; only the always-run mention fold recomputes role from the stored record
   const now2 = now1 + 24 * 60 * 60_000
   const gh2 = fakeGh([
-    { when: 'pr list --state all', reply: noList },
+    {
+      when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+      reply: noList,
+    },
     { when: 'search prs --owner', reply: noSearch },
   ])
   const r2 = run({ file: first.files.get(RUN_ID)! })
@@ -1048,7 +1074,15 @@ test('buildPrs: a MERGED companion PR named only in its gh-viewed body keeps its
 test("buildPrs: a run whose rig has no GitHub owner never calls `gh search prs --owner ''`, and still marks itself searched so it is not retried every call (wyc.8)", async () => {
   const now = 1_000_000_000
   const calls: string[][] = []
-  const gh = fakeGh([{ when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } }], calls)
+  const gh = fakeGh(
+    [
+      {
+        when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+        reply: { code: 0, out: '[]', err: '' },
+      },
+    ],
+    calls,
+  )
   const r = run({ owner: '' })
   const { files } = await buildPrs([r], IS_STATION, gh, now)
   expect(calls.some(c => c[0] === 'search')).toBe(false)
@@ -1058,7 +1092,10 @@ test("buildPrs: a run whose rig has no GitHub owner never calls `gh search prs -
 test("buildPrs: an ended run's search drops a hit created after it ended, like a later run of the same bead (wyc.5)", async () => {
   const now = 3_000_000_000
   const gh = fakeGh([
-    { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
+    {
+      when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+      reply: { code: 0, out: '[]', err: '' },
+    },
     {
       when: 'search prs --owner acme',
       reply: {
@@ -1081,7 +1118,10 @@ test("buildPrs: an ended run's search drops a hit created after it ended, like a
 test('buildPrs: a failed final search is retried (not given up on) once its backoff elapses, and finds the PR search alone could ever surface (wyc.11)', async () => {
   const now1 = 3_000_000_000
   const gh1 = fakeGh([
-    { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
+    {
+      when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+      reply: { code: 0, out: '[]', err: '' },
+    },
     { when: 'search prs --owner acme', reply: { code: 1, out: '', err: 'rate limit' } },
   ])
   const r1 = run({ ended: true, endAt: 1791819735929 })
@@ -1092,7 +1132,15 @@ test('buildPrs: a failed final search is retried (not given up on) once its back
 
   // immediately again: still backing off, gh must not be re-called
   const calls2: string[][] = []
-  const gh2 = fakeGh([{ when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } }], calls2)
+  const gh2 = fakeGh(
+    [
+      {
+        when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+        reply: { code: 0, out: '[]', err: '' },
+      },
+    ],
+    calls2,
+  )
   const r2 = run({ ended: true, endAt: 1791819735929, file: file1 })
   await buildPrs([r2], IS_STATION, gh2, now1 + 1_000)
   expect(calls2.some(c => c[0] === 'search')).toBe(false)
@@ -1100,7 +1148,10 @@ test('buildPrs: a failed final search is retried (not given up on) once its back
   // past the backoff window, with a healthy gh: the PR search alone could find is finally found
   const now2 = now1 + 2 * 60_000
   const gh3 = fakeGh([
-    { when: 'pr list --state all', reply: { code: 0, out: '[]', err: '' } },
+    {
+      when: 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+      reply: { code: 0, out: '[]', err: '' },
+    },
     {
       when: 'search prs --owner acme',
       reply: {
@@ -1147,30 +1198,20 @@ test('buildPrs spends at most the view budget in one call, 6 at a time, deferrin
   const calls: string[][] = []
   const gh: Gh = async argv => {
     calls.push(argv)
-    if (argv[0] === 'pr' && argv[1] === 'list') return { code: 0, out: '[]', err: '' }
+    if (argv[1]!.includes('/pulls?')) return { code: 0, out: '[]', err: '' }
     inFlight++
     maxInFlight = Math.max(maxInFlight, inFlight)
     await new Promise(res => setTimeout(res, 1))
     inFlight--
     return {
       code: 0,
-      out: JSON.stringify({
-        title: '',
-        state: 'open',
-        isDraft: false,
-        reviewDecision: '',
-        mergeStateStatus: '',
-        statusCheckRollup: [],
-        updatedAt: '',
-        headRefName: '',
-        body: '',
-      }),
+      out: JSON.stringify({ title: '', state: 'open', draft: false }),
       err: '',
     }
   }
   const r = run({ bead: undefined, file: { version: 1, prs } })
   const { rows } = await buildPrs([r], IS_STATION, gh, now)
-  const viewed = calls.filter(c => c[0] === 'pr' && c[1] === 'view')
+  const viewed = calls.filter(c => /\/pulls\/\d+$/.test(c[1]!))
   expect(viewed).toHaveLength(30) // DEFAULT_BUDGET.views
   expect(maxInFlight).toBeLessThanOrEqual(6)
   const stillStale = rows[0]!.prs.filter(p => p.checkedAt === 0)
@@ -1188,27 +1229,17 @@ test('buildPrs: an exhausted overall deadline stops spending new gh calls past i
   const calls: string[][] = []
   const gh: Gh = async argv => {
     calls.push(argv)
-    if (argv[0] === 'pr' && argv[1] === 'list') return { code: 0, out: '[]', err: '' }
+    if (argv[1]!.includes('/pulls?')) return { code: 0, out: '[]', err: '' }
     return {
       code: 0,
-      out: JSON.stringify({
-        title: '',
-        state: 'open',
-        isDraft: false,
-        reviewDecision: '',
-        mergeStateStatus: '',
-        statusCheckRollup: [],
-        updatedAt: '',
-        headRefName: '',
-        body: '',
-      }),
+      out: JSON.stringify({ title: '', state: 'open', draft: false }),
       err: '',
     }
   }
   const r1 = run({ id: 'lifecycle-one', repoDir: '/repo/one' })
   const r2 = run({ id: 'lifecycle-two', repoDir: '/repo/two' })
   await buildPrs([r1, r2], IS_STATION, gh, now, DEFAULT_BUDGET, clock, 10)
-  const listCalls = calls.filter(c => c[0] === 'pr' && c[1] === 'list')
+  const listCalls = calls.filter(c => c[1]!.includes('/pulls?'))
   expect(listCalls).toHaveLength(1) // repo "two"'s branch list never ran: the deadline hit first
   expect(calls.some(c => c[0] === 'search')).toBe(false) // the search loop never got a turn either
 })
@@ -1588,4 +1619,467 @@ test('buildPrs: an MR URL on another host is never viewed, on a GitLab rig or a 
       error: 'merge request is not on the rig forge host',
     })
   }
+})
+
+// ---- GitHub REST mappers (claude-factory-fbyg.1) ----
+
+import { githubPulls, githubRows, githubSlugOf, parseGithubView, restNotes, reviewDecisionOf } from './prs'
+
+test('githubSlugOf: owner/repo of a github.com PR URL; a dot segment, a GitLab URL, http and a query give null', () => {
+  expect(githubSlugOf('https://github.com/acme/widget/pull/5')).toBe('acme/widget')
+  for (const bad of [
+    'https://github.com/../widget/pull/5',
+    'https://github.com/acme/../pull/5',
+    'https://github.com/./widget/pull/5',
+    'https://github.com/acme/./pull/5',
+    'https://gitlab.example.com/acme/widget/-/merge_requests/5',
+    'http://github.com/acme/widget/pull/5',
+    'https://github.com/acme/widget/pull/5?x=1',
+    'https://github.com/acme/widget/pull/5#x',
+  ])
+    expect(githubSlugOf(bad)).toBeNull()
+})
+
+const pull = (o: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    title: 't',
+    state: 'open',
+    draft: false,
+    mergeable: true,
+    mergeable_state: 'clean',
+    updated_at: '2026-10-12T09:00:00Z',
+    head: { ref: 'b', sha: 'abc', repo: { full_name: 'acme/widget' } },
+    base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+    body: 'x',
+    additions: 3,
+    deletions: 2,
+    changed_files: 1,
+    ...o,
+  })
+
+test('parseGithubView: state, draft, merge state, mergeable, checks and diff size', () => {
+  const v = parseGithubView(pull())!
+  expect(v).toMatchObject({
+    title: 't',
+    state: 'OPEN',
+    isDraft: false,
+    mergeStateStatus: 'CLEAN',
+    mergeable: 'MERGEABLE',
+    headRefName: 'b',
+    headSha: 'abc',
+    baseRefName: 'main',
+    additions: 3,
+    deletions: 2,
+    changedFiles: 1,
+    reviewDecision: '',
+  })
+  expect(parseGithubView(pull({ draft: true }))!.isDraft).toBe(true)
+  expect(parseGithubView(pull({ state: 'closed', merged_at: '2026-10-12T10:00:00Z' }))).toMatchObject({
+    state: 'MERGED',
+    mergedAt: '2026-10-12T10:00:00Z',
+  })
+  expect(parseGithubView(pull({ state: 'closed', closed_at: '2026-10-12T10:00:00Z' }))).toMatchObject({
+    state: 'CLOSED',
+    closedAt: '2026-10-12T10:00:00Z',
+  })
+  for (const s of ['clean', 'dirty', 'behind', 'blocked', 'unstable', 'has_hooks', 'draft', 'unknown'])
+    expect(parseGithubView(pull({ mergeable_state: s }))!.mergeStateStatus).toBe(s.toUpperCase())
+  expect(parseGithubView(pull({ mergeable_state: undefined }))!.mergeStateStatus).toBe('UNKNOWN')
+  expect(parseGithubView(pull({ mergeable: false }))!.mergeable).toBe('CONFLICTING')
+  expect(parseGithubView(pull({ mergeable: null }))!.mergeable).toBe('UNKNOWN')
+  const runs = JSON.stringify({
+    check_runs: [
+      { status: 'queued', conclusion: null },
+      { status: 'in_progress', conclusion: null },
+      { status: 'completed', conclusion: 'success' },
+      { status: 'completed', conclusion: 'failure' },
+      { status: 'completed', conclusion: 'skipped' },
+    ],
+  })
+  const statuses = JSON.stringify({
+    statuses: [{ state: 'success' }, { state: 'failure' }, { state: 'error' }, { state: 'pending' }],
+  })
+  expect(parseGithubView(pull(), '[]', runs, statuses)!.checks).toEqual({ pass: 3, fail: 3, pending: 3 })
+  expect(parseGithubView('nope')).toBeNull()
+  expect(parseGithubView('[]')).toBeNull()
+})
+
+const rv = (login: string, state: string, assoc: string) => ({
+  user: { login },
+  state,
+  author_association: assoc,
+})
+
+test('reviewDecisionOf: member-class reviews only; the latest review of a user wins', () => {
+  expect(reviewDecisionOf([rv('a', 'APPROVED', 'MEMBER')])).toBe('APPROVED')
+  expect(
+    reviewDecisionOf([rv('a', 'APPROVED', 'COLLABORATOR'), rv('a', 'CHANGES_REQUESTED', 'COLLABORATOR')]),
+  ).toBe('CHANGES_REQUESTED')
+  expect(reviewDecisionOf([rv('a', 'CHANGES_REQUESTED', 'OWNER'), rv('a', 'DISMISSED', 'OWNER')])).toBe('')
+  expect(reviewDecisionOf([rv('a', 'COMMENTED', 'OWNER')])).toBe('')
+  for (const assoc of ['NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR']) {
+    expect(reviewDecisionOf([rv('a', 'APPROVED', assoc)])).toBe('')
+    expect(reviewDecisionOf([rv('a', 'CHANGES_REQUESTED', assoc)])).toBe('')
+  }
+  expect(reviewDecisionOf('x')).toBe('')
+})
+
+test('restNotes: a member is a person; a Bot user and a NONE author are not', () => {
+  const notes = restNotes(
+    [
+      {
+        user: { login: 'a' },
+        author_association: 'MEMBER',
+        state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-10-12T09:00:00Z',
+        body: 'r',
+      },
+    ],
+    [
+      {
+        user: { login: 'b', type: 'Bot' },
+        author_association: 'MEMBER',
+        created_at: '2026-10-12T09:01:00Z',
+        body: 'c',
+      },
+      {
+        user: { login: 'c', type: 'User' },
+        author_association: 'NONE',
+        created_at: '2026-10-12T09:02:00Z',
+        body: 'd',
+      },
+      {
+        user: { login: 'd', type: 'User' },
+        author_association: 'OWNER',
+        created_at: '2026-10-12T09:03:00Z',
+        body: 'e',
+      },
+    ],
+  )
+  expect(notes.map(n => n.person)).toEqual([true, false, false, true])
+  expect(notes[0]!.changesRequested).toBe(true)
+  expect(restNotes(null, undefined)).toEqual([])
+})
+
+test('githubRows maps pulls onto gh pr list fields; githubPulls pages until a short page', async () => {
+  const rows = githubRows([
+    {
+      number: 1,
+      html_url: 'https://github.com/acme/widget/pull/1',
+      title: 't',
+      state: 'closed',
+      merged_at: '2026-10-12T10:00:00Z',
+      merge_commit_sha: 'deadbeef',
+      head: { ref: 'f', repo: null },
+      base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+      labels: [{ name: 'x y' }],
+    },
+    {
+      number: 2,
+      html_url: 'https://github.com/acme/widget/pull/2',
+      state: 'open',
+      draft: true,
+      head: { ref: 'g', repo: { full_name: 'acme/widget' } },
+      base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+    },
+  ])
+  expect(rows[0]).toMatchObject({
+    number: 1,
+    url: 'https://github.com/acme/widget/pull/1',
+    state: 'MERGED',
+    isCrossRepository: true,
+    mergeCommit: { oid: 'deadbeef' },
+    labels: [{ name: 'x y' }],
+  })
+  expect(rows[1]).toMatchObject({ state: 'OPEN', isDraft: true, isCrossRepository: false, labels: [] })
+  expect(rows[1]).not.toHaveProperty('mergeCommit')
+
+  const argvs: string[][] = []
+  const gh: Gh = async argv => {
+    argvs.push(argv)
+    const page = Number(/&page=(\d+)/.exec(argv[1]!)![1])
+    return { code: 0, out: JSON.stringify(Array(page === 1 ? 100 : 3).fill({ number: page })), err: '' }
+  }
+  const got = await githubPulls(gh, 'acme/widget', '/tmp', { state: 'closed', pages: 5, head: 'acme:a/b' })
+  expect(got).toHaveLength(103)
+  expect(argvs.map(a => a[1])).toEqual([
+    'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1&head=acme%3Aa%2Fb',
+    'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=2&head=acme%3Aa%2Fb',
+  ])
+  const bad: Gh = async () => ({ code: 1, out: '', err: 'x' })
+  expect(await githubPulls(bad, 'acme/widget', '/tmp', { state: 'all', pages: 1 })).toBeNull()
+})
+
+test('buildPrs on GitHub: list and view go through REST only; a failed check-runs call leaves the view applied, a failed pull call is an error', async () => {
+  const sha = 'a'.repeat(40)
+  const open = {
+    url: 'https://github.com/acme/widget/pull/5',
+    repo: 'acme/widget',
+    number: 5,
+    title: '',
+    role: 'code' as const,
+    station: 'review',
+    firstSeenAt: 1,
+    source: 'report' as const,
+    corroborated: true,
+    state: 'UNKNOWN' as const,
+    isDraft: false,
+    reviewDecision: '',
+    mergeStateStatus: '',
+    checks: { pass: 0, fail: 0, pending: 0 },
+    updatedAt: '',
+    checkedAt: 0,
+    ownHead: false,
+    namesIt: false,
+    errorStreak: 0,
+    erroredAt: 0,
+  }
+  const reply = (out: string): GhResult => ({ code: 0, out, err: '' })
+  const pullPath = 'repos/acme/widget/pulls/5'
+  const table = (checkRuns: GhResult) => [
+    { when: 'api repos/acme/widget/pulls?state=all', reply: reply('[]') },
+    {
+      when: `api ${pullPath}/reviews?per_page=100`,
+      reply: reply(
+        JSON.stringify([{ user: { login: 'a' }, state: 'APPROVED', author_association: 'MEMBER' }]),
+      ),
+    },
+    { when: `api repos/acme/widget/commits/${sha}/check-runs?per_page=100`, reply: checkRuns },
+    {
+      when: `api repos/acme/widget/commits/${sha}/status`,
+      reply: reply(JSON.stringify({ statuses: [{ state: 'success' }] })),
+    },
+    {
+      when: `api ${pullPath}`,
+      reply: reply(
+        JSON.stringify({
+          title: 'T',
+          state: 'open',
+          draft: true,
+          head: { ref: 'b', sha },
+          mergeable_state: 'clean',
+        }),
+      ),
+    },
+  ]
+  const calls: string[][] = []
+  const gh = fakeGh(table({ code: 1, out: '', err: 'HTTP 500' }), calls)
+  const { rows } = await buildPrs(
+    [run({ bead: undefined, file: { version: 1, prs: [open] } })],
+    IS_STATION,
+    gh,
+    1_000_000_000,
+  )
+  expect(rows[0]!.prs[0]).toMatchObject({
+    state: 'OPEN',
+    title: 'T',
+    isDraft: true,
+    reviewDecision: 'APPROVED',
+    checks: { pass: 1, fail: 0, pending: 0 },
+  })
+  expect(rows[0]!.prs[0]!.error).toBeUndefined()
+  expect(calls[0]).toEqual([
+    'api',
+    'repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1',
+  ])
+  expect(calls.slice(1).every(c => c[0] === 'api' && c.length === 2)).toBe(true)
+  expect(calls.some(c => c.includes('graphql') || c[0] === 'pr')).toBe(false)
+
+  const failing = fakeGh([{ when: 'api repos/acme/widget/pulls?state=all', reply: reply('[]') }])
+  const bad = await buildPrs(
+    [run({ bead: undefined, file: { version: 1, prs: [open] } })],
+    IS_STATION,
+    failing,
+    1_000_000_000,
+  )
+  expect(bad.rows[0]!.prs[0]!.error).toContain('unmocked')
+
+  const evil = { ...open, url: 'https://github.com/acme/../pull/5' }
+  const evilCalls: string[][] = []
+  await buildPrs(
+    [run({ bead: undefined, file: { version: 1, prs: [evil] } })],
+    IS_STATION,
+    fakeGh(table({ code: 1, out: '', err: '' }), evilCalls),
+    1_000_000_000,
+  )
+  expect(evilCalls.some(c => c[1]?.includes('/pulls/5'))).toBe(false)
+})
+
+import { githubWatchView } from './prs'
+
+test('githubWatchView: pull, then reviews and comments with --paginate --slurp, flattened; any failed call gives null', async () => {
+  const calls: string[][] = []
+  const answer =
+    (comments: GhResult | null): Gh =>
+    async argv => {
+      calls.push(argv)
+      const path = argv.at(-1)!
+      if (path.endsWith('/pulls/5'))
+        return {
+          code: 0,
+          err: '',
+          out: JSON.stringify({
+            state: 'open',
+            draft: true,
+            updated_at: '2026-10-12T09:00:00Z',
+            mergeable: false,
+            head: { ref: 'factory/x', sha: 'abc' },
+            base: { ref: 'main' },
+          }),
+        }
+      if (path.includes('/reviews?'))
+        return {
+          code: 0,
+          err: '',
+          out: JSON.stringify([
+            [
+              {
+                user: { login: 'a' },
+                author_association: 'MEMBER',
+                state: 'APPROVED',
+                submitted_at: '2026-10-12T09:00:00Z',
+                body: '',
+              },
+            ],
+            [
+              {
+                user: { login: 'b' },
+                author_association: 'NONE',
+                state: 'COMMENTED',
+                submitted_at: '2026-10-12T09:01:00Z',
+                body: '',
+              },
+            ],
+          ]),
+        }
+      return (
+        comments ?? {
+          code: 0,
+          err: '',
+          out: JSON.stringify([
+            [
+              {
+                user: { login: 'a' },
+                author_association: 'OWNER',
+                created_at: '2026-10-12T09:02:00Z',
+                body: 'hi',
+              },
+            ],
+          ]),
+        }
+      )
+    }
+  const v = await githubWatchView(answer(null), 'https://github.com/acme/widget/pull/5', '/tmp')
+  expect(v).toMatchObject({
+    url: 'https://github.com/acme/widget/pull/5',
+    state: 'OPEN',
+    isDraft: true,
+    reviewDecision: 'APPROVED',
+    headRefOid: 'abc',
+    mergeable: 'CONFLICTING',
+    headRefName: 'factory/x',
+    baseRefName: 'main',
+  })
+  expect(v!.notes!.map(n => n.person)).toEqual([true, false, true])
+  expect(calls.map(c => c.join(' ')).sort()).toEqual([
+    'api --paginate --slurp repos/acme/widget/issues/5/comments?per_page=100',
+    'api --paginate --slurp repos/acme/widget/pulls/5/reviews?per_page=100',
+    'api repos/acme/widget/pulls/5',
+  ])
+  expect(
+    await githubWatchView(
+      answer({ code: 1, out: '', err: 'x' }),
+      'https://github.com/acme/widget/pull/5',
+      '/tmp',
+    ),
+  ).toBeNull()
+  calls.length = 0
+  expect(await githubWatchView(answer(null), 'https://github.com/acme/../pull/5', '/tmp')).toBeNull()
+  expect(calls).toEqual([])
+})
+
+import { githubPullPath } from './prs'
+
+test('githubPullPath: the REST path of a PR, null for a URL githubSlugOf refuses', () => {
+  expect(githubPullPath('https://github.com/acme/widget/pull/5')).toBe('repos/acme/widget/pulls/5')
+  expect(githubPullPath('https://github.com/acme/../pull/5')).toBeNull()
+  expect(githubPullPath('https://gitlab.example.com/a/b/-/merge_requests/5')).toBeNull()
+})
+
+import { githubMergedJson } from './prs'
+
+test('githubMergedJson: closed pulls with a merge date only, in the parseMergedPrs shape, with the head filter', async () => {
+  const argvs: string[][] = []
+  const gh: Gh = async argv => {
+    argvs.push(argv)
+    return {
+      code: 0,
+      err: '',
+      out: JSON.stringify([
+        {
+          number: 1,
+          html_url: 'https://github.com/acme/widget/pull/1',
+          title: 'a',
+          state: 'closed',
+          merged_at: '2026-10-12T10:00:00Z',
+          merge_commit_sha: 'deadbeef',
+          head: { ref: 'f' },
+          base: { ref: 'main' },
+        },
+        {
+          number: 2,
+          html_url: 'https://github.com/acme/widget/pull/2',
+          title: 'b',
+          state: 'closed',
+          merged_at: null,
+          head: { ref: 'g' },
+          base: { ref: 'main' },
+        },
+      ]),
+    }
+  }
+  const out = await githubMergedJson(gh, 'acme/widget', '/tmp', { pages: 1, head: 'acme:f' })
+  expect(parseMergedPrs(out!)).toEqual([
+    {
+      number: 1,
+      url: 'https://github.com/acme/widget/pull/1',
+      title: 'a',
+      headRefName: 'f',
+      mergeCommit: 'deadbeef',
+      state: 'MERGED',
+    },
+  ])
+  expect(argvs[0]![1]).toBe(
+    'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1&head=acme%3Af',
+  )
+  expect(
+    await githubMergedJson(async () => ({ code: 1, out: '', err: '' }), 'acme/widget', '/tmp', { pages: 1 }),
+  ).toBeNull()
+})
+
+import { githubCloseArgv, githubCommentArgv, githubUnlabelArgv } from './prs'
+
+test('GitHub PR write argv: comment, unlabel and close go through gh api; a body goes raw with -f; a label is encoded', () => {
+  expect(githubCommentArgv('acme/widget', 7, '@etc/passwd')).toEqual([
+    'api',
+    '-X',
+    'POST',
+    'repos/acme/widget/issues/7/comments',
+    '-f',
+    'body=@etc/passwd',
+  ])
+  expect(githubUnlabelArgv('acme/widget', 7, 'needs work/x y')).toEqual([
+    'api',
+    '-X',
+    'DELETE',
+    'repos/acme/widget/issues/7/labels/needs%20work%2Fx%20y',
+  ])
+  expect(githubCloseArgv('acme/widget', 7)).toEqual([
+    'api',
+    '-X',
+    'PATCH',
+    'repos/acme/widget/pulls/7',
+    '-f',
+    'state=closed',
+  ])
 })

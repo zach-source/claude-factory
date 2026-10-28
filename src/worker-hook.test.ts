@@ -694,10 +694,10 @@ test.each(BEADS_ACTOR_SPLIT_STRING_DENY)('denyReason denies %s (claude-factory-i
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 //
 // The limit is FIND_MS, not 500 ms: the linear scan takes about 280 ms on a laptop and 280 to 560 ms
-// on a shared CI runner, so 500 ms failed CI at random. The O(n^2) scan above takes about 11 s, so
-// 2000 ms still fails it by more than 5x.
+// on a shared CI runner (the env row took 1736 to 2167 ms there, so 2000 ms failed CI at random). The
+// O(n^2) scan above takes about 11 s, so 6000 ms still fails it.
 const FIND_N = 200000
-const FIND_MS = 2000
+const FIND_MS = 6000
 
 test(
   'scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)',

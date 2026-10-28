@@ -104,8 +104,8 @@ export function harnessOf(agent: string): Harness | null {
 
 // The guard must turn off these codex features. Each one lets a command run without the PreToolUse hook (claude-factory-x0b9).
 export const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
-// 0.160.1 ignores --disable unified_exec (features list keeps it true), so the launch probe cannot check it
-const CODEX_PROBED = CODEX_UNGUARDED.filter(f => f !== 'unified_exec')
+// codex ignores --disable unified_exec: only a managed pin turns it off, and write_stdin skips the hook (claude-factory-fzm3)
+export const CODEX_PIN = '/etc/codex/requirements.toml'
 /** the codex flags a worker runs with: the hooks on, every unguarded feature off. A pane and a VM use the same ones */
 export const CODEX_GUARD_FLAGS = [
   ...['--enable', 'hooks', '--dangerously-bypass-hook-trust'],
@@ -119,7 +119,11 @@ export function codexFeaturesBad(out: string) {
     const c = l.trim().split(/\s+/)
     if (c.length >= 2) on.set(c[0]!, c[c.length - 1]!)
   }
-  return on.get('hooks') !== 'true' ? 'hooks is not on' : CODEX_PROBED.find(f => on.get(f) !== 'false')
+  if (on.get('hooks') !== 'true') return 'hooks is not on'
+  const f = CODEX_UNGUARDED.find(f => on.get(f) !== 'false')
+  return f === 'unified_exec'
+    ? `unified_exec is not off: pin it in ${CODEX_PIN} with [features] unified_exec = false, claude-factory-fzm3`
+    : f
 }
 
 // tools that only read: a call cut off mid-way is safe to run again

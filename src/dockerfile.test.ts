@@ -19,3 +19,11 @@ test('the worker image copies every top-level directory that src imports', () =>
   expect([...imported].filter(d => !copied.has(d))).toEqual([])
   expect(imported.has('mod')).toBe(true)
 })
+
+test('the worker image pins codex unified_exec off, since write_stdin skips the deny hook (claude-factory-fzm3)', () => {
+  const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  const worker = docker.slice(docker.indexOf(' AS worker'), docker.indexOf(' AS manager'))
+  expect(worker).toContain("printf '[features]\\nunified_exec = false\\n' > /etc/codex/requirements.toml")
+  expect(worker).toContain('chmod 0644 /etc/codex/requirements.toml')
+  expect(worker.indexOf('/etc/codex/requirements.toml')).toBeGreaterThan(worker.indexOf('@openai/codex@'))
+})

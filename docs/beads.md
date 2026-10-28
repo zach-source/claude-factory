@@ -50,7 +50,7 @@ A bead is **queued** (dispatch starts it) when all of these are true:
 
 A ready bead **without** the `factory` label is **unqueued**: the board's Backlog lists it for you to prioritize, and the manager does not start it. You queue it when you want it done.
 
-**Dispatch's pre-check**: dispatch runs this check before it starts a run for a ready, GitHub-hosted bead. The check runs `gh pr list --state merged --search <id>` in the rig's repo. It also searches the bead's own run branches. It looks for a merged pull request. The pull request title names the bead's exact id. It can also name a dotted child id of a bead with no open children.
+**Dispatch's pre-check**: dispatch runs this check before it starts a run for a ready, GitHub-hosted bead. The check runs `gh pr list --state merged --search <id>` in the rig's repo. It also looks up the bead's own run branches with `gh api repos/<owner>/<repo>/pulls?state=closed&head=<owner>:<branch>`. It looks for a merged pull request. The pull request title names the bead's exact id. It can also name a dotted child id of a bead with no open children.
 
 If the check finds a match, dispatch rejects the bead. Dispatch sets `rejected_by: dispatch`. It puts the pull request's URL, number, merge SHA and title in the reject reason. It leaves one comment with that evidence. It never closes the bead.
 
@@ -360,7 +360,7 @@ The pm pass (`factory plan`) reports a `file-churn` finding when one file change
 
 Once a day, `factory tick` runs the `hygiene` sweep for each rig. The pass is code. It uses no model
 and starts no run. It reads all beads with one `bd list` and the last 500 merged PRs with one
-`gh pr list`. It proposes a close for a bead, with one of these kinds:
+`gh api repos/<owner>/<repo>/pulls`. It proposes a close for a bead, with one of these kinds:
 
 | Kind        | Rule                                                                                                           |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |

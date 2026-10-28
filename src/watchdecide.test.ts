@@ -223,6 +223,11 @@ test('claude-factory-61pu AC5: a draft or review decision change wakes; equal or
   expect(kind({ prs: [pr({ reviewDecision: 'REVIEW_REQUIRED' })], ...seen(dec) })).toBeUndefined()
   expect(kind({ prs: [pr({ reviewDecision: 'APPROVED' })], ...seen({}) })).toBeUndefined()
   expect(kind({ prs: [pr()], ...seen(dec) })).toBeUndefined()
+  // REST cannot say REVIEW_REQUIRED: an old GraphQL baseline of it equals none (claude-factory-fbyg.3)
+  expect(kind({ prs: [pr({ reviewDecision: '' })], ...seen(dec) })).toBeUndefined()
+  expect(kind({ prs: [pr({ reviewDecision: '' })], ...seen({ decisions: { [URL]: 'APPROVED' } }) })).toBe(
+    'wake',
+  )
 })
 
 test('claude-factory-61pu AC7: held mail ends the repark; the timer starts the worker', () => {

@@ -60,6 +60,8 @@ export const REPARK_LEAD_MIN = 10
 export const BODY_CLIP = 2000
 
 const BOT_LOGIN = /\[bot\]$|^github-actions$|^(?:project|group)_\d+_bot/i
+/** REST cannot say REVIEW_REQUIRED (GraphQL did), so a baseline of REVIEW_REQUIRED equals none */
+const noRequired = (d: string) => (d === 'REVIEW_REQUIRED' ? '' : d)
 const MEMBER = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 
 /** whether a GitHub author is a person who may steer a run. A bot has a plain login (`github-actions`)
@@ -67,7 +69,7 @@ const MEMBER = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 export const isPerson = (login: string | undefined, association: string | undefined, isBot = false) =>
   !!login && !isBot && !BOT_LOGIN.test(login) && MEMBER.has(association ?? '')
 
-/** the notes in a `gh pr view --json reviews,comments` answer; a malformed entry is skipped */
+/** the notes in a `reviews` and `comments` answer in the GraphQL shape (`restNotes` maps REST onto it); a malformed entry is skipped */
 export function ghNotes(json: { reviews?: unknown; comments?: unknown }): Note[] {
   type Raw = {
     author?: { login?: string; is_bot?: boolean }
@@ -194,7 +196,11 @@ export function watchDecide(i: DecideInput): Decision | null {
     if (p.isDraft !== undefined && wasDraft !== undefined && p.isDraft !== wasDraft)
       return wake(p, p.isDraft ? 'it is a draft again' : 'it is ready for review')
     const wasDecision = i.seen?.decisions?.[p.url]
-    if (p.reviewDecision !== undefined && wasDecision !== undefined && p.reviewDecision !== wasDecision)
+    if (
+      p.reviewDecision !== undefined &&
+      wasDecision !== undefined &&
+      noRequired(p.reviewDecision) !== noRequired(wasDecision)
+    )
       return wake(
         p,
         `its review decision is now ${p.reviewDecision || 'none'} (was ${wasDecision || 'none'})`,

@@ -29,18 +29,45 @@ const factory = (args: string[], path?: string) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
-/** fake gh: `gh pr view <url> --json state,updatedAt` answers the control file's JSON and logs the call
- * (one line an invocation), so a test can count how many times gh actually ran */
+/** fake gh: `gh api repos/<slug>/pulls/N[/reviews]` and `issues/N/comments` answer from the control file
+ * (the GraphQL-style pull request JSON below, mapped onto REST) and log the call (one line an invocation),
+ * so a test can count how many times gh actually ran */
 function fakeGh() {
   mkdirSync(bin, { recursive: true })
-  const script = [
-    '#!/bin/sh',
-    `echo "$*" >> ${calls}`,
-    'case "$1 $2" in',
-    `  "pr view") cat ${prState};;`,
-    '  *) exit 1;;',
-    'esac',
-  ].join('\n')
+  const script = `#!/usr/bin/env bun
+import { appendFileSync, readFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n')
+const argv = process.argv.slice(2)
+const path = argv.at(-1) ?? ''
+let j
+try {
+  j = JSON.parse(readFileSync(${JSON.stringify(prState)}, 'utf8'))
+} catch {
+  process.exit(1)
+}
+const who = a => ({ login: a?.login, type: a?.is_bot ? 'Bot' : 'User' })
+if (argv[0] !== 'api') process.exit(1)
+if (/\\/reviews\\?/.test(path)) {
+  const page = (j.reviews ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, state: r.state, submitted_at: r.submittedAt, body: r.body }))
+  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+} else if (/\\/comments\\?/.test(path)) {
+  const page = (j.comments ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, created_at: r.createdAt, body: r.body }))
+  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+} else {
+  const merged = j.state === 'MERGED'
+  console.log(JSON.stringify({
+    state: merged || j.state === 'CLOSED' ? 'closed' : 'open',
+    draft: j.isDraft,
+    updated_at: j.updatedAt,
+    merged_at: j.mergedAt ?? (merged ? j.updatedAt : null),
+    closed_at: j.closedAt ?? null,
+    mergeable_state: 'clean',
+    mergeable: j.mergeable === 'CONFLICTING' ? false : j.mergeable === 'MERGEABLE' ? true : null,
+    head: { ref: j.headRefName, sha: j.headRefOid },
+    base: { ref: j.baseRefName },
+  }))
+}
+`
   writeFileSync(join(bin, 'gh'), script)
   chmodSync(join(bin, 'gh'), 0o755)
 }
@@ -120,6 +147,8 @@ function mailOf(id: string): { text: string }[] {
     .filter(e => e.type === 'MAIL')
 }
 
+/** the pull request views gh ran: one `gh api repos/<slug>/pulls/N` each */
+const ghViewCount = () => ghCallCount().filter(l => /^api repos\/\S+\/pulls\/\d+$/.test(l))
 const ghCallCount = () =>
   existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : []
 
@@ -221,7 +250,7 @@ test('two runs parked on the same pull request share one gh view this pass (AC6)
   parkedRun('r2', r, f)
   const out = factory(['watch'])
   expect(out.code).toBe(0)
-  expect(ghCallCount()).toHaveLength(1) // one gh call, though two runs link the same pull request
+  expect(ghViewCount()).toHaveLength(1) // one gh call, though two runs link the same pull request
   const watchJson = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
   expect(watchJson.viewed).toBe(1)
 })
@@ -251,10 +280,10 @@ test('tick spawns one watch pass, then none while still inside that pass’s min
   expect(existsSync(join(home, 'watch.json'))).toBe(false)
   factory(['tick'])
   const first = (await waitForWatch()) as { at: number }
-  expect(ghCallCount()).toHaveLength(1)
+  expect(ghViewCount()).toHaveLength(1)
   factory(['tick']) // immediately after: well inside the same minute, so this must spawn nothing
   await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
-  expect(ghCallCount()).toHaveLength(1) // still one gh call, not two
+  expect(ghViewCount()).toHaveLength(1) // still one gh call, not two
   const second = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
   expect(second.at).toBe(first.at) // the file is untouched since the first pass
 })
@@ -510,7 +539,9 @@ test('a conflicting pull request on the run branch mails the station once (confl
   routeRun('r1')
   conflictJson()
   factory(['watch'])
-  expect(ghCallCount()[0]).toContain('mergeable,headRefName,baseRefName')
+  expect(ghCallCount()).toContain('api repos/acme/widget/pulls/42')
+  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/pulls/42/reviews?per_page=100')
+  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/issues/42/comments?per_page=100')
   const mail = inboxOf('r1').filter(e => e.type === 'MAIL')
   expect(mail).toHaveLength(1)
   expect(mail[0]).toMatchObject({ from: 'factory', to: 'deploy', text: CONFLICT_TEXT })
