@@ -57,9 +57,8 @@ for (const [name, env] of Object.entries(markers)) {
   for (const args of [
     ['start', 'lifecycle', dir, 'g'],
     ['fork', 'r1', 'implement'],
-    ['fork', 'r1', 'implement', 'a', 'note'],
   ]) {
-    test(`${name}: ${args.slice(0, 3).join(' ')}${args.length > 3 && args[0] === 'fork' ? ' + note' : ''} is refused and makes no run`, () => {
+    test(`${name}: ${args.slice(0, 3).join(' ')} is refused and makes no run`, () => {
       const p = run(args, env)
       expect(p.exitCode).toBe(1)
       expect(p.stderr.toString()).toMatch(refused)

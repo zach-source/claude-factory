@@ -1249,7 +1249,7 @@ function tracking(run: Run, node: string) {
     return [
       '## Tracking',
       "This repo has no beads tracker: keep the run's tasks as a checklist in your report summary.",
-      `- Separate work that starts on its own: check \`${CLI} status\` for a duplicate, then ${CLI} start ${run.factory}[@station] ${run.repo} "<goal>" (@station starts it at that station)`,
+      `- Separate work that starts on its own: check \`${CLI} status\` for a duplicate, then mail it to the manager.`,
       `- Separate work for a person to prioritize: mail it to the manager.`,
     ]
   return [
@@ -7987,15 +7987,32 @@ async function start(factory: string | undefined, repo: string | undefined, goal
  * It returns 'manager' when no marker is present. Otherwise it fails and posts nothing.
  */
 function managerSender(run: Run): 'manager' {
-  const marker = process.env.FACTORY_DEF_NAME
-    ? 'FACTORY_DEF_NAME is set'
-    : process.env.BEADS_ACTOR?.startsWith('factory/')
-      ? 'BEADS_ACTOR names a factory worker'
-      : insideWorktree(run)
-        ? 'the working directory is inside the run worktree'
-        : undefined
+  const marker =
+    workerMarker() ?? (insideWorktree(run) ? 'the working directory is inside the run worktree' : undefined)
   if (marker) fail(`a worker cannot send mail as the manager (${marker}); a worker mails as its own station`)
   return 'manager'
+}
+
+/**
+ * claude-factory-5y7b: the env marker that says a worker runs this command, else undefined.
+ * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
+ */
+function workerMarker(): string | undefined {
+  return process.env.FACTORY_FROM
+    ? 'FACTORY_FROM is set'
+    : process.env.FACTORY_RUN
+      ? 'FACTORY_RUN is set'
+      : process.env.FACTORY_DEF_NAME
+        ? 'FACTORY_DEF_NAME is set'
+        : process.env.BEADS_ACTOR?.startsWith('factory/')
+          ? 'BEADS_ACTOR names a factory worker'
+          : undefined
+}
+
+/** the person and the manager run these verbs; a worker mails the manager instead */
+function refuseWorker(verb: string) {
+  const marker = workerMarker()
+  if (marker) fail(`a worker cannot run factory ${verb} (${marker}): mail the manager instead`)
 }
 
 function insideWorktree(run: Run): boolean {
@@ -8846,11 +8863,13 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'start': {
+        refuseWorker('start')
         const words = args.slice(2)
         await start(args[0], args[1], words.filter(w => w !== '--owned').join(' '), words.includes('--owned'))
         break
       }
       case 'fork':
+        if (args.length < 3) refuseWorker('fork') // a fork with a note is refused by managerSender
         await fork(args[0], args[1], args.slice(2).join(' '))
         break
       case 'tick':
@@ -8906,10 +8925,12 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'say':
+        refuseWorker('say')
         if (!args.length) fail('usage: factory say <text...>')
         ax.say(args.join(' '))
         break
       case 'stop': {
+        refuseWorker('stop')
         if (halted()) fail(`already ${halted()!.state}`)
         writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
         console.log(
@@ -8918,6 +8939,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'resume': {
+        refuseWorker('resume')
         const halt = halted() ?? fail('the factory is not stopped')
         // the runs whose workers stop closed, at the station they were at: the next tick resumes each
         const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
