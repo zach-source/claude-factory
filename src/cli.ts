@@ -1014,6 +1014,8 @@ const runIds = () =>
         .map(d => d.name)
         .sort()
     : []
+// runIds() without a run dir that has no state.json yet (createRun writes run.json, then state.json last)
+const startedRunIds = () => runIds().filter(id => existsSync(join(runDir(id), 'state.json')))
 function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
@@ -6153,7 +6155,7 @@ function linearExcluded(): { ids: Set<string>; rigs: Set<string> } {
  * one of these; `factory plan facts` reports them to the pm as busy context (claude-factory-dun.2). */
 const liveBeadIdSet = () =>
   new Set(
-    runIds().flatMap(id => {
+    startedRunIds().flatMap(id => {
       const { run, value } = current(id)
       return run.bead && !['done', 'aborted'].includes(where(value)[0]) ? [run.bead] : []
     }),
@@ -6318,7 +6320,7 @@ async function dispatch() {
   // claude-factory-6as.3: a Map, not a Set, so dispatch can name the run working a bead that is
   // still `ready` and unassigned (it lost its own claim on the bead), for one comment.
   const linked = new Map(
-    runIds().flatMap(id => {
+    startedRunIds().flatMap(id => {
       const { run, value } = current(id)
       return run.bead && !['done', 'aborted'].includes(where(value)[0])
         ? ([[run.bead, id]] as [string, string][])
@@ -7317,7 +7319,7 @@ type LiveBead = { blocked: boolean; why?: string; since?: number }
 /** each live run's bead: whether the run waits on the owner, what it asks, and since when */
 async function liveByBead() {
   const out = new Map<string, LiveBead>()
-  for (const id of runIds()) {
+  for (const id of startedRunIds()) {
     const { run, value, c } = current(id)
     if (!run.bead || ['done', 'aborted'].includes(where(value)[0])) continue
     const r = row(run, await loadFactory(run.factory), value, c)
@@ -7454,7 +7456,7 @@ async function labelPass() {
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
-  const live = runIds()
+  const live = startedRunIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
     .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log, c: r.c }))
@@ -7788,7 +7790,13 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   const busy: (string | undefined)[] = []
   const held: (string | undefined)[] = []
   for (const id of runIds()) {
-    const { run, value } = current(id)
+    let cur
+    try {
+      cur = current(id)
+    } catch {
+      continue // run dir exists before run.json and state.json (createRun writes state.json last)
+    }
+    const { run, value } = cur
     if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
     const [node, sub] = where(value)
     const n = (await loadFactory(run.factory)).nodes[node]
@@ -8531,7 +8539,7 @@ function records(): RunRecord[] {
   // a run can get two lines over its life (a gc prune, then later `factory rm`): a Map keeps only
   // the last line for each id, so metrics never counts a pruned-then-removed run twice
   const kept = [...new Map(lines.map(r => [r.id, r])).values()]
-  const live = runIds().map(id => record(id))
+  const live = startedRunIds().map(id => record(id))
   const liveIds = new Set(live.map(r => r.id))
   return [...kept.filter(r => !liveIds.has(r.id)), ...live]
 }
@@ -8567,7 +8575,7 @@ async function status(id: string | undefined) {
     )
   }
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
-  for (const runId of id ? [id] : runIds()) {
+  for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
     const def = await loadFactory(run.factory)
     const r = row(run, def, value, c, agentOf(def, value, c))
@@ -9411,7 +9419,7 @@ if (import.meta.main && !outboxCmd)
         break
       case 'waiting': {
         const rows = await Promise.all(
-          runIds().map(async id => {
+          startedRunIds().map(async id => {
             const { run, value, c } = current(id)
             const def = await loadFactory(run.factory)
             return row(run, def, value, c, agentOf(def, value, c))
