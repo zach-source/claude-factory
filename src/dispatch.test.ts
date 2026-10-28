@@ -2420,3 +2420,107 @@ test('a PR labeled close is commented and closed through gh api REST paths, neve
   expect(calls[i + 1]).toBe('gh api -X PATCH repos/acme/widget/pulls/9 -f state=closed')
   expect(calls.some(l => /^gh pr (comment|edit|close)\b/.test(l))).toBe(false)
 })
+
+test('a past-cap bead stays held when the rig is full until the cluster oldest bead ages out', () => {
+  const hours = [23.9, 23, 23, 23, 23, 23, 1]
+  const beads = hours.map((h, i) => ({
+    id: `w-${i + 1}`,
+    title: `worker-hook: bypass number ${i + 1}`,
+    created_by: `factory/run${i + 1}/${stations[i % 3]}`,
+    hoursAgo: h,
+  }))
+  filingReset(beads)
+  const rigs = (maxRuns: number) =>
+    writeFileSync(
+      join(ghome, 'rigs.json'),
+      JSON.stringify([{ name: 'a', repo: repo(), factory: 'lifecycle', clusterRuns: 20, maxRuns }]),
+    )
+  rigs(0)
+  gfactory(['beads'])
+  expect(startedBeads()).toEqual([])
+  expect(fCalls().some(l => /^bd (update|comment) w-7 /.test(l))).toBe(false)
+  // w-1 ages out of the 24h window; the rig has room
+  fakeFilingBd(beads.map(b => ({ ...b, hoursAgo: b.hoursAgo + 0.6 })))
+  rigs(20)
+  nextPass()
+  gfactory(['beads'])
+  expect(startedBeads()).not.toContain('w-7')
+  expect(
+    fCalls().filter(
+      l =>
+        l.startsWith('bd update w-7 ') &&
+        l.includes('--remove-label factory') &&
+        l.includes('--add-label held:cluster:worker-hook'),
+    ),
+  ).toHaveLength(1)
+  expect(fCalls().filter(l => l.startsWith('bd comment w-7 '))).toHaveLength(1)
+  expect(dispatchRows().filter(r => r.id === 'w-7' && r.skip?.startsWith('filing guard'))).toHaveLength(1)
+  expect(JSON.parse(readFileSync(join(ghome, 'filing-guard.json'), 'utf8')).a).toHaveProperty('w-7')
+  expect(startedBeads().sort()).toEqual(['w-1', 'w-2', 'w-3', 'w-4', 'w-5', 'w-6'])
+  expect(fCalls().some(l => /^bd update w-[1-6] .*--remove-label factory/.test(l))).toBe(false)
+})
+
+test('a released bead stays released after the rig is unread for more than 48h', () => {
+  const held = replayBeads().map(b => (b.id === 'w-7' ? { ...b, labels: ['pm-proposal'] } : b))
+  filingReset(held)
+  const rigs = (maxRuns: number) =>
+    writeFileSync(
+      join(ghome, 'rigs.json'),
+      JSON.stringify([{ name: 'a', repo: repo(), factory: 'lifecycle', clusterRuns: 20, maxRuns }]),
+    )
+  gfactory(['beads'])
+  const file = join(ghome, 'filing-guard.json')
+  expect(JSON.parse(readFileSync(file, 'utf8')).a).toHaveProperty('w-7')
+  // a person queued w-7 and 49h passed; a full rig is not read, so its marks are not checked
+  const old = Date.now() - 49 * 3600_000
+  const aged = JSON.parse(readFileSync(file, 'utf8'))
+  for (const id of Object.keys(aged.a)) aged.a[id] = old
+  writeFileSync(file, JSON.stringify(aged))
+  fakeFilingBd(
+    held.map(b => ({ ...b, hoursAgo: b.hoursAgo + 49, ...(b.id === 'w-7' && { labels: ['factory'] }) })),
+  )
+  rigs(0)
+  nextPass()
+  gfactory(['beads'])
+  expect(JSON.parse(readFileSync(file, 'utf8')).a).toHaveProperty('w-7')
+  const before = fCalls().length
+  rigs(20)
+  nextPass()
+  gfactory(['beads'])
+  expect(
+    fCalls()
+      .slice(before)
+      .some(l => /^bd (update|comment) w-7 .*(held|remove-label factory)/.test(l)),
+  ).toBe(false)
+  expect(startedBeads()).toContain('w-7')
+})
+
+test('claude-factory-z2b1: a re-queued sweep bead stays released after the rig is unread for more than 48h', () => {
+  rmSync(gdir, { recursive: true, force: true })
+  mkdirSync(gClaudeConfig, { recursive: true })
+  writeFileSync(join(gClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
+  mkdirSync(ghome, { recursive: true })
+  const r = repo()
+  fakeAgedOutBd() // acme-1: 25h old, factory label, so a missing mark means the aged-out loop holds it
+  fakeGuardHerdr()
+  const rigs = (maxRuns: number) =>
+    writeFileSync(
+      join(ghome, 'rigs.json'),
+      JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle', maxRuns }]),
+    )
+  // a person re-queued acme-1 after the guard held it; its mark is 49h old
+  writeFileSync(
+    join(ghome, 'sweep-guard.json'),
+    JSON.stringify({ a: { 'acme-1': Date.now() - 49 * 3600_000 } }),
+  )
+  rigs(0) // a full rig is not read, so its marks are not checked
+  gfactory(['beads'])
+  expect(JSON.parse(readFileSync(join(ghome, 'sweep-guard.json'), 'utf8')).a).toHaveProperty('acme-1')
+  rmSync(join(ghome, 'dispatch.stamp'), { force: true })
+  rigs(20)
+  gfactory(['beads'])
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd defer acme-1\b/.test(l))).toBe(false)
+  expect(calls.some(l => /^bd update acme-1\b.*--remove-label factory\b/.test(l))).toBe(false)
+  expect(existsSync(join(ghome, 'runs'))).toBe(true)
+})

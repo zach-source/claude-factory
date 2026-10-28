@@ -6331,8 +6331,8 @@ async function dispatch() {
     ? readJson<SweepGuardState>(sweepGuardFile())
     : {}
   // Each rig's open bead ids, from this pass's own `b.every()` call (claude-factory-8pc.21).
-  // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A flat 48h
-  // age limit would else let a held bead lose its mark, and so get held again, after 48h open.
+  // `pruneGuardState` below uses this to keep a rig's marks only for beads still open. A rig not read
+  // this pass keeps all its marks, so a released bead is not held again.
   const openIds: Record<string, Set<string>> = {}
   // The filing guard's marks (claude-factory-nwlh.2): same shape and rules as the sweep guard's.
   let filingState: SweepGuardState = existsSync(filingGuardFile())
@@ -6446,7 +6446,9 @@ async function dispatch() {
       }
       // claude-factory-nwlh.2: the filing guard. `filingGuard` (src/filing-guard.ts) scores the
       // top-level beads a factory worker filed (a child bead and a sweep-filed bead are not its
-      // concern; a closed bead uses a slot but gets no write). A bead past a cap loses `factory`, gains `held:cluster:<key>` or
+      // concern; a closed bead uses a slot but gets no write). The guard scores each bead against the
+      // 24h before its own filing time, so a pass with room scores the same as an earlier pass. A bead
+      // past a cap loses `factory`, gains `held:cluster:<key>` or
       // `held:station`, and gets one comment. A mark in filing-guard.json is written only after
       // both calls land. `factory queue` removes the `held:*` label; the mark keeps the guard from
       // holding the bead again. Like the sweep guard, a failed call leaves the bead out of `ready`.
@@ -6760,8 +6762,9 @@ async function dispatch() {
           })
     }
   }
-  writeJson(sweepGuardFile(), pruneGuardState(guardState, Date.now(), openIds))
-  writeJson(filingGuardFile(), pruneGuardState(filingState, Date.now(), openIds))
+  writeJson(sweepGuardFile(), pruneGuardState(guardState, openIds))
+  // Every filing bead keeps its verdict. A rig not read this pass keeps its marks: no age prune.
+  writeJson(filingGuardFile(), pruneGuardState(filingState, openIds))
   if (Object.keys(autoHistory).length) writeJson(autoQueueFile(), autoHistory)
   writeJson(dispatchFile(), errors)
 }
