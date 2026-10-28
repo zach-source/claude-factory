@@ -266,10 +266,12 @@ test('deploy and soak carry the same live-object finding rule: search, comment, 
     'bd comment <id>',
     'bd update <id> -p <n>',
     'never above P1',
+    'Never lower a priority',
+    'any bead with the ship label',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
   ])
     expect(want).toContain(t)
-  expect(want).not.toMatch(/-p 0|P0/)
+  expect(want).not.toMatch(/-p 0/)
   for (const id of ['queue', 'release', 'rollback', 'postmortem'])
     expect(prompt(id), id).not.toContain('Live-object findings')
 })
@@ -277,7 +279,8 @@ test('deploy and soak carry the same live-object finding rule: search, comment, 
 test('a repeat crash loop or failed rollout gets the factory label and no other label (4h8j AC2)', () => {
   const want = liveText(prompt('soak'))
   for (const t of [
-    '--add-label factory -p 1',
+    'bd update <id> --add-label factory',
+    'only if it is P2 or lower',
     '24 hours',
     'earlier release',
     'a closed bead counts',

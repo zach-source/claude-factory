@@ -11,9 +11,9 @@ const mimirRead =
 const liveFinding =
   `Live-object findings: a problem you see on one named object in a cluster (a Deployment, Pod, Job, Service or certificate). ` +
   `Before you file one, run \`bd search "<object name>" --status open\`, then \`bd search "<symptom>" --status open\`, then \`bd search "<object name>"\` with no --status to find a closed bead. ` +
-  `If an open bead names the same object and symptom, do not file a new bead. Run \`bd comment <id> "<release version, time, evidence>"\`, then raise its priority by one step with \`bd update <id> -p <n>\`, never above P1. ` +
+  `If an open bead names the same object and symptom, do not file a new bead. Run \`bd comment <id> "<release version, time, evidence>"\`, then raise its priority by one step with \`bd update <id> -p <n>\`, never above P1. Never lower a priority: keep a P0 or P1 bead as it is. This rule does not apply to the bead that this ship run ships, or to any bead with the ship label: a crash loop that the release causes is regressed (soak) or failed (deploy). ` +
   `If no open bead matches, file one with the title \`<context>/<namespace>/<kind>/<name>: <symptom>\` (for example \`prod/acme/deploy/widget: CrashLoopBackOff\`), so the next search finds it. ` +
-  `If the symptom is a failed rollout or a crash loop (CrashLoopBackOff, restarts that climb, ProgressDeadlineExceeded, rollout status not complete), and an earlier bead or comment shows the same object with the same symptom 24 hours or more ago or at an earlier release (a closed bead counts), run \`bd update <id> --add-label factory -p 1\` on the open bead. ` +
+  `If the symptom is a failed rollout or a crash loop (CrashLoopBackOff, restarts that climb, ProgressDeadlineExceeded, rollout status not complete), and an earlier bead or comment shows the same object with the same symptom 24 hours or more ago or at an earlier release (a closed bead counts), run \`bd update <id> --add-label factory\` on the open bead, and add \`-p 1\` only if it is P2 or lower. ` +
   `Add no other label: no station:* label and no sweep-queue:* label. Search and file only in this rig's beads.`
 
 /** deploy interpolates this; reads only (-o wide, not jsonpath, because the worker hook denies some brace text) */
