@@ -7,9 +7,11 @@ import { join } from 'node:path'
 import { shipStarts } from './cli'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
-const dir = join(tmpdir(), `shippass-${process.pid}`)
-const home = join(dir, 'home')
-const bin = join(dir, 'bin')
+// each test gets its own dir: a detached `factory beads` pass of one test must not write into the next test's home
+let n = 0
+let dir = ''
+let home = ''
+let bin = ''
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -30,7 +32,9 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 
 /** a repo is queued when its .beads/queue file exists: the fake bd lists one ship bead for it */
 function setup(rigs: { name: string; queued: boolean }[]) {
-  rmSync(dir, { recursive: true, force: true })
+  dir = join(tmpdir(), `shippass-${process.pid}-${n++}`)
+  home = join(dir, 'home')
+  bin = join(dir, 'bin')
   mkdirSync(bin, { recursive: true })
   mkdirSync(join(dir, 'claude-config'), { recursive: true })
   writeFileSync(join(dir, 'claude-config', '.claude.json'), JSON.stringify({ projects: {} }))
@@ -90,10 +94,12 @@ function setup(rigs: { name: string; queued: boolean }[]) {
 
 const runs = () =>
   existsSync(join(home, 'runs'))
-    ? readdirSync(join(home, 'runs')).map(id => ({
-        id,
-        ...JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')),
-      }))
+    ? readdirSync(join(home, 'runs'))
+        .filter(id => existsSync(join(home, 'runs', id, 'run.json')))
+        .map(id => ({
+          id,
+          ...JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')),
+        }))
     : []
 
 test('shipStarts picks the repos with a queue and no live ship run', () => {
