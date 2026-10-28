@@ -16,7 +16,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const run = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, PATH, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, PATH, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, PATH: `${bin}:${PATH}`, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', ...env },
     timeout: 30_000,
