@@ -690,7 +690,8 @@ const codexCount = (
   env: Record<string, string> = {},
   runner = 'herdr',
   node = 'a',
-) => ids.filter(id => pickAgent(id, splitDef, node, rig, runner, env) === 'codex').length
+) =>
+  ids.filter(id => pickAgent(id, splitDef, node, rig, runner, env, import.meta.path) === 'codex').length
 
 test('a split pick is stable per run, and each share param picks on its own', () => {
   for (const id of ids.slice(0, 200))
@@ -721,6 +722,17 @@ test('the ax runner gets the split agent only with FACTORY_AX_CODEX=1; a rig age
   expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: { codex_share: '1' } }, 'herdr', {})).toBe(
     'pi',
   )
+})
+
+test('a local split picks codex only when the host has the unified_exec pin file (claude-factory-fzm3)', () => {
+  const pick = (share: string, pin: string, runner = 'herdr', env = {}) =>
+    pickAgent('run-1', splitDef, 'a', { params: { codex_share: share } }, runner, env, pin)
+  const missing = join(tmpdir(), 'no-such-pin.toml')
+  expect(pick('1', missing)).toBe('claude')
+  expect(pick('1', import.meta.path)).toBe('codex')
+  expect(pick('0', import.meta.path)).toBe('claude')
+  expect(pick('1', missing, 'ax', { FACTORY_AX_CODEX: '1' })).toBe('codex')
+  expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: {} }, 'herdr', {}, missing)).toBe('pi')
 })
 
 test('the manager and the mod subagents name a full model id, never an alias', () => {

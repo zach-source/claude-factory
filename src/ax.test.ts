@@ -1202,7 +1202,7 @@ test('a codex worker briefs once, then resumes the thread its first turn named',
   writeFileSync(
     codex,
     `#!/bin/sh
-case "$*" in *'features list') printf 'hooks stable true\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; exit;; esac
+case "$*" in *'features list') printf 'hooks stable true\\nunified_exec stable false\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; exit;; esac
 echo "$*" >> ${dir}/codex.log
 n=$(ls ${dir}/codex.stdin.* 2>/dev/null | wc -l)
 cat > ${dir}/codex.stdin.$n
@@ -1999,7 +1999,7 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
   const home = join(tmp, 'codex')
   const features = join(tmp, 'features.txt')
   const on =
-    'hooks stable true\nunified_exec stable true\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
+    'hooks stable true\nunified_exec stable false\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
   writeFileSync(features, on)
   const fake = join(tmp, 'fake-codex')
   writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(tmp, 'argv')}'\ncat '${features}'\n`, {
@@ -2029,6 +2029,10 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     expect(() => worker.codexHome(home)).toThrow('hooks is not on')
     writeFileSync(features, on.replace('multi_agent stable false', 'multi_agent stable true'))
     expect(() => worker.codexHome(home)).toThrow('multi_agent')
+    writeFileSync(features, on.replace('unified_exec stable false', 'unified_exec stable true'))
+    expect(() => worker.codexHome(home)).toThrow('/etc/codex/requirements.toml with [features]')
+    writeFileSync(features, on.replace('unified_exec stable false\n', ''))
+    expect(() => worker.codexHome(home)).toThrow('claude-factory-fzm3')
     writeFileSync(features, on)
     mkdirSync(join(repo, '.codex'))
     expect(() => worker.codexHome(home)).toThrow('would add project config')

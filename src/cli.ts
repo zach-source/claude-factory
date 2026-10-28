@@ -104,6 +104,7 @@ import {
 import * as gatebrief from './gatebrief'
 import {
   CODEX_GUARD_FLAGS,
+  CODEX_PIN,
   CODEX_UNGUARDED,
   claudeCommand,
   codexFeaturesBad,
@@ -1760,7 +1761,8 @@ export function splitPick(runId: string, shareName: string, share: string | unde
 }
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
- * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex).
+ * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex), and elsewhere only when
+ * the `pin` file exists (claude-factory-fzm3).
  */
 export const pickAgent = (
   runId: string,
@@ -1769,11 +1771,13 @@ export const pickAgent = (
   rig: Pick<Rig, 'agent' | 'params'> | undefined,
   runner: string,
   env = process.env,
+  pin = CODEX_PIN,
 ) => {
   const params = paramsOf(def, rig, env)
   const split = def.nodes[node]!.split
+  // a host without the unified_exec pin cannot launch codex (the probe refuses), so the split keeps Claude there
   const picked =
-    split && (runner !== 'ax' || axCodex(env)) && splitPick(runId, split.share, params[split.share])
+    split && (runner === 'ax' ? axCodex(env) : existsSync(pin)) && splitPick(runId, split.share, params[split.share])
   return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
