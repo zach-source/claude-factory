@@ -63,11 +63,48 @@ test('a person-filed bead is absent and uses no slot', () => {
   expect(v.find(x => x.id === 'b9' || x.id === 'b8')).toBeUndefined()
 })
 
-test('a bead older than the window is absent and uses no slot', () => {
+test('a bead more than the window before the next one uses no slot and gets a verdict', () => {
+  const old = bead('b0', { created_at: new Date(now - 27 * 3_600_000).toISOString() })
+  const v = filingGuard([old, ...many(6, i => ({ id: `b${i + 1}` }))], now)
+  expect(v.find(x => x.id === 'b0')?.kept).toBe(true)
+  expect(kept(v)).toEqual([true, true, true, true, true, true, true])
+})
+
+test('the window starts at each bead own filing time: a past-cap bead stays held as time goes on', () => {
   const old = bead('b0', { created_at: new Date(now - 25 * 3_600_000).toISOString() })
   const v = filingGuard([old, ...many(6, i => ({ id: `b${i + 1}` }))], now)
-  expect(v.find(x => x.id === 'b0')).toBeUndefined()
-  expect(kept(v)).toEqual([true, true, true, true, true, true])
+  expect(kept(v)).toEqual([true, true, true, true, true, true, false])
+  expect(v[6]?.held).toBe('cluster')
+})
+
+test('the station cap also keeps a bead held when the first bead of the run is older than 24h', () => {
+  const at = (h: number) => new Date(now - h * 3_600_000).toISOString()
+  const v = filingGuard(
+    [25, 2, 1.5, 1].map((h, i) =>
+      bead(`b${i}`, { title: `t${i}: x`, created_by: 'factory/acme-r1/plan', created_at: at(h) }),
+    ),
+    now,
+  )
+  expect(kept(v)).toEqual([true, true, true, false])
+  expect(v[3]?.held).toBe('station')
+})
+
+test('a bead exactly 24h before the next one uses no slot', () => {
+  const day = 24 * 3_600_000
+  const t0 = now - 2 * day
+  const at = (ms: number) => new Date(ms).toISOString()
+  const first = bead('b0', { created_at: at(t0) })
+  const rest = many(6, i => ({ id: `b${i + 1}`, created_at: at(t0 + day + i * 1000) }))
+  expect(kept(filingGuard([first, ...rest], now))).toEqual([true, true, true, true, true, true, true])
+})
+
+test('a held bead uses no slot: a bead filed after the oldest kept one left its window is kept', () => {
+  const at = (hrs: number) => new Date(now - hrs * 3_600_000).toISOString()
+  const six = many(6, i => ({ id: `b${i}`, created_at: at(40 - i) }))
+  const held = bead('b6', { created_at: at(30) })
+  const late = bead('b7', { created_at: at(15.5) })
+  const v = filingGuard([...six, held, late], now)
+  expect(kept(v)).toEqual([true, true, true, true, true, true, false, true])
 })
 
 test('a bead with no created_at counts as now: scored, and it can be the 7th', () => {
