@@ -166,6 +166,8 @@ test('a run dir without run.json does not break factory start', () => {
 test('a run dir without run.json does not break factory status', () => {
   setup([{ name: 'a', queued: true }])
   mkdirSync(join(home, 'runs', 'x'), { recursive: true })
+  mkdirSync(join(home, 'runs', 'y'), { recursive: true })
+  writeFileSync(join(home, 'runs', 'y', 'run.json'), JSON.stringify({ id: 'y' }))
   const out = factory(['status'])
   expect(out.err).not.toContain('no run')
   expect(out.code).toBe(0)

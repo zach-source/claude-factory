@@ -1014,8 +1014,8 @@ const runIds = () =>
         .map(d => d.name)
         .sort()
     : []
-// runIds() without a run dir that has no run.json yet (createRun writes it last)
-const startedRunIds = () => runIds().filter(id => existsSync(join(runDir(id), 'run.json')))
+// runIds() without a run dir that has no state.json yet (createRun writes run.json, then state.json last)
+const startedRunIds = () => runIds().filter(id => existsSync(join(runDir(id), 'state.json')))
 function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
@@ -7794,7 +7794,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
     try {
       cur = current(id)
     } catch {
-      continue // run dir exists before run.json (createRun writes it last)
+      continue // run dir exists before run.json and state.json (createRun writes state.json last)
     }
     const { run, value } = cur
     if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
