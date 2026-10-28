@@ -3648,6 +3648,7 @@ function compactMessage(
     merged: number
     archived: number
     retired: number
+    trimmed?: number
     flagged: number
     held: number
     skipped: { topic: string; reason: string }[]
@@ -3661,6 +3662,7 @@ function compactMessage(
     `compact: ${tiers.merged} merged, ${tiers.archived} archived` +
     (tiers.held ? `, ${tiers.held} held by the archive cap` : '') +
     (tiers.retired ? `, ${tiers.retired} retired` : '') +
+    (tiers.trimmed ? `, ${tiers.trimmed} long entries trimmed` : '') +
     (tiers.flagged ? `, ${tiers.flagged} flagged` : '') +
     `, ${filesBefore} files -> ${filesAfter} files` +
     (tiers.overCap.length
