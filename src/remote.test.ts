@@ -2311,6 +2311,13 @@ test('ActorResumeFailed writes the rig no-suspend marker and mails the manager o
   expect(text).toContain('24 h')
   factory(['tick']) // the same failure again: the marker is fresh, so no second mail
   expect(resumeMails('r34')).toHaveLength(1)
+  // another run of the same rig fails the same way inside the window: no new mail, the marker stays
+  launched('r41')
+  clusterConds('Failed', RESUME_FAILED)
+  factory(['tick'])
+  expect(resumeMails('r41')).toHaveLength(0)
+  expect(JSON.parse(readFileSync(markerOf('wt'), 'utf8')).at).toBe(marker.at)
+  rmSync(join(home, 'runs', 'r41'), { recursive: true })
   rmSync(markerOf('wt'), { force: true })
   rmSync(join(home, 'runs', 'r34'), { recursive: true })
 })
