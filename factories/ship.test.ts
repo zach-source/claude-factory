@@ -5,6 +5,7 @@ import sweeps from './sweeps'
 import lifecycle from './lifecycle'
 import ship from './ship'
 import { brief } from '../src/cli'
+import { actorOf } from '../src/beads'
 
 /** drives a run by outcomes (waking it from any timed wait) and returns the stations it visited */
 function walk(def: Factory, outcomes: string[], at = def.start) {
@@ -140,6 +141,24 @@ test('release trusts a Reviewed head line only from an approve verdict or a writ
   )
   expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(p.indexOf('Run `git fetch origin main'))
   expect(p.indexOf('review#<n> approve:')).toBeLessThan(p.indexOf('only when'))
+})
+
+test('release trusts a bead-comment Reviewed head only from the runner or a person, best effort (claude-factory-3grj)', () => {
+  const p = ship.nodes.release.prompt
+  for (const s of [
+    'bd comments <bead> --json',
+    "comment's author field",
+    '^factory/[^/]+$',
+    'factory/<run>/<station>',
+    'a person',
+    'best effort',
+    'by factory/<run>',
+  ])
+    expect(p, s).toContain(s)
+  expect(p.indexOf('^factory/[^/]+$')).toBeLessThan(p.indexOf('Use source 2'))
+  const runner = new RegExp('^factory/[^/]+$')
+  expect(runner.test(actorOf('lifecycle-x'))).toBe(true)
+  expect(runner.test(actorOf('lifecycle-x') + '/implement')).toBe(false)
 })
 
 test('queue drafts a ready PR before it pushes a conflict-fix merge, and sends unreviewed PRs to review (claude-factory-9gkc AC3, AC4)', () => {
