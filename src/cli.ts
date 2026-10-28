@@ -180,7 +180,9 @@ import {
   forgeNote,
   forgeOf,
   gitlabForge,
+  githubPullPath,
   githubWatchView,
+  parseGithubView,
   gitlabWatchNotes,
   mrsIn,
   onHost,
@@ -3117,6 +3119,14 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   }
 }
 
+/** a github.com pull request through REST (`gh api repos/<slug>/pulls/N`), or null when gh fails */
+function pullSync(url: string, timeout: number) {
+  const path = githubPullPath(url)
+  if (!path) return null
+  const p = Bun.spawnSync(['gh', 'api', path], { timeout })
+  return p.exitCode === 0 ? parseGithubView(p.stdout.toString()) : null
+}
+
 /**
  * The run's own PR among the links its reports cite. One link is that PR. With several, a report may cite
  * a sibling PR, so the answer is the link whose head branch is the run's; no match records none, and the
@@ -3125,12 +3135,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
 export function shipPrOf(
   links: string[],
   branch: string,
-  headOf: (url: string) => string | null = url => {
-    const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'headRefName', '-q', '.headRefName'], {
-      timeout: 20_000,
-    })
-    return p.exitCode === 0 ? p.stdout.toString().trim() : null
-  },
+  headOf: (url: string) => string | null = url => pullSync(url, 20_000)?.headRefName || null,
 ) {
   if (links.length < 2) return links[0] ?? ''
   return links.find(url => headOf(url) === branch) ?? ''
@@ -3599,9 +3604,7 @@ function untilDeps(): memory.UntilDeps {
         return null
       }
       ghCalls++
-      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state'], { timeout: 30_000 })
-      const state: PrState | null =
-        p.exitCode === 0 ? ((JSON.parse(p.stdout.toString()).state as PrState) ?? null) : null
+      const state: PrState | null = pullSync(url, 30_000)?.state ?? null
       prCache.set(url, state)
       return state
     },
@@ -8084,20 +8087,12 @@ async function gateBriefFacts(id: string | undefined) {
       // merge request would need `glab`'s own fields, skipped here rather than guessed at)
       if (pr.role === 'code' && pr.forge !== 'gitlab') {
         try {
-          const res = await spawnGh(['pr', 'view', pr.url, '--json', 'additions,deletions,changedFiles'], {
-            cwd: run.repo,
-            timeout: 30_000,
-          })
-          if (res.code === 0) {
-            const parsed = JSON.parse(res.out) as {
-              additions?: number
-              deletions?: number
-              changedFiles?: number
-            }
-            additions = typeof parsed.additions === 'number' ? parsed.additions : null
-            deletions = typeof parsed.deletions === 'number' ? parsed.deletions : null
-            changedFiles = typeof parsed.changedFiles === 'number' ? parsed.changedFiles : null
-          }
+          const path = githubPullPath(pr.url)
+          const res = path ? await spawnGh(['api', path], { cwd: run.repo, timeout: 30_000 }) : null
+          const parsed = res?.code === 0 ? parseGithubView(res.out) : null
+          additions = parsed?.additions ?? null
+          deletions = parsed?.deletions ?? null
+          changedFiles = parsed?.changedFiles ?? null
         } catch {
           // fail soft (the design's own rule): additions/deletions/changedFiles stay null
         }

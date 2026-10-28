@@ -823,6 +823,12 @@ export function reviewDecisionOf(reviews: unknown): string {
   return states.includes('APPROVED') ? 'APPROVED' : ''
 }
 
+/** the REST path of a github.com pull request (`repos/<owner>/<repo>/pulls/<n>`), or null */
+export function githubPullPath(url: string): string | null {
+  const slug = githubSlugOf(url)
+  return slug ? `repos/${slug}/pulls/${prRef(url)!.number}` : null
+}
+
 const MERGEABLE: Record<string, string> = { true: 'MERGEABLE', false: 'CONFLICTING' }
 const STATUS_CONCLUSION: Record<string, string> = { success: 'SUCCESS', failure: 'FAILURE', error: 'FAILURE' }
 

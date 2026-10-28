@@ -1997,3 +1997,11 @@ test('githubWatchView: pull, then reviews and comments with --paginate --slurp, 
   expect(await githubWatchView(answer(null), 'https://github.com/acme/../pull/5', '/tmp')).toBeNull()
   expect(calls).toEqual([])
 })
+
+import { githubPullPath } from './prs'
+
+test('githubPullPath: the REST path of a PR, null for a URL githubSlugOf refuses', () => {
+  expect(githubPullPath('https://github.com/acme/widget/pull/5')).toBe('repos/acme/widget/pulls/5')
+  expect(githubPullPath('https://github.com/acme/../pull/5')).toBeNull()
+  expect(githubPullPath('https://gitlab.example.com/a/b/-/merge_requests/5')).toBeNull()
+})
