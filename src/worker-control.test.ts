@@ -3,6 +3,8 @@ import { afterEach, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createActor } from 'xstate'
+import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `worker-control-${process.pid}`)
@@ -12,9 +14,10 @@ const halt = join(home, 'halt.json')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 /** a fresh home and a fake ax that logs its argv; runs the CLI once with the given extra env */
-function run(args: string[], env: Record<string, string>, seedHalt = false) {
+function run(args: string[], env: Record<string, string>, seedHalt = false, seed?: () => void) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(join(home, 'runs'), { recursive: true })
+  seed?.()
   const ax = join(dir, 'fake-ax')
   writeFileSync(ax, `#!/bin/sh\necho "$@" >> ${axLog}\n`, { mode: 0o755 })
   if (seedHalt) writeFileSync(halt, JSON.stringify({ state: 'stopping', at: 1, told: {}, closed: {} }))
@@ -79,3 +82,45 @@ test('no marker: resume removes halt.json', () => {
   expect(run(['resume'], {}, true).exitCode).toBe(0)
   expect(existsSync(halt)).toBe(false)
 })
+
+// a fork with a note goes through managerSender, which skips FACTORY_FROM and FACTORY_RUN for mail
+const DEF: Factory = {
+  name: 'ship',
+  start: 'implement',
+  nodes: { implement: { prompt: 'do it', next: { ready: 'done' } } },
+}
+function seedRun() {
+  const d = join(home, 'runs', 'r1')
+  mkdirSync(join(dir, 'wt'), { recursive: true })
+  mkdirSync(d, { recursive: true })
+  const file = join(d, 'factory.ts')
+  writeFileSync(file, `export default ${JSON.stringify(DEF)}`)
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id: 'r1',
+      factory: file,
+      repo: join(dir, 'repo'),
+      goal: 'g',
+      ws: 'w1',
+      worktree: join(dir, 'wt'),
+      branch: 'b',
+    }),
+  )
+  const actor = createActor(compile(DEF)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+  writeFileSync(join(d, 'inbox.jsonl'), '')
+}
+for (const [name, env] of [
+  ['FACTORY_FROM', { FACTORY_FROM: 'implement' }],
+  ['FACTORY_FROM manager', { FACTORY_FROM: 'manager' }],
+  ['FACTORY_RUN own run', { FACTORY_RUN: 'r1' }],
+] as const) {
+  test(`${name}: fork with a note is refused and makes no run`, () => {
+    const p = run(['fork', 'r1', 'implement', 'a', 'note'], env, false, seedRun)
+    expect(p.exitCode).toBe(1)
+    expect(p.stderr.toString()).toMatch(/a worker cannot run factory fork/)
+    expect(runs()).toBe(1)
+  })
+}

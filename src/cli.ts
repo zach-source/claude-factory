@@ -5218,8 +5218,8 @@ async function sweep() {
       continue
     }
     // claude-factory-8pc.19: a rig with no .beads has no bd for the flood guard to read at all
-    // (tracking() tells a worker on such a rig to `factory start` work with no bead, and no
-    // guard). Today every rig in rigs.json has .beads, so this is latent, not live. Skip it, one
+    // (a worker cannot run `factory start` since claude-factory-5y7b, so only the manager or a person starts
+    // work with no bead, and no guard). Today every rig in rigs.json has .beads, so this is latent, not live. Skip it, one
     // log line per due station, instead of starting a sweep run the guard can never see.
     const due = dueSweeps(preview, rig, state, live, Date.now())
     if (due.length && !hasBeads(rig.repo)) {
@@ -8072,6 +8072,7 @@ async function fork(id: string | undefined, station: string | undefined, note: s
   if (!Object.hasOwn(def.nodes, station ?? ''))
     fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
   const sender = note ? managerSender(src) : undefined
+  refuseWorker('fork') // managerSender lets FACTORY_FROM and FACTORY_RUN through for mail
   await assertRoom(src.repo)
   const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
   const bead = src.bead
