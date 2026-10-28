@@ -7988,17 +7988,19 @@ async function start(factory: string | undefined, repo: string | undefined, goal
  */
 function managerSender(run: Run): 'manager' {
   const marker =
-    workerMarker() ?? (insideWorktree(run) ? 'the working directory is inside the run worktree' : undefined)
+    workerMarker(true) ??
+    (insideWorktree(run) ? 'the working directory is inside the run worktree' : undefined)
   if (marker) fail(`a worker cannot send mail as the manager (${marker}); a worker mails as its own station`)
   return 'manager'
 }
 
 /**
  * claude-factory-5y7b: the env marker that says a worker runs this command, else undefined.
+ * forMail skips FACTORY_FROM: the manager mails with FACTORY_FROM=manager (remote.test.ts), so managerSender keeps its old three markers.
  * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
  */
-function workerMarker(): string | undefined {
-  return process.env.FACTORY_FROM
+function workerMarker(forMail = false): string | undefined {
+  return process.env.FACTORY_FROM && !forMail
     ? 'FACTORY_FROM is set'
     : process.env.FACTORY_RUN
       ? 'FACTORY_RUN is set'
