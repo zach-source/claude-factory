@@ -92,6 +92,7 @@ import {
   type GhRun,
   guardHandled,
   markGuardHandled,
+  MONITOR_RECHECK_MIN,
   pruneGuardState,
   sigOf,
   sweepFiler,
@@ -4951,6 +4952,7 @@ type SweepLogEntry = {
     | 'tracked'
     | 'quiet'
   run?: string
+  recheck?: boolean
   proposed?: number
   kinds?: Record<string, number>
   digest?: string
@@ -5265,6 +5267,7 @@ async function sweep() {
       // room, and a changed read still needs its mail even when no room is free yet (it waits)
       let mail: string | undefined
       let read: { sig: string; lines: number } | undefined
+      let recheck = false
       if (station === 'ci' || station === 'flakes') {
         // Check room first. A full factory writes no lastAt, so a late check repeats the gh reads each tick.
         try {
@@ -5305,11 +5308,20 @@ async function sweep() {
           continue
         }
         read = { sig: sigOf(output), lines: output ? output.split('\n').length : 0 }
-        if (read.sig === state[rig.name]?.[station]?.sig) {
-          state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at, ...read } } }
-          writeJson(sweepStateFile(), state)
-          logSweep({ at, rig: rig.name, sweep: station, action: 'unchanged' })
-          continue
+        const prev = state[rig.name]?.[station]
+        // ranAt is the time of the last run start. Old state has none, so lastAt stands in once.
+        const ranAt = prev?.ranAt ?? prev?.lastAt
+        if (read.sig === prev?.sig) {
+          if (ranAt !== undefined && at - ranAt < MONITOR_RECHECK_MIN * 60_000) {
+            state = {
+              ...state,
+              [rig.name]: { ...state[rig.name], [station]: { lastAt: at, ...read, ranAt } },
+            }
+            writeJson(sweepStateFile(), state)
+            logSweep({ at, rig: rig.name, sweep: station, action: 'unchanged' })
+            continue
+          }
+          recheck = true
         }
         mail = clipUtf8(output)
       }
@@ -5324,9 +5336,22 @@ async function sweep() {
         const { run, def } = await createTracked(spec, preview.name, rig.repo, goal, linked.bead)
         if (station !== def.start) post(run.id, { type: 'GOTO', node: station })
         if (mail !== undefined) post(run.id, { type: 'MAIL', from: 'sweep', to: station, text: mail })
-        state = { ...state, [rig.name]: { ...state[rig.name], [station]: { lastAt: at, ...read } } }
+        state = {
+          ...state,
+          [rig.name]: {
+            ...state[rig.name],
+            [station]: { lastAt: at, ...read, ...(station === 'monitor' ? { ranAt: at } : {}) },
+          },
+        }
         writeJson(sweepStateFile(), state)
-        logSweep({ at, rig: rig.name, sweep: station, action: 'started', run: run.id })
+        logSweep({
+          at,
+          rig: rig.name,
+          sweep: station,
+          action: 'started',
+          run: run.id,
+          ...(recheck ? { recheck: true } : {}),
+        })
         console.log(`${new Date(at).toISOString()} sweep ${station} for rig ${rig.name} → ${run.id}`)
       } catch (err) {
         logSweep({ at, rig: rig.name, sweep: station, action: 'error' })

@@ -735,7 +735,10 @@ The `small` loop skips the Opus plan step. It adds the security station only whe
 files what it finds as beads, not as a standing run. `rig add --sweeps a,b|none` picks which
 sweeps a rig runs; the default is all of them. `monitor` reads the rig's `--slo` command on the
 laptop (never on a VM worker), hashes its output, and starts a run only when the hash changed
-since the last pass; the unchanged output never reaches a model. Start a pass by hand with
+since the last pass; the unchanged output never reaches a model. If the output stays the same for
+6 hours (`MONITOR_RECHECK_MIN`), `monitor` starts a run anyway (`recheck: true` in `sweeps.jsonl`).
+That run lists each firing alert and each `Ready=False` condition with its age. It files a bead
+for each one that is 6 hours old or older, or comments on the open bead that already tracks it. Start a pass by hand with
 `factory start sweeps@maintain <rig> 'sweep: maintain'`.
 
 `ci` and `flakes` read GitHub Actions on the laptop with `gh`. They start no run unless they find
