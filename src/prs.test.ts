@@ -2006,7 +2006,7 @@ test('githubPullPath: the REST path of a PR, null for a URL githubSlugOf refuses
   expect(githubPullPath('https://gitlab.example.com/a/b/-/merge_requests/5')).toBeNull()
 })
 
-import { githubMergedJson, parseMergedPrs } from './prs'
+import { githubMergedJson } from './prs'
 
 test('githubMergedJson: closed pulls with a merge date only, in the parseMergedPrs shape, with the head filter', async () => {
   const argvs: string[][] = []
@@ -2055,4 +2055,31 @@ test('githubMergedJson: closed pulls with a merge date only, in the parseMergedP
   expect(
     await githubMergedJson(async () => ({ code: 1, out: '', err: '' }), 'acme/widget', '/tmp', { pages: 1 }),
   ).toBeNull()
+})
+
+import { githubCloseArgv, githubCommentArgv, githubUnlabelArgv } from './prs'
+
+test('GitHub PR write argv: comment, unlabel and close go through gh api; a body goes raw with -f; a label is encoded', () => {
+  expect(githubCommentArgv('acme/widget', 7, '@etc/passwd')).toEqual([
+    'api',
+    '-X',
+    'POST',
+    'repos/acme/widget/issues/7/comments',
+    '-f',
+    'body=@etc/passwd',
+  ])
+  expect(githubUnlabelArgv('acme/widget', 7, 'needs work/x y')).toEqual([
+    'api',
+    '-X',
+    'DELETE',
+    'repos/acme/widget/issues/7/labels/needs%20work%2Fx%20y',
+  ])
+  expect(githubCloseArgv('acme/widget', 7)).toEqual([
+    'api',
+    '-X',
+    'PATCH',
+    'repos/acme/widget/pulls/7',
+    '-f',
+    'state=closed',
+  ])
 })

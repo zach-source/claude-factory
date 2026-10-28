@@ -180,7 +180,10 @@ import {
   forgeNote,
   forgeOf,
   gitlabForge,
+  githubCloseArgv,
+  githubCommentArgv,
   githubMergedJson,
+  githubUnlabelArgv,
   githubPullPath,
   githubPulls,
   githubRows,
@@ -7437,7 +7440,6 @@ async function labelPass() {
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
-  const fields = 'number,url,headRefName,baseRefName,isCrossRepository,labels'
   const live = runIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
@@ -7479,18 +7481,31 @@ async function labelPass() {
               cli('glab', ['mr', 'close', String(pr.number)])
             },
           }
-        : {
-            list: (): LabeledPr[] => {
-              const search = `label:${[CLOSE_LABEL, ...REWORK_LABELS].join(',')}` // a comma is OR in GitHub search
-              return JSON.parse(gh('pr', 'list', '--state', 'open', '--search', search, '--json', fields))
-            },
-            comment: (pr: LabeledPr, body: string) => gh('pr', 'comment', String(pr.number), '--body', body),
-            unlabel: (pr: LabeledPr, labels: string[]) =>
-              gh('pr', 'edit', String(pr.number), '--remove-label', labels.join(',')),
-            close: (pr: LabeledPr, body: string) => gh('pr', 'close', String(pr.number), '--comment', body),
-          }
+        : (() => {
+            const ref = rigRef(rig.repo)
+            const slug = () => {
+              if (!ref) throw new Error('not a GitHub repo')
+              return ref.slug
+            }
+            return {
+              // REST, not `gh pr list --search`: the path names the owner, so the AX gateway picks the owner's key
+              list: async (): Promise<LabeledPr[]> => {
+                const rows = await githubPulls(spawnGh, slug(), rig.repo, { state: 'open', pages: 10 })
+                if (!rows) throw new Error('gh api pulls failed')
+                return (githubRows(rows) as LabeledPr[]).filter(pr => labelAction(pr) !== undefined)
+              },
+              comment: (pr: LabeledPr, body: string) => gh(...githubCommentArgv(slug(), pr.number, body)),
+              unlabel: (pr: LabeledPr, labels: string[]) => {
+                for (const label of labels) gh(...githubUnlabelArgv(slug(), pr.number, label))
+              },
+              close: (pr: LabeledPr, body: string) => {
+                gh(...githubCommentArgv(slug(), pr.number, body))
+                gh(...githubCloseArgv(slug(), pr.number))
+              },
+            }
+          })()
     try {
-      const labeled = forge.list()
+      const labeled = await forge.list()
       const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
         ? beads(rig.repo, 'factory').shipQueue()
         : []

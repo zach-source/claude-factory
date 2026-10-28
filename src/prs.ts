@@ -984,6 +984,30 @@ export async function githubMergedJson(
   return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
 }
 
+/** `gh api` argv for the three PR writes of labelPass. The body goes through -f (raw): -F would read `@file`. */
+export const githubCommentArgv = (slug: string, n: number, body: string) => [
+  'api',
+  '-X',
+  'POST',
+  `repos/${slug}/issues/${n}/comments`,
+  '-f',
+  `body=${body}`,
+]
+export const githubUnlabelArgv = (slug: string, n: number, label: string) => [
+  'api',
+  '-X',
+  'DELETE',
+  `repos/${slug}/issues/${n}/labels/${encodeURIComponent(label)}`,
+]
+export const githubCloseArgv = (slug: string, n: number) => [
+  'api',
+  '-X',
+  'PATCH',
+  `repos/${slug}/pulls/${n}`,
+  '-f',
+  'state=closed',
+]
+
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh
  * headRefName/body this one call has (AC2/AC3) and its ownHead/namesIt facts stored for every later
  * recompute (wyc.4), checkedAt bumped so its TTL restarts, and the error streak cleared on success */
