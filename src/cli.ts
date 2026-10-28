@@ -9257,6 +9257,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'self-update': {
+        refuseWorker('self-update', true)
         const state = runSelfUpdate()
         console.log(state ? JSON.stringify(state) : 'a tick, or another self-update, is already running')
         break
@@ -9343,6 +9344,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'loop': {
+        refuseWorker('loop', true)
         lease()
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000
         if (!(ms >= 1000)) fail('usage: factory loop [--interval ms], at least 1000')
@@ -9840,6 +9842,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'gc': {
+        refuseWorker('gc', true)
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
         const dryRun = args.includes('--dry-run')
         if (args.includes('--worktrees')) {
@@ -9876,6 +9879,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'sweep': {
+        refuseWorker('sweep', true)
         const release = hold('sweeps.lock')
         if (!release) {
           console.log('a sweep pass is already running: skipped this one')
