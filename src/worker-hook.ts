@@ -2734,13 +2734,23 @@ export const BEADS_ACTOR_REASON =
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
+// claude-factory-ab8n: one guard per variable a worker must not change. cmd is the command word
+// that reads the variable: bd reads BEADS_ACTOR, and factory reads FACTORY_FROM (the mail sender).
+type EnvGuard = { name: string; cmd: string; reason: string }
+export const FACTORY_FROM_REASON =
+  'The factory denies this command: do not set, clear, export, or re-export FACTORY_FROM. ' +
+  'The factory reads the mail sender from this variable, and the owner-only rule trusts mail from the ' +
+  'manager. Do not retry this command.'
+const BEADS_ACTOR_GUARD: EnvGuard = { name: 'BEADS_ACTOR', cmd: 'bd', reason: BEADS_ACTOR_REASON }
+const FACTORY_FROM_GUARD: EnvGuard = { name: 'FACTORY_FROM', cmd: 'factory', reason: FACTORY_FROM_REASON }
+
 const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
 
 // claude-factory-igj: returns true when a bare value word (not a dash word) names BEADS_ACTOR.
 // A match is any text that contains the name, which also matches the exact name.
 // This match is defensive and fails closed. See BEADS_ACTOR_REASON above.
-function valueNamesBeadsActor(v: string | undefined): boolean {
-  return v !== undefined && v.includes('BEADS_ACTOR')
+function valueNamesBeadsActor(v: string | undefined, g: EnvGuard): boolean {
+  return v !== undefined && v.includes(g.name)
 }
 
 // claude-factory-sft4: true for a word that is, or can expand at run time to, sh, bash, zsh or
@@ -2776,7 +2786,13 @@ function shCScriptValue(words: string[], start: number): string | undefined {
 // claude-factory-igj.8: the scan reads every word after start, not only words[start]. A wrapper
 // word (env, nice, nohup, sudo, and so on) can sit between start and the sh/bash/zsh/dash or
 // eval word. This scan still finds that later word.
-function segmentRunsBdCommand(words: string[], start: number, depth: number, state: ScanState): boolean {
+function segmentRunsBdCommand(
+  words: string[],
+  start: number,
+  depth: number,
+  state: ScanState,
+  g: EnvGuard,
+): boolean {
   // claude-factory-cbai: the first eval word's recursion reads every later word of the segment
   // (rest holds them all, later eval words too). A later eval word then needs no recursion of its
   // own. Without this skip, n stacked eval words cost about 2^n work.
@@ -2785,7 +2801,7 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
   let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
-    if (bw === 'bd') return true
+    if (bw === g.cmd) return true
     if (shellSlotWord(words[k]!)) {
       // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
@@ -2797,18 +2813,18 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
       // A brace list word is denied as a dynamic verb before this scan matters. Reading its script
       // here would change that reason to the BEADS_ACTOR one (claude-factory-38jm AC4).
       const script = BRACE_LIST_WORD.test(words[k]!) ? undefined : shCScriptValue(words, k)
-      if (script !== undefined && stringNamesBdCommand(script, state, depth + 1)) return true
+      if (script !== undefined && stringNamesBdCommand(script, state, g, depth + 1)) return true
     } else if (bw === 'trap' && k >= trapEnd) {
       // claude-factory-81tz.2: the trap action and every word after trap are scripts. Read them like eval.
       // claude-factory-81tz.4: trapEnd skips a trap word inside an earlier walk, so the scan stays O(n).
       // claude-factory-81tz.5: read every word to the end, since a redirect word can sit before the action.
       for (let a = k + 1; a < words.length; a++)
-        if (stringNamesBdCommand(words[a]!, state, depth + 1)) return true
+        if (stringNamesBdCommand(words[a]!, state, g, depth + 1)) return true
       trapEnd = words.length
     } else if (bw === 'eval' && !evalScanned) {
       evalScanned = true
       const rest = words.slice(k + 1).join(' ')
-      if (rest && stringNamesBdCommand(rest, state, depth + 1)) return true
+      if (rest && stringNamesBdCommand(rest, state, g, depth + 1)) return true
     }
   }
   return false
@@ -2817,10 +2833,10 @@ function segmentRunsBdCommand(words: string[], start: number, depth: number, sta
 // claude-factory-igj: true when a bd word sits anywhere inside s, read as shell words, or
 // inside a sh/bash/zsh/dash -c script or an eval word nested in s. depth bounds the recursion
 // the same way MAX_SHELL_DEPTH bounds anyShellReason's eval/sh -c recursion.
-function stringNamesBdCommand(s: string, state: ScanState, depth = 0): boolean {
+function stringNamesBdCommand(s: string, state: ScanState, g: EnvGuard, depth = 0): boolean {
   if (depth > MAX_SHELL_DEPTH || spendWork(state, s.length)) return true
   for (const seg of segments(s)) {
-    if (segmentRunsBdCommand(seg, 0, depth, state)) return true
+    if (segmentRunsBdCommand(seg, 0, depth, state, g)) return true
   }
   return false
 }
@@ -2863,6 +2879,7 @@ function envOptionScan(
   depth: number,
   state: ScanState,
   spanScanned: { done: boolean },
+  g: EnvGuard,
 ): { cmdStart: number; clearsAll: boolean } | true {
   const span = envSplitStringScan(words, envIndex)
   let clearsAll = false
@@ -2891,7 +2908,7 @@ function envOptionScan(
           ...segments(span.value).flat(),
           ...words.slice(span.end),
         ]
-        if (touchesBeadsActor(recombined, state, depth + 1)) return true
+        if (touchesBeadsActor(recombined, state, g, depth + 1)) return true
       }
       j = span.end - 1 // skip the flag and its own value word; it already ran above
       continue
@@ -2916,11 +2933,11 @@ function envOptionScan(
         name.length > 0 &&
         ENV_LONG_VALUE_FLAGS.some(full => full.startsWith(name))
       ) {
-        if (valueNamesBeadsActor(words[j + 1])) return true
+        if (valueNamesBeadsActor(words[j + 1], g)) return true
         j++ // skip this flag's own separate value word
         continue
       }
-      if (attached !== undefined && attached.includes('BEADS_ACTOR')) return true
+      if (attached !== undefined && attached.includes(g.name)) return true
       continue // an unrelated long option (--debug, --version, ...): keep scanning
     }
     if (ew.startsWith('-') && ew.length > 1) {
@@ -2935,7 +2952,7 @@ function envOptionScan(
           const rest = chars.slice(ci + 1)
           const value = rest.length > 0 ? rest : words[j + 1]
           if (rest.length === 0) j++ // the value is the next whole word: skip it
-          if (c !== 'S' && valueNamesBeadsActor(value)) return true
+          if (c !== 'S' && valueNamesBeadsActor(value, g)) return true
           break // the cluster's value, attached or skipped, ends the cluster
         }
       }
@@ -2967,7 +2984,7 @@ function envOptionScan(
  * A plain, whole-word scan of `words` would not find that word.
  * For example, in `env -i sh -c 'bd create x'`, the word `bd` is inside the script text.
  */
-function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolean {
+function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth = 0): boolean {
   if (depth > MAX_SHELL_DEPTH) return true
   let chars = 0
   for (const w of words) chars += w.length + 1
@@ -2977,21 +2994,21 @@ function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolea
   let runsBd = false
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (/^BEADS_ACTOR=/.test(w)) return true
+    if (w.startsWith(g.name + '=')) return true
     const b = baseWord(w)
-    if (b === 'bd') runsBd = true
+    if (b === g.cmd) runsBd = true
     // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
     // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
     if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
       let j = i + 1
       while (words[j]?.startsWith('-') && words[j] !== '--') j++
-      if (words[j] !== undefined && /^BEADS_ACTOR(=|$)/.test(words[j]!)) return true
+      if (words[j] !== undefined && (words[j] === g.name || words[j]!.startsWith(g.name + '='))) return true
     }
-    if (b === 'unset' && words.slice(i + 1).includes('BEADS_ACTOR')) return true
+    if (b === 'unset' && words.slice(i + 1).includes(g.name)) return true
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {
-      const scan = envOptionScan(words, i, depth, state, spanScanned)
+      const scan = envOptionScan(words, i, depth, state, spanScanned, g)
       if (scan === true) return true
       if (scan.clearsAll) {
         envClearsAll = true
@@ -2999,7 +3016,7 @@ function touchesBeadsActor(words: string[], state: ScanState, depth = 0): boolea
         // claude-factory-igj.8: scan every word from cmdStart to the end of this segment, not
         // only words[cmdStart]. A wrapper word (env, nice, nohup, sudo, and so on) can sit
         // between env's own options and the real sh/bash/zsh/dash or eval word.
-        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1, state)) {
+        if (cmdStart < words.length && segmentRunsBdCommand(words, cmdStart, depth + 1, state, g)) {
           runsBd = true
         }
       }
@@ -8547,8 +8564,8 @@ function denyAtScan(
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
-    if (touchesBeadsActor(words, state)) {
-      return state.work < 0 ? SCAN_BUDGET_REASON : BEADS_ACTOR_REASON
+    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD]) {
+      if (touchesBeadsActor(words, state, g)) return state.work < 0 ? SCAN_BUDGET_REASON : g.reason
     }
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
     // check denies is exactly what realCommand's own strip would otherwise hide.
