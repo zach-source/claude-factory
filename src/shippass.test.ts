@@ -155,6 +155,14 @@ test('a live ship run holds no slot, but a work run still does', () => {
   expect(factory(['start', 'lifecycle', 'a', 'more work'], env).err).toContain('runs are busy')
 })
 
+test('a run dir without run.json does not break factory start', () => {
+  setup([{ name: 'a', queued: true }])
+  mkdirSync(join(home, 'runs', 'ship-stale'), { recursive: true })
+  const out = factory(['start', 'ship', 'a', 'again'])
+  expect(out.err).toContain('only the runner starts a ship run')
+  expect(out.err).not.toContain('no run')
+})
+
 test('factory start ship is refused: only the runner starts a ship run', () => {
   const [a] = setup([{ name: 'a', queued: true }])
   factory(['beads'])

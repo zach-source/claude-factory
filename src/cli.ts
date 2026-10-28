@@ -7788,7 +7788,13 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   const busy: (string | undefined)[] = []
   const held: (string | undefined)[] = []
   for (const id of runIds()) {
-    const { run, value } = current(id)
+    let cur
+    try {
+      cur = current(id)
+    } catch {
+      continue // run dir exists before run.json (createRun writes it last)
+    }
+    const { run, value } = cur
     if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
     const [node, sub] = where(value)
     const n = (await loadFactory(run.factory)).nodes[node]
