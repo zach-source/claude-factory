@@ -3,7 +3,7 @@
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
 import { mrsIn, prsIn, type Entry } from './machine'
-import { isPerson, type Note } from './watch'
+import { ghNotes, isPerson, type Note } from './watch'
 export { mrsIn }
 
 export type PrSource = 'report' | 'mail' | 'search' | 'branch'
@@ -572,6 +572,12 @@ export type Viewed = Pick<
   headSha?: string
   mergedAt?: string
   closedAt?: string
+  /** GitHub REST only: what the gate and the park watch read beyond the fields above */
+  baseRefName?: string
+  mergeable?: string
+  additions?: number
+  deletions?: number
+  changedFiles?: number
 }
 export function parseView(out: string): Viewed | null {
   let v: Record<string, unknown>
@@ -787,6 +793,143 @@ export async function gitlabWatchNotes(
     } else if (!/404/.test(m.err)) return null
   }
   return gitlabNotes(res.out, members)
+}
+
+// ---- GitHub: `gh api repos/<owner>/<repo>/...` answers with REST objects ----
+// The AX gateway picks the key from the owner in the path. `gh pr` sends POST /graphql, which has no owner.
+// So the factory reads and writes PRs through REST only.
+
+/** owner/repo of a github.com pull request URL. Null for any other URL.
+ * Null also for a `.` or `..` segment: it can move an API path out of `repos/<owner>/`. */
+export function githubSlugOf(url: string): string | null {
+  const ref = prRef(url)
+  if (!ref || ref.forge) return null
+  return ref.repo.split('/').some(s => s === '.' || s === '..') ? null : ref.repo
+}
+
+/** the review decision REST can show: only reviews of a member-class author count, the latest review of each
+ * user wins, and REVIEW_REQUIRED does not exist here (it comes from branch protection) */
+export function reviewDecisionOf(reviews: unknown): string {
+  if (!Array.isArray(reviews)) return ''
+  const latest = new Map<string, string>()
+  for (const r of reviews as Json[]) {
+    const user = str((r?.user as Json | undefined)?.login)
+    const state = str(r?.state)
+    if (!user || !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(str(r?.author_association))) continue
+    if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) latest.set(user, state)
+  }
+  const states = [...latest.values()]
+  if (states.includes('CHANGES_REQUESTED')) return 'CHANGES_REQUESTED'
+  return states.includes('APPROVED') ? 'APPROVED' : ''
+}
+
+const MERGEABLE: Record<string, string> = { true: 'MERGEABLE', false: 'CONFLICTING' }
+const STATUS_CONCLUSION: Record<string, string> = { success: 'SUCCESS', failure: 'FAILURE', error: 'FAILURE' }
+
+/** a pull (`pulls/N`), its reviews, its head's check runs and its combined status mapped onto `Viewed`.
+ * A missing reviews, checks or status answer leaves that field blank. */
+export function parseGithubView(
+  pullOut: string,
+  reviewsOut = '',
+  checkRunsOut = '',
+  statusOut = '',
+): Viewed | null {
+  const p = asJson(pullOut) as Json | null
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+  const runs = (asJson(checkRunsOut) as Json | null)?.check_runs
+  const statuses = (asJson(statusOut) as Json | null)?.statuses
+  const rollup = [
+    ...(Array.isArray(runs) ? (runs as Json[]) : []).map(c => ({
+      conclusion: str(c?.status) === 'completed' ? str(c?.conclusion) : null,
+    })),
+    ...(Array.isArray(statuses) ? (statuses as Json[]) : []).map(s => ({
+      conclusion: STATUS_CONCLUSION[str(s?.state)] ?? null,
+    })),
+  ]
+  const head = p.head as Json | undefined
+  const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
+  return {
+    title: str(p.title),
+    state: (str(p.merged_at) ? 'MERGED' : str(p.state).toUpperCase() || 'UNKNOWN') as PrState,
+    isDraft: p.draft === true,
+    reviewDecision: reviewDecisionOf(asJson(reviewsOut)),
+    mergeStateStatus: str(p.mergeable_state).toUpperCase() || 'UNKNOWN',
+    checks: checksOf(rollup),
+    updatedAt: str(p.updated_at),
+    headRefName: str(head?.ref),
+    body: str(p.body),
+    headSha: str(head?.sha) || undefined,
+    mergedAt: str(p.merged_at) || undefined,
+    closedAt: str(p.closed_at) || undefined,
+    baseRefName: str((p.base as Json | undefined)?.ref) || undefined,
+    mergeable: MERGEABLE[String(p.mergeable)] ?? 'UNKNOWN',
+    additions: num(p.additions),
+    deletions: num(p.deletions),
+    changedFiles: num(p.changed_files),
+  }
+}
+
+/** the notes of REST reviews and issue comments, through the same reader as `gh pr view` notes (`ghNotes`) */
+export function restNotes(reviews: unknown, comments: unknown): Note[] {
+  const raw = (list: unknown, at: 'submittedAt' | 'createdAt') =>
+    (Array.isArray(list) ? (list as Json[]) : []).map(r => {
+      const u = r?.user as Json | undefined
+      return {
+        author: { login: str(u?.login), is_bot: u?.type === 'Bot' },
+        authorAssociation: str(r?.author_association),
+        [at]: str(r?.[at === 'submittedAt' ? 'submitted_at' : 'created_at']),
+        state: str(r?.state),
+        body: str(r?.body),
+      }
+    })
+  return ghNotes({ reviews: raw(reviews, 'submittedAt'), comments: raw(comments, 'createdAt') })
+}
+
+/** `pulls` rows mapped onto `gh pr list --json` fields */
+export function githubRows(pulls: unknown): Json[] {
+  if (!Array.isArray(pulls)) return []
+  return (pulls as Json[]).map(p => {
+    const head = p.head as Json | undefined
+    const base = p.base as Json | undefined
+    const mergedAt = str(p.merged_at)
+    const headRepo = head?.repo as Json | null | undefined
+    return {
+      number: p.number,
+      url: str(p.html_url),
+      title: str(p.title),
+      body: str(p.body),
+      state: mergedAt ? 'MERGED' : str(p.state).toUpperCase(),
+      isDraft: p.draft === true,
+      headRefName: str(head?.ref),
+      baseRefName: str(base?.ref),
+      isCrossRepository:
+        !headRepo || str(headRepo.full_name) !== str((base?.repo as Json | undefined)?.full_name),
+      ...(mergedAt ? { mergeCommit: { oid: str(p.merge_commit_sha) } } : {}),
+      labels: (Array.isArray(p.labels) ? (p.labels as Json[]) : []).map(l => ({ name: str(l?.name) })),
+    }
+  })
+}
+
+/** `GET repos/<slug>/pulls` pages, newest first, until a short page; null when a call fails */
+export async function githubPulls(
+  gh: Gh,
+  slug: string,
+  cwd: string,
+  o: { state: 'open' | 'closed' | 'all'; pages: number; head?: string },
+): Promise<Json[] | null> {
+  const rows: Json[] = []
+  for (let page = 1; page <= o.pages; page++) {
+    const q = `state=${o.state}&sort=created&direction=desc&per_page=100&page=${page}`
+    const res = await gh(
+      ['api', `repos/${slug}/pulls?${q}${o.head ? `&head=${encodeURIComponent(o.head)}` : ''}`],
+      timed(cwd),
+    )
+    const list = res.code === 0 ? asJson(res.out) : null
+    if (!Array.isArray(list)) return null
+    rows.push(...(list as Json[]))
+    if (list.length < 100) break
+  }
+  return rows
 }
 
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh

@@ -1589,3 +1589,192 @@ test('buildPrs: an MR URL on another host is never viewed, on a GitLab rig or a 
     })
   }
 })
+
+// ---- GitHub REST mappers (claude-factory-fbyg.1) ----
+
+import { githubPulls, githubRows, githubSlugOf, parseGithubView, restNotes, reviewDecisionOf } from './prs'
+
+test('githubSlugOf: owner/repo of a github.com PR URL; a dot segment, a GitLab URL, http and a query give null', () => {
+  expect(githubSlugOf('https://github.com/acme/widget/pull/5')).toBe('acme/widget')
+  for (const bad of [
+    'https://github.com/../widget/pull/5',
+    'https://github.com/acme/../pull/5',
+    'https://github.com/./widget/pull/5',
+    'https://github.com/acme/./pull/5',
+    'https://gitlab.example.com/acme/widget/-/merge_requests/5',
+    'http://github.com/acme/widget/pull/5',
+    'https://github.com/acme/widget/pull/5?x=1',
+    'https://github.com/acme/widget/pull/5#x',
+  ])
+    expect(githubSlugOf(bad)).toBeNull()
+})
+
+const pull = (o: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    title: 't',
+    state: 'open',
+    draft: false,
+    mergeable: true,
+    mergeable_state: 'clean',
+    updated_at: '2026-10-12T09:00:00Z',
+    head: { ref: 'b', sha: 'abc', repo: { full_name: 'acme/widget' } },
+    base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+    body: 'x',
+    additions: 3,
+    deletions: 2,
+    changed_files: 1,
+    ...o,
+  })
+
+test('parseGithubView: state, draft, merge state, mergeable, checks and diff size', () => {
+  const v = parseGithubView(pull())!
+  expect(v).toMatchObject({
+    title: 't',
+    state: 'OPEN',
+    isDraft: false,
+    mergeStateStatus: 'CLEAN',
+    mergeable: 'MERGEABLE',
+    headRefName: 'b',
+    headSha: 'abc',
+    baseRefName: 'main',
+    additions: 3,
+    deletions: 2,
+    changedFiles: 1,
+    reviewDecision: '',
+  })
+  expect(parseGithubView(pull({ draft: true }))!.isDraft).toBe(true)
+  expect(parseGithubView(pull({ state: 'closed', merged_at: '2026-10-12T10:00:00Z' }))).toMatchObject({
+    state: 'MERGED',
+    mergedAt: '2026-10-12T10:00:00Z',
+  })
+  expect(parseGithubView(pull({ state: 'closed', closed_at: '2026-10-12T10:00:00Z' }))).toMatchObject({
+    state: 'CLOSED',
+    closedAt: '2026-10-12T10:00:00Z',
+  })
+  for (const s of ['clean', 'dirty', 'behind', 'blocked', 'unstable', 'has_hooks', 'draft', 'unknown'])
+    expect(parseGithubView(pull({ mergeable_state: s }))!.mergeStateStatus).toBe(s.toUpperCase())
+  expect(parseGithubView(pull({ mergeable_state: undefined }))!.mergeStateStatus).toBe('UNKNOWN')
+  expect(parseGithubView(pull({ mergeable: false }))!.mergeable).toBe('CONFLICTING')
+  expect(parseGithubView(pull({ mergeable: null }))!.mergeable).toBe('UNKNOWN')
+  const runs = JSON.stringify({
+    check_runs: [
+      { status: 'queued', conclusion: null },
+      { status: 'in_progress', conclusion: null },
+      { status: 'completed', conclusion: 'success' },
+      { status: 'completed', conclusion: 'failure' },
+      { status: 'completed', conclusion: 'skipped' },
+    ],
+  })
+  const statuses = JSON.stringify({
+    statuses: [{ state: 'success' }, { state: 'failure' }, { state: 'error' }, { state: 'pending' }],
+  })
+  expect(parseGithubView(pull(), '[]', runs, statuses)!.checks).toEqual({ pass: 3, fail: 3, pending: 3 })
+  expect(parseGithubView('nope')).toBeNull()
+  expect(parseGithubView('[]')).toBeNull()
+})
+
+const rv = (login: string, state: string, assoc: string) => ({
+  user: { login },
+  state,
+  author_association: assoc,
+})
+
+test('reviewDecisionOf: member-class reviews only; the latest review of a user wins', () => {
+  expect(reviewDecisionOf([rv('a', 'APPROVED', 'MEMBER')])).toBe('APPROVED')
+  expect(
+    reviewDecisionOf([rv('a', 'APPROVED', 'COLLABORATOR'), rv('a', 'CHANGES_REQUESTED', 'COLLABORATOR')]),
+  ).toBe('CHANGES_REQUESTED')
+  expect(reviewDecisionOf([rv('a', 'CHANGES_REQUESTED', 'OWNER'), rv('a', 'DISMISSED', 'OWNER')])).toBe('')
+  expect(reviewDecisionOf([rv('a', 'COMMENTED', 'OWNER')])).toBe('')
+  for (const assoc of ['NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR']) {
+    expect(reviewDecisionOf([rv('a', 'APPROVED', assoc)])).toBe('')
+    expect(reviewDecisionOf([rv('a', 'CHANGES_REQUESTED', assoc)])).toBe('')
+  }
+  expect(reviewDecisionOf('x')).toBe('')
+})
+
+test('restNotes: a member is a person; a Bot user and a NONE author are not', () => {
+  const notes = restNotes(
+    [
+      {
+        user: { login: 'a' },
+        author_association: 'MEMBER',
+        state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-10-12T09:00:00Z',
+        body: 'r',
+      },
+    ],
+    [
+      {
+        user: { login: 'b', type: 'Bot' },
+        author_association: 'MEMBER',
+        created_at: '2026-10-12T09:01:00Z',
+        body: 'c',
+      },
+      {
+        user: { login: 'c', type: 'User' },
+        author_association: 'NONE',
+        created_at: '2026-10-12T09:02:00Z',
+        body: 'd',
+      },
+      {
+        user: { login: 'd', type: 'User' },
+        author_association: 'OWNER',
+        created_at: '2026-10-12T09:03:00Z',
+        body: 'e',
+      },
+    ],
+  )
+  expect(notes.map(n => n.person)).toEqual([true, false, false, true])
+  expect(notes[0]!.changesRequested).toBe(true)
+  expect(restNotes(null, undefined)).toEqual([])
+})
+
+test('githubRows maps pulls onto gh pr list fields; githubPulls pages until a short page', async () => {
+  const rows = githubRows([
+    {
+      number: 1,
+      html_url: 'https://github.com/acme/widget/pull/1',
+      title: 't',
+      state: 'closed',
+      merged_at: '2026-10-12T10:00:00Z',
+      merge_commit_sha: 'deadbeef',
+      head: { ref: 'f', repo: null },
+      base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+      labels: [{ name: 'x y' }],
+    },
+    {
+      number: 2,
+      html_url: 'https://github.com/acme/widget/pull/2',
+      state: 'open',
+      draft: true,
+      head: { ref: 'g', repo: { full_name: 'acme/widget' } },
+      base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+    },
+  ])
+  expect(rows[0]).toMatchObject({
+    number: 1,
+    url: 'https://github.com/acme/widget/pull/1',
+    state: 'MERGED',
+    isCrossRepository: true,
+    mergeCommit: { oid: 'deadbeef' },
+    labels: [{ name: 'x y' }],
+  })
+  expect(rows[1]).toMatchObject({ state: 'OPEN', isDraft: true, isCrossRepository: false, labels: [] })
+  expect(rows[1]).not.toHaveProperty('mergeCommit')
+
+  const argvs: string[][] = []
+  const gh: Gh = async argv => {
+    argvs.push(argv)
+    const page = Number(/&page=(\d+)/.exec(argv[1]!)![1])
+    return { code: 0, out: JSON.stringify(Array(page === 1 ? 100 : 3).fill({ number: page })), err: '' }
+  }
+  const got = await githubPulls(gh, 'acme/widget', '/tmp', { state: 'closed', pages: 5, head: 'acme:a/b' })
+  expect(got).toHaveLength(103)
+  expect(argvs.map(a => a[1])).toEqual([
+    'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1&head=acme%3Aa%2Fb',
+    'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=2&head=acme%3Aa%2Fb',
+  ])
+  const bad: Gh = async () => ({ code: 1, out: '', err: 'x' })
+  expect(await githubPulls(bad, 'acme/widget', '/tmp', { state: 'all', pages: 1 })).toBeNull()
+})
