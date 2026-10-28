@@ -1107,7 +1107,7 @@ test('planLines() header counts retire and flag, and each line reads kind  path:
   ]
   const lines = planLines(decisions, { archiveCap: 25, historyDays: 10 })
   expect(lines[0]).toBe(
-    'tier plan: 1 merge, 1 archive, 1 retire, 1 held (cap 25), 1 flag, usage history 10 days',
+    'tier plan: 1 merge, 1 archive, 1 retire, 0 trim, 1 held (cap 25), 1 flag, usage history 10 days',
   )
   expect(lines).toContain('retire  a/c.md: r3')
   expect(lines).toContain('flag  a/e.md: r5')
@@ -1234,7 +1234,7 @@ test('applyTiers() caps a mass of never-shown notes at 25, holds the rest, and p
   expect(Math.floor(historyDays)).toBe(20)
   expect(plans).toHaveLength(1)
   expect(plans[0]![0]).toBe(
-    'tier plan: 0 merge, 25 archive, 0 retire, 5 held (cap 25), 0 flag, usage history 20 days',
+    'tier plan: 0 merge, 25 archive, 0 retire, 0 trim, 5 held (cap 25), 0 flag, usage history 20 days',
   )
   expect(plans[0]!.filter(l => l.startsWith('archive  ')).length).toBe(25)
   expect(plans[0]!.filter(l => l.startsWith('held  ')).length).toBe(5)

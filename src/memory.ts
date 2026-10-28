@@ -1096,7 +1096,18 @@ export type ShortCandidate = {
   untilFlag?: string // untilStatus()'s unknown reason: decide() flags the note, but never retires it
 }
 /** a LONG.md entry, with what decide() needs to judge it */
-export type LongCandidate = { path: string; activation: number; runs: number }
+export type LongCandidate = {
+  path: string
+  activation: number
+  runs: number
+  ageDays?: number // since the entry's at:; undefined with no at, so no age rule applies
+  chars?: number // summary + newline + body, the text that search embeds (see LONG_ENTRY_CAP)
+  expired?: boolean // as for a short note: decide() retires the entry
+  expiredReason?: string
+  untilFlag?: string
+}
+export const LONG_ARCHIVE_DAYS = 30 // a long entry this old, with activation below θa, archives
+export const LONG_ENTRY_CAP = 2000 // chars of a long entry that search embeds; a longer entry gets a trim
 /** a CORE.md line (`CORE.md#<hash>`), with how often notes contradicted it in the activation window */
 export type CoreCandidate = { path: string; contradicted: number; activation: number }
 const DEMOTE_CONTRADICTED = 2 // contradicted at least this often, and its activation below θa: demote it
@@ -1110,6 +1121,7 @@ export type Decision =
   | { kind: 'promote'; path: string; reason: string }
   | { kind: 'dedupe'; a: string; b: string; reason: string }
   | { kind: 'retire'; path: string; reason: string }
+  | { kind: 'trim'; path: string; reason: string }
   | { kind: 'flag'; path: string; reason: string }
   | { kind: 'demote'; path: string; reason: string }
 
@@ -1208,13 +1220,43 @@ export function decide(
         reason: `activation ${n.activation.toFixed(2)}, ${age} days old`,
       })
   }
-  for (const e of long)
+  const trims: { path: string; chars: number }[] = []
+  for (const e of long) {
+    if (e.expired) {
+      decisions.push({ kind: 'retire', path: e.path, reason: e.expiredReason ?? 'until marker ended' })
+      continue
+    }
+    if (e.untilFlag) decisions.push({ kind: 'flag', path: e.path, reason: e.untilFlag })
+    if (
+      historyDays >= LONG_ARCHIVE_DAYS &&
+      e.ageDays !== undefined &&
+      e.ageDays >= LONG_ARCHIVE_DAYS &&
+      e.activation < theta.archive
+    ) {
+      decisions.push({
+        kind: 'archive',
+        path: e.path,
+        reason: `activation ${e.activation.toFixed(2)} below ${theta.archive}, ${Math.floor(e.ageDays)} days old`,
+      })
+      continue
+    }
+    if ((e.chars ?? 0) > LONG_ENTRY_CAP) trims.push({ path: e.path, chars: e.chars! })
     if (e.activation > theta.promote && e.runs >= PROMOTE_RUNS)
       decisions.push({
         kind: 'promote',
         path: e.path,
         reason: `activation ${e.activation.toFixed(2)} across ${e.runs} runs`,
       })
+  }
+  // trims have their own cap (archiveCap): the largest entries first, so one pass stays small
+  trims.sort((a, b) => b.chars - a.chars || a.path.localeCompare(b.path))
+  trims.forEach((t, i) =>
+    decisions.push(
+      i < archiveCap
+        ? { kind: 'trim', path: t.path, reason: `${t.chars} chars, over ${LONG_ENTRY_CAP}` }
+        : { kind: 'held', path: t.path, reason: `over the trim cap of ${archiveCap} this pass` },
+    ),
+  )
   // FR-021: a core fact that keeps being contradicted, with too little use for it, goes back to a note
   for (const c of opts.core ?? [])
     if (c.contradicted >= DEMOTE_CONTRADICTED && c.activation < theta.archive)
@@ -1231,7 +1273,8 @@ export function decide(
   // kind; the rest of this pass's archive/retire decisions become `held`, so nothing past the cap is
   // ever written this pass. A retire shares the same cap as archive (AC7): both remove a short note.
   type CappedDecision = Extract<Decision, { kind: 'archive' | 'retire' }>
-  const ageOf = new Map(short.map(n => [n.path, n.ageDays]))
+  const ageOf = new Map<string, number>(short.map(n => [n.path, n.ageDays]))
+  for (const e of long) if (e.ageDays !== undefined) ageOf.set(e.path, e.ageDays)
   const overCap: { d: CappedDecision; i: number }[] = []
   decisions.forEach((d, i) => {
     if (d.kind === 'archive' || d.kind === 'retire') overCap.push({ d, i })
@@ -1298,7 +1341,7 @@ export function planLines(
   const count = (kind: Decision['kind']) => decisions.filter(d => d.kind === kind).length
   const describe = (d: Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
   const header =
-    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('retire')} retire, ` +
+    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('retire')} retire, ${count('trim')} trim, ` +
     `${count('held')} held (cap ${opts.archiveCap}), ${count('flag')} flag, ` +
     `usage history ${Math.floor(opts.historyDays)} days`
   return [header, ...decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`)]
