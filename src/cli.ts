@@ -9473,6 +9473,8 @@ if (import.meta.main && !outboxCmd)
           process.env.FACTORY_FROM && process.env.FACTORY_FROM !== 'manager'
             ? process.env.FACTORY_FROM
             : undefined
+        if (workerFrom !== undefined && !Object.hasOwn(def.nodes, workerFrom))
+          fail('FACTORY_FROM must name a station of this factory')
         const boxes = Object.keys(def.nodes).concat('manager')
         if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
         post(run.id, {
