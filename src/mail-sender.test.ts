@@ -81,7 +81,7 @@ test('AC4: poke is refused for a worker', () => {
   const r = makeRun()
   const out = factory(['poke', r.id], ACTOR)
   expect(out.code).not.toBe(0)
-  expect(out.err).toContain('cannot send mail as the manager')
+  expect(out.err).toContain('cannot run factory poke')
   expect(r.mails()).toEqual([])
 })
 

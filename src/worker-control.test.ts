@@ -165,6 +165,7 @@ const verbRows: { args: string[]; verb: string; patrol: boolean }[] = [
   { args: ['devenv'], verb: 'devenv', patrol: false },
   { args: ['linear', '--force'], verb: 'linear', patrol: false },
   { args: ['queue', 'acme', 'b1'], verb: 'queue', patrol: false },
+  { args: ['poke', 'r1'], verb: 'poke', patrol: false },
   { args: ['attach'], verb: 'attach', patrol: true },
   { args: ['manager'], verb: 'manager', patrol: true },
   { args: ['manager', 'host'], verb: 'manager', patrol: true },

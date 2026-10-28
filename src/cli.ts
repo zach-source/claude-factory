@@ -9615,6 +9615,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'poke': {
+        refuseWorker('poke')
         // the manager's nudge: lands in the current worker's session on the next tick
         const [id, ...text] = args
         const { run, value, c } = current(id)

@@ -19,6 +19,7 @@ const CONTROL = [
   'factory devenv',
   'factory linear acme',
   'factory queue acme b1',
+  'factory poke r1 hi',
   'factory retry r1',
   'factory abort r1',
   'factory rm r1',
