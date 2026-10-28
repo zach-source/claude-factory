@@ -163,6 +163,14 @@ test('a run dir without run.json does not break factory start', () => {
   expect(out.err).not.toContain('no run')
 })
 
+test('a run dir without run.json does not break factory status', () => {
+  setup([{ name: 'a', queued: true }])
+  mkdirSync(join(home, 'runs', 'x'), { recursive: true })
+  const out = factory(['status'])
+  expect(out.err).not.toContain('no run')
+  expect(out.code).toBe(0)
+})
+
 test('factory start ship is refused: only the runner starts a ship run', () => {
   const [a] = setup([{ name: 'a', queued: true }])
   factory(['beads'])
