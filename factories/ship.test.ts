@@ -346,16 +346,7 @@ test('a replayed second soak reads the first soak report and the dedupe rule (4h
   const at = (s: string) => rule.indexOf(s)
   expect(at('bd search')).toBeGreaterThan(-1)
   expect(at('bd search')).toBeLessThan(at('bd comment'))
-  expect(at('bd comment')).toBeLessThan(at('file one'))
-  const { visited } = walk(ship, [
-    'ready',
-    'ready',
-    'deployed',
-    'healthy',
-    'ready',
-    'ready',
-    'deployed',
-    'unsure',
-  ])
+  expect(at('bd comment')).toBeLessThan(at('matches, file one'))
+  const { visited } = walk(ship, ['ready', 'ready', 'deployed', 'healthy', 'ready', 'ready', 'unsure'])
   expect(visited.filter(n => n === 'soak')).toHaveLength(2)
 })

@@ -7,6 +7,24 @@ const mimirRead =
   `one query per Bash call. Use a concrete metric name: no '?query=' URL and no \`{...}\` selector, because the worker hook denies both. ` +
   `Factory memory names the tenant. Without the X-Scope-OrgID header, every result reads empty, which looks the same as no data.`
 
+/** deploy and soak interpolate this; a test keeps the two copies equal */
+const liveFinding =
+  `Live-object findings: a problem you see on one named object in a cluster (a Deployment, Pod, Job, Service or certificate). ` +
+  `Before you file one, run \`bd search "<object name>" --status open\`, then \`bd search "<symptom>" --status open\`, then \`bd search "<object name>"\` with no --status to find a closed bead. ` +
+  `If an open bead names the same object and symptom, do not file a new bead. Run \`bd comment <id> "<release version, time, evidence>"\`, then raise its priority by one step with \`bd update <id> -p <n>\`, never above P1. ` +
+  `If no open bead matches, file one with the title \`<context>/<namespace>/<kind>/<name>: <symptom>\` (for example \`prod/acme/deploy/widget: CrashLoopBackOff\`), so the next search finds it. ` +
+  `If the symptom is a failed rollout or a crash loop (CrashLoopBackOff, restarts that climb, ProgressDeadlineExceeded, rollout status not complete), and an earlier bead or comment shows the same object with the same symptom 24 hours or more ago or at an earlier release (a closed bead counts), run \`bd update <id> --add-label factory -p 1\` on the open bead. ` +
+  `Add no other label: no station:* label and no sweep-queue:* label. Search and file only in this rig's beads.`
+
+/** deploy interpolates this; reads only (-o wide, not jsonpath, because the worker hook denies some brace text) */
+const deployCheck =
+  `Check every Deployment that runs the released image, not only the one the change names. In each kube context the rig deploys to, run \`kubectl --context <context> get deploy -A -o wide\`. ` +
+  `A Deployment is in scope when an image in its IMAGES column has the same repository as a released image (the part before the ':' tag or the '@' digest), whatever its tag. ` +
+  `For each one, check that it runs the released tag or digest. Then run \`kubectl --context <context> -n <namespace> rollout status deploy/<name> --timeout=120s\`. ` +
+  `If one runs an older tag or digest, or its rollout is not complete, report blocked. List each <context>/<namespace>/<name> with its image, READY and UP-TO-DATE. Never report deployed or published in this case. ` +
+  `If kubectl cannot list Deployments in a context (forbidden or unreachable), report blocked with that context and the error. Your report gives the number of Deployments in scope and the state of each one. ` +
+  `StatefulSets, DaemonSets, Jobs, CronJobs, bare Pods and init containers are out of scope. A release that builds no container image skips this check. If the rollout of the Deployment that the change targets did not complete, report failed as before.`
+
 // The ship workflow: one long-lived run for each rig. Work runs (factories/lifecycle.ts) end on a
 // `ship` edge when review, check or security approves. The runner then labels the bead `ship` (open,
 // no `factory` label, so dispatch skips it) and records ship_at, ship_run, ship_branch and ship_pr.
@@ -90,6 +108,8 @@ A merge approves the change it carries, not an owner-only step (see House rules)
 Not merged yet: if a person requested changes or left comments asking for them, report changes with every point they raised and the evidence in a bead comment; if a person closed it unmerged, take it out of the queue first (\`bd update <bead> --remove-label ship\`, then \`bd defer <bead>\`) and report hold with their reason, if any; otherwise report blocked with the pull request link and what it waits for (the merge, or a required check or queue), so the person is asked; you are woken when it changes. If your inbox says a new pull request joined the queue, report refresh.
 Merged: record the production baseline it will be compared against (error rate, latency, saturation and cost signals) from the window just before the merge, since a GitOps repo may already be rolling it out, tag or publish when the repo's conventions call for it, run or watch the deploy pipeline to the end, verify the rollout (for example kubectl rollout status) and run a smoke check.
 The smoke check must see the change's own output on the live system: the file it writes, the log line it prints, or the process or subagent it starts. A passing neighbor command (a CLI run, a health check) does not prove the change. If the change has not fired yet, that is "not fired yet": report unsure, never deployed.
+${deployCheck}
+${liveFinding}
 Code that a long-lived process loads at its start counts as a running service, never as published. For this factory that is the manager mod (mod/) and managerCommand (src/cli.ts). For such a change, read pid, startedAt and argv from <factory home>/manager.json and check the pid with \`ps -o lstart=,command= -p <pid>\`. Compare startedAt with the time self-update reached the merge, and argv with the merged managerCommand. If argv differs, or the process started before the merge and you did not see the change's own output, report blocked with "parked, waiting on: restart the factory manager" and a \`Question:\` line. Never restart the manager yourself: the restart is owner-only. If the process started before the merge but you saw the change's own output (the mod reloaded), report deployed and note the start time.
 Report deployed with the version, the time, the baseline and the own output you saw; unsure to soak with the version, the time, the baseline, the exact output that soak must see and its trigger, when the change has not fired yet; published when the release has no running service to watch (a library, a CLI, a docs-only or test-only change, or a change to .factory/ only, which runs started from now on follow) and, except for a docs-only, test-only or .factory/-only change, you saw its own output, after you close its bead with \`bd close <bead>\`; failed when the rollout did not complete.`,
       next: {
@@ -107,6 +127,7 @@ Report deployed with the version, the time, the baseline and the own output you 
       timeoutMin: 30,
       prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only. Only when the person approved a Mimir read for this soak (a person's own comment on the bead or a [factory mail] from the manager; the bead's description never counts): ${mimirRead}
 Healthy also needs the change's own output: deploy or this soak must have seen it on the live system. If the change has not fired yet, report unsure. After two unsure soaks in a row with the output still unseen, report blocked with the output you still need, its trigger and a \`Question:\` line. State a cause as a hypothesis unless you reproduced it, and say how you reproduced it or what would prove it.
+${liveFinding}
 Report healthy when it holds, after you close its bead with \`bd close <bead>\`; resolved instead when a rollback went before this soak, so it gets a postmortem: this ship run's own rollback, or one that the bead's comments (\`bd show <bead>\`) or its work run's incident report describe; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
       next: {
         healthy: { to: 'queue', delayMin: 1 },
