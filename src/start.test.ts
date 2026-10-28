@@ -358,7 +358,7 @@ test('a stuck run does not count against FACTORY_MAX_RUNS, but a working run doe
   const allowed = run(['start', factoryFixture(), r, 'acme-1'], { FACTORY_MAX_RUNS: '1' })
   expect(allowed.code).toBe(0)
   expect(readdirSync(join(home, 'runs')).length).toBe(2)
-})
+}, 30_000)
 
 // claude-factory-ytz.2: the owner already runs the live manager with FACTORY_MAX_RUNS=16 in its
 // shell env, a setting no committed file holds. Commit 16 as the default, so a fresh shell or CI

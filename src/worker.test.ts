@@ -607,6 +607,10 @@ describe('startServices', () => {
     ])
     const results = await startServices()
     expect(results[0]).toMatchObject({ name: 'web', ok: true })
+    // the ready probe can pass before the spawned shell writes the marker: wait for it
+    for (let i = 0; i < 100 && !existsSync(marker); i++) await new Promise(r => setTimeout(r, 50))
+    // ponytail: the file can exist before the echo writes; a short wait lets the write land
+    await new Promise(r => setTimeout(r, 50))
     expect(readFileSync(marker, 'utf8').trim()).toBe('bar')
   })
 
