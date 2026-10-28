@@ -43,7 +43,7 @@ test('factory dream: failure classes reach the prompt, and only 3 of 5 new propo
     ].join('\n'),
   )
   chmodSync(claude, 0o755)
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'dream'], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_CLAUDE: claude },
   })

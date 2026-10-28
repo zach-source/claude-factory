@@ -23,7 +23,7 @@ const claudeConfig = join(dir, 'claude-config')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[]) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,
@@ -355,7 +355,7 @@ const rejectedFlag = join(pdir, 'rejected.flag')
 afterEach(() => rmSync(pdir, { recursive: true, force: true }))
 
 function pfactory(args: string[], extraEnv: Record<string, string> = {}) {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,
@@ -815,7 +815,7 @@ const gCallsLog = join(gdir, 'bd-calls.log')
 afterEach(() => rmSync(gdir, { recursive: true, force: true }))
 
 function gfactory(args: string[], env: Record<string, string> = {}) {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,

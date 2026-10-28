@@ -14,7 +14,7 @@ const marker = join(dir, 'marker')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 function run(gpgsign: string, program: string) {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const conf = [
     ['user.name', 't'],
     ['user.email', 't@t'],

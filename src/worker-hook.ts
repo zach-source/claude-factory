@@ -2741,6 +2741,11 @@ export const FACTORY_FROM_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_FROM. ' +
   'The factory reads the mail sender from this variable, and the owner-only rule trusts mail from the ' +
   'manager. Do not retry this command.'
+export const FACTORY_RUN_REASON =
+  'The factory denies this command: do not set, clear, export, or re-export FACTORY_RUN. ' +
+  'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
+  'Do not retry this command.'
+const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmd: 'factory', reason: FACTORY_RUN_REASON }
 const BEADS_ACTOR_GUARD: EnvGuard = { name: 'BEADS_ACTOR', cmd: 'bd', reason: BEADS_ACTOR_REASON }
 const FACTORY_FROM_GUARD: EnvGuard = { name: 'FACTORY_FROM', cmd: 'factory', reason: FACTORY_FROM_REASON }
 
@@ -8585,7 +8590,7 @@ function denyAtScan(
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
-    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD]) {
+    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD]) {
       if (touchesBeadsActor(words, state, g)) return state.work < 0 ? SCAN_BUDGET_REASON : g.reason
     }
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this

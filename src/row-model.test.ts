@@ -46,7 +46,7 @@ function run(id: string, atGate: boolean) {
 }
 
 const show = (id: string) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_PATROL, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_PATROL, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'show', id], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
     timeout: 30_000,

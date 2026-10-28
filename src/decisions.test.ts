@@ -13,7 +13,7 @@ const calls = join(dir, 'calls.log')
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
     // would refuse and mail the manager a new "branch is ..., not main" reason, landing in

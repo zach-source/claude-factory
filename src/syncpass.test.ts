@@ -19,7 +19,7 @@ let claudeConfig = ''
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const t0 = Date.now()
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
