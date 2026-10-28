@@ -127,7 +127,7 @@ test('release trusts a Reviewed head line only from an approve verdict or a writ
   ])
     expect(p, s).toContain(s)
   for (const s of [
-    'changes:',
+    '<n> changes:',
     'implement#',
     'verify#',
     'triage#',
@@ -135,7 +135,9 @@ test('release trusts a Reviewed head line only from an approve verdict or a writ
     'Take the latest such line from the bead comments',
   ])
     expect(p, s).not.toContain(s)
-  expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(p.indexOf('git merge-base --is-ancestor <reviewed> <head>'))
+  expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(
+    p.indexOf('git merge-base --is-ancestor <reviewed> <head>'),
+  )
   expect(p.indexOf('review#<n> approve:')).toBeLessThan(p.indexOf('only when'))
 })
 
