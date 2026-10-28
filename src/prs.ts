@@ -38,12 +38,12 @@ export type PrRecord = {
   updatedAt: string
   /** when gh last answered for this PR, 0 until the first refresh */
   checkedAt: number
-  /** whether the last `gh pr view` saw this PR's head as the run's own branch (wyc.4: a fact `role`
+  /** whether the last PR view saw this PR's head as the run's own branch (wyc.4: a fact `role`
    * needs on every recompute, not only the call that just viewed it) */
   ownHead: boolean
-  /** whether the last `gh pr view`'s title or body named the run's bead; stored for the same reason */
+  /** whether the last PR view's title or body named the run's bead; stored for the same reason */
   namesIt: boolean
-  /** consecutive failed `gh pr view` calls, backing off `needsView` (wyc.10) so one broken PR cannot
+  /** consecutive failed PR views, backing off `needsView` (wyc.10) so one broken PR cannot
    * keep starving the view budget every call ahead of PRs that would otherwise be due */
   errorStreak: number
   /** when the current error streak started, 0 while errorStreak is 0 */
@@ -361,10 +361,10 @@ export function checksOf(rollup: { conclusion?: string | null; status?: string }
 }
 
 /** what role() needs about a PR beyond what the stored record gives: when `headRefName`/`body` are given
- * (only right after a fresh `gh pr view`), ownHead/namesIt are computed from them; otherwise (every other
+ * (only right after a fresh PR view), ownHead/namesIt are computed from them; otherwise (every other
  * recompute: AC2a's mention fold, AC2d's branch fold, AC2c's search fold, all of which run on every call
  * whether or not they found anything new) the stored `ownHead`/`namesIt` facts are used instead, so a PR
- * whose bead-naming body or own-branch head was only ever seen on one `gh pr view` keeps its role on every
+ * whose bead-naming body or own-branch head was only ever seen on one PR view keeps its role on every
  * later call (wyc.4) rather than losing it the moment nothing fresh is in hand */
 export type RoleInput = Pick<PrRecord, 'repo' | 'title' | 'station' | 'corroborated'> & {
   headRefName?: string
@@ -416,7 +416,7 @@ export function viewBackoff(streak: number): number {
   return streak <= 0 ? 0 : Math.min(2 ** (streak - 1) * 60_000, MAX_BACKOFF_MS)
 }
 
-/** whether a record is stale enough to spend a `gh pr view` on: a MERGED PR never needs one again; a PR
+/** whether a record is stale enough to spend a PR view on: a MERGED PR never needs one again; a PR
  * on an error streak additionally waits out its backoff, on top of its state's own TTL */
 export function needsView(
   pr: Pick<PrRecord, 'state' | 'checkedAt'> & Partial<Pick<PrRecord, 'errorStreak' | 'erroredAt'>>,
@@ -541,7 +541,7 @@ const searchFound = (
     .filter(h => keepSearchHit(h.createdAt, runStartAt, runEndAt))
     .map(h => ({ url: h.url, at: now, source: 'search' as const }))
 
-/** AC2d parsed: one `gh pr list --state all` per rig repo, independent of any run's budget */
+/** AC2d parsed: one list of all PRs per rig repo, independent of any run's budget */
 export function parseBranchList(out: string): { url: string; headRefName: string }[] {
   try {
     return JSON.parse(out)
@@ -560,7 +560,7 @@ export function branchFound(
     .map(p => ({ url: p.url, at: now, source: 'branch' as const }))
 }
 
-/** `gh pr view <url> --json ...` parsed: headRefName and body are used only to feed `role` right here, in
+/** a PR view parsed (`gh api` REST through `parseGithubView`, or the GraphQL JSON through `parseView`): headRefName and body are used only to feed `role` right here, in
  * the same call, and are never carried into the stored PrRecord (RoleInput says so) */
 export type Viewed = Pick<
   PrRecord,

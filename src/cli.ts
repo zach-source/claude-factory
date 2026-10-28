@@ -3558,8 +3558,8 @@ function closedBeads() {
  * dream.lock that it runs under, instead of throwing. Only a bd process that exits non-zero, or
  * exits 0 with an answer untilStatus() cannot use, throws or returns null here.
  *
- * `pr(url)` runs `gh pr view <url> --json state` with a 30 s timeout. If the exit code is 0,
- * `pr(url)` reads the `.state` value from the output. Any other exit code returns null.
+ * `pr(url)` runs `gh api repos/<owner>/<repo>/pulls/<n>` with a 30 s timeout. If the exit code is 0,
+ * `pr(url)` maps the REST pull to a state (a merge date makes it MERGED). Any other exit code returns null.
  *
  * One pass makes at most 50 gh calls. The worst case is 50 x 30 s = 25 min, when every call hangs
  * to its timeout. A PR after the 50th stays unmatched (null). untilStatus() flags that PR, and
@@ -8095,7 +8095,7 @@ async function gateBriefFacts(id: string | undefined) {
       let additions: number | null = null
       let deletions: number | null = null
       let changedFiles: number | null = null
-      // the diff stat costs one more `gh pr view`; only for a code-role PR, and only on GitHub (a GitLab
+      // the diff stat costs one more `gh api` call; only for a code-role PR, and only on GitHub (a GitLab
       // merge request would need `glab`'s own fields, skipped here rather than guessed at)
       if (pr.role === 'code' && pr.forge !== 'gitlab') {
         try {
@@ -8208,7 +8208,7 @@ function reviewSet(key: string | undefined, filePath: string | undefined) {
  * every run's own pull requests (AC1): mentions out of its reports and mail, corroborated by its rig's
  * branch listing or a search for its bead, kept and refreshed in runs/<id>/prs.json so a restart loses
  * nothing (AC6). Draft, merged and closed PRs stay listed; the budget (src/prs.ts DEFAULT_BUDGET) spends
- * at most 10 searches and 30 `gh pr view` calls a call, live runs first.
+ * at most 10 searches and 30 PR views a call, live runs first. A view is up to 4 `gh api` calls.
  */
 async function prs() {
   const stations = new Set<string>()

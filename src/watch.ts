@@ -69,7 +69,7 @@ const MEMBER = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 export const isPerson = (login: string | undefined, association: string | undefined, isBot = false) =>
   !!login && !isBot && !BOT_LOGIN.test(login) && MEMBER.has(association ?? '')
 
-/** the notes in a `gh pr view --json reviews,comments` answer; a malformed entry is skipped */
+/** the notes in a `reviews` and `comments` answer in the GraphQL shape (`restNotes` maps REST onto it); a malformed entry is skipped */
 export function ghNotes(json: { reviews?: unknown; comments?: unknown }): Note[] {
   type Raw = {
     author?: { login?: string; is_bot?: boolean }

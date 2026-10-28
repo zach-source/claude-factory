@@ -138,7 +138,7 @@ export type FactoryPrs = {
     role: 'code' | 'companion' | 'deploy' | 'mentioned'
     /** the station that first named it, or '' when it was only found by search or branch */
     station: string
-    /** OPEN, MERGED, CLOSED or UNKNOWN before its first `gh pr view` */
+    /** OPEN, MERGED, CLOSED or UNKNOWN before its first PR view */
     state: 'OPEN' | 'MERGED' | 'CLOSED' | 'UNKNOWN'
     isDraft: boolean
     /** APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or '' */

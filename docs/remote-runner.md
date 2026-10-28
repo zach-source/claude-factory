@@ -182,9 +182,10 @@ The VM holds no key and no token. Every HTTPS request out goes through Substrate
   - `github.com` with path `/zach-source/` uses `GITHUB_ZS_BASIC`.
   - `api.github.com` and `uploads.github.com` with path `/repos/zach-source/` use `GITHUB_ZS`.
   - Other paths keep `GITHUB_BASIC` and `GITHUB`.
-  - `gh` sends pull request calls to `/graphql`. No path prefix can choose a key there. So a worker of a rig with origin owner `zach-source` gets `GITHUB_ZS` and `GITHUB_ZS_BASIC` on the other paths too.
+  - `gh pr` sends pull request calls to `/graphql`. No path prefix can choose a key there. So a worker of a rig with origin owner `zach-source` gets `GITHUB_ZS` and `GITHUB_ZS_BASIC` on the other paths too.
   - The task side file keeps this owner as `githubOwner`, and a retry of the policy uses it.
   - A side file with no `githubOwner`, a GitLab rig and the AX manager task keep the default keys. So the manager cannot use `gh pr view` on a zach-source pull request.
+  - The factory CLI does not use `gh pr` for this reason (claude-factory-fbyg). It reads and writes pull requests with `gh api repos/<owner>/<repo>/...`. The path names the owner, so the manager gets the `GITHUB_ZS` key. The search calls (`gh search prs`, `gh pr list --search`) and the garbage collector (`gh api graphql`) still send GraphQL or search requests (claude-factory-oz6s).
   - A prefix chooses a key. It is not an access control.
   - Rollout order: first the Substrate fork with `pathPrefixes` (`ateapi`, then `atenet`, then `kubectl-ate` and the broker image). An old `atenet` ignores `pathPrefixes` and applies the rule to all paths. An old `ateapi` or `kubectl-ate` can refuse the field, and then no task gets a policy. Do not merge this change before the rollout.
 - **Reviewer identity** (`reviewerTask` in `src/ax.ts`, claude-factory-0gww): a task can approve a pull request as a second GitHub App, the reviewer App. The author App does not approve. This is off by default. To turn it on, set `FACTORY_AX_REVIEWER_OWNER=<owner>` and `FACTORY_AX_VAULT` on the laptop. A task gets the reviewer identity when two things are true. Its station is `review`, `security` or `check`. The owner of the rig's GitHub origin equals `FACTORY_AX_REVIEWER_OWNER`. For such a task:
