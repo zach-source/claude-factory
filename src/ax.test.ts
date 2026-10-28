@@ -2267,3 +2267,15 @@ test('failureOf is undefined for a healthy task, no conditions or YAML that does
   expect(ax.failureOf('a: [unclosed\n  - : :\n\t}{')).toBeUndefined()
   expect(ax.failureOf('')).toBeUndefined()
 })
+
+test('diedText puts the message on one line, newlines as " | ", before a clipped stack', () => {
+  const e = new Error(`git clone x: Cloning into 'r'...\nfatal: Recv failure: Connection reset by peer\n`)
+  e.stack = `Error: ${e.message}\n${'    at f (w.ts:1:1)\n'.repeat(200)}`
+  const [first, ...rest] = worker.diedText(e).split('\n')
+  expect(first).toBe(
+    `serve died: git clone x: Cloning into 'r'... | fatal: Recv failure: Connection reset by peer`,
+  )
+  expect(rest.join('\n').length).toBeLessThanOrEqual(1200)
+  expect(worker.diedText('plain')).toBe('serve died: plain\n')
+  expect(worker.diedText(new Error('x'.repeat(900))).split('\n')[0]?.length).toBe('serve died: '.length + 500)
+})

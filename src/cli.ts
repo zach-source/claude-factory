@@ -825,8 +825,14 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     seen.missing = missing
     writeJson(seenFile(run, task), seen)
   }
+  // the one-line "serve died:" message first: gone() clips from the front, and a long stack would cut git's fatal line
+  const died = polled.log?.split('\n').findLast(l => l.includes('serve died: '))
   return polled.status === 'exited'
-    ? gone(`serve exited; its log: ${polled.log || '(empty)'}`)
+    ? gone(
+        died
+          ? `serve exited: ${died.slice(died.indexOf('serve died: '))}`
+          : `serve exited; its log: ${polled.log || '(empty)'}`,
+      )
     : {
         status: polled.status,
         agent: 'ax',

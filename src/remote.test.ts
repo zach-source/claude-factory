@@ -2262,3 +2262,28 @@ test('a Failed task with no condition keeps the bare "phase Failed" reason', () 
   expect(row.error).toBe('phase Failed')
   rmSync(join(home, 'runs', 'r31'), { recursive: true })
 })
+
+test("a serve that died on a git clone failure fails the attempt with git's fatal line, past a long stack", () => {
+  launched('r32')
+  const fatal =
+    'fatal: unable to access https://github.com/acme/widget.git/: Recv failure: Connection reset by peer'
+  const stack = `Error: git clone x\n${'    at frame (/x/worker.ts:1:1)\n'.repeat(80)}`.slice(0, 2000)
+  cluster('Running', {
+    status: 'exited',
+    log: `2026-10-28T00:00:00Z serve died: git clone https://github.com/acme/widget.git: Cloning into 'r' | ${fatal}\n${stack}`,
+    lines: [],
+  })
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r32')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toContain('Recv failure: Connection reset by peer')
+  expect(row.error.startsWith('serve exited: serve died: ')).toBe(true)
+  rmSync(join(home, 'runs', 'r32'), { recursive: true })
+})
+
+test('a serve exit with no "serve died:" line keeps the whole log as the reason', () => {
+  launched('r33')
+  cluster('Running', { status: 'exited', log: 'h exited 1: boom', lines: [] })
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r33')
+  expect(row.error).toBe('serve exited; its log: h exited 1: boom')
+  rmSync(join(home, 'runs', 'r33'), { recursive: true })
+})
