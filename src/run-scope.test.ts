@@ -103,6 +103,20 @@ test.each(['add', 'helped'])('otherRunRefusal: memory %s checks every --from', v
   expect(otherRunRefusal('memory', [verb, '--from'], ENV)).toContain('refused')
 })
 
+test.each(['add', 'helped'])('otherRunRefusal: memory with a flag before %s checks every --from', verb => {
+  expect(otherRunRefusal('memory', ['--from', 'B/plan', verb, 's', 'b'], ENV)).toContain('refused')
+  expect(otherRunRefusal('memory', ['--rig', 'x', verb, '--from', 'B/plan', 's'], ENV)).toContain('refused')
+  expect(otherRunRefusal('memory', ['--from', 'A/plan', verb, 's'], ENV)).toBeUndefined()
+  expect(otherRunRefusal('memory', ['--from', 'B/plan', 'search', 'q'], ENV)).toBeUndefined()
+})
+
+test('memory with a flag before add for another run writes nothing', () => {
+  mkdirSync(home, { recursive: true })
+  const r = factory(['memory', '--from', 'B/plan', 'add', 's', 'b'], { FACTORY_RUN: 'A' })
+  expect(r.code).toBe(1)
+  expect(existsSync(join(home, 'memory', 'inbox'))).toBe(false)
+})
+
 test('memory add for another run writes nothing', () => {
   mkdirSync(home, { recursive: true })
   const r = factory(['memory', 'add', '--from', 'B/plan', '--kind', 'fact', 's', 'b'], { FACTORY_RUN: 'A' })

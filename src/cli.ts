@@ -568,10 +568,16 @@ export function otherRunRefusal(
   if (!own) return undefined
   const named: (string | undefined)[] = []
   if (cmd && RUN_SCOPED.includes(cmd)) named.push(args[0])
-  else if (cmd === 'memory' && (args[0] === 'add' || args[0] === 'helped'))
-    args.forEach((a, i) => {
-      if (a === '--from') named.push((args[i + 1] ?? '').split('/')[0])
-    })
+  else if (cmd === 'memory') {
+    // the memory case splices the first of each flag and its value out before it reads the subcommand: do the same
+    const rest = [...args]
+    for (const f of ['--rig', '--from', '--kind', '--until', '--supersedes'])
+      if (rest.includes(f)) rest.splice(rest.indexOf(f), 2)
+    if (rest[0] === 'add' || rest[0] === 'helped')
+      args.forEach((a, i) => {
+        if (a === '--from') named.push((args[i + 1] ?? '').split('/')[0])
+      })
+  }
   return named.every(id => id === own)
     ? undefined
     : `refused: this worker belongs to run ${own} and cannot run ${cmd} for another run`
