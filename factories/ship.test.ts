@@ -4,6 +4,7 @@ import { compile, fill, validate, where, type Factory } from '../src/machine'
 import sweeps from './sweeps'
 import lifecycle from './lifecycle'
 import ship from './ship'
+import { brief } from '../src/cli'
 
 /** drives a run by outcomes (waking it from any timed wait) and returns the stations it visited */
 function walk(def: Factory, outcomes: string[], at = def.start) {
@@ -246,4 +247,111 @@ test('infra-blocks pre-push bot-file check is in exactly the ship queue and rele
 
 test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () => {
   expect(walk(ship, ['ready', 'ready', 'unsure']).visited).toEqual(['queue', 'release', 'deploy', 'soak'])
+})
+
+// claude-factory-4h8j: live-object findings are deduped by bd search, repeat crash loops escalate, deploy checks every Deployment
+const prompt = (id: string) => (ship.nodes as Record<string, { prompt: string }>)[id]!.prompt
+const liveText = (s: string) =>
+  s.slice(s.indexOf('Live-object findings:'), s.indexOf('Search and file only in this rig'))
+const deployText = (s: string) =>
+  s.slice(s.indexOf('Check every Deployment'), s.indexOf('A release that builds no container image'))
+
+test('deploy and soak carry the same live-object finding rule: search, comment, raise priority (4h8j AC1)', () => {
+  const want = liveText(prompt('soak'))
+  expect(want.length).toBeGreaterThan(300)
+  expect(liveText(prompt('deploy'))).toBe(want)
+  for (const t of [
+    'bd search "<object name>" --status open',
+    'bd search "<symptom>" --status open',
+    'bd comment <id>',
+    'bd update <id> -p <n>',
+    'never above P1',
+    'Never lower a priority',
+    'any bead with the ship label',
+    'The comment and escalation steps do not apply to',
+    'has a held:* label, a rejected label or an owner label, add no label',
+    '<context>/<namespace>/<kind>/<name>: <symptom>',
+  ])
+    expect(want).toContain(t)
+  expect(want).not.toMatch(/-p 0/)
+  for (const id of ['queue', 'release', 'rollback', 'postmortem'])
+    expect(prompt(id), id).not.toContain('Live-object findings')
+})
+
+test('a repeat crash loop or failed rollout gets the factory label and no other label (4h8j AC2)', () => {
+  const want = liveText(prompt('soak'))
+  for (const t of [
+    'bd update <id> --add-label factory',
+    'only if it is P2 or lower',
+    '24 hours',
+    'earlier release',
+    'a closed bead counts',
+    'CrashLoopBackOff',
+    'ProgressDeadlineExceeded',
+  ])
+    expect(want).toContain(t)
+  expect(want).not.toMatch(/station:[a-z]|sweep-queue:[a-z]|--add-label (?!factory)/)
+})
+
+test('deploy checks every Deployment of the released image with reads only (4h8j AC3)', () => {
+  const want = deployText(prompt('deploy'))
+  expect(want.length).toBeGreaterThan(300)
+  for (const t of [
+    'get deploy -A -o wide',
+    'same repository',
+    'whatever its tag',
+    'rollout status deploy/<name>',
+    'report blocked',
+    'forbidden or unreachable',
+    'number of Deployments in scope',
+  ])
+    expect(want).toContain(t)
+  expect(want).not.toMatch(
+    /\b(apply|patch|scale|delete|edit|annotate|label|set image|rollout (restart|undo|pause|resume))\b/,
+  )
+  expect(want).not.toContain('{')
+  for (const id of ['queue', 'release', 'soak', 'rollback', 'postmortem'])
+    expect(prompt(id), id).not.toContain('get deploy -A')
+})
+
+test('a replayed second soak reads the first soak report and the dedupe rule (4h8j AC5)', () => {
+  const first = 'filed acme-1 prod/acme/deploy/widget: CrashLoopBackOff'
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [
+      { node: 'deploy', attempt: 1, outcome: 'deployed', summary: 'deployed v1', at: 1 },
+      { node: 'soak', attempt: 1, outcome: 'unsure', summary: first, at: 2 },
+    ],
+  }
+  const run = {
+    id: 'r1',
+    factory: 'ship',
+    repo: '/nonexistent/repo-4h8j',
+    goal: 'ship',
+    ws: 'ws',
+    worktree: '/nonexistent/wt-4h8j',
+    branch: 'b',
+  }
+  const text = brief(run as never, ship as Factory, 'soak', c as never, [])
+  expect(text).toContain(first)
+  const rule = text.slice(text.indexOf('Live-object findings:'))
+  const at = (s: string) => rule.indexOf(s)
+  expect(at('bd search')).toBeGreaterThan(-1)
+  expect(at('bd search')).toBeLessThan(at('bd comment'))
+  expect(at('bd comment')).toBeLessThan(at('matches, file one'))
+  const { visited } = walk(ship, ['ready', 'ready', 'deployed', 'healthy', 'ready', 'ready', 'unsure'])
+  expect(visited.filter(n => n === 'soak')).toHaveLength(2)
 })
