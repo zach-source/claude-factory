@@ -163,6 +163,7 @@ const verbRows: { args: string[]; verb: string; patrol: boolean }[] = [
   { args: ['sync'], verb: 'sync', patrol: false },
   { args: ['dream'], verb: 'dream', patrol: false },
   { args: ['devenv'], verb: 'devenv', patrol: false },
+  { args: ['linear', '--force'], verb: 'linear', patrol: false },
   { args: ['attach'], verb: 'attach', patrol: true },
   { args: ['manager'], verb: 'manager', patrol: true },
   { args: ['manager', 'host'], verb: 'manager', patrol: true },

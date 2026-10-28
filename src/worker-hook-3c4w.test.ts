@@ -17,6 +17,7 @@ const CONTROL = [
   'factory sync',
   'factory dream',
   'factory devenv',
+  'factory linear acme',
   'factory retry r1',
   'factory abort r1',
   'factory rm r1',

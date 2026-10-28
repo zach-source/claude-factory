@@ -9245,6 +9245,7 @@ if (import.meta.main && !outboxCmd)
         )
         break
       case 'linear': {
+        refuseWorker('linear')
         if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
         const names = args.filter(a => a !== '--force')
         for (const name of names) {
