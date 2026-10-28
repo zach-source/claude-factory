@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { createActor } from 'xstate'
 import { compile, fill, validate, where } from '../src/machine'
 import lifecycle from './lifecycle'
+import { MONITOR_RECHECK_MIN } from '../src/sweeps'
 import sweeps from './sweeps'
 
 test('sweeps validates and compiles', () => {
@@ -107,4 +108,38 @@ test('only the monitor prompt carries the Mimir query form, before the guard not
     expect(p(id), id).not.toContain('X-Scope-OrgID')
   expect(fill(p('monitor'), {})).toBe(p('monitor'))
   expect(p('monitor')).not.toMatch(new RegExp(['stig' + 'en', 'spin' + 'dle'].join('|'), 'i'))
+})
+
+test('the monitor prompt files long-firing alerts and long-False Ready conditions', () => {
+  const p = (id: string) => (sweeps.nodes as Record<string, { prompt: string }>)[id]!.prompt
+  expect(MONITOR_RECHECK_MIN).toBe(360)
+  const m = p('monitor')
+  for (const t of [
+    `${MONITOR_RECHECK_MIN / 60} hours`,
+    'ALERTS_FOR_STATE',
+    'time() - ALERTS_FOR_STATE',
+    'lastTransitionTime',
+    'Ready',
+    'bd search',
+    '--status open',
+    'bd comment',
+    'add no label',
+    'alert/<alertname>/<namespace>: firing since <activeAt>',
+    '<context>/<namespace>/<kind>/<name>: Ready=False since <lastTransitionTime>',
+    '-p 1',
+    'station:incident',
+    'sweep-queue:incident',
+    '-p 2',
+  ])
+    expect(m, t).toContain(t)
+  expect(m).not.toContain('an unchanged read starts no run at all')
+  for (const id of Object.keys(sweeps.nodes).filter(i => i !== 'monitor'))
+    expect(p(id), id).not.toContain('ALERTS_FOR_STATE')
+})
+
+test("sweeps.ts stays self-contained: a repo's own copy keeps no import", async () => {
+  const { readFileSync } = await import('node:fs')
+  const { ownCopy } = await import('../src/cli')
+  const copy = ownCopy(readFileSync(new URL('./sweeps.ts', import.meta.url), 'utf8'), 'sweeps')
+  expect(copy).not.toMatch(/^import /m)
 })
