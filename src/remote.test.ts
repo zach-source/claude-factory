@@ -389,7 +389,7 @@ test('reap() closes a finished run\'s workspace through FACTORY_HERDR, not a lit
     at: 1,
   })
   cluster('Running', { status: 'idle', session: 's1', lines: [report] })
-  factory(['tick'], { FACTORY_RUN: 'inherited-other-run' }) // 'a' goes idle: the report is replayed
+  factory(['tick']) // 'a' goes idle: the report is replayed. A tick with a worker marker is refused since 3c4w (worker-control.test.ts)
   const second = factory(['tick']) // the station ends: the run is over
   expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1x', node: 'done' })
 
