@@ -1605,7 +1605,11 @@ export function applyTiers(
         activation: activation(events.get(n.path) ?? [], now),
         runs: 0, // promote needs a run count that applyTiers does not gather; it never promotes
         ageDays: Number.isFinite(atMs) ? (now - atMs) / DAY_MS : undefined,
-        chars: n.summary.length + 1 + n.body.length,
+        // a summary with no room left for the pointer line cannot shrink: it gets no trim, or every pass would trim it again
+        chars:
+          n.summary.length + 3 + cutLine(n.path.slice(0, n.path.indexOf('/'))).length >= LONG_ENTRY_CAP
+            ? 0
+            : n.summary.length + 1 + n.body.length,
         expired: verdict?.state === 'ended',
         expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,

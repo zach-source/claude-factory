@@ -103,3 +103,13 @@ test('compact() keeps usage of a trimmed entry and drops it for an archived one'
   expect(paths).toContain('beads/LONG.md#big')
   expect(paths).not.toContain('beads/LONG.md#old')
 })
+
+test('an entry whose summary alone passes the cap is not trimmed again on a second pass', () => {
+  seed([entry('wide', { summary: 'w'.repeat(LONG_ENTRY_CAP + 100), body: bigBody(10) })])
+  const first = applyTiers(dir, { now: NOW })
+  const archive1 = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
+  const second = applyTiers(dir, { now: NOW })
+  expect(first.trimmed).toBe(0)
+  expect(second.trimmed).toBe(0)
+  expect(existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : '').toBe(archive1)
+})
