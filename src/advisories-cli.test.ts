@@ -62,7 +62,7 @@ const item = (o: Record<string, unknown> = {}) => ({
 function run(doc: unknown, actor: string | null = ACTOR) {
   const file = join(dir, 'advisories.json')
   writeFileSync(file, typeof doc === 'string' ? doc : JSON.stringify(doc))
-  const { FACTORY_OUTBOX, FACTORY_FROM, BEADS_ACTOR, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'advisories', 'file', file], {
     cwd: repo,
     env: {

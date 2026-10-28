@@ -13,7 +13,7 @@ const home = join(dir, 'home')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', ...env },
   })
@@ -102,7 +102,7 @@ test('AC3: the first goto on a run held by rounds queues one line; one tick move
     [
       '#!/bin/sh',
       'case "$1 $2" in',
-      '  "tab create") printf \'{"result":{"root_pane":{"pane_id":"p1"}}}\\n\' ;;',
+      `  "tab create") echo "$*" > ${join(dir, 'tab-args')}; printf '{"result":{"root_pane":{"pane_id":"p1"}}}\\n' ;;`,
       '  "pane run") exit 0 ;;',
       "  *) echo '{}' ;;",
       'esac',
@@ -111,6 +111,7 @@ test('AC3: the first goto on a run held by rounds queues one line; one tick move
   chmodSync(herdr, 0o755)
   const tick = factory(['tick'], { FACTORY_HERDR: herdr, CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config') })
   expect(tick.code).toBe(0)
+  expect(readFileSync(join(dir, 'tab-args'), 'utf8')).toContain(`--env FACTORY_RUN=${r.id} `)
   const { snapshot } = state()
   expect(snapshot.value).toEqual({ implement: 'working' })
   expect(snapshot.context.seq).toBe(5)

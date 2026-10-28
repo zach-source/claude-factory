@@ -1553,14 +1553,14 @@ test('clipFactsJson still fits under budget with nothing to drop beyond the norm
 const MEMORY_ADD_CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const memoryAddHome = (tag: string) => join(tmpdir(), `cli-memory-add-${tag}-${process.pid}`)
 const runMemoryAdd = (home: string, args: string[]) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([MEMORY_ADD_CLI, 'memory', 'add', ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
 }
 const runMemoryHelped = (home: string, args: string[]) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([MEMORY_ADD_CLI, 'memory', 'helped', ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
   })
