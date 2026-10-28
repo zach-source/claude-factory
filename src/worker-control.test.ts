@@ -147,7 +147,11 @@ for (const [name, env] of Object.entries(markers)) {
     })
   }
 }
-for (const [name, env] of Object.entries({ 'no marker': {}, 'BEADS_ACTOR person': { BEADS_ACTOR: 'person' } })) {
+const plain: Record<string, Record<string, string>> = {
+  'no marker': {},
+  'BEADS_ACTOR person': { BEADS_ACTOR: 'person' },
+}
+for (const [name, env] of Object.entries(plain)) {
   for (const args of managerOnly) {
     test(`${name}: ${args.slice(0, 2).join(' ')} is not refused as a worker`, () => {
       expect(run(args, env).stderr.toString()).not.toMatch(/a worker cannot/)

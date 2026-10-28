@@ -8469,8 +8469,7 @@ function decisionsList() {
 /** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
  * gets a comment (queuing or starting it is a separate choice, made in the console or with start --owned) */
 function decisionsAnswer(rigName: string, id: string, text: string) {
-  if (workerMarker())
-    fail("a worker cannot answer the person's decisions: mail the manager instead")
+  if (workerMarker()) fail("a worker cannot answer the person's decisions: mail the manager instead")
   // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above, behind
   // the mod's own regex deny for this command.
   if (process.env.FACTORY_PATROL) fail("a patrol cannot answer the person's decisions: leave it for them")
@@ -8516,8 +8515,7 @@ function parseOption(raw: string): { label: string; effect?: string; recommended
  * An owner-only bead never takes the manager's own choices. The manager can still give it a shorter question,
  * or an added context sentence. */
 function decisionsPropose(key: string, question: string, optionsLine: string, context?: string) {
-  if (workerMarker())
-    fail("a worker cannot propose the person's decisions: mail the manager instead")
+  if (workerMarker()) fail("a worker cannot propose the person's decisions: mail the manager instead")
   // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above. Only the
   // manager's own interview round proposes decisions; a patrol never does.
   if (process.env.FACTORY_PATROL) fail("a patrol cannot propose the person's decisions: leave it for them")
