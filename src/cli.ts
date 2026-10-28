@@ -7152,7 +7152,7 @@ type PmAnswer = {
  * `plan.json`, and the board and `plan show` list them.
  *
  * It refuses, and writes nothing, in each of these cases:
- * - a worker calls it (`FACTORY_FROM` is set)
+ * - a worker calls it (`workerMarker()` finds a worker marker)
  * - `plan-facts.json` is missing, too old (`>= plan.PLAN_FRESH_MS`), or not valid JSON
  * - `<file>` is missing or not valid JSON
  *
@@ -7162,7 +7162,7 @@ type PmAnswer = {
  * It files at most 3 new beads for each rig.
  */
 function planSetCmd(answerPath?: string) {
-  if (process.env.FACTORY_FROM) fail('a worker cannot set the plan: only the pm, through its own turn, may')
+  if (workerMarker()) fail('a worker cannot set the plan: only the pm, through its own turn, may')
   if (!answerPath) fail('usage: factory plan set <file>')
   if (!existsSync(planFactsFile())) fail('no plan-facts.json yet: run `factory plan facts` first')
   const factsAge = Date.now() - statSync(planFactsFile()).mtimeMs
@@ -8279,7 +8279,7 @@ async function gateBriefFacts(id: string | undefined) {
  * `gatebrief.clipBrief` cleans `<file>`'s text before storage, because the text is the briefer's model
  * output, built from untrusted PR and journal text. */
 async function gateBriefSet(key: string | undefined, filePath: string | undefined) {
-  if (process.env.FACTORY_FROM) fail('a worker cannot set a gate brief: only the briefer may')
+  if (workerMarker()) fail('a worker cannot set a gate brief: only the briefer may')
   if (process.env.FACTORY_PATROL) fail('a patrol cannot set a gate brief: leave it for the briefer')
   if (!key || !filePath) fail('usage: factory gate-brief set <key> <file>')
   const m = /^gate:(.+)@(\d+)$/.exec(key!)
@@ -8327,7 +8327,7 @@ function reviewFacts(key: string | undefined) {
  * It refuses a worker or patrol env, a stale or unknown key, and a key that has a verdict already.
  * `memory.parseReview` parses the model's answer strictly: it is built from untrusted dream text. */
 function reviewSet(key: string | undefined, filePath: string | undefined) {
-  if (process.env.FACTORY_FROM) fail('a worker cannot set a review: only the reviewer may')
+  if (workerMarker()) fail('a worker cannot set a review: only the reviewer may')
   if (process.env.FACTORY_PATROL) fail('a patrol cannot set a review: leave it for the reviewer')
   if (!key || !filePath) fail('usage: factory review set <key> <file>')
   if (!memory.reviewItems(MEMORY).some(i => i.key === key)) fail(`no pending item with key "${key}"`)
@@ -8469,7 +8469,7 @@ function decisionsList() {
 /** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
  * gets a comment (queuing or starting it is a separate choice, made in the console or with start --owned) */
 function decisionsAnswer(rigName: string, id: string, text: string) {
-  if (process.env.FACTORY_FROM)
+  if (workerMarker())
     fail("a worker cannot answer the person's decisions: mail the manager instead")
   // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above, behind
   // the mod's own regex deny for this command.
@@ -8516,7 +8516,7 @@ function parseOption(raw: string): { label: string; effect?: string; recommended
  * An owner-only bead never takes the manager's own choices. The manager can still give it a shorter question,
  * or an added context sentence. */
 function decisionsPropose(key: string, question: string, optionsLine: string, context?: string) {
-  if (process.env.FACTORY_FROM)
+  if (workerMarker())
     fail("a worker cannot propose the person's decisions: mail the manager instead")
   // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above. Only the
   // manager's own interview round proposes decisions; a patrol never does.
@@ -9260,7 +9260,7 @@ if (import.meta.main && !outboxCmd)
         // a patrol subagent has a Bash tool: the manager or the person decides, never a subagent
         if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_PATROL)
           fail(`a patrol cannot ${verb} a skill: leave it for the manager`)
-        if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_FROM)
+        if ((verb === 'install' || verb === 'reject') && workerMarker())
           fail(`a worker cannot ${verb} a skill: mail the manager instead`)
         if (!verb)
           console.log(
@@ -9301,7 +9301,7 @@ if (import.meta.main && !outboxCmd)
           )
         } else if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_PATROL) {
           fail(`a patrol cannot ${verb} a proposal: leave it for the manager`)
-        } else if ((verb === 'install' || verb === 'reject') && process.env.FACTORY_FROM) {
+        } else if ((verb === 'install' || verb === 'reject') && workerMarker()) {
           fail(`a worker cannot ${verb} a proposal: mail the manager instead`)
         } else if (verb === 'install' && name) {
           const p = memory.proposals(MEMORY).find(x => x.name === name)
@@ -9550,7 +9550,7 @@ if (import.meta.main && !outboxCmd)
       case 'decide': {
         const [id, outcome, ...note] = args
         // ponytail: an env check, not a lock: it stops a worker deciding by habit, not one set on it
-        if (process.env.FACTORY_FROM) fail('a worker cannot decide a gate: mail the manager instead')
+        if (workerMarker()) fail('a worker cannot decide a gate: mail the manager instead')
         // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above,
         // behind the mod's own regex deny for this command.
         if (process.env.FACTORY_PATROL) fail('a patrol cannot decide a gate: leave it for the person')
