@@ -9500,6 +9500,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'queue': {
+        refuseWorker('queue')
         const [repo, id, station] = args
         if (!repo || !id) fail('usage: factory queue <rig|repo> <bead> [station]')
         const root = repoOf(repo!)
