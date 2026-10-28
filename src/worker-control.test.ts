@@ -124,3 +124,38 @@ for (const [name, env] of [
     expect(runs()).toBe(1)
   })
 }
+
+// claude-factory-s6ra: the older manager-only write verbs refuse every worker marker, not FACTORY_FROM alone.
+const managerOnly: string[][] = [
+  ['skills', 'install', 'sk'],
+  ['skills', 'reject', 'sk', 'no'],
+  ['proposals', 'install', 'p'],
+  ['proposals', 'reject', 'p', 'no'],
+  ['decisions', 'answer', 'widget', 'acme-1', 'yes'],
+  ['decisions', 'propose', 'k1', 'q?', 'a: b | c: d'],
+  ['decide', 'lifecycle-x', 'ready'],
+  ['plan', 'set', 'answer.json'],
+  ['review', 'set', 'k', 'f.json'],
+  ['gate-brief', 'set', 'gate:x@1', 'f.json'],
+]
+for (const [name, env] of Object.entries(markers)) {
+  for (const args of managerOnly) {
+    test(`${name}: ${args.slice(0, 2).join(' ')} is refused as a worker`, () => {
+      const p = run(args, env)
+      expect(p.exitCode).toBe(1)
+      expect(p.stderr.toString()).toMatch(/a worker cannot/)
+    })
+  }
+}
+for (const [name, env] of Object.entries({ 'no marker': {}, 'BEADS_ACTOR person': { BEADS_ACTOR: 'person' } })) {
+  for (const args of managerOnly) {
+    test(`${name}: ${args.slice(0, 2).join(' ')} is not refused as a worker`, () => {
+      expect(run(args, env).stderr.toString()).not.toMatch(/a worker cannot/)
+    })
+  }
+}
+for (const verb of ['skills', 'proposals']) {
+  test(`FACTORY_RUN: ${verb} list still works`, () => {
+    expect(run([verb], { FACTORY_RUN: 'lifecycle-x' }).exitCode).toBe(0)
+  })
+}
