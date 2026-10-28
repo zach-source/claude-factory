@@ -13,7 +13,14 @@ export const sweepNames = (def: Factory): string[] =>
   Object.keys(def.nodes).filter(id => def.nodes[id]!.everyMin)
 
 /** sweeps.json's shape: for each rig, for each sweep, when it last ran, and (monitor only) its last read. */
-export type SweepState = Record<string, Record<string, { lastAt: number; sig?: string; lines?: number }>>
+export type SweepState = Record<
+  string,
+  Record<string, { lastAt: number; sig?: string; lines?: number; ranAt?: number }>
+>
+
+/** Minutes after which the monitor sweep starts a run on a read that did not change. `ranAt` in
+ * sweeps.json holds the time when the sweep last started one. */
+export const MONITOR_RECHECK_MIN = 360
 
 export type LiveRun = { repo: string; goal: string }
 
