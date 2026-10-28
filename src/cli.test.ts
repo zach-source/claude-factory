@@ -690,8 +690,7 @@ const codexCount = (
   env: Record<string, string> = {},
   runner = 'herdr',
   node = 'a',
-) =>
-  ids.filter(id => pickAgent(id, splitDef, node, rig, runner, env, import.meta.path) === 'codex').length
+) => ids.filter(id => pickAgent(id, splitDef, node, rig, runner, env, import.meta.path) === 'codex').length
 
 test('a split pick is stable per run, and each share param picks on its own', () => {
   for (const id of ids.slice(0, 200))
