@@ -20,7 +20,15 @@ test('a new verdict wakes the patrol alone, names the item, the verdict and why,
   const due = call([sk, pr])
   expect(due).not.toBeNull()
   expect(due!.text).toContain('Proposals to review:')
-  expect(due!.text).toContain('- skill sk (new): reviewer says install: Safe and saves work.')
+  expect(due!.text).toContain(
+    '- skill sk (new): reviewer says install: Safe and saves work. -> run: factory skills install sk',
+  )
+  const rej = call([{ ...pr, recommendation: 'reject' as const, why: 'Unsafe.' }])
+  expect(rej!.text).toContain('reviewer says reject: Unsafe.')
+  expect(rej!.text).not.toContain('-> run')
+  expect(call([{ ...pr, recommendation: 'install' as const, why: 'ok' }])!.text).toContain(
+    'ok -> run: factory proposals install pr',
+  )
   expect(due!.text).toContain('- proposal pr (pending): not reviewed yet')
   expect(due!.text).toContain('reviewer: skill sk is install')
   expect(due!.keys).toEqual([`verdict:${sk.key}`])
