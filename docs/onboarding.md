@@ -247,7 +247,7 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 
 The console also has a `stop` button and a `resume` button.
 
-Only the person and the manager run `factory stop`, `resume`, `say`, `start` and `fork`. The CLI refuses a worker (it has `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME` or a `factory/` `BEADS_ACTOR`), and the worker hook denies them. A worker mails the manager instead.
+Only the person and the manager run `factory stop`, `resume`, `say`, `start`, `fork`, `goto`, `retry`, `abort`, `rm`, `tick`, `attach`, `manager`, `migrate-to-ax`, `rig add` and `rig rm`. The CLI refuses a worker (it has `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME` or a `factory/` `BEADS_ACTOR`), and the worker hook denies them. A worker mails the manager instead. `factory rig` and `factory rig list` stay open to a worker. A patrol (`FACTORY_PATROL`) can run `goto`, `retry`, `abort`, `rm`, `start` and `fork`. It cannot run `stop`, `resume`, `say`, `tick`, `attach`, `manager`, `migrate-to-ax`, `rig add` or `rig rm`.
 
 ### Attach to the AX manager
 
