@@ -127,6 +127,7 @@ import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
+import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
@@ -3990,7 +3991,7 @@ const kickSelfUpdate = () => {
   spawnChild(CLI, ['self-update'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
@@ -4334,7 +4335,7 @@ const kickGc = () => {
   spawnChild(CLI, ['gc'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
@@ -4845,7 +4846,7 @@ const kickGcWorktrees = () => {
   spawnChild(CLI, ['gc', '--worktrees'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
@@ -4867,7 +4868,7 @@ const kickSweeps = () => {
   spawnChild(CLI, ['sweep'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
@@ -8074,10 +8075,12 @@ function workerMarker(forMail = false): string | undefined {
           : undefined
 }
 
-/** the person and the manager run these verbs; a worker mails the manager instead */
-function refuseWorker(verb: string) {
+/** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
+function refuseWorker(verb: string, patrol = false) {
   const marker = workerMarker()
   if (marker) fail(`a worker cannot run factory ${verb} (${marker}): mail the manager instead`)
+  if (patrol && process.env.FACTORY_PATROL)
+    fail(`a patrol cannot run factory ${verb}: leave it for the person or the manager`)
 }
 
 function insideWorktree(run: Run): boolean {
@@ -8944,22 +8947,27 @@ if (import.meta.main && !outboxCmd)
         await fork(args[0], args[1], args.slice(2).join(' '))
         break
       case 'tick':
+        refuseWorker('tick', true)
         lease()
         console.log(JSON.stringify(await tick(true)))
         break
       case 'beads':
+        refuseWorker('beads')
         await beadsPass()
         break
       case 'watch':
+        refuseWorker('watch')
         await watchPass()
         break
       case 'sync':
+        refuseWorker('sync')
         await syncPass()
         break
       case 'broker':
         broker.main(args)
         break
       case 'manager':
+        refuseWorker('manager', true)
         if (args[0] === 'host') {
           await managerhost.host(args.slice(1), { prepare: reposSync, lock: () => hold('tick.lock') })
           break
@@ -8982,9 +8990,11 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'migrate-to-ax':
+        refuseWorker('migrate-to-ax', true)
         await migrateToAx(args)
         break
       case 'attach': {
+        refuseWorker('attach', true)
         const follow = args[0] === '--follow'
         if (args.length > (follow ? 1 : 0)) fail('usage: factory attach [--follow]')
         for (;;) {
@@ -8996,12 +9006,12 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'say':
-        refuseWorker('say')
+        refuseWorker('say', true)
         if (!args.length) fail('usage: factory say <text...>')
         ax.say(args.join(' '))
         break
       case 'stop': {
-        refuseWorker('stop')
+        refuseWorker('stop', true)
         if (halted()) fail(`already ${halted()!.state}`)
         writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
         console.log(
@@ -9010,7 +9020,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'resume': {
-        refuseWorker('resume')
+        refuseWorker('resume', true)
         const halt = halted() ?? fail('the factory is not stopped')
         // the runs whose workers stop closed, at the station they were at: the next tick resumes each
         const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
@@ -9220,9 +9230,11 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'dream':
+        refuseWorker('dream')
         console.log(await dream())
         break
       case 'devenv':
+        refuseWorker('devenv')
         console.log(
           devenvPass(
             args.filter(a => a !== '--force'),
@@ -9231,6 +9243,7 @@ if (import.meta.main && !outboxCmd)
         )
         break
       case 'linear': {
+        refuseWorker('linear')
         if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
         const names = args.filter(a => a !== '--force')
         for (const name of names) {
@@ -9249,6 +9262,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'self-update': {
+        refuseWorker('self-update', true)
         const state = runSelfUpdate()
         console.log(state ? JSON.stringify(state) : 'a tick, or another self-update, is already running')
         break
@@ -9335,6 +9349,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'loop': {
+        refuseWorker('loop', true)
         lease()
         const ms = args[0] === '--interval' ? Number(args[1]) : 5000
         if (!(ms >= 1000)) fail('usage: factory loop [--interval ms], at least 1000')
@@ -9483,6 +9498,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'queue': {
+        refuseWorker('queue')
         const [repo, id, station] = args
         if (!repo || !id) fail('usage: factory queue <rig|repo> <bead> [station]')
         const root = repoOf(repo!)
@@ -9597,6 +9613,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'poke': {
+        refuseWorker('poke')
         // the manager's nudge: lands in the current worker's session on the next tick
         const [id, ...text] = args
         const { run, value, c } = current(id)
@@ -9609,6 +9626,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'retry': {
+        refuseWorker('retry')
         const { run, value, c } = current(args[0])
         const [node, sub] = where(value)
         if (sub !== 'stuck')
@@ -9622,6 +9640,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'goto': {
+        refuseWorker('goto')
         const run = loadRun(args[0])
         const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
         if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
@@ -9648,6 +9667,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'abort':
+        refuseWorker('abort')
         post(loadRun(args[0]).id, { type: 'ABORT' })
         break
       case 'init': {
@@ -9721,6 +9741,7 @@ if (import.meta.main && !outboxCmd)
         const mergeAuth = args.includes('--merge-authority')
         if (mergeAuth) args.splice(args.indexOf('--merge-authority'), 1)
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
+        if (sub !== 'list') refuseWorker(`rig ${sub}`, true) // triage reads the rig list; only the person changes rigs
         if (sub === 'add') {
           if (!name || !repo)
             fail(
@@ -9812,6 +9833,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'rm': {
+        refuseWorker('rm')
         const { run, value } = current(args[0])
         if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
         // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
@@ -9827,6 +9849,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'gc': {
+        refuseWorker('gc', true)
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
         const dryRun = args.includes('--dry-run')
         if (args.includes('--worktrees')) {
@@ -9863,6 +9886,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'sweep': {
+        refuseWorker('sweep', true)
         const release = hold('sweeps.lock')
         if (!release) {
           console.log('a sweep pass is already running: skipped this one')

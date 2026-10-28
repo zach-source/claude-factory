@@ -8348,8 +8348,16 @@ test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (c
   expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
 })
 
-const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
-test.each(['bin/factory gc --dry-run', 'FACTORY_HOME=/t /abs/bin/factory gc', 'A+=1 /abs/bin/factory gc'])(
+const SLASH_ALIASES = new Map<string, string | null>([
+  ...SNAP_ALIASES,
+  ['gc', 'git commit'],
+  ['status', 'git commit'],
+])
+test.each([
+  'bin/factory status --dry-run',
+  'FACTORY_HOME=/t /abs/bin/factory status',
+  'A+=1 /abs/bin/factory status',
+])(
   'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
   cmd => {
     expect(
@@ -8959,14 +8967,14 @@ test.each([
   'é=x ls',
   'A[k]=x ls',
   'time A[k]=x ls',
-  'B[1]=2 /abs/bin/factory gc',
-  'C[k]+=3 /abs/bin/factory gc',
+  'B[1]=2 /abs/bin/factory status',
+  'C[k]+=3 /abs/bin/factory status',
   'B[1]=/x gp origin main',
   'C[k]+=/x gp origin main',
   'A[a]b]=/x gp origin main',
-  'time -p é=1 /abs/bin/factory gc',
-  '/usr/bin/time A+=1 /abs/bin/factory gc',
-  'tim""e A+=1 /abs/bin/factory gc',
+  'time -p é=1 /abs/bin/factory status',
+  '/usr/bin/time A+=1 /abs/bin/factory status',
+  'tim""e A+=1 /abs/bin/factory status',
 ])('denyReason denies %j (claude-factory-mmc9.14, ambiguous assignment prefix)', cmd => {
   expect(denyReason(cmd)).toBe(ASSIGNMENT_PREFIX_REASON)
 })

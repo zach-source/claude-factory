@@ -5047,10 +5047,37 @@ function anyGhReason(
 
 export const FACTORY_CONTROL_REASON =
   'The factory denies this command: only the person or the manager runs factory say, stop, resume, ' +
-  'start and fork. Mail the manager instead. Do not retry this command.'
+  'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, beads, watch, sync, dream, devenv, linear, queue, poke, attach, manager, migrate-to-ax and rig with a sub other than list. ' +
+  'Mail the manager instead. Do not retry this command.'
 
-// claude-factory-5y7b: the verbs only the person or the manager runs.
-const FACTORY_CONTROL_VERBS = new Set(['say', 'stop', 'resume', 'start', 'fork'])
+// claude-factory-5y7b, claude-factory-3c4w: the verbs only the person or the manager runs.
+const FACTORY_CONTROL_VERBS = new Set([
+  'say',
+  'stop',
+  'resume',
+  'start',
+  'fork',
+  'goto',
+  'retry',
+  'abort',
+  'rm',
+  'tick',
+  'loop',
+  'self-update',
+  'gc',
+  'sweep',
+  'beads',
+  'watch',
+  'sync',
+  'dream',
+  'devenv',
+  'linear',
+  'queue',
+  'poke',
+  'attach',
+  'manager',
+  'migrate-to-ax',
+])
 
 /**
  * claude-factory-5y7b: a factory word at any position (after sudo, env, timeout, bash -c) whose next
@@ -5062,6 +5089,11 @@ function anyFactoryControlReason(words: string[]): string | undefined {
     const next = words[j + 1]!
     if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
     if (dynamicWord(next)) return DYNAMIC_VERB_REASON
+    if (next.toLowerCase() === 'rig' && j + 2 < words.length) {
+      const sub = words[j + 2]!
+      if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+      if (sub !== 'list') return FACTORY_CONTROL_REASON
+    }
   }
   return undefined
 }
