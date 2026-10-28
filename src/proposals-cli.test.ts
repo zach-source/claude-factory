@@ -15,7 +15,7 @@ const bdLog = join(dir, 'bd.log')
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const run = (args: string[]) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', PATH: `${bin}:${laptop.PATH}` },
   })

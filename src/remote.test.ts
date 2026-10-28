@@ -26,7 +26,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
     // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
@@ -389,7 +389,7 @@ test('reap() closes a finished run\'s workspace through FACTORY_HERDR, not a lit
     at: 1,
   })
   cluster('Running', { status: 'idle', session: 's1', lines: [report] })
-  factory(['tick']) // 'a' goes idle: the report is replayed
+  factory(['tick'], { FACTORY_RUN: 'inherited-other-run' }) // 'a' goes idle: the report is replayed
   const second = factory(['tick']) // the station ends: the run is over
   expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1x', node: 'done' })
 

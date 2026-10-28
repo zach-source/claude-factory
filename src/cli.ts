@@ -552,6 +552,31 @@ export function replayable(
   return null
 }
 
+const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort']
+
+/**
+ * why a worker may not run this command: with FACTORY_RUN set, a run-scoped command must name exactly that run
+ * (memory add|helped: the text before the first '/' of every --from). undefined when allowed or FACTORY_RUN is unset.
+ * ponytail: an env check, not a lock; a worker can still write another run's inbox in a shared FACTORY_HOME
+ */
+export function otherRunRefusal(
+  cmd: string | undefined,
+  args: string[],
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const own = env.FACTORY_RUN
+  if (!own) return undefined
+  const named: (string | undefined)[] = []
+  if (cmd && RUN_SCOPED.includes(cmd)) named.push(args[0])
+  else if (cmd === 'memory' && (args[0] === 'add' || args[0] === 'helped'))
+    args.forEach((a, i) => {
+      if (a === '--from') named.push((args[i + 1] ?? '').split('/')[0])
+    })
+  return named.every(id => id === own)
+    ? undefined
+    : `refused: this worker belongs to run ${own} and cannot run ${cmd} for another run`
+}
+
 /** an outbox line's argv; null for a line that is not `{argv: string[]}`, which the VM may write */
 export function outboxArgv(line: string): string[] | null {
   try {
@@ -741,7 +766,13 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     const argv = outboxArgv(line)
     const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
-    const env = { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '', FACTORY_FROM: side?.node }
+    const env = {
+      ...process.env,
+      FACTORY_HOME: HOME,
+      FACTORY_OUTBOX: '',
+      FACTORY_FROM: side?.node,
+      FACTORY_RUN: run.id,
+    }
     const p = cmd ? Bun.spawnSync([CLI, ...cmd], { env }) : null
     if (!p)
       ax.prompt(
@@ -1391,7 +1422,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
       ...['--label', `${node}#${c.attempt}`, '--no-focus'],
       ...['--env', `FACTORY_FROM=${node}`, '--env', `FACTORY_HOME=${HOME}`],
-      ...['--env', `FACTORY_DEF_NAME=${def.name}`],
+      ...['--env', `FACTORY_DEF_NAME=${def.name}`, '--env', `FACTORY_RUN=${run.id}`],
       ...['--env', `BEADS_ACTOR=${actorOf(run.id)}/${node}`],
     )
   let created
@@ -1572,6 +1603,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       ...env,
       ...rig?.env,
       FACTORY_FROM: node,
+      FACTORY_RUN: run.id,
       FACTORY_DEF_NAME: def.name,
       FACTORY_SKILLS: skills.join(','),
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
@@ -8767,6 +8799,13 @@ else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This
 or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
+{
+  const why = import.meta.main ? otherRunRefusal(cmd, args, process.env) : undefined
+  if (why) {
+    console.error(why)
+    process.exit(1)
+  }
+}
 // inside an AX task the run lives on the laptop: what a worker reports, mails or learns waits in the outbox
 const outboxCmd =
   import.meta.main &&
