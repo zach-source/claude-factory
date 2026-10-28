@@ -90,10 +90,12 @@ function setup(rigs: { name: string; queued: boolean }[]) {
 
 const runs = () =>
   existsSync(join(home, 'runs'))
-    ? readdirSync(join(home, 'runs')).map(id => ({
-        id,
-        ...JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')),
-      }))
+    ? readdirSync(join(home, 'runs'))
+        .filter(id => existsSync(join(home, 'runs', id, 'run.json')))
+        .map(id => ({
+          id,
+          ...JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')),
+        }))
     : []
 
 test('shipStarts picks the repos with a queue and no live ship run', () => {
