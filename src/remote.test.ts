@@ -26,7 +26,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
     // would refuse and mail the manager a new "branch is ..., not main" reason, landing in

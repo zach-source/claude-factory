@@ -25,7 +25,7 @@ import {
 import { spawn as spawnChild } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, extname, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
   afterTimeout,
@@ -7980,11 +7980,41 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   )
 }
 
+/**
+ * claude-factory-ab8n: the sender for mail the manager posts (mail, poke and fork).
+ * A worker has FACTORY_DEF_NAME, a factory/ BEADS_ACTOR, or a cwd inside its run's worktree.
+ * It must not mail as the manager, because the owner-only rule trusts mail from the manager.
+ * It returns 'manager' when no marker is present. Otherwise it fails and posts nothing.
+ */
+function managerSender(run: Run): 'manager' {
+  const marker = process.env.FACTORY_DEF_NAME
+    ? 'FACTORY_DEF_NAME is set'
+    : process.env.BEADS_ACTOR?.startsWith('factory/')
+      ? 'BEADS_ACTOR names a factory worker'
+      : insideWorktree(run)
+        ? 'the working directory is inside the run worktree'
+        : undefined
+  if (marker) fail(`a worker cannot send mail as the manager (${marker}); a worker mails as its own station`)
+  return 'manager'
+}
+
+function insideWorktree(run: Run): boolean {
+  if (!run.worktree || run.worktree === run.repo) return false
+  try {
+    const wt = realpathSync(run.worktree)
+    const cwd = realpathSync(process.cwd())
+    return cwd === wt || cwd.startsWith(wt + sep)
+  } catch {
+    return false
+  }
+}
+
 async function fork(id: string | undefined, station: string | undefined, note: string) {
   const { run: src, value } = current(id)
   const def = await loadFactory(src.factory)
   if (!Object.hasOwn(def.nodes, station ?? ''))
     fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
+  const sender = note ? managerSender(src) : undefined
   await assertRoom(src.repo)
   const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
   const bead = src.bead
@@ -7997,7 +8027,7 @@ async function fork(id: string | undefined, station: string | undefined, note: s
   const { run } = await createTracked(src.factory, def.name, src.repo, src.goal, bead, { run: src, saved })
   const [node, sub] = where(value)
   if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station! })
-  if (note) post(run.id, { type: 'MAIL', from: 'manager', to: station!, text: note })
+  if (sender) post(run.id, { type: 'MAIL', from: sender, to: station!, text: note })
   await tick()
   console.log(`forked ${src.id} at ${station} into ${run.id}: branch ${run.branch} from ${src.branch}`)
 }
@@ -9447,11 +9477,17 @@ if (import.meta.main && !outboxCmd)
         const text = wake ? rest.slice(1) : rest
         const run = loadRun(id)
         const def = await loadFactory(run.factory)
+        const workerFrom =
+          process.env.FACTORY_FROM && process.env.FACTORY_FROM !== 'manager'
+            ? process.env.FACTORY_FROM
+            : undefined
+        if (workerFrom !== undefined && !Object.hasOwn(def.nodes, workerFrom))
+          fail('FACTORY_FROM must name a station of this factory')
         const boxes = Object.keys(def.nodes).concat('manager')
         if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
         post(run.id, {
           type: 'MAIL',
-          from: process.env.FACTORY_FROM ?? 'manager',
+          from: workerFrom ?? managerSender(run),
           to: to!,
           text: text.join(' '),
           ...(wake && { wake: true as const }),
@@ -9475,7 +9511,7 @@ if (import.meta.main && !outboxCmd)
         if (sub !== 'working' || (await loadFactory(run.factory)).nodes[node]?.gate)
           fail(`${run.id} has no worker to poke: it is at ${node}${sub ? `/${sub}` : ''}`)
         const nudge = `[factory] The manager is checking in. When you are finished run: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"; if something blocks you, mail the manager what it is.`
-        post(run.id, { type: 'MAIL', from: 'manager', to: node, text: text.join(' ') || nudge })
+        post(run.id, { type: 'MAIL', from: managerSender(run), to: node, text: text.join(' ') || nudge })
         console.log(`poked ${node} of ${run.id}`)
         break
       }
