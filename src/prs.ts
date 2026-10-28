@@ -1035,8 +1035,12 @@ export type Forge = {
 const timed = (cwd: string) => ({ cwd, timeout: VIEW_TIMEOUT_MS })
 
 const githubForge = (gh: Gh): Forge => ({
-  list: r =>
-    gh(['pr', 'list', '--state', 'all', '--limit', '100', '--json', 'url,headRefName'], timed(r.repoDir)),
+  async list(r) {
+    const rows = await githubPulls(gh, r.runRepo, r.repoDir, { state: 'all', pages: 1 })
+    return rows
+      ? { code: 0, out: JSON.stringify(githubRows(rows)), err: '' }
+      : { code: 1, out: '', err: 'gh api: pull list failed' }
+  },
   parseList: parseBranchList,
   search: r =>
     gh(
@@ -1045,18 +1049,21 @@ const githubForge = (gh: Gh): Forge => ({
     ),
   parseSearch,
   async view(url, cwd) {
-    const res = await gh(
-      [
-        'pr',
-        'view',
-        url,
-        '--json',
-        'title,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,updatedAt,headRefName,body',
-      ],
-      timed(cwd),
-    )
-    const viewed = res.code === 0 ? parseView(res.out) : null
-    return viewed ? { viewed } : { err: res.code === 0 ? 'gh pr view: unparseable JSON' : res.err }
+    const slug = githubSlugOf(url)
+    if (!slug) return { err: 'not a github.com pull request URL' }
+    const pullPath = `repos/${slug}/pulls/${prRef(url)!.number}`
+    const api = (path: string) => gh(['api', path], timed(cwd))
+    const pull = await api(pullPath)
+    const sha = pull.code === 0 ? str(((asJson(pull.out) as Json | null)?.head as Json | undefined)?.sha) : ''
+    const hex = /^[0-9a-f]{7,64}$/i.test(sha)
+    const ok = (res?: GhResult) => (res?.code === 0 ? res.out : '')
+    const [reviews, runs, status] = await Promise.all([
+      api(`${pullPath}/reviews?per_page=100`),
+      hex ? api(`repos/${slug}/commits/${sha}/check-runs?per_page=100`) : undefined,
+      hex ? api(`repos/${slug}/commits/${sha}/status`) : undefined,
+    ])
+    const viewed = pull.code === 0 ? parseGithubView(pull.out, ok(reviews), ok(runs), ok(status)) : null
+    return viewed ? { viewed } : { err: pull.code === 0 ? 'gh api: unparseable JSON' : pull.err }
   },
 })
 
