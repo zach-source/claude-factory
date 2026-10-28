@@ -138,6 +138,7 @@ test('release trusts a Reviewed head line only from an approve verdict or a writ
   expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(
     p.indexOf('git merge-base --is-ancestor <reviewed> <head>'),
   )
+  expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(p.indexOf('Run `git fetch origin main'))
   expect(p.indexOf('review#<n> approve:')).toBeLessThan(p.indexOf('only when'))
 })
 
