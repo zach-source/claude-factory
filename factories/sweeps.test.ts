@@ -136,3 +136,10 @@ test('the monitor prompt files long-firing alerts and long-False Ready condition
   for (const id of Object.keys(sweeps.nodes).filter(i => i !== 'monitor'))
     expect(p(id), id).not.toContain('ALERTS_FOR_STATE')
 })
+
+test("sweeps.ts stays self-contained: a repo's own copy keeps no import", async () => {
+  const { readFileSync } = await import('node:fs')
+  const { ownCopy } = await import('../src/cli')
+  const copy = ownCopy(readFileSync(new URL('./sweeps.ts', import.meta.url), 'utf8'), 'sweeps')
+  expect(copy).not.toMatch(/^import /m)
+})
