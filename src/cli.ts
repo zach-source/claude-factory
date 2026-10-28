@@ -180,7 +180,11 @@ import {
   forgeNote,
   forgeOf,
   gitlabForge,
+  githubMergedJson,
   githubPullPath,
+  githubPulls,
+  githubRows,
+  githubSlugOf,
   githubWatchView,
   parseGithubView,
   gitlabWatchNotes,
@@ -4913,21 +4917,10 @@ async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: 
   if (originRef(rig.repo)?.forge !== 'github') ghError = 'not a GitHub repo: shipped kind skipped'
   else {
     try {
-      const r = await gh(
-        [
-          'pr',
-          'list',
-          '--state',
-          'merged',
-          '-L',
-          '500',
-          '--json',
-          'number,url,title,headRefName,mergeCommit',
-        ],
-        { cwd: rig.repo, timeout: 30_000 },
-      )
-      if (r.code !== 0) throw new Error('gh pr list failed')
-      prs = parseMergedPrs(r.out)
+      const ref = rigRef(rig.repo)
+      const out = ref ? await githubMergedJson(gh, ref.slug, rig.repo, { pages: 5 }) : null
+      if (out === null) throw new Error('gh api pulls failed')
+      prs = parseMergedPrs(out)
     } catch {
       ghError = 'gh failed: shipped kind skipped' // never the raw gh text
     }
@@ -6199,7 +6192,7 @@ const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) 
   }
 }
 
-/** `gh pr list --state merged --search <id> ...`, a second `--search <short id>` for a dotted child id, plus `--head <branch>` for up to 3 local run
+/** `gh pr list --state merged --search <id> ...`, a second `--search <short id>` for a dotted child id, plus a REST `head=<owner>:<branch>` lookup for up to 3 local run
  * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
 async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh): Promise<MergedPr[]> {
   const fields = 'number,url,title,headRefName,mergeCommit'
@@ -6225,12 +6218,11 @@ async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
-    const byHead = await gh(['pr', 'list', '--state', 'merged', '--head', branch, '--json', fields], {
-      cwd: repo,
-      timeout: PRECHECK_TIMEOUT_MS,
-    })
-    if (byHead.code !== 0) continue
-    found.push(...parseMergedPrs(byHead.out))
+    const ref = rigRef(repo)
+    const byHead = ref
+      ? await githubMergedJson(gh, ref.slug, repo, { pages: 1, head: `${ref.owner}:${branch}` })
+      : null
+    if (byHead !== null) found.push(...parseMergedPrs(byHead))
   }
   return found
 }
@@ -7296,15 +7288,12 @@ export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<type
 }
 
 /** the rig's pull requests of any state, newest 200; none on a forge without `gh` */
-function rigPrs(repo: string): PrFact[] {
-  if (originRef(repo)?.forge !== 'github') return []
-  const fields = 'number,url,state,isDraft,body,headRefName'
-  const p = Bun.spawnSync(['gh', 'pr', 'list', '--state', 'all', '-L', '200', '--json', fields], {
-    cwd: repo,
-    timeout: 60_000,
-  })
-  if (p.exitCode !== 0) throw new Error(`gh pr list: ${p.stderr.toString().trim().split('\n')[0]}`)
-  return JSON.parse(p.stdout.toString())
+async function rigPrs(repo: string): Promise<PrFact[]> {
+  const ref = rigRef(repo)
+  if (!ref) return []
+  const rows = await githubPulls(spawnGh, ref.slug, repo, { state: 'all', pages: 2 })
+  if (!rows) throw new Error('gh api pulls failed')
+  return githubRows(rows) as PrFact[]
 }
 
 type LiveBead = { blocked: boolean; why?: string; since?: number }
@@ -7377,7 +7366,7 @@ async function repairPass() {
     try {
       if (!hasBeads(rig.repo)) continue
       const b = beads(rig.repo, 'factory')
-      const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
+      const todo = repairs(rig.name, b.every(), await rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
       const closed = new Set<string>()
       for (const r of todo) {
         const done =
@@ -7418,7 +7407,7 @@ async function digest() {
         name: rig.name,
         slug: o?.forge === 'github' ? `${o.owner}/${o.repo}` : undefined,
         beads: b.every(),
-        ctx: { live, prs: rigPrs(rig.repo) },
+        ctx: { live, prs: await rigPrs(rig.repo) },
         queue: b.shipQueue(),
       })
     } catch (err) {
@@ -8044,6 +8033,14 @@ function originRef(
   const parts = remote.path.split('/')
   if (parts.length < 2) return undefined
   return { owner: parts.slice(0, -1).join('/'), repo: parts.at(-1)!, forge: 'gitlab', host: remote.host }
+}
+
+/** owner and owner/repo of a rig repo whose origin is on github.com; null for any other, and for a dot segment */
+function rigRef(repoPath: string): { owner: string; slug: string } | null {
+  const o = originRef(repoPath)
+  if (o?.forge !== 'github') return null
+  const slug = githubSlugOf(`https://github.com/${o.owner}/${o.repo}/pull/1`)
+  return slug ? { owner: o.owner, slug } : null
 }
 
 /** whether `glab` is signed in to a host: how a self-hosted GitLab without "gitlab" in its name is told */

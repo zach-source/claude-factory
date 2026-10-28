@@ -2005,3 +2005,54 @@ test('githubPullPath: the REST path of a PR, null for a URL githubSlugOf refuses
   expect(githubPullPath('https://github.com/acme/../pull/5')).toBeNull()
   expect(githubPullPath('https://gitlab.example.com/a/b/-/merge_requests/5')).toBeNull()
 })
+
+import { githubMergedJson, parseMergedPrs } from './prs'
+
+test('githubMergedJson: closed pulls with a merge date only, in the parseMergedPrs shape, with the head filter', async () => {
+  const argvs: string[][] = []
+  const gh: Gh = async argv => {
+    argvs.push(argv)
+    return {
+      code: 0,
+      err: '',
+      out: JSON.stringify([
+        {
+          number: 1,
+          html_url: 'https://github.com/acme/widget/pull/1',
+          title: 'a',
+          state: 'closed',
+          merged_at: '2026-10-12T10:00:00Z',
+          merge_commit_sha: 'deadbeef',
+          head: { ref: 'f' },
+          base: { ref: 'main' },
+        },
+        {
+          number: 2,
+          html_url: 'https://github.com/acme/widget/pull/2',
+          title: 'b',
+          state: 'closed',
+          merged_at: null,
+          head: { ref: 'g' },
+          base: { ref: 'main' },
+        },
+      ]),
+    }
+  }
+  const out = await githubMergedJson(gh, 'acme/widget', '/tmp', { pages: 1, head: 'acme:f' })
+  expect(parseMergedPrs(out!)).toEqual([
+    {
+      number: 1,
+      url: 'https://github.com/acme/widget/pull/1',
+      title: 'a',
+      headRefName: 'f',
+      mergeCommit: 'deadbeef',
+      state: 'MERGED',
+    },
+  ])
+  expect(argvs[0]![1]).toBe(
+    'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1&head=acme%3Af',
+  )
+  expect(
+    await githubMergedJson(async () => ({ code: 1, out: '', err: '' }), 'acme/widget', '/tmp', { pages: 1 }),
+  ).toBeNull()
+})

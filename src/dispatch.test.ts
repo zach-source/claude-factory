@@ -406,16 +406,35 @@ function fakePrecheckBd(extra: Record<string, unknown> = {}) {
 }
 
 /** fake gh: it logs every call. `$GH_FAIL` set makes every call fail, like a timeout or a rate
- * limit. `$GH_FAIL_HEAD` set makes only a `--head` call fail (claude-factory-6as.9). Else it answers
+ * limit. `$GH_FAIL_HEAD` set makes only a head lookup (`api ...&head=`) fail (claude-factory-6as.9). Else it answers
  * `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout. */
 function fakeGh() {
+  // the REST `pulls?state=closed&head=<owner>:<branch>` answer: $GH_JSON rows (the old `gh pr list` shape) as merged pulls
+  const restScript = join(pbin, 'rest-pulls.ts')
+  writeFileSync(
+    restScript,
+    `const rows = JSON.parse(process.env.GH_JSON || '[]').map((p: any) => ({
+  number: p.number,
+  html_url: p.url,
+  title: p.title,
+  state: 'closed',
+  merged_at: '2026-10-12T10:00:00Z',
+  merge_commit_sha: p.mergeCommit?.oid,
+  head: { ref: p.headRefName, repo: { full_name: 'acme/widget' } },
+  base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+}))
+console.log(JSON.stringify(rows))
+`,
+  )
   const script = [
     '#!/bin/sh',
     `echo "gh $*" >> "${ghCallsLog}"`,
     'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
     'case "$*" in',
     '  *"--search 192.6 "*) if [ -n "$GH_FAIL_SHORT" ]; then echo "gh: rate limited" >&2; exit 1; fi; if [ -n "$GH_JSON_SHORT" ]; then printf \'%s\' "$GH_JSON_SHORT"; exit 0; fi;;',
-    '  *--head*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi;;',
+    '  "api "*"&head="*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi; bun "' +
+      restScript +
+      '"; exit 0;;',
     '  *--remove-label*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi;;',
     '  *"--search label:"*) if [ -n "$GH_LABELED" ]; then printf \'%s\' "$GH_LABELED"; exit 0; fi;;',
     'esac',
@@ -579,7 +598,7 @@ test('a --search hit still rejects the bead even when a --head call for its run 
   expect(bdCalls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
   expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
   const ghCalls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
-  expect(ghCalls.some(l => l.includes('--head'))).toBe(true) // the --head call ran, and failed
+  expect(ghCalls.some(l => l.includes('&head='))).toBe(true) // the head lookup ran, and failed
 })
 
 // claude-factory-jxl.1: a title may cite only the short child id; a second --search finds it

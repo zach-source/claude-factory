@@ -972,6 +972,18 @@ export async function githubWatchView(gh: Gh, url: string, cwd: string): Promise
   }
 }
 
+/** the merged PRs of a repo as `gh pr list --state merged --json` text (`parseMergedPrs` reads it), or null
+ * when a call fails. REST has no merged filter, so this lists closed PRs and keeps the ones with a merge date. */
+export async function githubMergedJson(
+  gh: Gh,
+  slug: string,
+  cwd: string,
+  o: { pages: number; head?: string },
+): Promise<string | null> {
+  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o })
+  return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
+}
+
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh
  * headRefName/body this one call has (AC2/AC3) and its ownHead/namesIt facts stored for every later
  * recompute (wyc.4), checkedAt bumped so its TTL restarts, and the error streak cleared on success */
