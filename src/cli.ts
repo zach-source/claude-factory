@@ -56,7 +56,7 @@ import {
   type Factory,
   type Mail,
 } from './machine'
-import { ghNotes, watchDecide, type Seen, type WatchedPr } from './watch'
+import { watchDecide, type Seen, type WatchedPr } from './watch'
 import {
   actorOf,
   backlogOf,
@@ -181,6 +181,16 @@ import {
   forgeNote,
   forgeOf,
   gitlabForge,
+  githubCloseArgv,
+  githubCommentArgv,
+  githubMergedJson,
+  githubUnlabelArgv,
+  githubPullPath,
+  githubPulls,
+  githubRows,
+  githubSlugOf,
+  githubWatchView,
+  parseGithubView,
   gitlabWatchNotes,
   mrsIn,
   onHost,
@@ -3122,6 +3132,14 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   }
 }
 
+/** a github.com pull request through REST (`gh api repos/<slug>/pulls/N`), or null when gh fails */
+function pullSync(url: string, timeout: number) {
+  const path = githubPullPath(url)
+  if (!path) return null
+  const p = Bun.spawnSync(['gh', 'api', path], { timeout })
+  return p.exitCode === 0 ? parseGithubView(p.stdout.toString()) : null
+}
+
 /**
  * The run's own PR among the links its reports cite. One link is that PR. With several, a report may cite
  * a sibling PR, so the answer is the link whose head branch is the run's; no match records none, and the
@@ -3130,12 +3148,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
 export function shipPrOf(
   links: string[],
   branch: string,
-  headOf: (url: string) => string | null = url => {
-    const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'headRefName', '-q', '.headRefName'], {
-      timeout: 20_000,
-    })
-    return p.exitCode === 0 ? p.stdout.toString().trim() : null
-  },
+  headOf: (url: string) => string | null = url => pullSync(url, 20_000)?.headRefName || null,
 ) {
   if (links.length < 2) return links[0] ?? ''
   return links.find(url => headOf(url) === branch) ?? ''
@@ -3551,8 +3564,8 @@ function closedBeads() {
  * dream.lock that it runs under, instead of throwing. Only a bd process that exits non-zero, or
  * exits 0 with an answer untilStatus() cannot use, throws or returns null here.
  *
- * `pr(url)` runs `gh pr view <url> --json state` with a 30 s timeout. If the exit code is 0,
- * `pr(url)` reads the `.state` value from the output. Any other exit code returns null.
+ * `pr(url)` runs `gh api repos/<owner>/<repo>/pulls/<n>` with a 30 s timeout. If the exit code is 0,
+ * `pr(url)` maps the REST pull to a state (a merge date makes it MERGED). Any other exit code returns null.
  *
  * One pass makes at most 50 gh calls. The worst case is 50 x 30 s = 25 min, when every call hangs
  * to its timeout. A PR after the 50th stays unmatched (null). untilStatus() flags that PR, and
@@ -3604,9 +3617,7 @@ function untilDeps(): memory.UntilDeps {
         return null
       }
       ghCalls++
-      const p = Bun.spawnSync(['gh', 'pr', 'view', url, '--json', 'state'], { timeout: 30_000 })
-      const state: PrState | null =
-        p.exitCode === 0 ? ((JSON.parse(p.stdout.toString()).state as PrState) ?? null) : null
+      const state: PrState | null = pullSync(url, 30_000)?.state ?? null
       prCache.set(url, state)
       return state
     },
@@ -4915,21 +4926,10 @@ async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: 
   if (originRef(rig.repo)?.forge !== 'github') ghError = 'not a GitHub repo: shipped kind skipped'
   else {
     try {
-      const r = await gh(
-        [
-          'pr',
-          'list',
-          '--state',
-          'merged',
-          '-L',
-          '500',
-          '--json',
-          'number,url,title,headRefName,mergeCommit',
-        ],
-        { cwd: rig.repo, timeout: 30_000 },
-      )
-      if (r.code !== 0) throw new Error('gh pr list failed')
-      prs = parseMergedPrs(r.out)
+      const ref = rigRef(rig.repo)
+      const out = ref ? await githubMergedJson(gh, ref.slug, rig.repo, { pages: 5 }) : null
+      if (out === null) throw new Error('gh api pulls failed')
+      prs = parseMergedPrs(out)
     } catch {
       ghError = 'gh failed: shipped kind skipped' // never the raw gh text
     }
@@ -6201,7 +6201,7 @@ const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) 
   }
 }
 
-/** `gh pr list --state merged --search <id> ...`, a second `--search <short id>` for a dotted child id, plus `--head <branch>` for up to 3 local run
+/** `gh pr list --state merged --search <id> ...`, a second `--search <short id>` for a dotted child id, plus a REST `head=<owner>:<branch>` lookup for up to 3 local run
  * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
 async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh): Promise<MergedPr[]> {
   const fields = 'number,url,title,headRefName,mergeCommit'
@@ -6227,12 +6227,11 @@ async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
-    const byHead = await gh(['pr', 'list', '--state', 'merged', '--head', branch, '--json', fields], {
-      cwd: repo,
-      timeout: PRECHECK_TIMEOUT_MS,
-    })
-    if (byHead.code !== 0) continue
-    found.push(...parseMergedPrs(byHead.out))
+    const ref = rigRef(repo)
+    const byHead = ref
+      ? await githubMergedJson(gh, ref.slug, repo, { pages: 1, head: `${ref.owner}:${branch}` })
+      : null
+    if (byHead !== null) found.push(...parseMergedPrs(byHead))
   }
   return found
 }
@@ -7298,15 +7297,12 @@ export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<type
 }
 
 /** the rig's pull requests of any state, newest 200; none on a forge without `gh` */
-function rigPrs(repo: string): PrFact[] {
-  if (originRef(repo)?.forge !== 'github') return []
-  const fields = 'number,url,state,isDraft,body,headRefName'
-  const p = Bun.spawnSync(['gh', 'pr', 'list', '--state', 'all', '-L', '200', '--json', fields], {
-    cwd: repo,
-    timeout: 60_000,
-  })
-  if (p.exitCode !== 0) throw new Error(`gh pr list: ${p.stderr.toString().trim().split('\n')[0]}`)
-  return JSON.parse(p.stdout.toString())
+async function rigPrs(repo: string): Promise<PrFact[]> {
+  const ref = rigRef(repo)
+  if (!ref) return []
+  const rows = await githubPulls(spawnGh, ref.slug, repo, { state: 'all', pages: 2 })
+  if (!rows) throw new Error('gh api pulls failed')
+  return githubRows(rows) as PrFact[]
 }
 
 type LiveBead = { blocked: boolean; why?: string; since?: number }
@@ -7379,7 +7375,7 @@ async function repairPass() {
     try {
       if (!hasBeads(rig.repo)) continue
       const b = beads(rig.repo, 'factory')
-      const todo = repairs(rig.name, b.every(), rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
+      const todo = repairs(rig.name, b.every(), await rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
       const closed = new Set<string>()
       for (const r of todo) {
         const done =
@@ -7420,7 +7416,7 @@ async function digest() {
         name: rig.name,
         slug: o?.forge === 'github' ? `${o.owner}/${o.repo}` : undefined,
         beads: b.every(),
-        ctx: { live, prs: rigPrs(rig.repo) },
+        ctx: { live, prs: await rigPrs(rig.repo) },
         queue: b.shipQueue(),
       })
     } catch (err) {
@@ -7450,7 +7446,6 @@ async function labelPass() {
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
-  const fields = 'number,url,headRefName,baseRefName,isCrossRepository,labels'
   const live = runIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
@@ -7492,18 +7487,31 @@ async function labelPass() {
               cli('glab', ['mr', 'close', String(pr.number)])
             },
           }
-        : {
-            list: (): LabeledPr[] => {
-              const search = `label:${[CLOSE_LABEL, ...REWORK_LABELS].join(',')}` // a comma is OR in GitHub search
-              return JSON.parse(gh('pr', 'list', '--state', 'open', '--search', search, '--json', fields))
-            },
-            comment: (pr: LabeledPr, body: string) => gh('pr', 'comment', String(pr.number), '--body', body),
-            unlabel: (pr: LabeledPr, labels: string[]) =>
-              gh('pr', 'edit', String(pr.number), '--remove-label', labels.join(',')),
-            close: (pr: LabeledPr, body: string) => gh('pr', 'close', String(pr.number), '--comment', body),
-          }
+        : (() => {
+            const ref = rigRef(rig.repo)
+            const slug = () => {
+              if (!ref) throw new Error('not a GitHub repo')
+              return ref.slug
+            }
+            return {
+              // REST, not `gh pr list --search`: the path names the owner, so the AX gateway picks the owner's key
+              list: async (): Promise<LabeledPr[]> => {
+                const rows = await githubPulls(spawnGh, slug(), rig.repo, { state: 'open', pages: 10 })
+                if (!rows) throw new Error('gh api pulls failed')
+                return (githubRows(rows) as LabeledPr[]).filter(pr => labelAction(pr) !== undefined)
+              },
+              comment: (pr: LabeledPr, body: string) => gh(...githubCommentArgv(slug(), pr.number, body)),
+              unlabel: (pr: LabeledPr, labels: string[]) => {
+                for (const label of labels) gh(...githubUnlabelArgv(slug(), pr.number, label))
+              },
+              close: (pr: LabeledPr, body: string) => {
+                gh(...githubCommentArgv(slug(), pr.number, body))
+                gh(...githubCloseArgv(slug(), pr.number))
+              },
+            }
+          })()
     try {
-      const labeled = forge.list()
+      const labeled = await forge.list()
       const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
         ? beads(rig.repo, 'factory').shipQueue()
         : []
@@ -7591,35 +7599,7 @@ async function watchPass() {
       if (cache.has(url)) return cache.get(url)!
       let v: WatchedPr | null = null
       try {
-        const p = Bun.spawnSync(
-          [
-            'gh',
-            'pr',
-            'view',
-            url,
-            '--json',
-            'state,isDraft,reviewDecision,updatedAt,headRefOid,mergedAt,closedAt,reviews,comments,mergeable,headRefName,baseRefName',
-          ],
-          { cwd, timeout: 60_000 },
-        )
-        if (p.exitCode === 0) {
-          const j = JSON.parse(p.stdout.toString())
-          v = {
-            url,
-            state: j.state,
-            isDraft: typeof j.isDraft === 'boolean' ? j.isDraft : undefined,
-            reviewDecision: typeof j.reviewDecision === 'string' ? j.reviewDecision : undefined,
-            updatedAt: j.updatedAt,
-            headRefOid: j.headRefOid,
-            mergedAt: j.mergedAt,
-            closedAt: j.closedAt,
-            notes: ghNotes(j),
-            ...(['mergeable', 'headRefName', 'baseRefName'] as const).reduce(
-              (o, k) => (typeof j[k] === 'string' ? { ...o, [k]: j[k] } : o),
-              {},
-            ),
-          }
-        }
+        v = await githubWatchView(spawnGh, url, cwd)
       } catch {
         // a missing binary or unreadable output counts as a failed view
       }
@@ -8076,6 +8056,14 @@ function originRef(
   return { owner: parts.slice(0, -1).join('/'), repo: parts.at(-1)!, forge: 'gitlab', host: remote.host }
 }
 
+/** owner and owner/repo of a rig repo whose origin is on github.com; null for any other, and for a dot segment */
+function rigRef(repoPath: string): { owner: string; slug: string } | null {
+  const o = originRef(repoPath)
+  if (o?.forge !== 'github') return null
+  const slug = githubSlugOf(`https://github.com/${o.owner}/${o.repo}/pull/1`)
+  return slug ? { owner: o.owner, slug } : null
+}
+
 /** whether `glab` is signed in to a host: how a self-hosted GitLab without "gitlab" in its name is told */
 const glabKnows = (host: string) =>
   Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
@@ -8113,24 +8101,16 @@ async function gateBriefFacts(id: string | undefined) {
       let additions: number | null = null
       let deletions: number | null = null
       let changedFiles: number | null = null
-      // the diff stat costs one more `gh pr view`; only for a code-role PR, and only on GitHub (a GitLab
+      // the diff stat costs one more `gh api` call; only for a code-role PR, and only on GitHub (a GitLab
       // merge request would need `glab`'s own fields, skipped here rather than guessed at)
       if (pr.role === 'code' && pr.forge !== 'gitlab') {
         try {
-          const res = await spawnGh(['pr', 'view', pr.url, '--json', 'additions,deletions,changedFiles'], {
-            cwd: run.repo,
-            timeout: 30_000,
-          })
-          if (res.code === 0) {
-            const parsed = JSON.parse(res.out) as {
-              additions?: number
-              deletions?: number
-              changedFiles?: number
-            }
-            additions = typeof parsed.additions === 'number' ? parsed.additions : null
-            deletions = typeof parsed.deletions === 'number' ? parsed.deletions : null
-            changedFiles = typeof parsed.changedFiles === 'number' ? parsed.changedFiles : null
-          }
+          const path = githubPullPath(pr.url)
+          const res = path ? await spawnGh(['api', path], { cwd: run.repo, timeout: 30_000 }) : null
+          const parsed = res?.code === 0 ? parseGithubView(res.out) : null
+          additions = parsed?.additions ?? null
+          deletions = parsed?.deletions ?? null
+          changedFiles = parsed?.changedFiles ?? null
         } catch {
           // fail soft (the design's own rule): additions/deletions/changedFiles stay null
         }
@@ -8234,7 +8214,7 @@ function reviewSet(key: string | undefined, filePath: string | undefined) {
  * every run's own pull requests (AC1): mentions out of its reports and mail, corroborated by its rig's
  * branch listing or a search for its bead, kept and refreshed in runs/<id>/prs.json so a restart loses
  * nothing (AC6). Draft, merged and closed PRs stay listed; the budget (src/prs.ts DEFAULT_BUDGET) spends
- * at most 10 searches and 30 `gh pr view` calls a call, live runs first.
+ * at most 10 searches and 30 PR views a call, live runs first. A view is up to 4 `gh api` calls.
  */
 async function prs() {
   const stations = new Set<string>()

@@ -43,15 +43,18 @@ function setup(beads: unknown[], ghMode: 'ok' | 'fail' = 'ok', github = true) {
   if (github)
     Bun.spawnSync(['git', '-C', repo, 'remote', 'add', 'origin', 'https://github.com/acme/widget.git'])
   writeFileSync(listFile, JSON.stringify(beads))
-  const prs = [
-    {
-      number: 7,
-      url: 'https://github.com/acme/widget/pull/7',
-      title: 'Fix acme-1: retry',
-      headRefName: 'x',
-      mergeCommit: { oid: 'abc123' },
-    },
-  ]
+  // the REST `pulls?state=closed` answer: one merged pull, one closed without a merge (hygiene keeps the first only)
+  const pull = (number: number, merged: boolean) => ({
+    number,
+    html_url: `https://github.com/acme/widget/pull/${number}`,
+    title: 'Fix acme-1: retry',
+    state: 'closed',
+    merged_at: merged ? '2026-10-12T10:00:00Z' : null,
+    merge_commit_sha: merged ? 'abc123' : null,
+    head: { ref: 'x', repo: { full_name: 'acme/widget' } },
+    base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+  })
+  const prs = [pull(7, true), pull(8, false)]
   writeFileSync(
     join(bin, 'bd'),
     [

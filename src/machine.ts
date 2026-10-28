@@ -536,7 +536,7 @@ export const prsIn = (text: string) => [
   ...new Set(text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g) ?? []),
 ]
 /** every GitLab merge request URL in a text; `prsIn` stays GitHub-only because the park watch behind it
- * runs `gh pr view` (prs.ts re-exports this, since its glab-shaped IO lives there) */
+ * reads GitHub through `gh api` (prs.ts re-exports this, since its glab-shaped IO lives there) */
 export const mrsIn = (text: string) => [
   ...new Set(
     text.match(

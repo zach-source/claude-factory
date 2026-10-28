@@ -406,18 +406,52 @@ function fakePrecheckBd(extra: Record<string, unknown> = {}) {
 }
 
 /** fake gh: it logs every call. `$GH_FAIL` set makes every call fail, like a timeout or a rate
- * limit. `$GH_FAIL_HEAD` set makes only a `--head` call fail (claude-factory-6as.9). Else it answers
- * `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout. */
+ * limit. `$GH_FAIL_HEAD` set makes only a head lookup (`api ...&head=`) fail (claude-factory-6as.9). Else it answers
+ * `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout. `$GH_LABELED` (the same shape) is what the label pass lists. */
 function fakeGh() {
+  // the REST `pulls?state=closed&head=<owner>:<branch>` answer: $GH_JSON rows (the old `gh pr list` shape) as merged pulls
+  const restScript = join(pbin, 'rest-pulls.ts')
+  writeFileSync(
+    restScript,
+    `const rows = JSON.parse(process.env.GH_JSON || '[]').map((p: any) => ({
+  number: p.number,
+  html_url: p.url,
+  title: p.title,
+  state: 'closed',
+  merged_at: '2026-10-12T10:00:00Z',
+  merge_commit_sha: p.mergeCommit?.oid,
+  head: { ref: p.headRefName, repo: { full_name: 'acme/widget' } },
+  base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+}))
+console.log(JSON.stringify(rows))
+`,
+  )
+  // the REST `pulls?state=open` answer: $GH_LABELED rows (the old `gh pr list` shape) as open pulls
+  const restOpen = join(pbin, 'rest-open.ts')
+  writeFileSync(
+    restOpen,
+    `const rows = JSON.parse(process.env.GH_LABELED || '[]').map((p: any) => ({
+  number: p.number,
+  html_url: p.url,
+  state: 'open',
+  head: { ref: p.headRefName, repo: p.isCrossRepository ? { full_name: 'fork/r' } : { full_name: 'acme/widget' } },
+  base: { ref: p.baseRefName, repo: { full_name: 'acme/widget' } },
+  labels: p.labels,
+}))
+console.log(JSON.stringify(rows))
+`,
+  )
   const script = [
     '#!/bin/sh',
     `echo "gh $*" >> "${ghCallsLog}"`,
     'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
     'case "$*" in',
     '  *"--search 192.6 "*) if [ -n "$GH_FAIL_SHORT" ]; then echo "gh: rate limited" >&2; exit 1; fi; if [ -n "$GH_JSON_SHORT" ]; then printf \'%s\' "$GH_JSON_SHORT"; exit 0; fi;;',
-    '  *--head*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi;;',
-    '  *--remove-label*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi;;',
-    '  *"--search label:"*) if [ -n "$GH_LABELED" ]; then printf \'%s\' "$GH_LABELED"; exit 0; fi;;',
+    '  "api "*"&head="*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi; bun "' +
+      restScript +
+      '"; exit 0;;',
+    '  "api -X DELETE "*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi; exit 0;;',
+    '  "api "*"state=open"*) bun "' + restOpen + '"; exit 0;;',
     'esac',
     'printf \'%s\' "$GH_JSON"',
   ].join('\n')
@@ -579,7 +613,7 @@ test('a --search hit still rejects the bead even when a --head call for its run 
   expect(bdCalls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
   expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
   const ghCalls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
-  expect(ghCalls.some(l => l.includes('--head'))).toBe(true) // the --head call ran, and failed
+  expect(ghCalls.some(l => l.includes('&head='))).toBe(true) // the head lookup ran, and failed
 })
 
 // claude-factory-jxl.1: a title may cite only the short child id; a second --search finds it
@@ -1670,7 +1704,9 @@ test('a conflict label that cannot come off mails its run once, not every pass',
   expect(mails()).toBe(0) // the label stayed on: no mail, so the next pass cannot repeat one
   pass({})
   expect(mails()).toBe(1)
-  expect(readFileSync(ghCallsLog, 'utf8')).toContain('--remove-label conflict')
+  expect(readFileSync(ghCallsLog, 'utf8')).toContain(
+    'api -X DELETE repos/acme/widget/issues/7/labels/conflict',
+  )
 })
 
 test('station:<name> with no factory:<name> label keeps the rig factory (A4 control)', () => {
@@ -2361,4 +2397,26 @@ test('auto-queue does not re-queue a held or mark-only bead; factory queue still
   nextPass()
   gfactory(['beads'])
   expect(startedBeads()).toContain('w-7')
+})
+
+test('a PR labeled close is commented and closed through gh api REST paths, never gh pr (claude-factory-fbyg.6)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory'] }])
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  const pr = {
+    number: 9,
+    url: 'https://github.com/acme/widget/pull/9',
+    headRefName: 'someone/branch',
+    baseRefName: 'main',
+    isCrossRepository: false,
+    labels: [{ name: 'close' }],
+  }
+  rmSync(join(phome, 'labels.stamp'), { force: true })
+  expect(pfactory(['beads'], { GH_JSON: '[]', GH_LABELED: JSON.stringify([pr]) }).code).toBe(0)
+  const calls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
+  const i = calls.findIndex(l =>
+    l.startsWith('gh api -X POST repos/acme/widget/issues/9/comments -f body=Closed by'),
+  )
+  expect(i).toBeGreaterThanOrEqual(0)
+  expect(calls[i + 1]).toBe('gh api -X PATCH repos/acme/widget/pulls/9 -f state=closed')
+  expect(calls.some(l => /^gh pr (comment|edit|close)\b/.test(l))).toBe(false)
 })

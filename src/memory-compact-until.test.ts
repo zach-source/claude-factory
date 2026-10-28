@@ -61,16 +61,21 @@ function fakeBd() {
   chmodSync(join(bin, 'bd'), 0o755)
 }
 
-/** A fake `gh` on PATH. `pr view <url> --json state` answers GH_STATE: a PrState prints as JSON;
+/** A fake `gh` on PATH. `api repos/<slug>/pulls/N` answers GH_STATE (OPEN, MERGED or CLOSED) as a REST pull;
  * "FAIL" exits 1 with no stdout, like a down or rate-limited gh. */
 function fakeGh() {
   mkdirSync(bin, { recursive: true })
   const script = [
     '#!/bin/sh',
-    'case "$1 $2" in',
-    '"pr view")',
-    '  if [ "$GH_STATE" = "FAIL" ]; then exit 1; fi',
-    '  printf \'%s\' \'{"state":"\'"$GH_STATE"\'"}\'; exit 0;;',
+    'case "$1" in',
+    '"api")',
+    '  case "$2" in repos/acme/widget/pulls/*) ;; *) exit 1;; esac',
+    '  case "$GH_STATE" in',
+    '    FAIL) exit 1;;',
+    '    OPEN) printf \'%s\' \'{"state":"open"}\';;',
+    '    MERGED) printf \'%s\' \'{"state":"closed","merged_at":"2026-10-12T10:00:00Z"}\';;',
+    '    CLOSED) printf \'%s\' \'{"state":"closed"}\';;',
+    '  esac; exit 0;;',
     'esac',
   ].join('\n')
   writeFileSync(join(bin, 'gh'), script)

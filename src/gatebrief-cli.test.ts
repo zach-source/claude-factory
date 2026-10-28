@@ -28,7 +28,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
-/** fake gh: `gh pr view <url> --json additions,deletions,changedFiles` answers one fixed diff stat, and
+/** fake gh: `gh api repos/<slug>/pulls/N` answers one fixed diff stat, and
  * logs every call (one line an invocation), so a test can count how many times it actually ran */
 function fakeGh() {
   mkdirSync(bin, { recursive: true })
@@ -36,7 +36,7 @@ function fakeGh() {
     '#!/bin/sh',
     `echo "$*" >> '${calls}'`,
     'case "$1 $2" in',
-    `  "pr view") printf '%s' '{"additions":12,"deletions":3,"changedFiles":4}' ;;`,
+    `  "api repos/acme/widget/pulls/"*) printf '%s' '{"additions":12,"deletions":3,"changed_files":4}' ;;`,
     '  *) exit 1 ;;',
     'esac',
   ].join('\n')
@@ -181,8 +181,10 @@ test('gate-brief facts: key, goal, gate, verify/review summaries, and PR facts w
   })
   const companion = facts.prs.find((p: { role: string }) => p.role === 'companion')
   expect(companion).toMatchObject({ additions: null, deletions: null, changedFiles: null })
-  // only the code-role PR costs a `gh pr view` call
-  expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1)
+  // only the code-role PR costs a `gh api` call
+  const logged = readFileSync(calls, 'utf8').trim().split('\n')
+  expect(logged).toHaveLength(1)
+  expect(logged[0]).toMatch(/^api repos\/acme\/widget\/pulls\/\d+$/)
 })
 
 test('gate-brief facts refuses a run that is not at a gate', () => {
