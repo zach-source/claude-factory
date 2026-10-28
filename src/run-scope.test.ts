@@ -76,7 +76,7 @@ test('mail for another run is refused with no inbox write', () => {
 })
 
 const ENV = { FACTORY_RUN: 'A' }
-test.each(['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort'])(
+test.each(['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort', 'fork', 'rm'])(
   'otherRunRefusal: %s names one run',
   cmd => {
     expect(otherRunRefusal(cmd, ['B', '1'], ENV)).toContain('refused')

@@ -552,7 +552,7 @@ export function replayable(
   return null
 }
 
-const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort']
+const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort', 'fork', 'rm']
 
 /**
  * why a worker may not run this command: with FACTORY_RUN set, a run-scoped command must name exactly that run
