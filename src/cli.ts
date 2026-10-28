@@ -127,6 +127,7 @@ import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
+import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import * as ax from './ax'
 import type { Egress } from './ax'
@@ -3990,7 +3991,7 @@ const kickSelfUpdate = () => {
   spawnChild(CLI, ['self-update'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
@@ -4334,7 +4335,7 @@ const kickGc = () => {
   spawnChild(CLI, ['gc'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
@@ -4845,7 +4846,7 @@ const kickGcWorktrees = () => {
   spawnChild(CLI, ['gc', '--worktrees'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
@@ -4867,7 +4868,7 @@ const kickSweeps = () => {
   spawnChild(CLI, ['sweep'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, FACTORY_HOME: HOME },
+    env: kickEnv(process.env, HOME),
   }).unref()
 }
 
