@@ -19,6 +19,8 @@ export type WorkerInfo = {
   limit?: { at: number; kind: string; resetsAt: number }
   /** set once a runner gives up retrying something itself (a put stuck over ax ssh): the reconciler fails the attempt with this reason instead of retrying silently */
   failed?: string
+  /** the text of the one manager mail. Set only when AX failed to restore the task (ActorResumeFailed) and this call wrote the rig's no-suspend marker */
+  resumeFailed?: string
   /** why an AX worker has not started: the deadline names it instead of "no report" */
   pending?: string
 }

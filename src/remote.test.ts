@@ -2287,3 +2287,80 @@ test('a serve exit with no "serve died:" line keeps the whole log as the reason'
   expect(row.error).toBe('serve exited; its log: h exited 1: boom')
   rmSync(join(home, 'runs', 'r33'), { recursive: true })
 })
+
+const markerOf = (rig: string) => join(home, `ax-no-suspend-${rig}.json`)
+/** the manager's mails from the factory in the run's saved state, about a failed restore */
+const resumeMails = (id: string): { from: string; text: string }[] =>
+  (
+    JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot.context.mail.manager ?? []
+  ).filter(
+    (m: { from: string; text: string }) => m.from === 'factory' && m.text.includes('ActorResumeFailed'),
+  )
+
+test('ActorResumeFailed writes the rig no-suspend marker and mails the manager once', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r34')
+  clusterConds('Failed', RESUME_FAILED)
+  factory(['tick'])
+  const marker = JSON.parse(readFileSync(markerOf('wt'), 'utf8'))
+  expect(typeof marker.at).toBe('number')
+  expect(marker.why).toContain('runsc restore: exit status 128')
+  expect(resumeMails('r34')).toHaveLength(1)
+  const text = resumeMails('r34')[0]!.text
+  expect(text).toContain('wt')
+  expect(text).toContain('24 h')
+  factory(['tick']) // the same failure again: the marker is fresh, so no second mail
+  expect(resumeMails('r34')).toHaveLength(1)
+  rmSync(markerOf('wt'), { force: true })
+  rmSync(join(home, 'runs', 'r34'), { recursive: true })
+})
+
+test('only an ActorResumeFailed writes the marker: another reason, no condition or a serve exit does not', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r35')
+  clusterConds(
+    'Failed',
+    '  conditions:\n  - type: Ready\n    status: "False"\n    reason: Other\n    message: m\n',
+  )
+  factory(['tick'])
+  rmSync(join(home, 'runs', 'r35'), { recursive: true })
+  launched('r36')
+  clusterConds('Failed', '')
+  factory(['tick'])
+  rmSync(join(home, 'runs', 'r36'), { recursive: true })
+  launched('r37')
+  cluster('Running', { status: 'exited', log: 'serve died: ActorResumeFailed', lines: [] })
+  factory(['tick'])
+  rmSync(join(home, 'runs', 'r37'), { recursive: true })
+  expect(existsSync(markerOf('wt'))).toBe(false)
+})
+
+/** a run r whose repo is `repo`, after the worker asked the manager and went idle on a Running task */
+function askingIdle(id: string, repo: string) {
+  launched(id)
+  const runFile = join(home, 'runs', id, 'run.json')
+  writeFileSync(runFile, JSON.stringify({ ...JSON.parse(readFileSync(runFile, 'utf8')), repo }))
+  const ask = JSON.stringify({ argv: ['mail', id, 'manager', 'which db?'], from: 'a', at: 1 })
+  cluster('Running', { status: 'idle', session: 's1', lines: [ask] })
+  factory(['tick']) // the question is replayed
+  factory(['tick']) // asked and idle
+}
+
+test('a rig with a fresh no-suspend marker keeps its asking idle worker running; another rig and an old marker do not', () => {
+  const mark = (rig: string, ageH: number) =>
+    writeFileSync(markerOf(rig), JSON.stringify({ at: Date.now() - ageH * 3_600_000, why: 'x' }))
+  mark('wt', 1)
+  askingIdle('r38', join(dir, 'wt'))
+  expect(called()).not.toContain('suspend task')
+  rmSync(join(home, 'runs', 'r38'), { recursive: true })
+
+  askingIdle('r39', join(dir, 'other-rig')) // marker is for wt, not this rig
+  expect(called()).toContain('suspend task t')
+  rmSync(join(home, 'runs', 'r39'), { recursive: true })
+
+  mark('wt', 25)
+  askingIdle('r40', join(dir, 'wt'))
+  expect(called()).toContain('suspend task t')
+  rmSync(join(home, 'runs', 'r40'), { recursive: true })
+  rmSync(markerOf('wt'), { force: true })
+})

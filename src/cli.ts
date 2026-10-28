@@ -712,6 +712,25 @@ async function syncAsRemoteUser(rig: Rig) {
   }
 }
 
+const NO_SUSPEND_MS = 24 * 3_600_000
+const noSuspendFile = (run: Run) =>
+  join(HOME, `ax-no-suspend-${(rigOf(run.repo)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
+/**
+ * True when AX failed to restore a worker of this run's rig less than 24 h ago. A suspended worker of
+ * that rig can fail to restore. So the reconciler keeps it running (claude-factory-x500).
+ * ponytail: a fixed 24 h window. Upgrade: clear the marker after one restore of that rig succeeds.
+ */
+function noSuspend(run: Run) {
+  const m = existsSync(noSuspendFile(run)) ? readJson<{ at?: number }>(noSuspendFile(run)) : null
+  return typeof m?.at === 'number' && Date.now() - m.at < NO_SUSPEND_MS
+}
+/** write the marker; the text of the one mail that tells the manager */
+function markNoSuspend(run: Run, why: string) {
+  const rig = rigOf(run.repo)?.name ?? basename(run.repo)
+  writeJson(noSuspendFile(run), { at: Date.now(), why: clip(why, 500) })
+  return `AX could not restore a ${rig} worker (${clip(why, 300)}). For 24 h the factory does not suspend ${rig} workers that wait on the manager, so no more of them fail the same way.`
+}
+
 /**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
  * or suspended task is not polled, and a failed or deleted one is gone, like a closed pane
@@ -728,8 +747,12 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
     { status: 'gone', failed: clip(why, 500) }
   )
-  if (phase !== 'Running')
-    return gone(`phase ${phase ?? 'not found'}${phase === 'Failed' && failure ? `: ${failure}` : ''}`)
+  if (phase !== 'Running') {
+    const info = gone(`phase ${phase ?? 'not found'}${phase === 'Failed' && failure ? `: ${failure}` : ''}`)
+    if (phase === 'Failed' && failure?.startsWith('ActorResumeFailed') && !noSuspend(run))
+      info.resumeFailed = markNoSuspend(run, failure)
+    return info
+  }
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
@@ -2750,6 +2773,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
+    if (info.resumeFailed) send({ type: 'MAIL', from: 'factory', to: 'manager', text: info.resumeFailed })
     send({ type: 'FAIL', seq: c.seq, reason: info.failed })
     return info.status
   }
@@ -2948,7 +2972,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       )
     )
       send({ type: 'READ', box: node, seen: c.mail[node]!.length })
-  } else if (isAsking && status === 'idle' && runner.suspend) {
+  } else if (isAsking && status === 'idle' && runner.suspend && !noSuspend(run)) {
     runner.suspend(c.pane)
   } else if (
     !isAsking &&
