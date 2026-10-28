@@ -1094,6 +1094,19 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
 }
 
 /**
+ * The text that serve logs when it dies. First line: the message, with each newline as " | ", 500 characters
+ * at most. Then the stack, 1200 characters at most. The poll log holds the last 2000 characters. A long stack
+ * must not push the message (for example git's fatal line) out of it (claude-factory-x500).
+ */
+export function diedText(e: unknown) {
+  const msg = String((e as Error)?.message ?? e)
+    .trim()
+    .replace(/\s*\n\s*/g, ' | ')
+    .slice(0, 500)
+  return `serve died: ${msg}\n${((e as Error)?.stack ?? '').slice(0, 1200)}`
+}
+
+/**
  * the worker: the brief once, then queued prompts in order, one turn at a time. A resumed task restarts
  * it with the workspace as it was, so a session already started is never briefed again.
  */
@@ -1102,7 +1115,7 @@ export async function serve(model?: string, o: { idleMs?: number; once?: boolean
   try {
     await serveTurns(model, o)
   } catch (e) {
-    appendFileSync(serveLog(), `${new Date().toISOString()} serve died: ${(e as Error).stack ?? e}\n`)
+    appendFileSync(serveLog(), `${new Date().toISOString()} ${diedText(e)}\n`)
     throw e
   }
 }

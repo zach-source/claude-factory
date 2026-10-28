@@ -171,6 +171,10 @@ Substrate's `EgressPolicy` allows a task by hostname and port only: once `proxy.
 
 A worker that is idle and has asked the manager (the existing `isAsking`) is suspended with `ax suspend task`. Its status shows `suspended` on the board, and it is not polled. When the answer arrives, `deliver` sees the task is not `Running` and runs `ax resume task`, and the mail stays unread. The next tick delivers it to the running task.
 
+AX can fail to restore a suspended task. The task then has phase `Failed` and a condition `Ready=False` with reason `ActorResumeFailed`. The message holds the `runsc restore` error. AX does not retry it. The failure reason of the attempt is `phase Failed: ActorResumeFailed: <message>`.
+
+The factory also writes `$FACTORY_HOME/ax-no-suspend-<rig>.json` (`{at, why}`) and sends one mail from `factory` to the manager. For 24 hours after `at`, the factory does not suspend an idle worker of that rig that asked the manager. That worker stays `Running`, and the mail reaches it with `worker prompt`. Delete the file to end the window early.
+
 ### Keys: the egress gateway puts them in, from agent-vault
 
 The VM holds no key and no token. Every HTTPS request out goes through Substrate's egress gateway, which decrypts it (sdsmint), checks it against the task's EgressPolicy, and, for a rule with `replaceHeaders`, swaps the placeholder in an auth header for a credential it fetches from its credential provider: agent-vault (`ate-secret://agent-vault/<vault>/<KEY>`). A gateway serves one provider. Substrate's reference provider reads Kubernetes Secrets, which would mean copying keys into them; agent-vault reads them from where they live.

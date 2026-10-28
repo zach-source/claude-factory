@@ -2239,3 +2239,43 @@ test('the host ax call inherits AX_AUTH_TOKEN, and the fake records only whether
     else process.env.AX_AUTH_TOKEN = saved
   }
 })
+
+const failedTask = (cond: string) => `status:\n  phase: Failed\n  conditions:\n${cond}`
+test('failureOf reads the first False condition of an ax task as "reason: message"', () => {
+  const msg = 'resuming actor a/b: while running runsc restore: exit status 128'
+  expect(
+    ax.failureOf(
+      failedTask(
+        `  - type: Ready\n    status: "False"\n    reason: ActorResumeFailed\n    message: "${msg}"\n`,
+      ),
+    ),
+  ).toBe(`ActorResumeFailed: ${msg}`)
+  // a False condition with no message: the reason alone
+  expect(ax.failureOf(failedTask('  - type: Ready\n    status: "False"\n    reason: Boom\n'))).toBe('Boom')
+  // the first False one, after a True one
+  expect(
+    ax.failureOf(
+      failedTask(
+        '  - type: A\n    status: "True"\n    reason: Fine\n  - type: Ready\n    status: "False"\n    reason: Bad\n    message: m\n',
+      ),
+    ),
+  ).toBe('Bad: m')
+})
+test('failureOf is undefined for a healthy task, no conditions or YAML that does not parse, and never throws', () => {
+  expect(ax.failureOf(failedTask('  - type: Ready\n    status: "True"\n    reason: Ok\n'))).toBeUndefined()
+  expect(ax.failureOf('status:\n  phase: Running\n')).toBeUndefined()
+  expect(ax.failureOf('a: [unclosed\n  - : :\n\t}{')).toBeUndefined()
+  expect(ax.failureOf('')).toBeUndefined()
+})
+
+test('diedText puts the message on one line, newlines as " | ", before a clipped stack', () => {
+  const e = new Error(`git clone x: Cloning into 'r'...\nfatal: Recv failure: Connection reset by peer\n`)
+  e.stack = `Error: ${e.message}\n${'    at f (w.ts:1:1)\n'.repeat(200)}`
+  const [first, ...rest] = worker.diedText(e).split('\n')
+  expect(first).toBe(
+    `serve died: git clone x: Cloning into 'r'... | fatal: Recv failure: Connection reset by peer`,
+  )
+  expect(rest.join('\n').length).toBeLessThanOrEqual(1200)
+  expect(worker.diedText('plain')).toBe('serve died: plain\n')
+  expect(worker.diedText(new Error('x'.repeat(900))).split('\n')[0]?.length).toBe('serve died: '.length + 500)
+})
