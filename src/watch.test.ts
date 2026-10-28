@@ -22,7 +22,7 @@ const prState = join(dir, 'pr-state.json')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], path?: string) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, PATH: path ?? `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0' },
   })
