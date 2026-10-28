@@ -1605,8 +1605,7 @@ export function applyTiers(
         activation: activation(events.get(n.path) ?? [], now),
         runs: 0, // promote needs a run count that applyTiers does not gather; it never promotes
         ageDays: Number.isFinite(atMs) ? (now - atMs) / DAY_MS : undefined,
-        // an entry that already ends with the cut line was trimmed: it counts as short enough
-        chars: n.body.endsWith(cutLine(topicOf(n))) ? 0 : n.summary.length + 1 + n.body.length,
+        chars: n.summary.length + 1 + n.body.length,
         expired: verdict?.state === 'ended',
         expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
