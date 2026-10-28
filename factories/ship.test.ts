@@ -151,7 +151,7 @@ test('queue drafts a ready PR before it pushes a conflict-fix merge, and sends u
   expect(one).toContain('If the undo fails, do not push')
   expect(two).toContain('Unreviewed commits:')
   expect(two).toContain(
-    'only when the latest `Unreviewed commits:` comment is newer than the latest `Reviewed head:` line',
+    'only when the latest `Unreviewed commits:` comment is newer than the latest trusted `Reviewed head:` line (an approve verdict, from the same sources as release;',
   )
   expect(two).toContain('bd update <bead> --remove-label ship --add-label factory --add-label station:review')
 })
