@@ -8034,13 +8034,13 @@ function managerSender(run: Run): 'manager' {
 
 /**
  * claude-factory-5y7b: the env marker that says a worker runs this command, else undefined.
- * forMail skips FACTORY_FROM: the manager mails with FACTORY_FROM=manager (remote.test.ts), so managerSender keeps its old three markers.
+ * forMail skips FACTORY_FROM and FACTORY_RUN: the manager mails with FACTORY_FROM=manager (remote.test.ts) and a run worker mails its own station (run-scope.test.ts), so managerSender keeps its old three markers.
  * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
  */
 function workerMarker(forMail = false): string | undefined {
   return process.env.FACTORY_FROM && !forMail
     ? 'FACTORY_FROM is set'
-    : process.env.FACTORY_RUN
+    : process.env.FACTORY_RUN && !forMail
       ? 'FACTORY_RUN is set'
       : process.env.FACTORY_DEF_NAME
         ? 'FACTORY_DEF_NAME is set'

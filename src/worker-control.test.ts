@@ -33,7 +33,7 @@ const markers: Record<string, Record<string, string>> = {
   FACTORY_DEF_NAME: { FACTORY_DEF_NAME: 'lifecycle' },
   BEADS_ACTOR: { BEADS_ACTOR: 'factory/lifecycle-x/implement' },
 }
-const refused = /a worker cannot run factory (say|stop|resume|start|fork)/
+const refused = /a worker cannot run factory (say|stop|resume|start|fork)|cannot run fork for another run/
 
 for (const [name, env] of Object.entries(markers)) {
   test(`${name}: say is refused and runs no ax`, () => {
