@@ -1313,8 +1313,9 @@ test('the AWS broker egress rule sends the vault key as the raw Authorization va
   expect(rule).toEqual({ hosts: [host], key: 'AWS_BROKER', header: 'Authorization', prefix: '' })
   // without the trailing ':Authorization:' the prefix is 'Bearer ', which the SDK does not send
   expect(ax.parseEgress(`${host}=AWS_BROKER`).prefix).toBeUndefined()
-  const policy = ax.egressPolicy('v', [rule])
+  const policy = ax.egressPolicy('v', [{ ...rule, port: 8443 }])
   const found = policy.rules.find(r => r.https?.hostnames?.includes(host))
+  expect((found?.https as { ports?: unknown }).ports).toEqual({ numbers: [8443] })
   expect((found?.https as { effects?: { replaceHeaders: unknown } }).effects?.replaceHeaders).toEqual([
     { header: 'Authorization', prefix: '', credentialUri: 'ate-secret://agent-vault/v/AWS_BROKER' },
   ])
