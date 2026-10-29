@@ -335,7 +335,7 @@ export const beads = (repo: string, actor: string) => ({
   /** the rig's bead-id prefix, thrown on failure instead of prefix()'s lenient "" (bd down looks the same as no prefix) */
   prefixStrict: () => must(bd(repo, actor, 'config', 'get', 'issue_prefix'), 'config get issue_prefix'),
   ready: (): Bead[] =>
-    JSON.parse(must(bd(repo, actor, 'ready', '--label', LABEL, '--json', '-n', '50'), 'ready')),
+    JSON.parse(must(bd(repo, actor, 'ready', '--label', LABEL, '--json', '-n', '0'), 'ready')),
   /** ready work nobody has handed to the factory yet: what a person prioritizes, children with their parents */
   unqueued: (): Bead[] =>
     (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '0'), 'ready')) as Bead[]).filter(
