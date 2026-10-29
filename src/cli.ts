@@ -1593,6 +1593,11 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
           `- kubectl reaches the live cluster read-only (its kubeconfig is set up, its token added on the way out): get, describe and logs work; secrets, exec and any change are refused, so a cluster change goes through the repo.`,
         ]
       : []),
+    ...(rig?.env?.AWS_CONTAINER_CREDENTIALS_FULL_URI
+      ? [
+          `- AWS reads work: the AWS CLI and SDKs get a read-only role's credentials from AWS_CONTAINER_CREDENTIALS_FULL_URI by themselves (nix shell nixpkgs#awscli2 -c aws ...). Every write, and every secret read (secretsmanager:GetSecretValue, SSM decryption, kms:Decrypt, state bucket objects), is refused: an AWS change goes through the repo. Only the AWS endpoints the rig lists are reachable. For S3 objects, first run aws configure set default.s3.addressing_style path, as bucket hostnames are not reachable.`,
+        ]
+      : []),
     `- A tool you lack (go, make, kubectl, gcc...): nix shell nixpkgs#<pkg> ... -c <command>, or the repo's own nix develop. The VM reaches only the hosts it needs (the model's API, GitHub, the Nix cache and what the rig adds): a download elsewhere fails, so ask the manager instead of working around it.`,
     ...(run.ship
       ? [

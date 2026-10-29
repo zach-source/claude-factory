@@ -615,6 +615,7 @@ const NOT_DEVENV = new Set([
   'GIT_SSL_CAINFO',
   'SSL_CERT_FILE',
   'NIX_SSL_CERT_FILE',
+  'AWS_CA_BUNDLE',
 ])
 
 /**
@@ -1003,6 +1004,7 @@ export function trustCA() {
     GIT_SSL_CAINFO: ca,
     SSL_CERT_FILE: ca,
     NIX_SSL_CERT_FILE: ca,
+    AWS_CA_BUNDLE: ca,
   })
 }
 

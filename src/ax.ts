@@ -525,7 +525,7 @@ export function createPolicy(
  * which `serve` waits out. The keys in the VM are placeholders: the gateway puts the real ones in on the way out.
  */
 export const launch = (l: Launch) => {
-  const env = {
+  const env: Record<string, string> = {
     ...l.env,
     FACTORY_CA: egressCA(),
     // the policy allows only the hosts it names, so skip the telemetry it would refuse
@@ -567,6 +567,9 @@ export const launch = (l: Launch) => {
       }),
     }),
   }
+  // fail closed: the broker's bearer lives in the vault, so the VM never holds a real token
+  delete env.AWS_CONTAINER_AUTHORIZATION_TOKEN
+  if (env.AWS_CONTAINER_CREDENTIALS_FULL_URI) env.AWS_CONTAINER_AUTHORIZATION_TOKEN = 'placeholder'
   must(['apply', '-f', '-'], manifest({ ...l, env }))
   return `ax://${l.name}`
 }
