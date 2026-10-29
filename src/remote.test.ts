@@ -1711,6 +1711,66 @@ test("a launch stores the origin's GitHub owner in the side file and sends the m
   }
 }, 60_000) // git clones and whole ticks
 
+test('an ax brief says AWS is read-only once, only when the rig env holds the broker URI (claude-factory-5n22)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+  }
+  mkdirSync(dir, { recursive: true })
+  for (const [id, env] of [
+    ['aws1a', { AWS_CONTAINER_CREDENTIALS_FULL_URI: 'https://broker.example/creds' }],
+    ['aws1b', {}],
+  ] as const) {
+    const origin = join(dir, id, 'origin.git')
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
+    const run = {
+      id,
+      factory: join(runDir, 'factory.ts'),
+      repo: worktree,
+      goal: 'read aws',
+      ws: 'w1',
+      worktree,
+    }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(def)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax', env }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img' }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    const brief = readFileSync(
+      join(
+        runDir,
+        readdirSync(runDir).find(f => f.endsWith('.brief.md'))!,
+      ),
+      'utf8',
+    )
+    if (id === 'aws1a') {
+      expect(brief.split('- AWS reads work:').length - 1).toBe(1)
+      expect(brief).toContain('Every write, and every secret read')
+    } else expect(brief).not.toContain('AWS_CONTAINER_CREDENTIALS_FULL_URI')
+    rmSync(runDir, { recursive: true })
+  }
+}, 60_000)
+
 test('an ax launch searches the laptop memory once and puts the top notes in the brief', () => {
   const sh = (cwd: string, ...a: string[]) => {
     const p = Bun.spawnSync(a, { cwd })

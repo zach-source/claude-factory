@@ -1324,7 +1324,10 @@ test('the AWS broker egress rule sends the vault key as the raw Authorization va
 test('the task env holds only a placeholder AWS container token, and only with the broker URI (claude-factory-5n22)', () => {
   const uri = 'https://aws-broker.factory-aws.svc.cluster.local/creds'
   const rows: [Record<string, string>, string | undefined][] = [
-    [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: uri, AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' }, 'placeholder'],
+    [
+      { AWS_CONTAINER_CREDENTIALS_FULL_URI: uri, AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' },
+      'placeholder',
+    ],
     [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: uri }, 'placeholder'],
     [{ AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' }, undefined],
     [{}, undefined],
