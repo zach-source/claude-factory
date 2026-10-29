@@ -525,7 +525,7 @@ export function createPolicy(
  * which `serve` waits out. The keys in the VM are placeholders: the gateway puts the real ones in on the way out.
  */
 export const launch = (l: Launch) => {
-  const env = {
+  const env: Record<string, string> = {
     ...l.env,
     FACTORY_CA: egressCA(),
     // the policy allows only the hosts it names, so skip the telemetry it would refuse
