@@ -1089,6 +1089,7 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     await pushing
     expect(readFileSync(join(own, 'egress-ca.crt'), 'utf8')).toBe('CA-PEM')
     expect(process.env.GIT_SSL_CAINFO).toBe(join(own, 'egress-ca.crt'))
+    expect(process.env.AWS_CA_BUNDLE).toBe(join(own, 'egress-ca.crt')) // aws CLI v2 ignores SSL_CERT_FILE
     expect(existsSync(join(repo, '.git'))).toBe(true)
     expect(existsSync(join(home, '.gitconfig'))).toBe(false) // git's auth header comes in the task's env
     // the rig's flags, then the gateway's CA for bazel's gRPC and, in a Java trust store, for its JVM
@@ -1304,6 +1305,46 @@ test('--egress parses hosts, a vault key, and its header and prefix', () => {
   expect(() => ax.parseEgress('localhost')).toThrow('not a hostname')
   expect(() => ax.parseEgress('a.example.com=openai')).toThrow('SCREAMING_SNAKE_CASE')
   expect(() => ax.parseEgress('a.example.com=K:bad header:')).toThrow('header name')
+})
+
+test('the AWS broker egress rule sends the vault key as the raw Authorization value (claude-factory-5n22)', () => {
+  const host = 'aws-broker.factory-aws.svc.cluster.local'
+  const rule = ax.parseEgress(`${host}=AWS_BROKER:Authorization:`)
+  expect(rule).toEqual({ hosts: [host], key: 'AWS_BROKER', header: 'Authorization', prefix: '' })
+  // without the trailing ':Authorization:' the prefix is 'Bearer ', which the SDK does not send
+  expect(ax.parseEgress(`${host}=AWS_BROKER`).prefix).toBeUndefined()
+  const policy = ax.egressPolicy('v', [rule])
+  const found = policy.rules.find(r => r.https.hostnames?.includes(host))
+  expect(found?.https.effects?.replaceHeaders).toEqual([
+    { header: 'Authorization', prefix: '', credentialUri: 'ate-secret://agent-vault/v/AWS_BROKER' },
+  ])
+  expect(ax.createPolicy('aws-1', [rule])).toBeBoolean() // the policy builds without a refusal
+})
+
+test('the task env holds only a placeholder AWS container token, and only with the broker URI (claude-factory-5n22)', () => {
+  const uri = 'https://aws-broker.factory-aws.svc.cluster.local/creds'
+  const rows: [Record<string, string>, string | undefined][] = [
+    [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: uri, AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' }, 'placeholder'],
+    [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: uri }, 'placeholder'],
+    [{ AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' }, undefined],
+    [{}, undefined],
+  ]
+  for (const vault of [undefined, 'factory']) {
+    if (vault) process.env.FACTORY_AX_VAULT = vault
+    try {
+      for (const [rigEnv, want] of rows) {
+        ax.launch({ name: 'aws-t', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: rigEnv })
+        const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+        const env = Object.fromEntries(
+          task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+        )
+        expect(env.AWS_CONTAINER_AUTHORIZATION_TOKEN).toBe(want)
+        expect(JSON.stringify(task)).not.toContain('zqsecret')
+      }
+    } finally {
+      delete process.env.FACTORY_AX_VAULT
+    }
+  }
 })
 
 test('a rig egress rule on another port names it, as a Dolt remotesapi needs', () => {
