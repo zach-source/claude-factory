@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { autoPick } from './autoqueue'
 import {
   backlogOf,
   beads,
@@ -852,4 +853,33 @@ test('reship reopens, adds only the ship label, comments, and never claims', () 
   const bad = run('reopen')
   expect(bad.ok).toBe(false)
   expect(bad.calls.map(c => c.split(' ')[0])).toEqual(['reopen'])
+})
+
+test('unqueued reads every ready bead, so a pickable bead after the first 100 is found (claude-factory-0hp2)', () => {
+  const bin = join(tmpdir(), `fake-bd-unqueued-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const all = Array.from({ length: 101 }, (_, i) => ({
+    id: `fx-${i + 1}`,
+    title: 't',
+    priority: 1,
+    created_at: '2026-01-01T00:00:00Z',
+    labels: i < 100 ? ['factory'] : [],
+  }))
+  // like bd: -n N caps the list, -n 0 means no cap
+  const script = [
+    '#!/usr/bin/env bun',
+    `const a = process.argv.slice(2), n = Number(a[a.indexOf('-n') + 1])`,
+    `if (a[0] === 'ready') process.stdout.write(JSON.stringify(${JSON.stringify(all)}.slice(0, n || undefined)))`,
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const ready = beads(tmpdir(), 'factory').unqueued()
+    const got = autoPick(ready, Date.now(), [], { minPriority: 2, perHour: 3 }, 5)
+    expect(got.map(b => b.id)).toEqual(['fx-101'])
+  } finally {
+    process.env.PATH = path
+  }
 })
