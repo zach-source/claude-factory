@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { autoPick } from './autoqueue'
 import {
   backlogOf,
   beads,
@@ -852,4 +853,83 @@ test('reship reopens, adds only the ship label, comments, and never claims', () 
   const bad = run('reopen')
   expect(bad.ok).toBe(false)
   expect(bad.calls.map(c => c.split(' ')[0])).toEqual(['reopen'])
+})
+
+test('unqueued reads every ready bead, so a pickable bead after the first 100 is found (claude-factory-0hp2)', () => {
+  const bin = join(tmpdir(), `fake-bd-unqueued-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const all = Array.from({ length: 101 }, (_, i) => ({
+    id: `fx-${i + 1}`,
+    title: 't',
+    priority: 1,
+    created_at: '2026-01-01T00:00:00Z',
+    labels: i < 100 ? ['factory'] : [],
+  }))
+  // like bd: -n N caps the list, -n 0 means no cap
+  const script = [
+    '#!/usr/bin/env bun',
+    `const a = process.argv.slice(2), n = Number(a[a.indexOf('-n') + 1])`,
+    `if (a[0] === 'ready') process.stdout.write(JSON.stringify(${JSON.stringify(all)}.slice(0, n || undefined)))`,
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const ready = beads(tmpdir(), 'factory').unqueued()
+    const got = autoPick(ready, Date.now(), [], { minPriority: 2, perHour: 3 }, 5)
+    expect(got.map(b => b.id)).toEqual(['fx-101'])
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+const withFakeReady = (all: unknown[], fn: () => void) => {
+  const bin = join(tmpdir(), `fake-bd-ready-${process.pid}-${Math.random().toString(36).slice(2)}`)
+  mkdirSync(bin, { recursive: true })
+  // like bd: -n N caps the list, -n 0 means no cap
+  const script = [
+    '#!/usr/bin/env bun',
+    `const a = process.argv.slice(2), n = Number(a[a.indexOf('-n') + 1])`,
+    `if (a[0] === 'ready') process.stdout.write(JSON.stringify(${JSON.stringify(all)}.slice(0, n || undefined)))`,
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    fn()
+  } finally {
+    process.env.PATH = path
+  }
+}
+
+test('ready reads every factory bead, so a dispatchable bead after the first 50 is found', () => {
+  const all = Array.from({ length: 51 }, (_, i) => ({
+    id: `fx-${i + 1}`,
+    title: 't',
+    priority: 1,
+    labels: ['factory'],
+    assignee: i < 50 ? 'someone' : undefined,
+  }))
+  withFakeReady(all, () => {
+    const got = dispatchable(beads(tmpdir(), 'factory').ready(), new Set(), 5)
+    expect(got.map(b => b.id)).toEqual(['fx-51'])
+  })
+})
+
+test('owned reads every ready bead, so an owned bead after the first 100 is found', () => {
+  const all = Array.from({ length: 101 }, (_, i) => ({
+    id: `fx-${i + 1}`,
+    title: 't',
+    priority: 1,
+    metadata: i < 100 ? {} : { owner_decisions: { pilot: {} } },
+  }))
+  withFakeReady(all, () => {
+    expect(
+      beads(tmpdir(), 'factory')
+        .owned()
+        .map(b => b.id),
+    ).toEqual(['fx-101'])
+  })
 })
