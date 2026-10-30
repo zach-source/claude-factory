@@ -71,7 +71,7 @@ const blockingScope = `A finding blocks only when it is one of these kinds:
 1. An acceptance criterion fails.
 2. The diff adds the defect, or the defect is in lines the diff changed, or the diff makes an existing defect reachable or enabled (a new caller, route, default, flag or input path).
 3. The defect is a sibling site of a defect that the diff fixes, or of an earlier round's finding.
-A finding outside this branch's diff never makes the verdict changes, unless it is kind 1 or 3 or the diff makes it reachable (kind 2). A gap that origin/{base_branch} also has, that no acceptance criterion names and that is not kind 2 or 3 does not block: list it under 'Not blocking' and file it as separate work. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (\`--deps discovered-from:<run bead>\`, see Tracking). Only a person, or triage or plan on the run's own bead, sets P0 or P1. Each blocking finding names its kind: 1, 2 or 3.`
+A finding outside this branch's diff never makes the verdict changes, unless it is kind 1 or 3 or the diff makes it reachable (kind 2). A gap that origin/{base_branch} also has, that no acceptance criterion names and that is not kind 2 or 3 does not block: list it under 'Not blocking' and file it as separate work. Run \`bd search\` first and add the instance to an open class bead. If none is open, file one bead per class at P2 or lower, with the instances as evidence (\`--deps discovered-from:<run bead>\`, see Tracking). Only a person, or triage or plan on the run's own bead, sets P0 or P1. Each blocking finding names its kind: 1, 2 or 3. When you find one missing guard, list every sibling of its class before you report: every entry point of the same kind (CLI verb, route, handler, tick pass, spawned child), with each one's guard status. Report the whole class as one finding, with the list, so implement fixes all of it in one round.`
 
 // review, security and check interpolate this: how the verdict reaches the pull request. When FACTORY_GH_REVIEWER is 1
 // the task runs with the reviewer identity's token, and the worker hook allows the approving call
@@ -108,6 +108,8 @@ export default {
   nodes: {
     // ── intake ───────────────────────────────────────────────────────────────
     triage: {
+      // parked on a PR, plain mail waits for the PR watch or the timer (claude-factory-ey90)
+      holdMail: true,
       timeoutMin: 20,
       prompt: `Classify the goal and route it. Read enough of the repo (docs, layout, recent history, any issue or alert the goal cites) to decide; change nothing.
 - build: a feature, a bug fix or any change whose intent is known

@@ -215,6 +215,23 @@ test('queue sends a PR that needs changes back to implement through the existing
   )
 })
 
+test('queue does not send a PR back when its red tests are held assertions', () => {
+  const p = ship.nodes.queue.prompt
+  const step2 = p.split('\n2. ')[1]!
+  for (const s of [
+    'read its bead comments and the plan',
+    'held assertions',
+    'an open bead or an owner decision',
+    'Do not send it back',
+  ])
+    expect(step2).toContain(s)
+  const send = 'bd update <bead> --remove-label ship --add-label factory --add-label station:implement'
+  expect(step2.indexOf('held assertions')).toBeLessThan(step2.indexOf(send))
+  expect(p).toContain('report blocked once')
+  expect(p).toContain('Report ready when at least one queued pull request is current')
+  expect(Object.keys(ship.nodes.queue.next)).toEqual(['ready', 'again', 'empty'])
+})
+
 test('a run ships 30 PRs in a row without a stuck step budget', () => {
   const round = ['ready', 'ready', 'published']
   const outcomes = [...Array(30).keys()].flatMap(() => round)

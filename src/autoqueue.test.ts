@@ -69,3 +69,13 @@ test('off when config is absent or malformed', () => {
   expect(autoQueueOf({ autoQueue: { minPriority: 2, perHour: 0 } })).toBeUndefined()
   expect(autoQueueOf({ autoQueue: cfg })).toEqual(cfg)
 })
+
+test('never picks a bead that carries pm_finding metadata (legacy pm finding or proposal), any value', () => {
+  const ready = [
+    bead('f', { metadata: { pm_finding: 'epic-done-open:acme:acme-1' } }),
+    bead('p', { metadata: { pm_finding: 'proposal:acme:x' } }),
+    bead('h', { metadata: { hygiene_proposed: 'x' } }),
+    bead('n'),
+  ]
+  expect(ids(autoPick(ready, NOW, [], cfg, 10)).sort()).toEqual(['h', 'n'])
+})

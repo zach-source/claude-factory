@@ -26,6 +26,7 @@ const isLeaf = (b: Bead, parents: Set<string>) =>
 const isHeld = (b: Bead, excluded: Set<string>) =>
   excluded.has(b.id) ||
   !!sweepFiler(b) ||
+  b.metadata?.pm_finding !== undefined ||
   !!b.labels?.some(l => l === LABEL || l.startsWith('held:') || HELD.includes(l)) ||
   isOwned(b)
 
@@ -34,7 +35,7 @@ const age = (b: Bead) => Date.parse(b.created_at ?? '') || 0
 /**
  * Which unlabeled ready beads a rig takes into its queue. Pure: it reads nothing and writes nothing.
  * It takes a leaf only (no parent, no open child, not an epic), with no assignee, priority at or
- * above `minPriority`, and not held back (rejected, owner, human, ship, sweep-filed, flood-guard held).
+ * above `minPriority`, and not held back (rejected, owner, human, ship, sweep-filed, a pm finding bead, flood-guard held).
  * The best come first: priority, then oldest. At most `min(room, perHour - picks in the last hour)`.
  * `parents` is the set of ids that have an open child; `history` is this rig's earlier pick times.
  */

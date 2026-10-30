@@ -1081,6 +1081,10 @@ export function reworkBase(repo: string, branch: string) {
  * (fetched first); else the remote's default branch when it already holds everything local (fetched, so merged work,
  * factory changes included, reaches new runs); else local HEAD
  */
+/** a VM worker's serve died in setup on `bd bootstrap -y`: a transient outage, not a fault of the work */
+export const isBootstrapFail = (r: string) =>
+  /^serve exited: serve died: beads in the VM: \S+ bootstrap -y: /.test(r)
+
 export function freshBase(repo: string, rig: Pick<Rig, 'params'> | undefined = rigOf(repo)) {
   const b = paramsOf({ params: { base_branch: '' } }, rig).base_branch!.trim()
   if (b && branchOk(b)) {
@@ -2864,6 +2868,22 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return info.status
     }
     if (info.resumeFailed) send({ type: 'MAIL', from: 'factory', to: 'manager', text: info.resumeFailed })
+    if (isBootstrapFail(info.failed)) {
+      // a bd bootstrap outage spends no attempt: 2 min for the first hit, the streak floor and one mail for the next
+      const prev = c.log.at(-1)
+      const again = prev?.node === node && prev.outcome === 'outage' && isBootstrapFail(prev.summary)
+      const text = `bd bootstrap fails on ${rigOf(run.repo)?.name ?? basename(run.repo)} VMs`
+      if (again && !(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === text))
+        send({ type: 'MAIL', from: 'factory', to: 'manager', text })
+      send({
+        type: 'FAIL',
+        seq: c.seq,
+        reason: info.failed,
+        hold: again ? 0 : now + 120_000,
+        ...(again ? {} : { holdMin: 2 }),
+      })
+      return info.status
+    }
     send({ type: 'FAIL', seq: c.seq, reason: info.failed })
     return info.status
   }
@@ -7075,6 +7095,8 @@ export type RigFacts = {
   goal?: string
   maxRuns?: number
   busy: number
+  /** ready beads nobody queued yet; absent in an old plan-facts.json (reads as 0) */
+  readyUnqueued?: number
   candidates: { id: string; title: string; priority?: number; issue_type?: string }[]
   epics: {
     id: string
@@ -7094,6 +7116,7 @@ const emptyRigFacts = (rig: Pick<Rig, 'goal' | 'maxRuns'>, busy: number, error?:
   goal: rig.goal,
   maxRuns: rig.maxRuns,
   busy,
+  readyUnqueued: 0,
   candidates: [],
   epics: [],
   closedRecently: [],
@@ -7107,6 +7130,7 @@ function rigFacts(
   rig: Rig,
   every: Bead[],
   ready: Bead[],
+  readyUnqueued: number,
   linked: Set<string>,
   busy: number,
   now: number,
@@ -7164,6 +7188,7 @@ function rigFacts(
     goal: rig.goal,
     maxRuns: rig.maxRuns,
     busy,
+    readyUnqueued,
     candidates,
     epics,
     closedRecently,
@@ -7261,6 +7286,7 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
         rig,
         b.every(),
         b.ready(),
+        b.unqueued().length,
         linked,
         busy,
         now,
@@ -7395,7 +7421,8 @@ function planSetCmd(answerPath?: string) {
     }))
     const items = plan.rankPlan(cleanAnswer, candidates)
     const found = [...rf.findings]
-    if (rf.goal && items.length === 0) found.push(plan.goalNoPlanFinding(name, rf.goal))
+    if (rf.goal && items.length === 0 && (rf.readyUnqueued ?? 0) === 0)
+      found.push(plan.goalNoPlanFinding(name, rf.goal))
     rigsPlan[name] = { items, findings: found }
   }
   const churnProposals = plan.churnProposals(Object.values(facts!).flatMap(rf => rf.findings))

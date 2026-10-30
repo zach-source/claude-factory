@@ -931,3 +931,62 @@ test('implement and quick tell the worker to grep sibling sites of its fix (smmr
     'A finding names an instance: grep for its siblings and fix the class, not the one line.',
   )
 })
+
+test('review, security and check list the whole class of a missing guard (pjno AC1, AC2)', () => {
+  const RULE =
+    "When you find one missing guard, list every sibling of its class before you report: every entry point of the same kind (CLI verb, route, handler, tick pass, spawned child), with each one's guard status. Report the whole class as one finding, with the list, so implement fixes all of it in one round."
+  for (const id of ['review', 'security', 'check']) {
+    const p = promptOf(lifecycle, id)
+    expect(p, id).toContain(RULE)
+    expect(p.split(RULE).length - 1, id).toBe(1)
+  }
+  for (const id of ['plan', 'implement', 'verify', 'quick'])
+    expect(promptOf(lifecycle, id), id).not.toContain(RULE)
+})
+
+// claude-factory-ey90: a triage parked on a PR holds plain mail; only a wake mail or the timer starts a worker
+function parkTriage(reason: string) {
+  const actor = createActor(compile(lifecycle)).start()
+  const send = (e: Parameters<typeof actor.send>[0]) => (actor.send(e), actor.getSnapshot())
+  send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 10 })
+  const s = send({ type: 'BLOCKED', seq: 1, reason, at: 20 })
+  return { send, s }
+}
+const mailTo = (to: string) =>
+  ({ type: 'MAIL', from: 'manager', to, text: 'Report blocked', at: 30 }) as const
+
+test('ey90 AC1: only the lifecycle triage node holds mail', () => {
+  expect(lifecycle.nodes.triage?.holdMail).toBe(true)
+  for (const id of ['plan', 'implement', 'verify', 'review'])
+    expect((lifecycle as Factory).nodes[id]?.holdMail, id).toBeFalsy()
+})
+
+test('ey90 AC2, AC3: plain mail to a PR-parked triage waits; a wake mail starts the worker', () => {
+  const { send } = parkTriage('Waiting on: a person merges ' + PR)
+  const m = send(mailTo('triage'))
+  expect(where(m.value)).toEqual(['triage', 'waiting'])
+  expect(m.context.mail.triage?.at(-1)?.text).toBe('Report blocked')
+  const w = send({ type: 'MAIL', from: 'factory', to: 'triage', text: 'merged', wake: true, at: 40 })
+  expect(where(w.value)).toEqual(['triage', 'working'])
+  expect(w.context.mail.triage?.map(x => x.text)).toEqual(['Report blocked', 'merged'])
+})
+
+test('ey90 AC4: no PR link, the timer, or another station still start a worker at once', () => {
+  expect(where(parkTriage('Waiting on the owner').send(mailTo('triage')).value)).toEqual([
+    'triage',
+    'working',
+  ])
+  const t = parkTriage('Waiting on ' + PR)
+  expect(where(t.send({ type: 'TICK', at: t.s.context.wakeAt! }).value)).toEqual(['triage', 'working'])
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'DONE', seq: 1, outcome: 'build', summary: 'x', at: 10 })
+  actor.send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 11 })
+  actor.send({ type: 'BLOCKED', seq: 1, reason: 'Waiting on ' + PR, at: 20 })
+  actor.send(mailTo('plan'))
+  expect(where(actor.getSnapshot().value)).toEqual(['plan', 'working'])
+})
+
+test('ey90 AC5: a GitLab merge request link holds plain mail too', () => {
+  const { send } = parkTriage('Waiting on https://gitlab.example.com/acme/widget/-/merge_requests/7')
+  expect(where(send(mailTo('triage')).value)).toEqual(['triage', 'waiting'])
+})
