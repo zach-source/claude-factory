@@ -101,6 +101,10 @@ export const LONG_COMMAND_REASON =
   'request body, put the text in a file under .scratch/ and pass it with --body-file, or as ' +
   '"$(cat .scratch/<name>)". Do not retry this exact command.'
 
+// claude-factory-ukho: the fix for a shell form that this guard cannot read.
+export const SCRATCH_HINT =
+  'Write these steps with the Write tool to .scratch/<name>.sh (or .scratch/<name>.ts for denyReason rows), then run it by its literal path.'
+
 // claude-factory-1zr5
 export const SHELL_ALIAS_REASON =
   'The factory denies this command: a word in it is a shell alias from the Claude Code shell snapshot ' +
@@ -112,7 +116,8 @@ export const SHELL_ALIAS_DEFINE_REASON =
   'The factory denies this command: it defines a shell alias (alias, an aliases[...] or BASH_ALIASES ' +
   'write, or a dynamic command word) and also runs more. An eval, trap, source, substitution or ' +
   'sourced file reads the new alias after this hook ran. Define no alias; type the full command. ' +
-  'Do not retry this exact command.'
+  'Do not retry this exact command. ' +
+  SCRATCH_HINT
 
 // claude-factory-1zr5
 export const SHELL_ALIAS_READ_REASON =
@@ -295,16 +300,17 @@ export const HEREDOC_REASON =
   'backslash, and more text follows it. A quote in the body can hide a later command from this ' +
   "guard. Use a quoted delimiter such as <<'EOF' in a commit message form, run the later " +
   'commands in a separate Bash call, or write the text with the Write tool. Do not retry this ' +
-  'exact command.'
+  'exact command. ' +
+  SCRATCH_HINT
 
 // claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
 // guard denies every shell function definition.
 export const FUNCTION_DEF_REASON =
   'The factory denies this command: it defines a shell function. A function name can hide a git, ' +
   'gh, sh, eval, kubectl or rm word from this guard, and the guard cannot follow the call. Write ' +
-  'the commands plainly, or write the function to a .scratch script file with the Write tool and ' +
-  'run it with bash or zsh. A heredoc write of the function is also denied. Do not retry this ' +
-  'exact command.'
+  'the commands plainly. A heredoc write of the function is also denied. Do not retry this ' +
+  'exact command. ' +
+  SCRATCH_HINT
 
 // claude-factory-upag
 export const QUOTED_ASSIGNMENT_REASON =
@@ -328,20 +334,23 @@ export const SHELL_STDIN_REASON =
   'The factory denies this command: a shell word (sh, bash, zsh, dash or a dynamic word) can read ' +
   'its script from a pipe, a redirect or a here-string, or xargs runs a shell. This guard cannot ' +
   'read that script. Run the commands directly, or run a script file with a literal name. ' +
-  'Do not retry this exact command.'
+  'Do not retry this exact command. ' +
+  SCRATCH_HINT
 
 // claude-factory-3frd: a dollar or backtick word after a literal sh -c cluster.
 export const SH_DYNAMIC_SCRIPT_REASON =
   'The factory denies this command: a sh, bash, zsh or dash -c call has a word after -c that holds ' +
   '$ or a backtick. The shell expands it at run time, so the guard cannot read the script. Run the ' +
-  'commands directly, with literal words. Do not retry this exact command.'
+  'commands directly, with literal words. Do not retry this exact command. ' +
+  SCRATCH_HINT
 
 // claude-factory-38jm: reason for a dynamic word in the option slot of a shell call.
 export const SH_DYNAMIC_FLAG_REASON =
   'The factory denies this command: a word in the option slot of a sh, bash, zsh or dash call ' +
   'holds a shell expansion ($, a backtick, a glob, a brace or a paren). The shell can expand it ' +
   'to -c and a script that the guard cannot read. Write the shell flags and the script plainly. ' +
-  'Do not retry this exact command.'
+  'Do not retry this exact command. ' +
+  SCRATCH_HINT
 
 // claude-factory-p43v: a command or subcommand word can hold a dollar sign, a backtick, a glob
 // character, a brace, or a leading tilde. The shell has not expanded that word yet. This guard
