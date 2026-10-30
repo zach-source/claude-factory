@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { baseBranchOf, branchOk, brief } from './cli'
 import lifecycle from '../factories/lifecycle'
+import ship from '../factories/ship'
 import type { Factory } from './machine'
 
 const repo = '/nonexistent/repo-ldq9'
@@ -148,4 +149,55 @@ test('AC6: rig add stores a plain base_branch, stores an empty one, and refuses 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// claude-factory-g53p: ship takes the same base_branch param as lifecycle
+const shipTask = (node: string) => {
+  const b = brief(run, ship as Factory, node, c as never, [])
+  return b.slice(b.indexOf('## Your task'))
+}
+
+test('g53p AC1: ship declares base_branch with the empty default', () => {
+  expect((ship as Factory).params?.base_branch).toBe('')
+})
+
+test('g53p AC3: base_branch=acme/deploy puts origin/acme/deploy in ship queue and release', () => {
+  process.env.FACTORY_BASE_BRANCH = 'acme/deploy'
+  for (const n of ['queue', 'release']) {
+    const t = shipTask(n)
+    expect(t).toContain('origin/acme/deploy')
+    expect(t).not.toContain('origin/main')
+    expect(t).not.toContain('{base_branch}')
+  }
+  expect(shipTask('release')).toContain('rules/branches/acme/deploy')
+  expect(shipTask('release')).toContain('^origin/acme/deploy')
+  expect(shipTask('queue')).toContain('merge origin/acme/deploy into it')
+  expect(shipTask('queue')).toContain('against origin/acme/deploy')
+  expect(shipTask('queue')).not.toMatch(/(with|against|from) main\b/)
+})
+
+test('g53p AC4: unset or blank base_branch keeps origin/main in ship', () => {
+  for (const v of [undefined, ' ']) {
+    if (v === undefined) delete process.env.FACTORY_BASE_BRANCH
+    else process.env.FACTORY_BASE_BRANCH = v
+    for (const n of ['queue', 'release']) {
+      expect(shipTask(n)).toContain('origin/main')
+      expect(shipTask(n)).not.toContain('{base_branch}')
+    }
+    expect(shipTask('release')).toContain('rules/branches/main')
+  }
+})
+
+test('g53p AC5: a bad base_branch never reaches a ship brief', () => {
+  for (const bad of ['a..b', '-x', 'x y', 'x`y`', 'a;b']) {
+    process.env.FACTORY_BASE_BRANCH = bad
+    for (const n of ['queue', 'release']) {
+      expect(shipTask(n)).toContain('origin/main')
+      expect(shipTask(n)).not.toContain(bad)
+    }
+  }
+})
+
+test('g53p AC6: the Reviewed head regex survives fill in the release brief', () => {
+  expect(shipTask('release')).toContain('^[0-9a-f]{40}$')
 })
