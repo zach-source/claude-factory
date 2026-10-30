@@ -1078,8 +1078,8 @@ export function reworkBase(repo: string, branch: string) {
 
 /**
  * what a new run branches from: the tip of origin/<base_branch> when the rig sets a valid base_branch that origin has
- * (fetched first); else the remote's default branch when it already holds everything local (fetched, so merged work,
- * factory changes included, reaches new runs); else local HEAD
+ * (fetched first); else the tip of the remote's default branch (fetched, so merged work,
+ * factory changes included, reaches new runs, and unpushed local commits never do); else local HEAD when there is no origin
  */
 /** a VM worker's serve died in setup on `bd bootstrap -y`: a transient outage, not a fault of the work */
 export const isBootstrapFail = (r: string) =>
@@ -1100,8 +1100,8 @@ export function freshBase(repo: string, rig: Pick<Rig, 'params'> | undefined = r
   if (remote.exitCode !== 0) return head
   const ref = remote.stdout.toString().trim()
   Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin'], { timeout: 30_000 }) // offline: what we have
-  const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
-  return isBehind ? git(repo, 'rev-parse', ref) : head
+  const tip = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+  return tip.exitCode === 0 ? tip.stdout.toString().trim() : head
 }
 /** the message for a skill the worker image does not have, or none */
 const unknownSkill = (skill: string, where: string) =>
