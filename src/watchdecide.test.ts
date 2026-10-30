@@ -127,6 +127,13 @@ test('AC2: a head change, a merge, a close with no hold, or a person note wakes'
   expect(watchDecide(input({ seen: undefined, prs: [pr({ headRefOid: 'bbbbbbb2' })] }))).toBeNull()
 })
 
+test('a mailOnly park gets no timed wake for a pull request that was already merged at the park', () => {
+  const old = pr({ state: 'MERGED', mergedAt: iso(-30), updatedAt: iso(-30) })
+  const late = { prs: [old], now: min(61) }
+  expect(watchDecide(input(late))?.kind).toBe('wake')
+  expect(watchDecide(input({ ...late, mailOnly: true }))).toBeNull()
+})
+
 test('AC2: a pre-launch park on an already merged pull request wakes at once', () => {
   const merged = pr({ state: 'MERGED', mergedAt: iso(-30), updatedAt: iso(-30) })
   expect(watchDecide(input({ isPreLaunch: true, now: min(1), prs: [merged] }))).toMatchObject({

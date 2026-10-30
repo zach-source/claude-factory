@@ -183,7 +183,7 @@ test('outboxUsage: --help/-h only in a positional slot, malformed args, else nul
 
 const def: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'do a', next: { ready: 'done' } } } }
 /** a run as the tick that launched its task left it: working at a, its worker ax://<task>; returns the worker's seq */
-function launched(id: string, policy = true, task = 't') {
+function launched(id: string, policy = true, task = 't', pane = `ax://${task}`) {
   const runDir = join(home, 'runs', id)
   const worktree = join(dir, 'wt')
   mkdirSync(runDir, { recursive: true })
@@ -203,7 +203,7 @@ function launched(id: string, policy = true, task = 't') {
   const actor = createActor(compile(def)).start()
   actor.send({ type: 'TICK', at: Date.now() })
   const seq = actor.getSnapshot().context.seq
-  actor.send({ type: 'SPAWNED', seq, pane: `ax://${task}`, at: Date.now() })
+  actor.send({ type: 'SPAWNED', seq, pane, at: Date.now() })
   writeFileSync(join(runDir, `${task}.json`), JSON.stringify({ node: 'a', seq, policy }))
   writeFileSync(
     join(runDir, 'state.json'),
@@ -2886,6 +2886,15 @@ describe('an AX worker blocked report that names a live read waits for mail', ()
   })
   test('a pull request link without a live read keeps the watched park', () => {
     expect(parked('lr2', 'waiting on https://github.com/acme/widget/pull/7')).toBeLessThan(24 * 60 * MIN)
+  })
+  test('a herdr worker (local runner) that names a live read keeps the plain 60 min park', () => {
+    const seq = launched('lr4', true, 't', 'w1-1')
+    const r = factory(['report', 'lr4', String(seq), 'blocked', 'need kubectl get pods on prod'])
+    expect(r.code).toBe(0)
+    const line = readFileSync(join(home, 'runs', 'lr4', 'inbox.jsonl'), 'utf8').trim().split('\n').at(-1)!
+    rmSync(join(home, 'runs', 'lr4'), { recursive: true })
+    expect(JSON.parse(line)).toMatchObject({ type: 'BLOCKED', reason: 'need kubectl get pods on prod' })
+    expect(JSON.parse(line).mailOnly).toBeUndefined()
   })
   test('no live read and no pull request keeps 60 min', () => {
     const d = parked('lr3', 'need a decision')
