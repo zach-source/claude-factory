@@ -1039,8 +1039,6 @@ async function ensureTicking($: EngineInterface) {
   void tick($)
 }
 
-/** a stored view of 'run', from before the Run tab folded into Board, reads as 'board'; the one
- * place both `readView` (refresh's fetch gate) and the render switch map it, so they can't drift */
 /** The item set of a patrol report: run ids, URLs, backticked names and question lines, sorted.
  * ponytail: a regex read of free text. A report that words the same items another way differs;
  * an empty key (no items) never counts as a repeat. */
@@ -1059,6 +1057,8 @@ export const patrolKey = (report: string): string =>
     .sort()
     .join('\n')
 
+/** a stored view of 'run', from before the Run tab folded into Board, reads as 'board'; the one
+ * place both `readView` (refresh's fetch gate) and the render switch map it, so they can't drift */
 export const mapView = (v: string): FactoryView => (v === 'run' ? 'board' : (v as FactoryView))
 
 async function readView($: EngineInterface): Promise<FactoryView> {

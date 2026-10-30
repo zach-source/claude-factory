@@ -1543,6 +1543,56 @@ test(
   },
 )
 
+test(
+  'a patrol report with no items toasts its full first line, even when it equals the last one',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const toasts: string[] = []
+    const prev = {
+      at: 1000,
+      agentId: 'p0',
+      reason: 'answer',
+      durationMs: 1,
+      actions: [],
+      report: 'All quiet',
+    }
+    files.set('/home/factory/patrol-log.jsonl', `${JSON.stringify(prev)}\n`)
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', (_, e) => (toasts.push(JSON.stringify(e)), { value: undefined }) as never)
+    on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-1' }) as never)
+    agentListMock(on, ['patrol-1'])
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.turn.complete({
+      answer: 'All quiet',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-1',
+    } as never)
+    expect(toasts.join('\n')).toContain('All quiet')
+    expect(toasts.join('\n')).not.toContain('nothing new since')
+  },
+)
+
 test('patrolKey lists run ids, URLs, backticked names and question lines, sorted', () => {
   expect(patrolKey('ok')).toBe('')
   expect(patrolKey('b lifecycle-b2 `n` https://x.y/1.\nAny news?')).toBe(
