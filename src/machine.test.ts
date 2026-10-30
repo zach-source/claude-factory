@@ -8,8 +8,10 @@ import {
   failClass,
   failingAcIds,
   gotoRefusal,
+  isLiveRead,
   isNoWorker,
   isParkedOn,
+  OWNER_AFTER_MS,
   isPrWait,
   mrsIn,
   parkDelayMin,
@@ -1351,4 +1353,57 @@ describe('gotoRefusal (claude-factory-7dd)', () => {
     expect(refusal(r, d, 'done')).toBeNull()
     expect(r.saved()).toEqual(before)
   })
+})
+
+test('isLiveRead names a live read of a cluster, metrics or logs, and nothing else', () => {
+  for (const t of [
+    'kubectl get pods -n x',
+    'Mimir query',
+    'Alertmanager silences',
+    'LOKI logs',
+    'port-forward to pg',
+    'live DB read',
+    'prod pods',
+    'production logs',
+  ])
+    expect(isLiveRead(t)).toBe(true)
+  for (const t of [
+    'psql on 127.0.0.1',
+    'kubectly',
+    'unit tests red',
+    'waiting on PR https://github.com/acme/widget/pull/7',
+    '',
+    'livelihood',
+    'products',
+  ])
+    expect(isLiveRead(t)).toBe(false)
+})
+
+test('a mailOnly blocked report parks for 2*OWNER_AFTER_MS: only mail wakes it, and the manager hears once', () => {
+  const { send } = run()
+  let s = send({ type: 'BLOCKED', seq: 1, reason: 'need kubectl get pods', at: 1000, mailOnly: true })
+  expect(s.context.wakeAt).toBe(1000 + 2 * OWNER_AFTER_MS)
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('waits for mail')
+  expect(s.context.mail.manager?.at(-1)?.text).toContain('kubectl')
+  for (const m of [61, 121, 481]) {
+    s = send({ type: 'TICK', at: 1000 + m * 60_000 })
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    expect(s.context.seq).toBe(1)
+  }
+  s = send({ type: 'REPARK', node: 'implement', wakeAt: 5000, at: 5000 })
+  expect(s.context.wakeAt).toBe(1000 + 2 * OWNER_AFTER_MS)
+  s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'results', at: 2_000_000 })
+  expect(where(s.value)).toEqual(['implement', 'working'])
+  expect(s.context.seq).toBe(2)
+})
+
+test('a repeat mailOnly blocked report does not mail the manager again; the owner handoff still ends it', () => {
+  const { send } = run()
+  send({ type: 'BLOCKED', seq: 1, reason: 'need kubectl', at: 1000, mailOnly: true })
+  let s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'x', at: 2000 })
+  const told = s.context.mail.manager?.length
+  s = send({ type: 'BLOCKED', seq: 2, reason: 'need kubectl', at: 3000, mailOnly: true })
+  expect(s.context.mail.manager?.length).toBe(told)
+  const log = [{ node: 'implement', attempt: 1, outcome: 'blocked', summary: 'need kubectl', at: 0 }]
+  expect(shouldHandToOwner(log as never, 25 * 3_600_000)).toBe(true)
 })

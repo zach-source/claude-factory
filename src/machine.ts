@@ -267,7 +267,7 @@ export type Ev = At &
     /** the worker's context grew too long: a fresh worker carries on from its notes, spending no attempt */
     | { type: 'HANDOFF'; seq: number; summary: string }
     /** the worker waits on something outside the run (a person, another run, a review): park, spend no attempt */
-    | { type: 'BLOCKED'; seq: number; reason: string }
+    | { type: 'BLOCKED'; seq: number; reason: string; mailOnly?: true }
     | { type: 'MAIL'; from: string; to: string; text: string; wake?: true }
     | { type: 'READ'; box: string; seen: number }
     /** the runner's watch took a parked station's outcome from its pull request, with no worker (claude-factory-5wav) */
@@ -577,6 +577,12 @@ export const OWNER_AFTER_MS = 24 * 3_600_000
 /** a blocked report that names a step only the owner can do */
 export const isOwnerStep = (text: string) =>
   /\bowner[- ]?(?:only|step|action|decision|input|call)\b|\b(?:waiting|waits?) (?:on|for) (?:the |its )?owner\b/i.test(
+    text,
+  )
+
+/** a blocked report that names a live read (cluster, metrics, logs): a VM worker cannot do it, so a re-check finds nothing new */
+export const isLiveRead = (text: string) =>
+  /\b(?:kubectl|mimir|loki|tempo|alertmanager|prometheus|promql|logql|port-forward)\b|\b(?:live|prod(?:uction)?)\s+(?:db|database|pods?|cluster|logs?|metrics|reads?)\b/i.test(
     text,
   )
 
@@ -908,14 +914,18 @@ export function compile(def: Factory) {
               guard: isCurrent,
               target: 'waiting',
               actions: assign(({ context, event }) => {
-                const { reason, at } = event as Extract<Ev, { type: 'BLOCKED' }>
+                const { reason, at, mailOnly } = event as Extract<Ev, { type: 'BLOCKED' }>
                 // each report that finds it still blocked doubles the wait, up to 8h: a re-check is a whole worker
                 const isWatched = prsIn(reason).length > 0
-                const wakeAt =
-                  at +
-                  (isWatched ? WATCHED_PARK_MIN : parkDelayMin(context as Ctx, id, node.parkMin ?? 60)) *
-                    60_000
-                const text = `${id} is parked, waiting on: ${reason}. It checks again ${isWatched ? 'when one of its pull requests changes, at the latest' : 'at'} ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
+                // mailOnly: no timer re-check; 2x the owner handoff, so that handoff always ends the run first
+                const wakeAt = mailOnly
+                  ? at + 2 * OWNER_AFTER_MS
+                  : at +
+                    (isWatched ? WATCHED_PARK_MIN : parkDelayMin(context as Ctx, id, node.parkMin ?? 60)) *
+                      60_000
+                const text = mailOnly
+                  ? `${id} is parked, waiting on: ${reason}. It names a live read that a VM worker cannot do, so it waits for mail and has no timer re-check. The owner handoff ends it after 24 h.`
+                  : `${id} is parked, waiting on: ${reason}. It checks again ${isWatched ? 'when one of its pull requests changes, at the latest' : 'at'} ${new Date(wakeAt).toISOString()}, or sooner when its station is mailed.`
                 // the manager hears when a station parks, not each re-check that finds nothing changed
                 const last = context.log.at(-1)
                 const isRepeat = last?.node === id && last.outcome === 'blocked'

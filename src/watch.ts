@@ -120,6 +120,8 @@ export type DecideInput = {
   /** when the park's timer starts a worker */
   wakeAt: number
   plainMin: number
+  /** the park waits for mail only (a VM live-read block): no timed wake */
+  mailOnly?: boolean
   isPreLaunch: boolean
   seen?: Seen
   /** the station has these outcomes */
@@ -217,7 +219,11 @@ export function watchDecide(i: DecideInput): Decision | null {
     if (i.mailed?.includes(text)) continue
     return { kind: 'wake', text, url: p.url, state: p.state }
   }
-  if (!prs.some(p => p.state === 'OPEN') && (i.isPreLaunch || i.now - parkedAt >= i.plainMin * 60_000))
+  if (
+    !i.mailOnly &&
+    !prs.some(p => p.state === 'OPEN') &&
+    (i.isPreLaunch || i.now - parkedAt >= i.plainMin * 60_000)
+  )
     return {
       kind: 'wake',
       text: `[factory] None of the pull requests you linked is open, so they will not change: check again whether what you wait on is done.`,

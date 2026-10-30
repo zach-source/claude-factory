@@ -793,3 +793,37 @@ test('an off-host merge request is skipped and the on-host one still routes (pw6
   expect(watchJson().errors).toBe(0)
   expect(inboxOf('r1')[0]).toMatchObject({ type: 'ROUTE', outcome: 'changes' })
 })
+
+/** a run parked by a BLOCKED report at release, 70 min ago, that links a pull request merged before the park */
+function blockedRun(id: string, mailOnly: boolean) {
+  const f = join(dir, 'route-ship.json')
+  writeFileSync(f, JSON.stringify(ROUTE_SHIP))
+  const r = repo()
+  const actor = createActor(compile(ROUTE_SHIP)).start()
+  actor.send({ type: 'GOTO', node: 'release', at: 0 })
+  const { seq } = actor.getSnapshot().context
+  actor.send({
+    type: 'BLOCKED',
+    seq,
+    reason: `merged ${PR}; need kubectl get pods`,
+    at: Date.now() - 70 * 60_000,
+    ...(mailOnly && { mailOnly: true as const }),
+  })
+  const d = join(home, 'runs', id)
+  mkdirSync(d, { recursive: true })
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({ id, factory: f, repo: r, goal: 'g', ws: 'ws1', worktree: r, branch: 'b' }),
+  )
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+}
+
+test('a mailOnly park gets no none-open wake after plainMin; the same park without mailOnly does (hpmw.5)', () => {
+  reset()
+  prJson({ state: 'MERGED', updatedAt: iso(100 * 60_000), mergedAt: iso(100 * 60_000) })
+  blockedRun('r1', true)
+  blockedRun('r2', false)
+  expect(factory(['watch']).code).toBe(0)
+  expect(mailOf('r1')).toEqual([])
+  expect(mailOf('r2')).toHaveLength(1)
+})
