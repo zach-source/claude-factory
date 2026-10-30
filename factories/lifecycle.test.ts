@@ -931,3 +931,15 @@ test('implement and quick tell the worker to grep sibling sites of its fix (smmr
     'A finding names an instance: grep for its siblings and fix the class, not the one line.',
   )
 })
+
+test('review, security and check list the whole class of a missing guard (pjno AC1, AC2)', () => {
+  const RULE =
+    "When you find one missing guard, list every sibling of its class before you report: every entry point of the same kind (CLI verb, route, handler, tick pass, spawned child), with each one's guard status. Report the whole class as one finding, with the list, so implement fixes all of it in one round."
+  for (const id of ['review', 'security', 'check']) {
+    const p = promptOf(lifecycle, id)
+    expect(p, id).toContain(RULE)
+    expect(p.split(RULE).length - 1, id).toBe(1)
+  }
+  for (const id of ['plan', 'implement', 'verify', 'quick'])
+    expect(promptOf(lifecycle, id), id).not.toContain(RULE)
+})
