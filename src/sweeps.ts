@@ -15,7 +15,7 @@ export const sweepNames = (def: Factory): string[] =>
 /** sweeps.json's shape: for each rig, for each sweep, when it last ran, and (monitor only) its last read. */
 export type SweepState = Record<
   string,
-  Record<string, { lastAt: number; sig?: string; lines?: number; ranAt?: number }>
+  Record<string, { lastAt: number; sig?: string; lines?: number; ranAt?: number; read?: string }>
 >
 
 /** Minutes after which the monitor sweep starts a run on a read that did not change. `ranAt` in
@@ -106,7 +106,9 @@ export function pruneGuardState(
 /**
  * This is the flood guard (claude-factory-8pc.5). At most `cap` (default 5) sweep-filed beads per
  * rig stay inside any rolling `windowMs` (default 24h) window. It keeps the oldest ones first, by
- * `created_at`. `beads` is one rig's full bead list. Only beads a sweep pass filed (`sweepFiler`)
+ * `created_at`. A queue-labeled bead (`sweep-queue:*`) counts only the earlier queue-labeled
+ * beads. An unlabeled bead counts every earlier bead. So an unlabeled bead never takes a queued
+ * bead's place. `beads` is one rig's full bead list. Only beads a sweep pass filed (`sweepFiler`)
  * appear in the result. The caller must leave every other bead alone: a person's, or another run's.
  *
  * `kept` false means the bead is past the cap: the caller must defer it and strip its `factory`
@@ -135,13 +137,36 @@ export function sweepGuard(
       })
       .filter(x => now - x.at < windowMs)
       .sort((a, c) => a.at - c.at)
-      .map((x, i) => ({
-        id: x.b.id,
-        station: x.station,
-        kept: i < cap,
-        allowed: i < cap && !!x.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l)),
-      }))
+      // claude-factory-d20: a queue-labeled bead ranks only among queue-labeled beads, so an
+      // unlabeled bead (a drift bump bead) never takes the auto-start place of a later incident.
+      .map((x, i, all) => {
+        const isQ = (y: { b: GuardedBead }) => !!y.b.labels?.some(l => SWEEP_QUEUE_LABELS.includes(l))
+        const queued = isQ(x)
+        const rank = queued ? all.slice(0, i).filter(isQ).length : i
+        return { id: x.b.id, station: x.station, kept: rank < cap, allowed: queued && rank < cap }
+      })
   )
+}
+
+/**
+ * The duplicate drift beads (claude-factory-d20): the drift prompt files one bead for each resource,
+ * labeled `drift:<key>`, and a model can still file a second one. Of the not-closed beads that share a
+ * key, the oldest is the original. Each newer bead that a drift sweep filed (`sweepFiler`) is a
+ * duplicate of it. A bead a person filed is never a duplicate. A closed bead is never either side.
+ */
+export function driftDuplicates(
+  beads: (GuardedBead & { status?: string })[],
+): { dup: string; original: string }[] {
+  const byKey = new Map<string, (GuardedBead & { status?: string })[]>()
+  for (const b of beads) {
+    if (b.status === 'closed') continue
+    for (const l of b.labels ?? []) if (l.startsWith('drift:')) byKey.set(l, [...(byKey.get(l) ?? []), b])
+  }
+  const at = (b: GuardedBead) => (b.created_at ? new Date(b.created_at).getTime() : Infinity)
+  return [...byKey.values()].flatMap(group => {
+    const [original, ...rest] = [...group].sort((a, b) => at(a) - at(b))
+    return rest.filter(b => sweepFiler(b) === 'drift').map(b => ({ dup: b.id, original: original!.id }))
+  })
 }
 
 /** A deterministic fingerprint of a monitor pass's command output (claude-factory-8pc.6). `sweep()`
@@ -172,7 +197,7 @@ export function clipUtf8(text: string, maxBytes = 4096): string {
  */
 export function dueSweeps(
   def: Factory,
-  rig: { name: string; repo: string; sweeps?: string[]; slo?: string },
+  rig: { name: string; repo: string; sweeps?: string[]; slo?: string; drift?: string },
   state: SweepState,
   liveRuns: LiveRun[],
   now: number,
@@ -180,6 +205,7 @@ export function dueSweeps(
   const names = (rig.sweeps ?? sweepNames(def)).filter(s => def.nodes[s]?.everyMin)
   return names.filter(s => {
     if (s === 'monitor' && !rig.slo) return false
+    if (s === 'drift' && !rig.drift) return false
     const goal = sweepGoal(s)
     if (liveRuns.some(r => r.repo === rig.repo && r.goal === goal)) return false
     const lastAt = state[rig.name]?.[s]?.lastAt ?? 0

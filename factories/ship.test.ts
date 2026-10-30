@@ -25,6 +25,13 @@ function walk(def: Factory, outcomes: string[], at = def.start) {
   return { visited, snapshot: actor.getSnapshot() }
 }
 
+test('deploy waits for a bump pull request in another repo and never opens or merges it', () => {
+  const p = ship.nodes.deploy.prompt
+  expect(p).toContain('only through a pull request in another repo')
+  expect(p).toContain('never open or merge it')
+  expect(p).toContain('parked, waiting on: a bump pull request in <repo>')
+})
+
 test('queue runs on the laptop like deploy, soak and rollback; release and postmortem keep the rig runner', () => {
   const runner = (n: string) => (ship.nodes as Record<string, { runner?: string }>)[n]!.runner
   for (const n of ['queue', 'deploy', 'soak', 'rollback']) expect(runner(n)).toBe('herdr')
