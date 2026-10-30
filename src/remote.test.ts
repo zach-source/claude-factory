@@ -2431,3 +2431,142 @@ test('a rig with a fresh no-suspend marker keeps its asking idle worker running;
   rmSync(join(home, 'runs', 'r40'), { recursive: true })
   rmSync(markerOf('wt'), { force: true })
 })
+
+// claude-factory-xbzd S1: an AX-rig run needs no herdr. createRun makes a plain git worktree at herdr's layout.
+describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+    return p.stdout.toString().trim()
+  }
+  const two: Factory = {
+    name: 'two',
+    start: 'a',
+    nodes: { a: { prompt: 'do a', next: { ready: 'b' } }, b: { prompt: 'do b', next: { ready: 'done' } } },
+  }
+  /** a rig repo cloned from a bare origin, a fake herdr that logs every call and fails, and the rig's file */
+  function setup(tag: string, runner?: string, fdef: Factory = two) {
+    const root = join(dir, tag)
+    rmSync(root, { recursive: true, force: true })
+    mkdirSync(root, { recursive: true })
+    sh(root, 'git', 'init', '-q', '--bare', 'origin.git')
+    sh(root, 'git', 'clone', '-q', 'origin.git', 'widget')
+    const repo = join(root, 'widget')
+    writeFileSync(join(repo, 'a'), 'a\n')
+    sh(repo, 'git', 'add', '.')
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(repo, 'git', 'push', '-q', 'origin', 'HEAD')
+    const fdefFile = join(root, 'two.json')
+    writeFileSync(fdefFile, JSON.stringify(fdef))
+    const herdrLog = join(root, 'herdr.log')
+    const fake = join(root, 'fakeherdr')
+    writeFileSync(fake, `#!/bin/sh\necho "$*" >> ${herdrLog}\nexit 1\n`)
+    chmodSync(fake, 0o755)
+    mkdirSync(home, { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo, factory: fdefFile, ...(runner && { runner }) }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    const env = {
+      HOME: join(root, 'home'),
+      FACTORY_HERDR: fake,
+      FACTORY_AX_IMAGE: 'img',
+      FACTORY_AX_VAULT: 'factory',
+    }
+    const herdrCalls = () => (existsSync(herdrLog) ? readFileSync(herdrLog, 'utf8') : '')
+    return {
+      repo,
+      fdefFile,
+      env,
+      herdrCalls,
+      tree: (id: string) => join(env.HOME, '.herdr/worktrees/widget', `factory-${id}`),
+    }
+  }
+  const startedId = (out: string) => /started (\S+) in/.exec(out)![1]!
+  const seqOf = (id: string) =>
+    JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot.context.seq
+
+  test('start makes a git worktree at the herdr layout, with no herdr call and ws empty (AC5)', () => {
+    const s = setup('s1a', 'ax')
+    const out = factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+    expect(out.err).toBe('')
+    const id = startedId(out.out)
+    const run = JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8'))
+    expect(run.ws).toBe('')
+    expect(run.worktree).toBe(s.tree(id))
+    expect(run.branch).toBe(`factory/${id}`)
+    expect(existsSync(join(run.worktree, 'a'))).toBe(true)
+    expect(sh(s.repo, 'git', 'worktree', 'list')).toContain(s.tree(id))
+    expect(sh(run.worktree, 'git', 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(`factory/${id}`)
+    expect(s.herdrCalls()).not.toContain('worktree create')
+    expect(out.out).not.toContain('herdr workspace')
+  }, 30_000)
+
+  test('start, launch, report and the next launch never call herdr to create, tab or run (AC6)', () => {
+    const s = setup('s1b', 'ax')
+    const id = startedId(factory(['start', s.fdefFile, s.repo, 'goal text'], s.env).out)
+    expect(called()).toContain('apply -f') // the first launch
+    const seq = seqOf(id)
+    cluster('Running', { status: 'idle', lines: [] })
+    expect(factory(['report', id, String(seq), 'ready', 'a done'], s.env).code).toBe(0)
+    expect(factory(['tick'], s.env).code).toBe(0)
+    expect(called()).toContain('apply -f') // b launched
+    expect(seqOf(id)).toBeGreaterThan(seq)
+    const log = s.herdrCalls()
+    for (const bad of ['worktree create', 'tab create', 'pane run']) expect(log).not.toContain(bad)
+  }, 60_000)
+
+  test('rm of the done AX run removes its worktree with git (AC7)', () => {
+    const one: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'x', next: { ready: 'done' } } } }
+    const s = setup('s1c', 'ax', one)
+    const id = startedId(factory(['start', s.fdefFile, s.repo, 'goal text'], s.env).out)
+    expect(factory(['report', id, String(seqOf(id)), 'ready', 'ok'], s.env).code).toBe(0)
+    factory(['tick'], s.env)
+    const rm = factory(['rm', id], s.env)
+    expect(rm.err).toBe('')
+    expect(existsSync(s.tree(id))).toBe(false)
+    expect(sh(s.repo, 'git', 'worktree', 'list')).not.toContain(`factory-${id}`)
+    expect(sh(s.repo, 'git', 'branch', '--list', `factory/${id}`)).toContain(`factory/${id}`)
+  }, 60_000)
+
+  test('a bad factory removes the new worktree with git and the run directory', () => {
+    const bad: Factory = {
+      name: 'bad',
+      start: 'a',
+      nodes: { a: { prompt: 'x', next: { ok: { to: 'done', ship: true } } } },
+    }
+    const s = setup('s1d', 'ax', bad)
+    const before = existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : []
+    const out = factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+    expect(out.code).not.toBe(0)
+    expect(out.err).toContain('is not a valid factory')
+    expect(sh(s.repo, 'git', 'worktree', 'list')).not.toContain('.herdr/worktrees')
+    expect(readdirSync(join(home, 'runs'))).toEqual(before)
+    expect(s.herdrCalls()).toBe('')
+  }, 30_000)
+
+  test.each([['herdr'], [undefined]])(
+    'a rig with runner %p still creates its worktree through herdr',
+    runner => {
+      const s = setup(`s1e-${runner}`, runner)
+      const out = factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+      expect(out.code).not.toBe(0)
+      expect(s.herdrCalls()).toContain('worktree create')
+    },
+    30_000,
+  )
+
+  test("an AX rig's herdr-runner station reopens its worktree through herdr worktree open", () => {
+    const mixed: Factory = {
+      name: 'mixed',
+      start: 'a',
+      nodes: { a: { prompt: 'x', runner: 'herdr', next: { ready: 'done' } } },
+    }
+    const s = setup('s1f', 'ax', mixed)
+    factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+    expect(s.herdrCalls()).toContain('worktree open')
+    expect(s.herdrCalls()).not.toContain('worktree create')
+  }, 30_000)
+})
