@@ -35,6 +35,7 @@ const run = {
   branch: 'b',
 }
 const stations = ['implement', 'verify', 'review', 'security', 'quick', 'check']
+const nodes = (lifecycle as Factory).nodes
 
 afterEach(() => {
   delete process.env.FACTORY_BASE_BRANCH
@@ -42,7 +43,7 @@ afterEach(() => {
 
 /** brief of a node, with the onTimeout section on when the node has one */
 const briefOf = (node: string) => {
-  const log = lifecycle.nodes[node]?.onTimeout
+  const log = nodes[node]?.onTimeout
     ? [{ node, outcome: 'fail', summary: 'no report within 75 min', attempt: 1, at: 1 }]
     : []
   return brief(run, lifecycle as Factory, node, { ...c, log } as never, [])
@@ -50,7 +51,7 @@ const briefOf = (node: string) => {
 
 test('AC1: base_branch=acme/deploy puts origin/acme/deploy in each lifecycle station, never origin/main or a raw placeholder', () => {
   process.env.FACTORY_BASE_BRANCH = 'acme/deploy'
-  for (const s of stations.filter(s => lifecycle.nodes[s])) {
+  for (const s of stations.filter(s => nodes[s])) {
     // factory memory (rules text, before the goal) may still name origin/main; the task section may not
     const text = briefOf(s).slice(briefOf(s).indexOf('## Your task'))
     expect(text).not.toContain('origin/main')
@@ -65,7 +66,7 @@ test('AC1: base_branch=acme/deploy puts origin/acme/deploy in each lifecycle sta
 })
 
 test('AC2: with no base_branch the brief says origin/main, also for an empty value', () => {
-  for (const s of stations.filter(s => lifecycle.nodes[s])) {
+  for (const s of stations.filter(s => nodes[s])) {
     expect(briefOf(s)).not.toContain('{base_branch}')
     expect(briefOf(s)).toContain('origin/main')
   }
