@@ -1126,7 +1126,7 @@ function cloneFixture(name: string, withBranch: boolean) {
   for (const d of [own, home]) mkdirSync(d, { recursive: true })
   const git = (cwd: string, ...a: string[]) =>
     Bun.spawnSync(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd })
-  git(dir, 'init', '-q', '--bare', origin)
+  git(dir, 'init', '-q', '--bare', '-b', 'main', origin)
   git(dir, 'init', '-q', '-b', 'main', seed)
   git(seed, 'commit', '-q', '--allow-empty', '-m', 'main')
   git(seed, 'push', '-q', origin, 'main')
