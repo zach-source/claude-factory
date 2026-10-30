@@ -57,6 +57,7 @@ import {
   type Mail,
 } from './machine'
 import { watchDecide, type Seen, type WatchedPr } from './watch'
+import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
   actorOf,
   backlogOf,
@@ -191,6 +192,7 @@ import {
   githubMergedJson,
   githubUnlabelArgv,
   githubPullPath,
+  githubChecks,
   githubPulls,
   githubRows,
   githubSlugOf,
@@ -249,6 +251,7 @@ const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
+const ORPHANS_MS = 10 * 60_000 // how often the rigs' open factory drafts are swept for orphans (orphanPass)
 // ponytail: pr-merger's default label names; make them a rig setting when a repo uses others
 const CLOSE_LABEL = 'close'
 const CONFLICT_LABEL = 'conflict'
@@ -1182,6 +1185,10 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
   const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
   const prior = node === def.start ? priorWork(run) : ''
   const origin = originRef(run.repo)
+  const rig = rigOf(run.repo)
+  // only base_branch fills prompts: other {names} in a prompt stay as written
+  const prm: Record<string, string> =
+    def.params?.base_branch === undefined ? {} : { base_branch: baseBranchOf(def, rig, run.repo) }
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
@@ -1201,7 +1208,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     run.goal,
     '',
     '## Your task',
-    n.prompt.trim(),
+    fill(n.prompt.trim(), prm),
     // the journal is the run's memory: every station's report, so a plan or a baseline reaches every later station
     ...(c.log.length
       ? [
@@ -1222,7 +1229,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
           '',
           '## The previous attempt timed out',
           `This attempt has ${n.onTimeout.timeoutMin} min.`,
-          ...(n.onTimeout.prompt ? [n.onTimeout.prompt] : []),
+          ...(n.onTimeout.prompt ? [fill(n.onTimeout.prompt, prm)] : []),
         ]
       : []),
     ...(handedOff
@@ -2760,7 +2767,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return 'awaiting trust'
     }
     if (n.mergeCheck) {
-      const base = defaultBranch(run.repo)
+      const base = baseBranchOf(def, rigOf(run.repo), run.repo)
       const files = conflictsOf(run.repo, base, run.branch)
       if (files.length) {
         const summary = `no worker: merge origin/${base} into ${run.branch}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
@@ -3490,6 +3497,7 @@ async function beadsPass() {
     // repairs share the label pass's throttle: one labels.stamp gates both
     const labelsDue = !isFresh(join(HOME, 'labels.stamp'), LABELS_MS)
     await labelPass()
+    await orphanPass()
     if (labelsDue) await repairPass()
   } finally {
     release()
@@ -4950,6 +4958,9 @@ async function tick(isPatrol = false) {
     out.runs.push(
       ...(existsSync(join(HOME, 'labels.json')) ? readJson<Row[]>(join(HOME, 'labels.json')) : []),
     )
+    out.runs.push(
+      ...(existsSync(join(HOME, 'orphans.json')) ? readJson<Row[]>(join(HOME, 'orphans.json')) : []),
+    )
     showInSidebar(out.runs, now, isPatrol)
     reap(out.runs)
     // stopped once no worker is still being told to stop: everything that was working has closed
@@ -5089,6 +5100,20 @@ async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: 
 function readSlo(rig: Rig, cmd = rig.slo!): string {
   const p = Bun.spawnSync(['sh', '-c', cmd], { cwd: rig.repo, timeout: 30_000 })
   return (p.stdout.toString() + p.stderr.toString()).trim()
+}
+
+const BRANCH_OK = /^[\w][\w./-]*$/
+/** a plain branch name: it is safe in a prompt and in git argv */
+export const branchOk = (b: string) => BRANCH_OK.test(b) && !b.includes('..')
+
+/** the branch a run merges against: the rig's base_branch param when it is a plain name, else the default branch */
+export function baseBranchOf(
+  def: Pick<Factory, 'params'>,
+  rig: Pick<Rig, 'params'> | undefined,
+  repo: string,
+) {
+  const b = paramsOf(def, rig).base_branch?.trim() ?? ''
+  return b && branchOk(b) ? b : defaultBranch(repo)
 }
 
 /** the rig's default branch: origin/HEAD without `origin/`, else main */
@@ -7733,6 +7758,116 @@ async function labelPass() {
 }
 
 /**
+ * Start a review run for each green draft pull request that no run owns (claude-factory-pff5).
+ * An aborted run that blocked leaves such a PR. In each GitHub rig, `orphanSweep` forks the source run
+ * at `review`. It forks ORPHAN_CAP runs at most in one pass, and only where the rig has room.
+ * Each fork goes in orphan-forks.json, keyed by PR URL and head SHA: one review for each head.
+ * If that file is unreadable, the rig is skipped: with no record, a PR can get two forks.
+ * The mail to the station is from `factory`. Mail from `manager` counts as owner approval.
+ * The new run starts at the next tick.
+ */
+async function orphanPass() {
+  const stamp = join(HOME, 'orphans.stamp')
+  if (halted() || isFresh(stamp, ORPHANS_MS)) return
+  writeFileSync(stamp, '')
+  const errors: Row[] = []
+  const file = join(HOME, 'orphan-forks.json')
+  let records: OrphanCtx['records'] | undefined
+  try {
+    const read = existsSync(file) ? readJson<unknown>(file) : {}
+    if (read && typeof read === 'object' && !Array.isArray(read)) records = read as OrphanCtx['records']
+  } catch {
+    // left undefined
+  }
+  const { busy, held } = await busyRigs()
+  const runs = new Map<string, Run>()
+  const live: { id: string; log: Entry[]; bead?: string }[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value, c } = current(id)
+      const [node] = where(value)
+      runs.set(id, run)
+      if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
+    } catch {
+      // a run still being written
+    }
+  }
+  for (const rig of rigs()) {
+    try {
+      const ref = rigRef(rig.repo)
+      if (!ref) continue // GitLab rigs: claude-factory-9t7v
+      if (!records) throw new Error('orphan-forks.json is unreadable')
+      const cap = Math.min(ORPHAN_CAP, room(rig, busy, undefined, held))
+      if (cap <= 0) continue
+      const rows = await githubPulls(spawnGh, ref.slug, rig.repo, { state: 'open', pages: 2 })
+      if (!rows) throw new Error('gh api pulls failed')
+      const prs = (githubRows(rows) as OrphanPr[]).filter(pr => pr.headRefName.startsWith('factory/'))
+      if (!prs.length) continue
+      const shipQueue = beads(rig.repo, 'factory').shipQueue()
+      const mine = new Map<string, { bead?: string }>()
+      for (const [id, run] of runs) if (run.repo === rig.repo) mine.set(id, { bead: run.bead })
+      const ctx: OrphanCtx = {
+        runs: mine,
+        liveBeads: new Set(live.flatMap(r => (r.bead ? [r.bead] : []))),
+        owner: pr => prOwner(pr, live),
+        queued: pr => !!queuedOwner(pr, shipQueue),
+        records: records,
+      }
+      const { skipped } = await orphanSweep(
+        prs,
+        ctx,
+        {
+          beadStatus: async id => {
+            try {
+              return beads(rig.repo, 'factory').show(id)?.status ?? null
+            } catch {
+              return null
+            }
+          },
+          checks: pr => githubChecks(spawnGh, ref.slug, pr.headRefOid, rig.repo),
+          fork: async (pr, srcId, note) => {
+            const { value } = current(srcId)
+            const src = runs.get(srcId)!
+            const def = await loadFactory(src.factory)
+            if (!Object.hasOwn(def.nodes, 'review'))
+              throw new Error(`${srcId}: its factory has no review station`)
+            const run = await forkRun(src, value, def.name, 'review', note, 'factory')
+            busy.push(rig.name)
+            return run.id
+          },
+          record: (pr, from, run) => {
+            records![pr.url] = { sha: pr.headRefOid, run, from, at: new Date().toISOString() }
+            writeJson(file, records)
+            if (run)
+              console.log(
+                `${new Date().toISOString()} orphan ${pr.url}@${pr.headRefOid.slice(0, 7)} -> fork ${from} into ${run}`,
+              )
+          },
+        },
+        cap,
+      )
+      for (const s of skipped)
+        if (/^(fork|record) failed/.test(s.why))
+          errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
+      // a failed fork keeps its record, so later passes skip the PR: show the row every pass until a person removes the entry
+      for (const pr of prs)
+        if (
+          records![pr.url]?.sha === pr.headRefOid &&
+          records![pr.url]?.run === '' &&
+          !errors.some(e => e.error?.includes(pr.url))
+        )
+          errors.push({
+            id: `rig:${rig.name}`,
+            error: `orphans: ${pr.url}: fork failed at ${pr.headRefOid.slice(0, 7)}; remove its orphan-forks.json entry to retry`,
+          })
+    } catch (err) {
+      errors.push({ id: `rig:${rig.name}`, error: `orphans: ${(err as Error).message}` })
+    }
+  }
+  writeJson(join(HOME, 'orphans.json'), errors)
+}
+
+/**
  * a station parked on pull requests (its blocked report, or an awaitsPr arrival, links them) is watched
  * once a minute. It wakes by mail for a real change after it parked: a new head commit, a merge, a close,
  * or a review or comment by a person. Bot comments, CI statuses and labels change only `updatedAt` and
@@ -8068,6 +8203,8 @@ async function defineRig(
       fail(
         `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
       )
+    if (k === 'base_branch' && v && !branchOk(v))
+      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
     rig.params = { ...rig.params, [k]: v }
   }
   if (max !== undefined) {
@@ -8207,6 +8344,21 @@ async function fork(id: string | undefined, station: string | undefined, note: s
   const sender = note ? managerSender(src) : undefined
   refuseWorker('fork') // managerSender lets FACTORY_FROM and FACTORY_RUN through for mail
   await assertRoom(src.repo)
+  const run = await forkRun(src, value, def.name, station!, note, sender)
+  await tick()
+  console.log(`forked ${src.id} at ${station} into ${run.id}: branch ${run.branch} from ${src.branch}`)
+}
+
+/** a run of `src`'s factory that starts at `station` from `src`'s saved state, its bead a child of the source bead.
+ * The note goes to the station as mail from `from` (none: no mail). It checks no worker, room or tick: the caller does. */
+export async function forkRun(
+  src: Run,
+  value: Parameters<typeof where>[0],
+  factoryName: string,
+  station: string,
+  note: string,
+  from: 'manager' | 'factory' | undefined,
+) {
   const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
   const bead = src.bead
     ? beads(src.repo, 'factory').create(
@@ -8215,12 +8367,11 @@ async function fork(id: string | undefined, station: string | undefined, note: s
         ...['--deps', `related:${src.bead}`],
       )
     : undefined
-  const { run } = await createTracked(src.factory, def.name, src.repo, src.goal, bead, { run: src, saved })
+  const { run } = await createTracked(src.factory, factoryName, src.repo, src.goal, bead, { run: src, saved })
   const [node, sub] = where(value)
-  if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station! })
-  if (sender) post(run.id, { type: 'MAIL', from: sender, to: station!, text: note })
-  await tick()
-  console.log(`forked ${src.id} at ${station} into ${run.id}: branch ${run.branch} from ${src.branch}`)
+  if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station })
+  if (from) post(run.id, { type: 'MAIL', from, to: station, text: note })
+  return run
 }
 
 function current(id: string | undefined) {

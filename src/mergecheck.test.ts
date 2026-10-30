@@ -61,9 +61,10 @@ test('conflictsOf fails open (AC3)', () => {
   expect(conflictsOf(clone, 'main', 'b')).toEqual([]) // fetch fails
 }, 60_000)
 
-const factoryDef = (mergeCheck: boolean): Factory => ({
+const factoryDef = (mergeCheck: boolean, params?: Record<string, string>): Factory => ({
   name: 'mc',
   start: 'implement',
+  ...(params && { params }),
   nodes: {
     implement: { prompt: 'x', agent: 'true', next: { ready: 'verify' } },
     verify: {
@@ -110,6 +111,41 @@ test('a conflicting branch goes back to implement with the mail and no launch (A
   expect(ctx.mail.implement.at(-1).text).toContain(text)
   expect(existsSync(join(home, 'launches.jsonl'))).toBe(false)
 }, 60_000)
+
+// claude-factory-ldq9 AC5: the rig's base_branch param, not only origin/HEAD, picks the branch mergeCheck merges against
+test('mergeCheck merge-trees against the rig base_branch: clean against deploy, red against main, red against a conflicting deploy', () => {
+  const rigWith = (params: object) =>
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'r', repo: clone, factory: 'mc', params }]),
+    )
+  const run = (params: object) => {
+    rigWith(params)
+    verifyRun(factoryDef(true, { base_branch: '' }))
+    return tick().context.log.at(-1)
+  }
+  // origin/deploy sits at the base commit: b merges into it cleanly, while main moved CHANGELOG.md
+  const withDeploy = () => {
+    setup(true)
+    git(other, 'push', '-q', 'origin', 'main~1:refs/heads/deploy')
+    mkdirSync(home, { recursive: true })
+  }
+
+  withDeploy()
+  expect(run({ base_branch: 'deploy' })?.outcome).not.toBe('red') // clean: a worker would launch
+
+  withDeploy()
+  expect(run({}).summary).toContain('merge origin/main into b; conflicts in: CHANGELOG.md')
+
+  withDeploy()
+  git(other, 'checkout', '-q', 'deploy')
+  writeFileSync(join(other, 'CHANGELOG.md'), 'deploy\n')
+  git(other, 'commit', '-qam', 'deploy moves')
+  git(other, 'push', '-q', 'origin', 'deploy')
+  expect(run({ base_branch: 'deploy' }).summary).toContain(
+    'merge origin/deploy into b; conflicts in: CHANGELOG.md',
+  )
+}, 120_000)
 
 test('a station without mergeCheck runs no fetch (AC4)', () => {
   setup(true)

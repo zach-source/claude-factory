@@ -332,7 +332,7 @@ test("security's onTimeout prompt points the retry at review's or check's diff s
   expect(onTimeout.prompt).toContain("review's or check's report")
   expect(onTimeout.prompt).toMatch(/Do not re-read/)
 
-  expect(lifecycle.nodes.review!.prompt).toContain('git diff --stat origin/main...HEAD')
+  expect(lifecycle.nodes.review!.prompt).toContain('git diff --stat origin/{base_branch}...HEAD')
   expect(lifecycle.nodes.review!.prompt).toContain('60 files')
   expect(lifecycle.nodes.review!.prompt).toContain('+N more')
 
@@ -376,7 +376,7 @@ test('small AC4/AC5/AC6: check marks an approved PR ready and promises a diff su
     'draft',
     'gh pr review --comment',
     'security-sensitive',
-    'git diff --stat origin/main...HEAD',
+    'git diff --stat origin/{base_branch}...HEAD',
     '60 files',
     '+N more',
   ])
@@ -671,11 +671,11 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
     expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
 })
 
-const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"
+const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
 const BOT_TOKENS = [
   'In the infra-blocks repo',
   BOT_CMD,
-  'git checkout origin/main -- <file>',
+  'git checkout origin/{base_branch} -- <file>',
   'git rm --cached <file>',
   'run the check again',
   'separate commands',
@@ -896,4 +896,15 @@ test('claude-factory-p7fs AC1: the plan prompt asks a guard that parses input fo
     const prompt = (node as { prompt?: unknown }).prompt
     if (id !== 'plan' && typeof prompt === 'string') expect(prompt.includes('closed grammar'), id).toBe(false)
   }
+})
+
+test('implement and quick tell the worker to grep sibling sites of its fix (smmr AC1)', () => {
+  const RULE =
+    'Before you report ready, grep every other caller of the code you fixed (the same function, the same unguarded call, the same rule text in a sibling prompt step). Fix each one, or list it in the report with the reason it is safe.'
+  for (const id of ['implement', 'quick']) expect(promptOf(lifecycle, id), id).toContain(RULE)
+  for (const id of ['plan', 'verify', 'review', 'security', 'check'])
+    expect(promptOf(lifecycle, id), id).not.toContain(RULE)
+  expect(promptOf(lifecycle, 'implement')).toContain(
+    'A finding names an instance: grep for its siblings and fix the class, not the one line.',
+  )
 })
