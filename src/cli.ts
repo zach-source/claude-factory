@@ -36,6 +36,7 @@ import {
   isMailHeld,
   isParked,
   isParkedOn,
+  isLiveRead,
   isPrWait,
   WORKER_OUTCOMES,
   parkDelayMin,
@@ -1350,7 +1351,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
-    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
+    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it.${runnerOfStation(run, def, node).local ? '' : ' A blocked report that names a live read (kubectl, Mimir, Loki, Alertmanager, a live DB or pod) waits for mail or the person, with no timer re-check.'} When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
@@ -9909,7 +9910,15 @@ if (import.meta.main && !outboxCmd)
           outcome === 'fail'
             ? { type: 'FAIL', seq: c.seq, reason: text }
             : outcome === 'blocked'
-              ? { type: 'BLOCKED', seq: c.seq, reason: text }
+              ? {
+                  type: 'BLOCKED',
+                  seq: c.seq,
+                  reason: text,
+                  // a VM worker cannot do a live read: a timer re-check finds nothing new, so only mail wakes it
+                  ...(c.pane && !runnerOf(c.pane).local && isLiveRead(text)
+                    ? { mailOnly: true as const }
+                    : {}),
+                }
               : outcome === 'handoff'
                 ? { type: 'HANDOFF', seq: c.seq, summary: text }
                 : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },

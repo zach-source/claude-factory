@@ -1390,7 +1390,7 @@ test('a mailOnly blocked report parks for 2*OWNER_AFTER_MS: only mail wakes it, 
     expect(where(s.value)).toEqual(['implement', 'waiting'])
     expect(s.context.seq).toBe(1)
   }
-  s = send({ type: 'REPARK', node: 'implement', wakeAt: 5000 })
+  s = send({ type: 'REPARK', node: 'implement', wakeAt: 5000, at: 5000 })
   expect(s.context.wakeAt).toBe(1000 + 2 * OWNER_AFTER_MS)
   s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'results', at: 2_000_000 })
   expect(where(s.value)).toEqual(['implement', 'working'])

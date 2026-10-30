@@ -949,6 +949,43 @@ test('the brief names the station skills: asd-ste100 tells a worker to write in 
   expect(text.length).toBeLessThan(4800)
 })
 
+test('the brief tells a worker on a VM that a live-read block waits for mail; a laptop worker does not read it', () => {
+  const def = (runner: string) =>
+    ({
+      name: 'f',
+      start: 'implement',
+      nodes: { implement: { prompt: 'do the thing', runner, next: { ready: 'verify' } } },
+    }) as never
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-hpmw-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-hpmw-test',
+    branch: 'b',
+  }
+  expect(brief(run, def('ax'), 'implement', c, [])).toContain('no timer re-check')
+  expect(brief(run, def('herdr'), 'implement', c, [])).not.toContain('no timer re-check')
+})
+
 // wzy6: the ponytail rules go in the one file every backend reads (Claude's system prompt, codex's AGENTS.md),
 // on the laptop and in the VM, so no worker depends on a plugin that only the laptop has (constitution I)
 test('the worker system prompt carries the ponytail rules', () => {
