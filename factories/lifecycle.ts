@@ -135,7 +135,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
       prompt: `Write the spec every later station works from: your summary is that spec. Cover:
-1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them. Each AC names the test or command that proves it, and its negative rows (the inputs that must stay denied or allowed). For a guard, validator or parser, define the class as one fail-closed rule, not as a list of forms, and name the forms that are out of scope.
+1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them. Each AC names the test or command that proves it, and its negative rows (the inputs that must stay denied or allowed). For a guard, validator or parser, define the class as one fail-closed rule, not as a list of forms, and name the forms that are out of scope. When the change adds a guard that parses another tool's input (a shell command, a Kustomize tree, a config file), specify a closed grammar: list each field and path form the guard reads, reject every other form before any render or run, and test that a rejection makes zero downstream calls.
 2. Design: the change, the files it touches, the alternatives you rejected and why.
 3. Test plan: the failing tests implement writes first.
 4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
