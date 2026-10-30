@@ -162,7 +162,9 @@ import {
   launchStats,
   metrics,
   parseLaunchLines,
+  inWindow,
   parsePrecheckLines,
+  parseRecords,
   precheckStats,
   render,
   renderLaunches,
@@ -8717,15 +8719,7 @@ function managerUsage(since: number): ManagerUsage[] {
 
 function records(): RunRecord[] {
   const file = join(HOME, 'metrics.jsonl')
-  const lines: RunRecord[] = existsSync(file)
-    ? readFileSync(file, 'utf8')
-        .split('\n')
-        .filter(Boolean)
-        .map(l => JSON.parse(l))
-    : []
-  // a run can get two lines over its life (a gc prune, then later `factory rm`): a Map keeps only
-  // the last line for each id, so metrics never counts a pruned-then-removed run twice
-  const kept = [...new Map(lines.map(r => [r.id, r])).values()]
+  const kept = existsSync(file) ? parseRecords(readFileSync(file, 'utf8')) : []
   const live = startedRunIds().map(id => record(id))
   const liveIds = new Set(live.map(r => r.id))
   return [...kept.filter(r => !liveIds.has(r.id)), ...live]
@@ -9468,9 +9462,7 @@ if (import.meta.main && !outboxCmd)
         const since = opt('--since')
         const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
         if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
-        const picked = records().filter(
-          r => (!rig || r.rig === rig) && Date.now() - r.createdAt < days * 86_400_000,
-        )
+        const picked = records().filter(r => inWindow(r, rig, days))
         const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
         const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
         // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
