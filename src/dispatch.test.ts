@@ -937,6 +937,53 @@ test('a second pass makes no new defer or relabel call: the guard is idempotent'
   expect(calls.filter(l => /^bd update acme-2\b.*--remove-label factory\b/.test(l))).toHaveLength(0)
 })
 
+// --- claude-factory-d20: two open drift beads with one key. dispatch comments on the oldest, closes
+// the newer, and never starts the newer, even when the close fails ---
+
+function fakeDriftBd(closeExit: number) {
+  mkdirSync(gbin, { recursive: true })
+  const key = 'drift:kustomization.flux-system.apps'
+  const bead = (i: number) => ({
+    id: `acme-${i}`,
+    created_by: `factory/sweeps-run${i}/drift`,
+    created_at: new Date(Date.now() - (3 - i) * 60_000).toISOString(),
+    labels: ['factory', 'sweep-queue:incident', 'station:incident', key],
+  })
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${gCallsLog}"`,
+    'case "$1" in',
+    `  list) printf '%s' '${JSON.stringify([bead(1), bead(2)])}';;`,
+    `  ready) printf '%s' '[{"id":"acme-2","title":"t","labels":["factory"]}]';;`,
+    `  close) exit ${closeExit};;`,
+    "  children) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(gbin, 'bd'), script)
+  chmodSync(join(gbin, 'bd'), 0o755)
+}
+
+test('a duplicate drift bead gets a comment on the oldest bead and a close, and never starts', () => {
+  guardReset()
+  fakeDriftBd(0)
+  expect(gfactory(['beads']).code).toBe(0)
+  const calls = readFileSync(gCallsLog, 'utf8').trim().split('\n')
+  expect(calls.some(l => /^bd comment acme-1 .*acme-2/.test(l))).toBe(true)
+  expect(calls.some(l => /^bd close acme-2\b/.test(l))).toBe(true)
+  expect(gRunDirs().map(gBeadOf)).not.toContain('acme-2')
+})
+
+test('a failed close keeps the duplicate drift bead from starting', () => {
+  guardReset()
+  fakeDriftBd(1)
+  gfactory(['beads'])
+  expect(readFileSync(gCallsLog, 'utf8')).toMatch(/^bd close acme-2\b/m)
+  expect(readFileSync(gCallsLog, 'utf8')).not.toMatch(/^bd comment /m)
+  expect(gRunDirs().map(gBeadOf)).not.toContain('acme-2')
+})
+
 // --- claude-factory-8pc.12, .13 and .18: the guard must handle each bead once, fail closed, and
 // trust no mark the bead's own labels (a sweep worker's bd calls) can set ---
 
