@@ -351,6 +351,11 @@ test('infra-blocks pre-push bot-file check is in exactly the ship queue and rele
   for (const name of holders) expect(botText(nodes[name]!.prompt!)).toBe(want)
 })
 
+test('no ship node holds the layer-version check', () => {
+  for (const n of Object.values((ship as Factory).nodes))
+    expect(n.prompt ?? '').not.toContain("'shapefile/layers/*/layer.cue'")
+})
+
 test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () => {
   expect(walk(ship, ['ready', 'ready', 'unsure']).visited).toEqual(['queue', 'release', 'deploy', 'soak'])
 })
