@@ -1050,13 +1050,16 @@ export const patrolKey = (report: string): string =>
       ...(report.match(/\blifecycle-[a-z0-9]+\b/g) ?? []),
       ...(report.match(/https?:\/\/[^\s)>\]`]+/g) ?? []).map(u => u.replace(/[.,;]+$/, '')),
       ...(report.match(/`[^`\n]+`/g) ?? []),
-      ...report.split('\n').filter(l => l.trim().endsWith('?')).map(l => l.trim()),
+      ...report
+        .split('\n')
+        .filter(l => l.trim().endsWith('?'))
+        .map(l => l.trim()),
     ]),
   ]
     .sort()
     .join('\n')
 
-export const mapView =(v: string): FactoryView => (v === 'run' ? 'board' : (v as FactoryView))
+export const mapView = (v: string): FactoryView => (v === 'run' ? 'board' : (v as FactoryView))
 
 async function readView($: EngineInterface): Promise<FactoryView> {
   return mapView(await read($, view))
