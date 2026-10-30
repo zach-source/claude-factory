@@ -1,6 +1,15 @@
 // The runner with an AX worker, end to end through bin/factory: a fake `ax` stands in for the cluster.
 import { afterAll, describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -2451,7 +2460,7 @@ describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
     mkdirSync(root, { recursive: true })
     sh(root, 'git', 'init', '-q', '--bare', 'origin.git')
     sh(root, 'git', 'clone', '-q', 'origin.git', 'widget')
-    const repo = join(root, 'widget')
+    const repo = realpathSync(join(root, 'widget')) // rigs.json holds the resolved path
     writeFileSync(join(repo, 'a'), 'a\n')
     sh(repo, 'git', 'add', '.')
     sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
