@@ -695,6 +695,29 @@ test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle s
   )
 })
 
+const LAYER_CMD = "git diff --name-only origin/{base_branch}...HEAD -- 'shapefile/layers/*/layer.cue'"
+
+test('infra-blocks layer-version check is self-check item 8 of implement only', () => {
+  const nodes = (lifecycle as Factory).nodes
+  const holders = Object.entries(nodes)
+    .filter(([, n]) => (n.prompt ?? '').includes(LAYER_CMD))
+    .map(([name]) => name)
+  expect(holders).toEqual(['implement'])
+  const p = nodes.implement!.prompt!
+  for (const t of [
+    'In the infra-blocks repo',
+    'git show origin/{base_branch}:<file>',
+    'version:',
+    'above',
+    'bump it past',
+    'run the check again',
+  ])
+    expect(p).toContain(t)
+  expect(p.indexOf('7. In the infra-blocks repo')).toBeGreaterThan(-1)
+  expect(p.indexOf('7. In the infra-blocks repo')).toBeLessThan(p.indexOf('8. In the infra-blocks repo'))
+  expect(p.indexOf('8. In the infra-blocks repo')).toBeLessThan(p.indexOf(LAYER_CMD))
+})
+
 test('plan keeps tests and the change they wait on in one PR, or orders the beads (claude-factory-9hzj AC1)', () => {
   const prompt = (lifecycle as Factory).nodes.plan!.prompt ?? ''
   for (const t of [

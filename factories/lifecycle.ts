@@ -63,6 +63,8 @@ const botFiles = `In the infra-blocks repo, a bot writes CHANGELOG.md and bumps 
 
 // implement and quick interpolate this
 const siblingSites = `Before you report ready, grep every other caller of the code you fixed (the same function, the same unguarded call, the same rule text in a sibling prompt step). Fix each one, or list it in the report with the reason it is safe.`
+// Only the implement station uses layerVersion (quick and ship do not).
+const layerVersion = `In the infra-blocks repo, a pull request that edits a layer must raise its version, because the publish job skips a version that already exists. Before each push there, run \`git diff --name-only origin/{base_branch}...HEAD -- 'shapefile/layers/*/layer.cue'\`. For each file it prints, compare its \`version:\` line with the one in \`git show origin/{base_branch}:<file>\`. The version must differ from origin/{base_branch}'s and be above it. If it is not, bump it past origin/{base_branch}'s version, commit, and run the check again. A file that origin/{base_branch} does not have passes.`
 
 // review, security and check interpolate this: one rule for what blocks and where a finding goes
 const blockingScope = `A finding blocks only when it is one of these kinds:
@@ -181,6 +183,7 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 5. After a send-back, read the whole delta since the last reviewed head (\`git diff <reviewed sha>..HEAD\`) for defects that your fixes added. Grep for the siblings of each finding.
 6. Add no changelog entry and no version bump: the repo's release step writes the changelog at release time.
 7. ${botFiles}
+8. ${layerVersion}
 Close every task of this run (see Tracking). Push the branch and open it as a draft pull request (gh pr create --draft) if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
 Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
