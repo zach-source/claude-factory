@@ -882,3 +882,14 @@ test('claude-factory-9sji AC4: only implement, verify and quick carry the rule; 
   expect(promptOf(lifecycle, 'verify')).toContain('red with a numbered list')
   expect(promptOf(lifecycle, 'verify')).toContain('Failing:')
 })
+
+test('implement and quick tell the worker to grep sibling sites of its fix (smmr AC1)', () => {
+  const RULE =
+    'Before you report ready, grep every other caller of the code you fixed (the same function, the same unguarded call, the same rule text in a sibling prompt step). Fix each one, or list it in the report with the reason it is safe.'
+  for (const id of ['implement', 'quick']) expect(promptOf(lifecycle, id), id).toContain(RULE)
+  for (const id of ['plan', 'verify', 'review', 'security', 'check'])
+    expect(promptOf(lifecycle, id), id).not.toContain(RULE)
+  expect(promptOf(lifecycle, 'implement')).toContain(
+    'A finding names an instance: grep for its siblings and fix the class, not the one line.',
+  )
+})

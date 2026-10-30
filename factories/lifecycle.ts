@@ -61,6 +61,9 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 // implement and quick interpolate this; ship.ts keeps its own copy (it must not import this file) and ship.test.ts pins the two equal
 const botFiles = `In the infra-blocks repo, a bot writes CHANGELOG.md and bumps VERSION, so a pull request must not change them or .devenv. Before each push there, run \`git fetch origin {base_branch}\`, then \`git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv\`. If it prints a file, run \`git checkout origin/{base_branch} -- <file>\` (or \`git rm --cached <file>\` when origin/{base_branch} has no such file), commit, and run the check again. Run the check, the fix, the commit and the push as separate commands. The pull request title is the changelog line, and the bot bumps VERSION.`
 
+// implement and quick interpolate this
+const siblingSites = `Before you report ready, grep every other caller of the code you fixed (the same function, the same unguarded call, the same rule text in a sibling prompt step). Fix each one, or list it in the report with the reason it is safe.`
+
 // review, security and check interpolate this: one rule for what blocks and where a finding goes
 const blockingScope = `A finding blocks only when it is one of these kinds:
 1. An acceptance criterion fails.
@@ -169,7 +172,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
       skills: ['asd-ste100'],
       split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 120,
-      prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line.
+      prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line. ${siblingSites}
 Before you report ready, run this self-check at the final HEAD, after your last commit. Do what review would:
 1. Merge origin/{base_branch} last and resolve any conflict. Then run the full gate the way CI runs it: the same commands, the pinned tool versions and the whole test suite, not only the files you touched. If load makes timing tests flake, run those files alone and say so.
 2. Make an AC table: each plan AC id and the test or command that proves it.
@@ -236,7 +239,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
     quick: {
       skills: ['asd-ste100'],
       timeoutMin: 60,
-      prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. Merge origin/{base_branch}, run the formatter and the tests of what you touched, commit.
+      prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. ${siblingSites} Merge origin/{base_branch}, run the formatter and the tests of what you touched, commit.
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request.
 ${pushGuard}

@@ -1623,7 +1623,15 @@ test('buildPrs: an MR URL on another host is never viewed, on a GitLab rig or a 
 
 // ---- GitHub REST mappers (claude-factory-fbyg.1) ----
 
-import { githubPulls, githubRows, githubSlugOf, parseGithubView, restNotes, reviewDecisionOf } from './prs'
+import {
+  githubChecks,
+  githubPulls,
+  githubRows,
+  githubSlugOf,
+  parseGithubView,
+  restNotes,
+  reviewDecisionOf,
+} from './prs'
 
 test('githubSlugOf: owner/repo of a github.com PR URL; a dot segment, a GitLab URL, http and a query give null', () => {
   expect(githubSlugOf('https://github.com/acme/widget/pull/5')).toBe('acme/widget')
@@ -1793,6 +1801,9 @@ test('githubRows maps pulls onto gh pr list fields; githubPulls pages until a sh
   })
   expect(rows[1]).toMatchObject({ state: 'OPEN', isDraft: true, isCrossRepository: false, labels: [] })
   expect(rows[1]).not.toHaveProperty('mergeCommit')
+  expect(rows[1]).toMatchObject({ headRefOid: '' })
+  const sha = 'a'.repeat(40)
+  expect(githubRows([{ number: 3, head: { ref: 'h', sha } }])[0]).toMatchObject({ headRefOid: sha })
 
   const argvs: string[][] = []
   const gh: Gh = async argv => {
@@ -1808,6 +1819,34 @@ test('githubRows maps pulls onto gh pr list fields; githubPulls pages until a sh
   ])
   const bad: Gh = async () => ({ code: 1, out: '', err: 'x' })
   expect(await githubPulls(bad, 'acme/widget', '/tmp', { state: 'all', pages: 1 })).toBeNull()
+})
+
+test('githubChecks tallies check runs and statuses of a 40-hex head; a failed call or a bad SHA gives null', async () => {
+  const sha = 'a'.repeat(40)
+  const answer =
+    (runs: unknown, status: unknown, code = 0): Gh =>
+    async argv => ({
+      code,
+      out: JSON.stringify(argv[1]!.includes('/check-runs') ? runs : status),
+      err: '',
+    })
+  const runs = {
+    check_runs: [
+      { status: 'completed', conclusion: 'success' },
+      { status: 'completed', conclusion: 'failure' },
+      { status: 'in_progress', conclusion: null },
+    ],
+  }
+  const status = { statuses: [{ state: 'success' }, { state: 'pending' }] }
+  expect(await githubChecks(answer(runs, status), 'acme/widget', sha, '/tmp')).toEqual({
+    pass: 2,
+    fail: 1,
+    pending: 2,
+  })
+  const none = answer({ check_runs: [] }, { statuses: [] })
+  expect(await githubChecks(none, 'acme/widget', sha, '/tmp')).toEqual({ pass: 0, fail: 0, pending: 0 })
+  expect(await githubChecks(answer(runs, status, 1), 'acme/widget', sha, '/tmp')).toBeNull()
+  expect(await githubChecks(answer(runs, status), 'acme/widget', 'abc', '/tmp')).toBeNull()
 })
 
 test('buildPrs on GitHub: list and view go through REST only; a failed check-runs call leaves the view applied, a failed pull call is an error', async () => {
