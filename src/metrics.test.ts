@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test'
 import {
   createdAt,
+  inWindow,
+  parseRecords,
   failKind,
   fate,
   launchStats,
@@ -597,4 +599,17 @@ test('a deploy unsure still counts as shipped, a failed one does not (claude-fac
   expect(fate({ id: 'a', node: 'rollback', createdAt: 0, log: [e('deploy', 'failed', 1)] })).not.toBe(
     'shipped',
   )
+})
+
+test('parseRecords keeps the last line of each id; inWindow filters rig and age', () => {
+  const l = (id: string, rig: string, createdAt: number) =>
+    JSON.stringify({ id, rig, node: 'done', createdAt, log: [] })
+  const rs = parseRecords([l('a', 'x', 1), l('b', 'y', 2), l('a', 'z', 3)].join('\n') + '\n')
+  expect(rs.map(r => [r.id, r.rig])).toEqual([
+    ['a', 'z'],
+    ['b', 'y'],
+  ])
+  expect(inWindow(rs[0]!, 'z', 1, 3 + 1000)).toBe(true)
+  expect(inWindow(rs[0]!, 'x', Infinity, 3)).toBe(false)
+  expect(inWindow(rs[1]!, undefined, 1, 2 + 86_400_000)).toBe(false)
 })

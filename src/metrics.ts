@@ -23,13 +23,27 @@ const HOUR = 3_600_000
 /** the id carries the run's creation time: `${name}-${Date.now().toString(36)}xx` */
 export const createdAt = (id: string) => parseInt(id.slice(id.lastIndexOf('-') + 1, -2), 36)
 
-const median = (xs: number[]) => {
+export const median = (xs: number[]) => {
   if (!xs.length) return null
   const s = [...xs].sort((a, b) => a - b)
   return s[Math.floor((s.length - 1) / 2)]!
 }
-const p90 = (xs: number[]) =>
+export const p90 = (xs: number[]) =>
   xs.length ? [...xs].sort((a, b) => a - b)[Math.ceil(xs.length * 0.9) - 1]! : null
+
+/** the metrics.jsonl lines as records; a run with two lines (gc prune, then rm) keeps the last */
+export const parseRecords = (text: string): RunRecord[] => [
+  ...new Map(
+    text
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l) as RunRecord)
+      .map(r => [r.id, r] as const),
+  ).values(),
+]
+
+export const inWindow = (r: RunRecord, rig: string | undefined, days: number, now = Date.now()) =>
+  (!rig || r.rig === rig) && now - r.createdAt < days * 86_400_000
 
 /** a run's fate: shipped (deploy succeeded), requeued (claude-factory-wnm, a bead moved on to
  * another factory or station), rejected (triage turned it down), closed, aborted, or where it is */
