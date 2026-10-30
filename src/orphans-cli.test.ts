@@ -202,6 +202,7 @@ test('a failed fork shows an error row with the URL, and a second pass forks not
   expect(rows[0].error).toContain('fork failed')
   pass()
   expect(runIds()).toHaveLength(1)
+  expect(read('orphans.json')).toHaveLength(1)
 })
 
 test('AC8: a stopped factory skips the pass; resume lets it fork', () => {

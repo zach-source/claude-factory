@@ -7831,6 +7831,17 @@ async function orphanPass() {
       for (const s of skipped)
         if (/^(fork|record) failed/.test(s.why))
           errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
+      // a failed fork keeps its record, so later passes skip the PR: show the row every pass until a person removes the entry
+      for (const pr of prs)
+        if (
+          records![pr.url]?.sha === pr.headRefOid &&
+          records![pr.url]?.run === '' &&
+          !errors.some(e => e.error?.includes(pr.url))
+        )
+          errors.push({
+            id: `rig:${rig.name}`,
+            error: `orphans: ${pr.url}: fork failed at ${pr.headRefOid.slice(0, 7)}; remove its orphan-forks.json entry to retry`,
+          })
     } catch (err) {
       errors.push({ id: `rig:${rig.name}`, error: `orphans: ${(err as Error).message}` })
     }
