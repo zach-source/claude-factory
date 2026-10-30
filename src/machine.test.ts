@@ -1254,6 +1254,30 @@ describe('an outage hold parks the station and spends no attempt', () => {
     expect(send2(hold(1, 1000, later)).context.wakeAt).toBe(later)
   })
 
+  test('holdMin sets the first wait; it does not lift the hold limit or work without hold', () => {
+    const { send } = run()
+    const s = send({ ...hold(1, 1000, 1000 + 2 * MIN), holdMin: 2 } as Ev)
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    expect(s.context.wakeAt).toBe(1000 + 2 * MIN)
+    expect(s.context.attempt).toBe(1)
+    expect(s.context.log.map(e => `${e.outcome}:${e.attempt}`)).toEqual(['outage:1'])
+
+    const r = run()
+    let at = 1000
+    let x = r.send({ ...hold(1, at), holdMin: 2 } as Ev)
+    for (let i = 2; i <= 5; i++) {
+      at = x.context.wakeAt
+      r.send({ type: 'TICK', at })
+      x = r.send({ ...hold(i, at), holdMin: 2 } as Ev)
+    }
+    expect(where(x.value)).toEqual(['implement', 'backoff'])
+    expect(x.context.log.at(-1)?.outcome).toBe('fail')
+
+    const n = run()
+    const f = n.send({ type: 'FAIL', seq: 1, reason: 'crashed', holdMin: 2, at: 1000 } as Ev)
+    expect(where(f.value)).toEqual(['implement', 'backoff'])
+  })
+
   test('the 5th hold in a row spends an attempt; a fail restarts the streak', () => {
     const { send } = run()
     let at = 1000
