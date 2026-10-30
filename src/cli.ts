@@ -747,7 +747,10 @@ const bdSkewFile = (run: Run) =>
 function bdSkewOf(line: string) {
   try {
     const { bdSkew } = JSON.parse(line)
-    return typeof bdSkew === 'string' && bdSkew.length <= 300 && worker.SKEW_RE.test(bdSkew)
+    return typeof bdSkew === 'string' &&
+      bdSkew.length <= 300 &&
+      !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
+      worker.SKEW_RE.test(bdSkew)
       ? bdSkew
       : undefined
   } catch {
@@ -874,7 +877,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         status: 'gone',
         agent: 'ax',
         bdSkew: skew,
-        failed: `needs the person: bd version skew on ax (${skew}). The worker reported ${argv![3]}: ${clipReport(argv!.slice(4).join(' '))}`,
+        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${argv![3]}: ${clipReport(argv!.slice(4).join(' '))}`,
       }
   }
   // a line this laptop already counted as replayed, now missing from the outbox: the worker edited it after
@@ -2855,7 +2858,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
           type: 'MAIL',
           from: 'factory',
           to: 'manager',
-          text: `Question: bd on the ${runner.name} image cannot read ${rig}'s beads (${info.bdSkew}). How should the factory go on?\nOptions: update bd: update bd on the ${runner.name} image; the next probe start clears the hold | pause the rig: pause ${rig} until bd is fixed`,
+          text: `Question: bd on the ${runner.name} image cannot read ${rig}'s beads (\`${info.bdSkew}\`). How should the factory go on?\nOptions: update bd: update bd on the ${runner.name} image; the next probe start clears the hold | pause the rig: pause ${rig} until bd is fixed`,
         })
       send({ type: 'FAIL', seq: c.seq, reason: info.failed, hold: now + SKEW_PROBE_MS })
       return info.status
