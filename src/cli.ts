@@ -8138,6 +8138,21 @@ async function fork(id: string | undefined, station: string | undefined, note: s
   const sender = note ? managerSender(src) : undefined
   refuseWorker('fork') // managerSender lets FACTORY_FROM and FACTORY_RUN through for mail
   await assertRoom(src.repo)
+  const run = await forkRun(src, value, def.name, station!, note, sender)
+  await tick()
+  console.log(`forked ${src.id} at ${station} into ${run.id}: branch ${run.branch} from ${src.branch}`)
+}
+
+/** a run of `src`'s factory that starts at `station` from `src`'s saved state, its bead a child of the source bead.
+ * The note goes to the station as mail from `from` (none: no mail). It checks no worker, room or tick: the caller does. */
+export async function forkRun(
+  src: Run,
+  value: Parameters<typeof where>[0],
+  factoryName: string,
+  station: string,
+  note: string,
+  from: 'manager' | 'factory' | undefined,
+) {
   const saved = readJson<Saved>(join(runDir(src.id), 'state.json'))
   const bead = src.bead
     ? beads(src.repo, 'factory').create(
@@ -8146,12 +8161,11 @@ async function fork(id: string | undefined, station: string | undefined, note: s
         ...['--deps', `related:${src.bead}`],
       )
     : undefined
-  const { run } = await createTracked(src.factory, def.name, src.repo, src.goal, bead, { run: src, saved })
+  const { run } = await createTracked(src.factory, factoryName, src.repo, src.goal, bead, { run: src, saved })
   const [node, sub] = where(value)
-  if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station! })
-  if (sender) post(run.id, { type: 'MAIL', from: sender, to: station!, text: note })
-  await tick()
-  console.log(`forked ${src.id} at ${station} into ${run.id}: branch ${run.branch} from ${src.branch}`)
+  if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station })
+  if (from) post(run.id, { type: 'MAIL', from, to: station, text: note })
+  return run
 }
 
 function current(id: string | undefined) {
