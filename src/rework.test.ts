@@ -29,7 +29,7 @@ test('a branch that is not a factory branch name gives no base', () => {
   for (const b of ['-x', 'main', '../x', 'factory/../x']) expect(reworkBase('.', b)).toBeUndefined()
 })
 
-test('freshBase starts at the rig base_branch tip on origin, and falls back to today for anything else', () => {
+test('freshBase starts at the rig base_branch tip on origin, and falls back to the origin default branch, never unpushed local commits', () => {
   const root = mkdtempSync(join(tmpdir(), 'fresh-'))
   const origin = join(root, 'origin.git')
   const work = join(root, 'work')
@@ -47,7 +47,9 @@ test('freshBase starts at the rig base_branch tip on origin, and falls back to t
   g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/deploy')
   g(root, 'clone', '-q', origin, clone)
   commit(clone, 'local') // one unpushed commit
+  const mainTip = sha(work) // origin/main; the clone's local main is one commit ahead
   const local = sha(clone)
+  expect(local).not.toBe(mainTip)
   commit(work, 'd1')
   g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/deploy')
   const deployTip = sha(work)
@@ -55,9 +57,9 @@ test('freshBase starts at the rig base_branch tip on origin, and falls back to t
 
   expect(freshBase(clone, rig('deploy'))).toBe(deployTip) // A: fetched, not the stale origin/deploy
   expect(freshBase(clone, rig(' deploy '))).toBe(deployTip)
-  expect(freshBase(clone, rig(''))).toBe(local) // B
+  expect(freshBase(clone, rig(''))).toBe(mainTip) // B: never the unpushed local commit
   for (const b of ['a..b', '-x', 'x y', '$(id)', 'deploy~0', 'nope'])
-    expect(freshBase(clone, rig(b))).toBe(local) // D, E
+    expect(freshBase(clone, rig(b))).toBe(mainTip) // D, E
 
   const clone2 = join(root, 'clone2')
   g(root, 'clone', '-q', origin, clone2)
