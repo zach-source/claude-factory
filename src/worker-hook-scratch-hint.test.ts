@@ -48,7 +48,7 @@ for (const [name, cmd, reason] of ROWS) {
 }
 
 test('FUNCTION_DEF_REASON states the scratch fix once', () => {
-  expect(FUNCTION_DEF_REASON.split('.scratch').length).toBe(2)
+  expect(FUNCTION_DEF_REASON.split('Write tool').length).toBe(2)
 })
 
 test('other reasons carry no hint', () => {
