@@ -346,7 +346,7 @@ test('infra-blocks pre-push bot-file check is in exactly the ship queue and rele
     .sort()
   expect(holders).toEqual(['queue', 'release'])
   for (const name of holders) for (const t of BOT_TOKENS) expect(nodes[name]!.prompt).toContain(t)
-  const want = botText((lifecycle as Factory).nodes.implement!.prompt!)
+  const want = botText((lifecycle as Factory).nodes.implement!.prompt!.replaceAll('{base_branch}', 'main'))
   expect(want.length).toBeGreaterThan(100)
   for (const name of holders) expect(botText(nodes[name]!.prompt!)).toBe(want)
 })
