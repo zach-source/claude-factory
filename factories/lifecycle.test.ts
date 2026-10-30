@@ -906,6 +906,24 @@ test('claude-factory-9sji AC4: only implement, verify and quick carry the rule; 
   expect(promptOf(lifecycle, 'verify')).toContain('Failing:')
 })
 
+test('claude-factory-k7ku AC1-AC4: verify cites exact-head CI for a local tool that cannot run', () => {
+  const verify = promptOf(lifecycle, 'verify')
+  for (const s of [
+    'exact head SHA',
+    'PKIX',
+    'Local gap:',
+    'A CI run on another SHA does not count',
+    'For the person:',
+  ])
+    expect(verify).toContain(s)
+  expect(verify.split('Local gap:').length - 1).toBe(1)
+  expect(verify.indexOf('Local gap:')).toBeLessThan(verify.indexOf('When to block:'))
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const prompt = (node as { prompt?: unknown }).prompt
+    if (typeof prompt === 'string' && id !== 'verify') expect(prompt, id).not.toContain('Local gap:')
+  }
+})
+
 test('claude-factory-p7fs AC1: the plan prompt asks a guard that parses input for a closed grammar, once, and no other prompt does', () => {
   const S =
     "When the change adds a guard that parses another tool's input (a shell command, a Kustomize tree, a config file), specify a closed grammar: list each field and path form the guard reads, reject every other form before any render or run, and test that a rejection makes zero downstream calls."

@@ -36,12 +36,14 @@ import {
   isMailHeld,
   isParked,
   isParkedOn,
+  isLiveRead,
   isPrWait,
   WORKER_OUTCOMES,
   parkDelayMin,
   prsIn,
   reach,
   shareOk,
+  OWNER_AFTER_MS,
   shouldHandToOwner,
   timeoutOf,
   unread,
@@ -737,6 +739,40 @@ function markNoSuspend(run: Run, why: string) {
   return `AX could not restore a ${rig} worker (${clip(why, 300)}). For 24 h the factory does not suspend ${rig} workers that wait on the manager, so no more of them fail the same way.`
 }
 
+const SKEW_PROBE_MS = 60 * 60_000
+const bdSkewFile = (run: Run) =>
+  join(HOME, `bd-skew-${(rigOf(run.repo)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
+/**
+ * The bd error of an outbox line whose VM could not sync beads (schema skew), else undefined. The VM agent
+ * writes the line, so a field of the wrong type, over 300 chars or without the skew text counts as absent.
+ */
+function bdSkewOf(line: string) {
+  try {
+    const { bdSkew } = JSON.parse(line)
+    return typeof bdSkew === 'string' &&
+      bdSkew.length <= 300 &&
+      !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
+      worker.SKEW_RE.test(bdSkew)
+      ? bdSkew
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+/**
+ * True while this run's rig has a fresh bd skew marker for this runner: no VM of the rig starts. After
+ * SKEW_PROBE_MS one start goes through as the probe, and the marker's clock restarts for the others.
+ * ponytail: a fixed 60 min window. Upgrade: probe bd on the image at serve setup.
+ */
+function bdSkewHeld(run: Run, runner: string, now: number) {
+  const file = bdSkewFile(run)
+  const m = existsSync(file) ? readJson<{ at?: number; runner?: string }>(file) : null
+  if (!m || m.runner !== runner || typeof m.at !== 'number') return false
+  if (now - m.at < SKEW_PROBE_MS) return true
+  writeJson(file, { ...m, at: now })
+  return false
+}
+
 /**
  * an AX worker's status, after replaying here the commands its outbox holds since the last look; a pending
  * or suspended task is not polled, and a failed or deleted one is gone, like a closed pane
@@ -811,13 +847,15 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       FACTORY_FROM: side?.node,
       FACTORY_RUN: run.id,
     }
-    const p = cmd ? Bun.spawnSync([CLI, ...cmd], { env }) : null
-    if (!p)
+    // a report that went out without its bd sync is not replayed: its text goes to the journal in a hold
+    const skew = cmd && argv![0] === 'report' ? bdSkewOf(line) : undefined
+    const p = cmd && !skew ? Bun.spawnSync([CLI, ...cmd], { env }) : null
+    if (!p && !skew)
       ax.prompt(
         task,
         `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
       )
-    else if (p.exitCode !== 0)
+    else if (p && p.exitCode !== 0)
       ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
     // the worker pushed before reporting, and the local worktree is what the next launch pushes back:
     // best effort, the report stands either way
@@ -828,11 +866,21 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         if (rows.length) appendUsage(run.id, rows)
       } catch {} // a bad usage never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
-      // from where this VM was told to push, which a rig changed since does not move
-      if (vmBeads(run)) syncRigBeads(run, 'pull', side?.beadsRemote)
+      if (!skew) {
+        // from where this VM was told to push, which a rig changed since does not move
+        if (vmBeads(run)) syncRigBeads(run, 'pull', side?.beadsRemote)
+        rmSync(bdSkewFile(run), { force: true }) // a report with a good pull: bd on the VM works again
+      }
     }
     seen.seen[h] = (seen.seen[h] ?? 0) + 1
     writeJson(seenFile(run, task), seen)
+    if (skew)
+      return {
+        status: 'gone',
+        agent: 'ax',
+        bdSkew: skew,
+        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${argv![3]}: ${clipReport(argv!.slice(4).join(' '))}`,
+      }
   }
   // a line this laptop already counted as replayed, now missing from the outbox: the worker edited it after
   // the fact (claude-factory-4x1). Told once per increase, not every tick the edit stays
@@ -1032,8 +1080,8 @@ export function reworkBase(repo: string, branch: string) {
 
 /**
  * what a new run branches from: the tip of origin/<base_branch> when the rig sets a valid base_branch that origin has
- * (fetched first); else the remote's default branch when it already holds everything local (fetched, so merged work,
- * factory changes included, reaches new runs); else local HEAD
+ * (fetched first); else the remote's default branch (fetched, so merged work reaches new runs and an unpushed local
+ * commit does not); else local HEAD when there is no remote
  */
 /** a VM worker's serve died in setup on `bd bootstrap -y`: a transient outage, not a fault of the work */
 export const isBootstrapFail = (r: string) =>
@@ -1054,8 +1102,7 @@ export function freshBase(repo: string, rig: Pick<Rig, 'params'> | undefined = r
   if (remote.exitCode !== 0) return head
   const ref = remote.stdout.toString().trim()
   Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin'], { timeout: 30_000 }) // offline: what we have
-  const isBehind = Bun.spawnSync(['git', '-C', repo, 'merge-base', '--is-ancestor', head, ref]).exitCode === 0
-  return isBehind ? git(repo, 'rev-parse', ref) : head
+  return git(repo, 'rev-parse', ref)
 }
 /** the message for a skill the worker image does not have, or none */
 const unknownSkill = (skill: string, where: string) =>
@@ -1304,7 +1351,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
-    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it. When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
+    `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it.${runnerOfStation(run, def, node).local ? '' : ' A blocked report that names a live read (kubectl, Mimir, Loki, Alertmanager, a live DB or pod) waits for mail or the person, with no timer re-check.'} When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
     `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
@@ -2769,6 +2816,9 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   if (!c.pane) {
     if (runnerOfStation(run, def, node).name === 'ax' && holdUnavailableAx(c, send))
       return 'AX executor unavailable'
+    const starter = runnerOfStation(run, def, node)
+    if (!starter.local && bdSkewHeld(run, starter.name, now))
+      return `needs the person: bd version skew on ${starter.name}`
     // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt
     if (isClaude && runnerOfStation(run, def, node).local && !isTrusted(run.repo)) {
       const paged = join(HOME, 'untrusted.json')
@@ -2802,6 +2852,22 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
+    if (info.bdSkew) {
+      // one Question for each rig: the marker says it was asked. The hold lasts one probe window.
+      const file = bdSkewFile(run)
+      const asked = existsSync(file)
+      const rig = rigOf(run.repo)?.name ?? basename(run.repo)
+      writeJson(file, { at: now, runner: runner.name, error: info.bdSkew })
+      if (!asked)
+        send({
+          type: 'MAIL',
+          from: 'factory',
+          to: 'manager',
+          text: `Question: bd on the ${runner.name} image cannot read ${rig}'s beads (\`${info.bdSkew}\`). How should the factory go on?\nOptions: update bd: update bd on the ${runner.name} image; the next probe start clears the hold | pause the rig: pause ${rig} until bd is fixed`,
+        })
+      send({ type: 'FAIL', seq: c.seq, reason: info.failed, hold: now + SKEW_PROBE_MS })
+      return info.status
+    }
     if (info.resumeFailed) send({ type: 'MAIL', from: 'factory', to: 'manager', text: info.resumeFailed })
     if (isBootstrapFail(info.failed)) {
       // a bd bootstrap outage spends no attempt: 2 min for the first hit, the streak floor and one mail for the next
@@ -8030,6 +8096,8 @@ async function watchPass() {
           now,
           wakeAt: c.wakeAt,
           plainMin,
+          // machine.ts BLOCKED mailOnly parks until 2x OWNER_AFTER_MS
+          mailOnly: c.wakeAt - parked.at >= 2 * OWNER_AFTER_MS,
           isPreLaunch: isPrWait(parked),
           seen,
           canHold: !!def.nodes[node]?.next.hold,
@@ -9167,6 +9235,14 @@ if (queued) {
   // report that went without them would end the VM, and its writes with it
   if (cmd === 'report') {
     const sync = worker.syncBeads()
+    if (!sync.ok && worker.isSchemaSkew(sync)) {
+      // no retry fixes a VM whose bd is too old for the store: the report goes out, and the laptop holds the station
+      worker.queue([cmd!, ...args], worker.usageOfSession(args[0]!), sync.error)
+      console.log(
+        `queued for the factory: report; bd could not sync (schema skew: ${sync.error}), so the factory holds this station for the person; you are done, stop now`,
+      )
+      process.exit(0)
+    }
     if (!sync.ok) {
       console.error(
         `refused: your bd changes were not shared (bd dolt ${sync.step} failed: ${sync.error}); run bd ` +
@@ -9836,7 +9912,15 @@ if (import.meta.main && !outboxCmd)
           outcome === 'fail'
             ? { type: 'FAIL', seq: c.seq, reason: text }
             : outcome === 'blocked'
-              ? { type: 'BLOCKED', seq: c.seq, reason: text }
+              ? {
+                  type: 'BLOCKED',
+                  seq: c.seq,
+                  reason: text,
+                  // a VM worker cannot do a live read: a timer re-check finds nothing new, so only mail wakes it
+                  ...(c.pane && !runnerOf(c.pane).local && isLiveRead(text)
+                    ? { mailOnly: true as const }
+                    : {}),
+                }
               : outcome === 'handoff'
                 ? { type: 'HANDOFF', seq: c.seq, summary: text }
                 : { type: 'DONE', seq: c.seq, outcome: outcome!, summary: text },
