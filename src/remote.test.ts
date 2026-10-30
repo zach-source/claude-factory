@@ -2891,7 +2891,10 @@ describe('an AX worker blocked report that names a live read waits for mail', ()
     const seq = launched('lr4', true, 't', 'w1-1')
     const r = factory(['report', 'lr4', String(seq), 'blocked', 'need kubectl get pods on prod'])
     expect(r.code).toBe(0)
-    const line = readFileSync(join(home, 'runs', 'lr4', 'inbox.jsonl'), 'utf8').trim().split('\n').at(-1)!
+    const line = readFileSync(join(home, 'runs', 'lr4', 'inbox.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .at(-1)!
     rmSync(join(home, 'runs', 'lr4'), { recursive: true })
     expect(JSON.parse(line)).toMatchObject({ type: 'BLOCKED', reason: 'need kubectl get pods on prod' })
     expect(JSON.parse(line).mailOnly).toBeUndefined()
