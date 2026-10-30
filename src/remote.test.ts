@@ -2579,3 +2579,214 @@ describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
     expect(s.herdrCalls()).not.toContain('worktree create')
   }, 30_000)
 })
+
+// claude-factory-lahb: an AX report survives a bd schema skew
+describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
+  const SKEW = 'schema skew check: probing schema_migrations existence: Error 1105: table has unknown fields'
+  const SKEW_URL = `${SKEW} at https://dolt.example.com:50051/app`
+  const SKEW_OUT = `${SKEW} at <url>`
+  /** `factory report` on a fake VM whose bd is `body`; returns the run's files and result */
+  function vmReport(tag: string, body: string) {
+    const vm = join(dir, tag)
+    mkdirSync(vm, { recursive: true })
+    const log = join(vm, 'bd.log')
+    writeFileSync(join(vm, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n${body}\nexit 0\n`)
+    chmodSync(join(vm, 'bd'), 0o755)
+    const p = Bun.spawnSync([CLI, 'report', 'r1', '1', 'ready', 'plan text'], {
+      env: {
+        ...process.env,
+        FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
+        FACTORY_FROM: 'a',
+        FACTORY_RUN: '',
+        FACTORY_BD: join(vm, 'bd'),
+        BEADS_DIR: join(vm, '.beads'),
+        FACTORY_HOME: join(vm, 'nohome'),
+      },
+    })
+    const outbox = existsSync(join(vm, 'outbox.jsonl')) ? readFileSync(join(vm, 'outbox.jsonl'), 'utf8') : ''
+    return { p, outbox, bdLog: readFileSync(log, 'utf8') }
+  }
+
+  test('AC1: a pull that fails with a skew queues the report with bdSkew and exits 0', () => {
+    const r = vmReport('vm-skew', `[ "$2" = pull ] && { echo "${SKEW_URL}" >&2; exit 1; }`)
+    expect(r.p.exitCode).toBe(0)
+    const lines = r.outbox.trim().split('\n')
+    expect(lines).toHaveLength(1)
+    const line = JSON.parse(lines[0]!)
+    expect(line.argv).toEqual(['report', 'r1', '1', 'ready', 'plan text'])
+    expect(line.bdSkew).toBe(SKEW_OUT)
+    expect(r.outbox).not.toContain('dolt.example.com')
+    const out = r.p.stdout.toString()
+    expect(out).toContain('schema skew')
+    expect(out).toContain('stop now')
+    expect(r.bdLog).not.toContain('push')
+  })
+
+  test('AC2: other sync failures stay refused, and a cleared conflict has no bdSkew', () => {
+    const timeout = vmReport('vm-skew-timeout', `[ "$2" = pull ] && { echo "i/o timeout" >&2; exit 1; }`)
+    expect(timeout.p.exitCode).toBe(1)
+    expect(timeout.outbox).toBe('')
+    // a push error that names the skew is not a pull skew
+    const push = vmReport(
+      'vm-skew-push',
+      `[ "$2" = push ] && { echo "table has unknown fields" >&2; exit 1; }`,
+    )
+    expect(push.p.exitCode).toBe(1)
+    expect(push.outbox).toBe('')
+    const conflict = vmReport(
+      'vm-skew-conflict',
+      `[ "$2" = pull ] && [ "$3" != "--strategy" ] && { echo "merge conflicts" >&2; exit 1; }`,
+    )
+    expect(conflict.p.exitCode).toBe(0)
+    expect(conflict.outbox).toContain('"report"')
+    expect(conflict.outbox).not.toContain('bdSkew')
+  })
+
+  const markerFile = (rig = 'wt') => join(home, `bd-skew-${rig}.json`)
+  const ctxOfRun = (id: string) =>
+    JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot.context
+  const skewLine = (id: string, seq: number, extra: object = { bdSkew: SKEW_OUT }) =>
+    JSON.stringify({ argv: ['report', id, String(seq), 'ready', 'plan text'], from: 'a', at: 1, ...extra })
+  const finish = (...ids: string[]) => {
+    rmSync(markerFile(), { force: true })
+    for (const id of ids) rmSync(join(home, 'runs', id), { recursive: true, force: true })
+  }
+
+  test('AC3: a valid skew line becomes an outage hold, with no replay of the report', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3')
+    cluster('Running', { status: 'idle', session: 's1', lines: [skewLine('sk3', seq)] })
+    const before = Date.now()
+    factory(['tick'])
+    const ctx = ctxOfRun('sk3')
+    const last = ctx.log.at(-1)
+    expect(last).toMatchObject({ node: 'a', outcome: 'outage' })
+    expect(last.summary).toContain('needs the person: bd version skew on ax')
+    expect(last.summary).toContain('ready')
+    expect(last.summary).toContain('plan text')
+    expect(ctx.wakeAt).toBeGreaterThanOrEqual(before + 60 * 60_000)
+    expect(inbox('sk3')).not.toContain('"outcome":"ready"')
+    expect(existsSync(markerFile())).toBe(true)
+    finish('sk3')
+  })
+
+  test('AC4: one Question for each rig, sent from the factory', () => {
+    rmSync(markerFile(), { force: true })
+    const a = launched('sk4a', true, 't')
+    const b = launched('sk4b', true, 'u')
+    clusterByTask('Running', {
+      t: { status: 'idle', session: 's1', lines: [skewLine('sk4a', a)] },
+      u: { status: 'idle', session: 's2', lines: [skewLine('sk4b', b)] },
+    })
+    factory(['tick'])
+    expect(existsSync(markerFile())).toBe(true)
+    const mails = ['sk4a', 'sk4b'].flatMap(id => ctxOfRun(id).mail.manager ?? [])
+    const asks = mails.filter((m: { text: string }) => m.text.includes('Question:'))
+    expect(asks).toHaveLength(1)
+    expect(asks[0].from).toBe('factory')
+    expect(asks[0].text).toContain('Options: update bd')
+    expect(mails.filter((m: { from: string }) => m.from === 'a')).toHaveLength(0)
+    finish('sk4a', 'sk4b')
+  })
+
+  test('AC7: a normal report clears the marker and replays as today', () => {
+    const seq = launched('sk7')
+    writeFileSync(markerFile(), JSON.stringify({ at: Date.now(), runner: 'ax', error: SKEW_OUT }))
+    cluster('Running', { status: 'idle', session: 's1', lines: [skewLine('sk7', seq, {})] })
+    factory(['tick'])
+    expect(inbox('sk7')).toContain('"outcome":"ready"')
+    expect(existsSync(markerFile())).toBe(false)
+    finish('sk7')
+  })
+
+  test.each([
+    ['not a string', 42],
+    ['no skew text', 'connection refused'],
+    ['over 300 chars', `${SKEW_OUT} ${'x'.repeat(300)}`],
+  ])('AC8: a bad bdSkew (%s) is ignored', (_n, bdSkew) => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk8')
+    cluster('Running', { status: 'idle', session: 's1', lines: [skewLine('sk8', seq, { bdSkew })] })
+    factory(['tick'])
+    expect(inbox('sk8')).toContain('"outcome":"ready"')
+    expect(existsSync(markerFile())).toBe(false)
+    finish('sk8')
+  })
+
+  test('AC8: a valid bdSkew on a report for another seq is refused as today', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk8s')
+    cluster('Running', { status: 'idle', session: 's1', lines: [skewLine('sk8s', seq + 1)] })
+    factory(['tick'])
+    expect(inbox('sk8s')).not.toContain('"outcome":"ready"')
+    expect(called()).toContain('worker prompt')
+    expect(existsSync(markerFile())).toBe(false)
+    finish('sk8s')
+  })
+})
+
+describe('a bd skew hold on the rig starts (claude-factory-lahb)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+  }
+  const one: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'x', next: { ready: 'done' } } } }
+  /** a rig named `rig` on runner `runner`, as the tests of claude-factory-xbzd set one up */
+  function rigSetup(tag: string, rig: string, runner: string) {
+    const root = join(dir, tag)
+    rmSync(root, { recursive: true, force: true })
+    mkdirSync(root, { recursive: true })
+    sh(root, 'git', 'init', '-q', '--bare', 'origin.git')
+    sh(root, 'git', 'clone', '-q', 'origin.git', 'widget')
+    const repo = realpathSync(join(root, 'widget'))
+    writeFileSync(join(repo, 'a'), 'a\n')
+    sh(repo, 'git', 'add', '.')
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(repo, 'git', 'push', '-q', 'origin', 'HEAD')
+    const fdefFile = join(root, 'one.json')
+    writeFileSync(fdefFile, JSON.stringify(one))
+    mkdirSync(home, { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: rig, repo, factory: fdefFile, runner }]))
+    cluster('Running', { status: 'idle', lines: [] })
+    const env = { HOME: join(root, 'home'), FACTORY_AX_IMAGE: 'img', FACTORY_AX_VAULT: 'factory' }
+    return { repo, fdefFile, env }
+  }
+  const markerOf = (rig: string) => join(home, `bd-skew-${rig}.json`)
+  const mark = (rig: string, ageMin: number) =>
+    writeFileSync(
+      markerOf(rig),
+      JSON.stringify({ at: Date.now() - ageMin * 60_000, runner: 'ax', error: 'x' }),
+    )
+  const applies = () =>
+    called()
+      .split('\n')
+      .filter(l => l.includes('apply -f')).length
+  const start = (s: ReturnType<typeof rigSetup>) => factory(['start', s.fdefFile, s.repo, 'goal'], s.env)
+
+  test('AC5: a fresh marker holds the rig AX start; another rig still starts', () => {
+    const s = rigSetup('skew-hold', 'acme', 'ax')
+    mark('acme', 1)
+    start(s)
+    expect(applies()).toBe(0)
+    expect(factory(['tick'], s.env).out).toContain('needs the person: bd version skew on ax')
+    rmSync(markerOf('acme'))
+    // a marker of another rig holds nothing
+    mark('other', 1)
+    start(s)
+    expect(applies()).toBe(1)
+    rmSync(markerOf('other'))
+  }, 60_000)
+
+  test('AC6: an old marker lets one probe start, then holds again', () => {
+    const s = rigSetup('skew-probe', 'acme', 'ax')
+    mark('acme', 61)
+    start(s)
+    expect(applies()).toBe(1)
+    expect(Date.now() - JSON.parse(readFileSync(markerOf('acme'), 'utf8')).at).toBeLessThan(60_000)
+    cluster('Running', { status: 'idle', lines: [] })
+    start(s)
+    expect(applies()).toBe(0)
+    rmSync(markerOf('acme'))
+  }, 60_000)
+})
