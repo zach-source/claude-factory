@@ -182,6 +182,28 @@ test('AC9: an unreadable orphan-forks.json forks nothing and shows an error row;
   expect(runIds()).toHaveLength(1)
 })
 
+test('a failed fork shows an error row with the URL, and a second pass forks nothing', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  // the source factory loses its review station, so the fork fails
+  writeFileSync(
+    join(home(), 'runs', src, 'factory.json'),
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'Do it.', next: { ok: 'done' } } },
+    }),
+  )
+  pass()
+  expect(runIds()).toHaveLength(1)
+  const rows = read('orphans.json')
+  expect(rows).toHaveLength(1)
+  expect(rows[0].error).toContain(URL)
+  expect(rows[0].error).toContain('fork failed')
+  pass()
+  expect(runIds()).toHaveLength(1)
+})
+
 test('AC8: a stopped factory skips the pass; resume lets it fork', () => {
   const src = setup()
   fakeGh(src, SHA1)

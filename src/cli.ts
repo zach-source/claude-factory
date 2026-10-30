@@ -7793,7 +7793,7 @@ async function orphanPass() {
         queued: pr => !!queuedOwner(pr, shipQueue),
         records: records,
       }
-      const { forked } = await orphanSweep(
+      const { skipped } = await orphanSweep(
         prs,
         ctx,
         {
@@ -7826,6 +7826,9 @@ async function orphanPass() {
         },
         cap,
       )
+      for (const s of skipped)
+        if (/^(fork|record) failed/.test(s.why))
+          errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
     } catch (err) {
       errors.push({ id: `rig:${rig.name}`, error: `orphans: ${(err as Error).message}` })
     }
