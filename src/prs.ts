@@ -832,6 +832,31 @@ export function githubPullPath(url: string): string | null {
 const MERGEABLE: Record<string, string> = { true: 'MERGEABLE', false: 'CONFLICTING' }
 const STATUS_CONCLUSION: Record<string, string> = { success: 'SUCCESS', failure: 'FAILURE', error: 'FAILURE' }
 
+/** a head's check runs and combined status (REST answers) as one rollup for `checksOf` */
+function rollupOf(checkRunsOut: string, statusOut: string) {
+  const runs = (asJson(checkRunsOut) as Json | null)?.check_runs
+  const statuses = (asJson(statusOut) as Json | null)?.statuses
+  return [
+    ...(Array.isArray(runs) ? (runs as Json[]) : []).map(c => ({
+      conclusion: str(c?.status) === 'completed' ? str(c?.conclusion) : null,
+    })),
+    ...(Array.isArray(statuses) ? (statuses as Json[]) : []).map(s => ({
+      conclusion: STATUS_CONCLUSION[str(s?.state)] ?? null,
+    })),
+  ]
+}
+
+/** the CI tally of a commit, or null when a REST call fails or the SHA is not 40 hex characters */
+export async function githubChecks(gh: Gh, slug: string, sha: string, cwd: string): Promise<Checks | null> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null
+  const api = (path: string) => gh(['api', path], { cwd, timeout: 30_000 })
+  const [runs, status] = await Promise.all([
+    api(`repos/${slug}/commits/${sha}/check-runs?per_page=100`),
+    api(`repos/${slug}/commits/${sha}/status`),
+  ])
+  return runs.code === 0 && status.code === 0 ? checksOf(rollupOf(runs.out, status.out)) : null
+}
+
 /** a pull (`pulls/N`), its reviews, its head's check runs and its combined status mapped onto `Viewed`.
  * A missing reviews, checks or status answer leaves that field blank. */
 export function parseGithubView(
@@ -842,16 +867,7 @@ export function parseGithubView(
 ): Viewed | null {
   const p = asJson(pullOut) as Json | null
   if (!p || typeof p !== 'object' || Array.isArray(p)) return null
-  const runs = (asJson(checkRunsOut) as Json | null)?.check_runs
-  const statuses = (asJson(statusOut) as Json | null)?.statuses
-  const rollup = [
-    ...(Array.isArray(runs) ? (runs as Json[]) : []).map(c => ({
-      conclusion: str(c?.status) === 'completed' ? str(c?.conclusion) : null,
-    })),
-    ...(Array.isArray(statuses) ? (statuses as Json[]) : []).map(s => ({
-      conclusion: STATUS_CONCLUSION[str(s?.state)] ?? null,
-    })),
-  ]
+  const rollup = rollupOf(checkRunsOut, statusOut)
   const head = p.head as Json | undefined
   const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
   return {
@@ -907,6 +923,7 @@ export function githubRows(pulls: unknown): Json[] {
       state: mergedAt ? 'MERGED' : str(p.state).toUpperCase(),
       isDraft: p.draft === true,
       headRefName: str(head?.ref),
+      headRefOid: str(head?.sha),
       baseRefName: str(base?.ref),
       isCrossRepository:
         !headRepo || str(headRepo.full_name) !== str((base?.repo as Json | undefined)?.full_name),
