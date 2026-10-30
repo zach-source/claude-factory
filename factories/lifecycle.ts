@@ -108,6 +108,8 @@ export default {
   nodes: {
     // ── intake ───────────────────────────────────────────────────────────────
     triage: {
+      // parked on a PR, plain mail waits for the PR watch or the timer (claude-factory-ey90)
+      holdMail: true,
       timeoutMin: 20,
       prompt: `Classify the goal and route it. Read enough of the repo (docs, layout, recent history, any issue or alert the goal cites) to decide; change nothing.
 - build: a feature, a bug fix or any change whose intent is known
