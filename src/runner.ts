@@ -21,6 +21,8 @@ export type WorkerInfo = {
   failed?: string
   /** the text of the one manager mail. Set only when AX failed to restore the task (ActorResumeFailed) and this call wrote the rig's no-suspend marker */
   resumeFailed?: string
+  /** the redacted bd error of a report that went out without its bd sync: see worker.isSchemaSkew */
+  bdSkew?: string
   /** why an AX worker has not started: the deadline names it instead of "no report" */
   pending?: string
 }
