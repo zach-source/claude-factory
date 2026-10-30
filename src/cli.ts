@@ -1185,6 +1185,10 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
   const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
   const prior = node === def.start ? priorWork(run) : ''
   const origin = originRef(run.repo)
+  const rig = rigOf(run.repo)
+  // only base_branch fills prompts: other {names} in a prompt stay as written
+  const prm: Record<string, string> =
+    def.params?.base_branch === undefined ? {} : { base_branch: baseBranchOf(def, rig, run.repo) }
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
@@ -1204,7 +1208,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     run.goal,
     '',
     '## Your task',
-    n.prompt.trim(),
+    fill(n.prompt.trim(), prm),
     // the journal is the run's memory: every station's report, so a plan or a baseline reaches every later station
     ...(c.log.length
       ? [
@@ -1225,7 +1229,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
           '',
           '## The previous attempt timed out',
           `This attempt has ${n.onTimeout.timeoutMin} min.`,
-          ...(n.onTimeout.prompt ? [n.onTimeout.prompt] : []),
+          ...(n.onTimeout.prompt ? [fill(n.onTimeout.prompt, prm)] : []),
         ]
       : []),
     ...(handedOff
@@ -2763,7 +2767,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return 'awaiting trust'
     }
     if (n.mergeCheck) {
-      const base = defaultBranch(run.repo)
+      const base = baseBranchOf(def, rigOf(run.repo), run.repo)
       const files = conflictsOf(run.repo, base, run.branch)
       if (files.length) {
         const summary = `no worker: merge origin/${base} into ${run.branch}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
@@ -5096,6 +5100,20 @@ async function hygienePass(rig: Pick<Rig, 'name' | 'repo'>, write: boolean, gh: 
 function readSlo(rig: Rig, cmd = rig.slo!): string {
   const p = Bun.spawnSync(['sh', '-c', cmd], { cwd: rig.repo, timeout: 30_000 })
   return (p.stdout.toString() + p.stderr.toString()).trim()
+}
+
+const BRANCH_OK = /^[\w][\w./-]*$/
+/** a plain branch name: it is safe in a prompt and in git argv */
+export const branchOk = (b: string) => BRANCH_OK.test(b) && !b.includes('..')
+
+/** the branch a run merges against: the rig's base_branch param when it is a plain name, else the default branch */
+export function baseBranchOf(
+  def: Pick<Factory, 'params'>,
+  rig: Pick<Rig, 'params'> | undefined,
+  repo: string,
+) {
+  const b = paramsOf(def, rig).base_branch?.trim() ?? ''
+  return b && branchOk(b) ? b : defaultBranch(repo)
 }
 
 /** the rig's default branch: origin/HEAD without `origin/`, else main */
@@ -8185,6 +8203,8 @@ async function defineRig(
       fail(
         `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
       )
+    if (k === 'base_branch' && v && !branchOk(v))
+      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
     rig.params = { ...rig.params, [k]: v }
   }
   if (max !== undefined) {
