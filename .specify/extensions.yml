@@ -1,0 +1,24 @@
+installed:
+- beads
+settings:
+  auto_execute_hooks: true
+hooks:
+  after_plan:
+  - extension: beads
+    command: speckit.beads.tasks
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Create or reconcile this feature's implementation work in Beads now?
+    description: Plan directly from the completed Spec Kit artifacts into Beads.
+    condition: null
+  before_analyze:
+  - extension: beads
+    command: speckit.beads.render
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Render a fresh tasks.md compatibility view from Beads before analysis?
+    description: Give the core analyzer a read-only projection of the authoritative
+      Beads graph.
+    condition: null

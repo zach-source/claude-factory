@@ -1,0 +1,1 @@
+../../../.specify/extensions/beads/.specify-dev/agent-commands/claude/speckit-beads-ready/SKILL.md
