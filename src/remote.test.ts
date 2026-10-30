@@ -288,7 +288,10 @@ esac
 }
 // the default FACTORY_AX_CAPABILITIES (SETUID,SETGID,CHOWN): every `ax ssh` command runs as the worker user
 const AS_WORKER = 'setpriv --reuid=worker --regid=worker --init-groups env HOME=/home/worker USER=worker'
-const inbox = (id: string) => readFileSync(join(home, 'runs', id, 'inbox.jsonl'), 'utf8')
+const inbox = (id: string) => {
+  const f = join(home, 'runs', id, 'inbox.jsonl')
+  return existsSync(f) ? readFileSync(f, 'utf8') : ''
+}
 /** the fake cluster, but a distinct poll per task (ax://<task>): lets two runs' workers disagree at once */
 function clusterByTask(phase: string, pollByTask: Record<string, object>) {
   rmSync(calls, { force: true })
@@ -2765,17 +2768,20 @@ describe('a bd skew hold on the rig starts (claude-factory-lahb)', () => {
   const start = (s: ReturnType<typeof rigSetup>) => factory(['start', s.fdefFile, s.repo, 'goal'], s.env)
 
   test('AC5: a fresh marker holds the rig AX start; another rig still starts', () => {
-    const s = rigSetup('skew-hold', 'acme', 'ax')
-    mark('acme', 1)
-    start(s)
-    expect(applies()).toBe(0)
-    expect(factory(['tick'], s.env).out).toContain('needs the person: bd version skew on ax')
-    rmSync(markerOf('acme'))
     // a marker of another rig holds nothing
+    const s = rigSetup('skew-hold', 'acme', 'ax')
     mark('other', 1)
     start(s)
     expect(applies()).toBe(1)
     rmSync(markerOf('other'))
+    // a fresh marker of this rig holds the next start
+    const t = rigSetup('skew-hold2', 'acme', 'ax')
+    mark('acme', 1)
+    start(t)
+    expect(applies()).toBe(0)
+    expect(factory(['tick'], t.env).out).toContain('needs the person: bd version skew on ax')
+    expect(applies()).toBe(0)
+    rmSync(markerOf('acme'))
   }, 60_000)
 
   test('AC6: an old marker lets one probe start, then holds again', () => {

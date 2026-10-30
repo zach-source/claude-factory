@@ -56,7 +56,7 @@ const alive = (pid: number) => {
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
-export function queue(argv: string[], usage?: Usage[]) {
+export function queue(argv: string[], usage?: Usage[], bdSkew?: string) {
   appendFileSync(
     outbox(),
     JSON.stringify({
@@ -64,6 +64,7 @@ export function queue(argv: string[], usage?: Usage[]) {
       from: process.env.FACTORY_FROM,
       at: Date.now(),
       ...(usage?.length && { usage }),
+      ...(bdSkew && { bdSkew }),
     }) + '\n',
   )
 }
@@ -230,6 +231,11 @@ export function setupBeads() {
 
 /** The result of syncBeads for a push, a pull, or every try. It is ok. Or it names the command that does not succeed and bd's own last error line. */
 export type SyncResult = { ok: true } | { ok: false; step: 'pull' | 'push'; error: string }
+
+/** The text of a bd pull that fails because the VM's bd is older than the beads store. */
+export const SKEW_RE = /schema skew|table has unknown fields/i
+/** True when the sync failed at the pull with a schema skew. No retry fixes it, and the report must still go out. */
+export const isSchemaSkew = (s: SyncResult) => !s.ok && s.step === 'pull' && SKEW_RE.test(s.error)
 
 /**
  * This returns the last line of stderr that is not empty. It comes from a bd command that does not succeed, and has a maximum of 300 chars.
