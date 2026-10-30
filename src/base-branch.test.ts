@@ -43,7 +43,7 @@ afterEach(() => {
 /** brief of a node, with the onTimeout section on when the node has one */
 const briefOf = (node: string) => {
   const log = lifecycle.nodes[node]?.onTimeout
-    ? [{ node, outcome: 'timeout', summary: 's', attempt: 1, at: 1 }]
+    ? [{ node, outcome: 'fail', summary: 'no report within 75 min', attempt: 1, at: 1 }]
     : []
   return brief(run, lifecycle as Factory, node, { ...c, log } as never, [])
 }
@@ -60,7 +60,8 @@ test('AC1: base_branch=acme/deploy puts origin/acme/deploy in each lifecycle sta
   expect(briefOf('verify')).toContain('git merge-tree')
   expect(briefOf('verify')).toContain('against origin/acme/deploy')
   expect(briefOf('review')).toContain('git diff --stat origin/acme/deploy...HEAD')
-  expect(briefOf('security')).toContain('origin/acme/deploy')
+  expect(briefOf('security')).toContain('The previous attempt timed out')
+  expect(briefOf('security')).toContain('git diff --stat origin/acme/deploy...HEAD')
 })
 
 test('AC2: with no base_branch the brief says origin/main, also for an empty value', () => {
