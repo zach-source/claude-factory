@@ -530,6 +530,7 @@ function precheckReset(extra: Record<string, unknown> = {}) {
   // labelPass() also calls gh, for an unrelated label check, now that the repo has a GitHub origin.
   // A fresh labels.stamp throttles it out of this pass, so every gh call a test sees is the pre-check's.
   writeFileSync(join(phome, 'labels.stamp'), '')
+  writeFileSync(join(phome, 'orphans.stamp'), '') // the orphan pass lists pulls through gh too
   const r = precheckRepo()
   fakePrecheckBd(extra)
   fakeGh()
@@ -1640,6 +1641,7 @@ function fixtureReset(beads: Record<string, unknown>[]) {
   writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
   mkdirSync(phome, { recursive: true })
   writeFileSync(join(phome, 'labels.stamp'), '') // throttles labelPass's own unrelated gh call
+  writeFileSync(join(phome, 'orphans.stamp'), '') // and the orphan pass's
   const r = precheckRepo()
   writeFixtureFactory(r, 'release', RELEASE_FIXTURE)
   fixtureBd(beads)
@@ -1927,6 +1929,7 @@ function e2eReset() {
   writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
   mkdirSync(phome, { recursive: true })
   writeFileSync(join(phome, 'labels.stamp'), '') // throttles labelPass's own, unrelated gh call
+  writeFileSync(join(phome, 'orphans.stamp'), '') // and the orphan pass's
   // a real git repo: createRun()'s freshBase() runs `git rev-parse` in it, for a new run's base
   const r = precheckRepo()
   writeFixtureFactory(r, 'release', E2E_FACTORY_2)
