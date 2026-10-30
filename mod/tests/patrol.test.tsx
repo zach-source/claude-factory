@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import { patrolKey } from '../hooks/register'
 
 // raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
 // this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
@@ -1488,3 +1489,64 @@ test(
     expect(patrol!.prompt).toContain('Never goto implement with no new direction')
   },
 )
+
+test(
+  'a patrol report with the same item set as the last logged one toasts one line; the log keeps the full text',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const toasts: string[] = []
+    const prev = {
+      at: 1000,
+      agentId: 'p0',
+      reason: 'answer',
+      durationMs: 1,
+      actions: [],
+      report: 'Stuck: lifecycle-aaa1 and `skill-x`. See https://example.com/pr/1',
+    }
+    files.set('/home/factory/patrol-log.jsonl', `${JSON.stringify(prev)}\n`)
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/home/factory',
+      files,
+    )
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', (_, e) => (toasts.push(JSON.stringify(e)), { value: undefined }) as never)
+    on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-1' }) as never)
+    agentListMock(on, ['patrol-1'])
+    on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    on(
+      'tool.call',
+      { tool: 'Bash' },
+      () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never,
+    )
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.turn.complete({
+      answer: 'Still stuck: https://example.com/pr/1 `skill-x` lifecycle-aaa1',
+      durationMs: 1,
+      isAborted: false,
+      reason: 'answer',
+      turnId: 't1',
+      agentId: 'patrol-1',
+    } as never)
+    expect(toasts.join('\n')).toContain('nothing new since')
+    expect(toasts.join('\n')).not.toContain('Still stuck')
+    const log = (files.get('/home/factory/patrol-log.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(log).toHaveLength(2)
+    expect(JSON.parse(log[1]!).report).toContain('Still stuck')
+  },
+)
+
+test('patrolKey lists run ids, URLs, backticked names and question lines, sorted', () => {
+  expect(patrolKey('ok')).toBe('')
+  expect(patrolKey('b lifecycle-b2 `n` https://x.y/1.\nAny news?')).toBe(
+    patrolKey('Any news?\nhttps://x.y/1 `n` lifecycle-b2'),
+  )
+  expect(patrolKey('lifecycle-a1')).not.toBe(patrolKey('lifecycle-a2'))
+})
