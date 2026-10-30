@@ -49,7 +49,7 @@ test('AC1: a green orphan draft gets one fork from its source run, with a note n
   expect(calls.fork).toEqual([[pr().url, 'run-1', orphanNote(pr())]])
   expect(orphanNote(pr())).toContain(pr().url)
   expect(orphanNote(pr())).toContain(SHA)
-  expect(calls.record).toEqual([pr().url])
+  expect(calls.record).toEqual([pr().url, pr().url]) // the attempt, then the run id
 })
 
 const rows: [string, OrphanPr, Partial<OrphanCtx>, Partial<OrphanIo>][] = [
@@ -115,6 +115,35 @@ test('AC3: a second pass with the records forks 0; a new head SHA forks again', 
   expect(second.calls.checks).toBe(0)
   const pushed = pr(1, { headRefOid: 'b'.repeat(40) })
   expect((await orphanSweep([pushed], ctx({ records }), second.o, ORPHAN_CAP)).forked).toHaveLength(1)
+})
+
+test('a fork that throws is recorded: 1 fork call over 2 passes, and the next PR still forks', async () => {
+  const records: OrphanCtx['records'] = {}
+  const forks: number[] = []
+  const o = io({
+    record: (p, from, run) => void (records[p.url] = { sha: p.headRefOid, run, from, at: 'now' }),
+    fork: async p => {
+      forks.push(p.number)
+      if (p.number === 1) throw new Error('boom')
+      return `fork-${p.number}`
+    },
+  }).o
+  const first = await orphanSweep([pr(1), pr(2)], ctx({ records }), o, ORPHAN_CAP)
+  expect(first.skipped).toEqual([{ url: pr(1).url, why: 'fork failed: boom' }])
+  expect(first.forked).toEqual([{ url: pr(2).url, run: 'fork-2' }])
+  await orphanSweep([pr(1), pr(2)], ctx({ records }), o, ORPHAN_CAP)
+  expect(forks).toEqual([1, 2])
+})
+
+test('a record write that fails stops that PR before the fork', async () => {
+  const f = io({
+    record: () => {
+      throw new Error('disk')
+    },
+  })
+  const res = await orphanSweep([pr()], ctx(), f.o, ORPHAN_CAP)
+  expect(f.calls.fork).toHaveLength(0)
+  expect(res.skipped[0]!.why).toBe('record failed: disk')
 })
 
 test('AC4: 5 green orphans give ORPHAN_CAP forks; cap 1 gives 1; cap 0 gives 0 and no checks call', async () => {

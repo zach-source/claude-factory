@@ -40,6 +40,7 @@ export type OrphanIo = {
   checks: (pr: OrphanPr) => Promise<Checks | null>
   /** starts the review run from the source run: the new run's id */
   fork: (pr: OrphanPr, src: string, note: string) => Promise<string>
+  /** run is '' for the attempt, written before the fork, then the new run's id */
   record: (pr: OrphanPr, src: string, run: string) => void
 }
 
@@ -97,8 +98,23 @@ export async function orphanSweep(prs: OrphanPr[], ctx: OrphanCtx, io: OrphanIo,
       skipped.push({ url: pr.url, why: `CI ${verdict}` })
       continue
     }
-    const run = await io.fork(pr, src, orphanNote(pr))
-    io.record(pr, src, run)
+    // the record comes first: a fork that fails or a record write that fails after it must not repeat every pass
+    try {
+      io.record(pr, src, '')
+    } catch (err) {
+      skipped.push({ url: pr.url, why: `record failed: ${(err as Error).message}` })
+      continue
+    }
+    let run: string
+    try {
+      run = await io.fork(pr, src, orphanNote(pr))
+    } catch (err) {
+      skipped.push({ url: pr.url, why: `fork failed: ${(err as Error).message}` })
+      continue
+    }
+    try {
+      io.record(pr, src, run)
+    } catch {} // the first record still holds this PR at this head
     forked.push({ url: pr.url, run })
   }
   return { forked, skipped }

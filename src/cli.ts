@@ -7772,9 +7772,10 @@ async function orphanPass() {
           record: (pr, from, run) => {
             records![pr.url] = { sha: pr.headRefOid, run, from, at: new Date().toISOString() }
             writeJson(file, records)
-            console.log(
-              `${new Date().toISOString()} orphan ${pr.url}@${pr.headRefOid.slice(0, 7)} -> fork ${from} into ${run}`,
-            )
+            if (run)
+              console.log(
+                `${new Date().toISOString()} orphan ${pr.url}@${pr.headRefOid.slice(0, 7)} -> fork ${from} into ${run}`,
+              )
           },
         },
         cap,
