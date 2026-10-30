@@ -958,7 +958,7 @@ const mailTo = (to: string) =>
 test('ey90 AC1: only the lifecycle triage node holds mail', () => {
   expect(lifecycle.nodes.triage?.holdMail).toBe(true)
   for (const id of ['plan', 'implement', 'verify', 'review'])
-    expect(lifecycle.nodes[id]?.holdMail, id).toBeFalsy()
+    expect(lifecycle.nodes[id as 'plan']?.holdMail, id).toBeFalsy()
 })
 
 test('ey90 AC2, AC3: plain mail to a PR-parked triage waits; a wake mail starts the worker', () => {
