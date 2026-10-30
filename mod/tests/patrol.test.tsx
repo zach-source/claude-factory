@@ -230,6 +230,11 @@ test(
     // so the fallback must carry them itself, or the main chat gets due.text with no rules to work it
     expect(submits[0]!.text).toContain('## Factory patrol')
     expect(submits[0]!.text).toContain("You are the factory manager's patrol")
+    // claude-factory-502: the prompt names the release factory and says what to do with a "File in:" line
+    expect(submits[0]!.text).toContain('start release <rig>')
+    expect(submits[0]!.text).not.toContain('lifecycle covers build, release')
+    expect(submits[0]!.text).toContain('"File in: <rig>: <title> | <description>"')
+    expect(submits[0]!.text).toContain('`bd undefer` the source bead')
     expect(JSON.stringify(status)).toContain('fell back to the main chat')
   },
 )
@@ -543,6 +548,19 @@ test(
     expect(entry.tokens).toBe(150)
     expect(entry.actions).toEqual(['factory mail r1 implement "answered"'])
     expect(entry.report).toContain('Mailed r1')
+    // claude-factory-hr94: the turn's spend, by type, under the name patrol
+    const spent = (files.get('/home/factory/manager-usage.jsonl') ?? '').trim().split('\n').filter(Boolean)
+    expect(spent.map(l => JSON.parse(l))).toEqual([
+      {
+        name: 'patrol',
+        at: expect.any(Number),
+        model: 'claude-x',
+        input: 100,
+        cacheWrite: 0,
+        cacheRead: 0,
+        output: 50,
+      },
+    ])
 
     // the main loop's own turn.complete (no agentId, isPatrolling already false): writes nothing more
     await $.turn.complete({

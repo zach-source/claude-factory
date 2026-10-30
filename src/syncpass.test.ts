@@ -8,16 +8,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
-const dir = join(tmpdir(), `syncpass-${process.pid}`)
-const home = join(dir, 'home')
-const bin = join(dir, 'bin')
-const log = join(dir, 'bd.log')
-const claudeConfig = join(dir, 'claude-config')
+// Each test gets its own dir: `factory tick` leaves detached children that write into the old home.
+let n = 0
+let dir = ''
+let home = ''
+let bin = ''
+let log = ''
+let claudeConfig = ''
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const t0 = Date.now()
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
@@ -33,7 +35,12 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 }
 
 function setup(names: string[], marks: Record<string, Record<string, string>> = {}) {
-  rmSync(dir, { recursive: true, force: true })
+  if (dir) rmSync(dir, { recursive: true, force: true })
+  dir = join(tmpdir(), `syncpass-${process.pid}-${++n}`)
+  home = join(dir, 'home')
+  bin = join(dir, 'bin')
+  log = join(dir, 'bd.log')
+  claudeConfig = join(dir, 'claude-config')
   mkdirSync(bin, { recursive: true })
   mkdirSync(claudeConfig, { recursive: true })
   writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
@@ -221,7 +228,7 @@ test('dispatch.json names why each ready bead did not start; tick drops those ro
 
 test('a full rig gets one row and no bd ready call (AC6)', () => {
   oneRig({ 'ready.json': bead }, 0)
-  factory(['beads'])
+  expect(factory(['beads']).code).toBe(0)
   expect(dispatchJson().filter(x => x.skip)).toEqual([
     { id: 'rig:acme-a', rig: 'acme-a', skip: 'rig full 0/0' },
   ])

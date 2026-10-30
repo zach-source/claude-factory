@@ -279,6 +279,14 @@ test('findings: an open epic whose children are all closed is a plan gap, unless
   expect(findings('acme', undefined, every, ['r-2'], now)).toEqual([]) // a live run's own epic: not a gap yet
 })
 
+test('findings: an epic in the ship queue (label ship) is not an epic-done-open gap', () => {
+  const now = 1_000 * HOUR
+  const kids: Bead[] = [bead('r-2.1', { status: 'closed', parent: 'r-2' })]
+  const epic = (labels: string[]) => [bead('r-2', { status: 'open', priority: 2, labels }), ...kids]
+  expect(findings('acme', undefined, epic(['ship']), [], now)).toEqual([])
+  expect(findings('acme', undefined, epic([]), [], now).map(f => f.kind)).toEqual(['epic-done-open'])
+})
+
 test('findings: an epic title with ESC and a newline (an untrusted Linear-synced title) comes out clean in the epic-done-open text (claude-factory-dun.23)', () => {
   const now = 1_000 * HOUR
   const every: Bead[] = [

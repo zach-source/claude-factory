@@ -1,9 +1,15 @@
-import { expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { beforeAll, expect, test } from 'bun:test'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { shipPrOf, track, type Track } from './cli'
+import { beads } from './beads'
+import { closeParents, shipPrOf, track, type Track } from './cli'
 import { hasShipEdge, type Ctx, type Factory } from './machine'
+
+const repairsLog = join(mkdtempSync(join(tmpdir(), 'repairs-')), 'repairs.jsonl')
+beforeAll(() => {
+  process.env.FACTORY_REPAIRS_LOG = repairsLog
+})
 
 const PR = 'https://github.com/acme/widget/pull/42'
 const def = {
@@ -27,12 +33,14 @@ const run = {
 const ctx = (summary: string, outcome = 'approve') =>
   ({ log: [{ node: 'review', attempt: 1, outcome, summary, at: 1 }] }) as unknown as Ctx
 
-const fakeBd = (name: string, labels: string[]) => {
+const fakeBd = (name: string, labels: string[], list = '') => {
   const bin = join(tmpdir(), `${name}-${process.pid}`)
   mkdirSync(bin, { recursive: true })
   const log = join(bin, 'calls')
   const show = join(bin, 'show.json')
+  const listOut = join(bin, 'list.json')
   writeFileSync(show, JSON.stringify([{ id: 'fx-1', title: 't', labels }]))
+  writeFileSync(listOut, list)
   writeFileSync(log, '')
   writeFileSync(
     join(bin, 'bd'),
@@ -42,6 +50,7 @@ const fakeBd = (name: string, labels: string[]) => {
       'case "$1" in',
       `  show) cat ${show};;`,
       `  children) echo '[]';;`,
+      `  list) cat ${listOut};;`,
       'esac',
     ].join('\n'),
   )
@@ -97,6 +106,85 @@ test('a run that ends on a plain edge still closes its bead', () => {
     )
     expect(f.calls().some(c => c.startsWith('close fx-1'))).toBe(true)
     expect(f.calls().some(c => c.includes('--add-label ship'))).toBe(false)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+const plain = { ...def, nodes: { review: { prompt: '', next: { approve: 'done' } } } } satisfies Factory
+const trackPlain = (list: string, c = ctx(`approve ${PR}`)) => {
+  const f = fakeBd(`fake-bd-parent-${Math.random().toString(36).slice(2)}`, ['factory'], list)
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const t: Track = { mirrored: 1, beatAt: 0, isSettled: false }
+    track({ ...run, bead: 'fx-1.1' }, plain, { done: '' }, c, t, Date.now())
+    return { calls: f.calls(), t }
+  } finally {
+    process.env.PATH = path
+  }
+}
+const bead = (id: string, status = 'open') => ({ id, title: id, status })
+
+test('a run that closes the last child also closes its parent, with a comment that cites the run', () => {
+  const { calls } = trackPlain(JSON.stringify([bead('fx-1'), bead('fx-1.1'), bead('fx-1.2', 'closed')]))
+  expect(calls.some(c => c.startsWith('close fx-1.1'))).toBe(true)
+  expect(calls.filter(c => c.startsWith('close fx-1 --reason every child is closed'))).toHaveLength(1)
+  const comment = calls.filter(c => c.startsWith('comment fx-1 '))
+  expect(comment).toHaveLength(1)
+  expect(comment[0]).toContain('run run-1')
+  expect(comment[0]).toContain('fx-1.1')
+  const row = JSON.parse(readFileSync(repairsLog, 'utf8').trim().split('\n').pop()!)
+  expect(row).toMatchObject({ kind: 'close', id: 'fx-1', child: 'fx-1.1', by: 'run run-1' })
+})
+
+test('an open sibling leaves the parent alone', () => {
+  const { calls } = trackPlain(JSON.stringify([bead('fx-1'), bead('fx-1.1'), bead('fx-1.2')]))
+  expect(calls.some(c => c.startsWith('close fx-1 '))).toBe(false)
+  expect(calls.some(c => c.startsWith('comment fx-1 '))).toBe(false)
+})
+
+test('a bd list that prints junk does not stop the run settling or defer the bead', () => {
+  const { calls, t } = trackPlain('not json')
+  expect(t.isSettled).toBe(true)
+  expect(calls.some(c => c.startsWith('defer '))).toBe(false)
+  expect(calls.some(c => c.startsWith('close fx-1.1'))).toBe(true)
+})
+
+test('closeParents shares one closed set: the second close of a pass closes the parent from a stale list', () => {
+  const f = fakeBd(
+    'fake-bd-closeparents',
+    ['factory'],
+    JSON.stringify([bead('fx-1'), bead('fx-1.1'), bead('fx-1.2')]),
+  )
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    const closed = new Set(['fx-1.1'])
+    closeParents(b, tmpdir(), 'fx-1.1', 'the repair pass', closed)
+    expect(f.calls().some(c => c.startsWith('close fx-1 '))).toBe(false)
+    closed.add('fx-1.2')
+    closeParents(b, tmpdir(), 'fx-1.2', 'the repair pass', closed)
+    expect(f.calls().filter(c => c.startsWith('close fx-1 '))).toHaveLength(1)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('closeParents adds each parent it closes to the shared set, so a later close sees it', () => {
+  const list = [bead('g'), bead('g.1'), bead('g.1.1'), bead('g.2')]
+  const f = fakeBd('fake-bd-closeparents-2', ['factory'], JSON.stringify(list))
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    const closed = new Set(['g.1.1'])
+    closeParents(b, tmpdir(), 'g.1.1', 'the repair pass', closed)
+    expect(closed.has('g.1')).toBe(true)
+    closed.add('g.2')
+    closeParents(b, tmpdir(), 'g.2', 'the repair pass', closed)
+    expect(f.calls().filter(c => c.startsWith('close g '))).toHaveLength(1)
   } finally {
     process.env.PATH = path
   }

@@ -40,7 +40,7 @@ export function taskName(run: string, seq: number) {
 /** where the image keeps the factory (Dockerfile.worker), and with it the workers' system prompt */
 export const FACTORY_DIR = '/opt/factory'
 
-/** the station's model, read from its agent command (`--model 'claude-sonnet-5[1m]'`, codex's `-m o3`) */
+/** the station's model, read from its agent command (`--model 'claude-sonnet-5-5[1m]'`, codex's `-m o3`) */
 export const modelOf = (agent: string) => agent.match(/(?:^|\s)(?:--model|-m)[\s=]+'?([^'\s]+)'?/)?.[1]
 /** pi's provider, read from its agent command (`--provider anthropic`); pi defaults to google */
 export const providerOf = (agent: string) => agent.match(/(?:^|\s)--provider[\s=]+'?([^'\s]+)'?/)?.[1]
@@ -59,6 +59,10 @@ export type Egress = {
   prefix?: string
   port?: number
   http?: boolean
+  /** only these request paths (needs a Substrate with egress pathPrefixes live) */
+  pathPrefixes?: string[]
+  /** several injections on one rule, instead of key, header and prefix */
+  headers?: { header: string; prefix: string; key: string }[]
 }
 
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i
@@ -96,10 +100,19 @@ export type Launch = {
   provider?: string
   /** Claude's flags for a worker: tools, settings, system prompt (what workerFlags gives a pane's Claude) */
   claudeFlags?: string[]
+  /** a codex worker's CODEX_HOME files by name (cli.ts vmCodexHome); serve writes them before the first turn */
+  codexHome?: Record<string, string>
+  /** a codex worker logs in with an API key (placeholder env keys) or with ChatGPT (auth.json, no key in the env) */
+  codexAuth?: 'apikey' | 'chatgpt'
   env: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
+  /** the rig's AX sandbox class (Rig.sandboxClass); AX's gvisor default when absent */
+  sandboxClass?: SandboxClass
 }
+
+/** AX's spec.sandboxClass: microvm runs the task in a Cloud Hypervisor guest with a real kernel, where Nix builds work */
+export type SandboxClass = 'gvisor' | 'microvm'
 
 /** the Task and its Workspace as a multi-document manifest; JSON is YAML, so no YAML library */
 export function manifest(l: Launch) {
@@ -130,6 +143,7 @@ export function manifest(l: Launch) {
           FACTORY_HARNESS: l.harness ?? 'claude',
           ...(l.provider && { FACTORY_PROVIDER: l.provider }),
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
+          ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
         }),
       }).map(([name, value]) => ({
         name,
@@ -140,6 +154,8 @@ export function manifest(l: Launch) {
       debug: true,
       // so serve can run as the image's worker user instead of root (worker.ts asWorker)
       ...(CAPABILITIES().length && { capabilities: CAPABILITIES() }),
+      // only when set: an AX without spec.sandboxClass refuses the field
+      ...(l.sandboxClass && { sandboxClass: l.sandboxClass }),
     },
   }
   return [workspace, task].map(d => JSON.stringify(d, null, 2)).join('\n---\n')
@@ -148,27 +164,51 @@ export function manifest(l: Launch) {
 /** a task's phase from `ax get task` (YAML): Pending, Running, Suspended, Failed, Terminating; null when gone */
 export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1] ?? null
 
+/**
+ * why a task failed, from its `ax get task` YAML: "<reason>: <message>" of the first status.conditions entry
+ * whose status is "False" (AX writes ActorResumeFailed and the runsc error there). undefined when none; never throws
+ */
+export function failureOf(yaml: string): string | undefined {
+  try {
+    const conds = (Bun.YAML.parse(yaml) as { status?: { conditions?: unknown } } | null)?.status?.conditions
+    const bad = (Array.isArray(conds) ? conds : []).find(c => c?.status === 'False' || c?.status === false)
+    if (!bad?.reason && !bad?.message) return undefined
+    return [bad.reason, bad.message].filter(Boolean).join(': ')
+  } catch {
+    return undefined
+  }
+}
+
 /** Pending tasks cannot start while the shared controller is down; preserve them instead of retrying. */
 export function unavailable(): string | undefined {
   const unknown = 'AX executor unavailable: controller readiness could not be observed'
   try {
-    const p = Bun.spawnSync(
-      [
-        KUBECTL(),
-        ...context(),
-        'get',
-        'deployment',
-        'ax-controller',
-        '-n',
-        'ax-system',
-        '-o',
-        'json',
-        '--request-timeout=5s',
-      ],
-      { timeout: 6_000 },
-    )
-    if (p.exitCode !== 0) return unknown
-    const d = JSON.parse(p.stdout.toString())
+    let raw: string
+    if (BROKER()) {
+      // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
+      const r = broker('GET', '/controller')
+      if (!r.ok) return unknown
+      raw = r.body
+    } else {
+      const p = Bun.spawnSync(
+        [
+          KUBECTL(),
+          ...context(),
+          'get',
+          'deployment',
+          'ax-controller',
+          '-n',
+          'ax-system',
+          '-o',
+          'json',
+          '--request-timeout=5s',
+        ],
+        { timeout: 6_000 },
+      )
+      if (p.exitCode !== 0) return unknown
+      raw = p.stdout.toString()
+    }
+    const d = JSON.parse(raw)
     const generation = d?.metadata?.generation
     const status = d?.status
     if (
@@ -206,10 +246,13 @@ export type Poll = {
   log?: string
   /** an egress-gateway outage serve is retrying a turn through: see worker.ts egressFailure */
   egress?: { since: number; tries: number; last: string }
+  /** a codex turn that ended on a usage limit: see worker.ts codexLimit */
+  limit?: { at: number; kind: string; resetsAt: number }
 }
 
 function ax(args: string[], stdin?: string, timeout = 30_000) {
   const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
+    env: process.env, // the ax CLI sends AX_AUTH_TOKEN over the loopback tunnel
     stdin: stdin ? Buffer.from(stdin) : undefined,
     timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
   })
@@ -339,6 +382,19 @@ const gitlabRule = (host: string, uri?: (key: string) => string) => ({
   },
 })
 
+/** the stations that post approving reviews as the reviewer App: review, security and check (the small route's review) */
+export const REVIEWER_STATIONS = ['review', 'security', 'check']
+
+/**
+ * true when this task gets the reviewer App's key on api.github.com: a reviewer station, FACTORY_AX_VAULT set, and
+ * FACTORY_AX_REVIEWER_OWNER (the feature flag) equal to the rig's GitHub owner. Unset flag: today's behavior.
+ */
+export const reviewerTask = (node: string, githubOwner?: string, env: NodeJS.ProcessEnv = process.env) =>
+  REVIEWER_STATIONS.includes(node) &&
+  !!env.FACTORY_AX_VAULT &&
+  !!env.FACTORY_AX_REVIEWER_OWNER &&
+  env.FACTORY_AX_REVIEWER_OWNER === githubOwner
+
 /** GitHub owners whose repos need their own vault key (the App's installation on that account); the Basic key adds `_BASIC` */
 const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
 
@@ -347,7 +403,8 @@ const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
  * swaps the placeholder in each auth header for that agent-vault vault's credential: `ANTHROPIC` (a Claude OAuth token),
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). A rig on GitLab host H gets H the same way, with `GITLAB` (an access token) and `GITLAB_BASIC`
- * (base64 of `<user>:<token>`, git's Basic auth). agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
+ * (base64 of `<user>:<token>`, git's Basic auth). With `reviewer`, api.github.com uses `GITHUB_REVIEWER` (the reviewer App's
+ * installation token); github.com keeps the Basic key, as the reviewer App cannot push. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  *
  * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
  * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
@@ -361,6 +418,7 @@ export function egressPolicy(
   gitlabHost?: string,
   githubOwner?: string,
   githubKey = 'GITHUB_BASIC',
+  reviewer = false,
 ) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (
@@ -370,12 +428,17 @@ export function egressPolicy(
     key: string,
     port?: number,
     pathPrefixes?: string[],
+    more: { header: string; prefix: string; key: string }[] = [{ header, prefix, key }],
   ) => ({
     https: {
       hostnames,
       ...(port && { ports: { numbers: [port] } }),
       ...(pathPrefixes && { pathPrefixes }),
-      ...(vault && { effects: { replaceHeaders: [{ header, prefix, credentialUri: uri(key) }] } }),
+      ...(vault && {
+        effects: {
+          replaceHeaders: more.map(m => ({ header: m.header, prefix: m.prefix, credentialUri: uri(m.key) })),
+        },
+      }),
     },
   })
   const own = githubOwner && Object.hasOwn(GITHUB_OWNER_KEYS, githubOwner) && GITHUB_OWNER_KEYS[githubOwner]
@@ -383,12 +446,19 @@ export function egressPolicy(
   return {
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
-      rule(apiHosts, 'Authorization', 'Bearer ', own || 'GITHUB'),
+      rule(apiHosts, 'Authorization', 'Bearer ', reviewer ? 'GITHUB_REVIEWER' : own || 'GITHUB'),
       rule(['github.com'], 'Authorization', 'Basic ', own ? `${own}_BASIC` : githubKey),
       // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live)
       ...(vault && githubKey === 'GITHUB_BASIC'
         ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
-            rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
+            rule(
+              apiHosts,
+              'Authorization',
+              'Bearer ',
+              reviewer && owner === githubOwner ? 'GITHUB_REVIEWER' : key,
+              undefined,
+              [`/repos/${owner}/`],
+            ),
             rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`]),
           ])
         : []),
@@ -398,14 +468,26 @@ export function egressPolicy(
       // change every devenv's derivation, and so miss the rig's cached devenv
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } },
       ...(gate ? [gateRule(gate)] : []),
-      ...(gate ? stripRegistryHosts(extra) : extra).map(({ hosts, key, header, prefix, port, http }) =>
-        key
-          ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port)
-          : { [http ? 'http' : 'https']: { hostnames: hosts, ...(port && { ports: { numbers: [port] } }) } },
+      ...(gate ? stripRegistryHosts(extra) : extra).map(
+        ({ hosts, key, header, prefix, port, http, pathPrefixes, headers }) =>
+          headers?.length
+            ? rule(hosts, '', '', '', port, pathPrefixes, headers)
+            : key
+              ? rule(hosts, header ?? 'Authorization', prefix ?? 'Bearer ', key, port, pathPrefixes)
+              : {
+                  [http ? 'http' : 'https']: {
+                    hostnames: hosts,
+                    ...(port && { ports: { numbers: [port] } }),
+                    ...(pathPrefixes && { pathPrefixes }),
+                  },
+                },
       ),
     ],
   }
 }
+
+/** a vault key that only the manager task may use: it gives full AX control, or write access to the backup repo */
+const MANAGER_ONLY_KEY = /"credentialUri":"[^"]*\/(AX_AUTH|GITHUB_BASIC_MANAGER)"/
 
 /**
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
@@ -417,8 +499,15 @@ export function createPolicy(
   gitlabHost?: string,
   githubOwner?: string,
   githubKey?: string,
+  reviewer = false,
 ) {
-  const policy = JSON.stringify(egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey))
+  const policy = JSON.stringify(
+    egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer),
+  )
+  // the manager and every worker share one vault: a worker policy must not name a manager-only key
+  const key = MANAGER_ONLY_KEY.exec(policy)?.[1]
+  if (key && task !== managerTask())
+    throw new Error(`egress policy for ${task} names manager-only vault key ${key}`)
   if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
@@ -436,7 +525,7 @@ export function createPolicy(
  * which `serve` waits out. The keys in the VM are placeholders: the gateway puts the real ones in on the way out.
  */
 export const launch = (l: Launch) => {
-  const env = {
+  const env: Record<string, string> = {
     ...l.env,
     FACTORY_CA: egressCA(),
     // the policy allows only the hosts it names, so skip the telemetry it would refuse
@@ -445,7 +534,8 @@ export const launch = (l: Launch) => {
     ...(process.env.FACTORY_AX_VAULT && {
       // each agent sends its key as `Authorization: Bearer`; the rig's egress rule names the vault key behind it
       ...((l.harness ?? 'claude') === 'claude' && { CLAUDE_CODE_OAUTH_TOKEN: 'placeholder' }),
-      ...(l.harness === 'codex' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
+      ...(l.harness === 'codex' &&
+        l.codexAuth !== 'chatgpt' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
       GIT_CONFIG_COUNT: l.gitlabHost ? '2' : '1',
@@ -477,15 +567,20 @@ export const launch = (l: Launch) => {
       }),
     }),
   }
+  // fail closed: the broker's bearer lives in the vault, so the VM never holds a real token
+  delete env.AWS_CONTAINER_AUTHORIZATION_TOKEN
+  if (env.AWS_CONTAINER_CREDENTIALS_FULL_URI) env.AWS_CONTAINER_AUTHORIZATION_TOKEN = 'placeholder'
   must(['apply', '-f', '-'], manifest({ ...l, env }))
   return `ax://${l.name}`
 }
-export function phase(task: string) {
+/** the task's phase and, when AX says why it failed, that reason: one `ax get task` */
+export function read(task: string): { phase: string | null; failure?: string } {
   const r = ax(['get', 'task', task])
-  if (r.ok) return phaseOf(r.out)
-  if (/not ?found/i.test(r.err)) return null
+  if (r.ok) return { phase: phaseOf(r.out), failure: failureOf(r.out) }
+  if (/not ?found/i.test(r.err)) return { phase: null }
   throw new Error(`ax get task: ${r.err}`)
 }
+export const phase = (task: string) => read(task).phase
 /**
  * a VM command as the worker user, not root: root over `ax ssh` has no DAC_OVERRIDE or CAP_FOWNER (see
  * docs/remote-runner.md), so it cannot write `.factory-worker`, which `serve` gave to WORKER_USER. setpriv
@@ -622,7 +717,14 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
     ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
-    ...(env[MANAGER_BROKER] && { FACTORY_POLICY_BROKER: env[MANAGER_BROKER] }),
+    // the gateway adds the real token (managerEgress). The VM holds a placeholder. The CLI sends a token only over https
+    ...(env.FACTORY_AX_VAULT &&
+      env[MANAGER_AX_SERVER]?.startsWith('https://') && { AX_AUTH_TOKEN: 'placeholder' }),
+    ...(env[MANAGER_BROKER] && {
+      FACTORY_POLICY_BROKER: env[MANAGER_BROKER],
+      // the swap runs in the broker pod, where the op writer token is; the VM holds none
+      FACTORY_AX_TOKEN_SWAP: `curl -sSf -m 25 -X POST ${env[MANAGER_BROKER]!.replace(/\/+$/, '')}/token/best`,
+    }),
     // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
     ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
   }
@@ -639,22 +741,89 @@ export function routerAddress(url?: string) {
   }
 }
 
+type DoltRig = { beadsRemote?: { url: string }; egress?: Egress[] }
+
+/**
+ * The Dolt rule for the https beadsRemote of a rig.
+ * The key, header and prefix come from the rig's own keyed rule for that host and port.
+ * If the rig has none, the key is DOLT_BASIC.
+ */
+function doltRule(r: DoltRig): (Egress & { port: number }) | undefined {
+  try {
+    const u = r.beadsRemote ? new URL(r.beadsRemote.url) : null
+    if (!u?.hostname || u.protocol !== 'https:') return undefined
+    const port = Number(u.port) || 443
+    const own = r.egress?.find(
+      e => e.key && e.hosts.includes(u.hostname) && (e.port ?? 443) === port && !e.http,
+    )
+    return {
+      hosts: [u.hostname],
+      key: own?.key ?? 'DOLT_BASIC',
+      header: own ? (own.header ?? 'Authorization') : 'Authorization',
+      prefix: own ? (own.prefix ?? 'Bearer ') : 'Basic ',
+      port,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * This adds the Dolt rule of the rig's own beadsRemote to the egress of a worker. The VM then can clone its beads.
+ * It adds no other host.
+ * If the egress has a keyed rule for that host and port, it does not change.
+ */
+export function withDoltEgress(egress: Egress[] | undefined, rig?: DoltRig): Egress[] | undefined {
+  const rule = rig && doltRule(rig)
+  if (!rule) return egress
+  const has = egress?.some(
+    e => e.key && rule.hosts.every(h => e.hosts.includes(h)) && (e.port ?? 443) === rule.port && !e.http,
+  )
+  return has ? egress : [...(egress ?? []), rule]
+}
+
 /**
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
- * A value that is not a URL adds no rule. ponytail: a rig's hosts stay with the workers
+ * A value that is not a URL adds no rule. A rig's beadsRemote adds its Dolt rule, and a --linear rig adds Linear's.
  */
-export function managerEgress(env: Record<string, string | undefined> = process.env): Egress[] {
-  const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap(k => {
+export function managerEgress(
+  env: Record<string, string | undefined> = process.env,
+  rigs: { beadsRemote?: { url: string }; linear?: unknown; egress?: Egress[] }[] = [],
+): Egress[] {
+  const rules = [MANAGER_AX_SERVER, MANAGER_ROUTER, MANAGER_BROKER].flatMap((k): Egress[] => {
     try {
       const u = env[k] ? new URL(env[k]!) : null
-      return u?.hostname ? [{ hosts: [u.hostname], port: Number(u.port) || 80, http: true }] : []
+      if (!u?.hostname) return []
+      // the AX server's https rule has the gateway add the caller token (vault key AX_AUTH)
+      if (k === MANAGER_AX_SERVER && u.protocol === 'https:')
+        return [
+          {
+            hosts: [u.hostname],
+            port: Number(u.port) || 443,
+            key: 'AX_AUTH',
+            header: 'Authorization',
+            prefix: 'Bearer ',
+          },
+        ]
+      return [{ hosts: [u.hostname], port: Number(u.port) || 80, http: true }]
     } catch {
       return []
     }
   })
-  return [{ hosts: ['claude.ai'] }, ...rules]
+  // one rule for each host:port of a rig's https beadsRemote (the gateway injects only on HTTPS); a rig with none adds
+  // none. The key, header and prefix come from the rig's own egress entry for that host:port, else DOLT_BASIC
+  const dolt = new Map<string, Egress>()
+  for (const r of rigs) {
+    const rule = doltRule(r)
+    if (rule) dolt.set(`${rule.hosts.join()}:${rule.port}`, rule)
+  }
+  // Linear sends its raw key, so the prefix is empty
+  const linear = rigs.some(r => r.linear)
+    ? [{ hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' }]
+    : []
+  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear]
 }
 
 /**
@@ -668,11 +837,16 @@ export const managerGithubKey = (env: Record<string, string | undefined> = proce
  * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
  * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
  */
-export async function launchManager(image: string, args: string[], { tries = 24, waitMs = 5000 } = {}) {
+export async function launchManager(
+  image: string,
+  args: string[],
+  rigs: Parameters<typeof managerEgress>[1] = [],
+  { tries = 24, waitMs = 5000 } = {},
+) {
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress(), undefined, undefined, managerGithubKey()))
+    if (createPolicy(name, managerEgress(process.env, rigs), undefined, undefined, managerGithubKey()))
       return { name, policy: true }
     await Bun.sleep(waitMs)
   }

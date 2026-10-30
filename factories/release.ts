@@ -21,7 +21,7 @@ const LAPTOP = 'herdr'
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Follow the release recipe in the journal exactly; where it is silent, do what the repo's last release did and say so.
 - Only a person merges a pull request; only rollout and rollback touch production. Nobody pushes a release branch or the default branch directly; a rollback that reverts code opens a pull request for a person to merge instead. Nobody force-pushes.
-- Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when the bead's description, a person's own comment on it, or a [factory mail] from the manager says the person approved that exact step; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
+- Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step. The bead's description records no author, so it never counts as approval; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: "parked, waiting on: <the owner step and the exact command>". Reads, and watching a pipeline the person's merge started, stay allowed.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, tags, pull requests, pipelines) and never repeat an external action that already happened.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
 - Your report summary is the next station's whole briefing: concrete and complete, links over descriptions.`
@@ -72,9 +72,11 @@ Report ready with the release pull request or tag link, the CI status, and exact
 That approval covers the release it carries, not an owner-only step (see House rules): a hand-run kubectl or helm apply, an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential change. Do every other step, then park with "parked, waiting on: <the owner step and the exact command>" and a \`Question:\` line asking the person to run it or to approve you running it.
 Not approved yet: report blocked with the link and what it waits for; if a person closed it, report hold with their reason.
 Approved: record the production baseline it will be compared against from the window just before, then run or watch each environment's rollout in the recipe's order to the end, verify it (pipeline status, the deployed version, rollout status) and run a smoke check.
-Report deployed with the version, the environments, the time and the baseline; published when the release has no running service to watch; failed when a rollout did not complete.`,
+The smoke check must see the change's own output on the live system: the file it writes, the log line it prints, or the process or subagent it starts. A passing neighbor command does not prove the change. If the change has not fired yet, that is "not fired yet": report unsure, never deployed.
+Report deployed with the version, the environments, the time, the baseline and the own output you saw; unsure to soak with the version, the time, the baseline, the exact output that soak must see and its trigger, when the change has not fired yet; published when the release has no running service to watch (and, except for a docs-only or test-only change, you saw its own output); failed when a rollout did not complete.`,
       next: {
         deployed: { to: 'soak', delayMin: 15 },
+        unsure: { to: 'soak', delayMin: 15 },
         published: 'done',
         failed: 'rollback',
         hold: { to: 'done', defer: true },
@@ -84,6 +86,7 @@ Report deployed with the version, the environments, the time and the baseline; p
       runner: LAPTOP,
       timeoutMin: 30,
       prompt: `The release has run for a soak period. Compare production now with the baseline rollout recorded: error rates and new error types, latency, saturation, SLO burn, logs, and the checks each pull request in it named. Read-only.
+Healthy also needs the change's own output: rollout or this soak must have seen it on the live system. If the change has not fired yet, report unsure. After two unsure soaks in a row with the output still unseen, report blocked with the output you still need, its trigger and a \`Question:\` line. State a cause as a hypothesis unless you reproduced it, and say how you reproduced it or what would prove it.
 Report healthy when it holds; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
       next: {
         healthy: 'done',
@@ -96,7 +99,7 @@ Report healthy when it holds; unsure to soak one more period (at most twice in a
       retries: 3,
       timeoutMin: 45,
       prompt: `Restore service. Check what is already rolled back, then roll back by the recipe: redeploy the previous version, turn the flag off, or open a pull request that reverts the release, since you never push a release branch or the default branch directly. Confirm recovery against the baseline. File the fix forward as separate work for a person to prioritize, citing the pull request that caused it.
-Report recovered with what you did, the evidence, and the revert pull request's link if you opened one.`,
+Report recovered with what you did, the evidence, and the revert pull request's link if you opened one. A cause is a hypothesis unless you reproduced it: say how you reproduced it, or what would prove it.`,
       next: { recovered: 'done' },
     },
   },

@@ -233,7 +233,7 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 | `factory waiting` | Show everything that waits on you, and how to answer each item. |
 | `factory poke <run> [text...]` | Nudge the worker of the current station. |
 | `factory retry <run>` | Retry a stuck run. |
-| `factory goto <run> <node\|done>` | Move a run to a station. |
+| `factory goto <run> <node\|done>` | Queue a move of a run to a station. The next tick applies it. The command exits 1 in three cases. An earlier goto is still queued. Or the step budget would hold the run at once: run `factory retry` first. Or the run is done. |
 | `factory abort <run>` | Abort a run. Its bead is deferred. |
 | `factory rm <run>` | Remove a finished run. Its branch stays. |
 | `factory gc [--days N] [--dry-run]` | Remove old files of finished runs, and a dead launch script. `--dry-run` only shows the bytes. |
@@ -246,6 +246,17 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 3. To bring the workers back, each in its own conversation, run `factory resume`.
 
 The console also has a `stop` button and a `resume` button.
+
+Only the person and the manager run `factory stop`, `resume`, `say`, `start`, `fork`, `goto`, `retry`, `abort`, `rm`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue`, `poke`, `attach`, `manager`, `migrate-to-ax`, `rig add` and `rig rm`. The CLI refuses a worker (it has `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME` or a `factory/` `BEADS_ACTOR`), and the worker hook denies them. A worker mails the manager instead. `factory rig` and `factory rig list` stay open to a worker. A patrol (`FACTORY_PATROL`) can run `goto`, `retry`, `abort`, `rm`, `start`, `fork`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue` and `poke`. It cannot run `stop`, `resume`, `say`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `attach`, `manager`, `migrate-to-ax`, `rig add` or `rig rm`.
+
+### Attach to the AX manager
+
+If the manager runs in the AX task `f-manager`, use these commands on the laptop:
+
+- `factory attach` prints the manager pane once. `factory attach --follow` prints it again every 3 seconds.
+- `factory say <text...>` types the text and Enter into the manager pane.
+
+To stop, press Ctrl-C. This stops only the command on the laptop. The manager keeps running, because it is the AX task `f-manager`. `ax ssh` has no PTY, so `factory attach` shows a snapshot and not a keyboard. To read another pane, set `FACTORY_AX_MANAGER_PANE` to an id from `herdr pane list`. This command runs in the AX task, not on the laptop. See [remote-runner.md](remote-runner.md).
 
 ### Where the state lives
 
@@ -265,9 +276,10 @@ All files are under the factory directory (`FACTORY_HOME`). The factory has no l
 
 - **Remote runner.** A rig can run its workers in AX microVMs on a Kubernetes cluster. Add `--runner ax` to `rig add`. Read [remote-runner.md](remote-runner.md).
 - **GitLab rigs.** If the origin of a rig is GitLab, `factory prs` and the PRs tab show its merge requests. Sign in to `glab`. Workers still open and watch pull requests with `gh` only.
-- **Memory.** Workers share what they learn. Use `factory memory search [--rig r] <query...>` to find a note. Use `factory memory add [--rig r] <summary> [body...]` to save one. `factory dream` cleans the memory. A tick starts one dream each day.
+- **Memory.** Workers share what they learn. Use `factory memory search [--rig r] <query...>` to find a note. Use `factory memory add [--rig r] --kind fact|rule|recipe <summary> [body...]` to save one. A note that names a bead or a PR also needs `--until <bead|owner/repo#N|YYYY-MM-DD>`, unless its kind is `recipe`. To replace a wrong note, add the correct one with `--supersedes <old note path>`. `factory dream` cleans the memory. A tick starts one dream each day.
 - **Your own factory.** Run `factory adopt <repo>` to copy the lifecycle template to `<repo>/.factory/lifecycle.ts`. Run `factory check <file>` to validate a factory file.
 - **Metrics.** Run `factory metrics [--rig r] [--since 7d] [--json]`.
+- **Skills.** A worker gets only the skills its station needs, because each skill costs context on every turn. Set `skills: ['asd-ste100']` on a station or on a factory in a factory file, or `"skills": ["asd-ste100"]` on a rig in `rigs.json` (edit it by hand). A worker gets the sorted union of the factory, rig and station lists. A factory with no `skills` gives `asd-ste100` to every station. Use `skills: []` to give none. Today `asd-ste100` is the only name: it is the plugin in the worker image. `factory check` refuses any other name, and so does a launch for a rig with one. On a laptop, a worker for a station with `asd-ste100` starts without it when your Claude settings have it off. The runner prints one warning. The brief of the worker has a `## Skills` section that names each skill.
 - **Other agents.** Use `--agent` to run a rig with `codex` or `pi`, and `--mcp` to give workers MCP servers.
 
 | Read | For |

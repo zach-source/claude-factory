@@ -3,7 +3,7 @@
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
 import { mrsIn, prsIn, type Entry } from './machine'
-import { isPerson, type Note } from './watch'
+import { ghNotes, isPerson, type Note, type WatchedPr } from './watch'
 export { mrsIn }
 
 export type PrSource = 'report' | 'mail' | 'search' | 'branch'
@@ -38,12 +38,12 @@ export type PrRecord = {
   updatedAt: string
   /** when gh last answered for this PR, 0 until the first refresh */
   checkedAt: number
-  /** whether the last `gh pr view` saw this PR's head as the run's own branch (wyc.4: a fact `role`
+  /** whether the last PR view saw this PR's head as the run's own branch (wyc.4: a fact `role`
    * needs on every recompute, not only the call that just viewed it) */
   ownHead: boolean
-  /** whether the last `gh pr view`'s title or body named the run's bead; stored for the same reason */
+  /** whether the last PR view's title or body named the run's bead; stored for the same reason */
   namesIt: boolean
-  /** consecutive failed `gh pr view` calls, backing off `needsView` (wyc.10) so one broken PR cannot
+  /** consecutive failed PR views, backing off `needsView` (wyc.10) so one broken PR cannot
    * keep starving the view budget every call ahead of PRs that would otherwise be due */
   errorStreak: number
   /** when the current error streak started, 0 while errorStreak is 0 */
@@ -139,6 +139,16 @@ export function citesBead(id: string, text: string): boolean {
   return new RegExp(`(?<![\\w.-])${esc}(?![\\w-]|\\.\\w)`).test(text)
 }
 
+/**
+ * claude-factory-jxl.1: PR titles often cite a child bead without its rig prefix ("192.6", "81tz.2").
+ * Return that short form for a dotted child id, or null. A bare id such as "acme-wmsr" or a tiny one
+ * such as "acme-1.2" gives null, as those words and numbers occur in unrelated titles.
+ */
+export function shortBeadId(id: string): string | null {
+  const short = id.slice(id.lastIndexOf('-') + 1)
+  return id.includes('-') && /^[a-z0-9]{3,}(\.\d+)+$/i.test(short) ? short : null
+}
+
 /** a merged PR, as `parseMergedPrs` reads it off `gh pr list --json number,url,title,headRefName,mergeCommit` */
 export type MergedPr = {
   number: number
@@ -178,11 +188,17 @@ export function alreadyDone(
   prs: MergedPr[],
   ctx: { childIds: string[]; allChildrenClosed: boolean; runBranches: string[] },
 ): AlreadyDoneHit | null {
+  const short = shortBeadId(id)
   for (const pr of prs) {
     if (pr.state !== 'MERGED') continue
     const citesChild =
       ctx.childIds.length > 0 && ctx.allChildrenClosed && ctx.childIds.some(c => citesBead(c, pr.title))
-    if (citesBead(id, pr.title) || ctx.runBranches.includes(pr.headRefName) || citesChild)
+    if (
+      citesBead(id, pr.title) ||
+      (short !== null && citesBead(short, pr.title)) ||
+      ctx.runBranches.includes(pr.headRefName) ||
+      citesChild
+    )
       return {
         kind: 'merged-pr',
         pr: { number: pr.number, url: pr.url, title: pr.title, mergeCommit: pr.mergeCommit },
@@ -345,10 +361,10 @@ export function checksOf(rollup: { conclusion?: string | null; status?: string }
 }
 
 /** what role() needs about a PR beyond what the stored record gives: when `headRefName`/`body` are given
- * (only right after a fresh `gh pr view`), ownHead/namesIt are computed from them; otherwise (every other
+ * (only right after a fresh PR view), ownHead/namesIt are computed from them; otherwise (every other
  * recompute: AC2a's mention fold, AC2d's branch fold, AC2c's search fold, all of which run on every call
  * whether or not they found anything new) the stored `ownHead`/`namesIt` facts are used instead, so a PR
- * whose bead-naming body or own-branch head was only ever seen on one `gh pr view` keeps its role on every
+ * whose bead-naming body or own-branch head was only ever seen on one PR view keeps its role on every
  * later call (wyc.4) rather than losing it the moment nothing fresh is in hand */
 export type RoleInput = Pick<PrRecord, 'repo' | 'title' | 'station' | 'corroborated'> & {
   headRefName?: string
@@ -400,7 +416,7 @@ export function viewBackoff(streak: number): number {
   return streak <= 0 ? 0 : Math.min(2 ** (streak - 1) * 60_000, MAX_BACKOFF_MS)
 }
 
-/** whether a record is stale enough to spend a `gh pr view` on: a MERGED PR never needs one again; a PR
+/** whether a record is stale enough to spend a PR view on: a MERGED PR never needs one again; a PR
  * on an error streak additionally waits out its backoff, on top of its state's own TTL */
 export function needsView(
   pr: Pick<PrRecord, 'state' | 'checkedAt'> & Partial<Pick<PrRecord, 'errorStreak' | 'erroredAt'>>,
@@ -525,7 +541,7 @@ const searchFound = (
     .filter(h => keepSearchHit(h.createdAt, runStartAt, runEndAt))
     .map(h => ({ url: h.url, at: now, source: 'search' as const }))
 
-/** AC2d parsed: one `gh pr list --state all` per rig repo, independent of any run's budget */
+/** AC2d parsed: one list of all PRs per rig repo, independent of any run's budget */
 export function parseBranchList(out: string): { url: string; headRefName: string }[] {
   try {
     return JSON.parse(out)
@@ -544,7 +560,7 @@ export function branchFound(
     .map(p => ({ url: p.url, at: now, source: 'branch' as const }))
 }
 
-/** `gh pr view <url> --json ...` parsed: headRefName and body are used only to feed `role` right here, in
+/** a PR view parsed (`gh api` REST through `parseGithubView`, or the GraphQL JSON through `parseView`): headRefName and body are used only to feed `role` right here, in
  * the same call, and are never carried into the stored PrRecord (RoleInput says so) */
 export type Viewed = Pick<
   PrRecord,
@@ -556,6 +572,12 @@ export type Viewed = Pick<
   headSha?: string
   mergedAt?: string
   closedAt?: string
+  /** GitHub REST only: what the gate and the park watch read beyond the fields above */
+  baseRefName?: string
+  mergeable?: string
+  additions?: number
+  deletions?: number
+  changedFiles?: number
 }
 export function parseView(out: string): Viewed | null {
   let v: Record<string, unknown>
@@ -730,13 +752,27 @@ export function gitlabNotes(out: string, members: Set<number> = new Set()): Note
   return notes
 }
 
+/** true when the URL is on the rig's forge host. A `glab api --hostname` call sends GITLAB_TOKEN to that host, so
+ * the sinks refuse any other host. Only the hostname counts: a port is dropped on both sides. */
+export const onHost = (url: string, host?: string): boolean => {
+  try {
+    return !!host && new URL(url).hostname.toLowerCase() === host.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
 /** the person notes of a merge request for the park watch, or null when glab could not say. The author of each
  * human note is checked against the project members (`members/all/:id`, access level 30 or above). A 404 means
  * not a member. Any other failure fails the whole call, so the watch never trusts a note it could not check. */
-export async function gitlabWatchNotes(glab: Gh, url: string, cwd: string): Promise<Note[] | null> {
+export async function gitlabWatchNotes(
+  glab: Gh,
+  url: string,
+  cwd: string,
+  host?: string,
+): Promise<Note[] | null> {
   const ref = prRef(url)
-  if (!ref) return null
-  const host = new URL(url).hostname
+  if (!ref || !host || !onHost(url, host)) return null
   const base = `projects/${encodeURIComponent(ref.repo)}`
   const api = (path: string) => glab(['api', '--hostname', host, path], timed(cwd))
   const res = await api(`${base}/merge_requests/${ref.number}/notes?sort=desc&per_page=50`)
@@ -758,6 +794,219 @@ export async function gitlabWatchNotes(glab: Gh, url: string, cwd: string): Prom
   }
   return gitlabNotes(res.out, members)
 }
+
+// ---- GitHub: `gh api repos/<owner>/<repo>/...` answers with REST objects ----
+// The AX gateway picks the key from the owner in the path. `gh pr` sends POST /graphql, which has no owner.
+// So the factory reads and writes PRs through REST only.
+
+/** owner/repo of a github.com pull request URL. Null for any other URL.
+ * Null also for a `.` or `..` segment: it can move an API path out of `repos/<owner>/`. */
+export function githubSlugOf(url: string): string | null {
+  const ref = prRef(url)
+  if (!ref || ref.forge) return null
+  return ref.repo.split('/').some(s => s === '.' || s === '..') ? null : ref.repo
+}
+
+/** the review decision REST can show: only reviews of a member-class author count, the latest review of each
+ * user wins, and REVIEW_REQUIRED does not exist here (it comes from branch protection) */
+export function reviewDecisionOf(reviews: unknown): string {
+  if (!Array.isArray(reviews)) return ''
+  const latest = new Map<string, string>()
+  for (const r of reviews as Json[]) {
+    const user = str((r?.user as Json | undefined)?.login)
+    const state = str(r?.state)
+    if (!user || !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(str(r?.author_association))) continue
+    if (['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(state)) latest.set(user, state)
+  }
+  const states = [...latest.values()]
+  if (states.includes('CHANGES_REQUESTED')) return 'CHANGES_REQUESTED'
+  return states.includes('APPROVED') ? 'APPROVED' : ''
+}
+
+/** the REST path of a github.com pull request (`repos/<owner>/<repo>/pulls/<n>`), or null */
+export function githubPullPath(url: string): string | null {
+  const slug = githubSlugOf(url)
+  return slug ? `repos/${slug}/pulls/${prRef(url)!.number}` : null
+}
+
+const MERGEABLE: Record<string, string> = { true: 'MERGEABLE', false: 'CONFLICTING' }
+const STATUS_CONCLUSION: Record<string, string> = { success: 'SUCCESS', failure: 'FAILURE', error: 'FAILURE' }
+
+/** a pull (`pulls/N`), its reviews, its head's check runs and its combined status mapped onto `Viewed`.
+ * A missing reviews, checks or status answer leaves that field blank. */
+export function parseGithubView(
+  pullOut: string,
+  reviewsOut = '',
+  checkRunsOut = '',
+  statusOut = '',
+): Viewed | null {
+  const p = asJson(pullOut) as Json | null
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+  const runs = (asJson(checkRunsOut) as Json | null)?.check_runs
+  const statuses = (asJson(statusOut) as Json | null)?.statuses
+  const rollup = [
+    ...(Array.isArray(runs) ? (runs as Json[]) : []).map(c => ({
+      conclusion: str(c?.status) === 'completed' ? str(c?.conclusion) : null,
+    })),
+    ...(Array.isArray(statuses) ? (statuses as Json[]) : []).map(s => ({
+      conclusion: STATUS_CONCLUSION[str(s?.state)] ?? null,
+    })),
+  ]
+  const head = p.head as Json | undefined
+  const num = (v: unknown) => (typeof v === 'number' ? v : undefined)
+  return {
+    title: str(p.title),
+    state: (str(p.merged_at) ? 'MERGED' : str(p.state).toUpperCase() || 'UNKNOWN') as PrState,
+    isDraft: p.draft === true,
+    reviewDecision: reviewDecisionOf(asJson(reviewsOut)),
+    mergeStateStatus: str(p.mergeable_state).toUpperCase() || 'UNKNOWN',
+    checks: checksOf(rollup),
+    updatedAt: str(p.updated_at),
+    headRefName: str(head?.ref),
+    body: str(p.body),
+    headSha: str(head?.sha) || undefined,
+    mergedAt: str(p.merged_at) || undefined,
+    closedAt: str(p.closed_at) || undefined,
+    baseRefName: str((p.base as Json | undefined)?.ref) || undefined,
+    mergeable: MERGEABLE[String(p.mergeable)] ?? 'UNKNOWN',
+    additions: num(p.additions),
+    deletions: num(p.deletions),
+    changedFiles: num(p.changed_files),
+  }
+}
+
+/** the notes of REST reviews and issue comments, through the same reader as `gh pr view` notes (`ghNotes`) */
+export function restNotes(reviews: unknown, comments: unknown): Note[] {
+  const raw = (list: unknown, at: 'submittedAt' | 'createdAt') =>
+    (Array.isArray(list) ? (list as Json[]) : []).map(r => {
+      const u = r?.user as Json | undefined
+      return {
+        author: { login: str(u?.login), is_bot: u?.type === 'Bot' },
+        authorAssociation: str(r?.author_association),
+        [at]: str(r?.[at === 'submittedAt' ? 'submitted_at' : 'created_at']),
+        state: str(r?.state),
+        body: str(r?.body),
+      }
+    })
+  return ghNotes({ reviews: raw(reviews, 'submittedAt'), comments: raw(comments, 'createdAt') })
+}
+
+/** `pulls` rows mapped onto `gh pr list --json` fields */
+export function githubRows(pulls: unknown): Json[] {
+  if (!Array.isArray(pulls)) return []
+  return (pulls as Json[]).map(p => {
+    const head = p.head as Json | undefined
+    const base = p.base as Json | undefined
+    const mergedAt = str(p.merged_at)
+    const headRepo = head?.repo as Json | null | undefined
+    return {
+      number: p.number,
+      url: str(p.html_url),
+      title: str(p.title),
+      body: str(p.body),
+      state: mergedAt ? 'MERGED' : str(p.state).toUpperCase(),
+      isDraft: p.draft === true,
+      headRefName: str(head?.ref),
+      baseRefName: str(base?.ref),
+      isCrossRepository:
+        !headRepo || str(headRepo.full_name) !== str((base?.repo as Json | undefined)?.full_name),
+      ...(mergedAt ? { mergeCommit: { oid: str(p.merge_commit_sha) } } : {}),
+      labels: (Array.isArray(p.labels) ? (p.labels as Json[]) : []).map(l => ({ name: str(l?.name) })),
+    }
+  })
+}
+
+/** `GET repos/<slug>/pulls` pages, newest first, until a short page; null when a call fails */
+export async function githubPulls(
+  gh: Gh,
+  slug: string,
+  cwd: string,
+  o: { state: 'open' | 'closed' | 'all'; pages: number; head?: string },
+): Promise<Json[] | null> {
+  const rows: Json[] = []
+  for (let page = 1; page <= o.pages; page++) {
+    const q = `state=${o.state}&sort=created&direction=desc&per_page=100&page=${page}`
+    const res = await gh(
+      ['api', `repos/${slug}/pulls?${q}${o.head ? `&head=${encodeURIComponent(o.head)}` : ''}`],
+      timed(cwd),
+    )
+    const list = res.code === 0 ? asJson(res.out) : null
+    if (!Array.isArray(list)) return null
+    rows.push(...(list as Json[]))
+    if (list.length < 100) break
+  }
+  return rows
+}
+
+/** the PR for the park watch: the pull, then its reviews and issue comments, all pages.
+ * Null when any call fails, so the watch never routes on a half view. */
+export async function githubWatchView(gh: Gh, url: string, cwd: string): Promise<WatchedPr | null> {
+  const slug = githubSlugOf(url)
+  if (!slug) return null
+  const path = `repos/${slug}/pulls/${prRef(url)!.number}`
+  const pages = async (p: string): Promise<unknown[] | null> => {
+    const res = await gh(['api', '--paginate', '--slurp', p], { cwd, timeout: 60_000 })
+    const list = res.code === 0 ? asJson(res.out) : null
+    return Array.isArray(list) ? list.flat() : null
+  }
+  const [pull, reviews, comments] = await Promise.all([
+    gh(['api', path], { cwd, timeout: 60_000 }),
+    pages(`${path}/reviews?per_page=100`),
+    pages(`repos/${slug}/issues/${prRef(url)!.number}/comments?per_page=100`),
+  ])
+  const v = pull.code === 0 && reviews && comments ? parseGithubView(pull.out) : null
+  if (!v) return null
+  return {
+    url,
+    state: v.state,
+    isDraft: v.isDraft,
+    reviewDecision: reviewDecisionOf(reviews),
+    updatedAt: v.updatedAt,
+    headRefOid: v.headSha,
+    mergedAt: v.mergedAt,
+    closedAt: v.closedAt,
+    notes: restNotes(reviews, comments),
+    mergeable: v.mergeable,
+    headRefName: v.headRefName || undefined,
+    baseRefName: v.baseRefName,
+  }
+}
+
+/** the merged PRs of a repo as `gh pr list --state merged --json` text (`parseMergedPrs` reads it), or null
+ * when a call fails. REST has no merged filter, so this lists closed PRs and keeps the ones with a merge date. */
+export async function githubMergedJson(
+  gh: Gh,
+  slug: string,
+  cwd: string,
+  o: { pages: number; head?: string },
+): Promise<string | null> {
+  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o })
+  return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
+}
+
+/** `gh api` argv for the three PR writes of labelPass. The body goes through -f (raw): -F would read `@file`. */
+export const githubCommentArgv = (slug: string, n: number, body: string) => [
+  'api',
+  '-X',
+  'POST',
+  `repos/${slug}/issues/${n}/comments`,
+  '-f',
+  `body=${body}`,
+]
+export const githubUnlabelArgv = (slug: string, n: number, label: string) => [
+  'api',
+  '-X',
+  'DELETE',
+  `repos/${slug}/issues/${n}/labels/${encodeURIComponent(label)}`,
+]
+export const githubCloseArgv = (slug: string, n: number) => [
+  'api',
+  '-X',
+  'PATCH',
+  `repos/${slug}/pulls/${n}`,
+  '-f',
+  'state=closed',
+]
 
 /** a viewed PR folded into its record: every gh-sourced field refreshed, role recomputed with the fresh
  * headRefName/body this one call has (AC2/AC3) and its ownHead/namesIt facts stored for every later
@@ -856,14 +1105,18 @@ export type Forge = {
   parseList(out: string): { url: string; headRefName: string }[]
   search(r: RunMeta): Promise<GhResult>
   parseSearch(out: string, startAt: number, endAt: number, now: number): Found[]
-  view(url: string, cwd: string): Promise<{ viewed: Viewed } | { err: string }>
+  view(url: string, cwd: string, host?: string): Promise<{ viewed: Viewed } | { err: string }>
 }
 
 const timed = (cwd: string) => ({ cwd, timeout: VIEW_TIMEOUT_MS })
 
 const githubForge = (gh: Gh): Forge => ({
-  list: r =>
-    gh(['pr', 'list', '--state', 'all', '--limit', '100', '--json', 'url,headRefName'], timed(r.repoDir)),
+  async list(r) {
+    const rows = await githubPulls(gh, r.runRepo, r.repoDir, { state: 'all', pages: 1 })
+    return rows
+      ? { code: 0, out: JSON.stringify(githubRows(rows)), err: '' }
+      : { code: 1, out: '', err: 'gh api: pull list failed' }
+  },
   parseList: parseBranchList,
   search: r =>
     gh(
@@ -872,18 +1125,21 @@ const githubForge = (gh: Gh): Forge => ({
     ),
   parseSearch,
   async view(url, cwd) {
-    const res = await gh(
-      [
-        'pr',
-        'view',
-        url,
-        '--json',
-        'title,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup,updatedAt,headRefName,body',
-      ],
-      timed(cwd),
-    )
-    const viewed = res.code === 0 ? parseView(res.out) : null
-    return viewed ? { viewed } : { err: res.code === 0 ? 'gh pr view: unparseable JSON' : res.err }
+    const slug = githubSlugOf(url)
+    if (!slug) return { err: 'not a github.com pull request URL' }
+    const pullPath = `repos/${slug}/pulls/${prRef(url)!.number}`
+    const api = (path: string) => gh(['api', path], timed(cwd))
+    const pull = await api(pullPath)
+    const sha = pull.code === 0 ? str(((asJson(pull.out) as Json | null)?.head as Json | undefined)?.sha) : ''
+    const hex = /^[0-9a-f]{7,64}$/i.test(sha)
+    const ok = (res?: GhResult) => (res?.code === 0 ? res.out : '')
+    const [reviews, runs, status] = await Promise.all([
+      api(`${pullPath}/reviews?per_page=100`),
+      hex ? api(`repos/${slug}/commits/${sha}/check-runs?per_page=100`) : undefined,
+      hex ? api(`repos/${slug}/commits/${sha}/status`) : undefined,
+    ])
+    const viewed = pull.code === 0 ? parseGithubView(pull.out, ok(reviews), ok(runs), ok(status)) : null
+    return viewed ? { viewed } : { err: pull.code === 0 ? 'gh api: unparseable JSON' : pull.err }
   },
 })
 
@@ -902,10 +1158,10 @@ export const gitlabForge = (glab: Gh): Forge => {
         r.repoDir,
       ),
     parseSearch: parseGitlabSearch,
-    async view(url, cwd) {
+    async view(url, cwd, host) {
+      if (!onHost(url, host)) return { err: 'merge request is not on the rig forge host' }
       const ref = prRef(url)!
       const path = `${project(ref.repo)}/${ref.number}`
-      const host = new URL(url).hostname
       const [mr, approvals] = await Promise.all([api(host, path, cwd), api(host, `${path}/approvals`, cwd)])
       const viewed = mr.code === 0 ? parseGitlabView(mr.out, approvals.code === 0 ? approvals.out : '') : null
       return viewed ? { viewed } : { err: mr.code === 0 ? 'glab api: unparseable JSON' : mr.err }
@@ -1033,7 +1289,7 @@ export async function buildPrs(
       const r = runs.find(x => x.id === runId)!
       // the PR's own URL says which forge answers for it: a run can name a PR on a forge its rig is not on
       const forge = prRef(url)?.forge ? forges.gitlab : forges.github
-      const res = await forge.view(url, r.repoDir)
+      const res = await forge.view(url, r.repoDir, r.host)
       const cur = files.get(runId)!
       const prs = cur.prs.map(p => {
         if (p.url !== url) return p

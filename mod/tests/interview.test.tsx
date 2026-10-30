@@ -75,9 +75,10 @@ test(
     await ui.press({ key: 'iv-opt-iv:r1@1-0' })
     await clock.settle()
     const mail = ran.find(a => a.includes('mail'))
-    expect(mail?.slice(-3)).toEqual([
+    expect(mail?.slice(-4)).toEqual([
       'r1',
       'triage',
+      '--wake',
       'Answering "Which spec wins?": The person chose: the ADR.',
     ])
     expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
@@ -546,7 +547,7 @@ test(
     await clock.settle()
     const mails = ran.filter(a => a.includes('mail'))
     expect(mails).toHaveLength(2)
-    expect(mails.map(a => a.slice(-3)[0])).toEqual(['ra', 'rb']) // one mail to each station
+    expect(mails.map(a => a.slice(-4)[0])).toEqual(['ra', 'rb']) // one mail to each station
     expect(
       mails.every(a => a.slice(-1)[0] === 'Answering "Merge policy?": The person chose: pause merges.'),
     ).toBe(true)
@@ -593,7 +594,7 @@ test(
     await ui.press({ key: 'iv-opt-iv:ra@1-0' }) // 'pause merges'
     await clock.settle()
     const mails = ran.filter(a => a.includes('mail'))
-    expect(mails.map(a => a.slice(-3)[0])).toEqual(['ra', 'rb']) // both attempted, in order
+    expect(mails.map(a => a.slice(-4)[0])).toEqual(['ra', 'rb']) // both attempted, in order
     const drawn = JSON.stringify(await ui.drawn())
     // ra's own answer still recorded, even though rb's mail failed right after it
     expect(drawn).toContain('answered (1)')
@@ -648,6 +649,76 @@ test(
     expect(drawn).toContain(
       '"key":"iv-reply-iv:r1@1","placeholder":"pick an option, add a note, or answer in your words","value":"my note"',
     )
+    await ui.unmount()
+  },
+)
+
+// 3 parked owner steps on 2 rigs: one group, each exact command, and one answer mails one station (n340)
+const park = (id: string, rig: string, cmd: string) => ({
+  id,
+  rig,
+  node: 'deploy',
+  sub: 'waiting',
+  goal: 'g',
+  last: { node: 'deploy', attempt: 1, outcome: 'blocked', summary: 'parked, waiting on: ' + cmd, at: 1 },
+})
+const STEP_CMDS = ['kubectl rollout restart deploy/a -n x', 'helm upgrade w ./chart', 'terraform apply']
+const STEPS_TICK = {
+  manager: [],
+  rigs: [
+    { name: 'api', repo: '/w/api', factory: 'lifecycle' },
+    { name: 'web', repo: '/w/web', factory: 'lifecycle' },
+  ],
+  runs: [
+    { ...park('s1', 'api', STEP_CMDS[0]!), bead: 'api-1' },
+    { ...park('s2', 'api', STEP_CMDS[1]!), bead: 'api-1' },
+    park('s3', 'web', STEP_CMDS[2]!),
+  ],
+}
+
+test(
+  'parked owner steps from 2 rigs show as one group, and an answer mails only its own station',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const ran: string[][] = []
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      ran.push([...e.argv])
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(STEPS_TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn.match(/Owner steps \(3\)/g)).toHaveLength(1)
+    expect(drawn).toContain('questions (3)')
+    for (const cmd of STEP_CMDS) expect(drawn).toContain(cmd)
+
+    await ui.input({ key: 'iv-reply-iv:s2@1', text: 'done, applied', kind: 'change' } as never)
+    await clock.settle()
+    await ui.press({ key: 'iv-send-iv:s2@1' })
+    await clock.settle()
+    const mails = ran.filter(a => a.includes('mail'))
+    expect(mails).toHaveLength(1)
+    expect(mails[0]!.slice(-4, -2)).toEqual(['s2', 'deploy'])
+    expect(mails[0]!.at(-1)).toContain('done, applied')
     await ui.unmount()
   },
 )

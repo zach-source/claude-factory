@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { rmSafe } from './home-guard'
 import type { PrState } from './prs'
 
@@ -293,6 +293,7 @@ export type LongEntry = {
   rig?: string
   from?: string
   at?: string
+  until?: string
   aliases?: string[]
   body: string
 }
@@ -301,13 +302,14 @@ const LONG_HEADER = '---\ntier: long\n---\n'
 // JSON, not `key: value` pairs split on whitespace: `from:` holds a real run id list like "r1/x, r2/y",
 // commas and all, and a bare \S+ field split lost everything after the first space (claude-factory-59r.8)
 const LONG_ID = /^<!--\s*id:\s*(\{.*\})\s*-->\s*$/
-type LongMeta = { id: string; rig?: string; from?: string; at?: string; aliases?: string[] }
+type LongMeta = { id: string; rig?: string; from?: string; at?: string; until?: string; aliases?: string[] }
 const encodeId = (e: LongEntry): string =>
   JSON.stringify({
     id: e.id,
     ...(e.rig ? { rig: e.rig } : {}),
     ...(e.from ? { from: e.from } : {}),
     ...(e.at ? { at: e.at } : {}),
+    ...(e.until ? { until: e.until } : {}),
     ...(e.aliases?.length ? { aliases: e.aliases } : {}),
   })
 const decodeId = (line: string): LongMeta | null => {
@@ -353,6 +355,7 @@ export function parseLong(text: string): LongEntry[] {
       rig: meta.rig,
       from: meta.from,
       at: meta.at,
+      until: meta.until,
       aliases: meta.aliases,
       body: rest.trim(),
     }
@@ -377,6 +380,7 @@ export function walk(dir: string) {
             rig: e.rig,
             from: e.from,
             at: e.at,
+            until: e.until,
             body: e.body,
             tier: 'long',
           })
@@ -395,6 +399,14 @@ const dot = (a: number[], b: number[]) => a.reduce((s, x, i) => s + x * b[i]!, 0
 // a higher tier already survived a dream's judgment, so it outranks a short note at a near-equal match;
 // a short note still wins a search its tier mate loses outright (see the memory-long-0.005-vs-0.02 test)
 export const TIER_BONUS: Record<Tier, number> = { short: 0, long: 0.01, fact: 0.02 }
+/** the activation that earns the whole rank bonus: ln(20), about 20 helps a day ago */
+export const ACTIVATION_MAX = Math.log(20)
+/**
+ * at most 0.02, the scale of TIER_BONUS.fact, so use breaks only a near-tie and relevance still wins
+ * (claude-factory-3u1.2.3, research R3). -Infinity (no events) and below 0 earn nothing.
+ */
+export const activationBonus = (a: number) =>
+  (Math.min(Math.max(a, 0), ACTIVATION_MAX) / ACTIVATION_MAX) * 0.02
 /** a note of another rig never comes up; a note with no rig holds everywhere */
 export const rank = (
   notes: Note[],
@@ -402,6 +414,7 @@ export const rank = (
   topicVec: (topic: string) => number[] | undefined,
   query: number[],
   rig?: string,
+  act?: (n: Note) => number,
 ) =>
   notes
     .filter(n => !n.rig || !rig || n.rig === rig)
@@ -409,7 +422,7 @@ export const rank = (
       const own = dot(vec(n), query)
       const t = topicVec(topicOf(n))
       const base = t ? (1 - TOPIC_WEIGHT) * own + TOPIC_WEIGHT * dot(t, query) : own
-      return { note: n, score: base + TIER_BONUS[n.tier ?? 'short'] }
+      return { note: n, score: base + TIER_BONUS[n.tier ?? 'short'] + (act ? activationBonus(act(n)) : 0) }
     })
     .sort((a, b) => b.score - a.score)
 
@@ -425,6 +438,8 @@ async function embed(texts: string[]) {
     out.push(...(await embedder!(texts.slice(i, i + 32), { pooling: 'cls', normalize: true })).tolist())
   return out
 }
+/** download the model into transformers' cache: the worker image runs it at build, since a VM cannot fetch it */
+export const fetchModel = () => embed(['warm'])
 
 type Index = { model: string; vecs: Record<string, { hash: string; vec: number[] }> }
 const textOf = (n: Note) => `${n.summary}\n${n.body}`.slice(0, 2000) // bge reads 512 tokens
@@ -482,10 +497,14 @@ export async function search(
 ) {
   const { notes, topics } = walk(dir)
   const all = [...notes, ...coreNotes(dir)]
+  if (!all.length) return []
   const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])
+  const events = usageEvents(dir)
+  const now = Date.now()
+  const act = (n: Note) => activation(events.get(n.path) ?? [], now)
   return close(
-    rank(all, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig),
+    rank(all, vec, t => (topics.has(t) ? vec(topics.get(t)!) : undefined), q!, rig, act),
     limit,
   )
 }
@@ -493,33 +512,86 @@ export async function search(
 /**
  * one line of a fixed query set. `expect` is a substring of the path or the summary of the note that the
  * search for `query` must surface: summary text survives a merge into LONG.md, where the path does not.
+ * `category` (FR-023, research R10): update asks for the note that replaced an old one, temporal for a
+ * time-bound fact, abstain for a question memory must not answer. An abstain case has no `expect`: it
+ * hits when search returns nothing above FLOOR.
  */
-export type EvalCase = { query: string; expect: string; rig?: string }
+export type EvalCase = { query: string; expect?: string; rig?: string; category?: EvalCategory }
+export type EvalCategory = 'update' | 'temporal' | 'abstain'
+export type EvalScore = { recall: number; mrr: number; n: number }
 export type EvalResult = {
   recall: number // the fraction of cases where `expect` was somewhere in the results
   mrr: number // the mean of 1/rank over every case; 0 for a case that missed entirely
   misses: EvalCase[]
+  categories: Partial<Record<EvalCategory, EvalScore>> // the same scores over each category's cases
 }
 
 /** pure: scores a fixed query set against results already searched for, so a test needs no search() call */
 export function evalScore(cases: EvalCase[], results: string[][]): EvalResult {
-  let hits = 0
-  let rrSum = 0
-  const misses: EvalCase[] = []
-  cases.forEach((c, i) => {
-    const rank = (results[i] ?? []).findIndex(path => path.includes(c.expect))
-    if (rank < 0) {
-      misses.push(c)
-      return
-    }
-    hits++
-    rrSum += 1 / (rank + 1)
+  // the reciprocal rank of each case: 1/rank of its first hit, 0 for a miss
+  const rr = cases.map((c, i) => {
+    const found = results[i] ?? []
+    if (c.category === 'abstain') return found.length ? 0 : 1
+    const rank = c.expect === undefined ? -1 : found.findIndex(path => path.includes(c.expect!))
+    return rank < 0 ? 0 : 1 / (rank + 1)
   })
-  return {
-    recall: cases.length ? hits / cases.length : 1,
-    mrr: cases.length ? rrSum / cases.length : 1,
-    misses,
+  const score = (idx: number[]): EvalScore => ({
+    recall: idx.length ? idx.filter(i => rr[i]! > 0).length / idx.length : 1,
+    mrr: idx.length ? idx.reduce((s, i) => s + rr[i]!, 0) / idx.length : 1,
+    n: idx.length,
+  })
+  const all = score(cases.map((_, i) => i))
+  const categories: EvalResult['categories'] = {}
+  for (const k of ['update', 'temporal', 'abstain'] as const) {
+    const idx = cases.flatMap((c, i) => (c.category === k ? [i] : []))
+    if (idx.length) categories[k] = score(idx)
   }
+  return { recall: all.recall, mrr: all.mrr, misses: cases.filter((_, i) => !rr[i]), categories }
+}
+
+/**
+ * pure: the lifecycle numbers each dream logs to dream.log (FR-024, claude-factory-3u1.4.2). Notes are
+ * counted per topic over every tier. The kind and until shares count short notes only, since a LONG.md
+ * entry has no kind. A recipe that cites a bead or PR counts too: SC-003 measures every such note.
+ */
+export function lifecycleMetrics(notes: Note[], pass: { archived: number; retired: number }): string {
+  const perTopic = new Map<string, number>()
+  for (const n of notes) perTopic.set(topicOf(n), (perTopic.get(topicOf(n)) ?? 0) + 1)
+  const short = notes.filter(n => n.tier !== 'long' && n.tier !== 'fact')
+  const pct = (k: number) => `${short.length ? Math.round((100 * k) / short.length) : 0}%`
+  const withKind = short.filter(n => n.kind).length
+  const untracked = short.filter(n => !n.until && citesTracker(`${n.summary}\n${n.body}`)).length
+  const topics = [...perTopic].sort(([a], [b]) => (a < b ? -1 : 1)).map(([t, k]) => `${t} ${k}`)
+  return `metrics: notes ${notes.length} (${topics.join(', ')})  archived ${pass.archived}  retired ${pass.retired}  kind ${pct(withKind)}  cites-without-until ${pct(untracked)}`
+}
+
+/** a seeded PRNG (mulberry32): the same seed samples the same notes, so two evals compare */
+const rng = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
+
+/**
+ * pure: n cases built from the notes themselves, for a store with no curated .eval.jsonl
+ * (claude-factory-9l7). The query is a note's first body sentence, the target is that note. `expect`
+ * is the path plus a space, because evaluate() matches against "<path> <summary>".
+ */
+export function selfCases(notes: Note[], n: number, seed = 1): EvalCase[] {
+  const pool = notes
+    .map(note => {
+      const line = note.body.split('\n')[0]!.trim()
+      return { note, query: (/^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line).trim() }
+    })
+    .filter(c => c.query)
+    .sort((a, b) => (a.note.path < b.note.path ? -1 : 1))
+  const next = rng(seed)
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j]!, pool[i]!]
+  }
+  return pool.slice(0, n).map(c => ({ query: c.query, expect: `${c.note.path} `, rig: c.note.rig }))
 }
 
 /** runs the fixed query set against the real store and scores it: what `factory memory eval` reports */
@@ -590,16 +662,21 @@ export async function longSimPairs(dir: string): Promise<SimPair[]> {
  * decide()'s promote and dedupe candidates among the long tier, worded for the dream prompt. A path
  * alone means little to the dream, so each line also carries its entry's summary.
  */
-export async function tierCandidates(dir: string): Promise<{ promotions: string[]; duplicates: string[] }> {
+export async function tierCandidates(
+  dir: string,
+  now = Date.now(),
+): Promise<{ promotions: string[]; duplicates: string[] }> {
   const { notes } = walk(dir)
   const long = notes.filter(n => n.tier === 'long')
   const uses = usage(dir)
+  const events = usageEvents(dir)
   const summaryOf = (path: string) => long.find(n => n.path === path)?.summary ?? path
-  const candidates: LongCandidate[] = long.map(n => {
-    const u = uses.get(n.path)
-    return { path: n.path, helped: u?.helped ?? 0, runs: u?.runs ?? 0 }
-  })
-  const decisions = decide([], candidates, await longSimPairs(dir))
+  const candidates: LongCandidate[] = long.map(n => ({
+    path: n.path,
+    activation: activation(events.get(n.path) ?? [], now),
+    runs: uses.get(n.path)?.runs ?? 0,
+  }))
+  const decisions = decide([], candidates, await longSimPairs(dir), { theta: envTheta() })
   return {
     promotions: decisions
       .filter(d => d.kind === 'promote')
@@ -661,6 +738,7 @@ export function outline(dir: string, rig?: string) {
     .filter(t => t !== 'inbox')
     .sort()
     .map(t => `- ${t} (${count(t)}): ${topics.get(t)?.summary ?? ''}`.trimEnd())
+    .map(l => (l.length > 100 ? `${l.slice(0, 99)}…` : l))
   const inbox = count('inbox')
   return { core, topics: inbox ? [...lines, `- inbox (${inbox}): new notes, not yet filed`] : lines }
 }
@@ -710,6 +788,55 @@ export const use = (
       paths.map(path => JSON.stringify({ path, [kind]: 1, at, ...(by ? { by } : {}) })).join('\n') + '\n',
     )
 }
+export type UsageKind = 'shown' | 'helped' | 'confirmed' | 'contradicted'
+/** one usage event, weighted for activation(). A folded line in `.usage.jsonl` stores it as `[at, kind, w]`. */
+export type UsageEvent = { at: number; kind: UsageKind; w: number }
+const EVENT_WEIGHT: Record<UsageKind, number> = { helped: 1, confirmed: 1, shown: 0.15, contradicted: -1 }
+/** a help counts 0.3 when its attempt failed (`ok: false`); a missing `ok` counts in full (research R1) */
+export const eventWeight = (kind: UsageKind, ok?: boolean) =>
+  kind === 'helped' && ok === false ? 0.3 : EVENT_WEIGHT[kind]
+export const ACTIVATION_WINDOW_DAYS = 90
+const ACTIVATION_MIN_DAYS = 1 / 24 // ponytail: an event this instant counts as one hour old, so t^-0.5 stays finite
+const ACTIVATION_FLOOR = 1e-6 // a sum that contradictions push to 0 or below: a finite low score, not NaN
+/**
+ * an ACT-R base-level activation, `ln(Σ w · t_days^-0.5)`, over the events of the last 90 days
+ * (claude-factory-3u1.2.1, research R1). One number for recency and frequency. No events gives -Infinity,
+ * which decide()'s never-shown rule handles.
+ */
+export function activation(events: UsageEvent[], now: number): number {
+  const recent = events.filter(e => now - e.at <= ACTIVATION_WINDOW_DAYS * DAY_MS)
+  if (!recent.length) return -Infinity
+  const sum = recent.reduce(
+    (s, e) => s + e.w * Math.max((now - e.at) / DAY_MS, ACTIVATION_MIN_DAYS) ** -0.5,
+    0,
+  )
+  return Math.log(Math.max(sum, ACTIVATION_FLOOR))
+}
+/**
+ * the `run/station` a `memory helped` names (claude-factory-p11, FR-017): its --from, else
+ * $FACTORY_RUN/$FACTORY_STATION when both are set. undefined means the caller must refuse.
+ */
+export const helpedBy = (from: string | undefined, env: Record<string, string | undefined>) =>
+  from || (env.FACTORY_RUN && env.FACTORY_STATION ? `${env.FACTORY_RUN}/${env.FACTORY_STATION}` : undefined)
+/** one journal entry, cut down to what helpOk() needs */
+export type AttemptOutcome = { run: string; node: string; at: number; outcome: string; summary?: string }
+/** whether a help's attempt ended green, from its `by` and `at`; undefined when unknown */
+export type OkOf = (by: string | undefined, at: number) => boolean | undefined
+// ponytail: a fixed list of red outcomes; a factory with its own failure edge names must add them here
+const RED_OUTCOMES = new Set(['fail', 'failed', 'blocked', 'red', 'aborted'])
+/**
+ * whether the attempt a help came from ended green (claude-factory-3u1.2.4, research R1). The attempt
+ * is the first journal entry of the help's run and station at or after the help. undefined when the
+ * help names no run, or its attempt has no entry yet: such a help counts at full weight.
+ */
+export function helpOk(journal: AttemptOutcome[], by: string | undefined, at: number): boolean | undefined {
+  if (!by) return undefined
+  const [run, node] = by.split('/')
+  const ended = journal
+    .filter(e => e.run === run && e.node === node && e.at >= at)
+    .reduce<AttemptOutcome | undefined>((first, e) => (!first || e.at < first.at ? e : first), undefined)
+  return ended && !RED_OUTCOMES.has(ended.outcome)
+}
 type RawTally = {
   path: string
   shown: number
@@ -719,16 +846,24 @@ type RawTally = {
   at: number
   runsBase: number
   keys: Set<string>
+  events: UsageEvent[]
 }
 /**
  * each note's raw totals, keys kept apart from their count. compact() must persist the keys themselves,
  * not only how many there were (claude-factory-59r.17): a folded line that kept only `runs: 2` cannot
  * tell a later line's run id was one it already counted, so that run got counted again.
  */
-function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<string, RawTally> {
+function tallyRaw(lines: string[], renamed: Record<string, string> = {}, okOf?: OkOf): Map<string, RawTally> {
   const out = new Map<string, RawTally>()
   for (const line of lines.filter(Boolean)) {
-    const u: Partial<Use> & { path: string; at: number; by?: string; keys?: string[] } = JSON.parse(line)
+    const u: Partial<Use> & {
+      path: string
+      at: number
+      by?: string
+      keys?: string[]
+      ok?: boolean
+      events?: [number, UsageKind, number][]
+    } = JSON.parse(line)
     const path = renamed[u.path] ?? u.path
     const t = out.get(path) ?? {
       path,
@@ -739,6 +874,7 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
       at: 0,
       runsBase: 0,
       keys: new Set<string>(),
+      events: [],
     }
     t.shown += u.shown ?? 0
     t.helped += u.helped ?? 0
@@ -748,7 +884,16 @@ function tallyRaw(lines: string[], renamed: Record<string, string> = {}): Map<st
     if (Array.isArray(u.keys)) for (const k of u.keys) t.keys.add(k)
     else if (typeof u.runs === 'number')
       t.runsBase += u.runs // a pre-claude-factory-59r.17 folded line: no keys to recover
-    else t.keys.add(runKey(u.by, u.at))
+    else if (!(u.shown && !u.helped && !u.confirmed && !u.contradicted)) t.keys.add(runKey(u.by, u.at))
+    if (Array.isArray(u.events)) for (const [at, kind, w] of u.events) t.events.push({ at, kind, w })
+    else if (typeof u.runs !== 'number')
+      for (const kind of ['shown', 'helped', 'confirmed', 'contradicted'] as const)
+        if (u[kind])
+          t.events.push({
+            at: u.at,
+            kind,
+            w: eventWeight(kind, u.ok ?? (kind === 'helped' ? okOf?.(u.by, u.at) : undefined)),
+          })
     out.set(path, t)
   }
   return out
@@ -768,8 +913,12 @@ export const tally = (lines: string[], renamed: Record<string, string> = {}) => 
     })
   return result
 }
-export const usage = (dir: string, renamed?: Record<string, string>) =>
-  tally(existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : [], renamed)
+const usageFileLines = (dir: string) =>
+  existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
+export const usage = (dir: string, renamed?: Record<string, string>) => tally(usageFileLines(dir), renamed)
+/** each note's usage events, oldest line first, for activation() */
+export const usageEvents = (dir: string, renamed?: Record<string, string>) =>
+  new Map([...tallyRaw(usageFileLines(dir), renamed)].map(([path, t]) => [path, t.events]))
 
 /**
  * A note's path: a short note's file, a LONG.md entry's `#id`, or a CORE.md bullet's `#<hash>`
@@ -856,7 +1005,8 @@ export function resolvePath(dir: string, path: string, extra: Record<string, str
  * even over several dreams. Then it keeps one usage line per note left. It follows renames, and a
  * removed note's counts go with it.
  */
-export function compact(dir: string, renamed: Record<string, string>) {
+/** `okOf` (the dream's journal) sets each raw help's weight as it folds; see helpOk() */
+export function compact(dir: string, renamed: Record<string, string>, now = Date.now(), okOf?: OkOf) {
   if (Object.keys(renamed).length)
     appendFileSync(
       renamesFile(dir),
@@ -867,7 +1017,7 @@ export function compact(dir: string, renamed: Record<string, string>) {
   const log = renameLog(dir)
   const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k)]))
   const lines = existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
-  const kept = [...tallyRaw(lines, resolved).values()].filter(t => noteExists(dir, t.path))
+  const kept = [...tallyRaw(lines, resolved, okOf).values()].filter(t => noteExists(dir, t.path))
   writeFileSync(
     `${usageFile(dir)}.tmp`,
     kept
@@ -882,6 +1032,9 @@ export function compact(dir: string, renamed: Record<string, string>) {
             at: t.at,
             runs: t.runsBase + t.keys.size,
             ...(t.keys.size ? { keys: [...t.keys] } : {}),
+            events: t.events
+              .filter(e => now - e.at <= ACTIVATION_WINDOW_DAYS * DAY_MS)
+              .map(e => [e.at, e.kind, e.w]),
           })}\n`,
       )
       .join(''),
@@ -907,14 +1060,21 @@ export const usageLines = (dir: string) => {
 // duplicate. It reads no file and no clock. The caller gathers every input from the real store
 // (applyTiers does that). Because it is pure, a test can hit every boundary with a table and no fixture dir.
 const MERGE_AGE_DAYS = 7 // a short note waits this long before it can merge: a fresh note may still be wrong
-const ARCHIVE_STALE_DAYS = 30 // never shown or helped in this long, and this old: a candidate to archive
-const ARCHIVE_NEW_DAYS = 14 // never shown at all, and this old: a candidate too, once usage history is old enough to trust "never shown"
+const ARCHIVE_NEW_DAYS = 14 // a note this old can archive: never shown at all, or its activation is below θa
+/**
+ * activation() thresholds (claude-factory-3u1.2.2, research R2). θa = -3.6 is about one show 30 days
+ * ago, ln(0.15/√30), so a once-shown note archives where the old 30-day rule did. θm = θa keeps
+ * today's merge behaviour: every used note old enough either merges or archives. θc = 0 is about
+ * 3 helps in the last 9 days. Each has one env override: FACTORY_MEMORY_THETA_MERGE, _ARCHIVE, _PROMOTE.
+ */
+// ponytail: picked from the model's own decay curve, not measured on a home; retune with the env overrides
+export type Theta = { merge: number; archive: number; promote: number }
+export const THETA: Theta = { merge: -3.6, archive: -3.6, promote: 0 }
 // at most this many archives in one tiering pass, oldest (by ageDays) first: a long-idle home must not
 // dump every stale note into .archive the moment it crosses ARCHIVE_NEW_DAYS or ARCHIVE_STALE_DAYS
 // (claude-factory-503: a ~190-note mass archive at day 30 forced a revert of a 139-merge pass).
 const ARCHIVE_CAP = 25
-const PROMOTE_HELPED = 3 // a long entry helped at least this often...
-const PROMOTE_RUNS = 3 // ...across at least this many distinct runs, becomes a promotion candidate
+const PROMOTE_RUNS = 3 // a long entry above θc across at least this many distinct runs becomes a promotion candidate
 // a topic's short-note cap (FR-010): past this many short notes in one topic, the tier pass merges
 // the oldest ones into LONG.md so the topic keeps retrieval dense; the dream drops or merges the rest
 // the tier pass cannot (claude-factory-3u1.1.3).
@@ -926,9 +1086,9 @@ export type ShortCandidate = {
   topic: string
   superseded?: string // frontmatter `superseded: <path>`: archive it outright
   ageDays: number // since the note's own at:, else the commit that added it
-  staleDays: number // since it was last shown or helped; ageDays when it never was
   shown: number
   helped: number
+  activation: number // activation() of its usage events; -Infinity with none in the window
   // applyTiers() sets these three fields from untilStatus() before it calls decide(); decide() itself
   // never calls untilStatus(), so it stays pure and a table test can set them with no fixture or lookup
   expired?: boolean // true when untilStatus() says the until marker ended: decide() retires the note
@@ -936,7 +1096,21 @@ export type ShortCandidate = {
   untilFlag?: string // untilStatus()'s unknown reason: decide() flags the note, but never retires it
 }
 /** a LONG.md entry, with what decide() needs to judge it */
-export type LongCandidate = { path: string; helped: number; runs: number }
+export type LongCandidate = {
+  path: string
+  activation: number
+  runs: number
+  ageDays?: number // since the entry's at:; undefined with no at, so no age rule applies
+  chars?: number // summary + newline + body, the text that search embeds (see LONG_ENTRY_CAP)
+  expired?: boolean // as for a short note: decide() retires the entry
+  expiredReason?: string
+  untilFlag?: string
+}
+export const LONG_ARCHIVE_DAYS = 30 // a long entry this old, with activation below θa, archives
+export const LONG_ENTRY_CAP = 2000 // chars of a long entry that search embeds; a longer entry gets a trim
+/** a CORE.md line (`CORE.md#<hash>`), with how often notes contradicted it in the activation window */
+export type CoreCandidate = { path: string; contradicted: number; activation: number }
+const DEMOTE_CONTRADICTED = 2 // contradicted at least this often, and its activation below θa: demote it
 /** a pair of notes (short or long) whose summaries a caller already scored as near-duplicates */
 export type SimPair = { a: string; b: string; score: number }
 
@@ -947,11 +1121,18 @@ export type Decision =
   | { kind: 'promote'; path: string; reason: string }
   | { kind: 'dedupe'; a: string; b: string; reason: string }
   | { kind: 'retire'; path: string; reason: string }
+  | { kind: 'trim'; path: string; reason: string }
   | { kind: 'flag'; path: string; reason: string }
+  | { kind: 'demote'; path: string; reason: string }
 
 /**
  * The tier pass creates a plan. The plan uses no file and no clock. A table test covers each
- * boundary: 7, 14 and 30 days; 3 helps or runs; the cap.
+ * boundary: 7 and 14 days; θm, θa and θc; 3 runs; the cap.
+ *
+ * A used note at least 7 days old merges when its activation is above θm. A note at least 14 days
+ * old archives when it was never shown (FR-015), or when its activation is below θa (FR-014).
+ * A LONG.md entry above θc across at least 3 runs is a promotion candidate. `opts.theta` overrides
+ * THETA.
  *
  * A note with `n.expired` set gets a `retire` decision (FR-016). This check runs right after the
  * superseded check, and before every other rule. It holds at any age and any shown/helped count.
@@ -993,9 +1174,15 @@ export function decide(
   short: ShortCandidate[],
   long: LongCandidate[],
   sims: SimPair[] = [],
-  opts: { historyDays?: number; archiveCap?: number; topicCap?: number } = {},
+  opts: {
+    historyDays?: number
+    archiveCap?: number
+    topicCap?: number
+    theta?: Theta
+    core?: CoreCandidate[]
+  } = {},
 ): Decision[] {
-  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP, topicCap = Infinity } = opts
+  const { historyDays = Infinity, archiveCap = ARCHIVE_CAP, topicCap = Infinity, theta = THETA } = opts
   const decisions: Decision[] = []
   for (const n of short) {
     if (n.topic === 'inbox') continue // the dream files these; decide() never touches them
@@ -1011,35 +1198,72 @@ export function decide(
     }
     // untilFlag never retires or archives the note by itself; every other rule below still runs
     if (n.untilFlag) decisions.push({ kind: 'flag', path: n.path, reason: n.untilFlag })
-    if (historyDays >= ARCHIVE_NEW_DAYS && n.helped === 0 && n.staleDays >= ARCHIVE_STALE_DAYS) {
-      decisions.push({
-        kind: 'archive',
-        path: n.path,
-        reason: `never helped, unused for ${Math.floor(n.staleDays)} days`,
-      })
-      continue
+    const age = Math.floor(n.ageDays)
+    if (historyDays >= ARCHIVE_NEW_DAYS && n.ageDays >= ARCHIVE_NEW_DAYS) {
+      if (n.shown === 0 && n.helped === 0) {
+        decisions.push({ kind: 'archive', path: n.path, reason: `never shown, ${age} days old` })
+        continue
+      }
+      if (n.activation < theta.archive) {
+        decisions.push({
+          kind: 'archive',
+          path: n.path,
+          reason: `activation ${n.activation.toFixed(2)} below ${theta.archive}, ${age} days old`,
+        })
+        continue
+      }
     }
-    if (historyDays >= ARCHIVE_NEW_DAYS && n.shown === 0 && n.helped === 0 && n.ageDays >= ARCHIVE_NEW_DAYS) {
-      decisions.push({
-        kind: 'archive',
-        path: n.path,
-        reason: `never shown, ${Math.floor(n.ageDays)} days old`,
-      })
-      continue
-    }
-    if ((n.shown > 0 || n.helped > 0) && n.ageDays >= MERGE_AGE_DAYS)
+    if (n.activation > theta.merge && n.ageDays >= MERGE_AGE_DAYS)
       decisions.push({
         kind: 'merge',
         path: n.path,
-        reason: `shown or helped, ${Math.floor(n.ageDays)} days old`,
+        reason: `activation ${n.activation.toFixed(2)}, ${age} days old`,
       })
   }
-  for (const e of long)
-    if (e.helped >= PROMOTE_HELPED && e.runs >= PROMOTE_RUNS)
+  const trims: { path: string; chars: number }[] = []
+  for (const e of long) {
+    if (e.expired) {
+      decisions.push({ kind: 'retire', path: e.path, reason: e.expiredReason ?? 'until marker ended' })
+      continue
+    }
+    if (e.untilFlag) decisions.push({ kind: 'flag', path: e.path, reason: e.untilFlag })
+    if (
+      historyDays >= LONG_ARCHIVE_DAYS &&
+      e.ageDays !== undefined &&
+      e.ageDays >= LONG_ARCHIVE_DAYS &&
+      e.activation < theta.archive
+    ) {
+      decisions.push({
+        kind: 'archive',
+        path: e.path,
+        reason: `activation ${e.activation.toFixed(2)} below ${theta.archive}, ${Math.floor(e.ageDays)} days old`,
+      })
+      continue
+    }
+    if ((e.chars ?? 0) > LONG_ENTRY_CAP) trims.push({ path: e.path, chars: e.chars! })
+    if (e.activation > theta.promote && e.runs >= PROMOTE_RUNS)
       decisions.push({
         kind: 'promote',
         path: e.path,
-        reason: `helped ${e.helped} times across ${e.runs} runs`,
+        reason: `activation ${e.activation.toFixed(2)} across ${e.runs} runs`,
+      })
+  }
+  // trims have their own cap (archiveCap): the largest entries first, so one pass stays small
+  trims.sort((a, b) => b.chars - a.chars || a.path.localeCompare(b.path))
+  trims.forEach((t, i) =>
+    decisions.push(
+      i < archiveCap
+        ? { kind: 'trim', path: t.path, reason: `${t.chars} chars, over ${LONG_ENTRY_CAP}` }
+        : { kind: 'held', path: t.path, reason: `over the trim cap of ${archiveCap} this pass` },
+    ),
+  )
+  // FR-021: a core fact that keeps being contradicted, with too little use for it, goes back to a note
+  for (const c of opts.core ?? [])
+    if (c.contradicted >= DEMOTE_CONTRADICTED && c.activation < theta.archive)
+      decisions.push({
+        kind: 'demote',
+        path: c.path,
+        reason: `contradicted ${c.contradicted} times, activation ${c.activation.toFixed(2)}`,
       })
   for (const s of sims)
     if (s.score >= SAME)
@@ -1049,7 +1273,8 @@ export function decide(
   // kind; the rest of this pass's archive/retire decisions become `held`, so nothing past the cap is
   // ever written this pass. A retire shares the same cap as archive (AC7): both remove a short note.
   type CappedDecision = Extract<Decision, { kind: 'archive' | 'retire' }>
-  const ageOf = new Map(short.map(n => [n.path, n.ageDays]))
+  const ageOf = new Map<string, number>(short.map(n => [n.path, n.ageDays]))
+  for (const e of long) if (e.ageDays !== undefined) ageOf.set(e.path, e.ageDays)
   const overCap: { d: CappedDecision; i: number }[] = []
   decisions.forEach((d, i) => {
     if (d.kind === 'archive' || d.kind === 'retire') overCap.push({ d, i })
@@ -1116,10 +1341,23 @@ export function planLines(
   const count = (kind: Decision['kind']) => decisions.filter(d => d.kind === kind).length
   const describe = (d: Decision) => ('path' in d ? d.path : `${d.a} ~ ${d.b}`)
   const header =
-    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('retire')} retire, ` +
+    `tier plan: ${count('merge')} merge, ${count('archive')} archive, ${count('retire')} retire, ${count('trim')} trim, ` +
     `${count('held')} held (cap ${opts.archiveCap}), ${count('flag')} flag, ` +
     `usage history ${Math.floor(opts.historyDays)} days`
   return [header, ...decisions.map(d => `${d.kind}  ${describe(d)}: ${d.reason}`)]
+}
+
+/** THETA with each FACTORY_MEMORY_THETA_MERGE, _ARCHIVE and _PROMOTE that parses as a finite number */
+export function envTheta(env: Record<string, string | undefined> = process.env): Theta {
+  const read = (name: string, fallback: number) => {
+    const n = Number(env[name] || NaN)
+    return Number.isFinite(n) ? n : fallback
+  }
+  return {
+    merge: read('FACTORY_MEMORY_THETA_MERGE', THETA.merge),
+    archive: read('FACTORY_MEMORY_THETA_ARCHIVE', THETA.archive),
+    promote: read('FACTORY_MEMORY_THETA_PROMOTE', THETA.promote),
+  }
 }
 
 /** FACTORY_MEMORY_ARCHIVE_CAP, when it is a whole number >= 0; else the default ARCHIVE_CAP (25). */
@@ -1327,6 +1565,7 @@ export function applyTiers(
   const now = opts.now ?? Date.now()
   const { notes } = walk(dir)
   const uses = usage(dir)
+  const events = usageEvents(dir)
   const historyDays = usageHistoryDays(dir, now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
   const topicCap = opts.topicCap ?? envTopicCap()
@@ -1337,7 +1576,6 @@ export function applyTiers(
       const atMs = n.at ? Date.parse(n.at) : NaN
       const createdMs = Number.isFinite(atMs) ? atMs : (gitAddedMs(dir, n.path) ?? now)
       const u = uses.get(n.path)
-      const lastMs = u?.at || createdMs
       // a date marker is always judged; a bead or PR marker only when the caller gave untilDeps
       // (AC8): this keeps a caller that never passes untilDeps free of any new verdict or flag.
       const until = n.until && (isDateUntil(n.until) || opts.untilDeps) ? n.until : undefined
@@ -1347,15 +1585,46 @@ export function applyTiers(
         topic: topicOf(n),
         superseded: n.superseded,
         ageDays: (now - createdMs) / DAY_MS,
-        staleDays: (now - lastMs) / DAY_MS,
         shown: u?.shown ?? 0,
         helped: u?.helped ?? 0,
+        activation: activation(events.get(n.path) ?? [], now),
         expired: verdict?.state === 'ended',
         expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
       }
     })
-  const decisions = decide(short, [], [], { historyDays, archiveCap, topicCap })
+  const cutLine = (topic: string) => `(cut to ${LONG_ENTRY_CAP} chars; full text in .archive/${topic}.md)`
+  const longs: LongCandidate[] = notes
+    .filter(n => n.tier === 'long')
+    .map(n => {
+      const atMs = n.at ? Date.parse(n.at) : NaN
+      const until = n.until && (isDateUntil(n.until) || opts.untilDeps) ? n.until : undefined
+      const verdict = until ? untilStatus(until, now, opts.untilDeps ?? {}) : null
+      return {
+        path: n.path,
+        activation: activation(events.get(n.path) ?? [], now),
+        runs: 0, // promote needs a run count that applyTiers does not gather; it never promotes
+        ageDays: Number.isFinite(atMs) ? (now - atMs) / DAY_MS : undefined,
+        // a summary with no room left for the pointer line cannot shrink: it gets no trim, or every pass would trim it again
+        chars:
+          n.summary.length + 3 + cutLine(n.path.slice(0, n.path.indexOf('/'))).length >= LONG_ENTRY_CAP
+            ? 0
+            : n.summary.length + 1 + n.body.length,
+        expired: verdict?.state === 'ended',
+        expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
+        untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
+      }
+    })
+  const coreLines = coreNotes(dir)
+  const core: CoreCandidate[] = coreLines.map(n => {
+    const recent = (events.get(n.path) ?? []).filter(e => now - e.at <= ACTIVATION_WINDOW_DAYS * DAY_MS)
+    return {
+      path: n.path,
+      contradicted: recent.filter(e => e.kind === 'contradicted').length,
+      activation: activation(recent, now),
+    }
+  })
+  const decisions = decide(short, longs, [], { historyDays, archiveCap, topicCap, theta: envTheta(), core })
   opts.onPlan?.(planLines(decisions, { archiveCap, historyDays }))
   // a LONG.md with non-blank text before its first recognized entry (a dream's own prose, or a first
   // entry with broken id JSON) would lose that text on rewrite (claude-factory-59r.15): skip the whole
@@ -1367,12 +1636,34 @@ export function applyTiers(
   let merged = 0
   let archived = 0
   let retired = 0
+  let trimmed = 0
+  let demoted = 0
+  const isLongPath = (p: string) => p.includes('/LONG.md#')
   // one topic's remaining short-note count drops by one for every merge this pass writes to disk
   // (not one a skipped, unsafe LONG.md held back) and every archive or retire; overCap below reads this.
   const removedByTopic = new Map<string, number>()
   const removeOne = (topic: string) => removedByTopic.set(topic, (removedByTopic.get(topic) ?? 0) + 1)
   for (const d of decisions) {
+    if (d.kind === 'demote') {
+      // the line goes back to the inbox as a short note; the dream files it, and its usage follows it
+      const line = coreLines.find(n => n.path === d.path)
+      if (!line) continue
+      demoted++
+      if (opts.dryRun) continue
+      const file = add(dir, {
+        summary: line.summary,
+        rig: line.rig,
+        body: `Demoted from CORE.md: ${d.reason}.`,
+      })
+      writeFileSync(
+        join(dir, 'CORE.md'),
+        withoutCoreLine(readFileSync(join(dir, 'CORE.md'), 'utf8'), line.summary),
+      )
+      renamed[d.path] = relative(dir, file)
+      continue
+    }
     if (d.kind !== 'merge' && d.kind !== 'archive' && d.kind !== 'retire') continue
+    if (isLongPath(d.path)) continue // written per topic below
     const note = notes.find(n => n.path === d.path)
     if (!note) continue
     if (d.kind === 'merge') {
@@ -1411,6 +1702,7 @@ export function applyTiers(
         rig: note.rig,
         from: note.from,
         at: note.at,
+        until: note.until,
         body: note.body,
       })
       writeFileSync(longFile, formatLong(existing))
@@ -1440,6 +1732,64 @@ export function applyTiers(
       // rule requires helped === 0.
     }
   }
+  // long entries: per topic, the full text goes to .archive/<topic>.md first, then LONG.md is rewritten
+  // once. A trim keeps the entry with a cut body and a pointer to that archive copy.
+  const longByTopic = new Map<string, Decision[]>()
+  for (const d of decisions)
+    if ((d.kind === 'archive' || d.kind === 'retire' || d.kind === 'trim') && isLongPath(d.path)) {
+      const topic = d.path.slice(0, d.path.indexOf('/'))
+      ;(longByTopic.get(topic) ?? longByTopic.set(topic, []).get(topic)!).push(d)
+    }
+  for (const [topic, ds] of longByTopic) {
+    const reason = unsafe.get(topic)
+    if (reason) {
+      if (!skippedTopics.has(topic)) {
+        skippedTopics.add(topic)
+        skipped.push({ topic, reason })
+      }
+      continue
+    }
+    const longFile = join(dir, topic, 'LONG.md')
+    const entries = parseLong(readFileSync(longFile, 'utf8'))
+    const byPath = new Map(ds.map(d => [`${topic}/LONG.md#${(d as { path: string }).path.split('#')[1]}`, d]))
+    const copies: LongEntry[] = []
+    const kept: LongEntry[] = []
+    for (const e of entries) {
+      const d = byPath.get(`${topic}/LONG.md#${e.id}`)
+      if (!d) {
+        kept.push(e)
+        continue
+      }
+      copies.push(e)
+      if (d.kind === 'trim') {
+        const ptr = cutLine(topic)
+        const budget = LONG_ENTRY_CAP - e.summary.length - 1 - ptr.length - 2
+        let cut = e.body.slice(0, Math.max(budget, 0))
+        if (e.body.length > cut.length && e.body[cut.length] !== '\n' && cut.includes('\n'))
+          cut = cut.slice(0, cut.lastIndexOf('\n'))
+        kept.push({ ...e, body: `${cut.trimEnd()}\n\n${ptr}`.trim() })
+        trimmed++
+      } else if (d.kind === 'retire') retired++
+      else archived++
+    }
+    if (opts.dryRun || !copies.length) continue
+    mkdirSync(join(dir, '.archive'), { recursive: true })
+    const archiveFile = join(dir, '.archive', `${topic}.md`)
+    const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
+    writeFileSync(
+      archiveFile,
+      prefix +
+        copies
+          .map(e =>
+            format({ summary: e.summary, rig: e.rig, from: e.from, at: e.at, until: e.until, body: e.body }),
+          )
+          .join(''),
+    )
+    writeFileSync(longFile, formatLong(kept))
+    for (const e of copies)
+      if (byPath.get(`${topic}/LONG.md#${e.id}`)!.kind !== 'trim')
+        rewriteReadmeLink(dir, topic, `${topic}/LONG.md#${e.id}`, `../.archive/${topic}.md`)
+  }
   const flagged = decisions.filter(d => d.kind === 'flag').length
   const held = decisions.filter(d => d.kind === 'held').length
   const totalByTopic = new Map<string, number>()
@@ -1454,6 +1804,8 @@ export function applyTiers(
     merged,
     archived,
     retired,
+    trimmed,
+    demoted,
     flagged,
     held,
     skipped,
@@ -1594,6 +1946,213 @@ export function patrolActivity(lines: string[], since: number): string[] {
   return out.sort((a, b) => a.at - b.at).map(o => o.line)
 }
 
+// The learning ladder (claude-factory-3u1.3.1, FR-018, research R8): note -> CORE line -> station or
+// worker instruction -> skill or checklist -> mechanical check. The dream proposes a step up; a person
+// or the manager installs or rejects it (`factory proposals`).
+export const PROPOSAL_CAP = 3 // at most this many new proposals per dream
+export const proposalsDir = (dir: string) => join(dir, '.proposals')
+export type FailureClass = { station: string; reason: string; runs: string[] }
+const FAILURE_RUNS = 3
+/** a report's first sentence, lowercased, with every word that holds a digit (ids, counts, exit codes) cut */
+// ponytail: the first sentence only; reasons that differ in wording stay apart, embeddings if that misses classes
+export const normalizeReason = (summary: string) =>
+  summary
+    .split(/[.!?](?:\s|$)|\n/)[0]!
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(w => w && !/\d/.test(w))
+    .join(' ')
+/** each (station, normalized reason) that ended red in FAILURE_RUNS (3) or more distinct runs, most runs first */
+export function failureClasses(journal: AttemptOutcome[]): FailureClass[] {
+  const groups = new Map<string, FailureClass>()
+  for (const e of journal) {
+    if (!RED_OUTCOMES.has(e.outcome)) continue
+    const reason = normalizeReason(e.summary ?? '')
+    const key = `${e.node}\0${reason}`
+    const g = groups.get(key) ?? groups.set(key, { station: e.node, reason, runs: [] }).get(key)!
+    if (!g.runs.includes(e.run)) g.runs.push(e.run)
+  }
+  return [...groups.values()]
+    .filter(g => g.runs.length >= FAILURE_RUNS)
+    .sort((a, b) => b.runs.length - a.runs.length || a.station.localeCompare(b.station))
+}
+/** every proposal the dream wrote, by name: its frontmatter and the first line of its change */
+export function proposals(dir: string) {
+  const root = proposalsDir(dir)
+  if (!existsSync(root)) return []
+  return readdirSync(root)
+    .filter(f => f.endsWith('.md'))
+    .sort()
+    .map(f => {
+      const text = readFileSync(join(root, f), 'utf8')
+      const field = (k: string) => new RegExp(`^${k}:\\s*(.*)$`, 'm').exec(text)?.[1]?.trim() ?? ''
+      const body = text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+      return {
+        name: f.slice(0, -3),
+        rung: field('rung'),
+        target: field('target'),
+        status: field('status'),
+        change:
+          body
+            .split('\n')
+            .find(l => l.trim())
+            ?.trim() ?? '',
+        file: join(root, f),
+      }
+    })
+}
+/** CORE.md with `- line` at the end of its top part, before the first `## ` section (claude-factory-3u1.3.2) */
+export function withCoreLine(core: string, line: string): string {
+  const lines = core.split('\n')
+  const i = lines.findIndex(l => l.startsWith('## '))
+  if (i < 0) return `${core.trimEnd()}${core.trim() ? '\n' : ''}- ${line}\n`
+  const top = lines.slice(0, i).join('\n').trimEnd()
+  return `${top ? `${top}\n` : ''}- ${line}\n\n${lines.slice(i).join('\n')}`
+}
+/** text with frontmatter `key: value` set, added at the end of the block when it is not there */
+export function withFrontmatter(text: string, key: string, value: string): string {
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
+  if (!m) return `---\n${key}: ${value}\n---\n${text}`
+  const meta = m[1]!.split('\n')
+  const at = meta.findIndex(l => l.startsWith(`${key}:`))
+  if (at >= 0) meta[at] = `${key}: ${value}`
+  else meta.push(`${key}: ${value}`)
+  return `---\n${meta.join('\n')}\n---\n${text.slice(m[0].length)}`
+}
+const pendingProposal = (dir: string, name: string) => {
+  const p = /^[a-z0-9][a-z0-9-]*$/.test(name) && proposals(dir).find(x => x.name === name)
+  if (!p || p.status !== 'pending')
+    throw new Error(`no pending proposal ${name}: factory proposals lists them`)
+  return p
+}
+/** sets frontmatter fields on a pending proposal; the caller checked it with pendingProposal() */
+const markProposal = (file: string, fields: Record<string, string>) =>
+  writeFileSync(
+    file,
+    Object.entries(fields).reduce((t, [k, v]) => withFrontmatter(t, k, v), readFileSync(file, 'utf8')),
+  )
+/** rung core: the change becomes a CORE.md line (FR-020). Any higher rung throws: a person installs it through a bead */
+export function installCoreProposal(dir: string, name: string) {
+  const p = pendingProposal(dir, name)
+  if (p.rung !== 'core') throw new Error(`${name} is rung ${p.rung}: it files a bead for a person`)
+  const core = join(dir, 'CORE.md')
+  writeFileSync(core, withCoreLine(existsSync(core) ? readFileSync(core, 'utf8') : '', p.change))
+  markProposal(p.file, { status: 'installed' })
+}
+/** a rung above core: marks it installed with the bead a person works it from; never touches factory code */
+export function installProposalAsBead(
+  dir: string,
+  name: string,
+  file: (p: ReturnType<typeof proposals>[0]) => string,
+) {
+  const p = pendingProposal(dir, name)
+  const bead = file(p)
+  markProposal(p.file, { status: 'installed', bead })
+  return bead
+}
+/** the reason goes to the inbox, so the dream does not propose it again as it was (FR-021) */
+export function rejectProposal(dir: string, name: string, why: string) {
+  markProposal(pendingProposal(dir, name).file, { status: 'rejected' })
+  return add(dir, {
+    summary: `The manager rejected the proposal ${name}: ${why}`,
+    from: 'manager',
+    body: `Do not propose it again as it was. ${why}`,
+  })
+}
+/** the manager's message for a set of pending proposals (FR-019) */
+export const proposalMailText = (pending: ReturnType<typeof proposals>, cli: string) =>
+  [
+    `The dream proposed ${pending.length} change(s) one rung up the learning ladder. Read each file, then \`${cli} proposals install <name>\` (rung core adds the CORE.md line; a higher rung files a bead for a person) or \`${cli} proposals reject <name> <why>\`:`,
+    ...pending.map(p => `- ${p.name} (rung ${p.rung}, ${p.target}): ${p.change} (${p.file})`),
+  ].join('\n')
+// The reviewer (claude-factory-ag2): a mod subagent recommends install or reject for each pending skill and
+// proposal. The verdict lives in <home>/reviews.json, never in the skill or proposal file: install copies it.
+export type Review = { recommendation: 'install' | 'reject'; why: string; at: string }
+export type ReviewItem = {
+  key: string
+  kind: 'skill' | 'proposal'
+  name: string
+  change: string
+  text: string
+}
+/** kind:name:sha12 — the first 12 hex of the text's sha256, so a changed text is a new key and a new review */
+export const reviewKey = (kind: string, name: string, text: string) =>
+  `${kind}:${name}:${createHash('sha256').update(text).digest('hex').slice(0, 12)}`
+/** every pending skill (new, changed or reaped) and pending proposal, with the text the reviewer reads */
+export function reviewItems(dir: string): ReviewItem[] {
+  const skillItems = pendingSkills(dir).map(s => {
+    const text = `${s.change}\n${skillText(skillSources(dir), s.name) ?? skillText(skillsDir(dir), s.name) ?? ''}`
+    return {
+      key: reviewKey('skill', s.name, text),
+      kind: 'skill' as const,
+      name: s.name,
+      change: s.change,
+      text,
+    }
+  })
+  const proposalItems = proposals(dir)
+    .filter(p => p.status === 'pending')
+    .map(p => {
+      const text = readFileSync(p.file, 'utf8')
+      return {
+        key: reviewKey('proposal', p.name, text),
+        kind: 'proposal' as const,
+        name: p.name,
+        change: 'pending',
+        text,
+      }
+    })
+  return [...skillItems, ...proposalItems]
+}
+/** the items that have no verdict in `store` yet */
+export const pendingReviews = (dir: string, store: Record<string, Review>) =>
+  reviewItems(dir).filter(i => !store[i.key])
+/** the answer's last fenced json block as a verdict: recommendation exactly install or reject, a non-empty why on one line, 300 chars at most; anything else throws */
+export function parseReview(answer: string): Pick<Review, 'recommendation' | 'why'> {
+  const blocks = [...answer.matchAll(/```json\s*\n([\s\S]*?)\n\s*```/g)]
+  const raw = blocks.at(-1)?.[1]
+  if (raw === undefined) throw new Error('no fenced json block in the answer')
+  const o = JSON.parse(raw) as { recommendation?: unknown; why?: unknown }
+  if (!o || typeof o !== 'object') throw new Error('the answer is not a json object')
+  if (o.recommendation !== 'install' && o.recommendation !== 'reject')
+    throw new Error('recommendation must be exactly install or reject')
+  if (typeof o.why !== 'string' || !o.why.trim()) throw new Error('why must be a non-empty string')
+  // eslint-disable-next-line no-control-regex
+  const why = o.why
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300)
+  return { recommendation: o.recommendation, why }
+}
+/** CORE.md without its first bullet that reads `line` (claude-factory-3u1.3.3) */
+export function withoutCoreLine(core: string, line: string): string {
+  const lines = core.split('\n')
+  const i = lines.findIndex(l => /^-\s+(.*\S)\s*$/.exec(l)?.[1] === line)
+  return i < 0 ? core : [...lines.slice(0, i), ...lines.slice(i + 1)].join('\n')
+}
+/** the new proposal names past PROPOSAL_CAP, last by name: the dream wrote more than it may */
+export const proposalsOverCap = (before: string[], after: string[], cap = PROPOSAL_CAP) =>
+  after
+    .filter(n => !before.includes(n))
+    .sort()
+    .slice(cap)
+/** inbox notes that say what a CORE.md line already says: a lesson the core did not keep (SC-008) */
+export async function relearned(dir: string): Promise<string[]> {
+  const inbox = walk(dir).notes.filter(n => topicOf(n) === 'inbox')
+  const core = coreNotes(dir)
+  if (!inbox.length || !core.length) return []
+  // its own cache file: vectors() rewrites the file it is given to hold only these notes
+  const vec = await vectors(dir, [...inbox, ...core], n => n.summary, '.index.json.relearned')
+  return inbox.flatMap(n => {
+    const best = core
+      .filter(c => !c.rig || !n.rig || c.rig === n.rig)
+      .map(c => ({ c, score: dot(vec(n), vec(c)) }))
+      .sort((a, b) => b.score - a.score)[0]
+    return best && best.score >= SAME ? [`- ${n.path} re-learns CORE.md: ${best.c.summary}`] : []
+  })
+}
+
 export const dreamPrompt = (
   dir: string,
   journal: string[],
@@ -1605,6 +2164,11 @@ export const dreamPrompt = (
   unsafe: string[] = [],
   overCap: string[] = [],
   topicCap: number = TOPIC_CAP,
+  learn: { failures: FailureClass[]; relearned: string[]; proposals: string[] } = {
+    failures: [],
+    relearned: [],
+    proposals: [],
+  },
 ) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
 
 The structure, three tiers:
@@ -1626,6 +2190,7 @@ This pass:
 7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry: keep the older id, add the removed entry's id to the kept entry's \`"aliases"\` list in its id line's JSON (so its usage count carries over; start the list if it has none), then delete the removed entry's heading, id line and body.
 8. Unsafe LONG.md files below: each holds text before its first \`## summary\` + id comment that a tiering pass cannot place in any entry, so it cannot merge a new note into that topic until you fix it. Rewrite the file by hand: either give that text its own \`## summary\` heading and an id comment, or delete it when it says nothing worth keeping.
 9. Topics over the short-note cap below: merge or drop notes in each one until it holds ${topicCap} or fewer. The tiering pass after you finish merges each topic's oldest notes once they are 7 days old or more, used or not, but it never drops one; where a note is under 7 days old, you decide what to merge or drop now.
+10. Proposals, one rung up the learning ladder: note, then a CORE.md line (rung \`core\`), then a line in a station's or the worker's instructions (\`instruction\`), then a skill or checklist (\`skill\`), then a mechanical check (\`check\`). For each failure class below (one station failing one way in 3 or more runs) and each re-learned lesson (an inbox note that repeats a CORE.md line, so the line did not change behavior), write at most 3 new proposals in all, the strongest first, as ${proposalsDir(dir)}/<name>.md: a kebab-case name, frontmatter \`rung:\` (core, instruction, skill or check: one rung above where the lesson lives now), \`target:\` (CORE.md, station:<name>, worker-system or a skill name), \`status: pending\`, \`evidence:\` (a JSON list of run ids and note paths), \`created:\` (today, YYYY-MM-DD); then the body: the exact line or change to install, and why. Skip one that an existing proposal below already covers, or that an inbox note says was rejected and why. Never edit factory code: a person installs the higher rungs.
 Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
 
 ## Manager skills (name: uses, last used: description)
@@ -1648,6 +2213,15 @@ ${unsafe.join('\n') || '(none)'}
 
 ## Topics over the short-note cap
 ${overCap.join('\n') || '(none)'}
+
+## Failure classes (station: normalized reason (runs))
+${learn.failures.map(f => `- ${f.station}: ${f.reason} (${f.runs.length} runs: ${f.runs.join(', ')})`).join('\n') || '(none)'}
+
+## Re-learned lessons (an inbox note that repeats a CORE.md line)
+${learn.relearned.join('\n') || '(none)'}
+
+## Existing proposals (name (status, rung))
+${learn.proposals.join('\n') || '(none)'}
 
 ## Closed beads this memory names
 ${closed.join('\n') || '(none)'}

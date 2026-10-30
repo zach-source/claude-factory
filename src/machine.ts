@@ -1,7 +1,7 @@
 // A factory definition compiled to an xstate machine. Pure: no I/O, every
 // event carries its own `at`, so a run is a fold over its events and the
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
-import { assign, setup } from 'xstate'
+import { assign, createActor, setup, type Snapshot } from 'xstate'
 import { NAME } from './beads'
 
 /**
@@ -12,6 +12,8 @@ import { NAME } from './beads'
  * the run moves on.
  *
  * The `defer` field (`to: 'done'` only) ends the run. The work stays open for a person to pick up.
+ * `defer: { station }` also moves the bead's `station:*` label, so the run after an undefer starts
+ * at that station. The station must be a node of the same factory.
  *
  * The `reject` field (`to: 'done'` only) also ends the run. The work stays open and ready. It stays
  * out of the factory's queue until a person queues it again.
@@ -32,7 +34,7 @@ export type Edge =
   | {
       to: string
       delayMin?: number
-      defer?: true
+      defer?: true | { station: string }
       reject?: true
       requeue?: true | { factory?: string; station?: string }
       ship?: true
@@ -58,6 +60,9 @@ export type Node = {
   timeoutMin?: number
   /**
    * The station can report one outcome this many times in a run. Review's `changes` is one example.
+   * Only an outcome that loops back counts: its edge goes to this node, to a node on
+   * this node's shortest path from `start`, or to a node that cannot end the run. An outcome that goes to
+   * `done`, or to an off-path node that can end the run (review's `security`), never counts.
    * When `onRounds` is set, the next such report re-plans the run.
    * With no `onRounds`, the next report holds for the manager instead.
    * A loop that does not converge by then needs a new design, or a person.
@@ -98,19 +103,46 @@ export type Node = {
    * `validate` refuses a `repeatMail` value that is not a key of `next`.
    */
   repeatMail?: string
+  /**
+   * An outcome in `next`.
+   * Before a fresh worker starts, the runner merges origin's default branch and the run's branch
+   * with `git merge-tree`.
+   * If the merge has a text conflict, no worker starts.
+   * The runner reports this outcome at once and names the conflicting files.
+   * If the check fails for any other reason, the worker starts as usual.
+   * `validate` refuses a value that is not a key of `next`.
+   * `validate` refuses this field on a gate.
+   */
+  mergeCheck?: string
   /** worker command for this node, overrides the factory's */
   agent?: string
+  /**
+   * Some runs start this station with `agent` instead of its own command. `agent` can hold {name}s.
+   * `share` is the name of a param. Its value is a number from 0 to 1.
+   * The runner picks for each run, and the pick does not change (cli.ts `splitPick`).
+   * The value 0 turns the split off.
+   * `validate` refuses a split on a gate, an unknown {name} or share, and a default outside 0 to 1.
+   */
+  split?: { agent: string; share: string }
   /**
    * where this station's workers run whatever the rig's runner (`herdr`, `ax`): a station that needs the
    * laptop (its kubectl, its network, production) stays on herdr when the rig sends its workers to VMs
    */
   runner?: string
+  /** skills this station's worker gets, on top of the factory's and the rig's (cli.ts workerSkills) */
+  skills?: string[]
   /**
    * No worker starts here while the arriving report names a pull or merge request. The run parks
    * instead, the same way a worker's own blocked report does. The watch wakes it on a merge, a close, or
    * any later activity. `validate` refuses this field on a gate: a gate has no worker to hold back.
    */
   awaitsPr?: true
+  /**
+   * While this station is parked on a pull or merge request (its last log entry is a blocked entry that
+   * links one), plain mail stays in its box and starts no worker. A MAIL with `wake: true` starts one, and
+   * so does the clock. `validate` refuses this field on a gate: a gate has no worker.
+   */
+  holdMail?: true
   /**
    * Marks this node a sweep station. `sweep()` runs it at most once per `everyMin` minutes, for each
    * rig. No person or other station sends work to it. `validate` requires a value greater than 0.
@@ -147,6 +179,8 @@ export type Factory = {
   maxContextK?: number
   /** house rules every worker's brief carries */
   rules?: string
+  /** skills every station's worker gets (names in harness.ts VM_PLUGINS); absent: `asd-ste100` */
+  skills?: string[]
   nodes: Record<string, Node>
 }
 
@@ -226,12 +260,14 @@ export type Ev = At &
     /** a worker brought back after the factory was stopped: its clock and its nudges start over */
     | { type: 'RESUMED'; seq: number; pane: string }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
-    | { type: 'FAIL'; seq: number; reason: string }
+    /** `hold`: the reconciler saw an outage (egress down, a usage limit), not a fault of the work. It is the earliest
+     * wake time in ms. The station parks and spends no attempt, for OUTAGE_HOLDS holds in a row. Only the reconciler sets it. */
+    | { type: 'FAIL'; seq: number; reason: string; hold?: number }
     /** the worker's context grew too long: a fresh worker carries on from its notes, spending no attempt */
     | { type: 'HANDOFF'; seq: number; summary: string }
     /** the worker waits on something outside the run (a person, another run, a review): park, spend no attempt */
     | { type: 'BLOCKED'; seq: number; reason: string }
-    | { type: 'MAIL'; from: string; to: string; text: string }
+    | { type: 'MAIL'; from: string; to: string; text: string; wake?: true }
     | { type: 'READ'; box: string; seen: number }
     /** the runner's watch took a parked station's outcome from its pull request, with no worker (claude-factory-5wav) */
     | { type: 'ROUTE'; node: string; outcome: string; summary: string }
@@ -251,9 +287,16 @@ const PARAM = /\{([a-z][a-z0-9_]*)\}/g
 export const fill = (cmd: string, params: Record<string, string>) =>
   cmd.replace(PARAM, (all, name: string) => params[name] ?? all)
 
+/** a share param's value: a finite number from 0 to 1 */
+export const shareOk = (v: string) =>
+  v.trim() !== '' && Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 1
+
 export function validate(def: Factory): Factory {
   const ids = Object.keys(def.nodes ?? {})
-  const commands = [def.agent, ...ids.map(id => def.nodes[id]!.agent)].filter(Boolean) as string[]
+  const commands = [
+    def.agent,
+    ...ids.flatMap(id => [def.nodes[id]!.agent, def.nodes[id]!.split?.agent]),
+  ].filter(Boolean) as string[]
   const unknown = [...new Set(commands.flatMap(c => [...c.matchAll(PARAM)].map(m => m[1]!)))].filter(
     name => !(name in (def.params ?? {})),
   )
@@ -268,8 +311,17 @@ export function validate(def: Factory): Factory {
         typeof node.prompt !== 'string' && `${id}: has no prompt`,
         !Object.keys(node.next ?? {}).length && `${id}: has no outcomes`,
         node.gate && node.agent && `${id}: a gate has no worker, so no agent`,
+        node.gate && node.split && `${id}: a gate has no worker, so no split`,
+        node.split &&
+          !(node.split.share in (def.params ?? {})) &&
+          `${id}: split share "${node.split.share}" is not a param`,
+        node.split &&
+          node.split.share in (def.params ?? {}) &&
+          !shareOk(def.params![node.split.share]!) &&
+          `${id}: split share "${node.split.share}" must be a number between 0 and 1`,
         node.gate && node.runner && `${id}: a gate has no worker, so no runner`,
         node.gate && node.awaitsPr && `${id}: a gate has no worker, so nothing to hold back`,
+        node.gate && node.holdMail && `${id}: a gate has no worker, so no mail to hold`,
         node.gate && node.onTimeout && `${id}: a gate has no worker, so no onTimeout`,
         node.onTimeout &&
           !(node.onTimeout.timeoutMin > (node.timeoutMin ?? 60)) &&
@@ -287,6 +339,10 @@ export function validate(def: Factory): Factory {
         node.repeatMail !== undefined &&
           !Object.keys(node.next ?? {}).includes(node.repeatMail) &&
           `${id}: repeatMail "${node.repeatMail}" is not an outcome in next`,
+        node.mergeCheck !== undefined &&
+          !Object.keys(node.next ?? {}).includes(node.mergeCheck) &&
+          `${id}: mergeCheck "${node.mergeCheck}" is not an outcome in next`,
+        node.gate && node.mergeCheck !== undefined && `${id}: a gate has no worker, so no mergeCheck`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&
@@ -304,6 +360,10 @@ export function validate(def: Factory): Factory {
             edge.reject &&
             edge.to !== 'done' &&
             `${id}: only an edge into done rejects`,
+          typeof edge !== 'string' &&
+            typeof edge.defer === 'object' &&
+            !ids.includes(edge.defer.station) &&
+            `${id}: outcome "${outcome}" defer station "${edge.defer.station}" is not a node`,
           typeof edge !== 'string' &&
             edge.defer &&
             edge.reject &&
@@ -347,6 +407,26 @@ const withMail = ({ context, event }: { context: Ctx; event: Ev }) => {
 export const isParked = (c: Ctx, node: string) => {
   const last = c.log.at(-1)
   return last?.node === node && last.outcome === 'blocked'
+}
+
+/** a holdMail station parked on a pull or merge request: plain mail waits in its box */
+export const isMailHeld = (c: Ctx, node: string, holds?: boolean) =>
+  !!holds &&
+  isParked(c, node) &&
+  prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0
+
+/** whether the station is parked by a blocked report that links this pull or merge request */
+export const isParkedOn = (c: Ctx, node: string, url: string) =>
+  isParked(c, node) && [...prsIn(c.log.at(-1)!.summary), ...mrsIn(c.log.at(-1)!.summary)].includes(url)
+
+/** how many outage holds in a row a station gets before the outage fails like any other fault */
+export const OUTAGE_HOLDS = 4
+export const OUTAGE_HOLD_MIN = 15
+/** the outage holds a node made in a row, newest first: any other entry ends the streak */
+export const outageStreak = (c: Ctx, node: string) => {
+  let n = 0
+  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node && c.log[i]?.outcome === 'outage'; i--) n++
+  return n
 }
 
 /** the kind of failure a reason names when retrying it unchanged is unlikely to help: the worker went silent */
@@ -456,7 +536,7 @@ export const prsIn = (text: string) => [
   ...new Set(text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g) ?? []),
 ]
 /** every GitLab merge request URL in a text; `prsIn` stays GitHub-only because the park watch behind it
- * runs `gh pr view` (prs.ts re-exports this, since its glab-shaped IO lives there) */
+ * reads GitHub through `gh api` (prs.ts re-exports this, since its glab-shaped IO lives there) */
 export const mrsIn = (text: string) => [
   ...new Set(
     text.match(
@@ -489,11 +569,65 @@ export const parkDelayMin = (c: Ctx, node: string, parkMin: number) => {
   return Math.min(parkMin * 2 ** n, Math.max(parkMin, 480))
 }
 
+/** how many blocked reports in a row, at one station, hand the bead to its owner */
+export const OWNER_BLOCKED_PASSES = 3
+/** how long the first park of a blocked streak may last before the bead goes to its owner */
+export const OWNER_AFTER_MS = 24 * 3_600_000
+/** a blocked report that names a step only the owner can do */
+export const isOwnerStep = (text: string) =>
+  /\bowner[- ]?(?:only|step|action|decision|input|call)\b|\b(?:waiting|waits?) (?:on|for) (?:the |its )?owner\b/i.test(
+    text,
+  )
+
+/**
+ * Decides if a blocked run ends and its bead goes to the owner. It reads the trailing blocked reports
+ * at the last station. A pre-launch PR park (`isPrWait`) spent no worker and counts for nothing. Any
+ * other outcome ends the streak. True when the last report names an owner step, when the streak has
+ * `OWNER_BLOCKED_PASSES` reports, or when its first report is older than `OWNER_AFTER_MS`.
+ */
+export const shouldHandToOwner = (log: Entry[], now: number) => {
+  const node = log.at(-1)?.node
+  const streak: Entry[] = []
+  for (let i = log.length - 1; i >= 0 && log[i]?.node === node && log[i]?.outcome === 'blocked'; i--)
+    if (!isPrWait(log[i])) streak.push(log[i]!)
+  if (!streak.length) return false
+  return (
+    isOwnerStep(streak[0]!.summary) ||
+    streak.length >= OWNER_BLOCKED_PASSES ||
+    now - streak.at(-1)!.at > OWNER_AFTER_MS
+  )
+}
+
 export function compile(def: Factory) {
   validate(def)
   const m = setup({ types: { context: {} as Ctx, events: {} as Ev } })
   const isCurrent = ({ context, event }: { context: Ctx; event: Ev }) =>
     'seq' in event && event.seq === context.seq
+
+  // An outcome counts toward a node's `rounds` only when its edge loops back: the target is the node
+  // itself, sits on the node's shortest path from start (BFS parents), or cannot end the run (no edge to
+  // done). An edge to done, or to an off-path station that can end the run (review's security), never counts.
+  const parent: Record<string, string> = {}
+  const seen = new Set([def.start])
+  for (const queue = [def.start]; queue.length;) {
+    const q = queue.shift()!
+    for (const e of Object.values(def.nodes[q]?.next ?? {})) {
+      const t = edgeTo(e)
+      if (t !== 'done' && !seen.has(t)) {
+        seen.add(t)
+        parent[t] = q
+        queue.push(t)
+      }
+    }
+  }
+  const counts = (id: string, node: Node, outcome: string) => {
+    const e = node.next[outcome]
+    if (!e) return false
+    const t = edgeTo(e)
+    if (t === 'done') return false
+    for (let x: string | undefined = id; x; x = parent[x]) if (x === t) return true
+    return !Object.values(def.nodes[t]?.next ?? {}).some(x => edgeTo(x) === 'done')
+  }
 
   const nodeState = (id: string, node: Node) => {
     const attempts = 1 + (node.retries ?? 2)
@@ -581,7 +715,10 @@ export function compile(def: Factory) {
             MAIL: [
               {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
-                  event.type === 'MAIL' && event.to === id && isParked(context, id),
+                  event.type === 'MAIL' &&
+                  event.to === id &&
+                  isParked(context, id) &&
+                  (!!event.wake || !isMailHeld(context, id, node.holdMail)),
                 target: 'working',
                 actions: assign(withMail),
               },
@@ -686,6 +823,7 @@ export function compile(def: Factory) {
                             guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                               isCurrent({ context, event }) &&
                               event.type === 'DONE' &&
+                              counts(id, node, event.outcome) &&
                               context.log.filter(e => e.node === id && e.outcome === event.outcome).length ===
                                 node.rounds!,
                             target: `#factory.${node.onRounds}`,
@@ -718,6 +856,7 @@ export function compile(def: Factory) {
                     {
                       guard: ({ context, event }: { context: Ctx; event: Ev }) => {
                         if (!isCurrent({ context, event }) || event.type !== 'DONE') return false
+                        if (!counts(id, node, event.outcome)) return false
                         const n = context.log.filter(e => e.node === id && e.outcome === event.outcome).length
                         return node.onRounds ? n > 2 * node.rounds! : n >= node.rounds!
                       },
@@ -791,6 +930,32 @@ export function compile(def: Factory) {
               }),
             },
             FAIL: [
+              {
+                guard: ({ context, event }: { context: Ctx; event: Ev }) =>
+                  isCurrent({ context, event }) &&
+                  (event as Extract<Ev, { type: 'FAIL' }>).hold !== undefined &&
+                  outageStreak(context, id) < OUTAGE_HOLDS,
+                target: 'waiting',
+                actions: assign(({ context, event }) => {
+                  const { reason, at, hold } = event as Extract<Ev, { type: 'FAIL' }>
+                  const streak = outageStreak(context as Ctx, id)
+                  // 15, 30, 60, then 120 min at the last of OUTAGE_HOLDS holds
+                  const wakeAt = Math.max(hold ?? 0, at + OUTAGE_HOLD_MIN * 2 ** streak * 60_000)
+                  const text = `${id} is held, not failed: ${reason}. It spent no attempt and starts again at ${new Date(wakeAt).toISOString()}.`
+                  return {
+                    log: [
+                      ...context.log,
+                      { node: id, attempt: context.attempt, outcome: 'outage', summary: reason, at },
+                    ],
+                    mail:
+                      streak === 0
+                        ? post(context.mail, 'manager', { from: 'factory', text, at })
+                        : context.mail,
+                    pane: null,
+                    wakeAt,
+                  }
+                }),
+              },
               {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                   isCurrent({ context, event }) &&
@@ -914,6 +1079,25 @@ export function reach(def: Factory) {
 }
 
 export const unread = (c: Ctx, box: string) => (c.mail[box] ?? []).slice(c.seen[box] ?? 0)
+
+/**
+ * Why a goto to `node` would not move the run, or null if it would. It replays the pending inbox
+ * events and then the GOTO on a copy of the saved snapshot: the same steps the next tick takes.
+ */
+export function gotoRefusal(
+  def: Factory,
+  snapshot: Snapshot<unknown>,
+  pending: Ev[],
+  node: string,
+  at: number,
+): string | null {
+  const actor = createActor(compile(def), { snapshot: structuredClone(snapshot) }).start()
+  for (const e of pending) actor.send(e)
+  actor.send({ type: 'GOTO', node, at })
+  const [to, sub] = where(actor.getSnapshot().value)
+  if (to === node && sub !== 'stuck') return null
+  return `${to}/${sub}: ${actor.getSnapshot().context.error ?? 'goto did not move the run'}`
+}
 
 /** 'implement.working' -> ['implement', 'working']; 'done' -> ['done', ''] */
 export function where(value: unknown): [string, string] {

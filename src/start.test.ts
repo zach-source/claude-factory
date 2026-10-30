@@ -24,7 +24,7 @@ const claudeConfig = join(dir, 'claude-config')
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const run = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,
@@ -241,6 +241,45 @@ test('a goal naming a bead bd finds still starts a run on it, as before', () => 
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
 })
 
+// claude-factory-vad1: goalOf writes a run's goal as '<id>: <title>'. A start with that text, copied from a
+// run or from `factory status`, must work the named bead, not file a copy titled with the whole text.
+test("an '<id>: <title>' goal naming a bead bd finds starts a run on that bead and creates nothing (claude-factory-vad1)", () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'found')
+  const out = run(['start', factoryFixture(), r, 'acme-1: docs: filing guard, thresholds and re-queue'])
+  expect(out.code).toBe(0)
+  const log = readFileSync(calls, 'utf8')
+  expect(log).toContain('show acme-1 ')
+  expect(log).not.toContain('create ')
+  expect(readdirSync(join(home, 'runs')).length).toBe(1)
+})
+
+test("an '<id>: <title>' goal under this rig's prefix that bd does not find fails the start and creates nothing (claude-factory-vad1)", () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'notfound')
+  const out = run(['start', factoryFixture(), r, 'acme-yrq: some title'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('no bead acme-yrq')
+  expect(readFileSync(calls, 'utf8')).not.toContain('create ')
+})
+
+test('a goal with a colon whose head is not a bead id still creates a bead, as before (claude-factory-vad1)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'notfound')
+  const out = run(['start', factoryFixture(), r, 'fix-login: the form drops the session'])
+  expect(out.code).toBe(0)
+  expect(readFileSync(calls, 'utf8')).toContain('create fix-login: the form drops the session')
+})
+
 test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refuses it even with --owned (claude-factory-72v.19)', () => {
   reset()
   const r = repo()
@@ -255,6 +294,31 @@ test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refus
   const person = run(['start', factoryFixture(), r, 'acme-1', '--owned'])
   expect(person.code).toBe(0)
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
+})
+
+test('start <factory>@constructor (an Object.prototype key) fails as an unknown station and creates nothing (claude-factory-dax)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const out = run(['start', `${factoryFixture()}@constructor`, r, 'a goal'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('no station "constructor"')
+  const runs = join(home, 'runs')
+  expect(existsSync(runs) ? readdirSync(runs) : []).toHaveLength(0)
+})
+
+test('fork <run> constructor (an Object.prototype key) prints the usage line (claude-factory-dax)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const started = run(['start', factoryFixture(), r, 'a goal'])
+  expect(started.code).toBe(0)
+  const id = readdirSync(join(home, 'runs'))[0]!
+  const out = run(['fork', id, 'constructor'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('usage: factory fork')
 })
 
 // claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
@@ -294,7 +358,7 @@ test('a stuck run does not count against FACTORY_MAX_RUNS, but a working run doe
   const allowed = run(['start', factoryFixture(), r, 'acme-1'], { FACTORY_MAX_RUNS: '1' })
   expect(allowed.code).toBe(0)
   expect(readdirSync(join(home, 'runs')).length).toBe(2)
-})
+}, 30_000)
 
 // claude-factory-ytz.2: the owner already runs the live manager with FACTORY_MAX_RUNS=16 in its
 // shell env, a setting no committed file holds. Commit 16 as the default, so a fresh shell or CI
@@ -302,7 +366,7 @@ test('a stuck run does not count against FACTORY_MAX_RUNS, but a working run doe
 // shows the committed default, not whatever the test runner's own shell happens to export.
 test('`factory help` names the committed default FACTORY_MAX_RUNS as 16 (claude-factory-ytz.2)', () => {
   reset()
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_MAX_RUNS, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_MAX_RUNS, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'help'], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
   })

@@ -1,9 +1,12 @@
 import { expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import { createActor } from 'xstate'
-import { ruleLines } from '../src/cli'
+import { join } from 'node:path'
+import { modelOf } from '../src/ax'
+import { loadFactory, ruleLines, workerSkills } from '../src/cli'
 import {
   compile,
+  fill,
   isPrWait,
   repeatQuestion,
   timeoutOf,
@@ -15,6 +18,7 @@ import {
 import lifecycle from './lifecycle'
 import release from './release'
 import ship from './ship'
+import sweeps from './sweeps'
 
 const PR = 'https://github.com/acme/widget/pull/42'
 
@@ -126,16 +130,26 @@ test('incidents, optimizations and refactors take their own entries', () => {
 })
 
 test('lifecycle and release house rules each name every owner-only class, the approval clause and the park text', () => {
-  for (const rules of [lifecycle.rules!, release.rules!, ship.rules!]) {
+  for (const rules of [lifecycle.rules!, release.rules!, ship.rules!, sweeps.rules!]) {
     expect(rules).toContain('kubectl apply')
     expect(rules).toContain('production registry')
     expect(rules).toContain('ruleset')
     expect(rules).toContain('organization setting')
     expect(rules).toContain('credential')
-    expect(rules).toMatch(/bead's description|factory mail.*manager/)
+    expect(rules).toContain(
+      "a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step",
+    )
+    expect(rules).toContain("The bead's description records no author, so it never counts as approval")
+    expect(rules).not.toMatch(/only when the bead's description|bead's description, a person's own comment/)
     expect(rules).toContain("a worker's own comment never counts as approval")
     expect(rules).toContain('parked, waiting on:')
   }
+})
+
+test('the ship soak prompt counts only a person comment or manager mail as Mimir approval', () => {
+  const p = ship.nodes.soak!.prompt as string
+  expect(p).toContain("a person's own comment on the bead or a [factory mail] from the manager")
+  expect(p).not.toMatch(/\(the bead's description,/)
 })
 
 test('the ship deploy prompt and the release rollout prompt park on an owner-only step instead of doing it', () => {
@@ -164,7 +178,11 @@ test('a deploy or rollout brief for a rig whose goal names owner-only steps carr
       'credential',
     ])
       expect(brief).toContain(needle)
-    expect(brief).toMatch(/bead's description|factory mail.*manager/)
+    expect(brief).toContain(
+      "a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step",
+    )
+    expect(brief).toContain("The bead's description records no author, so it never counts as approval")
+    expect(brief).not.toMatch(/only when the bead's description|bead's description, a person's own comment/)
     expect(brief).toContain('parked, waiting on:')
   }
 })
@@ -190,6 +208,7 @@ test('release reporting ready with a pull request link parks deploy with no work
 test('a merge or close mail wakes a parked deploy, which then routes every outcome as today (claude-factory-960 AC4)', () => {
   const cases: { outcome: string; next: [string, string] }[] = [
     { outcome: 'deployed', next: ['soak', 'waiting'] },
+    { outcome: 'unsure', next: ['soak', 'waiting'] },
     { outcome: 'published', next: ['queue', 'waiting'] },
     { outcome: 'changes', next: ['queue', 'waiting'] },
     { outcome: 'hold', next: ['queue', 'waiting'] },
@@ -201,7 +220,7 @@ test('a merge or close mail wakes a parked deploy, which then routes every outco
     const released = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'waiting'])
-    actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+    actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, wake: true, at: 2000 })
     expect(where(actor.getSnapshot().value)).toEqual(['deploy', 'working'])
     const deploySeq = actor.getSnapshot().context.seq
     actor.send({ type: 'DONE', seq: deploySeq, outcome, summary: outcome, at: 3000 })
@@ -214,7 +233,7 @@ test("a worker's own blocked report at deploy still parks as today, after the pr
   actor.send({ type: 'GOTO', node: 'release', at: 0 })
   const released = actor.getSnapshot().context.seq
   actor.send({ type: 'DONE', seq: released, outcome: 'ready', summary: `shipping ${PR}`, at: 1000 })
-  actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, at: 2000 })
+  actor.send({ type: 'MAIL', from: 'factory', to: 'deploy', text: `${PR} merged`, wake: true, at: 2000 })
   const deploySeq = actor.getSnapshot().context.seq
   actor.send({ type: 'BLOCKED', seq: deploySeq, reason: `still waiting on review ${PR}`, at: 3000 })
   const s = actor.getSnapshot()
@@ -351,7 +370,7 @@ test('small AC3: check changes loops back through quick; quick full joins the fu
   expect(lifecycle.nodes.check!.rounds).toBe(3)
 })
 
-test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for security; quick is Sonnet, check is Opus', () => {
+test('small AC4/AC5/AC6: check marks an approved PR ready and promises a diff summary for security; quick is Sonnet, check is Opus', () => {
   const check = lifecycle.nodes.check!
   for (const needle of [
     'draft',
@@ -362,8 +381,9 @@ test('small AC4/AC5/AC6: check stays a draft and promises a diff summary for sec
     '+N more',
   ])
     expect(check.prompt).toContain(needle)
-  expect(check.prompt).not.toContain('mark it ready')
-  expect(check.prompt).toContain('ship marks it ready')
+  // claude-factory-usp5: the approving station marks the pull request ready, not only ship
+  expect(check.prompt).toContain('mark the pull request ready: \`gh pr ready <n> -R <owner>/<repo>\`')
+  expect(check.prompt).toContain('Do not mark it ready when you report changes or security')
   expect(ship.nodes.release.prompt).toContain('mark it ready')
   expect(check.agent).toContain('{judge_model}')
   expect((lifecycle as Factory).nodes.quick!.agent).toBeUndefined()
@@ -381,6 +401,28 @@ test('small AC7/AC8: triage names the small route and its exclusions; the ship d
   expect(lifecycle.nodes.triage!.prompt).toContain('security-sensitive')
   expect(lifecycle.nodes.triage!.prompt).toContain('factories/')
   expect(ship.nodes.deploy!.prompt).toContain('docs-only')
+})
+
+// claude-factory-53tf: review's security outcome leaves the loop, so it never counts toward review's cap.
+test('review security reports (4-7) with security changes between go to security, never re-plan (53tf)', () => {
+  // a long maxSteps: seven loops would use up the default launch budget of 20
+  const actor = createActor(compile({ ...lifecycle, maxSteps: 200 })).start()
+  let now = 0
+  const report = (outcome: string) => {
+    const { seq } = actor.getSnapshot().context
+    actor.send({ type: 'DONE', seq, outcome, summary: `${outcome} ${now}`, at: ++now })
+  }
+  for (let i = 1; i <= 7; i++) {
+    actor.send({ type: 'GOTO', node: 'review', at: now })
+    report('security')
+    expect(where(actor.getSnapshot().value)[0]).toBe('security')
+    actor.send({ type: 'GOTO', node: 'security', at: now })
+    report('changes')
+    expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+  }
+  const ctx = actor.getSnapshot().context
+  expect(ctx.log.some(e => e.replan)).toBe(false)
+  expect(ctx.mail.plan ?? []).toEqual([])
 })
 
 // claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,
@@ -429,6 +471,7 @@ test("review's round cap re-plans to plan with the findings, then holds on a sec
 // the manager (from 'factory', not from verify), while the run still goes on to implement as today.
 test("verify's repeated red on the same AC id mails the manager; a different AC id does not (claude-factory-qgz AC6, AC7)", () => {
   expect(lifecycle.nodes.verify!.repeatMail).toBe('red')
+  expect(lifecycle.nodes.verify!.mergeCheck).toBe('red')
 
   const red = createActor(compile(lifecycle)).start()
   red.send({ type: 'GOTO', node: 'verify', at: 0 })
@@ -499,12 +542,343 @@ test('a manager goto plan between two verify reds breaks the repeat streak (clau
   expect(actor.getSnapshot().context.mail.manager?.filter(m => m.from === 'factory')).toHaveLength(1)
 })
 
-test('review, security and check prompts hold the out-of-diff rule (claude-factory-nwlh.4)', () => {
+test('implement runs a numbered self-check and reports a Self-check block (2ida AC1, AC2)', () => {
+  const p = lifecycle.nodes.implement!.prompt
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.']) expect(p).toContain(`\n${n} `)
+  expect(p).toContain('the whole test suite')
+  expect(p).toContain('AC table')
+  expect(p).toContain('git diff <reviewed sha>..HEAD')
+  expect(p).toContain('Add no changelog entry')
+  expect(p).not.toContain('the ship release adds them')
+  expect(p).toContain('writes the changelog at release time')
+  expect(p).toContain("'Self-check:'")
+  expect(p).toContain('Close every task of this run')
+})
+
+test('review, security and check share one blocking-scope rule (2ida AC3, AC4)', () => {
   for (const n of ['review', 'security', 'check'] as const) {
     const p = lifecycle.nodes[n]!.prompt
+    expect(p).toContain('A finding blocks only when it is one of these')
+    expect(p).toContain('makes an existing defect reachable or enabled')
+    expect(p).toContain('Not blocking')
+    expect(p).toContain('discovered-from:')
     expect(p).toContain("outside this branch's diff never makes the verdict changes")
     expect(p).toContain('bd search')
     expect(p).toContain('P2 or lower')
     expect(p).toContain('sets P0 or P1')
+    expect(p).toContain('and that is not kind 2 or 3 does not block')
   }
+  expect(lifecycle.nodes.security!.prompt).not.toContain('P1 or higher')
+  expect(lifecycle.nodes.security!.prompt).toContain('for a person to prioritize')
+  expect(lifecycle.nodes.security!.prompt).toContain('that is not kind 1, 2 or 3 does not block')
+})
+
+test('plan names the proof for each AC, negative rows and a fail-closed class rule (2ida AC5)', () => {
+  const p = lifecycle.nodes.plan!.prompt
+  expect(p).toContain('the test or command that proves it')
+  expect(p).toContain('negative rows')
+  expect(p).toContain('one fail-closed rule')
+  expect(p).toContain('out of scope')
+})
+
+test('triage rejects a second fix for a red main (claude-factory-yhf5)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'gh pr list --state open --search',
+    'in:title,body',
+    'factory status',
+    'reject as already tracked and name that PR',
+  ])
+    expect(p).toContain(s)
+})
+
+test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
+  const decision = { to: 'done', defer: { station: 'plan' } }
+  expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
+  expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
+  for (const n of ['triage', 'plan', 'implement'] as const)
+    expect(lifecycle.nodes[n].next.decision).toEqual(decision)
+  expect(lifecycle.nodes.implement!.prompt).toContain('open no new pull request')
+  expect(lifecycle.nodes.implement!.prompt).toContain('earlier run opened')
+  expect(release.start).toBe('recipe')
+  expect(walk(lifecycle, ['rollout']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['elsewhere']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['decision']).visited).toEqual(['triage', 'done'])
+  expect(walk(lifecycle, ['decision'], 'plan').visited).toEqual(['plan', 'done'])
+  expect(walk(lifecycle, ['decision'], 'implement').visited).toEqual(['implement', 'done'])
+  expect(walk(lifecycle, ['build']).visited).toEqual(['triage', 'plan'])
+  expect(walk(lifecycle, ['reject']).snapshot.context.log.at(-1)).toMatchObject({ outcome: 'reject' })
+})
+
+test('implement, verify, security, plan and review split to codex, and the exec tier never gets the security model', () => {
+  const lc = lifecycle as Factory
+  const split = Object.entries(lc.nodes)
+    .filter(([, n]) => n.split)
+    .map(([id, n]) => [id, n.split!.share, n.split!.agent])
+  expect(split).toEqual([
+    ['plan', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
+    ['implement', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['verify', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['review', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
+    ['security', 'codex_security_share', "{codex} -m '{codex_security_model}'"],
+  ])
+  for (const id of ['check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
+  expect(lc.params!.codex_share).toBe('0.3')
+  expect(lc.params!.codex_judge_share).toBe('0') // a rig turns the codex judge tier on itself
+  expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
+  validate(lifecycle as Factory)
+})
+
+test('every station model id of every factory resolves to a known id', async () => {
+  const lc = lifecycle as Factory
+  const known = [
+    'claude-sonnet-5-5[1m]',
+    'claude-opus-5-5[1m]',
+    'claude-fable-5-1',
+    'gpt-6.1-sol',
+    'gpt-6-astra',
+  ]
+  const rework = await loadFactory(join(import.meta.dir, 'rework.yaml'))
+  for (const def of [lifecycle, ship, release, sweeps, rework] as Factory[]) {
+    for (const node of Object.values(def.nodes)) {
+      for (const cmd of [node.agent ?? def.agent, node.split?.agent]) {
+        if (!cmd) continue
+        expect(known).toContain(modelOf(fill(cmd, def.params ?? {}))!)
+      }
+    }
+  }
+  expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
+  expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
+  expect(modelOf(fill(lc.nodes.review!.split!.agent, lc.params!))).toBe('gpt-6-astra')
+})
+
+test('claude-factory-0gww.4: review, security and check approve or request changes as the reviewer identity on the exact head, with a comment fallback', () => {
+  for (const node of ['review', 'security', 'check']) {
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
+    for (const needle of [
+      'FACTORY_GH_REVIEWER',
+      'commit_id',
+      'event=APPROVE',
+      'event=REQUEST_CHANGES',
+      'gh pr view <n> --json author,headRefOid',
+      'the author is the reviewer identity',
+      'headRefOid is not the commit you reviewed',
+      'gh pr review --comment',
+    ])
+      expect(prompt).toContain(needle)
+  }
+  for (const node of ['plan', 'implement', 'quick', 'verify'])
+    expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
+})
+
+const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"
+const BOT_TOKENS = [
+  'In the infra-blocks repo',
+  BOT_CMD,
+  'git checkout origin/main -- <file>',
+  'git rm --cached <file>',
+  'run the check again',
+  'separate commands',
+  'The pull request title is the changelog line',
+]
+
+test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle stations', () => {
+  const holders = Object.entries((lifecycle as Factory).nodes)
+    .filter(([, n]) => (n.prompt ?? '').includes(BOT_CMD))
+    .map(([name]) => name)
+    .sort()
+  expect(holders).toEqual(['implement', 'quick'])
+  for (const name of holders)
+    for (const t of BOT_TOKENS) expect((lifecycle as Factory).nodes[name]!.prompt).toContain(t)
+  expect((lifecycle as Factory).nodes.implement!.prompt).toContain(
+    'Add no changelog entry and no version bump',
+  )
+})
+
+test('plan keeps tests and the change they wait on in one PR, or orders the beads (claude-factory-9hzj AC1)', () => {
+  const prompt = (lifecycle as Factory).nodes.plan!.prompt ?? ''
+  for (const t of [
+    'plan both in one pull request',
+    'the tests commit first, then the change',
+    'make this bead depend on the other bead',
+    'red required checks by design',
+  ])
+    expect(prompt).toContain(t)
+})
+
+// claude-factory-pt4r: a bead whose ACs are all live reads goes to decision on a VM, not to plan.
+test('triage sends live-read-only beads on a VM to decision (pt4r AC1/AC2)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'live read',
+    'kubectl get',
+    'Mimir query',
+    'needs no code',
+    'Classify it decision',
+    'name the exact reads',
+    'laptop runner',
+  ])
+    expect(p).toContain(s)
+  expect(lifecycle.nodes.triage!.next.decision).toEqual({ to: 'done', defer: { station: 'plan' } })
+  expect(lifecycle.nodes.triage!.next.build).toBe('plan')
+})
+
+test('claude-factory-ocox AC1: a house rule says implement and quick open drafts only and names who marks ready', () => {
+  const line = lifecycle.rules!.split('\n').find(l => l.includes('gh pr create --draft'))
+  expect(line).toBeDefined()
+  for (const needle of [
+    'implement and quick',
+    'never run `gh pr ready`',
+    'review, security and check',
+    'ship release',
+    'merges a ready',
+  ])
+    expect(line).toContain(needle)
+})
+
+test('claude-factory-ocox AC2/AC3 + ye1v AC5: plain gh pr ready only in review, security and check; the --undo form only in implement and quick', () => {
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const p = node.prompt
+    expect(p.replaceAll(/gh pr ready <n> --undo/g, '').includes('gh pr ready'), id).toBe(
+      ['review', 'security', 'check'].includes(id),
+    )
+    expect(p.includes('gh pr ready <n> --undo'), id).toBe(['implement', 'quick'].includes(id))
+  }
+  expect(lifecycle.nodes.implement!.prompt).toContain('gh pr create --draft')
+})
+
+test('claude-factory-ye1v AC1/AC2: implement and quick go back to draft before a push and list unreviewed SHAs', () => {
+  for (const id of ['implement', 'quick']) {
+    const p = (lifecycle.nodes as Record<string, { prompt: string }>)[id]!.prompt
+    for (const s of [
+      'gh pr view <n> --json isDraft',
+      'gh pr ready <n> --undo',
+      'before you push',
+      'do not push',
+      'Unreviewed:',
+      'git log --format=%h <reviewed head>..HEAD',
+      'Reviewed head:',
+      'every report',
+      '+N more',
+    ])
+      expect(p, `${id}: ${s}`).toContain(s)
+  }
+})
+
+test('claude-factory-ye1v AC3: approvers name the reviewed head and mark ready only at that head', () => {
+  for (const id of ['review', 'security', 'check']) {
+    const p = (lifecycle.nodes as Record<string, { prompt: string }>)[id]!.prompt
+    expect(p, id).toContain('Reviewed head: <full SHA>')
+    expect(p, id).toContain('headRefOid equals the SHA you reviewed')
+  }
+})
+
+test('claude-factory-ye1v AC4: the house rule allows only the --undo form and requires a draft before a push', () => {
+  const line = lifecycle.rules!.split('\n').find(l => l.includes('gh pr create --draft'))!
+  expect(line).toContain('except `gh pr ready <n> --undo`')
+  expect(line).toContain('is not a draft')
+})
+
+// claude-factory-qda: asd-ste100 goes to the stations that write text people read, and to no other
+test('lifecycle gives asd-ste100 to its text stations only', () => {
+  const text = ['plan', 'implement', 'review', 'security', 'quick', 'check', 'rollback', 'incident']
+  for (const [id, node] of Object.entries(lifecycle.nodes))
+    expect([id, workerSkills(lifecycle, node as { skills?: string[] })]).toEqual([
+      id,
+      text.includes(id) ? ['asd-ste100'] : [],
+    ])
+})
+
+const promptOf = (def: Factory, node: string) => (def.nodes[node] as { prompt: string }).prompt
+
+test("deploy and rollout must see the change's own live output; not fired yet is unsure (claude-factory-ee7 AC1, AC2)", () => {
+  for (const [def, node] of [
+    [ship, 'deploy'],
+    [release, 'rollout'],
+  ] as const) {
+    const p = promptOf(def, node)
+    expect(p, node).toContain('own output')
+    expect(p, node).toContain(
+      'the file it writes, the log line it prints, or the process or subagent it starts',
+    )
+    expect(p, node).toMatch(/not fired yet[^.]*unsure|unsure[^.]*not fired yet/)
+    expect((def.nodes as Record<string, { next: unknown }>)[node]!.next).toMatchObject({
+      unsure: { to: 'soak', delayMin: 15 },
+    })
+  }
+})
+
+test('ship deploy parks on a stale manager; release rollout does not (claude-factory-ee7 AC3)', () => {
+  const p = promptOf(ship, 'deploy')
+  for (const word of ['manager.json', 'startedAt', 'argv', 'managerCommand', 'restart the factory manager'])
+    expect(p, word).toContain(word)
+  expect(promptOf(release, 'rollout')).not.toContain('manager.json')
+})
+
+test('soak needs the own output before healthy (claude-factory-ee7 AC4)', () => {
+  for (const def of [ship, release]) {
+    const p = promptOf(def, 'soak')
+    expect(p).toContain('own output')
+    expect(p).toContain('not fired yet')
+  }
+})
+
+test('rollback and soak call an unreproduced cause a hypothesis (claude-factory-ee7 AC5)', () => {
+  for (const [def, node] of [
+    [ship, 'rollback'],
+    [lifecycle, 'rollback'],
+    [release, 'rollback'],
+    [ship, 'soak'],
+    [release, 'soak'],
+  ] as const)
+    expect(promptOf(def, node), node).toContain('hypothesis unless you reproduced it')
+})
+
+const NO_BLOCK = [
+  ['implement', 'ready', 'verify'],
+  ['verify', 'green', 'review'],
+  ['quick', 'ready', 'check'],
+] as const
+
+test('claude-factory-9sji AC1: implement, verify and quick carry the no-block rule', () => {
+  for (const [id] of NO_BLOCK)
+    for (const needle of [
+      'ready, merge or hold',
+      'For the person:',
+      'another open pull request',
+      'owner-only',
+    ])
+      expect(promptOf(lifecycle, id), `${id}: ${needle}`).toContain(needle)
+})
+
+test('claude-factory-9sji AC2: the rule names a forward outcome of each station', () => {
+  for (const [id, outcome, to] of NO_BLOCK) {
+    expect(promptOf(lifecycle, id), id).toContain(`report ${outcome}. Do not report blocked or decision`)
+    expect((lifecycle.nodes[id] as { next: Record<string, unknown> }).next[outcome], id).toBe(to)
+  }
+})
+
+test('claude-factory-9sji AC3: closed tasks and green CI reach review', () => {
+  expect(walk(lifecycle, ['build', 'ready', 'ready', 'green']).visited).toEqual([
+    'triage',
+    'plan',
+    'implement',
+    'verify',
+    'review',
+  ])
+})
+
+test('claude-factory-9sji AC4: only implement, verify and quick carry the rule; it keeps the owner-only park and names no gh pr ready', () => {
+  const carriers: string[] = NO_BLOCK.map(([id]) => id)
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const prompt = (node as { prompt?: unknown }).prompt
+    if (typeof prompt !== 'string') continue
+    expect(prompt.includes('For the person:'), id).toBe(carriers.includes(id))
+  }
+  for (const id of carriers) {
+    expect(promptOf(lifecycle, id), id).toContain('parked, waiting on')
+    expect(promptOf(lifecycle, id), id).toContain('still a failure')
+  }
+  expect(promptOf(lifecycle, 'verify')).toContain('red with a numbered list')
+  expect(promptOf(lifecycle, 'verify')).toContain('Failing:')
 })

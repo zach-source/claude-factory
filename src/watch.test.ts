@@ -22,25 +22,52 @@ const prState = join(dir, 'pr-state.json')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], path?: string) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, PATH: path ?? `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0' },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 
-/** fake gh: `gh pr view <url> --json state,updatedAt` answers the control file's JSON and logs the call
- * (one line an invocation), so a test can count how many times gh actually ran */
+/** fake gh: `gh api repos/<slug>/pulls/N[/reviews]` and `issues/N/comments` answer from the control file
+ * (the GraphQL-style pull request JSON below, mapped onto REST) and log the call (one line an invocation),
+ * so a test can count how many times gh actually ran */
 function fakeGh() {
   mkdirSync(bin, { recursive: true })
-  const script = [
-    '#!/bin/sh',
-    `echo "$*" >> ${calls}`,
-    'case "$1 $2" in',
-    `  "pr view") cat ${prState};;`,
-    '  *) exit 1;;',
-    'esac',
-  ].join('\n')
+  const script = `#!/usr/bin/env bun
+import { appendFileSync, readFileSync } from 'node:fs'
+appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n')
+const argv = process.argv.slice(2)
+const path = argv.at(-1) ?? ''
+let j
+try {
+  j = JSON.parse(readFileSync(${JSON.stringify(prState)}, 'utf8'))
+} catch {
+  process.exit(1)
+}
+const who = a => ({ login: a?.login, type: a?.is_bot ? 'Bot' : 'User' })
+if (argv[0] !== 'api') process.exit(1)
+if (/\\/reviews\\?/.test(path)) {
+  const page = (j.reviews ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, state: r.state, submitted_at: r.submittedAt, body: r.body }))
+  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+} else if (/\\/comments\\?/.test(path)) {
+  const page = (j.comments ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, created_at: r.createdAt, body: r.body }))
+  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+} else {
+  const merged = j.state === 'MERGED'
+  console.log(JSON.stringify({
+    state: merged || j.state === 'CLOSED' ? 'closed' : 'open',
+    draft: j.isDraft,
+    updated_at: j.updatedAt,
+    merged_at: j.mergedAt ?? (merged ? j.updatedAt : null),
+    closed_at: j.closedAt ?? null,
+    mergeable_state: 'clean',
+    mergeable: j.mergeable === 'CONFLICTING' ? false : j.mergeable === 'MERGEABLE' ? true : null,
+    head: { ref: j.headRefName, sha: j.headRefOid },
+    base: { ref: j.baseRefName },
+  }))
+}
+`
   writeFileSync(join(bin, 'gh'), script)
   chmodSync(join(bin, 'gh'), 0o755)
 }
@@ -120,6 +147,8 @@ function mailOf(id: string): { text: string }[] {
     .filter(e => e.type === 'MAIL')
 }
 
+/** the pull request views gh ran: one `gh api repos/<slug>/pulls/N` each */
+const ghViewCount = () => ghCallCount().filter(l => /^api repos\/\S+\/pulls\/\d+$/.test(l))
 const ghCallCount = () =>
   existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : []
 
@@ -153,6 +182,39 @@ test('a merge after the park wakes the station at once (AC3)', () => {
   expect(watchJson.woke[0]).toMatchObject({ run: 'r1', node: 'deploy', url: PR })
 })
 
+test('the watch wake mail has wake true, so a PR change starts a holdMail station (61pu AC6)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'MERGED', updatedAt: iso(1 * 60_000) }))
+  parkedRun('r1', repo(), f)
+  factory(['watch'])
+  expect(mailOf('r1')[0]).toMatchObject({ from: 'factory', wake: true })
+})
+
+test('factory mail: --wake sets wake; a held box prints the held line; later --wake stays text (61pu AC8)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  const held: Factory = {
+    ...SHIP,
+    nodes: { ...SHIP.nodes, deploy: { ...SHIP.nodes.deploy!, holdMail: true } },
+  }
+  writeFileSync(f, JSON.stringify(held))
+  parkedRun('r1', repo(), f, { def: held })
+  const plain = factory(['mail', 'r1', 'deploy', 'Report', 'blocked'])
+  expect(plain.out).toContain('held for deploy: parked on ' + PR)
+  expect(plain.out).toContain('add --wake to start one now')
+  expect(mailOf('r1').at(-1)).toMatchObject({ text: 'Report blocked' })
+  expect(mailOf('r1').at(-1)).not.toHaveProperty('wake')
+  const woken = factory(['mail', 'r1', 'deploy', '--wake', 'answer'])
+  expect(woken.out).not.toContain('held for')
+  expect(mailOf('r1').at(-1)).toMatchObject({ text: 'answer', wake: true })
+  const late = factory(['mail', 'r1', 'deploy', 'say', '--wake'])
+  expect(mailOf('r1').at(-1)).toMatchObject({ text: 'say --wake' })
+  expect(mailOf('r1').at(-1)).not.toHaveProperty('wake')
+  expect(late.out).toContain('mailed deploy')
+})
+
 test('a merge that predates a pre-launch park still wakes it at once, not out its plain park wait (AC3)', () => {
   reset()
   const f = join(dir, 'ship.json')
@@ -176,7 +238,7 @@ test('a run parked on a pull request in another repo is watched and woken on its
   parkedRun('r1', repo(), f, { url: foreign })
   const out = factory(['watch'])
   expect(out.code).toBe(0)
-  expect(ghCallCount()[0]).toContain(foreign)
+  expect(ghViewCount()[0]).toContain('repos/acme/widget-flux/pulls/7')
   expect(mailOf('r1')).toHaveLength(1)
   const watchJson = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
   expect(watchJson.woke[0]).toMatchObject({ run: 'r1', node: 'deploy', url: foreign })
@@ -203,7 +265,7 @@ test('two runs parked on the same pull request share one gh view this pass (AC6)
   parkedRun('r2', r, f)
   const out = factory(['watch'])
   expect(out.code).toBe(0)
-  expect(ghCallCount()).toHaveLength(1) // one gh call, though two runs link the same pull request
+  expect(ghViewCount()).toHaveLength(1) // one gh call, though two runs link the same pull request
   const watchJson = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
   expect(watchJson.viewed).toBe(1)
 })
@@ -233,10 +295,10 @@ test('tick spawns one watch pass, then none while still inside that pass’s min
   expect(existsSync(join(home, 'watch.json'))).toBe(false)
   factory(['tick'])
   const first = (await waitForWatch()) as { at: number }
-  expect(ghCallCount()).toHaveLength(1)
+  expect(ghViewCount()).toHaveLength(1)
   factory(['tick']) // immediately after: well inside the same minute, so this must spawn nothing
   await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
-  expect(ghCallCount()).toHaveLength(1) // still one gh call, not two
+  expect(ghViewCount()).toHaveLength(1) // still one gh call, not two
   const second = JSON.parse(readFileSync(join(home, 'watch.json'), 'utf8'))
   expect(second.at).toBe(first.at) // the file is untouched since the first pass
 })
@@ -336,6 +398,14 @@ function routeRun(id: string, opts: { at?: number; bead?: string; url?: string }
   writeFileSync(f, JSON.stringify(ROUTE_SHIP))
   const r = repo()
   if (opts.bead) mkdirSync(join(r, '.beads'), { recursive: true })
+  // a merge request run needs the rig's forge host: the watch views only MRs on the origin host
+  if (opts.url?.includes('/-/merge_requests/') && !existsSync(join(r, '.git'))) {
+    for (const a of [
+      ['init', '-q'],
+      ['remote', 'add', 'origin', 'https://gitlab.example.com/acme/widget.git'],
+    ])
+      Bun.spawnSync(['git', '-C', r, ...a])
+  }
   parkedRun(id, r, f, { def: ROUTE_SHIP, ...opts })
 }
 
@@ -470,6 +540,69 @@ test('a failed gh view posts no route and no re-park (5wav AC6)', () => {
   reset()
   routeRun('r1', { at: Date.now() - 475 * 60_000 })
   rmSync(prState, { force: true }) // the fake gh cats a missing file and exits 1
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  expect(watchJson().errors).toBe(1)
+})
+
+const conflictJson = (over: Record<string, unknown> = {}) =>
+  prJson({ mergeable: 'CONFLICTING', headRefName: 'factory/r1', baseRefName: 'main', ...over })
+const CONFLICT_TEXT = `[factory] ${PR} is CONFLICTING with main at head aaa1111, so GitHub builds no pull merge ref and no CI can start. Merge origin/main, resolve, push.`
+
+test('a conflicting pull request on the run branch mails the station once (conflict AC6, AC7)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson()
+  factory(['watch'])
+  expect(ghCallCount()).toContain('api repos/acme/widget/pulls/42')
+  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/pulls/42/reviews?per_page=100')
+  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/issues/42/comments?per_page=100')
+  const mail = inboxOf('r1').filter(e => e.type === 'MAIL')
+  expect(mail).toHaveLength(1)
+  expect(mail[0]).toMatchObject({ from: 'factory', to: 'deploy', text: CONFLICT_TEXT })
+  expect(watchJson().woke).toMatchObject([{ run: 'r1', node: 'deploy', url: PR, state: 'OPEN' }])
+  factory(['watch'])
+  expect(inboxOf('r1').filter(e => e.type === 'MAIL')).toHaveLength(1)
+})
+
+test('a drained conflict mail is not sent again for the same head (conflict AC7, drained)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson()
+  factory(['watch'])
+  const file = join(home, 'runs', 'r1', 'state.json')
+  const st = JSON.parse(readFileSync(file, 'utf8'))
+  const mail = inboxOf('r1').filter(e => e.type === 'MAIL')
+  st.cursor = inboxOf('r1').length
+  st.snapshot.context.mail.deploy = [
+    ...(st.snapshot.context.mail.deploy ?? []),
+    { from: 'factory', text: mail[0]!.text, at: Date.now() },
+  ]
+  writeFileSync(file, JSON.stringify(st))
+  factory(['watch'])
+  expect(inboxOf('r1').filter(e => e.type === 'MAIL')).toHaveLength(1)
+})
+
+test('UNKNOWN mails nothing; CONFLICTING on the next pass mails (conflict AC8)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson({ mergeable: 'UNKNOWN' })
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  conflictJson()
+  factory(['watch'])
+  expect(inboxOf('r1').filter(e => e.type === 'MAIL')).toHaveLength(1)
+})
+
+test('MERGEABLE, another branch and a failed gh mail nothing (conflict AC9)', () => {
+  reset()
+  routeRun('r1')
+  conflictJson({ mergeable: 'MERGEABLE' })
+  factory(['watch'])
+  conflictJson({ headRefName: 'factory/someone-else' })
+  factory(['watch'])
+  expect(inboxOf('r1')).toEqual([])
+  rmSync(prState, { force: true })
   factory(['watch'])
   expect(inboxOf('r1')).toEqual([])
   expect(watchJson().errors).toBe(1)
@@ -613,4 +746,50 @@ test('a missing gh or glab binary counts an error, routes nothing and re-parks n
   expect(inboxOf('r1')).toEqual([])
   expect(inboxOf('r2')).toEqual([])
   expect(watchJson().errors).toBe(2)
+})
+
+const OFF_HOST = 'https://gitlab.invalid/acme/widget/-/merge_requests/1'
+const glabCalls = () => join(dir, 'glab-calls.log')
+/** makes the fake glab log each call, one line an invocation */
+function logGlab() {
+  const real = readFileSync(join(bin, 'glab'), 'utf8').split('\n')
+  writeFileSync(join(bin, 'glab'), [real[0], `echo "$*" >> ${glabCalls()}`, ...real.slice(1)].join('\n'))
+}
+
+test('a park that names only a merge request on another host runs glab 0 times and counts no error (pw6t)', () => {
+  reset()
+  routeRun('r1', { url: OFF_HOST })
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [])
+  logGlab()
+  const out = factory(['watch'])
+  expect(existsSync(glabCalls())).toBe(false)
+  expect(out.err).toContain('gitlab.invalid')
+  expect(out.err).not.toContain(OFF_HOST)
+  expect(inboxOf('r1')).toEqual([])
+  expect(watchJson().errors).toBe(0)
+})
+
+test('an off-host merge request URL that new URL rejects does not stop the run (pw6t.3)', () => {
+  reset()
+  routeRun('r1', { url: `https://1.2.3.999/acme/widget/-/merge_requests/1 and ${MR_URL}` })
+  fakeGlab(mrBody(), [])
+  logGlab()
+  const out = factory(['watch'])
+  expect(readFileSync(glabCalls(), 'utf8')).toContain('gitlab.example.com')
+  expect(out.err).toContain('1.2.3.999')
+})
+
+test('an off-host merge request is skipped and the on-host one still routes (pw6t)', () => {
+  reset()
+  routeRun('r1', { url: `${OFF_HOST} and ${MR_URL}` })
+  fakeGlab(mrBody(), [])
+  logGlab()
+  factory(['watch'])
+  fakeGlab(mrBody({ sha: 'bbb2222' }), [mrNote('/changes use the helper', 'zach')])
+  logGlab()
+  factory(['watch'])
+  expect(readFileSync(glabCalls(), 'utf8')).not.toContain('gitlab.invalid')
+  expect(readFileSync(glabCalls(), 'utf8')).toContain('gitlab.example.com')
+  expect(watchJson().errors).toBe(0)
+  expect(inboxOf('r1')[0]).toMatchObject({ type: 'ROUTE', outcome: 'changes' })
 })

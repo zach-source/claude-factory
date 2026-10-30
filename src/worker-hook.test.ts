@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  APPROVE_REASON,
   baseWord,
   baseWordForTest,
   dynamicHeadDenyForTest,
@@ -25,6 +26,7 @@ import {
   HEREDOC_REASON,
   LIVE_REASON,
   LONG_COMMAND_REASON,
+  MERGE_FORM_REASON,
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
@@ -692,10 +694,10 @@ test.each(BEADS_ACTOR_SPLIT_STRING_DENY)('denyReason denies %s (claude-factory-i
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 //
 // The limit is FIND_MS, not 500 ms: the linear scan takes about 280 ms on a laptop and 280 to 560 ms
-// on a shared CI runner, so 500 ms failed CI at random. The O(n^2) scan above takes about 11 s, so
-// 2000 ms still fails it by more than 5x.
+// on a shared CI runner (the env row took 1736 to 2167 ms there, so 2000 ms failed CI at random). The
+// O(n^2) scan above takes about 11 s, so 6000 ms still fails it.
 const FIND_N = 200000
-const FIND_MS = 2000
+const FIND_MS = 6000
 
 test(
   'scanReason denies a 200000-word find -exec scan, fast, no personOnly (claude-factory-lbn)',
@@ -997,7 +999,8 @@ test('denyReason denies a merge command behind a stack of eval words, fast', () 
 
 // claude-factory-zl5.2: only the release station marks a pull request ready for review. implement,
 // review, verify and no station at all (undefined) all deny it the same way.
-const NON_RELEASE_STATIONS = [undefined, 'implement', 'review', 'verify']
+// claude-factory-usp5: review, security and check approve, so they may mark ready; these may not
+const NON_RELEASE_STATIONS = [undefined, 'implement', 'plan', 'verify', 'quick']
 const READY_COMMANDS = [
   'gh pr ready 5',
   'gh pr ready',
@@ -1014,9 +1017,11 @@ for (const station of NON_RELEASE_STATIONS) {
   })
 }
 
-test.each(READY_COMMANDS)('denyReason allows %j at the release station', cmd => {
-  expect(denyReason(cmd, undefined, undefined, { station: 'release' })).toBeUndefined()
-})
+for (const station of ['release', 'review', 'security', 'check']) {
+  test.each(READY_COMMANDS)(`denyReason allows %j at station ${station} (claude-factory-usp5)`, cmd => {
+    expect(denyReason(cmd, undefined, undefined, { station })).toBeUndefined()
+  })
+}
 
 // claude-factory-zl5.2: gh pr ready --undo (back to draft) is always allowed, at every station.
 const UNDO_COMMANDS = ['gh pr ready --undo', 'gh pr ready 5 --undo', 'gh pr ready --undo 5']
@@ -3404,6 +3409,7 @@ const DENY_ENV_SPLIT_STRING: Array<[string, string]> = [
   ["env - -S 'git push origin main'", 'PUSH_DIR_REASON'],
 ]
 const ENV_SPLIT_STRING_REASON: Record<string, string> = {
+  MERGE_FORM_REASON,
   MERGE_REASON,
   READY_REASON,
   PUSH_DIR_REASON,
@@ -8342,8 +8348,16 @@ test.each(SNAP_DENY_ALIAS)('denyReason denies the shell-snapshot alias row %j (c
   expect(denyReason(cmd, '/w', undefined, SNAP_GATE)).toBe(SHELL_ALIAS_REASON)
 })
 
-const SLASH_ALIASES = new Map<string, string | null>([...SNAP_ALIASES, ['gc', 'git commit']])
-test.each(['bin/factory gc --dry-run', 'FACTORY_HOME=/t /abs/bin/factory gc', 'A+=1 /abs/bin/factory gc'])(
+const SLASH_ALIASES = new Map<string, string | null>([
+  ...SNAP_ALIASES,
+  ['gc', 'git commit'],
+  ['status', 'git commit'],
+])
+test.each([
+  'bin/factory status --dry-run',
+  'FACTORY_HOME=/t /abs/bin/factory status',
+  'A+=1 /abs/bin/factory status',
+])(
   'denyReason allows %j: an alias word after a path command word does not expand (claude-factory-1zr5)',
   cmd => {
     expect(
@@ -8953,14 +8967,14 @@ test.each([
   'é=x ls',
   'A[k]=x ls',
   'time A[k]=x ls',
-  'B[1]=2 /abs/bin/factory gc',
-  'C[k]+=3 /abs/bin/factory gc',
+  'B[1]=2 /abs/bin/factory status',
+  'C[k]+=3 /abs/bin/factory status',
   'B[1]=/x gp origin main',
   'C[k]+=/x gp origin main',
   'A[a]b]=/x gp origin main',
-  'time -p é=1 /abs/bin/factory gc',
-  '/usr/bin/time A+=1 /abs/bin/factory gc',
-  'tim""e A+=1 /abs/bin/factory gc',
+  'time -p é=1 /abs/bin/factory status',
+  '/usr/bin/time A+=1 /abs/bin/factory status',
+  'tim""e A+=1 /abs/bin/factory status',
 ])('denyReason denies %j (claude-factory-mmc9.14, ambiguous assignment prefix)', cmd => {
   expect(denyReason(cmd)).toBe(ASSIGNMENT_PREFIX_REASON)
 })
@@ -9297,6 +9311,95 @@ test.each([
   'git commit -m "a$(date)b"',
   'echo "a"$(date) "b"',
 ])('claude-factory-j1ki.12-15: %s stays allowed', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
+})
+// claude-factory-y094: an empty glued expansion joins the command word.
+test.each([
+  'g${X}it${IFS}push${IFS}origin${IFS}main',
+  'g${XIFS}it${IFS}push${IFS}origin${IFS}main',
+  'g$XIFS"it"$IFS"push"$IFS"origin"$IFS"main"',
+  'g${IFS:+}it${IFS}push${IFS}origin${IFS}main',
+  'g${IFS:0:0}it${IFS}push${IFS}origin${IFS}main',
+  'g$1it${IFS}push${IFS}origin${IFS}main',
+  'g$@it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-}it${IFS}push${IFS}origin${IFS}main',
+  'g${X#a}it${IFS}push${IFS}origin${IFS}main',
+  'sudo g${X}it${IFS}push${IFS}origin${IFS}main',
+  'true && g${X}it${IFS}push${IFS}origin${IFS}main',
+  'g${X}it${IFS}push${IFS}origin${IFS}HEAD:main',
+  'gi${X}t${IFS}pu${X}sh${IFS}origin${IFS}main',
+  'g$X"it"$IFS"push"$IFS"origin"$IFS"main"',
+  'g${X}it${IFS:0:1}push${IFS:0:1}--force${IFS:0:1}origin${IFS:0:1}main',
+  'g${X:-it}${IFS}push${IFS}origin${IFS}main',
+  'g${X=it}${IFS}push${IFS}origin${IFS}main',
+  'g${X:=it}${IFS}push${IFS}origin${IFS}main',
+  '${X:-git}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+it}${IFS}push${IFS}origin${IFS}main',
+  'g${X:-${Y:-i}}t${IFS}push${IFS}origin${IFS}main',
+  'g${X:-it${IFS}push}${IFS}origin${IFS}main',
+  'g${X:+zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X+zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X-zz}it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-${Y:+zz}}it${IFS}push${IFS}origin${IFS}main',
+  'g' + '${X:+${IFS:0:1}}'.repeat(50) + 'it${IFS}push${IFS}origin${IFS}main',
+  'g${X:-"i"}t${IFS}push${IFS}origin${IFS}main',
+  "g${X:-'i'}t${IFS}push${IFS}origin${IFS}main",
+  'g${X:-\\i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+"i"}t${IFS}push${IFS}origin${IFS}main',
+  'g${X:+z}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+  'g${X:+a}${X:+b}${X:+c}${HOME:+i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}${HOME:+t}${X:+z}${X:+z}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i}t${X:+a}${X:+b}${X:+c}${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+${Y:+zz}i}t${IFS}push${IFS}origin${IFS}main',
+  'g${HOME:+i${Y:+zz}}t${IFS}push${IFS}origin${IFS}main',
+  'gi${HOME:+t${Y:+zz}}${IFS}push${IFS}origin${IFS}main',
+  'g${IFS:0:0}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+])('claude-factory-y094: %s denies with DYNAMIC_VERB_REASON', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+})
+// y094.6: an IFS span with a modifier glued after an emptied head word still denies (any reason).
+test.each([
+  'g${X}it${IFS:0:1}push${IFS:0:1}origin${IFS:0:1}main',
+  'g${X}it${IFS:1:1}push${IFS:1:1}origin${IFS:1:1}main',
+  'g${X}it${IFS:1}push${IFS:1}origin${IFS:1}main',
+  'g${X}it${IFS::1}push${IFS::1}origin${IFS::1}main',
+  'g${X}it${IFS:-}push${IFS:-}origin${IFS:-}main',
+  'g${X}it${IFS-}push${IFS-}origin${IFS-}main',
+  'g${X}it${IFS}push${IFS:0:1}origin${IFS:+}main',
+])('claude-factory-y094.6: %s denies', cmd => {
+  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeDefined()
+})
+test.each(['r${X}m -rf /', 'r${X}m${IFS}-rf${IFS}/', 'r$(:)m -r ./d'])(
+  'claude-factory-y094: %s denies with REASON',
+  cmd => {
+    expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(REASON)
+  },
+)
+test('claude-factory-y094: g${X}h${IFS}pr${IFS}merge${IFS}1 denies like gh pr merge', () => {
+  expect(denyReason('g${X}h${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(
+    DYNAMIC_VERB_REASON,
+  )
+  expect(denyReason('g${HOME:+h}${IFS}pr${IFS}merge${IFS}1', '/root/repo', undefined, J1KI_GATE)).toBe(
+    DYNAMIC_VERB_REASON,
+  )
+})
+test.each([
+  'g${X}it${IFS}status',
+  'echo a${X}b',
+  'ls build/a${X}b',
+  '$HOME/.local/bin/claude plugin test mod',
+  'git -C "$WT"/sub status',
+  'ls$IFS-la',
+  'ls ${X:-.}',
+  'echo a${X:-b}c',
+  'echo a${X:+b}c',
+  'ls${IFS:0:1}-la',
+  'echo ${X:-${Y:-a}}',
+  'echo ${A:-a}${B:-b}${C:-c}${D:-d}${E:-e}',
+  'echo "${IFS:0:1}"',
+  'git commit -m "g${X}it${IFS}push"',
+])('claude-factory-y094: %s stays allowed', cmd => {
   expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBeUndefined()
 })
 const J1KI_ALLOW_ROWS = [
@@ -10592,3 +10695,238 @@ test.each(['{ echo x; }', 'echo {a,b}>f', 'echo {a,b}> f', 'echo hi {fd}>f', '{f
     expect(denyReason(cmd, '/Users/acme/widget')).toBeUndefined()
   },
 )
+
+// claude-factory-l3tl: a rig can give the ship release station one strict `gh pr merge` form.
+const SHA = 'a'.repeat(40)
+const MERGE_GATE: HookGate = {
+  mergeAuthority: 'acme/widget',
+  factory: 'ship',
+  station: 'release',
+  ghAliases: () => new Map([['mm', 'pr merge']]),
+}
+const merge = (cmd: string, gate: HookGate = MERGE_GATE) => denyReason(cmd, '/root/repo', undefined, gate)
+
+test.each([
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr merge --match-head-commit ${SHA} --merge 12 -R acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit=${SHA} -R acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --repo=acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --repo acme/widget`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R ACME/Widget`,
+  `env FOO=1 gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  // claude-factory-usp5: --auto enqueues on a merge-queue repo
+  `gh pr merge 12 --merge --auto --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr merge 12 --auto --merge --match-head-commit ${SHA} -R acme/widget`,
+])('ship release with merge authority allows %j', cmd => {
+  expect(merge(cmd)).toBeUndefined()
+})
+
+test.each([
+  `gh pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R zach-source/claude-factory`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --repo=acme/other`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget2`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widge`,
+  `GH_REPO=acme/other gh pr merge 12 --merge --match-head-commit ${SHA}`,
+  `cd /root/other && gh pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge`,
+  `gh pr merge 12 --merge --squash --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --rebase --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --admin --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --auto --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --auto --auto --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr merge 12 --auto --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr merge 12 --merge --disable-auto --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge -d --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --delete-branch --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --body x --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge -b x --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --subject x --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge -t x --match-head-commit ${SHA}`,
+  `gh pr merge 12 -m --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit abc123`,
+  `gh pr merge 12 --merge --match-head-commit ${'A'.repeat(40)}`,
+  'gh pr merge 12 --merge --match-head-commit $SHA',
+  'gh pr merge 12 --merge --match-head-commit `git rev-parse HEAD`',
+  `gh pr merge 12 --merge --match-head-commit ${'a'.repeat(39)}*`,
+  `gh pr merge 12 13 --merge --match-head-commit ${SHA}`,
+  `gh pr merge https://github.com/acme/widget/pull/12 --merge --match-head-commit ${SHA}`,
+  `gh pr merge my-branch --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} >f`,
+  `gh pr merge 12 --merge --merge --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} --match-head-commit ${SHA}`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget --repo=acme/other`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R $REPO`,
+  `gh pr merge 12 --merge --match-head-commit ${SHA} -R widget`,
+  `gh -R acme/widget pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh --repo acme/widget pr merge 12 --merge --match-head-commit ${SHA}`,
+  `gh pr -R acme/widget merge 12 --merge --match-head-commit ${SHA}`,
+  `gh mm 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr '' merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh pr - merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+  `gh '' pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`,
+])('ship release with merge authority gives the form reason for %j', cmd => {
+  expect(merge(cmd)).toBe(MERGE_FORM_REASON)
+})
+
+test.each(['gh repo sync', 'gh api -X PUT repos/o/r/pulls/5/merge', 'gh api repos/o/r/merges -f base=main'])(
+  'ship release with merge authority still gives MERGE_REASON for %j',
+  cmd => {
+    expect(merge(cmd)).toBe(MERGE_REASON)
+  },
+)
+
+test.each([
+  { ...MERGE_GATE, mergeAuthority: undefined },
+  { ...MERGE_GATE, mergeAuthority: true as unknown as string },
+  { ...MERGE_GATE, mergeAuthority: '' },
+  { ...MERGE_GATE, mergeAuthority: 'widget' },
+  { ...MERGE_GATE, mergeAuthority: 'acme/widget extra' },
+  { ...MERGE_GATE, factory: 'lifecycle' },
+  { ...MERGE_GATE, factory: undefined },
+  { ...MERGE_GATE, factory: '' },
+  { ...MERGE_GATE, factory: 'ship ' },
+  { ...MERGE_GATE, factory: 'Ship' },
+  { ...MERGE_GATE, station: 'deploy' },
+  { ...MERGE_GATE, station: 'implement' },
+  { ...MERGE_GATE, station: undefined },
+  { ...MERGE_GATE, station: 'release ' },
+])('the pass form gives MERGE_REASON at gate %j', gate => {
+  expect(merge(`gh pr merge 12 --merge --match-head-commit ${SHA} -R acme/widget`, gate)).toBe(MERGE_REASON)
+})
+
+// claude-factory-0gww.3: only a reviewer-gated station (review, security, check, with
+// FACTORY_GH_REVIEWER=1) may submit an approving GitHub review. Everywhere else the hook allows
+// a gh call that can create a review only when it proves from literal words that it is no approval.
+const APPROVE_DENY = [
+  'gh pr review 5 --approve',
+  'gh pr review 5 -a',
+  'gh pr review -a 5 -b ok',
+  'gh pr review 5 --approve=true',
+  'gh pr review 5 -ac',
+  'gh pr review 5 -c -a',
+  'gh pr review 5 -c --approve=true',
+  'gh pr review 5 -c -ac',
+  'gh pr review 5 -c $FLAG',
+  'gh --bogus pr review 5 --approve',
+  'gh pr review 5',
+  'gh pr review 5 -b ok',
+  'gh pr review 5 --comment --approve',
+  'gh pr review 5 $FLAG',
+  'gh -R o/r pr review 5 --approve',
+  'gh pr --repo o/r review 5 --approve',
+  'gh pr --bogus review 5 --approve',
+  "bash -lc 'gh pr review 5 --approve'",
+  'sudo gh pr review 5 --approve',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -fevent=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -F event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews --raw-field=event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews -f event=comment',
+  'gh api repos/o/r/pulls/5/reviews -f event=COMMENT -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews/9/events -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews/9/events -X POST',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=$E',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=@ev.txt',
+  'gh api -X POST repos/o/r/pulls%2F5/reviews -f event=APPROVE',
+  'gh api -X POST repos/o/r/pulls/5/reviews/ -f event=APPROVE',
+  'gh api -X POST repos/o/r/pulls/5/reviews#x -f event=APPROVE',
+  'gh api -X POST https://api.github.com/repos/o/r/pulls/5/reviews -f event=APPROVE',
+  'gh api repos/o/r/pulls/5/reviews --input approve.json',
+  'gh api repos/o/r/pulls/5/reviews --input missing.json',
+  'gh api repos/o/r/pulls/5/reviews --input notjson.json',
+  'gh api graphql -f query=\'mutation { addPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }\'',
+  'gh api graphql -f query=\'mutation { submitPullRequestReview(input: {pullRequestId: "x", event: APPROVE}) { clientMutationId } }\'',
+  'gh api graphql -f query=@q.graphql',
+]
+const APPROVE_ALLOW = [
+  'gh pr review 5 --comment --body-file f',
+  'gh pr review 5 -c -b ok',
+  'gh pr review 5 --request-changes -b x',
+  'gh pr review 5 -r -b x',
+  'gh pr review 5 -c -b "$MSG"',
+  'gh pr view 5',
+  'gh api repos/o/r/pulls/5/reviews',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=COMMENT -F body=@f',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f event=REQUEST_CHANGES -f body=x',
+  'gh api -X POST repos/o/r/pulls/5/reviews -f body=x',
+  'gh api repos/o/r/pulls/5/reviews --input review.json',
+  'gh api repos/o/r/pulls/5/comments -f body=x',
+  'gh api repos/o/r/pulls/5/reviews/9/events -f event=COMMENT',
+]
+const APPROVE_FILES: Record<string, string> = {
+  'approve.json': '{"event":"APPROVE","body":"x"}',
+  'review.json': '{"event":"COMMENT","body":"x"}',
+  'notjson.json': 'event=APPROVE',
+  'q.graphql': 'mutation { addPullRequestReview(input: {}) { clientMutationId } }',
+}
+const approveGate = (g: HookGate = {}): HookGate => ({ readFile: p => APPROVE_FILES[p], ...g })
+
+for (const g of [
+  {},
+  { station: 'implement' },
+  { station: 'review' },
+  { station: 'release' },
+  { station: 'plan', reviewer: false },
+]) {
+  test.each(APPROVE_DENY)(
+    `denyReason denies %j for gate ${JSON.stringify(g)} (claude-factory-0gww.3)`,
+    cmd => {
+      expect(denyReason(cmd, undefined, undefined, approveGate(g))).toBe(APPROVE_REASON)
+    },
+  )
+  test.each(APPROVE_ALLOW)(
+    `denyReason allows %j for gate ${JSON.stringify(g)} (claude-factory-0gww.3)`,
+    cmd => {
+      expect(denyReason(cmd, undefined, undefined, approveGate(g))).toBeUndefined()
+    },
+  )
+}
+
+test.each(APPROVE_DENY.filter(c => !c.includes('$') && !c.includes('%2F')))(
+  'denyReason allows %j inside the reviewer gate (claude-factory-0gww.3)',
+  cmd => {
+    const r = denyReason(cmd, undefined, undefined, approveGate({ station: 'review', reviewer: true }))
+    // a malformed or unreadable form may still deny, with another reason, but never with APPROVE_REASON
+    expect(r).not.toBe(APPROVE_REASON)
+  },
+)
+
+test('an existing gh alias that expands to pr review --approve is denied outside the reviewer gate (claude-factory-0gww.3)', () => {
+  const gate = approveGate({ ghAliases: () => new Map([['ap', 'pr review --approve']]) })
+  expect(denyReason('gh ap 5', undefined, undefined, gate)).toBe(APPROVE_REASON)
+  expect(denyReason('gh ap 5', undefined, undefined, { ...gate, reviewer: true })).toBeUndefined()
+})
+
+test('run as `bun src/worker-hook.ts`, an approve call is allowed only with FACTORY_GH_REVIEWER=1 at a reviewer station (claude-factory-0gww.3)', async () => {
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'gh pr review 5 --approve' } })
+  const env: Record<string, string | undefined> = { ...process.env }
+  delete env.FACTORY_GH_REVIEWER
+  const denied = {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: APPROVE_REASON,
+    },
+  }
+  for (const e of [
+    { FACTORY_FROM: 'review' },
+    { FACTORY_FROM: 'review', FACTORY_GH_REVIEWER: '0' },
+    { FACTORY_FROM: 'review', FACTORY_GH_REVIEWER: 'true' },
+    { FACTORY_FROM: 'implement', FACTORY_GH_REVIEWER: '1' },
+    { FACTORY_FROM: 'release', FACTORY_GH_REVIEWER: '1' },
+    { FACTORY_FROM: 'Review', FACTORY_GH_REVIEWER: '1' },
+  ]) {
+    const r = await run(input, { ...env, ...e })
+    expect(JSON.parse(r.out.trim())).toEqual(denied)
+  }
+  for (const from of ['review', 'security', 'check']) {
+    expect(await run(input, { ...env, FACTORY_FROM: from, FACTORY_GH_REVIEWER: '1' })).toEqual({
+      out: '',
+      code: 0,
+    })
+  }
+}, 20_000)

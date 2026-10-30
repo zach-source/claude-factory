@@ -20,7 +20,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const run = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', ...env },
   })
@@ -81,6 +81,11 @@ for (const [label, tiersEnv] of [
 
     // A1: nothing left to commit right after dream()
     expect(gitMemory('status', '--porcelain')).toBe('')
+
+    // FR-024 (claude-factory-3u1.4.2): each dream logs its lifecycle metrics, tiers on or off
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).toMatch(
+      /^metrics: notes 1 \(topic 1\) {2}archived 0 {2}retired 0 {2}kind 0% {2}cites-without-until 0%$/m,
+    )
 
     // A3: the gitignore tracks .usage.jsonl and .renames.jsonl; only .index.json* and the compact
     // temp file stay ignored
@@ -190,4 +195,49 @@ test('a home with the old gitignore starts tracking .usage.jsonl on its next dre
   expect(gitMemory('ls-files', '.usage.jsonl')).toBe('.usage.jsonl')
   expect(readFileSync(join(home, 'memory', '.gitignore'), 'utf8')).toBe('.index.json*\n.usage.jsonl.tmp\n')
   expect(gitMemory('status', '--porcelain')).toBe('')
+}, 30_000)
+
+// claude-factory-hr94: the dream's own transcript is counted under the name dream
+test('factory dream stores its session usage in manager-usage.jsonl as a dream row', () => {
+  seedInbox()
+  const claudeHome = join(dir, 'claude')
+  const projectDir = join(claudeHome, 'projects', join(home, 'memory').replace(/[^a-zA-Z0-9]/g, '-'))
+  mkdirSync(projectDir, { recursive: true })
+  const line = JSON.stringify({
+    type: 'assistant',
+    message: {
+      id: 'm1',
+      model: 'claude-opus-4-7',
+      usage: {
+        input_tokens: 5,
+        cache_creation_input_tokens: 6,
+        cache_read_input_tokens: 70,
+        output_tokens: 8,
+      },
+    },
+  })
+  const file = join(dir, 'fake-claude-usage.sh')
+  writeFileSync(
+    file,
+    `#!/bin/sh\nset -e\nmkdir -p topic\ngit mv inbox/x.md topic/x.md\necho '${line}' > ${join(projectDir, 'd1.jsonl')}\necho filed\n`,
+  )
+  chmodSync(file, 0o755)
+  expect(run(['dream'], { FACTORY_CLAUDE: file, CLAUDE_CONFIG_DIR: claudeHome }).code).toBe(0)
+  const rows = readFileSync(join(home, 'manager-usage.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(rows).toEqual([
+    {
+      name: 'dream',
+      at: expect.any(Number),
+      model: 'claude-opus-4-7',
+      input: 5,
+      cacheWrite: 6,
+      cacheRead: 70,
+      output: 8,
+      turns: 1,
+      peak: 81,
+    },
+  ])
 }, 30_000)

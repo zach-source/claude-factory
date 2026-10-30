@@ -19,8 +19,16 @@ export type Note = {
 export type WatchedPr = {
   url: string
   state: string
+  /** GitHub: the pull request is a draft */
+  isDraft?: boolean
+  /** GitHub: APPROVED, REVIEW_REQUIRED, CHANGES_REQUESTED or empty */
+  reviewDecision?: string
   updatedAt: string
   headRefOid?: string
+  /** GitHub's merge check: MERGEABLE, CONFLICTING or UNKNOWN (not computed yet) */
+  mergeable?: string
+  headRefName?: string
+  baseRefName?: string
   mergedAt?: string
   closedAt?: string
   notes?: Note[]
@@ -31,6 +39,9 @@ export type WatchedPr = {
 /** what `watchPass` keeps between passes for one park (key: run id and the park's time) */
 export type Seen = {
   heads: Record<string, string>
+  /** isDraft and reviewDecision at the baseline, by URL */
+  drafts?: Record<string, boolean>
+  decisions?: Record<string, string>
   /** GitLab: the merge request asked for changes at the baseline */
   changes?: Record<string, boolean>
   routed?: boolean
@@ -49,6 +60,8 @@ export const REPARK_LEAD_MIN = 10
 export const BODY_CLIP = 2000
 
 const BOT_LOGIN = /\[bot\]$|^github-actions$|^(?:project|group)_\d+_bot/i
+/** REST cannot say REVIEW_REQUIRED (GraphQL did), so a baseline of REVIEW_REQUIRED equals none */
+const noRequired = (d: string) => (d === 'REVIEW_REQUIRED' ? '' : d)
 const MEMBER = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 
 /** whether a GitHub author is a person who may steer a run. A bot has a plain login (`github-actions`)
@@ -56,7 +69,7 @@ const MEMBER = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 export const isPerson = (login: string | undefined, association: string | undefined, isBot = false) =>
   !!login && !isBot && !BOT_LOGIN.test(login) && MEMBER.has(association ?? '')
 
-/** the notes in a `gh pr view --json reviews,comments` answer; a malformed entry is skipped */
+/** the notes in a `reviews` and `comments` answer in the GraphQL shape (`restNotes` maps REST onto it); a malformed entry is skipped */
 export function ghNotes(json: { reviews?: unknown; comments?: unknown }): Note[] {
   type Raw = {
     author?: { login?: string; is_bot?: boolean }
@@ -112,6 +125,22 @@ export type DecideInput = {
   /** the station has these outcomes */
   canHold: boolean
   canChange: boolean
+  /** mail waits in the station's box (a holdMail station): a repark would hide it, so the timer ends the park */
+  held?: boolean
+  /** the run's own branch (factory/<run id>): only a pull request on it gets the conflict wake */
+  branch?: string
+  /** the texts the station's mail box already holds from the factory */
+  mailed?: string[]
+}
+
+/** the mail for a pull request that conflicts with its base: GitHub builds no CI ref for it */
+export function conflictText(p: WatchedPr) {
+  const base = /^[A-Za-z0-9._/-]+$/.test(p.baseRefName ?? '') ? p.baseRefName! : ''
+  return (
+    `[factory] ${p.url} is CONFLICTING with ${base || 'its base branch'} at head ${(p.headRefOid ?? '').slice(0, 7)}, ` +
+    `so GitHub builds no pull merge ref and no CI can start. ` +
+    `${base ? `Merge origin/${base}` : 'Merge its base branch'}, resolve, push.`
+  )
 }
 
 const clip = (s: string) => (s.length > BODY_CLIP ? s.slice(0, BODY_CLIP) : s)
@@ -163,8 +192,30 @@ export function watchDecide(i: DecideInput): Decision | null {
     const was = i.seen?.heads[p.url]
     if (p.headRefOid && was && p.headRefOid !== was)
       return wake(p, `it has a new head commit ${p.headRefOid.slice(0, 7)} (was ${was.slice(0, 7)})`)
+    const wasDraft = i.seen?.drafts?.[p.url]
+    if (p.isDraft !== undefined && wasDraft !== undefined && p.isDraft !== wasDraft)
+      return wake(p, p.isDraft ? 'it is a draft again' : 'it is ready for review')
+    const wasDecision = i.seen?.decisions?.[p.url]
+    if (
+      p.reviewDecision !== undefined &&
+      wasDecision !== undefined &&
+      noRequired(p.reviewDecision) !== noRequired(wasDecision)
+    )
+      return wake(
+        p,
+        `its review decision is now ${p.reviewDecision || 'none'} (was ${wasDecision || 'none'})`,
+      )
     const note = (p.notes ?? []).find(n => n.person && after(n))
     if (note) return wake(p, `a person reviewed or commented on it at ${new Date(note.at).toISOString()}`)
+  }
+  // an open pull request on the run's own branch that conflicts: no CI can start, so waiting is pointless
+  for (const p of prs) {
+    if (p.state !== 'OPEN' || p.mergeable !== 'CONFLICTING' || !p.headRefOid) continue
+    if (!i.branch || !p.headRefName) continue
+    if (p.headRefName !== i.branch && !p.headRefName.startsWith(`${i.branch}-`)) continue
+    const text = conflictText(p)
+    if (i.mailed?.includes(text)) continue
+    return { kind: 'wake', text, url: p.url, state: p.state }
   }
   if (!prs.some(p => p.state === 'OPEN') && (i.isPreLaunch || i.now - parkedAt >= i.plainMin * 60_000))
     return {
@@ -174,6 +225,7 @@ export function watchDecide(i: DecideInput): Decision | null {
   // nothing changed and every pull request is open: near the timer, park again instead of a worker
   if (
     !i.failed &&
+    !i.held &&
     prs.every(p => p.state === 'OPEN') &&
     i.now >= i.wakeAt - REPARK_LEAD_MIN * 60_000 &&
     !(i.seen?.reparkedUntil && i.now < i.seen.reparkedUntil - REPARK_LEAD_MIN * 60_000)

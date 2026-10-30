@@ -16,7 +16,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const run = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, PATH, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, PATH, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, PATH: `${bin}:${PATH}`, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', ...env },
     timeout: 30_000,
@@ -61,16 +61,21 @@ function fakeBd() {
   chmodSync(join(bin, 'bd'), 0o755)
 }
 
-/** A fake `gh` on PATH. `pr view <url> --json state` answers GH_STATE: a PrState prints as JSON;
+/** A fake `gh` on PATH. `api repos/<slug>/pulls/N` answers GH_STATE (OPEN, MERGED or CLOSED) as a REST pull;
  * "FAIL" exits 1 with no stdout, like a down or rate-limited gh. */
 function fakeGh() {
   mkdirSync(bin, { recursive: true })
   const script = [
     '#!/bin/sh',
-    'case "$1 $2" in',
-    '"pr view")',
-    '  if [ "$GH_STATE" = "FAIL" ]; then exit 1; fi',
-    '  printf \'%s\' \'{"state":"\'"$GH_STATE"\'"}\'; exit 0;;',
+    'case "$1" in',
+    '"api")',
+    '  case "$2" in repos/acme/widget/pulls/*) ;; *) exit 1;; esac',
+    '  case "$GH_STATE" in',
+    '    FAIL) exit 1;;',
+    '    OPEN) printf \'%s\' \'{"state":"open"}\';;',
+    '    MERGED) printf \'%s\' \'{"state":"closed","merged_at":"2026-10-12T10:00:00Z"}\';;',
+    '    CLOSED) printf \'%s\' \'{"state":"closed"}\';;',
+    '  esac; exit 0;;',
     'esac',
   ].join('\n')
   writeFileSync(join(bin, 'gh'), script)

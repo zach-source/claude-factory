@@ -1,50 +1,23 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# claude-factory Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Worker Parity (NON-NEGOTIABLE)
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+All workers must receive the same skills, rules and MCP servers. This applies to every agent backend (claude, codex, pi) and to every runner (the laptop pane, the AX VM).
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
-
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
-
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
-
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
-
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
-
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
-
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+- A skill or a set of rules that a worker gets must reach all backends and runners through one source. Today that source is `src/worker-system.md`. Claude reads it as its system prompt. Codex reads it as `AGENTS.md`.
+- Do not give a skill to a worker through a path that only one backend or runner has. An example is a Claude plugin that only the laptop has. If a plugin is necessary, put it into the worker image. Then give it to all backends.
+- An MCP server that a rig sets (`rig add --mcp`) must reach every worker of that rig. If a runner or backend cannot load the server, the factory must refuse the setting. It must not run the worker without the server. (`rig add` refuses `--mcp` for a remote runner for this reason.)
+- A change can add a skill, rules or an MCP server to one backend or runner. Then it must add it to all of them in the same change. If it cannot, it must file a bead for each gap. The PR must name each gap.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution has priority over other practices in this repo. Each PR and review must make sure that the change obeys it. To change the constitution, open a PR that gives the reason and updates the version.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+Known gaps on 2026-10-27 (after claude-factory-fxu, claude-factory-qo6i, claude-factory-hg9o and claude-factory-qda):
+
+- The `asd-ste100` hooks (the session brief and the score check) run only for Claude workers. Codex and pi workers get its skill and the STE rule in its brief, but not its hooks.
+- A VM worker gets the image's plugins for its station's skills. A laptop worker gets a plugin only when the person has it on. A skill name must be in the image (`VM_PLUGINS`), so a skill is on every backend or refused.
+
+**Version**: 1.0.2 | **Ratified**: 2026-10-26 | **Last Amended**: 2026-10-27

@@ -23,6 +23,7 @@ import {
   briefContext,
   byState,
   blockers,
+  byRunner,
   clockOf,
   counts,
   dur,
@@ -105,6 +106,7 @@ const TABS: [FactoryView, string, string][] = [
   ['rigs', 'Rigs', '4'],
   ['prs', 'PRs', '5'],
   ['interview', 'Interview', '6'],
+  ['runners', 'Runners', '7'],
 ]
 
 /** a column that keeps its width: ids, badges and times never shrink, so free text beside them truncates instead */
@@ -1010,7 +1012,10 @@ export function interviewView(
 ) {
   const { Box, Text, Button, Input } = p.ui
   const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
-  const open = openInterviews(board.runs, decisions.rigs, decisions.proposals, answered)
+  const all = openInterviews(board.runs, decisions.rigs, decisions.proposals, answered)
+  // owner-only steps lead, in one group; every row keeps its own answer path
+  const open = [...all.filter(i => i.step), ...all.filter(i => !i.step)]
+  const nSteps = all.filter(i => i.step).length
   const done = [...(draft.interviewed ?? [])].reverse()
   const isOpenDetails = (key: string) => draft.interviewOpen?.includes(key) ?? false
   const tab = draft.interviewTab ?? 'open'
@@ -1049,6 +1054,11 @@ export function interviewView(
           const run = iv.run ? board.runs.find(r => r.id === iv.run) : undefined
           return (
             <Box key={iv.key} flexDirection="column" marginBottom={1}>
+              {i === 0 && nSteps > 0 && (
+                <Text key="iv-steps" bold>
+                  {`Owner steps (${nSteps})`}
+                </Text>
+              )}
               <Box gap={1}>
                 {cell(p, `iv-n-${iv.key}`, `${i + 1}.`, { dimColor: true })}
                 {iv.rig && cell(p, `iv-rig-${iv.key}`, iv.rig, { color: 'magenta' })}
@@ -1076,6 +1086,11 @@ export function interviewView(
                   <Text color="yellow" bold wrap="wrap">
                     ? {iv.title}
                   </Text>
+                  {iv.step && (
+                    <Text key={`iv-step-${iv.key}`} wrap="wrap">
+                      {`$ ${iv.step}`}
+                    </Text>
+                  )}
                   {iv.context && (
                     <Text dimColor wrap="wrap">
                       {iv.context}
@@ -1262,9 +1277,42 @@ export function prsView(p: Base, runs: FactoryPrs, board: FactoryBoard) {
   )
 }
 
+/** where the workers run: for each runner its rigs, then its live runs with their station and pane */
+export function runnersView(p: Base, board: FactoryBoard) {
+  const { Box, Text } = p.ui
+  return (
+    <Box key="runners" flexDirection="column">
+      {byRunner(board.rigs ?? [], board.runs).map(g => (
+        <Box key={`runners-${g.name}`} flexDirection="column" marginBottom={1}>
+          {rule(p, g.name, `${g.rigs.length} rigs · ${g.busy} busy · ${g.runs.length} live`)}
+          <Text dimColor wrap="wrap">
+            {g.rigs.length
+              ? g.rigs
+                  .map(
+                    r =>
+                      `${r.name}${r.sandboxClass ? ` (${r.sandboxClass})` : ''}${r.maxRuns === 0 ? ' (off)' : ''}`,
+                  )
+                  .join(' · ')
+              : 'no rigs'}
+          </Text>
+          {g.runs.map(r => (
+            <Box key={`runners-run-${r.id}`} gap={1}>
+              {cell(p, `runners-id-${r.id}`, r.id, { color: 'cyan' })}
+              {cell(p, `runners-rig-${r.id}`, r.rig ?? '-', { color: 'magenta' })}
+              {cell(p, `runners-node-${r.id}`, `${r.node}/${r.sub ?? ''}`)}
+              {cell(p, `runners-model-${r.id}`, r.model ?? '-', { color: 'green' })}
+              {rest(p, `runners-pane-${r.id}`, r.pane ?? '-', { dimColor: true })}
+            </Box>
+          ))}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 export function footer(p: Base) {
   const { Text } = p.ui
-  return <Text dimColor>1-6 views · tab between controls · enter presses · esc back to the prompt</Text>
+  return <Text dimColor>1-7 views · tab between controls · enter presses · esc back to the prompt</Text>
 }
 
 /** the band above the prompt while the console is closed: counts, and the first gate answerable in place */

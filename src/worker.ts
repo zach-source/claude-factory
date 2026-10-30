@@ -17,8 +17,19 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import {
+  beadsOnlyCodexDir,
+  CODEX_GUARD_FLAGS,
+  codexFeaturesBad,
+  codexSkills,
+  cutOffCall,
+  cutOffNote,
+  piFlags,
+  VM_PLUGINS,
+} from './harness'
 import { rmSafe } from './home-guard'
+import { sessionOf, type Usage } from './metrics'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -45,8 +56,42 @@ const alive = (pid: number) => {
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
-export function queue(argv: string[]) {
-  appendFileSync(outbox(), JSON.stringify({ argv, from: process.env.FACTORY_FROM, at: Date.now() }) + '\n')
+export function queue(argv: string[], usage?: Usage[]) {
+  appendFileSync(
+    outbox(),
+    JSON.stringify({
+      argv,
+      from: process.env.FACTORY_FROM,
+      at: Date.now(),
+      ...(usage?.length && { usage }),
+    }) + '\n',
+  )
+}
+
+/**
+ * what this VM's Claude session spent, with its subagents, for the report to carry. The laptop cannot
+ * read the VM's transcripts. A worker with no Claude transcript (codex, pi) gives none. Never throws.
+ */
+export function usageOfSession(run: string): Usage[] {
+  try {
+    const session = state()?.session
+    if (!session || !/^[A-Za-z0-9-]+$/.test(session)) return []
+    const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
+    const dir = readdirSync(projects)
+      .map(d => join(projects, d))
+      .find(d => existsSync(join(d, `${session}.jsonl`)))
+    if (!dir) return []
+    const read = (f: string) => readFileSync(f, 'utf8').split('\n')
+    const subDir = join(dir, session, 'subagents')
+    const subs = existsSync(subDir)
+      ? readdirSync(subDir)
+          .filter(g => g.endsWith('.jsonl'))
+          .map(g => read(join(subDir, g)))
+      : []
+    return sessionOf(read(join(dir, `${session}.jsonl`)), run, () => '?', session, subs)
+  } catch {
+    return []
+  }
 }
 
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
@@ -56,6 +101,7 @@ export const OUTBOX_USAGE = {
   mail: 'usage: factory mail <run> <node|manager> <text...>',
   memory:
     'usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]',
+  helped: 'usage: factory memory helped --from run/station <note path...>',
 }
 
 /**
@@ -82,6 +128,11 @@ export function outboxUsage(cmd: string, args: string[]): 'help' | string | null
     if (helpAt([args[1]])) return 'help'
     if (!args[1]) return OUTBOX_USAGE.memory
     return null
+  }
+  if (cmd === 'memory' && args[0] === 'helped') {
+    if (args.slice(1).some(a => a === '--help' || a === '-h')) return 'help'
+    const paths = args.slice(1).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
+    return paths.length ? null : OUTBOX_USAGE.helped
   }
   return null
 }
@@ -156,7 +207,8 @@ export function bootstrapBeads(
       env: { ...env, BEADS_DOLT_SHARED_SERVER: '0', BD_NON_INTERACTIVE: '1' },
       stderr: 'pipe',
     })
-    if (p.exitCode !== 0) throw new Error(`beads in the VM: ${cmd.join(' ')}: ${p.stderr.toString().trim()}`)
+    if (p.exitCode !== 0)
+      throw new Error(`beads in the VM: ${cmd.join(' ')}: ${lastError(p.stderr.toString())}`)
   }
 }
 
@@ -251,7 +303,14 @@ const harness = (): Harness => (process.env.FACTORY_HARNESS as Harness | undefin
  */
 export function turnArgv(
   h: Harness,
-  o: { model?: string; provider?: string; session?: string; claudeFlags?: string[]; piDir?: string } = {},
+  o: {
+    model?: string
+    provider?: string
+    session?: string
+    claudeFlags?: string[]
+    piDir?: string
+    plugins?: string[]
+  } = {},
 ) {
   const model = (flag: string) => (o.model ? [flag, o.model] : [])
   switch (h) {
@@ -266,6 +325,8 @@ export function turnArgv(
     case 'codex':
       return [
         process.env.FACTORY_CODEX ?? 'codex',
+        // the deny hook on, the features that skip it off (codexHome checks they hold)
+        ...CODEX_GUARD_FLAGS,
         ...['exec', ...(o.session ? ['resume'] : [])],
         ...['--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
         ...model('-m'),
@@ -276,6 +337,8 @@ export function turnArgv(
       return [
         process.env.FACTORY_PI ?? 'pi',
         ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
+        // the worker rules and the image's skills, as a Claude or codex worker gets them (constitution I)
+        ...piFlags(join(import.meta.dir, 'worker-system.md'), o.plugins ?? imagePlugins()),
         ...(o.provider ? ['--provider', o.provider] : []),
         ...model('--model'),
       ]
@@ -552,11 +615,13 @@ const NOT_DEVENV = new Set([
   'GIT_SSL_CAINFO',
   'SSL_CERT_FILE',
   'NIX_SSL_CERT_FILE',
+  'AWS_CA_BUNDLE',
 ])
 
 /**
  * the repo's devenv.nix, when its rig caches it, as the worker's own environment, so the agent and all it runs
  * have the repo's toolchain without devenv shell, whose enterShell runs the repo's git hooks (minutes of bazel).
+ * It drops print-dev-env's closing 'eval ${shellHook:-}' line, so enterShell does not run here either.
  * Every start: the environment lives only in this process. A devenv that will not load leaves the VM as it was
  */
 export function loadDevenv() {
@@ -566,7 +631,8 @@ export function loadDevenv() {
   const made = Bun.spawnSync(['devenv', 'print-dev-env'], { cwd: repo(), env, stderr: 'pipe' })
   if (made.exitCode !== 0)
     return void console.error(`devenv print-dev-env: ${made.stderr.toString().trim().slice(-2000)}`)
-  writeFileSync(script, made.stdout)
+  // the script ends with 'eval ${shellHook:-}', which runs enterShell: drop it
+  writeFileSync(script, made.stdout.toString().replace(/^[ \t]*eval "?\$\{shellHook:-\}"?[ \t]*$/gm, ''))
   const dumped = Bun.spawnSync(
     ['bash', '-c', `e=$(command -v env); . '${script}' >/dev/null 2>&1; "$e" -0`],
     { cwd: repo(), env },
@@ -938,7 +1004,58 @@ export function trustCA() {
     GIT_SSL_CAINFO: ca,
     SSL_CERT_FILE: ca,
     NIX_SSL_CERT_FILE: ca,
+    AWS_CA_BUNDLE: ca,
   })
+}
+
+/**
+ * The image's plugin dirs for this worker. FACTORY_SKILLS is the laptop's list of the station's skills:
+ * an empty list gives none, and an unset one (an older laptop) gives all of them.
+ */
+export const imagePlugins = (skills = process.env.FACTORY_SKILLS) =>
+  skills === undefined
+    ? Object.values(VM_PLUGINS)
+    : skills
+        .split(',')
+        .filter(Boolean)
+        .flatMap(s => VM_PLUGINS[s] ?? [])
+
+/**
+ * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
+ * AGENTS.md from this image's worker rules, and the image's skills (constitution I). It fails closed, as a pane's launch does (cli.ts codexWorker):
+ * a .codex directory in the repo would add project config (all but the one `bd init` writes), and `codex features list` must show the guard on
+ * (claude-factory-72dq).
+ */
+export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plugins = imagePlugins()) {
+  if (harness() !== 'codex') return
+  const files = process.env.FACTORY_CODEX_HOME_FILES
+  if (!files || !dir)
+    throw new Error('a codex worker needs FACTORY_CODEX_HOME_FILES and CODEX_HOME from the laptop')
+  const local = join(repo(), '.codex')
+  if (existsSync(local) && !beadsOnlyCodexDir(local))
+    throw new Error(`a codex worker keeps the deny hook on: ${local} would add project config`)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  for (const [name, text] of Object.entries(JSON.parse(files) as Record<string, string>))
+    writeFileSync(join(dir, basename(name)), text, { mode: 0o600 })
+  writeFileSync(
+    join(dir, 'AGENTS.md'),
+    readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
+      readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+  )
+  codexSkills(dir, plugins)
+  const p = Bun.spawnSync([process.env.FACTORY_CODEX ?? 'codex', ...CODEX_GUARD_FLAGS, 'features', 'list'], {
+    env: { ...process.env, CODEX_HOME: dir },
+    stdin: 'ignore',
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
+  })
+  const bad = p.exitedDueToTimeout
+    ? 'codex features list timed out'
+    : p.exitCode !== 0
+      ? 'codex features list failed'
+      : codexFeaturesBad(p.stdout.toString())
+  if (bad) throw new Error(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
 }
 
 /**
@@ -979,6 +1096,19 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
 }
 
 /**
+ * The text that serve logs when it dies. First line: the message, with each newline as " | ", 500 characters
+ * at most. Then the stack, 1200 characters at most. The poll log holds the last 2000 characters. A long stack
+ * must not push the message (for example git's fatal line) out of it (claude-factory-x500).
+ */
+export function diedText(e: unknown) {
+  const msg = String((e as Error)?.message ?? e)
+    .trim()
+    .replace(/\s*\n\s*/g, ' | ')
+    .slice(0, 500)
+  return `serve died: ${msg}\n${((e as Error)?.stack ?? '').slice(0, 1200)}`
+}
+
+/**
  * the worker: the brief once, then queued prompts in order, one turn at a time. A resumed task restarts
  * it with the workspace as it was, so a session already started is never briefed again.
  */
@@ -987,7 +1117,7 @@ export async function serve(model?: string, o: { idleMs?: number; once?: boolean
   try {
     await serveTurns(model, o)
   } catch (e) {
-    appendFileSync(serveLog(), `${new Date().toISOString()} serve died: ${(e as Error).stack ?? e}\n`)
+    appendFileSync(serveLog(), `${new Date().toISOString()} ${diedText(e)}\n`)
     throw e
   }
 }
@@ -1002,6 +1132,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
+  codexHome()
   const services = await startServices()
   let session = prior?.session
   let egress: Egress | undefined = prior?.egress
@@ -1032,6 +1163,10 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
       onSession,
       egress,
     )
+  } else if (prior?.status === 'working') {
+    // the VM stopped mid-turn (a restart, a suspend): say so, and name the call it cut off (claude-factory-p0yt)
+    set('working')
+    session = await turnWithRetry(resumeNote(session), model, session, onEgress, onSession, egress)
   }
   for (;;) {
     const next = readdirSync(prompts()).sort()[0]
@@ -1048,9 +1183,46 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   }
 }
 
+/**
+ * Find the usage limit that ended a codex turn. Read the last turn.failed or error line of `codex exec --json`
+ * output. It is a limit when the message says "You've hit your usage limit" (curly or plain apostrophe).
+ * A later turn.completed, any other failure or a cut first line gives null. `at` is the time of the last write.
+ */
+export function codexLimit(out: string, at = Date.now()) {
+  for (const line of out.split('\n').reverse()) {
+    try {
+      const e = JSON.parse(line)
+      if (e.type === 'turn.completed') return null
+      if (e.type !== 'turn.failed' && e.type !== 'error') continue
+      const text = String(e.type === 'error' ? e.message : e.error?.message)
+      return /hit your usage limit/i.test(text) ? { at, kind: 'usage', resetsAt: 0 } : null
+    } catch {
+      // not a JSON line: the cut first line of the tail
+    }
+  }
+  return null
+}
+
+/** the usage limit in the last 64 KiB of the codex stream; null for another harness or no stream yet */
+function codexLimitNow() {
+  if (harness() !== 'codex') return null
+  try {
+    const file = join(own(), 'codex.jsonl')
+    const { size, mtimeMs } = statSync(file)
+    const buf = Buffer.alloc(Math.min(size, 64 * 1024))
+    const fd = openSync(file, 'r')
+    readSync(fd, buf, 0, buf.length, size - buf.length)
+    closeSync(fd)
+    return codexLimit(buf.toString(), mtimeMs)
+  } catch {
+    return null
+  }
+}
+
 /** the laptop's view: the worker's state and the outbox past its cursor */
 export function poll(cursor: number) {
   const s = state()
+  const limit = codexLimitNow()
   const lines = existsSync(outbox()) ? readFileSync(outbox(), 'utf8').split('\n').filter(Boolean) : []
   return {
     status: !s || !alive(s.pid) ? 'exited' : s.status,
@@ -1061,6 +1233,7 @@ export function poll(cursor: number) {
     bytes: streamBytes(),
     log: logTail(),
     ...(s?.egress && { egress: s.egress }),
+    ...(limit && { limit }),
   }
 }
 
@@ -1115,6 +1288,37 @@ export function lastTurn(session?: string) {
     if (existsSync(file)) return lastAssistant(file)
   }
   return lastAssistant(join(own(), 'claude.jsonl'))
+}
+
+/**
+ * the turn a session resumed mid-turn gets first. Before it, a VM that restarted during the brief went idle
+ * with nothing to do, and the run waited for its deadline (claude-factory-p0yt)
+ */
+export function resumeNote(session: string) {
+  const call = harness() === 'claude' ? cutOffCall(transcriptTail(session)) : undefined
+  return (
+    `[factory] Your VM restarted and this session was resumed.${cutOffNote(call)} Carry on where you left off: ` +
+    `check git status and git log first. When finished, report exactly once, as your brief says.`
+  )
+}
+
+/** the end of a Claude session's transcript, else of the turn stream; empty when neither is there */
+function transcriptTail(session: string) {
+  const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  const file = join(dir, 'projects', repo().replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`)
+  for (const f of [file, join(own(), 'claude.jsonl')]) {
+    try {
+      const size = statSync(f).size
+      const buf = Buffer.alloc(Math.min(size, 512 * 1024))
+      const fd = openSync(f, 'r')
+      readSync(fd, buf, 0, buf.length, size - buf.length)
+      closeSync(fd)
+      return buf.toString()
+    } catch {
+      // not there: try the next
+    }
+  }
+  return ''
 }
 
 export function prompt(base64: string) {

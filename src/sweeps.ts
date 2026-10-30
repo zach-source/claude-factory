@@ -12,11 +12,15 @@ export const sweepGoal = (station: string) => `sweep: ${station}`
 export const sweepNames = (def: Factory): string[] =>
   Object.keys(def.nodes).filter(id => def.nodes[id]!.everyMin)
 
-/** sweeps.json's shape: for each rig, for each sweep, when it last ran, and (monitor, drift) its last read. drift keeps the clipped read itself. */
+/** sweeps.json's shape: for each rig, for each sweep, when it last ran, and (monitor only) its last read. */
 export type SweepState = Record<
   string,
-  Record<string, { lastAt: number; sig?: string; lines?: number; read?: string }>
+  Record<string, { lastAt: number; sig?: string; lines?: number; ranAt?: number; read?: string }>
 >
+
+/** Minutes after which the monitor sweep starts a run on a read that did not change. `ranAt` in
+ * sweeps.json holds the time when the sweep last started one. */
+export const MONITOR_RECHECK_MIN = 360
 
 export type LiveRun = { repo: string; goal: string }
 
@@ -46,6 +50,7 @@ export const SWEEP_QUEUE_LABELS = [
   'sweep-queue:incident',
   'sweep-queue:main-ci-red',
   'sweep-queue:critical-advisory',
+  'sweep-queue:flaky-test',
 ]
 
 export type GuardedBead = { id: string; created_by?: string; created_at?: string; labels?: string[] }
@@ -81,24 +86,18 @@ export function markGuardHandled(
  * set, however old (claude-factory-8pc.21). A held bead can stay open well past 48h. It must keep
  * its mark, or dispatch holds it again on the next pass.
  *
- * A rig dispatch did not read this pass (it stayed full, say) has no entry in `openIds`. For that
- * rig only, this function falls back to `maxAgeMs` (default 48h, twice the flood guard's 24h cap
- * window). A bead past `sweepGuard`'s own 24h window is never scored again regardless. So, past
- * that age, a mark dispatch cannot check against a fresh bead list is dead weight. This keeps
- * sweep-guard.json from growing forever, even once a rig drops out of `rigs.json`.
+ * A rig dispatch did not read this pass (it stayed full, say) has no entry in `openIds`. This
+ * function keeps all marks of that rig, however old (claude-factory-z2b1). A mark dispatch cannot
+ * check could belong to a bead a person released. Dropping it would hold that bead again.
  */
 export function pruneGuardState(
   state: SweepGuardState,
-  now: number,
   openIds: Record<string, Set<string>> = {},
-  maxAgeMs = 48 * 60 * 60 * 1000,
 ): SweepGuardState {
   const out: SweepGuardState = {}
   for (const [rig, ids] of Object.entries(state)) {
     const open = openIds[rig]
-    const kept = Object.fromEntries(
-      Object.entries(ids).filter(([id, at]) => (open ? open.has(id) : now - at < maxAgeMs)),
-    )
+    const kept = open ? Object.fromEntries(Object.entries(ids).filter(([id]) => open.has(id))) : ids
     if (Object.keys(kept).length) out[rig] = kept
   }
   return out
@@ -132,7 +131,10 @@ export function sweepGuard(
       })
       // claude-factory-8pc.13(c): a bead with no `created_at` must stay inside the window (as if
       // filed now), not fall out of it at epoch 0 and so escape the cap and the defer below.
-      .map(x => ({ ...x, at: x.b.created_at ? new Date(x.b.created_at).getTime() : now }))
+      .map(x => {
+        const t = x.b.created_at ? new Date(x.b.created_at).getTime() : now
+        return { ...x, at: Number.isFinite(t) ? t : now }
+      })
       .filter(x => now - x.at < windowMs)
       .sort((a, c) => a.at - c.at)
       // claude-factory-d20: a queue-labeled bead ranks only among queue-labeled beads, so an
@@ -209,4 +211,125 @@ export function dueSweeps(
     const lastAt = state[rig.name]?.[s]?.lastAt ?? 0
     return now - lastAt >= def.nodes[s]!.everyMin! * 60_000
   })
+}
+
+/** one row of `gh run list --json workflowDatabaseId,workflowName,headSha,conclusion,status,databaseId,createdAt,url,event` */
+export type GhRun = {
+  workflowDatabaseId: number
+  workflowName: string
+  headSha: string
+  conclusion: string
+  status: string
+  databaseId: number
+  createdAt: string
+  url: string
+  event: string
+  attempt?: number
+}
+
+export type CiRed = { key: string; workflowId: number; workflow: string; sha: string; url: string }
+
+/** the dedupe key of a red main streak: the workflow id and the first failing SHA */
+export const ciKey = (workflowId: number, sha: string): string => `ci-red:${workflowId}-${sha.slice(0, 7)}`
+
+const RED = ['failure', 'timed_out', 'startup_failure']
+const counted = (r: GhRun): boolean =>
+  r.status === 'completed' &&
+  !r.event.startsWith('pull_request') &&
+  (r.conclusion === 'success' || RED.includes(r.conclusion))
+
+/** Per workflow, reports the red newest counted run of main. A pull_request event, an unfinished run
+ * and a cancelled, skipped, neutral or action_required run are not counted. The SHA is the oldest run
+ * of the newest unbroken red streak, so a later red push keeps the same key. */
+export function mainCiReds(runs: GhRun[]): CiRed[] {
+  const by = new Map<number, GhRun[]>()
+  for (const r of runs.filter(counted))
+    by.set(r.workflowDatabaseId, [...(by.get(r.workflowDatabaseId) ?? []), r])
+  const out: CiRed[] = []
+  for (const [id, rs] of by) {
+    rs.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    if (!RED.includes(rs[0]!.conclusion)) continue
+    let first = rs[0]!
+    for (const r of rs) {
+      if (!RED.includes(r.conclusion)) break
+      first = r
+    }
+    out.push({
+      key: ciKey(id, first.headSha),
+      workflowId: id,
+      workflow: rs[0]!.workflowName,
+      sha: first.headSha,
+      url: rs[0]!.url,
+    })
+  }
+  return out
+}
+
+/** The reds with no open bead. A label with the prefix `ci-red:<workflow id>-` also tracks the red:
+ * a streak longer than the run window moves its first failing SHA, and must not file a second bead. */
+export const newCiReds = (reds: CiRed[], openLabels: Set<string>): CiRed[] =>
+  reds.filter(r => ![...openLabels].some(l => l.startsWith(`ci-red:${r.workflowId}-`)))
+
+/** a run whose failed log holds a flaky test; `attempt` picks the failed attempt of a re-run */
+export type FlakyRun = { id: number; url: string; attempt?: number }
+
+/** The runs to read failed logs from. A SHA is flaky when one workflow ran it red and green: each
+ * red run is a flaky run. A green run on attempt 2 or later is flaky too: its last failed attempt is. */
+export function flakyRuns(runs: GhRun[]): FlakyRun[] {
+  const cs = runs.filter(counted)
+  const green = new Set(
+    cs.filter(r => r.conclusion === 'success').map(r => `${r.workflowDatabaseId}/${r.headSha}`),
+  )
+  return cs.flatMap(r => {
+    if (RED.includes(r.conclusion))
+      return green.has(`${r.workflowDatabaseId}/${r.headSha}`) ? [{ id: r.databaseId, url: r.url }] : []
+    return (r.attempt ?? 1) > 1 ? [{ id: r.databaseId, url: r.url, attempt: r.attempt! - 1 }] : []
+  })
+}
+
+const HOSTILE = new RegExp(
+  '[\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]',
+)
+const TEST_ID = /^[\x21-\x7e](?:[\x20-\x7e]{0,198}[\x21-\x7e])?$/
+const FAIL_LINE = [
+  /\(fail\) (.+?)(?: \[[\d.]+m?s\])?$/, // bun
+  /--- FAIL: (\S+)/, // go
+  /FAILED (\S+::\S+)/, // pytest
+]
+
+/** The distinct failed test ids in a CI log (bun, go and pytest formats). A CI log can come from a
+ * fork branch, so it is hostile: a line with a control, bidi or line-break character is dropped, and
+ * an id must be 1 to 200 printable ASCII characters that do not look like a mail header. */
+export function failedTests(log: string): string[] {
+  const out = new Set<string>()
+  for (const line of log.split('\n')) {
+    if (HOSTILE.test(line)) continue
+    for (const re of FAIL_LINE) {
+      const id = re.exec(line)?.[1]
+      if (id && TEST_ID.test(id) && !/(^|\s)-?\s*from \S+:/i.test(id)) out.add(id)
+    }
+  }
+  return [...out]
+}
+
+/** the dedupe key of a flaky test: a hash of its id, so the label stays short and safe */
+export const flakeKey = (id: string): string =>
+  `flake:${createHash('sha256').update(id).digest('hex').slice(0, 12)}`
+
+export type FlakeCandidate = { id: string; key: string; n: number; queue: boolean; urls: string[] }
+
+/** Flaky tests to file: a test that failed in 2 or more flaky runs (a run counts once). It starts on
+ * its own (`queue`) at 3 or more. A key on an open bead is dropped. Most runs first, then id; at most `cap`. */
+export function flakeCandidates(
+  runs: { url: string; tests: string[] }[],
+  openLabels: Set<string>,
+  cap = 3,
+): FlakeCandidate[] {
+  const by = new Map<string, string[]>()
+  for (const r of runs) for (const t of new Set(r.tests)) by.set(t, [...(by.get(t) ?? []), r.url])
+  return [...by]
+    .map(([id, urls]) => ({ id, key: flakeKey(id), n: urls.length, queue: urls.length >= 3, urls }))
+    .filter(c => c.n >= 2 && !openLabels.has(c.key))
+    .sort((a, b) => b.n - a.n || (a.id < b.id ? -1 : 1))
+    .slice(0, cap)
 }

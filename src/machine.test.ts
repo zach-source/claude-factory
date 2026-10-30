@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { createActor, type Snapshot } from 'xstate'
 import {
   acIdsIn,
@@ -7,10 +7,13 @@ import {
   compile,
   failClass,
   failingAcIds,
+  gotoRefusal,
   isNoWorker,
+  isParkedOn,
   isPrWait,
   mrsIn,
   parkDelayMin,
+  shouldHandToOwner,
   prevReport,
   prsIn,
   reach,
@@ -25,7 +28,7 @@ import {
 } from './machine'
 
 const def: Factory = {
-  name: 'review-loop',
+  name: 'implement-review',
   start: 'implement',
   backoffSec: 10,
   nodes: {
@@ -46,7 +49,7 @@ function run(d = def) {
     return actor.getSnapshot()
   }
   const now = () => createActor(machine, { snapshot: snap }).start().getSnapshot()
-  return { send, now }
+  return { send, now, saved: () => JSON.parse(JSON.stringify(snap)) as Snapshot<unknown> }
 }
 
 test('loop graph routes outcomes and carries summaries as mail', () => {
@@ -235,6 +238,20 @@ test('validate rejects broken graphs', () => {
   expect(validate(def)).toBe(def)
 })
 
+test('validate accepts a defer edge that names a station of the factory, and refuses an unknown one', () => {
+  const rejects = (edge: object) => () =>
+    validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
+  expect(rejects({ to: 'done', defer: { station: 'a' } })).not.toThrow()
+  expect(rejects({ to: 'done', defer: { station: 'nope' } })).toThrow('defer station "nope" is not a node')
+  expect(rejects({ to: 'a', defer: { station: 'a' } })).toThrow('only an edge into done defers')
+  expect(rejects({ to: 'done', defer: { station: 'a' }, requeue: true })).toThrow(
+    'defers, rejects or requeues, only one',
+  )
+  expect(rejects({ to: 'done', defer: { station: 'a' }, ship: true })).toThrow(
+    'defers, rejects, requeues or ships, only one',
+  )
+})
+
 test('validate refuses a requeue edge that does not go into done, that also defers or rejects, or that names an invalid factory/station', () => {
   const rejects = (edge: object) => () =>
     validate({ name: 'x', start: 'a', nodes: { a: { prompt: '', next: { no: edge as never } } } })
@@ -415,6 +432,64 @@ test('onRounds re-plans a capped station with its findings, then holds for the m
   expect(s.context.mail.manager?.at(-1)?.text).toContain('held instead of going to implement')
 })
 
+// claude-factory-53tf: only an outcome that loops back counts toward a node's rounds cap.
+// review's `security` leaves the loop for a deeper node, so it never counts.
+const secDef = (onRounds?: string): Factory => ({
+  ...def,
+  nodes: {
+    plan: { prompt: 'plan it', next: { planned: 'implement' } },
+    implement: { prompt: 'build it', next: { ready: 'review' }, retries: 1 },
+    review: {
+      prompt: 'review it',
+      next: { changes: 'implement', security: 'security', approve: 'done' },
+      rounds: 3,
+      ...(onRounds ? { onRounds } : {}),
+    },
+    security: { prompt: 'scan it', next: { changes: 'implement', approve: 'done' } },
+  },
+  start: 'plan',
+})
+
+function secRun(onRounds?: string) {
+  const { send } = run(secDef(onRounds))
+  let seq = 1
+  let t = 0
+  const d = (outcome: string) => send({ type: 'DONE', seq: seq++, outcome, summary: outcome, at: ++t })
+  d('planned')
+  return { d, send }
+}
+
+test.each(['plan', undefined])(
+  'review security reports never count toward the cap (onRounds %s)',
+  onRounds => {
+    const { d } = secRun(onRounds)
+    for (let i = 0; i < 5; i++) {
+      d('ready')
+      const s = d('security')
+      expect(where(s.value)).toEqual(['security', 'working'])
+      expect(s.context.mail.plan ?? []).toHaveLength(0)
+      expect(s.context.log.some(e => e.replan)).toBe(false)
+      d('changes') // security changes goes back to implement
+    }
+  },
+)
+
+test('back edges still cap, and security reports between them do not move the cap', () => {
+  const { d } = secRun('plan')
+  for (let i = 0; i < 3; i++) {
+    d('ready')
+    d('security')
+    d('changes')
+    d('ready')
+    expect(where(d('changes').value)).toEqual(['implement', 'working'])
+  }
+  d('ready')
+  const s = d('changes')
+  expect(where(s.value)).toEqual(['plan', 'working'])
+  expect(s.context.log.at(-1)).toMatchObject({ node: 'review', replan: true })
+  expect(s.context.mail.plan?.at(-1)?.text).toContain('round cap')
+})
+
 // claude-factory-qgz AC2: the re-plan mail stays near 24000 chars even when every round's summary is huge.
 test('capReplanMail clips each round so the whole mail stays under 24000 chars plus its header', () => {
   const big = 'x'.repeat(50_000)
@@ -427,6 +502,18 @@ test('capReplanMail clips each round so the whole mail stays under 24000 chars p
   expect(text).toContain('### review round 2')
   expect(text).toContain('### review round 3')
   expect(text.length).toBeLessThan(24_000 + 1_000) // 3 rounds clipped to floor(24000/3) each, plus the header
+})
+
+test('validate refuses a mergeCheck not in next, or on a gate; accepts one in next', () => {
+  const g = (a: object) =>
+    ({ name: 'x', start: 'a', nodes: { a, b: { prompt: 'x', next: { ok: 'a' } } } }) as unknown as Factory
+  expect(() => validate(g({ prompt: 'x', next: { ok: 'b' }, mergeCheck: 'nope' }))).toThrow(
+    'a: mergeCheck "nope" is not an outcome in next',
+  )
+  expect(() => validate(g({ prompt: 'x', gate: true, next: { ok: 'b' }, mergeCheck: 'ok' }))).toThrow(
+    'a: a gate has no worker, so no mergeCheck',
+  )
+  expect(() => validate(g({ prompt: 'x', next: { ok: 'b' }, mergeCheck: 'ok' }))).not.toThrow()
 })
 
 // claude-factory-qgz AC5: validate refuses each broken onRounds and a repeatMail that is not an outcome.
@@ -987,4 +1074,257 @@ test('REPARK never moves wakeAt earlier, and ignores another node', () => {
   expect(s.context.wakeAt).toBe(old)
   s = send({ type: 'REPARK', node: 'release', wakeAt: old + 5, at: 2000 })
   expect(s.context.wakeAt).toBe(old)
+})
+
+describe('shouldHandToOwner', () => {
+  const H = 3_600_000
+  const blocked = (at: number, summary = 'waiting on a vendor', attempt = 1) => ({
+    node: 'deploy',
+    attempt,
+    outcome: 'blocked',
+    summary,
+    at,
+  })
+  test('two blocked passes in the first day stay with the factory', () => {
+    expect(shouldHandToOwner([blocked(0), blocked(H)], 2 * H)).toBe(false)
+  })
+  test('three blocked passes in a row hand the bead over', () => {
+    expect(shouldHandToOwner([blocked(0), blocked(H), blocked(2 * H)], 3 * H)).toBe(true)
+  })
+  test('a streak older than 24h hands the bead over', () => {
+    expect(shouldHandToOwner([blocked(0)], 25 * H)).toBe(true)
+    expect(shouldHandToOwner([blocked(0)], 23 * H)).toBe(false)
+  })
+  test('an owner step in the report hands the bead over at once', () => {
+    expect(shouldHandToOwner([blocked(0, 'owner step: rotate the key')], H)).toBe(true)
+  })
+  test('PR waits do not count', () => {
+    const pr = (at: number) => blocked(at, 'no worker yet: waiting for a PR', 0)
+    expect(shouldHandToOwner([pr(0), pr(H), pr(2 * H), blocked(3 * H)], 10 * H)).toBe(false)
+    expect(shouldHandToOwner([blocked(0), pr(H), blocked(2 * H), pr(3 * H)], 4 * H)).toBe(false)
+  })
+  test('a non-blocked outcome resets the streak', () => {
+    const fail = { node: 'deploy', attempt: 1, outcome: 'fail', summary: 'x', at: 2 * H }
+    expect(shouldHandToOwner([blocked(0), blocked(H), fail, blocked(3 * H)], 4 * H)).toBe(false)
+  })
+  test('a streak at another station does not count', () => {
+    const other = { ...blocked(H), node: 'plan' }
+    expect(shouldHandToOwner([blocked(0), blocked(0), other], 2 * H)).toBe(false)
+  })
+})
+
+test('validate checks a node split: its agent params, its share param and its default', () => {
+  const mk =
+    (split: object, params: Record<string, string> = {}, gate = false) =>
+    () =>
+      validate({
+        name: 'x',
+        start: 'a',
+        params: { codex: 'codex', codex_share: '0.3', ...params },
+        nodes: {
+          a: { prompt: '', next: { ok: 'done' }, ...(gate ? { gate: true } : {}), split: split as never },
+        },
+      })
+  const ok = { agent: '{codex}', share: 'codex_share' }
+  expect(mk(ok)).not.toThrow()
+  expect(mk({ ...ok, agent: '{ghost}' })).toThrow('{ghost}')
+  expect(mk({ ...ok, share: 'nope' })).toThrow('split share "nope" is not a param')
+  for (const bad of ['abc', '', '-1', '2', 'NaN', 'Infinity'])
+    expect(mk(ok, { codex_share: bad })).toThrow('between 0 and 1')
+  expect(mk(ok, { codex_share: '0' })).not.toThrow()
+  expect(mk(ok, { codex_share: '1' })).not.toThrow()
+  expect(mk(ok, {}, true)).toThrow('a gate has no worker, so no split')
+})
+
+// claude-factory-61pu.1: a holdMail station parked on a pull request keeps plain mail in its box.
+// Only a MAIL with wake: true starts a worker.
+const holdGraph = (node: object = { holdMail: true }): Factory => ({
+  name: 'ship',
+  start: 'deploy',
+  nodes: { deploy: { prompt: 'deploy it', next: { deployed: 'done' }, ...node } },
+})
+const blockOn = (g: Factory, reason: string) => {
+  const r = run(g)
+  r.send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 10 })
+  return { ...r, s: r.send({ type: 'BLOCKED', seq: 1, reason, at: 20 }) }
+}
+
+test('plain mail to a holdMail station parked on a pull request stays in the box', () => {
+  const { send, s } = blockOn(holdGraph(), 'waiting on ' + PR)
+  expect(where(s.value)).toEqual(['deploy', 'waiting'])
+  const m = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'Report blocked', at: 30 })
+  expect(where(m.value)).toEqual(['deploy', 'waiting'])
+  expect(m.context.mail.deploy?.at(-1)?.text).toBe('Report blocked')
+})
+
+test('a MAIL with wake starts the worker of a held station, with the held mail in its box', () => {
+  const { send } = blockOn(holdGraph(), 'waiting on ' + PR)
+  send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'nudge', at: 30 })
+  const m = send({ type: 'MAIL', from: 'factory', to: 'deploy', text: 'merged', wake: true, at: 40 })
+  expect(where(m.value)).toEqual(['deploy', 'working'])
+  expect(m.context.mail.deploy?.map(x => x.text)).toEqual(['nudge', 'merged'])
+})
+
+test('a pre-launch PR park of a holdMail station holds plain mail too', () => {
+  const g: Factory = {
+    name: 'ship',
+    start: 'release',
+    nodes: {
+      release: { prompt: 'ship it', next: { ready: 'deploy' } },
+      deploy: { prompt: 'deploy it', awaitsPr: true, holdMail: true, next: { deployed: 'done' } },
+    },
+  }
+  const { send } = run(g)
+  send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'ready ' + PR, at: 1000 })
+  const m = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'hi', at: 2000 })
+  expect(where(m.value)).toEqual(['deploy', 'waiting'])
+})
+
+test('plain mail still starts a worker: no holdMail, no PR link, or a lifecycle station', () => {
+  for (const [g, reason] of [
+    [holdGraph({}), 'waiting on ' + PR],
+    [holdGraph(), 'waiting on the owner'],
+  ] as const) {
+    const { send } = blockOn(g, reason)
+    const m = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'hi', at: 30 })
+    expect(where(m.value)).toEqual(['deploy', 'working'])
+  }
+  const { send } = run()
+  send({ type: 'BLOCKED', seq: 1, reason: 'waiting on ' + PR, at: 20 })
+  const m = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'hi', at: 30 })
+  expect(where(m.value)).toEqual(['implement', 'working'])
+})
+
+test('isParkedOn: only the PR the last blocked report links (61pu AC11)', () => {
+  const { s } = blockOn(holdGraph(), 'waiting on ' + PR)
+  expect(isParkedOn(s.context, 'deploy', PR)).toBe(true)
+  expect(isParkedOn(s.context, 'deploy', 'https://github.com/acme/widget/pull/8')).toBe(false)
+  expect(isParkedOn(s.context, 'other', PR)).toBe(false)
+})
+
+test('validate refuses holdMail on a gate', () => {
+  expect(() =>
+    validate({
+      name: 'x',
+      start: 'g',
+      nodes: { g: { prompt: '?', gate: true, holdMail: true, next: { ok: 'done' } } },
+    }),
+  ).toThrow('g: a gate has no worker, so no mail to hold')
+})
+
+describe('an outage hold parks the station and spends no attempt', () => {
+  const MIN = 60_000
+  const hold = (seq: number, at: number, h = 0) =>
+    ({ type: 'FAIL', seq, reason: 'egress gateway: model API unreachable', hold: h, at }) as Ev
+
+  test('three holds do not reach stuck, and the attempt stays 1', () => {
+    const { send } = run()
+    let at = 1000
+    let s = send(hold(1, at))
+    for (let i = 2; i <= 3; i++) {
+      expect(where(s.value)).toEqual(['implement', 'waiting'])
+      at = s.context.wakeAt
+      s = send({ type: 'TICK', at })
+      expect(where(s.value)).toEqual(['implement', 'working'])
+      expect(s.context).toMatchObject({ attempt: 1, seq: i })
+      s = send(hold(i, at))
+    }
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    expect(s.context.attempt).toBe(1)
+    expect(s.context.log.map(e => `${e.outcome}:${e.attempt}`)).toEqual(['outage:1', 'outage:1', 'outage:1'])
+  })
+
+  test('the wait doubles up to 120 min, and a later hold wins', () => {
+    const { send } = run()
+    let at = 1000
+    const waits: number[] = []
+    let s = send(hold(1, at))
+    for (let i = 1; i <= 3; i++) {
+      waits.push((s.context.wakeAt - at) / MIN)
+      at = s.context.wakeAt
+      s = send({ type: 'TICK', at })
+      s = send(hold(i + 1, at))
+    }
+    waits.push((s.context.wakeAt - at) / MIN)
+    expect(waits).toEqual([15, 30, 60, 120])
+    expect(where(send({ type: 'TICK', at: s.context.wakeAt - 1 }).value)).toEqual(['implement', 'waiting'])
+
+    const { send: send2 } = run()
+    const later = 10 * 60 * MIN
+    expect(send2(hold(1, 1000, later)).context.wakeAt).toBe(later)
+  })
+
+  test('the 5th hold in a row spends an attempt; a fail restarts the streak', () => {
+    const { send } = run()
+    let at = 1000
+    let s = send(hold(1, at))
+    for (let i = 2; i <= 5; i++) {
+      at = s.context.wakeAt
+      send({ type: 'TICK', at })
+      s = send(hold(i, at))
+    }
+    expect(where(s.value)).toEqual(['implement', 'backoff'])
+    expect(s.context.log.at(-1)?.outcome).toBe('fail')
+
+    const r = run()
+    let t = 1000
+    let x = r.send(hold(1, t))
+    t = x.context.wakeAt
+    r.send({ type: 'TICK', at: t })
+    x = r.send({ type: 'FAIL', seq: 2, reason: 'crashed', at: t })
+    expect(where(x.value)).toEqual(['implement', 'backoff'])
+    t = x.context.retryAt
+    r.send({ type: 'TICK', at: t })
+    x = r.send(hold(3, t))
+    expect(x.context.wakeAt - t).toBe(15 * MIN)
+  })
+
+  test('only the first hold of a streak mails the manager, from the factory', () => {
+    const { send } = run()
+    let s = send(hold(1, 1000))
+    const mails = () => s.context.mail.manager ?? []
+    expect(mails()).toHaveLength(1)
+    expect(mails()[0]).toMatchObject({ from: 'factory' })
+    expect(mails()[0]?.text).toContain('held, not failed')
+    const at = s.context.wakeAt
+    send({ type: 'TICK', at })
+    s = send(hold(2, at))
+    expect(mails()).toHaveLength(1)
+  })
+
+  test('a FAIL without hold behaves as before', () => {
+    const { send } = run()
+    const s = send({ type: 'FAIL', seq: 1, reason: 'egress gateway: model API unreachable', at: 1000 })
+    expect(where(s.value)).toEqual(['implement', 'backoff'])
+    expect(s.context.log.at(-1)?.outcome).toBe('fail')
+  })
+})
+
+describe('gotoRefusal (claude-factory-7dd)', () => {
+  const refusal = (r: ReturnType<typeof run>, d: Factory, node: string, pending: Ev[] = []) =>
+    gotoRefusal(d, r.saved(), pending, node, 99)
+
+  test('a review held by rounds can go to implement', () => {
+    const d: Factory = { ...def, nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 1 } } }
+    const r = run(d)
+    r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'a', at: 1 })
+    r.send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'b', at: 2 })
+    r.send({ type: 'DONE', seq: 3, outcome: 'ready', summary: 'c', at: 3 })
+    r.send({ type: 'DONE', seq: 4, outcome: 'changes', summary: 'd', at: 4 })
+    expect(where(r.now().value)).toEqual(['review', 'stuck'])
+    expect(refusal(r, d, 'implement')).toBeNull()
+  })
+
+  test('a budget hold refuses goto; a pending RETRY refills it; goto done is fine', () => {
+    const d: Factory = { ...def, maxSteps: 2 }
+    const r = run(d)
+    r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'a', at: 1 })
+    r.send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'b', at: 2 })
+    expect(where(r.now().value)).toEqual(['implement', 'stuck'])
+    const before = r.saved()
+    expect(refusal(r, d, 'review')).toContain('step budget used up')
+    expect(refusal(r, d, 'review', [{ type: 'RETRY', at: 5 }])).toBeNull()
+    expect(refusal(r, d, 'done')).toBeNull()
+    expect(r.saved()).toEqual(before)
+  })
 })

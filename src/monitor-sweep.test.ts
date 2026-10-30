@@ -19,7 +19,7 @@ const marker = join(dir, 'marker.txt')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[]) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0' },
   })
@@ -79,7 +79,7 @@ function repo() {
 /** `markerText` is what the fake `--slo` command ("cat <marker>") reads this pass. `priorSig`, when
  * given, seeds sweeps.json as if a pass 31 minutes ago (past monitor's 30 min cadence) already read
  * that sig: with none, the rig is due with no prior sig at all, as a fresh rig is. */
-function reset(markerText: string, priorSig?: string) {
+function reset(markerText: string, priorSig?: string, ranAgoMin?: number) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(home, { recursive: true })
   const r = repo()
@@ -93,7 +93,16 @@ function reset(markerText: string, priorSig?: string) {
   if (priorSig !== undefined)
     writeFileSync(
       join(home, 'sweeps.json'),
-      JSON.stringify({ a: { monitor: { lastAt: Date.now() - 31 * 60_000, sig: priorSig, lines: 1 } } }),
+      JSON.stringify({
+        a: {
+          monitor: {
+            lastAt: Date.now() - 31 * 60_000,
+            sig: priorSig,
+            lines: 1,
+            ...(ranAgoMin === undefined ? {} : { ranAt: Date.now() - ranAgoMin * 60_000 }),
+          },
+        },
+      }),
     )
   return r
 }
@@ -137,6 +146,37 @@ test('an unchanged read starts no run: no model ever sees output that did not ch
   expect(journal()).toEqual([{ at: expect.any(Number), rig: 'a', sweep: 'monitor', action: 'unchanged' }])
   const st = JSON.parse(readFileSync(join(home, 'sweeps.json'), 'utf8')).a.monitor
   expect(st.sig).toBe(sigOf('all green')) // unchanged: still the same sig
+  // The 6 h clock counts from the last run. Old state has no ranAt, so it uses lastAt (31 min ago).
+  expect(st.ranAt).toBeGreaterThan(Date.now() - 32 * 60_000)
+  expect(st.ranAt).toBeLessThan(Date.now() - 30 * 60_000)
+})
+
+test('an unchanged read 359 min after the last run starts no run and keeps ranAt', () => {
+  reset('all green\n', sigOf('all green'), 359)
+  const seeded = JSON.parse(readFileSync(join(home, 'sweeps.json'), 'utf8')).a.monitor.ranAt
+  expect(factory(['sweep']).code).toBe(0)
+  expect(runCount()).toBe(0)
+  expect(journal()).toEqual([{ at: expect.any(Number), rig: 'a', sweep: 'monitor', action: 'unchanged' }])
+  const st = JSON.parse(readFileSync(join(home, 'sweeps.json'), 'utf8')).a.monitor
+  expect(st.ranAt).toBe(seeded)
+})
+
+test('an unchanged read 361 min after the last run starts a recheck run with the read as mail', () => {
+  reset('all green\n', sigOf('all green'), 361)
+  expect(factory(['sweep']).code).toBe(0)
+  expect(runCount()).toBe(1)
+  const runId = readdirSync(join(home, 'runs'))[0]!
+  expect(journal()).toEqual([
+    expect.objectContaining({ rig: 'a', sweep: 'monitor', action: 'started', run: runId, recheck: true }),
+  ])
+  const lines = readFileSync(join(home, 'runs', runId, 'inbox.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(lines).toContainEqual(expect.objectContaining({ type: 'MAIL', to: 'monitor', text: 'all green' }))
+  const st = JSON.parse(readFileSync(join(home, 'sweeps.json'), 'utf8')).a.monitor
+  expect(st.sig).toBe(sigOf('all green'))
+  expect(st.ranAt).toBeGreaterThan(Date.now() - 60_000)
 })
 
 test('a changed read starts a run, carrying the new output as mail, and records the new sig', () => {
@@ -157,6 +197,8 @@ test('a changed read starts a run, carrying the new output as mail, and records 
   )
   const st = JSON.parse(readFileSync(join(home, 'sweeps.json'), 'utf8')).a.monitor
   expect(st.sig).toBe(sigOf('error rate 12%'))
+  expect(st.ranAt).toBeGreaterThan(Date.now() - 60_000)
+  expect(journal()[0]).not.toHaveProperty('recheck')
 })
 
 // --- `rig add` validation (claude-factory-8pc.6): monitor needs a command to read ---

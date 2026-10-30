@@ -44,8 +44,10 @@ export type FilingVerdict = {
 /**
  * The filing flood guard (claude-factory-nwlh.1).
  * Only beads that a factory worker filed (`filingActor`) get a verdict.
- * Inside `windowMs`, a cluster keeps at most `clusterCap` beads. A run/station keeps at most
- * `stationCap`. The oldest beads stay first.
+ * The window ends at the filing time of each bead. A kept bead uses a slot for a later bead only
+ * when the factory filed it less than `windowMs` before that bead. So a verdict does not change
+ * as time passes (claude-factory-422q). In a window, a cluster keeps at most `clusterCap` beads.
+ * A run/station keeps at most `stationCap`. The oldest beads stay first.
  * A held bead uses no slot. A closed bead gets a verdict and uses a slot.
  * A bead with no `created_at` counts as filed at `now`.
  * ponytail: the station cap has the same window, so a run that lives more than 24h can file 3 more.
@@ -56,26 +58,27 @@ export function filingGuard(
   opts: { clusterCap?: number; stationCap?: number; windowMs?: number } = {},
 ): FilingVerdict[] {
   const { clusterCap = 6, stationCap = 3, windowMs = 24 * 60 * 60 * 1000 } = opts
-  const used = new Map<string, number>()
-  const take = (k: string) => used.get(k) ?? 0
+  const used = new Map<string, number[]>()
+  const take = (k: string, at: number) => (used.get(k) ?? []).filter(t => at - t < windowMs).length
   return beads
     .flatMap(b => {
       const actor = filingActor(b.created_by)
       if (!actor) return []
-      const at = b.created_at ? new Date(b.created_at).getTime() : now
+      const t = b.created_at ? new Date(b.created_at).getTime() : now
+      const at = Number.isFinite(t) ? t : now
       const station = actor.run && actor.station ? `${actor.run}/${actor.station}` : undefined
-      return now - at < windowMs ? [{ b, at, station, cluster: clusterKey(b) }] : []
+      return [{ b, at, station, cluster: clusterKey(b) }]
     })
     .sort((x, y) => x.at - y.at || (x.b.id < y.b.id ? -1 : x.b.id > y.b.id ? 1 : 0))
-    .map(({ b, station, cluster }) => {
+    .map(({ b, at, station, cluster }) => {
       const ck = `c:${cluster}`
       const sk = `s:${station}`
-      const clusterFull = take(ck) >= clusterCap
-      const stationFull = station !== undefined && take(sk) >= stationCap
+      const clusterFull = take(ck, at) >= clusterCap
+      const stationFull = station !== undefined && take(sk, at) >= stationCap
       const kept = !clusterFull && !stationFull
       if (kept) {
-        used.set(ck, take(ck) + 1)
-        if (station) used.set(sk, take(sk) + 1)
+        used.set(ck, [...(used.get(ck) ?? []), at])
+        if (station) used.set(sk, [...(used.get(sk) ?? []), at])
       }
       return {
         id: b.id,

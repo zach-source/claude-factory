@@ -1,12 +1,24 @@
 import { expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
+  labelMail,
+  reworkOwned,
   brief,
+  vmBeads,
   clipFactsJson,
   clipReport,
   CONFIG_SYNC,
@@ -17,6 +29,7 @@ import {
   isTrusted,
   labelAction,
   lastContext,
+  holdFloor,
   limitHit,
   managerCommand,
   needsSwap,
@@ -30,6 +43,8 @@ import {
   loadFactory,
   ownCopy,
   paramsOf,
+  pickAgent,
+  splitPick,
   reapable,
   progressNow,
   progressSig,
@@ -38,13 +53,21 @@ import {
   reworkGoal,
   ruleLines,
   selfUpdateMail,
+  managerStale,
+  managerStaleMail,
+  writeManagerLaunch,
+  tokenDigestMail,
   stalled,
   swapUntil,
   workerFlags,
+  piWorker,
+  userPluginDirs,
   workerSettings,
+  workerSkills,
   WORKER_TOOLS,
   commitIdentity,
   room,
+  clusterCap,
   slot,
   withoutFleet,
   type RigFacts,
@@ -260,6 +283,43 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
 })
 
+test('a skills list names only skills the worker image has: factory and station layers refuse the rest', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-'))
+  const tiny = (extra: object) =>
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
+      ...extra,
+    })
+  writeFileSync(join(dir, 'ok.json'), tiny({ skills: ['asd-ste100'] }))
+  expect((await loadFactory(join(dir, 'ok.json'))).skills).toEqual(['asd-ste100'])
+  writeFileSync(join(dir, 'bad.json'), tiny({ skills: ['nope'] }))
+  await expect(loadFactory(join(dir, 'bad.json'))).rejects.toThrow('skill "nope" is not asd-ste100')
+  for (const bad of ['', 'ASD-STE100']) {
+    writeFileSync(join(dir, 'row.json'), tiny({ skills: [bad] }))
+    await expect(loadFactory(join(dir, 'row.json'))).rejects.toThrow(`skill "${bad}"`)
+  }
+  writeFileSync(
+    join(dir, 'node.json'),
+    tiny({ nodes: { work: { prompt: 'x', skills: ['nope'], next: { ok: 'done' } } } }),
+  )
+  await expect(loadFactory(join(dir, 'node.json'))).rejects.toThrow('work: skill "nope" is not asd-ste100')
+})
+
+test('workerSkills is the sorted union of the factory default, the rig and the station', () => {
+  const node = (skills?: string[]) => ({ prompt: 'x', next: {}, skills })
+  const def = (skills?: string[]) => ({ name: 'f', start: 'a', nodes: {}, skills })
+  expect(workerSkills(def(), node(), undefined)).toEqual(['asd-ste100'])
+  expect(workerSkills(def([]), node(), undefined)).toEqual([])
+  expect(workerSkills(def([]), node(['asd-ste100']), undefined)).toEqual(['asd-ste100'])
+  expect(workerSkills(def([]), node(), { skills: ['asd-ste100'] })).toEqual(['asd-ste100'])
+  expect(workerSkills(def(['asd-ste100']), node(['asd-ste100']), { skills: ['asd-ste100'] })).toEqual([
+    'asd-ste100',
+  ])
+  expect(() => workerSkills(def([]), node(), { skills: ['nope'] })).toThrow('skill "nope" is not asd-ste100')
+})
+
 test("a PR's close label closes it, its conflict or rework label reworks it unless it comes from a fork", () => {
   const pr = (labels: string[], isCrossRepository = false) => ({
     number: 7,
@@ -420,11 +480,14 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   // claude-factory-cr6: the factory's deny-rm-rf hook comes last, so it never shadows the user's own guard
   expect(pre[1]).toMatchObject({ matcher: 'Bash' })
   expect(pre[1]!.hooks[0]!.command).toMatch(/worker-hook\.ts'$/)
-  expect(pre).toHaveLength(2)
+  // claude-factory-g4du: the same command guards Write, Edit, MultiEdit and NotebookEdit file paths
+  expect(pre[2]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit' })
+  expect(pre[2]!.hooks[0]!.command).toBe(pre[1]!.hooks[0]!.command)
+  expect(pre).toHaveLength(3)
   // workerSettings keeps a hook event other than PreToolUse as the user set it
   expect(w.hooks.SessionStart).toEqual(hooks.SessionStart)
   // a user with no hooks at all gets only the factory's entry
-  expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(1)
+  expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(2)
   expect(w.env).toMatchObject({
     A: '1',
     CLAUDE_CODE_PLUGIN_DIRS: '/y/mine',
@@ -445,8 +508,13 @@ test('a worker keeps asd-ste100 and the plugins the factory names, and no other'
   const user = {
     enabledPlugins: { 'asd-ste100@m': true, 'ponytail@ponytail': true, 'other@x': true, 'ponytailx@y': true },
   }
-  expect(Object.keys(workerSettings(user, 200).enabledPlugins!)).toEqual(['asd-ste100@m'])
-  const kept = workerSettings(user, 200, undefined, undefined, undefined, ['ponytail']).enabledPlugins!
+  const ste: [undefined, undefined, undefined, string[]] = [undefined, undefined, undefined, ['asd-ste100']]
+  expect(Object.keys(workerSettings(user, 200, ...ste).enabledPlugins!)).toEqual(['asd-ste100@m'])
+  expect(workerSettings(user, 200).enabledPlugins).toBeUndefined()
+  const kept = workerSettings(user, 200, undefined, undefined, undefined, [
+    'asd-ste100',
+    'ponytail',
+  ]).enabledPlugins!
   expect(Object.keys(kept).sort()).toEqual(['asd-ste100@m', 'ponytail@ponytail'])
   const off = { enabledPlugins: { 'ponytail@ponytail': false } }
   expect(
@@ -470,6 +538,47 @@ test("workerFlags writes a rig's own worker-settings-<rig>.json when it has pers
   const webSettings = JSON.parse(readFileSync(join(home, 'worker-settings.json'), 'utf8'))
   expect(acmeSettings.hooks.PreToolUse.at(-1).hooks[0].command).toContain("--person-only-contexts 'acme-ctx'")
   expect(webSettings.hooks.PreToolUse.at(-1).hooks[0].command).not.toContain('--person-only-contexts')
+})
+
+test('workerFlags writes one settings file for each skill set, and warns when a listed skill is off', () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-skills-'))
+  const claude = mkdtempSync(join(tmpdir(), 'claude-cfg-'))
+  const wasDir = process.env.CLAUDE_CONFIG_DIR
+  const warn = console.warn
+  const warned: string[] = []
+  console.warn = (m: string) => void warned.push(m)
+  try {
+    process.env.CLAUDE_CONFIG_DIR = claude
+    writeFileSync(
+      join(claude, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'asd-ste100@m': true, 'acme-other@m': true } }),
+    )
+    const def = { maxContextK: 200 }
+    const none = workerFlags(def, { name: 'web' }, home, [], 'verify')
+    const ste = workerFlags(def, { name: 'web' }, home, ['asd-ste100'], 'plan')
+    expect(none).toContain(join(home, 'worker-settings.json'))
+    expect(ste).toContain(join(home, 'worker-settings--asd-ste100.json'))
+    const read = (f: string) => JSON.parse(readFileSync(join(home, f), 'utf8'))
+    expect(read('worker-settings.json').enabledPlugins).toBeUndefined()
+    expect(read('worker-settings--asd-ste100.json').enabledPlugins).toEqual({ 'asd-ste100@m': true })
+    const acme = { name: 'acme', personOnlyContexts: ['acme-ctx'] }
+    expect(workerFlags(def, acme, home, ['asd-ste100'], 'plan')).toContain(
+      join(home, 'worker-settings-acme--asd-ste100.json'),
+    )
+    expect(warned).toEqual([])
+    writeFileSync(
+      join(claude, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'asd-ste100@m': false } }),
+    )
+    workerFlags(def, { name: 'web' }, home, ['asd-ste100'], 'plan')
+    expect(warned).toHaveLength(1)
+    expect(warned[0]).toContain('asd-ste100')
+    expect(warned[0]).toContain('plan')
+  } finally {
+    console.warn = warn
+    if (wasDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = wasDir
+  }
 })
 
 // claude-factory-25z.2: a rig's personOnlyContexts reaches the deny hook's own argv, so it can refuse a
@@ -539,13 +648,18 @@ test('a worker gets the asd-ste100 plugin alone, with bundled skills off, so it 
       'warp@claude-code-warp': true,
     },
   }
-  const w = workerSettings(user, 200)
+  const w = workerSettings(user, 200, undefined, undefined, undefined, ['asd-ste100'])
   expect(w.enabledPlugins).toEqual({ 'asd-ste100@agent-marketplace': true })
   expect(w.disableBundledSkills).toBe(true)
   expect(w.env).toMatchObject({ STE_VOCAB_PATH: '/v', STE_JEV_URL: 'https://j' })
   // no enabledPlugins key at all when the user has none, or asd-ste100 is off
   expect('enabledPlugins' in workerSettings({ enabledPlugins: { p: true } }, 200)).toBe(false)
-  expect('enabledPlugins' in workerSettings({ enabledPlugins: { 'asd-ste100@m': false } }, 200)).toBe(false)
+  expect(
+    'enabledPlugins' in
+      workerSettings({ enabledPlugins: { 'asd-ste100@m': false } }, 200, undefined, undefined, undefined, [
+        'asd-ste100',
+      ]),
+  ).toBe(false)
   expect('enabledPlugins' in workerSettings({}, 200)).toBe(false)
 })
 
@@ -557,6 +671,75 @@ test("the manager's --tools carries Agent, so the mod can spawn a patrol subagen
   const i = managerCommand().indexOf('--tools')
   expect(i).toBeGreaterThanOrEqual(0)
   expect(managerCommand()[i + 1]!.split(',')).toContain('Agent')
+})
+
+const splitDef = {
+  name: 'x',
+  start: 'a',
+  agent: 'claude',
+  params: { codex: 'codex', codex_share: '0.3', other_share: '0.3' },
+  nodes: {
+    a: { prompt: '', next: { ok: 'done' }, split: { agent: '{codex}', share: 'codex_share' } },
+    b: { prompt: '', next: { ok: 'done' }, split: { agent: '{codex}', share: 'other_share' } },
+    c: { prompt: '', next: { ok: 'done' } },
+  },
+}
+const ids = Array.from({ length: 10000 }, (_, i) => `run-${i}`)
+const codexCount = (
+  rig: object | undefined,
+  env: Record<string, string> = {},
+  runner = 'herdr',
+  node = 'a',
+) => ids.filter(id => pickAgent(id, splitDef, node, rig, runner, env, import.meta.path) === 'codex').length
+
+test('a split pick is stable per run, and each share param picks on its own', () => {
+  for (const id of ids.slice(0, 200))
+    expect(pickAgent(id, splitDef, 'a', undefined, 'herdr', {})).toBe(
+      pickAgent(id, splitDef, 'a', undefined, 'herdr', {}),
+    )
+  const n = codexCount(undefined)
+  expect(n).toBeGreaterThan(2500)
+  expect(n).toBeLessThan(3500)
+  const both = ids.filter(
+    id => splitPick(id, 'codex_share', '0.3') && splitPick(id, 'other_share', '0.3'),
+  ).length
+  expect(both).toBeLessThan(n * 0.6)
+  expect(pickAgent('run-1', splitDef, 'c', undefined, 'herdr', {})).toBe('claude')
+})
+
+test('share 0 never picks codex, share 1 always does, a bad share is 0', () => {
+  expect(codexCount({ params: { codex_share: '0' } })).toBe(0)
+  expect(codexCount(undefined, { FACTORY_CODEX_SHARE: '0' })).toBe(0)
+  expect(codexCount({ params: { codex_share: '1' } })).toBe(10000)
+  for (const bad of ['abc', '-1', '2', 'NaN']) expect(codexCount({ params: { codex_share: bad } })).toBe(0)
+  expect(codexCount({ params: { codex_share: '0' } }, {}, 'herdr', 'b')).toBeGreaterThan(2500)
+})
+
+test('the ax runner gets the split agent only with FACTORY_AX_CODEX=1; a rig agent never does', () => {
+  expect(codexCount({ params: { codex_share: '1' } }, {}, 'ax')).toBe(0)
+  expect(codexCount({ params: { codex_share: '1' } }, { FACTORY_AX_CODEX: '1' }, 'ax')).toBe(10000)
+  expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: { codex_share: '1' } }, 'herdr', {})).toBe(
+    'pi',
+  )
+})
+
+test('a local split picks codex only when the host has the unified_exec pin file (claude-factory-fzm3)', () => {
+  const pick = (share: string, pin: string, runner = 'herdr', env = {}) =>
+    pickAgent('run-1', splitDef, 'a', { params: { codex_share: share } }, runner, env, pin)
+  const missing = join(tmpdir(), 'no-such-pin.toml')
+  expect(pick('1', missing)).toBe('claude')
+  expect(pick('1', import.meta.path)).toBe('codex')
+  expect(pick('0', import.meta.path)).toBe('claude')
+  expect(pick('1', missing, 'ax', { FACTORY_AX_CODEX: '1' })).toBe('codex')
+  expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: {} }, 'herdr', {}, missing)).toBe('pi')
+})
+
+test('the manager and the mod subagents name a full model id, never an alias', () => {
+  const c = managerCommand()
+  expect(c[c.indexOf('--model') + 1]).toBe('claude-opus-5-5')
+  const src = readFileSync(new URL('../mod/hooks/register.tsx', import.meta.url), 'utf8')
+  const models = [...src.matchAll(/^\s+model: '([^']+)'/gm)].map(m => m[1])
+  expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5'])
 })
 
 test("workers commit as the factory home's own git identity, crediting factory.coauthor", () => {
@@ -592,6 +775,46 @@ test("a usage limit is read from the transcript's last turn, and the next accoun
     resetsAt: 1_800_000_000_000,
   })
   expect(limitHit([refused, turn({})].join('\n'))).toBeNull() // it went on since
+  const text = (t: string, extra: object = {}, ts = '2026-10-24T00:07:25.000Z') =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: ts,
+      error: 'rate_limit',
+      apiErrorStatus: 429,
+      isApiErrorMessage: true,
+      message: { content: [{ type: 'text', text: t }] },
+      ...extra,
+    })
+  expect(limitHit(text("You've hit your weekly limit · resets Oct 28, 2am (UTC)"))).toEqual({
+    at: Date.parse('2026-10-24T00:07:25.000Z'),
+    kind: 'seven_day',
+    resetsAt: Date.parse('2026-10-28T02:00:00Z'),
+  })
+  const session = "You've hit your session limit · resets 10am (UTC)"
+  expect(limitHit(text(session, {}, '2026-10-24T08:00:00Z'))).toMatchObject({
+    kind: 'five_hour',
+    resetsAt: Date.parse('2026-10-24T10:00:00Z'),
+  })
+  expect(limitHit(text(session, {}, '2026-10-24T11:00:00Z'))?.resetsAt).toBe(
+    Date.parse('2026-10-25T10:00:00Z'),
+  )
+  expect(limitHit(text('resets Jan 2, 3:30am (UTC)', {}, '2026-12-30T00:00:00Z'))?.resetsAt).toBe(
+    Date.parse('2027-01-02T03:30:00Z'),
+  )
+  expect(limitHit(text('weekly limit resets Oct 10 at 9pm (America/New_York)'))).toMatchObject({
+    kind: 'seven_day',
+    resetsAt: 0,
+  })
+  expect(limitHit(text('slow down'))).toMatchObject({ kind: 'usage', resetsAt: 0 })
+  expect(limitHit(text('x', { error: 'authentication_failed' }))).toMatchObject({ kind: 'auth', resetsAt: 0 })
+  expect(
+    limitHit(text('OAuth token revoked', { error: 'invalid_request', apiErrorStatus: 401 })),
+  ).toMatchObject({ kind: 'auth' })
+  for (const s of [403, 500, 529])
+    expect(limitHit(text('x', { error: 'server_error', apiErrorStatus: s }))).toBeNull()
+  expect(limitHit(text('x', { error: undefined }))).toBeNull()
+  expect(limitHit(JSON.stringify({ type: 'user' }))).toBeNull()
+  expect(servedAt(text('x'))).toBe(0)
   expect(servedAt([refused, turn({})].join('\n'))).toBeGreaterThan(0)
   expect(servedAt([turn({}), refused].join('\n'))).toBe(0)
   expect(nextAccount(['a', 'b', 'c'], 'b', { b: 9 }, 5)).toBe('c')
@@ -674,16 +897,65 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text).toContain('2>/dev/null')
   expect(text).toContain('git checkout -- <file>')
   expect(text).toContain('git status --short')
-  expect(text.length).toBeLessThan(3600)
+  expect(text.length).toBeLessThan(4800)
 })
 
-// mv9: tells a worker to write in ASD-STE100 and to load the plugin's skill before long text, without
-// copying the plugin's own rules into this file (that text would drift from the plugin)
-test('the worker system prompt tells a worker to write in ASD-STE100 and load the asd-ste100 skill first', () => {
+// mv9, claude-factory-qda: the brief of a station with asd-ste100 tells the worker to write in ASD-STE100 and to
+// load the plugin's skill before long text, without copying the plugin's own rules (that text would drift).
+// The worker system prompt no longer says it: a station without the skill must not read it
+test('the brief names the station skills: asd-ste100 tells a worker to write in ASD-STE100, an empty set adds nothing', () => {
+  const def = (skills?: string[]) => ({
+    name: 'f',
+    start: 'implement',
+    skills,
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  })
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-qda-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-qda-test',
+    branch: 'b',
+  }
+  const withSte = brief(run, def(), 'implement', c, [])
+  expect(withSte).toContain('## Skills')
+  expect(withSte).toContain('ASD-STE100')
+  expect(withSte).toContain('asd-ste100 skill')
+  const none = brief(run, def([]), 'implement', c, [])
+  expect(none).not.toContain('## Skills')
+  expect(none).not.toContain('asd-ste100 skill')
+  expect(none).not.toContain('Write every text a person reads')
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
-  expect(text).toContain('ASD-STE100')
-  expect(text).toContain('asd-ste100 skill')
-  expect(text.length).toBeLessThan(3600)
+  expect(text).not.toContain('asd-ste100')
+  expect(text.length).toBeLessThan(4800)
+})
+
+// wzy6: the ponytail rules go in the one file every backend reads (Claude's system prompt, codex's AGENTS.md),
+// on the laptop and in the VM, so no worker depends on a plugin that only the laptop has (constitution I)
+test('the worker system prompt carries the ponytail rules', () => {
+  const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
+  expect(text).toContain('# Ponytail')
+  expect(text).toContain('`ponytail:` comment')
+  expect(text).toContain('trust boundary')
 })
 
 test('a rig with no goal and no ready beads is idle', () => {
@@ -896,6 +1168,8 @@ test("brief()'s memory section tells a worker to pass --kind on memory add (clau
   const text = brief(run, def, 'implement', c, [])
   expect(text).toContain('memory add --from r1/implement --kind fact|rule|recipe')
   expect(text).toContain('--until')
+  // a note that proved wrong is replaced, not left beside its fix (claude-factory-3u1.1.5)
+  expect(text).toContain('--supersedes <old note path>')
 })
 
 // claude-factory-wnm (A10): a requeue edge can hand the same bead to a later run, in another
@@ -1167,6 +1441,50 @@ test('selfUpdateMail mails a repeated refusal again once a no-op sits between th
   expect(again[0]!.text).toContain('a dirty tree')
 })
 
+test('tokenDigestMail mails the token digest once a week, from factory', () => {
+  const D = 86_400_000
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  const digest = () => 'tokens: X'
+  const first = tokenDigestMail(0, home, digest)
+  expect(first).toHaveLength(1)
+  expect(first[0]!.from).toBe('factory')
+  expect(first[0]!.text.startsWith('factory weekly token digest, last 7d:')).toBe(true)
+  expect(first[0]!.text).toContain('tokens: X')
+  expect(tokenDigestMail(6 * D, home, digest)).toHaveLength(0)
+  expect(tokenDigestMail(7 * D, home, digest)).toHaveLength(1)
+})
+
+test('tokenDigestMail mails nothing for an empty digest but moves the date', () => {
+  const D = 86_400_000
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  expect(tokenDigestMail(0, home, () => '')).toHaveLength(0)
+  expect(tokenDigestMail(D, home, () => 'tokens: X')).toHaveLength(0)
+  expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(0)
+})
+
+test('tokenDigestMail returns [] when the digest throws, and the date is written first', () => {
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  expect(
+    tokenDigestMail(5, home, () => {
+      throw new Error('boom')
+    }),
+  ).toEqual([])
+  expect(JSON.parse(readFileSync(join(home, 'token-digest.json'), 'utf8')).at).toBe(5)
+})
+
+test('tokenDigestMail does nothing when FACTORY_TOKEN_DIGEST=0', () => {
+  const home = mkdtempSync(join(tmpdir(), 'token-digest-'))
+  const was = process.env.FACTORY_TOKEN_DIGEST
+  process.env.FACTORY_TOKEN_DIGEST = '0'
+  try {
+    expect(tokenDigestMail(0, home, () => 'tokens: X')).toHaveLength(0)
+    expect(existsSync(join(home, 'token-digest.json'))).toBe(false)
+  } finally {
+    if (was === undefined) delete process.env.FACTORY_TOKEN_DIGEST
+    else process.env.FACTORY_TOKEN_DIGEST = was
+  }
+})
+
 // ---- clipFactsJson (claude-factory-dun.25) ----
 
 const emptyFacts = (extra: Partial<RigFacts> = {}): RigFacts => ({
@@ -1235,14 +1553,14 @@ test('clipFactsJson still fits under budget with nothing to drop beyond the norm
 const MEMORY_ADD_CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const memoryAddHome = (tag: string) => join(tmpdir(), `cli-memory-add-${tag}-${process.pid}`)
 const runMemoryAdd = (home: string, args: string[]) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([MEMORY_ADD_CLI, 'memory', 'add', ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
 }
 const runMemoryHelped = (home: string, args: string[]) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([MEMORY_ADD_CLI, 'memory', 'helped', ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
   })
@@ -1639,7 +1957,7 @@ test('memory helped on a real note still exits 0 and logs it', () => {
   const home = freshMemoryAddHome('helped-real-note')
   mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
   writeFileSync(join(home, 'memory', 'beads', 'x.md'), '---\nsummary: a real note\n---\nbody\n')
-  const r = runMemoryHelped(home, ['beads/x.md'])
+  const r = runMemoryHelped(home, ['--from', 'r1/verify', 'beads/x.md'])
   expect(r.code).toBe(0)
   expect(r.out).toContain('noted:')
   expect(usageLinesOf(home).map(l => l.path)).toEqual(['beads/x.md'])
@@ -1806,4 +2124,216 @@ test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file fi
     }
   }
   rmSync(dir, { recursive: true })
+})
+
+test('clusterCap gives clusterRuns when a positive integer, else 2', () => {
+  expect(clusterCap({ clusterRuns: 3 })).toBe(3)
+  for (const v of [undefined, 0, -1, 1.5, '3', null]) expect(clusterCap({ clusterRuns: v as never })).toBe(2)
+})
+
+// claude-factory-l3tl: an opted-in rig gets its own settings file, with --merge-authority on the hook's argv
+test("workerFlags carries --merge-authority only for a rig with mergeAuthority true, in the rig's own file", () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-flags-'))
+  const clone = join(home, 'clone')
+  Bun.spawnSync(['git', 'init', '-q', clone])
+  Bun.spawnSync(['git', '-C', clone, 'remote', 'add', 'origin', 'git@github.com:acme/widget.git'])
+  const bare = join(home, 'bare')
+  Bun.spawnSync(['git', 'init', '-q', bare])
+  const acme = { name: 'acme', repo: clone, mergeAuthority: true }
+  const noOrigin = { name: 'nogit', repo: bare, mergeAuthority: true }
+  const web = { name: 'web', repo: clone }
+  const loose = { name: 'loose', repo: clone, mergeAuthority: 'yes' as unknown as boolean }
+  expect(workerFlags({ maxContextK: 200 }, acme, home)).toContain(join(home, 'worker-settings-acme.json'))
+  expect(workerFlags({ maxContextK: 200 }, web, home)).toContain(join(home, 'worker-settings.json'))
+  expect(workerFlags({ maxContextK: 200 }, noOrigin, home)).toContain(join(home, 'worker-settings.json'))
+  expect(workerFlags({ maxContextK: 200 }, loose, home)).toContain(join(home, 'worker-settings.json'))
+  const cmd = (f: string) =>
+    JSON.parse(readFileSync(join(home, f), 'utf8')).hooks.PreToolUse.at(-1).hooks[0].command as string
+  expect(cmd('worker-settings-acme.json')).toMatch(/worker-hook\.ts' --merge-authority 'acme\/widget'$/)
+  expect(cmd('worker-settings.json')).not.toContain('merge-authority')
+})
+
+// claude-factory-l3tl: the merge-authority rule shows only for the ship factory on an opted-in rig
+test('ruleLines adds the Merge authority section only for the ship factory and an opted-in rig', () => {
+  const ship = { name: 'ship', rules: '- rule one' }
+  const text = ruleLines(ship, undefined, undefined, true).join('\n')
+  expect(text).toContain('## Merge authority')
+  expect(text).toContain('--match-head-commit')
+  expect(ruleLines(ship, undefined, undefined, false)).toEqual(ruleLines(ship))
+  expect(ruleLines(ship)).not.toContain('## Merge authority')
+  expect(ruleLines({ name: 'lifecycle', rules: '- rule one' }, undefined, undefined, true)).toEqual(
+    ruleLines({ rules: '- rule one' }),
+  )
+})
+
+test('the ship release prompt merges only under a Merge authority section; deploy never merges', async () => {
+  const { default: ship } = await import('../factories/ship')
+  expect(ship.nodes.release.prompt).toContain('"Merge authority" section')
+  expect(ship.nodes.release.prompt).toContain('Without that section, you never merge')
+  expect(ship.nodes.deploy.prompt).toContain('you never merge it yourself')
+})
+
+// claude-factory-pfc8: an AX ship run has no bead, yet its queue station reads the ship queue from bd
+test('vmBeads gives the VM beads for a run with a bead and for a ship run', () => {
+  expect(vmBeads({ bead: 'app-1' })).toBe(true)
+  expect(vmBeads({ ship: true })).toBe(true)
+  expect(vmBeads({})).toBe(false)
+})
+
+// claude-factory-qo6i: codex and pi workers get the skills of the plugins a Claude worker keeps (constitution I).
+// Claude Code keeps a plugin at its installPath, or (a directory marketplace) in the marketplace's own dir
+test('userPluginDirs finds an on worker plugin at its installPath or in its directory marketplace', () => {
+  const c = mkdtempSync(join(tmpdir(), 'plugins-'))
+  const cached = join(c, 'cache', 'p')
+  const market = join(c, 'market')
+  mkdirSync(join(c, 'plugins'), { recursive: true })
+  mkdirSync(cached, { recursive: true })
+  mkdirSync(join(market, '.claude-plugin'), { recursive: true })
+  mkdirSync(join(market, 'claude', 'ste'), { recursive: true })
+  writeFileSync(
+    join(c, 'settings.json'),
+    JSON.stringify({ enabledPlugins: { 'pony@p': true, 'ste@m': true, 'off@p': false, 'other@p': true } }),
+  )
+  writeFileSync(
+    join(c, 'plugins', 'installed_plugins.json'),
+    JSON.stringify({
+      plugins: {
+        'pony@p': [{ installPath: cached }],
+        'ste@m': [{ installPath: join(c, 'gone') }],
+        'off@p': [{ installPath: cached }],
+      },
+    }),
+  )
+  writeFileSync(
+    join(c, 'plugins', 'known_marketplaces.json'),
+    JSON.stringify({ m: { installLocation: market } }),
+  )
+  writeFileSync(
+    join(market, '.claude-plugin', 'marketplace.json'),
+    JSON.stringify({ plugins: [{ name: 'ste', source: './claude/ste' }] }),
+  )
+  expect(userPluginDirs(['pony', 'ste', 'off'], c)).toEqual([cached, join(market, 'claude', 'ste')])
+  expect(userPluginDirs(['pony'], join(c, 'none'))).toEqual([])
+  expect(userPluginDirs([], c)).toEqual([]) // a station with no skills gets no plugin dir
+})
+
+// claude-factory-hg9o: a pi worker gets the worker rules a Claude worker gets, and the plugins' skills
+test('piWorker appends the worker rules to pi and passes each plugin skill', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pi-home-'))
+  const plugin = join(home, 'plugin')
+  mkdirSync(join(plugin, 'skills', 'ste'), { recursive: true })
+  const { extra } = piWorker(home, [plugin])
+  const rules = join(home, 'worker-system.md')
+  expect(extra).toBe(` '--append-system-prompt' '${rules}' '--skill' '${join(plugin, 'skills', 'ste')}'`)
+  expect(readFileSync(rules, 'utf8')).toStartWith(
+    readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
+  )
+})
+
+test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {
+  const stopped = 'worker stopped without reporting'
+  const hit = { at: 5000, resetsAt: 90_000 }
+  expect(holdFloor('egress gateway: model API unreachable since x (3 retries): y', null, 0, 1000, 2000)).toBe(
+    0,
+  )
+  expect(holdFloor(stopped, hit, 70_000, 1000, 2000)).toBe(90_000)
+  expect(holdFloor(stopped, hit, 95_000, 1000, 2000)).toBe(95_000)
+  expect(holdFloor(stopped, null, 70_000, 1000, 2000)).toBe(70_000) // the page is still active
+  // not an outage
+  expect(holdFloor(stopped, null, 1500, 1000, 2000)).toBeNull() // the page has passed
+  expect(holdFloor(stopped, hit, 0, 9000, 20_000)).toBeNull() // an older attempt's limit
+  expect(holdFloor('no report within 60 min', hit, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('stalled: no output for 30 min', hit, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('worker never started on AX after 5 min: x', null, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('worker pane x was closed', null, 70_000, 1000, 2000)).toBeNull()
+  expect(holdFloor('see egress gateway: model API unreachable', null, 0, 1000, 2000)).toBeNull()
+})
+
+test('label mail wakes only the ship station parked on that very PR (61pu)', () => {
+  const url = 'https://github.com/acme/widget/pull/7'
+  const c = { log: [{ node: 'deploy', outcome: 'blocked', summary: 'waiting on ' + url }] } as never
+  expect(labelMail({ c, node: 'deploy' }, url, 't')).toMatchObject({ wake: true })
+  expect(labelMail({ c, node: 'deploy' }, 'https://github.com/acme/widget/pull/8', 't')).not.toHaveProperty(
+    'wake',
+  )
+  // a rework label on the PR a run owns (rollback parked on its revert PR) mails through the same rule
+  const owner = { id: 'r', node: 'rollback', c }
+  expect(labelMail(owner, url, 't')).not.toHaveProperty('wake') // node differs from the parked one
+})
+
+test('a rework label on a run-owned PR mails the parked station with wake (61pu.6)', () => {
+  const url = 'https://github.com/acme/widget/pull/7'
+  const c = { log: [{ node: 'deploy', outcome: 'blocked', summary: 'waiting on ' + url }] } as never
+  const pr = { number: 7, url, labels: [{ name: 'rework' }] } as never
+  const sent: unknown[] = []
+  const io = { unlabel: () => 0, comment: () => 0, post: (_id: string, ev: unknown) => sent.push(ev) }
+  reworkOwned(pr, { id: 'r', node: 'deploy', c }, io)
+  expect(sent[0]).toMatchObject({ type: 'MAIL', to: 'deploy', wake: true })
+  reworkOwned(pr, { id: 'r', node: 'rollback', c }, io)
+  expect(sent[1]).not.toHaveProperty('wake')
+})
+
+test('managerCommand([], "") holds no per-launch extras and ignores the caller plugin dirs (claude-factory-772)', () => {
+  const env = (c: string[]) => JSON.parse(c[c.indexOf('--settings') + 1]!).env.CLAUDE_CODE_PLUGIN_DIRS
+  expect(env(managerCommand([], 'x/herdr-fleet:y'))).toBe('y')
+  expect(env(managerCommand([], 'y'))).toBe('y')
+  const c = managerCommand([], '')
+  for (const f of ['--resume', '--session-id', '--add-dir']) expect(c).not.toContain(f)
+})
+
+test('writeManagerLaunch stores pid, startedAt and argv in manager.json, mode 0600 (claude-factory-772)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'manager-launch-'))
+  writeManagerLaunch(home, 123, 1000, ['claude', '--tools', 'Bash'])
+  expect(JSON.parse(readFileSync(join(home, 'manager.json'), 'utf8'))).toEqual({
+    pid: 123,
+    startedAt: 1000,
+    argv: ['claude', '--tools', 'Bash'],
+  })
+  expect(statSync(join(home, 'manager.json')).mode & 0o777).toBe(0o600)
+})
+
+test('managerStale says restart only for a live manager with an older launch command (claude-factory-772)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'manager-stale-'))
+  const now = ['claude', '--tools', 'Bash,Agent']
+  const old = ['claude', '--tools', 'Bash']
+  const alive = () => true
+  expect(managerStale(home, now, alive)).toBeNull() // no file
+  writeManagerLaunch(home, 5, 1000, old)
+  const text = managerStale(home, now, alive)!
+  expect(text).toContain('restart factory manager')
+  expect(text).toContain('Agent')
+  expect(managerStale(home, now, () => false)).toBeNull() // dead pid
+  writeManagerLaunch(home, 5, 1000, now)
+  expect(managerStale(home, now, alive)).toBeNull() // equal
+  writeFileSync(join(home, 'manager.json'), 'not json')
+  expect(managerStale(home, now, alive)).toBeNull()
+  writeFileSync(join(home, 'manager.json'), JSON.stringify({ pid: 5, startedAt: 1 }))
+  expect(managerStale(home, now, alive)).toBeNull() // argv missing
+  writeFileSync(join(home, 'manager.json'), JSON.stringify({ pid: 5, startedAt: 1, argv: 'x' }))
+  expect(managerStale(home, now, alive)).toBeNull() // argv not an array
+})
+
+test('status prints the manager line, and only without a run id (claude-factory-772)', () => {
+  const src = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8')
+  const body = src.slice(src.indexOf('async function status('))
+  expect(body.slice(0, body.indexOf('\n}\n'))).toContain('!id && managerStale(HOME')
+})
+
+test('managerStaleMail mails once for each launch, from the factory (claude-factory-772)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'manager-stale-mail-'))
+  const now = managerCommand([], '')
+  const old = [...now, '--old']
+  const alive = () => true
+  expect(managerStaleMail(1, home, alive)).toEqual([])
+  writeManagerLaunch(home, 5, 1000, now)
+  expect(managerStaleMail(1, home, alive)).toEqual([]) // not stale: no marker
+  expect(existsSync(join(home, 'manager-stale-mailed.json'))).toBe(false)
+  writeManagerLaunch(home, 5, 1000, old)
+  const first = managerStaleMail(2, home, alive)
+  expect(first).toHaveLength(1)
+  expect(first[0]!.from).toBe('factory')
+  expect(first[0]!.run).toBe('factory')
+  expect(managerStaleMail(3, home, alive)).toEqual([])
+  writeManagerLaunch(home, 6, 2000, old)
+  expect(managerStaleMail(4, home, alive)).toHaveLength(1)
 })

@@ -13,6 +13,7 @@ import {
   pullArgs,
   redact,
   resolveConnectCreds,
+  linearAuth,
   resolveLinearApiKey,
   routeLinearIssue,
   syncEnv,
@@ -593,7 +594,7 @@ afterAll(() => {
 })
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,
@@ -1164,4 +1165,62 @@ test('the incremental cutoff looks 5 minutes behind the last good pull, so clock
   const pullCalls = callLines().filter(l => argvOf(l).startsWith('linear pull'))
   expect(pullCalls).toHaveLength(2) // the first pass's call, plus exactly one new call
   expect(argvOf(pullCalls[1]!)).toBe('linear pull A-2 --json')
+})
+
+test('a changed routing config drops the cutoff; an unchanged one keeps it (claude-factory-dvg)', () => {
+  const rig = (labels: string[]) => [
+    { name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM], labels } },
+  ]
+  const pulls = () => callLines().filter(l => argvOf(l).startsWith('linear pull'))
+  const backdate = () => {
+    const s = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+    s.a.at = Date.now() - 20 * 60_000 - 1000
+    writeFileSync(join(home, 'linear-sync.json'), JSON.stringify(s))
+  }
+  writeRigs(rig(['x']))
+  factory(['linear'])
+  expect(pulls()).toHaveLength(1)
+
+  backdate()
+  factory(['linear']) // same config: the old issue is cut off
+  expect(pulls()).toHaveLength(1)
+
+  writeRigs(rig(['x', 'y']))
+  backdate()
+  factory(['linear']) // changed labels: the old issue is read again
+  expect(pulls()).toHaveLength(2)
+  expect(JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8')).a.routing).toContain('"y"')
+})
+
+test('a failed pass after a routing change keeps the old routing, so the next good pass still drops the cutoff (claude-factory-dvg)', () => {
+  const rig = (labels: string[]) => [
+    { name: 'a', repo: repoA, factory: 'lifecycle', linear: { team: [TEAM], labels } },
+  ]
+  const pulls = () => callLines().filter(l => argvOf(l).startsWith('linear pull'))
+  const backdate = () => {
+    const s = JSON.parse(readFileSync(join(home, 'linear-sync.json'), 'utf8'))
+    s.a.at = Date.now() - 20 * 60_000 - 1000
+    writeFileSync(join(home, 'linear-sync.json'), JSON.stringify(s))
+  }
+  writeRigs(rig(['x']))
+  factory(['linear'])
+  expect(pulls()).toHaveLength(1)
+
+  writeRigs(rig(['x', 'y']))
+  backdate()
+  writeFileSync(mode, 'error')
+  factory(['linear']) // changed labels, but the pull fails
+  expect(pulls()).toHaveLength(2)
+
+  rmSync(mode, { force: true })
+  backdate()
+  factory(['linear']) // good pass: the old issue must still be read
+  expect(pulls()).toHaveLength(3)
+})
+
+test('linearAuth in the AX manager returns the placeholder and reads no Connect value', async () => {
+  const secrets: string[] = []
+  expect(await linearAuth(secrets, { FACTORY_IN_AX: '1', FACTORY_NO_KEYCHAIN: '1' })).toBe('placeholder')
+  expect(secrets).toEqual([])
+  await expect(linearAuth(secrets, { FACTORY_NO_KEYCHAIN: '1' })).rejects.toThrow(CONNECT_SETUP_HELP)
 })

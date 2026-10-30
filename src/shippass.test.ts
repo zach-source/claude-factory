@@ -7,14 +7,16 @@ import { join } from 'node:path'
 import { shipStarts } from './cli'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
-const dir = join(tmpdir(), `shippass-${process.pid}`)
-const home = join(dir, 'home')
-const bin = join(dir, 'bin')
+// each test gets its own dir: a detached `factory beads` pass of one test must not write into the next test's home
+let n = 0
+let dir = ''
+let home = ''
+let bin = ''
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,
@@ -30,7 +32,9 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 
 /** a repo is queued when its .beads/queue file exists: the fake bd lists one ship bead for it */
 function setup(rigs: { name: string; queued: boolean }[]) {
-  rmSync(dir, { recursive: true, force: true })
+  dir = join(tmpdir(), `shippass-${process.pid}-${n++}`)
+  home = join(dir, 'home')
+  bin = join(dir, 'bin')
   mkdirSync(bin, { recursive: true })
   mkdirSync(join(dir, 'claude-config'), { recursive: true })
   writeFileSync(join(dir, 'claude-config', '.claude.json'), JSON.stringify({ projects: {} }))
@@ -90,10 +94,12 @@ function setup(rigs: { name: string; queued: boolean }[]) {
 
 const runs = () =>
   existsSync(join(home, 'runs'))
-    ? readdirSync(join(home, 'runs')).map(id => ({
-        id,
-        ...JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')),
-      }))
+    ? readdirSync(join(home, 'runs'))
+        .filter(id => existsSync(join(home, 'runs', id, 'run.json')))
+        .map(id => ({
+          id,
+          ...JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')),
+        }))
     : []
 
 test('shipStarts picks the repos with a queue and no live ship run', () => {
@@ -147,6 +153,24 @@ test('a live ship run holds no slot, but a work run still does', () => {
   writeFileSync(join(home, 'runs', id, 'run.json'), JSON.stringify({ ...rest, id, ship: undefined }))
   rmSync(join(home, 'runs', runs().find(r => r.id !== id)!.id), { recursive: true })
   expect(factory(['start', 'lifecycle', 'a', 'more work'], env).err).toContain('runs are busy')
+})
+
+test('a run dir without run.json does not break factory start', () => {
+  setup([{ name: 'a', queued: true }])
+  mkdirSync(join(home, 'runs', 'ship-stale'), { recursive: true })
+  const out = factory(['start', 'ship', 'a', 'again'])
+  expect(out.err).toContain('only the runner starts a ship run')
+  expect(out.err).not.toContain('no run')
+})
+
+test('a run dir without run.json does not break factory status', () => {
+  setup([{ name: 'a', queued: true }])
+  mkdirSync(join(home, 'runs', 'x'), { recursive: true })
+  mkdirSync(join(home, 'runs', 'y'), { recursive: true })
+  writeFileSync(join(home, 'runs', 'y', 'run.json'), JSON.stringify({ id: 'y' }))
+  const out = factory(['status'])
+  expect(out.err).not.toContain('no run')
+  expect(out.code).toBe(0)
 })
 
 test('factory start ship is refused: only the runner starts a ship run', () => {

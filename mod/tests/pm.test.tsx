@@ -133,7 +133,7 @@ test(
   async ($, on) => {
     const clock = mock.clock(on)
     const spawns: { subagent_type: string; description: string; prompt: string }[] = []
-    pmMocks(on, { runs: () => [RUN('r1')] })
+    const files = pmMocks(on, { runs: () => [RUN('r1')] })
     on('agent.spawn', ($, e) => {
       const ev = e as unknown as { subagent_type: string; description: string; prompt: string }
       if (ev.subagent_type === 'factory:pm') spawns.push(ev)
@@ -159,8 +159,32 @@ test(
       reason: 'answer',
       turnId: 't1',
       agentId: 'pm-1',
+      usage: {
+        input_tokens: 7,
+        output_tokens: 8,
+        cache_read_input_tokens: 9,
+        cache_creation_input_tokens: 6,
+        model: 'claude-x',
+      },
     } as never)
     await clock.settle()
+    // claude-factory-hr94: the pm's turn is counted under its own name
+    expect(
+      (files.get(`${HOME}/manager-usage.jsonl`) ?? '')
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l)),
+    ).toEqual([
+      {
+        name: 'pm',
+        at: expect.any(Number),
+        model: 'claude-x',
+        input: 7,
+        cacheWrite: 6,
+        cacheRead: 9,
+        output: 8,
+      },
+    ])
 
     // well under 60 minutes later: no second spawn
     await clock.advance(59 * 60_000)

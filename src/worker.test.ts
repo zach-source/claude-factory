@@ -12,7 +12,15 @@ import {
   servicesNote,
   servicesWaitMs,
   startServices,
+  imagePlugins,
 } from './worker'
+
+// claude-factory-qda.4: the laptop names a station's skills in FACTORY_SKILLS; unset is an older laptop
+test('imagePlugins picks the image plugin dirs by FACTORY_SKILLS', () => {
+  expect(imagePlugins('')).toEqual([])
+  expect(imagePlugins(undefined)).toEqual(['/opt/plugins/asd-ste100'])
+  expect(imagePlugins('asd-ste100')).toEqual(['/opt/plugins/asd-ste100'])
+})
 
 function sh(cmd: string[], cwd: string) {
   const p = Bun.spawnSync(cmd, { cwd })
@@ -599,6 +607,10 @@ describe('startServices', () => {
     ])
     const results = await startServices()
     expect(results[0]).toMatchObject({ name: 'web', ok: true })
+    // the ready probe can pass before the spawned shell writes the marker: wait for it
+    for (let i = 0; i < 100 && !existsSync(marker); i++) await new Promise(r => setTimeout(r, 50))
+    // ponytail: the file can exist before the echo writes; a short wait lets the write land
+    await new Promise(r => setTimeout(r, 50))
     expect(readFileSync(marker, 'utf8').trim()).toBe('bar')
   })
 

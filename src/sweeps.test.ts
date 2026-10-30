@@ -201,9 +201,14 @@ test('a kept bead with no sweep-queue:* label is not allowed to auto-start', () 
   expect(verdicts).toEqual([{ id: 'b0', station: 'maintain', kept: true, allowed: false }])
 })
 
-test('a kept bead labeled sweep-queue:incident, sweep-queue:main-ci-red or sweep-queue:critical-advisory is allowed', () => {
+test('a kept bead labeled sweep-queue:incident, sweep-queue:main-ci-red, sweep-queue:critical-advisory or sweep-queue:flaky-test is allowed', () => {
   const now = Date.now()
-  for (const label of ['sweep-queue:incident', 'sweep-queue:main-ci-red', 'sweep-queue:critical-advisory']) {
+  for (const label of [
+    'sweep-queue:incident',
+    'sweep-queue:main-ci-red',
+    'sweep-queue:critical-advisory',
+    'sweep-queue:flaky-test',
+  ]) {
     const b = filed('b0', 'monitor', new Date(now).toISOString(), [label])
     expect(sweepGuard([b], now)).toEqual([{ id: 'b0', station: 'monitor', kept: true, allowed: true }])
   }
@@ -231,6 +236,15 @@ test('a sweep-filed bead with no created_at stays inside the window, not at epoc
     kept: false,
     allowed: false,
   })
+})
+
+test('a sweep-filed bead with an unparseable created_at stays inside the window', () => {
+  const now = Date.now()
+  const recent = Array.from({ length: 5 }, (_, i) =>
+    filed(`b${i}`, 'maintain', new Date(now - (4 - i) * 60_000).toISOString()),
+  )
+  const bad = filed('bad', 'maintain', 'garbage')
+  expect(sweepGuard([...recent, bad], now).find(v => v.id === 'bad')?.kept).toBe(false)
 })
 
 test('sweepGuard is idempotent: the same beads give the same verdicts on a second call', () => {
@@ -305,33 +319,13 @@ test('markGuardHandled is idempotent: marking the same id twice keeps one entry'
   expect(Object.keys(state.a!)).toHaveLength(1)
 })
 
-test('pruneGuardState drops a mark past maxAgeMs and keeps one still inside it', () => {
-  const now = Date.now()
-  const twoDaysAgo = now - 49 * 60 * 60 * 1000
-  const anHourAgo = now - 60 * 60 * 1000
-  let state: SweepGuardState = {}
-  state = markGuardHandled(state, 'a', 'stale', twoDaysAgo)
-  state = markGuardHandled(state, 'a', 'fresh', anHourAgo)
-  const pruned = pruneGuardState(state, now)
-  expect(guardHandled(pruned, 'a', 'stale')).toBe(false)
-  expect(guardHandled(pruned, 'a', 'fresh')).toBe(true)
-})
-
-test('pruneGuardState drops a rig entirely once every one of its marks is stale', () => {
-  const now = Date.now()
-  let state: SweepGuardState = {}
-  state = markGuardHandled(state, 'a', 'stale', now - 49 * 60 * 60 * 1000)
-  const pruned = pruneGuardState(state, now)
-  expect(pruned.a).toBeUndefined()
-})
-
 // claude-factory-8pc.21: a mark must outlive maxAgeMs as long as its bead stays open, or a held
 // bead re-queued after 48h gets held again right away.
 test('pruneGuardState keeps a mark past maxAgeMs when openIds says its bead is still open', () => {
   const now = Date.now()
   let state: SweepGuardState = {}
   state = markGuardHandled(state, 'a', 'still-open', now - 49 * 60 * 60 * 1000)
-  const pruned = pruneGuardState(state, now, { a: new Set(['still-open']) })
+  const pruned = pruneGuardState(state, { a: new Set(['still-open']) })
   expect(guardHandled(pruned, 'a', 'still-open')).toBe(true)
 })
 
@@ -339,16 +333,16 @@ test('pruneGuardState drops a mark openIds says is closed or gone, even inside m
   const now = Date.now()
   let state: SweepGuardState = {}
   state = markGuardHandled(state, 'a', 'closed', now - 60 * 60 * 1000)
-  const pruned = pruneGuardState(state, now, { a: new Set() })
+  const pruned = pruneGuardState(state, { a: new Set() })
   expect(guardHandled(pruned, 'a', 'closed')).toBe(false)
 })
 
-test('pruneGuardState falls back to maxAgeMs for a rig openIds has no entry for', () => {
+test('pruneGuardState keeps every mark of a rig openIds has no entry for', () => {
   const now = Date.now()
   let state: SweepGuardState = {}
-  state = markGuardHandled(state, 'a', 'stale', now - 49 * 60 * 60 * 1000)
+  state = markGuardHandled(state, 'a', 'old', now - 49 * 60 * 60 * 1000)
   state = markGuardHandled(state, 'b', 'fresh', now - 60 * 60 * 1000)
-  const pruned = pruneGuardState(state, now, { b: new Set() }) // 'b's mark drops: openIds says closed
-  expect(guardHandled(pruned, 'a', 'stale')).toBe(false) // 'a' has no openIds entry: age rule applies
+  const pruned = pruneGuardState(state, { b: new Set() }) // 'b's mark drops: openIds says closed
+  expect(guardHandled(pruned, 'a', 'old')).toBe(true) // 'a' was not read: keep its marks
   expect(guardHandled(pruned, 'b', 'fresh')).toBe(false)
 })

@@ -1,6 +1,15 @@
 // The runner with an AX worker, end to end through bin/factory: a fake `ax` stands in for the cluster.
 import { afterAll, describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -13,6 +22,7 @@ import {
   replayable,
   rigBeadsSync,
   vmClaudeFlags,
+  vmCodexHome,
 } from './cli'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
@@ -25,7 +35,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
     // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
@@ -388,7 +398,7 @@ test('reap() closes a finished run\'s workspace through FACTORY_HERDR, not a lit
     at: 1,
   })
   cluster('Running', { status: 'idle', session: 's1', lines: [report] })
-  factory(['tick']) // 'a' goes idle: the report is replayed
+  factory(['tick']) // 'a' goes idle: the report is replayed. A tick with a worker marker is refused since 3c4w (worker-control.test.ts)
   const second = factory(['tick']) // the station ends: the run is over
   expect(JSON.parse(second.out).runs[0]).toMatchObject({ id: 'r1x', node: 'done' })
 
@@ -484,6 +494,66 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
   expect(called().match(/worker prompt/g)).toHaveLength(5)
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
 })
+
+test("a tick replays memory helped as the worker's station, and refuses a path outside the memory dir", () => {
+  launched('r20')
+  const memDir = join(home, 'memory')
+  mkdirSync(join(memDir, 'topic'), { recursive: true })
+  writeFileSync(join(memDir, 'topic', 'n.md'), '---\nsummary: s\n---\nbody\n')
+  const usage = join(memDir, '.usage.jsonl')
+  const line = (argv: string[]) => JSON.stringify({ argv, from: 'a', at: 1 })
+  cluster('Running', {
+    status: 'working',
+    lines: [line(['memory', 'helped', '--from', 'forged/x', 'topic/n.md'])],
+  })
+  factory(['tick'])
+  const rows = readFileSync(usage, 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ path: 'topic/n.md', helped: 1, by: 'r20/a' })
+  expect(called()).not.toContain('worker prompt')
+  factory(['tick']) // nothing replays twice
+  expect(readFileSync(usage, 'utf8').trim().split('\n')).toHaveLength(1)
+
+  rmSync(usage)
+  cluster('Running', {
+    status: 'working',
+    lines: [
+      line(['memory', 'helped', '../../etc/passwd']),
+      line(['memory', 'helped', '/etc/passwd']),
+      line(['memory', 'helped', 'topic/missing.md']),
+    ],
+  })
+  rmSync(join(home, 'runs', 'r20', 't.seen'))
+  factory(['tick'])
+  expect(existsSync(usage)).toBe(false)
+  expect(called().match(/worker prompt/g)).toHaveLength(3) // each refusal told to the worker
+  rmSync(join(home, 'runs', 'r20'), { recursive: true })
+  rmSync(memDir, { recursive: true })
+})
+
+test('memory search --from logs shown with the run and station; without it, no by', () => {
+  const memDir = join(home, 'memory')
+  mkdirSync(join(memDir, 'topic'), { recursive: true })
+  writeFileSync(
+    join(memDir, 'topic', 'n.md'),
+    '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
+  )
+  const usage = join(memDir, '.usage.jsonl')
+  const rows = () =>
+    readFileSync(usage, 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+  expect(factory(['memory', 'search', '--from', 'r1/plan', 'dolt lock']).code).toBe(0)
+  expect(rows()).toHaveLength(1)
+  expect(rows()[0]).toMatchObject({ path: 'topic/n.md', shown: 1, by: 'r1/plan' })
+  expect(factory(['memory', 'search', 'dolt lock']).code).toBe(0)
+  expect(rows()[1].by).toBeUndefined()
+  rmSync(memDir, { recursive: true })
+}, 60_000)
 
 test('a report appended after the worker deletes its already-replayed probes still replays (claude-factory-4x1)', () => {
   const seq = launched('r8')
@@ -661,23 +731,116 @@ test("a task's egress policy is tried again each tick until its actor shows, wit
   rmSync(join(home, 'runs', 'r4'), { recursive: true })
 })
 
-test('a VM worker refused for the usage limit is held until the reset, not nudged', () => {
-  launched('r5')
-  const refused = JSON.stringify({
+/** every prompt sent to the fake ax, decoded: the worker prompt argument is base64 */
+const prompted = () =>
+  called()
+    .split('\n')
+    .filter(l => l.includes('worker prompt '))
+    .map(l => Buffer.from(l.split('worker prompt ')[1] ?? '', 'base64').toString())
+    .join('\n')
+/** a weekly-limit refusal with no quotaLimits (claude-factory-s6b8), whose reset is two days away, as serve prints it */
+function weeklyRefusal() {
+  const reset = new Date(Date.now() + 2 * 86_400_000)
+  reset.setUTCHours(2, 0, 0, 0)
+  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][
+    reset.getUTCMonth()
+  ]
+  const text = `You've hit your weekly limit · resets ${mon} ${reset.getUTCDate()}, 2am (UTC)`
+  const tail = JSON.stringify({
     type: 'assistant',
     timestamp: new Date(Date.now() + 1000).toISOString(),
     error: 'rate_limit',
-    quotaLimits: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: Date.now() / 1000 + 3600 },
+    apiErrorStatus: 429,
+    isApiErrorMessage: true,
+    message: { content: [{ type: 'text', text }] },
   })
-  cluster('Running', { status: 'idle', session: 's1', lines: [], tail: refused })
+  return { tail, resetsAt: reset.getTime() }
+}
+
+test('a VM worker refused for a long usage limit parks the station until the reset, not nudged', () => {
+  launched('r5')
+  const { tail, resetsAt } = weeklyRefusal()
+  cluster('Running', { status: 'idle', session: 's1', lines: [], tail })
   factory(['tick']) // learns the session
-  const held = factory(['tick'])
-  expect(JSON.parse(held.out).runs[0]).toMatchObject({ agent: 'usage limit' })
-  expect(readFileSync(join(home, 'runs', 'r5', 'state.json'), 'utf8')).toContain(
-    'at its usage limit (five_hour)',
-  ) // the manager is told
+  factory(['tick'])
+  const state = JSON.parse(readFileSync(join(home, 'runs', 'r5', 'state.json'), 'utf8'))
+  expect(state.snapshot.value).toMatchObject({ a: 'waiting' })
+  expect(state.snapshot.context.wakeAt).toBeGreaterThanOrEqual(resetsAt)
+  expect(state.snapshot.context.attempt).toBe(1)
+  const last = state.snapshot.context.log.at(-1)
+  expect(last.outcome).toBe('outage')
+  expect(last.summary).toStartWith('usage limit (seven_day)')
   expect(called()).not.toContain('worker prompt')
+  expect(called()).toContain('delete')
+  const held = (state.snapshot.context.mail.manager ?? []).filter((m: { text: string }) =>
+    m.text.includes('held, not failed'),
+  )
+  expect(held).toHaveLength(1)
+  expect(held[0].from).toBe('factory')
   rmSync(join(home, 'runs', 'r5'), { recursive: true })
+})
+
+test('a token swap that worked keeps the in-place wait, then the idle worker is nudged and the notice never makes it ask', () => {
+  const runDir = join(home, 'runs', 'r6')
+  const seq = launched('r6')
+  const swap = join(dir, 'swap')
+  writeFileSync(swap, `#!/bin/sh\necho x >> ${join(dir, 'swaps.log')}\necho 'slot 2 is live'\n`)
+  chmodSync(swap, 0o755)
+  rmSync(join(dir, 'swaps.log'), { force: true })
+  const { tail } = weeklyRefusal()
+  cluster('Running', { status: 'idle', session: 's1', lines: [], tail })
+  const env = { FACTORY_AX_TOKEN_SWAP: swap }
+  factory(['tick'], env) // learns the session
+  const waited = factory(['tick'], env)
+  expect(JSON.parse(waited.out).runs[0]).toMatchObject({ agent: 'usage limit' })
+  factory(['tick'], env)
+  expect(readFileSync(join(dir, 'swaps.log'), 'utf8')).toBe('x\n') // once per hit
+  const mid = readFileSync(join(runDir, 'state.json'), 'utf8')
+  expect(mid).not.toContain('"outcome":"outage"')
+  expect(mid).not.toContain('"outcome":"fail"')
+  const mail = (JSON.parse(mid).snapshot.context.mail.manager ?? []) as { from: string; text: string }[]
+  expect(mail.filter(m => m.text.includes('slot 2 is live')).map(m => m.from)).toEqual(['factory'])
+  expect(mail.filter(m => m.text.includes('usage limit')).map(m => m.from)).toEqual(['factory'])
+  // the refresh window ends and the worker has sat idle: it is nudged, not suspended
+  const old = Date.now() - 40 * 60_000
+  const actor = createActor(compile(def), { snapshot: JSON.parse(mid).snapshot }).start()
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: old })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  const swapFile = join(home, 'token-swap-ax.json')
+  writeFileSync(
+    swapFile,
+    JSON.stringify({ ...JSON.parse(readFileSync(swapFile, 'utf8')), until: Date.now() - 1_000 }),
+  )
+  factory(['tick'], env)
+  expect(prompted()).toContain('You have not reported')
+  expect(called()).not.toContain('suspend')
+  rmSync(runDir, { recursive: true })
+  rmSync(join(home, 'token-swap-ax.json'), { force: true })
+  rmSync(join(home, 'limit-paged-ax.json'), { force: true })
+})
+
+test('an idle VM worker with no limit hit is nudged, and the next tick delivers the manager mail', () => {
+  const runDir = join(home, 'runs', 'r95')
+  const seq = launched('r95')
+  const old = Date.now() - 10 * 60_000
+  const actor = createActor(compile(def), {
+    snapshot: JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot,
+  }).start()
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: old })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  cluster('Running', { status: 'idle', session: 's1', lines: [] })
+  factory(['tick'])
+  factory(['mail', 'r95', 'a', 'please check the branch'], { FACTORY_FROM: 'manager' })
+  factory(['tick'])
+  expect(prompted()).toContain('You have not reported')
+  expect(prompted()).toContain('[factory mail from manager]')
+  rmSync(runDir, { recursive: true })
 })
 
 test('an egress outage mails the manager once, spends no idle nudge while serve retries, and fails named once it gives up', () => {
@@ -706,7 +869,51 @@ test('an egress outage mails the manager once, spends no idle nudge while serve 
   const state = readFileSync(join(home, 'runs', 'r7', 'state.json'), 'utf8')
   expect(state).toContain('egress gateway: model API unreachable since')
   expect(state).toContain('(5 retries)')
+  // held, not failed: the station waits and keeps its attempt
+  const snap = JSON.parse(state).snapshot
+  expect(snap.value).toMatchObject({ a: 'waiting' })
+  expect(snap.context.attempt).toBe(1)
+  expect(snap.context.log.at(-1)).toMatchObject({ outcome: 'outage', attempt: 1 })
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
+})
+
+test('a VM worker stopped under an active usage limit page is held, not failed, once its nudges are spent', () => {
+  const runDir = join(home, 'runs', 'r91')
+  const seq = launched('r91')
+  const old = Date.now() - 40 * 60_000
+  const actor = createActor(compile(def), {
+    snapshot: JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot,
+  }).start()
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: old })
+  for (let i = 0; i < 4; i++) actor.send({ type: 'NUDGED', seq, at: old })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  const until = Date.now() + 2 * 3_600_000
+  const page = join(home, 'limit-paged-ax.json')
+  writeFileSync(page, JSON.stringify(until))
+  cluster('Running', { status: 'idle', session: 's1', lines: [] })
+  factory(['tick'])
+  const snap = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot
+  expect(snap.value).toMatchObject({ a: 'waiting' })
+  expect(snap.context.wakeAt).toBeGreaterThanOrEqual(until)
+  expect(snap.context.log.at(-1)).toMatchObject({
+    outcome: 'outage',
+    summary: 'worker stopped without reporting',
+  })
+  rmSync(runDir, { recursive: true })
+  rmSync(page)
+})
+
+test("a worker's own fail report with the egress text spends an attempt: only the reconciler holds", () => {
+  const seq = launched('r92')
+  factory(['report', 'r92', String(seq), 'fail', 'egress gateway: model API unreachable since x'])
+  factory(['tick'])
+  const snap = JSON.parse(readFileSync(join(home, 'runs', 'r92', 'state.json'), 'utf8')).snapshot
+  rmSync(join(home, 'runs', 'r92'), { recursive: true })
+  expect(snap.context.log.at(-1)).toMatchObject({ outcome: 'fail' })
+  expect(snap.context.attempt).toBe(1)
 })
 
 test('a single retry is pluralized in the egress FAIL reason, like the mail already is', () => {
@@ -927,8 +1134,8 @@ test('rig add --egress and --agent are for a runner that can take them', () => {
   expect(add('--egress', 'api.openai.com=OPENAI').err).toContain('add --runner ax')
   expect(add('--runner', 'ax', '--egress', 'https://x.com').err).toContain('not a hostname')
   expect(add('--runner', 'ax', '--egress', 'api.openai.com=openai').err).toContain('SCREAMING_SNAKE_CASE')
-  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude or pi')
-  expect(add('--runner', 'ax', '--agent', 'codex -m o3').err).toContain('claude-factory-72dq')
+  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude, codex or pi')
+  expect(add('--runner', 'ax', '--agent', 'codex -m o3').err).toContain('FACTORY_AX_CODEX=1')
   expect(add('--runner', 'ax', '--mcp', join(dir, 'mcp.json')).err).toContain('--mcp does not reach')
   const ok = add(
     ...['--runner', 'ax', '--agent', 'pi', '--egress', 'api.openai.com=OPENAI'],
@@ -1064,8 +1271,8 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     // claude-factory-cr6: the same deny-rm-rf PreToolUse hook a laptop worker gets, run from the VM image
     hooks: {
       PreToolUse: [
-        {
-          matcher: 'Bash',
+        ...['Bash', 'Write|Edit|MultiEdit|NotebookEdit'].map(matcher => ({
+          matcher,
           hooks: [
             {
               type: 'command',
@@ -1073,11 +1280,23 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
               timeout: 10,
             },
           ],
-        },
+        })),
       ],
     },
   })
-  expect(flags.at(-1)).toBe('/opt/factory/src/worker-system.md')
+  expect(flags[flags.indexOf('--system-prompt-file') + 1]).toBe('/opt/factory/src/worker-system.md')
+  // claude-factory-fxu: the image's plugins, as a laptop worker gets the person's (constitution I)
+  expect(flags.slice(-2)).toEqual(['--plugin-dir', '/opt/plugins/asd-ste100'])
+})
+
+// claude-factory-qda.4: a station with no skills gets no plugin dir
+test('vmClaudeFlags passes a plugin dir for each skill of the station, and none for an empty set', () => {
+  expect(
+    vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined, ['asd-ste100']).slice(-2),
+  ).toEqual(['--plugin-dir', '/opt/plugins/asd-ste100'])
+  expect(vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined, [])).not.toContain(
+    '--plugin-dir',
+  )
 })
 
 // claude-factory-25z.2: vmClaudeFlags carries the rig's personOnlyContexts to the VM hook's own argv too
@@ -1087,6 +1306,7 @@ test("vmClaudeFlags carries a rig's personOnlyContexts on the deny hook's own ar
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
     "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --person-only-contexts 'acme'",
   )
+  expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // no list: today's command, unchanged
   expect(vmClaudeFlags({ maxContextK: 150 })).toEqual(vmClaudeFlags({ maxContextK: 150 }, []))
 })
@@ -1098,6 +1318,7 @@ test("vmClaudeFlags carries a rig's protectedBranches on the deny hook's own arg
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
     "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --protected-branches 'acme-deploy'",
   )
+  expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // both lists together: person-only-contexts first, then protected-branches
   const both = vmClaudeFlags({ maxContextK: 150 }, ['ctx'], ['acme-deploy'])
   const bothSettings = JSON.parse(both[both.indexOf('--settings') + 1]!)
@@ -1155,6 +1376,70 @@ test("Claude's trust dialog does not hold an AX rig's run: the VM runs the agent
   rmSync(runDir, { recursive: true })
 })
 
+test('a replayed memory helped carries the run id in --from; other memory words are not replayable', () => {
+  const side = { node: 'plan', seq: 1 }
+  expect(replayable(['memory', 'helped', '--from', 'forged/x', 'p'], side, 'r1')).toEqual([
+    'memory',
+    'helped',
+    'p',
+    '--from',
+    'r1/plan',
+  ])
+  expect(replayable(['memory', 'helped', 'p', '--from'], side, 'r1')).toEqual([
+    'memory',
+    'helped',
+    'p',
+    '--from',
+    'r1/plan',
+  ])
+  for (const sub of ['search', 'compact', 'dream', 'confirmed'])
+    expect(replayable(['memory', sub, 'x'], side, 'r1')).toBeNull()
+})
+
+test('inside a VM, memory helped queues; help and no path queue nothing', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-helped.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  for (const args of [
+    ['memory', 'helped', '--help'],
+    ['memory', 'helped', '-h'],
+  ]) {
+    const r = factory(args, env)
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('usage: factory memory helped')
+  }
+  for (const args of [
+    ['memory', 'helped'],
+    ['memory', 'helped', '--from', 'r/a'],
+  ])
+    expect(factory(args, env).code).toBe(1)
+  expect(existsSync(outbox)).toBe(false)
+  const r = factory(['memory', 'helped', '--from', 'x', 'topic/n.md'], env)
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('queued for the factory')
+  expect(JSON.parse(readFileSync(outbox, 'utf8').trim()).argv).toEqual([
+    'memory',
+    'helped',
+    '--from',
+    'x',
+    'topic/n.md',
+  ])
+})
+
+test('a replayed memory add carries the run id in --from', () => {
+  const argv = ['memory', 'add', '--from', 'x', '--kind', 'fact', 's', 'b']
+  expect(replayable(argv, { node: 'plan', seq: 1 }, 'r1')).toEqual([
+    'memory',
+    'add',
+    '--kind',
+    'fact',
+    's',
+    'b',
+    '--from',
+    'r1/plan',
+  ])
+})
+
 test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them first", () => {
   expect(replayable(['bd', 'close', 'x-1'], { node: 'a', seq: 1 }, 'r1')).toBeNull()
   const vm = join(dir, 'vm-sync')
@@ -1167,6 +1452,7 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
       ...process.env,
       FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
       FACTORY_FROM: 'a',
+      FACTORY_RUN: '',
       FACTORY_BD: join(vm, 'bd'),
       BEADS_DIR: join(vm, '.beads'),
       FACTORY_HOME: join(vm, 'nohome'),
@@ -1191,6 +1477,7 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
       ...process.env,
       FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
       FACTORY_FROM: 'a',
+      FACTORY_RUN: '',
       FACTORY_BD: join(vm, 'bd'),
       BEADS_DIR: join(vm, '.beads'),
       FACTORY_HOME: join(vm, 'nohome'),
@@ -1216,6 +1503,7 @@ test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them 
       ...process.env,
       FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
       FACTORY_FROM: 'a',
+      FACTORY_RUN: '',
       FACTORY_BD: join(vm, 'bd'),
       BEADS_DIR: join(vm, '.beads'),
       FACTORY_HOME: join(vm, 'nohome'),
@@ -1253,6 +1541,7 @@ test('a conflicted pull retries with --strategy ours (the VM keeps its own write
       ...process.env,
       FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
       FACTORY_FROM: 'a',
+      FACTORY_RUN: '',
       FACTORY_BD: join(vm, 'bd'),
       BEADS_DIR: join(vm, '.beads'),
       FACTORY_HOME: join(vm, 'nohome'),
@@ -1289,6 +1578,7 @@ test('a plain pull failing for a reason other than a conflict, that the --strate
       ...process.env,
       FACTORY_OUTBOX: join(vm, 'outbox.jsonl'),
       FACTORY_FROM: 'a',
+      FACTORY_RUN: '',
       FACTORY_BD: join(vm, 'bd'),
       BEADS_DIR: join(vm, '.beads'),
       FACTORY_HOME: join(vm, 'nohome'),
@@ -1430,6 +1720,142 @@ test("a launch stores the origin's GitHub owner in the side file and sends the m
   }
 }, 60_000) // git clones and whole ticks
 
+test('an ax brief says AWS is read-only once, only when the rig env holds the broker URI (claude-factory-5n22)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+  }
+  mkdirSync(dir, { recursive: true })
+  for (const [id, env] of [
+    ['aws1a', { AWS_CONTAINER_CREDENTIALS_FULL_URI: 'https://broker.example/creds' }],
+    ['aws1b', {}],
+  ] as const) {
+    const origin = join(dir, id, 'origin.git')
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
+    const run = {
+      id,
+      factory: join(runDir, 'factory.ts'),
+      repo: worktree,
+      goal: 'read aws',
+      ws: 'w1',
+      worktree,
+    }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(def)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax', env }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img' }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    const brief = readFileSync(
+      join(
+        runDir,
+        readdirSync(runDir).find(f => f.endsWith('.brief.md'))!,
+      ),
+      'utf8',
+    )
+    if (id === 'aws1a') {
+      expect(brief.split('- AWS reads work:').length - 1).toBe(1)
+      expect(brief).toContain('Every write, and every secret read')
+    } else expect(brief).not.toContain('AWS_CONTAINER_CREDENTIALS_FULL_URI')
+    rmSync(runDir, { recursive: true })
+  }
+}, 60_000)
+
+test('an ax launch searches the laptop memory once and puts the top notes in the brief', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+  }
+  mkdirSync(dir, { recursive: true })
+  const memDir = join(home, 'memory')
+  for (const [id, withNote] of [
+    ['r21a', true],
+    ['r21b', false],
+  ] as const) {
+    rmSync(memDir, { recursive: true, force: true })
+    if (withNote) {
+      mkdirSync(join(memDir, 'topic'), { recursive: true })
+      writeFileSync(
+        join(memDir, 'topic', 'n.md'),
+        '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
+      )
+    }
+    const origin = join(dir, id, 'origin.git')
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
+    const run = {
+      id,
+      factory: join(runDir, 'factory.ts'),
+      repo: worktree,
+      goal: 'fix the dolt lock',
+      ws: 'w1',
+      worktree,
+    }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(def)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img' }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    const briefFile = readdirSync(runDir).find(f => f.endsWith('.brief.md'))!
+    const brief = readFileSync(join(runDir, briefFile), 'utf8')
+    const usage = join(memDir, '.usage.jsonl')
+    if (withNote) {
+      expect(brief).toContain('The factory already searched for your goal and station')
+      expect(brief).toContain('bd init locks the shared Dolt server')
+      expect(brief).toContain(join(memDir, 'topic', 'n.md'))
+      const rows = readFileSync(usage, 'utf8')
+        .trim()
+        .split('\n')
+        .map(l => JSON.parse(l))
+      expect(rows).toHaveLength(1) // one launch, one shown line, not one per read of the brief
+      expect(rows[0]).toMatchObject({ path: 'topic/n.md', shown: 1, by: `${id}/a` })
+    } else {
+      expect(brief).not.toContain('already searched')
+      expect(existsSync(usage)).toBe(false)
+    }
+    rmSync(runDir, { recursive: true })
+  }
+  rmSync(memDir, { recursive: true, force: true })
+}, 60_000) // git clones and whole ticks
+
 test("a pull that kept the VM's version of an issue says on it what the laptop had", () => {
   // what dolt sql -r json printed for the pull's statements, one line each
   const out = [
@@ -1474,6 +1900,15 @@ test('unavailable AX holds an expired Pending task and refuses retry without cha
   expect(first.manager.filter((m: { run: string }) => m.run === id)).toHaveLength(1)
   const second = JSON.parse(factory(['tick'], env).out)
   expect(second.manager.filter((m: { run: string }) => m.run === id)).toHaveLength(0)
+  const notStuck = factory(['retry', id], env)
+  expect(notStuck.code).toBe(1)
+  expect(notStuck.err).toContain(`${id} is at a/working, not stuck`)
+  expect(notStuck.err).toContain(`goto ${id} a`)
+  expect(existsSync(join(home, 'runs', id, 'inbox.jsonl'))).toBe(false)
+  const statePath = join(home, 'runs', id, 'state.json')
+  const saved = JSON.parse(readFileSync(statePath, 'utf8'))
+  saved.snapshot.value = { a: 'stuck' }
+  writeFileSync(statePath, JSON.stringify(saved))
   const retry = factory(['retry', id], env)
   expect(retry.code).toBe(1)
   expect(retry.err).toContain('AX executor unavailable')
@@ -1558,6 +1993,27 @@ describe('an AX worker that never started', () => {
     rmSync(join(home, 'runs', id), { recursive: true })
   })
 
+  test('a retried policy uses the reviewer key only when the side file says reviewer (claude-factory-0gww.2)', () => {
+    const sent = join(dir, 'rv-retry-sent')
+    const kubectl = join(dir, 'capture-rv-retry')
+    for (const [id, reviewer] of [
+      ['rvretry-yes', true],
+      ['rvretry-old', undefined],
+    ] as const) {
+      launchedAfterFail(id, 'old failure', 120)
+      writeFileSync(
+        kubectl,
+        `#!/bin/sh\ncase "$*" in *"get deployment ax-controller"*) exec ${readyController()} "$@" ;; esac\ncat > ${sent}\n`,
+      )
+      chmodSync(kubectl, 0o755)
+      cluster('Running', { status: 'working', lines: [] })
+      setSide(id, { policy: false, egress: [], githubOwner: 'acme', ...(reviewer && { reviewer }) })
+      factory(['tick'], { FACTORY_KUBECTL: kubectl, FACTORY_AX_VAULT: 'factory' })
+      expect(readFileSync(sent, 'utf8').includes('GITHUB_REVIEWER')).toBe(!!reviewer)
+      rmSync(join(home, 'runs', id), { recursive: true })
+    }
+  })
+
   test("a retried egress policy keeps the task's GitHub owner, so a zach-source rig keeps its keys", () => {
     const sent = join(dir, 'policy-sent')
     const kubectl = join(dir, 'capture-create')
@@ -1611,4 +2067,515 @@ esac
     expect(lastFail(id)).toBe('no report within 45 min')
     rmSync(join(home, 'runs', id), { recursive: true })
   })
+})
+
+// claude-factory-l3tl: --merge-authority is the only way to set Rig.mergeAuthority; a redefine clears it
+test('rig add --merge-authority stores Rig.mergeAuthority; a rig add without it clears it; rig lists it', () => {
+  const r = repo()
+  const stored = () => JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))[0]
+  expect(factory(['rig', 'add', 'x', r]).code).toBe(0)
+  expect(stored()).not.toHaveProperty('mergeAuthority')
+  expect(factory(['rig', 'add', 'x', r, '--protected-branch', 'acme-deploy']).code).toBe(0)
+  expect(stored()).not.toHaveProperty('mergeAuthority')
+  expect(factory(['rig']).out).not.toContain('merge authority')
+  expect(factory(['rig', 'add', 'x', r, '--merge-authority']).code).toBe(0)
+  expect(stored().mergeAuthority).toBe(true)
+  expect(factory(['rig']).out).toContain('merge authority: ship release station')
+  expect(factory(['rig', 'add', 'x', r]).code).toBe(0)
+  expect(stored()).not.toHaveProperty('mergeAuthority')
+  // a hand-edited value other than true counts as off
+  const rigs = JSON.parse(readFileSync(join(home, 'rigs.json'), 'utf8'))
+  writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ ...rigs[0], mergeAuthority: 'yes' }]))
+  expect(factory(['rig']).out).not.toContain('merge authority')
+})
+
+test("vmClaudeFlags and vmCodexHome carry --merge-authority on the hook's argv only when asked", () => {
+  const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, 'acme/widget')
+  const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
+  expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --merge-authority 'acme/widget'",
+  )
+  const off = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined)
+  expect(off).toEqual(vmClaudeFlags({ maxContextK: 150 }))
+  expect(JSON.stringify(off)).not.toContain('merge-authority')
+  const codex = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'], 'acme/widget')
+  expect(codex['hooks.json']).toMatch(/--protected-branches 'release' --merge-authority 'acme\/widget'/)
+  expect(vmCodexHome({ maxContextK: 150 })['hooks.json']).not.toContain('merge-authority')
+})
+
+test('a reviewer station of a rig whose owner is FACTORY_AX_REVIEWER_OWNER gets the reviewer key, the env and the brief line; others do not (claude-factory-0gww.2)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+    return p.stdout.toString().trim()
+  }
+  mkdirSync(dir, { recursive: true })
+  const sent = join(dir, 'rv-policy-sent')
+  const applied = join(dir, 'rv-applied')
+  const kubectl = join(dir, 'capture-rv')
+  writeFileSync(
+    kubectl,
+    `#!/bin/sh\ncase "$*" in *create*) cat > ${sent} ;; *) exec ${readyController()} "$@" ;; esac\n`,
+  )
+  chmodSync(kubectl, 0o755)
+  const cases = [
+    ['rv1', 'review', 'acme', 'acme', true],
+    ['rv2', 'security', 'acme', 'acme', true],
+    ['rv3', 'check', 'acme', 'acme', true],
+    ['rv4', 'implement', 'acme', 'acme', false],
+    ['rv5', 'review', 'acme', 'other', false],
+    ['rv6', 'review', 'acme', undefined, false],
+  ] as const
+  for (const [id, node, owner, flag, reviewer] of cases) {
+    rmSync(sent, { force: true })
+    rmSync(applied, { force: true })
+    const rdef: Factory = {
+      name: 'one',
+      start: node,
+      nodes: { [node]: { prompt: 'do', next: { ready: 'done' } } },
+    }
+    const origin = join(dir, id, `github.com/${owner}/widget.git`)
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(rdef)}`)
+    const run = { id, factory: join(runDir, 'factory.ts'), repo: worktree, goal: 'g', ws: 'w1', worktree }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(rdef)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    // the cluster fake, but it keeps the manifest that ax apply reads on stdin
+    writeFileSync(
+      join(dir, 'ax'),
+      `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "apply -f") cat > ${applied} ;;
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*) cat ${dir}/ssh ;;
+esac
+`,
+    )
+    const out = factory(['tick'], {
+      FACTORY_AX_IMAGE: 'img',
+      FACTORY_KUBECTL: kubectl,
+      FACTORY_AX_VAULT: 'factory',
+      ...(flag && { FACTORY_AX_REVIEWER_OWNER: flag }),
+    }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    const sideName = readdirSync(runDir).find(f => /^f-.*\.json$/.test(f))!
+    const side = JSON.parse(readFileSync(join(runDir, sideName), 'utf8'))
+    const policy = readFileSync(sent, 'utf8')
+    const brief = readFileSync(join(runDir, sideName.replace(/\.json$/, '.brief.md')), 'utf8')
+    expect(side.reviewer).toBe(reviewer ? true : undefined)
+    expect(policy.includes('GITHUB_REVIEWER')).toBe(reviewer)
+    expect(readFileSync(applied, 'utf8').includes('FACTORY_GH_REVIEWER')).toBe(reviewer)
+    expect(brief.includes('reviewer identity')).toBe(reviewer)
+    rmSync(runDir, { recursive: true })
+  }
+}, 90_000) // git clones and whole ticks
+
+// claude-factory-hr94: an AX worker sends its usage with its report
+const usageRow = (over: Record<string, unknown> = {}) => ({
+  session: 's1',
+  model: 'claude-opus-4-7',
+  input: 1,
+  cacheWrite: 2,
+  cacheRead: 300,
+  output: 4,
+  turns: 5,
+  peak: 303,
+  ...over,
+})
+const storedRows = (id: string) =>
+  readFileSync(join(home, 'runs', id, 'usage.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+
+test("inside a VM, a report carries the session's usage, subagents included (hr94 AC6)", () => {
+  mkdirSync(dir, { recursive: true })
+  const own = join(dir, 'vm-own')
+  const claudeHome = join(dir, 'vm-claude')
+  mkdirSync(join(claudeHome, 'projects', 'p', 'sess-9', 'subagents'), { recursive: true })
+  mkdirSync(own, { recursive: true })
+  writeFileSync(join(own, 'state.json'), JSON.stringify({ status: 'working', session: 'sess-9', pid: 1 }))
+  const turn = (id: string, model: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { id, model, usage: { input_tokens: 1, cache_read_input_tokens: 9, output_tokens: 2 } },
+    })
+  writeFileSync(join(claudeHome, 'projects', 'p', 'sess-9.jsonl'), turn('a', 'claude-opus-4-7') + '\n')
+  writeFileSync(
+    join(claudeHome, 'projects', 'p', 'sess-9', 'subagents', 'agent-1.jsonl'),
+    turn('b', 'claude-haiku-5-5') + '\n',
+  )
+  const outbox = join(dir, 'outbox-usage.jsonl')
+  const env = {
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'a',
+    FACTORY_RUN: '',
+    FACTORY_WORKER_DIR: own,
+    CLAUDE_CONFIG_DIR: claudeHome,
+  }
+  expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)
+  const line = JSON.parse(readFileSync(outbox, 'utf8').trim())
+  expect(line.argv).toEqual(['report', 'r1', '1', 'ready', 'done'])
+  expect(line.usage.map((u: { model: string }) => u.model).sort()).toEqual([
+    'claude-haiku-5-5',
+    'claude-opus-4-7',
+  ])
+  expect(line.usage[0]).toMatchObject({ session: 'sess-9', input: 1, cacheRead: 9, output: 2 })
+})
+
+test("a replayed AX report stores the VM's usage as its station, and bad usage never refuses the report (hr94 AC6, AC7)", () => {
+  const seq = launched('ru1')
+  const rows = [
+    usageRow({ node: 'evil', seq: 99 }), // node and seq come from the laptop, not the VM
+    usageRow({ model: 'bad model!' }),
+    usageRow({ session: 's2', cacheRead: NaN }),
+    usageRow({ session: 's3', output: -1 }),
+    usageRow({ session: 's4', peak: 1e13 }),
+    usageRow({ session: 's5', turns: 1.5 }),
+    usageRow({ session: 's6', model: 'claude-haiku-5-5' }),
+    'junk',
+  ]
+  const report = JSON.stringify({
+    argv: ['report', 'ru1', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 1,
+    usage: rows,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+  expect(factory(['tick']).code).toBe(0)
+  expect(inbox('ru1')).toContain('"outcome":"ready"')
+  const stored = storedRows('ru1')
+  expect(stored.map(r => [r.session, r.model, r.node, r.seq])).toEqual([
+    ['s1', 'claude-opus-4-7', 'a', seq],
+    ['s6', 'claude-haiku-5-5', 'a', seq],
+  ])
+  rmSync(join(home, 'runs', 'ru1'), { recursive: true })
+})
+
+test('AX usage with 21 rows, or not an array, is ignored and the report still lands (hr94 AC7)', () => {
+  for (const [id, usage] of [
+    ['ru2', Array.from({ length: 21 }, () => usageRow())],
+    ['ru3', 'lots'],
+  ] as const) {
+    const seq = launched(id)
+    const report = JSON.stringify({
+      argv: ['report', id, String(seq), 'ready', 'x'],
+      from: 'a',
+      at: 1,
+      usage,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+    expect(factory(['tick']).code).toBe(0)
+    expect(inbox(id)).toContain('"outcome":"ready"')
+    expect(existsSync(join(home, 'runs', id, 'usage.jsonl'))).toBe(false)
+    rmSync(join(home, 'runs', id), { recursive: true })
+  }
+})
+
+/** the fake cluster with a task in `phase` whose status.conditions hold `conds` (YAML list lines) */
+function clusterConds(phase: string, conds: string) {
+  rmSync(calls, { force: true })
+  writeFileSync(join(dir, 'cond.yaml'), `status:\n  phase: ${phase}\n${conds}`)
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") cat ${dir}/cond.yaml ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+}
+const RESUME_MSG = 'resuming actor f/t: while running runsc restore: exit status 128'
+const RESUME_FAILED = `  conditions:\n  - type: Ready\n    status: "False"\n    reason: ActorResumeFailed\n    message: "${RESUME_MSG}"\n`
+
+test('a Failed task carries its Ready condition into the failure reason, read with one ax get task', () => {
+  launched('r30')
+  clusterConds('Failed', RESUME_FAILED)
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r30')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toContain('ActorResumeFailed')
+  expect(row.error).toContain('runsc restore: exit status 128')
+  expect(readFileSync(join(home, 'runs', 'r30', 't.gone'), 'utf8')).toContain('ActorResumeFailed')
+  expect(called().match(/get task/g)).toHaveLength(1)
+  rmSync(join(home, 'runs', 'r30'), { recursive: true })
+})
+
+test('a Failed task with no condition keeps the bare "phase Failed" reason', () => {
+  launched('r31')
+  clusterConds('Failed', '')
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r31')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toBe('phase Failed')
+  rmSync(join(home, 'runs', 'r31'), { recursive: true })
+})
+
+test("a serve that died on a git clone failure fails the attempt with git's fatal line, past a long stack", () => {
+  launched('r32')
+  const fatal =
+    'fatal: unable to access https://github.com/acme/widget.git/: Recv failure: Connection reset by peer'
+  const stack = `Error: git clone x\n${'    at frame (/x/worker.ts:1:1)\n'.repeat(80)}`.slice(0, 2000)
+  cluster('Running', {
+    status: 'exited',
+    log: `2026-10-28T00:00:00Z serve died: git clone https://github.com/acme/widget.git: Cloning into 'r' | ${fatal}\n${stack}`,
+    lines: [],
+  })
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r32')
+  expect(row.agent).toBe('gone')
+  expect(row.error).toContain('Recv failure: Connection reset by peer')
+  expect(row.error.startsWith('serve exited: serve died: ')).toBe(true)
+  rmSync(join(home, 'runs', 'r32'), { recursive: true })
+})
+
+test('a serve exit with no "serve died:" line keeps the whole log as the reason', () => {
+  launched('r33')
+  cluster('Running', { status: 'exited', log: 'h exited 1: boom', lines: [] })
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r33')
+  expect(row.error).toBe('serve exited; its log: h exited 1: boom')
+  rmSync(join(home, 'runs', 'r33'), { recursive: true })
+})
+
+const markerOf = (rig: string) => join(home, `ax-no-suspend-${rig}.json`)
+/** the manager's mails from the factory in the run's saved state, about a failed restore */
+const resumeMails = (id: string): { from: string; text: string }[] =>
+  (
+    JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot.context.mail.manager ?? []
+  ).filter(
+    (m: { from: string; text: string }) => m.from === 'factory' && m.text.includes('ActorResumeFailed'),
+  )
+
+test('ActorResumeFailed writes the rig no-suspend marker and mails the manager once', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r34')
+  clusterConds('Failed', RESUME_FAILED)
+  factory(['tick'])
+  const marker = JSON.parse(readFileSync(markerOf('wt'), 'utf8'))
+  expect(typeof marker.at).toBe('number')
+  expect(marker.why).toContain('runsc restore: exit status 128')
+  expect(resumeMails('r34')).toHaveLength(1)
+  const text = resumeMails('r34')[0]!.text
+  expect(text).toContain('wt')
+  expect(text).toContain('24 h')
+  factory(['tick']) // the same failure again: the marker is fresh, so no second mail
+  expect(resumeMails('r34')).toHaveLength(1)
+  // another run of the same rig fails the same way inside the window: no new mail, the marker stays
+  launched('r41')
+  clusterConds('Failed', RESUME_FAILED)
+  factory(['tick'])
+  expect(resumeMails('r41')).toHaveLength(0)
+  expect(JSON.parse(readFileSync(markerOf('wt'), 'utf8')).at).toBe(marker.at)
+  rmSync(join(home, 'runs', 'r41'), { recursive: true })
+  rmSync(markerOf('wt'), { force: true })
+  rmSync(join(home, 'runs', 'r34'), { recursive: true })
+})
+
+test('only an ActorResumeFailed writes the marker: another reason, no condition or a serve exit does not', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r35')
+  clusterConds(
+    'Failed',
+    '  conditions:\n  - type: Ready\n    status: "False"\n    reason: Other\n    message: m\n',
+  )
+  factory(['tick'])
+  rmSync(join(home, 'runs', 'r35'), { recursive: true })
+  launched('r36')
+  clusterConds('Failed', '')
+  factory(['tick'])
+  rmSync(join(home, 'runs', 'r36'), { recursive: true })
+  launched('r37')
+  cluster('Running', { status: 'exited', log: 'serve died: ActorResumeFailed', lines: [] })
+  factory(['tick'])
+  rmSync(join(home, 'runs', 'r37'), { recursive: true })
+  expect(existsSync(markerOf('wt'))).toBe(false)
+})
+
+/** a run r whose repo is `repo`, after the worker asked the manager and went idle on a Running task */
+function askingIdle(id: string, repo: string) {
+  launched(id)
+  const runFile = join(home, 'runs', id, 'run.json')
+  writeFileSync(runFile, JSON.stringify({ ...JSON.parse(readFileSync(runFile, 'utf8')), repo }))
+  const ask = JSON.stringify({ argv: ['mail', id, 'manager', 'which db?'], from: 'a', at: 1 })
+  cluster('Running', { status: 'idle', session: 's1', lines: [ask] })
+  factory(['tick']) // the question is replayed
+  factory(['tick']) // asked and idle
+}
+
+test('a rig with a fresh no-suspend marker keeps its asking idle worker running; another rig and an old marker do not', () => {
+  const mark = (rig: string, ageH: number) =>
+    writeFileSync(markerOf(rig), JSON.stringify({ at: Date.now() - ageH * 3_600_000, why: 'x' }))
+  mark('wt', 1)
+  askingIdle('r38', join(dir, 'wt'))
+  expect(called()).not.toContain('suspend task')
+  rmSync(join(home, 'runs', 'r38'), { recursive: true })
+
+  askingIdle('r39', join(dir, 'other-rig')) // marker is for wt, not this rig
+  expect(called()).toContain('suspend task t')
+  rmSync(join(home, 'runs', 'r39'), { recursive: true })
+
+  mark('wt', 25)
+  askingIdle('r40', join(dir, 'wt'))
+  expect(called()).toContain('suspend task t')
+  rmSync(join(home, 'runs', 'r40'), { recursive: true })
+  rmSync(markerOf('wt'), { force: true })
+})
+
+// claude-factory-xbzd S1: an AX-rig run needs no herdr. createRun makes a plain git worktree at herdr's layout.
+describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+    return p.stdout.toString().trim()
+  }
+  const two: Factory = {
+    name: 'two',
+    start: 'a',
+    nodes: { a: { prompt: 'do a', next: { ready: 'b' } }, b: { prompt: 'do b', next: { ready: 'done' } } },
+  }
+  /** a rig repo cloned from a bare origin, a fake herdr that logs every call and fails, and the rig's file */
+  function setup(tag: string, runner?: string, fdef: Factory = two) {
+    const root = join(dir, tag)
+    rmSync(root, { recursive: true, force: true })
+    mkdirSync(root, { recursive: true })
+    sh(root, 'git', 'init', '-q', '--bare', 'origin.git')
+    sh(root, 'git', 'clone', '-q', 'origin.git', 'widget')
+    const repo = realpathSync(join(root, 'widget')) // rigs.json holds the resolved path
+    writeFileSync(join(repo, 'a'), 'a\n')
+    sh(repo, 'git', 'add', '.')
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(repo, 'git', 'push', '-q', 'origin', 'HEAD')
+    const fdefFile = join(root, 'two.json')
+    writeFileSync(fdefFile, JSON.stringify(fdef))
+    const herdrLog = join(root, 'herdr.log')
+    const fake = join(root, 'fakeherdr')
+    writeFileSync(fake, `#!/bin/sh\necho "$*" >> ${herdrLog}\nexit 1\n`)
+    chmodSync(fake, 0o755)
+    mkdirSync(home, { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo, factory: fdefFile, ...(runner && { runner }) }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    const env = {
+      HOME: join(root, 'home'),
+      FACTORY_HERDR: fake,
+      FACTORY_AX_IMAGE: 'img',
+      FACTORY_AX_VAULT: 'factory',
+    }
+    const herdrCalls = () => (existsSync(herdrLog) ? readFileSync(herdrLog, 'utf8') : '')
+    return {
+      repo,
+      fdefFile,
+      env,
+      herdrCalls,
+      tree: (id: string) => join(env.HOME, '.herdr/worktrees/widget', `factory-${id}`),
+    }
+  }
+  const startedId = (out: string) => /started (\S+) in/.exec(out)![1]!
+  const seqOf = (id: string) =>
+    JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8')).snapshot.context.seq
+
+  test('start makes a git worktree at the herdr layout, with no herdr call and ws empty (AC5)', () => {
+    const s = setup('s1a', 'ax')
+    const out = factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+    expect(out.err).toBe('')
+    const id = startedId(out.out)
+    const run = JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8'))
+    expect(run.ws).toBe('')
+    expect(run.worktree).toBe(s.tree(id))
+    expect(run.branch).toBe(`factory/${id}`)
+    expect(existsSync(join(run.worktree, 'a'))).toBe(true)
+    expect(sh(s.repo, 'git', 'worktree', 'list')).toContain(s.tree(id))
+    expect(sh(run.worktree, 'git', 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(`factory/${id}`)
+    expect(s.herdrCalls()).not.toContain('worktree create')
+    expect(out.out).not.toContain('herdr workspace')
+  }, 30_000)
+
+  test('start, launch, report and the next launch never call herdr to create, tab or run (AC6)', () => {
+    const s = setup('s1b', 'ax')
+    const id = startedId(factory(['start', s.fdefFile, s.repo, 'goal text'], s.env).out)
+    expect(called()).toContain('apply -f') // the first launch
+    const seq = seqOf(id)
+    cluster('Running', { status: 'idle', lines: [] })
+    expect(factory(['report', id, String(seq), 'ready', 'a done'], s.env).code).toBe(0)
+    expect(factory(['tick'], s.env).code).toBe(0)
+    expect(called()).toContain('apply -f') // b launched
+    expect(seqOf(id)).toBeGreaterThan(seq)
+    const log = s.herdrCalls()
+    for (const bad of ['worktree create', 'tab create', 'pane run']) expect(log).not.toContain(bad)
+  }, 60_000)
+
+  test('rm of the done AX run removes its worktree with git (AC7)', () => {
+    const one: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'x', next: { ready: 'done' } } } }
+    const s = setup('s1c', 'ax', one)
+    const id = startedId(factory(['start', s.fdefFile, s.repo, 'goal text'], s.env).out)
+    expect(factory(['report', id, String(seqOf(id)), 'ready', 'ok'], s.env).code).toBe(0)
+    factory(['tick'], s.env)
+    const rm = factory(['rm', id], s.env)
+    expect(rm.err).toBe('')
+    expect(existsSync(s.tree(id))).toBe(false)
+    expect(sh(s.repo, 'git', 'worktree', 'list')).not.toContain(`factory-${id}`)
+    expect(sh(s.repo, 'git', 'branch', '--list', `factory/${id}`)).toContain(`factory/${id}`)
+  }, 60_000)
+
+  test('a bad factory removes the new worktree with git and the run directory', () => {
+    const bad: Factory = {
+      name: 'bad',
+      start: 'a',
+      nodes: { a: { prompt: 'x', next: { ok: { to: 'done', ship: true } } } },
+    }
+    const s = setup('s1d', 'ax', bad)
+    const before = existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : []
+    const out = factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+    expect(out.code).not.toBe(0)
+    expect(out.err).toContain('is not a valid factory')
+    expect(sh(s.repo, 'git', 'worktree', 'list')).not.toContain('.herdr/worktrees')
+    expect(readdirSync(join(home, 'runs'))).toEqual(before)
+    expect(s.herdrCalls()).toBe('')
+  }, 30_000)
+
+  test.each([['herdr'], [undefined]])(
+    'a rig with runner %p still creates its worktree through herdr',
+    runner => {
+      const s = setup(`s1e-${runner}`, runner)
+      const out = factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+      expect(out.code).not.toBe(0)
+      expect(s.herdrCalls()).toContain('worktree create')
+    },
+    30_000,
+  )
+
+  test("an AX rig's herdr-runner station reopens its worktree through herdr worktree open", () => {
+    const mixed: Factory = {
+      name: 'mixed',
+      start: 'a',
+      nodes: { a: { prompt: 'x', runner: 'herdr', next: { ready: 'done' } } },
+    }
+    const s = setup('s1f', 'ax', mixed)
+    factory(['start', s.fdefFile, s.repo, 'goal text'], s.env)
+    expect(s.herdrCalls()).toContain('worktree open')
+    expect(s.herdrCalls()).not.toContain('worktree create')
+  }, 30_000)
 })

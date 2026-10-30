@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,6 +13,8 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
+import { vmCodexHome } from './cli'
+import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
 
 const dir = join(tmpdir(), `ax-${process.pid}`)
@@ -23,6 +26,7 @@ writeFileSync(
   fake,
   `#!/bin/sh
 echo "$*" >> ${calls}
+echo "\${AX_AUTH_TOKEN:+set}" >> ${dir}/auth
 case "$3 $4" in
   "apply -f") cat > ${dir}/applied; echo created ;;
   "get task") [ -f ${dir}/get ] && cat ${dir}/get || { echo 'getting task: rpc error: code = NotFound' >&2; exit 1; } ;;
@@ -51,7 +55,7 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller'])
+  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'bctl', 'auth'])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -103,7 +107,7 @@ test('task names are RFC 1123 labels that keep the seq', () => {
 })
 
 test("a station's model comes from its herdr agent command", () => {
-  expect(ax.modelOf(`claude-smart --new --model 'claude-sonnet-5[1m]'`)).toBe('claude-sonnet-5[1m]')
+  expect(ax.modelOf(`claude-smart --new --model 'claude-sonnet-5-5[1m]'`)).toBe('claude-sonnet-5-5[1m]')
   expect(ax.modelOf('claude-smart --new --dangerously-skip-permissions')).toBeUndefined()
 })
 
@@ -153,6 +157,23 @@ test('FACTORY_AX_CAPABILITIES empty leaves spec.capabilities out, for an AX with
   } finally {
     delete process.env.FACTORY_AX_CAPABILITIES
   }
+})
+
+test("a rig's sandboxClass reaches spec.sandboxClass; absent, the field stays out for an AX without it", () => {
+  ax.launch({
+    name: 'f-r1-3',
+    repo: 'r',
+    branch: 'b',
+    image: 'i',
+    brief: 'x',
+    env: {},
+    sandboxClass: 'microvm',
+  })
+  const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+  expect(task.spec.sandboxClass).toBe('microvm')
+  ax.launch({ name: 'f-r1-4', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: {} })
+  const plain = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+  expect(plain.spec.sandboxClass).toBeUndefined()
 })
 
 test("a task's egress policy is one try: refused until its actor shows, then in", () => {
@@ -248,6 +269,67 @@ test('a worker of a zach-source rig gets the zach-source keys on the unprefixed 
   expect(plainKeys('zach-source')).toEqual(['GITHUB_ZS', 'GITHUB_ZS_BASIC'])
   expect(plainKeys('acme')).toEqual(['GITHUB', 'GITHUB_BASIC'])
   expect(plainKeys()).toEqual(['GITHUB', 'GITHUB_BASIC'])
+})
+
+test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else changes', () => {
+  const keys = (owner?: string, reviewer?: boolean) =>
+    (ax.egressPolicy('v', [], undefined, undefined, owner, undefined, reviewer).rules as any[])
+      .filter(r => /github\.com/.test(r.https.hostnames[0]))
+      .map(r => [r.https.pathPrefixes?.[0] ?? '', keyOf(r)])
+  expect(keys('acme', true)).toEqual([
+    ['', 'GITHUB_REVIEWER'],
+    ['', 'GITHUB_BASIC'],
+    ['/repos/zach-source/', 'GITHUB_ZS'],
+    ['/zach-source/', 'GITHUB_ZS_BASIC'],
+  ])
+  expect(keys('zach-source', true)).toEqual([
+    ['', 'GITHUB_REVIEWER'],
+    ['', 'GITHUB_ZS_BASIC'],
+    ['/repos/zach-source/', 'GITHUB_REVIEWER'],
+    ['/zach-source/', 'GITHUB_ZS_BASIC'],
+  ])
+  expect(keys('acme', true).slice(2)).toEqual(keys('acme', false).slice(2))
+  expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
+  expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
+    ax.egressPolicy('v', [], undefined, undefined, 'acme'),
+  )
+  expect(ax.egressPolicy('', [], undefined, undefined, 'acme', undefined, true)).toEqual(ax.egressPolicy(''))
+  expect(
+    JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
+  ).not.toContain('REVIEWER')
+})
+
+test('reviewerTask is true only for review, security and check with the vault and a matching owner flag', () => {
+  const env = { FACTORY_AX_VAULT: 'v', FACTORY_AX_REVIEWER_OWNER: 'acme' }
+  for (const n of ['review', 'security', 'check']) expect(ax.reviewerTask(n, 'acme', env)).toBe(true)
+  for (const n of [
+    'implement',
+    'plan',
+    'verify',
+    'triage',
+    'quick',
+    'release',
+    'incident',
+    'Review',
+    ' review',
+  ])
+    expect(ax.reviewerTask(n, 'acme', env)).toBe(false)
+  expect(ax.reviewerTask('review', 'other', env)).toBe(false)
+  expect(ax.reviewerTask('review', undefined, env)).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { ...env, FACTORY_AX_REVIEWER_OWNER: '' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_VAULT: 'v' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_REVIEWER_OWNER: 'acme' })).toBe(false)
+})
+
+test('createPolicy passes the reviewer flag to the policy', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t4', [], undefined, 'acme', undefined, true)
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).toContain('factory/GITHUB_REVIEWER')
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
 })
 
 test('createPolicy passes the rig owner to the policy', () => {
@@ -848,6 +930,36 @@ test('a rig with no Dolt remote bootstraps its beads from the git origin through
   }
 })
 
+test("a failed bd bootstrap shows bd's last error line, not its metrics notice or a URL", () => {
+  const own = join(dir, 'own-beads-fail')
+  const bd = join(dir, 'bd-boot-fail')
+  writeFileSync(
+    bd,
+    `#!/bin/sh\necho 'Thanks for using bd! Metrics help us improve.' >&2\necho 'Error: Bootstrap failed: clone from remote: dolt clone https://dolt.example.com:50051/x: Error 1105: transport: authentication handshake failed: EOF' >&2\nexit 1\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_BEADS_REMOTE: 'https://dolt.example.com:50051/x',
+    FACTORY_BD: bd,
+  })
+  try {
+    let msg = ''
+    try {
+      worker.setupBeads()
+    } catch (e) {
+      msg = (e as Error).message
+    }
+    expect(msg).toContain('authentication handshake failed: EOF')
+    expect(msg).not.toContain('Thanks for using bd')
+    expect(msg).not.toContain('https://')
+  } finally {
+    process.env = saved
+  }
+})
+
 test('a rig with no Dolt remote and an origin with no refs/dolt/data gets no store', () => {
   const own = join(dir, 'own-beads-noref')
   const bd = join(dir, 'bd-boot-noref')
@@ -915,6 +1027,34 @@ test("a cached devenv becomes the worker's environment, keeping the VM's places 
   }
 })
 
+test('loadDevenv does not run the devenv enterShell (shellHook)', () => {
+  const own = join(dir, 'own-devenv2')
+  const repo = join(dir, 'repo-devenv2')
+  const bin = join(dir, 'devenv-bin2')
+  const marker = join(dir, 'enter-shell-ran')
+  for (const d of [own, repo, bin]) mkdirSync(d, { recursive: true })
+  writeFileSync(join(repo, 'devenv.nix'), '{ }\n')
+  writeFileSync(
+    join(bin, 'devenv'),
+    `#!/bin/sh\necho "export GOROOT=/nix/go2; shellHook='touch ${marker}'; export shellHook"\necho 'eval \${shellHook:-}'\necho 'eval "\${shellHook:-}"'\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_NIX_CACHE: 'https://cache.example.com:8443/devenv devenv:key=',
+    PATH: `${bin}:${process.env.PATH}`,
+  })
+  try {
+    worker.loadDevenv()
+    expect(process.env.GOROOT).toBe('/nix/go2')
+    expect(existsSync(marker)).toBe(false)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('setup trusts the CA and clones the branch once, retrying while egress is closed', async () => {
   const origin = join(dir, 'origin.git')
   const seed = join(dir, 'seed')
@@ -949,6 +1089,7 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     await pushing
     expect(readFileSync(join(own, 'egress-ca.crt'), 'utf8')).toBe('CA-PEM')
     expect(process.env.GIT_SSL_CAINFO).toBe(join(own, 'egress-ca.crt'))
+    expect(process.env.AWS_CA_BUNDLE).toBe(join(own, 'egress-ca.crt')) // aws CLI v2 ignores SSL_CERT_FILE
     expect(existsSync(join(repo, '.git'))).toBe(true)
     expect(existsSync(join(home, '.gitconfig'))).toBe(false) // git's auth header comes in the task's env
     // the rig's flags, then the gateway's CA for bazel's gRPC and, in a Java trust store, for its JVM
@@ -980,15 +1121,24 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
   // stdin, never argv, since a prompt over Linux's MAX_ARG_STRLEN (131072 bytes) made posix_spawn fail with
   // ENAMETOOLONG (claude-factory-kcg)
   expect(worker.turnArgv('codex', { model: 'o3' })).toEqual([
-    ...['codex', 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check'],
-    ...['-m', 'o3', '--', '-'],
+    ...['codex', ...CODEX_GUARD_FLAGS, 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...['--skip-git-repo-check', '-m', 'o3', '--', '-'],
   ])
   expect(worker.turnArgv('codex', { session: 'th-1' })).toEqual([
-    ...['codex', 'exec', 'resume', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...[
+      'codex',
+      ...CODEX_GUARD_FLAGS,
+      'exec',
+      'resume',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ],
     ...['--skip-git-repo-check', '--', 'th-1', '-'],
   ])
   expect(worker.turnArgv('pi', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
+    // claude-factory-hg9o: the image's worker rules (no /opt/plugins here, so no --skill)
+    ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-system\.md$/)],
     ...['--provider', 'anthropic', '--model', 'm'],
   ])
   expect(worker.turnArgv('claude', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
@@ -1053,6 +1203,7 @@ test('a codex worker briefs once, then resumes the thread its first turn named',
   writeFileSync(
     codex,
     `#!/bin/sh
+case "$*" in *'features list') printf 'hooks stable true\\nunified_exec stable false\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; exit;; esac
 echo "$*" >> ${dir}/codex.log
 n=$(ls ${dir}/codex.stdin.* 2>/dev/null | wc -l)
 cat > ${dir}/codex.stdin.$n
@@ -1068,6 +1219,8 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
     FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CODEX_HOME: join(own, 'codex'),
+    FACTORY_CODEX_HOME_FILES: '{}',
   })
   delete process.env.FACTORY_REPO
   delete process.env.FACTORY_CA
@@ -1077,7 +1230,7 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
     await worker.serve('o3', { once: true })
     const turns = readFileSync(join(dir, 'codex.log'), 'utf8').trim().split('\n')
     expect(turns[0]).toEndWith('-m o3 -- -') // no prompt text on argv: '-' reads it from stdin
-    expect(turns[1]).toStartWith('exec resume --json')
+    expect(turns[1]).toContain(' exec resume --json')
     expect(turns[1]).toEndWith('-m o3 -- th-1 -')
     expect(readFileSync(join(dir, 'codex.stdin.0'), 'utf8')).toBe('codex brief')
     expect(readFileSync(join(dir, 'codex.stdin.1'), 'utf8')).toBe('more')
@@ -1121,8 +1274,9 @@ cat > ${dir}/pi.stdin.$n
     const id = worker.poll(0).session!
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     // no prompt text on argv: it goes on stdin
-    expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id}`)
-    expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id}`)
+    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')}`
+    expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
+    expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(readFileSync(join(dir, 'pi.stdin.0'), 'utf8')).toBe('pi brief')
     expect(readFileSync(join(dir, 'pi.stdin.1'), 'utf8')).toBe('more')
     // pi -p only prints once a turn exits, so own()/pi.jsonl never grows mid-turn: a constant size would look
@@ -1151,6 +1305,50 @@ test('--egress parses hosts, a vault key, and its header and prefix', () => {
   expect(() => ax.parseEgress('localhost')).toThrow('not a hostname')
   expect(() => ax.parseEgress('a.example.com=openai')).toThrow('SCREAMING_SNAKE_CASE')
   expect(() => ax.parseEgress('a.example.com=K:bad header:')).toThrow('header name')
+})
+
+test('the AWS broker egress rule sends the vault key as the raw Authorization value (claude-factory-5n22)', () => {
+  const host = 'aws-broker.factory-aws.svc.cluster.local'
+  const rule = ax.parseEgress(`${host}=AWS_BROKER:Authorization:`)
+  expect(rule).toEqual({ hosts: [host], key: 'AWS_BROKER', header: 'Authorization', prefix: '' })
+  // without the trailing ':Authorization:' the prefix is 'Bearer ', which the SDK does not send
+  expect(ax.parseEgress(`${host}=AWS_BROKER`).prefix).toBeUndefined()
+  const policy = ax.egressPolicy('v', [{ ...rule, port: 8443 }])
+  const found = policy.rules.find(r => r.https?.hostnames?.includes(host))
+  expect((found?.https as { ports?: unknown }).ports).toEqual({ numbers: [8443] })
+  expect((found?.https as { effects?: { replaceHeaders: unknown } }).effects?.replaceHeaders).toEqual([
+    { header: 'Authorization', prefix: '', credentialUri: 'ate-secret://agent-vault/v/AWS_BROKER' },
+  ])
+  expect(ax.createPolicy('aws-1', [rule])).toBeBoolean() // the policy builds without a refusal
+})
+
+test('the task env holds only a placeholder AWS container token, and only with the broker URI (claude-factory-5n22)', () => {
+  const uri = 'https://aws-broker.factory-aws.svc.cluster.local/creds'
+  const rows: [Record<string, string>, string | undefined][] = [
+    [
+      { AWS_CONTAINER_CREDENTIALS_FULL_URI: uri, AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' },
+      'placeholder',
+    ],
+    [{ AWS_CONTAINER_CREDENTIALS_FULL_URI: uri }, 'placeholder'],
+    [{ AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' }, undefined],
+    [{}, undefined],
+  ]
+  for (const vault of [undefined, 'factory']) {
+    if (vault) process.env.FACTORY_AX_VAULT = vault
+    try {
+      for (const [rigEnv, want] of rows) {
+        ax.launch({ name: 'aws-t', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: rigEnv })
+        const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+        const env = Object.fromEntries(
+          task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+        )
+        expect(env.AWS_CONTAINER_AUTHORIZATION_TOKEN).toBe(want)
+        expect(JSON.stringify(task)).not.toContain('zqsecret')
+      }
+    } finally {
+      delete process.env.FACTORY_AX_VAULT
+    }
+  }
 })
 
 test('a rig egress rule on another port names it, as a Dolt remotesapi needs', () => {
@@ -1325,6 +1523,80 @@ test("a codex task gets its harness, its extra egress and OpenAI's placeholder k
     expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(
       ax.egressPolicy('factory', [ax.parseEgress('api.openai.com=OPENAI')]),
     )
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
+test('the ChatGPT egress rule becomes two header injections on chatgpt.com paths, none without a vault', () => {
+  const rule = {
+    hosts: ['chatgpt.com'],
+    pathPrefixes: ['/backend-api/codex/'],
+    headers: [
+      { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+      { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+    ],
+  }
+  const find = (vault: string) =>
+    (ax.egressPolicy(vault, [rule]).rules as any[]).find(r => r.https.hostnames[0] === 'chatgpt.com').https
+  expect(find('v')).toEqual({
+    hostnames: ['chatgpt.com'],
+    pathPrefixes: ['/backend-api/codex/'],
+    effects: {
+      replaceHeaders: [
+        {
+          header: 'Authorization',
+          prefix: 'Bearer ',
+          credentialUri: 'ate-secret://agent-vault/v/CODEX_CHATGPT',
+        },
+        {
+          header: 'ChatGPT-Account-ID',
+          prefix: '',
+          credentialUri: 'ate-secret://agent-vault/v/CODEX_CHATGPT_ACCOUNT',
+        },
+      ],
+    },
+  })
+  expect(find('')).toEqual({ hostnames: ['chatgpt.com'], pathPrefixes: ['/backend-api/codex/'] })
+})
+
+test('every egress pathPrefixes entry starts and ends with /', () => {
+  const rule = { hosts: ['chatgpt.com'], pathPrefixes: ['/backend-api/codex/'], key: 'K' }
+  const all = [...ax.egressPolicy('v', [rule]).rules, ...ax.egressPolicy('v', []).rules] as any[]
+  const prefixes = all.flatMap(r => r.https?.pathPrefixes ?? [])
+  expect(prefixes.length).toBeGreaterThan(0)
+  for (const p of prefixes) expect(p).toMatch(/^\/.*\/$/)
+})
+
+test('a ChatGPT-mode codex task has no API-key env, and its inputs hold only placeholders', () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    ax.launch({
+      name: 't4',
+      repo: 'r',
+      branch: 'b',
+      image: 'i',
+      brief: 'x',
+      harness: 'codex',
+      codexAuth: 'chatgpt',
+      codexHome: vmCodexHome({}, [], [], undefined, 'chatgpt'),
+      env: {},
+    })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env: Record<string, string> = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.FACTORY_HARNESS).toBe('codex')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.CODEX_API_KEY).toBeUndefined()
+    const files = JSON.parse(env.FACTORY_CODEX_HOME_FILES!)
+    const auth = JSON.parse(files['auth.json'])
+    expect(Object.keys(auth.tokens).sort()).toEqual(['access_token', 'id_token', 'refresh_token'])
+    expect(auth.tokens.refresh_token).toBe('placeholder')
+    expect(auth.tokens.access_token.split('.')[2]).toBe('placeholder')
+    expect(auth.tokens.id_token.split('.')[2]).toBe('placeholder')
+    expect(JSON.stringify(task)).not.toMatch(/CODEX_CHATGPT/)
   } finally {
     delete process.env.FACTORY_AX_VAULT
   }
@@ -1592,7 +1864,7 @@ test('launchManager applies the manager task with its command and env, then retr
       FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
     })
     delete process.env.FACTORY_AX_IMAGE
-    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], { waitMs: 0 })
+    const r = await ax.launchManager('mgr@sha256:abc', ['--model', 'opus'], [], { waitMs: 0 })
     expect(r).toEqual({ name: 'f-manager', policy: true })
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
@@ -1632,6 +1904,13 @@ test('launchManager applies the manager task with its command and env, then retr
   }
 })
 
+test('managerEnv sets the token swap to a broker POST only when the broker is set', () => {
+  expect(ax.managerEnv({}).FACTORY_AX_TOKEN_SWAP).toBeUndefined()
+  expect(
+    ax.managerEnv({ FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080/' }).FACTORY_AX_TOKEN_SWAP,
+  ).toBe('curl -sSf -m 25 -X POST http://broker.example.svc:8080/token/best')
+})
+
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
   expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
@@ -1650,11 +1929,39 @@ printf 'curl %s\\n' "$*" >> ${calls}
 case "$*" in
   *PUT*) cat > ${dir}/policy; printf 'created\\n201' ;;
   */ca*) printf 'CA-FROM-BROKER\\n200' ;;
+  */controller*) cat ${dir}/bctl ;;
   *) printf 'no\\n502' ;;
 esac
 `,
 )
 chmodSync(curl, 0o755)
+
+test('with FACTORY_POLICY_BROKER set, unavailable() asks the broker and does not run kubectl', () => {
+  const ready = {
+    metadata: { generation: 3 },
+    spec: { replicas: 1 },
+    status: { observedGeneration: 3, readyReplicas: 1, availableReplicas: 1 },
+  }
+  const saved = [process.env.FACTORY_POLICY_BROKER, process.env.FACTORY_CURL]
+  process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+  process.env.FACTORY_CURL = curl
+  try {
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(ready) + '\n200')
+    expect(ax.unavailable()).toBeUndefined()
+    expect(logged().some(l => l.startsWith('kubectl'))).toBe(false)
+    expect(logged().at(-1)).toContain('http://broker.example.svc:8080/controller')
+    const notReady = { ...ready, status: { ...ready.status, readyReplicas: 0 } }
+    writeFileSync(join(dir, 'bctl'), JSON.stringify(notReady) + '\n200')
+    expect(ax.unavailable()).toContain('is not ready at its current generation')
+    writeFileSync(join(dir, 'bctl'), 'controller: boom\n502')
+    expect(ax.unavailable()).toContain('could not be observed')
+  } finally {
+    if (saved[0] === undefined) delete process.env.FACTORY_POLICY_BROKER
+    else process.env.FACTORY_POLICY_BROKER = saved[0]
+    if (saved[1] === undefined) delete process.env.FACTORY_CURL
+    else process.env.FACTORY_CURL = saved[1]
+  }
+})
 
 test('with FACTORY_POLICY_BROKER set, the policy and the CA go to the broker and kubectl is not run', () => {
   process.env.FACTORY_CURL = curl
@@ -1681,4 +1988,339 @@ test('routerAddress gives host:port of the router URL, port 80 by default, and n
   expect(ax.routerAddress('http://r.example.svc:8081')).toBe('r.example.svc:8081')
   expect(ax.routerAddress('r.example.svc:80')).toBeUndefined()
   expect(ax.routerAddress(undefined)).toBeUndefined()
+})
+
+test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none without one', () => {
+  const rig = (name: string, url?: string, egress?: ax.Egress[]) => ({
+    name,
+    ...(url && { beadsRemote: { name: 'origin', url, user: 'u' } }),
+    ...(egress && { egress }),
+  })
+  const rigs = [
+    rig('a', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/widget'),
+    rig('b', 'https://beads-dolt.beads.svc.cluster.local:50051/acme/other'),
+    rig('c', 'https://dolt.example.com/acme/x'),
+    rig('d'),
+    rig('e', 'not a url'),
+    rig('f', 'http://plain.example.com:50051/x'),
+  ]
+  const dolt = (hosts: string[], port: number) => ({
+    hosts,
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+    port,
+  })
+  expect(ax.managerEgress({}, rigs)).toEqual([
+    { hosts: ['claude.ai'] },
+    dolt(['beads-dolt.beads.svc.cluster.local'], 50051),
+    dolt(['dolt.example.com'], 443),
+  ])
+  const own = rig('g', 'https://own.example.com:8443/x', [
+    { hosts: ['own.example.com'], port: 8443, key: 'ACME_DOLT', header: 'X-Auth', prefix: 'T ' },
+  ])
+  expect(ax.managerEgress({}, [own])[1]).toEqual({
+    hosts: ['own.example.com'],
+    key: 'ACME_DOLT',
+    header: 'X-Auth',
+    prefix: 'T ',
+    port: 8443,
+  })
+  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }])
+})
+
+test('managerEgress adds the Linear rule only for a rig with --linear', () => {
+  const linear = { linear: { team: 't' } }
+  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [linear])).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
+  ])
+})
+
+test('serve writes a codex worker home and fails closed when the guard is off (claude-factory-72dq)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-codex-'))
+  const repo = join(tmp, 'repo')
+  const home = join(tmp, 'codex')
+  const features = join(tmp, 'features.txt')
+  const on =
+    'hooks stable true\nunified_exec stable false\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
+  writeFileSync(features, on)
+  const fake = join(tmp, 'fake-codex')
+  writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(tmp, 'argv')}'\ncat '${features}'\n`, {
+    mode: 0o755,
+  })
+  mkdirSync(repo)
+  const keep = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: fake,
+    FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', '../config.toml': 'x = 1\n' }),
+  })
+  try {
+    worker.codexHome(home)
+    expect(readdirSync(home).sort()).toEqual(['AGENTS.md', 'config.toml', 'hooks.json'])
+    expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
+    expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(
+      readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+    )
+    expect(readFileSync(join(tmp, 'argv'), 'utf8').trim().split('\n')).toEqual([
+      ...CODEX_GUARD_FLAGS,
+      'features',
+      'list',
+    ])
+    writeFileSync(features, on.replace('hooks stable true', 'hooks stable false'))
+    expect(() => worker.codexHome(home)).toThrow('hooks is not on')
+    writeFileSync(features, on.replace('multi_agent stable false', 'multi_agent stable true'))
+    expect(() => worker.codexHome(home)).toThrow('multi_agent')
+    writeFileSync(features, on.replace('unified_exec stable false', 'unified_exec stable true'))
+    expect(() => worker.codexHome(home)).toThrow('/etc/codex/requirements.toml with [features]')
+    writeFileSync(features, on.replace('unified_exec stable false\n', ''))
+    expect(() => worker.codexHome(home)).toThrow('claude-factory-fzm3')
+    writeFileSync(features, on)
+    mkdirSync(join(repo, '.codex'))
+    expect(() => worker.codexHome(home)).toThrow('would add project config')
+    rmSync(join(repo, '.codex'), { recursive: true })
+    // claude-factory-8cu6: the .codex that bd init writes is allowed in the VM too
+    cpSync(join(import.meta.dir, 'fixtures', 'bd-codex'), join(repo, '.codex'), { recursive: true })
+    expect(() => worker.codexHome(home)).not.toThrow()
+    rmSync(join(repo, '.codex'), { recursive: true })
+    delete process.env.FACTORY_CODEX_HOME_FILES
+    expect(() => worker.codexHome(home)).toThrow('FACTORY_CODEX_HOME_FILES')
+    process.env.FACTORY_HARNESS = 'claude'
+    expect(() => worker.codexHome(join(tmp, 'none'))).not.toThrow()
+    expect(existsSync(join(tmp, 'none'))).toBe(false)
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
+    Object.assign(process.env, keep)
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('a session cut off mid-turn resumes with a note naming the cut-off call; an idle one does not (claude-factory-p0yt)', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-resume-'))
+  const own = join(tmp, 'own')
+  const repo = join(tmp, 'repo')
+  const conf = join(tmp, 'claude')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const projects = join(conf, 'projects', repo.replace(/[^a-zA-Z0-9]/g, '-'))
+  mkdirSync(projects, { recursive: true })
+  const use = { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git push origin HEAD' } }
+  writeFileSync(
+    join(projects, 's-1.jsonl'),
+    JSON.stringify({ type: 'assistant', message: { content: [use] } }) + '\n',
+  )
+  const claude = join(tmp, 'claude-bin')
+  writeFileSync(
+    claude,
+    `#!/bin/sh\nn=$(ls ${tmp}/stdin.* 2>/dev/null | wc -l)\ncat > ${tmp}/stdin.$n\necho '{"session_id":"s-1"}'\n`,
+    { mode: 0o755 },
+  )
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_HARNESS: 'claude',
+    FACTORY_CLAUDE: claude,
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CLAUDE_CONFIG_DIR: conf,
+  })
+  for (const k of ['FACTORY_REPO', 'FACTORY_CA', 'FACTORY_BRIEF', 'FACTORY_CLAUDE_FLAGS'])
+    delete process.env[k]
+  try {
+    writeFileSync(join(own, 'state.json'), JSON.stringify({ status: 'working', session: 's-1', pid: 1 }))
+    await worker.serve(undefined, { once: true })
+    const note = readFileSync(join(tmp, 'stdin.0'), 'utf8')
+    expect(note).toStartWith('[factory] Your VM restarted')
+    expect(note).toContain('`git push origin HEAD`')
+    expect(note).toContain('may have taken effect')
+    // idle when it stopped: nothing was cut off, so no note
+    await worker.serve(undefined, { once: true })
+    expect(existsSync(join(tmp, 'stdin.1'))).toBe(false)
+  } finally {
+    process.env = saved
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test("withDoltEgress adds the Dolt rule of the rig's own https beadsRemote, and nothing else", () => {
+  const rule = {
+    hosts: ['beads-dolt.example'],
+    key: 'DOLT_BASIC',
+    header: 'Authorization',
+    prefix: 'Basic ',
+    port: 50051,
+  }
+  const remote = { url: 'https://beads-dolt.example:50051/db' }
+  const other = [{ hosts: ['github.com'], key: 'GITHUB_BASIC' }]
+  expect(ax.withDoltEgress(other, { beadsRemote: remote, egress: other })).toEqual([...other, rule])
+  expect(ax.withDoltEgress(undefined, { beadsRemote: remote })).toEqual([rule])
+  expect(ax.withDoltEgress(other, { egress: other })).toEqual(other)
+  expect(ax.withDoltEgress(other, undefined)).toEqual(other)
+  expect(ax.withDoltEgress(other, { beadsRemote: { url: 'http://beads-dolt.example:50051/db' } })).toEqual(
+    other,
+  )
+  expect(ax.withDoltEgress(other, { beadsRemote: { url: 'not a url' } })).toEqual(other)
+  const own = [{ hosts: ['beads-dolt.example'], key: 'MY_DOLT', port: 50051 }]
+  expect(ax.withDoltEgress(own, { beadsRemote: remote, egress: own })).toEqual(own)
+})
+
+test('managerEnv gives an https AX server a placeholder token, and an http one or no vault none', () => {
+  const https = 'https://ax.example.svc:8443'
+  expect(ax.managerEnv({ FACTORY_AX_MANAGER_AX_SERVER: https, FACTORY_AX_VAULT: 'v1' })).toMatchObject({
+    AX_SERVER: https,
+    AX_AUTH_TOKEN: 'placeholder',
+  })
+  for (const env of [
+    { FACTORY_AX_MANAGER_AX_SERVER: 'http://ax.example.svc:8080', FACTORY_AX_VAULT: 'v1' },
+    { FACTORY_AX_MANAGER_AX_SERVER: https },
+    {},
+  ])
+    expect('AX_AUTH_TOKEN' in ax.managerEnv(env)).toBe(false)
+})
+
+test('managerEgress gives an https AX server a keyed rule and no http rule', () => {
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8443' })).toEqual([
+    { hosts: ['claude.ai'] },
+    { hosts: ['ax.example.svc'], port: 8443, key: 'AX_AUTH', header: 'Authorization', prefix: 'Bearer ' },
+  ])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc' })[1]).toMatchObject({
+    port: 443,
+    key: 'AX_AUTH',
+  })
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'http://ax.example.svc:8080' })[1]).toEqual({
+    hosts: ['ax.example.svc'],
+    port: 8080,
+    http: true,
+  })
+})
+
+test('launchManager with an https AX server injects AX_AUTH and sets a placeholder token', async () => {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_AX_VAULT: 'v1',
+      FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8443',
+    })
+    delete process.env.FACTORY_AX_MANAGER_BROKER
+    delete process.env.FACTORY_POLICY_BROKER
+    await ax.launchManager('mgr@sha256:abc', [], [], { waitMs: 0 })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.AX_AUTH_TOKEN).toBe('placeholder')
+    expect(env.AX_SERVER).toBe('https://ax.example.svc:8443')
+    const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
+    expect(rules.at(-1)).toEqual({
+      https: {
+        hostnames: ['ax.example.svc'],
+        ports: { numbers: [8443] },
+        effects: {
+          replaceHeaders: [
+            {
+              header: 'Authorization',
+              prefix: 'Bearer ',
+              credentialUri: 'ate-secret://agent-vault/v1/AX_AUTH',
+            },
+          ],
+        },
+      },
+    })
+  } finally {
+    process.env = saved
+  }
+})
+
+test('createPolicy refuses a manager-only vault key in a policy for any task but the manager', () => {
+  const saved = { ...process.env }
+  try {
+    process.env.FACTORY_AX_VAULT = 'v1'
+    delete process.env.FACTORY_POLICY_BROKER
+    writeFileSync(join(dir, 'actor'), '')
+    const rule = (key: string) => [{ hosts: ['h.example.svc'], key }]
+    const refused: [string, () => unknown][] = [
+      ['AX_AUTH', () => ax.createPolicy('w1', rule('AX_AUTH'))],
+      [
+        'AX_AUTH',
+        () =>
+          ax.createPolicy('w1', [
+            { hosts: ['h.example.svc'], headers: [{ header: 'X', prefix: '', key: 'AX_AUTH' }] },
+          ]),
+      ],
+      ['GITHUB_BASIC_MANAGER', () => ax.createPolicy('w1', [], undefined, undefined, 'GITHUB_BASIC_MANAGER')],
+    ]
+    for (const [key, run] of refused) {
+      rmSync(calls, { force: true })
+      expect(run).toThrow(key)
+      expect(existsSync(calls)).toBe(false)
+    }
+    process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+    expect(() => ax.createPolicy('w1', rule('AX_AUTH'))).toThrow('AX_AUTH')
+    expect(existsSync(calls)).toBe(false)
+    delete process.env.FACTORY_POLICY_BROKER
+    expect(ax.createPolicy(ax.managerTask(), rule('AX_AUTH'))).toBe(true)
+    for (const key of ['ANTHROPIC', 'GITHUB_BASIC', 'DOLT_BASIC', 'KUBE_READ', 'AX_AUTH_X', 'MY_AX_AUTH'])
+      expect(ax.createPolicy('w2', rule(key))).toBe(true)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('the host ax call inherits AX_AUTH_TOKEN, and the fake records only whether it is set', () => {
+  const saved = process.env.AX_AUTH_TOKEN
+  try {
+    process.env.AX_AUTH_TOKEN = 'e2e-fake'
+    ax.phase('t1')
+    expect(readFileSync(join(dir, 'auth'), 'utf8')).toBe('set\n')
+    rmSync(join(dir, 'auth'), { force: true })
+    delete process.env.AX_AUTH_TOKEN
+    ax.phase('t1')
+    expect(readFileSync(join(dir, 'auth'), 'utf8')).toBe('\n')
+  } finally {
+    if (saved === undefined) delete process.env.AX_AUTH_TOKEN
+    else process.env.AX_AUTH_TOKEN = saved
+  }
+})
+
+const failedTask = (cond: string) => `status:\n  phase: Failed\n  conditions:\n${cond}`
+test('failureOf reads the first False condition of an ax task as "reason: message"', () => {
+  const msg = 'resuming actor a/b: while running runsc restore: exit status 128'
+  expect(
+    ax.failureOf(
+      failedTask(
+        `  - type: Ready\n    status: "False"\n    reason: ActorResumeFailed\n    message: "${msg}"\n`,
+      ),
+    ),
+  ).toBe(`ActorResumeFailed: ${msg}`)
+  // a False condition with no message: the reason alone
+  expect(ax.failureOf(failedTask('  - type: Ready\n    status: "False"\n    reason: Boom\n'))).toBe('Boom')
+  // the first False one, after a True one
+  expect(
+    ax.failureOf(
+      failedTask(
+        '  - type: A\n    status: "True"\n    reason: Fine\n  - type: Ready\n    status: "False"\n    reason: Bad\n    message: m\n',
+      ),
+    ),
+  ).toBe('Bad: m')
+})
+test('failureOf is undefined for a healthy task, no conditions or YAML that does not parse, and never throws', () => {
+  expect(ax.failureOf(failedTask('  - type: Ready\n    status: "True"\n    reason: Ok\n'))).toBeUndefined()
+  expect(ax.failureOf('status:\n  phase: Running\n')).toBeUndefined()
+  expect(ax.failureOf('a: [unclosed\n  - : :\n\t}{')).toBeUndefined()
+  expect(ax.failureOf('')).toBeUndefined()
+})
+
+test('diedText puts the message on one line, newlines as " | ", before a clipped stack', () => {
+  const e = new Error(`git clone x: Cloning into 'r'...\nfatal: Recv failure: Connection reset by peer\n`)
+  e.stack = `Error: ${e.message}\n${'    at f (w.ts:1:1)\n'.repeat(200)}`
+  const [first, ...rest] = worker.diedText(e).split('\n')
+  expect(first).toBe(
+    `serve died: git clone x: Cloning into 'r'... | fatal: Recv failure: Connection reset by peer`,
+  )
+  expect(rest.join('\n').length).toBeLessThanOrEqual(1200)
+  expect(worker.diedText('plain')).toBe('serve died: plain\n')
+  expect(worker.diedText(new Error('x'.repeat(900))).split('\n')[0]?.length).toBe('serve died: '.length + 500)
 })

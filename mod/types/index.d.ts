@@ -9,6 +9,8 @@ export type FactoryRun = {
   attempts?: number
   pane?: string | null
   agent?: string | null
+  /** the model its station's worker runs; absent at a gate or when the agent command names none */
+  model?: string
   error?: string | null
   last?: FactoryEntry
   /** set while the run waits at a gate for the person */
@@ -75,6 +77,10 @@ export type FactoryRig = {
   maxRuns?: number
   sweeps?: string[]
   goal?: string
+  /** where its workers run (src/runner.ts): herdr panes on the laptop when absent, or ax VMs */
+  runner?: string
+  /** the AX sandbox class of its VM workers: gvisor when absent */
+  sandboxClass?: string
   /** this rig's Linear routing (claude-factory-b6c, claude-factory-b6c.18); absent when the rig has no Linear pull */
   linear?: { team: string[]; projects?: string[]; labels?: string[] }
   /** this rig's last Linear pull, added by `factory tick` from `linear-sync.json` */
@@ -132,7 +138,7 @@ export type FactoryPrs = {
     role: 'code' | 'companion' | 'deploy' | 'mentioned'
     /** the station that first named it, or '' when it was only found by search or branch */
     station: string
-    /** OPEN, MERGED, CLOSED or UNKNOWN before its first `gh pr view` */
+    /** OPEN, MERGED, CLOSED or UNKNOWN before its first PR view */
     state: 'OPEN' | 'MERGED' | 'CLOSED' | 'UNKNOWN'
     isDraft: boolean
     /** APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or '' */
@@ -146,7 +152,7 @@ export type FactoryPrs = {
   }[]
 }[]
 
-export type FactoryView = 'board' | 'backlog' | 'mail' | 'prs' | 'rigs' | 'interview'
+export type FactoryView = 'board' | 'backlog' | 'mail' | 'prs' | 'rigs' | 'interview' | 'runners'
 /** what the person has typed and not sent */
 export type FactoryDraft = {
   mail: string
@@ -225,6 +231,35 @@ export type FactoryPmLogEntry = {
   items?: number
   findings?: number
   filed?: number
+  error?: string
+}
+
+/** one pending skill or proposal with no verdict yet: an item of `factory tick`'s `reviews` field
+ * (mirrors `ReviewItem` in src/memory.ts, without its text) (claude-factory-ag2). */
+export type FactoryReviewItem = {
+  key: string
+  kind: 'skill' | 'proposal'
+  name: string
+  change: string
+}
+
+/** a pending item as the patrol shows it: an item of `factory tick`'s `reviews` field (no verdict) or
+ * its `reviewed` field (with one). The manager or the person confirms the verdict. */
+export type FactoryReviewRow = FactoryReviewItem & {
+  recommendation?: 'install' | 'reject'
+  why?: string
+}
+
+/** one reviewer attempt's outcome, appended to `<home>/review-log.jsonl`, capped at 50 lines
+ * (claude-factory-ag2). `key` is the item's own key (`reviewKey()`, src/memory.ts). `error` is set
+ * when the facts call, the spawn, the answer or `factory review set` failed. */
+export type FactoryReviewLogEntry = {
+  at: number
+  key: string
+  agentId?: string
+  reason?: string
+  durationMs: number
+  tokens?: number
   error?: string
 }
 
