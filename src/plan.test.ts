@@ -371,7 +371,47 @@ test('findings: a goal with no open leaf bead at all is flagged, even with an op
   ])
 })
 
+test('findings: a starved epic whose only open child waits on the person gives no finding; a plain P2 child keeps it', () => {
+  const now = 1_000 * HOUR
+  const waits: Record<string, Partial<Bead>> = {
+    human: { labels: ['human'] },
+    owner: { labels: ['owner'] },
+    p4: { priority: 4 },
+    owned: { metadata: { owner_decisions: 'x' } },
+  }
+  const run = (kid: Partial<Bead>[]) =>
+    findings(
+      'acme',
+      undefined,
+      [
+        bead('r-1', { status: 'open', priority: 1, issue_type: 'epic', created_at: iso(now - 25 * HOUR) }),
+        ...kid.map((k, i) => bead(`r-1.${i}`, { status: 'open', parent: 'r-1', priority: 2, ...k })),
+        bead('r-9', { status: 'closed', priority: 2, closed_at: iso(now - HOUR) }),
+      ],
+      [],
+      now,
+    ).map(f => f.kind)
+  for (const [name, k] of Object.entries(waits)) expect([name, run([k])]).toEqual([name, []])
+  expect(run([waits.human!, {}])).toEqual(['starved-epic'])
+})
+
 // ---- buildPlan ----
+
+test('buildPlan: goal-no-plan is held back while the rig has unqueued ready beads', () => {
+  const mk = (readyUnqueued?: number): RigInput => ({
+    name: 'acme',
+    goal: 'ship it',
+    candidates: [],
+    every: [bead('acme-1', { status: 'open', priority: 2 })],
+    liveBeadIds: [],
+    answer: [],
+    ...(readyUnqueued !== undefined && { readyUnqueued }),
+  })
+  const kinds = (n?: number) => buildPlan(0, [mk(n)], []).rigs.acme!.findings.map(f => f.kind)
+  expect(kinds(2)).toEqual([])
+  expect(kinds(0)).toEqual(['goal-no-plan'])
+  expect(kinds(undefined)).toEqual(['goal-no-plan'])
+})
 
 test('buildPlan: adds goal-no-plan only once ranking comes up empty for a goal rig', () => {
   const now = 1_000 * HOUR

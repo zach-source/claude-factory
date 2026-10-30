@@ -7,7 +7,7 @@
 // It picks an order and a one-line why for each id that the CLI already offers.
 // It proposes a change that it cannot make itself (claude-factory-dun).
 import { createHash } from 'node:crypto'
-import { parentOf, SHIP, type Bead } from './beads'
+import { isOwned, parentOf, SHIP, type Bead } from './beads'
 
 export type PlanItem = { id: string; title: string; priority: number; why: string }
 export type FindingKind = 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan' | 'file-churn'
@@ -321,7 +321,14 @@ export function findings(
     }
     // open but deferred children are also a person's own decision, not neglect: an epic whose
     // open children are all deferred is not starved (claude-factory-dun.14)
-    const activeKids = openKids.filter(k => !isDeferred(k))
+    // a child that waits on the person (human or owner label, owner decisions, P4) is not neglect either
+    const activeKids = openKids.filter(
+      k =>
+        !isDeferred(k) &&
+        !k.labels?.some(l => l === 'human' || l === 'owner') &&
+        !isOwned(k) &&
+        k.priority !== 4,
+    )
     if (!activeKids.length) continue
     const progress = kids.flatMap(k =>
       [tsOf(k.closed_at), tsOf(k.started_at)].filter((t): t is number => t !== undefined),
@@ -402,6 +409,8 @@ export type RigInput = {
   name: string
   goal?: string
   candidates: Bead[]
+  /** ready beads nobody queued yet: goal-no-plan is not filed while any exist (absent reads as 0) */
+  readyUnqueued?: number
   every: Bead[]
   liveBeadIds: string[]
   answer: AnswerItem[]
@@ -416,7 +425,8 @@ export function buildPlan(now: number, rigsIn: RigInput[], proposals: Proposal[]
   for (const r of rigsIn) {
     const items = rankPlan(r.answer, r.candidates)
     const found = findings(r.name, r.goal, r.every, r.liveBeadIds, now, starveHours)
-    if (r.goal && items.length === 0) found.push(goalNoPlanFinding(r.name, r.goal))
+    if (r.goal && items.length === 0 && (r.readyUnqueued ?? 0) === 0)
+      found.push(goalNoPlanFinding(r.name, r.goal))
     rigs[r.name] = { items, findings: found }
   }
   return { at: now, rigs, proposals }
