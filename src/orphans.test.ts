@@ -99,9 +99,9 @@ test('a run with no bead makes no bd call', async () => {
 test('orphanSkip reasons come before any io', () => {
   expect(orphanSkip(pr(), ctx())).toBeUndefined()
   expect(orphanSkip(pr(1, { isDraft: false }), ctx())).toBe('not a draft')
-  expect(orphanSkip(pr(), ctx({ records: { [pr().url]: { sha: SHA, run: 'x', from: 'run-1', at: '' } } }))).toBe(
-    'already forked at this head',
-  )
+  expect(
+    orphanSkip(pr(), ctx({ records: { [pr().url]: { sha: SHA, run: 'x', from: 'run-1', at: '' } } })),
+  ).toBe('already forked at this head')
 })
 
 test('AC3: a second pass with the records forks 0; a new head SHA forks again', async () => {
