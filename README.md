@@ -818,8 +818,8 @@ commit it, and the repo owns its factory like any other code:
   later edit, the run's own included, changes the graph under it. Without a repo copy, the
   template in `factories/` is used. `factory status <run>` says which version a run follows.
 - **New runs start from what has merged.** A run branches from the remote's default branch,
-  freshly fetched, whenever that already holds your local HEAD; from local HEAD when you have
-  unpushed work. So a merged factory change reaches the next run with nothing to pull.
+  freshly fetched, never from unpushed local commits; from local HEAD only when there is no
+  origin/HEAD. So a merged factory change reaches the next run with nothing to pull.
 - **The improve sweep's fourth lens is the factory itself**: it reads recent runs' journals
   and the closed factory beads' comments (retries, stuck stations, loops, gates always
   answered the same way, costly models) and files one change to `.factory/` per finding.
