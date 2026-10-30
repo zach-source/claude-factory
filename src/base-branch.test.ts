@@ -172,6 +172,8 @@ test('g53p AC3: base_branch=acme/deploy puts origin/acme/deploy in ship queue an
   expect(shipTask('release')).toContain('rules/branches/acme/deploy')
   expect(shipTask('release')).toContain('^origin/acme/deploy')
   expect(shipTask('queue')).toContain('merge origin/acme/deploy into it')
+  expect(shipTask('queue')).toContain('against origin/acme/deploy')
+  expect(shipTask('queue')).not.toMatch(/(with|against|from) main\b/)
 })
 
 test('g53p AC4: unset or blank base_branch keeps origin/main in ship', () => {
