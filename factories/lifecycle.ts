@@ -60,6 +60,8 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 
 // implement and quick interpolate this; ship.ts keeps its own copy (it must not import this file) and ship.test.ts pins the two equal
 const botFiles = `In the infra-blocks repo, a bot writes CHANGELOG.md and bumps VERSION, so a pull request must not change them or .devenv. Before each push there, run \`git fetch origin main\`, then \`git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv\`. If it prints a file, run \`git checkout origin/main -- <file>\` (or \`git rm --cached <file>\` when origin/main has no such file), commit, and run the check again. Run the check, the fix, the commit and the push as separate commands. The pull request title is the changelog line, and the bot bumps VERSION.`
+// Only the implement station uses layerVersion (quick and ship do not).
+const layerVersion = `In the infra-blocks repo, a pull request that edits a layer must raise its version, because the publish job skips a version that already exists. Before each push there, run \`git diff --name-only origin/main...HEAD -- 'shapefile/layers/*/layer.cue'\`. For each file it prints, compare its \`version:\` line with the one in \`git show origin/main:<file>\`. The version must differ from origin/main's and be above it. If it is not, bump it past origin/main's version, commit, and run the check again. A file that origin/main does not have passes.`
 
 // review, security and check interpolate this: one rule for what blocks and where a finding goes
 const blockingScope = `A finding blocks only when it is one of these kinds:
@@ -177,6 +179,7 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 5. After a send-back, read the whole delta since the last reviewed head (\`git diff <reviewed sha>..HEAD\`) for defects that your fixes added. Grep for the siblings of each finding.
 6. Add no changelog entry and no version bump: the repo's release step writes the changelog at release time.
 7. ${botFiles}
+8. ${layerVersion}
 Close every task of this run (see Tracking). Push the branch and open it as a draft pull request (gh pr create --draft) if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
 Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
