@@ -1035,6 +1035,9 @@ export function reworkBase(repo: string, branch: string) {
  * (fetched first); else the remote's default branch when it already holds everything local (fetched, so merged work,
  * factory changes included, reaches new runs); else local HEAD
  */
+/** a VM worker's serve died in setup on `bd bootstrap -y`: a transient outage, not a fault of the work */
+export const isBootstrapFail = (r: string) => /^serve exited: serve died: beads in the VM: \S+ bootstrap -y: /.test(r)
+
 export function freshBase(repo: string, rig: Pick<Rig, 'params'> | undefined = rigOf(repo)) {
   const b = paramsOf({ params: { base_branch: '' } }, rig).base_branch!.trim()
   if (b && branchOk(b)) {
@@ -2799,6 +2802,22 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
     if (info.resumeFailed) send({ type: 'MAIL', from: 'factory', to: 'manager', text: info.resumeFailed })
+    if (isBootstrapFail(info.failed)) {
+      // a bd bootstrap outage spends no attempt: 2 min for the first hit, the streak floor and one mail for the next
+      const prev = c.log.at(-1)
+      const again = prev?.node === node && prev.outcome === 'outage' && isBootstrapFail(prev.summary)
+      const text = `bd bootstrap fails on ${rigOf(run.repo)?.name ?? basename(run.repo)} VMs`
+      if (again && !(c.mail.manager ?? []).some((m) => m.from === 'factory' && m.text === text))
+        send({ type: 'MAIL', from: 'factory', to: 'manager', text })
+      send({
+        type: 'FAIL',
+        seq: c.seq,
+        reason: info.failed,
+        hold: again ? 0 : now + 120_000,
+        ...(again ? {} : { holdMin: 2 }),
+      })
+      return info.status
+    }
     send({ type: 'FAIL', seq: c.seq, reason: info.failed })
     return info.status
   }

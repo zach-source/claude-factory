@@ -2579,3 +2579,72 @@ describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
     expect(s.herdrCalls()).not.toContain('worktree create')
   }, 30_000)
 })
+
+const BOOT = 'serve died: beads in the VM: bd bootstrap -y: Error: exit 1'
+const bootMails = (id: string) =>
+  ((ctxOf(id).mail.manager ?? []) as { from: string; text: string }[]).filter(m =>
+    m.text.includes('bd bootstrap fails'),
+  )
+/** a serve that exited with `log`, then one tick */
+function serveExit(id: string, log: string) {
+  cluster('Running', { status: 'exited', log, lines: [] })
+  factory(['tick'])
+  return ctxOf(id)
+}
+/** the run wakes at wakeAt and a fresh worker starts, as the next tick would do */
+function relaunch(id: string) {
+  const runDir = join(home, 'runs', id)
+  const snap = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot
+  const actor = createActor(compile(def), { snapshot: snap }).start()
+  actor.send({ type: 'TICK', at: snap.context.wakeAt })
+  const seq = actor.getSnapshot().context.seq
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: Date.now() })
+  writeFileSync(join(runDir, 't.json'), JSON.stringify({ node: 'a', seq, policy: true }))
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+}
+
+test('a first bd bootstrap exit holds the station 2 min and spends no attempt, without a mail', () => {
+  launched('b1')
+  const before = Date.now()
+  const c = serveExit('b1', BOOT)
+  expect(c.attempt).toBe(1)
+  expect(c.log.at(-1).outcome).toBe('outage')
+  expect(c.wakeAt).toBeGreaterThanOrEqual(before + 120_000 - 5_000)
+  expect(c.wakeAt).toBeLessThanOrEqual(Date.now() + 120_000 + 60_000)
+  expect(bootMails('b1')).toHaveLength(0)
+  rmSync(join(home, 'runs', 'b1'), { recursive: true })
+})
+
+test('a second bootstrap exit in a row waits the streak floor and mails the manager once, from the factory', () => {
+  launched('b2')
+  serveExit('b2', BOOT)
+  relaunch('b2')
+  const before = Date.now()
+  const c = serveExit('b2', BOOT)
+  expect(c.attempt).toBe(1)
+  expect(c.log.at(-1).outcome).toBe('outage')
+  expect(c.wakeAt).toBeGreaterThanOrEqual(before + 30 * 60_000 - 5_000)
+  expect(bootMails('b2').map(m => [m.from, m.text])).toEqual([['factory', 'bd bootstrap fails on wt VMs']])
+  relaunch('b2')
+  serveExit('b2', BOOT)
+  expect(bootMails('b2')).toHaveLength(1)
+  rmSync(join(home, 'runs', 'b2'), { recursive: true })
+})
+
+test('only a serve died with a bd bootstrap -y step is the bootstrap class: the rest spends an attempt', () => {
+  for (const [i, log] of [
+    'serve died: beads in the VM: origin has no refs/dolt/data',
+    'serve died: beads in the VM: git init -q .: boom',
+    'serve died: git clone https://github.com/acme/widget.git: boom',
+    'bd bootstrap -y',
+  ].entries()) {
+    const id = `bn${i}`
+    launched(id)
+    const c = serveExit(id, log)
+    expect(c.log.at(-1).outcome).toBe('fail')
+    rmSync(join(home, 'runs', id), { recursive: true })
+  }
+})
