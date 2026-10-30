@@ -217,7 +217,7 @@ test('queue sends a PR that needs changes back to implement through the existing
 
 test('queue does not send a PR back when its red tests are held assertions', () => {
   const p = ship.nodes.queue.prompt
-  const step2 = p.split('\n2. ')[1]
+  const step2 = p.split('\n2. ')[1]!
   for (const s of [
     'read its bead comments and the plan',
     'held assertions',
