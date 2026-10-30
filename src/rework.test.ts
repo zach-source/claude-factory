@@ -29,7 +29,7 @@ test('a branch that is not a factory branch name gives no base', () => {
   for (const b of ['-x', 'main', '../x', 'factory/../x']) expect(reworkBase('.', b)).toBeUndefined()
 })
 
-test('freshBase starts at the rig base_branch tip on origin, and falls back to today for anything else', () => {
+test('freshBase starts at the rig base_branch tip on origin, and otherwise at origin default tip, never an unpushed local HEAD', () => {
   const root = mkdtempSync(join(tmpdir(), 'fresh-'))
   const origin = join(root, 'origin.git')
   const work = join(root, 'work')
