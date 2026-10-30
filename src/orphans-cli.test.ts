@@ -181,3 +181,15 @@ test('AC9: an unreadable orphan-forks.json forks nothing and shows an error row;
   settle()
   expect(runIds()).toHaveLength(1)
 })
+
+test('AC8: a stopped factory skips the pass; resume lets it fork', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  expect(factory(['stop']).code).toBe(0)
+  pass()
+  expect(runIds()).toHaveLength(1)
+  expect(existsSync(join(home(), 'orphan-forks.json'))).toBe(false)
+  expect(factory(['resume']).code).toBe(0)
+  pass()
+  expect(runIds()).toHaveLength(2)
+})
