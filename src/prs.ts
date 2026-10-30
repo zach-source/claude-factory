@@ -907,6 +907,7 @@ export function githubRows(pulls: unknown): Json[] {
       state: mergedAt ? 'MERGED' : str(p.state).toUpperCase(),
       isDraft: p.draft === true,
       headRefName: str(head?.ref),
+      headRefOid: str(head?.sha),
       baseRefName: str(base?.ref),
       isCrossRepository:
         !headRepo || str(headRepo.full_name) !== str((base?.repo as Json | undefined)?.full_name),

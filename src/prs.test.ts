@@ -1793,6 +1793,9 @@ test('githubRows maps pulls onto gh pr list fields; githubPulls pages until a sh
   })
   expect(rows[1]).toMatchObject({ state: 'OPEN', isDraft: true, isCrossRepository: false, labels: [] })
   expect(rows[1]).not.toHaveProperty('mergeCommit')
+  expect(rows[1]).toMatchObject({ headRefOid: '' })
+  const sha = 'a'.repeat(40)
+  expect(githubRows([{ number: 3, head: { ref: 'h', sha } }])[0]).toMatchObject({ headRefOid: sha })
 
   const argvs: string[][] = []
   const gh: Gh = async argv => {
