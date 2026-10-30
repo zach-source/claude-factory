@@ -1036,7 +1036,8 @@ export function reworkBase(repo: string, branch: string) {
  * factory changes included, reaches new runs); else local HEAD
  */
 /** a VM worker's serve died in setup on `bd bootstrap -y`: a transient outage, not a fault of the work */
-export const isBootstrapFail = (r: string) => /^serve exited: serve died: beads in the VM: \S+ bootstrap -y: /.test(r)
+export const isBootstrapFail = (r: string) =>
+  /^serve exited: serve died: beads in the VM: \S+ bootstrap -y: /.test(r)
 
 export function freshBase(repo: string, rig: Pick<Rig, 'params'> | undefined = rigOf(repo)) {
   const b = paramsOf({ params: { base_branch: '' } }, rig).base_branch!.trim()
@@ -2807,7 +2808,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const prev = c.log.at(-1)
       const again = prev?.node === node && prev.outcome === 'outage' && isBootstrapFail(prev.summary)
       const text = `bd bootstrap fails on ${rigOf(run.repo)?.name ?? basename(run.repo)} VMs`
-      if (again && !(c.mail.manager ?? []).some((m) => m.from === 'factory' && m.text === text))
+      if (again && !(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === text))
         send({ type: 'MAIL', from: 'factory', to: 'manager', text })
       send({
         type: 'FAIL',
