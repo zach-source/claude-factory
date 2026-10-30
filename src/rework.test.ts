@@ -46,8 +46,8 @@ test('freshBase starts at the rig base_branch tip on origin, and falls back to t
   g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
   g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/deploy')
   g(root, 'clone', '-q', origin, clone)
+  const mainTip = sha(clone)
   commit(clone, 'local') // one unpushed commit
-  const local = sha(clone)
   commit(work, 'd1')
   g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/deploy')
   const deployTip = sha(work)
@@ -55,9 +55,9 @@ test('freshBase starts at the rig base_branch tip on origin, and falls back to t
 
   expect(freshBase(clone, rig('deploy'))).toBe(deployTip) // A: fetched, not the stale origin/deploy
   expect(freshBase(clone, rig(' deploy '))).toBe(deployTip)
-  expect(freshBase(clone, rig(''))).toBe(local) // B
+  expect(freshBase(clone, rig(''))).toBe(mainTip) // B: an unpushed local commit stays out
   for (const b of ['a..b', '-x', 'x y', '$(id)', 'deploy~0', 'nope'])
-    expect(freshBase(clone, rig(b))).toBe(local) // D, E
+    expect(freshBase(clone, rig(b))).toBe(mainTip) // D, E
 
   const clone2 = join(root, 'clone2')
   g(root, 'clone', '-q', origin, clone2)
