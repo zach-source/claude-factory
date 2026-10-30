@@ -1060,7 +1060,9 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
 
 /**
  * every start, since only the workspace survives a suspend: trust the egress gateway's CA (it decrypts all
- * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet
+ * HTTPS out) and clone the run's branch, retrying while the task's egress policy does not exist yet.
+ * If origin has no such branch (a merge deleted it), clone the default branch, make the branch locally and
+ * return a note for the brief; otherwise return ''.
  */
 export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   trustCA()
@@ -1080,16 +1082,26 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   writeFileSync(join(bin, 'kube-apiserver'), APISERVER_WRAPPER, { mode: 0o755 })
   process.env.TEST_ASSET_KUBE_APISERVER ??= join(bin, 'kube-apiserver')
   const remote = process.env.FACTORY_REPO
-  if (!remote || existsSync(join(repo(), '.git'))) return
+  if (!remote || existsSync(join(repo(), '.git'))) return ''
+  const branch = process.env.FACTORY_BRANCH ?? 'main'
   let err = ''
   for (let i = 0; i < tries; i++) {
     rmSafe(repo(), { recursive: true, force: true })
-    const r = sh(['git', 'clone', '--branch', process.env.FACTORY_BRANCH ?? 'main', remote, repo()])
+    const r = sh(['git', 'clone', '--branch', branch, remote, repo()])
     if (r.ok) {
       excludeScratch(repo())
-      return
+      return ''
     }
     err = r.err
+    // not transient: the laptop pushed the branch before the launch, so it is gone (a merge deleted it)
+    if (err.includes(`Remote branch ${branch} not found in upstream origin`)) {
+      rmSafe(repo(), { recursive: true, force: true })
+      const c = sh(['git', 'clone', remote, repo()])
+      const b = c.ok ? sh(['git', '-C', repo(), 'checkout', '-q', '-b', branch]) : c
+      if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
+      excludeScratch(repo())
+      return `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
+    }
     await Bun.sleep(waitMs)
   }
   throw new Error(`git clone ${remote}: ${err}`)
@@ -1129,7 +1141,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   const prior = state()
   // working from the start: until the first turn there is no state, which poll would read as exited
   save({ status: 'working', session: prior?.session, pid: process.pid, egress: prior?.egress })
-  await setup()
+  const missing = await setup()
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
   codexHome()
@@ -1156,7 +1168,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
     session = await turnWithRetry(
-      brief + servicesNote(services, process.env),
+      brief + missing + servicesNote(services, process.env),
       model,
       undefined,
       onEgress,
