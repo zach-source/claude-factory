@@ -1062,7 +1062,6 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
   const repo = join(dir, 'repo2')
   mkdirSync(own, { recursive: true })
   const git = (cwd: string, ...a: string[]) => Bun.spawnSync(['git', ...a], { cwd }).exitCode
-  git(dir, 'init', '-q', '--bare', origin)
   git(dir, 'init', '-q', '-b', 'factory/r1', seed)
   git(seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'one')
   const home = join(dir, 'home')
@@ -1083,8 +1082,11 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     FACTORY_KUBE_SERVER: 'https://kube.example',
   })
   try {
-    // the branch arrives only after the first try, as egress opens only once the policy exists
-    const pushing = Bun.sleep(30).then(() => git(seed, 'push', '-q', origin, 'factory/r1'))
+    // the origin arrives only after the first try, as egress opens only once the policy exists
+    const pushing = Bun.sleep(30).then(() => {
+      git(dir, 'init', '-q', '--bare', origin)
+      git(seed, 'push', '-q', origin, 'factory/r1')
+    })
     await worker.setup({ tries: 20, waitMs: 20 })
     await pushing
     expect(readFileSync(join(own, 'egress-ca.crt'), 'utf8')).toBe('CA-PEM')
@@ -1109,6 +1111,115 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
     expect(kube.users[0].user).toEqual({ token: 'placeholder' })
     expect(kube['current-context']).toBe('factory')
     await worker.setup({ tries: 1, waitMs: 0 }) // a resumed task keeps its clone
+  } finally {
+    process.env = saved
+  }
+})
+
+// an origin with main (and, when withBranch, factory/r1 one commit later); env for a setup() clone of factory/r1
+function cloneFixture(name: string, withBranch: boolean) {
+  const origin = join(dir, `${name}-origin.git`)
+  const seed = join(dir, `${name}-seed`)
+  const own = join(dir, `${name}-own`)
+  const repo = join(dir, `${name}-repo`)
+  const home = join(dir, `${name}-home`)
+  for (const d of [own, home]) mkdirSync(d, { recursive: true })
+  const git = (cwd: string, ...a: string[]) =>
+    Bun.spawnSync(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd })
+  git(dir, 'init', '-q', '--bare', '-b', 'main', origin)
+  git(dir, 'init', '-q', '-b', 'main', seed)
+  git(seed, 'commit', '-q', '--allow-empty', '-m', 'main')
+  git(seed, 'push', '-q', origin, 'main')
+  const mainSha = git(seed, 'rev-parse', 'HEAD').stdout.toString().trim()
+  let branchSha = ''
+  if (withBranch) {
+    git(seed, 'checkout', '-q', '-b', 'factory/r1')
+    git(seed, 'commit', '-q', '--allow-empty', '-m', 'branch')
+    git(seed, 'push', '-q', origin, 'factory/r1')
+    branchSha = git(seed, 'rev-parse', 'HEAD').stdout.toString().trim()
+  }
+  Object.assign(process.env, {
+    HOME: home,
+    GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_REPO: origin,
+    FACTORY_BRANCH: 'factory/r1',
+  })
+  const head = () => ({
+    branch: git(repo, 'symbolic-ref', '--short', 'HEAD').stdout.toString().trim(),
+    sha: git(repo, 'rev-parse', 'HEAD').stdout.toString().trim(),
+  })
+  return { origin, repo, mainSha, branchSha, head }
+}
+
+test('setup: a run branch that is missing on origin does not fail; it clones the default branch and returns a note (claude-factory-giuf)', async () => {
+  const saved = { ...process.env }
+  const f = cloneFixture('miss', false)
+  try {
+    const t0 = Date.now()
+    const note = await worker.setup({ tries: 3, waitMs: 5000 }) // not-found is not transient: no retry
+    expect(Date.now() - t0).toBeLessThan(3000)
+    expect(note).toStartWith('\n\n[factory] ')
+    expect(note).toContain('your run branch factory/r1 is missing on origin')
+    expect(f.head()).toEqual({ branch: 'factory/r1', sha: f.mainSha })
+    expect(readFileSync(join(f.repo, '.git', 'info', 'exclude'), 'utf8')).toContain('.scratch')
+  } finally {
+    process.env = saved
+  }
+})
+
+test('setup: a run branch that is present is cloned and gives an empty note', async () => {
+  const saved = { ...process.env }
+  const f = cloneFixture('have', true)
+  try {
+    expect(await worker.setup({ tries: 1, waitMs: 0 })).toBe('')
+    expect(f.head()).toEqual({ branch: 'factory/r1', sha: f.branchSha })
+  } finally {
+    process.env = saved
+  }
+})
+
+test('setup: any other clone error keeps retrying and then throws, with no fallback clone', async () => {
+  const saved = { ...process.env }
+  const f = cloneFixture('bad', false)
+  process.env.FACTORY_REPO = join(dir, 'bad-nowhere.git')
+  try {
+    await expect(worker.setup({ tries: 2, waitMs: 0 })).rejects.toThrow(/^git clone .*bad-nowhere\.git: /)
+    expect(existsSync(join(f.repo, '.git'))).toBe(false)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('serve sends the missing-branch note once, after the brief, on the first turn only (claude-factory-giuf)', async () => {
+  const saved = { ...process.env }
+  const own = join(dir, 'gmiss-own')
+  const f = cloneFixture('gmiss', false)
+  const claude = join(dir, 'claude-gmiss')
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+n=$(ls ${dir}/gmiss.stdin.* 2>/dev/null | wc -l)
+cat > ${dir}/gmiss.stdin.$n
+echo '{"type":"system","subtype":"init","session_id":"sess-g"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  Object.assign(process.env, {
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_CLAUDE: claude,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_FROM: 'implement',
+  })
+  try {
+    await worker.serve('m1', { once: true })
+    const first = readFileSync(join(dir, 'gmiss.stdin.0'), 'utf8')
+    expect(first).toStartWith('the brief')
+    expect(first).toContain('your run branch factory/r1 is missing on origin')
+    expect(f.head().branch).toBe('factory/r1')
+    await worker.serve('m1', { once: true }) // resumed: no second brief, no note
+    expect(existsSync(join(dir, 'gmiss.stdin.1'))).toBe(false)
   } finally {
     process.env = saved
   }
