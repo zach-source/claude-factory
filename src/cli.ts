@@ -7010,6 +7010,8 @@ export type RigFacts = {
   goal?: string
   maxRuns?: number
   busy: number
+  /** ready beads nobody queued yet; absent in an old plan-facts.json (reads as 0) */
+  readyUnqueued?: number
   candidates: { id: string; title: string; priority?: number; issue_type?: string }[]
   epics: {
     id: string
@@ -7029,6 +7031,7 @@ const emptyRigFacts = (rig: Pick<Rig, 'goal' | 'maxRuns'>, busy: number, error?:
   goal: rig.goal,
   maxRuns: rig.maxRuns,
   busy,
+  readyUnqueued: 0,
   candidates: [],
   epics: [],
   closedRecently: [],
@@ -7042,6 +7045,7 @@ function rigFacts(
   rig: Rig,
   every: Bead[],
   ready: Bead[],
+  readyUnqueued: number,
   linked: Set<string>,
   busy: number,
   now: number,
@@ -7099,6 +7103,7 @@ function rigFacts(
     goal: rig.goal,
     maxRuns: rig.maxRuns,
     busy,
+    readyUnqueued,
     candidates,
     epics,
     closedRecently,
@@ -7196,6 +7201,7 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
         rig,
         b.every(),
         b.ready(),
+        b.unqueued().length,
         linked,
         busy,
         now,
@@ -7330,7 +7336,8 @@ function planSetCmd(answerPath?: string) {
     }))
     const items = plan.rankPlan(cleanAnswer, candidates)
     const found = [...rf.findings]
-    if (rf.goal && items.length === 0) found.push(plan.goalNoPlanFinding(name, rf.goal))
+    if (rf.goal && items.length === 0 && (rf.readyUnqueued ?? 0) === 0)
+      found.push(plan.goalNoPlanFinding(name, rf.goal))
     rigsPlan[name] = { items, findings: found }
   }
   const churnProposals = plan.churnProposals(Object.values(facts!).flatMap(rf => rf.findings))

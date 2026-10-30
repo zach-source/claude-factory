@@ -674,3 +674,17 @@ test('plan set files the pm proposals first; churn takes only the slots left in 
   expect(calls).toHaveLength(3)
   expect(calls.join('\n')).not.toContain('design question')
 })
+
+test('plan set adds goal-no-plan only when the rig has no unqueued ready beads', () => {
+  const kinds = (extra: Record<string, unknown>) => {
+    reset()
+    writeFacts({ candidates: [], findings: [], ...extra })
+    const answerPath = join(dir, 'answer.json')
+    writeAnswer(answerPath)
+    expect(factory(['plan', 'set', answerPath]).code).toBe(0)
+    return JSON.parse(readFileSync(planJson(), 'utf8')).rigs.a.findings.map((f: { kind: string }) => f.kind)
+  }
+  expect(kinds({ readyUnqueued: 3 })).toEqual([])
+  expect(kinds({ readyUnqueued: 0 })).toEqual(['goal-no-plan'])
+  expect(kinds({})).toEqual(['goal-no-plan'])
+})
