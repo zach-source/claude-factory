@@ -1,0 +1,64 @@
+schema_version: "1.0"
+
+extension:
+  id: beads
+  name: "Beads Execution Backend"
+  version: "0.3.0"
+  description: "Stores Spec Kit specifications, task context, and the executable dependency DAG in Beads."
+  category: integration
+  effect: read-write
+  author: "Sidekick contributors"
+  repository: "https://github.com/zach-source/speckit-beads"
+  homepage: "https://github.com/zach-source/speckit-beads"
+  license: MIT
+
+requires:
+  speckit_version: ">=1.0.0"
+  tools:
+    - name: bd
+      version: ">=1.0.0"
+      required: true
+  commands:
+    - speckit.plan
+
+provides:
+  commands:
+    - name: speckit.beads.tasks
+      file: commands/speckit.beads.tasks.md
+      description: "Plan directly from Spec Kit artifacts into a dependency-ordered Beads graph."
+      aliases: [speckit.beads.sync]
+    - name: speckit.beads.ready
+      file: commands/speckit.beads.ready.md
+      description: "Select ready Beads work and restore its linked Spec Kit context."
+    - name: speckit.beads.implement
+      file: commands/speckit.beads.implement.md
+      description: "Implement Beads work through ready, claim, validate, and close."
+    - name: speckit.beads.render
+      file: commands/speckit.beads.render.md
+      description: "Render an optional tasks.md compatibility view from Beads."
+    - name: speckit.beads.status
+      file: commands/speckit.beads.status.md
+      description: "Show Beads task readiness, blockers, and future execution waves."
+  scripts:
+    - name: speckit-beads-tasks
+      file: scripts/beads_tasks.py
+      description: "Validate/reconcile task graphs and render tasks.md compatibility views."
+      runtimes: [python]
+
+hooks:
+  after_plan:
+    command: speckit.beads.tasks
+    optional: true
+    prompt: "Create or reconcile this feature's implementation work in Beads now?"
+    description: "Plan directly from the completed Spec Kit artifacts into Beads."
+  before_analyze:
+    command: speckit.beads.render
+    optional: true
+    prompt: "Render a fresh tasks.md compatibility view from Beads before analysis?"
+    description: "Give the core analyzer a read-only projection of the authoritative Beads graph."
+
+tags:
+  - beads
+  - task-tracking
+  - integration
+  - workflow

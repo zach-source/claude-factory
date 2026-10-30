@@ -1,0 +1,51 @@
+{
+  "feature": {
+    "key": "001-example",
+    "title": "Example Feature",
+    "summary": "Implement the example feature described by the specification.",
+    "acceptance_criteria": "A valid request creates an example that satisfies FR-001.",
+    "directory": "specs/001-example",
+    "priority": 1
+  },
+  "artifacts": {
+    "spec": "specs/001-example/spec.md",
+    "plan": "specs/001-example/plan.md",
+    "research": "specs/001-example/research.md",
+    "data_model": "specs/001-example/data-model.md",
+    "contracts": ["specs/001-example/contracts/example.json"]
+  },
+  "tasks": [
+    {
+      "key": "create-example-model",
+      "display_id": "T001",
+      "title": "Create the Example model",
+      "description": "Create the Example model in src/models/example.py.",
+      "acceptance_criteria": "The model represents an identifier and validated name.",
+      "phase": "Foundational",
+      "story": null,
+      "parallel": false,
+      "priority": 1,
+      "dependencies": [],
+      "source_refs": [
+        "specs/001-example/data-model.md#Example",
+        "specs/001-example/plan.md"
+      ]
+    },
+    {
+      "key": "implement-create-example",
+      "display_id": "T002",
+      "title": "Implement example creation",
+      "description": "Implement example creation in src/services/example.py.",
+      "acceptance_criteria": "A valid request creates and returns an example.",
+      "phase": "User Story 1",
+      "story": "US1",
+      "parallel": false,
+      "priority": 1,
+      "dependencies": ["create-example-model"],
+      "source_refs": [
+        "specs/001-example/spec.md#FR-001",
+        "specs/001-example/contracts/example.json"
+      ]
+    }
+  ]
+}
