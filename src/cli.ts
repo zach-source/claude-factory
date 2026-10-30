@@ -1031,10 +1031,20 @@ export function reworkBase(repo: string, branch: string) {
 }
 
 /**
- * what a new run branches from: the remote's default branch when it already holds everything local
- * (fetched, so merged work, factory changes included, reaches new runs); local HEAD otherwise
+ * what a new run branches from: the tip of origin/<base_branch> when the rig sets a valid base_branch that origin has
+ * (fetched first); else the remote's default branch when it already holds everything local (fetched, so merged work,
+ * factory changes included, reaches new runs); else local HEAD
  */
-function freshBase(repo: string) {
+export function freshBase(repo: string, rig: Pick<Rig, 'params'> | undefined = rigOf(repo)) {
+  const b = paramsOf({ params: { base_branch: '' } }, rig).base_branch!.trim()
+  if (b && branchOk(b)) {
+    const ref = `refs/remotes/origin/${b}`
+    Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', `+refs/heads/${b}:${ref}`], {
+      timeout: 30_000,
+    }) // offline: what we have
+    const tip = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+    if (tip.exitCode === 0) return tip.stdout.toString().trim()
+  }
   const head = git(repo, 'rev-parse', 'HEAD')
   const remote = Bun.spawnSync(['git', '-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
   if (remote.exitCode !== 0) return head

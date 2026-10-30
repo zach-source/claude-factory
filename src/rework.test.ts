@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { reworkBase } from './cli'
+import { freshBase, reworkBase } from './cli'
 
 const g = (cwd: string, ...a: string[]) => {
   const r = Bun.spawnSync(['git', '-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@x', ...a])
@@ -27,4 +27,41 @@ test('a rework run starts on the queued PR branch from origin, and only when tha
 
 test('a branch that is not a factory branch name gives no base', () => {
   for (const b of ['-x', 'main', '../x', 'factory/../x']) expect(reworkBase('.', b)).toBeUndefined()
+})
+
+test('freshBase starts at the rig base_branch tip on origin, and falls back to today for anything else', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fresh-'))
+  const origin = join(root, 'origin.git')
+  const work = join(root, 'work')
+  const clone = join(root, 'clone')
+  const sha = (cwd: string) => Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD']).stdout.toString().trim()
+  const commit = (cwd: string, f: string) => {
+    writeFileSync(join(cwd, f), f)
+    g(cwd, 'add', f)
+    g(cwd, 'commit', '-q', '-m', f)
+  }
+  g(root, 'init', '--bare', '-q', '-b', 'main', origin)
+  g(root, 'clone', '-q', origin, work)
+  commit(work, 'a')
+  g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
+  g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/deploy')
+  g(root, 'clone', '-q', origin, clone)
+  commit(clone, 'local') // one unpushed commit
+  const local = sha(clone)
+  commit(work, 'd1')
+  g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/deploy')
+  const deployTip = sha(work)
+  const rig = (base_branch: string) => ({ params: { base_branch } })
+
+  expect(freshBase(clone, rig('deploy'))).toBe(deployTip) // A: fetched, not the stale origin/deploy
+  expect(freshBase(clone, rig(' deploy '))).toBe(deployTip)
+  expect(freshBase(clone, rig(''))).toBe(local) // B
+  for (const b of ['a..b', '-x', 'x y', '$(id)', 'deploy~0', 'nope'])
+    expect(freshBase(clone, rig(b))).toBe(local) // D, E
+
+  const clone2 = join(root, 'clone2')
+  g(root, 'clone', '-q', origin, clone2)
+  commit(work, 'm1')
+  g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
+  expect(freshBase(clone2, {})).toBe(sha(work)) // C
 })
