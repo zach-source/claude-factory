@@ -27,6 +27,21 @@ The DORA research program defines five delivery metrics. They are: deployment fr
 - Group each metric by rig, station, harness and model. The owner can then compare the choices that the factory makes.
 - Do not show scores to workers. A score that a worker can see becomes a target (Goodhart's law). Scores change routing and prompts only through the owner and the dream, not through the worker prompt.
 
+## Clarifications
+
+### Session 2026-10-29
+
+- Q: What counts as a deployment? → A: The merge to the default branch, for every rig. The deploy station's `deployed` time is a second point, reported apart (FR-002).
+- Q: Which links count in the change failure rate? → A: Direct links only: rollback, soak regression, incident, revert and fix-forward beads. Suspected links show apart (FR-004).
+- Q: How does the finding format roll out? → A: Warn for 7 days, then refuse (FR-011).
+- Q: What is in the first release? → A: US1, US2 and US5. US3, US4, US6 and US7 come later.
+- Q: Where does the owner see the metrics? → A: The CLI, a console view, a weekly report, a Prometheus `/metrics` endpoint and an OTLP push (FR-023).
+- Q: What is the probe budget? → A: All AX rigs, 3 probes each day for each rig (FR-015).
+- Q: Does the owner grade a judge calibration set? → A: Yes, in the console, about 30 changes for each rubric item (US6).
+- Q: Who acts on the metrics? → A: The dream proposes, and the owner installs (US7).
+- Q: How far back does attribution go? → A: All history, marked as backfilled (FR-027).
+- Q: What is the default window? → A: 30 days, with the trend against the previous 30 days (FR-026).
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - The owner sees the DORA metrics for each rig (Priority: P1)
@@ -35,7 +50,7 @@ The owner runs one command. The output shows the five DORA metrics for each rig 
 
 **Why this priority**: The data for it exists today. It gives one shared measure of delivery. The other stories build on this measure.
 
-**Independent Test**: On a copy of a factory home, run `factory metrics dora --window 7d`. Compare each number with a hand count from the run logs and git for one rig.
+**Independent Test**: On a copy of a factory home, run `factory metrics dora --since 30d`. Compare each number with a hand count from the run logs and git for one rig.
 
 **Acceptance Scenarios**:
 
@@ -47,9 +62,10 @@ The owner runs one command. The output shows the five DORA metrics for each rig 
      - change failure rate,
      - failed deployment recovery time (median and p90),
      - deployment rework rate.
-2. **Given** a rig with no deploy station (merge is the release).
+2. **Given** a rig with a deploy station.
    - **When** the metrics run.
-   - **Then** a merge to the default branch counts as the deployment. The output says so.
+   - **Then** the merge to the default branch counts as the deployment.
+   - **Then** the output also shows the time from merge to the deploy outcome `deployed`, apart from the DORA numbers.
 3. **Given** `--json`.
    - **When** the metrics run.
    - **Then** the output is one JSON object for each rig and window. The object is for the console and for other tools.
@@ -226,7 +242,7 @@ The dream reads the quality metrics. It proposes changes: a routing change (a di
   - change failure rate,
   - failed deployment recovery time,
   - deployment rework rate.
-- **FR-002**: A deployment MUST be a deploy station outcome `deployed` or `published`. For a rig with no deploy station, it MUST be the merge of the change to the default branch.
+- **FR-002**: A deployment MUST be the merge of the change to the default branch, for every rig. For a rig with a deploy station, the factory MUST also report the time to the deploy outcome `deployed` as a second, later point. That point does not change the DORA numbers.
 - **FR-003**: Change lead time MUST run from the first commit of the change to its deployment. The factory MUST also report two parts of it:
   - the time from bead creation to run start (queue time), and
   - the time from run start to deployment (run time).
@@ -234,7 +250,10 @@ The dream reads the quality metrics. It proposes changes: a routing change (a di
   - rollback,
   - soak regression,
   - incident,
-  - revert.
+  - revert,
+  - fix-forward (a bug bead `discovered-from` a bead that the change closed).
+
+  A suspected link (from `git blame` only) MUST NOT count in the rate. The output MUST show suspected links apart.
 - **FR-005**: Deployment rework rate MUST be the share of deployments in the window that were not planned, that is:
   - a fix-forward for an earlier failure,
   - a revert,
@@ -258,7 +277,7 @@ The dream reads the quality metrics. It proposes changes: a routing change (a di
 
 **Review and verdict scores**
 
-- **FR-011**: Review, security and check reports MUST carry findings in a fixed form. The form has these fields: id, file, line, severity, category and text. The CLI MUST refuse a `changes` outcome with no findings.
+- **FR-011**: Review, security and check reports MUST carry findings in a fixed form. The form has these fields: id, file, line, severity, category and text. For the first 7 days after release, the CLI MUST accept a `changes` outcome with no findings and log a warning. After that, the CLI MUST refuse it.
 - **FR-012**: The scorer MUST calculate, for each verdict station, harness, model and rig:
   - recall from failure links,
   - precision from finding outcomes,
@@ -272,7 +291,7 @@ The dream reads the quality metrics. It proposes changes: a routing change (a di
 **Defect probes**
 
 - **FR-014**: The defect probe MUST work only on local copies. It MUST NOT push, open a pull request, write a bead or post to GitHub.
-- **FR-015**: The probe MUST have a per-rig switch and a daily token budget. The switch and the budget MUST be off by default.
+- **FR-015**: The probe MUST have a per-rig switch and a daily token budget. The switch and the budget MUST be off by default. The first setting is all AX rigs, 3 probes each day for each rig.
 - **FR-016**: The probe MUST run the review station with the same prompt, harness and model that a real review uses. Its result then measures the real station.
 
 **Quality metrics and judge**
@@ -291,7 +310,14 @@ The dream reads the quality metrics. It proposes changes: a routing change (a di
 
 - **FR-021**: Workers MUST NOT see scores in their prompts, briefs or memory.
 - **FR-022**: The dream MUST be able to read the metrics and cite them in proposals.
-- **FR-023**: The console MUST show the DORA metrics and the quality metrics in a view.
+- **FR-023**: The metrics MUST be available in these places:
+  - the CLI (`factory metrics dora` and `factory metrics quality`, with `--json`),
+  - a Metrics view in the console,
+  - a weekly report with trends and the worst groups,
+  - a Prometheus `/metrics` endpoint,
+  - an OpenTelemetry (OTLP) push to an endpoint that the owner sets.
+- **FR-026**: The default window MUST be 30 days, with the trend against the previous 30 days. The CLI MUST accept `--since <n>d` (the flag that `factory metrics` has today).
+- **FR-027**: The first attribution pass MUST cover all run history. It MUST mark the links that it finds in history as backfilled.
 - **FR-024**: Each metric MUST work in both factory modes (local and server, spec 004). It MUST also work for each harness (Constitution I).
 - **FR-025**: All metric commands MUST be read-only on runs, beads and GitHub. The exceptions are the link store and the probe results.
 
@@ -308,7 +334,7 @@ The dream reads the quality metrics. It proposes changes: a routing change (a di
 
 ### Measurable Outcomes
 
-- **SC-001**: For one rig and a 7-day window, each DORA number matches a hand count within 5%.
+- **SC-001**: For one rig and a 30-day window, each DORA number matches a hand count within 5%.
 - **SC-002**: At least 80% of rollback, soak regression and incident runs in a 14-day window have a failure link to a change.
 - **SC-003**: The owner can compare two models at the same station on the same rig, with counts, in one command.
 - **SC-004**: Defect probes give a recall number for each review harness and model within 7 days after the switch goes on. The probes stay inside the daily token budget.
