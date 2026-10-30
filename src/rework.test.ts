@@ -51,12 +51,13 @@ test('freshBase starts at the rig base_branch tip on origin, and falls back to t
   commit(work, 'd1')
   g(work, 'push', '-q', 'origin', 'HEAD:refs/heads/deploy')
   const deployTip = sha(work)
-  const rig = (base_branch?: string) => ({ params: base_branch === undefined ? {} : { base_branch } })
+  const rig = (base_branch: string) => ({ params: { base_branch } })
 
   expect(freshBase(clone, rig('deploy'))).toBe(deployTip) // A: fetched, not the stale origin/deploy
   expect(freshBase(clone, rig(' deploy '))).toBe(deployTip)
   expect(freshBase(clone, rig(''))).toBe(local) // B
-  for (const b of ['a..b', '-x', 'x y', '$(id)', 'deploy~0', 'nope']) expect(freshBase(clone, rig(b))).toBe(local) // D, E
+  for (const b of ['a..b', '-x', 'x y', '$(id)', 'deploy~0', 'nope'])
+    expect(freshBase(clone, rig(b))).toBe(local) // D, E
 
   const clone2 = join(root, 'clone2')
   g(root, 'clone', '-q', origin, clone2)
