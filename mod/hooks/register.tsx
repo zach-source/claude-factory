@@ -1039,6 +1039,24 @@ async function ensureTicking($: EngineInterface) {
   void tick($)
 }
 
+/** The item set of a patrol report: run ids, URLs, backticked names and question lines, sorted.
+ * ponytail: a regex read of free text. A report that words the same items another way differs;
+ * an empty key (no items) never counts as a repeat. */
+export const patrolKey = (report: string): string =>
+  [
+    ...new Set([
+      ...(report.match(/\blifecycle-[a-z0-9]+\b/g) ?? []),
+      ...(report.match(/https?:\/\/[^\s)>\]`]+/g) ?? []).map(u => u.replace(/[.,;]+$/, '')),
+      ...(report.match(/`[^`\n]+`/g) ?? []),
+      ...report
+        .split('\n')
+        .filter(l => l.trim().endsWith('?'))
+        .map(l => l.trim()),
+    ]),
+  ]
+    .sort()
+    .join('\n')
+
 /** a stored view of 'run', from before the Run tab folded into Board, reads as 'board'; the one
  * place both `readView` (refresh's fetch gate) and the render switch map it, so they can't drift */
 export const mapView = (v: string): FactoryView => (v === 'run' ? 'board' : (v as FactoryView))
@@ -1593,6 +1611,7 @@ export const register: Register = (on, options) => {
       rt.patrolStartedAt = undefined
       await appendManagerUsage($, 'patrol', e.usage)
       const report = e.answer.length > 600 ? `${e.answer.slice(0, 599)}…` : e.answer
+      const last = (await readPatrolLog($).catch(() => [])).at(-1)
       const entry: FactoryPatrolLogEntry = {
         at: await $.clock.now(),
         agentId: e.agentId,
@@ -1608,7 +1627,12 @@ export const register: Register = (on, options) => {
       try {
         await appendPatrolLog($, entry)
         await update($, lastPatrol, () => entry)
-        if (report.trim()) $.ui.toast(`factory patrol: ${line(report.split('\n')[0] ?? '', 200)}`)
+        const key = patrolKey(report)
+        if (key && last && key === patrolKey(last.report)) {
+          $.ui.toast(`factory patrol: nothing new since ${new Date(last.at).toTimeString().slice(0, 5)}`)
+        } else if (report.trim()) {
+          $.ui.toast(`factory patrol: ${line(report.split('\n')[0] ?? '', 200)}`)
+        }
       } catch (err) {
         $.ui.status(`factory: failed to write the patrol log: ${line(String(err), 160)}`)
       }

@@ -1176,7 +1176,7 @@ rows = [
   starts no worker. The same `gh`/`glab` watch, polled every minute, wakes it for a real change
   (a merge, a new head commit or a person's comment) and routes a close or a change request. A deploy worker starts only once
   there is work for it to do.
-- **Held mail**: a station marked `holdMail: true` (ship's `release`, `deploy` and `rollback`)
+- **Held mail**: a station marked `holdMail: true` (ship's `release`, `deploy` and `rollback`, and lifecycle's `triage`)
   that is parked on a pull or merge request starts no worker for plain mail. The mail waits in its
   box. A change to the pull request, a mail sent with `factory mail <run> <box> --wake <text...>`,
   or the park's 8-hour timer starts a worker, which then reads the held mail. The console's

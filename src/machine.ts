@@ -261,8 +261,9 @@ export type Ev = At &
     | { type: 'RESUMED'; seq: number; pane: string }
     | { type: 'DONE'; seq: number; outcome: string; summary: string }
     /** `hold`: the reconciler saw an outage (egress down, a usage limit), not a fault of the work. It is the earliest
-     * wake time in ms. The station parks and spends no attempt, for OUTAGE_HOLDS holds in a row. Only the reconciler sets it. */
-    | { type: 'FAIL'; seq: number; reason: string; hold?: number }
+     * wake time in ms. The station parks and spends no attempt, for OUTAGE_HOLDS holds in a row. Only the reconciler sets it.
+     * `holdMin`: the wait in minutes, in place of the OUTAGE_HOLD_MIN streak floor; only the reconciler sets it. */
+    | { type: 'FAIL'; seq: number; reason: string; hold?: number; holdMin?: number }
     /** the worker's context grew too long: a fresh worker carries on from its notes, spending no attempt */
     | { type: 'HANDOFF'; seq: number; summary: string }
     /** the worker waits on something outside the run (a person, another run, a review): park, spend no attempt */
@@ -937,10 +938,10 @@ export function compile(def: Factory) {
                   outageStreak(context, id) < OUTAGE_HOLDS,
                 target: 'waiting',
                 actions: assign(({ context, event }) => {
-                  const { reason, at, hold } = event as Extract<Ev, { type: 'FAIL' }>
+                  const { reason, at, hold, holdMin } = event as Extract<Ev, { type: 'FAIL' }>
                   const streak = outageStreak(context as Ctx, id)
                   // 15, 30, 60, then 120 min at the last of OUTAGE_HOLDS holds
-                  const wakeAt = Math.max(hold ?? 0, at + OUTAGE_HOLD_MIN * 2 ** streak * 60_000)
+                  const wakeAt = Math.max(hold ?? 0, at + (holdMin ?? OUTAGE_HOLD_MIN * 2 ** streak) * 60_000)
                   const text = `${id} is held, not failed: ${reason}. It spent no attempt and starts again at ${new Date(wakeAt).toISOString()}.`
                   return {
                     log: [

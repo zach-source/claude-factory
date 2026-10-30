@@ -332,7 +332,7 @@ test("security's onTimeout prompt points the retry at review's or check's diff s
   expect(onTimeout.prompt).toContain("review's or check's report")
   expect(onTimeout.prompt).toMatch(/Do not re-read/)
 
-  expect(lifecycle.nodes.review!.prompt).toContain('git diff --stat origin/main...HEAD')
+  expect(lifecycle.nodes.review!.prompt).toContain('git diff --stat origin/{base_branch}...HEAD')
   expect(lifecycle.nodes.review!.prompt).toContain('60 files')
   expect(lifecycle.nodes.review!.prompt).toContain('+N more')
 
@@ -376,7 +376,7 @@ test('small AC4/AC5/AC6: check marks an approved PR ready and promises a diff su
     'draft',
     'gh pr review --comment',
     'security-sensitive',
-    'git diff --stat origin/main...HEAD',
+    'git diff --stat origin/{base_branch}...HEAD',
     '60 files',
     '+N more',
   ])
@@ -671,11 +671,11 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
     expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
 })
 
-const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"
+const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
 const BOT_TOKENS = [
   'In the infra-blocks repo',
   BOT_CMD,
-  'git checkout origin/main -- <file>',
+  'git checkout origin/{base_branch} -- <file>',
   'git rm --cached <file>',
   'run the check again',
   'separate commands',
@@ -693,6 +693,29 @@ test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle s
   expect((lifecycle as Factory).nodes.implement!.prompt).toContain(
     'Add no changelog entry and no version bump',
   )
+})
+
+const LAYER_CMD = "git diff --name-only origin/{base_branch}...HEAD -- 'shapefile/layers/*/layer.cue'"
+
+test('infra-blocks layer-version check is self-check item 8 of implement only', () => {
+  const nodes = (lifecycle as Factory).nodes
+  const holders = Object.entries(nodes)
+    .filter(([, n]) => (n.prompt ?? '').includes(LAYER_CMD))
+    .map(([name]) => name)
+  expect(holders).toEqual(['implement'])
+  const p = nodes.implement!.prompt!
+  for (const t of [
+    'In the infra-blocks repo',
+    'git show origin/{base_branch}:<file>',
+    'version:',
+    'above',
+    'bump it past',
+    'run the check again',
+  ])
+    expect(p).toContain(t)
+  expect(p.indexOf('7. In the infra-blocks repo')).toBeGreaterThan(-1)
+  expect(p.indexOf('7. In the infra-blocks repo')).toBeLessThan(p.indexOf('8. In the infra-blocks repo'))
+  expect(p.indexOf('8. In the infra-blocks repo')).toBeLessThan(p.indexOf(LAYER_CMD))
 })
 
 test('plan keeps tests and the change they wait on in one PR, or orders the beads (claude-factory-9hzj AC1)', () => {
@@ -881,4 +904,89 @@ test('claude-factory-9sji AC4: only implement, verify and quick carry the rule; 
   }
   expect(promptOf(lifecycle, 'verify')).toContain('red with a numbered list')
   expect(promptOf(lifecycle, 'verify')).toContain('Failing:')
+})
+
+test('claude-factory-p7fs AC1: the plan prompt asks a guard that parses input for a closed grammar, once, and no other prompt does', () => {
+  const S =
+    "When the change adds a guard that parses another tool's input (a shell command, a Kustomize tree, a config file), specify a closed grammar: list each field and path form the guard reads, reject every other form before any render or run, and test that a rejection makes zero downstream calls."
+  const plan = promptOf(lifecycle, 'plan')
+  expect(plan).toContain(S)
+  expect(plan.split(S).length - 1).toBe(1)
+  expect(plan).toContain(
+    'For a guard, validator or parser, define the class as one fail-closed rule, not as a list of forms, and name the forms that are out of scope.',
+  )
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const prompt = (node as { prompt?: unknown }).prompt
+    if (id !== 'plan' && typeof prompt === 'string') expect(prompt.includes('closed grammar'), id).toBe(false)
+  }
+})
+
+test('implement and quick tell the worker to grep sibling sites of its fix (smmr AC1)', () => {
+  const RULE =
+    'Before you report ready, grep every other caller of the code you fixed (the same function, the same unguarded call, the same rule text in a sibling prompt step). Fix each one, or list it in the report with the reason it is safe.'
+  for (const id of ['implement', 'quick']) expect(promptOf(lifecycle, id), id).toContain(RULE)
+  for (const id of ['plan', 'verify', 'review', 'security', 'check'])
+    expect(promptOf(lifecycle, id), id).not.toContain(RULE)
+  expect(promptOf(lifecycle, 'implement')).toContain(
+    'A finding names an instance: grep for its siblings and fix the class, not the one line.',
+  )
+})
+
+test('review, security and check list the whole class of a missing guard (pjno AC1, AC2)', () => {
+  const RULE =
+    "When you find one missing guard, list every sibling of its class before you report: every entry point of the same kind (CLI verb, route, handler, tick pass, spawned child), with each one's guard status. Report the whole class as one finding, with the list, so implement fixes all of it in one round."
+  for (const id of ['review', 'security', 'check']) {
+    const p = promptOf(lifecycle, id)
+    expect(p, id).toContain(RULE)
+    expect(p.split(RULE).length - 1, id).toBe(1)
+  }
+  for (const id of ['plan', 'implement', 'verify', 'quick'])
+    expect(promptOf(lifecycle, id), id).not.toContain(RULE)
+})
+
+// claude-factory-ey90: a triage parked on a PR holds plain mail; only a wake mail or the timer starts a worker
+function parkTriage(reason: string) {
+  const actor = createActor(compile(lifecycle)).start()
+  const send = (e: Parameters<typeof actor.send>[0]) => (actor.send(e), actor.getSnapshot())
+  send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 10 })
+  const s = send({ type: 'BLOCKED', seq: 1, reason, at: 20 })
+  return { send, s }
+}
+const mailTo = (to: string) =>
+  ({ type: 'MAIL', from: 'manager', to, text: 'Report blocked', at: 30 }) as const
+
+test('ey90 AC1: only the lifecycle triage node holds mail', () => {
+  expect(lifecycle.nodes.triage?.holdMail).toBe(true)
+  for (const id of ['plan', 'implement', 'verify', 'review'])
+    expect((lifecycle as Factory).nodes[id]?.holdMail, id).toBeFalsy()
+})
+
+test('ey90 AC2, AC3: plain mail to a PR-parked triage waits; a wake mail starts the worker', () => {
+  const { send } = parkTriage('Waiting on: a person merges ' + PR)
+  const m = send(mailTo('triage'))
+  expect(where(m.value)).toEqual(['triage', 'waiting'])
+  expect(m.context.mail.triage?.at(-1)?.text).toBe('Report blocked')
+  const w = send({ type: 'MAIL', from: 'factory', to: 'triage', text: 'merged', wake: true, at: 40 })
+  expect(where(w.value)).toEqual(['triage', 'working'])
+  expect(w.context.mail.triage?.map(x => x.text)).toEqual(['Report blocked', 'merged'])
+})
+
+test('ey90 AC4: no PR link, the timer, or another station still start a worker at once', () => {
+  expect(where(parkTriage('Waiting on the owner').send(mailTo('triage')).value)).toEqual([
+    'triage',
+    'working',
+  ])
+  const t = parkTriage('Waiting on ' + PR)
+  expect(where(t.send({ type: 'TICK', at: t.s.context.wakeAt! }).value)).toEqual(['triage', 'working'])
+  const actor = createActor(compile(lifecycle)).start()
+  actor.send({ type: 'DONE', seq: 1, outcome: 'build', summary: 'x', at: 10 })
+  actor.send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 11 })
+  actor.send({ type: 'BLOCKED', seq: 1, reason: 'Waiting on ' + PR, at: 20 })
+  actor.send(mailTo('plan'))
+  expect(where(actor.getSnapshot().value)).toEqual(['plan', 'working'])
+})
+
+test('ey90 AC5: a GitLab merge request link holds plain mail too', () => {
+  const { send } = parkTriage('Waiting on https://gitlab.example.com/acme/widget/-/merge_requests/7')
+  expect(where(send(mailTo('triage')).value)).toEqual(['triage', 'waiting'])
 })

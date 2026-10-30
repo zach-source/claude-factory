@@ -33,6 +33,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: the memory topic list in a brief clips each topic line to 100 characters. The list was about 30 KB (claude-factory-z9m4).
 - Fix: the worker hook now guards the Write, Edit, MultiEdit and NotebookEdit tools. It denies a path with a `.git` or `shell-snapshots` component, and the global git config (claude-factory-g4du).
 - Fix: a worker can no longer mail as the manager (claude-factory-ab8n). The worker hook denies a change to `FACTORY_FROM`. `factory mail`, `poke` and `fork` refuse the manager sender when the caller is a worker. `factory mail` accepts `FACTORY_FROM` only when it names a station.
+- Fix: a patrol report with the same item set as the last one now shows one toast line, "nothing new since HH:MM". The patrol log keeps the full text (claude-factory-g5um).
 
 ## 0.15.0 (2026-10-24)
 

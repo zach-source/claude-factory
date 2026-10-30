@@ -92,7 +92,7 @@ test('release marks a PR ready only when every commit after the Reviewed head is
   for (const s of [
     'Reviewed head:',
     'git merge-base --is-ancestor <reviewed> <head>',
-    'git rev-list <head> ^<reviewed> ^origin/main',
+    'git rev-list <head> ^<reviewed> ^origin/{base_branch}',
     'exactly two parents',
     'git merge-tree --write-tree',
     'git show -s --format=%T',
@@ -146,7 +146,7 @@ test('release trusts a Reviewed head line only from an approve verdict or a writ
   expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(
     p.indexOf('git merge-base --is-ancestor <reviewed> <head>'),
   )
-  expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(p.indexOf('Run `git fetch origin main'))
+  expect(p.indexOf('^[0-9a-f]{40}$')).toBeLessThan(p.indexOf('Run `git fetch origin {base_branch}'))
   expect(p.indexOf('review#<n> approve:')).toBeLessThan(p.indexOf('only when'))
 })
 
@@ -204,7 +204,7 @@ test('gates stay: deploy never merges, waits on the PR and parks on owner-only s
 
 test('queue keeps PRs current with a merge commit, never a rebase or a force-push', () => {
   const p = ship.nodes.queue.prompt
-  expect(p).toContain('merge origin/main into it (a merge commit')
+  expect(p).toContain('merge origin/{base_branch} into it (a merge commit')
   expect(p).toContain('Never rebase and never force-push')
   expect(p).not.toMatch(/\brebase onto\b/)
 })
@@ -213,6 +213,23 @@ test('queue sends a PR that needs changes back to implement through the existing
   expect(ship.nodes.queue.prompt).toContain(
     'bd update <bead> --remove-label ship --add-label factory --add-label station:implement',
   )
+})
+
+test('queue does not send a PR back when its red tests are held assertions', () => {
+  const p = ship.nodes.queue.prompt
+  const step2 = p.split('\n2. ')[1]!
+  for (const s of [
+    'read its bead comments and the plan',
+    'held assertions',
+    'an open bead or an owner decision',
+    'Do not send it back',
+  ])
+    expect(step2).toContain(s)
+  const send = 'bd update <bead> --remove-label ship --add-label factory --add-label station:implement'
+  expect(step2.indexOf('held assertions')).toBeLessThan(step2.indexOf(send))
+  expect(p).toContain('report blocked once')
+  expect(p).toContain('Report ready when at least one queued pull request is current')
+  expect(Object.keys(ship.nodes.queue.next)).toEqual(['ready', 'again', 'empty'])
 })
 
 test('a run ships 30 PRs in a row without a stuck step budget', () => {
@@ -299,7 +316,7 @@ test('release adds --auto when the ruleset needs a review or a merge queue (clau
 test('queue resolves a BUILD.bazel-only conflict with gazelle and keeps it (debg AC4, AC5)', () => {
   const [step1, step2] = ship.nodes.queue.prompt.split('\n2. ') as [string, string]
   expect(step1).toContain('BUILD.bazel')
-  expect(step1).toContain('git checkout origin/main -- <file>')
+  expect(step1).toContain('git checkout origin/{base_branch} -- <file>')
   expect(step1).toContain('bazelisk run //:gazelle -- <dirs>')
   expect(step1).toContain('.bazelversion')
   expect(step1).toContain('Any other conflicted file keeps the rule above')
@@ -325,11 +342,11 @@ test('only soak carries the Mimir query form, behind the approval prefix, equal 
   expect(soak).not.toMatch(new RegExp(['stig' + 'en', 'spin' + 'dle'].join('|'), 'i'))
 })
 
-const BOT_CMD = "git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv"
+const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
 const BOT_TOKENS = [
   'In the infra-blocks repo',
   BOT_CMD,
-  'git checkout origin/main -- <file>',
+  'git checkout origin/{base_branch} -- <file>',
   'git rm --cached <file>',
   'run the check again',
   'separate commands',
@@ -349,6 +366,11 @@ test('infra-blocks pre-push bot-file check is in exactly the ship queue and rele
   const want = botText((lifecycle as Factory).nodes.implement!.prompt!)
   expect(want.length).toBeGreaterThan(100)
   for (const name of holders) expect(botText(nodes[name]!.prompt!)).toBe(want)
+})
+
+test('no ship node holds the layer-version check', () => {
+  for (const n of Object.values((ship as Factory).nodes))
+    expect(n.prompt ?? '').not.toContain("'shapefile/layers/*/layer.cue'")
 })
 
 test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () => {
