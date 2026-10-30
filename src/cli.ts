@@ -5714,7 +5714,7 @@ async function loop(intervalMs: number) {
 }
 
 /**
- * a run is a branch + herdr worktree + snapshot + the factory it follows, pinned so that no later edit,
+ * a run is a branch + worktree (herdr's, or plain git for an AX rig) + snapshot + the factory it follows, pinned so that no later edit,
  * its own included, changes the graph under it; a fork starts from another run's branch, snapshot and factory
  */
 async function createRun(
@@ -5731,12 +5731,20 @@ async function createRun(
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
-  const created = herdr(
-    ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', from?.run.branch ?? onto ?? base],
-    ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
-  )
-  const ws: string = created.workspace.workspace_id
-  const worktree: string = created.worktree.path
+  const startPoint = from?.run.branch ?? onto ?? base
+  // an AX rig needs no herdr: a plain git worktree at herdr's own layout, so `herdr worktree open` finds it later
+  const isAx = rigOf(repo)?.runner === 'ax'
+  let ws = ''
+  let worktree = join(homedir(), '.herdr', 'worktrees', basename(repo), `factory-${id}`)
+  if (isAx) git(repo, 'worktree', 'add', '-b', branch, worktree, startPoint)
+  else {
+    const created = herdr(
+      ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', startPoint],
+      ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
+    )
+    ws = created.workspace.workspace_id
+    worktree = created.worktree.path
+  }
   worker.excludeScratch(worktree) // claude-factory-9wu: .scratch/ stays untracked, with no commit, in this repo
   const source = from ? from.run.factory : factorySource(spec, worktree)
   // pinned resolved, as data: a base it extends may change after the run starts
@@ -5750,7 +5758,9 @@ async function createRun(
       throw new Error('it hands its beads to ship, which needs a repo with .beads')
     writeJson(pinned, def)
   } catch (err) {
-    herdr('worktree', 'remove', '--workspace', ws, '--force') // fresh, nothing in it yet
+    // fresh, nothing in it yet
+    if (isAx) git(repo, 'worktree', 'remove', '--force', worktree)
+    else herdr('worktree', 'remove', '--workspace', ws, '--force')
     rmSafe(runDir(id), { recursive: true, force: true })
     throw new Error(
       `${relative(worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
@@ -8178,7 +8188,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   if (at && at !== def.start && Object.hasOwn(def.nodes, at)) post(run.id, { type: 'GOTO', node: at })
   await tick() // launches the first worker now rather than at the next tick
   console.log(
-    `started ${run.id} in ${run.worktree} (herdr workspace ${run.ws}), following ${run.factoryFrom}${run.bead ? `, bead ${run.bead}` : ''}`,
+    `started ${run.id} in ${run.worktree}${run.ws ? ` (herdr workspace ${run.ws})` : ''}, following ${run.factoryFrom}${run.bead ? `, bead ${run.bead}` : ''}`,
   )
 }
 
