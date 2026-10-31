@@ -2376,6 +2376,8 @@ test('codex usage: a missing dir, a wrong name, the claude dir, a symlink or a b
     expect(codexTick(id, kept).rows).toEqual([])
   none('rc2', () => {})
   none('rc3', d => keep(d, 'notes.jsonl', rolloutLines()))
+  none('rc3b', d => keep(d, `x-${ROLL}`, rolloutLines()))
+  none('rc3c', d => keep(d, `${ROLL}.bak`, rolloutLines()))
   none('rc4', d => keep(d, ROLL, rolloutLines(), 'claude'))
   none('rc5', d => {
     const out = join(dir, 'outside.jsonl')
@@ -2386,7 +2388,7 @@ test('codex usage: a missing dir, a wrong name, the claude dir, a symlink or a b
   none('rc6', d => {
     mkdirSync(join(d, 'codex'), { recursive: true })
     const f = join(d, 'codex', ROLL)
-    writeFileSync(f, rolloutLines())
+    writeFileSync(f, rolloutLines() + '\n')
     truncateSync(f, 64 * 1024 * 1024 + 1)
   })
   none('rc7', d => keep(d, ROLL, rolloutLines({ model: 'bad model' })))
