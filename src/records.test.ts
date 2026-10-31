@@ -293,3 +293,56 @@ test('factory rm keeps the last row of a session and model stored twice (hr94 re
   expect(line.sessions).toHaveLength(1)
   expect(line.sessions[0]).toMatchObject({ node: 'verify', cacheRead: 99 })
 })
+
+// claude-factory-dsfg: `factory metrics` counts the worker hook's denials from runs/*/denials.jsonl
+test('metrics prints denials by harness and reason, never the command, with --since and --rig (dsfg AC2)', () => {
+  const now = Date.now()
+  const put = (run: string, rows: object[]) => {
+    mkdirSync(join(home, 'runs', run), { recursive: true })
+    writeFileSync(join(home, 'runs', run, 'denials.jsonl'), rows.map(r => JSON.stringify(r) + '\n').join(''))
+  }
+  const row = (harness: string, reason: string, at = now) => ({
+    at,
+    run: 'x',
+    harness,
+    reason,
+    command: 'TOPSECRET',
+  })
+  put('a-1', [
+    row('codex', 'FUNCTION_DEF_REASON'),
+    row('codex', 'FUNCTION_DEF_REASON'),
+    row('codex', 'XARGS_REASON'),
+  ])
+  put('b-1', [row('claude', 'PUSH_REASON'), row('claude', 'PUSH_REASON', now - 10 * 86_400_000)])
+  const launch = (run: string, rig: string) =>
+    JSON.stringify({
+      at: now,
+      run,
+      rig,
+      node: 'implement',
+      seq: 1,
+      harness: 'codex',
+      model: 'm',
+      resume: false,
+    })
+  writeFileSync(join(home, 'launches.jsonl'), `${launch('a-1', 'acme')}\n${launch('b-1', 'widget')}\n`)
+
+  const all = factory(['metrics'])
+  expect(all.code).toBe(0)
+  expect(all.out).toContain(
+    'denials by harness and reason:\ncodex 3: FUNCTION_DEF_REASON 2, XARGS_REASON 1\nclaude 2: PUSH_REASON 2',
+  )
+  expect(all.out).not.toContain('TOPSECRET')
+  expect(factory(['metrics', '--since', '1d']).out).toContain('claude 1: PUSH_REASON 1')
+  const rig = factory(['metrics', '--rig', 'widget', '--json'])
+  expect(JSON.parse(rig.out).denials).toEqual({ claude: { total: 2, reasons: { PUSH_REASON: 2 } } })
+  expect(rig.out).not.toContain('TOPSECRET')
+})
+
+test('metrics with no runs dir or no denials prints no denials section and exits 0 (dsfg)', () => {
+  mkdirSync(home, { recursive: true })
+  const out = factory(['metrics'])
+  expect(out.code).toBe(0)
+  expect(out.out).not.toContain('denials by')
+  expect(JSON.parse(factory(['metrics', '--json']).out).denials).toEqual({})
+})

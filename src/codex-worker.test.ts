@@ -23,6 +23,7 @@ import {
 } from './cli'
 import { otelOf } from './otel'
 import { command } from './harness'
+import { denyReason } from './worker-hook'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
 const ROOT = join(import.meta.dir, '..')
@@ -82,7 +83,7 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
   expect(pre).toHaveLength(3)
   expect(pre[0]).toEqual(f.mine)
-  expect(pre[1].hooks[0].command).toContain("worker-hook.ts' --person-only-contexts 'acme'")
+  expect(pre[1].hooks[0].command).toContain("worker-hook.ts' --harness codex --person-only-contexts 'acme'")
   expect(pre[2].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
   const agents = readFileSync(join(f.dir, 'AGENTS.md'), 'utf8')
   expect(agents).toStartWith(readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8'))
@@ -131,6 +132,28 @@ test('with no person auth file there is no auth.json, and the context limit has 
 
 test('worker-codex.md stays under 2000 characters', () => {
   expect(readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8').length).toBeLessThan(2000)
+})
+
+// claude-factory-dsfg: the brief lists the shell shapes the hook denies, with the form it allows
+test('worker-codex.md lists at least 7 Denied/Use pairs: each Denied is denied and each Use is allowed', () => {
+  const md = readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8')
+  const pairs = [...md.matchAll(/^- Denied: `(.+?)`\. Use: `(.+?)`\.$/gm)].map(m => [m[1]!, m[2]!] as const)
+  expect(pairs.length).toBeGreaterThanOrEqual(7)
+  const gate = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+  for (const [denied, use] of pairs) {
+    expect(denyReason(denied, '/abs/path', undefined, gate)).toBeTruthy()
+    expect(denyReason(use, '/abs/path', undefined, gate)).toBeUndefined()
+  }
+})
+
+test('worker-codex.md prose rows: a quoted heredoc with later lines and a command over 8192 chars are denied', () => {
+  const gate = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+  expect(denyReason("cat <<'EOF' > a.txt\nit's\nEOF\nls", '/abs/path', undefined, gate)).toBeTruthy()
+  expect(denyReason("echo hi # it's\nls", '/abs/path', undefined, gate)).toBeTruthy()
+  expect(denyReason(`echo ${'x'.repeat(8200)}`, '/abs/path', undefined, gate)).toBeTruthy()
+  const md = readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8')
+  expect(md).toContain('heredoc body')
+  expect(md).toContain('8192')
 })
 
 test('the hooks.json command denies rm -rf, a person-only kubectl change and a push to main', () => {
@@ -252,6 +275,7 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   expect(hook[1].hooks).toEqual(hook[0].hooks)
   const cmd: string = hook[0].hooks[0].command
   expect(cmd).toContain("'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'")
+  expect(cmd).toContain('--harness codex')
   expect(cmd).toContain("--person-only-contexts 'acme'")
   expect(cmd).toContain("--protected-branches 'release'")
   expect(h['config.toml']).toBe(

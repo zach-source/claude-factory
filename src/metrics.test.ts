@@ -5,7 +5,10 @@ import {
   parseRecords,
   failKind,
   fate,
+  denialStats,
   launchStats,
+  parseDenialLines,
+  renderDenials,
   parseLaunchLines,
   renderLaunches,
   metrics,
@@ -17,6 +20,7 @@ import {
   renderTokens,
   tokensReport,
   sessionOf,
+  codexUsageOf,
 } from './metrics'
 
 const H = 3_600_000
@@ -594,6 +598,29 @@ test('launchStats counts launches per station by harness and model, and skips ba
   expect(renderLaunches({})).toBe('')
 })
 
+test('denialStats counts denials per harness and reason; the text has the biggest harness first and the top 10 reasons', () => {
+  const line = (harness: string, reason: string) =>
+    JSON.stringify({ at: 1, run: 'r', harness, reason, command: 'SECRET' })
+  const text = [
+    line('codex', 'FUNCTION_DEF_REASON'),
+    line('codex', 'FUNCTION_DEF_REASON'),
+    line('codex', 'XARGS_REASON'),
+    line('claude', 'PUSH_REASON'),
+    '{"at":1,"run"',
+    '{"at":"x","harness":"codex","reason":"A"}',
+  ].join('\n')
+  const stats = denialStats(parseDenialLines(text))
+  expect(stats).toEqual({
+    codex: { total: 3, reasons: { FUNCTION_DEF_REASON: 2, XARGS_REASON: 1 } },
+    claude: { total: 1, reasons: { PUSH_REASON: 1 } },
+  })
+  expect(renderDenials(stats)).toBe('codex 3: FUNCTION_DEF_REASON 2, XARGS_REASON 1\nclaude 1: PUSH_REASON 1')
+  expect(renderDenials(stats)).not.toContain('SECRET')
+  const many = denialStats(Array.from({ length: 12 }, (_, i) => ({ harness: 'h', reason: `R${i}` })))
+  expect(renderDenials(many).split(', ')).toHaveLength(10)
+  expect(renderDenials({})).toBe('')
+})
+
 test('a deploy unsure still counts as shipped, a failed one does not (claude-factory-ee7 AC6)', () => {
   expect(fate({ id: 'a', node: 'soak', createdAt: 0, log: [e('deploy', 'unsure', 1)] })).toBe('shipped')
   expect(fate({ id: 'a', node: 'rollback', createdAt: 0, log: [e('deploy', 'failed', 1)] })).not.toBe(
@@ -612,4 +639,63 @@ test('parseRecords keeps the last line of each id; inWindow filters rig and age'
   expect(inWindow(rs[0]!, 'z', 1, 3 + 1000)).toBe(true)
   expect(inWindow(rs[0]!, 'x', Infinity, 3)).toBe(false)
   expect(inWindow(rs[1]!, undefined, 1, 2 + 86_400_000)).toBe(false)
+})
+
+const U = '019a3b2c-0000-7000-8000-000000000001'
+const tc = (total: object | null, last: object = {}) =>
+  JSON.stringify({
+    type: 'event_msg',
+    payload: { type: 'token_count', info: total && { total_token_usage: total, last_token_usage: last } },
+  })
+export const CODEX_ROLLOUT = [
+  JSON.stringify({ type: 'session_meta', payload: { id: U } }),
+  JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-6-astra' } }),
+  tc(
+    {
+      input_tokens: 25690,
+      cached_input_tokens: 13184,
+      output_tokens: 41,
+      reasoning_output_tokens: 9,
+      total_tokens: 25731,
+    },
+    { input_tokens: 25690 },
+  ),
+  tc(
+    {
+      input_tokens: 51479,
+      cached_input_tokens: 38784,
+      output_tokens: 46,
+      reasoning_output_tokens: 12,
+      total_tokens: 51525,
+    },
+    { input_tokens: 25789 },
+  ),
+]
+const F = `rollout-2026-10-31T21-00-00-${U}.jsonl`
+
+test('codexUsageOf: the last cumulative token_count, not a sum', () => {
+  expect(codexUsageOf(CODEX_ROLLOUT, F)).toEqual({
+    session: U,
+    model: 'gpt-6-astra',
+    input: 12695,
+    cacheRead: 38784,
+    cacheWrite: 0,
+    output: 46,
+    turns: 2,
+    peak: 25789,
+  })
+})
+
+test('codexUsageOf: odd rows', () => {
+  const [meta, ctx, a, b] = CODEX_ROLLOUT as [string, string, string, string]
+  // an info:null event and a repeat change nothing
+  expect(codexUsageOf([meta, ctx, a, tc(null), a, b, b, 'not json', '{'], F)?.turns).toBe(2)
+  expect(codexUsageOf([meta, ctx, tc(null), 'x'], F)).toBeNull()
+  expect(codexUsageOf([], F)).toBeNull()
+  // cached above input gives input 0
+  const odd = tc({ input_tokens: 5, cached_input_tokens: 9, output_tokens: 1, total_tokens: 6 })
+  expect(codexUsageOf([odd], F)?.input).toBe(0)
+  // no turn_context: model codex. No session_meta: the uuid of the file name
+  expect(codexUsageOf([a], F)).toMatchObject({ model: 'codex', session: U })
+  expect(codexUsageOf([a], 'rollout-x.jsonl')).toBeNull()
 })
