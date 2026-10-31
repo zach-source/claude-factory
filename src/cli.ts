@@ -1718,6 +1718,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       ...rig?.env,
       FACTORY_FROM: node,
       FACTORY_RUN: run.id,
+      FACTORY_DENY_LOG: '1',
       FACTORY_DEF_NAME: def.name,
       FACTORY_SKILLS: skills.join(','),
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
@@ -1762,15 +1763,25 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * (claude-factory-zl5). Its own argv is `--protected-branches a,b`.
  * `merge` is the rig's owner/repo (claude-factory-l3tl). It adds `--merge-authority owner/repo`: the hook then lets the ship
  * release station run one strict `gh pr merge` form, for that repo only (-R required).
+ * `harness` adds `--harness claude|codex`: the hook logs it with each denial (claude-factory-dsfg).
  * An older VM image's hook copy ignores argv it does not know.
  */
-const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) => {
+const denyHook = (
+  bun: string,
+  file: string,
+  harness: 'claude' | 'codex',
+  contexts?: string[],
+  branches?: string[],
+  merge?: string,
+) => {
   const hooks = [
     {
       type: 'command',
       command: [
         sq(bun),
         sq(file),
+        '--harness',
+        harness,
         ...(contexts?.length ? ['--person-only-contexts', sq(contexts.join(','))] : []),
         ...(branches?.length ? ['--protected-branches', sq(branches.join(','))] : []),
         ...(merge ? ['--merge-authority', sq(merge)] : []),
@@ -1814,7 +1825,7 @@ export function vmClaudeFlags(
     disableBundledSkills: true,
     hooks: {
       PreToolUse: [
-        ...denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge),
+        ...denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, 'claude', contexts, branches, merge),
       ],
     },
   }
@@ -1842,6 +1853,7 @@ export function vmCodexHome(
   const hook = denyHook(
     '/usr/local/bin/bun',
     `${ax.FACTORY_DIR}/src/worker-hook.ts`,
+    'codex',
     contexts,
     branches,
     merge,
@@ -2227,7 +2239,7 @@ export const workerSettings = (
     ...user.hooks,
     PreToolUse: [
       ...(user.hooks?.PreToolUse ?? []),
-      ...denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly, branches, merge),
+      ...denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), 'claude', personOnly, branches, merge),
     ],
   }
   return {
@@ -2470,6 +2482,7 @@ export function codexWorker(
   const hook = denyHook(
     process.execPath,
     hookFile,
+    'codex',
     personOnlyContexts(rig),
     protectedBranches(rig),
     mergeAuthority(rig),

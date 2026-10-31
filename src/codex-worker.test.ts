@@ -73,7 +73,7 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
   expect(pre).toHaveLength(3)
   expect(pre[0]).toEqual(f.mine)
-  expect(pre[1].hooks[0].command).toContain("worker-hook.ts' --person-only-contexts 'acme'")
+  expect(pre[1].hooks[0].command).toContain("worker-hook.ts' --harness codex --person-only-contexts 'acme'")
   expect(pre[2].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
   const agents = readFileSync(join(f.dir, 'AGENTS.md'), 'utf8')
   expect(agents).toStartWith(readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8'))
@@ -243,6 +243,7 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   expect(hook[1].hooks).toEqual(hook[0].hooks)
   const cmd: string = hook[0].hooks[0].command
   expect(cmd).toContain("'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'")
+  expect(cmd).toContain('--harness codex')
   expect(cmd).toContain("--person-only-contexts 'acme'")
   expect(cmd).toContain("--protected-branches 'release'")
   expect(h['config.toml']).toBe(
