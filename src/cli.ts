@@ -944,7 +944,11 @@ const axRunner: Runner = {
     ax.prompt(task, text.replaceAll(CLI, 'factory'))
     return true
   },
-  close: address => ax.remove(ax.taskOf(address)),
+  close(address, keep) {
+    const task = ax.taskOf(address)
+    if (keep) ax.keepTranscripts(task, keep)
+    ax.remove(task)
+  },
   // waiting on the manager costs nothing: the VM is snapshotted until the answer wakes it
   suspend: address => ax.suspend(ax.taskOf(address)),
   phase: address => ax.phase(ax.taskOf(address))?.toLowerCase() ?? null,
@@ -3226,12 +3230,16 @@ function haltRun(
     runnerOf(c.pane!).deliver(c.pane!, STOP_NOTE)
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
-    if (step === 'close') runnerOf(c.pane!).close(c.pane!)
+    if (step === 'close') runnerOf(c.pane!).close(c.pane!, transcriptsDir(run.id, c.seq, node))
     halt.closed[run.id] = c.seq
   }
   writeJson(haltFile(), halt)
   return step === 'wait' || step === 'tell' ? 'stopping' : 'paused'
 }
+
+/** where a closing remote worker's transcripts go; a later close of the same station overwrites the same names */
+const transcriptsDir = (id: string, seq: number, node: string) =>
+  join(runDir(id), 'transcripts', `${seq}-${node}`)
 
 /** a herdr worker's station ended: keep what its transcripts show. A failure here must never fail the tick */
 function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt: number) {
@@ -3279,7 +3287,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     actor.send({ ...e, at } as Ev)
     if (pane && pane !== ctx().pane) {
       storeUsage(run, pane, node, seq, startedAt)
-      runnerOf(pane).close(pane)
+      runnerOf(pane).close(pane, transcriptsDir(run.id, seq, node))
     }
   }
 

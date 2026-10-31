@@ -58,8 +58,8 @@ export type Runner = {
   info(run: Run, address: string): WorkerInfo | null
   /** a prompt into the worker's conversation; false when it is not delivered yet (try again next tick) */
   deliver(address: string, text: string): boolean
-  /** end the worker; gone already is fine */
-  close(address: string): void
+  /** end the worker; gone already is fine. keep: a dir where a remote runner first copies the worker transcripts (herdr ignores it) */
+  close(address: string, keep?: string): void
   /** park a worker that waits on someone, at no cost until deliver wakes it */
   suspend?(address: string): void
   /** the worker's state without side effects (info may replay or wake things), for listings; none shown when absent */

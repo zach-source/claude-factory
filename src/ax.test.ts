@@ -2476,7 +2476,7 @@ test('transcripts lists the Claude session, its subagents and the codex rollouts
   }
 })
 
-const gz = (s: string | Buffer) => Buffer.from(Bun.gzipSync(s)).toString('base64')
+const gz = (s: string | Uint8Array<ArrayBuffer>) => Buffer.from(Bun.gzipSync(s)).toString('base64')
 const tr = (...files: unknown[]) => JSON.stringify({ files })
 const ent = (name: string, body = 'x') => ({ name, gz: gz(body) })
 
