@@ -105,6 +105,8 @@ describe('deny log', () => {
     expect(r.out).toContain('deny')
     expect(existsSync(file())).toBe(false)
     expect(existsSync(join(home, 'x'))).toBe(false)
+    expect(existsSync(join(home, 'denials.jsonl'))).toBe(false) // FACTORY_RUN '..'
+    expect(existsSync(join(home, 'runs', 'denials.jsonl'))).toBe(false) // FACTORY_RUN '.'
   })
 
   test('no run dir: no mkdir, same deny', () => {
