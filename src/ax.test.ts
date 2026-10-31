@@ -2435,3 +2435,42 @@ test('diedText puts the message on one line, newlines as " | ", before a clipped
   expect(worker.diedText('plain')).toBe('serve died: plain\n')
   expect(worker.diedText(new Error('x'.repeat(900))).split('\n')[0]?.length).toBe('serve died: '.length + 500)
 })
+
+test('transcripts lists the Claude session, its subagents and the codex rollouts as gzip, and skips bad, double and non-rollout files', () => {
+  const root = mkdtempSync(join(dir, 'tr-'))
+  const oldC = process.env.CLAUDE_CONFIG_DIR
+  const oldX = process.env.CODEX_HOME
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'c')
+  process.env.CODEX_HOME = join(root, 'x')
+  try {
+    expect(worker.transcripts()).toEqual({ files: [], skipped: 0 })
+    const proj = join(root, 'c', 'projects', 'repo')
+    mkdirSync(join(proj, 's1', 'subagents'), { recursive: true })
+    writeFileSync(join(proj, 's1.jsonl'), 'main\n')
+    writeFileSync(join(proj, 's1', 'subagents', 'agent-a1.jsonl'), 'sub\n')
+    writeFileSync(join(proj, 'bad name.jsonl'), 'x')
+    writeFileSync(join(proj, 'notes.txt'), 'x')
+    const day = join(root, 'x', 'sessions', '2026', '10', '31')
+    mkdirSync(day, { recursive: true })
+    writeFileSync(join(day, 'rollout-2026-10-31T21-00-00-uuid.jsonl'), 'codex\n')
+    writeFileSync(join(day, 'other.jsonl'), 'x')
+    const other = join(root, 'c', 'projects', 'repo2')
+    mkdirSync(other, { recursive: true })
+    writeFileSync(join(other, 's1.jsonl'), 'dup')
+    const r = worker.transcripts()
+    const got = Object.fromEntries(
+      r.files.map(f => [f.name, new TextDecoder().decode(Bun.gunzipSync(Buffer.from(f.gz, 'base64')))]),
+    )
+    expect(got).toEqual({
+      'claude/s1.jsonl': 'main\n',
+      'claude/agent-a1.jsonl': 'sub\n',
+      'codex/rollout-2026-10-31T21-00-00-uuid.jsonl': 'codex\n',
+    })
+    expect(r.skipped).toBe(4) // bad name, notes.txt, other.jsonl, the second s1.jsonl
+  } finally {
+    if (oldC === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = oldC
+    if (oldX === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = oldX
+  }
+})

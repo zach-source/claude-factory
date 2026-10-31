@@ -9172,7 +9172,7 @@ const usage = `factory — herdr software factories on xstate
                                      tick starts one, at most once a minute)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> <summary...>   worker: finish its station
-  worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
+  worker serve [--model m] | poll <cursor> | transcripts | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
@@ -9263,12 +9263,13 @@ if (import.meta.main && !outboxCmd)
         const [sub, arg] = args
         if (sub === 'serve') await worker.serve(arg === '--model' ? args[2] : undefined)
         else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
+        else if (sub === 'transcripts') console.log(JSON.stringify(worker.transcripts()))
         else if (sub === 'prompt' && arg) worker.prompt(arg)
         else if (sub === 'put' && args.length === 5)
           worker.put(arg!, Number(args[2]), Number(args[3]), args[4]!)
         else
           fail(
-            'usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | put <name> <part> <parts> <base64>',
+            'usage: factory worker serve [--model m] | poll <cursor> | transcripts | prompt <base64> | put <name> <part> <parts> <base64>',
           )
         break
       }
