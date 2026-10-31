@@ -2230,9 +2230,11 @@ test('an AX claude task carries the OTel env and the collector egress rule only 
     ['ot1', { FACTORY_AX_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }],
     ['ot2', { FACTORY_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }],
     ['ot3', {}],
+    ['ot4', { FACTORY_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }, { otelContent: false }],
+    ['ot5', { FACTORY_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }, { agent: 'pi' }],
   ] as const
   const seen: { env: string; policy: string }[] = []
-  for (const [id, knob] of cases) {
+  for (const [id, knob, rigExtra] of cases) {
     rmSync(sent, { force: true })
     rmSync(applied, { force: true })
     const rdef: Factory = {
@@ -2263,7 +2265,7 @@ test('an AX claude task carries the OTel env and the collector egress rule only 
     )
     writeFileSync(
       join(home, 'rigs.json'),
-      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax', ...rigExtra }]),
     )
     cluster('Running', { status: 'idle', lines: [] })
     writeFileSync(
@@ -2300,8 +2302,14 @@ esac
     )
     expect(rule).toEqual({ http: { hostnames: ['otel.example.svc'], ports: { numbers: [4318] } } })
   }
-  expect(seen[2]!.env).not.toMatch(/OTEL_|TELEMETRY/)
-  expect(seen[2]!.policy).not.toContain('otel.example.svc')
+  expect(seen[0]!.env).toContain('OTEL_LOG_TOOL_DETAILS')
+  // a rig with otelContent false: no tool details; a pi rig: no OTel at all
+  expect(seen[3]!.env).toContain('CLAUDE_CODE_ENABLE_TELEMETRY')
+  expect(seen[3]!.env).not.toContain('OTEL_LOG_TOOL_DETAILS')
+  for (const i of [2, 4]) {
+    expect(seen[i]!.env).not.toMatch(/OTEL_|TELEMETRY/)
+    expect(seen[i]!.policy).not.toContain('otel.example.svc')
+  }
 }, 90_000)
 
 // claude-factory-hr94: an AX worker sends its usage with its report
