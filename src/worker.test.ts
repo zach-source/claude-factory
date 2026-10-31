@@ -105,7 +105,9 @@ describe('bazelrc', () => {
     function fake(name: string, code: number, write: boolean) {
       const p = join(dir, name)
       const body = write ? 'for a; do [ "$p" = -keystore ] && : > "$a"; p=$a; done' : ':'
-      writeFileSync(p, `#!/bin/sh\n${body}\necho ${name} > ${join(dir, 'ran')}\nexit ${code}\n`, { mode: 0o755 })
+      writeFileSync(p, `#!/bin/sh\n${body}\necho ${name} > ${join(dir, 'ran')}\nexit ${code}\n`, {
+        mode: 0o755,
+      })
       return p
     }
     const quiet = (f: () => string) => {
