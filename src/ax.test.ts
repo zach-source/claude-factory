@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -2473,4 +2474,60 @@ test('transcripts lists the Claude session, its subagents and the codex rollouts
     if (oldX === undefined) delete process.env.CODEX_HOME
     else process.env.CODEX_HOME = oldX
   }
+})
+
+const gz = (s: string | Buffer) => Buffer.from(Bun.gzipSync(s)).toString('base64')
+const tr = (...files: unknown[]) => JSON.stringify({ files })
+const ent = (name: string, body = 'x') => ({ name, gz: gz(body) })
+
+test('parseTranscripts accepts only the closed grammar and rejects the whole answer otherwise', () => {
+  const ok = [
+    'claude/0b5e-uuid.jsonl',
+    'claude/agent-a1.jsonl',
+    'codex/rollout-2026-10-31T21-00-00-uuid.jsonl',
+  ]
+  for (const n of ok) expect(ax.parseTranscripts(tr(ent(n)))?.[0]?.name).toBe(n)
+  expect(ax.parseTranscripts(tr())).toEqual([])
+  const bad: [string, string][] = [
+    ['dotdot', tr(ent('../x.jsonl'))],
+    ['dotdot in', tr(ent('claude/../x.jsonl'))],
+    ['absolute', tr(ent('/etc/x.jsonl'))],
+    ['nested', tr(ent('claude/a/b.jsonl'))],
+    ['other dir', tr(ent('other/x.jsonl'))],
+    ['not jsonl', tr(ent('claude/x.txt'))],
+    ['dot start', tr(ent('claude/.x.jsonl'))],
+    ['long name', tr(ent(`claude/${'a'.repeat(201)}.jsonl`))],
+    ['newline end', tr(ent('claude/x.jsonl\n'))],
+    ['duplicate', tr(ent('claude/x.jsonl'), ent('claude/x.jsonl'))],
+    ['not base64', tr({ name: 'claude/x.jsonl', gz: 'not base64!' })],
+    ['not gzip', tr({ name: 'claude/x.jsonl', gz: Buffer.from('plain').toString('base64') })],
+    ['501 files', tr(...Array.from({ length: 501 }, (_, i) => ent(`claude/f${i}.jsonl`)))],
+    ['files not array', JSON.stringify({ files: {} })],
+    ['non-string field', tr({ name: 'claude/x.jsonl', gz: 5 })],
+    ['not json', 'oops'],
+    ['poll json', JSON.stringify({ status: 'idle', outbox: [] })],
+    ['null', 'null'],
+  ]
+  for (const [why, out] of bad) expect([why, ax.parseTranscripts(out)]).toEqual([why, null])
+  const big = gz(Buffer.alloc(40 * 1024 * 1024))
+  expect(ax.parseTranscripts(tr({ name: 'claude/a.jsonl', gz: big }))?.length).toBe(1)
+  expect(
+    ax.parseTranscripts(tr({ name: 'claude/a.jsonl', gz: big }, { name: 'claude/b.jsonl', gz: big })),
+  ).toBeNull()
+})
+
+test('keepTranscripts writes the files at 0600, and only error.txt when the ssh fails or the answer breaks the grammar', () => {
+  const root = mkdtempSync(join(dir, 'keep-'))
+  writeFileSync(join(dir, 'ssh'), tr(ent('claude/s1.jsonl', 'one'), ent('codex/rollout-x.jsonl', 'two')))
+  const a = join(root, 'a')
+  ax.keepTranscripts('t', a)
+  expect(readFileSync(join(a, 'claude', 's1.jsonl'), 'utf8')).toBe('one')
+  expect(readFileSync(join(a, 'codex', 'rollout-x.jsonl'), 'utf8')).toBe('two')
+  expect(statSync(join(a, 'claude', 's1.jsonl')).mode & 0o777).toBe(0o600)
+  expect(existsSync(join(a, 'error.txt'))).toBe(false)
+  writeFileSync(join(dir, 'ssh'), tr(ent('claude/ok.jsonl'), ent('../x.jsonl')))
+  const b = join(root, 'b')
+  ax.keepTranscripts('t', b)
+  expect(readdirSync(b)).toEqual(['error.txt'])
+  expect(readFileSync(join(b, 'error.txt'), 'utf8')).toBe('transcripts answer rejected\n')
 })

@@ -3,7 +3,10 @@
 // queues what the worker's `factory report|mail|memory add` would have done in an outbox, which the
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
-import { WORKER_USER } from './worker'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { gunzipSync } from 'node:zlib'
+import { TRANSCRIPT_MAX_BYTES, WORKER_USER } from './worker'
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
@@ -655,6 +658,58 @@ export function put(task: string, name: string, part: number, parts: number, bas
 export const PUT_PART = 96_000
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
+const TRANSCRIPT_NAME = /^(claude|codex)\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.jsonl$/
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
+/**
+ * The grammar for the output of `factory worker transcripts`. Do not trust the VM. Accept one JSON object
+ * with at most 500 files. Each file is {name, gz}. A name is plain and occurs once. Each gz is base64 gzip.
+ * All files decode to at most 64 MiB. Any other form rejects the whole answer. Pure.
+ */
+export function parseTranscripts(out: string): { name: string; data: Buffer }[] | null {
+  try {
+    const j = JSON.parse(out)
+    if (!j || typeof j !== 'object' || !Array.isArray(j.files) || j.files.length > 500) return null
+    const seen = new Set<string>()
+    let left = TRANSCRIPT_MAX_BYTES
+    const files: { name: string; data: Buffer }[] = []
+    for (const f of j.files) {
+      if (!f || typeof f.name !== 'string' || typeof f.gz !== 'string') return null
+      if (!TRANSCRIPT_NAME.test(f.name) || seen.has(f.name) || !BASE64.test(f.gz)) return null
+      seen.add(f.name)
+      const data = gunzipSync(Buffer.from(f.gz, 'base64'), { maxOutputLength: left })
+      left -= data.length
+      files.push({ name: f.name, data })
+    }
+    return files
+  } catch {
+    return null
+  }
+}
+/**
+ * Copies the Claude and codex session files of the VM into dir (mode 0700, files 0600) over one ssh. If the
+ * ssh fails or the answer breaks the grammar, it writes only dir/error.txt with a fixed reason. It never
+ * throws, so the delete after it always runs.
+ * ponytail: the ssh blocks the tick for up to 60 s; the upgrade is an async copy.
+ */
+export function keepTranscripts(task: string, dir: string) {
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const r = ax(['ssh', task, '--', ...asWorker(['factory', 'worker', 'transcripts'])], undefined, 60_000)
+    const files = r.ok ? parseTranscripts(r.out) : null
+    if (!files) {
+      writeFileSync(
+        join(dir, 'error.txt'),
+        r.ok ? 'transcripts answer rejected\n' : 'transcripts ssh failed\n',
+        { mode: 0o600 },
+      )
+      return
+    }
+    for (const f of files) {
+      mkdirSync(join(dir, dirname(f.name)), { recursive: true, mode: 0o700 })
+      writeFileSync(join(dir, f.name), f.data, { mode: 0o600 })
+    }
+  } catch {}
+}
 /** the task (its actor's egress policy goes with it) and its workspace; gone already is fine */
 export function remove(task: string) {
   ax(['delete', 'task', task])
