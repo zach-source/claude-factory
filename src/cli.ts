@@ -8554,9 +8554,14 @@ function rigRef(repoPath: string): { owner: string; slug: string } | null {
   return slug ? { owner: o.owner, slug } : null
 }
 
-/** whether `glab` is signed in to a host: how a self-hosted GitLab without "gitlab" in its name is told */
-const glabKnows = (host: string) =>
-  Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
+/** whether `glab` is signed in to a host (false when glab is not installed): how a self-hosted GitLab without "gitlab" in its name is told */
+const glabKnows = (host: string) => {
+  try {
+    return Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
+  } catch {
+    return false
+  }
+}
 
 const prsFile = (id: string) => join(runDir(id), 'prs.json')
 

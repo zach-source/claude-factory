@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `merges-cli-${process.pid}`)
@@ -72,7 +72,13 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 const metricsJson = () => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'metrics', '--json'], {
-    env: { ...laptop, PATH: `${bin}:${process.env.PATH}`, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    // PATH has no glab, as on CI
+    env: {
+      ...laptop,
+      PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+      FACTORY_HOME: home,
+      FACTORY_SELF_UPDATE: '0',
+    },
   })
   return {
     code: p.exitCode,
