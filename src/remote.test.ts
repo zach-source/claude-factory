@@ -8,6 +8,8 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -2311,6 +2313,98 @@ test('AX usage with 21 rows, or not an array, is ignored and the report still la
     expect(existsSync(join(home, 'runs', id, 'usage.jsonl'))).toBe(false)
     rmSync(join(home, 'runs', id), { recursive: true })
   }
+})
+
+const UUID = '019a3b2c-0000-7000-8000-000000000001'
+const rolloutLines = (over: { model?: string; out?: unknown } = {}) =>
+  [
+    { type: 'session_meta', payload: { id: UUID } },
+    { type: 'turn_context', payload: { model: over.model ?? 'gpt-6-astra' } },
+    {
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 51479,
+            cached_input_tokens: 38784,
+            output_tokens: over.out ?? 46,
+            total_tokens: 51525,
+          },
+          last_token_usage: { input_tokens: 25789 },
+        },
+      },
+    },
+  ]
+    .map(l => JSON.stringify(l))
+    .join('\n')
+/** an AX station for run `id` that reports ready; `kept` writes files under its transcripts dir before the closing tick */
+function codexTick(id: string, kept: (dir: string, seq: number) => void) {
+  const seq = launched(id)
+  kept(join(home, 'runs', id, 'transcripts', `${seq}-a`), seq)
+  const report = JSON.stringify({ argv: ['report', id, String(seq), 'ready', 'x'], from: 'a', at: 1 })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+  for (let i = 0; i < 2; i++) expect(factory(['tick']).code).toBe(0)
+  expect(inbox(id)).toContain('"outcome":"ready"')
+  const file = join(home, 'runs', id, 'usage.jsonl')
+  const rows = existsSync(file) ? storedRows(id) : []
+  rmSync(join(home, 'runs', id), { recursive: true })
+  return { rows, seq }
+}
+const keep = (d: string, name: string, text: string, sub = 'codex') => {
+  mkdirSync(join(d, sub), { recursive: true })
+  writeFileSync(join(d, sub, name), text)
+}
+const ROLL = `rollout-2026-10-31T21-00-00-${UUID}.jsonl`
+
+test("an AX codex station's usage comes from the kept rollout, with node and seq from the laptop (flhv AC2)", () => {
+  const { rows, seq } = codexTick('rc1', d => keep(d, ROLL, rolloutLines()))
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({
+    node: 'a',
+    seq,
+    session: UUID,
+    model: 'gpt-6-astra',
+    input: 12695,
+    cacheRead: 38784,
+    output: 46,
+  })
+})
+
+test('codex usage: a missing dir, a wrong name, the claude dir, a symlink or a big file add no rows (flhv AC3)', () => {
+  const none = (id: string, kept: (d: string, seq: number) => void) =>
+    expect(codexTick(id, kept).rows).toEqual([])
+  none('rc2', () => {})
+  none('rc3', d => keep(d, 'notes.jsonl', rolloutLines()))
+  none('rc4', d => keep(d, ROLL, rolloutLines(), 'claude'))
+  none('rc5', d => {
+    const out = join(dir, 'outside.jsonl')
+    writeFileSync(out, rolloutLines())
+    mkdirSync(join(d, 'codex'), { recursive: true })
+    symlinkSync(out, join(d, 'codex', 'rollout-x.jsonl'))
+  })
+  none('rc6', d => {
+    mkdirSync(join(d, 'codex'), { recursive: true })
+    const f = join(d, 'codex', ROLL)
+    writeFileSync(f, rolloutLines())
+    truncateSync(f, 64 * 1024 * 1024 + 1)
+  })
+  none('rc7', d => keep(d, ROLL, rolloutLines({ model: 'bad model' })))
+  none('rc8', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) })))
+  for (const [i, out] of [-1, 1.5, '9', 2e12].entries())
+    none(`rd${i}`, d => keep(d, ROLL, rolloutLines({ out })))
+})
+
+test('codex usage keeps the first 20 rollout files by name (flhv AC3)', () => {
+  const { rows } = codexTick('rc9', d => {
+    for (let i = 0; i < 21; i++) {
+      const id = `019a3b2c-0000-7000-8000-${String(i).padStart(12, '0')}`
+      keep(d, `rollout-2026-10-31T21-00-00-${id}.jsonl`, rolloutLines().replace(UUID, id))
+    }
+  })
+  expect(rows.map(r => r.session)).toEqual(
+    Array.from({ length: 20 }, (_, i) => `019a3b2c-0000-7000-8000-${String(i).padStart(12, '0')}`),
+  )
 })
 
 /** the fake cluster with a task in `phase` whose status.conditions hold `conds` (YAML list lines) */

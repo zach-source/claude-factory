@@ -172,6 +172,7 @@ import {
   render,
   renderLaunches,
   renderTokens,
+  codexUsageOf,
   sessionOf,
   type RunRecord,
   type ManagerUsage,
@@ -3226,7 +3227,10 @@ function haltRun(
     runnerOf(c.pane!).deliver(c.pane!, STOP_NOTE)
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
-    if (step === 'close') runnerOf(c.pane!).close(c.pane!)
+    if (step === 'close') {
+      runnerOf(c.pane!).close(c.pane!)
+      storeCodexUsage(run, node, c.seq)
+    }
     halt.closed[run.id] = c.seq
   }
   writeJson(haltFile(), halt)
@@ -3239,6 +3243,30 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
     if (runnerOf(pane).name !== 'herdr' || !startedAt) return
     const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
     if (rows.length) appendUsage(run.id, rows)
+  } catch {}
+}
+/**
+ * An AX codex station ended. Store its usage from the rollout files in
+ * runs/<run>/transcripts/<seq>-<node>/codex. The VM wrote them, so read only 20 plain files
+ * that have a rollout name and are 64 MiB or smaller. Send every row through validUsage.
+ * Do not read claude/: the report already has that usage. Never throw.
+ * ponytail: this reads the whole file; the upgrade is a stream of the last token_count.
+ */
+function storeCodexUsage(run: Run, node: string, seq: number) {
+  try {
+    const d = join(runDir(run.id), 'transcripts', `${seq}-${node}`, 'codex')
+    if (!existsSync(d)) return
+    const rows = readdirSync(d)
+      .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(f))
+      .sort()
+      .slice(0, 20)
+      .flatMap(f => {
+        const st = lstatSync(join(d, f))
+        if (!st.isFile() || st.size > 64 * 1024 * 1024) return []
+        return codexUsageOf(readFileSync(join(d, f), 'utf8').split('\n'), f) ?? []
+      })
+    const ok = validUsage(rows, node, seq)
+    if (ok.length) appendUsage(run.id, ok)
   } catch {}
 }
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
@@ -3280,6 +3308,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     if (pane && pane !== ctx().pane) {
       storeUsage(run, pane, node, seq, startedAt)
       runnerOf(pane).close(pane)
+      storeCodexUsage(run, node, seq)
     }
   }
 
