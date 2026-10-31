@@ -17,6 +17,8 @@ import { compile, type Factory } from './machine'
 import {
   githubSlug,
   httpsRemote,
+  isDenyLine,
+  outboxDenial,
   overwritten,
   progressSig,
   replayable,
@@ -606,6 +608,63 @@ test('polling the same outbox twice replays nothing the second time (claude-fact
   expect(inbox('r9')).toBe(once)
   expect(called().match(/worker prompt/g)).toBeNull()
   rmSync(join(home, 'runs', 'r9'), { recursive: true })
+})
+
+const denyLine = (deny: unknown, extra: object = {}) => JSON.stringify({ deny, from: 'a', at: 1, ...extra })
+const goodDeny = { at: 5, harness: 'codex', reason: 'FUNCTION_DEF_REASON', command: 'f() { ls; }' }
+
+test.each([
+  ['a valid denial', goodDeny, true],
+  ['an extra key', { ...goodDeny, x: 1 }, false],
+  ['a missing key', { at: 5, harness: 'codex', reason: 'REASON' }, false],
+  ['at not finite', { ...goodDeny, at: null }, false],
+  ['at a string', { ...goodDeny, at: '5' }, false],
+  ['an unknown harness', { ...goodDeny, harness: 'evil' }, false],
+  ['a lower-case reason', { ...goodDeny, reason: 'function_def' }, false],
+  ['a reason with a space', { ...goodDeny, reason: 'A B' }, false],
+  ['a reason over 64 chars', { ...goodDeny, reason: 'A'.repeat(65) }, false],
+  ['a command over 200 chars', { ...goodDeny, command: 'x'.repeat(201) }, false],
+  ['a command that is not a string', { ...goodDeny, command: 1 }, false],
+  ['a deny array', [], false],
+  ['a deny string', 'x', false],
+])('outboxDenial: %s', (_n, deny, ok) => {
+  expect(outboxDenial(denyLine(deny))).toEqual(ok ? goodDeny : null)
+})
+
+test('outboxDenial and isDenyLine: an argv key, bad JSON or no deny key is not a denial', () => {
+  expect(outboxDenial(denyLine(goodDeny, { argv: ['report'] }))).toBeNull()
+  expect(isDenyLine(denyLine(goodDeny, { argv: ['report'] }))).toBe(false)
+  for (const l of ['not json', 'null', '[]', '{"argv":["mail"]}']) {
+    expect(outboxDenial(l)).toBeNull()
+    expect(isDenyLine(l)).toBe(false)
+  }
+})
+
+test("a tick writes an AX worker's valid deny line to the run's denials.jsonl, once, with no prompt (claude-factory-dsfg)", () => {
+  launched('rd1')
+  clusterCursor('Running', 'idle', [denyLine({ ...goodDeny, command: 'f() { ls; }' }, { from: 'forged' })])
+  factory(['tick'])
+  const file = join(home, 'runs', 'rd1', 'denials.jsonl')
+  const rows = readFileSync(file, 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(rows).toEqual([{ ...goodDeny, run: 'rd1', station: 'a' }])
+  factory(['tick'])
+  expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(1)
+  expect(called().match(/worker prompt/g)).toBeNull()
+  rmSync(join(home, 'runs', 'rd1'), { recursive: true })
+})
+
+test('a tick drops an invalid AX deny line: no file, no prompt, and it is not read again (claude-factory-dsfg)', () => {
+  launched('rd2')
+  clusterCursor('Running', 'idle', [denyLine({ ...goodDeny, harness: 'evil' })])
+  factory(['tick'])
+  expect(existsSync(join(home, 'runs', 'rd2', 'denials.jsonl'))).toBe(false)
+  expect(seenTotal('rd2')).toBe(1)
+  factory(['tick'])
+  expect(called().match(/worker prompt/g)).toBeNull()
+  rmSync(join(home, 'runs', 'rd2'), { recursive: true })
 })
 
 test('two identical outbox lines both replay, counted as a multiset like today (claude-factory-4x1)', () => {
