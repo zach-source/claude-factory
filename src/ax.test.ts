@@ -2451,6 +2451,7 @@ test('transcripts lists the Claude session, its subagents and the codex rollouts
     writeFileSync(join(proj, 's1', 'subagents', 'agent-a1.jsonl'), 'sub\n')
     writeFileSync(join(proj, 'bad name.jsonl'), 'x')
     writeFileSync(join(proj, 'notes.txt'), 'x')
+    writeFileSync(join(proj, 'zbig.jsonl'), Buffer.alloc(65 * 1024 * 1024))
     const day = join(root, 'x', 'sessions', '2026', '10', '31')
     mkdirSync(day, { recursive: true })
     writeFileSync(join(day, 'rollout-2026-10-31T21-00-00-uuid.jsonl'), 'codex\n')
@@ -2467,7 +2468,7 @@ test('transcripts lists the Claude session, its subagents and the codex rollouts
       'claude/agent-a1.jsonl': 'sub\n',
       'codex/rollout-2026-10-31T21-00-00-uuid.jsonl': 'codex\n',
     })
-    expect(r.skipped).toBe(4) // bad name, notes.txt, other.jsonl, the second s1.jsonl
+    expect(r.skipped).toBe(5) // bad name, notes.txt, zbig past the cap, other.jsonl, the second s1.jsonl
   } finally {
     if (oldC === undefined) delete process.env.CLAUDE_CONFIG_DIR
     else process.env.CLAUDE_CONFIG_DIR = oldC
@@ -2495,6 +2496,9 @@ test('parseTranscripts accepts only the closed grammar and rejects the whole ans
     ['nested', tr(ent('claude/a/b.jsonl'))],
     ['other dir', tr(ent('other/x.jsonl'))],
     ['not jsonl', tr(ent('claude/x.txt'))],
+    ['prefix', tr(ent('xclaude/x.jsonl'))],
+    ['deep prefix', tr(ent('other/claude/x.jsonl'))],
+    ['stray char', tr({ name: 'claude/x.jsonl', gz: gz('x') + '!' })],
     ['dot start', tr(ent('claude/.x.jsonl'))],
     ['long name', tr(ent(`claude/${'a'.repeat(201)}.jsonl`))],
     ['newline end', tr(ent('claude/x.jsonl\n'))],
