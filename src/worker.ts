@@ -606,7 +606,9 @@ function kubeconfig() {
  * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (the image has
  * one on PATH; an older image gets it from Nix, as its OpenSSL cannot write a store Java trusts)
  */
+export let trustNote = ''
 export function bazelrc() {
+  trustNote = ''
   const lines = [process.env.FACTORY_BAZELRC!]
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
@@ -638,7 +640,10 @@ export function bazelrc() {
       lines.push(
         `startup --host_jvm_args=-Djavax.net.ssl.trustStore=${store} --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit --host_jvm_args=-Djavax.net.ssl.sessionCacheSize=1`,
       )
-    else console.error(`bazel will not trust the egress gateway: keytool: ${made.err || 'wrote no store'}`)
+    else {
+      console.error(`bazel will not trust the egress gateway: keytool: ${made.err || 'wrote no store'}`)
+      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${made.err.slice(0, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
+    }
   }
   // with a pkg-gate (launch() set these in the VM's env), rules_go/rules_python/rules_js fetch through it too,
   // instead of straight to proxy.golang.org/pypi.org/registry.npmjs.org, which the gate's egress strip refuses
@@ -1142,6 +1147,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
   // replaces) go in the home rc, which every workspace reads
   // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
+  trustNote = ''
   if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
   if (process.env.FACTORY_KUBE_SERVER) kubeconfig()
   nixCache()
@@ -1240,7 +1246,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
     session = await turnWithRetry(
-      brief + missing + servicesNote(services, process.env),
+      brief + missing + trustNote + servicesNote(services, process.env),
       model,
       undefined,
       onEgress,
