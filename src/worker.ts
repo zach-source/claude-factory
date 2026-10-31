@@ -1086,6 +1086,7 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
   // replaces) go in the home rc, which every workspace reads
   // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
+  trustNote = ''
   if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
   if (process.env.FACTORY_KUBE_SERVER) kubeconfig()
   nixCache()
