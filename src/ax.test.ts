@@ -542,6 +542,48 @@ echo '{"type":"system","subtype":"init","session_id":"sess-1"}'
   }
 })
 
+test('serve puts a [factory] trust-store note in the first brief when keytool fails (claude-factory-5ewd)', async () => {
+  const own = join(dir, 'own-trust')
+  const repo = join(dir, 'repo-trust')
+  const home = join(dir, 'home-trust')
+  for (const d of [own, repo, home]) mkdirSync(d, { recursive: true })
+  const stdinFile = join(dir, 'claude-trust-stdin')
+  const claude = join(dir, 'claude-trust')
+  writeFileSync(
+    claude,
+    `#!/bin/sh
+cat > ${stdinFile}
+echo '{"type":"system","subtype":"init","session_id":"sess-trust"}'
+`,
+  )
+  chmodSync(claude, 0o755)
+  const keytool = join(dir, 'keytool-trust')
+  writeFileSync(keytool, '#!/bin/sh\necho boom >&2\nexit 1\n')
+  chmodSync(keytool, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_BRIEF: 'the brief',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_FROM: 'implement',
+    FACTORY_CA: 'x',
+    FACTORY_BAZELRC: 'startup --batch_cpu_scheduling',
+    FACTORY_KEYTOOL: keytool,
+    HOME: home,
+  })
+  try {
+    await worker.serve('m1', { once: true })
+    const brief = readFileSync(stdinFile, 'utf8')
+    expect(brief).toStartWith('the brief')
+    expect(brief).toContain('[factory] serve wrote no JVM trust store')
+    expect(brief).toContain('boom')
+  } finally {
+    process.env = saved
+  }
+})
+
 test("serve starts the devenv's processes and ends the first brief with a [factory] services note (claude-factory-5sn)", async () => {
   const own = join(dir, 'own-svc')
   const repo = join(dir, 'repo-svc')
