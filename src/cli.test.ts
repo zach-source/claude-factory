@@ -479,7 +479,7 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   expect(pre[0]).toEqual(hooks.PreToolUse[0])
   // claude-factory-cr6: the factory's deny-rm-rf hook comes last, so it never shadows the user's own guard
   expect(pre[1]).toMatchObject({ matcher: 'Bash' })
-  expect(pre[1]!.hooks[0]!.command).toMatch(/worker-hook\.ts'$/)
+  expect(pre[1]!.hooks[0]!.command).toMatch(/worker-hook\.ts' --harness claude$/)
   // claude-factory-g4du: the same command guards Write, Edit, MultiEdit and NotebookEdit file paths
   expect(pre[2]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit' })
   expect(pre[2]!.hooks[0]!.command).toBe(pre[1]!.hooks[0]!.command)
@@ -586,13 +586,13 @@ test('workerFlags writes one settings file for each skill set, and warns when a 
 test("workerSettings carries a rig's personOnlyContexts on the deny hook's own argv", () => {
   const withList = workerSettings({}, 200, undefined, ['acme'])
   const pre = withList.hooks.PreToolUse as { hooks: { command: string }[] }[]
-  expect(pre.at(-1)!.hooks[0]!.command).toMatch(/--person-only-contexts 'acme'$/)
+  expect(pre.at(-1)!.hooks[0]!.command).toMatch(/--harness claude --person-only-contexts 'acme'$/)
   // no list, or an empty one: today's command, unchanged
   const withNone = workerSettings({}, 200)
   const withEmpty = workerSettings({}, 200, undefined, [])
   expect(withNone).toEqual(withEmpty)
   expect((withNone.hooks.PreToolUse as { hooks: { command: string }[] }[]).at(-1)!.hooks[0]!.command).toMatch(
-    /worker-hook\.ts'$/,
+    /worker-hook\.ts' --harness claude$/,
   )
 })
 
@@ -2187,7 +2187,9 @@ test("workerFlags carries --merge-authority only for a rig with mergeAuthority t
   expect(workerFlags({ maxContextK: 200 }, loose, home)).toContain(join(home, 'worker-settings.json'))
   const cmd = (f: string) =>
     JSON.parse(readFileSync(join(home, f), 'utf8')).hooks.PreToolUse.at(-1).hooks[0].command as string
-  expect(cmd('worker-settings-acme.json')).toMatch(/worker-hook\.ts' --merge-authority 'acme\/widget'$/)
+  expect(cmd('worker-settings-acme.json')).toMatch(
+    /worker-hook\.ts' --harness claude --merge-authority 'acme\/widget'$/,
+  )
   expect(cmd('worker-settings.json')).not.toContain('merge-authority')
 })
 

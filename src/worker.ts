@@ -603,8 +603,8 @@ function kubeconfig() {
 
 /**
  * the rig's bazel flags, and the gateway's CA for bazel: its gRPC (a remote cache) takes the PEM, but its JVM,
- * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (from Nix: the image
- * has no JDK, and its OpenSSL cannot write one Java trusts)
+ * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (the image has
+ * one on PATH; an older image gets it from Nix, as its OpenSSL cannot write a store Java trusts)
  */
 export function bazelrc() {
   const lines = [process.env.FACTORY_BAZELRC!]
@@ -612,9 +612,12 @@ export function bazelrc() {
     const ca = join(own(), 'egress-ca.crt')
     const store = join(own(), 'egress.jks')
     rmSync(store, { force: true }) // the CA is written anew every start
+    const onPath = Bun.which('keytool', { PATH: process.env.PATH })
     const keytool = process.env.FACTORY_KEYTOOL
       ? [process.env.FACTORY_KEYTOOL]
-      : ['nix', 'shell', 'nixpkgs#jdk21_headless', '-c', 'keytool']
+      : onPath
+        ? [onPath]
+        : ['nix', 'shell', 'nixpkgs#jdk21_headless', '-c', 'keytool']
     // a trust store holds no secret: its password is Java's well-known default
     const made = sh([
       ...keytool,
@@ -629,11 +632,13 @@ export function bazelrc() {
       '-storepass',
       'changeit',
     ])
-    if (!made.ok) console.error(`bazel will not trust the egress gateway: keytool: ${made.err}`)
-    lines.push(
-      `common --tls_certificate=${ca}`,
-      `startup --host_jvm_args=-Djavax.net.ssl.trustStore=${store} --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit`,
-    )
+    lines.push(`common --tls_certificate=${ca}`)
+    // a flag for a missing store fails every JVM TLS call: write it only when the store exists
+    if (made.ok && existsSync(store))
+      lines.push(
+        `startup --host_jvm_args=-Djavax.net.ssl.trustStore=${store} --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit --host_jvm_args=-Djavax.net.ssl.sessionCacheSize=1`,
+      )
+    else console.error(`bazel will not trust the egress gateway: keytool: ${made.err || 'wrote no store'}`)
   }
   // with a pkg-gate (launch() set these in the VM's env), rules_go/rules_python/rules_js fetch through it too,
   // instead of straight to proxy.golang.org/pypi.org/registry.npmjs.org, which the gate's egress strip refuses

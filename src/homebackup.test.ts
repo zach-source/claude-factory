@@ -101,6 +101,16 @@ test('AC2: the login files, locks, bin, devenv, logs and rigs.json backups stay 
   expect(files).toContain('home/rigs.json')
 })
 
+test('a worker transcript with a token shape neither stops the backup nor enters the tree', () => {
+  const r = remote()
+  const ws = workspace()
+  const f = 'home/runs/r1/transcripts/2-implement/claude/s.jsonl'
+  put(join(ws, f), 'token ghp_' + 'a'.repeat(36))
+  const res = backup(cfg(ws, r), true)
+  expect(res.error).toBeUndefined()
+  expect(sh('--git-dir', r, 'ls-tree', '-r', '--name-only', 'manager-home').split('\n')).not.toContain(f)
+})
+
 test('AC2: each exclude rule is needed', () => {
   // a rule removed from EXCLUDES lets its file in
   const rules = EXCLUDES.filter(x => !x.startsWith('#'))
@@ -117,6 +127,7 @@ test('AC2: each exclude rule is needed', () => {
     '/home/backup.json': 'home/backup.json',
     '/home/manager-host.log': 'home/manager-host.log',
     'worktrees/': 'home/runs/r1/worktrees/acme/f.txt',
+    '/home/runs/*/transcripts/': 'home/runs/r1/transcripts/2-implement/codex/rollout-a.jsonl',
   }
   for (const [rule, file] of Object.entries(probes)) {
     expect(rules).toContain(rule)

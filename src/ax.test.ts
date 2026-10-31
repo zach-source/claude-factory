@@ -1068,7 +1068,11 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
   const home = join(dir, 'home')
   mkdirSync(home, { recursive: true })
   const keytool = join(dir, 'keytool')
-  writeFileSync(keytool, `#!/bin/sh\necho "$@" > ${join(dir, 'keytool.args')}\n`, { mode: 0o755 })
+  writeFileSync(
+    keytool,
+    `#!/bin/sh\necho "$@" > ${join(dir, 'keytool.args')}\nfor a; do [ "$p" = -keystore ] && : > "$a"; p=$a; done\n`,
+    { mode: 0o755 },
+  )
   const saved = { ...process.env }
   Object.assign(process.env, {
     HOME: home,

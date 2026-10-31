@@ -160,18 +160,23 @@ import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import { signingProbe } from './signing'
 import {
+  attachMerges,
   createdAt,
   fate,
+  denialStats,
   launchStats,
   metrics,
+  parseDenialLines,
   parseLaunchLines,
   inWindow,
   parsePrecheckLines,
   parseRecords,
   precheckStats,
   render,
+  renderDenials,
   renderLaunches,
   renderTokens,
+  codexUsageOf,
   sessionOf,
   type RunRecord,
   type ManagerUsage,
@@ -603,6 +608,39 @@ export function outboxArgv(line: string): string[] | null {
   }
 }
 
+/** True for an outbox line with a `deny` key and no `argv` key. It records a denial. It is not a command (claude-factory-dsfg). */
+export function isDenyLine(line: string): boolean {
+  try {
+    const o = JSON.parse(line)
+    return !!o && typeof o === 'object' && 'deny' in o && !('argv' in o)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The denial in an outbox deny line, or null. The VM worker writes the line, so the laptop does not trust it.
+ * The grammar is closed. The deny object has exactly these keys: at (a finite number), harness, reason
+ * (an upper-case constant name) and command (a string of 200 chars or fewer). The laptop adds run and station.
+ */
+export function outboxDenial(
+  line: string,
+): { at: number; harness: string; reason: string; command: string } | null {
+  if (!isDenyLine(line)) return null
+  const d = JSON.parse(line).deny
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null
+  if (Object.keys(d).sort().join() !== 'at,command,harness,reason') return null
+  const ok =
+    typeof d.at === 'number' &&
+    Number.isFinite(d.at) &&
+    ['claude', 'codex', 'pi', 'unknown'].includes(d.harness) &&
+    typeof d.reason === 'string' &&
+    /^[A-Z][A-Z0-9_]{0,63}$/.test(d.reason) &&
+    typeof d.command === 'string' &&
+    d.command.length <= 200
+  return ok ? { at: d.at, harness: d.harness, reason: d.reason, command: d.command } : null
+}
+
 /** where bd keeps a repo's store: its Dolt server and database (`bd dolt show --json`) */
 type DoltConn = { host: string; port: number; database: string; user: string; tls: boolean }
 
@@ -837,6 +875,22 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     const h = hashLine(line)
     occurs[h] = (occurs[h] ?? 0) + 1
     if (occurs[h] <= (seen.seen[h] ?? 0)) continue // this occurrence of this line already replayed
+    if (isDenyLine(line)) {
+      // a worker's denial: data, never a command, so no prompt and no spawn. A bad line is marked seen and dropped
+      const d = outboxDenial(line)
+      if (d) {
+        try {
+          appendFileSync(
+            join(runDir(run.id), 'denials.jsonl'),
+            JSON.stringify({ run: run.id, station: side?.node, ...d }) + '\n',
+            { mode: 0o600 },
+          )
+        } catch {} // a log failure never blocks the replay of the lines after it
+      }
+      seen.seen[h] = (seen.seen[h] ?? 0) + 1
+      writeJson(seenFile(run, task), seen)
+      continue
+    }
     const argv = outboxArgv(line)
     const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
@@ -1722,6 +1776,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       ...rig?.env,
       FACTORY_FROM: node,
       FACTORY_RUN: run.id,
+      FACTORY_DENY_LOG: '1',
       FACTORY_DEF_NAME: def.name,
       FACTORY_SKILLS: skills.join(','),
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
@@ -1766,15 +1821,25 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * (claude-factory-zl5). Its own argv is `--protected-branches a,b`.
  * `merge` is the rig's owner/repo (claude-factory-l3tl). It adds `--merge-authority owner/repo`: the hook then lets the ship
  * release station run one strict `gh pr merge` form, for that repo only (-R required).
+ * `harness` adds `--harness claude|codex`: the hook logs it with each denial (claude-factory-dsfg).
  * An older VM image's hook copy ignores argv it does not know.
  */
-const denyHook = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) => {
+const denyHook = (
+  bun: string,
+  file: string,
+  harness: 'claude' | 'codex',
+  contexts?: string[],
+  branches?: string[],
+  merge?: string,
+) => {
   const hooks = [
     {
       type: 'command',
       command: [
         sq(bun),
         sq(file),
+        '--harness',
+        harness,
         ...(contexts?.length ? ['--person-only-contexts', sq(contexts.join(','))] : []),
         ...(branches?.length ? ['--protected-branches', sq(branches.join(','))] : []),
         ...(merge ? ['--merge-authority', sq(merge)] : []),
@@ -1818,7 +1883,14 @@ export function vmClaudeFlags(
     disableBundledSkills: true,
     hooks: {
       PreToolUse: [
-        ...denyHook('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge),
+        ...denyHook(
+          '/usr/local/bin/bun',
+          `${ax.FACTORY_DIR}/src/worker-hook.ts`,
+          'claude',
+          contexts,
+          branches,
+          merge,
+        ),
       ],
     },
   }
@@ -1846,6 +1918,7 @@ export function vmCodexHome(
   const hook = denyHook(
     '/usr/local/bin/bun',
     `${ax.FACTORY_DIR}/src/worker-hook.ts`,
+    'codex',
     contexts,
     branches,
     merge,
@@ -2231,7 +2304,14 @@ export const workerSettings = (
     ...user.hooks,
     PreToolUse: [
       ...(user.hooks?.PreToolUse ?? []),
-      ...denyHook(process.execPath, join(ROOT, 'src', 'worker-hook.ts'), personOnly, branches, merge),
+      ...denyHook(
+        process.execPath,
+        join(ROOT, 'src', 'worker-hook.ts'),
+        'claude',
+        personOnly,
+        branches,
+        merge,
+      ),
     ],
   }
   return {
@@ -2474,6 +2554,7 @@ export function codexWorker(
   const hook = denyHook(
     process.execPath,
     hookFile,
+    'codex',
     personOnlyContexts(rig),
     protectedBranches(rig),
     mergeAuthority(rig),
@@ -3230,7 +3311,10 @@ function haltRun(
     runnerOf(c.pane!).deliver(c.pane!, STOP_NOTE)
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
-    if (step === 'close') runnerOf(c.pane!).close(c.pane!, transcriptsDir(run.id, c.seq, node))
+    if (step === 'close') {
+      runnerOf(c.pane!).close(c.pane!, transcriptsDir(run.id, c.seq, node))
+      storeCodexUsage(run, node, c.seq)
+    }
     halt.closed[run.id] = c.seq
   }
   writeJson(haltFile(), halt)
@@ -3247,6 +3331,30 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
     if (runnerOf(pane).name !== 'herdr' || !startedAt) return
     const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
     if (rows.length) appendUsage(run.id, rows)
+  } catch {}
+}
+/**
+ * An AX codex station ended. Store its usage from the rollout files in
+ * runs/<run>/transcripts/<seq>-<node>/codex. The VM wrote them, so read only 20 plain files
+ * that have a rollout name and are 64 MiB or smaller. Send every row through validUsage.
+ * Do not read claude/: the report already has that usage. Never throw.
+ * ponytail: this reads the whole file; the upgrade is a stream of the last token_count.
+ */
+function storeCodexUsage(run: Run, node: string, seq: number) {
+  try {
+    const d = join(runDir(run.id), 'transcripts', `${seq}-${node}`, 'codex')
+    if (!existsSync(d)) return
+    const rows = readdirSync(d)
+      .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(f))
+      .sort()
+      .slice(0, 20)
+      .flatMap(f => {
+        const st = lstatSync(join(d, f))
+        if (!st.isFile() || st.size > 64 * 1024 * 1024) return []
+        return codexUsageOf(readFileSync(join(d, f), 'utf8').split('\n'), f) ?? []
+      })
+    const ok = validUsage(rows, node, seq)
+    if (ok.length) appendUsage(run.id, ok)
   } catch {}
 }
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
@@ -3288,6 +3396,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     if (pane && pane !== ctx().pane) {
       storeUsage(run, pane, node, seq, startedAt)
       runnerOf(pane).close(pane, transcriptsDir(run.id, seq, node))
+      storeCodexUsage(run, node, seq)
     }
   }
 
@@ -4199,11 +4308,7 @@ export function tokenTable(recs: ReturnType<typeof records>, emptyOk: boolean, s
 /** token usage of the runs from the last days days */
 export function tokenReport(days: number): string {
   const since = Date.now() - days * 86_400_000
-  return tokenTable(
-    records().filter(r => r.createdAt >= since),
-    false,
-    since,
-  )
+  return tokenTable(withMerges(records().filter(r => r.createdAt >= since)), false, since)
 }
 
 /**
@@ -8565,9 +8670,14 @@ function rigRef(repoPath: string): { owner: string; slug: string } | null {
   return slug ? { owner: o.owner, slug } : null
 }
 
-/** whether `glab` is signed in to a host: how a self-hosted GitLab without "gitlab" in its name is told */
-const glabKnows = (host: string) =>
-  Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
+/** whether `glab` is signed in to a host (false when glab is not installed): how a self-hosted GitLab without "gitlab" in its name is told */
+const glabKnows = (host: string) => {
+  try {
+    return Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
+  } catch {
+    return false
+  }
+}
 
 const prsFile = (id: string) => join(runDir(id), 'prs.json')
 
@@ -8988,6 +9098,88 @@ function records(): RunRecord[] {
   const liveIds = new Set(live.map(r => r.id))
   return [...kept.filter(r => !liveIds.has(r.id)), ...live]
 }
+/** claude-factory-7pxk: HOME/merged-prs.json caches the merged pull requests `factory metrics` matches to
+ * handed-off runs. A merge is final, so `prs` only grows. `rigs[name]` says when gh was last asked and
+ * from when merges are covered. The file rebuilds when deleted. */
+type MergedCache = {
+  rigs: { [rig: string]: { checkedAt: number; from: number } }
+  prs: { [url: string]: { head: string; mergedAt: number } }
+}
+const mergedFile = () => join(HOME, 'merged-prs.json')
+const MERGED_TTL_MS = 600_000
+function readMerged(): MergedCache {
+  const empty: MergedCache = { rigs: {}, prs: {} }
+  try {
+    const j = JSON.parse(readFileSync(mergedFile(), 'utf8'))
+    return j && typeof j.rigs === 'object' && typeof j.prs === 'object' ? { rigs: j.rigs, prs: j.prs } : empty
+  } catch {
+    return empty
+  }
+}
+const cachedMerges = (c: MergedCache) =>
+  Object.entries(c.prs).flatMap(([url, p]) =>
+    typeof p?.head === 'string' && Number.isFinite(p.mergedAt) ? [{ url, ...p }] : [],
+  )
+
+/** records with mergedAt set from the cache alone; no gh call */
+const withMerges = (recs: RunRecord[]) => attachMerges(recs, cachedMerges(readMerged()))
+
+/** `withMerges`, after one `gh pr list --state merged` for each GitHub rig that has a handed-off run the
+ * cache does not match, at most once in 10 min. A gh failure prints one line and leaves the run handed-off.
+ * ponytail: -L 1000 caps one lookup; a full page moves `from` to its oldest row, so older merges stay unmatched. */
+async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
+  const cache = readMerged()
+  const open = withMerges(recs).filter(r => fate(r) === 'handed-off' && r.rig)
+  const now = Date.now()
+  let dirty = false
+  for (const name of new Set(open.map(r => r.rig!))) {
+    const rig = rigs().find(r => r.name === name)
+    const seen = cache.rigs[name]
+    if (!rig || originRef(rig.repo)?.forge !== 'github') continue
+    if (seen && now - seen.checkedAt < MERGED_TTL_MS) continue
+    const oldest = Math.min(...open.filter(r => r.rig === name).map(r => r.createdAt))
+    const covered = !!seen && seen.from <= oldest
+    const from = covered ? seen.checkedAt - 86_400_000 : oldest
+    const p = await spawnGh(
+      [
+        'pr',
+        'list',
+        '--state',
+        'merged',
+        '--search',
+        `merged:>=${new Date(from).toISOString().slice(0, 10)}`,
+        '-L',
+        '1000',
+        '--json',
+        'url,headRefName,mergedAt',
+      ],
+      { cwd: rig.repo, timeout: 30_000 },
+    )
+    let rows: unknown
+    try {
+      rows = p.code === 0 ? JSON.parse(p.out) : undefined
+    } catch {}
+    if (!Array.isArray(rows)) {
+      console.error(
+        `merged-prs: gh pr list failed for ${name}: ${clip(p.err.trim().split('\n')[0] || 'bad output', 200)}`,
+      )
+      continue
+    }
+    let oldestRow = Infinity
+    for (const x of rows) {
+      const at = Date.parse(x?.mergedAt)
+      if (typeof x?.url !== 'string' || typeof x?.headRefName !== 'string' || Number.isNaN(at)) continue
+      cache.prs[x.url] = { head: x.headRefName, mergedAt: at }
+      oldestRow = Math.min(oldestRow, at)
+    }
+    const reached = rows.length >= 1000 ? oldestRow : from
+    cache.rigs[name] = { checkedAt: now, from: covered ? Math.min(seen.from, reached) : reached }
+    dirty = true
+  }
+  if (dirty) writeFileSync(mergedFile(), JSON.stringify({ version: 1, ...cache }))
+  return withMerges(recs)
+}
+
 function record(id: string): RunRecord {
   const { run, value, c } = current(id)
   return {
@@ -9735,7 +9927,7 @@ if (import.meta.main && !outboxCmd)
         const since = opt('--since')
         const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
         if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
-        const picked = records().filter(r => inWindow(r, rig, days))
+        const picked = await refreshMerges(records().filter(r => inWindow(r, rig, days)))
         const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
         const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
         // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
@@ -9745,11 +9937,21 @@ if (import.meta.main && !outboxCmd)
           ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
           : []
         const launchFile = join(HOME, 'launches.jsonl')
-        const launches = existsSync(launchFile)
-          ? parseLaunchLines(readFileSync(launchFile, 'utf8')).filter(
-              l => l.at >= since_ && (!rig || l.rig === rig),
-            )
-          : []
+        const launchesAll = existsSync(launchFile) ? parseLaunchLines(readFileSync(launchFile, 'utf8')) : []
+        const launches = launchesAll.filter(l => l.at >= since_ && (!rig || l.rig === rig))
+        // claude-factory-dsfg: runs/*/denials.jsonl, one file a run. --rig maps a run to its rig through
+        // every launch line (not the --since window: a denial can be newer than its run's first launch)
+        const rigOfRun = new Map(launchesAll.map(l => [l.run, l.rig]))
+        const denials = denialStats(
+          (existsSync(join(HOME, 'runs'))
+            ? readdirSync(join(HOME, 'runs'), { withFileTypes: true })
+            : []
+          ).flatMap(d => {
+            const f = join(HOME, 'runs', d.name, 'denials.jsonl')
+            if (!d.isDirectory() || !existsSync(f) || (rig && rigOfRun.get(d.name) !== rig)) return []
+            return parseDenialLines(readFileSync(f, 'utf8')).filter(l => l.at >= since_)
+          }),
+        )
         const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
         // --tokens reads what runs stored (record().sessions) and manager-usage.jsonl, never a live transcript
         const tokenArgs = args.includes('--tokens')
@@ -9766,6 +9968,7 @@ if (import.meta.main && !outboxCmd)
               ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
               launches,
+              denials,
               rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
             }),
           )
@@ -9780,6 +9983,8 @@ if (import.meta.main && !outboxCmd)
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
           if (launches.length)
             console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
+          if (Object.keys(denials).length)
+            console.log('\ndenials by harness and reason:\n' + renderDenials(denials))
         }
         if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
         break

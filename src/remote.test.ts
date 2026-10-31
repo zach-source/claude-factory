@@ -8,6 +8,8 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -17,6 +19,8 @@ import { compile, type Factory } from './machine'
 import {
   githubSlug,
   httpsRemote,
+  isDenyLine,
+  outboxDenial,
   overwritten,
   progressSig,
   replayable,
@@ -606,6 +610,63 @@ test('polling the same outbox twice replays nothing the second time (claude-fact
   expect(inbox('r9')).toBe(once)
   expect(called().match(/worker prompt/g)).toBeNull()
   rmSync(join(home, 'runs', 'r9'), { recursive: true })
+})
+
+const denyLine = (deny: unknown, extra: object = {}) => JSON.stringify({ deny, from: 'a', at: 1, ...extra })
+const goodDeny = { at: 5, harness: 'codex', reason: 'FUNCTION_DEF_REASON', command: 'f() { ls; }' }
+
+test.each([
+  ['a valid denial', goodDeny, true],
+  ['an extra key', { ...goodDeny, x: 1 }, false],
+  ['a missing key', { at: 5, harness: 'codex', reason: 'REASON' }, false],
+  ['at not finite', { ...goodDeny, at: null }, false],
+  ['at a string', { ...goodDeny, at: '5' }, false],
+  ['an unknown harness', { ...goodDeny, harness: 'evil' }, false],
+  ['a lower-case reason', { ...goodDeny, reason: 'function_def' }, false],
+  ['a reason with a space', { ...goodDeny, reason: 'A B' }, false],
+  ['a reason over 64 chars', { ...goodDeny, reason: 'A'.repeat(65) }, false],
+  ['a command over 200 chars', { ...goodDeny, command: 'x'.repeat(201) }, false],
+  ['a command that is not a string', { ...goodDeny, command: 1 }, false],
+  ['a deny array', [], false],
+  ['a deny string', 'x', false],
+])('outboxDenial: %s', (_n, deny, ok) => {
+  expect(outboxDenial(denyLine(deny))).toEqual(ok ? goodDeny : null)
+})
+
+test('outboxDenial and isDenyLine: an argv key, bad JSON or no deny key is not a denial', () => {
+  expect(outboxDenial(denyLine(goodDeny, { argv: ['report'] }))).toBeNull()
+  expect(isDenyLine(denyLine(goodDeny, { argv: ['report'] }))).toBe(false)
+  for (const l of ['not json', 'null', '[]', '{"argv":["mail"]}']) {
+    expect(outboxDenial(l)).toBeNull()
+    expect(isDenyLine(l)).toBe(false)
+  }
+})
+
+test("a tick writes an AX worker's valid deny line to the run's denials.jsonl, once, with no prompt (claude-factory-dsfg)", () => {
+  launched('rd1')
+  clusterCursor('Running', 'idle', [denyLine({ ...goodDeny, command: 'f() { ls; }' }, { from: 'forged' })])
+  factory(['tick'])
+  const file = join(home, 'runs', 'rd1', 'denials.jsonl')
+  const rows = readFileSync(file, 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(rows).toEqual([{ ...goodDeny, run: 'rd1', station: 'a' }])
+  factory(['tick'])
+  expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(1)
+  expect(called().match(/worker prompt/g)).toBeNull()
+  rmSync(join(home, 'runs', 'rd1'), { recursive: true })
+})
+
+test('a tick drops an invalid AX deny line: no file, no prompt, and it is not read again (claude-factory-dsfg)', () => {
+  launched('rd2')
+  clusterCursor('Running', 'idle', [denyLine({ ...goodDeny, harness: 'evil' })])
+  factory(['tick'])
+  expect(existsSync(join(home, 'runs', 'rd2', 'denials.jsonl'))).toBe(false)
+  expect(seenTotal('rd2')).toBe(1)
+  factory(['tick'])
+  expect(called().match(/worker prompt/g)).toBeNull()
+  rmSync(join(home, 'runs', 'rd2'), { recursive: true })
 })
 
 test('two identical outbox lines both replay, counted as a multiset like today (claude-factory-4x1)', () => {
@@ -1296,7 +1357,7 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
           hooks: [
             {
               type: 'command',
-              command: "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'",
+              command: "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude",
               timeout: 10,
             },
           ],
@@ -1324,7 +1385,7 @@ test("vmClaudeFlags carries a rig's personOnlyContexts on the deny hook's own ar
   const flags = vmClaudeFlags({ maxContextK: 150 }, ['acme'])
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --person-only-contexts 'acme'",
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --person-only-contexts 'acme'",
   )
   expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // no list: today's command, unchanged
@@ -1336,14 +1397,14 @@ test("vmClaudeFlags carries a rig's protectedBranches on the deny hook's own arg
   const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, ['acme-deploy'])
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --protected-branches 'acme-deploy'",
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --protected-branches 'acme-deploy'",
   )
   expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // both lists together: person-only-contexts first, then protected-branches
   const both = vmClaudeFlags({ maxContextK: 150 }, ['ctx'], ['acme-deploy'])
   const bothSettings = JSON.parse(both[both.indexOf('--settings') + 1]!)
   expect(bothSettings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --person-only-contexts 'ctx' --protected-branches 'acme-deploy'",
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --person-only-contexts 'ctx' --protected-branches 'acme-deploy'",
   )
   // no list: today's command, unchanged
   expect(vmClaudeFlags({ maxContextK: 150 })).toEqual(vmClaudeFlags({ maxContextK: 150 }, [], []))
@@ -2113,7 +2174,7 @@ test("vmClaudeFlags and vmCodexHome carry --merge-authority on the hook's argv o
   const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, 'acme/widget')
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --merge-authority 'acme/widget'",
+    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --merge-authority 'acme/widget'",
   )
   const off = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined)
   expect(off).toEqual(vmClaudeFlags({ maxContextK: 150 }))
@@ -2206,6 +2267,8 @@ esac
     expect(side.reviewer).toBe(reviewer ? true : undefined)
     expect(policy.includes('GITHUB_REVIEWER')).toBe(reviewer)
     expect(readFileSync(applied, 'utf8').includes('FACTORY_GH_REVIEWER')).toBe(reviewer)
+    // claude-factory-dsfg: the laptop replays deny lines, so the VM may send them
+    expect(readFileSync(applied, 'utf8')).toContain('FACTORY_DENY_LOG')
     expect(brief.includes('reviewer identity')).toBe(reviewer)
     rmSync(runDir, { recursive: true })
   }
@@ -2311,6 +2374,100 @@ test('AX usage with 21 rows, or not an array, is ignored and the report still la
     expect(existsSync(join(home, 'runs', id, 'usage.jsonl'))).toBe(false)
     rmSync(join(home, 'runs', id), { recursive: true })
   }
+})
+
+const UUID = '019a3b2c-0000-7000-8000-000000000001'
+const rolloutLines = (over: { model?: string; out?: unknown } = {}) =>
+  [
+    { type: 'session_meta', payload: { id: UUID } },
+    { type: 'turn_context', payload: { model: over.model ?? 'gpt-6-astra' } },
+    {
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 51479,
+            cached_input_tokens: 38784,
+            output_tokens: over.out ?? 46,
+            total_tokens: 51525,
+          },
+          last_token_usage: { input_tokens: 25789 },
+        },
+      },
+    },
+  ]
+    .map(l => JSON.stringify(l))
+    .join('\n')
+/** an AX station for run `id` that reports ready; `kept` writes files under its transcripts dir before the closing tick */
+function codexTick(id: string, kept: (dir: string, seq: number) => void) {
+  const seq = launched(id)
+  kept(join(home, 'runs', id, 'transcripts', `${seq}-a`), seq)
+  const report = JSON.stringify({ argv: ['report', id, String(seq), 'ready', 'x'], from: 'a', at: 1 })
+  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+  for (let i = 0; i < 2; i++) expect(factory(['tick']).code).toBe(0)
+  expect(inbox(id)).toContain('"outcome":"ready"')
+  const file = join(home, 'runs', id, 'usage.jsonl')
+  const rows = existsSync(file) ? storedRows(id) : []
+  rmSync(join(home, 'runs', id), { recursive: true })
+  return { rows, seq }
+}
+const keep = (d: string, name: string, text: string, sub = 'codex') => {
+  mkdirSync(join(d, sub), { recursive: true })
+  writeFileSync(join(d, sub, name), text)
+}
+const ROLL = `rollout-2026-10-31T21-00-00-${UUID}.jsonl`
+
+test("an AX codex station's usage comes from the kept rollout, with node and seq from the laptop (flhv AC2)", () => {
+  const { rows, seq } = codexTick('rc1', d => keep(d, ROLL, rolloutLines()))
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({
+    node: 'a',
+    seq,
+    session: UUID,
+    model: 'gpt-6-astra',
+    input: 12695,
+    cacheRead: 38784,
+    output: 46,
+  })
+})
+
+test('codex usage: a missing dir, a wrong name, the claude dir, a symlink or a big file add no rows (flhv AC3)', () => {
+  const none = (id: string, kept: (d: string, seq: number) => void) =>
+    expect(codexTick(id, kept).rows).toEqual([])
+  none('rc2', () => {})
+  none('rc3', d => keep(d, 'notes.jsonl', rolloutLines()))
+  none('rc3b', d => keep(d, `x-${ROLL}`, rolloutLines()))
+  none('rc3c', d => keep(d, `${ROLL}.bak`, rolloutLines()))
+  none('rc4', d => keep(d, ROLL, rolloutLines(), 'claude'))
+  none('rc5', d => {
+    const out = join(dir, 'outside.jsonl')
+    writeFileSync(out, rolloutLines())
+    mkdirSync(join(d, 'codex'), { recursive: true })
+    symlinkSync(out, join(d, 'codex', 'rollout-x.jsonl'))
+  })
+  none('rc6', d => {
+    mkdirSync(join(d, 'codex'), { recursive: true })
+    const f = join(d, 'codex', ROLL)
+    writeFileSync(f, rolloutLines() + '\n')
+    truncateSync(f, 64 * 1024 * 1024 + 1)
+  })
+  none('rc7', d => keep(d, ROLL, rolloutLines({ model: 'bad model' })))
+  none('rc8', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) })))
+  for (const [i, out] of [-1, 1.5, '9', 2e12].entries())
+    none(`rd${i}`, d => keep(d, ROLL, rolloutLines({ out })))
+})
+
+test('codex usage keeps the first 20 rollout files by name (flhv AC3)', () => {
+  const { rows } = codexTick('rc9', d => {
+    for (let i = 0; i < 21; i++) {
+      const id = `019a3b2c-0000-7000-8000-${String(i).padStart(12, '0')}`
+      keep(d, `rollout-2026-10-31T21-00-00-${id}.jsonl`, rolloutLines().replace(UUID, id))
+    }
+  })
+  expect(rows.map(r => r.session)).toEqual(
+    Array.from({ length: 20 }, (_, i) => `019a3b2c-0000-7000-8000-${String(i).padStart(12, '0')}`),
+  )
 })
 
 /** the fake cluster with a task in `phase` whose status.conditions hold `conds` (YAML list lines) */

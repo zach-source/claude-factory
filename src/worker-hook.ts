@@ -67,10 +67,11 @@
  * Claude Code's own prompt stays the backstop.
  */
 
-import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { appendFileSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
-import { homeReason } from './home-guard'
+import { HOME_REASON, homeReason } from './home-guard'
+import * as self from './worker-hook'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -9212,6 +9213,42 @@ export function fileWriteReason(
   return protectedParts(split(abs), xdg) || protectedParts(split(real), xdg) ? FILE_WRITE_REASON : undefined
 }
 
+/** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
+export function reasonName(reason: string): string {
+  for (const [k, v] of Object.entries({ ...self, HOME_REASON }))
+    if (k.endsWith('REASON') && v === reason) return k
+  return 'UNKNOWN'
+}
+
+const HARNESSES = ['claude', 'codex', 'pi']
+
+/**
+ * claude-factory-dsfg: record one denial as a JSON line in FACTORY_HOME/runs/<FACTORY_RUN>/denials.jsonl, and,
+ * for an AX worker whose laptop replays it (FACTORY_DENY_LOG=1), in the outbox. It runs after the deny is
+ * printed and never throws: a log failure must not change the deny. It makes no dir; the laptop made the run dir.
+ */
+function logDenial(reason: string, command: string, harness: string | undefined) {
+  try {
+    const run = process.env.FACTORY_RUN
+    const station = process.env.FACTORY_FROM
+    const at = Date.now()
+    const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
+    const name = reasonName(reason)
+    const cmd = command.slice(0, 200)
+    if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
+      appendFileSync(
+        process.env.FACTORY_OUTBOX,
+        JSON.stringify({ deny: { at, harness: h, reason: name, command: cmd }, from: station, at }) + '\n',
+      )
+    if (process.env.FACTORY_HOME && run && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(run))
+      appendFileSync(
+        joinPath(process.env.FACTORY_HOME, 'runs', run, 'denials.jsonl'),
+        JSON.stringify({ at, run, station, harness: h, reason: name, command: cmd }) + '\n',
+        { mode: 0o600 },
+      )
+  } catch {}
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -9231,12 +9268,14 @@ async function main() {
       notebook_path?: unknown
     }
   }
+  const argh = process.argv.indexOf('--harness')
+  const harness = argh >= 0 ? process.argv[argh + 1] : undefined
   if (i?.tool_name && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(i.tool_name)) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
       i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
     )
-    if (reason)
+    if (reason) {
       console.log(
         JSON.stringify({
           hookSpecificOutput: {
@@ -9246,6 +9285,9 @@ async function main() {
           },
         }),
       )
+      const p = i.tool_input?.file_path ?? i.tool_input?.notebook_path
+      logDenial(reason, `${i.tool_name} ${typeof p === 'string' ? p : ''}`, harness)
+    }
     return
   }
   if (i?.tool_name !== 'Bash') return
@@ -9322,6 +9364,7 @@ async function main() {
       },
     }),
   )
+  logDenial(reason, i.tool_input?.command ?? '', harness)
 }
 
 if (import.meta.main) await main()
