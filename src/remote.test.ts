@@ -33,24 +33,18 @@ const home = join(dir, 'home')
 const calls = join(dir, 'calls.log')
 // claude-factory-xeat: a factory() call that sets no FACTORY_HERDR gets this fake, which fails,
 // so no test opens a real herdr workspace on the host
-const defaultHerdr = () => {
-  const path = join(dir, 'default-herdr')
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(path, '#!/bin/sh\nexit 1\n')
-  chmodSync(path, 0o755)
-  return path
-}
-// the host's real herdr workspaces: the run must leave this list as it found it
-const hostWorkspaces = () => {
-  const bin = Bun.which('herdr')
-  if (!bin) return undefined
-  const p = Bun.spawnSync([bin, 'workspace', 'list'], { stdout: 'pipe', stderr: 'ignore' })
-  return p.exitCode === 0 ? p.stdout.toString() : undefined
-}
-const workspacesBefore = hostWorkspaces()
+const defaultHerdr = join(dir, 'default-herdr')
+mkdirSync(dir, { recursive: true })
+writeFileSync(defaultHerdr, '#!/bin/sh\nexit 1\n')
+chmodSync(defaultHerdr, 0o755)
 afterAll(() => {
+  // the host's real herdr must list no workspace under this run's own tmp dir. It ignores other sessions' workspaces
+  const bin = Bun.which('herdr')
+  const p = bin && Bun.spawnSync([bin, 'workspace', 'list'], { stdout: 'pipe', stderr: 'ignore' })
+  const mine = p && p.exitCode === 0 ? p.stdout.toString() : ''
+  const tmp = realpathSync(dir)
   rmSync(dir, { recursive: true, force: true })
-  expect(hostWorkspaces()).toBe(workspacesBefore)
+  expect(mine.includes(tmp) || mine.includes(dir)).toBe(false)
 })
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
@@ -68,7 +62,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
       FACTORY_AX: join(dir, 'ax'),
       FACTORY_KUBECTL: readyController(),
       FACTORY_SELF_UPDATE: '0',
-      FACTORY_HERDR: defaultHerdr(),
+      FACTORY_HERDR: defaultHerdr,
       ...env,
     },
   })
