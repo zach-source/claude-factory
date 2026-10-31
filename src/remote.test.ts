@@ -31,11 +31,27 @@ const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `remote-${process.pid}`)
 const home = join(dir, 'home')
 const calls = join(dir, 'calls.log')
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+// claude-factory-xeat: a factory() call that sets no FACTORY_HERDR gets this fake, which fails,
+// so no test opens a real herdr workspace on the host
+const defaultHerdr = join(dir, 'default-herdr')
+mkdirSync(dir, { recursive: true })
+writeFileSync(defaultHerdr, '#!/bin/sh\nexit 1\n')
+chmodSync(defaultHerdr, 0o755)
+afterAll(() => {
+  // the host's real herdr must list no workspace under this run's own tmp dir. It ignores other sessions' workspaces
+  const bin = Bun.which('herdr')
+  const p = bin && Bun.spawnSync([bin, 'workspace', 'list'], { stdout: 'pipe', stderr: 'ignore' })
+  const mine = p && p.exitCode === 0 ? p.stdout.toString() : ''
+  const tmp = realpathSync(dir)
+  rmSync(dir, { recursive: true, force: true })
+  expect(mine.includes(tmp) || mine.includes(dir)).toBe(false)
+})
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...rest } = process.env
+  // and no herdr socket or pane: the CLI must not reach the host's real herdr
+  const laptop = Object.fromEntries(Object.entries(rest).filter(([k]) => !k.startsWith('HERDR_')))
   const p = Bun.spawnSync([CLI, ...args], {
     // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
     // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
@@ -46,6 +62,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
       FACTORY_AX: join(dir, 'ax'),
       FACTORY_KUBECTL: readyController(),
       FACTORY_SELF_UPDATE: '0',
+      FACTORY_HERDR: defaultHerdr,
       ...env,
     },
   })
