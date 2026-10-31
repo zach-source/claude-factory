@@ -1614,10 +1614,24 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   axCodexRefused(agent)
   const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
   // the VM clones its beads from the rig's beadsRemote: its egress needs that Dolt rule
-  const egress = ax.withDoltEgress(
+  const doltEgress = ax.withDoltEgress(
     harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress,
     hasRunBeads ? rig : undefined,
   )
+  // a VM reaches the collector at its in-cluster address, the laptop at a NodePort: FACTORY_AX_OTLP_ENDPOINT wins
+  const otel =
+    harness === 'pi'
+      ? undefined // pi has no OTel support
+      : otelFor(
+          run,
+          node,
+          c,
+          agent,
+          process.env.FACTORY_AX_OTLP_ENDPOINT ?? process.env.FACTORY_OTLP_ENDPOINT,
+        )
+  const same = (e: ax.Egress) =>
+    otel && e.hosts.includes(otel.egress.hosts[0]!) && (e.port ?? 443) === otel.egress.port
+  const egress = otel && !doltEgress?.some(same) ? [...(doltEgress ?? []), otel.egress] : doltEgress
   // a worker that pushed and never reported (its VM went, its time ran out) left the branch ahead of the
   // worktree, or rewrote it (rebased onto main), and pushing the worktree back would be refused every tick: the
   // next attempt starts from its commits. A rebase drops what the worker already has; one that stops is undone
@@ -1709,6 +1723,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
             protectedBranches(rig),
             mergeAuthority(rig),
             codexAuth(rig?.egress),
+            otel?.toml,
           )
         : undefined,
     codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
@@ -1717,6 +1732,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     env: {
       ...env,
       ...rig?.env,
+      ...(harness === 'codex' ? otel?.codexEnv : otel?.env),
       FACTORY_FROM: node,
       FACTORY_RUN: run.id,
       FACTORY_DEF_NAME: def.name,
@@ -1839,6 +1855,7 @@ export function vmCodexHome(
   branches?: string[],
   merge?: string,
   auth: 'apikey' | 'chatgpt' = 'apikey',
+  otelToml = '',
 ) {
   const hook = denyHook(
     '/usr/local/bin/bun',
@@ -1856,7 +1873,8 @@ export function vmCodexHome(
       `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n` +
       'allow_login_shell = false\n' +
       (chatgpt ? 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' : '') +
-      `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n`,
+      `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n` +
+      otelToml,
     ...(chatgpt && { 'auth.json': placeholderAuth() }),
   } as { 'hooks.json': string; 'config.toml': string; 'auth.json'?: string }
 }

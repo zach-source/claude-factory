@@ -181,6 +181,17 @@ Substrate's `EgressPolicy` allows a task by hostname and port only: once `proxy.
 - **Deploying it**: `deploy/pkg-gate.yaml` runs `factory pkg-gate serve` as the worker image, with its `ax-task-runner` entrypoint overridden, behind a plain `Service` on port 8080 — not TLS, unlike the Dolt remotesapi and a nix cache above. Those are served over HTTPS because the gateway's MITM decrypts them to inject a vault credential (`replaceHeaders`); the gate's own egress rule has no `key`, so there is nothing to inject and TLS buys it nothing, at the cost of the gateway's upstream trust needing a new entry for it (as `kubernetes.default.svc.cluster.local` above does). So `FACTORY_AX_PKG_GATE=http://pkg-gate.pkg-gate.svc.cluster.local:8080`. The gate's own namespace, not a task's EgressPolicy, needs outbound internet access to the real registries; that is the cluster operator's NetworkPolicy, not this repo's.
 - **Residual gaps, filed and out of scope here**: Direct fetches of public dependencies never go through the gate. The fetches go to `github.com` and use `GOPROXY=direct` or `git+https` (claude-factory-lpv). The first Go sumdb floor refresh after a pod start has no prior traffic count. It cannot limit its rise against one. So it still trusts its raw sample (claude-factory-b9f).
 
+### OTel export (claude-factory-ozso)
+
+Set `FACTORY_OTLP_ENDPOINT` to make every Claude and codex worker export OTel. The value is a plain `http://` or `https://` base URL, for example `http://host:4318`. It has no user, path or query. If it is unset or not valid, a launch carries no OTel.
+
+- **Resource tags**: `OTEL_RESOURCE_ATTRIBUTES` holds `factory.run`, `factory.station`, `factory.rig`, `factory.attempt`, `factory.harness` and `factory.model`.
+- **Claude**: the launch env holds `CLAUDE_CODE_ENABLE_TELEMETRY=1`, the OTLP http/json exporters for logs, metrics and traces, and `OTEL_LOG_TOOL_DETAILS=1`. The factory never sets `OTEL_LOG_USER_PROMPTS`.
+- **codex**: the factory appends an `[otel]` block to the worker's `config.toml` (`log_user_prompt = false`). Pane workers and VM workers (`vmCodexHome`) get the same block.
+- **AX**: the laptop reaches the collector at a NodePort and a VM reaches it in the cluster. `FACTORY_AX_OTLP_ENDPOINT` replaces `FACTORY_OTLP_ENDPOINT` for AX tasks. Each task policy gets a plain http rule for that host and port, with no key and no header. A pi worker gets no OTel.
+- **Content off**: a rig with `"otelContent": false` in `rigs.json` gets no `OTEL_LOG_TOOL_DETAILS` for Claude and no codex log exporter, because codex logs hold tool arguments and output. Traces and metrics stay.
+- **Owner step**: set the two variables for the factory runner (and for the AX manager if it launches tasks). New launches use them. A running worker keeps its env. To turn it off, unset them.
+
 ### Suspend while a worker waits on mail
 
 A worker that is idle and has asked the manager (the existing `isAsking`) is suspended with `ax suspend task`. Its status shows `suspended` on the board, and it is not polled. When the answer arrives, `deliver` sees the task is not `Running` and runs `ax resume task`, and the mail stays unread. The next tick delivers it to the running task.

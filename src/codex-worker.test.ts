@@ -439,6 +439,15 @@ test('a codex pane worker still fails closed with the otel block on', () => {
   expect(() => f.make(undefined, { otel })).toThrow(/feature check failed/)
 })
 
+test('vmCodexHome appends the otel block to config.toml, and only then', () => {
+  const otel = otelOf('http://otel.example.svc:4318', tags)!
+  const plain = vmCodexHome({ maxContextK: 150 })['config.toml']
+  expect(plain).not.toContain('[otel]')
+  expect(
+    vmCodexHome({ maxContextK: 150 }, undefined, undefined, undefined, 'apikey', otel.toml)['config.toml'],
+  ).toBe(plain + otel.toml)
+})
+
 test('otelFor tags a launch, and a claude launch line carries the env; unset gives none', () => {
   const run = { id: 'r9', repo: '/nowhere' } as never
   const c = { attempt: 3 } as never
