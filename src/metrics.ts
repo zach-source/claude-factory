@@ -1,4 +1,4 @@
-import { isNoWorker, isPrWait, type Entry } from './machine'
+import { isNoWorker, isPrWait, prsIn, type Entry } from './machine'
 
 /** one run, as metrics see it. It is live from its state, or kept in metrics.jsonl after `factory
  * rm`. `requeued` is set when the run ended on a requeue edge (claude-factory-wnm). It copies
@@ -13,6 +13,8 @@ export type RunRecord = {
   requeued?: boolean
   /** the run's worker sessions' spend. An older metrics.jsonl line has none: it reads as [] */
   sessions?: Usage[]
+  /** when the run's pull request merged (claude-factory-7pxk). attachMerges sets it; metrics.jsonl never stores it */
+  mergedAt?: number
 }
 
 const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])
@@ -51,10 +53,26 @@ export function fate(r: RunRecord) {
   if (r.log.some(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))) return 'shipped'
   if (r.requeued) return 'requeued'
   if (r.log[0]?.node === 'triage' && r.log[0].outcome === 'reject') return 'rejected'
-  if (r.node === 'done' && r.log.at(-1)?.outcome === 'approve') return 'handed-off' // a ship edge: the PR waits in the ship queue
+  if (r.node === 'done' && r.log.at(-1)?.outcome === 'approve') return r.mergedAt ? 'shipped' : 'handed-off' // a ship edge: the PR waits in the ship queue
   if (r.node === 'done') return 'closed'
   if (r.node === 'aborted') return 'aborted'
   return `running@${r.node}`
+}
+
+/** sets mergedAt on a handed-off run whose pull request merged: the PR head is factory/<id>, or the run
+ * log cites exactly one PR link and it is that PR's url. It returns new records and keeps the input. */
+export const attachMerges = (
+  records: RunRecord[],
+  prs: { url: string; head: string; mergedAt: number }[],
+): RunRecord[] => {
+  const byHead = new Map(prs.map(p => [p.head, p]))
+  const byUrl = new Map(prs.map(p => [p.url, p]))
+  return records.map(r => {
+    if (fate(r) !== 'handed-off') return r
+    const links = prsIn(r.log.map(e => e.summary).join('\n'))
+    const pr = byHead.get('factory/' + r.id) ?? (links.length === 1 ? byUrl.get(links[0]!) : undefined)
+    return pr ? { ...r, mergedAt: pr.mergedAt } : r
+  })
 }
 
 /** a failure's kind: the machine's own reasons are fixed text, a worker's are free text */
@@ -134,8 +152,9 @@ export function metrics(records: RunRecord[]) {
     }
     if (reviewChanges >= 3) runsWith3PlusReviewRounds++
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
-    if (shipped) {
-      const hours = (shipped.at - r.createdAt) / HOUR
+    const shippedAt = shipped?.at ?? (f === 'shipped' ? r.mergedAt : undefined)
+    if (shippedAt !== undefined) {
+      const hours = (shippedAt - r.createdAt) / HOUR
       cycle.push(hours)
       if (isSmall && !wentFull) smallCycle.push(hours)
       implementPassesShipped += r.log.filter(
@@ -287,6 +306,40 @@ export const renderLaunches = (stats: ReturnType<typeof launchStats>) =>
     )
     .join('\n')
 
+/** One line of runs/<run>/denials.jsonl: a denial by the worker hook. The line has a `command` key too. Metrics never read it. */
+export type DenialLine = { at: number; run: string; harness: string; reason: string }
+
+/** reads a denials.jsonl: this drops a malformed line and a line with no time, harness or reason */
+export const parseDenialLines = (text: string) =>
+  (parsePrecheckLines(text) as unknown as DenialLine[]).filter(
+    l => typeof l?.at === 'number' && typeof l.harness === 'string' && typeof l.reason === 'string',
+  )
+
+/** denials per harness: the total, and the count for each reason */
+export function denialStats(lines: Pick<DenialLine, 'harness' | 'reason'>[]) {
+  const out: Record<string, { total: number; reasons: Record<string, number> }> = {}
+  for (const l of lines) {
+    const h = (out[l.harness] ??= { total: 0, reasons: {} })
+    h.total++
+    h.reasons[l.reason] = (h.reasons[l.reason] ?? 0) + 1
+  }
+  return out
+}
+
+/** one line a harness, the biggest total first: `codex 3: FUNCTION_DEF_REASON 2, REASON 1` (top 10 reasons) */
+export const renderDenials = (stats: ReturnType<typeof denialStats>) =>
+  Object.entries(stats)
+    .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]))
+    .map(
+      ([h, s]) =>
+        `${h} ${s.total}: ${Object.entries(s.reasons)
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, 10)
+          .map(([r, n]) => `${r} ${n}`)
+          .join(', ')}`,
+    )
+    .join('\n')
+
 /** one Claude worker session's spend with one model, from its transcript. `input` is the fresh
  * input, `cacheWrite` the cache creation and `cacheRead` the cache hits: their prices differ.
  * `peak` is the biggest context one turn re-sent. */
@@ -393,6 +446,54 @@ export function validUsage(raw: unknown, node: string, seq: number): Usage[] {
     if (!n.every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e12)) return []
     return [{ node, seq, session, model, ...Object.fromEntries(NUMS.map((k, i) => [k, n[i]])) } as Usage]
   })
+}
+
+/**
+ * one codex station's spend from the lines of its rollout file. The last `token_count` event holds
+ * the running totals, so take that one and never sum. `input_tokens` includes the cached ones;
+ * `output_tokens` includes the reasoning ones. The function skips bad lines. No usable event gives null.
+ */
+export function codexUsageOf(lines: string[], file: string): Omit<Usage, 'node' | 'seq'> | null {
+  let session: string | null = null
+  let model = 'codex'
+  let total: Record<string, unknown> | null = null
+  let turns = 0
+  let peak = 0
+  let prev = -1
+  for (const line of lines) {
+    let e: { type?: string; payload?: Record<string, any> }
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const p = e?.payload
+    if (!p || typeof p !== 'object') continue
+    if (e.type === 'session_meta' && !session && typeof p.id === 'string') session = p.id
+    else if (e.type === 'turn_context' && typeof p.model === 'string') model = p.model
+    else if (e.type === 'event_msg' && p.type === 'token_count' && p.info?.total_token_usage) {
+      total = p.info.total_token_usage
+      const t = Number(total!.total_tokens)
+      if (t > prev) turns++
+      prev = Math.max(prev, t)
+      peak = Math.max(peak, Number(p.info.last_token_usage?.input_tokens) || 0)
+    }
+  }
+  if (!total) return null
+  session ??= /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(file)?.[1] ?? null
+  if (!session) return null
+  const n = (k: string) => (total![k] as number) ?? 0
+  const cached = n('cached_input_tokens')
+  return {
+    session,
+    model,
+    input: Math.max(0, n('input_tokens') - cached),
+    cacheWrite: n('cache_write_input_tokens'),
+    cacheRead: cached,
+    output: n('output_tokens'),
+    turns,
+    peak,
+  }
 }
 
 /** a Usage row's tokens, all types */

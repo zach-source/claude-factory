@@ -5,6 +5,18 @@ The text above names Claude tools: Bash, Read, Edit, Write, Grep and Glob. You a
 
 A hook checks each shell command. If it denies a command, do not look for a way around it. Report the denial.
 
+The hook denies these shapes. Put the commands in a script in .scratch/. Run the script by path.
+
+- Denied: `f() { ls; }`. Use: `bash .scratch/x.sh`.
+- Denied: `echo ls | bash`. Use: `bash .scratch/x.sh`.
+- Denied: `bash -c "ls $D"`. Use: `bash .scratch/x.sh`.
+- Denied: `git $SUB`. Use: `git status`.
+- Denied: `ls src | xargs git add`. Use: `git add src/a.ts`.
+- Denied: `rm -rf .scratch/x`. Use: `rm .scratch/x.txt`.
+- Denied: `rm .scratch/*.log`. Use: `rm .scratch/a.log`.
+- The hook denies a heredoc body or a # comment that has a quote, when more lines follow. Use apply_patch.
+- The hook denies a command over 8192 chars. Put the text in a .scratch file. Pass the path.
+
 # Write less
 
 - Do the smallest thing that works.
