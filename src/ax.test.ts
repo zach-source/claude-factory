@@ -692,11 +692,11 @@ echo '{"type":"result","is_error":false,"result":"done"}'
     await Bun.sleep(80) // before the fake's 0.3s sleep ends: no commit made yet
     const early = worker.poll(0)
     expect(early.head).toBe(before)
-    // poll until the commit shows (head moves) or give up after well past the fake's own schedule: a loop,
-    // not a single fixed sleep, so a loaded box's scheduling jitter cannot flake this
+    // poll until the commit shows (head moves) and the stream grew (the fake commits, then echoes) or give up
+    // after well past the fake's own schedule: a loop, not a single fixed sleep, so a loaded box's jitter cannot flake this
     let mid = worker.poll(0)
     const deadline = Date.now() + 5000
-    while (mid.head === before && Date.now() < deadline) {
+    while ((mid.head === before || (mid.bytes ?? 0) <= (early.bytes ?? 0)) && Date.now() < deadline) {
       await Bun.sleep(50)
       mid = worker.poll(0)
     }
