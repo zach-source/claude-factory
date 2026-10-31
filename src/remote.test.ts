@@ -31,11 +31,33 @@ const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `remote-${process.pid}`)
 const home = join(dir, 'home')
 const calls = join(dir, 'calls.log')
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+// claude-factory-xeat: a factory() call that sets no FACTORY_HERDR gets this fake, which fails,
+// so no test opens a real herdr workspace on the host
+const defaultHerdr = () => {
+  const path = join(dir, 'default-herdr')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path, '#!/bin/sh\nexit 1\n')
+  chmodSync(path, 0o755)
+  return path
+}
+// the host's real herdr workspaces: the run must leave this list as it found it
+const hostWorkspaces = () => {
+  const bin = Bun.which('herdr')
+  if (!bin) return undefined
+  const p = Bun.spawnSync([bin, 'workspace', 'list'], { stdout: 'pipe', stderr: 'ignore' })
+  return p.exitCode === 0 ? p.stdout.toString() : undefined
+}
+const workspacesBefore = hostWorkspaces()
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true })
+  expect(hostWorkspaces()).toBe(workspacesBefore)
+})
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
   // the laptop's environment: no worker variables another test file left in this process
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...rest } = process.env
+  // and no herdr socket or pane: the CLI must not reach the host's real herdr
+  const laptop = Object.fromEntries(Object.entries(rest).filter(([k]) => !k.startsWith('HERDR_')))
   const p = Bun.spawnSync([CLI, ...args], {
     // FACTORY_SELF_UPDATE=0: this dev worktree's own branch is never 'main', so a real kick
     // would refuse and mail the manager a new "branch is ..., not main" reason, landing in
@@ -46,6 +68,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
       FACTORY_AX: join(dir, 'ax'),
       FACTORY_KUBECTL: readyController(),
       FACTORY_SELF_UPDATE: '0',
+      FACTORY_HERDR: defaultHerdr(),
       ...env,
     },
   })
