@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach } from 'bun:test'
+import { describe, expect, test, afterEach, beforeEach } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -115,6 +115,83 @@ describe('bazelrc', () => {
 
     test('is empty when keytool writes the store', () => {
       expect(run('touch "$8"')).toBe('')
+    })
+  })
+
+  // claude-factory-o5n0: a JVM trustStore flag that names a missing store makes every Bazel TLS call fail
+  describe('trust store', () => {
+    const keys = ['FACTORY_WORKER_DIR', 'FACTORY_KEYTOOL', 'PATH'] as const
+    const old: Record<string, string | undefined> = {}
+    let dir = ''
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'bazelrc-'))
+      for (const k of keys) old[k] = process.env[k]
+      process.env.FACTORY_WORKER_DIR = dir
+      delete process.env.FACTORY_KEYTOOL
+    })
+    afterEach(() => {
+      for (const k of keys) {
+        if (old[k] === undefined) delete process.env[k]
+        else process.env[k] = old[k]
+      }
+      rmSync(dir, { recursive: true, force: true })
+    })
+    // a fake keytool: writes the -keystore file when WRITE=1, exits with CODE, records that it ran
+    function fake(name: string, code: number, write: boolean) {
+      const p = join(dir, name)
+      const body = write ? 'for a; do [ "$p" = -keystore ] && : > "$a"; p=$a; done' : ':'
+      writeFileSync(p, `#!/bin/sh\n${body}\necho ${name} > ${join(dir, 'ran')}\nexit ${code}\n`, {
+        mode: 0o755,
+      })
+      return p
+    }
+    const quiet = (f: () => string) => {
+      const e = console.error
+      console.error = () => {}
+      try {
+        return f()
+      } finally {
+        console.error = e
+      }
+    }
+
+    test('(a) keytool made the store: trustStore and sessionCacheSize flags', () => {
+      set({ FACTORY_CA: 'PEM' })
+      process.env.FACTORY_KEYTOOL = fake('kt', 0, true)
+      const rc = bazelrc()
+      expect(rc).toContain(`-Djavax.net.ssl.trustStore=${join(dir, 'egress.jks')}`)
+      expect(rc).toContain('--host_jvm_args=-Djavax.net.ssl.sessionCacheSize=1')
+    })
+
+    test('(b) keytool failed: no JVM flag, tls_certificate stays', () => {
+      set({ FACTORY_CA: 'PEM' })
+      process.env.FACTORY_KEYTOOL = fake('kt', 1, true)
+      const rc = quiet(bazelrc)
+      expect(rc).not.toContain('javax.net.ssl')
+      expect(rc).toContain(`common --tls_certificate=${join(dir, 'egress-ca.crt')}`)
+    })
+
+    test('(c) keytool exit 0 but no store file: no JVM flag', () => {
+      set({ FACTORY_CA: 'PEM' })
+      process.env.FACTORY_KEYTOOL = fake('kt', 0, false)
+      expect(quiet(bazelrc)).not.toContain('javax.net.ssl')
+    })
+
+    test('keytool on PATH runs when FACTORY_KEYTOOL is unset', () => {
+      set({ FACTORY_CA: 'PEM' })
+      fake('keytool', 0, true)
+      process.env.PATH = `${dir}:${process.env.PATH}`
+      expect(bazelrc()).toContain('javax.net.ssl.trustStore=')
+      expect(readFileSync(join(dir, 'ran'), 'utf8').trim()).toBe('keytool')
+    })
+
+    test('FACTORY_KEYTOOL wins over keytool on PATH', () => {
+      set({ FACTORY_CA: 'PEM' })
+      fake('keytool', 0, true)
+      process.env.FACTORY_KEYTOOL = fake('other', 0, true)
+      process.env.PATH = `${dir}:${process.env.PATH}`
+      bazelrc()
+      expect(readFileSync(join(dir, 'ran'), 'utf8').trim()).toBe('other')
     })
   })
 })
