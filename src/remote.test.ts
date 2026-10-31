@@ -2274,6 +2274,107 @@ esac
   }
 }, 90_000) // git clones and whole ticks
 
+test('an AX claude task carries the OTel env and the collector egress rule only when an endpoint is set (ozso.3)', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+    return p.stdout.toString().trim()
+  }
+  mkdirSync(dir, { recursive: true })
+  const sent = join(dir, 'ot-policy-sent')
+  const applied = join(dir, 'ot-applied')
+  const kubectl = join(dir, 'capture-ot')
+  writeFileSync(
+    kubectl,
+    `#!/bin/sh\ncase "$*" in *create*) cat > ${sent} ;; *) exec ${readyController()} "$@" ;; esac\n`,
+  )
+  chmodSync(kubectl, 0o755)
+  const cases = [
+    ['ot1', { FACTORY_AX_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }],
+    ['ot2', { FACTORY_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }],
+    ['ot3', {}],
+    ['ot4', { FACTORY_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }, { otelContent: false }],
+    ['ot5', { FACTORY_OTLP_ENDPOINT: 'http://otel.example.svc:4318' }, { agent: 'pi' }],
+  ] as const
+  const seen: { env: string; policy: string }[] = []
+  for (const [id, knob, rigExtra] of cases) {
+    rmSync(sent, { force: true })
+    rmSync(applied, { force: true })
+    const rdef: Factory = {
+      name: 'one',
+      start: 'implement',
+      nodes: { implement: { prompt: 'do', next: { ready: 'done' } } },
+    }
+    const origin = join(dir, id, 'github.com/acme/widget.git')
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(rdef)}`)
+    const run = { id, factory: join(runDir, 'factory.ts'), repo: worktree, goal: 'g', ws: 'w1', worktree }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(rdef)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax', ...rigExtra }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    writeFileSync(
+      join(dir, 'ax'),
+      `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "apply -f") cat > ${applied} ;;
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*) cat ${dir}/ssh ;;
+esac
+`,
+    )
+    const out = factory(['tick'], {
+      FACTORY_AX_IMAGE: 'img',
+      FACTORY_KUBECTL: kubectl,
+      FACTORY_AX_VAULT: 'factory',
+      ...knob,
+    }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    seen.push({ env: readFileSync(applied, 'utf8'), policy: readFileSync(sent, 'utf8') })
+    rmSync(runDir, { recursive: true })
+  }
+  for (const s of seen.slice(0, 2)) {
+    expect(s.env).toContain('CLAUDE_CODE_ENABLE_TELEMETRY')
+    expect(s.env).toContain(`factory.run=`)
+    expect(s.env).toContain('factory.station=implement')
+    expect(s.env).toContain('OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(s.policy).toContain('otel.example.svc')
+    expect(s.policy).toContain('4318')
+    // the rule holds no key and no header (ozso AC8)
+    const rule = JSON.parse(s.policy).rules.find((r: object) =>
+      JSON.stringify(r).includes('otel.example.svc'),
+    )
+    expect(rule).toEqual({ http: { hostnames: ['otel.example.svc'], ports: { numbers: [4318] } } })
+  }
+  expect(seen[0]!.env).toContain('OTEL_LOG_TOOL_DETAILS')
+  // a rig with otelContent false: no tool details; a pi rig: no OTel at all
+  expect(seen[3]!.env).toContain('CLAUDE_CODE_ENABLE_TELEMETRY')
+  expect(seen[3]!.env).not.toContain('OTEL_LOG_TOOL_DETAILS')
+  for (const i of [2, 4]) {
+    expect(seen[i]!.env).not.toMatch(/OTEL_|TELEMETRY/)
+    expect(seen[i]!.policy).not.toContain('otel.example.svc')
+  }
+}, 90_000)
+
 // claude-factory-hr94: an AX worker sends its usage with its report
 const usageRow = (over: Record<string, unknown> = {}) => ({
   session: 's1',
