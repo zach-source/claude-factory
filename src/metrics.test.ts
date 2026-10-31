@@ -5,7 +5,10 @@ import {
   parseRecords,
   failKind,
   fate,
+  denialStats,
   launchStats,
+  parseDenialLines,
+  renderDenials,
   parseLaunchLines,
   renderLaunches,
   metrics,
@@ -593,6 +596,29 @@ test('launchStats counts launches per station by harness and model, and skips ba
   })
   expect(renderLaunches(stats)).toContain('implement: claude claude-sonnet-5-5[1m] 2, codex gpt-6.1-sol 1')
   expect(renderLaunches({})).toBe('')
+})
+
+test('denialStats counts denials per harness and reason; the text has the biggest harness first and the top 10 reasons', () => {
+  const line = (harness: string, reason: string) =>
+    JSON.stringify({ at: 1, run: 'r', harness, reason, command: 'SECRET' })
+  const text = [
+    line('codex', 'FUNCTION_DEF_REASON'),
+    line('codex', 'FUNCTION_DEF_REASON'),
+    line('codex', 'XARGS_REASON'),
+    line('claude', 'PUSH_REASON'),
+    '{"at":1,"run"',
+    '{"at":"x","harness":"codex","reason":"A"}',
+  ].join('\n')
+  const stats = denialStats(parseDenialLines(text))
+  expect(stats).toEqual({
+    codex: { total: 3, reasons: { FUNCTION_DEF_REASON: 2, XARGS_REASON: 1 } },
+    claude: { total: 1, reasons: { PUSH_REASON: 1 } },
+  })
+  expect(renderDenials(stats)).toBe('codex 3: FUNCTION_DEF_REASON 2, XARGS_REASON 1\nclaude 1: PUSH_REASON 1')
+  expect(renderDenials(stats)).not.toContain('SECRET')
+  const many = denialStats(Array.from({ length: 12 }, (_, i) => ({ harness: 'h', reason: `R${i}` })))
+  expect(renderDenials(many).split(', ')).toHaveLength(10)
+  expect(renderDenials({})).toBe('')
 })
 
 test('a deploy unsure still counts as shipped, a failed one does not (claude-factory-ee7 AC6)', () => {
