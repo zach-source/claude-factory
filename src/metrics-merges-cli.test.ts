@@ -17,7 +17,7 @@ const git = (cwd: string, ...a: string[]) => Bun.spawnSync(['git', '-C', cwd, ..
 const repo = (name: string, origin: string) => {
   const p = join(dir, name)
   mkdirSync(p, { recursive: true })
-  git(p, 'init', '-q')
+  git(p, 'init', '-q', '--initial-branch=main')
   git(p, 'remote', 'add', 'origin', origin)
   return p
 }
@@ -84,6 +84,7 @@ const callCount = () => readFileSync(calls, 'utf8').split('\n').filter(Boolean).
 
 test('a merged row makes the run shipped; two calls make one gh call; GitLab and idle rigs make none', () => {
   const first = metricsJson()
+  expect(first.err).toBe('')
   expect(first.code).toBe(0)
   expect(first.fates).toEqual({ shipped: 1, 'handed-off': 1, closed: 1 })
   expect(callCount()).toBe(1)
