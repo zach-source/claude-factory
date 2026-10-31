@@ -414,6 +414,54 @@ export function validUsage(raw: unknown, node: string, seq: number): Usage[] {
   })
 }
 
+/**
+ * one codex station's spend from the lines of its rollout file. The last `token_count` event holds
+ * the running totals, so take that one and never sum. `input_tokens` includes the cached ones;
+ * `output_tokens` includes the reasoning ones. The function skips bad lines. No usable event gives null.
+ */
+export function codexUsageOf(lines: string[], file: string): Omit<Usage, 'node' | 'seq'> | null {
+  let session: string | null = null
+  let model = 'codex'
+  let total: Record<string, unknown> | null = null
+  let turns = 0
+  let peak = 0
+  let prev = -1
+  for (const line of lines) {
+    let e: { type?: string; payload?: Record<string, any> }
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const p = e?.payload
+    if (!p || typeof p !== 'object') continue
+    if (e.type === 'session_meta' && !session && typeof p.id === 'string') session = p.id
+    else if (e.type === 'turn_context' && typeof p.model === 'string') model = p.model
+    else if (e.type === 'event_msg' && p.type === 'token_count' && p.info?.total_token_usage) {
+      total = p.info.total_token_usage
+      const t = Number(total!.total_tokens)
+      if (t > prev) turns++
+      prev = Math.max(prev, t)
+      peak = Math.max(peak, Number(p.info.last_token_usage?.input_tokens) || 0)
+    }
+  }
+  if (!total) return null
+  session ??= /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(file)?.[1] ?? null
+  if (!session) return null
+  const n = (k: string) => (total![k] as number) ?? 0
+  const cached = n('cached_input_tokens')
+  return {
+    session,
+    model,
+    input: Math.max(0, n('input_tokens') - cached),
+    cacheWrite: n('cache_write_input_tokens'),
+    cacheRead: cached,
+    output: n('output_tokens'),
+    turns,
+    peak,
+  }
+}
+
 /** a Usage row's tokens, all types */
 export const tokensOf = (u: Usage) => u.input + u.cacheWrite + u.cacheRead + u.output
 
