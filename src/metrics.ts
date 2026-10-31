@@ -1,4 +1,4 @@
-import { isNoWorker, isPrWait, type Entry } from './machine'
+import { isNoWorker, isPrWait, prsIn, type Entry } from './machine'
 
 /** one run, as metrics see it. It is live from its state, or kept in metrics.jsonl after `factory
  * rm`. `requeued` is set when the run ended on a requeue edge (claude-factory-wnm). It copies
@@ -13,6 +13,8 @@ export type RunRecord = {
   requeued?: boolean
   /** the run's worker sessions' spend. An older metrics.jsonl line has none: it reads as [] */
   sessions?: Usage[]
+  /** when the run's pull request merged (claude-factory-7pxk). attachMerges sets it; metrics.jsonl never stores it */
+  mergedAt?: number
 }
 
 const FAILED = new Set(['fail', 'failed', 'abandon', 'red'])
@@ -51,10 +53,26 @@ export function fate(r: RunRecord) {
   if (r.log.some(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))) return 'shipped'
   if (r.requeued) return 'requeued'
   if (r.log[0]?.node === 'triage' && r.log[0].outcome === 'reject') return 'rejected'
-  if (r.node === 'done' && r.log.at(-1)?.outcome === 'approve') return 'handed-off' // a ship edge: the PR waits in the ship queue
+  if (r.node === 'done' && r.log.at(-1)?.outcome === 'approve') return r.mergedAt ? 'shipped' : 'handed-off' // a ship edge: the PR waits in the ship queue
   if (r.node === 'done') return 'closed'
   if (r.node === 'aborted') return 'aborted'
   return `running@${r.node}`
+}
+
+/** sets mergedAt on a handed-off run whose pull request merged: the PR head is factory/<id>, or the run
+ * log cites exactly one PR link and it is that PR's url. It returns new records and keeps the input. */
+export const attachMerges = (
+  records: RunRecord[],
+  prs: { url: string; head: string; mergedAt: number }[],
+): RunRecord[] => {
+  const byHead = new Map(prs.map(p => [p.head, p]))
+  const byUrl = new Map(prs.map(p => [p.url, p]))
+  return records.map(r => {
+    if (fate(r) !== 'handed-off') return r
+    const links = prsIn(r.log.map(e => e.summary).join('\n'))
+    const pr = byHead.get('factory/' + r.id) ?? (links.length === 1 ? byUrl.get(links[0]!) : undefined)
+    return pr ? { ...r, mergedAt: pr.mergedAt } : r
+  })
 }
 
 /** a failure's kind: the machine's own reasons are fixed text, a worker's are free text */
@@ -134,8 +152,9 @@ export function metrics(records: RunRecord[]) {
     }
     if (reviewChanges >= 3) runsWith3PlusReviewRounds++
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
-    if (shipped) {
-      const hours = (shipped.at - r.createdAt) / HOUR
+    const shippedAt = shipped?.at ?? (f === 'shipped' ? r.mergedAt : undefined)
+    if (shippedAt !== undefined) {
+      const hours = (shippedAt - r.createdAt) / HOUR
       cycle.push(hours)
       if (isSmall && !wentFull) smallCycle.push(hours)
       implementPassesShipped += r.log.filter(

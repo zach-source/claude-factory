@@ -160,6 +160,7 @@ import * as pkggate from './pkggate'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import { signingProbe } from './signing'
 import {
+  attachMerges,
   createdAt,
   fate,
   launchStats,
@@ -4191,11 +4192,7 @@ export function tokenTable(recs: ReturnType<typeof records>, emptyOk: boolean, s
 /** token usage of the runs from the last days days */
 export function tokenReport(days: number): string {
   const since = Date.now() - days * 86_400_000
-  return tokenTable(
-    records().filter(r => r.createdAt >= since),
-    false,
-    since,
-  )
+  return tokenTable(withMerges(records().filter(r => r.createdAt >= since)), false, since)
 }
 
 /**
@@ -8557,9 +8554,14 @@ function rigRef(repoPath: string): { owner: string; slug: string } | null {
   return slug ? { owner: o.owner, slug } : null
 }
 
-/** whether `glab` is signed in to a host: how a self-hosted GitLab without "gitlab" in its name is told */
-const glabKnows = (host: string) =>
-  Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
+/** whether `glab` is signed in to a host (false when glab is not installed): how a self-hosted GitLab without "gitlab" in its name is told */
+const glabKnows = (host: string) => {
+  try {
+    return Bun.spawnSync(['glab', 'auth', 'status', '--hostname', host]).exitCode === 0
+  } catch {
+    return false
+  }
+}
 
 const prsFile = (id: string) => join(runDir(id), 'prs.json')
 
@@ -8980,6 +8982,88 @@ function records(): RunRecord[] {
   const liveIds = new Set(live.map(r => r.id))
   return [...kept.filter(r => !liveIds.has(r.id)), ...live]
 }
+/** claude-factory-7pxk: HOME/merged-prs.json caches the merged pull requests `factory metrics` matches to
+ * handed-off runs. A merge is final, so `prs` only grows. `rigs[name]` says when gh was last asked and
+ * from when merges are covered. The file rebuilds when deleted. */
+type MergedCache = {
+  rigs: { [rig: string]: { checkedAt: number; from: number } }
+  prs: { [url: string]: { head: string; mergedAt: number } }
+}
+const mergedFile = () => join(HOME, 'merged-prs.json')
+const MERGED_TTL_MS = 600_000
+function readMerged(): MergedCache {
+  const empty: MergedCache = { rigs: {}, prs: {} }
+  try {
+    const j = JSON.parse(readFileSync(mergedFile(), 'utf8'))
+    return j && typeof j.rigs === 'object' && typeof j.prs === 'object' ? { rigs: j.rigs, prs: j.prs } : empty
+  } catch {
+    return empty
+  }
+}
+const cachedMerges = (c: MergedCache) =>
+  Object.entries(c.prs).flatMap(([url, p]) =>
+    typeof p?.head === 'string' && Number.isFinite(p.mergedAt) ? [{ url, ...p }] : [],
+  )
+
+/** records with mergedAt set from the cache alone; no gh call */
+const withMerges = (recs: RunRecord[]) => attachMerges(recs, cachedMerges(readMerged()))
+
+/** `withMerges`, after one `gh pr list --state merged` for each GitHub rig that has a handed-off run the
+ * cache does not match, at most once in 10 min. A gh failure prints one line and leaves the run handed-off.
+ * ponytail: -L 1000 caps one lookup; a full page moves `from` to its oldest row, so older merges stay unmatched. */
+async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
+  const cache = readMerged()
+  const open = withMerges(recs).filter(r => fate(r) === 'handed-off' && r.rig)
+  const now = Date.now()
+  let dirty = false
+  for (const name of new Set(open.map(r => r.rig!))) {
+    const rig = rigs().find(r => r.name === name)
+    const seen = cache.rigs[name]
+    if (!rig || originRef(rig.repo)?.forge !== 'github') continue
+    if (seen && now - seen.checkedAt < MERGED_TTL_MS) continue
+    const oldest = Math.min(...open.filter(r => r.rig === name).map(r => r.createdAt))
+    const covered = !!seen && seen.from <= oldest
+    const from = covered ? seen.checkedAt - 86_400_000 : oldest
+    const p = await spawnGh(
+      [
+        'pr',
+        'list',
+        '--state',
+        'merged',
+        '--search',
+        `merged:>=${new Date(from).toISOString().slice(0, 10)}`,
+        '-L',
+        '1000',
+        '--json',
+        'url,headRefName,mergedAt',
+      ],
+      { cwd: rig.repo, timeout: 30_000 },
+    )
+    let rows: unknown
+    try {
+      rows = p.code === 0 ? JSON.parse(p.out) : undefined
+    } catch {}
+    if (!Array.isArray(rows)) {
+      console.error(
+        `merged-prs: gh pr list failed for ${name}: ${clip(p.err.trim().split('\n')[0] || 'bad output', 200)}`,
+      )
+      continue
+    }
+    let oldestRow = Infinity
+    for (const x of rows) {
+      const at = Date.parse(x?.mergedAt)
+      if (typeof x?.url !== 'string' || typeof x?.headRefName !== 'string' || Number.isNaN(at)) continue
+      cache.prs[x.url] = { head: x.headRefName, mergedAt: at }
+      oldestRow = Math.min(oldestRow, at)
+    }
+    const reached = rows.length >= 1000 ? oldestRow : from
+    cache.rigs[name] = { checkedAt: now, from: covered ? Math.min(seen.from, reached) : reached }
+    dirty = true
+  }
+  if (dirty) writeFileSync(mergedFile(), JSON.stringify({ version: 1, ...cache }))
+  return withMerges(recs)
+}
+
 function record(id: string): RunRecord {
   const { run, value, c } = current(id)
   return {
@@ -9726,7 +9810,7 @@ if (import.meta.main && !outboxCmd)
         const since = opt('--since')
         const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
         if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
-        const picked = records().filter(r => inWindow(r, rig, days))
+        const picked = await refreshMerges(records().filter(r => inWindow(r, rig, days)))
         const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
         const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
         // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
