@@ -1,15 +1,7 @@
 // claude-factory-7pxk: `factory metrics` counts a handed-off run as shipped when its PR merged. The PR
 // list comes from one cached gh call for each GitHub rig. A fake gh on PATH logs each call.
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import {
-  appendFileSync,
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -114,6 +106,12 @@ test('a gh failure leaves the run handed-off, exits 0 and prints one stderr line
 test('a corrupt merged-prs.json reads as empty', () => {
   writeFileSync(join(home, 'merged-prs.json'), '{not json')
   expect(metricsJson().fates).toEqual({ shipped: 1, 'handed-off': 1, closed: 1 })
-  appendFileSync(calls, '')
+  expect(callCount()).toBe(1)
+})
+
+test('an unmatched run makes one gh call in 10 min, however often metrics runs', () => {
+  writeFileSync(reply, '[]')
+  expect(metricsJson().fates).toEqual({ 'handed-off': 2, closed: 1 })
+  metricsJson()
   expect(callCount()).toBe(1)
 })
