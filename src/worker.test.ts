@@ -13,6 +13,7 @@ import {
   servicesWaitMs,
   startServices,
   imagePlugins,
+  trustNote,
 } from './worker'
 
 // claude-factory-qda.4: the laptop names a station's skills in FACTORY_SKILLS; unset is an older laptop
@@ -81,6 +82,40 @@ describe('bazelrc', () => {
     set({})
     const rc = bazelrc()
     expect(rc).not.toContain('--repo_env=')
+  })
+
+  // claude-factory-5ewd: the agent sees Bazel PKIX errors, so the brief says when serve writes no JVM trust store
+  describe('trustNote', () => {
+    const dirs: string[] = []
+    afterEach(() => {
+      for (const v of ['FACTORY_KEYTOOL', 'FACTORY_WORKER_DIR']) delete process.env[v]
+      for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
+    })
+    function run(script: string) {
+      set({ FACTORY_CA: 'x' })
+      const dir = mkdtempSync(join(tmpdir(), 'trust-'))
+      dirs.push(dir)
+      const keytool = join(dir, 'keytool')
+      writeFileSync(keytool, `#!/bin/sh\n${script}\n`, { mode: 0o755 })
+      process.env.FACTORY_KEYTOOL = keytool
+      process.env.FACTORY_WORKER_DIR = dir
+      bazelrc()
+      return trustNote
+    }
+
+    test('names a failing keytool', () => {
+      const note = run('echo boom >&2; exit 1')
+      expect(note).toStartWith('\n\n[factory] serve wrote no JVM trust store')
+      expect(note).toContain('boom')
+    })
+
+    test('names a keytool that exits 0 and writes no store', () => {
+      expect(run('exit 0')).toContain('[factory] serve wrote no JVM trust store')
+    })
+
+    test('is empty when keytool writes the store', () => {
+      expect(run('touch "$8"')).toBe('')
+    })
   })
 })
 

@@ -545,7 +545,9 @@ function kubeconfig() {
  * which fetches modules and toolchains, reads only a Java trust store, which keytool makes (from Nix: the image
  * has no JDK, and its OpenSSL cannot write one Java trusts)
  */
+export let trustNote = ''
 export function bazelrc() {
+  trustNote = ''
   const lines = [process.env.FACTORY_BAZELRC!]
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
@@ -569,6 +571,8 @@ export function bazelrc() {
       'changeit',
     ])
     if (!made.ok) console.error(`bazel will not trust the egress gateway: keytool: ${made.err}`)
+    if (!made.ok || !existsSync(store))
+      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${made.err.slice(0, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
     lines.push(
       `common --tls_certificate=${ca}`,
       `startup --host_jvm_args=-Djavax.net.ssl.trustStore=${store} --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit`,
@@ -1174,7 +1178,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
     session = await turnWithRetry(
-      brief + missing + servicesNote(services, process.env),
+      brief + missing + trustNote + servicesNote(services, process.env),
       model,
       undefined,
       onEgress,
