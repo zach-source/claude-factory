@@ -162,14 +162,17 @@ import { signingProbe } from './signing'
 import {
   createdAt,
   fate,
+  denialStats,
   launchStats,
   metrics,
+  parseDenialLines,
   parseLaunchLines,
   inWindow,
   parsePrecheckLines,
   parseRecords,
   precheckStats,
   render,
+  renderDenials,
   renderLaunches,
   renderTokens,
   sessionOf,
@@ -877,7 +880,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         try {
           appendFileSync(
             join(runDir(run.id), 'denials.jsonl'),
-            JSON.stringify({ at: d.at, run: run.id, station: side?.node, ...d }) + '\n',
+            JSON.stringify({ run: run.id, station: side?.node, ...d }) + '\n',
             { mode: 0o600 },
           )
         } catch {} // a log failure never blocks the replay of the lines after it
@@ -9812,11 +9815,21 @@ if (import.meta.main && !outboxCmd)
           ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
           : []
         const launchFile = join(HOME, 'launches.jsonl')
-        const launches = existsSync(launchFile)
-          ? parseLaunchLines(readFileSync(launchFile, 'utf8')).filter(
-              l => l.at >= since_ && (!rig || l.rig === rig),
-            )
-          : []
+        const launchesAll = existsSync(launchFile) ? parseLaunchLines(readFileSync(launchFile, 'utf8')) : []
+        const launches = launchesAll.filter(l => l.at >= since_ && (!rig || l.rig === rig))
+        // claude-factory-dsfg: runs/*/denials.jsonl, one file a run. --rig maps a run to its rig through
+        // every launch line (not the --since window: a denial can be newer than its run's first launch)
+        const rigOfRun = new Map(launchesAll.map(l => [l.run, l.rig]))
+        const denials = denialStats(
+          (existsSync(join(HOME, 'runs'))
+            ? readdirSync(join(HOME, 'runs'), { withFileTypes: true })
+            : []
+          ).flatMap(d => {
+            const f = join(HOME, 'runs', d.name, 'denials.jsonl')
+            if (!d.isDirectory() || !existsSync(f) || (rig && rigOfRun.get(d.name) !== rig)) return []
+            return parseDenialLines(readFileSync(f, 'utf8')).filter(l => l.at >= since_)
+          }),
+        )
         const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
         // --tokens reads what runs stored (record().sessions) and manager-usage.jsonl, never a live transcript
         const tokenArgs = args.includes('--tokens')
@@ -9833,6 +9846,7 @@ if (import.meta.main && !outboxCmd)
               ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
               launches,
+              denials,
               rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
             }),
           )
@@ -9847,6 +9861,8 @@ if (import.meta.main && !outboxCmd)
           if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
           if (launches.length)
             console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
+          if (Object.keys(denials).length)
+            console.log('\ndenials by harness and reason:\n' + renderDenials(denials))
         }
         if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
         break

@@ -287,6 +287,40 @@ export const renderLaunches = (stats: ReturnType<typeof launchStats>) =>
     )
     .join('\n')
 
+/** One line of runs/<run>/denials.jsonl: a denial by the worker hook. The line has a `command` key too. Metrics never read it. */
+export type DenialLine = { at: number; run: string; harness: string; reason: string }
+
+/** reads a denials.jsonl: this drops a malformed line and a line with no time, harness or reason */
+export const parseDenialLines = (text: string) =>
+  (parsePrecheckLines(text) as unknown as DenialLine[]).filter(
+    l => typeof l?.at === 'number' && typeof l.harness === 'string' && typeof l.reason === 'string',
+  )
+
+/** denials per harness: the total, and the count for each reason */
+export function denialStats(lines: Pick<DenialLine, 'harness' | 'reason'>[]) {
+  const out: Record<string, { total: number; reasons: Record<string, number> }> = {}
+  for (const l of lines) {
+    const h = (out[l.harness] ??= { total: 0, reasons: {} })
+    h.total++
+    h.reasons[l.reason] = (h.reasons[l.reason] ?? 0) + 1
+  }
+  return out
+}
+
+/** one line a harness, the biggest total first: `codex 3: FUNCTION_DEF_REASON 2, REASON 1` (top 10 reasons) */
+export const renderDenials = (stats: ReturnType<typeof denialStats>) =>
+  Object.entries(stats)
+    .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]))
+    .map(
+      ([h, s]) =>
+        `${h} ${s.total}: ${Object.entries(s.reasons)
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, 10)
+          .map(([r, n]) => `${r} ${n}`)
+          .join(', ')}`,
+    )
+    .join('\n')
+
 /** one Claude worker session's spend with one model, from its transcript. `input` is the fresh
  * input, `cacheWrite` the cache creation and `cacheRead` the cache hits: their prices differ.
  * `peak` is the biggest context one turn re-sent. */
