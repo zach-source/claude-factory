@@ -12,7 +12,16 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axCodexRefused, codexAuth, codexEgress, codexWorker, limitPagedFile, vmCodexHome } from './cli'
+import {
+  axCodexRefused,
+  codexAuth,
+  codexEgress,
+  codexWorker,
+  limitPagedFile,
+  otelFor,
+  vmCodexHome,
+} from './cli'
+import { otelOf } from './otel'
 import { command } from './harness'
 
 // claude-factory-x0b9: a codex worker gets the guard, the rules and a context limit in its own CODEX_HOME
@@ -398,4 +407,48 @@ test('a hung probe fails closed within the timeout', () => {
   const t = Date.now()
   expect(() => f.make(undefined, { timeoutMs: 500 })).toThrow('timed out')
   expect(Date.now() - t).toBeLessThan(5000)
+})
+
+// claude-factory-ozso: the [otel] block and the resource tags reach a pane's codex and claude launches
+const tags = {
+  run: 'r1',
+  station: 'implement',
+  rig: 'acme',
+  attempt: '1',
+  harness: 'codex',
+  model: 'default',
+}
+
+test('a codex pane worker gets the otel block and tags only when the endpoint is set', () => {
+  const f = fixture()
+  const plain = f.make()
+  const before = readFileSync(join(f.dir, 'config.toml'), 'utf8')
+  expect(before).not.toContain('[otel]')
+  expect(plain.env.OTEL_RESOURCE_ATTRIBUTES).toBeUndefined()
+  const otel = otelOf('http://otel.example.svc:4318', tags)!
+  const { env } = f.make(undefined, { otel })
+  const toml = readFileSync(join(f.dir, 'config.toml'), 'utf8')
+  expect(toml).toBe(before + otel.toml)
+  expect(env.OTEL_RESOURCE_ATTRIBUTES).toContain('factory.run=r1')
+})
+
+test('a codex pane worker still fails closed with the otel block on', () => {
+  const f = fixture()
+  f.fake('exit 3')
+  const otel = otelOf('http://otel.example.svc:4318', tags)!
+  expect(() => f.make(undefined, { otel })).toThrow(/feature check failed/)
+})
+
+test('otelFor tags a launch, and a claude launch line carries the env; unset gives none', () => {
+  const run = { id: 'r9', repo: '/nowhere' } as never
+  const c = { attempt: 3 } as never
+  expect(otelFor(run, 'implement', c, 'claude', undefined)).toBeUndefined()
+  const o = otelFor(run, 'implement', c, 'claude', 'http://otel.example.svc:4318')!
+  expect(o.env.OTEL_RESOURCE_ATTRIBUTES).toBe(
+    'factory.run=r9,factory.station=implement,factory.rig=none,factory.attempt=3,factory.harness=claude,factory.model=default',
+  )
+  const line = command('claude', '/p', { env: o.env })
+  expect(line).toContain("CLAUDE_CODE_ENABLE_TELEMETRY='1'")
+  expect(line).toContain("OTEL_RESOURCE_ATTRIBUTES='factory.run=r9,")
+  expect(command('claude', '/p', {})).not.toMatch(/OTEL_|TELEMETRY/)
 })

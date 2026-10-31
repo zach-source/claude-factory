@@ -58,6 +58,7 @@ import {
   type Factory,
   type Mail,
 } from './machine'
+import { otelOf, type Otel } from './otel'
 import { watchDecide, type Seen, type WatchedPr } from './watch'
 import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
@@ -2444,7 +2445,14 @@ export function codexWorker(
   node: string,
   agent: string,
   rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
-  o: { hookFile?: string; userHome?: string; dir?: string; timeoutMs?: number; plugins?: string[] } = {},
+  o: {
+    hookFile?: string
+    userHome?: string
+    dir?: string
+    timeoutMs?: number
+    plugins?: string[]
+    otel?: Pick<Otel, 'toml' | 'codexEnv'>
+  } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
   if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
@@ -2480,7 +2488,8 @@ export function codexWorker(
   writeFileSync(
     join(dir, 'config.toml'),
     `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n\n` +
-      `[projects.${JSON.stringify(run.worktree)}]\ntrust_level = "trusted"\n`,
+      `[projects.${JSON.stringify(run.worktree)}]\ntrust_level = "trusted"\n` +
+      (o.otel?.toml ?? ''),
   )
   const id = commitIdentity(HOME)
   writeFileSync(
@@ -2511,7 +2520,12 @@ export function codexWorker(
       : codexFeaturesBad(probe.stdout.toString())
   if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
   return {
-    env: { CODEX_HOME: dir, CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
+    env: {
+      CODEX_HOME: dir,
+      CLAUDE_PROJECT_DIR: run.worktree,
+      ...(id.env as Record<string, string>),
+      ...o.otel?.codexEnv,
+    },
     extra,
   }
 }
@@ -2523,20 +2537,41 @@ export function codexWorker(
 const deadlineOf = (def: Factory, node: string, c: Ctx) =>
   String(Date.now() + timeoutOf(def.nodes[node]!, c, node) * 90_000)
 
+/**
+ * The OTel settings for a worker launch (claude-factory-ozso), or undefined when the endpoint is unset.
+ * The tags are the ones of logLaunch.
+ */
+export function otelFor(run: Run, node: string, c: Ctx, agent: string, endpoint: string | undefined) {
+  const rig = rigOf(run.repo)
+  return otelOf(
+    endpoint,
+    {
+      run: run.id,
+      station: node,
+      rig: rig?.name ?? 'none',
+      attempt: String(c.attempt),
+      harness: harnessOf(agent) ?? 'other',
+      model: ax.modelOf(agent) ?? 'default',
+    },
+    rig?.otelContent !== false,
+  )
+}
+
 function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, session?: string) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const h = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
+  const otel = otelFor(run, node, c, agent, process.env.FACTORY_OTLP_ENDPOINT)
   const setup =
     h === 'codex'
-      ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)) })
+      ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)), otel })
       : h === 'pi'
         ? piWorker(HOME, userPluginDirs(workerPluginNames(skills)))
         : {
             extra: workerFlags(def, rig, HOME, skills, node),
-            env: { FACTORY_DEADLINE: deadlineOf(def, node, c) },
+            env: { FACTORY_DEADLINE: deadlineOf(def, node, c), ...otel?.env },
           }
   return command(agent, prompt, {
     session,
