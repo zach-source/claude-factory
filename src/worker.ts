@@ -551,7 +551,7 @@ export function bazelrc() {
     const ca = join(own(), 'egress-ca.crt')
     const store = join(own(), 'egress.jks')
     rmSync(store, { force: true }) // the CA is written anew every start
-    const onPath = Bun.which('keytool')
+    const onPath = Bun.which('keytool', { PATH: process.env.PATH })
     const keytool = process.env.FACTORY_KEYTOOL
       ? [process.env.FACTORY_KEYTOOL]
       : onPath
