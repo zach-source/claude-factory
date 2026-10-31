@@ -9,5 +9,7 @@ for (const k of [
   'BEADS_ACTOR',
   'FACTORY_OUTBOX',
   'FACTORY_PATROL',
+  'FACTORY_OTLP_ENDPOINT',
+  'FACTORY_AX_OTLP_ENDPOINT',
 ])
   delete process.env[k]
