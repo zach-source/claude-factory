@@ -8715,6 +8715,7 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
   for (const c of [
     "zs''h --interactive -c 'gp origin main'",
     "zs''h -o interactive -c gp",
+    'myshell -o interactive -c gp',
     "so''urce ~/.zshrc; e''val gp",
     "'.' ~/.zshrc; e''val gp",
     'zs${:-h} --interactive -c gp',
