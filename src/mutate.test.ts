@@ -141,8 +141,8 @@ test('refusals exit 2, never spawn the test, and leave the file alone', () => {
     ['timeout 3601', ['--timeout', '3601', `${W}:1`, '>=', '>', '--', t]],
     ['line 0', [`${W}:0`, '>=', '>', '--', t]],
     ['line past EOF', [`${W}:9`, '>=', '>', '--', t]],
-    ['empty old', [`${W}:1`, '', '>', '--', t]],
-    ['old == new', [`${W}:1`, '>=', '>=', '--', t]],
+    ['empty old', [`${W}:3`, '', '>', '--', t]],
+    ['old == new', [`${W}:3`, '>=', '>=', '--', t]],
     ['old not found', [`${W}:2`, '>=', '>', '--', t]],
     ['old twice in line', [`${W}:1`, '>=', '>', '--', t]],
     ['old twice in file, no line', [W, 'x >=', 'x >', '--', t]],
@@ -215,6 +215,14 @@ const alive = (pid: number) => {
     return false
   }
 }
+// A killed process stays visible as a zombie until init reaps it, so poll for a moment.
+const dead = async (pid: number) => {
+  for (let i = 0; i < 50; i++) {
+    if (!alive(pid)) return true
+    await Bun.sleep(100)
+  }
+  return false
+}
 
 // The test script sleeps only on the mutant. It writes its sleep grandchild pid and a started marker.
 function sleeper(d: string) {
@@ -228,7 +236,7 @@ function sleeper(d: string) {
   return { t, pidf, started }
 }
 
-test('timeout: exit 3, row TIMEOUT, bytes restored, the sleep grandchild is dead, under 10 s', () => {
+test('timeout: exit 3, row TIMEOUT, bytes restored, the sleep grandchild is dead, under 10 s', async () => {
   const { d, file } = repo()
   const before = readFileSync(file)
   const { t, pidf } = sleeper(d)
@@ -238,7 +246,7 @@ test('timeout: exit 3, row TIMEOUT, bytes restored, the sleep grandchild is dead
   expect(r.code).toBe(3)
   expect(r.out).toMatch(/timeout 1s \| TIMEOUT \|\n$/)
   expect(readFileSync(file).equals(before)).toBe(true)
-  expect(alive(Number(readFileSync(pidf, 'utf8')))).toBe(false)
+  expect(await dead(Number(readFileSync(pidf, 'utf8')))).toBe(true)
 })
 
 for (const [sig, code] of [
@@ -269,6 +277,6 @@ for (const [sig, code] of [
     p.kill(sig)
     expect(await p.exited).toBe(code)
     expect(readFileSync(file).equals(before)).toBe(true)
-    expect(alive(Number(readFileSync(pidf, 'utf8')))).toBe(false)
+    expect(await dead(Number(readFileSync(pidf, 'utf8')))).toBe(true)
   })
 }
