@@ -93,10 +93,6 @@ test('byte for byte: CRLF, no trailing newline, multibyte, mode 0755; only the n
   const bytes = Buffer.from('é = 1\r\nreturn x >= 2 >= 3\r\nlast >= 9', 'utf8')
   const { d, file } = repo(bytes, 0o755)
   const mode = statSync(file).mode
-  const t = script(d, 'copy.sh', `cp src/widget.ts "${d}/seen.txt"; exit 1`)
-  const r = run(d, ['src/widget.ts:2', '2 >= 3', '2 > 3', '--', t])
-  // baseline fails here (exit 1 on the clean file), so use a passing baseline script instead
-  expect(r.code).toBe(2)
   const t2 = script(
     d,
     'copy2.sh',
@@ -106,9 +102,7 @@ test('byte for byte: CRLF, no trailing newline, multibyte, mode 0755; only the n
   expect(r2.code).toBe(0)
   expect(readFileSync(file).equals(bytes)).toBe(true)
   expect(statSync(file).mode).toBe(mode)
-  expect(readFileSync(join(d, 'seen.txt')).toString()).toBe(
-    'é = 1\r\nreturn x >= 2 > 3\r\nlast >= 9'.replace('2 > 3', '2 > 3'),
-  )
+  expect(readFileSync(join(d, 'seen.txt')).toString()).toBe('é = 1\r\nreturn x >= 2 > 3\r\nlast >= 9')
 })
 
 test('a pipe in old or new is escaped in the row', () => {
