@@ -8700,6 +8700,14 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
     '. ~/.zshrc; gp',
     'exec /bin/zsh -ic gp',
     'command eval gp',
+    "$SHELL -i -c 'gp origin main'",
+    '"$0" -ic "gp"',
+    'sudo -u me zsh -ic gp',
+    "fish -c 'gp'",
+    'tcsh -ic gp',
+    'x=zsh; $x -ic gp',
+    'env $SHELL -ic gp',
+    'script -q /dev/null zsh -ic gp',
   ]) {
     const r = await run(cmd(c), env(withAlias, good))
     expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
