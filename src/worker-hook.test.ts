@@ -8727,6 +8727,10 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
     "for x in 1; do zs''h '-i' -c gp; done",
     "timeout 5 zs''h '-i' -c gp",
     "nice zs''h '-i' -c gp",
+    'myshell -i -c gp',
+    'myshell -li gp',
+    'x=my; ${x}shell gp',
+    '`echo myshell` gp',
   ]) {
     const r = await run(cmd(c), env(withAlias, good))
     expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
