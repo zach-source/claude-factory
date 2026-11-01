@@ -39,6 +39,8 @@ In the manager session:
                                # started with an older launch command than the code on disk (<home>/manager.json);
                                # the manager gets one mail for each launch. A restart cuts the session, so you decide:
                                # factory manager --resume <session>
+factory ci <pr>               # a PR's checks on its head SHA; for each failed Actions job: step and log tail
+                              # (exit 0 green, 1 failed, 2 pending, 3 error). The PR is a number or a github.com URL
 /factory interview            # questions from runs stuck or parked on your direction; your answer goes to the run
                                # 'Interview me' in the panel also sweeps every rig's gates, bd decisions and blocked
                                # workers in; the manager proposes options for anything still bare, except gates
@@ -827,6 +829,10 @@ commit it, and the repo owns its factory like any other code:
 - **Those changes ship like any change**: plan, implement, `factory check` in verify, a review
   that reads them as policy (security review when they remove a gate, widen what runs
   unattended or raise a limit), and your merge. Deploy reports them as published.
+- `factory mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>` is the worker's mutation check. It
+  applies one literal edit to a tracked, clean file, runs the test, restores the file byte for byte (also
+  after a timeout or a signal), and prints one row. Exit 0 means killed, 1 survived, 2 refused, 3 timeout,
+  4 restore failed.
 - `factory check <file>` validates a factory: the graph, its outcomes and timed edges, and a
   way to `done` from every station. A factory whose starting commit does not validate is
   refused before any worker starts, and its bead is deferred with the reason.

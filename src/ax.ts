@@ -395,6 +395,13 @@ export const reviewerTask = (node: string, githubOwner?: string, env: NodeJS.Pro
   !!env.FACTORY_AX_REVIEWER_OWNER &&
   env.FACTORY_AX_REVIEWER_OWNER === githubOwner
 
+// ponytail: the 140 shards in `gh api meta --jq .domains.actions` on 2026-10-31. A wildcard would open every Azure
+// storage account. The policy denies a new GitHub shard. Upgrade path: read that list again and change the ranges.
+const range = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i)
+export const ACTIONS_LOG_HOSTS = [...range(0, 19), ...range(30, 49), ...range(100, 199)].map(
+  n => `productionresultssa${n}.blob.core.windows.net`,
+)
+
 /** GitHub owners whose repos need their own vault key (the App's installation on that account); the Basic key adds `_BASIC` */
 const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
 
@@ -467,6 +474,8 @@ export function egressPolicy(
       // Nix's global flake registry, which the worker user has no cached copy of: turning it off in nix.conf would
       // change every devenv's derivation, and so miss the rig's cached devenv
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } },
+      // GitHub's Actions log storage: `gh api .../logs` follows a 302 there. No key goes to these hosts.
+      { https: { hostnames: ACTIONS_LOG_HOSTS } },
       ...(gate ? [gateRule(gate)] : []),
       ...(gate ? stripRegistryHosts(extra) : extra).map(
         ({ hosts, key, header, prefix, port, http, pathPrefixes, headers }) =>

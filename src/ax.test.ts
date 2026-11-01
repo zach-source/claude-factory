@@ -352,6 +352,7 @@ test("a worker's egress policy allows Anthropic and GitHub, and injects keys onl
       { https: { hostnames: ['api.github.com', 'uploads.github.com'] } },
       { https: { hostnames: ['github.com'] } },
       { https: { hostnames: ['cache.nixos.org', 'devenv.cachix.org', 'channels.nixos.org'] } }, // nix's caches and registry: no key
+      { https: { hostnames: ax.ACTIONS_LOG_HOSTS } }, // Actions job logs (the 302 target of gh api .../logs): no key
     ],
   })
   // no gate here, so every rule is the https shape -- a type-only cast, past `rules`' now-wider type
@@ -1516,7 +1517,7 @@ test('a rig egress rule on another port names it, as a Dolt remotesapi needs', (
     prefix: 'Basic ',
     port: 50051,
   }
-  expect(ax.egressPolicy('factory', [dolt]).rules[6]).toEqual({
+  expect(ax.egressPolicy('factory', [dolt]).rules[7]).toEqual({
     https: {
       hostnames: ['dolt.example.com'],
       ports: { numbers: [50051] },
@@ -1535,13 +1536,13 @@ test('a rig egress rule on another port names it, as a Dolt remotesapi needs', (
 
 test("a rig's egress rules follow the defaults, injected only from a named vault", () => {
   const extra = [ax.parseEgress('api.openai.com=OPENAI'), ax.parseEgress('pypi.org,files.pythonhosted.org')]
-  expect(ax.egressPolicy('', extra).rules.slice(4)).toEqual([
+  expect(ax.egressPolicy('', extra).rules.slice(5)).toEqual([
     { https: { hostnames: ['api.openai.com'] } },
     { https: { hostnames: ['pypi.org', 'files.pythonhosted.org'] } },
   ])
   const rules = ax.egressPolicy('factory', extra).rules
-  expect(rules).toHaveLength(8)
-  expect(rules[6]!.https).toEqual({
+  expect(rules).toHaveLength(9)
+  expect(rules[7]!.https).toEqual({
     hostnames: ['api.openai.com'],
     effects: {
       replaceHeaders: [
@@ -1553,13 +1554,13 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
       ],
     },
   })
-  expect(rules[7]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
+  expect(rules[8]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
 })
 
 test('unset, FACTORY_AX_PKG_GATE leaves egressPolicy byte-identical to today, registry hosts and all', () => {
   const extra = [ax.parseEgress('proxy.golang.org,sum.golang.org'), ax.parseEgress('pypi.org,api.openai.com')]
   expect(ax.egressPolicy('factory', extra, undefined)).toEqual(ax.egressPolicy('factory', extra))
-  expect(ax.egressPolicy('factory', extra).rules.slice(6)).toEqual([
+  expect(ax.egressPolicy('factory', extra).rules.slice(7)).toEqual([
     { https: { hostnames: ['proxy.golang.org', 'sum.golang.org'] } },
     { https: { hostnames: ['pypi.org', 'api.openai.com'] } },
   ])
