@@ -46,10 +46,12 @@ const failing = [check('test', { conclusion: 'failure' })]
 
 test('failed: header, job, first failed step, url and the last 80 log lines; exit 1', () => {
   const log = Array.from({ length: 100 }, (_, i) => `line${i}`).join('\n')
+  const calls: string[] = []
   const r = ciReport(
     ['7'],
-    fake([prView(), runs(A, [...failing, check('lint', { id: 12 })]), job, logs(log)]),
+    fake([prView(), runs(A, [...failing, check('lint', { id: 12 })]), job, logs(log)], calls),
   )
+  expect(calls).toContain('api repos/acme/widget/actions/jobs/11/logs --allow-escape-sequences')
   expect(r.exit).toBe(1)
   expect(r.text).toContain(`acme/widget#7 ${A}: failed (1 of 2 checks failed)`)
   expect(r.text).toContain('step 2 "bun test"')

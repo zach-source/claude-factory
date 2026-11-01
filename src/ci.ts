@@ -111,7 +111,7 @@ export function ciReport(arg: string[], gh: Gh): CiResult {
     } catch {
       // no step line: the log tail below still helps
     }
-    const log = gh(['api', `${jobPath}/logs`])
+    const log = gh(['api', `${jobPath}/logs`, '--allow-escape-sequences'])
     if (log.code !== 0) {
       out.push(why(log))
       continue
