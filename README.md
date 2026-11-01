@@ -35,6 +35,8 @@ In the manager session:
 /factory start lifecycle@improve my-app keep improving it
 /factory                      # the board: runs, stations, workers, gates, manager mail
 /factory status <run>         # one run's full journal
+factory ci <pr>               # a PR's checks on its head SHA; for each failed Actions job: step and log tail
+                              # (exit 0 green, 1 failed, 2 pending, 3 error). The PR is a number or a github.com URL
                                # `factory status` (no run) adds a line "restart factory manager" when the live manager
                                # started with an older launch command than the code on disk (<home>/manager.json);
                                # the manager gets one mail for each launch. A restart cuts the session, so you decide:
