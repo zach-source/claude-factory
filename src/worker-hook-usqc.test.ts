@@ -98,6 +98,8 @@ test('AC3: a segment that is not a flat external command turns the skip off for 
     `myf x; ${W}`,
     `eval x; ${W}`,
     `echo "$(if :; then :; fi)"; ${W}`,
+    `kubectl exec p -- wget --post-data='q={a="b"}' "$(if :; then :; fi)" u`,
+    'k get gc',
   ]
   for (const row of rows) expect([row, verdict(row)]).toEqual([row, SHELL_ALIAS_REASON])
   expect(verdict(W)).toBeUndefined()
@@ -130,6 +132,12 @@ test('Q5: a snapshot function name is not a flat command word, in any letter cas
   expect(verdict("myf 'a b' gp")).toBe(SHELL_ALIAS_REASON)
   expect(verdict("MyF 'a b' gp")).toBe(SHELL_ALIAS_REASON)
   expect(verdict("other 'a b' gp")).toBeUndefined()
+  expect(
+    verdict(
+      "myf 'a b' gp",
+      gateWith(() => new Set(['MYF'])),
+    ),
+  ).toBe(SHELL_ALIAS_REASON)
 })
 
 // AC5: the reader
