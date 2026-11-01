@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, setDefaultTimeout, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
@@ -12,6 +12,9 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// Each row spawns bin/factory (a bun start-up), and the refusal test spawns 25 of them.
+setDefaultTimeout(120_000)
 
 const BIN = join(import.meta.dir, '..', 'bin', 'factory')
 const dirs: string[] = []
