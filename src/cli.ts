@@ -9387,6 +9387,8 @@ const usage = `factory — herdr software factories on xstate
   metrics [--rig r] [--since 7d] [--json]   how the factory performs: fates, ship rate, time to ship and on
                                      the approve gate, review loops, failures by kind, each station's outcomes
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
+  mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>   apply one literal edit, run the test, restore the file;
+                                     exit 0 killed, 1 survived, 2 refused, 3 timeout, 4 restore failed
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
@@ -10337,6 +10339,8 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'mutate':
+        process.exit(await (await import('./mutate')).mutate(args))
       case 'check': {
         if (!args[0]) fail('usage: factory check <factory file>')
         const def = await loadFactory(resolve(args[0]!))
