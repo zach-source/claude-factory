@@ -75,8 +75,10 @@ function parse(args: string[], cwd: string): Plan & { seconds: number; argv: str
     a = a.slice(2)
   }
   if (a[0]?.startsWith('-')) refuse(`unknown flag ${a[0]}`)
-  const [spec, old, neu, dd, ...argv] = a
-  if (spec === undefined || old === undefined || neu === undefined) refuse('need <path>[:<line>] <old> <new>')
+  const [spec, old0, neu0, dd, ...argv] = a
+  if (spec === undefined || old0 === undefined || neu0 === undefined)
+    refuse('need <path>[:<line>] <old> <new>')
+  const [old, neu] = [old0!, neu0!]
   if (dd !== '--' || !argv.length) refuse('need -- and a test argv after <new>')
   if (!old) refuse('<old> is empty')
   if (old === neu) refuse('<old> and <new> are the same')
