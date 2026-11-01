@@ -188,8 +188,8 @@ function fakeBin(top: string, pgCtl: string, name = 'fakepg'): string {
     ['initdb', 'exit 0'],
     ['pg_ctl', pgCtl],
   ]) {
-    writeFileSync(join(bin, n), `#!/bin/sh\n${body}\n`)
-    chmodSync(join(bin, n), 0o755)
+    writeFileSync(join(bin, n!), `#!/bin/sh\n${body}\n`)
+    chmodSync(join(bin, n!), 0o755)
   }
   return bin
 }
@@ -207,7 +207,7 @@ test('stop keeps the data dir when pg_ctl stop fails and the server still runs, 
   const marker = join(top, 'stopped')
   const gone = fakeBin(
     top,
-    `case "$*" in *status) [ ! -e ${marker} ]; exit $?;; esac; touch ${marker}; exit 1`,
+    `case "$*" in *status) [ ! -e ${marker} ]; exit $?;; esac; : > ${marker}; exit 1`,
     'gonepg',
   )
   expect(pgScratch(['stop'], { cwd: top, env: env(gone) })).toBe(0)
