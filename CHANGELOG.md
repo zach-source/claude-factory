@@ -35,7 +35,6 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: a worker can no longer mail as the manager (claude-factory-ab8n). The worker hook denies a change to `FACTORY_FROM`. `factory mail`, `poke` and `fork` refuse the manager sender when the caller is a worker. `factory mail` accepts `FACTORY_FROM` only when it names a station.
 - Fix: a patrol report with the same item set as the last one now shows one toast line, "nothing new since HH:MM". The patrol log keeps the full text (claude-factory-g5um).
 - Fix: an AX worker's `factory report` no longer fails when `bd dolt pull` fails with a schema skew (claude-factory-lahb). The report goes to the outbox with a `bdSkew` field. The laptop holds the station as an outage (no attempt spent), asks the person one Question for each rig, and holds that rig's VM starts for up to 60 min.
-- Fix: the AX runner now keeps the worker transcripts before it deletes the task (claude-factory-qmvs). The laptop copies the Claude session files and codex rollouts to `runs/<run>/transcripts/<seq>-<node>/` over one ssh. It accepts only a closed grammar. If the copy fails, it writes `error.txt`. The home backup leaves these files out.
 
 ## 0.15.0 (2026-10-24)
 

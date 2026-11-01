@@ -31,7 +31,7 @@ Do not remove input validation at a trust boundary, error handling that prevents
 - Never chain `cd` with other commands or run `rm -rf`. Never `rm` a `$variable`, a glob (`*`, `?`, `[`), or a path outside the worktree. Claude Code stops for an approval nobody answers. Use `git -C <dir>`, `go -C <dir>`, an absolute path, or a literal path. For a cleanup, make a fresh `.scratch/<new-name>`.
 - The worker hook denies a loop, a shell function, a VAR=value prefix, a variable command word or a cd chain in Bash. Write the steps to `.scratch/<name>.sh` and run `bash /abs/path/.scratch/<name>.sh` (or `nix shell <pkgs> -c bash /abs/path/...`).
 - On a VM, if `nix shell nixpkgs#X` fails on SSL, try `nix-shell -p X`, then a curl of a GitHub release asset.
-- VM Go: export GOTOOLCHAIN=auto (go1.23 fails on a `tool` line). On 'signal: killed': GOMAXPROCS=2, `go test -p 1`.
+- VM Go: on 'signal: killed': GOMAXPROCS=2, `go test -p 1`.
 - Run independent tool calls in parallel.
 - Agent tool: for a broad search or subtask; brief it fully (starts blank).
 - Need a database? With the brief's factory CLI: `<cli> pg-scratch start` prints TEST_DATABASE_URL; `<cli> pg-scratch stop` removes it.

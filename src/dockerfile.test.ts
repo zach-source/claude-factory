@@ -27,3 +27,30 @@ test('the worker image pins codex unified_exec off, since write_stdin skips the 
   expect(worker).toContain('chmod 0644 /etc/codex/requirements.toml')
   expect(worker.indexOf('/etc/codex/requirements.toml')).toBeGreaterThan(worker.indexOf('@openai/codex@'))
 })
+
+// 823x: nix-shell -p read the base image's channel (go1.23) while the pin held go 1.26
+const workerStage = () => {
+  const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  return docker.slice(docker.indexOf(' AS worker'), docker.indexOf(' AS manager'))
+}
+
+test('the worker image pins nixpkgs at the rev with a current Go (claude-factory-823x)', () => {
+  const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  expect(docker).toContain('ARG NIXPKGS_REV=1c89083e451e891152365b799595cf7790a43325')
+  expect(docker).not.toContain('6510408d')
+})
+
+test('the worker NIX_PATH resolves nixpkgs to the pin, never a channel (claude-factory-823x)', () => {
+  const worker = workerStage()
+  expect(worker).toMatch(/^ENV NIX_PATH=nixpkgs=\/nix\/var\/nix\/gcroots\/nixpkgs-pin$/m)
+  expect(worker).toContain('--out-link /nix/var/nix/gcroots/nixpkgs-pin')
+  expect(worker).toContain('nixpkgs "path:$p"')
+  expect(worker).not.toMatch(/channel|nixos-\d|nixpkgs-unstable/)
+})
+
+test('the worker image installs gitleaks and jq and smokes them (claude-factory-823x)', () => {
+  const worker = workerStage()
+  expect(worker).toContain('nixpkgs#gitleaks nixpkgs#jq')
+  expect(worker).toContain('gitleaks version && jq --version')
+  expect(worker).not.toMatch(/nixpkgs#go\b/)
+})
