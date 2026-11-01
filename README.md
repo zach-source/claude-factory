@@ -39,6 +39,8 @@ In the manager session:
                                # started with an older launch command than the code on disk (<home>/manager.json);
                                # the manager gets one mail for each launch. A restart cuts the session, so you decide:
                                # factory manager --resume <session>
+factory ci <pr>               # a PR's checks on its head SHA; for each failed Actions job: step and log tail
+                              # (exit 0 green, 1 failed, 2 pending, 3 error). The PR is a number or a github.com URL
 /factory interview            # questions from runs stuck or parked on your direction; your answer goes to the run
                                # 'Interview me' in the panel also sweeps every rig's gates, bd decisions and blocked
                                # workers in; the manager proposes options for anything still bare, except gates

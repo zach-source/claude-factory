@@ -40,13 +40,15 @@ jobs:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: install zsh (src/cli.test.ts spawns it)
-        run: sudo apt-get update && sudo apt-get install -y zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh postgresql
+      - name: put the postgres bin dir on PATH (src/pg-scratch.test.ts needs initdb, pg_ctl, psql)
+        run: echo "$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
       - name: bun test src factories
         # PKGGATE_E2E_REQUIRE=1 turns a missing go/npm/pip/uv/python3/zip into a named failure
         # instead of a quiet skip (claude-factory-5h9.3). This runner installs all 6 above; zip
         # ships on the ubuntu-latest image already.
-        run: PKGGATE_E2E_REQUIRE=1 bun test --timeout 30000 src factories
+        run: PKGGATE_E2E_REQUIRE=1 PG_SCRATCH_REQUIRE=1 bun test --timeout 30000 src factories
 
   plugin:
     name: plugin
