@@ -22,7 +22,7 @@ function fake(table: [string, R][], calls: string[] = []) {
   return (argv: string[]): R => {
     const j = argv.join(' ')
     calls.push(j)
-    const hit = table.find(([w]) => j.startsWith(w))
+    const hit = table.filter(([w]) => j.startsWith(w)).sort((x, y) => y[0].length - x[0].length)[0]
     return hit ? hit[1] : { code: 1, out: '', err: `unmocked: ${j}` }
   }
 }
