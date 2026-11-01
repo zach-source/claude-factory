@@ -9328,10 +9328,15 @@ async function main() {
     gitAliases: timeoutMs => gitConfigAliases(i.cwd || root, timeoutMs),
     ghAliases: timeoutMs => ghAliasList(timeoutMs),
     // claude-factory-1zr5: the Bash tool shell sources a Claude Code snapshot of the user's aliases
+    // claude-factory-5us3: Claude Code sources CLAUDE_ENV_FILE after the snapshot (proved on 2.1.316).
+    // The factory file runs `unalias -a`, so the shell has no snapshot alias and the table is empty.
+    // Any other value reads the snapshots as before.
     shellAliases: () =>
-      shellSnapshotAliases(
-        joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),
-      ),
+      process.env.CLAUDE_ENV_FILE === joinPath(import.meta.dir, 'worker-shell-env.sh')
+        ? new Map<string, string | null>()
+        : shellSnapshotAliases(
+            joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),
+          ),
     // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
     // read this field; `gitReason` falls back to `root` itself at its own call site.

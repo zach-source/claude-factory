@@ -8693,7 +8693,7 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
     '',
     '/x/worker-shell-env.sh',
     `${good}.bak`,
-    join(import.meta.dir, '..', 'src', 'worker-shell-env.sh'),
+    `${import.meta.dir}/../src/worker-shell-env.sh`,
   ]
   for (const bad of bads) {
     const denied = await run(cmd('gp origin main'), env(withAlias, bad))
