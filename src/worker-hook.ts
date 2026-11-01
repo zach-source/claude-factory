@@ -9204,8 +9204,8 @@ export function shellSnapshotFunctions(
       if (m) names.add(m[1] ?? m[2]!)
       // Claude Code writes a bash function as `eval $'name () \n{ ...'` (`eval -- ` for a name that
       // starts with - or +). A line this reader cannot name fails closed.
-      else if (/^\s*eval\b/.test(line)) {
-        const e = /^\s*eval(?: --)? \$?'([A-Za-z0-9_.:@%+-]+) \(\) /.exec(line)
+      else if (/^eval\b/.test(line)) {
+        const e = /^eval(?: --)? \$?'([A-Za-z0-9_.:@%+-]+) \(\) /.exec(line)
         if (!e) return undefined
         names.add(e[1]!)
       }

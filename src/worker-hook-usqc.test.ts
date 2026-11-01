@@ -198,6 +198,13 @@ test('AC5: shellSnapshotFunctions reads the bash eval form (real printf %q outpu
   expect(shellSnapshotFunctions(odd)).toBeUndefined()
 })
 
+test('AC5: shellSnapshotFunctions ignores a tab-indented eval line in a zsh function body', () => {
+  const dir = snapDir({
+    'snapshot-zsh-1.sh': ['a1 () {', '\teval $clocale "$tmp[2,-1]" x', '}', '\teval odd'].join('\n'),
+  })
+  expect([...shellSnapshotFunctions(dir)!]).toEqual(['a1'])
+})
+
 test('AC5: shellSnapshotFunctions gives an empty Set for a missing folder and undefined for a read error', () => {
   expect(shellSnapshotFunctions(join(tmpdir(), 'usqc-missing-acme'))?.size).toBe(0)
   expect(
