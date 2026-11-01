@@ -11009,3 +11009,21 @@ test('run as `bun src/worker-hook.ts`, an approve call is allowed only with FACT
     })
   }
 }, 20_000)
+
+// claude-factory-pumc: `factory mutate` takes its edit as plain words, so a worker needs no heredoc. The
+// hook must allow the verb and still deny a push or merge in the test argv after `--`.
+test('factory mutate forms pass the hook; a push or merge tail stays denied', () => {
+  const gate = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+  const ask = (c: string) => denyReason(c, '/acme/root', ['acme'], gate)
+  for (const c of [
+    `factory mutate src/x.ts:12 '>=' '>' -- bun test src/x.test.ts`,
+    `factory mutate src/x.ts:12 'if (a && b)' 'if (a || b)' -- bun test --timeout 30000 src/x.test.ts`,
+    `factory mutate --timeout 600 src/x.ts:12 'return null' 'return undefined' -- go test ./pkg/...`,
+    `factory mutate src/x.ts:12 'x => x + 1' 'x => x' -- bun test src/x.test.ts`,
+    `factory mutate src/x.go:40 'err != nil' 'err == nil' -- go test -run 'TestX$' ./pkg`,
+    `/Users/acme/factory/bin/factory mutate src/x.ts:12 '<' '<=' -- bun test src/x.test.ts`,
+  ])
+    expect(ask(c)).toBeUndefined()
+  expect(ask(`factory mutate src/x.ts:12 a b -- git push origin HEAD:main`)).toBe(PUSH_REASON)
+  expect(ask(`factory mutate src/x.ts:12 a b -- gh pr merge 3`)).toBeDefined()
+})

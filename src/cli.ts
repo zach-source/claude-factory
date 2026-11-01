@@ -9409,6 +9409,8 @@ const usage = `factory — herdr software factories on xstate
   ci <pr>                            the PR's checks on its head SHA; each failed job's step and log tail
                                      (exit 0 green, 1 failed, 2 pending, 3 error)
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
+  mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>   apply one literal edit, run the test, restore the file;
+                                     exit 0 killed, 1 survived, 2 refused, 3 timeout, 4 restore failed
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
@@ -10362,6 +10364,8 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'mutate':
+        process.exit(await (await import('./mutate')).mutate(args))
       case 'ci': {
         const r = ciReport(args, a => {
           const p = Bun.spawnSync(['gh', ...a], { timeout: 60_000, maxBuffer: 64_000_000 })
