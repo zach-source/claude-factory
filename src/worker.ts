@@ -95,67 +95,6 @@ export function usageOfSession(run: string): Usage[] {
   }
 }
 
-export const TRANSCRIPT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.jsonl$/
-export const TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024
-/** The files in dir. A missing dir gives none. */
-const jsonlIn = (dir: string) => {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter(e => e.isFile())
-      .map(e => join(dir, e.name))
-      .sort()
-  } catch {
-    return []
-  }
-}
-const dirsIn = (dir: string) => {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter(e => e.isDirectory())
-      .map(e => join(dir, e.name))
-      .sort()
-  } catch {
-    return []
-  }
-}
-
-/**
- * Lists the Claude and codex session files of this VM as gzip and base64. The laptop keeps them before it
- * deletes the task. This function skips and counts three kinds of file: a name that is not a plain .jsonl
- * basename, a name that occurs twice, and a file past the raw cap. It never throws.
- */
-export function transcripts(): { files: { name: string; gz: string }[]; skipped: number } {
-  const files: { name: string; gz: string }[] = []
-  const seen = new Set<string>()
-  let skipped = 0
-  let total = 0
-  const add = (kind: string, path: string, ok: (b: string) => boolean) => {
-    const b = basename(path)
-    const name = `${kind}/${b}`
-    try {
-      if (!TRANSCRIPT_RE.test(b) || !ok(b) || seen.has(name)) return void skipped++
-      const raw = readFileSync(path)
-      if (total + raw.length > TRANSCRIPT_MAX_BYTES) return void skipped++
-      total += raw.length
-      seen.add(name)
-      files.push({ name, gz: Buffer.from(Bun.gzipSync(raw)).toString('base64') })
-    } catch {
-      skipped++
-    }
-  }
-  try {
-    const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
-    for (const d of dirsIn(projects)) {
-      for (const f of jsonlIn(d)) add('claude', f, () => true)
-      for (const s of dirsIn(d)) for (const f of jsonlIn(join(s, 'subagents'))) add('claude', f, () => true)
-    }
-    const walk = (dir: string): string[] => [...jsonlIn(dir), ...dirsIn(dir).flatMap(walk)]
-    const sessions = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions')
-    for (const f of walk(sessions)) add('codex', f, b => b.startsWith('rollout-'))
-  } catch {}
-  return { files, skipped }
-}
-
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
  * args (exit 1): see `outboxUsage` */
 export const OUTBOX_USAGE = {
