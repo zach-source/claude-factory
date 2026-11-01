@@ -150,7 +150,7 @@ The first turn's brief ends with a `[factory] services: ...` line. This line nam
 
 #### Toolbelt
 
-The image carries the tools that every rig needs: `devenv`, a JDK (`keytool`), `gitleaks` and `jq`. The house rules run `gitleaks` at every station, so it is in the image. The image carries no Go. `Dockerfile.worker` pins nixpkgs with `NIXPKGS_REV`. It sets `NIX_PATH=nixpkgs=flake:nixpkgs`, so `nix-shell -p go` and `nix shell nixpkgs#go` give the same Go, from the pin. Never point `NIX_PATH` at a channel: a channel can be older than the pin.
+The image carries the tools that every rig needs: `devenv`, a JDK (`keytool`), `gitleaks` and `jq`. The house rules run `gitleaks` at every station, so it is in the image. The image carries no Go. `Dockerfile.worker` pins nixpkgs with `NIXPKGS_REV`. It prefetches that rev into the store, links it as a GC root (`/nix/var/nix/gcroots/nixpkgs-pin`) and sets `NIX_PATH` to the link. It also registers the store path as `nixpkgs`. So `nix-shell -p go` and `nix shell nixpkgs#go` give the same Go, from the pin. Never point `NIX_PATH` at a channel: a channel can be older than the pin.
 
 Each tool that only some rigs need goes in that rig's `devenv.nix`: `go`, `govulncheck`, `kustomize`, `kubeconform`, `bats`, `promtool`, `postgresql` and so on. A rig pins each tool at the version its CI uses. The `factory devenv` pass above builds the devenv and pushes it to the rig's attic cache. A VM loads it from the cache with no full build.
 

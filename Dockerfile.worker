@@ -68,10 +68,14 @@ RUN mkdir -p /etc/nix && printf '%s\n' \
     'trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=' \
     > /etc/nix/nix.conf
 ENV PATH=/nix/var/nix/profiles/default/bin:$PATH
-# `nix-shell -p` reads NIX_PATH, which the base image points at an old go1.23 package set: use the pin instead
-ENV NIX_PATH=nixpkgs=flake:nixpkgs
-RUN nix registry add --registry /etc/nix/registry.json nixpkgs github:NixOS/nixpkgs/${NIXPKGS_REV} \
-  && nix flake prefetch github:NixOS/nixpkgs/${NIXPKGS_REV} \
+# `nix-shell -p` reads NIX_PATH, which the base image points at an old go1.23 package set. Point it at the pinned
+# store path through a GC root. Register the same path. Then nix does not fetch a tarball (codeload) at run time
+ENV NIX_PATH=nixpkgs=/nix/var/nix/gcroots/nixpkgs-pin
+RUN mkdir -p /nix/var/nix/gcroots \
+  && nix flake prefetch github:NixOS/nixpkgs/${NIXPKGS_REV} --out-link /nix/var/nix/gcroots/nixpkgs-pin \
+  && p=$(readlink -f /nix/var/nix/gcroots/nixpkgs-pin) \
+  && test -d "$p" \
+  && nix registry add --registry /etc/nix/registry.json nixpkgs "path:$p" \
   && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless nixpkgs#gitleaks nixpkgs#jq \
   && devenv version && keytool -help >/dev/null 2>&1 && gitleaks version && jq --version
 # serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the

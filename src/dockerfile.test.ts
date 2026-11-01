@@ -42,7 +42,9 @@ test('the worker image pins nixpkgs at the rev with a current Go (claude-factory
 
 test('the worker NIX_PATH resolves nixpkgs to the pin, never a channel (claude-factory-823x)', () => {
   const worker = workerStage()
-  expect(worker).toMatch(/^ENV NIX_PATH=nixpkgs=flake:nixpkgs$/m)
+  expect(worker).toMatch(/^ENV NIX_PATH=nixpkgs=\/nix\/var\/nix\/gcroots\/nixpkgs-pin$/m)
+  expect(worker).toContain('--out-link /nix/var/nix/gcroots/nixpkgs-pin')
+  expect(worker).toContain('nixpkgs "path:$p"')
   expect(worker).not.toMatch(/channel|nixos-\d|nixpkgs-unstable/)
 })
 
