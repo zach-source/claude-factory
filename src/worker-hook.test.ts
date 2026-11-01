@@ -8708,6 +8708,8 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
     'x=zsh; $x -ic gp',
     'env $SHELL -ic gp',
     'script -q /dev/null zsh -ic gp',
+    'x=my; ${x}shell gp',
+    '`echo myshell` gp',
   ]) {
     const r = await run(cmd(c), env(withAlias, good))
     expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
@@ -8729,8 +8731,6 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
     "nice zs''h '-i' -c gp",
     'myshell -i -c gp',
     'myshell -li gp',
-    'x=my; ${x}shell gp',
-    '`echo myshell` gp',
   ]) {
     const r = await run(cmd(c), env(withAlias, good))
     expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
