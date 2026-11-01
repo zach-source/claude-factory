@@ -7904,6 +7904,8 @@ function firstCommandWord(words: string[]): number {
 function flatExternal(words: string[], table: Map<string, string | null>, gate: HookGate): boolean {
   const f = firstCommandWord(words)
   if (f < 0) return false
+  // An expansion `${ cmd; }`, `${| cmd; }` or zsh `${functions[f]::=body}` can define a function in this shell.
+  if (words.some(x => x.includes('${'))) return false
   const w = words[f]!
   if (!/^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/.test(w) || table.has(w)) return false
   const lower = baseWord(w)
@@ -9200,6 +9202,13 @@ export function shellSnapshotFunctions(
     for (const line of text.split('\n')) {
       const m = /^\s*(?:function\s+(\S+?)\s*(?:\(\s*\))?\s*\{|(\S+)\s*\(\)\s*\{)/.exec(line)
       if (m) names.add(m[1] ?? m[2]!)
+      // Claude Code writes a bash function as `eval $'name () \n{ ...'` (`eval -- ` for a name that
+      // starts with - or +). A line this reader cannot name fails closed.
+      else if (/^\s*eval\b/.test(line)) {
+        const e = /^\s*eval(?: --)? \$?'([A-Za-z0-9_.:@%+-]+) \(\) /.exec(line)
+        if (!e) return undefined
+        names.add(e[1]!)
+      }
     }
   return names
 }

@@ -103,6 +103,20 @@ test('AC3: a segment that is not a flat external command turns the skip off for 
   ]
   for (const row of rows) expect([row, verdict(row)]).toEqual([row, SHELL_ALIAS_REASON])
   expect(verdict(W)).toBeUndefined()
+  const funsubs = [
+    'echo "${ f(){ eval $1;}; }"; f gp',
+    'f gp | cat "${ f(){ eval $1;}; }"',
+    'f gp | echo "${| f(){ eval $1;}; }"',
+    'f gp | echo "${x:-${ f(){ eval $1;}; }}"',
+    'f gp | echo "${ eval x; }"',
+    'f gp | echo "${ source x; }"',
+    'f gp | echo "${ myf; }"',
+    'f gp | echo "${functions[f]::=eval \\$1}"',
+    'f gp | ${functions[f]=eval}',
+    'f gp | cat /dev/null "${functions[f]::=eval}"',
+    'f gp | cat ${functions[f]::=eval} x',
+  ]
+  for (const row of funsubs) expect([row, verdict(row)]).toEqual([row, expect.any(String)])
   const defs = [
     'f() { eval "$1"; }; f gp',
     'echo ${ f(){ eval $1;}; }; f gp',
@@ -164,6 +178,24 @@ test('AC5: shellSnapshotFunctions reads every function form', () => {
   })
   const got = shellSnapshotFunctions(dir)!
   expect([...got].sort()).toEqual(['--', '-ftb-x', 'a1', 'a2', 'a3', 'a4'])
+})
+
+test('AC5: shellSnapshotFunctions reads the bash eval form (real printf %q output)', () => {
+  const dir = snapDir({
+    'snapshot-bash-1.sh': [
+      'eval $\'run () \\n{ \\n    eval "$1"\\n}\' > /dev/null 2>&1',
+      "eval -- $'-x () \\n{ \\n    :\\n}'",
+    ].join('\n'),
+  })
+  expect([...shellSnapshotFunctions(dir)!].sort()).toEqual(['-x', 'run'])
+  expect(
+    verdict(
+      'run x gp',
+      gateWith(() => shellSnapshotFunctions(dir)),
+    ),
+  ).toBe(SHELL_ALIAS_REASON)
+  const odd = snapDir({ 'snapshot-bash-1.sh': 'eval run\\ \\(\\)\\ x' })
+  expect(shellSnapshotFunctions(odd)).toBeUndefined()
 })
 
 test('AC5: shellSnapshotFunctions gives an empty Set for a missing folder and undefined for a read error', () => {
