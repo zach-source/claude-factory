@@ -436,6 +436,9 @@ export interface HookGate {
    * The Bash tool shell expands them, but the hook sees only the alias word. Unset means no alias
    * check. Undefined from the function means a read error: the hook denies every command. */
   shellAliases?: () => Map<string, string | null> | undefined
+  /** claude-factory-usqc: the function names in the same snapshots (see `shellSnapshotFunctions`). Unset
+   * or undefined means the hook cannot prove an argument word safe, so it scans every word for an alias. */
+  shellFunctions?: () => Set<string> | undefined
 }
 
 /**
@@ -515,6 +518,8 @@ interface ScanState {
   gitWord: boolean
   /** claude-factory-mn2y: set when any segment, at any depth, may define a shell alias. */
   aliasWrite: boolean
+  /** claude-factory-usqc: set, for the whole call, when a segment is not a flat command with an external first word. Then `shellAliasReason` scans every word. */
+  aliasArgsOff: boolean
   /** claude-factory-mn2y: set when a builtin or unknown command has an expansion argument. A name built from it may write the aliases table. */
   dynArg: boolean
   /** claude-factory-2pdm.16: count of substitution reads that fell back to the rest of the command */
@@ -2311,6 +2316,16 @@ function wrapperReadingsDeny(
 // `realCommand` keeps only one index, the index where it stops.
 // `commandAnchors` can keep more than one index.
 const LEAD_WRAPPERS = new Set([...WRAPPERS, 'timeout', 'xargs'])
+
+// claude-factory-usqc: the reserved words and builtins of bash 5.3 and zsh 5.9, plus LEAD_WRAPPERS.
+// Source: bash -c 'compgen -b; compgen -k' and zsh -fc 'print -l ${(k)builtins} ${(k)reswords}'.
+// A first word in this set is never a flat external command.
+export const SHELL_WORDS = new Set([
+  ...'! : [ [[ ]] { } - . alias autoload bg bind bindkey break builtin bye caller case cd chdir command compadd comparguments compcall compctl compdescribe compfiles compgen compgroups complete compopt compquote compset comptags comptry compvalues continue coproc declare dirs disable disown do done echo echotc echoti elif else emulate enable end esac eval exec exit export false fc fg fi float for foreach function functions getln getopts hash help history if in integer jobs kill let limit local log logout mapfile nocorrect noglob popd print printf private pushd pushln pwd r read readarray readonly rehash repeat return sched select set setopt shift shopt source suspend test then time times trap true ttyctl type typeset ulimit umask unalias unfunction unhash unlimit unset unsetopt until vared wait whence where which while zcompile zformat zle zmodload zparseopts zregexparse zstyle'.split(
+    ' ',
+  ),
+  ...LEAD_WRAPPERS,
+])
 
 // claude-factory-p43v.21: This limit sets the maximum number of candidate indices.
 // `commandAnchors` gives no more indices than this limit.
@@ -7673,6 +7688,19 @@ function memoGate(gate: HookGate): HookGate {
       return result
     }
   }
+  // claude-factory-usqc: the same for shellFunctions.
+  if (gate.shellFunctions) {
+    const real = gate.shellFunctions
+    let called = false
+    let result: Set<string> | undefined
+    memo.shellFunctions = () => {
+      if (!called) {
+        called = true
+        result = real()
+      }
+      return result
+    }
+  }
   // claude-factory-1zr5: shellAliases reads the snapshot folder at most one time for one denyReason call.
   if (gate.shellAliases) {
     const real = gate.shellAliases
@@ -7779,6 +7807,7 @@ export function scanReason(
     globalGitConfig: false,
     gitWord: false,
     aliasWrite: false,
+    aliasArgsOff: false,
     dynArg: false,
     substFallbacks: 0,
     outer: NO_OTHER_SEGS,
@@ -7858,6 +7887,35 @@ function requoteWord(w: string): string {
  *   - any other alias: the expansion replaces the word, and `denyAt` scans the result again.
  *     It skips the names already expanded, as zsh does, and denies past MAX_SHELL_ALIAS_DEPTH.
  */
+// claude-factory-usqc: builtins that print or test and never run, define or load a word. A function
+// or an alias of the same name still fails Q5 and Q3.
+const PURE_BUILTINS = new Set(['echo', 'printf', 'pwd', 'true', 'false'])
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/
+function firstCommandWord(words: string[]): number {
+  return words.findIndex(w => !ASSIGNMENT_WORD.test(w))
+}
+
+/**
+ * claude-factory-usqc: true when the shell expands no alias in a word after the command word of this
+ * segment. That holds when the first word is a plain name (Q2) that is no alias (Q3), no shell
+ * word (Q4) and no snapshot function (Q5). A function can eval its arguments, so `gate.shellFunctions`
+ * must be set and must not hold a command_not_found handler. Q1: an assignment-only segment fails.
+ */
+function flatExternal(words: string[], table: Map<string, string | null>, gate: HookGate): boolean {
+  const f = firstCommandWord(words)
+  if (f < 0) return false
+  // An expansion `${ cmd; }`, `${| cmd; }` or zsh `${functions[f]::=body}` can define a function in this shell.
+  if (words.some(x => x.includes('${'))) return false
+  const w = words[f]!
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/.test(w) || table.has(w)) return false
+  const lower = baseWord(w)
+  if (SHELL_WORDS.has(lower) && !PURE_BUILTINS.has(lower)) return false
+  const fns = gate.shellFunctions?.()
+  if (!fns || fns.has('command_not_found_handler') || fns.has('command_not_found_handle')) return false
+  for (const n of fns) if (n.toLowerCase() === lower) return false
+  return true
+}
+
 function shellAliasReason(
   words: string[],
   table: Map<string, string | null>,
@@ -7872,8 +7930,9 @@ function shellAliasReason(
   marks?: readonly number[],
 ): string | undefined {
   let end = words.length
-  const first = words.findIndex(w => !/^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/.test(w))
-  if (
+  const first = firstCommandWord(words)
+  if (!state.aliasArgsOff) end = first + 1
+  else if (
     first >= 0 &&
     words[first]!.includes('/') &&
     !/[=<>&|()]/.test(words[first]!) &&
@@ -8589,6 +8648,10 @@ function denyAtScan(
     }
     return undefined
   }
+  // claude-factory-usqc: read every segment before the first one is scanned. One segment that is not a
+  // flat external command turns the argument-word skip off for the whole call.
+  if (aliasTable && !state.aliasArgsOff && !segs.every(w => flatExternal(w, aliasTable, g)))
+    state.aliasArgsOff = true
   for (let segIdx = 0; segIdx < segs.length; segIdx++) {
     state.outer = otherSegs(segIdx, true)
     const subReason = scanSubs(segIdx)
@@ -9102,6 +9165,54 @@ function unquoteAliasValue(
 const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024
 const SNAPSHOT_FILES = 3
 
+/** claude-factory-usqc: the texts of the newest snapshot files, oldest first. A missing folder gives []. A read error or a file over 4 MiB gives undefined. */
+export function snapshotTexts(dir: string): string[] | undefined {
+  let names: string[]
+  try {
+    names = readdirSync(dir).filter(n => /^snapshot-.*\.sh$/.test(n))
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? [] : undefined
+  }
+  try {
+    const files = names
+      .map(n => ({ path: joinPath(dir, n), st: statSync(joinPath(dir, n)) }))
+      .sort((a, b) => b.st.mtimeMs - a.st.mtimeMs)
+      .slice(0, SNAPSHOT_FILES)
+      .reverse()
+    if (files.some(f => f.st.size > SNAPSHOT_MAX_BYTES)) return undefined
+    return files.map(f => readFileSync(f.path, 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * claude-factory-usqc: the function names in the same snapshot files, with the same file choice and
+ * size cap as `shellSnapshotAliases`. A line `name () {` (indented or not), `function name {` or
+ * `function name() {` names one. A missing folder gives an empty Set. A read error gives undefined.
+ */
+export function shellSnapshotFunctions(
+  dir: string,
+  read: (dir: string) => string[] | undefined = snapshotTexts,
+): Set<string> | undefined {
+  const texts = read(dir)
+  if (!texts) return undefined
+  const names = new Set<string>()
+  for (const text of texts)
+    for (const line of text.split('\n')) {
+      const m = /^\s*(?:function\s+(\S+?)\s*(?:\(\s*\))?\s*\{|(\S+)\s*\(\)\s*\{)/.exec(line)
+      if (m) names.add(m[1] ?? m[2]!)
+      // Claude Code writes a bash function as `eval $'name () \n{ ...'` (`eval -- ` for a name that
+      // starts with - or +). A line this reader cannot name fails closed.
+      else if (/^eval\b/.test(line)) {
+        const e = /^eval(?: --)? \$?'([A-Za-z0-9_.:@%+-]+) \(\) /.exec(line)
+        if (!e) return undefined
+        names.add(e[1]!)
+      }
+    }
+  return names
+}
+
 /**
  * claude-factory-1zr5: reads the shell aliases from the newest three `snapshot-*.sh` files in `dir`
  * (Claude Code's shell-snapshots folder), a newer file over an older one. The Bash tool shell
@@ -9110,24 +9221,18 @@ const SNAPSHOT_FILES = 3
  *
  * A value maps to null when this reader cannot unquote it. A missing folder gives an empty Map.
  * A folder or file that cannot be read, or a file over 4 MiB, gives undefined (fail closed).
+ * `read` gives the file texts, oldest first (default `snapshotTexts`).
  */
-export function shellSnapshotAliases(dir: string): Map<string, string | null> | undefined {
-  let names: string[]
-  try {
-    names = readdirSync(dir).filter(n => /^snapshot-.*\.sh$/.test(n))
-  } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? new Map() : undefined
-  }
+export function shellSnapshotAliases(
+  dir: string,
+  read: (dir: string) => string[] | undefined = snapshotTexts,
+): Map<string, string | null> | undefined {
+  const texts = read(dir)
+  if (!texts) return undefined
   const table = new Map<string, string | null>()
   try {
-    const files = names
-      .map(n => ({ path: joinPath(dir, n), st: statSync(joinPath(dir, n)) }))
-      .sort((a, b) => b.st.mtimeMs - a.st.mtimeMs)
-      .slice(0, SNAPSHOT_FILES)
-      .reverse()
-    for (const f of files) {
-      if (f.st.size > SNAPSHOT_MAX_BYTES) return undefined
-      const lines = readFileSync(f.path, 'utf8').split('\n')
+    for (const text of texts) {
+      const lines = text.split('\n')
       for (let n = 0; n < lines.length; n++) {
         const m = /^alias -- ([^=\s]+)=/.exec(lines[n]!)
         if (!m) continue
@@ -9300,6 +9405,10 @@ async function main() {
   // claude-factory-zl5.3: the rig's protected branch names, carried on this hook's own argv
   const argp = process.argv.indexOf('--protected-branches')
   const protectedBranches = argp >= 0 ? process.argv[argp + 1]?.split(',').filter(Boolean) : undefined
+  // claude-factory-usqc: the alias and function readers share one read of each snapshot file.
+  const snapDir = joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots')
+  let snapCache: { texts: string[] | undefined } | undefined
+  const snapRead = (d: string) => (snapCache ??= { texts: snapshotTexts(d) }).texts
   const gate: HookGate = {
     station: process.env.FACTORY_FROM,
     factory: process.env.FACTORY_DEF_NAME,
@@ -9328,10 +9437,8 @@ async function main() {
     gitAliases: timeoutMs => gitConfigAliases(i.cwd || root, timeoutMs),
     ghAliases: timeoutMs => ghAliasList(timeoutMs),
     // claude-factory-1zr5: the Bash tool shell sources a Claude Code snapshot of the user's aliases
-    shellAliases: () =>
-      shellSnapshotAliases(
-        joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),
-      ),
+    shellAliases: () => shellSnapshotAliases(snapDir, snapRead),
+    shellFunctions: () => shellSnapshotFunctions(snapDir, snapRead),
     // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
     // read this field; `gitReason` falls back to `root` itself at its own call site.
