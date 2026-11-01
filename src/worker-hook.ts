@@ -9330,9 +9330,13 @@ async function main() {
     // claude-factory-1zr5: the Bash tool shell sources a Claude Code snapshot of the user's aliases
     // claude-factory-5us3: Claude Code sources CLAUDE_ENV_FILE after the snapshot (proved on 2.1.316).
     // The factory file runs `unalias -a`, so the shell has no snapshot alias and the table is empty.
-    // Any other value reads the snapshots as before.
+    // Any other value reads the snapshots as before. A command with a shell, source, dot or eval word can load
+    // the aliases again (zsh -i -c, source ~/.zshrc; eval), so it reads the snapshots too.
     shellAliases: () =>
-      process.env.CLAUDE_ENV_FILE === joinPath(import.meta.dir, 'worker-shell-env.sh')
+      process.env.CLAUDE_ENV_FILE === joinPath(import.meta.dir, 'worker-shell-env.sh') &&
+      !/(?<![\w.-])(?:sh|bash|zsh|dash|ksh|source|eval)(?![\w.-])|(?:^|[\s;&|(\x60])\.(?:\s|$)/.test(
+        (i.tool_input?.command ?? '').replace(/\\\r?\n/g, ''),
+      )
         ? new Map<string, string | null>()
         : shellSnapshotAliases(
             joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),

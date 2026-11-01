@@ -8688,6 +8688,24 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
   expect((await run(cmd('git status'), env(unreadable, good))).out).toBe('')
   const push = await run(cmd('git push origin main'), env(withAlias, good))
   expect(JSON.parse(push.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
+  for (const c of [
+    "zsh -i -c 'gp origin main'",
+    "bash -i -c 'gp origin main'",
+    "zsh -l -c 'gp origin main'",
+    'zsh --login -ic gp',
+    'env zsh -i -c gp',
+    "source ~/.zshrc; eval 'gp origin main'",
+    'source ~/.zshrc && builtin eval gp',
+    "zsh -i -c 'gp -f'",
+    '. ~/.zshrc; gp',
+    'exec /bin/zsh -ic gp',
+    'command eval gp',
+  ]) {
+    const r = await run(cmd(c), env(withAlias, good))
+    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
+  }
+  for (const c of ['ls -la', 'grep -n foo src/x.ts', 'cat zsh.txt'])
+    expect((await run(cmd(c), env(withAlias, good))).out).toBe('')
   const bads = [
     undefined,
     '',
