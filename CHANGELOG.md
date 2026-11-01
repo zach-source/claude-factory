@@ -35,6 +35,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: a worker can no longer mail as the manager (claude-factory-ab8n). The worker hook denies a change to `FACTORY_FROM`. `factory mail`, `poke` and `fork` refuse the manager sender when the caller is a worker. `factory mail` accepts `FACTORY_FROM` only when it names a station.
 - Fix: a patrol report with the same item set as the last one now shows one toast line, "nothing new since HH:MM". The patrol log keeps the full text (claude-factory-g5um).
 - Fix: an AX worker's `factory report` no longer fails when `bd dolt pull` fails with a schema skew (claude-factory-lahb). The report goes to the outbox with a `bdSkew` field. The laptop holds the station as an outage (no attempt spent), asks the person one Question for each rig, and holds that rig's VM starts for up to 60 min.
+- Changed: a herdr worker starts with a clean Claude config (claude-factory-5us3). Its settings keep the factory deny hook, herdr's session hook and the `ctxguard` hook. Other user hooks (shunt-guard, `bd prime`, ccswitch, nvim notify) no longer load. The worker env sets `CTXGUARD_ALLOW` to the user value, then `factory memory search` and `.kube/k0s-`. `FACTORY_LEAN=0` restores the full user setup.
 
 ## 0.15.0 (2026-10-24)
 
