@@ -115,7 +115,7 @@ test('a pipe in old or new is escaped in the row', () => {
 })
 
 test('refusals exit 2, never spawn the test, and leave the file alone', () => {
-  const { d, file } = repo('x >= 1 >= 2\ny\nx >= 3\n')
+  const { d, file } = repo('x >= 1\ny\nx >= 3 >= 4\n')
   const outside = tmp()
   writeFileSync(join(outside, 'o.ts'), 'x >= 1\n')
   symlinkSync(join(outside, 'o.ts'), join(d, 'link.ts'))
@@ -141,10 +141,10 @@ test('refusals exit 2, never spawn the test, and leave the file alone', () => {
     ['timeout 3601', ['--timeout', '3601', `${W}:1`, '>=', '>', '--', t]],
     ['line 0', [`${W}:0`, '>=', '>', '--', t]],
     ['line past EOF', [`${W}:9`, '>=', '>', '--', t]],
-    ['empty old', [`${W}:3`, '', '>', '--', t]],
-    ['old == new', [`${W}:3`, '>=', '>=', '--', t]],
+    ['empty old', [`${W}:1`, '', '>', '--', t]],
+    ['old == new', [`${W}:1`, '>=', '>=', '--', t]],
     ['old not found', [`${W}:2`, '>=', '>', '--', t]],
-    ['old twice in line', [`${W}:1`, '>=', '>', '--', t]],
+    ['old twice in line', [`${W}:3`, '>=', '>', '--', t]],
     ['old twice in file, no line', [W, 'x >=', 'x >', '--', t]],
     ['missing path', ['src/none.ts:1', 'a', 'b', '--', t]],
     ['directory', ['src:1', 'a', 'b', '--', t]],
