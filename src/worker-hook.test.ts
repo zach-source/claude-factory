@@ -8712,7 +8712,17 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
     const r = await run(cmd(c), env(withAlias, good))
     expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
   }
-  for (const c of ['ls -la', 'grep -n foo src/x.ts', 'cat zsh.txt'])
+  for (const c of [
+    "zs''h --interactive -c 'gp origin main'",
+    "zs''h -o interactive -c gp",
+    "so''urce ~/.zshrc; e''val gp",
+    "'.' ~/.zshrc; e''val gp",
+    'zs${:-h} --interactive -c gp',
+  ]) {
+    const r = await run(cmd(c), env(withAlias, good))
+    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
+  }
+  for (const c of ['ls -la', 'grep -n foo src/x.ts', 'cat zsh.txt', 'echo "hi" | grep \'x\''])
     expect((await run(cmd(c), env(withAlias, good))).out).toBe('')
   const bads = [
     undefined,

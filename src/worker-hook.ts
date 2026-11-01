@@ -9331,10 +9331,10 @@ async function main() {
     // claude-factory-5us3: Claude Code sources CLAUDE_ENV_FILE after the snapshot (proved on 2.1.316).
     // The factory file runs `unalias -a`, so the shell has no snapshot alias and the table is empty.
     // Any other value reads the snapshots as before. A command with a shell, source, dot or eval word can load
-    // the aliases again (zsh -i -c, source ~/.zshrc; eval, a variable in command position, any -i flag word), so it reads the snapshots too.
+    // the aliases again (zsh -i -c, source ~/.zshrc; eval, a quote, backslash or dollar sign in a command word, an interactive word, any -i flag word), so it reads the snapshots too.
     shellAliases: () =>
       process.env.CLAUDE_ENV_FILE === joinPath(import.meta.dir, 'worker-shell-env.sh') &&
-      !/(?<![\w.-])(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|source|eval)(?![\w.-])|(?:^|[\s;&|(\x60])\.(?:\s|$)|(?:^|[;&|({\n\x60]|\b(?:env|exec|command|builtin|sudo|time|nohup|xargs))\s*["']?\$|(?:^|\s)-[a-zA-Z]*i[a-zA-Z]*(?=\s|$)/.test(
+      !/(?<![\w.-])(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|source|eval)(?![\w.-])|(?:^|[\s;&|(\x60])\.(?:\s|$)|(?:^|[;&|({\n\x60]|\b(?:env|exec|command|builtin|sudo|time|nohup|xargs))\s*[^\s;&|(){}\x60]*["'\\$]|\binteractive\b|(?:^|\s)-[a-zA-Z]*i[a-zA-Z]*(?=\s|$)/.test(
         (i.tool_input?.command ?? '').replace(/\\\r?\n/g, ''),
       )
         ? new Map<string, string | null>()
