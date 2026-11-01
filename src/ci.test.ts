@@ -170,10 +170,10 @@ test('an unknown conclusion counts as failed', () => {
 })
 
 test('log lines lose ANSI, control characters and CR, and are cut to 400 chars', () => {
-  const text = `\x1b[31mred\x1b[0m\x07 ok\r\n${'x'.repeat(1000)}\n`
+  const text = `\x1b[31mred\x1b[0m\x07 ok\r\n${'x'.repeat(1000)}\nc1\u009b31my bidi‮end\n`
   const r = ciReport(['7'], fake([prView(), runs(A, failing), job, logs(text)]))
   expect(r.text).toContain('red ok')
-  expect(r.text).not.toMatch(/[\x07\x1b\r]/)
+  expect(r.text).not.toMatch(/[\x07\x1b\r\u0080-\u009f‮]/)
   expect(r.text).not.toContain('x'.repeat(401))
   expect(r.text).toContain('x'.repeat(400))
 })

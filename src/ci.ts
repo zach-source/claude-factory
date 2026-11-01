@@ -39,7 +39,7 @@ const clean = (s: string, max: number) =>
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
     // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x08\x0a-\x1f\x7f]/g, '')
+    .replace(/[\x00-\x08\x0a-\x1f\x7f-\x9f‪-‮⁦-⁩]/g, '')
     .slice(0, max)
 
 export function ciReport(arg: string[], gh: Gh): CiResult {
