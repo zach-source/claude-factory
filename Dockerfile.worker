@@ -76,7 +76,7 @@ RUN mkdir -p /nix/var/nix/gcroots \
   && p=$(readlink -f /nix/var/nix/gcroots/nixpkgs-pin) \
   && test -d "$p" \
   && nix registry add --registry /etc/nix/registry.json nixpkgs "path:$p" \
-  && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless nixpkgs#gitleaks nixpkgs#jq \
+  && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless nixpkgs#gitleaks nixpkgs#jq nixpkgs#postgresql \
   && devenv version && keytool -help >/dev/null 2>&1 && gitleaks version && jq --version
 # serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the
 # task starts, since Substrate shows image files as root's, so nix shell and a rig's devenv substitute as it

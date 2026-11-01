@@ -899,6 +899,9 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text).toContain('git status --short')
   expect(text).not.toContain('GOTOOLCHAIN=auto')
   expect(text).toContain('GOMAXPROCS=2')
+  expect(text).toContain('pg-scratch start')
+  expect(text).toContain('pg-scratch stop')
+  expect(text).toContain('TEST_DATABASE_URL')
   expect(text.length).toBeLessThan(4800)
 })
 
