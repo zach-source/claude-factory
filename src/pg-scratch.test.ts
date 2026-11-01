@@ -175,8 +175,43 @@ test('outside a git worktree it exits 1 and makes nothing (AC6)', () => {
 
 test('uid 0 is refused before any spawn (AC6)', () => {
   const top = repo()
-  expect(pgScratch(['start'], { cwd: top, env: { PATH: '' }, uid: 0 })).toBe(1)
+  const bin = fakeBin(top, 'exit 0')
+  expect(pgScratch(['start'], { cwd: top, env: { PATH: bin }, uid: 0 })).toBe(1)
   expect(existsSync(join(top, '.scratch'))).toBe(false)
+})
+
+// a PATH dir with a fake initdb and a pg_ctl that runs the given sh body
+function fakeBin(top: string, pgCtl: string, name = 'fakepg'): string {
+  const bin = join(top, name)
+  mkdirSync(bin)
+  for (const [n, body] of [
+    ['initdb', 'exit 0'],
+    ['pg_ctl', pgCtl],
+  ]) {
+    writeFileSync(join(bin, n), `#!/bin/sh\n${body}\n`)
+    chmodSync(join(bin, n), 0o755)
+  }
+  return bin
+}
+
+test('stop keeps the data dir when pg_ctl stop fails and the server still runs, and removes it when the server is gone (AC4)', () => {
+  const top = repo()
+  const base = join(top, '.scratch', 'pg-scratch')
+  mkdirSync(join(base, 'data'), { recursive: true })
+  writeFileSync(join(base, 'data', 'PG_VERSION'), '17\n')
+  const env = (bin: string) => ({ PATH: bin })
+  const stuck = fakeBin(top, 'case "$*" in *status) exit 0;; esac; exit 1')
+  expect(pgScratch(['stop'], { cwd: top, env: env(stuck) })).toBe(1)
+  expect(existsSync(base)).toBe(true)
+  // the server counts as running until the first stop call: that call fails, yet the server is gone
+  const marker = join(top, 'stopped')
+  const gone = fakeBin(
+    top,
+    `case "$*" in *status) [ ! -e ${marker} ]; exit $?;; esac; touch ${marker}; exit 1`,
+    'gonepg',
+  )
+  expect(pgScratch(['stop'], { cwd: top, env: env(gone) })).toBe(0)
+  expect(existsSync(base)).toBe(false)
 })
 
 test('binaries: no initdb and no nix gives the error; a fake nix gives the bin dir (AC7)', () => {
