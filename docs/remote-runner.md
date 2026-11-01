@@ -385,7 +385,7 @@ Owner steps (the factory does not do them):
 How it works:
 
 - The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot and frees it before the push. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
-- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log`, `worktrees/` and `runs/*/transcripts/` (the worker transcripts that close keeps; they can hold tokens and are large).
+- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log` and `worktrees/`.
 - A file that holds a token shape (GitHub, Anthropic, AWS, Slack, a private key, an Authorization header) stops the backup. `home/backup.json` names the file, not the text.
 - The host does not back up while the home is not ready. An empty home never replaces a good backup.
 - When the host starts with an empty home (no `rigs.json`, `runs/` or `.migrated`), it fetches the branch and writes `.migrated`. The manager then starts and resumes the last session. A used home is never changed. If the fetch fails (network or auth), the host tries again each cycle and does not start the manager. This holds with `FACTORY_AX_FRESH=1` too. If there is no remote or no branch, the host waits for `factory migrate-to-ax` as before.

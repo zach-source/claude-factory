@@ -32,7 +32,6 @@ export const EXCLUDES = [
   '/home/backup.json',
   '/home/manager-host.log',
   '/home/.restoring',
-  '/home/runs/*/transcripts/',
   'worktrees/',
 ]
 
