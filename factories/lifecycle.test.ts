@@ -553,6 +553,8 @@ test('implement runs a numbered self-check and reports a Self-check block (2ida 
   expect(p).toContain('writes the changelog at release time')
   expect(p).toContain("'Self-check:'")
   expect(p).toContain('Close every task of this run')
+  expect(p).toContain('factory mutate <file:line> <old> <new> -- <test cmd>')
+  expect(p).toContain('Exit 0 means killed')
 })
 
 test('review, security and check share one blocking-scope rule (2ida AC3, AC4)', () => {
