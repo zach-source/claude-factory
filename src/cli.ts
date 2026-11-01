@@ -2333,7 +2333,7 @@ const isCtxguardHook = (e: unknown) => {
  * It keeps the user's env and skips every permission prompt.
  * Its only hooks are the factory's deny hook, herdr's session hook and the user's ctxguard (claude-factory-5us3).
  * Every other user hook, such as shunt-guard and `bd prime`, stays out.
- * `CTXGUARD_ALLOW` exempts the `factory memory search` text and the laptop kube config path from ctxguard.
+ * `CTXGUARD_ALLOW` exempts the `factory memory search` text from ctxguard.
  * It compacts well past the handoff limit too, only as a backstop.
  * A worktree's path excludes the global `CLAUDE.md` too, since Claude Code would read it as an ancestor's project file.
  * Only the plugins in `names` stay in (the enabledPlugins key before `@`): the station's skills, and the person's FACTORY_WORKER_PLUGINS.
@@ -2384,12 +2384,8 @@ export const workerSettings = (
       ...user.env,
       ...withoutFleet(user.env?.CLAUDE_CODE_PLUGIN_DIRS ?? process.env.CLAUDE_CODE_PLUGIN_DIRS).env,
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
-      // claude-factory-5us3: ctxguard matches command text, so it blocks 'factory memory search' words and the sanctioned kube config reads
-      CTXGUARD_ALLOW: [
-        user.env?.CTXGUARD_ALLOW ?? process.env.CTXGUARD_ALLOW,
-        'factory memory search',
-        '.kube/k0s-',
-      ]
+      // claude-factory-5us3: ctxguard matches command text, so it blocks 'factory memory search' words
+      CTXGUARD_ALLOW: [user.env?.CTXGUARD_ALLOW ?? process.env.CTXGUARD_ALLOW, 'factory memory search']
         .filter(Boolean)
         .join(','),
       // claude-factory-1zr5: the script clears the shell-snapshot aliases (gp, gco) that hide git from the deny hook;

@@ -539,13 +539,14 @@ test("a worker's settings are its own: the user's environment, herdr's session h
     expect(Object.keys(got)).toEqual(['PreToolUse'])
     expect(got.PreToolUse).toHaveLength(2)
   }
-  // ctxguard's allow list: the user's value first, then the memory-search text and the kube config path
+  // ctxguard's allow list: the user's value first, then the memory-search text (no kube config text: it would exempt kube config reads)
   expect(workerSettings({ env: { CTXGUARD_ALLOW: 'a/b.pem' } }, 200).env.CTXGUARD_ALLOW).toBe(
-    'a/b.pem,factory memory search,.kube/k0s-',
+    'a/b.pem,factory memory search',
   )
   const wasAllow = process.env.CTXGUARD_ALLOW
   delete process.env.CTXGUARD_ALLOW
-  expect(workerSettings({}, 200).env.CTXGUARD_ALLOW).toBe('factory memory search,.kube/k0s-')
+  expect(workerSettings({}, 200).env.CTXGUARD_ALLOW).toBe('factory memory search')
+  expect(workerSettings({}, 200).env.CTXGUARD_ALLOW).not.toContain('.kube')
   if (wasAllow !== undefined) process.env.CTXGUARD_ALLOW = wasAllow
   expect(w.env).toMatchObject({
     A: '1',
