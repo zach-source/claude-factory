@@ -148,7 +148,27 @@ When the devenv's cache holds its closure, `serve` starts the devenv's processes
 
 The first turn's brief ends with a `[factory] services: ...` line. This line names each process as ready or failed. A process that exits, or never turns ready, does not block the turn; its failure line names its log. To turn this off, set `FACTORY_SERVICES=0` in the rig's env.
 
-`serve`'s setup also makes three things a sandboxed test expects: a `localhost` entry (the VM has no `/etc/hosts`), `GOTOOLCHAIN=local`, and a `kube-apiserver` wrapper for envtest (`TEST_ASSET_KUBE_APISERVER`) that adds `--advertise-address=127.0.0.1`, since the VM's only address is link-local and kube-apiserver will not advertise one. Measured on a test cluster: a Go operator repo's `make vet test` (74 packages, envtest included) passes in a VM.
+#### Toolbelt
+
+The image carries the tools that every rig needs: `devenv`, a JDK (`keytool`), `gitleaks` and `jq`. The house rules run `gitleaks` at every station, so it is in the image. The image carries no Go. `Dockerfile.worker` pins nixpkgs with `NIXPKGS_REV`. It sets `NIX_PATH=nixpkgs=flake:nixpkgs`, so `nix-shell -p go` and `nix shell nixpkgs#go` give the same Go, from the pin. Never point `NIX_PATH` at a channel: a channel can be older than the pin.
+
+Each tool that only some rigs need goes in that rig's `devenv.nix`: `go`, `govulncheck`, `kustomize`, `kubeconform`, `bats`, `promtool`, `postgresql` and so on. A rig pins each tool at the version its CI uses. The `factory devenv` pass above builds the devenv and pushes it to the rig's attic cache. A VM loads it from the cache with no full build.
+
+| Rig kind | Where the tools come from |
+| --- | --- |
+| AX rig with `FACTORY_NIX_CACHE` | the rig's `devenv.nix`, cached by `factory devenv` |
+| AX rig without `FACTORY_NIX_CACHE` | the image tools and `nix shell nixpkgs#<pkg>` |
+| Laptop (herdr) rig | the laptop `PATH`; a laptop worker never loads a devenv |
+
+To add a tool to a rig:
+
+1. Add the package to `packages` in the rig's `devenv.nix`. Use the same version as the rig's CI. If the pin has another version, add a `devenv.yaml` input pinned to a nixpkgs rev with the CI version, or move the CI pin.
+2. Merge the change. The next `factory devenv` pass rebuilds the devenv. Check that `$FACTORY_HOME/devenv/<rig>.json` shows `ok: true`.
+3. For a tool that every rig needs, add it to the `nix profile install` line in `Dockerfile.worker` and to the build smoke after it. Add a row to `src/dockerfile.test.ts`.
+
+A new image digest changes the cache key of every rig, so the first pass after an image change rebuilds each cached rig.
+
+`serve`'s setup also makes three things a sandboxed test expects: a `localhost` entry (the VM has no `/etc/hosts`), `GOTOOLCHAIN=local` (Go comes from the image pin or the rig's devenv, and the default egress has no Go toolchain host), and a `kube-apiserver` wrapper for envtest (`TEST_ASSET_KUBE_APISERVER`) that adds `--advertise-address=127.0.0.1`, since the VM's only address is link-local and kube-apiserver will not advertise one. Measured on a test cluster: a Go operator repo's `make vet test` (74 packages, envtest included) passes in a VM.
 
 A Bazel rig shares a remote cache through the gateway. The rig's `env` (in `rigs.json`, over `FACTORY_AX_ENV`) sets `FACTORY_BAZELRC` to its cache flags, with the cache's key header set to a placeholder, and its egress names the cache host with the vault key to inject there (`<cache-host>=<KEY>:x-buildbuddy-api-key:` for BuildBuddy). `serve` writes those flags to the VM's `~/.bazelrc`, then adds the gateway's CA twice: `--tls_certificate` for the cache's gRPC, and a Java trust store for Bazel's JVM, which fetches modules and toolchains and reads no PEM. `keytool` comes from the image's JDK (an older image gets it from Nix). `serve` writes the Java flags only when `keytool` made the store, and sets `sessionCacheSize=1` to stop parallel-fetch PKIX failures. The rig's egress also needs Bazel's own hosts: `releases.bazel.build,bcr.bazel.build,mirror.bazel.build,codeload.github.com` and its rules' package registries. Measured on a test cluster: a Go package's build, cold in 164 s, ran again after `bazel clean` in 19 s, with all 324 actions remote cache hits.
 

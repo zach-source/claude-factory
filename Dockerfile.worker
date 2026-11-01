@@ -58,7 +58,7 @@ RUN mkdir -p /etc/codex && printf '[features]\nunified_exec = false\n' > /etc/co
 # repo's own devenv.nix with `devenv shell`, whose nixpkgs devenv's cache holds. What neither cache has (a
 # repo's own derivation) builds in the VM
 COPY --from=nixos/nix:2.28.3 /nix /nix
-ARG NIXPKGS_REV=6510408d147d8c5e6d76043e899e9251756f6a75
+ARG NIXPKGS_REV=1c89083e451e891152365b799595cf7790a43325
 RUN mkdir -p /etc/nix && printf '%s\n' \
     'experimental-features = nix-command flakes' \
     'build-users-group =' \
@@ -68,10 +68,12 @@ RUN mkdir -p /etc/nix && printf '%s\n' \
     'trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=' \
     > /etc/nix/nix.conf
 ENV PATH=/nix/var/nix/profiles/default/bin:$PATH
+# `nix-shell -p` reads NIX_PATH, which the base image points at an old go1.23 package set: use the pin instead
+ENV NIX_PATH=nixpkgs=flake:nixpkgs
 RUN nix registry add --registry /etc/nix/registry.json nixpkgs github:NixOS/nixpkgs/${NIXPKGS_REV} \
   && nix flake prefetch github:NixOS/nixpkgs/${NIXPKGS_REV} \
-  && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless \
-  && devenv version && keytool -help >/dev/null 2>&1
+  && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless nixpkgs#gitleaks nixpkgs#jq \
+  && devenv version && keytool -help >/dev/null 2>&1 && gitleaks version && jq --version
 # serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the
 # task starts, since Substrate shows image files as root's, so nix shell and a rig's devenv substitute as it
 RUN useradd --create-home --shell /bin/bash worker
