@@ -502,6 +502,7 @@ test("a worker's settings are its own: the user's environment and herdr's sessio
   const dropped: Record<string, unknown[]>[] = [
     { SessionStart: [cmd(`${herdrCmd}; /x/bin/ctxguard`)] },
     { SessionStart: [{ hooks: [...cmd(herdrCmd).hooks, ...guard] }] },
+    { SessionStart: [cmd(`/x/bin/ctxguard; ${herdrCmd}`)] },
     { SessionStart: [cmd(herdrCmd, 'prompt')] },
     { SessionStart: [cmd(herdrCmd.replace('bash', 'sh'))] },
     { SessionStart: [cmd(herdrCmd.replace('session', 'stop'))] },
