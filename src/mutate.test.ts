@@ -1,5 +1,15 @@
 import { afterAll, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -31,7 +41,12 @@ function repo(bytes: string | Buffer = 'const a = 1\nreturn x >= 2\nend\n', mode
 
 function run(cwd: string, args: string[], env: Record<string, string> = {}) {
   const home = tmp()
-  const e: Record<string, string | undefined> = { ...process.env, FACTORY_SELF_UPDATE: '0', FACTORY_HOME: home, ...env }
+  const e: Record<string, string | undefined> = {
+    ...process.env,
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_HOME: home,
+    ...env,
+  }
   for (const k of ['FACTORY_OUTBOX', 'FACTORY_FROM', 'FACTORY_RUN']) delete e[k]
   const p = Bun.spawnSync([BIN, 'mutate', ...args], { cwd, env: e as Record<string, string>, timeout: 60000 })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString(), home }
@@ -79,12 +94,18 @@ test('byte for byte: CRLF, no trailing newline, multibyte, mode 0755; only the n
   const r = run(d, ['src/widget.ts:2', '2 >= 3', '2 > 3', '--', t])
   // baseline fails here (exit 1 on the clean file), so use a passing baseline script instead
   expect(r.code).toBe(2)
-  const t2 = script(d, 'copy2.sh', `if grep -q '2 > 3' src/widget.ts; then cp src/widget.ts "${d}/seen.txt"; exit 1; fi`)
+  const t2 = script(
+    d,
+    'copy2.sh',
+    `if grep -q '2 > 3' src/widget.ts; then cp src/widget.ts "${d}/seen.txt"; exit 1; fi`,
+  )
   const r2 = run(d, ['src/widget.ts:2', '2 >= 3', '2 > 3', '--', t2])
   expect(r2.code).toBe(0)
   expect(readFileSync(file).equals(bytes)).toBe(true)
   expect(statSync(file).mode).toBe(mode)
-  expect(readFileSync(join(d, 'seen.txt')).toString()).toBe('é = 1\r\nreturn x >= 2 > 3\r\nlast >= 9'.replace('2 > 3', '2 > 3'))
+  expect(readFileSync(join(d, 'seen.txt')).toString()).toBe(
+    'é = 1\r\nreturn x >= 2 > 3\r\nlast >= 9'.replace('2 > 3', '2 > 3'),
+  )
 })
 
 test('a pipe in old or new is escaped in the row', () => {
@@ -169,7 +190,11 @@ test('a baseline that fails exits 2 after one test run and leaves the file alone
 test('restore failure exits 4 and names git checkout', () => {
   if (process.getuid?.() === 0) return
   const { d, file } = repo()
-  const t = script(tmp(), 'chmod.sh', `if grep -q '> 2' "${join(d, 'src/widget.ts')}"; then chmod 444 "${file}"; fi`)
+  const t = script(
+    tmp(),
+    'chmod.sh',
+    `if grep -q '> 2' "${join(d, 'src/widget.ts')}"; then chmod 444 "${file}"; fi`,
+  )
   const r = run(d, ['src/widget.ts:2', '>= 2', '> 2', '--', t])
   chmodSync(file, 0o644)
   expect(r.code).toBe(4)
@@ -195,7 +220,11 @@ const alive = (pid: number) => {
 function sleeper(d: string) {
   const pidf = join(d, 'SLEEPPID')
   const started = join(d, 'STARTED')
-  const t = script(tmp(), 'sleep.sh', `if grep -q '> 2' "${join(d, 'src/widget.ts')}"; then sleep 30 & echo $! > "${pidf}"; touch "${started}"; wait; fi`)
+  const t = script(
+    tmp(),
+    'sleep.sh',
+    `if grep -q '> 2' "${join(d, 'src/widget.ts')}"; then sleep 30 & echo $! > "${pidf}"; touch "${started}"; wait; fi`,
+  )
   return { t, pidf, started }
 }
 
@@ -212,15 +241,28 @@ test('timeout: exit 3, row TIMEOUT, bytes restored, the sleep grandchild is dead
   expect(alive(Number(readFileSync(pidf, 'utf8')))).toBe(false)
 })
 
-for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const) {
+for (const [sig, code] of [
+  ['SIGINT', 130],
+  ['SIGTERM', 143],
+  ['SIGHUP', 129],
+] as const) {
   test(`${sig}: exit ${code}, bytes restored, the process group is dead`, async () => {
     const { d, file } = repo()
     const before = readFileSync(file)
     const { t, pidf, started } = sleeper(d)
     const home = tmp()
-    const e: Record<string, string | undefined> = { ...process.env, FACTORY_SELF_UPDATE: '0', FACTORY_HOME: home }
+    const e: Record<string, string | undefined> = {
+      ...process.env,
+      FACTORY_SELF_UPDATE: '0',
+      FACTORY_HOME: home,
+    }
     for (const k of ['FACTORY_OUTBOX', 'FACTORY_FROM', 'FACTORY_RUN']) delete e[k]
-    const p = Bun.spawn([BIN, 'mutate', 'src/widget.ts:2', '>= 2', '> 2', '--', t], { cwd: d, env: e as Record<string, string>, stdout: 'pipe', stderr: 'pipe' })
+    const p = Bun.spawn([BIN, 'mutate', 'src/widget.ts:2', '>= 2', '> 2', '--', t], {
+      cwd: d,
+      env: e as Record<string, string>,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
     for (let i = 0; i < 300 && !existsSync(started); i++) await Bun.sleep(100)
     expect(existsSync(started)).toBe(true)
     expect(readFileSync(file, 'utf8')).toContain('> 2')

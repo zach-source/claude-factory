@@ -827,6 +827,10 @@ commit it, and the repo owns its factory like any other code:
 - **Those changes ship like any change**: plan, implement, `factory check` in verify, a review
   that reads them as policy (security review when they remove a gate, widen what runs
   unattended or raise a limit), and your merge. Deploy reports them as published.
+- `factory mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>` is the worker's mutation check. It
+  applies one literal edit to a tracked, clean file, runs the test, restores the file byte for byte (also
+  after a timeout or a signal), and prints one row. Exit 0 means killed, 1 survived, 2 refused, 3 timeout,
+  4 restore failed.
 - `factory check <file>` validates a factory: the graph, its outcomes and timed edges, and a
   way to `done` from every station. A factory whose starting commit does not validate is
   refused before any worker starts, and its bead is deferred with the reason.

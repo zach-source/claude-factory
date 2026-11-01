@@ -16,7 +16,12 @@ const refuse = (m: string): never => {
 type Run = { code: number | null; timedOut: boolean; tail: string }
 
 // ponytail: no --no-baseline flag; add one when the baseline run costs too much time.
-function runTest(argv: string[], cwd: string, seconds: number, onChild: (pid: number | undefined) => void): Promise<Run> {
+function runTest(
+  argv: string[],
+  cwd: string,
+  seconds: number,
+  onChild: (pid: number | undefined) => void,
+): Promise<Run> {
   return new Promise(done => {
     const child = spawn(argv[0]!, argv.slice(1), { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     onChild(child.pid)
@@ -50,13 +55,22 @@ function runTest(argv: string[], cwd: string, seconds: number, onChild: (pid: nu
 
 const git = (cwd: string, ...a: string[]) => spawnSync('git', ['-C', cwd, ...a], { encoding: 'utf8' })
 
-type Plan = { abs: string; rel: string; line: number; original: Buffer; mutant: Buffer; old: string; neu: string }
+type Plan = {
+  abs: string
+  rel: string
+  line: number
+  original: Buffer
+  mutant: Buffer
+  old: string
+  neu: string
+}
 
 function parse(args: string[], cwd: string): Plan & { seconds: number; argv: string[] } {
   let seconds = 200
   let a = [...args]
   if (a[0] === '--timeout') {
-    if (!/^[1-9]\d{0,3}$/.test(a[1] ?? '') || Number(a[1]) > 3600) refuse('--timeout takes an integer 1..3600')
+    if (!/^[1-9]\d{0,3}$/.test(a[1] ?? '') || Number(a[1]) > 3600)
+      refuse('--timeout takes an integer 1..3600')
     seconds = Number(a[1])
     a = a.slice(2)
   }
@@ -85,7 +99,8 @@ function parse(args: string[], cwd: string): Plan & { seconds: number; argv: str
   if (rel === '.git' || rel.startsWith('.git' + sep)) refuse('path is under .git')
   if (!statSync(real).isFile()) refuse('path is not a regular file')
   if (git(root, 'ls-files', '--error-unmatch', '--', rel).status !== 0) refuse('file is not tracked')
-  if (git(root, 'diff', '--quiet', 'HEAD', '--', rel).status !== 0) refuse('file has changes: commit or restore them first')
+  if (git(root, 'diff', '--quiet', 'HEAD', '--', rel).status !== 0)
+    refuse('file has changes: commit or restore them first')
   const denied = fileWriteReason(real, cwd)
   if (denied) refuse(denied)
 
@@ -104,7 +119,8 @@ function parse(args: string[], cwd: string): Plan & { seconds: number; argv: str
   const scope = text.slice(start, end)
   const at = scope.indexOf(old)
   if (at < 0) refuse('<old> not found')
-  if (scope.indexOf(old, at + 1) >= 0) refuse(`<old> occurs more than once${line ? ' in that line' : ': give :<line>'}`)
+  if (scope.indexOf(old, at + 1) >= 0)
+    refuse(`<old> occurs more than once${line ? ' in that line' : ': give :<line>'}`)
   const at0 = start + at
   const mutant = Buffer.from(text.slice(0, at0) + neu + text.slice(at0 + old.length), 'utf8')
   const lineNo = line || text.slice(0, at0).split('\n').length
@@ -127,7 +143,9 @@ export async function mutate(args: string[], cwd = process.cwd()): Promise<numbe
   }
   const base = await runTest(p.argv, cwd, p.seconds, () => {})
   if (base.code !== 0) {
-    console.error(`refused: baseline fails on the clean file (${base.timedOut ? 'timeout' : `exit ${base.code}`})\n${base.tail}`)
+    console.error(
+      `refused: baseline fails on the clean file (${base.timedOut ? 'timeout' : `exit ${base.code}`})\n${base.tail}`,
+    )
     return 2
   }
 
@@ -151,7 +169,11 @@ export async function mutate(args: string[], cwd = process.cwd()): Promise<numbe
     if (!restore()) console.error(`restore failed: run git checkout -- ${p.rel}`)
     process.exit(restore() ? code : 4)
   }
-  const sigs: [NodeJS.Signals, number][] = [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]
+  const sigs: [NodeJS.Signals, number][] = [
+    ['SIGINT', 130],
+    ['SIGTERM', 143],
+    ['SIGHUP', 129],
+  ]
   for (const [s, c] of sigs) process.on(s, onSignal(c))
 
   let r: Run
