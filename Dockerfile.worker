@@ -70,7 +70,7 @@ RUN mkdir -p /etc/nix && printf '%s\n' \
 ENV PATH=/nix/var/nix/profiles/default/bin:$PATH
 RUN nix registry add --registry /etc/nix/registry.json nixpkgs github:NixOS/nixpkgs/${NIXPKGS_REV} \
   && nix flake prefetch github:NixOS/nixpkgs/${NIXPKGS_REV} \
-  && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless \
+  && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless nixpkgs#postgresql \
   && devenv version && keytool -help >/dev/null 2>&1
 # serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the
 # task starts, since Substrate shows image files as root's, so nix shell and a rig's devenv substitute as it

@@ -130,6 +130,7 @@ import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
 import { REPAIR_CAP, closableParents, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
+import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
 import { kickEnv } from './kick-env'
@@ -9849,6 +9850,9 @@ if (import.meta.main && !outboxCmd)
       case 'dream':
         refuseWorker('dream')
         console.log(await dream())
+        break
+      case 'pg-scratch':
+        process.exit(pgScratch(args, { cwd: process.cwd(), env: process.env }))
         break
       case 'devenv':
         refuseWorker('devenv')
