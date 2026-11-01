@@ -130,6 +130,7 @@ import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
 import { REPAIR_CAP, closableParents, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
+import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
 import { kickEnv } from './kick-env'
@@ -241,6 +242,7 @@ import {
   type SyncEntry,
 } from './sync'
 import { rmSafe } from './home-guard'
+import { ciReport } from './ci'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -9404,6 +9406,8 @@ const usage = `factory — herdr software factories on xstate
                                      cleaned text in gate-briefs.json, for the gate's Interview item
   metrics [--rig r] [--since 7d] [--json]   how the factory performs: fates, ship rate, time to ship and on
                                      the approve gate, review loops, failures by kind, each station's outcomes
+  ci <pr>                            the PR's checks on its head SHA; each failed job's step and log tail
+                                     (exit 0 green, 1 failed, 2 pending, 3 error)
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
@@ -9867,6 +9871,9 @@ if (import.meta.main && !outboxCmd)
       case 'dream':
         refuseWorker('dream')
         console.log(await dream())
+        break
+      case 'pg-scratch':
+        process.exit(pgScratch(args, { cwd: process.cwd(), env: process.env }))
         break
       case 'devenv':
         refuseWorker('devenv')
@@ -10354,6 +10361,15 @@ if (import.meta.main && !outboxCmd)
           `wrote ${target}. Commit it: runs that start from a commit holding it follow it, and the factory improves it through its own runs.`,
         )
         break
+      }
+      case 'ci': {
+        const r = ciReport(args, a => {
+          const p = Bun.spawnSync(['gh', ...a], { timeout: 60_000, maxBuffer: 64_000_000 })
+          return { code: p.exitCode ?? 1, out: p.stdout.toString(), err: p.stderr.toString() }
+        })
+        if (r.exit === 3) console.error(r.text)
+        else console.log(r.text)
+        process.exit(r.exit)
       }
       case 'check': {
         if (!args[0]) fail('usage: factory check <factory file>')
