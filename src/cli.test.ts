@@ -463,10 +463,18 @@ test("a worker's context is its transcript's last turn, read from a tail that ma
   expect(lastContext('{"type":"user"}')).toBe(0)
 })
 
-test("a worker's settings are its own: the user's hooks and environment, none of their plugins", () => {
+test("a worker's settings are its own: the user's environment and herdr's session hook, no other hook or plugin", () => {
+  const herdr = {
+    matcher: '^(startup|resume|clear|compact|fork)$',
+    hooks: [
+      { type: 'command', command: "bash '/h/.claude/hooks/herdr-agent-state.sh' session", timeout: 10 },
+    ],
+  }
+  const guard = [{ type: 'command', command: '/x/bin/ctxguard' }]
   const hooks = {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'herdr-session' }] }],
-    PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'guard' }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'bd prime --hook-json' }] }, herdr],
+    PreToolUse: [{ matcher: 'Bash', hooks: guard }],
+    PostToolUse: [{ hooks: guard }],
   }
   const user = {
     env: { A: '1', CLAUDE_CODE_PLUGIN_DIRS: '/x/herdr-fleet:/y/mine' },
@@ -475,19 +483,39 @@ test("a worker's settings are its own: the user's hooks and environment, none of
   }
   const w = workerSettings(user, 200)
   const pre = w.hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[]
-  // the user's own PreToolUse entry (a secret guard such as ctxguard) stays first, unchanged
-  expect(pre[0]).toEqual(hooks.PreToolUse[0])
-  // claude-factory-cr6: the factory's deny-rm-rf hook comes last, so it never shadows the user's own guard
-  expect(pre[1]).toMatchObject({ matcher: 'Bash' })
-  expect(pre[1]!.hooks[0]!.command).toMatch(/worker-hook\.ts' --harness claude$/)
+  // claude-factory-5us3: no user hook stays: only the factory's deny hook and herdr's session hook
+  expect(Object.keys(w.hooks).sort()).toEqual(['PreToolUse', 'SessionStart'])
+  expect(JSON.stringify(w.hooks)).not.toContain('ctxguard')
+  expect(pre).toHaveLength(2)
+  expect(pre[0]).toMatchObject({ matcher: 'Bash' })
+  expect(pre[0]!.hooks[0]!.command).toMatch(/worker-hook\.ts' --harness claude$/)
   // claude-factory-g4du: the same command guards Write, Edit, MultiEdit and NotebookEdit file paths
-  expect(pre[2]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit' })
-  expect(pre[2]!.hooks[0]!.command).toBe(pre[1]!.hooks[0]!.command)
-  expect(pre).toHaveLength(3)
-  // workerSettings keeps a hook event other than PreToolUse as the user set it
-  expect(w.hooks.SessionStart).toEqual(hooks.SessionStart)
-  // a user with no hooks at all gets only the factory's entry
+  expect(pre[1]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit' })
+  expect(pre[1]!.hooks[0]!.command).toBe(pre[0]!.hooks[0]!.command)
+  expect(w.hooks.SessionStart).toEqual([herdr])
+  // a user with no hooks at all gets only the factory's entries
+  expect(Object.keys(workerSettings({}, 200).hooks)).toEqual(['PreToolUse'])
   expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(2)
+  // each of these is not herdr's hook, so it goes
+  const cmd = (command: string, type = 'command') => ({ hooks: [{ type, command }] })
+  const herdrCmd = "bash '/h/.claude/hooks/herdr-agent-state.sh' session"
+  const dropped: Record<string, unknown[]>[] = [
+    { SessionStart: [cmd(`${herdrCmd}; /x/bin/ctxguard`)] },
+    { SessionStart: [{ hooks: [...cmd(herdrCmd).hooks, ...guard] }] },
+    { SessionStart: [cmd(herdrCmd, 'prompt')] },
+    { SessionStart: [cmd(herdrCmd.replace('bash', 'sh'))] },
+    { SessionStart: [cmd(herdrCmd.replace('session', 'stop'))] },
+    { SessionStart: [{ hooks: [] }] },
+    { SessionStart: [{}] },
+    { PreToolUse: [cmd(herdrCmd)] },
+    { PostToolUse: [cmd(herdrCmd)] },
+    { SessionStart: [cmd('bd prime --hook-json')] },
+  ]
+  for (const h of dropped) {
+    const got = workerSettings({ hooks: h }, 200).hooks
+    expect(Object.keys(got)).toEqual(['PreToolUse'])
+    expect(got.PreToolUse).toHaveLength(2)
+  }
   expect(w.env).toMatchObject({
     A: '1',
     CLAUDE_CODE_PLUGIN_DIRS: '/y/mine',
@@ -538,6 +566,47 @@ test("workerFlags writes a rig's own worker-settings-<rig>.json when it has pers
   const webSettings = JSON.parse(readFileSync(join(home, 'worker-settings.json'), 'utf8'))
   expect(acmeSettings.hooks.PreToolUse.at(-1).hooks[0].command).toContain("--person-only-contexts 'acme-ctx'")
   expect(webSettings.hooks.PreToolUse.at(-1).hooks[0].command).not.toContain('--person-only-contexts')
+})
+
+// claude-factory-5us3: a herdr worker launches with the factory hook and herdr's session hook, no personal hook
+test('workerFlags writes a clean worker config: no personal hook, the alias-clearing env file', () => {
+  const home = mkdtempSync(join(tmpdir(), 'worker-clean-'))
+  const claude = mkdtempSync(join(tmpdir(), 'claude-clean-'))
+  const ctx = [{ type: 'command', command: '/nix/store/x-ctxguard-0.1.2/bin/ctxguard' }]
+  writeFileSync(
+    join(claude, 'settings.json'),
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: ctx }],
+        PostToolUse: [{ matcher: '', hooks: ctx }],
+        SessionStart: [
+          { hooks: [{ type: 'command', command: 'bd prime --hook-json' }] },
+          { hooks: [{ type: 'command', command: "bash '/h/.claude/hooks/herdr-agent-state.sh' session" }] },
+        ],
+      },
+    }),
+  )
+  const was = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = claude
+  try {
+    const flags = workerFlags({ maxContextK: 200 }, { name: 'web' }, home)
+    const file = join(home, 'worker-settings.json')
+    expect(flags).toContain(`--setting-sources project,local --settings '${file}'`)
+    const text = readFileSync(file, 'utf8')
+    expect(text).not.toContain('ctxguard')
+    expect(text).not.toContain('bd prime')
+    const s = JSON.parse(text)
+    const commands = Object.values(s.hooks as Record<string, { hooks: { command: string }[] }[]>)
+      .flat()
+      .flatMap(e => e.hooks.map(h => h.command))
+    expect(commands).toHaveLength(3)
+    expect(commands.filter(c => /worker-hook\.ts' --harness claude$/.test(c))).toHaveLength(2)
+    expect(commands.filter(c => c.includes('herdr-agent-state.sh'))).toHaveLength(1)
+    expect(s.env.CLAUDE_ENV_FILE).toBe(join(import.meta.dir, 'worker-shell-env.sh'))
+  } finally {
+    if (was === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = was
+  }
 })
 
 test('workerFlags writes one settings file for each skill set, and warns when a listed skill is off', () => {

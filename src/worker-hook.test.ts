@@ -8656,6 +8656,7 @@ const spawnEnv = (configDir: string) => ({
   FACTORY_FROM: undefined,
   FACTORY_SELF_UPDATE: '0',
   CLAUDE_CONFIG_DIR: configDir,
+  CLAUDE_ENV_FILE: undefined,
 })
 test('the spawned hook denies a snapshot alias word and allows git status with an empty folder (claude-factory-1zr5)', async () => {
   const withAlias = mkdtempSync(join(tmpdir(), 'cfg-'))
@@ -8672,6 +8673,35 @@ test('the spawned hook denies a snapshot alias word and allows git status with a
   const blocked = await run(cmd('git status'), spawnEnv(unreadable))
   expect(JSON.parse(blocked.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_READ_REASON)
 }, 30_000)
+
+// claude-factory-5us3: the factory env file clears every alias after the snapshot, so the hook skips the table
+test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the factory env file (claude-factory-5us3)', async () => {
+  const withAlias = mkdtempSync(join(tmpdir(), 'cfg-'))
+  mkdirSync(join(withAlias, 'shell-snapshots'))
+  writeFileSync(join(withAlias, 'shell-snapshots', 'snapshot-zsh-1.sh'), "alias -- gp='git push'\n")
+  const unreadable = mkdtempSync(join(tmpdir(), 'cfg-'))
+  writeFileSync(join(unreadable, 'shell-snapshots'), '')
+  const cmd = (command: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command } })
+  const good = join(import.meta.dir, 'worker-shell-env.sh')
+  const env = (dir: string, file?: string) => ({ ...spawnEnv(dir), CLAUDE_ENV_FILE: file })
+  expect((await run(cmd('gp origin main'), env(withAlias, good))).out).toBe('')
+  expect((await run(cmd('git status'), env(unreadable, good))).out).toBe('')
+  const push = await run(cmd('git push origin main'), env(withAlias, good))
+  expect(JSON.parse(push.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
+  const bads = [
+    undefined,
+    '',
+    '/x/worker-shell-env.sh',
+    `${good}.bak`,
+    join(import.meta.dir, '..', 'src', 'worker-shell-env.sh'),
+  ]
+  for (const bad of bads) {
+    const denied = await run(cmd('gp origin main'), env(withAlias, bad))
+    expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
+    const blocked = await run(cmd('git status'), env(unreadable, bad))
+    expect(JSON.parse(blocked.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_READ_REASON)
+  }
+}, 60_000)
 
 // claude-factory-a8pr: macOS APFS resolves Git, GH, SH to the real binaries, so a capitalized
 // command word must get the same verdict as its lowercase twin.
