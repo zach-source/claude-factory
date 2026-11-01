@@ -33,7 +33,7 @@ const repo = (parent = tmpdir(), name = 'pgs-test-'): string => {
   return d
 }
 const clean = (extra: Record<string, string> = {}) => {
-  const env = {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     FACTORY_SELF_UPDATE: '0',
     FACTORY_HOME: mkdtempSync(join(tmpdir(), 'pgs-home-')),

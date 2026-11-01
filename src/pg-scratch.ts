@@ -29,7 +29,7 @@ export function resolveBin(env: Record<string, string | undefined>): string {
       env: env as Record<string, string>,
       stderr: 'ignore',
     })
-    if (r.exitCode === 0) out = r.stdout.toString().trim().split('\n')[0]
+    if (r.exitCode === 0) out = r.stdout.toString().trim().split('\n')[0] ?? ''
   } catch {} // no nix on PATH: Bun throws; the error below says so
   if (!out) throw new Error('pg-scratch: no initdb on PATH and nix build nixpkgs#postgresql failed')
   return join(out, 'bin')
