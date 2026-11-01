@@ -9328,21 +9328,10 @@ async function main() {
     gitAliases: timeoutMs => gitConfigAliases(i.cwd || root, timeoutMs),
     ghAliases: timeoutMs => ghAliasList(timeoutMs),
     // claude-factory-1zr5: the Bash tool shell sources a Claude Code snapshot of the user's aliases
-    // claude-factory-5us3: Claude Code sources CLAUDE_ENV_FILE after the snapshot (proved on 2.1.316).
-    // The factory file runs `unalias -a`, so the shell has no snapshot alias and the table is empty.
-    // Any other value reads the snapshots as before. A command can load the aliases again (zsh -i -c,
-    // source ~/.zshrc; eval). The hook cannot see where a command word starts, so it reads a copy
-    // with every quote and backslash removed. It reads the snapshots if the copy has a dollar sign,
-    // a backtick, a shell, source, eval, dot or interactive word, or a dash word with an i.
     shellAliases: () =>
-      process.env.CLAUDE_ENV_FILE === joinPath(import.meta.dir, 'worker-shell-env.sh') &&
-      !/[$\x60]|(?<![\w.-])(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|source|eval)(?![\w.-])|(?:^|\s)\.(?:\s|$)|interactive|(?:^|\s)-[a-zA-Z]*i[a-zA-Z]*(?=\s|$)/.test(
-        (i.tool_input?.command ?? '').replace(/\\\r?\n/g, '').replace(/["'\\]/g, ''),
-      )
-        ? new Map<string, string | null>()
-        : shellSnapshotAliases(
-            joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),
-          ),
+      shellSnapshotAliases(
+        joinPath(process.env.CLAUDE_CONFIG_DIR || joinPath(homedir(), '.claude'), 'shell-snapshots'),
+      ),
     // claude-factory-3f2z.2 / claude-factory-9zd5: the tool call's own cwd, with no fallback to
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
     // read this field; `gitReason` falls back to `root` itself at its own call site.

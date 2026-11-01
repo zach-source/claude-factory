@@ -8674,8 +8674,8 @@ test('the spawned hook denies a snapshot alias word and allows git status with a
   expect(JSON.parse(blocked.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_READ_REASON)
 }, 30_000)
 
-// claude-factory-5us3: the factory env file clears every alias after the snapshot, so the hook skips the table
-test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the factory env file (claude-factory-5us3)', async () => {
+// claude-factory-5us3: the factory env file must not change what the hook reads from the snapshots
+test('CLAUDE_ENV_FILE does not change the snapshot alias table (claude-factory-5us3)', async () => {
   const withAlias = mkdtempSync(join(tmpdir(), 'cfg-'))
   mkdirSync(join(withAlias, 'shell-snapshots'))
   writeFileSync(join(withAlias, 'shell-snapshots', 'snapshot-zsh-1.sh'), "alias -- gp='git push'\n")
@@ -8683,72 +8683,29 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
   writeFileSync(join(unreadable, 'shell-snapshots'), '')
   const cmd = (command: string) => JSON.stringify({ tool_name: 'Bash', tool_input: { command } })
   const good = join(import.meta.dir, 'worker-shell-env.sh')
-  const env = (dir: string, file?: string) => ({ ...spawnEnv(dir), CLAUDE_ENV_FILE: file })
-  expect((await run(cmd('gp origin main'), env(withAlias, good))).out).toBe('')
-  expect((await run(cmd('git status'), env(unreadable, good))).out).toBe('')
-  const push = await run(cmd('git push origin main'), env(withAlias, good))
-  expect(JSON.parse(push.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
-  for (const c of [
+  const denied = [
     "zsh -i -c 'gp origin main'",
-    "bash -i -c 'gp origin main'",
-    "zsh -l -c 'gp origin main'",
-    'zsh --login -ic gp',
-    'env zsh -i -c gp',
     "source ~/.zshrc; eval 'gp origin main'",
-    'source ~/.zshrc && builtin eval gp',
-    "zsh -i -c 'gp -f'",
-    '. ~/.zshrc; gp',
-    'exec /bin/zsh -ic gp',
-    'command eval gp',
-    "$SHELL -i -c 'gp origin main'",
-    '"$0" -ic "gp"',
-    'sudo -u me zsh -ic gp',
-    "fish -c 'gp'",
-    'tcsh -ic gp',
-    'x=zsh; $x -ic gp',
-    'env $SHELL -ic gp',
-    'script -q /dev/null zsh -ic gp',
-    'x=my; ${x}shell gp',
-    '`echo myshell` gp',
-  ]) {
-    const r = await run(cmd(c), env(withAlias, good))
-    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
-  }
-  for (const c of [
     "zs''h --interactive -c 'gp origin main'",
-    "zs''h -o interactive -c gp",
-    'myshell -o interactive -c gp',
-    "so''urce ~/.zshrc; e''val gp",
-    "'.' ~/.zshrc; e''val gp",
-    'zs${:-h} --interactive -c gp',
-    "if zs''h '-i' -c 'gp origin main'; then :; fi",
-    "if :; then zs''h '-i' -c gp; fi",
-    "! zs''h '-i' -c gp",
-    "if so''urce ~/.zshrc; then e''val gp; fi",
-    "while zs''h '-i' -c gp; do :; done",
-    "for x in 1; do zs''h '-i' -c gp; done",
-    "timeout 5 zs''h '-i' -c gp",
-    "nice zs''h '-i' -c gp",
-    'myshell -i -c gp',
-    'myshell -li gp',
-  ]) {
-    const r = await run(cmd(c), env(withAlias, good))
-    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
-  }
-  for (const c of ['ls -la', 'grep -n foo src/x.ts', 'cat zsh.txt', 'echo "hi" | grep \'x\''])
-    expect((await run(cmd(c), env(withAlias, good))).out).toBe('')
-  const bads = [
-    undefined,
-    '',
-    '/x/worker-shell-env.sh',
-    `${good}.bak`,
-    `${import.meta.dir}/../src/worker-shell-env.sh`,
+    "if zs''h '-i' -c gp; then :; fi",
+    "true;. ~/.zshrc; trap 'gp origin main' EXIT",
+    "true&&. ~/.zshrc; trap 'gp origin main' EXIT",
+    "{. ~/.zshrc;}; trap 'gp origin main' EXIT",
+    "!. ~/.zshrc; trap 'gp origin main' EXIT",
+    "true;. ~/.zshrc; trap 'gp origin main' ZERR; false",
   ]
-  for (const bad of bads) {
-    const denied = await run(cmd('gp origin main'), env(withAlias, bad))
-    expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
-    const blocked = await run(cmd('git status'), env(unreadable, bad))
+  for (const file of [undefined, good]) {
+    const env = (dir: string) => ({ ...spawnEnv(dir), CLAUDE_ENV_FILE: file })
+    for (const c of denied) {
+      const r = await run(cmd(c), env(withAlias))
+      expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBeTruthy()
+    }
+    const g = await run(cmd('gp origin main'), env(withAlias))
+    expect(JSON.parse(g.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
+    const blocked = await run(cmd('git status'), env(unreadable))
     expect(JSON.parse(blocked.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_READ_REASON)
+    for (const c of ['ls -la', 'grep -n foo src/x.ts', 'cat zsh.txt', 'echo "hi" | grep \'x\''])
+      expect((await run(cmd(c), env(withAlias))).out).toBe('')
   }
 }, 60_000)
 
