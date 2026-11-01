@@ -8719,6 +8719,14 @@ test('the spawned hook skips the snapshot table only when CLAUDE_ENV_FILE is the
     "so''urce ~/.zshrc; e''val gp",
     "'.' ~/.zshrc; e''val gp",
     'zs${:-h} --interactive -c gp',
+    "if zs''h '-i' -c 'gp origin main'; then :; fi",
+    "if :; then zs''h '-i' -c gp; fi",
+    "! zs''h '-i' -c gp",
+    "if so''urce ~/.zshrc; then e''val gp; fi",
+    "while zs''h '-i' -c gp; do :; done",
+    "for x in 1; do zs''h '-i' -c gp; done",
+    "timeout 5 zs''h '-i' -c gp",
+    "nice zs''h '-i' -c gp",
   ]) {
     const r = await run(cmd(c), env(withAlias, good))
     expect(JSON.parse(r.out).hookSpecificOutput.permissionDecisionReason).toBe(SHELL_ALIAS_REASON)
