@@ -557,6 +557,17 @@ test('implement runs a numbered self-check and reports a Self-check block (2ida 
   expect(p).toContain('Exit 0 means killed')
 })
 
+test('implement pushes each finished task and keeps its tests (swrm AC1, AC2)', () => {
+  const p = lifecycle.nodes.implement!.prompt
+  const first = 'Each attempt must end with a pushed commit'
+  expect(p).toContain(first)
+  expect(p).toContain('Commit and push each finished task (its test and its fix) before you start the next')
+  expect(p).toContain("Never delete a test you wrote to fit a plan's 'one commit' rule")
+  expect(p).toContain('commit it as WIP and say so')
+  expect(p.indexOf(first)).toBeLessThan(p.indexOf('Before you report ready'))
+  expect(lifecycle.nodes.quick!.prompt).not.toContain(first)
+})
+
 test('review, security and check share one blocking-scope rule (2ida AC3, AC4)', () => {
   for (const n of ['review', 'security', 'check'] as const) {
     const p = lifecycle.nodes[n]!.prompt
