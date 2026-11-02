@@ -372,3 +372,30 @@ test('`factory help` names the committed default FACTORY_MAX_RUNS as 16 (claude-
   })
   expect(p.stdout.toString()).toContain('FACTORY_MAX_RUNS (16)')
 })
+
+// claude-factory-e8pb: a fork must not put a second run on the branch of a live source run.
+test('fork of a live run is refused and makes nothing; after abort it works', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const started = run(['start', factoryFixture(), r, 'a goal'])
+  expect(started.code).toBe(0)
+  const id = readdirSync(join(home, 'runs'))[0]!
+  const before = readFileSync(calls, 'utf8')
+  const refused = run(['fork', id, 'work', 'again'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(`${id} is live at work`)
+  expect(refused.err).toContain(`factory abort ${id}`)
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(1)
+  expect(readFileSync(calls, 'utf8').slice(before.length)).not.toMatch(/^create|--claim/m)
+
+  expect(run(['abort', id]).code).toBe(0)
+  const forked = run(['fork', id, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+  const ids = readdirSync(join(home, 'runs'))
+  expect(ids).toHaveLength(2)
+  const child = ids.find(x => x !== id)!
+  expect(JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8')).forkedFrom).toBe(id)
+})
