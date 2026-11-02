@@ -177,7 +177,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
       skills: ['asd-ste100'],
       split: { agent: CODEX_EXEC, share: 'codex_share' },
       timeoutMin: 120,
-      prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line. ${siblingSites}
+      prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Each attempt must end with a pushed commit. Commit and push each finished task (its test and its fix) before you start the next. Never delete a test you wrote to fit a plan's 'one commit' rule: commit it as WIP and say so. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line. ${siblingSites}
 Before you report ready, run this self-check at the final HEAD, after your last commit. Do what review would:
 1. Merge origin/{base_branch} last and resolve any conflict. Then run the full gate the way CI runs it: the same commands, the pinned tool versions and the whole test suite, not only the files you touched. If load makes timing tests flake, run those files alone and say so.
 2. Make an AC table: each plan AC id and the test or command that proves it.
