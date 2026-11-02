@@ -324,6 +324,14 @@ for (const from of ['review', 'check']) {
   })
 }
 
+test('the plan prompt tells plan to start its own scratch Postgres and never forbids initdb (g2mk)', () => {
+  const p = lifecycle.nodes.plan!.prompt as string
+  expect(p).toContain('factory pg-scratch start')
+  expect(p).toContain('factory pg-scratch stop')
+  expect(p).toContain('Never report blocked on a missing Postgres service')
+  expect(p).not.toMatch(/(do not|never|forbid)[^.\n]*(initdb|pg_ctl)/i)
+})
+
 test("security's onTimeout prompt points the retry at review's or check's diff summary, not the whole branch, and both prompts promise one (claude-factory-3t2 AC5, extended by claude-factory-wnn.6 for check)", () => {
   const onTimeout = lifecycle.nodes.security!.onTimeout!
   expect(onTimeout.timeoutMin).toBe(75)
