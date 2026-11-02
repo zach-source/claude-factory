@@ -324,6 +324,14 @@ for (const from of ['review', 'check']) {
   })
 }
 
+test('the plan prompt tells plan to start its own scratch Postgres and never forbids initdb (g2mk)', () => {
+  const p = lifecycle.nodes.plan!.prompt as string
+  expect(p).toContain('factory pg-scratch start')
+  expect(p).toContain('factory pg-scratch stop')
+  expect(p).toContain('Never report blocked on a missing Postgres service')
+  expect(p).not.toMatch(/(do not|never|forbid)[^.\n]*(initdb|pg_ctl)/i)
+})
+
 test("security's onTimeout prompt points the retry at review's or check's diff summary, not the whole branch, and both prompts promise one (claude-factory-3t2 AC5, extended by claude-factory-wnn.6 for check)", () => {
   const onTimeout = lifecycle.nodes.security!.onTimeout!
   expect(onTimeout.timeoutMin).toBe(75)
@@ -555,6 +563,17 @@ test('implement runs a numbered self-check and reports a Self-check block (2ida 
   expect(p).toContain('Close every task of this run')
   expect(p).toContain('factory mutate <file:line> <old> <new> -- <test cmd>')
   expect(p).toContain('Exit 0 means killed')
+})
+
+test('implement pushes each finished task and keeps its tests (swrm AC1, AC2)', () => {
+  const p = lifecycle.nodes.implement!.prompt
+  const first = 'Each attempt must end with a pushed commit'
+  expect(p).toContain(first)
+  expect(p).toContain('Commit and push each finished task (its test and its fix) before you start the next')
+  expect(p).toContain("Never delete a test you wrote to fit a plan's 'one commit' rule")
+  expect(p).toContain('commit it as WIP and say so')
+  expect(p.indexOf(first)).toBeLessThan(p.indexOf('Before you report ready'))
+  expect(lifecycle.nodes.quick!.prompt).not.toContain(first)
 })
 
 test('review, security and check share one blocking-scope rule (2ida AC3, AC4)', () => {
