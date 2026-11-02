@@ -1287,6 +1287,8 @@ export function ruleLines(
 const SKILL_USE: Record<string, string> = {
   'asd-ste100':
     'Write every text a person reads in ASD-STE100: PR titles and bodies, commit messages, bead comments, reports, docs, code comments. Use short sentences, active voice and approved words. Before you write a PR body, a doc or a long report, load the asd-ste100 skill.',
+  'code-review':
+    'Load the code-review skill and run its two axes before you write the review. Do not ask a person: the fixed point is the base branch that your task diffs against, the spec is the plan and the acceptance criteria of the bead, and the standards are the files the skill finds. Put its Standards and Spec findings into your review. A baseline smell is a judgement call: it never blocks alone, so list it as a suggestion unless a documented repo standard makes it a violation.',
 }
 const skillLines = (skills: string[]) =>
   skills.length

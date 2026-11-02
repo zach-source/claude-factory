@@ -209,7 +209,7 @@ ${notBlocked('green')}`,
       next: { green: 'review', red: 'implement' },
     },
     review: {
-      skills: ['asd-ste100'],
+      skills: ['asd-ste100', 'code-review'],
       agent: OPUS,
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,

@@ -1367,7 +1367,12 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
   })
   expect(flags[flags.indexOf('--system-prompt-file') + 1]).toBe('/opt/factory/src/worker-system.md')
   // claude-factory-fxu: the image's plugins, as a laptop worker gets the person's (constitution I)
-  expect(flags.slice(-2)).toEqual(['--plugin-dir', '/opt/plugins/asd-ste100'])
+  expect(flags.slice(-4)).toEqual([
+    '--plugin-dir',
+    '/opt/plugins/asd-ste100',
+    '--plugin-dir',
+    '/opt/plugins/code-review',
+  ])
 })
 
 // claude-factory-qda.4: a station with no skills gets no plugin dir
