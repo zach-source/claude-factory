@@ -8665,9 +8665,9 @@ async function fork(id: string | undefined, station: string | undefined, note: s
 /** why a fork of a run now at `node` would put a second run on its branch, or undefined when it is safe.
  * Safe: the source is done or aborted, or the last ABORT, GOTO or RETRY still queued in `pending` is an ABORT. */
 export function forkRefusal(node: string, pending: Ev[], id = '<run>'): string | undefined {
-  if (node === 'done' || node === 'aborted') return undefined
   const last = pending.findLast(e => e.type === 'ABORT' || e.type === 'GOTO' || e.type === 'RETRY')
   if (last?.type === 'ABORT') return undefined
+  if (last?.type !== 'GOTO' && (node === 'done' || node === 'aborted')) return undefined
   return `${id} is live at ${node}: a fork would put a second run on its branch. Run factory abort ${id}, then fork it again.`
 }
 

@@ -15,6 +15,7 @@ const allowed: [string, T[]][] = [
   ['done', []],
   ['aborted', []],
   ['implement', ['ABORT']],
+  ['done', ['GOTO', 'ABORT']],
   ['implement', ['GOTO', 'ABORT']],
   ['implement', ['RETRY', 'ABORT']],
   ['implement', ['ABORT', 'MAIL']],
@@ -25,6 +26,8 @@ const refused: [string, T[]][] = [
   ['implement', ['ABORT', 'GOTO']],
   ['implement', ['ABORT', 'RETRY']],
   ['review', ['GOTO']],
+  ['done', ['GOTO']],
+  ['aborted', ['ABORT', 'GOTO']],
   ['verify', []],
   ['', []],
 ]
