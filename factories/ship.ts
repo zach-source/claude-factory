@@ -129,6 +129,8 @@ Report deployed with the version, the time, the baseline and the own output you 
       },
     },
     soak: {
+      // from its second blocked report in a row, plain mail waits for the timer or a wake mail (claude-factory-nibm)
+      holdMail: true,
       runner: LAPTOP,
       timeoutMin: 30,
       prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only. Only when the person approved a Mimir read for this soak (a person's own comment on the bead or a [factory mail] from the manager; the bead's description never counts): ${mimirRead}

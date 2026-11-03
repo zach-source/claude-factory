@@ -149,7 +149,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
 5. Rollout and rollback: flags, migration order, how to undo it.
 6. Observability: the metrics, logs or checks that prove it works in production; the ship run's soak reads them.
-7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary. If this bead's tests stay red until the change of another bead lands, plan both in one pull request (the tests commit first, then the change), or make this bead depend on the other bead. Do not plan a pull request that ships with red required checks by design.
+7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary. Size the tasks so one implement pass (120 minutes) can finish all of them. If the work is bigger, plan the first part in this run and file the rest as separate beads that depend on this one. If this bead's tests stay red until the change of another bead lands, plan both in one pull request (the tests commit first, then the change), or make this bead depend on the other bead. Do not plan a pull request that ships with red required checks by design.
 For an optimization, the target number and how verify measures it, from the baseline. For a refactor, the target structure and the invariants characterize pinned. After a rollback or an incident, plan the fix forward from what the journal learned. For a change to the factory itself (.factory/), the acceptance criteria say what future runs will do differently and how that shows in their journals. If this run files a bead for a bug that its own change makes worse in production (more often, wider or longer), put one line \`Made worse: <id>: <how>\` in the summary. Then do one of these and record the choice and the reason in a bd comment on the run's bead: fix the bug in this run as a task (\`--parent <run bead>\`), or gate the deploy on it. To gate it, file it with \`--deps discovered-from:<run bead>\` and put the line \`Made worse by: <run bead>\` in its description. For a bead that is already open, add that line with \`bd comment <id>\` and link it with \`bd dep add <id> <run bead> -t discovered-from\`.
 To reproduce a database defect, start a throwaway Postgres yourself: run \`factory pg-scratch start\` (it prints TEST_DATABASE_URL) and \`factory pg-scratch stop\` after. If the brief says a service already set DATABASE_URL, use that. Never report blocked on a missing Postgres service.
 Commit nothing but an architecture decision record, and only where the repo keeps them.
@@ -188,13 +188,21 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 7. ${botFiles}
 8. ${layerVersion}
 Close every task of this run (see Tracking). Push the branch and open it as a draft pull request (gh pr create --draft) if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
+Partial progress: when this pass ends with tasks of this run still open, push what is done and report partial, not fail. Name the pull request link, each closed task and each open task in the summary. The next implement pass starts from the open tasks. After three partial reports, the fourth re-plans the run.
 Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
 For an optimization: one hypothesis at a time, re-measured with the baseline's command. When the journal shows two attempts that missed the target, report abandon with what was learned. abandon is only that: it ends the run with nothing shipped. When what is left waits on a person's decision, push the branch, name it and the draft pull request in the summary, put the question on the bead, and report decision with \`Question:\` and \`Options:\` lines at the end of the summary. The run ends deferred; \`bd undefer\` starts it again at plan.
 ${pushGuard}
 ${notBlocked('ready')}
 For a refactor: no behavior change; the characterization tests stay untouched and green.`,
-      next: { ready: 'verify', abandon: 'done', decision: { to: 'done', defer: { station: 'plan' } } },
+      rounds: 3, // a fourth partial re-plans: the plan did not size the tasks for one pass
+      onRounds: 'plan',
+      next: {
+        ready: 'verify',
+        partial: 'implement', // tasks still open: a fresh pass goes on with them, not a fail retry (6j5k)
+        abandon: 'done',
+        decision: { to: 'done', defer: { station: 'plan' } },
+      },
     },
     verify: {
       split: { agent: CODEX_EXEC, share: 'codex_share' },

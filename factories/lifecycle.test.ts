@@ -75,6 +75,27 @@ test('build: inner loops, a security review, then approve ends the run on a ship
   for (const n of SHIP_NODES) expect(visited).not.toContain(n)
 })
 
+test('implement reports partial to go on with the open tasks; a fourth partial re-plans (6j5k)', () => {
+  const partials = walk(lifecycle, ['build', 'ready', 'partial', 'partial', 'partial', 'ready'])
+  expect(partials.visited).toEqual([
+    'triage',
+    'plan',
+    'implement',
+    'implement',
+    'implement',
+    'implement',
+    'verify',
+  ])
+  expect(partials.snapshot.context.log.filter(e => e.outcome === 'fail')).toEqual([])
+  expect(
+    partials.snapshot.context.log.filter(e => e.node === 'implement' && e.outcome === 'partial'),
+  ).toHaveLength(3)
+  const capped = walk(lifecycle, ['build', 'ready', 'partial', 'partial', 'partial', 'partial'])
+  expect(capped.visited.at(-1)).toBe('plan')
+  expect(lifecycle.nodes.implement!.prompt).toContain('report partial, not fail')
+  expect(lifecycle.nodes.plan!.prompt).toContain('one implement pass')
+})
+
 test('lifecycle has no release, deploy, soak or postmortem node; incident and rollback stay (rtuw AC14)', () => {
   for (const n of SHIP_NODES) expect(lifecycle.nodes).not.toHaveProperty(n)
   expect(lifecycle.nodes).toHaveProperty('incident')
