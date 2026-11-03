@@ -69,6 +69,21 @@ describe('vm-env', () => {
       expect(r.err).toContain('FACTORY_VM_ENV')
       expect(r.runs).toBe(0)
     })
+  test('bin/factory worker poll reads the dir that FACTORY_VM_ENV packs', () => {
+    const w = mkdtempSync(join(dir, 'w-'))
+    writeFileSync(join(w, 'outbox.jsonl'), '{"hello":"packed"}\n')
+    const { FACTORY_OUTBOX: _o, FACTORY_FROM: _f, FACTORY_WORKER_DIR: _w, ...base } = process.env
+    const r = Bun.spawnSync([join(import.meta.dir, '..', 'bin', 'factory'), 'worker', 'poll', '0'], {
+      env: {
+        ...base,
+        FACTORY_SELF_UPDATE: '0',
+        FACTORY_HOME: mkdtempSync(join(dir, 'h-')),
+        FACTORY_VM_ENV: JSON.stringify({ FACTORY_WORKER_DIR: w }),
+      },
+    })
+    expect(r.exitCode).toBe(0)
+    expect(JSON.parse(r.stdout.toString()).lines).toEqual(['{"hello":"packed"}'])
+  })
   test('the error never prints a value', () => {
     expect(run('{"A":1,"SECRETISH":"zqsecret"}').err).not.toContain('zqsecret')
   })
