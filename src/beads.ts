@@ -92,6 +92,9 @@ const shipRework = (b: Bead) => {
 /** its owner recorded decisions governing it (fabriek's pilots): the owner hands it out, not the factory */
 export const isOwned = (b: Bead) => !!b.metadata?.owner_decisions
 
+/** a blocked run ended in handToOwner: label owner plus a recorded question. Dispatch does not read this. */
+export const isHandedOff = (b: Bead) => !!b.metadata?.owner_question && !!b.labels?.includes(OWNER)
+
 /**
  * True when `bd linear pull` set this bead's `external_ref` to a Linear issue URL.
  * `bd` copies every Linear label onto the bead, with no filter.
@@ -359,7 +362,7 @@ export const beads = (repo: string, actor: string) => ({
   /** ready, unassigned beads that are the owner's call to start, not the factory's */
   owned: (): Bead[] =>
     (JSON.parse(must(bd(repo, actor, 'ready', '--json', '-n', '0'), 'ready')) as Bead[]).filter(
-      b => isOwned(b) && !b.assignee,
+      b => (isOwned(b) || isHandedOff(b)) && !b.assignee,
     ),
   /** answers a human-flagged bead: a comment, and bd closes it */
   respond: (id: string, text: string) =>
