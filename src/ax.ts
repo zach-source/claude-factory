@@ -114,6 +114,33 @@ export type Launch = {
 /** AX's spec.sandboxClass: microvm runs the task in a Cloud Hypervisor guest with a real kernel, where Nix builds work */
 export type SandboxClass = 'gvisor' | 'microvm'
 
+/** Substrate allows 32 env entries in a Task. AX adds 2 of its own. */
+const AX_ENV_MAX = 30
+/** These keys stay flat when the env packs. An image without vm-env.ts still reads them. */
+const FLAT_KEYS = new Set([
+  'FACTORY_OUTBOX',
+  'FACTORY_REPO',
+  'FACTORY_BRANCH',
+  'FACTORY_BRIEF',
+  'FACTORY_HARNESS',
+  'FACTORY_PROVIDER',
+  'FACTORY_CLAUDE_FLAGS',
+  'FACTORY_CODEX_HOME_FILES',
+])
+
+/**
+ * The Task's env list. If it has more than AX_ENV_MAX entries, each key outside FLAT_KEYS moves into one
+ * JSON value, FACTORY_VM_ENV. vm-env.ts unpacks it in the VM. Up to AX_ENV_MAX entries, the list does not change.
+ */
+function packEnv(env: Record<string, string | undefined>) {
+  const all = Object.entries(env)
+  const list = (e: [string, string | undefined][]) => e.map(([name, value]) => ({ name, value }))
+  if (all.length <= AX_ENV_MAX) return list(all)
+  const flat = all.filter(([k]) => FLAT_KEYS.has(k))
+  const packed = Object.fromEntries(all.filter(([k, v]) => !FLAT_KEYS.has(k) && v !== undefined))
+  return list([...flat, ['FACTORY_VM_ENV', JSON.stringify(packed)]])
+}
+
 /** the Task and its Workspace as a multi-document manifest; JSON is YAML, so no YAML library */
 export function manifest(l: Launch) {
   const metadata = { name: l.name, atespace: ATESPACE() }
@@ -132,7 +159,7 @@ export function manifest(l: Launch) {
     spec: {
       image: l.image,
       command: l.command ?? ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
-      env: Object.entries({
+      env: packEnv({
         ...l.env,
         ...(!l.command && {
           FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
@@ -145,10 +172,7 @@ export function manifest(l: Launch) {
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
           ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
         }),
-      }).map(([name, value]) => ({
-        name,
-        value,
-      })),
+      }),
       workspaces: [{ name: l.name, path: WS }],
       // ax ssh is how the laptop polls and prompts the worker; the microVM is the boundary
       debug: true,

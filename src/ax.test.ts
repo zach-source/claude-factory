@@ -2552,7 +2552,6 @@ for (const [name, extra] of wcRows)
       {
         FACTORY_AX_VAULT: 'factory',
         FACTORY_AX_PKG_GATE: 'http://gate.example:8080',
-        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/creds',
       },
       () => {
         ax.launch({
@@ -2562,7 +2561,11 @@ for (const [name, extra] of wcRows)
           image: 'i',
           brief: 'do it',
           gitlabHost: 'gitlab.example.com',
-          env: { ...flatEnv(25), AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' },
+          env: {
+            ...flatEnv(25),
+            AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/creds',
+            AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret',
+          },
           codexHome: { 'auth.json': 'x' },
           ...extra,
         })
