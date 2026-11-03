@@ -40,6 +40,7 @@ import {
   isPrWait,
   WORKER_OUTCOMES,
   parkDelayMin,
+  prevReport,
   prsIn,
   reach,
   shareOk,
@@ -1950,7 +1951,15 @@ export function vmCodexHome(
     'config.toml':
       `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n` +
       'allow_login_shell = false\n' +
-      (chatgpt ? 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' : '') +
+      (chatgpt
+        ? // The gateway denies the plugin and git-attribution GETs (wham/settings/user) under chatgpt.com, and opening them
+          // would put the real token on more endpoints. plugins=false stops the plugin calls. git-attribution has no
+          // flag, so a dead local port makes its call fail in the VM and attribution reads as off. Model turns use a
+          // constant URL, not chatgpt_base_url.
+          // ponytail: drop the override when codex gets a flag, or when Substrate gets an exact-path rule (claude-factory-1817).
+          'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\nchatgpt_base_url = "http://127.0.0.1:9/backend-api"\n'
+        : '') +
+      (chatgpt ? '\n[features]\nplugins = false\n' : '') +
       `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n` +
       otelToml,
     ...(chatgpt && { 'auth.json': placeholderAuth() }),
@@ -3020,7 +3029,15 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const files = conflictsOf(run.repo, base, run.branch)
       if (files.length) {
         const summary = `no worker: merge origin/${base} into ${run.branch}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
-        send({ type: 'DONE', seq: c.seq, outcome: n.mergeCheck, summary })
+        // the same conflict again: implement did not resolve it (claude-factory-cjqo: 16 loops on a wrong base).
+        // ponytail: compares the summary text, not the branch head; a new merge that keeps the same files also parks
+        if (prevReport(c.log, node, n.next)?.summary === summary)
+          send({
+            type: 'BLOCKED',
+            seq: c.seq,
+            reason: `the same merge conflict again after implement: ${summary}`,
+          })
+        else send({ type: 'DONE', seq: c.seq, outcome: n.mergeCheck, summary })
         return 'merge conflict'
       }
     }
@@ -10350,8 +10367,11 @@ if (import.meta.main && !outboxCmd)
         if (!wake && isMailHeld(c, to!, def.nodes[to!]?.holdMail)) {
           const last = c.log.at(-1)!
           const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
+          const on = urls.length
+            ? `parked on ${urls.join(', ')}; it starts a worker when one changes or`
+            : `blocked twice in a row on the same wait; it starts a worker`
           console.log(
-            `held for ${to}: parked on ${urls.join(', ')}; it starts a worker when one changes or at ${new Date(c.wakeAt).toISOString()}; add --wake to start one now`,
+            `held for ${to}: ${on} at ${new Date(c.wakeAt).toISOString()}; add --wake only for an answer that changes the wait`,
           )
         }
         break

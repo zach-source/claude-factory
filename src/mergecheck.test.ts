@@ -154,3 +154,23 @@ test('a station without mergeCheck runs no fetch (AC4)', () => {
   tick()
   expect(existsSync(join(clone, '.git', 'refs', 'remotes', 'origin', 'b'))).toBe(false)
 }, 60_000)
+
+// claude-factory-cjqo: implement came back ready with the same conflict (the ax rig merged against
+// upstream origin/main 16 times). The same conflict a second time parks verify for the manager.
+test('the same conflict again after implement parks verify, with no second implement visit', () => {
+  setup(true)
+  mkdirSync(home, { recursive: true })
+  verifyRun(factoryDef(true))
+  tick() // the first conflict: red, back to implement
+  const f = join(home, 'runs', 'r1', 'state.json')
+  const state = JSON.parse(readFileSync(f, 'utf8'))
+  const actor = createActor(compile(factoryDef(true)), { snapshot: state.snapshot }).start()
+  actor.send({ type: 'GOTO', node: 'verify', at: 1 }) // implement reported ready with no change
+  writeFileSync(f, JSON.stringify({ ...state, snapshot: actor.getPersistedSnapshot() }))
+  const snap = tick()
+  expect(where(snap.value)[0]).toBe('verify')
+  expect(snap.context.log.at(-1)).toMatchObject({ node: 'verify', outcome: 'blocked' })
+  expect(snap.context.log.at(-1).summary).toContain('conflicts in: CHANGELOG.md')
+  expect(snap.context.log.filter((e: { outcome: string }) => e.outcome === 'red')).toHaveLength(1)
+  expect(existsSync(join(home, 'launches.jsonl'))).toBe(false)
+}, 60_000)
