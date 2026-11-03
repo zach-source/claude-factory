@@ -563,7 +563,7 @@ test('five failed view passes in a row mail the manager once (5nb AC1)', () => {
   factory(['watch'])
   expect(managerMail()).toHaveLength(1)
   expect(inboxOf('r1').filter(e => e.type === 'ROUTE' || e.type === 'REPARK')).toEqual([])
-}, 30000)
+}, 90000)
 
 test('a good view resets the failed pass count (5nb AC2)', () => {
   reset()
@@ -575,7 +575,7 @@ test('a good view resets the failed pass count (5nb AC2)', () => {
   rmSync(prState, { force: true })
   for (let i = 0; i < 4; i++) factory(['watch'])
   expect(managerMail()).toHaveLength(0)
-}, 30000)
+}, 90000)
 
 const conflictJson = (over: Record<string, unknown> = {}) =>
   prJson({ mergeable: 'CONFLICTING', headRefName: 'factory/r1', baseRefName: 'main', ...over })

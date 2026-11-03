@@ -46,7 +46,13 @@ export type Seen = {
   changes?: Record<string, boolean>
   routed?: boolean
   reparkedUntil?: number
+  /** consecutive watch passes with a failed view, and whether the manager got the mail */
+  failedPasses?: number
+  failMailed?: boolean
 }
+
+/** failed view passes in a row before the manager gets one mail */
+export const WATCH_FAIL_PASSES = 5
 
 export type Decision =
   | { kind: 'wake'; text: string; url?: string; state?: string }
