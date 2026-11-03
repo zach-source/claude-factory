@@ -1242,12 +1242,22 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
   // Clear the typed reply only when every member succeeds. If a member's mail, decisions answer, or
   // start fails, keep the typed reply. The person does not lose their text when part of the round
   // fails. Still flush `entries`: a member that already succeeded this round does not ask again.
+  // If the primary succeeded, its row closes. Then move the typed reply to the first member not recorded,
+  // so the person still sees it on that member's row.
   const flush = async (clearReply: boolean) =>
-    update($, draft, d => ({
-      ...d,
-      replies: clearReply ? { ...d.replies, [iv.key]: '' } : d.replies,
-      interviewed: [...(d.interviewed ?? []), ...entries].slice(-100),
-    }))
+    update($, draft, d => {
+      const heir = (iv.also ?? []).find(m => !entries.some(e => e.key === m.key))
+      const move = !clearReply && typed && entries.some(e => e.key === iv.key) && heir
+      return {
+        ...d,
+        replies: clearReply
+          ? { ...d.replies, [iv.key]: '' }
+          : move
+            ? { ...d.replies, [heir.key]: typed }
+            : d.replies,
+        interviewed: [...(d.interviewed ?? []), ...entries].slice(-100),
+      }
+    })
   for (const member of [iv, ...(iv.also ?? [])]) {
     const text = interviewAnswer(member, choice, typed)
     if (!text) {

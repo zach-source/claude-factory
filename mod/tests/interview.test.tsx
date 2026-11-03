@@ -604,6 +604,47 @@ test(
 )
 
 test(
+  "a partly failed merged row shows the typed note on the failed member's row (claude-factory-87u)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('mail') && e.argv.includes('rb'))
+        return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.input({ key: 'iv-reply-iv:ra@1', text: 'my note', kind: 'change' } as never)
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-iv:ra@1-0' })
+    await clock.settle()
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('answered (1)')
+    expect(drawn).toMatch(/"key":"iv-reply-iv:rb@\d+"[^}]*"value":"my note"/)
+    await ui.unmount()
+  },
+)
+
+test(
   'a failed mail on the only member keeps the typed reply, instead of wiping it (claude-factory-9f6.16)',
   SLOW,
   async ($, on) => {
