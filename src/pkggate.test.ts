@@ -2528,7 +2528,7 @@ describe('claude-factory-37s: sumdb lookup key charset', () => {
       })
       const r = await g(new Request('http://gate/go/floorbad.example.com/mod/@v/v1.0.0.info'))
       expect(r.status).toBe(200)
-      expect(keys.filter(k => /evil|ok\.example|q\.example/.test(k))).toEqual([])
+      expect(unexpectedKeys(keys, 'evil').filter(k => k !== 'floorbad.example.com/mod@v1.0.0')).toEqual([])
       const floor = lines.map(l => JSON.parse(l)).find(l => typeof l.floor === 'number')
       expect(floor?.samples).toBe(9)
     } finally {
