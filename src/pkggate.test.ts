@@ -2209,7 +2209,7 @@ const redirectGate = (fake: (url: URL, init?: RequestInit) => Response) =>
       goIndex: base(),
     },
     now: () => NOW,
-    fetch: ((input: RequestInfo | URL, init?: RequestInit) => {
+    fetch: ((input: string | URL | Request, init?: RequestInit) => {
       const u = new URL(String(input))
       return u.origin === base() ? fetch(input, init) : Promise.resolve(fake(u, init))
     }) as typeof fetch,
