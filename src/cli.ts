@@ -1950,7 +1950,15 @@ export function vmCodexHome(
     'config.toml':
       `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n` +
       'allow_login_shell = false\n' +
-      (chatgpt ? 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' : '') +
+      (chatgpt
+        ? // The gateway denies the plugin and git-attribution GETs (wham/settings/user) under chatgpt.com, and opening them
+          // would put the real token on more endpoints. plugins=false stops the plugin calls. git-attribution has no
+          // flag, so a dead local port makes its call fail in the VM and attribution reads as off. Model turns use a
+          // constant URL, not chatgpt_base_url.
+          // ponytail: drop the override when codex gets a flag, or when Substrate gets an exact-path rule (claude-factory-1817).
+          'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\nchatgpt_base_url = "http://127.0.0.1:9/backend-api"\n'
+        : '') +
+      (chatgpt ? '\n[features]\nplugins = false\n' : '') +
       `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n` +
       otelToml,
     ...(chatgpt && { 'auth.json': placeholderAuth() }),
