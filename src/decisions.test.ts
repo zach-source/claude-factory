@@ -77,6 +77,33 @@ test("decisions lists every rig's human-flagged and owner-only beads, one rig's 
   expect(brokenRow.beads).toEqual([])
 })
 
+const handed = (id: string) => ({
+  id,
+  title: 'Blocked run',
+  labels: ['owner'],
+  metadata: { owner_question: 'Question: which region?' },
+})
+
+test('decisions lists a handed-off bead as owned, with its owner_question as the description', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', JSON.stringify([handed('api-5')]))
+  const out = JSON.parse(factory(['decisions']).out)
+  expect(out.rigs.find((r: { rig: string }) => r.rig === 'api').beads).toEqual([
+    { id: 'api-5', title: 'Blocked run', description: 'Question: which region?', kind: 'owned' },
+  ])
+})
+
+test('decisions answer comments on a handed-off bead and drops its own: proposal', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', JSON.stringify([handed('api-5')]))
+  seedKeys('own:api:api-5')
+  factory(['decisions', 'answer', 'api', 'api-5', 'eu-west'])
+  expect(readFileSync(calls, 'utf8').trim()).toBe('comment api-5 eu-west --actor factory/person')
+  expect(keysOnDisk()).toEqual([])
+})
+
 test('decisions answer responds to a human-flagged bead, comments on an owner-only one, and a worker is refused', () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
@@ -368,6 +395,16 @@ test('decisions drops an own: key unless the bead is still in the ready list as 
   fakeBd('null', '[]')
   expect(keysListed()).toEqual([])
   expect(keysOnDisk()).toEqual([])
+})
+
+test('decisions keeps an own: key of a handed-off bead while it is ready, drops it after', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', JSON.stringify([handed('api-5')]))
+  seedKeys('own:api:api-5')
+  expect(keysListed()).toEqual(['own:api:api-5'])
+  fakeBd('null', '[]')
+  expect(keysListed()).toEqual([])
 })
 
 test('decisions drops an iv: key for a done, aborted or missing run and keeps a live one', () => {
