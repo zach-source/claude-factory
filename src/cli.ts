@@ -9936,9 +9936,8 @@ if (import.meta.main && !outboxCmd)
             )
             console.log(
               [
-                decisions.length
-                  ? memory.planLines(decisions, { archiveCap, historyDays }).join('\n')
-                  : 'nothing to merge or archive',
+                memory.planLines(decisions, { archiveCap, historyDays }).join('\n'),
+                ...(decisions.length ? [] : ['nothing to merge or archive']),
                 ...skipped.map(s => `skip  ${s.topic}: ${s.reason}`),
                 ...overCap.map(o => `over  ${o.topic}: ${o.count} short notes, cap ${topicCap}`),
               ].join('\n'),
