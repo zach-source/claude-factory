@@ -9056,7 +9056,36 @@ function decisionsList() {
       return { rig: rig.name, factory: rig.factory, beads: [], error: (err as Error).message }
     }
   })
-  return { rigs: rows, proposals: proposals() }
+  const all = proposals()
+  const stale = Object.keys(all).filter(k => staleProposal(k, rows))
+  if (!stale.length) return { rigs: rows, proposals: all }
+  // read again: a propose may have landed while the bd calls ran
+  const fresh = proposals()
+  for (const k of stale) delete fresh[k]
+  writeJson(decisionsFile(), fresh)
+  for (const k of stale) delete all[k]
+  return { rigs: rows, proposals: all }
+}
+
+/** a stored proposal whose item is gone: its run is done, aborted or missing, or its bead is not open in its
+ * rig. Unsure (bd failed for the rig, unreadable run state, an unknown key prefix) is not stale. */
+function staleProposal(key: string, rows: DecisionsRow[]): boolean {
+  const iv = /^iv:(.+)@[^@]*$/.exec(key)
+  if (iv) {
+    if (!runIds().includes(iv[1]!)) return true
+    try {
+      return ['done', 'aborted'].includes(where(current(iv[1]).value)[0])
+    } catch {
+      return false
+    }
+  }
+  const m = /^(bd|own):([^:]+):(.+)$/.exec(key)
+  if (!m) return false
+  const row = rows.find(r => r.rig === m[2])
+  if (!row) return true
+  if (row.error) return false
+  const kind = m[1] === 'bd' ? 'bead' : 'owned'
+  return !row.beads.some(x => x.id === m[3] && x.kind === kind)
 }
 
 /** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
@@ -9069,6 +9098,12 @@ function decisionsAnswer(rigName: string, id: string, text: string) {
   const b = beads(repoOf(rigName), 'factory/person')
   if (b.human().some(x => x.id === id)) b.respond(id, text)
   else b.comment(id, text)
+  const all = proposals()
+  const keys = [`bd:${rigName}:${id}`, `own:${rigName}:${id}`].filter(k => k in all)
+  if (keys.length) {
+    for (const k of keys) delete all[k]
+    writeJson(decisionsFile(), all)
+  }
   console.log(`answered ${id}`)
 }
 
