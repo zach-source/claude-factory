@@ -9374,7 +9374,8 @@ async function main() {
     }
   }
   const argh = process.argv.indexOf('--harness')
-  const harness = argh >= 0 ? process.argv[argh + 1] : undefined
+  // claude-factory-ay4w: a hook config with no --harness falls back to the launch env (an AX VM sets FACTORY_HARNESS)
+  const harness = argh >= 0 ? process.argv[argh + 1] : process.env.FACTORY_HARNESS
   if (i?.tool_name && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(i.tool_name)) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
