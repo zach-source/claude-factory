@@ -22,6 +22,9 @@
 # sum.golang.org egress also carries client sumdb traffic now (claude-factory-1hc). proxy.golang.org
 # answers 404 on every /sumdb/sum.golang.org/* path. So the gate forwards the go command's default
 # GOSUMDB requests (latest, lookup/*, tile/*) straight to sum.golang.org. It answers /supported itself.
+#
+# The gate follows an upstream redirect (at most 5 hops) only to a configured upstream or to
+# https://storage.googleapis.com. It refuses any other target with 502 (claude-factory-qls).
 apiVersion: v1
 kind: Namespace
 metadata:
