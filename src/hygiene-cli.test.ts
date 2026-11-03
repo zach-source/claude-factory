@@ -186,6 +186,32 @@ test('factory hygiene <rig> prints findings as JSON and writes nothing (AC12)', 
   expect(writes()).toEqual([])
 })
 
+test('factory queue <bead> <station> on a Linear-sourced bead refuses and adds no label (claude-factory-8qk)', () => {
+  setup([])
+  const show = (ref: string) =>
+    writeFileSync(
+      join(bin, 'bd'),
+      readFileSync(join(bin, 'bd'), 'utf8').replace(
+        /  show\) .*\n/,
+        `  show) printf '%s' '[{"id":"acme-1","labels":["factory"],"external_ref":"${ref}"}]';;\n`,
+      ),
+    )
+  show('https://linear.app/acme/issue/X-1')
+  const r = factory(['queue', 'a', 'acme-1', 'review'])
+  expect(r.code).not.toBe(0)
+  expect(r.err + r.out).toContain('comes from Linear')
+  expect(r.err + r.out).toContain('factory fork')
+  expect(callLines().some(l => l.startsWith('update acme-1'))).toBe(false)
+  // without a station it still queues
+  expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
+  // a non-Linear bead still queues at the station
+  show('https://github.com/acme/widget/issues/1')
+  expect(factory(['queue', 'a', 'acme-1', 'review']).code).toBe(0)
+  expect(
+    callLines().some(l => l.startsWith('update acme-1') && l.includes('--add-label station:review')),
+  ).toBe(true)
+})
+
 test('factory queue removes the stale label so a held bead starts again (AC13)', () => {
   setup([])
   expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
