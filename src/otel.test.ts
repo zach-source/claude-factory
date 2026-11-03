@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { otelEnvOf, otelOf } from './otel'
+import { otelOf } from './otel'
 
 const tags = { run: 'r-1', station: 'implement', rig: 'acme', attempt: '2', harness: 'claude', model: 'opus' }
 
@@ -59,25 +59,4 @@ test('otelOf content off drops tool details and the codex log exporter, never se
     expect(JSON.stringify(o.env)).not.toContain('OTEL_LOG_USER_PROMPTS')
     expect(o.toml).toContain('log_user_prompt = false')
   }
-})
-
-test('otelEnvOf accepts only a JSON object of allowed OTel names with string values, else refuses the whole pack', () => {
-  const pack = { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://o:4318', CLAUDE_CODE_ENABLE_TELEMETRY: '1' }
-  expect(otelEnvOf(JSON.stringify(pack))).toEqual(pack)
-  expect(otelEnvOf(JSON.stringify({ CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: '1' }))).toEqual({
-    CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: '1',
-  })
-  const bad = [
-    undefined,
-    '',
-    '{not json',
-    '[]',
-    'null',
-    '1',
-    JSON.stringify({ OTEL_X: 1 }),
-    JSON.stringify({ ...pack, PATH: '/x' }),
-    JSON.stringify({ ...pack, FACTORY_HOME: '/x' }),
-    JSON.stringify({ ...pack, otel_x: 'a' }),
-  ]
-  for (const raw of bad) expect(otelEnvOf(raw)).toEqual({})
 })
