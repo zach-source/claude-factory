@@ -1197,6 +1197,21 @@ test('plain mail still starts a worker: no holdMail, no PR link, or a lifecycle 
   expect(where(m.value)).toEqual(['implement', 'working'])
 })
 
+// claude-factory-nibm: the patrol mailed a parked deploy "Report blocked" each pass. Each mail started
+// a worker that found the same block. From the second blocked report in a row, plain mail waits.
+test('a holdMail station holds plain mail from its second blocked report in a row', () => {
+  const { send } = blockOn(holdGraph(), 'waiting on the rollout of 4 Deployments')
+  const woke = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'Report blocked', at: 30 })
+  expect(where(woke.value)).toEqual(['deploy', 'working'])
+  send({ type: 'SPAWNED', seq: 2, pane: 'w1:p2', at: 40 })
+  send({ type: 'BLOCKED', seq: 2, reason: 'still waiting on the rollout', at: 50 })
+  const held = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'Report blocked', at: 60 })
+  expect(where(held.value)).toEqual(['deploy', 'waiting'])
+  const answer = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'rolled', wake: true, at: 70 })
+  expect(where(answer.value)).toEqual(['deploy', 'working'])
+  expect(answer.context.mail.deploy?.map(x => x.text).slice(-2)).toEqual(['Report blocked', 'rolled'])
+})
+
 test('isParkedOn: only the PR the last blocked report links (61pu AC11)', () => {
   const { s } = blockOn(holdGraph(), 'waiting on ' + PR)
   expect(isParkedOn(s.context, 'deploy', PR)).toBe(true)
