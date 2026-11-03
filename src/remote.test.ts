@@ -2379,7 +2379,16 @@ test('an AX claude task carries the OTel env and the collector egress rule only 
     )
     writeFileSync(
       join(home, 'rigs.json'),
-      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax', ...rigExtra }]),
+      JSON.stringify([
+        {
+          name: 'x',
+          repo: worktree,
+          factory: 'one',
+          runner: 'ax',
+          env: { FACTORY_BAZELRC: '/x/bazelrc', FACTORY_NIX_CACHE: 'https://cache.example' },
+          ...rigExtra,
+        },
+      ]),
     )
     cluster('Running', { status: 'idle', lines: [] })
     writeFileSync(
@@ -2403,7 +2412,14 @@ esac
     seen.push({ env: readFileSync(applied, 'utf8'), policy: readFileSync(sent, 'utf8') })
     rmSync(runDir, { recursive: true })
   }
+  // claude-factory-0nsf: Substrate allows 32 env names and AX adds 2, so a Task gets 30 (ax.ts packEnv);
+  // with OTel on and a rig env of 2 names, the unpacked list is 39
+  for (const s of seen) {
+    const names = JSON.parse(s.env.split('\n---\n')[1]!).spec.env.length
+    expect(names).toBeLessThanOrEqual(30)
+  }
   for (const s of seen.slice(0, 2)) {
+    expect(s.env).toContain('FACTORY_VM_ENV') // the list was over 30, so the extra names packed
     expect(s.env).toContain('CLAUDE_CODE_ENABLE_TELEMETRY')
     expect(s.env).toContain(`factory.run=`)
     expect(s.env).toContain('factory.station=implement')
