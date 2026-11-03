@@ -246,7 +246,7 @@ export type Poll = {
   log?: string
   /** an egress-gateway outage serve is retrying a turn through: see worker.ts egressFailure */
   egress?: { since: number; tries: number; last: string }
-  /** a codex turn that ended on a usage limit: see worker.ts codexLimit */
+  /** a codex turn that ended on a usage limit or a refused login (kind auth): see worker.ts codexLimit */
   limit?: { at: number; kind: string; resetsAt: number }
 }
 

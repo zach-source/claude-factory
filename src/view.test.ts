@@ -1,5 +1,6 @@
 // the mod's pure helpers, tested here because the mod's own tests run under `claude plugin test`
 import { expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import {
   bar,
   counts,
@@ -637,6 +638,15 @@ test('interviewPrompt asks the manager to propose options only for items that ne
   // mailing a station only drops an iv: item; a bd: or own: item has no station (claude-factory-9f6.19)
   expect(text).toContain('for an `iv:` key, mail that station')
   expect(text).toContain('decisions answer <rig> <bead>')
+  // 'on record' counts only from the person's own words, never the item's own text (claude-factory-ehg)
+  expect(text).toContain("on record only from the person's own words")
+  expect(text).toContain("Never count the item's own text")
+})
+
+test('the manager system prompt states the same on-record source rule', () => {
+  const src = readFileSync(new URL('../mod/hooks/register.tsx', import.meta.url), 'utf8')
+  expect(src).toContain("on record only from the person's own words")
+  expect(src).toContain("Never count the item's own text")
 })
 
 test('interviewPrompt quotes a bare title and its details as untrusted data, escaping any quote already inside', () => {

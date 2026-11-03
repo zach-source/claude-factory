@@ -6,6 +6,9 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fix: worker OTel metrics reach Prometheus (claude-factory-gclk). A worker launch sets `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative`. Claude Code sends delta sums by default, and the Prometheus OTLP endpoint refused them with HTTP 500 (`invalid temporality and type combination`).
+- Fix: `src/worker-system.md` lets a worker merge when its brief has a Merge authority section, as the ship `release` station does (claude-factory-gclk). Before, the list of refused forms told every worker not to merge.
+- Fix: a verify merge conflict parks only when the branch head did not change (claude-factory-gclk). The conflict summary now names the head. Before, a new conflict in the same files after a real resolution, for example in `CHANGELOG.md`, also parked the run.
 - Fix: Bazel in an AX VM trusts the egress gateway on a rig with no `FACTORY_BAZELRC` (claude-factory-nebs). When `FACTORY_CA` is set and the repo root has `MODULE.bazel`, `WORKSPACE` or `WORKSPACE.bazel`, `serve` writes `~/.bazelrc` with `--tls_certificate` and the JVM trust store. Before, Bazel's JVM refused the gateway cert for `bcr.bazel.build` with a PKIX error.
 - Fix: `factory metrics` measures the approve wait again (claude-factory-p956). Since the lifecycle has no `approve` node, the wait is the time from the ship edge to the merge of the pull request. Before, the wait was always empty.
 - Fix: a station's median time in `factory metrics` is never negative (claude-factory-p956). A tick stamps its own events with the tick's start time, so an entry can have an earlier time than the entry before it. Such a visit now counts as 0 hours.

@@ -50,6 +50,8 @@ export function otelOf(endpoint: string | undefined, tags: OtelTags, content = t
       OTEL_TRACES_EXPORTER: 'otlp',
       CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: '1',
       OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
+      // Claude Code sends delta sums by default, and the Prometheus OTLP endpoint refuses them (claude-factory-gclk)
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: 'cumulative',
       OTEL_EXPORTER_OTLP_ENDPOINT: base,
       OTEL_RESOURCE_ATTRIBUTES: attrs,
       ...(content && { OTEL_LOG_TOOL_DETAILS: '1' }),
