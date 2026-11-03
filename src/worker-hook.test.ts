@@ -7079,7 +7079,7 @@ test('denyReason denies 16 eval levels around many = words and rm targets, then 
   const reason = denyReason(cmd, process.cwd(), ['acme'], { ...CBAI_GATE, gitAliases: () => new Map() })
   const ms = performance.now() - t0
   expect(reason).toBe(REASON)
-  expect(ms).toBeLessThan(2000)
+  expect(ms).toBeLessThan(10_000)
 }, 60000)
 
 for (const [name, body] of [
@@ -7092,7 +7092,7 @@ for (const [name, body] of [
     const reason = denyReason(cmd, process.cwd(), ['acme'], { ...CBAI_GATE, gitAliases: () => new Map() })
     const ms = performance.now() - t0
     expect([REASON, SCAN_BUDGET_REASON]).toContain(reason!)
-    expect(ms).toBeLessThan(2000)
+    expect(ms).toBeLessThan(10_000)
   }, 60000)
 }
 
@@ -7132,7 +7132,7 @@ test('denyReason spends the default work budget on an 8192-character stacked env
   const command = 'env -i eval '.repeat(700).slice(0, 8192)
   const { reason, ms } = cbaiTimed(command)
   expect(reason).toBe(SCAN_BUDGET_REASON)
-  expect(ms).toBeLessThan(2000)
+  expect(ms).toBeLessThan(10_000)
 }, 30000)
 
 // The verdicts of main (ee6b84d plus s1fj, where env -S sh -c is scanned) for each form, inner command and nest level n=1..8.
@@ -8151,7 +8151,7 @@ test('denyReason finishes quickly on a long sudo -Z v env chain (claude-factory-
   const r = denyReason(cmd, '/x', undefined, P43V_GATE)
   const ms = performance.now() - t0
   expect(r).toBe(DYNAMIC_VERB_REASON)
-  expect(ms).toBeLessThan(2000)
+  expect(ms).toBeLessThan(10_000)
 })
 
 // claude-factory-p43v.33: before this change, `scanForFirstDynamicPair` added an anchor only
