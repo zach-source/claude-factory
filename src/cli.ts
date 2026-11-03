@@ -10349,8 +10349,11 @@ if (import.meta.main && !outboxCmd)
         if (!wake && isMailHeld(c, to!, def.nodes[to!]?.holdMail)) {
           const last = c.log.at(-1)!
           const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
+          const on = urls.length
+            ? `parked on ${urls.join(', ')}; it starts a worker when one changes or`
+            : `blocked twice in a row on the same wait; it starts a worker`
           console.log(
-            `held for ${to}: parked on ${urls.join(', ')}; it starts a worker when one changes or at ${new Date(c.wakeAt).toISOString()}; add --wake to start one now`,
+            `held for ${to}: ${on} at ${new Date(c.wakeAt).toISOString()}; add --wake only for an answer that changes the wait`,
           )
         }
         break
