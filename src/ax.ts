@@ -105,8 +105,6 @@ export type Launch = {
   /** a codex worker logs in with an API key (placeholder env keys) or with ChatGPT (auth.json, no key in the env) */
   codexAuth?: 'apikey' | 'chatgpt'
   env: Record<string, string>
-  /** a claude worker's OTel env: one FACTORY_OTEL_ENV name that serve expands (AX allows few env names) */
-  otelEnv?: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
   /** the rig's AX sandbox class (Rig.sandboxClass); AX's gvisor default when absent */
@@ -145,7 +143,6 @@ export function manifest(l: Launch) {
           FACTORY_HARNESS: l.harness ?? 'claude',
           ...(l.provider && { FACTORY_PROVIDER: l.provider }),
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
-          ...(l.otelEnv && { FACTORY_OTEL_ENV: JSON.stringify(l.otelEnv) }),
           ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
         }),
       }).map(([name, value]) => ({
@@ -532,9 +529,6 @@ export function createPolicy(
   return p.exitCode === 0
 }
 
-/** Substrate allows 32 container env names and AX adds 2 of its own, so a Task's spec.env gets 30 */
-export const MAX_TASK_ENV = 30
-
 /**
  * apply the task; its egress policy comes after (createPolicy), and until it exists the VM can reach nothing,
  * which `serve` waits out. The keys in the VM are placeholders: the gateway puts the real ones in on the way out.
@@ -585,11 +579,7 @@ export const launch = (l: Launch) => {
   // fail closed: the broker's bearer lives in the vault, so the VM never holds a real token
   delete env.AWS_CONTAINER_AUTHORIZATION_TOKEN
   if (env.AWS_CONTAINER_CREDENTIALS_FULL_URI) env.AWS_CONTAINER_AUTHORIZATION_TOKEN = 'placeholder'
-  const yaml = manifest({ ...l, env })
-  const names = (JSON.parse(yaml.split('\n---\n')[1]!).spec.env as unknown[]).length
-  if (names > MAX_TASK_ENV)
-    throw new Error(`AX task env has ${names} names, over the limit of ${MAX_TASK_ENV}`)
-  must(['apply', '-f', '-'], yaml)
+  must(['apply', '-f', '-'], manifest({ ...l, env }))
   return `ax://${l.name}`
 }
 /** the task's phase and, when AX says why it failed, that reason: one `ax get task` */

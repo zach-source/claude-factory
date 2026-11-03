@@ -1789,12 +1789,10 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
     gitlabHost,
     sandboxClass: rig?.sandboxClass,
-    // AX allows few env names: a claude worker's OTel settings ride in one (ax.MAX_TASK_ENV)
-    otelEnv: harness === 'claude' ? otel?.env : undefined,
     env: {
       ...env,
       ...rig?.env,
-      ...(harness === 'codex' && otel?.codexEnv),
+      ...(harness === 'codex' ? otel?.codexEnv : otel?.env),
       FACTORY_FROM: node,
       FACTORY_RUN: run.id,
       FACTORY_DENY_LOG: '1',
@@ -1805,9 +1803,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
       FACTORY_HOME: `${ax.OWN}/home`,
       // each agent's config and sessions on the workspace volume, so a session survives a suspend
-      ...(harness === 'claude' && { CLAUDE_CONFIG_DIR: `${ax.OWN}/claude` }),
-      ...(harness === 'codex' && { CODEX_HOME: `${ax.OWN}/codex` }),
-      ...(harness === 'pi' && { PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent` }),
+      CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
+      CODEX_HOME: `${ax.OWN}/codex`,
+      PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
       // the deny hook finds the worktree root here; Claude sets it for itself, codex does not
       ...(harness === 'codex' && { CLAUDE_PROJECT_DIR: ax.REPO }),
       ...(hasRunBeads && { FACTORY_BEADS: '1' }),
