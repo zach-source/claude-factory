@@ -1091,7 +1091,7 @@ conflicting files and tells the next station to merge the default branch and kee
 `CHANGELOG.md`. Each such report uses one step of the budget. If the check fails (a failed fetch, a
 branch not on origin), the worker starts as usual. Lifecycle's verify sets `mergeCheck` to `red`.
 If the station's previous report has the same conflict summary, the next station did not resolve
-it. The station then parks as `blocked` and mails the manager. It does not report the outcome again.
+it. The summary names the branch head, so a new push with the same files is a new conflict. The station then parks as `blocked` and mails the manager. It does not report the outcome again.
 
 `onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
 than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the
