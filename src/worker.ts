@@ -548,7 +548,7 @@ function kubeconfig() {
 export let trustNote = ''
 export function bazelrc() {
   trustNote = ''
-  const lines = [process.env.FACTORY_BAZELRC!]
+  const lines = process.env.FACTORY_BAZELRC ? [process.env.FACTORY_BAZELRC] : []
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
     const store = join(own(), 'egress.jks')
@@ -1080,14 +1080,10 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
  * If origin has no such branch (a merge deleted it), clone the default branch, make the branch locally and
  * return a note for the brief; otherwise return ''.
  */
-export async function setup({ tries = 60, waitMs = 5000 } = {}) {
+export async function setup(o: { tries?: number; waitMs?: number } = {}) {
   trustCA()
   localhost()
-  // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
-  // replaces) go in the home rc, which every workspace reads
-  // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
   trustNote = ''
-  if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
   if (process.env.FACTORY_KUBE_SERVER) kubeconfig()
   nixCache()
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
@@ -1098,6 +1094,20 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'kube-apiserver'), APISERVER_WRAPPER, { mode: 0o755 })
   process.env.TEST_ASSET_KUBE_APISERVER ??= join(bin, 'kube-apiserver')
+  const missing = await clone(o)
+  // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
+  // replaces) and the gateway's CA go in the home rc, which every workspace reads. A Bazel repo on a rig
+  // with no flags still needs the CA, or its JVM refuses the gateway's cert for bcr.bazel.build (nebs).
+  // ponytail: root markers only; a Bazel workspace in a subdirectory needs FACTORY_BAZELRC on its rig
+  const bazel = ['MODULE.bazel', 'WORKSPACE', 'WORKSPACE.bazel'].some(f => existsSync(join(repo(), f)))
+  // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
+  if (process.env.FACTORY_BAZELRC || (process.env.FACTORY_CA && bazel))
+    writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
+  return missing
+}
+
+/** clone the run branch once; a note for the brief when origin has lost it */
+async function clone({ tries = 60, waitMs = 5000 } = {}) {
   const remote = process.env.FACTORY_REPO
   if (!remote || existsSync(join(repo(), '.git'))) return ''
   const branch = process.env.FACTORY_BRANCH ?? 'main'

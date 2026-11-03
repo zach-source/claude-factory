@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fix: Bazel in an AX VM trusts the egress gateway on a rig with no `FACTORY_BAZELRC` (claude-factory-nebs). When `FACTORY_CA` is set and the repo root has `MODULE.bazel`, `WORKSPACE` or `WORKSPACE.bazel`, `serve` writes `~/.bazelrc` with `--tls_certificate` and the JVM trust store. Before, Bazel's JVM refused the gateway cert for `bcr.bazel.build` with a PKIX error.
 - Fix: pkg-gate caps the Go sumdb floor at an absolute ceiling, the tree size at now-minDays estimated from a history of `/latest` reads (claude-factory-ldb). An attacker who owns every sampled index entry can no longer compound the per-refresh rise cap across refreshes.
 
 ## 0.16.0 (2026-11-03)
