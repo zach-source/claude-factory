@@ -6725,16 +6725,19 @@ async function mergedPrsFor(
   const fields = 'number,url,title,headRefName,mergeCommit'
   const gl = origin.forge === 'gitlab'
   const glabPath = `${origin.owner}/${origin.repo}`
+  let firstErr = ''
   const bySearch = async (q: string): Promise<string | null> => {
-    if (gl) return gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: q })
+    if (gl) return gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: q }, e => (firstErr = e))
     const r = await cli.gh(['pr', 'list', '--state', 'merged', '--search', q, '--json', fields, '-L', '30'], {
       cwd: repo,
       timeout: PRECHECK_TIMEOUT_MS,
     })
+    if (r.code !== 0) firstErr = r.err
     return r.code === 0 ? r.out : null
   }
   const search = await bySearch(id)
-  if (search === null) throw new Error(`${gl ? 'glab api' : 'gh pr list'} failed`)
+  if (search === null)
+    throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh pr list'} failed`, 200))
   const found = parseMergedPrs(search)
   // claude-factory-jxl.1: a title may cite only the short child id ("192.6"); the full-id search misses it
   const short = shortBeadId(id)
@@ -6777,6 +6780,7 @@ async function precheckSkip(
   b: ReturnType<typeof beads>,
   runBranches: string[],
   cli: { gh: Gh; glab: Gh },
+  forgeFailed: Set<ForgeKind>,
 ): Promise<{ skip: boolean; error?: string }> {
   if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
   if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
@@ -6789,12 +6793,15 @@ async function precheckSkip(
   if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
   const origin = originRef(rig.repo)
   if (!origin) return { skip: false }
+  // claude-factory-6as.9: one failed call already proved this forge broken for the pass; fail every later candidate open
+  if (forgeFailed.has(origin.forge)) return { skip: false }
   let merged: MergedPr[]
   try {
     merged = await mergedPrsFor(rig.repo, origin, bead.id, runBranches, cli)
   } catch (err) {
     const error = `pre-check skipped: ${(err as Error).message}`
     logPrecheck(rig.name, bead.id, 'skip', error)
+    forgeFailed.add(origin.forge)
     return { skip: false, error }
   }
   const children = b.children(bead.id)
@@ -7242,15 +7249,15 @@ async function dispatch() {
           .map(id => `factory/${id}`)
         // claude-factory-6as.9: skip the gh calls outright once this pass already proved gh broken;
         // the first candidate's row in precheck.jsonl already covers the fail-open for the rest.
-        const forge = originRef(rig.repo)?.forge
-        const { skip, error } =
-          forge && forgeFailed.has(forge)
-            ? { skip: false, error: undefined }
-            : await precheckSkip(rig, bead, b, runBranches, { gh: spawnGh, glab: spawnGlab })
-        if (error) {
-          errors.push({ id: bead.id, error })
-          if (forge) forgeFailed.add(forge)
-        }
+        const { skip, error } = await precheckSkip(
+          rig,
+          bead,
+          b,
+          runBranches,
+          { gh: spawnGh, glab: spawnGlab },
+          forgeFailed,
+        )
+        if (error) errors.push({ id: bead.id, error })
         if (skip) {
           skips.set(bead.id, 'pre-check: already done')
           continue

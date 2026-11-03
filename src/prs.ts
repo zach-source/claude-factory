@@ -1010,6 +1010,7 @@ export async function gitlabMergedJson(
   path: string,
   cwd: string,
   o: { search: string } | { sourceBranch: string },
+  onErr?: (err: string) => void,
 ): Promise<string | null> {
   const q =
     'search' in o
@@ -1024,7 +1025,10 @@ export async function gitlabMergedJson(
     ],
     timed(cwd),
   )
-  if (res.code !== 0) return null
+  if (res.code !== 0) {
+    onErr?.(res.err)
+    return null
+  }
   let v: unknown
   try {
     v = JSON.parse(res.out)

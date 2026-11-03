@@ -519,7 +519,7 @@ function fakePrecheckHerdr() {
   chmodSync(join(pbin, 'herdr'), 0o755)
 }
 
-/** a repo with a GitHub origin, so `originRef` reads this rig as GitHub (the pre-check's own gate) */
+/** a repo with the given origin (GitHub by default), so `originRef` reads this rig's forge (the pre-check's own gate) */
 function precheckRepo(origin = 'https://github.com/acme/widget.git') {
   const r = join(pdir, 'repo')
   mkdirSync(join(r, '.beads'), { recursive: true })
@@ -579,6 +579,7 @@ test('a merged PR citing the bead rejects it with one comment, and starts no run
   const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
   expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
   expect(calls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+  expect(glabCalls()).toEqual([])
 })
 
 test('a second dispatch pass after a reject adds 0 new comments (the bead no longer shows in ready)', () => {
@@ -607,7 +608,10 @@ test('gh failing (or timing out) fails open: the run still starts, with one disp
     id: string
     error?: string
   }[]
-  expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped/.test(r.error ?? ''))).toBe(true)
+  expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped: gh: rate limited/.test(r.error ?? ''))).toBe(
+    true,
+  )
+  expect(glabCalls()).toEqual([])
 })
 
 // claude-factory-6as.9: a hung or rate-limited gh costs up to 5 calls of 15s, for each candidate.
@@ -2638,6 +2642,15 @@ test('GitLab: a title that cites other ids, or no merged MR, starts a run', () =
   }
 })
 
+test('GitLab: an MR that cites the id only in its description starts a run', () => {
+  precheckReset({}, GL)
+  const mr = JSON.parse(mergedMr('fix: unrelated title')) as Record<string, unknown>[]
+  mr[0]!.description = 'closes acme-1'
+  pfactory(['beads'], { GLAB_JSON: JSON.stringify(mr) })
+  expect(runDirs()).toHaveLength(1)
+  expect(rejected()).toBe(false)
+})
+
 test('GitLab: a short child id in a title rejects a dotted bead', () => {
   precheckReset({ id: 'acme-192.6' }, GL)
   pfactory(['beads'], { GLAB_JSON_SHORT: mergedMr('Manager lease (192.6, 192.7)') })
@@ -2662,7 +2675,9 @@ test('GitLab: a glab failure fails open with one skip row and one dispatch.json 
     id: string
     error?: string
   }[]
-  expect(rows.filter(r => r.id === 'acme-1' && /pre-check skipped/.test(r.error ?? ''))).toHaveLength(1)
+  expect(
+    rows.filter(r => r.id === 'acme-1' && /pre-check skipped: glab: boom/.test(r.error ?? '')),
+  ).toHaveLength(1)
   const log = readFileSync(join(phome, 'precheck.jsonl'), 'utf8').trim().split('\n')
   expect(log).toHaveLength(1)
   expect(JSON.parse(log[0]!).kind).toBe('skip')
@@ -2763,5 +2778,6 @@ test('pre-check off switches make no glab call on a GitLab rig; an unknown origi
   precheckReset({}, 'https://example.org/acme/widget.git')
   pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1'), GLAB_JSON: mergedMr('fix: acme-1') })
   expect(glabCalls().filter(l => l.includes('state=merged'))).toHaveLength(0)
+  expect(ghCallCount()).toBe(0)
   expect(runDirs()).toHaveLength(1)
 })

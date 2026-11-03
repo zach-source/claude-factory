@@ -2158,6 +2158,13 @@ test('gitlabMergedJson: one glab api call per lookup, mapped to gh pr list shape
     [7, 'b7', 'aa'],
     [8, 'b8', 'bb'],
   ])
+  expect(parseMergedPrs(out!).map(p => [p.url, p.title])).toEqual([
+    ['https://gitlab.com/g/s/p/-/merge_requests/7', 't'],
+    ['https://gitlab.com/g/s/p/-/merge_requests/8', 't'],
+  ])
+  const none = async () => ({ code: 0, err: '', out: JSON.stringify([mr(5, 'merged', null, null)]) })
+  const bare = await gitlabMergedJson(none, 'h', 'a/b', '/r', { search: 'i' })
+  expect(parseMergedPrs(bare!).map(p => p.mergeCommit)).toEqual([''])
   await gitlabMergedJson(glab, 'gitlab.com', 'g/p', '/r', { sourceBranch: 'factory/x' })
   expect(calls[1]![3]).toBe(
     'projects/g%2Fp/merge_requests?state=merged&per_page=30&source_branch=factory%2Fx',
@@ -2166,7 +2173,9 @@ test('gitlabMergedJson: one glab api call per lookup, mapped to gh pr list shape
 
 test('gitlabMergedJson: failure is null, garbage is an empty list', async () => {
   const bad = async () => ({ code: 1, err: 'x', out: '' })
-  expect(await gitlabMergedJson(bad, 'h', 'a/b', '/r', { search: 'i' })).toBeNull()
+  const errs: string[] = []
+  expect(await gitlabMergedJson(bad, 'h', 'a/b', '/r', { search: 'i' }, e => errs.push(e))).toBeNull()
+  expect(errs).toEqual(['x'])
   const junk = async () => ({ code: 0, err: '', out: 'nope' })
   expect(JSON.parse((await gitlabMergedJson(junk, 'h', 'a/b', '/r', { search: 'i' }))!)).toEqual([])
 })
