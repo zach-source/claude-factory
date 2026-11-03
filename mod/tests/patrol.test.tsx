@@ -236,6 +236,8 @@ test(
     expect(submits[0]!.text).not.toContain('lifecycle covers build, release')
     expect(submits[0]!.text).toContain('"File in: <rig>: <title> | <description>"')
     expect(submits[0]!.text).toContain('`bd undefer` the source bead')
+    // claude-factory-61a: a rule correction also fixes the memory note that taught the opposite
+    expect(submits[0]!.text).toContain('memory add --supersedes <old note path> --kind rule')
     expect(JSON.stringify(status)).toContain('fell back to the main chat')
   },
 )
