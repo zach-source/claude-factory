@@ -27,6 +27,7 @@ function run(input: unknown, env: Record<string, string | undefined> = {}, argv 
     FACTORY_FROM: 'implement',
     FACTORY_OUTBOX: undefined,
     FACTORY_DENY_LOG: undefined,
+    FACTORY_HARNESS: undefined,
     ...env,
   }
   const p = Bun.spawnSync(['bun', HOOK, ...argv], { stdin: Buffer.from(JSON.stringify(input)), env: e })
@@ -79,6 +80,14 @@ describe('deny log', () => {
     run(bash('f() { ls; }'), {}, [])
     run(bash('f() { ls; }'), {}, ['--harness', 'evil'])
     expect(lines().map(l => l.harness)).toEqual(['unknown', 'unknown'])
+  })
+
+  // claude-factory-ay4w: a hook config with no --harness (an older settings file or image) logged 'unknown'
+  test('with no --harness, FACTORY_HARNESS names the harness; --harness wins', () => {
+    run(bash('f() { ls; }'), { FACTORY_HARNESS: 'claude' }, [])
+    run(bash('f() { ls; }'), { FACTORY_HARNESS: 'claude' }, ['--harness', 'codex'])
+    run(bash('f() { ls; }'), { FACTORY_HARNESS: 'evil' }, [])
+    expect(lines().map(l => l.harness)).toEqual(['claude', 'codex', 'unknown'])
   })
 
   test('text with no constant is UNKNOWN', () => {
