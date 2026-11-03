@@ -1018,6 +1018,8 @@ test('the worker system prompt names the top refused hook forms and the allowed 
   expect(text).toContain('type the full git or gh command') // SHELL_ALIAS_REASON, SHELL_ALIAS_DEFINE_REASON
   expect(text).toContain('`git push origin <run branch>`') // PUSH_REASON
   expect(text).toContain('`gh pr merge`') // MERGE_REASON
+  // claude-factory-gclk: the ship release station merges when its brief has a Merge authority section
+  expect(text).toContain('unless your brief has a Merge authority section')
   expect(text).toContain('bash /abs/path/.scratch/<name>.sh') // loop, function, VAR=value, cd chain
 })
 

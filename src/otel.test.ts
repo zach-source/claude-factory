@@ -25,6 +25,8 @@ test('otelOf on: env, toml and egress', () => {
   expect(o.env.OTEL_LOG_TOOL_DETAILS).toBe('1')
   expect(o.env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1')
   expect(o.env.OTEL_EXPORTER_OTLP_PROTOCOL).toBe('http/json')
+  // claude-factory-gclk: Prometheus OTLP refuses delta sums with HTTP 500
+  expect(o.env.OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE).toBe('cumulative')
   expect(o.codexEnv).toEqual({ OTEL_RESOURCE_ATTRIBUTES: o.env.OTEL_RESOURCE_ATTRIBUTES! })
   for (const p of ['/v1/logs', '/v1/traces', '/v1/metrics'])
     expect(o.toml).toContain(`endpoint = "http://otel.example.svc:4318${p}", protocol = "json"`)

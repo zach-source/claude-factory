@@ -3028,9 +3028,13 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const base = baseBranchOf(def, rigOf(run.repo), run.repo)
       const files = conflictsOf(run.repo, base, run.branch)
       if (files.length) {
-        const summary = `no worker: merge origin/${base} into ${run.branch}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
-        // the same conflict again: implement did not resolve it (claude-factory-cjqo: 16 loops on a wrong base).
-        // ponytail: compares the summary text, not the branch head; a new merge that keeps the same files also parks
+        // the head names the pushed commit, so a new push with the same files is a new conflict (claude-factory-gclk)
+        const head = Bun.spawnSync(['git', '-C', run.repo, 'rev-parse', '--short', `origin/${run.branch}`])
+          .stdout.toString()
+          .trim()
+        const summary = `no worker: merge origin/${base} into ${run.branch} at ${head}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
+        // the same conflict at the same head again: implement pushed nothing that resolves it
+        // (claude-factory-cjqo: 16 loops on a wrong base)
         if (prevReport(c.log, node, n.next)?.summary === summary)
           send({
             type: 'BLOCKED',
