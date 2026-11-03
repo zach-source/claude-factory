@@ -1349,6 +1349,21 @@ test('applyTiers() topic cap: a skipped merge into an unsafe LONG.md leaves the 
   expect(overCap).toEqual([{ topic: 'beads', count: 18 }])
 })
 
+test('applyTiers() skips a LONG.md with an extra frontmatter key and keeps the key', () => {
+  const dir = join(tmpdir(), `memory-apply-fmkey-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+  const long = '---\ntier: long\nsummary: x\n---\n## s\n<!-- id: {"id":"beads/a"} -->\n\nbody\n'
+  writeFileSync(join(dir, 'beads', 'LONG.md'), long)
+
+  const { merged, skipped } = applyTiers(dir, { now, topicCap: 15 })
+  expect(merged).toBe(0)
+  expect(skipped.map(s => s.topic)).toEqual(['beads'])
+  expect(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).toContain('summary: x')
+})
+
 test('envTopicCap() reads FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
   const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
   try {

@@ -1487,9 +1487,14 @@ function rewriteReadmeLink(dir: string, topic: string, shortPath: string, target
  * block a merge forever (claude-factory-59r.21).
  */
 function longPreambleLoss(text: string): string {
+  const fm = text.startsWith(LONG_HEADER) ? null : /^---\n([\s\S]*?)\n---\n?/.exec(text)
   const body = text.startsWith(LONG_HEADER)
     ? text.slice(LONG_HEADER.length)
-    : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+    : fm
+      ? text.slice(fm[0].length)
+      : text
+  // formatLong writes only `tier: long`, so any other frontmatter line is lost on rewrite
+  const extra = (fm?.[1] ?? '').split('\n').filter(l => l.trim() && l.trim() !== 'tier: long')
   const lines = body.split('\n')
   let start = lines.length
   for (let i = 0; i < lines.length; i++) {
@@ -1498,7 +1503,7 @@ function longPreambleLoss(text: string): string {
       break
     }
   }
-  return lines.slice(0, start).join('\n').trim()
+  return [...extra, ...lines.slice(0, start)].join('\n').trim()
 }
 
 /**
