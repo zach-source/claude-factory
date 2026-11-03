@@ -785,7 +785,7 @@ function asked(text: string) {
  * least one letter a-f. Raw evidence must not appear in a short title or context line. It appears only behind
  * the details toggle. */
 const redact = (text: string) =>
-  text.replace(/https?:\/\/\S+/g, '').replace(/\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/gi, '')
+  text.replace(/https?:\/\/\S+/g, '').replace(/\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b/gi, '')
 
 /** the gate's brief, as one line for the console. The line is `'Brief: '` plus the redacted first line of
  * the brief, clipped to 200 characters. The line is empty when the briefer has not yet written a brief for
