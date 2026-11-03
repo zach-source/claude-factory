@@ -146,6 +146,8 @@ export const isUntil = (v: string): boolean => {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
+/** code-unit compare: the same order in every locale (localeCompare is not) */
+const cmpStr = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
 const PR_URL_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/
 /** Convert "owner/repo#N" or a GitHub pull URL to the GitHub pull URL form. Return null when `v` is
@@ -1143,7 +1145,8 @@ export type Decision =
  * an archive. The topic cap below treats a flag like a promote or a dedupe: none of the three count
  * as a decision there.
  *
- * `opts.historyDays` sets how far back the usage log goes.
+ * `opts.historyDays` is the age of the oldest last use of an existing note. compact() folds
+ * `.usage.jsonl` to one line per note, so this is not how far back the log goes.
  * Below ARCHIVE_NEW_DAYS (14 days), decide() does not use either usage-based archive rule.
  * A new or lost `.usage.jsonl` file cannot show if a note was never shown or shown before the log started.
  * The default is Infinity; a caller that does not pass it keeps the old rules, without this check.
@@ -1249,7 +1252,7 @@ export function decide(
       })
   }
   // trims have their own cap (archiveCap): the largest entries first, so one pass stays small
-  trims.sort((a, b) => b.chars - a.chars || a.path.localeCompare(b.path))
+  trims.sort((a, b) => b.chars - a.chars || cmpStr(a.path, b.path))
   trims.forEach((t, i) =>
     decisions.push(
       i < archiveCap
@@ -1281,7 +1284,7 @@ export function decide(
   })
   overCap.sort((x, y) => {
     const diff = (ageOf.get(y.d.path) ?? 0) - (ageOf.get(x.d.path) ?? 0)
-    return diff !== 0 ? diff : x.d.path.localeCompare(y.d.path)
+    return diff !== 0 ? diff : cmpStr(x.d.path, y.d.path)
   })
   for (const { d, i } of overCap.slice(archiveCap))
     decisions[i] = { kind: 'held', path: d.path, reason: `over the archive cap of ${archiveCap} this pass` }
@@ -1310,7 +1313,7 @@ export function decide(
       if (left <= topicCap) continue
       const candidates = topicNotes
         .filter(n => !decided.has(n.path) && !n.superseded && n.ageDays >= MERGE_AGE_DAYS)
-        .sort((a, b) => b.ageDays - a.ageDays || a.path.localeCompare(b.path))
+        .sort((a, b) => b.ageDays - a.ageDays || cmpStr(a.path, b.path))
       for (const n of candidates) {
         if (left <= topicCap) break
         decisions.push({
@@ -1332,7 +1335,7 @@ export function decide(
  * The first line is a header. Each later line reads `kind  path: reason`.
  * A dedupe decision names two notes, so its line reads `dedupe  a ~ b: reason` instead.
  * applyTiers() passes this to its caller through `opts.onPlan`, before it writes or removes anything.
- * The plan on disk then always matches what ran.
+ * The plan lists the decisions. A merge that applyTiers() skips as unsafe (see `skipped`) is not in it.
  */
 export function planLines(
   decisions: Decision[],
@@ -1381,7 +1384,7 @@ function overCapFrom(counts: Map<string, number>, cap: number): { topic: string;
   return [...counts]
     .filter(([, count]) => count > cap)
     .map(([topic, count]) => ({ topic, count }))
-    .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic))
+    .sort((a, b) => b.count - a.count || cmpStr(a.topic, b.topic))
 }
 
 /**
@@ -1403,7 +1406,7 @@ export function overCapTopics(dir: string, cap = envTopicCap()): { topic: string
 
 /** how many days of usage history the store holds: now minus the oldest note's newest recorded `at`.
  * 0 with no usage file, or when no entry ever recorded an `at` (claude-factory-503.2, AC2's guard). */
-function usageHistoryDays(dir: string, now: number, uses: Map<string, Use>): number {
+function usageHistoryDays(now: number, uses: Map<string, Use>): number {
   const ats = [...uses.values()].map(u => u.at).filter(at => at > 0)
   return ats.length ? (now - Math.min(...ats)) / DAY_MS : 0
 }
@@ -1548,7 +1551,7 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
  * So that topic can still appear in `overCap`.
  *
  * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
- * write or rmSync, and on a dry run too. This way, the plan a caller logs always matches what ran.
+ * write or rmSync, and on a dry run too. This way, the plan a caller logs lists the decisions. It does not list a merge skipped as unsafe.
  *
  * `opts.untilDeps` (claude-factory-3u1.1.4) feeds untilStatus() for each short note's `until`
  * marker. applyTiers() always checks a date marker with untilStatus(). It checks a bead or PR
@@ -1571,7 +1574,7 @@ export function applyTiers(
   const { notes } = walk(dir)
   const uses = usage(dir)
   const events = usageEvents(dir)
-  const historyDays = usageHistoryDays(dir, now, uses)
+  const historyDays = usageHistoryDays(now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
   const topicCap = opts.topicCap ?? envTopicCap()
   const isDateUntil = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v)
@@ -1979,7 +1982,7 @@ export function failureClasses(journal: AttemptOutcome[]): FailureClass[] {
   }
   return [...groups.values()]
     .filter(g => g.runs.length >= FAILURE_RUNS)
-    .sort((a, b) => b.runs.length - a.runs.length || a.station.localeCompare(b.station))
+    .sort((a, b) => b.runs.length - a.runs.length || cmpStr(a.station, b.station))
 }
 /** every proposal the dream wrote, by name: its frontmatter and the first line of its change */
 export function proposals(dir: string) {

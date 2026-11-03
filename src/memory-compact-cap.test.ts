@@ -54,7 +54,16 @@ test('memory compact --dry-run plans the cap and holds the 5 youngest, writing n
   expect(existsSync(join(home, 'memory', '.git'))).toBe(false)
 })
 
-test('memory compact archives the 25 oldest, holds 5, and logs the plan to dream.log first', () => {
+test('memory compact --dry-run on an empty store prints the usage history header', () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  const dry = run(['memory', 'compact', '--dry-run'])
+  expect(dry.code).toBe(0)
+  expect(dry.out).toContain('usage history 0 days')
+  expect(dry.out).toContain('nothing to merge or archive')
+})
+
+test('memory compact archives 25 notes and holds 5, and logs the plan to dream.log', () => {
   seed()
   const real = run(['memory', 'compact'])
   expect(real.code).toBe(0)
