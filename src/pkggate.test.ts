@@ -2195,3 +2195,161 @@ test('PyPI upstream errors refuse rather than pass through', async () => {
   expect(broken.status).toBe(502)
   expect(await broken.text()).toContain('pkg-gate')
 })
+
+// claude-factory-qls: an upstream 3xx must never take the gate to a host that is not a configured upstream
+const FAKE_PYPI = 'https://pypi.fake.test'
+const redirectGate = (fake: (url: URL, init?: RequestInit) => Response) =>
+  makeGate({
+    upstream: {
+      go: 'https://go.fake.test',
+      npm: 'https://npm.fake.test',
+      pypi: FAKE_PYPI,
+      files: FAKE_PYPI,
+      sumdb: base(),
+      goIndex: base(),
+    },
+    now: () => NOW,
+    fetch: ((input: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(String(input))
+      return u.origin === base() ? fetch(input, init) : Promise.resolve(fake(u, init))
+    }) as typeof fetch,
+  })
+const found = (loc: string) => new Response(null, { status: 302, headers: { location: loc } })
+
+test('claude-factory-qls AC1: a 302 from a configured upstream to an off-origin host is refused 502, never fetched', async () => {
+  const secondHits = { n: 0 }
+  const second = Bun.serve({
+    port: 0,
+    fetch() {
+      secondHits.n++
+      return new Response('should never be reached')
+    },
+  })
+  // each row: the gate path, and the one upstream path that answers 302 (every other path answers normally)
+  const rows: [string, string][] = [
+    ['/npm/@types/ms/-/ms-2.1.0.tgz', '/@types/ms/-/ms-2.1.0.tgz'],
+    ['/npm/@types%2fms', '/@types/ms'],
+    ['/go/golang.org/x/text/@v/v0.26.0.info', '/golang.org/x/text/@v/v0.26.0.info'],
+    ['/go/golang.org/x/text/@v/v0.26.0.zip', '/golang.org/x/text/@v/v0.26.0.zip'],
+    ['/pypi/simple/requests/', '/simple/requests/'],
+    [`/pypi/files/requests${PYPI_OLD_WHEEL_PATH}`, PYPI_OLD_WHEEL_PATH],
+  ]
+  try {
+    for (const [gatePath, redirectedPath] of rows) {
+      const fake = Bun.serve({
+        port: 0,
+        fetch(req) {
+          const url = new URL(req.url)
+          if (
+            url.pathname === redirectedPath ||
+            (url.pathname === '/@types%2fms' && redirectedPath === '/@types/ms')
+          )
+            return found(`${second.url.origin}/latest/meta-data`)
+          if (url.pathname === '/@types/ms' || url.pathname === '/@types%2fms')
+            return new Response(npmPackument(url.origin))
+          if (url.pathname === '/@types/ms/-/ms-2.1.0.tgz') return new Response('TARBALL')
+          if (url.pathname === '/golang.org/x/text/@v/v0.26.0.info') return new Response(GO_INFO_OLD)
+          if (url.pathname === '/golang.org/x/text/@v/v0.26.0.zip') return new Response('ZIP')
+          if (url.pathname === '/simple/requests/') return new Response(pypiIndex(url.origin))
+          if (url.pathname === PYPI_OLD_WHEEL_PATH) return new Response('WHEEL')
+          return new Response('not found', { status: 404 })
+        },
+      })
+      try {
+        const o = fake.url.origin
+        const g = makeGate({
+          upstream: { go: o, npm: o, pypi: o, files: o, sumdb: base(), goIndex: base() },
+          now: () => NOW,
+        })
+        const r = await g(new Request(`http://gate${gatePath}`))
+        expect(`${gatePath} ${r.status}`).toBe(`${gatePath} 502`)
+      } finally {
+        fake.stop(true)
+      }
+    }
+    expect(secondHits.n).toBe(0)
+  } finally {
+    second.stop(true)
+  }
+})
+
+test('claude-factory-qls AC2: a go .zip 302 to https://storage.googleapis.com is followed; other storage hosts are refused unrequested', async () => {
+  const GO_PATH = '/golang.org/x/text/@v/v0.26.0'
+  const requested: string[] = []
+  const mk = (target: string) =>
+    redirectGate(u => {
+      requested.push(u.href)
+      if (u.href === `https://go.fake.test${GO_PATH}.info`) return new Response(GO_INFO_OLD)
+      if (u.href === `https://go.fake.test${GO_PATH}.zip`) return found(target)
+      if (u.href === 'https://storage.googleapis.com/proxy-golang-org-prod/x') return new Response('ZIPBYTES')
+      return new Response('x', { status: 404 })
+    })
+  const ok = await mk('https://storage.googleapis.com/proxy-golang-org-prod/x')(
+    new Request(`http://gate/go${GO_PATH}.zip`),
+  )
+  expect(ok.status).toBe(200)
+  expect(await ok.text()).toBe('ZIPBYTES')
+  for (const bad of [
+    'http://storage.googleapis.com/x',
+    'https://storage.googleapis.com:8443/x',
+    'https://storage.googleapis.com.evil.test/x',
+  ]) {
+    requested.length = 0
+    const r = await mk(bad)(new Request(`http://gate/go${GO_PATH}.zip`))
+    expect(`${bad} ${r.status}`).toBe(`${bad} 502`)
+    expect(requested).not.toContain(bad)
+  }
+})
+
+test('claude-factory-qls AC3/AC6: same-origin 301 hops (absolute and relative) are followed, with redirect manual and the accept header kept', async () => {
+  for (const loc of [`${FAKE_PYPI}/simple/demo/`, '/simple/demo/']) {
+    const seen: { redirect?: string; accept: string | null }[] = []
+    const g = redirectGate((u, init) => {
+      seen.push({ redirect: init?.redirect, accept: new Headers(init?.headers).get('accept') })
+      return u.pathname === '/simple/demo/' && seen.length === 1
+        ? found(loc)
+        : new Response(pypiIndex(FAKE_PYPI))
+    })
+    const r = await g(new Request('http://gate/pypi/simple/Demo/'))
+    expect(r.status).toBe(200)
+    expect(seen.length).toBe(2)
+    for (const s of seen) {
+      expect(s.redirect).toBe('manual')
+      expect(s.accept).toBe('application/vnd.pypi.simple.v1+json')
+    }
+  }
+})
+
+test('claude-factory-qls AC4: 5 same-origin hops are followed; a 6th hop is refused and its target never requested', async () => {
+  for (const [chain, status] of [
+    [5, 200],
+    [6, 502],
+  ] as const) {
+    const requested: string[] = []
+    const g = redirectGate(u => {
+      requested.push(u.href)
+      const n = Number(u.searchParams.get('h') ?? 0)
+      return n < chain ? found(`/simple/requests/?h=${n + 1}`) : new Response(pypiIndex(FAKE_PYPI))
+    })
+    const r = await g(new Request('http://gate/pypi/simple/requests/'))
+    expect(`${chain} ${r.status}`).toBe(`${chain} ${status}`)
+    // the original request plus 5 hops; the 6th hop (the 7th URL) is never requested
+    expect(requested.length).toBe(6)
+    expect(requested.some(h => h.endsWith('?h=6'))).toBe(false)
+  }
+})
+
+test('claude-factory-qls AC5: a 3xx with no, unparseable or file: Location is refused 502 with no further fetch', async () => {
+  const rows: (string | null)[] = [null, 'http://[bad', 'file:///etc/passwd']
+  for (const loc of rows) {
+    let n = 0
+    const g = redirectGate(() => {
+      n++
+      return loc === null ? new Response(null, { status: 302 }) : found(loc)
+    })
+    const r = await g(new Request('http://gate/pypi/simple/requests/'))
+    expect(`${loc} ${r.status}`).toBe(`${loc} 502`)
+    expect(n).toBe(1)
+    expect(g.stats().error).toBe(1) // the refusal is counted, not an accidental TypeError
+  }
+})

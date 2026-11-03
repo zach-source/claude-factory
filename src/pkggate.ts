@@ -285,12 +285,56 @@ function refuse(status: number, text: string) {
   return new Response(text, { status, headers: { 'content-type': 'text/plain' } })
 }
 
+const MAX_REDIRECT_HOPS = 5
+/** proxy.golang.org can answer a large .zip with a 302 to this host (claude-factory-qls). */
+const GO_STORAGE_ORIGIN = 'https://storage.googleapis.com'
+
+/**
+ * Fetches `url` and follows each 3xx by hand. Every hop must go to a configured upstream or to
+ * GO_STORAGE_ORIGIN. The gate follows at most MAX_REDIRECT_HOPS hops. Any other redirect throws, so the
+ * caller answers 502 and the gate never requests the target. The default redirect:'follow' of `fetch`
+ * would go to any http(s) host (claude-factory-qls).
+ */
+async function upstreamFetch(
+  cfg: Resolved,
+  url: string,
+  headers?: Record<string, string>,
+): Promise<Response> {
+  const allowed = [...Object.values(cfg.upstream), GO_STORAGE_ORIGIN]
+  const signal = AbortSignal.timeout(cfg.fetchTimeoutMs)
+  let current = url
+  for (let hop = 0; ; hop++) {
+    const r = await cfg.fetch(current, { headers, redirect: 'manual', signal })
+    if (r.status < 300 || r.status > 399) return r
+    const loc = r.headers.get('location')
+    let next: URL | null = null
+    try {
+      next = loc ? new URL(loc, current) : null
+    } catch {
+      // an unparseable Location is refused below, the same as a missing one
+    }
+    if (hop >= MAX_REDIRECT_HOPS || !next || !isConfiguredUpstream(next, allowed)) {
+      cfg.stats.error++
+      console.log(
+        JSON.stringify({
+          eco: 'gate',
+          decision: 'error',
+          reason: 'redirect refused',
+          host: next?.host ?? null,
+        }),
+      )
+      throw new Error('redirect refused')
+    }
+    current = next.href
+  }
+}
+
 async function fetchText(
   cfg: Resolved,
   url: string,
 ): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
   try {
-    const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
+    const r = await upstreamFetch(cfg, url)
     const text = await r.text()
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, text }
@@ -305,7 +349,7 @@ async function fetchBytes(
   url: string,
 ): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number }> {
   try {
-    const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
+    const r = await upstreamFetch(cfg, url)
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, buf: await r.arrayBuffer() }
   } catch {
@@ -893,9 +937,8 @@ async function fetchPackument(cfg: Resolved, pkg: string) {
     cfg.npmCache.delete(pkg) // expired: evict rather than leave it to grow the map forever (ei0.13)
   }
   try {
-    const r = await cfg.fetch(`${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
+    const r = await upstreamFetch(cfg, `${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, {
+      accept: 'application/json',
     })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePackument(await r.text())
@@ -1061,9 +1104,8 @@ async function fetchPypiIndex(cfg: Resolved, project: string) {
     cfg.pypiCache.delete(project) // expired: evict rather than leave it to grow the map forever (ei0.13)
   }
   try {
-    const r = await cfg.fetch(pypiIndexUrl(cfg, project), {
-      headers: { accept: 'application/vnd.pypi.simple.v1+json' },
-      signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
+    const r = await upstreamFetch(cfg, pypiIndexUrl(cfg, project), {
+      accept: 'application/vnd.pypi.simple.v1+json',
     })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePypiIndex(await r.text())
