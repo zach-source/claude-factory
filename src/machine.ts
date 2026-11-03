@@ -109,6 +109,7 @@ export type Node = {
    * with `git merge-tree`.
    * If the merge has a text conflict, no worker starts.
    * The runner reports this outcome at once and names the conflicting files.
+   * If the station's previous report has the same conflict summary, the station parks as `blocked` for the manager.
    * If the check fails for any other reason, the worker starts as usual.
    * `validate` refuses a value that is not a key of `next`.
    * `validate` refuses this field on a gate.
