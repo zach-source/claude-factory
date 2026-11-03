@@ -388,7 +388,12 @@ export const beads = (repo: string, actor: string) => ({
    * again, not at the rig's own factory (claude-factory-wnm.12).
    */
   queue: (id: string, station?: string) => {
-    const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(
+    const cur = lookupBead(repo, actor, id)
+    if (station && cur && linearSourced(cur))
+      throw new Error(
+        `${id} comes from Linear: stationOf ignores a station label there, so it would not start at ${station}. Queue it without a station, or use 'factory fork <run> ${station}'`,
+      )
+    const old = (cur?.labels ?? []).filter(
       l => l.startsWith('factory:') || l.startsWith('station:') || l.startsWith('held:'),
     )
     return must(
