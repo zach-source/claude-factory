@@ -940,7 +940,7 @@ export function beadInterviews(
       const key = `${b.kind === 'bead' ? 'bd' : 'own'}:${d.rig}:${b.id}`
       if (answered[key]) continue
       const raw = b.description ?? ''
-      const a = b.kind === 'bead' ? asked(raw) : { question: undefined, context: undefined, options: [] }
+      const a = asked(raw)
       const question = a.question ?? line(b.title, 200)
       const options: Choice[] =
         b.kind === 'owned' ? [{ label: 'start now' }, { label: 'not now' }] : a.options.map(parseChoice)
