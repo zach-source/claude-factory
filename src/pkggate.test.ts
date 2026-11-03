@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { makeGate } from './pkggate'
 
 // Fixtures trimmed from real proxy.golang.org responses (golang.org/x/text), 2026-10-14:
@@ -2352,4 +2352,188 @@ test('claude-factory-qls AC5: a 3xx with no, unparseable or file: Location is re
     expect(n).toBe(1)
     expect(g.stats().error).toBe(1) // the refusal is counted, not an accidental TypeError
   }
+})
+
+// claude-factory-37s: a Version from an upstream body joins the sumdb lookup URL, so it must match Go's grammar first
+function keyFixture(extra: (url: URL) => Response | undefined) {
+  const keys: string[] = []
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index')
+        return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        keys.push(key)
+        return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
+      }
+      return extra(url) ?? new Response('not found', { status: 404 })
+    },
+  })
+  const g = makeGate({
+    upstream: {
+      go: srv.url.origin,
+      npm: base(),
+      pypi: base(),
+      files: base(),
+      sumdb: srv.url.origin,
+      goIndex: srv.url.origin,
+    },
+    now: () => NOW,
+  })
+  return { srv, g, keys }
+}
+// a lookup key that is not one of the floor-sample keys, or that names the module under test
+const unexpectedKeys = (keys: string[], mod: string) =>
+  keys.filter(k => k.includes(mod) || GO_FLOOR_RECORDS[k] === undefined)
+
+describe('claude-factory-37s: sumdb lookup key charset', () => {
+  const rejects = [
+    'v1.0.0/../../evil',
+    'v1.0.0/x',
+    'v1.0.0?x=1',
+    'v1.0.0#f',
+    'v1.0.0%2Fx',
+    'v1.0.0 x',
+    'v1.0.0\\x',
+    '1.0.0',
+    '',
+  ]
+  for (const bad of rejects) {
+    test(`.info/.mod/.zip answer 502 for body Version ${JSON.stringify(bad)}, with no lookup`, async () => {
+      const lines: string[] = []
+      const orig = console.log
+      console.log = (s: string) => lines.push(s)
+      const { srv, g, keys } = keyFixture(url =>
+        url.pathname === '/badver.example.com/mod/@v/v1.0.0.info'
+          ? new Response(JSON.stringify({ Version: bad, Time: GO_INFO_BACKDATED_TIME }))
+          : undefined,
+      )
+      try {
+        for (const ext of ['info', 'mod', 'zip'])
+          expect(
+            (await g(new Request(`http://gate/go/badver.example.com/mod/@v/v1.0.0.${ext}`))).status,
+          ).toBe(502)
+        expect(unexpectedKeys(keys, 'badver.example.com')).toEqual([])
+        const line = lines
+          .map(l => JSON.parse(l))
+          .find(l => l.decision === 'error' && String(l.reason).includes('lookup key'))
+        expect(line?.reason).toBe('sum.golang.org lookup key not valid')
+        for (const l of lines) expect(l).not.toContain('http')
+      } finally {
+        console.log = orig
+        srv.stop(true)
+      }
+    })
+  }
+
+  const allows = [
+    'v1.0.0',
+    'v1.0.0-RC1',
+    'v1.1.0-0.20261001120000-abcdef123456',
+    'v2.0.0+incompatible',
+    'v1.0.0-rc.1+build.5',
+  ]
+  for (const ok of allows) {
+    test(`body Version ${ok} stays allowed, with one lookup for its escaped key`, async () => {
+      const { srv, g, keys } = keyFixture(url =>
+        url.pathname === `/okver.example.com/mod/@v/${escapeGoPath(ok)}.info`
+          ? new Response(JSON.stringify({ Version: ok, Time: GO_INFO_BACKDATED_TIME }))
+          : undefined,
+      )
+      try {
+        const r = await g(new Request(`http://gate/go/okver.example.com/mod/@v/${escapeGoPath(ok)}.info`))
+        expect(r.status).toBe(200)
+        expect(keys.filter(k => k.includes('okver.example.com'))).toEqual([
+          `okver.example.com/mod@${escapeGoPath(ok)}`,
+        ])
+      } finally {
+        srv.stop(true)
+      }
+    })
+  }
+
+  test('@latest with a bad Version makes no lookup and falls back to @v/list', async () => {
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (s: string) => lines.push(s)
+    const info = JSON.stringify({ Version: 'v1.0.0', Time: GO_INFO_BACKDATED_TIME })
+    const { srv, g, keys } = keyFixture(url => {
+      if (url.pathname === '/badlatest.example.com/mod/@latest')
+        return new Response(JSON.stringify({ Version: 'v9.9.9/../../evil', Time: GO_INFO_BACKDATED_TIME }))
+      if (url.pathname === '/badlatest.example.com/mod/@v/list') return new Response('v1.0.0\n')
+      if (url.pathname === '/badlatest.example.com/mod/@v/v1.0.0.info') return new Response(info)
+      return undefined
+    })
+    try {
+      const r = await g(new Request('http://gate/go/badlatest.example.com/mod/@latest'))
+      expect(r.status).toBe(200)
+      expect(((await r.json()) as { Version: string }).Version).toBe('v1.0.0')
+      expect(keys.filter(k => k.includes('evil') || k.includes('v9.9.9'))).toEqual([])
+      const bad = lines.map(l => JSON.parse(l)).find(l => l.version === 'v9.9.9/../../evil')
+      expect(bad?.decision).toBe('error')
+    } finally {
+      console.log = orig
+      srv.stop(true)
+    }
+  })
+
+  test('the floor refresh drops index entries with a bad Path or Version before it samples', async () => {
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (s: string) => lines.push(s)
+    const keys: string[] = []
+    const srv = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url)
+        if (url.pathname === '/index') {
+          const ts = new Date(Date.parse(url.searchParams.get('since') ?? '') + 15 * 60_000).toISOString()
+          const bad = [
+            { Path: 'evil.example.com/../x', Version: 'v1.0.0' },
+            { Path: 'ok.example.com/m', Version: 'v1/../x' },
+            { Path: 'q.example.com/m?x=1', Version: 'v1.0.0' },
+          ]
+          // GO_FLOOR_SAMPLE_LIMIT bad entries first: if they took sample slots the floor would starve
+          const badMany = Array.from({ length: 9 }, (_, i) => bad[i % 3]!)
+          const good = GO_FLOOR_SAMPLE_PATHS.map(p => ({ Path: p, Version: GO_FLOOR_SAMPLE_VERSION }))
+          return new Response(
+            [...badMany, ...good].map(e => JSON.stringify({ ...e, Timestamp: ts })).join('\n') + '\n',
+          )
+        }
+        if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+        if (url.pathname.startsWith('/lookup/')) {
+          const key = url.pathname.slice('/lookup/'.length)
+          keys.push(key)
+          return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
+        }
+        if (url.pathname === '/floorbad.example.com/mod/@v/v1.0.0.info')
+          return new Response(JSON.stringify({ Version: 'v1.0.0', Time: GO_INFO_BACKDATED_TIME }))
+        return new Response('not found', { status: 404 })
+      },
+    })
+    try {
+      const g = makeGate({
+        upstream: {
+          go: srv.url.origin,
+          npm: base(),
+          pypi: base(),
+          files: base(),
+          sumdb: srv.url.origin,
+          goIndex: srv.url.origin,
+        },
+        now: () => NOW,
+      })
+      const r = await g(new Request('http://gate/go/floorbad.example.com/mod/@v/v1.0.0.info'))
+      expect(r.status).toBe(200)
+      expect(unexpectedKeys(keys, 'evil').filter(k => k !== 'floorbad.example.com/mod@v1.0.0')).toEqual([])
+      const floor = lines.map(l => JSON.parse(l)).find(l => typeof l.floor === 'number')
+      expect(floor?.samples).toBe(9)
+    } finally {
+      console.log = orig
+      srv.stop(true)
+    }
+  })
 })
