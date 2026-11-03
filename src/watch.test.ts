@@ -203,7 +203,7 @@ test('factory mail: --wake sets wake; a held box prints the held line; later --w
   parkedRun('r1', repo(), f, { def: held })
   const plain = factory(['mail', 'r1', 'deploy', 'Report', 'blocked'])
   expect(plain.out).toContain('held for deploy: parked on ' + PR)
-  expect(plain.out).toContain('add --wake to start one now')
+  expect(plain.out).toContain('add --wake only for an answer that changes the wait')
   expect(mailOf('r1').at(-1)).toMatchObject({ text: 'Report blocked' })
   expect(mailOf('r1').at(-1)).not.toHaveProperty('wake')
   const woken = factory(['mail', 'r1', 'deploy', '--wake', 'answer'])
