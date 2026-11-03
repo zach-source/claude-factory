@@ -367,6 +367,20 @@ export const beads = (repo: string, actor: string) => ({
   /** answers a human-flagged bead: a comment, and bd closes it */
   respond: (id: string, text: string) =>
     must(bd(repo, actor, 'human', 'respond', id, '-r', text), 'human respond'),
+  /** Ends a hand-off: removes label owner and the owner_question/owner_since keys, as queue does. False if bd fails. */
+  clearOwner: (id: string) =>
+    bd(
+      repo,
+      actor,
+      'update',
+      id,
+      '--remove-label',
+      OWNER,
+      '--unset-metadata',
+      'owner_question',
+      '--unset-metadata',
+      'owner_since',
+    ).isOk,
   /**
    * Hands a bead to the factory: a rig starts it at the next dispatch, a rejected one too.
    * It removes every old `factory:*`/`station:*` label first, then adds `station:<station>` when

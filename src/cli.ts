@@ -6185,7 +6185,7 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
   b.children(id).filter(x => x.status !== 'closed')
 
 function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk = false } = {}) {
-  if (!hasBeads(repo)) return { goal }
+  if (!hasBeads(repo)) return { goal, handedOff: false }
   const b = beads(repo, 'factory')
   // a bare id, or the id in front of '<id>: <title>': goalOf writes every run's goal that way, so a goal
   // copied from a run or `factory status` names its bead too (claude-factory-vad1)
@@ -6233,9 +6233,13 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
           .map(x => `${x.id} ${x.status}`)
           .join(', ')})`,
       )
-    return { goal: goalOf(named), bead: named.id }
+    const handedOff =
+      !!named.labels?.includes(OWNER) ||
+      named.metadata?.owner_question !== undefined ||
+      named.metadata?.owner_since !== undefined
+    return { goal: goalOf(named), bead: named.id, handedOff }
   }
-  return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra) }
+  return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra), handedOff: false }
 }
 
 /**
@@ -8595,6 +8599,11 @@ async function start(factory: string | undefined, repo: string | undefined, goal
     )
   const linked = beadFor(root, goal, { isOwnerOk })
   const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
+  // the run exists and holds the claim: end the hand-off now. A failure only warns, the run is live (claude-factory-h1wj)
+  if (linked.handedOff && !beads(root, actorOf(run.id)).clearOwner(linked.bead!))
+    console.error(
+      `warning: could not clear the owner label of ${linked.bead}: it stays handed off. Run: factory queue to clear it by hand`,
+    )
   if (at && at !== def.start && Object.hasOwn(def.nodes, at)) post(run.id, { type: 'GOTO', node: at })
   await tick() // launches the first worker now rather than at the next tick
   console.log(
