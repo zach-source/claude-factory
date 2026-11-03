@@ -1001,6 +1001,54 @@ export async function githubMergedJson(
   return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
 }
 
+/** the merged MRs of a GitLab project as `gh pr list --json` shaped text (`parseMergedPrs` reads it), found by a
+ * title search or by source branch, or null when the call fails. The API `state=merged` filter is trusted; rows
+ * that say otherwise are dropped. */
+export async function gitlabMergedJson(
+  glab: Gh,
+  host: string,
+  path: string,
+  cwd: string,
+  o: { search: string } | { sourceBranch: string },
+  onErr?: (err: string) => void,
+): Promise<string | null> {
+  const q =
+    'search' in o
+      ? `&in=title&search=${encodeURIComponent(o.search)}`
+      : `&source_branch=${encodeURIComponent(o.sourceBranch)}`
+  const res = await glab(
+    [
+      'api',
+      '--hostname',
+      host,
+      `projects/${encodeURIComponent(path)}/merge_requests?state=merged&per_page=30${q}`,
+    ],
+    timed(cwd),
+  )
+  if (res.code !== 0) {
+    onErr?.(res.err)
+    return null
+  }
+  let v: unknown
+  try {
+    v = JSON.parse(res.out)
+  } catch {
+    return '[]'
+  }
+  if (!Array.isArray(v)) return '[]'
+  return JSON.stringify(
+    (v as Record<string, unknown>[])
+      .filter(m => m.state === 'merged')
+      .map(m => ({
+        number: m.iid,
+        url: m.web_url,
+        title: m.title,
+        headRefName: m.source_branch,
+        mergeCommit: { oid: str(m.merge_commit_sha) || str(m.squash_commit_sha) },
+      })),
+  )
+}
+
 /** `gh api` argv for the three PR writes of labelPass. The body goes through -f (raw): -F would read `@file`. */
 export const githubCommentArgv = (slug: string, n: number, body: string) => [
   'api',
