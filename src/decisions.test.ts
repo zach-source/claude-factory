@@ -106,7 +106,7 @@ test('decisions answer responds to a human-flagged bead, comments on an owner-on
 test('decisions propose refuses a gate key and a malformed one, a worker, and otherwise stores options decisions shows back', () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
-  fakeBd('null', '[]')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
   const gate = factory(['decisions', 'propose', 'gate:r1@0', 'q', 'a | b'])
   expect(gate.code).not.toBe(0)
   expect(gate.err).toContain('never proposed')
@@ -154,7 +154,7 @@ test('decide refuses a worker and a patrol before it ever looks up the run (clau
 test('decisions propose keeps a value at its limit, refuses one over it naming the field and the limit, and leaves decisions.json unchanged', () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
-  fakeBd('null', '[]')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
   const decisionsFile = join(home, 'decisions.json')
   const snapshot = () => (existsSync(decisionsFile) ? readFileSync(decisionsFile, 'utf8') : undefined)
 
@@ -290,7 +290,7 @@ test('decisions propose refuses an unknown extra argument instead of silently ig
 test("decisions propose ignores the given options for an own: key and always keeps 'start now' and 'not now'", () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
-  fakeBd('null', '[]')
+  fakeBd('null', JSON.stringify([{ id: 'api-9', title: 't', metadata: { owner_decisions: {} } }]))
   const proposed = factory([
     'decisions',
     'propose',
@@ -312,7 +312,7 @@ test("decisions propose ignores the given options for an own: key and always kee
 test('decisions propose --context round-trips into `factory decisions` output', () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
-  fakeBd('null', '[]')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
   const withContext = factory([
     'decisions',
     'propose',
@@ -329,4 +329,98 @@ test('decisions propose --context round-trips into `factory decisions` output', 
     context: 'The service has no DB yet.',
     options: ['pg: smaller ops burden', 'mysql: team knows it already (recommended)'],
   })
+})
+
+const decisionsFile = () => join(home, 'decisions.json')
+const seedKeys = (...keys: string[]) => {
+  mkdirSync(home, { recursive: true })
+  const p = { question: 'q', options: ['a', 'b'], at: 1 }
+  writeFileSync(decisionsFile(), JSON.stringify(Object.fromEntries(keys.map(k => [k, p]))))
+}
+const keysOnDisk = () => Object.keys(JSON.parse(readFileSync(decisionsFile(), 'utf8'))).sort()
+const keysListed = () => Object.keys(JSON.parse(factory(['decisions']).out).proposals).sort()
+/** a run dir; no value writes an unparsable state.json */
+const seedRun = (id: string, value?: unknown) => {
+  const d = join(home, 'runs', id)
+  mkdirSync(d, { recursive: true })
+  writeFileSync(join(d, 'run.json'), JSON.stringify({ id }))
+  writeFileSync(
+    join(d, 'state.json'),
+    value === undefined ? '{not json' : JSON.stringify({ snapshot: { value, context: {} } }),
+  )
+}
+
+test('decisions drops a bd: key whose bead is no longer open, in the output and in decisions.json', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
+  seedKeys('bd:api:api-1', 'bd:api:api-2')
+  expect(keysListed()).toEqual(['bd:api:api-1'])
+  expect(keysOnDisk()).toEqual(['bd:api:api-1'])
+})
+
+test('decisions drops an own: key unless the bead is still in the ready list as owner-only', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', JSON.stringify([{ id: 'api-9', title: 't', metadata: { owner_decisions: {} } }]))
+  seedKeys('own:api:api-9')
+  expect(keysListed()).toEqual(['own:api:api-9'])
+  fakeBd('null', '[]')
+  expect(keysListed()).toEqual([])
+  expect(keysOnDisk()).toEqual([])
+})
+
+test('decisions drops an iv: key for a done, aborted or missing run and keeps a live one', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+  seedRun('r-done', 'done')
+  seedRun('r-ab', 'aborted')
+  seedRun('r-live', { plan: 'working' })
+  seedKeys('iv:r-done@1', 'iv:r-ab@1', 'iv:r-gone@1', 'iv:r-live@1')
+  expect(keysListed()).toEqual(['iv:r-live@1'])
+  expect(keysOnDisk()).toEqual(['iv:r-live@1'])
+})
+
+test('decisions keeps a key when it cannot tell: bd fails, run state unreadable, other prefix; drops a key of an unknown rig', () => {
+  rmSync(dir, { recursive: true, force: true })
+  const broken = rig('broken')
+  writeFileSync(join(broken, 'BROKEN'), '')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'bd'), "#!/bin/sh\nif [ -f ./BROKEN ]; then echo boom >&2; exit 1; fi\necho '[]'\n")
+  chmodSync(join(bin, 'bd'), 0o755)
+  seedRun('r-bad')
+  seedKeys('bd:broken:b-1', 'own:broken:b-2', 'iv:r-bad@1', 'zz:other', 'bd:nope:x-1')
+  const kept = ['bd:broken:b-1', 'iv:r-bad@1', 'own:broken:b-2', 'zz:other']
+  expect(keysListed()).toEqual(kept)
+  expect(keysOnDisk()).toEqual(kept)
+})
+
+test('decisions writes nothing when every key is live, and makes no file when there is none', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
+  factory(['decisions'])
+  expect(existsSync(decisionsFile())).toBe(false)
+  mkdirSync(home, { recursive: true })
+  writeFileSync(decisionsFile(), '{"bd:api:api-1":{"question":"q","options":["a","b"],"at":1}}\n')
+  const before = readFileSync(decisionsFile(), 'utf8')
+  factory(['decisions'])
+  expect(readFileSync(decisionsFile(), 'utf8')).toBe(before)
+})
+
+test('decisions answer deletes the bd: and own: keys of that bead only, and keeps the file when bd fails', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
+  seedKeys('bd:api:api-1', 'own:api:api-1', 'bd:api:api-2')
+  expect(factory(['decisions', 'answer', 'api', 'api-1', 'go']).code).toBe(0)
+  expect(keysOnDisk()).toEqual(['bd:api:api-2'])
+
+  seedKeys('bd:api:api-1', 'bd:api:api-2')
+  const before = readFileSync(decisionsFile(), 'utf8')
+  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nexit 1\n')
+  chmodSync(join(bin, 'bd'), 0o755)
+  expect(factory(['decisions', 'answer', 'api', 'api-1', 'go']).code).not.toBe(0)
+  expect(readFileSync(decisionsFile(), 'utf8')).toBe(before)
 })
