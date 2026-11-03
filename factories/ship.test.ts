@@ -83,7 +83,7 @@ test('only the release station marks a PR ready: the worker hook allows gh pr re
   for (const [id, node] of Object.entries(ship.nodes)) {
     const stripped = node.prompt.replaceAll('gh pr ready <n> --undo', '')
     expect(stripped.includes('gh pr ready'), id).toBe(id === 'release')
-    expect(node.prompt.includes('--undo'), id).toBe(id === 'queue' || id === 'release')
+    expect(node.prompt.includes('--undo'), id).toBe(id === 'queue' || id === 'release' || id === 'deploy')
   }
 })
 

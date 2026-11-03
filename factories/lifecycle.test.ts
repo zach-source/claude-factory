@@ -807,7 +807,10 @@ test('claude-factory-ocox AC2/AC3 + ye1v AC5: plain gh pr ready only in review, 
     expect(p.replaceAll(/gh pr ready <n> --undo/g, '').includes('gh pr ready'), id).toBe(
       ['review', 'security', 'check'].includes(id),
     )
-    expect(p.includes('gh pr ready <n> --undo'), id).toBe(['implement', 'quick'].includes(id))
+    expect(p.includes('gh pr ready <n> --undo'), id).toBe(
+      // implement and quick undo before a push; review, security and check carry the Made-worse gate
+      ['implement', 'quick', 'review', 'security', 'check'].includes(id),
+    )
   }
   expect(lifecycle.nodes.implement!.prompt).toContain('gh pr create --draft')
 })
@@ -1055,7 +1058,7 @@ const PLAN_RULE =
   "If this run files a bead for a bug that its own change makes worse in production (more often, wider or longer), put one line `Made worse: <id>: <how>` in the summary. Then do one of these and record the choice and the reason in a bd comment on the run's bead: fix the bug in this run as a task (`--parent <run bead>`), or gate the deploy on it. To gate it, file it with `--deps discovered-from:<run bead>` and put the line `Made worse by: <run bead>` in its description. For a bead that is already open, add that line with `bd comment <id>` and link it with `bd dep add <id> <run bead> -t discovered-from`."
 
 const GATE_RULE =
-  "Made-worse gate: before you mark ready, merge or deploy a pull request, run `bd dep list <bead> --direction=up -t discovered-from` for its bead. Run `bd show <id>` for each open bead in the list. A bead gates the pull request when its description or a comment contains `Made worse by: <bead>`, or says that this change makes it worse in production. The gate clears only when that bead is closed, or when a person's own comment on it or a [factory mail] from the manager says to ship anyway. If a bead gates the pull request, do not mark it ready, merge it or deploy it. Report blocked with each gating bead id and a `Question:` line that asks the person to ship before the fix or to wait. If a bd command fails, report blocked with the command: never ship on a failed read."
+  "Made-worse gate: before you mark ready, merge or deploy a pull request, run `bd dep list <bead> --direction=up -t discovered-from` for its bead. Run `bd show <id>` for each open bead in the list. A bead gates the pull request when its description or a comment contains `Made worse by: <bead>`, or says that this change makes it worse in production. The gate clears only when that bead is closed, or when a person's own comment on it or a [factory mail] from the manager says to ship anyway. If a bead gates the pull request, do not mark it ready, merge it or deploy it. If it is not a draft, run `gh pr ready <n> --undo`. Report blocked with each gating bead id and a `Question:` line that asks the person to ship before the fix or to wait. If a bd command fails, report blocked with the command: never ship on a failed read."
 
 test('plan names a bead that its change makes worse and records fix or gate (claude-factory-j2k AC1)', () => {
   const plan = promptOf(lifecycle, 'plan')
@@ -1086,8 +1089,19 @@ test('ship release, ship deploy and release rollout gate on a made-worse discove
     }
   for (const [id, node] of Object.entries(lifecycle.nodes)) {
     const prompt = (node as { prompt?: unknown }).prompt
-    if (typeof prompt === 'string') expect(prompt.includes('Made-worse gate'), id).toBe(false)
+    if (typeof prompt !== 'string') continue
+    const gated = ['review', 'security', 'check'].includes(id)
+    expect(prompt.split(GATE_RULE).length - 1, id).toBe(gated ? 1 : 0)
+    if (gated)
+      expect(prompt.indexOf('Made-worse gate'), id).toBeLessThan(prompt.indexOf('gh pr ready <n> -R'))
+    else expect(prompt.includes('Made-worse gate'), id).toBe(false)
   }
-  for (const s of ['never ship on a failed read', "a person's own comment", '[factory mail]', '`Question:`'])
+  for (const s of [
+    'never ship on a failed read',
+    '--undo',
+    "a person's own comment",
+    '[factory mail]',
+    '`Question:`',
+  ])
     expect(GATE_RULE).toContain(s)
 })
