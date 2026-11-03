@@ -201,6 +201,7 @@ import {
   githubCloseArgv,
   githubCommentArgv,
   githubMergedJson,
+  gitlabMergedJson,
   githubUnlabelArgv,
   githubPullPath,
   githubChecks,
@@ -6709,36 +6710,47 @@ const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) 
   }
 }
 
-/** `gh pr list --state merged --search <id> ...`, a second `--search <short id>` for a dotted child id, plus a REST `head=<owner>:<branch>` lookup for up to 3 local run
- * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
-async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh): Promise<MergedPr[]> {
+/** the pre-check's merged-PR lookups for a rig on GitHub (`gh pr list --state merged --search`, a REST `head=` call) or GitLab
+ * (`glab api` merged MR searches): a title search for the id, a second one for a dotted child's short id, plus a lookup for up to 3
+ * local run branches of this bead (a PR that closed the bead's own run but never named it in its title). It throws when the first
+ * search fails. A failed short-id or branch call keeps the hits already found. */
+async function mergedPrsFor(
+  repo: string,
+  origin: NonNullable<ReturnType<typeof originRef>>,
+  id: string,
+  branches: string[],
+  cli: { gh: Gh; glab: Gh },
+): Promise<MergedPr[]> {
   const fields = 'number,url,title,headRefName,mergeCommit'
-  const search = await gh(['pr', 'list', '--state', 'merged', '--search', id, '--json', fields, '-L', '30'], {
-    cwd: repo,
-    timeout: PRECHECK_TIMEOUT_MS,
-  })
-  if (search.code !== 0) throw new Error(clip(search.err.trim().split('\n')[0] || 'gh pr list failed', 200))
-  const found = parseMergedPrs(search.out)
+  const gl = origin.forge === 'gitlab'
+  const glabPath = `${origin.owner}/${origin.repo}`
+  const bySearch = async (q: string): Promise<string | null> => {
+    if (gl) return gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: q })
+    const r = await cli.gh(['pr', 'list', '--state', 'merged', '--search', q, '--json', fields, '-L', '30'], {
+      cwd: repo,
+      timeout: PRECHECK_TIMEOUT_MS,
+    })
+    return r.code === 0 ? r.out : null
+  }
+  const search = await bySearch(id)
+  if (search === null) throw new Error(`${gl ? 'glab api' : 'gh pr list'} failed`)
+  const found = parseMergedPrs(search)
   // claude-factory-jxl.1: a title may cite only the short child id ("192.6"); the full-id search misses it
   const short = shortBeadId(id)
   if (short) {
-    const byShort = await gh(
-      ['pr', 'list', '--state', 'merged', '--search', short, '--json', fields, '-L', '30'],
-      {
-        cwd: repo,
-        timeout: PRECHECK_TIMEOUT_MS,
-      },
-    )
-    if (byShort.code === 0) found.push(...parseMergedPrs(byShort.out))
+    const byShort = await bySearch(short)
+    if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
-  // claude-factory-6as.9: a failed `--head` call must not discard a hit `--search` already found.
+  // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
     const ref = rigRef(repo)
-    const byHead = ref
-      ? await githubMergedJson(gh, ref.slug, repo, { pages: 1, head: `${ref.owner}:${branch}` })
-      : null
+    const byHead = gl
+      ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { sourceBranch: branch })
+      : ref
+        ? await githubMergedJson(cli.gh, ref.slug, repo, { pages: 1, head: `${ref.owner}:${branch}` })
+        : null
     if (byHead !== null) found.push(...parseMergedPrs(byHead))
   }
   return found
@@ -6748,14 +6760,14 @@ async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh
  * claude-factory-6as: check if a merged PR already proves `bead`'s work is done.
  * If it does, dispatch must reject the bead instead of starting a run for it.
  *
- * This makes no gh call at all in four cases:
+ * This makes no gh or glab call at all in four cases:
  * - `FACTORY_PRECHECK=0`
  * - a person already overrode a prior reject (`rejected_by` metadata still names dispatch after a
  *   requeue)
  * - the id does not look like a bead id
- * - the rig's repo is not on GitHub
+ * - the rig's repo is neither on GitHub nor on GitLab
  *
- * A gh failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
+ * A gh or glab failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
  * shows it.
  */
 async function precheckSkip(
@@ -6763,7 +6775,7 @@ async function precheckSkip(
   bead: Bead,
   b: ReturnType<typeof beads>,
   runBranches: string[],
-  gh: Gh,
+  cli: { gh: Gh; glab: Gh },
 ): Promise<{ skip: boolean; error?: string }> {
   if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
   if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
@@ -6774,10 +6786,11 @@ async function precheckSkip(
   // through the pre-check like any other.
   if (bead.metadata?.requeued_from) return { skip: false }
   if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
-  if (originRef(rig.repo)?.forge !== 'github') return { skip: false }
+  const origin = originRef(rig.repo)
+  if (!origin) return { skip: false }
   let merged: MergedPr[]
   try {
-    merged = await mergedPrsFor(rig.repo, bead.id, runBranches, gh)
+    merged = await mergedPrsFor(rig.repo, origin, bead.id, runBranches, cli)
   } catch (err) {
     const error = `pre-check skipped: ${(err as Error).message}`
     logPrecheck(rig.name, bead.id, 'skip', error)
@@ -6814,9 +6827,10 @@ async function dispatch() {
   const { busy, held } = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
   // claude-factory-6as.9: one hung gh call already proved gh broken for this pass (5 calls, up to
-  // 15s each). The other candidates, in this rig or the next, must fail open with no further gh
-  // calls, not wait out the same timeout again.
-  let ghFailed = false
+  // 15s each). The other candidates on that forge, in this rig or the next, must fail open with no
+  // further calls, not wait out the same timeout again. The latch is per forge: a broken glab
+  // must not turn off the GitHub pre-check.
+  const forgeFailed = new Set<ForgeKind>()
   // live runs only: a finished run's deferred bead, undeferred by a person, is new work again.
   // claude-factory-6as.3: a Map, not a Set, so dispatch can name the run working a bead that is
   // still `ready` and unassigned (it lost its own claim on the bead), for one comment.
@@ -7227,12 +7241,14 @@ async function dispatch() {
           .map(id => `factory/${id}`)
         // claude-factory-6as.9: skip the gh calls outright once this pass already proved gh broken;
         // the first candidate's row in precheck.jsonl already covers the fail-open for the rest.
-        const { skip, error } = ghFailed
-          ? { skip: false, error: undefined }
-          : await precheckSkip(rig, bead, b, runBranches, spawnGh)
+        const forge = originRef(rig.repo)?.forge
+        const { skip, error } =
+          forge && forgeFailed.has(forge)
+            ? { skip: false, error: undefined }
+            : await precheckSkip(rig, bead, b, runBranches, { gh: spawnGh, glab: spawnGlab })
         if (error) {
           errors.push({ id: bead.id, error })
-          ghFailed = true
+          if (forge) forgeFailed.add(forge)
         }
         if (skip) {
           skips.set(bead.id, 'pre-check: already done')
