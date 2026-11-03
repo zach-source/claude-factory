@@ -699,3 +699,20 @@ test('codexUsageOf: odd rows', () => {
   expect(codexUsageOf([a], F)).toMatchObject({ model: 'codex', session: U })
   expect(codexUsageOf([a], 'rollout-x.jsonl')).toBeNull()
 })
+
+// claude-factory-p956: a tick stamps its own events with the tick's start time, so a later entry can carry
+// an earlier `at` than an inbox line the same tick replayed
+test('a station visit never takes negative time when an entry is stamped before the one before it', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'implement',
+      createdAt: 0,
+      log: [
+        e('implement', 'ready', 2),
+        { ...e('verify', 'red', 1.99), summary: 'no worker: merge origin/main' },
+      ],
+    },
+  ])
+  expect(m.stations.verify!.medianHours).toBe(0)
+})

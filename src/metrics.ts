@@ -128,14 +128,17 @@ export function metrics(records: RunRecord[]) {
       const s = (stations[e.node] ??= { visits: 0, failed: 0, outcomes: {}, hours: [] })
       s.visits++
       s.outcomes[e.outcome] = (s.outcomes[e.outcome] ?? 0) + 1
-      s.hours.push((e.at - prev) / HOUR)
+      // claude-factory-p956: a tick stamps its own events (a mergeCheck DONE, a timeout) with the tick's
+      // start time, so an entry can carry an earlier `at` than the inbox line before it: that visit took no time
+      const hours = Math.max(0, e.at - prev) / HOUR
+      s.hours.push(hours)
       if (FAILED.has(e.outcome)) {
         s.failed++
         const k = failKind(e.summary)
         fails[k] = (fails[k] ?? 0) + 1
       }
       // ponytail: a gate's wait is its station's time; gates are named approve in every factory so far
-      if (e.node === 'approve') gateWait.push((e.at - prev) / HOUR)
+      if (e.node === 'approve') gateWait.push(hours)
       // claude-factory-wnn: `check` is the small route's combined verify+review station. It sends
       // work back the same way `review`'s `changes` outcome does. Count it the same way here, and
       // below in the round-cap metric.
@@ -148,7 +151,7 @@ export function metrics(records: RunRecord[]) {
       // round 1 finding .8: those write no log entry of their own, but still sit next to 'plan')
       if (e.replan) capReplans++
       if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
-      prev = e.at
+      prev = Math.max(prev, e.at)
     }
     if (reviewChanges >= 3) runsWith3PlusReviewRounds++
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
