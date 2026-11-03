@@ -1215,8 +1215,8 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
 /**
  * Find the usage limit that ended a codex turn. Read the last turn.failed or error line of `codex exec --json`
  * output. It is a limit when the message says "You've hit your usage limit" (curly or plain apostrophe).
- * It is kind auth when a turn.failed says "unexpected status 401 Unauthorized" or "access token could not be
- * refreshed". An error line (a retry) never gives auth.
+ * It is kind auth when a turn.failed says "unexpected status 401 Unauthorized", "access token could not be
+ * refreshed" or "Failed to refresh token: <status>" (codex rust-v0.160.1 manager.rs). An error line (a retry) never gives auth.
  * A later turn.completed, any other failure or a cut first line gives null. `at` is the time of the last write.
  */
 export function codexLimit(out: string, at = Date.now()) {
@@ -1230,7 +1230,9 @@ export function codexLimit(out: string, at = Date.now()) {
       // a retry shows as an error line and can recover: only a turn.failed is a refused login
       if (
         e.type === 'turn.failed' &&
-        /unexpected status 401 Unauthorized|access token could not be refreshed/i.test(text)
+        /unexpected status 401 Unauthorized|access token could not be refreshed|Failed to refresh token: \d{3}\b/i.test(
+          text,
+        )
       )
         return { at, kind: 'auth', resetsAt: 0 }
       return null
