@@ -19,6 +19,8 @@ const home = join(dir, 'home')
 const bin = join(dir, 'bin')
 const calls = join(dir, 'calls.log')
 const showMode = join(dir, 'show-mode') // found | owned | notfound | timeout | query-timeout | store-missing
+const claimFail = join(dir, 'claim-fail') // marker file: `update --claim` exits 1
+const updateFail = join(dir, 'update-fail') // marker file: any other `update` exits 1
 const claudeConfig = join(dir, 'claude-config')
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -63,13 +65,19 @@ function fakeBd(prefix: string) {
     '    case "$m" in',
     '      found) printf \'%s\' \'[{"id":"acme-1","title":"t"}]\';;',
     '      owned) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_decisions":{}}}]\';;',
+    '      handed-off) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"],"metadata":{"owner_question":"q","owner_since":"2026-11-01"}}]\';;',
+    '      owned-handed-off) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"],"metadata":{"owner_decisions":{},"owner_question":"q","owner_since":"2026-11-01"}}]\';;',
     '      notfound) echo "Issue $2 not found" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
     '      timeout) echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1;;',
     '      query-timeout) echo "Error fetching $2: dial tcp 127.0.0.1:3308: i/o timeout" >&2; printf \'%s\' \'{"error":"no issues found matching the provided IDs"}\'; exit 1;;',
     '      store-missing) echo \'Error: failed to open database: database "zzz" not found on Dolt server at 127.0.0.1:3308\' >&2; exit 1;;',
     '    esac;;',
     '  create) echo new-bead-1;;',
-    '  update) exit 0;;',
+    '  update)',
+    `    case "$*" in`,
+    `      *--claim*) [ -e ${claimFail} ] && { echo "already claimed" >&2; exit 1; };;`,
+    `      *) [ -e ${updateFail} ] && { echo "update failed" >&2; exit 1; };;`,
+    '    esac; exit 0;;',
     "  children) printf '%s' '[]';;",
     '  *) exit 0;;',
     'esac',
@@ -398,4 +406,75 @@ test('fork of a live run is refused and makes nothing; after abort it works', ()
   expect(ids).toHaveLength(2)
   const child = ids.find(x => x !== id)!
   expect(JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8')).forkedFrom).toBe(id)
+})
+
+const CLEAR =
+  'update acme-1 --remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
+const startHandedOff = (
+  mode: string,
+  args: string[] = [],
+  marker?: string,
+  env: Record<string, string> = {},
+) => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, mode)
+  if (marker) writeFileSync(marker, '')
+  const out = run(['start', factoryFixture(), r, 'acme-1', ...args], env)
+  const log = existsSync(calls) ? readFileSync(calls, 'utf8') : ''
+  const runs = existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0
+  return { out, log, runs, updates: log.split('\n').filter(l => l.startsWith('update ')) }
+}
+
+// claude-factory-h1wj: a run that starts on a handed-off bead clears its owner label and keys
+test('start of a handed-off bead clears the owner label and keys once, after the claim (claude-factory-h1wj)', () => {
+  const t = startHandedOff('handed-off')
+  expect(t.out.code).toBe(0)
+  expect(t.runs).toBe(1)
+  const clears = t.updates.filter(l => l.startsWith(CLEAR))
+  expect(clears.length).toBe(1)
+  expect(t.log.indexOf('--claim')).toBeGreaterThan(-1)
+  expect(t.log.indexOf(CLEAR)).toBeGreaterThan(t.log.indexOf('--claim'))
+})
+
+test('start of a plain bead writes no owner clear (claude-factory-h1wj)', () => {
+  const t = startHandedOff('found')
+  expect(t.out.code).toBe(0)
+  expect(t.log).not.toContain('--remove-label owner')
+  expect(t.log).not.toContain('owner_question')
+})
+
+test('the owned gate is unchanged: a refused start clears nothing; --owned clears and never touches owner_decisions (claude-factory-h1wj)', () => {
+  const refused = startHandedOff('owned-handed-off')
+  expect(refused.out.code).not.toBe(0)
+  expect(refused.out.err).toContain("carries its owner's decisions")
+  expect(refused.updates.length).toBe(0)
+  expect(refused.runs).toBe(0)
+
+  const owned = startHandedOff('owned-handed-off', ['--owned'])
+  expect(owned.out.code).toBe(0)
+  expect(owned.updates.filter(l => l.startsWith(CLEAR)).length).toBe(1)
+  expect(owned.updates.some(l => l.includes('owner_decisions'))).toBe(false)
+
+  const patrol = startHandedOff('owned-handed-off', ['--owned'], undefined, { FACTORY_PATROL: '1' })
+  expect(patrol.out.code).not.toBe(0)
+  expect(patrol.updates.length).toBe(0)
+})
+
+test('a refused claim keeps the owner label (claude-factory-h1wj)', () => {
+  const t = startHandedOff('handed-off', [], claimFail)
+  expect(t.out.code).not.toBe(0)
+  expect(t.out.err).toContain('already claimed')
+  expect(t.log).not.toContain(CLEAR)
+  expect(t.runs).toBe(0)
+})
+
+test('a failed owner clear warns but the start still succeeds (claude-factory-h1wj)', () => {
+  const t = startHandedOff('handed-off', [], updateFail)
+  expect(t.out.code).toBe(0)
+  expect(t.runs).toBe(1)
+  expect(t.out.err).toContain('acme-1')
+  expect(t.out.err).toContain('owner')
 })
