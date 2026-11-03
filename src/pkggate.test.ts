@@ -854,7 +854,7 @@ test("claude-factory-56j: owning every sampled index entry caps one refresh's ri
   type Phase = 'start' | 'attack' | 'honest'
   let phase: Phase = 'start'
   let now = NOW
-  const latestByPhase: Record<Phase, number> = { start: 10_000, attack: 10_100, honest: 10_200 }
+  const latestByPhase: Record<Phase, number> = { start: 30_000, attack: 30_100, honest: 30_200 }
   // the probe module, separate from the sampled paths, so its own decisions never feed the floor it is
   // judged against
   const PROBE_RECORDS: Record<string, number> = { 'v1.0.0': 5000, 'v2.0.0': 1200 }
@@ -964,6 +964,145 @@ test("claude-factory-56j: owning every sampled index entry caps one refresh's ri
   } finally {
     console.log = origLog
     srv.stop(true)
+  }
+})
+
+// claude-factory-ldb: a tree-size history gives the floor an absolute ceiling, so refreshes cannot compound
+// the per-refresh rise cap. Fixture: 10 records a minute, one refresh every 31 min (310 records), minDays 4
+// (57_600 records of history).
+function ldbFixture() {
+  const PATHS = Array.from({ length: 9 }, (_, i) => `ldb-${String.fromCharCode(97 + i)}.example.com/mod`)
+  const st = { now: NOW, latest: 1_000_000, minId: 942_400, lookups: true }
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') {
+        const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(st.now).toISOString())
+        const ts = new Date(sinceMs + 15 * 60_000).toISOString()
+        return new Response(
+          PATHS.map(p => JSON.stringify({ Path: p, Version: 'v1.0.0', Timestamp: ts })).join('\n') + '\n',
+        )
+      }
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(st.latest))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        if (key.startsWith('ldbprobe.example.com/mod@')) return new Response('1030000\n')
+        if (!st.lookups) return new Response('gone', { status: 404 })
+        const idx = PATHS.findIndex(p => key === `${escapeGoPath(p)}@v1.0.0`)
+        return new Response(`${idx >= 0 ? st.minId + idx : 999_999_999}\n`)
+      }
+      if (/^\/ldbprobe\.example\.com\/mod\/@v\/v[\d.]+\.info$/.test(url.pathname))
+        return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  const lines: string[] = []
+  const origLog = console.log
+  console.log = (s: string) => lines.push(s)
+  const g = makeGate({
+    upstream: {
+      go: srv.url.origin,
+      npm: base(),
+      pypi: base(),
+      files: base(),
+      sumdb: srv.url.origin,
+      goIndex: srv.url.origin,
+    },
+    now: () => st.now,
+  })
+  let n = 0
+  // one refresh: a decision on a stale floor starts it; wait for its log line, return that line
+  const refresh = async () => {
+    const m = lines.length
+    await g(new Request(`http://gate/go/ldbprobe.example.com/mod/@v/v0.${n++}.0.info`))
+    await waitForFloorRefresh(lines, m)
+    return lines
+      .slice(m)
+      .map(l => JSON.parse(l))
+      .find(j => j.eco === 'go' && (typeof j.floor === 'number' || j.decision === 'error'))
+  }
+  const probe = () => g(new Request('http://gate/go/ldbprobe.example.com/mod/@v/v1.0.0.info'))
+  const healthzFloor = async () =>
+    ((await (await g(new Request('http://gate/healthz'))).json()) as { goFloor: { record: number } | null })
+      .goFloor?.record
+  const stop = () => {
+    console.log = origLog
+    srv.stop(true)
+  }
+  return { st, refresh, probe, healthzFloor, stop }
+}
+
+test('claude-factory-ldb AC1: a sustained attack that owns every sample cannot lift the floor above the traffic ceiling', async () => {
+  const f = ldbFixture()
+  try {
+    await f.refresh()
+    for (let k = 1; k <= 100; k++) {
+      f.st.now += 31 * 60_000
+      f.st.latest = 1_000_000 + 310 * k
+      f.st.minId = f.st.latest - 10
+      const line = await f.refresh()
+      expect(line.floor).toBeLessThanOrEqual(f.st.latest - 57_600)
+    }
+    const floor = (await f.healthzFloor()) as number
+    expect(floor).toBeLessThanOrEqual(973_400)
+    expect(floor).toBeGreaterThan(973_000)
+    const p = await f.probe()
+    expect(p.status).toBe(404)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
+test('claude-factory-ldb AC2: honest steady traffic is not cut by the ceiling', async () => {
+  const f = ldbFixture()
+  try {
+    await f.refresh()
+    for (let k = 1; k <= 5; k++) {
+      f.st.now += 31 * 60_000
+      f.st.latest = 1_000_000 + 310 * k
+      f.st.minId = f.st.latest - 57_700
+      const line = await f.refresh()
+      expect(line).toMatchObject({ floor: f.st.minId, sampled: f.st.minId, capped: false })
+    }
+  } finally {
+    f.stop()
+  }
+})
+
+test('claude-factory-ldb AC3: the anchor is the newest size read at or before now-minDays', async () => {
+  const f = ldbFixture()
+  try {
+    f.st.minId = 900_000
+    await f.refresh()
+    // 1 h later a burst of 100_000 records. The lookups fail, so the floor stays but the size is kept.
+    f.st.now += 3_600_000
+    f.st.latest = 1_100_000
+    f.st.lookups = false
+    await f.refresh()
+    f.st.lookups = true
+    f.st.now = NOW + 98 * 3_600_000
+    f.st.latest = 1_200_000
+    f.st.minId = 1_150_000
+    const line = await f.refresh()
+    // anchor NOW+1h: 1_200_000 - 100_000 * 96/97 = 1_101_031. Anchor NOW would give 1_004_081.
+    expect(line.floor).toBeGreaterThan(1_101_000)
+    expect(line.floor).toBeLessThanOrEqual(1_101_031)
+    expect(line.capped).toBe(true)
+  } finally {
+    f.stop()
+  }
+})
+
+test('claude-factory-ldb AC4: a cold start gives a finite floor and still refuses a newer version', async () => {
+  const f = ldbFixture()
+  try {
+    const line = await f.refresh()
+    expect(line).toMatchObject({ floor: 942_400, sampled: 942_400, capped: false })
+    expect(await f.healthzFloor()).toBe(942_400)
+    expect((await f.probe()).status).toBe(404)
+  } finally {
+    f.stop()
   }
 })
 
