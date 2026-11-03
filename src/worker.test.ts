@@ -754,7 +754,9 @@ describe('startServices', () => {
     ])
     const results = await startServices()
     expect(results.map(r => r.name)).toEqual(['web', 'after-web'])
-    expect(readFileSync(orderLog, 'utf8').trim().split('\n')).toEqual(['web', 'after-web'])
+    const lines = () => (existsSync(orderLog) ? readFileSync(orderLog, 'utf8').trim().split('\n') : [])
+    for (let i = 0; i < 100 && lines().length < 2; i++) await new Promise(r => setTimeout(r, 50))
+    expect(lines()).toEqual(['web', 'after-web'])
   })
 })
 
