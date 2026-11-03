@@ -70,6 +70,7 @@ import {
   goalOf,
   shipBranchOf,
   hasBeads,
+  isHandedOff,
   isOwned,
   OWNER,
   REJECTED,
@@ -9044,7 +9045,7 @@ function decisionsList() {
       const slim = (kind: 'bead' | 'owned') => (x: Bead) => ({
         id: x.id,
         title: x.title,
-        description: x.description,
+        description: kind === 'owned' && isHandedOff(x) ? String(x.metadata?.owner_question) : x.description,
         kind,
       })
       return {

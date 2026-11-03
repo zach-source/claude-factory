@@ -9,6 +9,7 @@ import {
   dispatchable,
   factoryOf,
   goalOf,
+  isHandedOff,
   isOwned,
   linearSourced,
   stationOf,
@@ -142,6 +143,15 @@ test("a bead carrying its owner's decisions is theirs, not the factory's", () =>
   expect(isOwned(bead('fx-3'))).toBe(false)
 })
 
+test('a handed-off bead has label owner and an owner_question; isOwned stays owner_decisions only', () => {
+  const handed = bead('fx-1', { labels: ['owner'], metadata: { owner_question: 'Question: which region?' } })
+  expect(isHandedOff(handed)).toBe(true)
+  expect(isOwned(handed)).toBe(false)
+  expect(isHandedOff(bead('fx-2', { labels: ['owner'] }))).toBe(false)
+  expect(isHandedOff(bead('fx-3', { metadata: { owner_question: 'q' } }))).toBe(false)
+  expect(isHandedOff(bead('fx-4'))).toBe(false)
+})
+
 test('a heartbeat bd cannot make keeps the claim: lost only to a named other assignee', () => {
   const bin = join(tmpdir(), `fake-bd-${process.pid}`)
   mkdirSync(bin, { recursive: true })
@@ -194,6 +204,16 @@ test('human and owned: bd null means no human beads, and owned keeps unassigned 
       bead('fx-4'),
     ])
     expect(b.owned().map(x => x.id)).toEqual(['fx-2'])
+
+    const q = { owner_question: 'q' }
+    process.env.READY_JSON = JSON.stringify([
+      bead('fx-5', { labels: ['owner'], metadata: q }),
+      bead('fx-6', { labels: ['owner'], metadata: q, assignee: 'someone' }),
+      bead('fx-7', { labels: ['owner'] }),
+      bead('fx-8', { metadata: q }),
+      bead('fx-9', { labels: ['owner'], metadata: { ...q, owner_decisions: {} } }),
+    ])
+    expect(b.owned().map(x => x.id)).toEqual(['fx-5', 'fx-9'])
   } finally {
     process.env.PATH = path
     delete process.env.HUMAN_JSON

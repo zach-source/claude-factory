@@ -551,6 +551,29 @@ test("beadInterviews: a rig's human beads keep their Options: shape, owner-only 
   ])
 })
 
+test('beadInterviews: an owned bead asks its Question: line when it has one, with start/not-now kept', () => {
+  const decisions = [
+    {
+      rig: 'api',
+      factory: 'lifecycle',
+      beads: [
+        {
+          id: 'api-5',
+          title: 'Blocked run',
+          description: 'blah\nQuestion: which region?',
+          kind: 'owned' as const,
+        },
+      ],
+    },
+  ]
+  expect(beadInterviews(decisions)[0]).toMatchObject({
+    question: 'which region?',
+    title: 'api-5: which region?',
+    options: [{ label: 'start now' }, { label: 'not now' }],
+    needsProposal: false,
+  })
+})
+
 test('beadInterviews: an owner-only bead still needs a proposal when its title or a fixed label is too long, but not for lacking a Question: line', () => {
   const longTitle = `${'a pilot that does '.repeat(10)}too much`
   const decisions = [
