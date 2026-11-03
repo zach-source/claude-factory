@@ -60,7 +60,7 @@ import {
   type Mail,
 } from './machine'
 import { otelOf, type Otel } from './otel'
-import { watchDecide, type Seen, type WatchedPr } from './watch'
+import { watchDecide, WATCH_FAIL_PASSES, type Seen, type WatchedPr } from './watch'
 import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
   actorOf,
@@ -8325,6 +8325,19 @@ async function watchPass() {
               seen.decisions[p.url] = p.reviewDecision
             if (seen.changes && !(p.url in seen.changes)) seen.changes[p.url] = !!p.changesRequested
           }
+        const fs = store[key]!
+        fs.failedPasses = failed ? (fs.failedPasses ?? 0) + 1 : 0
+        if (fs.failedPasses >= WATCH_FAIL_PASSES && !fs.failMailed) {
+          fs.failMailed = true
+          const bad = [...urls, ...mrUrls].filter((_, n) => views[n] === null)
+          post(id, {
+            type: 'MAIL',
+            from: 'factory',
+            to: 'manager',
+            text: `[factory] watch: gh/glab could not view ${bad.join(', ')} on ${WATCH_FAIL_PASSES} passes in a row. Run ${id} stays parked at ${node} with no worker until ${new Date(c.wakeAt).toISOString()}. Check gh/glab auth, rate limit and repo access.`,
+          })
+          console.log(`${new Date().toISOString()} ${id}: mailed the manager: ${bad.length} failed view(s)`)
+        }
         const now = Date.now()
         const d = watchDecide({
           prs,

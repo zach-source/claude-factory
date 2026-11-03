@@ -545,6 +545,38 @@ test('a failed gh view posts no route and no re-park (5wav AC6)', () => {
   expect(watchJson().errors).toBe(1)
 })
 
+const managerMail = () => inboxOf('r1').filter(e => e.type === 'MAIL' && e.to === 'manager')
+
+test('five failed view passes in a row mail the manager once (5nb AC1)', () => {
+  reset()
+  routeRun('r1', { at: Date.now() - 475 * 60_000 })
+  rmSync(prState, { force: true })
+  for (let i = 1; i <= 4; i++) {
+    factory(['watch'])
+    expect(managerMail()).toHaveLength(0)
+  }
+  factory(['watch'])
+  expect(managerMail()).toHaveLength(1)
+  expect(managerMail()[0]).toMatchObject({ from: 'factory', to: 'manager' })
+  expect(String(managerMail()[0]!.text)).toContain('r1')
+  expect(String(managerMail()[0]!.text)).toContain(PR)
+  factory(['watch'])
+  expect(managerMail()).toHaveLength(1)
+  expect(inboxOf('r1').filter(e => e.type === 'ROUTE' || e.type === 'REPARK')).toEqual([])
+}, 90000)
+
+test('a good view resets the failed pass count (5nb AC2)', () => {
+  reset()
+  routeRun('r1', { at: Date.now() - 100 * 60_000 })
+  rmSync(prState, { force: true })
+  for (let i = 0; i < 4; i++) factory(['watch'])
+  prJson({ updatedAt: iso(30_000) })
+  factory(['watch'])
+  rmSync(prState, { force: true })
+  for (let i = 0; i < 4; i++) factory(['watch'])
+  expect(managerMail()).toHaveLength(0)
+}, 90000)
+
 const conflictJson = (over: Record<string, unknown> = {}) =>
   prJson({ mergeable: 'CONFLICTING', headRefName: 'factory/r1', baseRefName: 'main', ...over })
 const CONFLICT_TEXT = `[factory] ${PR} is CONFLICTING with main at head aaa1111, so GitHub builds no pull merge ref and no CI can start. Merge origin/main, resolve, push.`
