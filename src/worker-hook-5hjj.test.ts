@@ -139,6 +139,22 @@ test.each(GITCONFIG_DENIED)('denies a clobber redirect to the global git config:
   expect(run(cmd)).toBeTruthy()
 })
 
+// claude-factory-ymvm: zsh force-clobber (!) forms, with a space or glued before the target.
+const BANG_OPS = ['>!', '>>!', '2>!', '2>>!', '>&!', '>>&!', '1>!', '{fd}>!']
+const BANG_TARGETS = ['~/.gitconfig', '~/.gitc*']
+const BANG_DENIED = BANG_OPS.flatMap(op =>
+  BANG_TARGETS.flatMap(t => [`echo x ${op} ${t}`, `echo x ${op}${t}`].flatMap(c => [c, `${c}; git push`])),
+)
+test.each(BANG_DENIED)('denies a force-clobber redirect to the global git config: %s', cmd => {
+  expect(run(cmd)).toBeTruthy()
+})
+test.each(['echo x >! f', 'echo x >>! f; git push', 'echo x >! f; git push origin HEAD'])(
+  'allows a force-clobber redirect to a plain file: %s',
+  cmd => {
+    expect(run(cmd)).toBeUndefined()
+  },
+)
+
 const ALLOWED = [
   'echo hi >&| f ; ls',
   'echo a(b)',
