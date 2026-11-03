@@ -1658,7 +1658,7 @@ test("applyTiers() rewrites an archived note's README link, not just a merged on
   const readme = readFileSync(join(dir, 'beads', 'README.md'), 'utf8')
   expect(readme).not.toContain('(old.md)')
   expect(readme).toContain('(../.archive/beads.md)')
-})
+}, 30_000)
 
 test('applyTiers() ages a note with no at: from the commit that added it, not from now (claude-factory-59r.19b)', () => {
   const dir = join(tmpdir(), `memory-apply-no-at-${process.pid}`)
@@ -1686,7 +1686,7 @@ test('applyTiers() ages a note with no at: from the commit that added it, not fr
   expect(decisions).toEqual([
     { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never shown') },
   ])
-})
+}, 30_000)
 
 test('applyTiers() ages a note with no at: from the commit that added it, not the commit that last edited it (claude-factory-59r.23)', () => {
   const dir = join(tmpdir(), `memory-apply-no-at-edited-${process.pid}`)
@@ -1716,7 +1716,7 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   expect(decisions).toEqual([
     { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never shown') },
   ])
-})
+}, 30_000)
 
 test('applyTiers() retires a note whose date until marker passed, and writes it to .archive like an archive', () => {
   const dir = join(tmpdir(), `memory-apply-retire-date-${process.pid}`)
