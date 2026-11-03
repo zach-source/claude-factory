@@ -69,14 +69,15 @@ type Resolved = {
    * An attacker can own every sampled index entry. The attacker can log each one in sum.golang.org right
    * before a refresh. The margin limits the rise of one refresh only.
    *
-   * The margin does not stop a sustained attack across many refreshes. An attacker who owns the samples
-   * at every refresh in a row gains about 2x real traffic per refresh above the truth. The attacker's own
-   * sumdb records count as traffic for the next refresh's cap too. After about minDays / 2 refreshes, the
-   * floor can get near `now`. See claude-factory-ldb for this gap.
+   * The margin does not stop a sustained attack across many refreshes. So refreshGoFloor also caps the
+   * floor at an absolute ceiling from `goSizes` (claude-factory-ldb).
    *
    * The first refresh after a pod start has no earlier `latest` value. This refresh has no cap on its
    * rise. See claude-factory-b9f for this gap. */
   goFloor: { record: number; at: number; latest: number } | null
+  /** goSizes holds the sum.golang.org tree sizes that floor refreshes read, oldest first, with the wall
+   * time of each read. It keeps the newest read at or before now-minDays and every later one. */
+  goSizes: { at: number; size: number }[]
   /** goFloorRefreshing holds the one in-flight floor refresh. Every decision that needs a refresh shares
    * this promise, so concurrent decisions trigger at most one index.golang.org request
    * (claude-factory-8ub). */
@@ -121,8 +122,8 @@ const GO_FLOOR_MIN_SAMPLES = 5
  *
  * A margin of 3 allows normal variance. Examples are bursty publishing and a refresh that runs late. It
  * limits one refresh only: an attacker who controls every sampled entry gains at most this margin over
- * real traffic in that one refresh. It does not stop a sustained attacker who owns the samples at every
- * refresh in a row -- see claude-factory-ldb (claude-factory-56j).
+ * real traffic in that one refresh. The ceiling from `goSizes` stops a sustained attacker who owns the
+ * samples at every refresh in a row (claude-factory-ldb, claude-factory-56j).
  *
  * The cap has no time term. A long idle or backoff gap still shows up as a large `latest` delta. So the
  * floor can still catch up to it in one refresh.
@@ -159,6 +160,7 @@ function resolve(cfg: GateConfig): Resolved {
     pypiCache: new Map(),
     goInfoCache: new Map(),
     goFloor: null,
+    goSizes: [],
     goFloorRefreshing: null,
     goFloorBackoffMs: 0,
     goFloorNextRetryAt: 0,
@@ -526,13 +528,22 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
  *
  * `sampled` alone is not the new floor. An attacker can control every sampled index entry. The attacker
  * can record each one in sum.golang.org right before the refresh. Then `sampled` can move close to `now`.
- * So the new floor is `Math.min(sampled, bound)`.
+ * So the new floor is `Math.min(sampled, bound, ceiling)`.
  *
  * Here `bound` sets a limit on this one refresh's increase. Its value is GO_FLOOR_RISE_MARGIN times the
  * real sum.golang.org traffic in that span (`latest - prev.latest`). See `goFloor`'s own doc comment and
- * claude-factory-56j. This bound does not stop a sustained attacker who owns the samples at every refresh
- * in a row -- see claude-factory-ldb. A cold start (no prior floor) has no bound. The new floor can come
- * out below the old one, and a low `bound` makes more versions too new, which is the safe side.
+ * claude-factory-56j. A cold start (no prior floor) has no bound.
+ *
+ * Here `ceiling` is an absolute limit (claude-factory-ldb). `cfg.goSizes` holds each tree size that a
+ * refresh read, with the wall time of the read. The anchor is its newest entry at or before now-minDays,
+ * else its oldest. The ceiling is `latest - (latest - anchor.size) * minDays / (now - anchor.at)`. With
+ * less than minDays of history, this extrapolates the observed rate. With more, it interpolates between
+ * two real reads. An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
+ * does not compound across refreshes. With no elapsed time (a cold start) it is Infinity. A zero span
+ * must never reach the division: a NaN floor would allow every version.
+ *
+ * The new floor can come out below the old one, and a low `bound` or `ceiling` makes more versions too
+ * new, which is the safe side. The size read is kept even when the sample check later fails.
  *
  * A failed fetch, or fewer than `GO_FLOOR_MIN_SAMPLES` answers left after the drop, leaves the existing
  * floor in place. So a down upstream never blocks every decision behind a refresh.
@@ -565,6 +576,10 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const sample = pickEvenlySpaced(entries, GO_FLOOR_SAMPLE_LIMIT)
   const latestSize = await goSumdbLatestSize(cfg)
   if (!latestSize.ok) return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
+  const wallNow = cfg.now()
+  cfg.goSizes.push({ at: wallNow, size: latestSize.size })
+  const cutoff = wallNow - cfg.minDays * 24 * 3_600_000
+  while (cfg.goSizes.length > 1 && cfg.goSizes[1]!.at <= cutoff) cfg.goSizes.shift()
   const ids: number[] = []
   await mapLimit(sample, GO_LIST_CONCURRENCY, async e => {
     const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
@@ -580,7 +595,14 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const bound = prev
     ? prev.record + GO_FLOOR_RISE_MARGIN * Math.max(0, latestSize.size - prev.latest)
     : Infinity
-  const record = Math.min(sampled, bound)
+  const anchor = cfg.goSizes[0]! // just pushed above, never empty
+  const span = wallNow - anchor.at
+  // span > 0 keeps NaN out: a NaN floor would allow every version (goDecideVersion compares record > floor)
+  const ceiling =
+    span > 0
+      ? Math.floor(latestSize.size - ((latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span)
+      : Infinity
+  const record = Math.min(sampled, bound, ceiling)
   const capped = record < sampled
   cfg.goFloor = { record, at: t0, latest: latestSize.size }
   cfg.goFloorBackoffMs = 0
