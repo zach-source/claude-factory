@@ -278,6 +278,8 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   expect(cmd).toContain('--harness codex')
   expect(cmd).toContain("--person-only-contexts 'acme'")
   expect(cmd).toContain("--protected-branches 'release'")
+  expect(h['config.toml']).not.toContain('features')
+  expect(h['config.toml']).not.toContain('chatgpt_base_url')
   expect(h['config.toml']).toBe(
     'model_auto_compact_token_limit = 300000\nallow_login_shell = false\n\n[projects."/workspace/w/repo"]\ntrust_level = "trusted"\n',
   )
@@ -290,6 +292,10 @@ test('a ChatGPT-mode VM codex home holds a placeholder auth.json that codex acce
   expect(Object.keys(h).sort()).toEqual(['auth.json', 'config.toml', 'hooks.json'])
   const auth = JSON.parse(h['auth.json']!)
   expect(auth.auth_mode).toBe('chatgpt')
+  const cfg = Bun.TOML.parse(h['config.toml']) as any
+  expect(cfg.features).toEqual({ plugins: false })
+  expect(cfg.chatgpt_base_url).toBe('http://127.0.0.1:9/backend-api')
+  expect(cfg.projects['/workspace/w/repo'].trust_level).toBe('trusted')
   expect(auth.OPENAI_API_KEY).toBeNull()
   expect(auth.tokens.refresh_token).toBe('placeholder')
   // codex 0.160.1 runs wham/accounts/check workspace routing only when tokens.account_id is set; the gateway adds the header
