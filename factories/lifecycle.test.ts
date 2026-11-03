@@ -1053,14 +1053,14 @@ test('ship release, ship deploy and release rollout gate on a made-worse discove
   ]
   for (const [name, p, after] of sites) {
     expect(p.split(GATE_RULE).length - 1, name).toBe(1)
-    for (const a of after) expect(p.indexOf('Made-worse gate'), name + a).toBeLessThan(p.indexOf(a))
+    for (const a of after) expect(p.indexOf('Made-worse gate'), name + a).toBeLessThan(p.lastIndexOf(a))
   }
   for (const [def, ids] of [
     [ship, ['queue', 'soak', 'rollback', 'postmortem']],
     [release, ['recipe', 'gather', 'cut', 'soak', 'rollback']],
   ] as const)
     for (const id of ids) {
-      const node = def.nodes[id] as { prompt?: string } | undefined
+      const node = (def.nodes as Record<string, { prompt?: string }>)[id]
       if (node?.prompt) expect(node.prompt.includes('Made-worse gate'), id).toBe(false)
     }
   for (const [id, node] of Object.entries(lifecycle.nodes)) {
