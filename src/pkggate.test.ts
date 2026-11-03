@@ -2350,5 +2350,6 @@ test('claude-factory-qls AC5: a 3xx with no, unparseable or file: Location is re
     const r = await g(new Request('http://gate/pypi/simple/requests/'))
     expect(`${loc} ${r.status}`).toBe(`${loc} 502`)
     expect(n).toBe(1)
+    expect(g.stats().error).toBe(1) // the refusal is counted, not an accidental TypeError
   }
 })
