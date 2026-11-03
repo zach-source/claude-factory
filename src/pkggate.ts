@@ -408,6 +408,18 @@ function goModuleEscape(s: string): string {
   return s.replace(/[A-Z]/g, c => `!${c.toLowerCase()}`)
 }
 
+/**
+ * true when an already Go-case-escaped `mod` and `version` can join a sum.golang.org lookup URL as they are.
+ * A version is `v` plus letters, digits and `. + - !`. A module path is `/`-separated elements of
+ * `a-z 0-9 . _ ~ - !`, none of them `.` or `..`. Anything else can steer the lookup path (claude-factory-37s).
+ */
+function goSumdbKeyOk(mod: string, version: string): boolean {
+  return (
+    /^v[0-9a-z.+!-]+$/.test(version) &&
+    mod.split('/').every(e => /^[a-z0-9._~!-]+$/.test(e) && e !== '.' && e !== '..')
+  )
+}
+
 function parseGoInfo(text: string): { version: string; time: string } | null {
   try {
     const j = JSON.parse(text)
@@ -431,7 +443,8 @@ async function goSumdbRecord(
   cfg: Resolved,
   mod: string,
   version: string,
-): Promise<{ ok: true; record: number } | { ok: false }> {
+): Promise<{ ok: true; record: number } | { ok: false; invalid?: true }> {
+  if (!goSumdbKeyOk(mod, version)) return { ok: false, invalid: true }
   const r = await fetchText(cfg, `${cfg.upstream.sumdb}/lookup/${mod}@${version}`)
   if (!r.ok) return { ok: false }
   const line1 = (r.text.split('\n')[0] ?? '').trim()
@@ -542,7 +555,12 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     .filter((e): e is GoIndexLine => {
       if (!e) return false
       const ts = Date.parse(e.Timestamp)
-      return !Number.isNaN(ts) && ts >= sinceMs && ts <= t0
+      return (
+        !Number.isNaN(ts) &&
+        ts >= sinceMs &&
+        ts <= t0 &&
+        goSumdbKeyOk(goModuleEscape(e.Path), goModuleEscape(e.Version))
+      )
     })
   const sample = pickEvenlySpaced(entries, GO_FLOOR_SAMPLE_LIMIT)
   const latestSize = await goSumdbLatestSize(cfg)
@@ -631,7 +649,11 @@ async function goSumdbGate(
   if (record === undefined) {
     const looked = await goSumdbRecord(cfg, mod, version)
     if (!looked.ok)
-      return { decision: 'error', reason: 'sum.golang.org lookup failed', ageH: infoDecision.ageH }
+      return {
+        decision: 'error',
+        reason: looked.invalid ? 'sum.golang.org lookup key not valid' : 'sum.golang.org lookup failed',
+        ageH: infoDecision.ageH,
+      }
     record = looked.record
     if (cacheEntry) cacheEntry.record = record
   }
