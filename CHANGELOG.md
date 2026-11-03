@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fix: pkg-gate caps the Go sumdb floor at an absolute ceiling, the tree size at now-minDays estimated from a history of `/latest` reads (claude-factory-ldb). An attacker who owns every sampled index entry can no longer compound the per-refresh rise cap across refreshes.
+
 ## 0.16.0 (2026-11-03)
 
 - New: the console has a Runners tab (key 7; claude-factory-oulo). It has one section for each runner (`herdr`, `ax`). Each section lists the runner's rigs, with the sandbox class and `(off)` for `maxRuns` 0, and its live runs with rig, station, model and pane. `factory tick` and `factory show` rows have a new `model` field: the model of the station's worker.
