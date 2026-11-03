@@ -1,6 +1,7 @@
 // The factory runner: owns .factory/, drives herdr, feeds the xstate machines.
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
+import './vm-env' // first: it may re-run the process with the packed AX env
 import {
   appendFileSync,
   chmodSync,
