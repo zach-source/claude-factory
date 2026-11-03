@@ -2516,3 +2516,168 @@ test('diedText puts the message on one line, newlines as " | ", before a clipped
   expect(worker.diedText('plain')).toBe('serve died: plain\n')
   expect(worker.diedText(new Error('x'.repeat(900))).split('\n')[0]?.length).toBe('serve died: '.length + 500)
 })
+
+// Substrate caps a Task's env at 32 and AX adds 2 of its own: more than 30 entries pack into FACTORY_VM_ENV
+const taskEnv = () => {
+  const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+  const flat = Object.fromEntries(
+    task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+  )
+  const packed: string | undefined = flat.FACTORY_VM_ENV
+  return {
+    names: task.spec.env.map((e: { name: string }) => e.name) as string[],
+    packed,
+    effective: { ...flat, ...JSON.parse(packed ?? '{}') } as Record<string, string>,
+  }
+}
+const flatEnv = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`E${i}`, `v${i}`]))
+function withEnv(vars: Record<string, string>, fn: () => void) {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, vars)
+    fn()
+  } finally {
+    process.env = saved
+  }
+}
+const wcRows: [string, Partial<ax.Launch>][] = [
+  ['claude', {}],
+  ['codex apikey', { harness: 'codex', codexAuth: 'apikey' }],
+  ['codex chatgpt', { harness: 'codex', codexAuth: 'chatgpt' }],
+  ['pi', { harness: 'pi', provider: 'openai' }],
+]
+for (const [name, extra] of wcRows)
+  test(`worst-case ${name} launch: at most 30 spec.env entries, the effective env is whole, no real secret`, () => {
+    withEnv(
+      {
+        FACTORY_AX_VAULT: 'factory',
+        FACTORY_AX_PKG_GATE: 'http://gate.example:8080',
+        AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/creds',
+      },
+      () => {
+        ax.launch({
+          name: 'f-wc',
+          repo: 'r',
+          branch: 'b',
+          image: 'i',
+          brief: 'do it',
+          gitlabHost: 'gitlab.example.com',
+          env: { ...flatEnv(25), AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret' },
+          codexHome: { 'auth.json': 'x' },
+          ...extra,
+        })
+        const { names, packed, effective } = taskEnv()
+        expect(names.length).toBeLessThanOrEqual(30)
+        expect(new Set(names).size).toBe(names.length)
+        expect(packed).toBeDefined()
+        expect(Buffer.byteLength(packed!)).toBeLessThan(32768)
+        expect(effective).toMatchObject({
+          ...flatEnv(25),
+          FACTORY_CA: 'CA-PEM',
+          FACTORY_BRIEF: 'do it',
+          FACTORY_REPO: 'r',
+          FACTORY_BRANCH: 'b',
+          FACTORY_HARNESS: extra.harness ?? 'claude',
+          FACTORY_OUTBOX: '/workspace/w/.factory-worker/outbox.jsonl',
+          GH_TOKEN: 'placeholder',
+          GIT_CONFIG_COUNT: '2',
+          GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+          GIT_CONFIG_VALUE_0: 'Authorization: Basic placeholder',
+          GITLAB_TOKEN: 'placeholder',
+          GITLAB_HOST: 'gitlab.example.com',
+          GIT_CONFIG_KEY_1: 'http.https://gitlab.example.com/.extraHeader',
+          GIT_CONFIG_VALUE_1: 'Authorization: Basic placeholder',
+          GOPROXY: 'http://gate.example:8080/go',
+          NPM_CONFIG_REGISTRY: 'http://gate.example:8080/npm/',
+          PIP_TRUSTED_HOST: 'gate.example',
+          UV_INSECURE_HOST: 'gate.example',
+          YARN_UNSAFE_HTTP_WHITELIST: 'gate.example',
+          AWS_CONTAINER_AUTHORIZATION_TOKEN: 'placeholder',
+          FACTORY_CODEX_HOME_FILES: '{"auth.json":"x"}',
+        })
+        expect(JSON.stringify(effective)).not.toContain('zqsecret')
+        const claude = (extra.harness ?? 'claude') === 'claude'
+        expect(effective.CLAUDE_CODE_OAUTH_TOKEN).toBe(claude ? 'placeholder' : undefined)
+        expect(effective.OPENAI_API_KEY).toBe(extra.codexAuth === 'apikey' ? 'placeholder' : undefined)
+        // the manifest-level keys stay flat: an image without vm-env still reads them
+        for (const k of [
+          'FACTORY_OUTBOX',
+          'FACTORY_REPO',
+          'FACTORY_BRANCH',
+          'FACTORY_BRIEF',
+          'FACTORY_HARNESS',
+        ])
+          expect(names).toContain(k)
+        expect(names).toContain('FACTORY_CODEX_HOME_FILES')
+        expect(JSON.parse(packed!).FACTORY_CODEX_HOME_FILES).toBeUndefined()
+      },
+    )
+  })
+
+test('no vault and no gate: no FACTORY_VM_ENV and the flat env as before', () => {
+  ax.launch({ name: 'f-n', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: { FACTORY_FROM: 'plan' } })
+  const { names, packed } = taskEnv()
+  expect(packed).toBeUndefined()
+  expect(names).toEqual([
+    'FACTORY_FROM',
+    'FACTORY_CA',
+    'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+    'FACTORY_OUTBOX',
+    'FACTORY_REPO',
+    'FACTORY_BRANCH',
+    'FACTORY_BRIEF',
+    'FACTORY_HARNESS',
+  ])
+})
+
+test('a merged env of exactly 30 stays flat; 31 packs', () => {
+  const base = { name: 'f-b', repo: 'r', branch: 'b', image: 'i', brief: 'x' }
+  // launch adds 2 and manifest adds 5 on top of l.env: 23 in l.env gives 30
+  ax.launch({ ...base, env: flatEnv(23) })
+  expect(taskEnv().names.length).toBe(30)
+  expect(taskEnv().packed).toBeUndefined()
+  ax.launch({ ...base, env: flatEnv(24) })
+  expect(taskEnv().names.length).toBeLessThan(30)
+  expect(taskEnv().packed).toBeDefined()
+  expect(Object.keys(taskEnv().effective).length).toBe(24 + 2 + 5 + 1) // +1: FACTORY_VM_ENV itself
+})
+
+test('the manager task over 30 entries keeps only FACTORY_VM_ENV flat and the same effective env', () => {
+  withEnv(
+    { FACTORY_MAX_RUNS: '16', FACTORY_AX_VAULT: 'v1', FACTORY_AX_PKG_GATE: 'http://gate.example:8080' },
+    () => {
+      ax.launch({ name: 'f-manager', image: 'i', command: ['factory', 'manager', 'host'], env: flatEnv(30) })
+      const { names, effective } = taskEnv()
+      expect(names).toEqual(['FACTORY_VM_ENV'])
+      expect(effective).toMatchObject({
+        ...flatEnv(30),
+        GH_TOKEN: 'placeholder',
+        GOPROXY: 'http://gate.example:8080/go',
+      })
+    },
+  )
+})
+
+test('the real manager launch stays within 30 entries with every optional var set', async () => {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      FACTORY_AX_PKG_GATE: 'http://gate.example:8080',
+      FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8080',
+      FACTORY_AX_MANAGER_ROUTER: 'http://router.example.svc',
+      FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
+    })
+    await ax.launchManager('mgr@sha256:abc', [], [], { waitMs: 0 })
+    const { names, effective } = taskEnv()
+    expect(names.length).toBeLessThanOrEqual(30)
+    expect(effective).toMatchObject({
+      FACTORY_IN_AX: '1',
+      FACTORY_HOME: '/workspace/w/home',
+      GOPROXY: 'http://gate.example:8080/go',
+    })
+  } finally {
+    process.env = saved
+  }
+})
