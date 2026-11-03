@@ -902,9 +902,9 @@ memory/
   `FACTORY_MEMORY_THETA_MERGE`, `FACTORY_MEMORY_THETA_ARCHIVE` or `FACTORY_MEMORY_THETA_PROMOTE`
   to change one. Both
   usage-based archive rules wait until the store holds at least 14 days of usage history. The
+  So a new or lost `.usage.jsonl` cannot be misread as "never shown." The
   history length is the age of the oldest last use of an existing note, not how far back the
-  log goes, because compact folds `.usage.jsonl` to one line per note. So a new
-  or lost `.usage.jsonl` cannot be misread as "never shown." A pass archives at most
+  log goes, because compact folds `.usage.jsonl` to one line per note. A pass archives at most
   `FACTORY_MEMORY_ARCHIVE_CAP` notes (default 25), oldest first across every topic; the rest are
   held back for a later pass. The pass writes its plan to `dream.log` before it merges or archives
   anything. A merge keeps the note's usage count under its new `<topic>/LONG.md#<id>` path,

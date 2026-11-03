@@ -1335,7 +1335,8 @@ export function decide(
  * The first line is a header. Each later line reads `kind  path: reason`.
  * A dedupe decision names two notes, so its line reads `dedupe  a ~ b: reason` instead.
  * applyTiers() passes this to its caller through `opts.onPlan`, before it writes or removes anything.
- * The plan lists the decisions. A merge that applyTiers() skips as unsafe (see `skipped`) is not in it.
+ * The plan lists every decision, also a merge that applyTiers() later skips as unsafe.
+ * The skip is not in the plan: see `skipped`.
  */
 export function planLines(
   decisions: Decision[],
@@ -1551,7 +1552,8 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
  * So that topic can still appear in `overCap`.
  *
  * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
- * write or rmSync, and on a dry run too. This way, the plan a caller logs lists the decisions. It does not list a merge skipped as unsafe.
+ * write or rmSync, and on a dry run too. The plan lists every decision, also a merge later skipped
+ * as unsafe. The skip itself is not in the plan: see `skipped`.
  *
  * `opts.untilDeps` (claude-factory-3u1.1.4) feeds untilStatus() for each short note's `until`
  * marker. applyTiers() always checks a date marker with untilStatus(). It checks a bead or PR
