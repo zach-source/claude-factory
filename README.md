@@ -901,7 +901,7 @@ memory/
   days ago), and θc, the promote limit for a LONG.md entry helped across 3 runs, is 0. Set
   `FACTORY_MEMORY_THETA_MERGE`, `FACTORY_MEMORY_THETA_ARCHIVE` or `FACTORY_MEMORY_THETA_PROMOTE`
   to change one. Both
-  usage-based archive rules wait until the store holds at least 14 days of usage history. The
+  usage-based archive rules wait until the store holds at least 14 days of usage history.
   So a new or lost `.usage.jsonl` cannot be misread as "never shown." The
   history length is the age of the oldest last use of an existing note, not how far back the
   log goes, because compact folds `.usage.jsonl` to one line per note. A pass archives at most
