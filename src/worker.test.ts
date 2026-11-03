@@ -181,6 +181,16 @@ describe('bazelrc', () => {
       expect(quiet(bazelrc)).not.toContain('javax.net.ssl')
     })
 
+    // claude-factory-nebs: a rig with no FACTORY_BAZELRC gets the CA lines only
+    test('no FACTORY_BAZELRC: the CA lines come first, with no undefined line', () => {
+      set({ FACTORY_CA: 'PEM' })
+      delete process.env.FACTORY_BAZELRC
+      process.env.FACTORY_KEYTOOL = fake('kt', 0, true)
+      const rc = bazelrc()
+      expect(rc).not.toContain('undefined')
+      expect(rc).toStartWith(`common --tls_certificate=${join(dir, 'egress-ca.crt')}\n`)
+    })
+
     test('keytool on PATH runs when FACTORY_KEYTOOL is unset', () => {
       set({ FACTORY_CA: 'PEM' })
       fake('keytool', 0, true)
