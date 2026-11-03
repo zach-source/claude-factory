@@ -557,7 +557,12 @@ test('beadInterviews: an owned bead asks its Question: line when it has one, wit
       rig: 'api',
       factory: 'lifecycle',
       beads: [
-        { id: 'api-5', title: 'Blocked run', description: 'blah\nQuestion: which region?', kind: 'owned' as const },
+        {
+          id: 'api-5',
+          title: 'Blocked run',
+          description: 'blah\nQuestion: which region?',
+          kind: 'owned' as const,
+        },
       ],
     },
   ]
