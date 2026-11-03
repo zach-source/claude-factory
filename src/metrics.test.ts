@@ -700,6 +700,22 @@ test('codexUsageOf: odd rows', () => {
   expect(codexUsageOf([a], 'rollout-x.jsonl')).toBeNull()
 })
 
+// claude-factory-p956: the lifecycle has no approve node since c079623a; the person's merge is the gate
+test('the approve wait is the time from the ship edge to the merge, when no approve node is in the log', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      mergedAt: 10 * H,
+      log: [e('implement', 'ready', 2), e('review', 'approve', 4)],
+    },
+    { id: 'r2', node: 'done', createdAt: 0, log: [e('review', 'approve', 3)] }, // handed off, not merged yet: no wait
+  ])
+  expect(m.approveWaitHours.median).toBe(6)
+  expect(m.approveWaitHours.p90).toBe(6)
+})
+
 // claude-factory-p956: a tick stamps its own events with the tick's start time, so a later entry can carry
 // an earlier `at` than an inbox line the same tick replayed
 test('a station visit never takes negative time when an entry is stamped before the one before it', () => {

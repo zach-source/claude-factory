@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fix: `factory metrics` measures the approve wait again (claude-factory-p956). Since the lifecycle has no `approve` node, the wait is the time from the ship edge to the merge of the pull request. Before, the wait was always empty.
 - Fix: a station's median time in `factory metrics` is never negative (claude-factory-p956). A tick stamps its own events with the tick's start time, so an entry can have an earlier time than the entry before it. Such a visit now counts as 0 hours.
 - Fix: pkg-gate caps the Go sumdb floor at an absolute ceiling, the tree size at now-minDays estimated from a history of `/latest` reads (claude-factory-ldb). An attacker who owns every sampled index entry can no longer compound the per-refresh rise cap across refreshes.
 

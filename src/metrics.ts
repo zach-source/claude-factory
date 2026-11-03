@@ -137,7 +137,7 @@ export function metrics(records: RunRecord[]) {
         const k = failKind(e.summary)
         fails[k] = (fails[k] ?? 0) + 1
       }
-      // ponytail: a gate's wait is its station's time; gates are named approve in every factory so far
+      // an older factory's approve gate: its wait is its station's time (a lifecycle run has the merge below)
       if (e.node === 'approve') gateWait.push(hours)
       // claude-factory-wnn: `check` is the small route's combined verify+review station. It sends
       // work back the same way `review`'s `changes` outcome does. Count it the same way here, and
@@ -153,6 +153,11 @@ export function metrics(records: RunRecord[]) {
       if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
       prev = Math.max(prev, e.at)
     }
+    // claude-factory-p956: since c079623a the lifecycle has no approve node: the person's merge is the gate,
+    // so the wait runs from the ship edge (the last entry) to the merge
+    const last = r.log.at(-1)
+    if (r.mergedAt !== undefined && last && !r.log.some(e => e.node === 'approve'))
+      gateWait.push(Math.max(0, r.mergedAt - last.at) / HOUR)
     if (reviewChanges >= 3) runsWith3PlusReviewRounds++
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
     const shippedAt = shipped?.at ?? (f === 'shipped' ? r.mergedAt : undefined)
