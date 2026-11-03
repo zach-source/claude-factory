@@ -3154,21 +3154,22 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,
     // runTokenSwap moves to a new slot, and the worker goes on when the vault refreshes. With no swap
     // command, the worker waits for the reset, and the nudge below then gives it its next turn.
+    const refused = hit.kind === 'auth'
     const until = runner.local
       ? swapAccount(hit, now)
       : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
       // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
       if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
-        const reason = `usage limit (${hit.kind}) until ${new Date(until).toISOString()}`
+        const reason = `${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
         send({ type: 'FAIL', seq: c.seq, reason, hold: until })
         return 'usage limit'
       }
       const paged = limitPagedFile(runner, isCodex)
       if (!existsSync(paged) || readJson<number>(paged) < until) {
         const text = runner.local
-          ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
-          : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
+          ? `Every Claude account is ${refused ? 'login refused' : 'at its usage limit'} (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+          : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is ${refused ? `login refused (${hit.kind})` : `at its usage limit (${hit.kind})`}; they wait until ${new Date(until).toLocaleString()} and go on then.`
         send({ type: 'MAIL', from: 'factory', to: 'manager', text })
         writeJson(paged, until)
       }

@@ -861,6 +861,52 @@ test('a VM worker refused for a long usage limit parks the station until the res
   rmSync(join(home, 'runs', 'r5'), { recursive: true })
 })
 
+test('a VM Codex worker whose login the gateway refuses (401) parks the station and says login refused', () => {
+  launched('r5c')
+  const codexDef = { ...def, nodes: { a: { ...def.nodes.a, agent: 'codex' } } }
+  writeFileSync(join(home, 'runs', 'r5c', 'factory.ts'), `export default ${JSON.stringify(codexDef)}`)
+  const limit = { at: Date.now() + 1000, kind: 'auth', resetsAt: 0 }
+  cluster('Running', { status: 'idle', session: 's1', lines: [], limit })
+  factory(['tick'], { FACTORY_AX_CODEX_TOKEN_SWAP: '' }) // learns the session
+  factory(['tick'], { FACTORY_AX_CODEX_TOKEN_SWAP: '' })
+  const state = JSON.parse(readFileSync(join(home, 'runs', 'r5c', 'state.json'), 'utf8'))
+  expect(state.snapshot.value).toMatchObject({ a: 'waiting' })
+  expect(state.snapshot.context.attempt).toBe(1)
+  const last = state.snapshot.context.log.at(-1)
+  expect(last.outcome).toBe('outage')
+  expect(last.summary).toStartWith('login refused (auth)')
+  expect(called()).not.toContain('worker prompt')
+  const held = (state.snapshot.context.mail.manager ?? []).filter((m: { text: string }) =>
+    m.text.includes('held, not failed'),
+  )
+  expect(held).toHaveLength(1)
+  expect(held[0].from).toBe('factory')
+  rmSync(join(home, 'runs', 'r5c'), { recursive: true })
+})
+
+test('a refused Codex login with a working swap command mails "login refused (auth)", not a usage limit', () => {
+  launched('r6c')
+  const codexDef = { ...def, nodes: { a: { ...def.nodes.a, agent: 'codex' } } }
+  writeFileSync(join(home, 'runs', 'r6c', 'factory.ts'), `export default ${JSON.stringify(codexDef)}`)
+  const swap = join(dir, 'swap-c')
+  writeFileSync(swap, `#!/bin/sh\necho 'slot 3 is live'\n`)
+  chmodSync(swap, 0o755)
+  const limit = { at: Date.now() + 1000, kind: 'auth', resetsAt: 0 }
+  cluster('Running', { status: 'idle', session: 's1', lines: [], limit })
+  const env = { FACTORY_AX_CODEX_TOKEN_SWAP: swap }
+  factory(['tick'], env) // learns the session
+  factory(['tick'], env)
+  const state = JSON.parse(readFileSync(join(home, 'runs', 'r6c', 'state.json'), 'utf8'))
+  const mail = (state.snapshot.context.mail.manager ?? []) as { text: string }[]
+  const refused = mail.filter(m => m.text.includes('workers run on is'))
+  expect(refused).toHaveLength(1)
+  expect(refused[0]?.text).toContain('login refused (auth)')
+  expect(refused[0]?.text).not.toContain('usage limit')
+  rmSync(join(home, 'runs', 'r6c'), { recursive: true })
+  rmSync(join(home, 'token-swap-ax-codex.json'), { force: true })
+  rmSync(join(home, 'limit-paged-ax-codex.json'), { force: true })
+})
+
 test('a token swap that worked keeps the in-place wait, then the idle worker is nudged and the notice never makes it ask', () => {
   const runDir = join(home, 'runs', 'r6')
   const seq = launched('r6')

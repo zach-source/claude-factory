@@ -20,9 +20,6 @@ test('codexLimit reads the usage limit of the last turn.failed or error line, wi
 })
 
 test('codexLimit is null for another failure, a success, a later success, a cut first line and a Claude tail', () => {
-  expect(
-    codexLimit(jl({ type: 'turn.failed', error: { message: 'unexpected status 401 Unauthorized' } })),
-  ).toBeNull()
   const gateway = 'upstream connect error or disconnect/reset before headers'
   expect(codexLimit(jl({ type: 'turn.failed', error: { message: gateway } }))).toBeNull()
   expect(codexLimit(jl({ type: 'turn.completed', usage: {} }))).toBeNull()
@@ -33,6 +30,34 @@ test('codexLimit is null for another failure, a success, a later success, a cut 
   expect(codexLimit('hit your usage limit"}}')).toBeNull()
   expect(codexLimit('')).toBeNull()
   expect(codexLimit(jl({ type: 'assistant', error: 'rate_limit' }))).toBeNull()
+})
+
+const failed = (message: string) => jl({ type: 'turn.failed', error: { message } })
+
+test('codexLimit reads a 401 or a token refresh failure that ended the turn as kind auth', () => {
+  for (const m of [
+    'unexpected status 401 Unauthorized: {"detail":"x"}, url: https://chatgpt.com/backend-api/codex/responses',
+    // manager.rs (rust-v0.160.1): the placeholder refresh hits an authority that refuses it (a gateway 403)
+    'Failed to refresh token: 403 Forbidden: {"detail":"denied"}',
+    'Failed to refresh token: 500 Internal Server Error: boom',
+    'Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.',
+    'Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.',
+    'Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.',
+  ]) {
+    expect(codexLimit(failed(m), 5)).toEqual({ at: 5, kind: 'auth', resetsAt: 0 })
+  }
+})
+
+test('codexLimit is null for a 401 on a retry line, a later success and other statuses', () => {
+  const m = 'unexpected status 401 Unauthorized: {}, url: https://chatgpt.com/backend-api/codex/responses'
+  expect(codexLimit(jl({ type: 'error', message: m }))).toBeNull()
+  expect(codexLimit(failed(m) + '\n' + jl({ type: 'turn.completed', usage: {} }))).toBeNull()
+  expect(codexLimit(failed('unexpected status 403 Forbidden: denied'))).toBeNull()
+  expect(codexLimit(failed('unexpected status 500 Internal Server Error: id 401'))).toBeNull()
+  expect(codexLimit(failed('unexpected status 4010'))).toBeNull()
+  expect(codexLimit(jl({ type: 'error', message: 'Failed to refresh token: 403 Forbidden: x' }))).toBeNull()
+  expect(codexLimit(failed('Failed to refresh tokens'))).toBeNull()
+  expect(codexLimit('unexpected status 401 Unauthorized"}}')).toBeNull()
 })
 
 function swapFixture() {
