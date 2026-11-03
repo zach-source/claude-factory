@@ -2586,7 +2586,7 @@ echo '{"type":"system","subtype":"init","session_id":"sess-o"}'
     expect(good).toContain('OTEL_RESOURCE_ATTRIBUTES=factory.run=r1')
     expect(good).toContain('CLAUDE_CODE_ENABLE_TELEMETRY=1')
     const bad = await run(JSON.stringify({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://o:4318', PATH: '/x' }), 1)
-    expect(bad).not.toContain('OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(bad).not.toMatch(/^OTEL_EXPORTER_OTLP_ENDPOINT=/m) // FACTORY_OTEL_ENV itself still holds the text
     expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('FACTORY_OTEL_ENV')
   } finally {
     process.env = saved

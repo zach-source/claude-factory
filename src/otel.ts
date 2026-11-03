@@ -19,6 +19,23 @@ export type Otel = {
   egress: Egress & { port: number }
 }
 
+const OTEL_KEY = /^(OTEL_[A-Z0-9_]+|CLAUDE_CODE_ENABLE_TELEMETRY|CLAUDE_CODE_ENHANCED_TELEMETRY_BETA)$/
+
+/**
+ * The OTel env in a worker's `FACTORY_OTEL_ENV` pack (claude-factory-0nsf). It fails closed. A pack must be
+ * a JSON object of OTel names with string values. Else the result is {}, never a part of the pack. So a pack
+ * cannot set PATH or a FACTORY_* name in the VM.
+ */
+export function otelEnvOf(raw: string | undefined): Record<string, string> {
+  try {
+    const o = JSON.parse(raw ?? '')
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return {}
+    return Object.entries(o).every(([k, v]) => OTEL_KEY.test(k) && typeof v === 'string') ? o : {}
+  } catch {
+    return {}
+  }
+}
+
 /**
  * The OTel export settings for one worker launch (claude-factory-ozso), or undefined when `endpoint` is
  * unset or is not a plain http(s) URL with no userinfo, query or path: then a launch carries no OTel.

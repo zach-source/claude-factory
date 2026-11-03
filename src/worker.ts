@@ -30,6 +30,7 @@ import {
 } from './harness'
 import { rmSafe } from './home-guard'
 import { sessionOf, type Usage } from './metrics'
+import { otelEnvOf } from './otel'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -1169,6 +1170,13 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   // working from the start: until the first turn there is no state, which poll would read as exited
   save({ status: 'working', session: prior?.session, pid: process.pid, egress: prior?.egress })
   const missing = await setup()
+  const otel = otelEnvOf(process.env.FACTORY_OTEL_ENV)
+  Object.assign(process.env, otel) // turn() spreads process.env into the agent's env
+  if (process.env.FACTORY_OTEL_ENV && !Object.keys(otel).length)
+    appendFileSync(
+      serveLog(),
+      `${new Date().toISOString()} FACTORY_OTEL_ENV refused: not a pack of OTel names\n`,
+    )
   setupBeads() // after the clone: both wait on the task's egress policy
   loadDevenv()
   codexHome()
