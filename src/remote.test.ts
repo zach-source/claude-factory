@@ -900,8 +900,8 @@ test('a refused Codex login with a working swap command mails "login refused (au
   const mail = (state.snapshot.context.mail.manager ?? []) as { text: string }[]
   const refused = mail.filter(m => m.text.includes('workers run on is'))
   expect(refused).toHaveLength(1)
-  expect(refused[0].text).toContain('login refused (auth)')
-  expect(refused[0].text).not.toContain('usage limit')
+  expect(refused[0]?.text).toContain('login refused (auth)')
+  expect(refused[0]?.text).not.toContain('usage limit')
   rmSync(join(home, 'runs', 'r6c'), { recursive: true })
   rmSync(join(home, 'token-swap-ax-codex.json'), { force: true })
   rmSync(join(home, 'limit-paged-ax-codex.json'), { force: true })
