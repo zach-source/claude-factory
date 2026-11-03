@@ -1163,6 +1163,40 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
   }
 })
 
+// claude-factory-nebs: a Bazel repo on a rig with no FACTORY_BAZELRC still needs the gateway CA in Bazel's JVM
+test('setup writes the CA trust store to ~/.bazelrc for a Bazel repo with no FACTORY_BAZELRC', async () => {
+  const own = join(dir, 'nebs-own')
+  const repo = join(dir, 'nebs-repo')
+  const home = join(dir, 'nebs-home')
+  for (const d of [own, home, join(repo, '.git')]) mkdirSync(d, { recursive: true })
+  const keytool = join(dir, 'nebs-keytool')
+  writeFileSync(keytool, '#!/bin/sh\nfor a; do [ "$p" = -keystore ] && : > "$a"; p=$a; done\n', {
+    mode: 0o755,
+  })
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    HOME: home,
+    FACTORY_KEYTOOL: keytool,
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CA: 'CA-PEM',
+  })
+  delete process.env.FACTORY_BAZELRC
+  delete process.env.FACTORY_REPO
+  try {
+    // not a Bazel repo: no rc, and no keytool run
+    await worker.setup({ tries: 1, waitMs: 0 })
+    expect(existsSync(join(home, '.bazelrc'))).toBe(false)
+    writeFileSync(join(repo, 'MODULE.bazel'), '')
+    await worker.setup({ tries: 1, waitMs: 0 })
+    const rc = readFileSync(join(home, '.bazelrc'), 'utf8').split('\n')
+    expect(rc[0]).toBe(`common --tls_certificate=${join(own, 'egress-ca.crt')}`)
+    expect(rc[1]).toContain(`-Djavax.net.ssl.trustStore=${join(own, 'egress.jks')}`)
+  } finally {
+    process.env = saved
+  }
+})
+
 // an origin with main (and, when withBranch, factory/r1 one commit later); env for a setup() clone of factory/r1
 function cloneFixture(name: string, withBranch: boolean) {
   const origin = join(dir, `${name}-origin.git`)
