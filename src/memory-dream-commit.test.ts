@@ -124,6 +124,40 @@ for (const [label, tiersEnv] of [
   }, 30_000)
 }
 
+// claude-factory-00s: dream()'s tiers pass must run compact() before its compact: commit. Only a real
+// tier merge changes .usage.jsonl/.renames.jsonl, so seed a note that decide() merges.
+test("factory dream's compact: commit holds the tier merge's rename and usage line", () => {
+  seedInbox()
+  const now = Date.now()
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(
+    join(home, 'memory', 'beads', 'old.md'),
+    `---\nsummary: a fixture note old enough to merge\nat: ${new Date(now - 10 * DAY_MS).toISOString().slice(0, 10)}\n---\nbody text\n`,
+  )
+  writeFileSync(
+    join(home, 'memory', '.usage.jsonl'),
+    [
+      { path: 'inbox/x.md', shown: 1, at: now - 1000 },
+      { path: 'beads/old.md', shown: 1, at: now - 9 * DAY_MS },
+    ]
+      .map(r => JSON.stringify(r))
+      .join('\n') + '\n',
+  )
+  expect(run(['dream'], { FACTORY_CLAUDE: fakeClaude() }).code).toBe(0)
+  expect(existsSync(join(home, 'memory', 'beads', 'old.md'))).toBe(false) // merged into LONG.md
+
+  expect(gitMemory('status', '--porcelain')).toBe('')
+  const compactCommit = gitMemory('log', '-1', '--grep=^compact:', '--format=%H')
+  expect(compactCommit).not.toBe('')
+  const files = gitMemory('show', '--name-only', '--format=', compactCommit).split('\n')
+  expect(files).toContain('.renames.jsonl')
+  expect(files).toContain('.usage.jsonl')
+  expect(gitMemory('show', `${compactCommit}:.renames.jsonl`)).toContain('"old":"beads/old.md"')
+  const usage = gitMemory('show', `${compactCommit}:.usage.jsonl`)
+  expect(usage).toContain('"path":"beads/LONG.md#')
+  expect(usage).not.toContain('"path":"beads/old.md"')
+}, 30_000)
+
 // 30s: compact() runs applyTiers() -> tierCandidates(), which loads the embedding model cold, like
 // dream() above; the default 5s bun:test timeout does not always clear that on a cold cache.
 test('factory memory compact leaves the memory repo clean after it merges a note and rewrites .usage.jsonl/.renames.jsonl', () => {
