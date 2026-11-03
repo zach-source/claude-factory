@@ -410,11 +410,22 @@ export const isParked = (c: Ctx, node: string) => {
   return last?.node === node && last.outcome === 'blocked'
 }
 
-/** a holdMail station parked on a pull or merge request: plain mail waits in its box */
+/** the count of worker blocked reports in a row at the node, from the end of the log. A pre-launch park does not count. */
+const blockedStreak = (c: Ctx, node: string) => {
+  let n = 0
+  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node && c.log[i]?.outcome === 'blocked'; i--)
+    if (c.log[i]?.attempt !== 0) n++
+  return n
+}
+
+/** A holdMail station keeps plain mail in its box while it parks on a pull or merge request.
+ * It also keeps it from its second blocked report in a row (claude-factory-nibm).
+ * Before this, each plain mail started a fresh worker, and that worker found the same block. */
 export const isMailHeld = (c: Ctx, node: string, holds?: boolean) =>
   !!holds &&
   isParked(c, node) &&
-  prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0
+  (prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0 ||
+    blockedStreak(c, node) >= 2)
 
 /** whether the station is parked by a blocked report that links this pull or merge request */
 export const isParkedOn = (c: Ctx, node: string, url: string) =>
