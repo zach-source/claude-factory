@@ -2379,7 +2379,16 @@ test('an AX claude task carries the OTel env and the collector egress rule only 
     )
     writeFileSync(
       join(home, 'rigs.json'),
-      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax', ...rigExtra }]),
+      JSON.stringify([
+        {
+          name: 'x',
+          repo: worktree,
+          factory: 'one',
+          runner: 'ax',
+          env: { FACTORY_BAZELRC: '/x/bazelrc', FACTORY_NIX_CACHE: 'https://cache.example' },
+          ...rigExtra,
+        },
+      ]),
     )
     cluster('Running', { status: 'idle', lines: [] })
     writeFileSync(
@@ -2403,7 +2412,20 @@ esac
     seen.push({ env: readFileSync(applied, 'utf8'), policy: readFileSync(sent, 'utf8') })
     rmSync(runDir, { recursive: true })
   }
+  // claude-factory-0nsf: AX allows 32 names, adds 2 itself; the OTel settings ride in one name and the
+  // per-harness agent dirs leave room (28 here: the largest rig env today is 29 before OTel)
+  const names = (s: string) =>
+    JSON.parse(s.split('\n---\n')[1]!).spec.env.map((e: { name: string }) => e.name) as string[]
   for (const s of seen.slice(0, 2)) {
+    expect(names(s.env).length).toBeLessThanOrEqual(28)
+    expect(names(s.env).filter(n => /^OTEL_|^CLAUDE_CODE_ENABLE_TELEMETRY/.test(n))).toEqual([])
+    const pack = JSON.parse(
+      JSON.parse(s.env.split('\n---\n')[1]!).spec.env.find(
+        (e: { name: string }) => e.name === 'FACTORY_OTEL_ENV',
+      ).value,
+    )
+    expect(pack.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1')
+    expect(pack.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('http://otel.example.svc:4318')
     expect(s.env).toContain('CLAUDE_CODE_ENABLE_TELEMETRY')
     expect(s.env).toContain(`factory.run=`)
     expect(s.env).toContain('factory.station=implement')
