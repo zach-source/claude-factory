@@ -54,6 +54,7 @@ describe('vm-env', () => {
     ['not JSON', 'nope'],
     ['empty string', ''],
     ['an array', '["A"]'],
+    ['an empty array', '[]'],
     ['null', 'null'],
     ['a number value', '{"A":1}'],
     ['a null value', '{"A":null}'],

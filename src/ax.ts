@@ -137,7 +137,7 @@ function packEnv(env: Record<string, string | undefined>) {
   const list = (e: [string, string | undefined][]) => e.map(([name, value]) => ({ name, value }))
   if (all.length <= AX_ENV_MAX) return list(all)
   const flat = all.filter(([k]) => FLAT_KEYS.has(k))
-  const packed = Object.fromEntries(all.filter(([k, v]) => !FLAT_KEYS.has(k) && v !== undefined))
+  const packed = Object.fromEntries(all.filter(([k]) => !FLAT_KEYS.has(k)))
   return list([...flat, ['FACTORY_VM_ENV', JSON.stringify(packed)]])
 }
 
