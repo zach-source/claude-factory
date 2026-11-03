@@ -483,3 +483,9 @@ test('a replayed second soak reads the first soak report and the dedupe rule (4h
   const { visited } = walk(ship, ['ready', 'ready', 'deployed', 'healthy', 'ready', 'ready', 'unsure'])
   expect(visited.filter(n => n === 'soak')).toHaveLength(2)
 })
+
+// claude-factory-nibm: soak re-checks a block for each plain mail, like deploy did; both hold it from the second block
+test('deploy and soak hold plain mail', () => {
+  expect(ship.nodes.deploy.holdMail).toBe(true)
+  expect(ship.nodes.soak.holdMail).toBe(true)
+})
