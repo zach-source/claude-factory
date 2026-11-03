@@ -10,6 +10,7 @@ import {
   due,
   evidenceLine,
   foldFound,
+  gitlabMergedJson,
   foldMentions,
   keepSearchHit,
   namesBead,
@@ -2121,4 +2122,51 @@ test('GitHub PR write argv: comment, unlabel and close go through gh api; a body
     '-f',
     'state=closed',
   ])
+})
+
+test('gitlabMergedJson: one glab api call per lookup, mapped to gh pr list shaped JSON', async () => {
+  const calls: string[][] = []
+  const mr = (iid: number, state: string, sha: unknown, squash: unknown) => ({
+    iid,
+    web_url: `https://gitlab.com/g/s/p/-/merge_requests/${iid}`,
+    title: 't',
+    source_branch: `b${iid}`,
+    state,
+    merge_commit_sha: sha,
+    squash_commit_sha: squash,
+  })
+  const glab = async (argv: string[]) => {
+    calls.push(argv)
+    return {
+      code: 0,
+      err: '',
+      out: JSON.stringify([
+        mr(7, 'merged', 'aa', 'bb'),
+        mr(8, 'merged', null, 'bb'),
+        mr(9, 'opened', 'cc', null),
+      ]),
+    }
+  }
+  const out = await gitlabMergedJson(glab, 'gitlab.com', 'g/s/p', '/r', { search: 'ex 1' })
+  expect(calls[0]).toEqual([
+    'api',
+    '--hostname',
+    'gitlab.com',
+    'projects/g%2Fs%2Fp/merge_requests?state=merged&per_page=30&in=title&search=ex%201',
+  ])
+  expect(parseMergedPrs(out!).map(p => [p.number, p.headRefName, p.mergeCommit])).toEqual([
+    [7, 'b7', 'aa'],
+    [8, 'b8', 'bb'],
+  ])
+  await gitlabMergedJson(glab, 'gitlab.com', 'g/p', '/r', { sourceBranch: 'factory/x' })
+  expect(calls[1]![3]).toBe(
+    'projects/g%2Fp/merge_requests?state=merged&per_page=30&source_branch=factory%2Fx',
+  )
+})
+
+test('gitlabMergedJson: failure is null, garbage is an empty list', async () => {
+  const bad = async () => ({ code: 1, err: 'x', out: '' })
+  expect(await gitlabMergedJson(bad, 'h', 'a/b', '/r', { search: 'i' })).toBeNull()
+  const junk = async () => ({ code: 0, err: '', out: 'nope' })
+  expect(JSON.parse((await gitlabMergedJson(junk, 'h', 'a/b', '/r', { search: 'i' }))!)).toEqual([])
 })
