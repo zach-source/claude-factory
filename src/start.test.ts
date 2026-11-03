@@ -66,6 +66,7 @@ function fakeBd(prefix: string) {
     '      found) printf \'%s\' \'[{"id":"acme-1","title":"t"}]\';;',
     '      owned) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_decisions":{}}}]\';;',
     '      handed-off) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"],"metadata":{"owner_question":"q","owner_since":"2026-11-01"}}]\';;',
+    '      label-only) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"]}]\';;',
     '      question-only) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_question":"q"}}]\';;',
     '      since-only) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_since":"2026-11-01"}}]\';;',
     '      owned-handed-off) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"],"metadata":{"owner_decisions":{},"owner_question":"q","owner_since":"2026-11-01"}}]\';;',
@@ -481,8 +482,8 @@ test('a failed owner clear warns but the start still succeeds (claude-factory-h1
   expect(t.out.err).toContain('owner')
 })
 
-test('a bead that keeps only owner_question or only owner_since is cleared too (claude-factory-h1wj)', () => {
-  for (const mode of ['question-only', 'since-only']) {
+test('a bead that keeps only the owner label, only owner_question or only owner_since is cleared too (claude-factory-h1wj)', () => {
+  for (const mode of ['label-only', 'question-only', 'since-only']) {
     const t = startHandedOff(mode)
     expect(t.out.code).toBe(0)
     expect(t.updates.filter(l => l.startsWith(CLEAR)).length).toBe(1)
