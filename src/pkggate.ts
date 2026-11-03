@@ -579,7 +579,7 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const wallNow = cfg.now()
   cfg.goSizes.push({ at: wallNow, size: latestSize.size })
   const cutoff = wallNow - cfg.minDays * 24 * 3_600_000
-  while (cfg.goSizes.length > 1 && cfg.goSizes[1].at <= cutoff) cfg.goSizes.shift()
+  while (cfg.goSizes.length > 1 && cfg.goSizes[1]!.at <= cutoff) cfg.goSizes.shift()
   const ids: number[] = []
   await mapLimit(sample, GO_LIST_CONCURRENCY, async e => {
     const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
@@ -595,7 +595,7 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const bound = prev
     ? prev.record + GO_FLOOR_RISE_MARGIN * Math.max(0, latestSize.size - prev.latest)
     : Infinity
-  const anchor = cfg.goSizes[0]
+  const anchor = cfg.goSizes[0]! // just pushed above, never empty
   const span = wallNow - anchor.at
   // span > 0 keeps NaN out: a NaN floor would allow every version (goDecideVersion compares record > floor)
   const ceiling =
