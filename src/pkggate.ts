@@ -77,6 +77,9 @@ type Resolved = {
    * The first refresh after a pod start has no earlier `latest` value. This refresh has no cap on its
    * rise. See claude-factory-b9f for this gap. */
   goFloor: { record: number; at: number; latest: number } | null
+  /** goSizes holds the sum.golang.org tree sizes that floor refreshes read, oldest first, with the wall
+   * time of each read. It keeps the newest read at or before now-minDays and every later one. */
+  goSizes: { at: number; size: number }[]
   /** goFloorRefreshing holds the one in-flight floor refresh. Every decision that needs a refresh shares
    * this promise, so concurrent decisions trigger at most one index.golang.org request
    * (claude-factory-8ub). */
@@ -159,6 +162,7 @@ function resolve(cfg: GateConfig): Resolved {
     pypiCache: new Map(),
     goInfoCache: new Map(),
     goFloor: null,
+    goSizes: [],
     goFloorRefreshing: null,
     goFloorBackoffMs: 0,
     goFloorNextRetryAt: 0,
@@ -565,6 +569,10 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const sample = pickEvenlySpaced(entries, GO_FLOOR_SAMPLE_LIMIT)
   const latestSize = await goSumdbLatestSize(cfg)
   if (!latestSize.ok) return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
+  const wallNow = cfg.now()
+  cfg.goSizes.push({ at: wallNow, size: latestSize.size })
+  const cutoff = wallNow - cfg.minDays * 24 * 3_600_000
+  while (cfg.goSizes.length > 1 && cfg.goSizes[1].at <= cutoff) cfg.goSizes.shift()
   const ids: number[] = []
   await mapLimit(sample, GO_LIST_CONCURRENCY, async e => {
     const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
@@ -580,7 +588,14 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const bound = prev
     ? prev.record + GO_FLOOR_RISE_MARGIN * Math.max(0, latestSize.size - prev.latest)
     : Infinity
-  const record = Math.min(sampled, bound)
+  const anchor = cfg.goSizes[0]
+  const span = wallNow - anchor.at
+  // span > 0 keeps NaN out: a NaN floor would allow every version (goDecideVersion compares record > floor)
+  const ceiling =
+    span > 0
+      ? Math.floor(latestSize.size - ((latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span)
+      : Infinity
+  const record = Math.min(sampled, bound, ceiling)
   const capped = record < sampled
   cfg.goFloor = { record, at: t0, latest: latestSize.size }
   cfg.goFloorBackoffMs = 0
