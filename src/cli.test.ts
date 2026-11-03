@@ -1008,7 +1008,17 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text).toContain('TEST_DATABASE_URL')
   expect(text).toContain('Never ask the person')
   expect(text).toContain('any DSN variable')
-  expect(text.length).toBeLessThan(4800)
+  expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
+})
+
+// claude-factory-ay4w: the top refused hook forms (7d metrics 2026-11-03) and the allowed form for each
+test('the worker system prompt names the top refused hook forms and the allowed form for each', () => {
+  const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
+  expect(text).toContain('not `$G push`') // DYNAMIC_VERB_REASON
+  expect(text).toContain('type the full git or gh command') // SHELL_ALIAS_REASON, SHELL_ALIAS_DEFINE_REASON
+  expect(text).toContain('`git push origin <run branch>`') // PUSH_REASON
+  expect(text).toContain('`gh pr merge`') // MERGE_REASON
+  expect(text).toContain('bash /abs/path/.scratch/<name>.sh') // loop, function, VAR=value, cd chain
 })
 
 // mv9, claude-factory-qda: the brief of a station with asd-ste100 tells the worker to write in ASD-STE100 and to
@@ -1057,7 +1067,7 @@ test('the brief names the station skills: asd-ste100 tells a worker to write in 
   expect(none).not.toContain('Write every text a person reads')
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
   expect(text).not.toContain('asd-ste100')
-  expect(text.length).toBeLessThan(4800)
+  expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
 })
 
 test('the brief tells a worker on a VM that a live-read block waits for mail; a laptop worker does not read it', () => {

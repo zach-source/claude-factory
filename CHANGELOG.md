@@ -10,6 +10,8 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `factory metrics` measures the approve wait again (claude-factory-p956). Since the lifecycle has no `approve` node, the wait is the time from the ship edge to the merge of the pull request. Before, the wait was always empty.
 - Fix: a station's median time in `factory metrics` is never negative (claude-factory-p956). A tick stamps its own events with the tick's start time, so an entry can have an earlier time than the entry before it. Such a visit now counts as 0 hours.
 - Fix: pkg-gate caps the Go sumdb floor at an absolute ceiling, the tree size at now-minDays estimated from a history of `/latest` reads (claude-factory-ldb). An attacker who owns every sampled index entry can no longer compound the per-refresh rise cap across refreshes.
+- Fix: the worker hook names the harness of each denial when its argv has no `--harness` (claude-factory-ay4w). It then reads `FACTORY_HARNESS`, which the AX launch env sets. Before, such a denial logged `unknown`. Rebuild the worker image to give the fix to AX workers.
+- Changed: `src/worker-system.md` lists the Bash forms that the worker hook refuses most, and the allowed form for each (claude-factory-ay4w). The forms are a shell expansion in a command word, a shell alias, a push to a protected branch and a merge. Each denial costs a worker turn. Rebuild the worker image to give the list to AX workers.
 
 ## 0.16.0 (2026-11-03)
 
