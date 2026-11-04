@@ -172,7 +172,7 @@ test('inside a VM, report --summary-file queues the file text; a bad file queues
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho ran >> ${marker}\n`)
   chmodSync(join(bin, 'bd'), 0o755)
-  const envBd = { ...env, PATH: `${bin}:${process.env.PATH}` }
+  const envBd = { ...env, PATH: `${bin}:${process.env.PATH}`, BEADS_DIR: join(dir, 'sf-beads') }
   for (const rest of [
     ['--summary-file'],
     ['--summary-file', join(dir, 'sf-missing')],
