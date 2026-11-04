@@ -181,6 +181,71 @@ test('POST /token/best answers 409 while a swap runs, then 502 with a fixed body
   expect(again.status).toBe(200)
 })
 
+const U = (key: string) => 'ate-secret://agent-vault/v1/' + key
+const withHeader = (h: Record<string, unknown>) => ({
+  rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: [h] } }],
+})
+const withPath = (hostnames: unknown, extra: Record<string, unknown> = { pathPrefixes: ['/x/'] }) => ({
+  rules: [{ https: { hostnames, ...extra } }],
+})
+const hdr = (credentialUri: unknown) => withHeader({ header: 'Authorization', credentialUri })
+
+test('PUT refuses a worker policy that names a manager-only key or a github path rule, before any command runs', async () => {
+  const refused: Record<string, unknown> = {
+    AX_AUTH: hdr(U('AX_AUTH')),
+    GITHUB_BASIC_MANAGER: hdr(U('GITHUB_BASIC_MANAGER')),
+    'key CredentialURI': withHeader({ CredentialURI: U('AX_AUTH') }),
+    'key credential_uri': withHeader({ credential_uri: 'https://x.example.com/ax' }),
+    'key with U+017F': withPath(['a.example.com'], { pathPrefixeſ: ['/x/'] }),
+    'lowercase value': hdr(U('ax_auth')),
+    'query suffix': hdr(U('AX_AUTH') + '?x=1'),
+    'trailing slash': hdr(U('AX_AUTH') + '/'),
+    'percent escape': hdr(U('AX%5FAUTH')),
+    'number value': hdr(5),
+    'object value': hdr({ a: 1 }),
+    'other field': withHeader({ header: 'AX_AUTH' }),
+    'api.github.com path': withPath(['api.github.com'], { pathPrefixes: ['/repos/zach-source/'] }),
+    'github.com path': withPath(['github.com'], { pathPrefixes: ['/zach-source/'] }),
+    'GitHub.COM. path': withPath(['GitHub.COM.']),
+    'wildcard github': withPath(['*.github.com']),
+    'uploads.github.com': withPath(['uploads.github.com']),
+    'path_prefixes key': withPath(['github.com'], { path_prefixes: ['/x/'] }),
+    'no hostnames': { rules: [{ https: { pathPrefixes: ['/x/'] } }] },
+    'hostnames string': withPath('github.com'),
+  }
+  for (const [name, body] of Object.entries(refused)) {
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 400])
+    expect(calls).toEqual([])
+  }
+  const deep = '['.repeat(20_000) + ']'.repeat(20_000)
+  const { calls, c } = setup()
+  const res = await handle(req('PUT', '/policy/factory/f-r1-1', `{"rules":[${deep}]}`), c)
+  expect(res.status).toBe(400)
+  expect(calls).toEqual([])
+})
+
+test('PUT still creates a normal worker policy', async () => {
+  const keys = ['AX_AUTH_X', 'MY_AX_AUTH', 'GITHUB_BASIC'].map(k => ({ header: 'A', credentialUri: U(k) }))
+  const allowed: Record<string, unknown> = {
+    current: JSON.parse(POLICY),
+    'github owner key': hdr(U('GITHUB_ZS_BASIC')),
+    gitlab: hdr(U('GITLAB')),
+    'look-alike keys': { rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: keys } }] },
+    'path on other host': withPath(['gitlab.example.com']),
+    'path on look-alike host': withPath(['notgithub.com']),
+  }
+  for (const [name, body] of Object.entries(allowed)) {
+    const { calls, c } = setup()
+    const text = JSON.stringify(body)
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', text), c)
+    expect([name, res.status]).toEqual([name, 200])
+    expect(calls.length).toBe(2)
+    expect(calls[1]!.stdin).toBe(text)
+  }
+})
+
 test('a failed token swap logs the exit code only, never the child stderr', async () => {
   const logged: unknown[][] = []
   const old = console.error
