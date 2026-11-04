@@ -90,20 +90,25 @@ const READERS = new Set([
 const GIT_SUBS = new Set(['diff', 'log', 'show', 'status', 'blame'])
 
 /**
- * True when each segment of `command` starts with a bare reader word, and no backtick or `$(`
- * is outside single quotes. For git, only -C <dir> and --no-pager can come before a read
+ * True when each segment of `command` starts with a bare reader word. Outside single quotes it
+ * gives false for a backtick, `$(`, `${`, and outside all quotes for `#`, `$'` and `<<`. For git, only -C <dir> and --no-pager can come before a read
  * subcommand. Any other form gives false (fail closed), so the script read runs.
  * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
  * textconv) is not covered. False denies stay for bun test with a file, sed, rg, awk, an
  * absolute-path git, and bd text in double quotes with `$(`, `${` or a backtick. Upgrade path: a real shell parser.
  */
 function readOnly(command: string): boolean {
-  const cmd = command.replace(/\\\n/g, ' ')
+  const cmd = command
   const segs: string[] = []
   let cur = ''
   let q = ''
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
+    // a line join (backslash, newline) outside single quotes; an escaped backslash is read as a pair below
+    if (c === '\\' && cmd[i + 1] === '\n' && q !== "'") {
+      i++
+      continue
+    }
     if (q !== "'" && (c === '`' || (c === '$' && (cmd[i + 1] === '(' || cmd[i + 1] === '{')))) return false
     if (q) {
       if (c === '\\' && q === '"') cur += c + (cmd[++i] ?? '')

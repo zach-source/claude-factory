@@ -169,8 +169,9 @@ describe('homeReason', () => {
     'git diff a \\\\\n./x.sh',
     'cat x \\\\\\\\\n./x.sh',
     'cat x\\\\\nbash x.sh',
-  ])("denies a fake quote: an unquoted #, $', <<, a nested quote in ${} or an even backslash run before a newline: %j", cmd =>
-    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  ])(
+    "denies a fake quote: an unquoted #, $', <<, a nested quote in ${} or an even backslash run before a newline: %j",
+    cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
   test('allows a # inside double quotes', () => {
