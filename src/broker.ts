@@ -101,7 +101,8 @@ const CREDENTIAL_URI = /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/[A-Z][A-Z0-9_]*$
 
 /**
  * The reason the broker refuses a worker policy, or null. A worker policy must not name a manager-only
- * vault key or have a github pathPrefixes rule. Those belong to the manager policy. Substrate ignores key
+ * vault key or have a pathPrefixes rule on a hostname pattern that can match a github host (github.com,
+ * *.github.com, and the Substrate patterns * and *.com). Those belong to the manager policy. Substrate ignores key
  * case and underscores, and it folds some non-ASCII letters. So a key with a non-ASCII character fails closed.
  */
 export function workerPolicyRefusal(policy: unknown): string | null {
@@ -126,7 +127,7 @@ export function workerPolicyRefusal(policy: unknown): string | null {
         const hosts = h === undefined ? null : o[h]
         if (!Array.isArray(hosts) || hosts.some(x => typeof x !== 'string'))
           return 'has pathPrefixes without a list of hostnames'
-        if (hosts.some(x => /^(.*\.)?github\.com$/.test(x.toLowerCase().replace(/\.$/, ''))))
+        if (hosts.some(x => /^(\*|\*\.com|(.*\.)?github\.com)$/.test(x.toLowerCase().replace(/\.$/, ''))))
           return 'has pathPrefixes on a github host'
       }
     }

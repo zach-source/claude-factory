@@ -450,7 +450,7 @@ Limits:
 - The broker answers 400 and runs no command for a worker policy in these cases:
   - It names the vault key `AX_AUTH` or `GITHUB_BASIC_MANAGER`.
   - A `credentialUri` is not `ate-secret://agent-vault/<vault>/<KEY>`.
-  - A rule has `pathPrefixes` on a `github.com` host.
+  - A rule has `pathPrefixes` on a hostname pattern that can match a `github.com` host. Examples: `github.com`, `*.github.com`, `*.com`, `*`.
   - A key has a non-ASCII character.
   - The policy nests deeper than 32 levels.
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.
