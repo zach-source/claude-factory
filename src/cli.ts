@@ -395,8 +395,6 @@ export type Row = {
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
-// gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
-// it. Nothing reads it now: the usage rows keep their own station name (storeUsage).
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
 function durable(path: string, text: string, flag: 'w' | 'a') {

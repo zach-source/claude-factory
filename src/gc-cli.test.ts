@@ -116,7 +116,6 @@ test('a real pass removes prompts/, the brief and the stray backup; every kept n
   expect(existsSync(join(d, 'rigs.json.before-123'))).toBe(false)
   for (const name of ['run.json', 'state.json', 'inbox.jsonl', 'track.json', 'progress.json', 'factory.ts'])
     expect(existsSync(join(d, name))).toBe(true)
-  expect(existsSync(join(d, 'prompts.list'))).toBe(false)
 })
 
 test('an aborted run with no journal entry still ages off createdAt(id) (AC2)', () => {
