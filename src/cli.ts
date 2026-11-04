@@ -3371,6 +3371,18 @@ const readReviews = (): Record<string, memory.Review> => {
     return {} // a corrupt reviews.json must not break the tick
   }
 }
+/** drop the verdicts of items that are no longer pending (installed, rejected or changed text), so reviews.json stays small */
+const pruneReviews = () => {
+  try {
+    const store = readReviews()
+    const live = new Set(memory.reviewItems(MEMORY).map(i => i.key))
+    const keys = Object.keys(store)
+    const kept = keys.filter(k => live.has(k))
+    if (kept.length < keys.length) writeJson(reviewsFile(), Object.fromEntries(kept.map(k => [k, store[k]!])))
+  } catch {
+    // housekeeping only: a failed prune must not break the tick
+  }
+}
 /** the verdict for a skill or proposal as it stands now, or undefined */
 const verdictOf = (kind: 'skill' | 'proposal', name: string) => {
   const store = readReviews()
@@ -5282,6 +5294,7 @@ async function tick(isPatrol = false) {
     const linearState = existsSync(linearSyncFile())
       ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
       : {}
+    pruneReviews()
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
