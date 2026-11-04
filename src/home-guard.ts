@@ -104,8 +104,8 @@ function readOnly(command: string): boolean {
   let q = ''
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
-    // a line join (backslash, newline) outside single quotes; an escaped backslash is read as a pair below
-    if (c === '\\' && cmd[i + 1] === '\n' && q !== "'") {
+    // a line join (backslash, newline) is a space; an escaped backslash is read as a pair below
+    if (c === '\\' && cmd[i + 1] === '\n') {
       i++
       continue
     }

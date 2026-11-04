@@ -111,6 +111,7 @@ describe('homeReason', () => {
     `bd create "t" -d "see src/home-guard.ts (the guard; it reads ${CLI}) & more | x"`,
     `bd comment x 'see src/home-guard.ts; $(no) \`no\`'`,
     `git diff \\\n  ${CLI}`,
+    `git \\\n diff ${CLI}`,
     `git diff ${CLI} &> /dev/null`,
     `(cd /abs/wt && git diff ${CLI})`,
     `git blame ${CLI}`,
