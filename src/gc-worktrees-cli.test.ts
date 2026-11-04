@@ -64,12 +64,12 @@ const noPanes = () => {
   return join(bin, 'herdr')
 }
 
-/** A fake `gh` answers `api --paginate repos/acme/widget/pulls?...` with the given PRs, as REST pulls.
- * It splits the PRs into NDJSON pages (one array per line) of up to 100, as `--jq tojson` prints them.
+/** A fake `gh` answers `api repos/acme/widget/pulls?...&page=N` with page N of the given PRs, as REST pulls.
+ * It splits the PRs into pages of up to 100; each call prints one array on one line, as `--jq tojson` does.
+ * `opts.failPage` makes that page exit 1.
  * A PR entry keeps the old GraphQL-style fields; the fake maps them onto the REST shape.
  *
- * A real `gh --paginate` run sends many HTTP requests. This fake sends the data in one process
- * call. The call log shows exactly 1 call.
+ * The call log has one line per page.
  *
  * `isCrossRepository` is optional on a PR entry. If you omit it, the fake leaves out `head`:
  * a malformed answer, which parsePrPages() must reject (fail closed, claude-factory-ph8.4).
@@ -82,7 +82,7 @@ function fakeGh(
     headRefOid: string
     isCrossRepository?: boolean
   }[],
-  opts: { badField?: boolean } = {},
+  opts: { badField?: boolean; failPage?: number } = {},
 ) {
   mkdirSync(bin, { recursive: true })
   const rest = prs.map((p, i) => ({
@@ -104,10 +104,16 @@ function fakeGh(
   for (let i = 0; i < rest.length || pages.length === 0; i += 100) {
     pages.push(JSON.stringify(rest.slice(i, i + 100)))
   }
-  const body = pages.join('\n').replaceAll("'", "'\\''")
+  pages.forEach((pg, i) => writeFileSync(join(dir, `gh-page-${i + 1}.json`), pg))
+  const cases = pages
+    .map(
+      (_, i) =>
+        `*"&page=${i + 1} --jq"*) ${opts.failPage === i + 1 ? 'exit 1' : `cat '${join(dir, `gh-page-${i + 1}.json`)}'`};;`,
+    )
+    .join('\n')
   writeFileSync(
     join(bin, 'gh'),
-    `#!/bin/sh\necho "$*" >> ${join(dir, 'gh-calls.log')}\ncase "$*" in "api --paginate repos/acme/widget/pulls?"*) printf '%s' '${body}';; *) exit 1;; esac\n`,
+    `#!/bin/sh\necho "$*" >> ${join(dir, 'gh-calls.log')}\ncase "$*" in "api repos/acme/widget/pulls?"*) case "$*" in\n${cases}\n*) printf '[]';; esac;; *) exit 1;; esac\n`,
   )
   chmodSync(join(bin, 'gh'), 0o755)
 }
@@ -847,7 +853,7 @@ test('q: an unknown --rig name fails, naming the known rigs, and never holds the
   expect(existsSync(join(home, 'gc-worktrees.lock'))).toBe(false)
 })
 
-test('r: gh api reads every PR of the origin repo in one paginated call, past the old 1000-PR cap (claude-factory-ph8)', () => {
+test('r: gh api reads every PR of the origin repo one page per call, past the old 1000-PR cap (claude-factory-ph8)', () => {
   reset()
   const { repo } = makeRig('r1')
   const mergedId = freshId('ship')
@@ -875,11 +881,16 @@ test('r: gh api reads every PR of the origin repo in one paginated call, past th
   const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
   expect(out.code).toBe(0)
   const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8').trim().split('\n')
-  expect(calls.length).toBe(1)
-  // the call must read the whole origin repo with --paginate, on a REST path that names the owner (claude-factory-oz6s)
-  expect(calls[0]).toContain('--paginate')
-  expect(calls[0]).toContain('repos/acme/widget/pulls?state=all')
-  expect(calls[0]).not.toContain('graphql')
+  // 1050 PRs make 11 calls. Every call names the owner in the path: gh --paginate would follow a
+  // /repositories/<id>/pulls Link URL on pages 2 and later (claude-factory-oz6s)
+  expect(calls.length).toBe(11)
+  calls.forEach((c, i) => {
+    expect(c).toContain(
+      `repos/acme/widget/pulls?state=all&sort=created&direction=asc&per_page=100&page=${i + 1}`,
+    )
+    expect(c).not.toContain('--paginate')
+    expect(c).not.toContain('graphql')
+  })
   // a MERGED PR past index 1000, head matching the branch tip: covered, so gc deletes the branch
   expect(git(repo, 'branch', '--list', mergedBranch)).toBe('')
   // a merged-ancestor branch with an OPEN PR past index 1000 on the same name: gc keeps it anyway
@@ -914,6 +925,28 @@ test('u: a bad field in one PR keeps every branch facts-unavailable (AC3)', () =
     ],
     { badField: true },
   )
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('')
+})
+
+test('u2: a failed page 2 keeps every branch (claude-factory-oz6s)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  const head = git(repo, 'rev-parse', branch)
+  // page 1 holds a MERGED PR for the branch; page 2 fails, so gc must not trust page 1 alone
+  const prs = Array.from({ length: 150 }, (_, i) => ({
+    number: i,
+    state: i === 0 ? 'MERGED' : 'CLOSED',
+    headRefName: i === 0 ? branch : `factory/other-${i}`,
+    headRefOid: i === 0 ? head : '0'.repeat(40),
+    isCrossRepository: false,
+  }))
+  fakeGh(prs, { failPage: 2 })
   const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
   expect(out.code).toBe(0)
   expect(git(repo, 'branch', '--list', branch)).not.toBe('')

@@ -5127,33 +5127,48 @@ export function githubSlug(url: string): string | null {
   const parts = remote.path.split('/')
   return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
-/** `gh api --paginate repos/<owner>/<repo>/pulls`, called once per rig, not once per branch. The plan for
+/** `gh api repos/<owner>/<repo>/pulls`, one call per page, once per rig, not once per branch. The plan for
  * claude-factory-l38 rejected the per-branch call: it would run about 700 calls on the first
  * pass. This function returns null on a non-GitHub forge, or on any `gh` failure (AC5).
  *
  * `gh pr list --limit 1000` (claude-factory-l38.13) capped a rig's pull requests at 1000. A rig
  * with more PRs than that always read as incomplete (claude-factory-ph8: a rig with over 3000
- * pull requests is a real case). `--paginate` has no cap, and `gh` exits non-zero when any page fails.
+ * pull requests is a real case). The page loop has no cap, and a failed page gives null.
  * GraphQL gave no owner in the path, so the AX gateway sent the default key (claude-factory-oz6s).
- * `--jq tojson` prints one JSON line per page. `gc.parsePrPages()` returns null, never a partial list,
+ * `--jq tojson` prints one JSON line per call. `gc.parsePrPages()` returns null, never a partial list,
  * on any unknown form. Ascending creation order means a PR opened during the read only adds at the end. */
 function prFacts(repo: string): gc.PrFact[] | null {
   const url = originConfigUrl(repo)
   const slug = url ? githubSlug(url) : null
   if (!slug) return null
-  const p = Bun.spawnSync(
-    [
-      'gh',
-      'api',
-      '--paginate',
-      `repos/${slug}/pulls?state=all&sort=created&direction=asc&per_page=100`,
-      '--jq',
-      'tojson',
-    ],
-    { cwd: repo, timeout: 300_000 },
-  )
-  if (p.exitCode !== 0) return null
-  return gc.parsePrPages(p.stdout.toString())
+  // One call per page, not `--paginate`: gh follows the Link URL /repositories/<id>/pulls, which has no
+  // owner in the path, so the AX gateway sends the default key for pages 2 and later (claude-factory-oz6s).
+  const pages: string[] = []
+  for (let page = 1; ; page++) {
+    const p = Bun.spawnSync(
+      [
+        'gh',
+        'api',
+        `repos/${slug}/pulls?state=all&sort=created&direction=asc&per_page=100&page=${page}`,
+        '--jq',
+        'tojson',
+      ],
+      { cwd: repo, timeout: 300_000 },
+    )
+    if (p.exitCode !== 0) return null
+    const text = p.stdout.toString().trim()
+    pages.push(text)
+    // a short page is the last one; each call prints one JSON array on one line
+    let n: unknown
+    try {
+      n = JSON.parse(text)
+    } catch {
+      return null
+    }
+    if (!Array.isArray(n)) return null
+    if (n.length < 100) break
+  }
+  return gc.parsePrPages(pages.join('\n'))
 }
 
 type GcRunRef = gc.RunRef & { repo: string }
