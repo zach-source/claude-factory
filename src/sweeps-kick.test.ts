@@ -20,7 +20,9 @@ import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `sweeps-kick-${process.pid}`)
-const home = join(dir, 'home')
+// A new home per test: detached tick children of an earlier test write into its old home, not the next one.
+let homeN = 0
+let home = join(dir, 'home')
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -69,6 +71,7 @@ function doneRun(id: string): string {
 
 const reset = () => {
   rmSync(dir, { recursive: true, force: true })
+  home = join(dir, `home-${++homeN}`)
   mkdirSync(home, { recursive: true })
 }
 
