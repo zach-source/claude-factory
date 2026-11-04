@@ -4165,10 +4165,48 @@ function compactMessage(
  * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
+/**
+ * The rollouts of the codex dream since start (y3zo). Read at most 20 plain files that have a rollout
+ * name, are 64 MiB or smaller and sit under the private home's sessions/. Send every row through validUsage.
+ */
+function dreamCodexUsage(codexHome: string, start: number) {
+  const sessions = join(codexHome, 'sessions')
+  if (!existsSync(sessions)) return []
+  const rows = (readdirSync(sessions, { recursive: true }) as string[])
+    .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(basename(f)))
+    .sort()
+    .flatMap(f => {
+      const st = lstatSync(join(sessions, f))
+      if (!st.isFile() || st.size > 64 * 1024 * 1024 || st.mtimeMs < start) return []
+      return codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? []
+    })
+    .slice(0, 20)
+  return validUsage(rows, 'dream', 0)
+}
+
+/**
+ * Make a private CODEX_HOME for the codex dream. It holds a trust line for the memory and a link to the
+ * person's auth.json (one token store, as codexWorker does). The dream copies nothing else.
+ */
+function dreamCodexHome() {
+  const dir = join(HOME, 'codex-dream')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  writeFileSync(join(dir, 'config.toml'), `[projects.${JSON.stringify(MEMORY)}]\ntrust_level = "trusted"\n`)
+  const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
+  const link = join(dir, 'auth.json')
+  rmSync(link, { force: true })
+  if (existsSync(auth)) symlinkSync(auth, link)
+  return dir
+}
+
+const DREAM_CODEX_NOTE =
+  '\n\nYour sandbox keeps .git read-only, so git mv and git rm fail. Use mkdir, mv, rm and rm -r (not rm -f). The factory stages your changes with git add -A.'
+
 /** the dream's own sessions (hr94): one name=dream row for each model in manager-usage.jsonl. Never throws */
-function storeDreamUsage(start: number) {
+function storeDreamUsage(start: number, codexHome?: string) {
   try {
-    const rows = usageIn(MEMORY, '', () => '?', start)
+    const rows = codexHome ? dreamCodexUsage(codexHome, start) : usageIn(MEMORY, '', () => '?', start)
     appendFileSync(
       join(HOME, 'manager-usage.jsonl'),
       rows
@@ -4238,22 +4276,51 @@ async function dream() {
         proposals: proposalsBefore.map(p => `- ${p.name} (${p.status}, rung ${p.rung})`),
       },
     )
+    // FACTORY_DREAM_CODEX=<model> runs the dream on codex in its workspace-write sandbox (y3zo)
+    const model = process.env.FACTORY_DREAM_CODEX?.trim()
+    let codexHome: string | undefined
+    if (model) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model)) return 'FACTORY_DREAM_CODEX is not a model name'
+      // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
+      try {
+        lstatSync(join(MEMORY, '.codex'))
+        return 'the memory holds .codex, which would add codex project config'
+      } catch {}
+      codexHome = dreamCodexHome()
+    }
     // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
-    const p = Bun.spawnSync(
-      [
-        ...claudeCommand().split(/\s+/),
-        ...['-p', '--permission-mode', 'acceptEdits'],
-        ...['--settings', JSON.stringify(withoutFleet())],
-        ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
-      ],
-      { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
-    )
+    const p = codexHome
+      ? Bun.spawnSync(
+          [
+            process.env.FACTORY_CODEX ?? 'codex',
+            ...['exec', '-s', 'workspace-write', '-c', 'approval_policy="never"'],
+            ...['-c', 'sandbox_workspace_write.network_access=false'],
+            ...['-c', 'sandbox_workspace_write.exclude_slash_tmp=true'],
+            ...['-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true'],
+            ...['-C', MEMORY, '-m', model!, '-'],
+          ],
+          {
+            cwd: MEMORY,
+            env: { ...process.env, CODEX_HOME: codexHome },
+            stdin: Buffer.from(prompt + DREAM_CODEX_NOTE),
+            timeout: 45 * 60_000,
+          },
+        )
+      : Bun.spawnSync(
+          [
+            ...claudeCommand().split(/\s+/),
+            ...['-p', '--permission-mode', 'acceptEdits'],
+            ...['--settings', JSON.stringify(withoutFleet())],
+            ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
+          ],
+          { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
+        )
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
     // dream.log keeps history: a log past 256 KB moves to dream.log.1 (one old file, replaced each time)
     const dreamLog = join(HOME, 'dream.log')
     if (existsSync(dreamLog) && statSync(dreamLog).size > 256 * 1024) renameSync(dreamLog, `${dreamLog}.1`)
     appendFileSync(dreamLog, `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
-    storeDreamUsage(start)
+    storeDreamUsage(start, codexHome)
     if (p.exitCode !== 0) return said
     // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
     const overProposals = memory.proposalsOverCap(
