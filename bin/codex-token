@@ -23,6 +23,7 @@
 #
 # For op auth, see claude-token: a writer service account in OP_SERVICE_ACCOUNT_TOKEN, or your own op sign-in.
 #
+# Tokens reach op and curl on stdin, never in argv.
 # This script does not print a token.
 set -euo pipefail
 
@@ -31,6 +32,8 @@ for v in CODEX_TOKEN_ITEM CODEX_TOKEN_VAULT CODEX_TOKEN_LIVE_FIELD CODEX_TOKEN_A
 done
 I=$CODEX_TOKEN_ITEM
 V=$CODEX_TOKEN_VAULT
+# jq function: set the CONCEALED field $l to $v, or append it. The values come from the environment, never from argv.
+put='def put($l; $v): if any(.fields[]?; .label == $l) then .fields |= map(if .label == $l then .value = $v | .type = "CONCEALED" else . end) else .fields = (.fields // []) + [{label: $l, type: "CONCEALED", value: $v}] end;'
 USAGE=https://chatgpt.com/backend-api/wham/usage
 
 session() { # the auth.json of the ccswitch session for label $1, on stdout
@@ -58,9 +61,10 @@ use() {
   e=$(exp_of "$t")
   { [ -n "$e" ] && [ "$e" -gt $(($(date +%s) + 3600)) ]; } ||
     { echo "codex-token: the access token of $1 expires within an hour, or has no exp" >&2; exit 1; }
-  op item edit "$I" --vault "$V" \
-    "${CODEX_TOKEN_LIVE_FIELD}[concealed]=$t" "${CODEX_TOKEN_ACCOUNT_FIELD}[concealed]=$a" "${CODEX_TOKEN_ACTIVE_FIELD}[concealed]=$1" \
-    >/dev/null 2>&1 || { echo "codex-token: couldn't update the item" >&2; exit 1; }
+  op item get "$I" --vault "$V" --format json |
+    LIVE="$t" ACCT="$a" LABEL="$1" jq --arg lf "$CODEX_TOKEN_LIVE_FIELD" --arg af "$CODEX_TOKEN_ACCOUNT_FIELD" --arg tf "$CODEX_TOKEN_ACTIVE_FIELD" \
+      "$put put(\$lf; \$ENV.LIVE) | put(\$af; \$ENV.ACCT) | put(\$tf; \$ENV.LABEL)" |
+    op item edit "$I" --vault "$V" >/dev/null 2>&1 || { echo "codex-token: couldn't update the item" >&2; exit 1; }
   echo "label $1 is live; agent-vault picks it up within its refresh interval"
 }
 case "${1:-}" in
