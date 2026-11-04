@@ -961,6 +961,28 @@ test('claude-factory-ye1v AC3: approvers name the reviewed head and mark ready o
   }
 })
 
+test('claude-factory-97yj: approvers re-read headRefOid after gh pr ready and undo on a moved head', () => {
+  const nodes = lifecycle.nodes as Record<string, { prompt: string }>
+  const reread = 'Right after you mark it, read `gh pr view <n> --json headRefOid` again.'
+  for (const id of Object.keys(nodes)) {
+    const p = nodes[id]!.prompt
+    if (!['review', 'security', 'check'].includes(id)) {
+      expect(p, id).not.toContain(reread)
+      continue
+    }
+    const at = p.indexOf(reread)
+    expect(at, id).toBeGreaterThan(p.indexOf('gh pr ready <n> -R'))
+    const after = p.slice(at)
+    for (const s of [
+      'If it is not the SHA you reviewed, run `gh pr ready <n> --undo` at once.',
+      'Do the same if the read fails.',
+      'Then report changes with the new SHAs.',
+      'If the undo fails, report blocked with the pull request link.',
+    ])
+      expect(after, `${id}: ${s}`).toContain(s)
+  }
+})
+
 test('claude-factory-ye1v AC4: the house rule allows only the --undo form and requires a draft before a push', () => {
   const line = lifecycle.rules!.split('\n').find(l => l.includes('gh pr create --draft'))!
   expect(line).toContain('except `gh pr ready <n> --undo`')

@@ -297,6 +297,21 @@ test('no ship station tells a worker to edit CHANGELOG.md (debg AC1, AC2)', () =
   expect(p).toContain('gh pr edit <n> -R <repo> --title')
 })
 
+test('release re-reads headRefOid after gh pr ready and undoes on a moved head (claude-factory-zz7b)', () => {
+  const p = ship.nodes.release.prompt
+  const reread = 'Right after you mark it, read `gh pr view <n> --json headRefOid` again.'
+  const at = p.indexOf(reread)
+  expect(at).toBeGreaterThan(p.indexOf('mark it ready with `gh pr ready`'))
+  const after = p.slice(at)
+  for (const s of [
+    'run `gh pr ready <n> --undo` at once.',
+    'Do the same if the read fails.',
+    'Then report changes with the new SHAs.',
+    'If the undo fails, report blocked with the pull request link.',
+  ])
+    expect(after, s).toContain(s)
+})
+
 test('release keeps version bump, description and ready steps (debg AC3)', () => {
   const p = ship.nodes.release.prompt
   expect(p).toContain("the version bump the repo's conventions call for")
