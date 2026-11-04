@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { prsIn } from './machine'
 import {
   alreadyDone,
@@ -2180,4 +2180,73 @@ test('gitlabMergedJson: failure is null, garbage is an empty list', async () => 
   expect(errs).toEqual(['x'])
   const junk = async () => ({ code: 0, err: '', out: 'nope' })
   expect(JSON.parse((await gitlabMergedJson(junk, 'h', 'a/b', '/r', { search: 'i' }))!)).toEqual([])
+})
+
+// claude-factory-oz6s: /search/issues has no owner in the path, so the REST list of the run's own repo also feeds the search
+describe('buildPrs: the search adds the run repo REST list (oz6s)', () => {
+  const REST = 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1'
+  const row = (n: number, title: string, createdAt = '2026-10-12T08:49:00Z') => ({
+    number: n,
+    html_url: `https://github.com/acme/widget/pull/${n}`,
+    title,
+    body: '',
+    created_at: createdAt,
+    head: { ref: `feature/${n}` },
+  })
+  const search = async (rest: GhResult, searchReply: GhResult, over: Partial<RunMeta> = {}) => {
+    const calls: string[][] = []
+    const gh = fakeGh(
+      [
+        { when: REST, reply: rest },
+        { when: 'search prs --owner acme', reply: searchReply },
+      ],
+      calls,
+    )
+    const out = await buildPrs([run(over)], IS_STATION, gh, 2_000_000_000)
+    return { ...out, calls }
+  }
+  const ok = (v: unknown): GhResult => ({ code: 0, out: JSON.stringify(v), err: '' })
+
+  test('a REST row that cites the bead is a search hit when the search finds nothing', async () => {
+    const { rows } = await search(ok([row(800, 'ex-12.3 fix')]), ok([]))
+    expect(rows[0]!.prs.find(p => p.number === 800)?.source).toBe('search')
+  })
+
+  test.each([
+    ['a longer sibling id', 'ex-12.3x fix'],
+    ['a dotted descendant', 'ex-12.3.4 fix'],
+    ['the parent of the dotted bead', 'ex-12 fix'],
+  ])('a REST row that cites only %s is no hit', async (_n, title) => {
+    const { rows } = await search(ok([row(801, title)]), ok([]))
+    expect(rows[0]!.prs.find(p => p.number === 801)).toBeUndefined()
+  })
+
+  test('a REST row created before the run started is dropped', async () => {
+    const { rows } = await search(ok([row(802, 'ex-12.3 old', '2026-10-12T07:00:00Z')]), ok([]))
+    expect(rows[0]!.prs.find(p => p.number === 802)).toBeUndefined()
+  })
+
+  test('a failed REST list fails the search, so it is not spent', async () => {
+    const { files, rows } = await search({ code: 1, out: '', err: 'boom' }, ok([]), { ended: true })
+    expect(files.get(RUN_ID)!.searchedFinal).not.toBe(true)
+    expect(files.get(RUN_ID)!.searchErrorStreak).toBe(1)
+    expect(rows[0]!.error).toBeDefined()
+  })
+
+  test('a failed search call fails the search even when the REST list works', async () => {
+    const { files } = await search(
+      ok([row(803, 'ex-12.3 fix')]),
+      { code: 1, out: '', err: 'rate' },
+      { ended: true },
+    )
+    expect(files.get(RUN_ID)!.searchErrorStreak).toBe(1)
+  })
+
+  test('a hit in both the search and the REST list counts once', async () => {
+    const { rows } = await search(
+      ok([row(804, 'ex-12.3 fix')]),
+      ok([{ url: 'https://github.com/acme/widget/pull/804', createdAt: '2026-10-12T08:49:00Z' }]),
+    )
+    expect(rows[0]!.prs.filter(p => p.number === 804)).toHaveLength(1)
+  })
 })

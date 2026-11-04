@@ -1183,11 +1183,26 @@ const githubForge = (gh: Gh): Forge => ({
       : { code: 1, out: '', err: 'gh api: pull list failed' }
   },
   parseList: parseBranchList,
-  search: r =>
-    gh(
-      ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
-      timed(r.repoDir),
-    ),
+  // `gh search prs` finds companion PRs in other repos of the owner. /search/issues has no owner in the
+  // path, so the AX gateway gives it the default key (claude-factory-oz6s). The REST list of the run's own
+  // repo adds that repo's PRs under the owner's key.
+  async search(r) {
+    const [found, rows] = await Promise.all([
+      gh(
+        ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
+        timed(r.repoDir),
+      ),
+      githubPulls(gh, r.runRepo, r.repoDir, { state: 'all', pages: 1 }),
+    ])
+    if (found.code !== 0) return found
+    if (!rows) return { code: 1, out: '', err: 'gh api: pull list failed' }
+    const hits = (asJson(found.out) as { url: string; createdAt: string }[] | null) ?? []
+    const seen = new Set(hits.map(h => h.url))
+    const own = rows
+      .filter(p => citesBead(r.bead, `${str(p.title)}\n${str(p.body)}`) && !seen.has(str(p.html_url)))
+      .map(p => ({ url: str(p.html_url), createdAt: str(p.created_at) }))
+    return { code: 0, out: JSON.stringify([...hits, ...own]), err: '' }
+  },
   parseSearch,
   async view(url, cwd) {
     const slug = githubSlugOf(url)
