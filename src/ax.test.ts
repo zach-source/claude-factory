@@ -1579,7 +1579,7 @@ test('a rig egress rule on another port names it, as a Dolt remotesapi needs', (
     prefix: 'Basic ',
     port: 50051,
   }
-  expect(ax.egressPolicy('factory', [dolt]).rules[7]).toEqual({
+  expect(ax.egressPolicy('factory', [dolt]).rules[5]).toEqual({
     https: {
       hostnames: ['dolt.example.com'],
       ports: { numbers: [50051] },
@@ -1603,8 +1603,8 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
     { https: { hostnames: ['pypi.org', 'files.pythonhosted.org'] } },
   ])
   const rules = ax.egressPolicy('factory', extra).rules
-  expect(rules).toHaveLength(9)
-  expect(rules[7]!.https).toEqual({
+  expect(rules).toHaveLength(7)
+  expect(rules[5]!.https).toEqual({
     hostnames: ['api.openai.com'],
     effects: {
       replaceHeaders: [
@@ -1616,13 +1616,13 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
       ],
     },
   })
-  expect(rules[8]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
+  expect(rules[6]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
 })
 
 test('unset, FACTORY_AX_PKG_GATE leaves egressPolicy byte-identical to today, registry hosts and all', () => {
   const extra = [ax.parseEgress('proxy.golang.org,sum.golang.org'), ax.parseEgress('pypi.org,api.openai.com')]
   expect(ax.egressPolicy('factory', extra, undefined)).toEqual(ax.egressPolicy('factory', extra))
-  expect(ax.egressPolicy('factory', extra).rules.slice(7)).toEqual([
+  expect(ax.egressPolicy('factory', extra).rules.slice(5)).toEqual([
     { https: { hostnames: ['proxy.golang.org', 'sum.golang.org'] } },
     { https: { hostnames: ['pypi.org', 'api.openai.com'] } },
   ])
