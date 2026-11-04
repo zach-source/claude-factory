@@ -215,6 +215,8 @@ export type FactoryPatrolLogEntry = {
   actions: string[]
   /** the patrol's final answer, clipped to 600 chars */
   report: string
+  /** set on a `fallback` entry: why the patrol ran in the main chat (claude-factory-drr) */
+  error?: string
 }
 
 /** one pm subagent turn's outcome. register.tsx's pm `turn.complete` hook appends one of these to
