@@ -429,7 +429,8 @@ function fakeGh() {
   const restScript = join(pbin, 'rest-pulls.ts')
   writeFileSync(
     restScript,
-    `const rows = JSON.parse(process.env.GH_JSON || '[]').map((p: any) => ({
+    `const all = [...JSON.parse(process.env.GH_JSON || '[]'), ...(process.argv[2] === 'list' ? JSON.parse(process.env.GH_JSON_SHORT || '[]') : [])]
+const rows = all.map((p: any) => ({
   number: p.number,
   html_url: p.url,
   title: p.title,
@@ -462,10 +463,10 @@ console.log(JSON.stringify(rows))
     `echo "gh $*" >> "${ghCallsLog}"`,
     'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
     'case "$*" in',
-    '  *"--search 192.6 "*) if [ -n "$GH_FAIL_SHORT" ]; then echo "gh: rate limited" >&2; exit 1; fi; if [ -n "$GH_JSON_SHORT" ]; then printf \'%s\' "$GH_JSON_SHORT"; exit 0; fi;;',
     '  "api "*"&head="*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi; bun "' +
       restScript +
       '"; exit 0;;',
+    '  "api "*"state=closed"*) bun "' + restScript + '" list; exit 0;;',
     '  "api -X DELETE "*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi; exit 0;;',
     '  "api "*"state=open"*) bun "' + restOpen + '"; exit 0;;',
     'esac',
@@ -623,9 +624,9 @@ test('gh failing (or timing out) fails open: the run still starts, with one disp
     id: string
     error?: string
   }[]
-  expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped: gh: rate limited/.test(r.error ?? ''))).toBe(
-    true,
-  )
+  expect(
+    rows.some(r => r.id === 'acme-1' && /pre-check skipped: gh api pulls failed/.test(r.error ?? '')),
+  ).toBe(true)
   expect(glabCalls()).toEqual([])
 })
 
@@ -667,15 +668,24 @@ test('a PR that cites only the short child id rejects a dotted bead (claude-fact
   expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
 })
 
-test('a failed short-id search keeps the full-id hit (claude-factory-jxl.1)', () => {
+// claude-factory-oz6s: this replaces the old "failed short-id search keeps the full-id hit" test. The
+// short-id search call no longer exists on GitHub: one REST list of closed PRs covers both ids.
+test('the GitHub pre-check makes one REST list call and no pr list or search (claude-factory-oz6s)', () => {
   precheckReset({ id: 'acme-192.6' })
-  const out = pfactory(['beads'], {
-    GH_JSON: mergedPr('fix: acme-192.6 lands the thing'),
-    GH_FAIL_SHORT: '1',
-  })
+  const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-192.6 lands the thing') })
   expect(out.code).toBe(0)
   expect(runDirs()).toHaveLength(0)
-  expect(readFileSync(ghCallsLog, 'utf8')).toContain('--search 192.6 ')
+  const calls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => l.includes('state=closed') && !l.includes('&head='))).toHaveLength(1)
+  expect(calls.some(l => l.includes('pr list') || l.includes('--search') || l.includes('graphql'))).toBe(
+    false,
+  )
+})
+
+test('a merged PR that names a longer id, or a PR closed without a merge, does not reject (claude-factory-oz6s)', () => {
+  precheckReset()
+  expect(pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-12 lands the thing') }).code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
 })
 
 test('a person-requeued bead (rejected_by=dispatch metadata) starts, with 0 gh calls', () => {

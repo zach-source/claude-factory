@@ -6849,10 +6849,10 @@ const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) 
   }
 }
 
-/** the pre-check's merged-PR lookups for a rig on GitHub (`gh pr list --state merged --search`, a REST `head=` call) or GitLab
- * (`glab api` merged MR searches): a title search for the id, a second one for a dotted child's short id, plus a lookup for up to 3
- * local run branches of this bead (a PR that closed the bead's own run but never named it in its title). It throws when the first
- * search fails. A failed short-id or branch call keeps the hits already found. */
+/** the pre-check's merged-PR lookups for a rig on GitHub (one REST list of the newest 300 closed PRs, then a REST `head=` call
+ * per branch) or GitLab (`glab api` merged MR searches: a title search for the id, a second one for a dotted child's short id),
+ * plus a lookup for up to 3 local run branches of this bead (a PR that closed the bead's own run but never named it in its
+ * title). It throws when the first list or search fails. A failed short-id or branch call keeps the hits already found. */
 async function mergedPrsFor(
   repo: string,
   origin: NonNullable<ReturnType<typeof originRef>>,
@@ -6860,34 +6860,30 @@ async function mergedPrsFor(
   branches: string[],
   cli: { gh: Gh; glab: Gh },
 ): Promise<MergedPr[]> {
-  const fields = 'number,url,title,headRefName,mergeCommit'
   const gl = origin.forge === 'gitlab'
   const glabPath = `${origin.owner}/${origin.repo}`
   let firstErr = ''
-  const bySearch = async (q: string): Promise<string | null> => {
-    if (gl) return gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: q }, e => (firstErr = e))
-    const r = await cli.gh(['pr', 'list', '--state', 'merged', '--search', q, '--json', fields, '-L', '30'], {
-      cwd: repo,
-      timeout: PRECHECK_TIMEOUT_MS,
-    })
-    if (r.code !== 0) firstErr = r.err
-    return r.code === 0 ? r.out : null
-  }
-  const search = await bySearch(id)
-  if (search === null)
-    throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh pr list'} failed`, 200))
-  const found = parseMergedPrs(search)
-  // claude-factory-jxl.1: a title may cite only the short child id ("192.6"); the full-id search misses it
-  const short = shortBeadId(id)
+  const ref = rigRef(repo)
+  // GitHub: one REST list of the newest closed PRs. `alreadyDone` matches the id, the short id and the run
+  // branches in it. `gh pr list --search` is GraphQL, which the AX gateway cannot key by owner (oz6s).
+  const list = gl
+    ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: id }, e => (firstErr = e))
+    : ref
+      ? await githubMergedJson(cli.gh, ref.slug, repo, { pages: 3 })
+      : null
+  if (list === null)
+    throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh api pulls'} failed`, 200))
+  const found = parseMergedPrs(list)
+  // claude-factory-jxl.1: a GitLab title may cite only the short child id ("192.6"); the full-id search misses it
+  const short = gl ? shortBeadId(id) : null
   if (short) {
-    const byShort = await bySearch(short)
+    const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: short })
     if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
   // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
-    const ref = rigRef(repo)
     const byHead = gl
       ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { sourceBranch: branch })
       : ref
