@@ -104,20 +104,28 @@ describe('homeReason', () => {
     `git -C /abs/wt diff ${CLI}`,
     `git --no-pager log -p -- ${CLI}`,
     `grep -n x ${CLI} ${WRK}`,
-    `cat ${CLI} | head -n 5`,
     `head -n 50 ${CLI}`,
-    `cd /abs/wt && git diff ${CLI}`,
-    `git diff ${CLI} 2>&1 | tail -n 3`,
     `bd create "t" -d "see src/home-guard.ts (the guard; it reads ${CLI}) & more | x"`,
     `bd comment x 'see src/home-guard.ts; $(no) \`no\`'`,
+    `git blame ${CLI}`,
+    `git status ${CLI}`,
+    `git diff HEAD~1 HEAD^ -- ${CLI}`,
+    `grep -n 'a|b' ${CLI}`,
+    'bd create -d "see src/home-guard.ts"',
+  ])('allows a read-only command that names a script: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBeUndefined(),
+  )
+
+  test.each([
+    `cat ${CLI} | head -n 5`,
+    `cd /abs/wt && git diff ${CLI}`,
+    `git diff ${CLI} 2>&1 | tail -n 3`,
     `git diff \\\n  ${CLI}`,
     `git \\\n diff ${CLI}`,
     `git diff ${CLI} &> /dev/null`,
     `(cd /abs/wt && git diff ${CLI})`,
-    `git blame ${CLI}`,
-    `git status ${CLI}`,
-  ])('allows a read-only command that names a script: %s', cmd =>
-    expect(homeReason(cmd, bad, H)).toBeUndefined(),
+  ])('denies a read command outside the one-command grammar: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
   test.each([
@@ -170,6 +178,11 @@ describe('homeReason', () => {
     'git diff a \\\\\n./x.sh',
     'cat x \\\\\\\\\n./x.sh',
     'cat x\\\\\nbash x.sh',
+    'echo "\\" \'"\n./x.sh\necho \'',
+    "cat x \\'\n./x.sh\necho '",
+    'bd create -d "!! x.sh"',
+    "'git' diff ./x.sh",
+    'g""it diff ./x.sh',
   ])(
     "denies a fake quote: an unquoted #, $', <<, a nested quote in ${} or an even backslash run before a newline: %j",
     cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
