@@ -77,6 +77,7 @@ import {
   OWNER,
   REJECTED,
   LABEL,
+  NAME,
   linearSourced,
   byId,
   parentOf,
@@ -3602,6 +3603,12 @@ export function shipPrOf(
 }
 
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
+/** the NAME a factory:<name> label takes: the base name of the run's factory file, else the def's name */
+export const factoryLabelName = (run: Run, def: Factory) => {
+  const file = (run.factoryFrom ?? run.factory).split(' at ')[0]!
+  const base = basename(file, extname(file))
+  return NAME.test(base) ? base : def.name
+}
 export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
   const b = beads(run.repo, actorOf(run.id))
   const id = run.bead!
@@ -3679,12 +3686,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
       // dispatch never reads a station label off a Linear-sourced bead, so it gets a plain defer
       const station = typeof edge.defer === 'object' ? edge.defer.station : undefined
       const current = station ? b.lookup(id) : undefined
-      b.defer(
-        id,
-        reason,
-        current && linearSourced(current) ? undefined : station,
-        run.factoryFrom ?? run.factory,
-      )
+      b.defer(id, reason, current && linearSourced(current) ? undefined : station, factoryLabelName(run, def))
     }
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)

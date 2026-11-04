@@ -71,6 +71,7 @@ import {
   slot,
   withoutFleet,
   type RigFacts,
+  factoryLabelName,
 } from './cli'
 
 test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
@@ -2539,4 +2540,13 @@ test('managerStaleMail mails once for each launch, from the factory (claude-fact
   expect(managerStaleMail(3, home, alive)).toEqual([])
   writeManagerLaunch(home, 6, 2000, old)
   expect(managerStaleMail(4, home, alive)).toHaveLength(1)
+})
+
+test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or the def (claude-factory-i9sj)', () => {
+  const def = { name: 'lifecycle' } as Parameters<typeof factoryLabelName>[1]
+  const run = (factoryFrom: string) =>
+    ({ factory: '/x/pinned.json', factoryFrom }) as Parameters<typeof factoryLabelName>[0]
+  expect(factoryLabelName(run('/a/factories/release.ts'), def)).toBe('release')
+  expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
+  expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
 })

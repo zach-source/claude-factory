@@ -494,7 +494,9 @@ export const beads = (repo: string, actor: string) => ({
       const old = labels.filter(l => l.startsWith('station:'))
       // a bead started by hand has no factory:* label: without one, dispatch would use rig.factory at the station
       const addFactory =
-        factory && !labels.some(l => l.startsWith('factory:')) ? ['--add-label', `factory:${factory}`] : []
+        factory && NAME.test(factory) && !labels.some(l => l.startsWith('factory:'))
+          ? ['--add-label', `factory:${factory}`]
+          : []
       must(
         bd(
           repo,
