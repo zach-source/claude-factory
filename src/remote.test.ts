@@ -156,6 +156,49 @@ test('inside a VM, `report`/`mail`/`memory add --help`|`-h` print usage and exit
   expect(existsSync(outbox)).toBe(false) // nothing was appended
 })
 
+test('inside a VM, report --summary-file queues the file text; a bad file queues nothing', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-sf.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  const empty = join(dir, 'sf-empty')
+  const f = join(dir, 'sf.md')
+  writeFileSync(empty, '')
+  writeFileSync(f, 'long\nsummary "x"\n')
+  const blank = join(dir, 'sf-blank')
+  writeFileSync(blank, ' \n\t\n')
+  // a fake bd first on PATH writes a marker when the VM syncs beads. A bad form must refuse first
+  const marker = join(dir, 'sf-bd-ran')
+  const bin = join(dir, 'sf-bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho ran >> ${marker}\n`)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const envBd = { ...env, PATH: `${bin}:${process.env.PATH}`, BEADS_DIR: join(dir, 'sf-beads') }
+  for (const rest of [
+    ['--summary-file'],
+    ['--summary-file', join(dir, 'sf-missing')],
+    ['--summary-file', dir],
+    ['--summary-file', empty],
+    ['--summary-file', blank],
+    ['--summary-file', f, 'x'],
+  ]) {
+    const bad = factory(['report', 'r1', '1', 'ready', ...rest], envBd)
+    expect(bad.code).toBe(1)
+    expect(bad.err).toContain('--summary-file')
+  }
+  expect(existsSync(marker)).toBe(false)
+  expect(existsSync(outbox)).toBe(false)
+  expect(factory(['report', 'r1', '1', 'ready', '--summary-file', f], env).code).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  expect(lines.map(l => JSON.parse(l).argv)).toEqual([['report', 'r1', '1', 'ready', 'long\nsummary "x"\n']])
+})
+
+test('a report argv that still holds --summary-file is not replayable; the flag after summary words is', () => {
+  const side = { node: 'a', seq: 1 }
+  expect(replayable(['report', 'r1', '1', 'ready', '--summary-file', '/etc/passwd'], side, 'r1')).toBeNull()
+  const plain = ['report', 'r1', '1', 'ready', 'text', '--summary-file', 'x']
+  expect(replayable(plain, side, 'r1')).toEqual(plain)
+})
+
 test('inside a VM, malformed report/mail args refuse on stderr with exit 1, nothing queued (claude-factory-4x1)', () => {
   mkdirSync(dir, { recursive: true })
   const outbox = join(dir, 'outbox-bad.jsonl')
@@ -396,6 +439,24 @@ test("a tick replays an AX worker's report from its outbox, and cleans up even w
   expect(called()).toContain('-a factory delete task t')
   expect(called()).toContain('-a factory delete workspace t')
   rmSync(join(home, 'runs', 'r1'), { recursive: true })
+})
+
+test('a tick does not replay a report that still holds --summary-file, and reads no laptop file for it', () => {
+  const seq = launched('r1sf')
+  const secret = join(dir, 'sf-secret.md')
+  writeFileSync(secret, 'zqsecret')
+  const line = JSON.stringify({
+    argv: ['report', 'r1sf', String(seq), 'ready', '--summary-file', secret],
+    from: 'a',
+    at: 1,
+  })
+  cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+  expect(factory(['tick']).code).toBe(0)
+  expect(inbox('r1sf')).not.toContain('"outcome":"ready"')
+  expect(inbox('r1sf')).not.toContain('zqsecret')
+  const prompt = called().match(/worker prompt (\S+)/)?.[1] ?? ''
+  expect(Buffer.from(prompt, 'base64').toString()).toContain('is not yours to run')
+  rmSync(join(home, 'runs', 'r1sf'), { recursive: true })
 })
 
 test('a tick on an AX-only rig still runs with no herdr installed (claude-factory-5h9.4)', () => {
