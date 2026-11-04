@@ -740,10 +740,26 @@ export function outline(dir: string, rig?: string) {
     .filter(t => t !== 'inbox')
     .sort()
     .map(t => `- ${t} (${count(t)}): ${topics.get(t)?.summary ?? ''}`.trimEnd())
-    .map(l => (l.length > 100 ? `${l.slice(0, 99)}…` : l))
+    .map(l => {
+      const cps = Array.from(l)
+      return cps.length > 100 ? `${cps.slice(0, 99).join('')}…` : l
+    })
   const inbox = count('inbox')
-  return { core, topics: inbox ? [...lines, `- inbox (${inbox}): new notes, not yet filed`] : lines }
+  const tail = inbox ? [`- inbox (${inbox}): new notes, not yet filed`] : []
+  // drop topics from the end until the whole list fits; the inbox line stays
+  const size = (a: string[]) => Buffer.byteLength(a.join('\n'))
+  let keep = lines.length
+  const build = () => [
+    ...lines.slice(0, keep),
+    ...(keep < lines.length ? [`- (+${lines.length - keep} more topics; memory search)`] : []),
+    ...tail,
+  ]
+  while (keep > 0 && size(build()) > TOPICS_BUDGET) keep--
+  return { core, topics: build() }
 }
+
+/** bytes the topic list may put in a brief, whatever the number of topics */
+export const TOPICS_BUDGET = 4000
 
 export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n) === 'inbox').length
 /** all of it as one text, to find the beads it names */
