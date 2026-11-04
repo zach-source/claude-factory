@@ -342,8 +342,8 @@ test('a skills list names only skills the worker image has: factory and station 
       nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
       ...extra,
     })
-  writeFileSync(join(dir, 'ok.json'), tiny({ skills: ['asd-ste100'] }))
-  expect((await loadFactory(join(dir, 'ok.json'))).skills).toEqual(['asd-ste100'])
+  writeFileSync(join(dir, 'tiny.json'), tiny({ skills: ['asd-ste100'] }))
+  expect((await loadFactory(join(dir, 'tiny.json'))).skills).toEqual(['asd-ste100'])
   writeFileSync(join(dir, 'bad.json'), tiny({ skills: ['nope'] }))
   await expect(loadFactory(join(dir, 'bad.json'))).rejects.toThrow('skill "nope" is not asd-ste100')
   for (const bad of ['', 'ASD-STE100']) {
