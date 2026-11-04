@@ -411,6 +411,16 @@ test('warnSkillsOff warns once per listed skill that is off, for any worker harn
   }
 })
 
+test('warnSkillsOff with null enabledPlugins warns for each skill and does not throw', () => {
+  const warn = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    warnSkillsOff(['a', 'b'], 'work', null)
+    expect(warn.mock.calls.length).toBe(2)
+  } finally {
+    warn.mockRestore()
+  }
+})
+
 test('workerSkills is the sorted union of the factory default, the rig and the station', () => {
   const node = (skills?: string[]) => ({ prompt: 'x', next: {}, skills })
   const def = (skills?: string[]) => ({ name: 'f', start: 'a', nodes: {}, skills })

@@ -2599,9 +2599,9 @@ export function userPluginDirs(
 }
 
 /** warn for each listed skill that is not on in the person's Claude settings: the worker starts without it */
-export function warnSkillsOff(skills: string[], station: string, on: Record<string, boolean> = {}) {
+export function warnSkillsOff(skills: string[], station: string, on?: Record<string, boolean> | null) {
   for (const k of skills)
-    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
+    if (!Object.entries(on ?? {}).some(([key, v]) => v && key.split('@')[0] === k))
       console.warn(
         `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
       )
