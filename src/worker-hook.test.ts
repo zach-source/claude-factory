@@ -4727,7 +4727,7 @@ const DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR = [
   'env --argv0 x --chdir /other git push origin HEAD',
   'env -iu FOO -C /other git push origin HEAD',
   'env -va x -C /other git push origin HEAD',
-  'env -0u FOO --chdir=/other git push origin HEAD',
+  'env -iu FOO --chdir=/other git push origin HEAD',
 ]
 
 test.each(DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR)(

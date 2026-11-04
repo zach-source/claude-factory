@@ -383,8 +383,23 @@ test('the manager has its own github.com vault key when a backup remote is set; 
   const mgr = JSON.stringify(
     ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER').rules,
   )
-  expect(mgr).not.toContain('GITHUB_ZS')
-  expect(mgr).not.toContain('pathPrefixes')
+  expect(mgr).not.toContain('GITHUB_ZS_BASIC')
+  const rows = ax
+    .egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')
+    .rules.filter((r: any) => r.https.hostnames.some((h: string) => h.endsWith('github.com')))
+    .map((r: any) => [
+      r.https.hostnames,
+      r.https.pathPrefixes ?? [''],
+      r.https.effects.replaceHeaders[0].credentialUri.split('/').pop(),
+    ])
+  expect(rows).toEqual([
+    [['api.github.com', 'uploads.github.com'], [''], 'GITHUB'],
+    [['github.com'], [''], 'GITHUB_BASIC_MANAGER'],
+    [['api.github.com', 'uploads.github.com'], ['/repos/zach-source/'], 'GITHUB_ZS'],
+  ])
+  expect(
+    JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
+  ).not.toContain('pathPrefixes')
 })
 
 test("a task's phase is read from ax get, and a deleted task has none", () => {

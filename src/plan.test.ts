@@ -492,7 +492,7 @@ test('churnCounts: one count per path per commit', () => {
 
 const rv = 'factory/lifecycle-x/review'
 
-test('stationDemoted: only a top-level P0/P1 from review, security, verify or check', () => {
+test('stationDemoted: only a P0/P1 from review, security, verify or check', () => {
   for (const st of ['review', 'security', 'verify', 'check'])
     expect(stationDemoted(bead('a-1', { priority: 1, created_by: `factory/r/${st}` }))).toBe(true)
   expect(stationDemoted(bead('a-1', { priority: 0, created_by: rv }))).toBe(true)
@@ -500,8 +500,10 @@ test('stationDemoted: only a top-level P0/P1 from review, security, verify or ch
   expect(stationDemoted(bead('a-1', { priority: 1, created_by: 'factory/r/triage' }))).toBe(false)
   expect(stationDemoted(bead('a-1', { priority: 1, created_by: 'factory/r/plan' }))).toBe(false)
   expect(stationDemoted(bead('a-1', { priority: 1, created_by: 'factory/sweeps-x/maintain' }))).toBe(false)
-  expect(stationDemoted(bead('a-1.2', { priority: 1, created_by: rv }))).toBe(false)
-  expect(stationDemoted(bead('a-1', { priority: 1, parent: 'a-0', created_by: rv }))).toBe(false)
+  expect(stationDemoted(bead('a-1.2', { priority: 1, created_by: rv }))).toBe(true)
+  expect(stationDemoted(bead('a-1.2', { priority: 1, created_by: 'factory/r/plan' }))).toBe(false)
+  expect(stationDemoted(bead('a-1.2', { priority: 2, created_by: rv }))).toBe(false)
+  expect(stationDemoted(bead('a-1', { priority: 1, parent: 'a-0', created_by: rv }))).toBe(true)
   expect(stationDemoted(bead('a-1', { priority: 2, created_by: rv }))).toBe(false)
   expect(stationDemoted(bead('a-1', { priority: 1 }))).toBe(false)
 })
@@ -509,6 +511,17 @@ test('stationDemoted: only a top-level P0/P1 from review, security, verify or ch
 test('orderByPlan: a review-filed P1 sorts in the P2 band, even when the plan ranks it first', () => {
   const c = [
     bead('a-1', { priority: 1, created_by: rv }),
+    bead('a-2', { priority: 3 }),
+    bead('a-3', { priority: 1, created_by: 'Zach Taylor' }),
+  ]
+  const plan = { items: [{ id: 'a-1', title: 't', priority: 1, why: 'w' }] }
+  expect(orderByPlan(c, plan).map(b => b.id)).toEqual(['a-3', 'a-1', 'a-2'])
+  expect(orderByPlan(c, undefined).map(b => b.id)).toEqual(['a-3', 'a-1', 'a-2'])
+})
+
+test('orderByPlan: a review-filed P1 child of an unrelated epic sorts in the P2 band', () => {
+  const c = [
+    bead('a-1', { priority: 1, parent: 'epic-0', created_by: rv }),
     bead('a-2', { priority: 3 }),
     bead('a-3', { priority: 1, created_by: 'Zach Taylor' }),
   ]
