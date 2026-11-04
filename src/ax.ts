@@ -488,7 +488,12 @@ export function egressPolicy(
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
       rule(apiHosts, 'Authorization', 'Bearer ', reviewer ? 'GITHUB_REVIEWER' : own || 'GITHUB'),
-      rule(['github.com'], 'Authorization', 'Basic ', reviewer ? 'GITHUB_REVIEWER_BASIC' : own ? `${own}_BASIC` : githubKey),
+      rule(
+        ['github.com'],
+        'Authorization',
+        'Basic ',
+        reviewer ? 'GITHUB_REVIEWER_BASIC' : own ? `${own}_BASIC` : githubKey,
+      ),
       // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live); manager only
       // the github.com Basic rule is only for the shared worker key: the manager's backup push must keep
       // GITHUB_BASIC_MANAGER, so it gets the REST API rule but not this one

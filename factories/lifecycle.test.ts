@@ -791,6 +791,17 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
     expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
 })
 
+test('qoub.3: review and check never push; with no pull request they report changes', () => {
+  for (const node of ['review', 'check']) {
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
+    expect(prompt.replace('"push the branch and open the draft pull request"', '')).not.toMatch(
+      /push the branch/i,
+    )
+    expect(prompt).toContain('do not push')
+    expect(prompt).toContain('"push the branch and open the draft pull request"')
+  }
+})
+
 const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
 const BOT_TOKENS = [
   'In the infra-blocks repo',
