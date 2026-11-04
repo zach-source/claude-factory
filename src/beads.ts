@@ -65,6 +65,13 @@ export const hasBeads = (repo: string) => existsSync(join(repo, '.beads'))
 /** the run owns its bead under this name; its workers write as `<actor>/<station>` */
 export const actorOf = (runId: string) => `factory/${runId}`
 
+/**
+ * Factory text, last in the goal of a Linear-sourced bead, so its author cannot remove it.
+ * The triage prompt reads it: a bead filed from here in another rig gets no `factory` label.
+ */
+export const LINEAR_FILE_RULE =
+  'Linear-sourced: this bead came from a Linear issue. A bead you file from it in another rig must not carry the label `factory`: a person queues it there.'
+
 /** what a run is asked to do, from its bead */
 export const goalOf = (b: Bead) =>
   [
@@ -72,6 +79,7 @@ export const goalOf = (b: Bead) =>
     b.description,
     b.acceptance_criteria && `Acceptance: ${b.acceptance_criteria}`,
     shipRework(b),
+    linearSourced(b) && LINEAR_FILE_RULE,
   ]
     .filter(Boolean)
     .join('\n\n')

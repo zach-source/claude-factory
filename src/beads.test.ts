@@ -11,6 +11,7 @@ import {
   goalOf,
   isHandedOff,
   isOwned,
+  LINEAR_FILE_RULE,
   linearSourced,
   stationOf,
   type Bead,
@@ -107,6 +108,12 @@ test('a bead becomes a goal and may name its station', () => {
   expect(stationOf(b)).toBe('incident')
   expect(stationOf(bead('fx-8', { labels: ['factory'] }))).toBeUndefined()
   expect(goalOf(bead('fx-7'))).toBe('fx-7: title fx-7')
+  for (const ref of ['https://linear.app/acme/issue/STI-1', 'HTTPS://LINEAR.APP/acme/issue/STI-1'])
+    expect(
+      goalOf(bead('fx-5', { acceptance_criteria: 'ok', external_ref: ref })).endsWith(LINEAR_FILE_RULE),
+    ).toBe(true)
+  for (const ref of [undefined, 'gh-9'])
+    expect(goalOf(bead('fx-4', { external_ref: ref }))).not.toContain('Linear-sourced:')
   const q = goalOf(bead('fx-6', { metadata: { ship_branch: 'factory/run-1', ship_pr: 'https://x/pull/3' } }))
   expect(q).toContain('https://x/pull/3 on branch factory/run-1')
   expect(q).toContain('starts from origin/factory/run-1')
