@@ -638,6 +638,14 @@ test('triage rollout requeues into the release factory; decision defers at plan;
   const decision = { to: 'done', defer: { station: 'plan' } }
   expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
   expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
+  const t = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'Add the label `factory` only when the Goal has no `Linear-sourced:` line',
+    'discovered_from',
+    'File in: <rig>: <title> | <description>',
+  ])
+    expect(t).toContain(s)
+  expect(t).not.toContain('the label `factory`, and this bead')
   for (const n of ['triage', 'plan', 'implement'] as const)
     expect(lifecycle.nodes[n].next.decision).toEqual(decision)
   expect(lifecycle.nodes.implement!.prompt).toContain('open no new pull request')
