@@ -1199,7 +1199,9 @@ const githubForge = (gh: Gh): Forge => ({
     const hits = (asJson(found.out) as { url: string; createdAt: string }[] | null) ?? []
     const seen = new Set(hits.map(h => h.url))
     const own = rows
-      .filter(p => citesBead(r.bead, `${str(p.title)}\n${str(p.body)}`) && !seen.has(str(p.html_url)))
+      .filter(
+        p => !!r.bead && citesBead(r.bead, `${str(p.title)}\n${str(p.body)}`) && !seen.has(str(p.html_url)),
+      )
       .map(p => ({ url: str(p.html_url), createdAt: str(p.created_at) }))
     return { code: 0, out: JSON.stringify([...hits, ...own]), err: '' }
   },
