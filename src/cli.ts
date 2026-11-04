@@ -738,7 +738,10 @@ function syncRigBeads(
   way: 'push' | 'pull',
   r = rigOf(run.repo)?.beadsRemote,
 ) {
-  const show = r && !inAx() ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
+  const show =
+    r && !inAx()
+      ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeout: syncTimeoutMs() })
+      : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
   // the server's own user; its password, if it has one, as bd takes it
   const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
