@@ -892,6 +892,14 @@ memory/
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
   Each commit also carries that step's `.usage.jsonl` (per-note counts) and `.renames.jsonl`
   (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
+  To run the dream on codex, set `FACTORY_DREAM_CODEX=<model>` (for example `gpt-6-astra`) in the
+  environment of the process that runs `factory tick`. Unset, the dream runs on Claude. On codex, the
+  dream runs `codex exec -s workspace-write` in the memory with no network and no `/tmp`. It uses a
+  private `CODEX_HOME` at `<factory>/codex-dream`: a trust line for the memory and a link to your
+  `auth.json`, and nothing else. The sandbox keeps `.git` read-only, so the dream uses plain `mv`
+  and `rm`, and the factory stages the changes with `git add -A`. If the memory holds a `.codex`
+  entry, the codex dream refuses to start. Its usage rows in `manager-usage.jsonl` come from the
+  codex rollout files.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
   topic's `LONG.md` once the note is 7 days old and its activation is above θm, and archives a
