@@ -3210,7 +3210,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       : (info?.tail ?? '')
   const isCodex = harnessOf(agentOfNode(run, def, node)) === 'codex'
   if (isCodex && !runner.local) refreshCodexToken(now, runner.name)
-  const hit = isCodex && !runner.local ? (info?.limit ?? null) : limitHit(tail)
+  const hit = trustedHit(isCodex && !runner.local ? info?.limit : limitHit(tail), now)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
     // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,

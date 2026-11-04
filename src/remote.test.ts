@@ -3329,3 +3329,74 @@ test('report lines replayed for one seq store at most 20 usage rows (claude-fact
   expect(readFileSync(file, 'utf8').trim().split('\n').length).toBeLessThanOrEqual(20)
   rmSync(join(home, 'runs', 'r4eox'), { recursive: true })
 })
+
+function codexRun(id: string) {
+  launched(id)
+  const codexDef = { ...def, nodes: { a: { ...def.nodes.a, agent: 'codex' } } }
+  writeFileSync(join(home, 'runs', id, 'factory.ts'), `export default ${JSON.stringify(codexDef)}`)
+}
+const codexCleanup = (id: string) => {
+  rmSync(join(home, 'runs', id), { recursive: true })
+  rmSync(join(home, 'token-swap-ax-codex.json'), { force: true })
+  rmSync(join(home, 'limit-paged-ax-codex.json'), { force: true })
+}
+const stateOf = (id: string) => JSON.parse(readFileSync(join(home, 'runs', id, 'state.json'), 'utf8'))
+function swapScript(name: string) {
+  const swap = join(dir, name)
+  const log = join(dir, `${name}.log`)
+  rmSync(log, { force: true })
+  writeFileSync(swap, `#!/bin/sh\necho x >> ${log}\necho 'label a@acme.test is live'\n`)
+  chmodSync(swap, 0o755)
+  return { swap, log }
+}
+
+test('a hostile VM that sends a fresh limit time and free kind text each tick swaps once and mails no VM text', () => {
+  codexRun('r7a')
+  const { swap, log } = swapScript('swap-h')
+  const env = { FACTORY_AX_CODEX_TOKEN_SWAP: swap }
+  for (let i = 0; i < 4; i++) {
+    const limit = { at: Date.now() + 1000 + i, kind: 'evil\nkind', resetsAt: 0 }
+    cluster('Running', { status: 'idle', session: 's1', lines: [], limit })
+    factory(['tick'], env)
+  }
+  // the token refresh runs the command once; the first hit then waits out the 5 minute window
+  expect(readFileSync(log, 'utf8').split('\n').filter(Boolean).length).toBeLessThanOrEqual(1)
+  const c = stateOf('r7a').snapshot.context
+  const mail = (c.mail.manager ?? []) as { text: string }[]
+  expect(mail.filter(m => m.text.includes('Swapped')).length).toBeLessThanOrEqual(1)
+  expect(JSON.stringify(c)).not.toContain('evil')
+  codexCleanup('r7a')
+})
+
+test('a far reset from a VM cannot park a station for more than about an hour, a real weekly reset still can', () => {
+  for (const [id, days] of [
+    ['r7b', 400],
+    ['r7c', 3],
+  ] as const) {
+    codexRun(id)
+    const at = Date.now() + 1000
+    const resetsAt = Date.now() + days * 86_400_000
+    cluster('Running', { status: 'idle', session: 's1', lines: [], limit: { at, kind: 'seven_day', resetsAt } })
+    factory(['tick'])
+    factory(['tick'])
+    const wakeAt = stateOf(id).snapshot.context.wakeAt
+    if (days > 8) expect(wakeAt).toBeLessThanOrEqual(at + 3_600_000 + 60_000)
+    else expect(wakeAt).toBeGreaterThanOrEqual(resetsAt)
+    expect(wakeAt).toBeGreaterThan(at)
+    codexCleanup(id)
+  }
+})
+
+test('a VM limit hit stamped in the future is ignored: no limit state, no limit mail', () => {
+  codexRun('r7d')
+  const { swap } = swapScript('swap-f')
+  const limit = { at: Date.now() + 10 * 60_000, kind: 'usage', resetsAt: 0 }
+  cluster('Running', { status: 'idle', session: 's1', lines: [], limit })
+  const env = { FACTORY_AX_CODEX_TOKEN_SWAP: swap }
+  factory(['tick'], env)
+  const out = factory(['tick'], env)
+  expect(JSON.parse(out.out).runs[0].agent).not.toBe('usage limit')
+  const mail = (stateOf('r7d').snapshot.context.mail.manager ?? []) as { text: string }[]
+  expect(mail.filter(m => m.text.includes('usage limit'))).toHaveLength(0)
+  codexCleanup('r7d')
+})
