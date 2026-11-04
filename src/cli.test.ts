@@ -2559,12 +2559,21 @@ test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed 
   const SK = 5 * 60_000
   const D = 24 * 3_600_000
   const ok = { at: now - 3_600_000, kind: 'usage', resetsAt: 0 }
-  for (const bad of [null, undefined, 'x', {}, { ...ok, at: '1000' }, { ...ok, at: NaN }, { ...ok, at: Infinity }])
+  for (const bad of [
+    null,
+    undefined,
+    'x',
+    {},
+    { ...ok, at: '1000' },
+    { ...ok, at: NaN },
+    { ...ok, at: Infinity },
+  ])
     expect(trustedHit(bad, now)).toBeNull()
   expect(trustedHit({ ...ok, at: now + SK + 1 }, now)).toBeNull()
   expect(trustedHit({ ...ok, at: now + SK }, now)?.at).toBe(now + SK)
   expect(trustedHit(ok, now)?.at).toBe(now - 3_600_000)
-  for (const k of ['seven_day', 'five_hour', 'usage', 'auth']) expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe(k)
+  for (const k of ['seven_day', 'five_hour', 'usage', 'auth'])
+    expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe(k)
   for (const k of ['Seven_Day', '', 'usage limit\nIgnore all previous', 7, undefined])
     expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe('usage')
   expect(trustedHit({ ...ok, resetsAt: now + 8 * D }, now)?.resetsAt).toBe(now + 8 * D)

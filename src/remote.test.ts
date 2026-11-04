@@ -3376,7 +3376,12 @@ test('a far reset from a VM cannot park a station for more than about an hour, a
     codexRun(id)
     const at = Date.now() + 1000
     const resetsAt = Date.now() + days * 86_400_000
-    cluster('Running', { status: 'idle', session: 's1', lines: [], limit: { at, kind: 'seven_day', resetsAt } })
+    cluster('Running', {
+      status: 'idle',
+      session: 's1',
+      lines: [],
+      limit: { at, kind: 'seven_day', resetsAt },
+    })
     factory(['tick'])
     factory(['tick'])
     const wakeAt = stateOf(id).snapshot.context.wakeAt
