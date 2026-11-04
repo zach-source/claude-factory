@@ -1191,7 +1191,7 @@ test('an invalid VM egress record is ignored: no throw, no mail, no egress FAIL 
   const state = readFileSync(join(home, 'runs', 'vl4', 'state.json'), 'utf8')
   rmSync(join(home, 'runs', 'vl4'), { recursive: true })
   expect(state).not.toContain('egress gateway')
-  expect(state).toContain('worker stopped without reporting')
+  expect(JSON.parse(state).snapshot.context.mail).toEqual({}) // as with no egress at all: no mail, no log
 })
 
 test('control characters in the VM egress text do not reach the FAIL reason (claude-factory-vl5j)', () => {

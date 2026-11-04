@@ -1267,6 +1267,27 @@ const post = (id: string, e: Input) =>
 
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+
+const EGRESS_SKEW_MS = 5 * 60_000
+const EGRESS_REPAGE_MS = 30 * 60_000
+
+/**
+ * The VM's egress record from a poll, or undefined when any field is off. The laptop does not trust the VM:
+ * a bad `since` would throw in toISOString or mail the manager each tick, and `last` is free text that goes
+ * in the FAIL reason. So control and format characters in `last` become spaces, and `last` is cut to 200.
+ */
+export function trustedEgress(
+  egress: unknown,
+  now: number,
+): { since: number; tries: number; last: string } | undefined {
+  if (!egress || typeof egress !== 'object') return undefined
+  const { since, tries, last } = egress as Record<string, unknown>
+  if (typeof since !== 'number' || !Number.isFinite(since) || since <= 0 || since > now + EGRESS_SKEW_MS)
+    return undefined
+  if (typeof tries !== 'number' || !Number.isSafeInteger(tries) || tries < 0) return undefined
+  if (typeof last !== 'string') return undefined
+  return { since, tries, last: clip(last.replace(/[\p{Cc}\p{Cf}]/gu, ' '), 200) }
+}
 /**
  * the cap on one prior report or mail placed whole into a station's brief or a delivered mid-run mail. A
  * report that pastes a diff or a log can run past 128 KiB. That broke two things: a station's own argv
@@ -3236,14 +3257,15 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // the egress gateway refusing api.anthropic.com (see docs/remote-runner.md): serve is retrying the turn
   // itself, so tell the manager once per outage and, once serve gives up (idle with the outage still set),
   // fail with the cause instead of spending nudges on a worker that was never going to report
-  const egress = info?.egress
+  // the laptop does not trust the VM's egress record (claude-factory-vl5j)
+  const egress = trustedEgress(info?.egress, now)
   const retries = (n: number) => `${n} ${n === 1 ? 'retry' : 'retries'}`
   if (egress) {
     // keyed per run+node, not per runner: the gateway is shared, so a single outage hits every concurrent
     // AX worker at once, and a file keyed only by the runner's name would have them overwrite each other's
     // `since` and each mail the manager on every tick
     const paged = join(runDir(run.id), `egress-paged-${node}.json`)
-    if (!existsSync(paged) || readJson<number>(paged) !== egress.since) {
+    if (!existsSync(paged) || egress.since >= readJson<number>(paged) + EGRESS_REPAGE_MS) {
       const since = new Date(egress.since).toLocaleString()
       // from 'factory', not node: a notice, not a question, so it never reads as the station asking the
       // manager something and awaiting a reply (isAsking keys off mail with from === node)
@@ -3258,7 +3280,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   }
   const egressReason =
     egress &&
-    `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${clip(egress.last, 200)}`
+    `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${egress.last}`
   const limitPage = limitPagedFile(runner, isCodex)
   const pagedUntil = existsSync(limitPage) ? readJson<number>(limitPage) : 0
   // an outage is held, not failed: the machine spends no attempt on it (claude-factory-dhof). Only this
