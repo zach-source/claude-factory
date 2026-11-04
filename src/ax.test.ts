@@ -209,7 +209,7 @@ test('with a vault named, the task sends placeholder auth headers for the gatewa
 const keyOf = (r: { https: { effects?: { replaceHeaders: { credentialUri: string }[] } } }) =>
   r.https.effects!.replaceHeaders[0]!.credentialUri.split('/').at(-1)
 
-test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones keep the default keys', () => {
+test('the manager policy has the path-prefixed zach-source rules; the unprefixed ones keep the default keys', () => {
   type R = {
     https: {
       hostnames: string[]
@@ -217,7 +217,9 @@ test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones 
       effects?: { replaceHeaders: { header: string; prefix: string; credentialUri: string }[] }
     }
   }
-  const rules = ax.egressPolicy('factory').rules as R[]
+  const rules = ax.egressPolicy('factory', [], undefined, undefined, undefined, undefined, false, true)
+    .rules as R[]
+  expect(rules.filter(r => r.https.pathPrefixes)).toHaveLength(2)
   const zsGit = rules.find(r => r.https.pathPrefixes?.[0] === '/zach-source/')!
   expect(zsGit.https).toEqual({
     hostnames: ['github.com'],
@@ -258,7 +260,26 @@ test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones 
         seen.add(`${h} ${p}`)
       }
   // no vault: no prefixed rule
-  expect(JSON.stringify(ax.egressPolicy(''))).not.toContain('pathPrefixes')
+  expect(
+    JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, undefined, false, true)),
+  ).not.toContain('pathPrefixes')
+  // a manager with its own backup key gets no prefixed rule
+  expect(
+    JSON.stringify(
+      ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true),
+    ),
+  ).not.toContain('pathPrefixes')
+})
+
+test('a worker policy has no path-prefixed rule, whatever the rig owner', () => {
+  for (const owner of ['acme', 'zach-source', undefined]) {
+    const json = JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, owner))
+    expect(json).not.toContain('pathPrefixes')
+    expect(json).not.toContain('/zach-source/')
+  }
+  expect(JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, 'acme'))).not.toContain(
+    'GITHUB_ZS',
+  )
 })
 
 test('a worker of a zach-source rig gets the zach-source keys on the unprefixed GitHub rules', () => {
@@ -279,16 +300,12 @@ test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else chan
   expect(keys('acme', true)).toEqual([
     ['', 'GITHUB_REVIEWER'],
     ['', 'GITHUB_BASIC'],
-    ['/repos/zach-source/', 'GITHUB_ZS'],
-    ['/zach-source/', 'GITHUB_ZS_BASIC'],
   ])
   expect(keys('zach-source', true)).toEqual([
     ['', 'GITHUB_REVIEWER'],
     ['', 'GITHUB_ZS_BASIC'],
-    ['/repos/zach-source/', 'GITHUB_REVIEWER'],
-    ['/zach-source/', 'GITHUB_ZS_BASIC'],
   ])
-  expect(keys('acme', true).slice(2)).toEqual(keys('acme', false).slice(2))
+  expect(keys('acme', true).slice(1)).toEqual(keys('acme', false).slice(1))
   expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
   expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
     ax.egressPolicy('v', [], undefined, undefined, 'acme'),
@@ -340,6 +357,17 @@ test('createPolicy passes the rig owner to the policy', () => {
     expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(
       ax.egressPolicy('factory', [], undefined, undefined, 'zach-source'),
     )
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
+test('createPolicy gives a worker no prefixed rule', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t5', [], undefined, 'acme')
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).not.toContain('pathPrefixes')
   } finally {
     delete process.env.FACTORY_AX_VAULT
   }
@@ -2061,6 +2089,10 @@ test('launchManager applies the manager task with its command and env, then retr
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
     expect(task.spec.image).toBe('mgr@sha256:abc')
+    const prefixed = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.flatMap(
+      (x: any) => x.https?.pathPrefixes ?? [],
+    )
+    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/'])
     expect(task.spec.debug).toBe(true)
     expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
     const env = Object.fromEntries(
