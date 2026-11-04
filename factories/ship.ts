@@ -7,14 +7,20 @@ const mimirRead =
   `one query per Bash call. Use a concrete metric name: no '?query=' URL and no \`{...}\` selector, because the worker hook denies both. ` +
   `Factory memory names the tenant. Without the X-Scope-OrgID header, every result reads empty, which looks the same as no data.`
 
-/** deploy and soak interpolate this; a test keeps the two copies equal */
-const liveFinding =
+/** deploy, soak, sweeps monitor and lifecycle incident interpolate this; each file keeps its own copy (a test keeps them equal) */
+const liveDedupe =
   `Live-object findings: a problem you see on one named object in a cluster (a Deployment, Pod, Job, Service or certificate). ` +
   `Before you file one, run \`bd search "<object name>" --status open\`, then \`bd search "<symptom>" --status open\`, then \`bd search "<object name>"\` with no --status to find a closed bead. ` +
-  `If an open bead names the same object and symptom, do not file a new bead. Run \`bd comment <id> "<release version, time, evidence>"\`, then raise its priority by one step with \`bd update <id> -p <n>\`, never above P1. Never lower a priority: keep a P0 or P1 bead as it is. The comment and escalation steps do not apply to the bead that this ship run ships, or to any bead with the ship label: a crash loop that the release causes is regressed (soak) or failed (deploy). ` +
-  `If no open bead matches, file one with the title \`<context>/<namespace>/<kind>/<name>: <symptom>\` (for example \`prod/acme/deploy/widget: CrashLoopBackOff\`), so the next search finds it. ` +
+  `If an open bead names the same object and symptom, do not file a new bead: run \`bd comment <id> "<time, evidence>"\` on it. ` +
+  `If no open bead matches, file one with the title \`<context>/<namespace>/<kind>/<name>: <symptom>\` (for example \`prod/acme/deploy/widget: CrashLoopBackOff\`), so the next search finds it. If a closed bead matches, name it in the description. ` +
+  `Search and file only in this rig's beads.`
+
+/** deploy and soak interpolate this; it adds the escalation of a matched open bead to the core */
+const liveFinding =
+  `${liveDedupe} ` +
+  `In deploy and soak, put the release version in that comment. Then raise the open bead's priority by one step with \`bd update <id> -p <n>\`, never above P1. Never lower a priority: keep a P0 or P1 bead as it is. The comment and escalation steps do not apply to the bead that this ship run ships, or to any bead with the ship label: a crash loop that the release causes is regressed (soak) or failed (deploy). ` +
   `If the symptom is a failed rollout or a crash loop (CrashLoopBackOff, restarts that climb, ProgressDeadlineExceeded, rollout status not complete), and an earlier bead or comment shows the same object with the same symptom 24 hours or more ago or at an earlier release (a closed bead counts), run \`bd update <id> --add-label factory\` on the open bead, and add \`-p 1\` only if it is P2 or lower. If that bead has a held:* label, a rejected label or an owner label, add no label: comment, and name the bead in your report so a person runs \`factory queue\`. ` +
-  `Add no other label: no station:* label and no sweep-queue:* label. Search and file only in this rig's beads.`
+  `Add no other label: no station:* label and no sweep-queue:* label.`
 
 /** deploy interpolates this; reads only (-o wide, not jsonpath, because the worker hook denies some brace text) */
 const deployCheck =

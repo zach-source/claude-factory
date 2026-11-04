@@ -395,7 +395,10 @@ test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () =>
 // claude-factory-4h8j: live-object findings are deduped by bd search, repeat crash loops escalate, deploy checks every Deployment
 const prompt = (id: string) => (ship.nodes as Record<string, { prompt: string }>)[id]!.prompt
 const liveText = (s: string) =>
-  s.slice(s.indexOf('Live-object findings:'), s.indexOf('Search and file only in this rig'))
+  s.slice(
+    s.indexOf('Live-object findings:'),
+    s.indexOf('no sweep-queue:* label.') + 'no sweep-queue:* label.'.length,
+  )
 const deployText = (s: string) =>
   s.slice(s.indexOf('Check every Deployment'), s.indexOf('A release that builds no container image'))
 
