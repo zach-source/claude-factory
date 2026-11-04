@@ -104,12 +104,18 @@ test('compact() keeps usage of a trimmed entry and drops it for an archived one'
   expect(paths).not.toContain('beads/LONG.md#old')
 })
 
-test('an entry whose summary alone passes the cap is not trimmed again on a second pass', () => {
-  seed([entry('wide', { summary: 'w'.repeat(LONG_ENTRY_CAP + 100), body: bigBody(10) })])
+test('an entry whose summary alone passes the cap is cut under the cap, archived whole, and not trimmed again', () => {
+  const summary = 'word '.repeat(420)
+  seed([entry('wide', { summary, body: 'short body' })])
   const first = applyTiers(dir, { now: NOW })
-  const archive1 = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
+  expect(first.trimmed).toBe(1)
+  const [e] = parseLong(readFileSync(longFile, 'utf8'))
+  expect(e!.summary.length + 1 + e!.body.length).toBeLessThanOrEqual(LONG_ENTRY_CAP)
+  expect(e!.summary.endsWith('…')).toBe(true)
+  expect(e!.body.endsWith('(cut to 2000 chars; full text in .archive/beads.md)')).toBe(true)
+  const archive1 = readFileSync(archiveFile, 'utf8')
+  expect(archive1).toContain(summary.trim())
   const second = applyTiers(dir, { now: NOW })
-  expect(first.trimmed).toBe(0)
   expect(second.trimmed).toBe(0)
-  expect(existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : '').toBe(archive1)
+  expect(readFileSync(archiveFile, 'utf8')).toBe(archive1)
 })

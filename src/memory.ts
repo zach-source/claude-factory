@@ -1637,11 +1637,7 @@ export function applyTiers(
         activation: activation(events.get(n.path) ?? [], now),
         runs: 0, // promote needs a run count that applyTiers does not gather; it never promotes
         ageDays: Number.isFinite(atMs) ? (now - atMs) / DAY_MS : undefined,
-        // a summary with no room left for the pointer line cannot shrink: it gets no trim, or every pass would trim it again
-        chars:
-          n.summary.length + 3 + cutLine(n.path.slice(0, n.path.indexOf('/'))).length >= LONG_ENTRY_CAP
-            ? 0
-            : n.summary.length + 1 + n.body.length,
+        chars: n.summary.length + 1 + n.body.length,
         expired: verdict?.state === 'ended',
         expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
@@ -1795,11 +1791,14 @@ export function applyTiers(
       copies.push(e)
       if (d.kind === 'trim') {
         const ptr = cutLine(topic)
-        const budget = LONG_ENTRY_CAP - e.summary.length - 1 - ptr.length - 2
+        // Cut a long summary too, so the entry ends under the cap. The archive keeps the full text.
+        const room = LONG_ENTRY_CAP - 1 - ptr.length
+        const summary = e.summary.length > room - 2 ? `${e.summary.slice(0, room - 3).trimEnd()}…` : e.summary
+        const budget = LONG_ENTRY_CAP - summary.length - 1 - ptr.length - 2
         let cut = e.body.slice(0, Math.max(budget, 0))
         if (e.body.length > cut.length && e.body[cut.length] !== '\n' && cut.includes('\n'))
           cut = cut.slice(0, cut.lastIndexOf('\n'))
-        kept.push({ ...e, body: `${cut.trimEnd()}\n\n${ptr}`.trim() })
+        kept.push({ ...e, summary, body: `${cut.trimEnd()}\n\n${ptr}`.trim() })
         trimmed++
       } else if (d.kind === 'retire') retired++
       else archived++
