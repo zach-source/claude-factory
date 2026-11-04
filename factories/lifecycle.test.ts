@@ -447,11 +447,78 @@ test('review security reports (4-7) with security changes between go to security
     expect(where(actor.getSnapshot().value)[0]).toBe('security')
     actor.send({ type: 'GOTO', node: 'security', at: now })
     report('changes')
-    expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+    // security's own cap (x2en): its 4th changes re-plans
+    expect(where(actor.getSnapshot().value)[0]).toBe(i === 4 ? 'plan' : 'implement')
   }
   const ctx = actor.getSnapshot().context
-  expect(ctx.log.some(e => e.replan)).toBe(false)
-  expect(ctx.mail.plan ?? []).toEqual([])
+  // review never re-plans on its security outcome; only security's own cap (x2en) re-plans, once
+  expect(ctx.log.some(e => e.replan && e.node === 'review')).toBe(false)
+  expect(ctx.log.filter(e => e.replan).map(e => e.node)).toEqual(['security'])
+})
+
+// claude-factory-x2en: security has its own round cap (3), separate from review's.
+test("security's round cap re-plans to plan, then holds on a second cap (x2en AC1-AC3, AC5)", () => {
+  expect(lifecycle.nodes.security!.rounds).toBe(3)
+  expect(lifecycle.nodes.security!.onRounds).toBe('plan')
+
+  const start = () => {
+    const actor = createActor(compile({ ...lifecycle, maxSteps: 200 })).start()
+    let now = 0
+    const send = (node: string, outcome: string, i = now) => {
+      actor.send({ type: 'GOTO', node, at: now })
+      const { seq } = actor.getSnapshot().context
+      actor.send({
+        type: 'DONE',
+        seq,
+        outcome,
+        summary: `${node} ${outcome} round ${i} finding AC${i}`,
+        at: ++now,
+      })
+    }
+    return { actor, send }
+  }
+  const top = (a: ReturnType<typeof start>['actor']) => where(a.getSnapshot().value)[0]
+
+  const { actor, send } = start()
+  for (let i = 1; i <= 3; i++) {
+    send('security', 'changes', i)
+    expect(top(actor)).toBe('implement')
+  }
+  send('security', 'changes', 4)
+  expect(top(actor)).toBe('plan')
+  const last = actor.getSnapshot().context.log.at(-1)
+  expect(last?.node).toBe('security')
+  expect(last?.replan).toBe(true)
+  const plan = actor.getSnapshot().context.mail.plan?.at(-1)
+  expect(plan?.from).toBe('security')
+  for (let i = 1; i <= 4; i++) {
+    expect(plan?.text).toContain(`### security round ${i}`)
+    expect(plan?.text).toContain(`finding AC${i}`)
+  }
+  expect(actor.getSnapshot().context.mail.manager).toBeUndefined()
+  for (let i = 5; i <= 7; i++) {
+    send('security', 'changes', i)
+    expect(top(actor)).toBe('implement')
+  }
+  send('security', 'changes', 8)
+  const s = actor.getSnapshot()
+  expect(where(s.value)).toEqual(['security', 'stuck'])
+  expect(s.context.error).toBe('security reported changes more than 3 times')
+  expect(s.context.mail.manager?.find(m => m.from === 'security')?.text).toContain(
+    'already re-planned once, to plan',
+  )
+
+  // AC5 (a, b): approve never counts; three changes then approve ships
+  const b = start()
+  for (let i = 1; i <= 3; i++) b.send('security', 'changes', i)
+  b.send('security', 'approve')
+  expect(top(b.actor)).toBe('done')
+
+  // AC5 (c): review's own cap does not count security's changes
+  const c = start()
+  for (let i = 1; i <= 3; i++) c.send('security', 'changes', i)
+  c.send('review', 'changes')
+  expect(top(c.actor)).toBe('implement')
 })
 
 // claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,
