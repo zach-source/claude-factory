@@ -111,6 +111,10 @@ describe('homeReason', () => {
     `bd create "t" -d "see src/home-guard.ts (the guard; it reads ${CLI}) & more | x"`,
     `bd comment x 'see src/home-guard.ts; $(no) \`no\`'`,
     `git diff \\\n  ${CLI}`,
+    `git diff ${CLI} &> /dev/null`,
+    `(cd /abs/wt && git diff ${CLI})`,
+    `git blame ${CLI}`,
+    `git status ${CLI}`,
   ])('allows a read-only command that names a script: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBeUndefined(),
   )
@@ -146,7 +150,7 @@ describe('homeReason', () => {
     'git diff x.ts\n{ ./x.sh; }',
   ])('denies a command that can run a script: %s', cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON))
 
-  test.each(['bd create -d "`bash x.sh`"', 'echo $(./x.sh)', '(./x.sh)'])(
+  test.each(['bd create -d "`bash x.sh`"', 'echo $(./x.sh)', '(./x.sh)', 'echo `./x.sh`'])(
     'denies a script in a backtick, $( or ( word: %s',
     cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
