@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  aliasSpawnCapMs,
   APPROVE_REASON,
   GLAB_APPROVE_REASON,
   baseWord,
@@ -5133,6 +5134,7 @@ test('run as `bun src/worker-hook.ts`, a real git alias co=checkout cannot hide 
   env.GIT_CONFIG_GLOBAL = configFile
   env.GIT_CONFIG_NOSYSTEM = '1'
   env.GH_CONFIG_DIR = ghConfigDir
+  env.FACTORY_HOOK_ALIAS_TIMEOUT_MS = '6000'
   for (const cmd of [
     'git co main && git push o HEAD',
     'git br -M main && git push o HEAD',
@@ -5152,6 +5154,73 @@ test('run as `bun src/worker-hook.ts`, a real git alias co=checkout cannot hide 
   const stInput = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: 'git st' } })
   expect(await run(stInput, env)).toEqual({ out: '', code: 0 })
 }, 20_000)
+
+// claude-factory-zzxp: FACTORY_HOOK_ALIAS_TIMEOUT_MS is a test knob for the alias-read spawn cap.
+// Only a plain decimal integer in 1..6000 counts. Every other value gives the 2000 ms default.
+test.each([
+  [undefined, 2000],
+  ['', 2000],
+  [' ', 2000],
+  ['0', 2000],
+  ['-1', 2000],
+  ['abc', 2000],
+  ['1e3', 2000],
+  ['0x10', 2000],
+  ['6001', 2000],
+  ['99999', 2000],
+  ['2000.5', 2000],
+  [' 3000', 2000],
+  ['0100', 2000],
+  ['1', 1],
+  ['3000', 3000],
+  ['6000', 6000],
+])('aliasSpawnCapMs(%p) gives %p (claude-factory-zzxp, AC1)', (v, want) => {
+  expect(aliasSpawnCapMs(v)).toBe(want)
+})
+
+// claude-factory-zzxp (AC2, AC3): a `git` wrapper sleeps 2.5 s for `git -C <dir> config` only.
+// With the default 2000 ms cap the alias read times out and the hook fails closed.
+// With the knob at 6000 the read finishes and the push guard gives its own reason.
+test.each([
+  [undefined, ALIAS_USE_REASON],
+  ['6000', PUSH_REASON],
+])(
+  'run as `bun src/worker-hook.ts`, slow git config with knob %p denies with the right reason (claude-factory-zzxp, AC2, AC3)',
+  async (knob, want) => {
+    const dir = mkdtempSync(join(tmpdir(), 'wh-zzxp-'))
+    Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', dir])
+    Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+    Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+    const configFile = join(dir, 'gitconfig-zzxp')
+    writeFileSync(configFile, '[alias]\n\tco = checkout\n')
+    const bin = mkdtempSync(join(tmpdir(), 'wh-zzxp-bin-'))
+    writeFileSync(
+      join(bin, 'git'),
+      `#!/bin/sh\n[ "$3" = config ] && sleep 2.5\nexec ${Bun.which('git')} "$@"\n`,
+      {
+        mode: 0o755,
+      },
+    )
+    const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-zzxp-gh-'))
+    const env: Record<string, string | undefined> = { ...process.env }
+    delete env.CLAUDE_PROJECT_DIR
+    delete env.FACTORY_HOOK_ALIAS_TIMEOUT_MS
+    env.PATH = `${bin}:${process.env.PATH}`
+    env.GIT_CONFIG_GLOBAL = configFile
+    env.GIT_CONFIG_NOSYSTEM = '1'
+    env.GH_CONFIG_DIR = ghConfigDir
+    if (knob) env.FACTORY_HOOK_ALIAS_TIMEOUT_MS = knob
+    const input = JSON.stringify({
+      tool_name: 'Bash',
+      cwd: dir,
+      tool_input: { command: 'git co main && git push o HEAD' },
+    })
+    const { out, code } = await run(input, env)
+    expect(code).toBe(0)
+    expect(JSON.parse(out.trim()).hookSpecificOutput.permissionDecisionReason).toBe(want)
+  },
+  20_000,
+)
 
 // claude-factory-bemr.5 (AC12): each flag here is a real git global flag.
 // Git 2.54.0 confirms each one takes no value word (`git --no-pager status`, `git -P status`).
