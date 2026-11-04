@@ -16,6 +16,7 @@ import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
   labelMail,
+  trustedEgress,
   reworkOwned,
   brief,
   vmBeads,
@@ -2598,4 +2599,40 @@ test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or 
   expect(factoryLabelName(run('/a/factories/release.ts'), def)).toBe('release')
   expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
   expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
+})
+
+test('trustedEgress keeps a sane VM egress record and drops the rest (claude-factory-vl5j)', () => {
+  const now = 1_700_000_000_000
+  const ok = { since: now - 1000, tries: 1, last: 'x' }
+  const bad: unknown[] = [
+    undefined,
+    null,
+    'x',
+    [],
+    {},
+    { ...ok, since: NaN },
+    { ...ok, since: 1e300 },
+    { ...ok, since: now + 5 * 60_000 + 1 },
+    { ...ok, since: 0 },
+    { ...ok, since: -1 },
+    { ...ok, since: '123' },
+    { ...ok, tries: -1 },
+    { ...ok, tries: 1.5 },
+    { ...ok, tries: '3' },
+    { ...ok, tries: 2 ** 53 },
+    { ...ok, last: 42 },
+    { since: ok.since, tries: 1 },
+  ]
+  for (const b of bad) expect(trustedEgress(b, now)).toBeUndefined()
+  for (const g of [
+    { ...ok, since: now + 5 * 60_000 },
+    { ...ok, since: now - 7 * 86_400_000 },
+    { ...ok, tries: 0 },
+    { ...ok, last: '' },
+  ])
+    expect(trustedEgress(g, now)).toEqual(g)
+  expect(trustedEgress({ ...ok, x: 1 }, now)).toEqual(ok)
+  expect(trustedEgress({ ...ok, last: 'a\nb\x1b[31mcd' }, now)!.last).toBe('a b [31mcd')
+  expect(trustedEgress({ ...ok, last: 'a‮b​c﻿d\x7fe' }, now)!.last).toBe('a b c d e')
+  expect(trustedEgress({ ...ok, last: 'y'.repeat(500) }, now)!.last).toHaveLength(201)
 })
