@@ -117,6 +117,8 @@ function readOnly(command: string): boolean {
       cur += c + (cmd[++i] ?? '')
       continue
     }
+    // a comment, $'..' string or heredoc breaks the quote tracking: fail closed
+    if (c === '#' || (c === '$' && cmd[i + 1] === "'") || (c === '<' && cmd[i + 1] === '<')) return false
     if (c === "'" || c === '"') q = c
     const redirect = c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>')
     if (/[;&|()\n]/.test(c) && !redirect) {

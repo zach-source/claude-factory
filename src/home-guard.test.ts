@@ -155,6 +155,15 @@ describe('homeReason', () => {
     cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
+  test.each(["git diff #'\n./x.sh #'", "echo $'\\'' ; ./x.sh #'", "cat <<EOF\necho '\nEOF\n./x.sh\necho '"])(
+    "denies a fake quote: an unquoted #, $' or <<: %j",
+    cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('allows a # inside double quotes', () => {
+    expect(homeReason('bd create -d "issue #12 see x.sh"', bad, H)).toBeUndefined()
+  })
+
   test('the worker hook gives HOME_REASON first', () => {
     expect(denyReason('find ~ -delete', '/Users/pat/wt')).toBe(HOME_REASON)
   })
