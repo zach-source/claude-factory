@@ -613,6 +613,11 @@ test('monitor and incident only dedupe: no priority raise, no label (sjwe AC2)',
   expect(mon).toContain('change no priority')
   expect(mon.indexOf('Never file what is already tracked')).toBeLessThan(mon.indexOf('Live-object findings:'))
   expect(inc.indexOf('Live-object findings:')).toBeLessThan(inc.indexOf('Report rollback'))
+  const noEsc = coreOf(prompt('soak')) + ' On a matched open bead, add no label and change no priority.'
+  expect(mon).toContain(noEsc)
+  expect(inc).toContain(noEsc)
+  expect(prompt('deploy')).not.toContain(noEsc)
+  expect(prompt('soak')).not.toContain(noEsc)
 })
 
 test('fill leaves the dedupe core as it is (sjwe AC4)', () => {
