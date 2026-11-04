@@ -1216,7 +1216,9 @@ export function workerSkills(
     ...new Set([...(def.skills ?? ['asd-ste100']), ...(rig?.skills ?? []), ...(node.skills ?? [])]),
   ].sort()
 }
-export const loadFactory = async (file: string): Promise<Factory> => {
+// a factory file's name is its file name: a repo's .factory/lifecycle.ts cannot declare 'ship' (merge authority keys on the name)
+// loadPinned is only for a run's own pinned copy (run.factory, named factory.json), which keeps the name it was started with
+const load = async (file: string, pinned: boolean): Promise<Factory> => {
   const def = validate(await readFactory(file))
   const badSkills = [
     ...(def.skills ?? []).flatMap(s => unknownSkill(s, `factory ${def.name}`)),
@@ -1228,8 +1230,15 @@ export const loadFactory = async (file: string): Promise<Factory> => {
     throw new Error(
       `factory ${def.name}:\n  ${unknown.map(([id, n]) => `${id}: runner "${n.runner}" is not ${Object.keys(runners).join(' or ')}`).join('\n  ')}`,
     )
+  const base = basename(file, extname(file))
+  if (!pinned && def.name !== base)
+    throw new Error(
+      `factory ${JSON.stringify(def.name)}:\n  name ${JSON.stringify(def.name)} must be the file name "${base}"`,
+    )
   return def
 }
+export const loadFactory = (file: string) => load(file, false)
+export const loadPinned = (file: string) => load(file, true)
 // a run moved to another factory leaves a link behind, so its workers' reports still reach it:
 // only the factory holding the run's directory ticks and lists it
 const runIds = () =>
@@ -3537,7 +3546,7 @@ function storedUsage(id: string): Usage[] {
 }
 
 async function tickRun(run: Run, now: number, halt: Halt | null = null) {
-  const def = await loadFactory(run.factory)
+  const def = await loadPinned(run.factory)
   const file = join(runDir(run.id), 'state.json')
   const saved = readJson<Saved>(file)
   const actor = createActor(compile(def), { snapshot: saved.snapshot }).start()
@@ -3857,7 +3866,7 @@ async function beadsPass() {
         try {
           track(
             run,
-            await loadFactory(run.factory),
+            await loadPinned(run.factory),
             saved.snapshot.value,
             saved.snapshot.context,
             t,
@@ -6164,7 +6173,7 @@ async function createRun(
   mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
   let def: Factory
   try {
-    def = await loadFactory(source)
+    def = await (from ? loadPinned : loadFactory)(source)
     // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
     if (hasShipEdge(def) && !hasBeads(repo))
       throw new Error('it hands its beads to ship, which needs a repo with .beads')
@@ -7908,7 +7917,7 @@ async function liveByBead() {
   for (const id of startedRunIds()) {
     const { run, value, c } = current(id)
     if (!run.bead || ['done', 'aborted'].includes(where(value)[0])) continue
-    const r = row(run, await loadFactory(run.factory), value, c)
+    const r = row(run, await loadPinned(run.factory), value, c)
     out.set(run.bead, {
       blocked: !!holdOf(r),
       why: r.gate?.question ?? r.last?.summary,
@@ -8231,7 +8240,7 @@ async function orphanPass() {
           fork: async (pr, srcId, note) => {
             const { value } = current(srcId)
             const src = runs.get(srcId)!
-            const def = await loadFactory(src.factory)
+            const def = await loadPinned(src.factory)
             if (!Object.hasOwn(def.nodes, 'review'))
               throw new Error(`${srcId}: its factory has no review station`)
             const run = await forkRun(src, value, def.name, 'review', note, 'factory')
@@ -8361,7 +8370,7 @@ async function watchPass() {
         ])
         const prs = views.filter(v => v !== null)
         const failed = prs.length < views.length
-        const def = await loadFactory(run.factory)
+        const def = await loadPinned(run.factory)
         // the plain park this report would have had, had it linked nothing
         const plainMin = parkDelayMin({ ...c, log: c.log.slice(0, -1) }, node, def.nodes[node]?.parkMin ?? 60)
         const key = `${id}:${parked.at}`
@@ -8510,7 +8519,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
     const { run, value } = cur
     if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
     const [node, sub] = where(value)
-    const n = (await loadFactory(run.factory)).nodes[node]
+    const n = (await loadPinned(run.factory)).nodes[node]
     const s = slot(n, sub)
     if (s === 'busy') busy.push(rigOf(run.repo)?.name)
     else if (s === 'rig') held.push(rigOf(run.repo)?.name)
@@ -8761,7 +8770,7 @@ function insideWorktree(run: Run): boolean {
 
 async function fork(id: string | undefined, station: string | undefined, note: string) {
   const { run: src, value } = current(id)
-  const def = await loadFactory(src.factory)
+  const def = await loadPinned(src.factory)
   if (!Object.hasOwn(def.nodes, station ?? ''))
     fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
   const sender = note ? managerSender(src) : undefined
@@ -8820,7 +8829,7 @@ function current(id: string | undefined) {
 /** everything the manager's run view draws, in one read */
 async function show(id: string | undefined) {
   const { run, value, c } = current(id)
-  const def = await loadFactory(run.factory)
+  const def = await loadPinned(run.factory)
   const [node, sub] = where(value)
   const tasks = run.bead ? beads(run.repo, 'factory').children(run.bead) : null
   return {
@@ -8908,7 +8917,7 @@ async function isLiveGateVisit(id: string, startedAt: number): Promise<boolean> 
     const { run, value, c } = current(id)
     const [node, sub] = where(value)
     if (sub !== 'working' || c.startedAt !== startedAt) return false
-    return (await loadFactory(run.factory)).nodes[node]?.gate === true
+    return (await loadPinned(run.factory)).nodes[node]?.gate === true
   } catch {
     return false // the run is gone, or its state is unreadable: not a live gate either way
   }
@@ -8920,7 +8929,7 @@ async function isLiveGateVisit(id: string, startedAt: number): Promise<boolean> 
 async function gateBriefFacts(id: string | undefined) {
   const { run, value, c } = current(id)
   const [node, sub] = where(value)
-  const def = await loadFactory(run.factory)
+  const def = await loadPinned(run.factory)
   const n = def.nodes[node]
   if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
   const file = existsSync(prsFile(run.id))
@@ -9070,7 +9079,7 @@ async function prs() {
       const { value, c } = current(id)
       const [node] = where(value)
       const ended = ['done', 'aborted'].includes(node)
-      const def = await loadFactory(run.factory).catch(() => undefined)
+      const def = await loadPinned(run.factory).catch(() => undefined)
       if (def) for (const k of Object.keys(def.nodes)) stations.add(k)
       metas.push({ id, rig: rigOf(run.repo)?.name, bead: run.bead, node, ended, at: createdAt(id) })
       const ref = cachedOriginRef(run.repo)
@@ -9468,7 +9477,7 @@ async function status(id: string | undefined) {
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
-    const def = await loadFactory(run.factory)
+    const def = await loadPinned(run.factory)
     const r = row(run, def, value, c, agentOf(def, value, c))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
@@ -10379,7 +10388,7 @@ if (import.meta.main && !outboxCmd)
         const rows = await Promise.all(
           startedRunIds().map(async id => {
             const { run, value, c } = current(id)
-            const def = await loadFactory(run.factory)
+            const def = await loadPinned(run.factory)
             return row(run, def, value, c, agentOf(def, value, c))
           }),
         )
@@ -10390,7 +10399,7 @@ if (import.meta.main && !outboxCmd)
         const [id, seq, outcome] = args
         const { run, value, c } = current(id)
         const [node] = where(value)
-        const n = (await loadFactory(run.factory)).nodes[node]
+        const n = (await loadPinned(run.factory)).nodes[node]
         if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
         const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
         if (Number(seq) !== c.seq)
@@ -10427,7 +10436,7 @@ if (import.meta.main && !outboxCmd)
         if (process.env.FACTORY_PATROL) fail('a patrol cannot decide a gate: leave it for the person')
         const { run, value, c } = current(id)
         const [node, sub] = where(value)
-        const n = (await loadFactory(run.factory)).nodes[node]
+        const n = (await loadPinned(run.factory)).nodes[node]
         if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
         const outcomes = Object.keys(n!.next)
         if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
@@ -10442,7 +10451,7 @@ if (import.meta.main && !outboxCmd)
         const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
         const run = loadRun(id)
-        const def = await loadFactory(run.factory)
+        const def = await loadPinned(run.factory)
         const workerFrom =
           process.env.FACTORY_FROM && process.env.FACTORY_FROM !== 'manager'
             ? process.env.FACTORY_FROM
@@ -10478,7 +10487,7 @@ if (import.meta.main && !outboxCmd)
         const [id, ...text] = args
         const { run, value, c } = current(id)
         const [node, sub] = where(value)
-        if (sub !== 'working' || (await loadFactory(run.factory)).nodes[node]?.gate)
+        if (sub !== 'working' || (await loadPinned(run.factory)).nodes[node]?.gate)
           fail(`${run.id} has no worker to poke: it is at ${node}${sub ? `/${sub}` : ''}`)
         const nudge = `[factory] The manager is checking in. When you are finished run: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"; if something blocks you, mail the manager what it is.`
         post(run.id, { type: 'MAIL', from: managerSender(run), to: node, text: text.join(' ') || nudge })
@@ -10493,7 +10502,7 @@ if (import.meta.main && !outboxCmd)
           fail(
             `${run.id} is at ${node}${sub ? `/${sub}` : ''}, not stuck: RETRY only applies to a stuck station; run ${CLI} goto ${run.id} ${node} to restart it`,
           )
-        const runner = c.pane ? runnerOf(c.pane) : runnerOfStation(run, await loadFactory(run.factory), node)
+        const runner = c.pane ? runnerOf(c.pane) : runnerOfStation(run, await loadPinned(run.factory), node)
         const unavailable = runner.name === 'ax' ? ax.unavailable() : undefined
         if (unavailable) fail(unavailable)
         post(run.id, { type: 'RETRY' })
@@ -10502,7 +10511,7 @@ if (import.meta.main && !outboxCmd)
       case 'goto': {
         refuseWorker('goto')
         const run = loadRun(args[0])
-        const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
+        const nodes = Object.keys((await loadPinned(run.factory)).nodes).concat('done')
         if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
         const target = args[1]!
         const saved = readJson<Saved>(join(runDir(run.id), 'state.json'))
@@ -10514,7 +10523,7 @@ if (import.meta.main && !outboxCmd)
           fail(
             `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
           )
-        const why = gotoRefusal(await loadFactory(run.factory), saved.snapshot, pending, target, Date.now())
+        const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
         if (why)
           fail(
             `goto ${target} would not move ${run.id}: ${why}` +
