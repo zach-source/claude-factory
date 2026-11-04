@@ -495,10 +495,10 @@ export function coreNotes(dir: string): Note[] {
 export async function search(
   dir: string,
   query: string,
-  { rig, limit = 5 }: { rig?: string; limit?: number } = {},
+  { rig, limit = 5, core = true }: { rig?: string; limit?: number; core?: boolean } = {},
 ) {
   const { notes, topics } = walk(dir)
-  const all = [...notes, ...coreNotes(dir)]
+  const all = [...notes, ...(core ? coreNotes(dir) : [])]
   if (!all.length) return []
   const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])

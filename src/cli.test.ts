@@ -2599,3 +2599,29 @@ test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or 
   expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
   expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
 })
+
+test('launchNotes logs a failed search once, and a store with only CORE.md gives no notes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'launch-notes-'))
+  const run = (home: string) => {
+    const code = `import { launchNotes } from ${JSON.stringify(join(import.meta.dir, 'cli.ts'))}
+console.log(JSON.stringify(launchNotes({ id: 'r1', repo: '/nowhere', goal: 'agents never approve a pull request' } as any, 'plan')))`
+    const p = Bun.spawnSync(['bun', '-e', code], {
+      env: { ...process.env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    })
+    return JSON.parse(p.stdout.toString().trim().split('\n').pop()!)
+  }
+  // a memory path that is a file: the search exits 1
+  const bad = join(root, 'bad')
+  mkdirSync(bad)
+  writeFileSync(join(bad, 'memory'), 'x')
+  expect(run(bad)).toBe('')
+  const lines = readFileSync(join(bad, 'launches.log'), 'utf8').trim().split('\n')
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toContain('r1/plan launch memory search failed: exit 1')
+  // CORE.md only: the brief prints it in full already
+  const core = join(root, 'core')
+  mkdirSync(join(core, 'memory'), { recursive: true })
+  writeFileSync(join(core, 'memory', 'CORE.md'), '# CORE\n\n- Agents never approve a pull request.\n')
+  expect(run(core)).toBe('')
+  rmSync(root, { recursive: true })
+}, 120_000)
