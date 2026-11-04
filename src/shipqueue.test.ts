@@ -148,3 +148,21 @@ test('shipQueue lists open ship beads oldest ship_at first and marks the first n
     process.env.PATH = path
   }
 })
+
+test('a bd call that outlives FACTORY_SYNC_TIMEOUT_MS fails fast instead of hanging', () => {
+  const f = fakeBd('fake-bd-slow')
+  writeFileSync(join(f.bin, 'bd'), '#!/bin/sh\nsleep 5\n')
+  const path = process.env.PATH
+  const t = process.env.FACTORY_SYNC_TIMEOUT_MS
+  process.env.PATH = `${f.bin}:${path}`
+  process.env.FACTORY_SYNC_TIMEOUT_MS = '200'
+  try {
+    const start = Date.now()
+    expect(() => beads(tmpdir(), 'a').shipQueue()).toThrow('timed out after 200ms')
+    expect(Date.now() - start).toBeLessThan(3000)
+  } finally {
+    process.env.PATH = path
+    if (t === undefined) delete process.env.FACTORY_SYNC_TIMEOUT_MS
+    else process.env.FACTORY_SYNC_TIMEOUT_MS = t
+  }
+})

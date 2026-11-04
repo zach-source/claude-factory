@@ -240,9 +240,14 @@ const isOrphanChild = (b: Bead, linked: Set<string>, parents?: Map<string, Bead>
 export const byId = (all: Bead[]) => new Map(all.map(b => [b.id, b]))
 
 function bd(repo: string, actor: string, ...args: string[]) {
-  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: bdEnv(repo) })
+  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], {
+    cwd: repo,
+    env: bdEnv(repo),
+    timeout: syncTimeoutMs(),
+  })
   const out = p.stdout.toString().trim()
-  const stderr = p.stderr.toString().trim()
+  const stderr =
+    p.exitCode === null && p.signalCode ? `timed out after ${syncTimeoutMs()}ms` : p.stderr.toString().trim()
   return { isOk: p.exitCode === 0, out, err: stderr || out, stderr }
 }
 const must = (r: ReturnType<typeof bd>, what: string) => {
