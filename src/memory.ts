@@ -498,7 +498,13 @@ export async function search(
   { rig, limit = 5, core = true }: { rig?: string; limit?: number; core?: boolean } = {},
 ) {
   const { notes, topics } = walk(dir)
-  const all = [...notes, ...(core ? coreNotes(dir) : [])]
+  // core=false drops only the bullets the brief prints; the ones coreFor cut stay searchable
+  const printed = new Set(
+    core || !existsSync(join(dir, 'CORE.md'))
+      ? []
+      : coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig).split('\n'),
+  )
+  const all = [...notes, ...coreNotes(dir).filter(n => core || !printed.has(`- ${n.summary}`))]
   if (!all.length) return []
   const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])

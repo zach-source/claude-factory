@@ -2623,5 +2623,20 @@ console.log(JSON.stringify(launchNotes({ id: 'r1', repo: '/nowhere', goal: 'agen
   mkdirSync(join(core, 'memory'), { recursive: true })
   writeFileSync(join(core, 'memory', 'CORE.md'), '# CORE\n\n- Agents never approve a pull request.\n')
   expect(run(core)).toBe('')
+  expect(existsSync(join(core, 'launches.log'))).toBe(false)
+  // a bullet that coreFor cut (over CORE_BUDGET) reaches no brief, so the search must still find it
+  const cut = join(root, 'cut')
+  mkdirSync(join(cut, 'memory'), { recursive: true })
+  const filler = Array.from(
+    { length: 40 },
+    (_, i) => `- Filler fact ${i} about unrelated build caches and disk layout.`,
+  )
+  writeFileSync(
+    join(cut, 'memory', 'CORE.md'),
+    `# CORE\n\n${filler.join('\n')}\n- Agents never approve a pull request.\n`,
+  )
+  const out = run(cut)
+  expect(out).toContain('Agents never approve a pull request')
+  expect(out).not.toContain('Filler fact 0 ')
   rmSync(root, { recursive: true })
 }, 120_000)
