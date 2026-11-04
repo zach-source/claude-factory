@@ -2598,6 +2598,29 @@ export function userPluginDirs(
     })
 }
 
+/** warn for each listed skill that is not on in the person's Claude settings: the worker starts without it */
+export function warnSkillsOff(skills: string[], station: string, on: Record<string, boolean> = {}) {
+  for (const k of skills)
+    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
+      console.warn(
+        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
+      )
+}
+
+/** codex and pi workers get plugin dirs, not settings: warn here for a listed skill that is off */
+export function warnSkillsForHarness(h: string, skills: string[], station: string, claudeDir: string) {
+  if (h !== 'codex' && h !== 'pi') return
+  let on: Record<string, boolean> | undefined
+  try {
+    on = readJson<{ enabledPlugins?: Record<string, boolean> }>(
+      join(claudeDir, 'settings.json'),
+    ).enabledPlugins
+  } catch {
+    // no user settings: every skill warns
+  }
+  warnSkillsOff(skills, station, on)
+}
+
 // what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn.
 // ToolSearch keeps MCP tools deferred: without it every MCP server's tools load into every turn (~60k)
 // Skill lets a worker run the asd-ste100 skill (workerSettings carries that one plugin over)
@@ -2612,15 +2635,6 @@ export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSe
  * A launch for a different rig writes that shared file with no argv.
  * It would overwrite this rig's hook argv before this rig's worker reads it.
  */
-/** warn for each listed skill that is not on in the person's Claude settings: the worker starts without it */
-export function warnSkillsOff(skills: string[], station: string, on: Record<string, boolean> = {}) {
-  for (const k of skills)
-    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
-      console.warn(
-        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
-      )
-}
-
 export function workerFlags(
   def: Pick<Factory, 'maxContextK'>,
   rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
@@ -2838,17 +2852,7 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const h = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
   const otel = otelFor(run, node, c, agent, process.env.FACTORY_OTLP_ENDPOINT)
-  if (h === 'codex' || h === 'pi') {
-    let on: Record<string, boolean> | undefined
-    try {
-      on = readJson<{ enabledPlugins?: Record<string, boolean> }>(
-        join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'settings.json'),
-      ).enabledPlugins
-    } catch {
-      // no user settings: every skill warns
-    }
-    warnSkillsOff(skills, node, on)
-  }
+  warnSkillsForHarness(h, skills, node, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'))
   const setup =
     h === 'codex'
       ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)), otel })

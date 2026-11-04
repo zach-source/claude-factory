@@ -67,6 +67,7 @@ import {
   workerSettings,
   workerSkills,
   warnSkillsOff,
+  warnSkillsForHarness,
   WORKER_TOOLS,
   commitIdentity,
   room,
@@ -382,6 +383,20 @@ test('a skills value that is not an array of strings refuses with its layer name
   expect(() => workerSkills({}, {}, { skills: 'asd-ste100' as unknown as string[] })).toThrow(
     'rig: skills must be an array of strings',
   )
+  expect(() => workerSkills({}, {}, { skills: ['asd-ste100', 1] as unknown as string[] })).toThrow(
+    'rig: skills must be an array of strings',
+  )
+})
+
+test('warnSkillsForHarness warns for codex and pi, not for claude', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-warn-'))
+  const warn = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    for (const h of ['codex', 'pi', 'claude']) warnSkillsForHarness(h, ['asd-ste100'], 'work', dir)
+    expect(warn.mock.calls.length).toBe(2)
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 test('warnSkillsOff warns once per listed skill that is off, for any worker harness', () => {
