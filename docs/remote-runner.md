@@ -447,6 +447,13 @@ Limits:
 - Only the atespaces in `FACTORY_BROKER_ATESPACES` (default `factory`).
 - Never the policy of the manager actor (`FACTORY_AX_MANAGER`, default `f-manager`). You create that policy from the laptop.
 - Atespace and actor must be RFC 1123 labels. The body must be a JSON object with `rules`, 64 KiB at most.
+- The broker answers 400 and runs no command for a worker policy in these cases:
+  - It names the vault key `AX_AUTH` or `GITHUB_BASIC_MANAGER`.
+  - A `credentialUri` is not `ate-secret://agent-vault/<vault>/<KEY>`.
+  - A rule has `pathPrefixes` on a `github.com` host.
+  - A key has a non-ASCII character.
+  - The policy nests deeper than 32 levels.
+- `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.
 - The broker logs one line for each call.
 
 Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task. The broker has no caller authentication.

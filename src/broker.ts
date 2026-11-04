@@ -95,6 +95,50 @@ async function body(req: Request) {
   return raw.length > MAX_BODY ? null : raw
 }
 
+/** only the manager task can use these vault keys: they give full AX control or write access to the backup repo */
+const MANAGER_ONLY_KEYS = /(^|[^A-Za-z0-9_])(AX_AUTH|GITHUB_BASIC_MANAGER)([^A-Za-z0-9_]|$)/i
+const CREDENTIAL_URI = /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/[A-Z][A-Z0-9_]*$/
+
+/**
+ * The reason the broker refuses a worker policy, or null. A worker policy must not name a manager-only
+ * vault key or have a github pathPrefixes rule. Those belong to the manager policy. Substrate ignores key
+ * case and underscores, and it folds some non-ASCII letters. So a key with a non-ASCII character fails closed.
+ */
+export function workerPolicyRefusal(policy: unknown): string | null {
+  const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
+  const walk = (v: unknown, depth: number): string | null => {
+    if (depth > 32) return 'is nested too deep'
+    if (typeof v === 'string') {
+      const m = MANAGER_ONLY_KEYS.exec(v)
+      return m ? `names manager-only vault key ${m[2]!.toUpperCase()}` : null
+    }
+    if (!v || typeof v !== 'object') return null
+    const o = v as Record<string, unknown>
+    const keys = Array.isArray(v) ? [] : Object.keys(o)
+    for (const k of keys) {
+      if (/[^\x20-\x7e]/.test(k)) return 'has a key with a non-ASCII character'
+      const bad = walk(k, depth + 1)
+      if (bad) return bad
+      if (norm(k) === 'credentialuri' && !(typeof o[k] === 'string' && CREDENTIAL_URI.test(o[k] as string)))
+        return 'has a credentialUri that is not an ate-secret://agent-vault/<vault>/<KEY> string'
+      if (norm(k) === 'pathprefixes') {
+        const h = keys.find(x => norm(x) === 'hostnames')
+        const hosts = h === undefined ? null : o[h]
+        if (!Array.isArray(hosts) || hosts.some(x => typeof x !== 'string'))
+          return 'has pathPrefixes without a list of hostnames'
+        if (hosts.some(x => /^(.*\.)?github\.com$/.test(x.toLowerCase().replace(/\.$/, ''))))
+          return 'has pathPrefixes on a github host'
+      }
+    }
+    for (const x of Array.isArray(v) ? v : Object.values(o)) {
+      const bad = walk(x, depth + 1)
+      if (bad) return bad
+    }
+    return null
+  }
+  return walk(policy, 0)
+}
+
 /** a policy that is not a JSON object with a rules array is not made */
 function policyText(raw: string) {
   try {
@@ -180,6 +224,8 @@ export async function handle(req: Request, c: Config): Promise<Response> {
   if (raw === null) return text(413, 'body too large\n')
   const policy = policyText(raw)
   if (!policy) return text(400, 'body is not an EgressPolicy (a JSON object with rules)\n')
+  const why = workerPolicyRefusal(JSON.parse(policy))
+  if (why) return text(400, `policy refused: it ${why}\n`)
   // ponytail: delete then create, so a repeat is not an error; the actor has no policy for a moment between them.
   // Replacing in place (update egress-policy) needs the stored version; not worth it for one writer
   await c.run([...c.ate, 'delete', 'egress-policy', ...target])
