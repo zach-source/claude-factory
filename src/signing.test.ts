@@ -62,6 +62,24 @@ test('a signer that refuses gives ok:false with its message', () => {
   expect(!r.ok && r.error).toContain('agent refused')
 })
 
+test('a missing git identity gives kind identity, not signer', () => {
+  key()
+  signing(program('exit 0'))
+  cfg('user.useConfigOnly', 'true') // git must not guess a name from the host
+  Bun.spawnSync(['git', '-C', repo, 'config', '--unset', 'user.name'])
+  Bun.spawnSync(['git', '-C', repo, 'config', '--unset', 'user.email'])
+  const r = signingProbe(repo)
+  expect(r.ok).toBe(false)
+  expect(!r.ok && r.kind).toBe('identity')
+})
+
+test('a refusing signer has kind signer', () => {
+  key()
+  signing(program('echo "agent refused" >&2; exit 1'))
+  const r = signingProbe(repo)
+  expect(!r.ok && r.kind).toBe('signer')
+})
+
 test('a signer that hangs times out', () => {
   key()
   signing(program('sleep 30'))

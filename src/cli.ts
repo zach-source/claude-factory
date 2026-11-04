@@ -7235,7 +7235,10 @@ async function dispatch() {
           if (!signing.ok)
             errors.push({
               id: 'signing',
-              error: `commit signing failed: ${signing.error}. Unlock the signing agent (or fix it); local runs wait. No unsigned fallback.`,
+              error:
+                signing.kind === 'identity'
+                  ? `git identity missing in the rig repo (${signing.error}). Set user.name and user.email there; local runs wait. No unsigned fallback.`
+                  : `commit signing failed: ${signing.error}. Unlock the signing agent (or fix it); local runs wait. No unsigned fallback.`,
             })
         }
         if (!signing.ok) {
