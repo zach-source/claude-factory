@@ -1205,11 +1205,9 @@ const githubForge = (gh: Gh): Forge => ({
     if (found.code !== 0) return found
     if (!rows) return { code: 1, out: '', err: 'gh api: pull list failed' }
     const hits = (asJson(found.out) as { url: string; createdAt: string }[] | null) ?? []
-    const seen = new Set(hits.map(h => h.url))
+    // a hit in both lists folds into one record (foldFound dedupes by url)
     const own = rows
-      .filter(
-        p => !!r.bead && citesBead(r.bead, `${str(p.title)}\n${str(p.body)}`) && !seen.has(str(p.html_url)),
-      )
+      .filter(p => !!r.bead && citesBead(r.bead, `${str(p.title)}\n${str(p.body)}`))
       .map(p => ({ url: str(p.html_url), createdAt: str(p.created_at) }))
     return { code: 0, out: JSON.stringify([...hits, ...own]), err: '' }
   },
