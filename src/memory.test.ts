@@ -33,6 +33,7 @@ import {
   NOTE_KINDS,
   noteExists,
   outline,
+  TOPICS_BUDGET,
   overCapTopics,
   parse,
   parseLong,
@@ -280,6 +281,24 @@ test('outline keeps 32 long topics under 3.3 KB', () => {
     writeFileSync(join(dir, `topic-${i}`, 'README.md'), format({ summary: 'y'.repeat(900), body: '' }))
   }
   expect(outline(dir).topics.join('\n').length).toBeLessThan(3300)
+})
+
+test('outline stays under the byte budget with 40 astral topics, clips on code points, keeps inbox', () => {
+  const dir = join(tmpdir(), `memory-bytes-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  for (let i = 0; i < 40; i++) {
+    mkdirSync(join(dir, `topic-${i}`), { recursive: true })
+    writeFileSync(join(dir, `topic-${i}`, 'README.md'), format({ summary: '😀'.repeat(300), body: '' }))
+  }
+  mkdirSync(join(dir, 'inbox'), { recursive: true })
+  writeFileSync(join(dir, 'inbox', 'a.md'), format({ summary: 'new', body: '' }))
+  const topics = outline(dir).topics
+  expect(Buffer.byteLength(topics.join('\n'))).toBeLessThanOrEqual(TOPICS_BUDGET)
+  expect(topics.join('\n')).not.toMatch(
+    /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/,
+  )
+  expect(topics.at(-1)).toContain('- inbox (1)')
+  expect(topics.some(l => l.includes('more topics'))).toBe(true)
 })
 
 test("search ranks by the note and its topic, and never shows another rig's notes", () => {
