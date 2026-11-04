@@ -161,8 +161,8 @@ export async function handle(req: Request, c: Config): Promise<Response> {
       const p = await c.run(c.swap!, undefined, true)
       // the first line only: the script prints "slot N is live", and a token must never leave in a response
       if (p.code === 0) return text(200, firstLine(p.out) + '\n')
-      // the caller is not authenticated and op's stderr is not ours: log it, answer with a fixed body
-      console.error(`token swap failed: ${firstLine(p.err)}`)
+      // op's stderr can echo the token from argv: log the exit code only, answer with a fixed body
+      console.error(`token swap failed: exit ${p.code}`)
       return text(502, 'token swap failed\n')
     } finally {
       swapping = false

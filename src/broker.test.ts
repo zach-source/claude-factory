@@ -180,3 +180,38 @@ test('POST /token/best answers 409 while a swap runs, then 502 with a fixed body
   )
   expect(again.status).toBe(200)
 })
+
+test('a failed token swap logs the exit code only, never the child stderr', async () => {
+  const logged: unknown[][] = []
+  const old = console.error
+  console.error = (...a: unknown[]) => void logged.push(a)
+  try {
+    const c = configFrom(swapEnv, async () => ({
+      code: 3,
+      out: '',
+      err: "claude-token: couldn't update the item\nzqsecret-tok\n",
+    }))
+    const res = await handle(req('POST', '/token/best'), c)
+    expect(res.status).toBe(502)
+    expect(await res.text()).toBe('token swap failed\n')
+  } finally {
+    console.error = old
+  }
+  expect(logged).toEqual([['token swap failed: exit 3']])
+})
+
+test('spawn strips OP_SERVICE_ACCOUNT_TOKEN from the child env unless op is set', async () => {
+  const old = process.env.OP_SERVICE_ACCOUNT_TOKEN
+  process.env.OP_SERVICE_ACCOUNT_TOKEN = 'zqsecret-op'
+  try {
+    const { run } = configFrom({})
+    const plain = await run(['/usr/bin/env'])
+    expect(plain.code).toBe(0)
+    expect(plain.out).not.toContain('OP_SERVICE_ACCOUNT_TOKEN=')
+    const withOp = await run(['/usr/bin/env'], undefined, true)
+    expect(withOp.out).toContain('OP_SERVICE_ACCOUNT_TOKEN=zqsecret-op')
+  } finally {
+    if (old === undefined) delete process.env.OP_SERVICE_ACCOUNT_TOKEN
+    else process.env.OP_SERVICE_ACCOUNT_TOKEN = old
+  }
+})
