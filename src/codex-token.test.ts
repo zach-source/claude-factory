@@ -19,16 +19,20 @@ function fixture() {
     chmodSync(join(bin, name), 0o755)
   }
   // ccswitch token get --codex <email>: prints ccs-<email>.json; fails when ccs-<email>.fail exists
-  fake('ccswitch', `[ ! -e "${tmp}/ccs-$4.fail" ] || exit 1\ncat "${tmp}/ccs-$4.json"\n`)
+  fake(
+    'ccswitch',
+    `echo "$0 $*" >> "${tmp}/argv.log"\n[ ! -e "${tmp}/ccs-$4.fail" ] || exit 1\ncat "${tmp}/ccs-$4.json"\n`,
+  )
   // op: item edit logs its args (and fails, echoing them, when op.fail exists); item get prints item.json
   fake(
     'op',
-    `if [ "$2" = edit ]; then printf '%s\\n' "$*" >> "${tmp}/op.log"; [ ! -e "${tmp}/op.fail" ] || { echo "$*" >&2; exit 1; }; exit 0; fi\ncat "${tmp}/item.json"\n`,
+    `echo "$0 $*" >> "${tmp}/argv.log"\nif [ "$2" = edit ]; then printf '%s\\n' "$*" >> "${tmp}/op.log"; cat > "${tmp}/stdin.log"; [ ! -e "${tmp}/op.fail" ] || { echo "$*" >&2; exit 1; }; exit 0; fi\ncat "${tmp}/item.json"\n`,
   )
+  fake('jq', `echo "$0 $*" >> "${tmp}/argv.log"\nexec "${Bun.which('jq')}" "$@"\n`)
   // curl -H @-: the headers come on stdin; the body is usage-<token>.json, and a .401 marker fails like curl -f
   fake(
     'curl',
-    `h=$(cat); t=$(printf '%s' "$h" | sed -n 's/^authorization: Bearer //p')\n[ ! -e "${tmp}/usage-$t.401" ] || exit 22\ncat "${tmp}/usage-$t.json"\n`,
+    `echo "$0 $*" >> "${tmp}/argv.log"\nh=$(cat); t=$(printf '%s' "$h" | sed -n 's/^authorization: Bearer //p')\n[ ! -e "${tmp}/usage-$t.401" ] || exit 22\ncat "${tmp}/usage-$t.json"\n`,
   )
   const session = (email: string, token: string, account = 'acct-' + email) =>
     writeFileSync(
@@ -50,7 +54,13 @@ function fixture() {
     )
   writeFileSync(
     join(tmp, 'item.json'),
-    JSON.stringify({ fields: [{ label: 'active', value: 'a@acme.test' }] }),
+    JSON.stringify({
+      title: 'T',
+      fields: [
+        { label: 'active', value: 'a@acme.test' },
+        { label: 'other', value: 'keep' },
+      ],
+    }),
   )
   const run = (args: string[], env: Record<string, string> = {}) => {
     const p = Bun.spawnSync(['bash', SCRIPT, ...args], {
@@ -68,8 +78,20 @@ function fixture() {
     return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
   }
   const log = () => (existsSync(join(tmp, 'op.log')) ? readFileSync(join(tmp, 'op.log'), 'utf8') : '')
+  const argv = () => (existsSync(join(tmp, 'argv.log')) ? readFileSync(join(tmp, 'argv.log'), 'utf8') : '')
+  const stdin = () => JSON.parse(readFileSync(join(tmp, 'stdin.log'), 'utf8'))
   const mark = (name: string) => writeFileSync(join(tmp, name), '')
-  return { tmp, session, usage, run, log, mark, done: () => rmSync(tmp, { recursive: true, force: true }) }
+  return {
+    tmp,
+    session,
+    usage,
+    run,
+    log,
+    argv,
+    stdin,
+    mark,
+    done: () => rmSync(tmp, { recursive: true, force: true }),
+  }
 }
 
 test('use writes the access token, the account id and the label, and prints no token', () => {
@@ -80,16 +102,17 @@ test('use writes the access token, the account id and the label, and prints no t
     const r = f.run(['use', 'a@acme.test'])
     expect(r.code).toBe(0)
     expect(r.out).toContain('label a@acme.test is live')
-    expect(f.log().trim().split(' ')).toEqual([
-      'item',
-      'edit',
-      'item',
-      '--vault',
-      'vault',
-      `live[concealed]=${tok}`,
-      'account[concealed]=acct-a@acme.test',
-      'active[concealed]=a@acme.test',
-    ])
+    expect(f.log().trim().split(' ')).toEqual(['item', 'edit', 'item', '--vault', 'vault'])
+    const item = f.stdin()
+    const by = (l: string) => item.fields.find((x: { label: string }) => x.label === l)
+    expect(by('live')).toEqual({ label: 'live', type: 'CONCEALED', value: tok })
+    expect(by('account')).toEqual({ label: 'account', type: 'CONCEALED', value: 'acct-a@acme.test' })
+    expect(by('active').type).toBe('CONCEALED')
+    expect(by('active').value).toBe('a@acme.test')
+    expect(by('other')).toEqual({ label: 'other', value: 'keep' })
+    expect(item.title).toBe('T')
+    expect(f.argv()).not.toContain(tok)
+    expect(f.argv()).not.toContain('acct-a@acme.test')
     expect(r.out + r.err).not.toContain(tok)
   } finally {
     f.done()
@@ -109,8 +132,9 @@ test('use never writes a refresh token or an auth.json blob', () => {
       }),
     )
     expect(f.run(['use', 'a@acme.test']).code).toBe(0)
-    expect(f.log()).not.toContain('refresh')
-    expect(f.log()).not.toContain('auth_mode')
+    const sent = readFileSync(join(f.tmp, 'stdin.log'), 'utf8')
+    expect(sent).not.toContain('refresh')
+    expect(sent).not.toContain('auth_mode')
   } finally {
     f.done()
   }
@@ -144,6 +168,7 @@ test('use hides the token when op fails and echoes it', () => {
     const r = f.run(['use', 'a@acme.test'])
     expect(r.code).toBe(1)
     expect(r.out + r.err).not.toContain(tok)
+    expect(f.argv()).not.toContain(tok)
   } finally {
     f.done()
   }
@@ -165,8 +190,11 @@ test('best skips a label at 100 percent and one that gets a 401, and takes the l
     const r = f.run(['best'], { CODEX_TOKEN_LABELS: 'a@acme.test b@acme.test c@acme.test' })
     expect(r.code).toBe(0)
     expect(r.out).toContain('label b@acme.test is live')
-    expect(f.log()).toContain(`live[concealed]=${tb}`)
+    expect(f.log().trim()).toBe('item edit item --vault vault')
+    expect(f.stdin().fields.find((x: { label: string }) => x.label === 'live').value).toBe(tb)
     expect(r.out + r.err).not.toContain(tb)
+    expect(f.argv()).not.toContain(tb)
+    expect(f.argv()).not.toContain(ta)
     f.usage(tb, 100, 1)
     const none = f.run(['best'], { CODEX_TOKEN_LABELS: 'a@acme.test b@acme.test c@acme.test' })
     expect(none.code).toBe(1)
@@ -205,6 +233,7 @@ test('with no argument it shows each label, its use and the live mark, without a
     expect(r.out).toMatch(/a@acme.test\s+40\s+\*/)
     expect(r.out).toMatch(/b@acme.test\s+\?/)
     expect(r.out + r.err).not.toContain(ta)
+    expect(f.argv()).not.toContain(ta)
   } finally {
     f.done()
   }

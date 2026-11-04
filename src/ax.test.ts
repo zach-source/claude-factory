@@ -299,13 +299,18 @@ test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else chan
       .map(r => [r.https.pathPrefixes?.[0] ?? '', keyOf(r)])
   expect(keys('acme', true)).toEqual([
     ['', 'GITHUB_REVIEWER'],
-    ['', 'GITHUB_BASIC'],
+    ['', 'GITHUB_REVIEWER_BASIC'],
   ])
   expect(keys('zach-source', true)).toEqual([
     ['', 'GITHUB_REVIEWER'],
-    ['', 'GITHUB_ZS_BASIC'],
+    ['', 'GITHUB_REVIEWER_BASIC'],
   ])
-  expect(keys('acme', true).slice(1)).toEqual(keys('acme', false).slice(1))
+  expect(keys('acme', false)[1]).toEqual(['', 'GITHUB_BASIC'])
+  expect(keys('zach-source', false)[1]).toEqual(['', 'GITHUB_ZS_BASIC'])
+  for (const o of ['acme', 'zach-source'])
+    expect(JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, o, undefined, true))).not.toMatch(
+      /GITHUB_(ZS_)?BASIC/,
+    )
   expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
   expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
     ax.egressPolicy('v', [], undefined, undefined, 'acme'),
@@ -336,6 +341,9 @@ test('reviewerTask is true only for review, security and check with the vault an
   expect(ax.reviewerTask('review', 'acme', { ...env, FACTORY_AX_REVIEWER_OWNER: '' })).toBe(false)
   expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_VAULT: 'v' })).toBe(false)
   expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_REVIEWER_OWNER: 'acme' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', env, true)).toBe(false)
+  expect(ax.reviewerTask('check', 'acme', env, true)).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', env, false)).toBe(true)
 })
 
 test('createPolicy passes the reviewer flag to the policy', () => {

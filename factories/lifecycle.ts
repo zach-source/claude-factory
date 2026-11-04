@@ -124,6 +124,7 @@ export default {
 - decision: the work cannot go on without a person's decision. Put the question on the bead (a bd comment) and end the summary with a \`Question:\` line and an \`Options:\` line. The run ends deferred. \`bd undefer\` starts it again at plan. If every acceptance criterion of the bead is a live read (kubectl get or logs on a production context, an edge GET, a Mimir query), the bead needs no code, and you run on a VM (\`kubectl config get-contexts\` lists no context), do not route it to plan or implement. Classify it decision, name the exact reads, and ask the manager to run them from the laptop or to start the run on a laptop runner.
 - elsewhere: the change belongs in another rig's repo. File the bead there: run bd create with your cwd in that rig's repo (see \`factory rig\`), \`--metadata '{"discovered_from":"<this bead's id>"}'\`, and this bead's id in its description. Add the label \`factory\` only when the Goal has no \`Linear-sourced:\` line; without the label a person queues the bead. Then comment the new id on this bead. If you cannot reach that repo (a VM worker), put one line \`File in: <rig>: <title> | <description>\` in the summary for the manager. The run ends deferred.
 - reject: unclear, already tracked (a run in \`factory status\`, an open issue), or not worth doing; say why
+Before you classify, bd search the error string, route, service and symptom; link matching open beads (or reject as a duplicate) and name them in the summary. Run \`bd search "<words>" --status open\` once for each term. For each match that the goal does not duplicate, run \`bd dep add <this bead> <id> -t related\`.
 If the goal is a red main or a CI job red on main, run \`gh pr list --state open --search '<failing file or test> in:title,body'\` and \`factory status\`. If an open PR or a live run already fixes it, reject as already tracked and name that PR.
 Summary: the goal restated as a testable outcome, its constraints, and the files and systems involved.`,
       next: {
@@ -229,7 +230,7 @@ ${notBlocked('green')}`,
       prompt: `Review the branch's diff against the default branch as you would before a merge: correctness, the tests' quality, simplicity, naming, error handling, backward compatibility, migrations and observability. Change no code.
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 ${blockingScope}
-Post the review on the pull request: implement opens it as a draft; push the branch and open one yourself if this run still has none. ${postVerdict}
+Post the review on the pull request: implement opens it as a draft. If this run has no pull request, do not push: report changes with the one item "push the branch and open the draft pull request". ${postVerdict}
 Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/{base_branch}...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: { to: 'done', ship: true }, changes: 'implement', security: 'security' },
     },
@@ -264,6 +265,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request.
 ${pushGuard}
+Push the branch and open it as a draft pull request (gh pr create --draft) if this run has none yet.
 ${botFiles}
 ${notBlocked('ready')}
 If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it.`,
@@ -278,7 +280,7 @@ If the work proves bigger than small (more files, a security-sensitive surface, 
 Run the repo's full pipeline: the build, every test suite, linters, type checks, and the security scanners it has (dependency audit, secret scan, static analysis). Then try to fail it: \`git merge-tree\` it against origin/{base_branch} (a conflict is red); break each new guard, branch and error path and see a test fail; check that each claim in a changed doc or docstring matches the code, and each documented command runs as written. For a change to .factory/, run the factory check on every changed file.
 Then review the diff as you would before a merge: correctness, the tests' quality, simplicity, naming, backward compatibility. A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 ${blockingScope}
-Push the branch and open it as a draft pull request if this run has none yet, then post the verdict. ${postVerdict}
+Post the verdict on the pull request. If this run has no pull request, do not push: report changes with the one item "push the branch and open the draft pull request". ${postVerdict}
 Report approve; or changes with one numbered list of every failure and finding, found in one pass over the whole diff, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the diff or the bead is security-sensitive (auth, secrets, crypto, input parsing, permissions, infrastructure access, or the label \`security\`), or the diff changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/{base_branch}...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
       next: { approve: { to: 'done', ship: true }, changes: 'quick', security: 'security' },
     },

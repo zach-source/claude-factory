@@ -704,6 +704,19 @@ test('triage rejects a second fix for a red main (claude-factory-yhf5)', () => {
     expect(p).toContain(s)
 })
 
+test('triage bd-searches open beads before it routes (claude-factory-tfdk)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  const sentence =
+    'bd search the error string, route, service and symptom; link matching open beads (or reject as a duplicate) and name them in the summary.'
+  expect(p).toContain(sentence)
+  expect(p.split(sentence).length - 1).toBe(1)
+  expect(p).toContain('bd search "<words>" --status open')
+  expect(p).toContain('bd dep add <this bead> <id> -t related')
+  const at = p.indexOf(sentence)
+  expect(at).toBeGreaterThan(p.indexOf('- reject: unclear, already tracked'))
+  expect(at).toBeLessThan(p.indexOf('Summary:'))
+})
+
 test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
   const decision = { to: 'done', defer: { station: 'plan' } }
   expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
@@ -789,6 +802,18 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
   }
   for (const node of ['plan', 'implement', 'quick', 'verify'])
     expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
+})
+
+test('qoub.3: review and check never push; with no pull request they report changes', () => {
+  for (const node of ['review', 'check']) {
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
+    expect(prompt.replace('"push the branch and open the draft pull request"', '')).not.toMatch(
+      /push the branch/i,
+    )
+    expect(prompt).toContain('do not push')
+    expect(prompt).toContain('"push the branch and open the draft pull request"')
+  }
+  expect((lifecycle as Factory).nodes.quick!.prompt).toContain('gh pr create --draft')
 })
 
 test('claude-factory-wbac: a security report posts a COMMENT review, only security approves', () => {

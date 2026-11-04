@@ -835,7 +835,8 @@ commit it, and the repo owns its factory like any other code:
   4 restore failed.
 - `factory check <file>` validates a factory: the graph, its outcomes and timed edges, and a
   way to `done` from every station. A factory whose starting commit does not validate is
-  refused before any worker starts, and its bead is deferred with the reason.
+  refused before any worker starts, and its bead is deferred with the reason. The `name` of a
+  factory file must be its file name: `.factory/lifecycle.ts` is named `lifecycle`.
 
 ## Shared memory and the dream
 

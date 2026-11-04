@@ -2311,6 +2311,8 @@ test('a reviewer station of a rig whose owner is FACTORY_AX_REVIEWER_OWNER gets 
     `#!/bin/sh\ncase "$*" in *create*) cat > ${sent} ;; *) exec ${readyController()} "$@" ;; esac\n`,
   )
   chmodSync(kubectl, 0o755)
+  const axEnv = join(dir, 'rv-ax-env.json')
+  writeFileSync(axEnv, JSON.stringify({ FACTORY_GH_REVIEWER: '1' }))
   const cases = [
     ['rv1', 'review', 'acme', 'acme', true],
     ['rv2', 'security', 'acme', 'acme', true],
@@ -2350,7 +2352,9 @@ test('a reviewer station of a rig whose owner is FACTORY_AX_REVIEWER_OWNER gets 
     )
     writeFileSync(
       join(home, 'rigs.json'),
-      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+      JSON.stringify([
+        { name: 'x', repo: worktree, factory: 'one', runner: 'ax', env: { FACTORY_GH_REVIEWER: '1' } },
+      ]),
     )
     cluster('Running', { status: 'idle', lines: [] })
     // the cluster fake, but it keeps the manifest that ax apply reads on stdin
@@ -2369,6 +2373,7 @@ esac
       FACTORY_AX_IMAGE: 'img',
       FACTORY_KUBECTL: kubectl,
       FACTORY_AX_VAULT: 'factory',
+      FACTORY_AX_ENV: axEnv,
       ...(flag && { FACTORY_AX_REVIEWER_OWNER: flag }),
     }).out
     expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
@@ -2382,6 +2387,10 @@ esac
     // claude-factory-dsfg: the laptop replays deny lines, so the VM may send them
     expect(readFileSync(applied, 'utf8')).toContain('FACTORY_DENY_LOG')
     expect(brief.includes('reviewer identity')).toBe(reviewer)
+    expect(policy.includes('GITHUB_REVIEWER_BASIC')).toBe(reviewer)
+    expect(policy.includes('/GITHUB_BASIC')).toBe(!reviewer)
+    expect(brief.includes('push your commits')).toBe(!reviewer)
+    expect(brief.includes('github.com is read-only')).toBe(reviewer)
     rmSync(runDir, { recursive: true })
   }
 }, 90_000) // git clones and whole ticks
@@ -2871,7 +2880,7 @@ describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
     sh(repo, 'git', 'add', '.')
     sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
     sh(repo, 'git', 'push', '-q', 'origin', 'HEAD')
-    const fdefFile = join(root, 'two.json')
+    const fdefFile = join(root, `${fdef.name}.json`)
     writeFileSync(fdefFile, JSON.stringify(fdef))
     const herdrLog = join(root, 'herdr.log')
     const fake = join(root, 'fakeherdr')
