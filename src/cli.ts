@@ -565,13 +565,38 @@ export function replayable(
   run: string,
 ): string[] | null {
   const [cmd, id, seq] = argv
-  if (cmd === 'report' && id === run && seq === String(side.seq)) return argv
+  // a VM expands --summary-file before it queues; a line that still has it would read a laptop file
+  if (cmd === 'report' && id === run && seq === String(side.seq))
+    return argv[4] === '--summary-file' ? null : argv
   if (cmd === 'mail' && id === run) return argv
   if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
     return ['memory', id, ...rest, '--from', `${run}/${side.node}`]
   }
   return null
+}
+
+/**
+ * `report <run> <seq> <outcome> --summary-file <path>` -> [run, seq, outcome, <file text>]; any other args pass
+ * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. A bad form
+ * throws. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
+ */
+export function summaryArgs(args: string[]): string[] {
+  if (args[3] !== '--summary-file') return args
+  const path = args[4]
+  if (!path || args.length !== 5)
+    return fail(
+      'usage: factory report <run> <seq> <outcome> --summary-file <path> (one path, nothing after it)',
+    )
+  let text: string
+  try {
+    if (!statSync(path).isFile()) throw 0
+    text = readFileSync(path, 'utf8')
+  } catch {
+    return fail(`--summary-file ${path} is not a readable file`)
+  }
+  if (!text.trim()) return fail(`--summary-file ${path} is empty`)
+  return [...args.slice(0, 3), text]
 }
 
 const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort', 'fork', 'rm']
@@ -1411,6 +1436,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '## Reporting (required)',
     'When you are finished, report exactly once and then stop:',
     `    ${CLI} report ${run.id} ${c.seq} <outcome> "<summary for the next station>"`,
+    'A long summary: write it to a file, then end the command with `--summary-file <path>` in place of the quoted text.',
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
@@ -9590,7 +9616,7 @@ const usage = `factory — herdr software factories on xstate
   watch                              one pass of the pull request watch that wakes a parked station (each
                                      tick starts one, at most once a minute)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
-  report <run> <seq> <outcome> <summary...>   worker: finish its station
+  report <run> <seq> <outcome> <summary...|--summary-file path>   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
@@ -9648,6 +9674,14 @@ else if (outboxOk) {
   console.error(outboxOk)
   process.exit(1)
 }
+let qargs = args
+if (outboxCmd && outboxOk === null && cmd === 'report')
+  try {
+    qargs = summaryArgs(args)
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(1)
+  }
 const queued = outboxCmd && outboxOk === null
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
@@ -9656,7 +9690,7 @@ if (queued) {
     const sync = worker.syncBeads()
     if (!sync.ok && worker.isSchemaSkew(sync)) {
       // no retry fixes a VM whose bd is too old for the store: the report goes out, and the laptop holds the station
-      worker.queue([cmd!, ...args], worker.usageOfSession(args[0]!), sync.error)
+      worker.queue([cmd!, ...qargs], worker.usageOfSession(args[0]!), sync.error)
       console.log(
         `queued for the factory: report; bd could not sync (schema skew: ${sync.error}), so the factory holds this station for the person; you are done, stop now`,
       )
@@ -9671,7 +9705,7 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...args], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
+  worker.queue([cmd!, ...qargs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
@@ -10331,7 +10365,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'report': {
-        const [id, seq, outcome, ...summary] = args
+        const [id, seq, outcome] = args
         const { run, value, c } = current(id)
         const [node] = where(value)
         const n = (await loadFactory(run.factory)).nodes[node]
@@ -10340,7 +10374,7 @@ if (import.meta.main && !outboxCmd)
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-        const text = summary.join(' ')
+        const text = summaryArgs(args).slice(3).join(' ')
         post(
           run.id,
           outcome === 'fail'

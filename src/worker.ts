@@ -98,7 +98,7 @@ export function usageOfSession(run: string): Usage[] {
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
  * args (exit 1): see `outboxUsage` */
 export const OUTBOX_USAGE = {
-  report: 'usage: factory report <run> <seq> <outcome> <summary...>',
+  report: 'usage: factory report <run> <seq> <outcome> <summary...|--summary-file path>',
   mail: 'usage: factory mail <run> <node|manager> <text...>',
   memory:
     'usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]',

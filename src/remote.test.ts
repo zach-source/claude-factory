@@ -156,6 +156,36 @@ test('inside a VM, `report`/`mail`/`memory add --help`|`-h` print usage and exit
   expect(existsSync(outbox)).toBe(false) // nothing was appended
 })
 
+test('inside a VM, report --summary-file queues the file text; a bad file queues nothing', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-sf.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  const empty = join(dir, 'sf-empty')
+  const f = join(dir, 'sf.md')
+  writeFileSync(empty, '')
+  writeFileSync(f, 'long\nsummary "x"\n')
+  for (const rest of [
+    ['--summary-file', join(dir, 'sf-missing')],
+    ['--summary-file', empty],
+    ['--summary-file', f, 'x'],
+  ]) {
+    const bad = factory(['report', 'r1', '1', 'ready', ...rest], env)
+    expect(bad.code).toBe(1)
+    expect(bad.err).toContain('--summary-file')
+  }
+  expect(existsSync(outbox)).toBe(false)
+  expect(factory(['report', 'r1', '1', 'ready', '--summary-file', f], env).code).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  expect(lines.map(l => JSON.parse(l).argv)).toEqual([['report', 'r1', '1', 'ready', 'long\nsummary "x"\n']])
+})
+
+test('a report argv that still holds --summary-file is not replayable; the flag after summary words is', () => {
+  const side = { node: 'a', seq: 1 }
+  expect(replayable(['report', 'r1', '1', 'ready', '--summary-file', '/etc/passwd'], side, 'r1')).toBeNull()
+  const plain = ['report', 'r1', '1', 'ready', 'text', '--summary-file', 'x']
+  expect(replayable(plain, side, 'r1')).toEqual(plain)
+})
+
 test('inside a VM, malformed report/mail args refuse on stderr with exit 1, nothing queued (claude-factory-4x1)', () => {
   mkdirSync(dir, { recursive: true })
   const outbox = join(dir, 'outbox-bad.jsonl')
