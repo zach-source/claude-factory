@@ -344,6 +344,19 @@ test('a station blocked on pull requests parks long: the runner watches them and
   expect(s.context.mail.manager?.at(-1)?.text).toContain('when one of its pull requests changes')
 })
 
+test('countRounds replaces the graph rule: an outcome it does not list never counts', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 1, countRounds: ['approve'] } },
+  })
+  let seq = 1
+  for (let i = 0; i < 3; i++) {
+    send({ type: 'DONE', seq: seq++, outcome: 'ready', summary: 'built', at: seq })
+    const s = send({ type: 'DONE', seq: seq++, outcome: 'changes', summary: 'fix', at: seq })
+    expect(where(s.value)).toEqual(['implement', 'working'])
+  }
+})
+
 test('a station that reports one outcome more than its rounds is held for the manager', () => {
   const { send } = run({
     ...def,
