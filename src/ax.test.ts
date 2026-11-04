@@ -1521,6 +1521,7 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
     worker.prompt(Buffer.from('more').toString('base64'))
     await expect(worker.serve('o3', { once: true })).rejects.toThrow('unified_exec is not off')
     expect(readFileSync(execLog, 'utf8').trim().split('\n')).toHaveLength(1)
+    expect(readdirSync(join(own, 'prompts'))).toHaveLength(1)
     expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('serve died')
   } finally {
     process.env = saved
