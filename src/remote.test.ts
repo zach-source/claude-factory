@@ -2311,6 +2311,8 @@ test('a reviewer station of a rig whose owner is FACTORY_AX_REVIEWER_OWNER gets 
     `#!/bin/sh\ncase "$*" in *create*) cat > ${sent} ;; *) exec ${readyController()} "$@" ;; esac\n`,
   )
   chmodSync(kubectl, 0o755)
+  const axEnv = join(dir, 'rv-ax-env.json')
+  writeFileSync(axEnv, JSON.stringify({ FACTORY_GH_REVIEWER: '1' }))
   const cases = [
     ['rv1', 'review', 'acme', 'acme', true],
     ['rv2', 'security', 'acme', 'acme', true],
@@ -2371,6 +2373,7 @@ esac
       FACTORY_AX_IMAGE: 'img',
       FACTORY_KUBECTL: kubectl,
       FACTORY_AX_VAULT: 'factory',
+      FACTORY_AX_ENV: axEnv,
       ...(flag && { FACTORY_AX_REVIEWER_OWNER: flag }),
     }).out
     expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
