@@ -233,9 +233,11 @@ test(
   'AC4: without a user auth.json the dream home has no link and the dream still runs',
   () => {
     seed()
+    mkdirSync(join(home, 'codex-dream'), { mode: 0o755 }) // an older dream home with loose rights
     expect(run(bothFakes({ FACTORY_DREAM_CODEX: 'o3' })).code).toBe(0)
     expect(existsSync(mark('codex.argv'))).toBe(true)
     expect(() => lstatSync(join(home, 'codex-dream', 'auth.json'))).toThrow()
+    expect(lstatSync(join(home, 'codex-dream')).mode & 0o777).toBe(0o700)
   },
   SLOW,
 )
