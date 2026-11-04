@@ -24,6 +24,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
       PATH: `${bin}:${laptop.PATH}`,
       CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
       FACTORY_SELF_UPDATE: '0',
+      FACTORY_NO_KICK: '1',
       ...env,
     },
   })

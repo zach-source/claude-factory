@@ -5540,7 +5540,8 @@ async function tick(isPatrol = false) {
     return { ...out, halt: halted()?.state }
   } finally {
     release()
-    if (rigs().length || runIds().length) {
+    // FACTORY_NO_KICK=1 (tests): a detached pass would recreate a removed home
+    if (process.env.FACTORY_NO_KICK !== '1' && (rigs().length || runIds().length)) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
       if (!halted()) kickWatch()
