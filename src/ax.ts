@@ -4,6 +4,7 @@
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
 import { WORKER_USER } from './worker'
+import { workerPolicyRefusal } from './broker'
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
@@ -518,9 +519,6 @@ export function egressPolicy(
   }
 }
 
-/** a vault key that only the manager task may use: it gives full AX control, or write access to the backup repo */
-const MANAGER_ONLY_KEY = /"credentialUri":"[^"]*\/(AX_AUTH|GITHUB_BASIC_MANAGER)"/
-
 /**
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
  * One try: the tick that launched the task does not wait, the next ones try again.
@@ -542,9 +540,8 @@ export function createPolicy(
     egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer, manager),
   )
   // the manager and every worker share one vault: a worker policy must not name a manager-only key
-  const key = MANAGER_ONLY_KEY.exec(policy)?.[1]
-  if (key && task !== managerTask())
-    throw new Error(`egress policy for ${task} names manager-only vault key ${key}`)
+  const why = task !== managerTask() && workerPolicyRefusal(JSON.parse(policy))
+  if (why) throw new Error(`egress policy for ${task} ${why}`)
   if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(

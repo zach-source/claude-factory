@@ -195,7 +195,7 @@ test('PUT refuses a worker policy that names a manager-only key or a github path
     AX_AUTH: hdr(U('AX_AUTH')),
     GITHUB_BASIC_MANAGER: hdr(U('GITHUB_BASIC_MANAGER')),
     'key CredentialURI': withHeader({ CredentialURI: U('AX_AUTH') }),
-    'key credential_uri': withHeader({ credential_uri: U('GITHUB_BASIC') }),
+    'key credential_uri': withHeader({ credential_uri: 'https://x.example.com/ax' }),
     'key with U+017F': withPath(['a.example.com'], { pathPrefixeſ: ['/x/'] }),
     'lowercase value': hdr(U('ax_auth')),
     'query suffix': hdr(U('AX_AUTH') + '?x=1'),
