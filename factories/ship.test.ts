@@ -395,7 +395,10 @@ test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () =>
 // claude-factory-4h8j: live-object findings are deduped by bd search, repeat crash loops escalate, deploy checks every Deployment
 const prompt = (id: string) => (ship.nodes as Record<string, { prompt: string }>)[id]!.prompt
 const liveText = (s: string) =>
-  s.slice(s.indexOf('Live-object findings:'), s.indexOf('Search and file only in this rig'))
+  s.slice(
+    s.indexOf('Live-object findings:'),
+    s.indexOf('no sweep-queue:* label.') + 'no sweep-queue:* label.'.length,
+  )
 const deployText = (s: string) =>
   s.slice(s.indexOf('Check every Deployment'), s.indexOf('A release that builds no container image'))
 
@@ -434,6 +437,37 @@ test('a repeat crash loop or failed rollout gets the factory label and no other 
   ])
     expect(want).toContain(t)
   expect(want).not.toMatch(/station:[a-z]|sweep-queue:[a-z]|--add-label (?!factory)/)
+})
+
+const coreText = (s: string) =>
+  s.slice(
+    s.indexOf('Live-object findings:'),
+    s.indexOf("Search and file only in this rig's beads.") +
+      "Search and file only in this rig's beads.".length,
+  )
+
+test('deploy and soak share a live-object dedupe core with no escalation (sjwe.2 AC2)', () => {
+  const want = coreText(prompt('soak'))
+  expect(want.length).toBeGreaterThan(300)
+  expect(coreText(prompt('deploy'))).toBe(want)
+  for (const t of [
+    'bd search "<object name>" --status open',
+    'bd search "<symptom>" --status open',
+    'with no --status',
+    'bd comment <id>',
+    '<context>/<namespace>/<kind>/<name>: <symptom>',
+    'name it in the description',
+  ])
+    expect(want).toContain(t)
+  const full = liveText(prompt('soak'))
+  expect(full.indexOf(want)).toBeGreaterThanOrEqual(0)
+  for (const t of [
+    'In deploy and soak, put the release version in that comment.',
+    "raise the open bead's priority by one step",
+  ])
+    expect(full.indexOf(t)).toBeGreaterThan(want.length)
+  for (const t of ['bd update', '--add-label', '-p ', 'ship', 'release', '{', 'In deploy and soak'])
+    expect(want).not.toContain(t)
 })
 
 test('deploy checks every Deployment of the released image with reads only (4h8j AC3)', () => {
