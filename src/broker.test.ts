@@ -209,6 +209,9 @@ test('PUT refuses a worker policy that names a manager-only key or a github path
     'GitHub.COM. path': withPath(['GitHub.COM.']),
     'wildcard github': withPath(['*.github.com']),
     'uploads.github.com': withPath(['uploads.github.com']),
+    'any host': withPath(['*']),
+    'any .com host': withPath(['*.com']),
+    'ANY.COM. host': withPath(['*.COM.']),
     'path_prefixes key': withPath(['github.com'], { path_prefixes: ['/x/'] }),
     'no hostnames': { rules: [{ https: { pathPrefixes: ['/x/'] } }] },
     'hostnames string': withPath('github.com'),
@@ -235,6 +238,10 @@ test('PUT still creates a normal worker policy', async () => {
     'look-alike keys': { rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: keys } }] },
     'path on other host': withPath(['gitlab.example.com']),
     'path on look-alike host': withPath(['notgithub.com']),
+    'path on *.org': withPath(['*.org']),
+    'path on *.notgithub.com': withPath(['*.notgithub.com']),
+    'any host no path': withPath(['*'], {}),
+    'any .com no path': withPath(['*.com'], {}),
   }
   for (const [name, body] of Object.entries(allowed)) {
     const { calls, c } = setup()
