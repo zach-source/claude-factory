@@ -263,12 +263,12 @@ test('the manager policy has the path-prefixed zach-source rules; the unprefixed
   expect(
     JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, undefined, false, true)),
   ).not.toContain('pathPrefixes')
-  // a manager with its own backup key gets no prefixed rule
-  expect(
-    JSON.stringify(
-      ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true),
-    ),
-  ).not.toContain('pathPrefixes')
+  // a manager with its own backup key gets the REST prefixed rule but no github.com one
+  const own = JSON.stringify(
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true),
+  )
+  expect(own).toContain('/repos/zach-source/')
+  expect(own).not.toContain('"/zach-source/"')
 })
 
 test('a worker policy has no path-prefixed rule, whatever the rig owner', () => {
@@ -409,11 +409,12 @@ test('the manager has its own github.com vault key when a backup remote is set; 
   )
   expect(ax.managerGithubKey({})).toBe('GITHUB_BASIC')
   const mgr = JSON.stringify(
-    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER').rules,
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
+      .rules,
   )
   expect(mgr).not.toContain('GITHUB_ZS_BASIC')
   const rows = ax
-    .egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')
+    .egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
     .rules.filter((r: any) => r.https.hostnames.some((h: string) => h.endsWith('github.com')))
     .map((r: any) => [
       r.https.hostnames,
