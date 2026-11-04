@@ -405,6 +405,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
  * (claude-factory-xq3)
  */
 async function turn(text: string, model?: string, session?: string, onSession?: (id: string) => void) {
+  codexHome() // a turn can rewrite /etc/codex/requirements.toml when serve stays root: check again before each spawn
   const h = harness()
   // pi has no output to read an id from: it takes one on first use
   const id = h === 'pi' ? (session ?? crypto.randomUUID()) : session
@@ -1037,7 +1038,7 @@ export const imagePlugins = (skills = process.env.FACTORY_SKILLS) =>
         .flatMap(s => VM_PLUGINS[s] ?? [])
 
 /**
- * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
+ * A codex worker's CODEX_HOME, written at serve start and before each turn. It holds the files the laptop sent (cli.ts vmCodexHome)
  * AGENTS.md from this image's worker rules, and the image's skills (constitution I). It fails closed, as a pane's launch does (cli.ts codexWorker):
  * a .codex directory in the repo would add project config (all but the one `bd init` writes), and `codex features list` must show the guard on
  * (claude-factory-72dq).
