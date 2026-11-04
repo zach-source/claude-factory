@@ -89,62 +89,33 @@ const READERS = new Set([
 ])
 const GIT_SUBS = new Set(['diff', 'log', 'show', 'status', 'blame'])
 
+// One simple command. Outside quotes: only word characters and blanks. A double-quoted string has
+// no backslash, $, backtick or !. A single-quoted string has any character but '.
+const LINE = /^(?:[\w./:@%+,=^~ \t-]|"[^"\\$`!]*"|'[^']*')*$/
+const WORD = /(?:[\w./:@%+,=^~-]|"[^"\\$`!]*"|'[^']*')+/g
+
 /**
- * True when each segment of `command` starts with a bare reader word. Outside single quotes it
- * gives false for a backtick, `$(`, `${`, and outside all quotes for `#`, `$'` and `<<`. For git, only -C <dir> and --no-pager can come before a read
- * subcommand. Any other form gives false (fail closed), so the script read runs.
+ * True when `command` is ONE simple command (see LINE) and its first word is a bare reader.
+ * Outside single quotes no pipe, ;, &, redirect, group, line join, $, backtick, backslash, glob,
+ * brace or # can pass LINE, so the code needs no shell lexer. For git, only -C <dir> and
+ * --no-pager can come before a read subcommand. Any other form gives false (fail closed), so the
+ * script read runs.
  * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
- * textconv) is not covered. False denies stay for bun test with a file, sed, rg, awk, an
- * absolute-path git, and bd text in double quotes with `$(`, `${` or a backtick. Upgrade path: a real shell parser.
+ * textconv) is not covered. False denies stay for pipes, &&, redirects, line joins, bun test with a
+ * file, sed, rg, awk and an absolute-path git. Upgrade path: a real shell parser.
  */
 function readOnly(command: string): boolean {
-  const cmd = command
-  const segs: string[] = []
-  let cur = ''
-  let q = ''
-  for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i]!
-    // a line join (backslash, newline) is a space; an escaped backslash is read as a pair below
-    if (c === '\\' && cmd[i + 1] === '\n') {
-      i++
-      continue
-    }
-    if (q !== "'" && (c === '`' || (c === '$' && (cmd[i + 1] === '(' || cmd[i + 1] === '{')))) return false
-    if (q) {
-      if (c === '\\' && q === '"') cur += c + (cmd[++i] ?? '')
-      else {
-        if (c === q) q = ''
-        cur += c
-      }
-      continue
-    }
-    if (c === '\\') {
-      cur += c + (cmd[++i] ?? '')
-      continue
-    }
-    // a comment, $'..' string or heredoc breaks the quote tracking: fail closed
-    if (c === '#' || (c === '$' && cmd[i + 1] === "'") || (c === '<' && cmd[i + 1] === '<')) return false
-    if (c === "'" || c === '"') q = c
-    const redirect = c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>')
-    if (/[;&|()\n]/.test(c) && !redirect) {
-      segs.push(cur)
-      cur = ''
-    } else cur += c
+  if (!LINE.test(command)) return false
+  const w = command.match(WORD) ?? []
+  if (!READERS.has(w[0] ?? '')) return false
+  if (w[0] !== 'git') return true
+  let i = 1
+  for (;;) {
+    if (w[i] === '-C') i += 2
+    else if (w[i] === '--no-pager') i++
+    else break
   }
-  segs.push(cur)
-  return segs.every(s => {
-    const w = s.trim().split(/\s+/).filter(Boolean)
-    if (!w.length) return true
-    if (!READERS.has(w[0]!)) return false
-    if (w[0] !== 'git') return true
-    let i = 1
-    for (;;) {
-      if (w[i] === '-C') i += 2
-      else if (w[i] === '--no-pager') i++
-      else break
-    }
-    return GIT_SUBS.has(w[i] ?? '')
-  })
+  return GIT_SUBS.has(w[i] ?? '')
 }
 
 /**
