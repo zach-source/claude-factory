@@ -2509,6 +2509,36 @@ test('createPolicy refuses a manager-only vault key in a policy for any task but
   }
 })
 
+test('createPolicy refuses manager=true for any task but the manager task', () => {
+  const saved = { ...process.env }
+  try {
+    process.env.FACTORY_AX_VAULT = 'v1'
+    delete process.env.FACTORY_POLICY_BROKER
+    delete process.env.FACTORY_AX_MANAGER
+    writeFileSync(join(dir, 'actor'), '')
+    const asManager = (task: string) => () => ax.createPolicy(task, [], undefined, 'acme', undefined, false, true)
+    rmSync(calls, { force: true })
+    expect(asManager('t9')).toThrow('t9')
+    expect(existsSync(calls)).toBe(false)
+    process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+    expect(asManager('t9')).toThrow('t9')
+    expect(existsSync(calls)).toBe(false)
+    delete process.env.FACTORY_POLICY_BROKER
+    delete process.env.FACTORY_AX_VAULT
+    expect(asManager('t9')).toThrow('t9')
+    expect(existsSync(calls)).toBe(false)
+    process.env.FACTORY_AX_VAULT = 'v1'
+    process.env.FACTORY_AX_MANAGER = 'm9'
+    expect(asManager('f-manager')).toThrow('f-manager')
+    expect(asManager('m9')()).toBe(true)
+    delete process.env.FACTORY_AX_MANAGER
+    expect(asManager(ax.managerTask())()).toBe(true)
+    expect(ax.createPolicy('t9', [], undefined, 'acme')).toBe(true)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('the host ax call inherits AX_AUTH_TOKEN, and the fake records only whether it is set', () => {
   const saved = process.env.AX_AUTH_TOKEN
   try {
