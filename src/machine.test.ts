@@ -1375,17 +1375,33 @@ describe('gotoRefusal (claude-factory-7dd)', () => {
     expect(refusal(r, d, 'implement')).toBeNull()
   })
 
-  test('a budget hold refuses goto; a pending RETRY refills it; goto done is fine', () => {
+  test('goto grants a fresh step budget; a pending RETRY and goto done are fine too', () => {
     const d: Factory = { ...def, maxSteps: 2 }
     const r = run(d)
     r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'a', at: 1 })
     r.send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'b', at: 2 })
     expect(where(r.now().value)).toEqual(['implement', 'stuck'])
     const before = r.saved()
-    expect(refusal(r, d, 'review')).toContain('step budget used up')
+    expect(refusal(r, d, 'review')).toBeNull()
     expect(refusal(r, d, 'review', [{ type: 'RETRY', at: 5 }])).toBeNull()
     expect(refusal(r, d, 'done')).toBeNull()
     expect(r.saved()).toEqual(before)
+  })
+
+  test('GOTO at a used-up budget lands working with a fresh budget, working or parked', () => {
+    const d: Factory = { ...def, maxSteps: 1 }
+    const w = run(d)
+    expect(w.now().context.seq).toBe(1)
+    const s = w.send({ type: 'GOTO', node: 'review', at: 3 })
+    expect(where(s.value)).toEqual(['review', 'working'])
+    expect(s.context.error).toBeNull()
+    expect(s.context.budget).toBeGreaterThanOrEqual(s.context.seq)
+    const p = run(d)
+    const parked = p.send({ type: 'BLOCKED', seq: 1, reason: 'PR #7 needs a human approval', at: 4 })
+    expect(where(parked.value)).toEqual(['implement', 'waiting'])
+    const t = p.send({ type: 'GOTO', node: 'review', at: 5 })
+    expect(where(t.value)).toEqual(['review', 'working'])
+    expect(t.context.error).toBeNull()
   })
 })
 

@@ -10698,13 +10698,7 @@ if (import.meta.main && !outboxCmd)
             `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
           )
         const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
-        if (why)
-          fail(
-            `goto ${target} would not move ${run.id}: ${why}` +
-              (why.includes('step budget')
-                ? `; run factory retry ${run.id} to grant more launches first`
-                : ''),
-          )
+        if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
         post(run.id, { type: 'GOTO', node: target })
         console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
         break
