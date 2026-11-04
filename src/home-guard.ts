@@ -70,7 +70,7 @@ const hits = (text: string, word: RegExp) => {
 
 // a word that names a script file: a script extension, or a ./ or / path
 const SCRIPT =
-  /(?:^|[\s'"=(`])((?:\.{0,2}\/)?[\w./-]+\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)|\.{1,2}\/[\w./-]+)(?=$|[\s'";&|)`])/g
+  /(?:^|[\s'"=(`;&|])((?:\.{0,2}\/)?[\w./-]+\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)|\.{1,2}\/[\w./-]+)(?=$|[\s'";&|)`])/g
 
 // the only command words of a read-only command: none of them runs a file it is given
 const READERS = new Set([
@@ -95,7 +95,7 @@ const GIT_SUBS = new Set(['diff', 'log', 'show', 'status', 'blame'])
  * subcommand. Any other form gives false (fail closed), so the script read runs.
  * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
  * textconv) is not covered. False denies stay for bun test with a file, sed, rg, awk, an
- * absolute-path git, and bd text in double quotes with `$(` or a backtick.
+ * absolute-path git, and bd text in double quotes with `$(`, `${` or a backtick. Upgrade path: a real shell parser.
  */
 function readOnly(command: string): boolean {
   const cmd = command.replace(/\\\n/g, ' ')
@@ -104,7 +104,7 @@ function readOnly(command: string): boolean {
   let q = ''
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i]!
-    if (q !== "'" && (c === '`' || (c === '$' && cmd[i + 1] === '('))) return false
+    if (q !== "'" && (c === '`' || (c === '$' && (cmd[i + 1] === '(' || cmd[i + 1] === '{')))) return false
     if (q) {
       if (c === '\\' && q === '"') cur += c + (cmd[++i] ?? '')
       else {

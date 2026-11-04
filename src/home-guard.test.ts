@@ -165,9 +165,8 @@ describe('homeReason', () => {
     "cat <<EOF\necho '\nEOF\n./x.sh\necho '",
     `echo "\${x-"'"}"; ./x.sh; echo "\${x-"'"}"`,
     `git diff "\${x:-"'"}" ; ./x.sh # "'"`,
-  ])(
-    "denies a fake quote: an unquoted #, $', << or a nested quote in ${}: %j",
-    cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  ])("denies a fake quote: an unquoted #, $', << or a nested quote in ${}: %j", cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
   test('allows a # inside double quotes', () => {
