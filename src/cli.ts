@@ -2344,14 +2344,20 @@ function swapAccount(hit: { at: number; resetsAt: number }, now: number): number
 }
 
 const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at most this often
+const CODEX_SWAP_GAP_MS = 3_600_000 // a Codex swap recopies a ChatGPT token: never more than once an hour
 
 /**
  * This function checks if a swap must run. A hit is new when no state exists yet. A hit is
  * also new when the hit time is after the state time. A new hit swaps only when the last run
  * (state.ran, laptop time) is at least TOKEN_SWAP_WAIT_MS old.
  */
-export function needsSwap(hit: { at: number }, state: { at: number; ran?: number } | undefined, now: number) {
-  return (!state || hit.at > state.at) && (state?.ran === undefined || now >= state.ran + TOKEN_SWAP_WAIT_MS)
+export function needsSwap(
+  hit: { at: number },
+  state: { at: number; ran?: number } | undefined,
+  now: number,
+  gap = TOKEN_SWAP_WAIT_MS,
+) {
+  return (!state || hit.at > state.at) && (state?.ran === undefined || now >= state.ran + gap)
 }
 
 /**
@@ -2392,7 +2398,8 @@ export function runTokenSwap(
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
   const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
   const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
-  if (!needsSwap(hit, state, now)) {
+  const gap = codex ? CODEX_SWAP_GAP_MS : TOKEN_SWAP_WAIT_MS
+  if (!needsSwap(hit, state, now, gap)) {
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
     return waiting ? Math.max(state!.until, state!.ran! + TOKEN_SWAP_WAIT_MS) : state!.until
   }
@@ -3316,7 +3323,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (until > now) {
       // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
       if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
-        const reason = `${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
+        const reason = `${isCodex ? 'Codex' : 'Claude'} ${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
         send({ type: 'FAIL', seq: c.seq, reason, hold: until })
         return 'usage limit'
       }

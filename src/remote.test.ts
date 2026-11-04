@@ -911,7 +911,7 @@ test('a VM worker refused for a long usage limit parks the station until the res
   expect(state.snapshot.context.attempt).toBe(1)
   const last = state.snapshot.context.log.at(-1)
   expect(last.outcome).toBe('outage')
-  expect(last.summary).toStartWith('usage limit (seven_day)')
+  expect(last.summary).toStartWith('Claude usage limit (seven_day)')
   expect(called()).not.toContain('worker prompt')
   expect(called()).toContain('delete')
   const held = (state.snapshot.context.mail.manager ?? []).filter((m: { text: string }) =>
@@ -935,7 +935,7 @@ test('a VM Codex worker whose login the gateway refuses (401) parks the station 
   expect(state.snapshot.context.attempt).toBe(1)
   const last = state.snapshot.context.log.at(-1)
   expect(last.outcome).toBe('outage')
-  expect(last.summary).toStartWith('login refused (auth)')
+  expect(last.summary).toStartWith('Codex login refused (auth)')
   expect(called()).not.toContain('worker prompt')
   const held = (state.snapshot.context.mail.manager ?? []).filter((m: { text: string }) =>
     m.text.includes('held, not failed'),
