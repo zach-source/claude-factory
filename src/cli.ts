@@ -4017,7 +4017,6 @@ const isHeld = (name: string) => {
 }
 /** starts a beads pass unless one is running: checked here, so a busy pass costs no process every tick */
 const kickBeads = () =>
-  process.env.FACTORY_NO_KICK === '1' || // tests: a detached pass would recreate a removed home
   isHeld('beads.lock') ||
   spawnChild(CLI, ['beads'], {
     detached: true,
@@ -5541,7 +5540,8 @@ async function tick(isPatrol = false) {
     return { ...out, halt: halted()?.state }
   } finally {
     release()
-    if (rigs().length || runIds().length) {
+    // FACTORY_NO_KICK=1 (tests): a detached pass would recreate a removed home
+    if (process.env.FACTORY_NO_KICK !== '1' && (rigs().length || runIds().length)) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
       if (!halted()) kickWatch()
