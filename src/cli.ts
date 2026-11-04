@@ -2131,6 +2131,27 @@ export function resetsAtFromText(text: string, after: number) {
   return 0
 }
 
+const LIMIT_SKEW_MS = 5 * 60_000 // a VM clock may run this far ahead of the laptop's
+const LIMIT_RESET_MAX_MS = 8 * 24 * 3_600_000 // a weekly reset is at most 7 days out
+const LIMIT_KINDS = new Set(['seven_day', 'five_hour', 'usage', 'auth'])
+
+/**
+ * claude-factory-5nca: a VM supplies its limit hit, so the laptop does not trust it. This returns null when the
+ * hit has no finite time, or a time more than 5 minutes ahead of now. Otherwise it returns only at, a kind from
+ * a fixed set (else 'usage') and a reset time within 8 days (else 0: the callers use at + 1 h).
+ */
+export function trustedHit(hit: unknown, now: number) {
+  if (typeof hit !== 'object' || hit === null) return null
+  const h = hit as { at?: unknown; kind?: unknown; resetsAt?: unknown }
+  if (typeof h.at !== 'number' || !Number.isFinite(h.at) || h.at > now + LIMIT_SKEW_MS) return null
+  const r = h.resetsAt
+  return {
+    at: h.at,
+    kind: typeof h.kind === 'string' && LIMIT_KINDS.has(h.kind) ? h.kind : 'usage',
+    resetsAt: typeof r === 'number' && Number.isFinite(r) && r > 0 && r <= now + LIMIT_RESET_MAX_MS ? r : 0,
+  }
+}
+
 /** the usage limit or login failure that refused a Claude transcript's last turn: when, which (seven_day, five_hour, usage, auth) and when it resets, in ms (0: unknown) */
 export function limitHit(tail: string) {
   for (const line of tail.split('\n').reverse()) {

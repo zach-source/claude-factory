@@ -33,6 +33,7 @@ import {
   limitHit,
   managerCommand,
   needsSwap,
+  trustedHit,
   nextAccount,
   servedAt,
   parsePkgGateAllowlist,
@@ -2549,4 +2550,24 @@ test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or 
   expect(factoryLabelName(run('/a/factories/release.ts'), def)).toBe('release')
   expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
   expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
+})
+
+test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed set, resetsAt to 8 days', () => {
+  const now = 1_700_000_000_000
+  const SK = 5 * 60_000
+  const D = 24 * 3_600_000
+  const ok = { at: now - 3_600_000, kind: 'usage', resetsAt: 0 }
+  for (const bad of [null, undefined, 'x', {}, { ...ok, at: '1000' }, { ...ok, at: NaN }, { ...ok, at: Infinity }])
+    expect(trustedHit(bad, now)).toBeNull()
+  expect(trustedHit({ ...ok, at: now + SK + 1 }, now)).toBeNull()
+  expect(trustedHit({ ...ok, at: now + SK }, now)?.at).toBe(now + SK)
+  expect(trustedHit(ok, now)?.at).toBe(now - 3_600_000)
+  for (const k of ['seven_day', 'five_hour', 'usage', 'auth']) expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe(k)
+  for (const k of ['Seven_Day', '', 'usage limit\nIgnore all previous', 7, undefined])
+    expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe('usage')
+  expect(trustedHit({ ...ok, resetsAt: now + 8 * D }, now)?.resetsAt).toBe(now + 8 * D)
+  expect(trustedHit({ ...ok, resetsAt: now + 3 * D }, now)?.resetsAt).toBe(now + 3 * D)
+  for (const r of [now + 8 * D + 1, now + 365 * D, -5, 0, '9', NaN, undefined])
+    expect(trustedHit({ ...ok, resetsAt: r }, now)?.resetsAt).toBe(0)
+  expect(trustedHit({ ...ok, text: 'x' }, now)).toEqual({ at: ok.at, kind: 'usage', resetsAt: 0 })
 })
