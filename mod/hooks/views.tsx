@@ -34,6 +34,7 @@ import {
   openInterviews,
   patrolAgo,
   planAgo,
+  patrolFallbackLine,
   pmBlockedLine,
   prName,
   prState,
@@ -792,7 +793,13 @@ export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all', draf
 }
 
 /** every rig: its cap and how full it is, its goal, where its runs stand, what needs the person */
-export function rigsView(p: Base, board: FactoryBoard, plan: FactoryPlan | null, pmBlocked?: string) {
+export function rigsView(
+  p: Base,
+  board: FactoryBoard,
+  plan: FactoryPlan | null,
+  pmBlocked?: string,
+  patrolFallback?: string,
+) {
   const { Box, Text, Button } = p.ui
   const rigs = board.rigs ?? []
   const loose = board.runs.filter(r => isLive(r) && !r.rig)
@@ -810,6 +817,11 @@ export function rigsView(p: Base, board: FactoryBoard, plan: FactoryPlan | null,
       {pmBlocked && (
         <Text key="rigs-pm-blocked" color="red" wrap="wrap">
           {pmBlockedLine(pmBlocked)}
+        </Text>
+      )}
+      {patrolFallback && (
+        <Text key="rigs-patrol-fallback" color="red" wrap="wrap">
+          {patrolFallbackLine(patrolFallback)}
         </Text>
       )}
       {rigs.map(g => {

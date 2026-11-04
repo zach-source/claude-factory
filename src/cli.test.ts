@@ -1817,6 +1817,47 @@ test('memory add gate() runs before dedupe: a refusal fires even when the summar
   expect(r.err).toContain('--kind')
 }, 30_000)
 
+test('memory add refuses a leftover --flag word twice: no false dedupe, no write (claude-factory-4ie)', () => {
+  const home = freshMemoryAddHome('stray-flag')
+  const row = ['--kind', 'fact', '--tier', 'long', 'acme widget retries flush three times', 'a plain body']
+  for (let i = 0; i < 2; i++) {
+    const r = runMemoryAdd(home, row)
+    expect(r.code).toBe(2)
+    expect(r.err).toContain('unknown flag --tier')
+    expect(r.out).not.toContain('already noted')
+  }
+  expect(inboxFiles(home)).toEqual([])
+}, 60_000)
+
+test('memory add refuses a repeated --rig, a bare -- and a flag after the summary', () => {
+  const home = freshMemoryAddHome('stray-flag-rows')
+  const rows: [string[], string][] = [
+    [['--kind', 'fact', '--rig', 'acme', '--rig', 'other', 'a plain summary'], '--rig'],
+    [['--kind', 'fact', '--', 'a plain summary'], 'unknown flag --'],
+    [['--kind', 'fact', 'a plain summary', '--tier', 'x'], '--tier'],
+  ]
+  for (const [row, flag] of rows) {
+    const r = runMemoryAdd(home, row)
+    expect(r.code).toBe(2)
+    expect(r.err).toContain(flag)
+  }
+  expect(inboxFiles(home)).toEqual([])
+}, 60_000)
+
+test('memory add still accepts --anyway on either side, a mid-word -- and a single-dash word', () => {
+  for (const [tag, row] of [
+    ['anyway-before', ['--kind', 'fact', '--anyway', 'a plain summary', 'a body']],
+    ['anyway-after', ['--kind', 'fact', 'a plain summary', '--anyway', 'a body']],
+    ['mid-dash', ['--kind', 'fact', 'a plain summary', 'run bun test --timeout 30000']],
+    ['single-dash', ['--kind', 'fact', 'a plain summary', '-p']],
+  ] as [string, string[]][]) {
+    const home = freshMemoryAddHome(tag)
+    const r = runMemoryAdd(home, row)
+    expect(r.code).toBe(0)
+    expect(inboxFiles(home)).toHaveLength(1)
+  }
+}, 60_000)
+
 test('memory add that cites nothing needs no --until', () => {
   const home = freshMemoryAddHome('no-cite-ok')
   const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body'])

@@ -9882,6 +9882,15 @@ if (import.meta.main && !outboxCmd)
               .join('\n\n') || `nothing in ${MEMORY} yet`,
           )
         } else if (sub === 'add' && words[0]) {
+          // a --word left after the opt() splices (typo, repeat, flag an older bin lacks) would become the
+          // summary and false-dedupe against the next such add (claude-factory-4ie)
+          const stray = words.find(w => w.startsWith('--') && w !== '--anyway')
+          if (stray) {
+            console.error(`factory memory add: unknown flag ${stray}`)
+            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+            process.exitCode = 2
+            break
+          }
           const isAnyway = words.includes('--anyway')
           const [summary, ...body] = words.filter(w => w !== '--anyway')
           const note = { summary: summary!, body: body.join(' '), rig, kind, until }
