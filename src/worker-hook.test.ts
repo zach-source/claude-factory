@@ -11030,6 +11030,7 @@ const GLAB_DYNAMIC_DENY = [
   'glab mr $S 5',
   'glab mr -R a/b $S 5',
   'glab api -X $M projects/1/merge_requests/5/approve',
+  'glab api -X $M projects/1/merge_requests/5/notes',
   'glab api -X POST "$EP"',
   'glab api "$EP" -f a=b',
 ]
