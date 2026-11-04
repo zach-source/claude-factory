@@ -11071,6 +11071,10 @@ const GLAB_ALLOW = [
   'glab mr note 5 -m x -- approve',
   'glab api -R x/y projects/:id/merge_requests/5/approvers',
   'glab api >out projects/:id/merge_requests/5',
+  'glab api --output "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api --form "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api -R "$R" -X POST projects/1/merge_requests/5/notes',
+  'glab api --repo "$R" -X POST projects/1/merge_requests/5/notes',
 ]
 for (const g of [
   {},
