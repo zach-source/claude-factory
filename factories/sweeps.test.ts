@@ -159,6 +159,24 @@ test('the monitor prompt files long-firing alerts and long-False Ready condition
     expect(p(id), id).not.toContain('ALERTS_FOR_STATE')
 })
 
+test('the monitor prompt sends an alert closed in the last 7 days to a person', () => {
+  const m = (sweeps.nodes as Record<string, { prompt: string }>)['monitor']!.prompt
+  for (const t of [
+    '--status closed --closed-after <date 7 days ago>',
+    'closed in the last 7 days',
+    'with no factory label, for a person',
+    'name the closed bead in the description',
+  ])
+    expect(m, t).toContain(t)
+  expect(m.indexOf('closed in the last 7 days')).toBeGreaterThan(-1)
+  expect(m.indexOf('closed in the last 7 days')).toBeLessThan(
+    m.indexOf('labels factory, station:incident and sweep-queue:incident'),
+  )
+  expect(m).not.toContain('bd reopen')
+  expect(m).not.toMatch(/--add-label factory/)
+  expect(m).not.toContain('If a closed bead matches, name it in the description.')
+})
+
 test("sweeps.ts stays self-contained: a repo's own copy keeps no import", async () => {
   const { readFileSync } = await import('node:fs')
   const { ownCopy } = await import('../src/cli')
