@@ -950,7 +950,9 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     else if (argv![0] === 'report') {
       try {
         const rows = validUsage(JSON.parse(line).usage, side!.node, side!.seq)
-        if (rows.length) appendUsage(run.id, rows)
+        // first report wins per node+seq: a replayed line must not add rows again
+        if (rows.length && !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq))
+          appendUsage(run.id, rows)
       } catch {} // a bad usage never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       if (!skew) {

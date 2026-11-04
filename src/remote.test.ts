@@ -3308,3 +3308,24 @@ describe('an AX worker blocked report that names a live read waits for mail', ()
     expect(d).toBeLessThan(61 * MIN)
   })
 })
+
+test('report lines replayed for one seq store at most 20 usage rows (claude-factory-4eox)', () => {
+  const seq = launched('r4eox')
+  const usage = Array.from({ length: 20 }, (_, i) => ({
+    session: 's' + i,
+    model: 'm',
+    input: 1,
+    cacheWrite: 0,
+    cacheRead: 0,
+    output: 1,
+    turns: 1,
+    peak: 1,
+  }))
+  const line = (text: string) =>
+    JSON.stringify({ argv: ['report', 'r4eox', String(seq), 'ready', text], from: 'a', at: 1, usage })
+  cluster('Running', { status: 'idle', session: 's1', lines: [line('one'), line('two')] })
+  factory(['tick'])
+  const file = join(home, 'runs', 'r4eox', 'usage.jsonl')
+  expect(readFileSync(file, 'utf8').trim().split('\n').length).toBeLessThanOrEqual(20)
+  rmSync(join(home, 'runs', 'r4eox'), { recursive: true })
+})
