@@ -6933,7 +6933,8 @@ async function mergedPrsFor(
   const list = gl
     ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: id }, e => (firstErr = e))
     : ref
-      ? await githubMergedJson(cli.gh, ref.slug, repo, { pages: 3 })
+      ? // ponytail: 3 pages = the newest 300 closed PRs; an older merge is missed by the pre-check
+        await githubMergedJson(cli.gh, ref.slug, repo, { pages: 3 }, e => (firstErr = e))
       : null
   if (list === null)
     throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh api pulls'} failed`, 200))
@@ -9559,16 +9560,18 @@ async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
     const covered = !!seen && seen.from <= oldest
     const from = covered ? seen.checkedAt - 86_400_000 : oldest
     const ref = rigRef(rig.repo)
+    let pullErr = ''
     const rows = ref
-      ? await githubPulls(spawnGh, ref.slug, rig.repo, {
-          state: 'closed',
-          pages: 10,
-          sort: 'updated',
-          since: from,
-        })
+      ? await githubPulls(
+          spawnGh,
+          ref.slug,
+          rig.repo,
+          { state: 'closed', pages: 10, sort: 'updated', since: from },
+          e => (pullErr = e),
+        )
       : null
     if (!rows) {
-      console.error(`merged-prs: gh api pulls failed for ${name}`)
+      console.error(`merged-prs: gh api pulls failed for ${name}: ${pullErr.trim().split('\n')[0]}`)
       continue
     }
     const text = (v: unknown) => (typeof v === 'string' ? v : '')

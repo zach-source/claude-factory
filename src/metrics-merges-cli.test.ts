@@ -117,6 +117,7 @@ test('a gh failure leaves the run handed-off, exits 0 and prints one stderr line
   expect(r.code).toBe(0)
   expect(r.fates).toEqual({ 'handed-off': 2, closed: 1 })
   expect(r.err.trim().split('\n')).toHaveLength(1)
+  expect(r.err).toMatch(/gh api pulls failed for gh: boom/)
   expect(existsSync(join(home, 'merged-prs.json'))).toBe(false)
 })
 

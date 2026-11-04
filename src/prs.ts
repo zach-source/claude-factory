@@ -946,6 +946,7 @@ export async function githubPulls(
     sort?: 'updated'
     since?: number
   },
+  onErr?: (err: string) => void,
 ): Promise<Json[] | null> {
   const rows: Json[] = []
   for (let page = 1; page <= o.pages; page++) {
@@ -955,7 +956,10 @@ export async function githubPulls(
       timed(cwd),
     )
     const list = res.code === 0 ? asJson(res.out) : null
-    if (!Array.isArray(list)) return null
+    if (!Array.isArray(list)) {
+      onErr?.(res.err)
+      return null
+    }
     rows.push(...(list as Json[]))
     if (list.length < 100) break
     if (o.since !== undefined && !(Date.parse(str((list.at(-1) as Json).updated_at)) >= o.since)) break
@@ -1004,8 +1008,9 @@ export async function githubMergedJson(
   slug: string,
   cwd: string,
   o: { pages: number; head?: string },
+  onErr?: (err: string) => void,
 ): Promise<string | null> {
-  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o })
+  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o }, onErr)
   return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
 }
 
@@ -1195,15 +1200,17 @@ const githubForge = (gh: Gh): Forge => ({
   // path, so the AX gateway gives it the default key (claude-factory-oz6s). The REST list of the run's own
   // repo adds that repo's PRs under the owner's key.
   async search(r) {
+    let pullErr = ''
     const [found, rows] = await Promise.all([
       gh(
         ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
         timed(r.repoDir),
       ),
-      githubPulls(gh, r.runRepo, r.repoDir, { state: 'all', pages: 1 }),
+      // ponytail: one page (the newest 100 PRs); an older own-repo PR is found by the search only
+      githubPulls(gh, r.runRepo, r.repoDir, { state: 'all', pages: 1 }, e => (pullErr = e)),
     ])
     if (found.code !== 0) return found
-    if (!rows) return { code: 1, out: '', err: 'gh api: pull list failed' }
+    if (!rows) return { code: 1, out: '', err: pullErr || 'gh api: pull list failed' }
     const hits = (asJson(found.out) as { url: string; createdAt: string }[] | null) ?? []
     // a hit in both lists folds into one record (foldFound dedupes by url)
     const own = rows

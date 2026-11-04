@@ -435,7 +435,7 @@ const rows = all.map((p: any) => ({
   html_url: p.url,
   title: p.title,
   state: 'closed',
-  merged_at: '2026-10-12T10:00:00Z',
+  merged_at: p.unmerged ? null : '2026-10-12T10:00:00Z',
   merge_commit_sha: p.mergeCommit?.oid,
   head: { ref: p.headRefName, repo: { full_name: 'acme/widget' } },
   base: { ref: 'main', repo: { full_name: 'acme/widget' } },
@@ -624,9 +624,9 @@ test('gh failing (or timing out) fails open: the run still starts, with one disp
     id: string
     error?: string
   }[]
-  expect(
-    rows.some(r => r.id === 'acme-1' && /pre-check skipped: gh api pulls failed/.test(r.error ?? '')),
-  ).toBe(true)
+  expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped: gh: rate limited/.test(r.error ?? ''))).toBe(
+    true,
+  )
   expect(glabCalls()).toEqual([])
 })
 
@@ -685,6 +685,14 @@ test('the GitHub pre-check makes one REST list call and no pr list or search (cl
 test('a merged PR that names a longer id, or a PR closed without a merge, does not reject (claude-factory-oz6s)', () => {
   precheckReset()
   expect(pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-12 lands the thing') }).code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+})
+
+test('a PR that names the id but closed without a merge (merged_at null) does not reject (claude-factory-oz6s)', () => {
+  precheckReset()
+  const rows = JSON.parse(mergedPr('fix: acme-1 lands the thing'))
+  rows[0].unmerged = true
+  expect(pfactory(['beads'], { GH_JSON: JSON.stringify(rows) }).code).toBe(0)
   expect(runDirs()).toHaveLength(1)
 })
 
