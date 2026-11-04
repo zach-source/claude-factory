@@ -5073,6 +5073,8 @@ function glabReason(words: string[], gate: HookGate): string | undefined {
   const { index: ei } = firstVerbIndex(apiArgs, GLAB_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (endpoint === undefined) return undefined
+  // a glob word such as `...approve?x=1` still names the approve path in its literal text
+  if (GLAB_APPROVE_PATH.test(normalizeEndpoint(endpoint))) return GLAB_APPROVE_REASON
   if (dynamicWord(endpoint)) {
     const hasData =
       ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined

@@ -11007,6 +11007,7 @@ const GLAB_APPROVE_DENY = [
   'glab mr approve \\\n5',
 ]
 const GLAB_API_DENY = [
+  'glab api projects/:id/merge_requests/5/approve?x=1',
   'glab api -X POST projects/:id/merge_requests/5/approve',
   'glab api projects/:id/merge_requests/5/approve -f sha=x',
   'glab api --method=POST projects/a%2Fb/merge_requests/5/approve',
@@ -11025,7 +11026,6 @@ const GLAB_API_DENY = [
 ]
 const GLAB_DYNAMIC_DENY = [
   "printf 'mr approve 5' | xargs glab",
-  'glab api projects/:id/merge_requests/5/approve?x=1',
   'glab $V 5',
   'glab mr $S 5',
   'glab mr -R a/b $S 5',
