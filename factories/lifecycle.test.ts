@@ -802,6 +802,23 @@ test('qoub.3: review and check never push; with no pull request they report chan
   }
 })
 
+test('claude-factory-wbac: a security report posts a COMMENT review, only security approves', () => {
+  const lc = lifecycle as Factory
+  for (const node of ['review', 'security', 'check']) {
+    const prompt = lc.nodes[node]!.prompt
+    expect(prompt).toContain('event=COMMENT when you report security')
+    expect(prompt).toContain('event=APPROVE only when you report approve')
+    expect(prompt).not.toContain('also when you report security')
+    expect(prompt).toContain('-f event=<event>')
+    expect(prompt).not.toContain('-f event=APPROVE -F body')
+    expect(prompt).toContain('Do not mark it ready when you report changes or security')
+    expect(prompt).toContain('Reviewed head: <full SHA>')
+  }
+  expect(Object.keys(lc.nodes.security!.next!).sort()).toEqual(['approve', 'changes'])
+  expect(lc.nodes.review!.next!.security).toBe('security')
+  expect(lc.nodes.check!.next!.security).toBe('security')
+})
+
 const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
 const BOT_TOKENS = [
   'In the infra-blocks repo',
