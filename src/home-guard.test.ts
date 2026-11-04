@@ -93,6 +93,105 @@ describe('homeReason', () => {
     expect(homeReason('bash ok.sh', read, H)).toBeUndefined()
   })
 
+  // every named file holds a recursive delete of the home dir (built at run time)
+  const bad = () => 'r' + 'm -rf "$' + 'HOME"\n'
+  const CLI = 'src/cli.ts'
+  const WRK = 'src/worker.ts'
+
+  test.each([
+    `git diff a b ${CLI}`,
+    `git diff origin/main...HEAD -- ${CLI} ${WRK}`,
+    `git -C /abs/wt diff ${CLI}`,
+    `git --no-pager log -p -- ${CLI}`,
+    `grep -n x ${CLI} ${WRK}`,
+    `head -n 50 ${CLI}`,
+    `bd create "t" -d "see src/home-guard.ts (the guard; it reads ${CLI}) & more | x"`,
+    `bd comment x 'see src/home-guard.ts; $(no) \`no\`'`,
+    `git blame ${CLI}`,
+    `git status ${CLI}`,
+    `git diff HEAD~1 HEAD^ -- ${CLI}`,
+    `grep -n 'a|b' ${CLI}`,
+    'bd create -d "see src/home-guard.ts"',
+  ])('allows a read-only command that names a script: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBeUndefined(),
+  )
+
+  test.each([
+    `cat ${CLI} | head -n 5`,
+    `cd /abs/wt && git diff ${CLI}`,
+    `git diff ${CLI} 2>&1 | tail -n 3`,
+    `git diff \\\n  ${CLI}`,
+    `git \\\n diff ${CLI}`,
+    `git diff ${CLI} &> /dev/null`,
+    `(cd /abs/wt && git diff ${CLI})`,
+  ])('denies a read command outside the one-command grammar: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test.each([
+    'bash .scratch/clean.sh',
+    'bun .scratch/x.ts',
+    './cleanup.sh --all',
+    'source x.sh',
+    '. x.sh',
+    'python3 x.py',
+    'deno run x.ts',
+    'tsx x.ts',
+    'timeout 60 bash x.sh',
+    'env ./x.sh',
+    'nohup ./x.sh',
+    'FOO=1 git diff ./x.sh',
+    'GIT_EXTERNAL_DIFF=./x.sh git diff',
+    'cat ./x.sh | bash',
+    `git diff ${CLI}; bash x.sh`,
+    `git diff ${CLI} && ./x.sh`,
+    `git diff ${CLI} & ./x.sh`,
+    `git diff ${CLI}\n./x.sh`,
+    'bd create -d "$(bash x.sh)"',
+    'git -c diff.external=./x.sh diff',
+    'git difftool -x ./x.sh',
+    'git rebase --exec ./x.sh HEAD~1',
+    'git bisect run ./x.sh',
+    '/usr/bin/git diff ./x.sh',
+    '"git" diff ./x.sh',
+    'rg --pre ./x.sh foo',
+    `bash -c 'git diff ${CLI}'`,
+    'git diff x.ts\n{ ./x.sh; }',
+    'cat x;./x.sh',
+    'cat x|./x.sh',
+    'cat x&./x.sh',
+    'cat x||./x.sh',
+  ])('denies a command that can run a script: %s', cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON))
+
+  test.each(['bd create -d "`bash x.sh`"', 'echo $(./x.sh)', '(./x.sh)', 'echo `./x.sh`'])(
+    'denies a script in a backtick, $( or ( word: %s',
+    cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test.each([
+    "git diff #'\n./x.sh #'",
+    "echo $'\\'' ; ./x.sh #'",
+    "cat <<EOF\necho '\nEOF\n./x.sh\necho '",
+    `echo "\${x-"'"}"; ./x.sh; echo "\${x-"'"}"`,
+    `git diff "\${x:-"'"}" ; ./x.sh # "'"`,
+    'cat x \\\\\n./x.sh',
+    'git diff a \\\\\n./x.sh',
+    'cat x \\\\\\\\\n./x.sh',
+    'cat x\\\\\nbash x.sh',
+    'echo "\\" \'"\n./x.sh\necho \'',
+    "cat x \\'\n./x.sh\necho '",
+    'bd create -d "!! x.sh"',
+    "'git' diff ./x.sh",
+    'g""it diff ./x.sh',
+  ])(
+    "denies a fake quote: an unquoted #, $', <<, a nested quote in ${} or an even backslash run before a newline: %j",
+    cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('allows a # inside double quotes', () => {
+    expect(homeReason('bd create -d "issue #12 see x.sh"', bad, H)).toBeUndefined()
+  })
+
   test('the worker hook gives HOME_REASON first', () => {
     expect(denyReason('find ~ -delete', '/Users/pat/wt')).toBe(HOME_REASON)
   })
