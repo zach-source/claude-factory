@@ -14,16 +14,20 @@ import { createActor } from 'xstate'
 import { compile, where } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
-const dir = join(tmpdir(), `start-${process.pid}`)
-const home = join(dir, 'home')
-const bin = join(dir, 'bin')
-const calls = join(dir, 'calls.log')
-const showMode = join(dir, 'show-mode') // found | owned | notfound | timeout | query-timeout | store-missing
-const claimFail = join(dir, 'claim-fail') // marker file: `update --claim` exits 1
-const updateFail = join(dir, 'update-fail') // marker file: any other `update` exits 1
-const claudeConfig = join(dir, 'claude-config')
+// Each test gets a fresh dir: a detached pass of the last test's `factory start` can still write
+// into its home after the test ends, and a shared dir would keep that run (claude-factory-1xyk).
+const root = join(tmpdir(), `start-${process.pid}`)
+let n = 0
+let dir = ''
+let home = ''
+let bin = ''
+let calls = ''
+let showMode = '' // found | owned | notfound | timeout | query-timeout | store-missing
+let claimFail = '' // marker file: `update --claim` exits 1
+let updateFail = '' // marker file: any other `update` exits 1
+let claudeConfig = ''
 
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const run = (args: string[], env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
@@ -140,7 +144,14 @@ const factoryFixture = () => {
 }
 
 function reset() {
-  rmSync(dir, { recursive: true, force: true })
+  dir = join(root, String(++n))
+  home = join(dir, 'home')
+  bin = join(dir, 'bin')
+  calls = join(dir, 'calls.log')
+  showMode = join(dir, 'show-mode')
+  claimFail = join(dir, 'claim-fail')
+  updateFail = join(dir, 'update-fail')
+  claudeConfig = join(dir, 'claude-config')
   mkdirSync(claudeConfig, { recursive: true })
   writeFileSync(join(claudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
   mkdirSync(home, { recursive: true })
@@ -416,7 +427,7 @@ const CLEAR =
 const startHandedOff = (
   mode: string,
   args: string[] = [],
-  marker?: string,
+  marker?: () => string,
   env: Record<string, string> = {},
 ) => {
   reset()
@@ -424,7 +435,7 @@ const startHandedOff = (
   fakeBd('acme')
   fakeHerdr()
   writeFileSync(showMode, mode)
-  if (marker) writeFileSync(marker, '')
+  if (marker) writeFileSync(marker(), '')
   const out = run(['start', factoryFixture(), r, 'acme-1', ...args], env)
   const log = existsSync(calls) ? readFileSync(calls, 'utf8') : ''
   const runs = existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0
@@ -467,7 +478,7 @@ test('the owned gate is unchanged: a refused start clears nothing; --owned clear
 })
 
 test('a refused claim keeps the owner label (claude-factory-h1wj)', () => {
-  const t = startHandedOff('handed-off', [], claimFail)
+  const t = startHandedOff('handed-off', [], () => claimFail)
   expect(t.out.code).not.toBe(0)
   expect(t.out.err).toContain('already claimed')
   expect(t.log).not.toContain(CLEAR)
@@ -475,7 +486,7 @@ test('a refused claim keeps the owner label (claude-factory-h1wj)', () => {
 })
 
 test('a failed owner clear warns but the start still succeeds (claude-factory-h1wj)', () => {
-  const t = startHandedOff('handed-off', [], updateFail)
+  const t = startHandedOff('handed-off', [], () => updateFail)
   expect(t.out.code).toBe(0)
   expect(t.runs).toBe(1)
   expect(t.out.err).toContain('acme-1')
