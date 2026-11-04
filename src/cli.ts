@@ -3602,13 +3602,14 @@ export function shipPrOf(
   return links.find(url => headOf(url) === branch) ?? ''
 }
 
-/** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
 /** the NAME a factory:<name> label takes: the base name of the run's factory file, else the def's name */
 export const factoryLabelName = (run: Run, def: Factory) => {
-  const file = (run.factoryFrom ?? run.factory).split(' at ')[0]!
-  const base = basename(file, extname(file))
+  if (!run.factoryFrom) return def.name // run.factory is the pinned factory.json, not a name
+  const base = basename(run.factoryFrom.split(' at ')[0]!, extname(run.factoryFrom.split(' at ')[0]!))
   return NAME.test(base) ? base : def.name
 }
+
+/** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
 export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
   const b = beads(run.repo, actorOf(run.id))
   const id = run.bead!
