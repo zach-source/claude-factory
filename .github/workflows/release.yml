@@ -83,6 +83,7 @@ jobs:
             notes="${notes:0:60000}"$'\n\n'"Notes cut at 60000 chars. Full text: https://github.com/${GITHUB_REPOSITORY}/blob/${branch}/CHANGELOG.md"
           fi
           gh pr create --base main --head "$branch" --title "release: $VERSION" --body "$notes"
-          # A GITHUB_TOKEN-opened PR starts no pull_request run, so ci.yml's required checks
-          # never report on this head SHA unless something dispatches them. Do that here.
+          # A GITHUB_TOKEN-opened PR starts a pull_request run, but GitHub holds it in
+          # action_required until a person approves it. This dispatch runs ci.yml on the branch.
+          # Its checks do not count toward the PR's required-check rollup.
           gh workflow run ci.yml --ref "$branch"

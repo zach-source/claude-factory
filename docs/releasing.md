@@ -38,7 +38,7 @@ Do this once. Do it before the first real dispatch of `release.yml`
 
    - `src/release.ts` refuses an empty Unreleased section, a version mismatch between the two JSON files, or a tag that already exists.
 
-3. The release job also runs `gh workflow run ci.yml --ref release/vX.Y.Z`. A pull request that `GITHUB_TOKEN` opens starts no `pull_request` run on its own. This step makes the CI checks report on the release PR's head SHA.
+3. The release job also runs `gh workflow run ci.yml --ref release/vX.Y.Z`. A pull request that `GITHUB_TOKEN` opens does start a `pull_request` run of `ci.yml`. GitHub holds it in `action_required` (see step 4). The dispatched run checks the release branch. Its checks do not count toward the PR's check rollup.
 
 4. A person must do two steps before the PR can merge. Agents never approve or merge.
 
