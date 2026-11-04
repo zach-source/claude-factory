@@ -319,6 +319,9 @@ const rt = {
    * more facts and spawns nothing until a restart starts a fresh process. `undefined` means not
    * blocked, or not checked yet. */
   pmBlocked: undefined as string | undefined,
+  /** the first reason this process's patrol fell back to `$.prompt.submit` (claude-factory-drr): one
+   * patrol-log entry and the Rigs tab's red line. `undefined` means no fallback yet. A restart clears it. */
+  patrolFallback: undefined as string | undefined,
   /** true while `pmNow` awaits `factory plan facts`, before `isPlanning` is set (claude-factory-dun.12):
    * `tick()` calls `pmNow` with `void`, so a later tick must not start a second facts gather */
   isGatheringFacts: false,
@@ -719,8 +722,10 @@ async function readPlan($: EngineInterface): Promise<FactoryPlan | undefined> {
  * spawn. The code tries again after PATROL_RETRY_MS, so no mail is lost.
  *
  * A rejected spawn falls back to the pre-subagent path, `$.prompt.submit`, once for this patrol.
- * An old manager with no Agent tool in its `--tools` causes this. A status line says so. The
- * fallback repeats on every later due patrol, until the person restarts the manager.
+ * An old manager with no Agent tool in its `--tools` causes this. A status line says so. When
+ * `tool.list` shows no Agent tool, the code does not try the spawn. The fallback repeats on every
+ * later due patrol, until the person restarts the manager. The first fallback of a process also
+ * writes one `fallback` patrol-log entry and sets `rt.patrolFallback`, which the Rigs tab draws red.
  */
 async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRig[]) {
   const now = await $.clock.now()
@@ -761,6 +766,48 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
   rt.isPatrolling = true
   rt.patrolStartedAt = now
   rt.patrolActions = []
+  // Like pmNow: if tool.list throws (an old engine), the answer is unknown, not blocked.
+  let toolNames: string[] | undefined
+  try {
+    toolNames = (await $.tool.list()).map(t => t.name)
+  } catch {
+    toolNames = undefined
+  }
+  const fallback = async (error: string) => {
+    // an old manager with no Agent tool in --tools: the same commit and fallback the old code did
+    if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
+    rt.unsent = due.kept
+    for (const key of due.keys) rt.seen.add(key)
+    rt.patrolAt = now
+    $.ui.status(
+      `factory: the patrol spawn failed (${line(error, 100)}); it fell back to the main chat. Restart the manager to fix it.`,
+    )
+    // claude-factory-drr: once per process, a log line and a red Rigs line, not only the status line
+    if (rt.patrolFallback === undefined) {
+      rt.patrolFallback = line(error, 300)
+      try {
+        await appendPatrolLog($, {
+          at: now,
+          reason: 'fallback',
+          durationMs: 0,
+          actions: [],
+          report: '',
+          error: rt.patrolFallback,
+        })
+      } catch (err) {
+        $.ui.status(`factory: failed to write the patrol log: ${line(String(err), 160)}`)
+      }
+    }
+    // claude-factory-72v.13: manual() no longer carries the patrol's own loop rules (PATROL does).
+    // The fallback must carry them itself, or the main chat gets due.text with no rules to work it.
+    void $.prompt
+      .submit({ text: `${PATROL(rt.cli)}\n\n${due.text}` })
+      .catch(() => {})
+      .finally(() => {
+        rt.isPatrolling = false
+      })
+  }
+  if (hasAgentTool(toolNames) === false) return fallback('this manager has no Agent tool')
   try {
     const res = await $.agent.spawn({
       subagentType: PATROL_TYPE,
@@ -784,22 +831,7 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
     rt.patrolId = res.agentId
     if (res.agentId) rt.patrolIds = [...rt.patrolIds, res.agentId].slice(-20)
   } catch (err) {
-    // an old manager with no Agent tool in --tools: the same commit and fallback the old code did
-    if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
-    rt.unsent = due.kept
-    for (const key of due.keys) rt.seen.add(key)
-    rt.patrolAt = now
-    $.ui.status(
-      `factory: the patrol spawn failed (${line(String(err), 100)}); it fell back to the main chat. Restart the manager to fix it.`,
-    )
-    // claude-factory-72v.13: manual() no longer carries the patrol's own loop rules (PATROL does).
-    // The fallback must carry them itself, or the main chat gets due.text with no rules to work it.
-    void $.prompt
-      .submit({ text: `${PATROL(rt.cli)}\n\n${due.text}` })
-      .catch(() => {})
-      .finally(() => {
-        rt.isPatrolling = false
-      })
+    await fallback(String(err))
   }
 }
 
@@ -1882,7 +1914,7 @@ export const register: Register = (on, options) => {
           : shown === 'prs'
             ? prsView(p, pr, b)
             : shown === 'rigs'
-              ? rigsView(p, b, pl, rt.pmBlocked)
+              ? rigsView(p, b, pl, rt.pmBlocked, rt.patrolFallback)
               : shown === 'interview'
                 ? interviewView(p, b, dr, dec)
                 : shown === 'runners'

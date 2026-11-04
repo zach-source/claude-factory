@@ -793,7 +793,10 @@ export function backlogView(p: Base, backlog: FactoryBacklog, type = 'all', draf
 }
 
 /** every rig: its cap and how full it is, its goal, where its runs stand, what needs the person */
-export function rigsView(p: Base, board: FactoryBoard, plan: FactoryPlan | null,
+export function rigsView(
+  p: Base,
+  board: FactoryBoard,
+  plan: FactoryPlan | null,
   pmBlocked?: string,
   patrolFallback?: string,
 ) {
