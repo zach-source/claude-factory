@@ -5535,14 +5535,13 @@ const ghRuns = (repo: string, extra: string[]): GhRun[] => {
   return runs
 }
 
-/** the labels of every open bead in `repo`, for the ci-red and flake dedupe; a bd failure throws */
-const openLabels = (repo: string): Set<string> =>
-  new Set(
-    beads(repo, 'factory')
-      .every()
-      .filter(b => b.status !== 'closed')
-      .flatMap(b => b.labels ?? []),
-  )
+/** the labels of the open and the closed beads in `repo`, for the ci-red and flake dedupe; a bd failure throws */
+const beadLabels = (repo: string): { open: Set<string>; closed: Set<string> } => {
+  const all = beads(repo, 'factory').every()
+  const of = (closed: boolean) =>
+    new Set(all.filter(b => (b.status === 'closed') === closed).flatMap(b => b.labels ?? []))
+  return { open: of(false), closed: of(true) }
+}
 
 /** printable ASCII only, so a workflow name or URL cannot carry a control or bidi character into a mail */
 const plain = (s: string, max = 200) => s.replace(/[^\x20-\x7e]/g, '?').slice(0, max)
@@ -5561,7 +5560,8 @@ function ciSweepRead(
   if (station === 'ci') {
     const reds = mainCiReds(ghRuns(rig.repo, ['--branch', branch, '--limit', '100']))
     if (!reds.length) return { action: 'green' }
-    const fresh = newCiReds(reds, openLabels(rig.repo))
+    const { open, closed } = beadLabels(rig.repo)
+    const fresh = newCiReds(reds, open, closed)
     if (!fresh.length) return { action: 'tracked' }
     return {
       action: 'start',
@@ -5580,7 +5580,7 @@ function ciSweepRead(
     ghRuns(rig.repo, ['--branch', branch, '--created', `>=${since}`, '--limit', '1000']),
   ).slice(0, 10)
   if (!flaky.length) return { action: 'quiet' }
-  const labels = openLabels(rig.repo)
+  const labels = beadLabels(rig.repo).open
   const logs = flaky.flatMap(r => {
     try {
       const out = ghRead(rig.repo, [

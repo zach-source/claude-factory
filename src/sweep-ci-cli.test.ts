@@ -139,12 +139,24 @@ test('every key already a label on an open bead: action tracked, no run', () => 
   expect(runDirs()).toEqual([])
 })
 
-test('a closed bead with the key does not dedupe', () => {
+test('a closed bead with the exact key: action tracked, no run', () => {
   setup(['ci'])
   runs([run({ conclusion: 'failure', headSha: 'c'.repeat(40) })])
   writeFileSync(
     join(fx, 'bd-list.json'),
     JSON.stringify([{ id: 'acme-9', status: 'closed', labels: ['ci-red:7-ccccccc'] }]),
+  )
+  factory()
+  expect(journal()).toMatchObject([{ sweep: 'ci', action: 'tracked' }])
+  expect(runDirs()).toEqual([])
+})
+
+test('a closed bead with another SHA of the workflow does not track the red', () => {
+  setup(['ci'])
+  runs([run({ conclusion: 'failure', headSha: 'c'.repeat(40) })])
+  writeFileSync(
+    join(fx, 'bd-list.json'),
+    JSON.stringify([{ id: 'acme-9', status: 'closed', labels: ['ci-red:7-zzzzzzz'] }]),
   )
   factory()
   expect(journal()).toMatchObject([{ sweep: 'ci', action: 'started' }])
