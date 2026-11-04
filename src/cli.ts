@@ -2401,7 +2401,7 @@ export function runTokenSwap(
   const gap = codex ? CODEX_SWAP_GAP_MS : TOKEN_SWAP_WAIT_MS
   if (!needsSwap(hit, state, now, gap)) {
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
-    return waiting ? Math.max(state!.until, state!.ran! + TOKEN_SWAP_WAIT_MS) : state!.until
+    return waiting ? Math.max(state!.until, state!.ran! + gap) : state!.until
   }
   const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
   const ok = p.exitCode === 0
@@ -2419,6 +2419,7 @@ export function runTokenSwap(
   return until
 }
 
+const CODEX_TOKEN_FRESH = 3 // exit code of `codex-token refresh` when it changes nothing
 const CODEX_REFRESH_MS = 12 * 3_600_000 // an access token lasts about 10 days; ccswitch renews under 24 h left
 /**
  * Run FACTORY_AX_CODEX_TOKEN_SWAP when the last run is 12 hours old or older, so the live field is never stale.
@@ -2431,7 +2432,8 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const file = join(home, `token-swap-${runnerName}-codex.json`)
   const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
   if (state && now - state.at < CODEX_REFRESH_MS) return
-  const ok = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode === 0
+  const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
+  const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
   writeJson(file, {
     at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
     until: ok ? now + TOKEN_SWAP_WAIT_MS : now,

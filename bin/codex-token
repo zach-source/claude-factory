@@ -12,7 +12,7 @@
 #   codex-token use E    Make label E (an email) live.
 #   codex-token best     Make live the label with the lowest use, if it is under 100 percent.
 #   codex-token refresh  Copy the session of the live label again when the live access token expires within
-#                        CODEX_TOKEN_MARGIN_HOURS (default 48). Do nothing when it does not. The factory runs
+#                        CODEX_TOKEN_MARGIN_HOURS (default 48). Exit 3 and copy nothing when it does not. The factory runs
 #                        this as FACTORY_AX_CODEX_TOKEN_SWAP, so the copy never expires.
 #
 # You must set these variables. This public script has no private default for them.
@@ -77,8 +77,8 @@ refresh() {
   t=$(op item get "$I" --vault "$V" --fields "label=$CODEX_TOKEN_LIVE_FIELD" --reveal 2>/dev/null || true)
   e=$(exp_of "$t")
   if [ -n "$e" ] && [ "$e" -gt $(($(date +%s) + ${CODEX_TOKEN_MARGIN_HOURS:-48} * 3600)) ]; then
-    echo "label $live is live; its token is still fresh"
-    return 0
+    echo "codex-token: the token of $live is still fresh; nothing copied"
+    exit 3
   fi
   use "$live"
 }
