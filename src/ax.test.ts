@@ -1485,6 +1485,48 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
   }
 })
 
+test('a codex worker re-checks the guard before each turn and fails closed if a turn dropped it', async () => {
+  const own = join(dir, 'own3b')
+  const repo = join(dir, 'repo3b')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const gone = join(dir, 'pin-gone')
+  const execLog = join(dir, 'codex-pin.log')
+  const codex = join(dir, 'codex-pin')
+  writeFileSync(
+    codex,
+    `#!/bin/sh
+case "$*" in *'features list') if [ -f ${gone} ]; then printf 'hooks stable true\\nunified_exec stable true\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; else printf 'hooks stable true\\nunified_exec stable false\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; fi; exit;; esac
+echo "$*" >> ${execLog}
+cat > /dev/null
+touch ${gone}
+echo '{"type":"thread.started","thread_id":"th-1"}'
+`,
+  )
+  chmodSync(codex, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: codex,
+    FACTORY_BRIEF: 'codex brief',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CODEX_HOME: join(own, 'codex'),
+    FACTORY_CODEX_HOME_FILES: '{}',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    worker.prompt(Buffer.from('more').toString('base64'))
+    await expect(worker.serve('o3', { once: true })).rejects.toThrow('unified_exec is not off')
+    expect(readFileSync(execLog, 'utf8').trim().split('\n')).toHaveLength(1)
+    expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('serve died')
+  } finally {
+    process.env = saved
+  }
+})
+
 test('a pi worker names its own session and keeps it across turns', async () => {
   const own = join(dir, 'own4')
   const repo = join(dir, 'repo4')
