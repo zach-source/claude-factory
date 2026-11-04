@@ -1199,6 +1199,12 @@ const unknownSkill = (skill: string, where: string) =>
     ? []
     : [`${where}: skill "${skill}" is not ${Object.keys(VM_PLUGINS).join(' or ')}`]
 
+/** a skills value must be an array of strings: say so with the layer name, before a flatMap fails with no hint */
+const skillsShape = (v: unknown, where: string) =>
+  v === undefined || (Array.isArray(v) && v.every(s => typeof s === 'string'))
+    ? []
+    : [`${where}: skills must be an array of strings`]
+
 /**
  * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
  * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
@@ -1210,7 +1216,8 @@ export function workerSkills(
   node: { skills?: string[] },
   rig?: { skills?: string[] },
 ) {
-  const bad = (rig?.skills ?? []).flatMap(s => unknownSkill(s, 'rig'))
+  const shape = skillsShape(rig?.skills, 'rig')
+  const bad = shape.length ? shape : (rig?.skills ?? []).flatMap(s => unknownSkill(s, 'rig'))
   if (bad.length) fail(bad.join('; '))
   return [
     ...new Set([...(def.skills ?? ['asd-ste100']), ...(rig?.skills ?? []), ...(node.skills ?? [])]),
@@ -1221,9 +1228,14 @@ export function workerSkills(
 const load = async (file: string, pinned: boolean): Promise<Factory> => {
   const def = validate(await readFactory(file))
   const badSkills = [
-    ...(def.skills ?? []).flatMap(s => unknownSkill(s, `factory ${def.name}`)),
-    ...Object.entries(def.nodes).flatMap(([id, n]) => (n.skills ?? []).flatMap(s => unknownSkill(s, id))),
+    ...skillsShape(def.skills, `factory ${def.name}`),
+    ...Object.entries(def.nodes).flatMap(([id, n]) => skillsShape(n.skills, id)),
   ]
+  if (!badSkills.length)
+    badSkills.push(
+      ...(def.skills ?? []).flatMap(s => unknownSkill(s, `factory ${def.name}`)),
+      ...Object.entries(def.nodes).flatMap(([id, n]) => (n.skills ?? []).flatMap(s => unknownSkill(s, id))),
+    )
   if (badSkills.length) throw new Error(`factory ${def.name}:\n  ${badSkills.join('\n  ')}`)
   const unknown = Object.entries(def.nodes).filter(([, n]) => n.runner && !(n.runner in runners))
   if (unknown.length)
@@ -2600,6 +2612,15 @@ export const WORKER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,Agent,WebFetch,WebSe
  * A launch for a different rig writes that shared file with no argv.
  * It would overwrite this rig's hook argv before this rig's worker reads it.
  */
+/** warn for each listed skill that is not on in the person's Claude settings: the worker starts without it */
+export function warnSkillsOff(skills: string[], station: string, on: Record<string, boolean> = {}) {
+  for (const k of skills)
+    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
+      console.warn(
+        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
+      )
+}
+
 export function workerFlags(
   def: Pick<Factory, 'maxContextK'>,
   rig?: Pick<Rig, 'name' | 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'> & { repo?: string },
@@ -2625,12 +2646,7 @@ export function workerFlags(
       ? `worker-settings-${rig!.name}${set}.json`
       : `worker-settings${set}.json`,
   )
-  const on = (user as { enabledPlugins?: Record<string, boolean> }).enabledPlugins ?? {}
-  for (const k of skills)
-    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
-      console.warn(
-        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
-      )
+  warnSkillsOff(skills, station, (user as { enabledPlugins?: Record<string, boolean> }).enabledPlugins)
   const settings = workerSettings(
     user,
     def.maxContextK ?? 200,
@@ -2822,6 +2838,17 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const h = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
   const otel = otelFor(run, node, c, agent, process.env.FACTORY_OTLP_ENDPOINT)
+  if (h === 'codex' || h === 'pi') {
+    let on: Record<string, boolean> | undefined
+    try {
+      on = readJson<{ enabledPlugins?: Record<string, boolean> }>(
+        join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'settings.json'),
+      ).enabledPlugins
+    } catch {
+      // no user settings: every skill warns
+    }
+    warnSkillsOff(skills, node, on)
+  }
   const setup =
     h === 'codex'
       ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)), otel })

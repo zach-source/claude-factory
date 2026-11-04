@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
@@ -66,6 +66,7 @@ import {
   userPluginDirs,
   workerSettings,
   workerSkills,
+  warnSkillsOff,
   WORKER_TOOLS,
   commitIdentity,
   room,
@@ -356,6 +357,43 @@ test('a skills list names only skills the worker image has: factory and station 
     tiny({ nodes: { work: { prompt: 'x', skills: ['nope'], next: { ok: 'done' } } } }),
   )
   await expect(loadFactory(join(dir, 'node.json'))).rejects.toThrow('work: skill "nope" is not asd-ste100')
+})
+
+test('a skills value that is not an array of strings refuses with its layer name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-str-'))
+  const tiny = (extra: object) =>
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
+      ...extra,
+    })
+  writeFileSync(join(dir, 'tiny.json'), tiny({ skills: 'asd-ste100' }))
+  await expect(loadFactory(join(dir, 'tiny.json'))).rejects.toThrow(
+    'factory tiny: skills must be an array of strings',
+  )
+  writeFileSync(
+    join(dir, 'node.json'),
+    tiny({ nodes: { work: { prompt: 'x', skills: 'asd-ste100', next: { ok: 'done' } } } }),
+  )
+  await expect(loadFactory(join(dir, 'node.json'))).rejects.toThrow(
+    'work: skills must be an array of strings',
+  )
+  expect(() => workerSkills({}, {}, { skills: 'asd-ste100' as unknown as string[] })).toThrow(
+    'rig: skills must be an array of strings',
+  )
+})
+
+test('warnSkillsOff warns once per listed skill that is off, for any worker harness', () => {
+  const warn = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    warnSkillsOff(['asd-ste100', 'other'], 'work', { 'asd-ste100@m': true, 'other@m': false })
+    expect(warn.mock.calls.map(c => c[0])).toEqual([
+      'skill other is not on in your Claude settings: the work worker starts without it',
+    ])
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 test('workerSkills is the sorted union of the factory default, the rig and the station', () => {
