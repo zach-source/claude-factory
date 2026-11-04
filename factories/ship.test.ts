@@ -459,6 +459,13 @@ test('deploy and soak share a live-object dedupe core with no escalation (sjwe.2
     'name it in the description',
   ])
     expect(want).toContain(t)
+  const full = liveText(prompt('soak'))
+  expect(full.indexOf(want)).toBeGreaterThanOrEqual(0)
+  for (const t of [
+    'In deploy and soak, put the release version in that comment.',
+    "raise the open bead's priority by one step",
+  ])
+    expect(full.indexOf(t)).toBeGreaterThan(want.length)
   for (const t of ['bd update', '--add-label', '-p ', 'ship', 'release', '{', 'In deploy and soak'])
     expect(want).not.toContain(t)
 })
