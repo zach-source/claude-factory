@@ -7673,6 +7673,14 @@ const MAX_HEAD_DIRS = 8
 // Math.min(2000, remaining) lines below).
 const GATE_BUDGET_MS = 6000
 
+// claude-factory-zzxp: the per-spawn cap of the two alias reads. Only a plain decimal integer
+// in 1..GATE_BUDGET_MS counts. Every other value gives 2000, so a bad value still fails closed.
+export function aliasSpawnCapMs(v: string | undefined): number {
+  return v !== undefined && /^[1-9][0-9]{0,3}$/.test(v) && Number(v) <= GATE_BUDGET_MS ? Number(v) : 2000
+}
+// Test knob, default 2000. The factory never sets it.
+const ALIAS_SPAWN_CAP_MS = aliasSpawnCapMs(process.env.FACTORY_HOOK_ALIAS_TIMEOUT_MS)
+
 /**
  * This memo for `gate` makes `headOf` and `originHead` each spawn git at most one time for one
  * `denyReason` call. One memo covers each push segment, each eval level and each sh -c level that
@@ -7743,7 +7751,7 @@ function memoGate(gate: HookGate): HookGate {
       if (!called) {
         called = true
         const remaining = deadline - Date.now()
-        if (remaining > 0) result = real(Math.min(2000, remaining))
+        if (remaining > 0) result = real(Math.min(ALIAS_SPAWN_CAP_MS, remaining))
       }
       return result
     }
@@ -7760,7 +7768,7 @@ function memoGate(gate: HookGate): HookGate {
       if (!called) {
         called = true
         const remaining = deadline - Date.now()
-        if (remaining > 0) result = real(Math.min(2000, remaining))
+        if (remaining > 0) result = real(Math.min(ALIAS_SPAWN_CAP_MS, remaining))
       }
       return result
     }

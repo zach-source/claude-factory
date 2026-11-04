@@ -2880,7 +2880,7 @@ describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
     sh(repo, 'git', 'add', '.')
     sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
     sh(repo, 'git', 'push', '-q', 'origin', 'HEAD')
-    const fdefFile = join(root, 'two.json')
+    const fdefFile = join(root, `${fdef.name}.json`)
     writeFileSync(fdefFile, JSON.stringify(fdef))
     const herdrLog = join(root, 'herdr.log')
     const fake = join(root, 'fakeherdr')

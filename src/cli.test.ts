@@ -41,6 +41,7 @@ import {
   queuedOwner,
   unshipClosed,
   loadFactory,
+  loadPinned,
   ownCopy,
   paramsOf,
   pickAgent,
@@ -284,6 +285,54 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
 })
 
+const tinyDef = { start: 'work', nodes: { work: { prompt: 'x', next: { ok: 'done' } } } }
+test('a factory file must be named for its file: loadFactory refuses any other name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fname-'))
+  mkdirSync(join(dir, '.factory'))
+  const at = (file: string, text: string) => {
+    writeFileSync(join(dir, '.factory', file), text)
+    return join(dir, '.factory', file)
+  }
+  const rows: [string, string][] = [
+    ['lifecycle.json', JSON.stringify({ extends: 'lifecycle', name: 'ship' })],
+    ['lifecycle.ts', `export default ${JSON.stringify({ ...tinyDef, name: 'ship' })}`],
+    ['foo.json', JSON.stringify({ extends: 'ship' })],
+    ['ship.yaml', 'extends: lifecycle\nname: lifecycle\n'],
+    ['lifecycle.json', JSON.stringify({ extends: 'lifecycle', name: 'Lifecycle' })],
+    ['lifecycle.json', JSON.stringify({ extends: 'lifecycle', name: 'lifecycle ' })],
+    ['lifecycle.json', JSON.stringify({ ...tinyDef, name: 7 })],
+    ['factory.json', JSON.stringify({ extends: 'lifecycle', name: 'ship' })],
+  ]
+  for (const [file, text] of rows)
+    await expect(loadFactory(at(file, text))).rejects.toThrow('must be the file name')
+  for (const f of ['lifecycle.ts', 'release.ts', 'ship.ts', 'sweeps.ts', 'rework.yaml'])
+    expect((await loadFactory(join(import.meta.dir, '..', 'factories', f))).name).toBe(f.replace(/\..*/, ''))
+})
+
+test('loadPinned takes a run pinned copy whose name is not its file name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pinned-'))
+  const file = join(dir, 'factory.json')
+  writeFileSync(file, JSON.stringify({ ...tinyDef, name: 'lifecycle' }))
+  expect((await loadPinned(file)).name).toBe('lifecycle')
+  await expect(loadFactory(file)).rejects.toThrow('must be the file name')
+})
+
+test('factory check refuses a .factory/lifecycle.json named ship', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fcheck-'))
+  mkdirSync(join(dir, '.factory'))
+  const file = join(dir, '.factory', 'lifecycle.json')
+  writeFileSync(file, JSON.stringify({ extends: 'lifecycle', name: 'ship' }))
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, ...laptop } = process.env
+  const env = { ...laptop, FACTORY_HOME: join(dir, 'home'), FACTORY_SELF_UPDATE: '0' }
+  const run = (f: string) => Bun.spawnSync([MEMORY_ADD_CLI, 'check', f], { env })
+  const bad = run(file)
+  expect(bad.exitCode).not.toBe(0)
+  expect(bad.stderr.toString()).toContain('must be the file name "lifecycle"')
+  const good = run(join(import.meta.dir, '..', 'factories', 'lifecycle.ts'))
+  expect(good.exitCode).toBe(0)
+  expect(good.stdout.toString()).toContain('lifecycle: valid')
+})
+
 test('a skills list names only skills the worker image has: factory and station layers refuse the rest', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'skills-'))
   const tiny = (extra: object) =>
@@ -293,8 +342,8 @@ test('a skills list names only skills the worker image has: factory and station 
       nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
       ...extra,
     })
-  writeFileSync(join(dir, 'ok.json'), tiny({ skills: ['asd-ste100'] }))
-  expect((await loadFactory(join(dir, 'ok.json'))).skills).toEqual(['asd-ste100'])
+  writeFileSync(join(dir, 'tiny.json'), tiny({ skills: ['asd-ste100'] }))
+  expect((await loadFactory(join(dir, 'tiny.json'))).skills).toEqual(['asd-ste100'])
   writeFileSync(join(dir, 'bad.json'), tiny({ skills: ['nope'] }))
   await expect(loadFactory(join(dir, 'bad.json'))).rejects.toThrow('skill "nope" is not asd-ste100')
   for (const bad of ['', 'ASD-STE100']) {
