@@ -1949,7 +1949,7 @@ test('buildPrs on GitHub: list and view go through REST only; a failed check-run
 
 import { githubWatchView } from './prs'
 
-test('githubWatchView: pull, then reviews and comments with --paginate --slurp, flattened; any failed call gives null', async () => {
+test('githubWatchView: pull, then reviews and comments one call per page, flattened; any failed call gives null', async () => {
   const calls: string[][] = []
   const answer =
     (comments: GhResult | null): Gh =>
@@ -1974,24 +1974,20 @@ test('githubWatchView: pull, then reviews and comments with --paginate --slurp, 
           code: 0,
           err: '',
           out: JSON.stringify([
-            [
-              {
-                user: { login: 'a' },
-                author_association: 'MEMBER',
-                state: 'APPROVED',
-                submitted_at: '2026-10-12T09:00:00Z',
-                body: '',
-              },
-            ],
-            [
-              {
-                user: { login: 'b' },
-                author_association: 'NONE',
-                state: 'COMMENTED',
-                submitted_at: '2026-10-12T09:01:00Z',
-                body: '',
-              },
-            ],
+            {
+              user: { login: 'a' },
+              author_association: 'MEMBER',
+              state: 'APPROVED',
+              submitted_at: '2026-10-12T09:00:00Z',
+              body: '',
+            },
+            {
+              user: { login: 'b' },
+              author_association: 'NONE',
+              state: 'COMMENTED',
+              submitted_at: '2026-10-12T09:01:00Z',
+              body: '',
+            },
           ]),
         }
       return (
@@ -1999,14 +1995,12 @@ test('githubWatchView: pull, then reviews and comments with --paginate --slurp, 
           code: 0,
           err: '',
           out: JSON.stringify([
-            [
-              {
-                user: { login: 'a' },
-                author_association: 'OWNER',
-                created_at: '2026-10-12T09:02:00Z',
-                body: 'hi',
-              },
-            ],
+            {
+              user: { login: 'a' },
+              author_association: 'OWNER',
+              created_at: '2026-10-12T09:02:00Z',
+              body: 'hi',
+            },
           ]),
         }
       )
@@ -2024,9 +2018,9 @@ test('githubWatchView: pull, then reviews and comments with --paginate --slurp, 
   })
   expect(v!.notes!.map(n => n.person)).toEqual([true, false, true])
   expect(calls.map(c => c.join(' ')).sort()).toEqual([
-    'api --paginate --slurp repos/acme/widget/issues/5/comments?per_page=100',
-    'api --paginate --slurp repos/acme/widget/pulls/5/reviews?per_page=100',
+    'api repos/acme/widget/issues/5/comments?per_page=100&page=1',
     'api repos/acme/widget/pulls/5',
+    'api repos/acme/widget/pulls/5/reviews?per_page=100&page=1',
   ])
   expect(
     await githubWatchView(
@@ -2298,4 +2292,47 @@ describe('githubPulls: sort and since (oz6s)', () => {
     await githubPulls(gh, 'acme/widget', '/r', { state: 'closed', pages: 2, sort: 'updated', since })
     expect(urls).toHaveLength(2)
   })
+})
+
+test('githubWatchView: 150 reviews make 2 calls named by owner and page, never --paginate; a failed page 2 gives null', async () => {
+  const run = async (failPage2: boolean) => {
+    const calls: string[] = []
+    const gh: Gh = async argv => {
+      const path = argv.at(-1)!
+      calls.push(argv.join(' '))
+      if (path.endsWith('/pulls/5'))
+        return {
+          code: 0,
+          err: '',
+          out: JSON.stringify({
+            state: 'open',
+            draft: false,
+            updated_at: '2026-10-12T09:00:00Z',
+            mergeable: true,
+            head: { ref: 'factory/x', sha: 'abc' },
+            base: { ref: 'main' },
+          }),
+        }
+      if (path.includes('/comments?')) return { code: 0, err: '', out: '[]' }
+      if (path.endsWith('&page=2') && failPage2) return { code: 1, err: 'boom', out: '' }
+      const n = path.endsWith('&page=1') ? 100 : 50
+      const row = {
+        user: { login: 'a' },
+        author_association: 'MEMBER',
+        state: 'COMMENTED',
+        submitted_at: '2026-10-12T09:00:00Z',
+        body: '',
+      }
+      return { code: 0, err: '', out: JSON.stringify(Array.from({ length: n }, () => row)) }
+    }
+    const v = await githubWatchView(gh, 'https://github.com/acme/widget/pull/5', '/tmp')
+    return { v, calls: calls.filter(c => c.includes('/reviews?')) }
+  }
+  const ok = await run(false)
+  expect(ok.v!.notes).toHaveLength(150)
+  expect(ok.calls).toEqual([
+    'api repos/acme/widget/pulls/5/reviews?per_page=100&page=1',
+    'api repos/acme/widget/pulls/5/reviews?per_page=100&page=2',
+  ])
+  expect((await run(true)).v).toBeNull()
 })

@@ -973,10 +973,17 @@ export async function githubWatchView(gh: Gh, url: string, cwd: string): Promise
   const slug = githubSlugOf(url)
   if (!slug) return null
   const path = `repos/${slug}/pulls/${prRef(url)!.number}`
+  // One call per page, not `--paginate`: gh follows the Link URL /repositories/<id>/..., which has no owner in
+  // the path, so the AX gateway sends the default key for pages 2 and later (claude-factory-oz6s).
   const pages = async (p: string): Promise<unknown[] | null> => {
-    const res = await gh(['api', '--paginate', '--slurp', p], { cwd, timeout: 60_000 })
-    const list = res.code === 0 ? asJson(res.out) : null
-    return Array.isArray(list) ? list.flat() : null
+    const rows: unknown[] = []
+    for (let page = 1; ; page++) {
+      const res = await gh(['api', `${p}&page=${page}`], { cwd, timeout: 60_000 })
+      const list = res.code === 0 ? asJson(res.out) : null
+      if (!Array.isArray(list)) return null
+      rows.push(...list)
+      if (list.length < 100) return rows
+    }
   }
   const [pull, reviews, comments] = await Promise.all([
     gh(['api', path], { cwd, timeout: 60_000 }),

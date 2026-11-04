@@ -172,8 +172,8 @@ function restPullFact(n: unknown): (PrFact & { number: number }) | null {
 }
 
 /**
- * Parses the stdout of `gh api --paginate repos/<owner>/<repo>/pulls --jq tojson`. The `prFacts()` function in
- * cli.ts builds the call. Each page is one JSON line: an array of REST pulls. A REST read names the owner in the
+ * Parses the stdout of `gh api repos/<owner>/<repo>/pulls?...&page=N --jq tojson`, one call per page. The
+ * `prFacts()` function in cli.ts builds the calls. Each page is one JSON line: an array of REST pulls. A REST read names the owner in the
  * path, so the AX gateway sends the owner's key. GraphQL has no owner in the path (claude-factory-oz6s).
  *
  * This function returns null, never a partial list, when it has any doubt (claude-factory-ph8):
@@ -181,7 +181,7 @@ function restPullFact(n: unknown): (PrFact & { number: number }) | null {
  * - An element lacks `number`, `state` (`open` or `closed`), `merged_at` (string or null), `head.ref`,
  *   a non-empty `head.sha`, `head.repo` (null or an object with `full_name`) or `base.repo.full_name`
  *
- * `gh` exits non-zero when any page fails, so a lost page never reaches this function. `prFacts()` lists in
+ * `prFacts()` returns null when the call for any page fails, so a lost page never reaches this function. It lists in
  * ascending creation order: a PR opened during the read only adds at the end.
  * A PR number repeats across pages only when two page requests overlap. Remove duplicates by number.
  */

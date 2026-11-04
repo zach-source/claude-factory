@@ -410,7 +410,7 @@ test('16: a non-factory branch on a run worktree path removes the worktree, neve
   expect(p.removeBranches).toEqual([])
 })
 
-// parsePrPages() parses the stdout of `gh api --paginate repos/<o>/<r>/pulls --jq tojson` (claude-factory-oz6s):
+// parsePrPages() parses the stdout of `gh api repos/<o>/<r>/pulls?...&page=N --jq tojson` (one call per page) (claude-factory-oz6s):
 // one JSON array of REST pulls per line. These tests prove it never returns a partial list.
 type RestPull = {
   number: unknown
