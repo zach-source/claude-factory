@@ -134,6 +134,21 @@ test("dispatch never starts a run at a Linear-sourced bead's station:<name> labe
   expect(gotoOf()).toEqual([]) // the run stays at the factory's own start station, not "review"
 })
 
+test('the goal of a Linear-sourced bead carries the Linear-sourced line; another goal does not (claude-factory-5ufp)', () => {
+  const goals = () => {
+    const runsDir = join(home, 'runs')
+    return readdirSync(runsDir)
+      .map(id => readFileSync(join(runsDir, id, 'run.json'), 'utf8'))
+      .join()
+  }
+  reset('https://linear.app/acme/issue/STI-1')
+  expect(factory(['beads']).code).toBe(0)
+  expect(goals()).toContain('Linear-sourced:')
+  reset(undefined)
+  expect(factory(['beads']).code).toBe(0)
+  expect(goals()).not.toContain('Linear-sourced:')
+})
+
 test('a station:<name> label a person wrote by hand (no Linear external_ref) still starts the run there', () => {
   reset(undefined)
   const out = factory(['beads'])
