@@ -148,6 +148,10 @@ describe('homeReason', () => {
     'rg --pre ./x.sh foo',
     `bash -c 'git diff ${CLI}'`,
     'git diff x.ts\n{ ./x.sh; }',
+    'cat x;./x.sh',
+    'cat x|./x.sh',
+    'cat x&./x.sh',
+    'cat x||./x.sh',
   ])('denies a command that can run a script: %s', cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON))
 
   test.each(['bd create -d "`bash x.sh`"', 'echo $(./x.sh)', '(./x.sh)', 'echo `./x.sh`'])(
@@ -155,8 +159,14 @@ describe('homeReason', () => {
     cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
-  test.each(["git diff #'\n./x.sh #'", "echo $'\\'' ; ./x.sh #'", "cat <<EOF\necho '\nEOF\n./x.sh\necho '"])(
-    "denies a fake quote: an unquoted #, $' or <<: %j",
+  test.each([
+    "git diff #'\n./x.sh #'",
+    "echo $'\\'' ; ./x.sh #'",
+    "cat <<EOF\necho '\nEOF\n./x.sh\necho '",
+    `echo "\${x-"'"}"; ./x.sh; echo "\${x-"'"}"`,
+    `git diff "\${x:-"'"}" ; ./x.sh # "'"`,
+  ])(
+    "denies a fake quote: an unquoted #, $', << or a nested quote in ${}: %j",
     cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
