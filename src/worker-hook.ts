@@ -159,6 +159,12 @@ export const APPROVE_REASON =
   '--comment --body-file f, or --request-changes. This hook also denies a gh call that creates a ' +
   'review with an event it cannot read. Do not retry this command.'
 
+// claude-factory-hoz8
+export const GLAB_APPROVE_REASON =
+  'The factory denies this command: the factory has no GitLab reviewer identity, so only a person ' +
+  'approves a merge request. Post a note instead: glab mr note N -m "<text>". This hook also denies a ' +
+  'glab approve call it cannot read. Do not retry this command.'
+
 // claude-factory-zl5.22
 export const ALIAS_REASON =
   'The factory denies this command: gh alias set and git config alias.<name> name another ' +
@@ -3076,7 +3082,7 @@ function xargsHidesOperand(words: string[]): boolean {
     if (baseWord(words[i]!.replace(/[<>][\s\S]*$/, '')).toLowerCase() !== 'xargs') continue
     for (let j = i + 1; j < words.length; j++) {
       const b = baseWord(words[j]!)
-      if (b === 'git' || b === 'gh') return true
+      if (b === 'git' || b === 'gh' || b === 'glab') return true
     }
   }
   return false
@@ -5037,6 +5043,73 @@ function ghAliasDenied(subArgs: string[]): string | undefined {
   return sub === 'set' || sub === 'import' ? ALIAS_REASON : undefined
 }
 
+// a glab REST path that approves a merge request; read on the decoded, lower-case path
+const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
+const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output', '-R', '--repo'])
+
+/** True when the decoded endpoint text names a merge request approve path, or cannot be decoded. */
+function glabApprovePath(endpoint: string): boolean {
+  const decoded = decodeApiPath(endpoint)
+  if (decoded === undefined) return true
+  return [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded].some(p =>
+    GLAB_APPROVE_PATH.test(p),
+  )
+}
+
+/**
+ * claude-factory-hoz8: the reason to deny a `glab` call that can record a merge request approval,
+ * or that hides the part which decides this. `words` start at the `glab` word.
+ * The factory has no GitLab reviewer identity, so this denies at every station and ignores
+ * `gate.reviewer`. It reads three channels, and fails closed on a part it cannot read:
+ * `glab mr approve` (a word scan, so an unknown flag cannot hide the word), a REST path
+ * `.../merge_requests/N/approve` with any method, and a GraphQL approve mutation.
+ * Like `ghReason`, it scans the words as given and again without redirect words.
+ */
+function glabReason(words: string[], gate: HookGate): string | undefined {
+  const tail = words.slice(1)
+  const dropped = dropRedirectWords(tail)
+  return (
+    glabReasonOn(tail, gate) ?? (dropped.length === tail.length ? undefined : glabReasonOn(dropped, gate))
+  )
+}
+
+function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
+  const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
+  if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
+  if (hasMutatingWordBeforeDashDash(tail, new Set(['mr']))) {
+    const mi = tail.indexOf('mr')
+    const rest = tail.slice(mi + 1)
+    const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+    if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
+  }
+  if (!hasMutatingWordBeforeDashDash(tail, new Set(['api']))) return undefined
+  const apiArgs = expandGhShortClusters(tail.slice(tail.indexOf('api') + 1))
+  const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
+  if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
+  // every word that is not a flag or a flag value could be the endpoint: check each one
+  const endpoints: string[] = []
+  for (let i = 0; i < apiArgs.length; i++) {
+    const w = apiArgs[i]!
+    if (GLAB_API_VALUE_FLAGS.has(w)) i++
+    else if (!w.startsWith('-')) endpoints.push(w)
+  }
+  for (const endpoint of endpoints) {
+    // a glob word such as `...approve?x=1` still names the approve path in its literal text
+    if (glabApprovePath(endpoint)) return GLAB_APPROVE_REASON
+    if (dynamicWord(endpoint)) {
+      const hasData =
+        ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
+      if ((methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() !== 'GET') return DYNAMIC_VERB_REASON
+    } else if (isGraphqlEndpoint(endpoint)) {
+      const { texts, unresolved } = graphqlTexts(apiArgs, gate)
+      if (unresolved) return GLAB_APPROVE_REASON
+      if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
+    }
+  }
+  return undefined
+}
+
 /**
  * True when a word in `words` is a bare `gh` token (claude-factory-zl5).
  * From that word on, the words can start a command this guard must deny.
@@ -5064,6 +5137,10 @@ function anyGhReason(
     }
     if (baseWord(words[j]!) === 'gh') {
       const r = ghReason(words.slice(j), gate, state, moved)
+      if (r) return r
+    }
+    if (baseWord(words[j]!) === 'glab') {
+      const r = glabReason(words.slice(j), gate)
       if (r) return r
     }
   }

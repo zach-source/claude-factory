@@ -690,7 +690,7 @@ export const forgeNote = (gitlabHost?: string): string[] =>
         '- gh pr create -> glab mr create',
         '- gh pr view <n> --comments -> glab mr view <n> --comments',
         '- gh pr comment -> glab mr note <n> -m "<text>"',
-        '- gh pr review --comment -> glab mr note <n> -m "<text>"; --approve -> glab mr approve <n>',
+        '- gh pr review --comment or --approve -> glab mr note <n> -m "<text>" (the factory denies glab mr approve: only a person approves a merge request)',
         '- gh pr checks -> glab ci status',
         '- gh api repos/... -> glab api projects/:id/...',
       ]
