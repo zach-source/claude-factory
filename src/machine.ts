@@ -1081,7 +1081,8 @@ export function compile(def: Factory) {
           guard: ({ event }: { event: Ev }) => event.type === 'GOTO' && event.node === id,
           target: `.${id}`,
           reenter: true,
-          actions: assign({ wakeAt: 0 }), // goto skips any wait: "run it now"
+          // goto skips any wait ("run it now") and grants a fresh step budget, the same as RETRY
+          actions: assign(({ context }) => ({ wakeAt: 0, budget: context.seq + (def.maxSteps ?? 20) })),
         })),
       ABORT: '.aborted',
     },
