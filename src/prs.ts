@@ -938,11 +938,18 @@ export async function githubPulls(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { state: 'open' | 'closed' | 'all'; pages: number; head?: string },
+  o: {
+    state: 'open' | 'closed' | 'all'
+    pages: number
+    head?: string
+    /** sort by update time, and stop after a page whose last row was updated before `since` (ms) */
+    sort?: 'updated'
+    since?: number
+  },
 ): Promise<Json[] | null> {
   const rows: Json[] = []
   for (let page = 1; page <= o.pages; page++) {
-    const q = `state=${o.state}&sort=created&direction=desc&per_page=100&page=${page}`
+    const q = `state=${o.state}&sort=${o.sort ?? 'created'}&direction=desc&per_page=100&page=${page}`
     const res = await gh(
       ['api', `repos/${slug}/pulls?${q}${o.head ? `&head=${encodeURIComponent(o.head)}` : ''}`],
       timed(cwd),
@@ -951,6 +958,7 @@ export async function githubPulls(
     if (!Array.isArray(list)) return null
     rows.push(...(list as Json[]))
     if (list.length < 100) break
+    if (o.since !== undefined && !(Date.parse(str((list.at(-1) as Json).updated_at)) >= o.since)) break
   }
   return rows
 }

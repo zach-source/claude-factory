@@ -9462,9 +9462,11 @@ const cachedMerges = (c: MergedCache) =>
 /** records with mergedAt set from the cache alone; no gh call */
 const withMerges = (recs: RunRecord[]) => attachMerges(recs, cachedMerges(readMerged()))
 
-/** `withMerges`, after one `gh pr list --state merged` for each GitHub rig that has a handed-off run the
+/** `withMerges`, after one REST `pulls?state=closed&sort=updated` read for each GitHub rig that has a handed-off run the
  * cache does not match, at most once in 10 min. A gh failure prints one line and leaves the run handed-off.
- * ponytail: -L 1000 caps one lookup; a full page moves `from` to its oldest row, so older merges stay unmatched. */
+ * GraphQL (`gh pr list --search`) has no owner in the path, so the AX gateway gave it the wrong key (claude-factory-oz6s).
+ * A PR merged at or after `from` was updated at or after `from`, so the read stops after a page that ends before it.
+ * ponytail: 10 pages (1000 PRs) cap one lookup; a capped read moves `from` to its last update time, so older merges stay unmatched. */
 async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
   const cache = readMerged()
   const open = withMerges(recs).filter(r => fate(r) === 'handed-off' && r.rig)
@@ -9478,39 +9480,27 @@ async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
     const oldest = Math.min(...open.filter(r => r.rig === name).map(r => r.createdAt))
     const covered = !!seen && seen.from <= oldest
     const from = covered ? seen.checkedAt - 86_400_000 : oldest
-    const p = await spawnGh(
-      [
-        'pr',
-        'list',
-        '--state',
-        'merged',
-        '--search',
-        `merged:>=${new Date(from).toISOString().slice(0, 10)}`,
-        '-L',
-        '1000',
-        '--json',
-        'url,headRefName,mergedAt',
-      ],
-      { cwd: rig.repo, timeout: 30_000 },
-    )
-    let rows: unknown
-    try {
-      rows = p.code === 0 ? JSON.parse(p.out) : undefined
-    } catch {}
-    if (!Array.isArray(rows)) {
-      console.error(
-        `merged-prs: gh pr list failed for ${name}: ${clip(p.err.trim().split('\n')[0] || 'bad output', 200)}`,
-      )
+    const ref = rigRef(rig.repo)
+    const rows = ref
+      ? await githubPulls(spawnGh, ref.slug, rig.repo, {
+          state: 'closed',
+          pages: 10,
+          sort: 'updated',
+          since: from,
+        })
+      : null
+    if (!rows) {
+      console.error(`merged-prs: gh api pulls failed for ${name}`)
       continue
     }
-    let oldestRow = Infinity
+    const text = (v: unknown) => (typeof v === 'string' ? v : '')
     for (const x of rows) {
-      const at = Date.parse(x?.mergedAt)
-      if (typeof x?.url !== 'string' || typeof x?.headRefName !== 'string' || Number.isNaN(at)) continue
-      cache.prs[x.url] = { head: x.headRefName, mergedAt: at }
-      oldestRow = Math.min(oldestRow, at)
+      const at = Date.parse(text(x.merged_at))
+      const head = text((x.head as { ref?: unknown } | undefined)?.ref)
+      if (at >= from && head && text(x.html_url)) cache.prs[text(x.html_url)] = { head, mergedAt: at }
     }
-    const reached = rows.length >= 1000 ? oldestRow : from
+    const lastUpdated = Date.parse(text(rows.at(-1)?.updated_at))
+    const reached = rows.length >= 1000 && lastUpdated >= from ? lastUpdated : from
     cache.rigs[name] = { checkedAt: now, from: covered ? Math.min(seen.from, reached) : reached }
     dirty = true
   }

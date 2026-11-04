@@ -13,6 +13,20 @@ const calls = join(dir, 'gh-calls')
 const reply = join(dir, 'gh-reply')
 const fail = join(dir, 'gh-fail')
 
+// a REST pull (claude-factory-oz6s): the merge date is merged_at, and a closed PR without a merge has null
+const pull = (
+  url: string,
+  ref: string,
+  mergedAt: string | null,
+  updatedAt = mergedAt ?? new Date().toISOString(),
+) => ({
+  html_url: url,
+  head: { ref },
+  state: 'closed',
+  merged_at: mergedAt,
+  updated_at: updatedAt,
+})
+
 const git = (cwd: string, ...a: string[]) => Bun.spawnSync(['git', '-C', cwd, ...a])
 const repo = (name: string, origin: string) => {
   const p = join(dir, name)
@@ -58,12 +72,8 @@ beforeEach(() => {
   writeFileSync(
     reply,
     JSON.stringify([
-      {
-        url: 'https://github.com/acme/widget/pull/1',
-        headRefName: 'factory/a-1',
-        mergedAt: new Date().toISOString(),
-      },
-      { url: 'https://github.com/acme/widget/pull/2', headRefName: 'bad', mergedAt: 'not a date' },
+      pull('https://github.com/acme/widget/pull/1', 'factory/a-1', new Date().toISOString()),
+      pull('https://github.com/acme/widget/pull/2', 'bad', 'not a date'),
     ]),
   )
 })
@@ -121,4 +131,31 @@ test('an unmatched run makes one gh call in 10 min, however often metrics runs',
   expect(metricsJson().fates).toEqual({ 'handed-off': 2, closed: 1 })
   metricsJson()
   expect(callCount()).toBe(1)
+})
+
+test('a closed PR with no merge date is not shipped, and a PR merged before the window is not cached', () => {
+  writeFileSync(
+    reply,
+    JSON.stringify([
+      pull('https://github.com/acme/widget/pull/3', 'factory/a-1', null),
+      pull(
+        'https://github.com/acme/widget/pull/4',
+        'factory/a-1',
+        '2020-01-01T00:00:00Z',
+        new Date().toISOString(),
+      ),
+    ]),
+  )
+  expect(metricsJson().fates).toEqual({ 'handed-off': 2, closed: 1 })
+  expect(existsSync(join(home, 'merged-prs.json'))).toBe(true)
+  expect(JSON.parse(readFileSync(join(home, 'merged-prs.json'), 'utf8')).prs).toEqual({})
+})
+
+test('the lookup is one REST pulls call, sorted by update time, with no GraphQL', () => {
+  const log = join(dir, 'gh-args')
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$PWD" >> ${calls}\necho "$*" >> ${log}\ncat ${reply}\n`)
+  metricsJson()
+  const args = readFileSync(log, 'utf8')
+  expect(args).toContain('api repos/acme/widget/pulls?state=closed&sort=updated&direction=desc')
+  expect(args).not.toMatch(/pr list|graphql|--search/)
 })

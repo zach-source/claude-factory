@@ -2250,3 +2250,52 @@ describe('buildPrs: the search adds the run repo REST list (oz6s)', () => {
     expect(rows[0]!.prs.filter(p => p.number === 804)).toHaveLength(1)
   })
 })
+
+describe('githubPulls: sort and since (oz6s)', () => {
+  const full = (updated: string) => Array.from({ length: 100 }, () => ({ updated_at: updated }))
+  const seq = (pages: unknown[][]) => {
+    const urls: string[] = []
+    const gh: Gh = async argv => {
+      urls.push(argv[1]!)
+      const page = pages[urls.length - 1]
+      return page ? { code: 0, out: JSON.stringify(page), err: '' } : { code: 1, out: '', err: 'no page' }
+    }
+    return { gh, urls }
+  }
+  const since = Date.parse('2026-10-10T00:00:00Z')
+
+  test('without sort and since, the URL is the created-order one', async () => {
+    const { gh, urls } = seq([[]])
+    await githubPulls(gh, 'acme/widget', '/r', { state: 'closed', pages: 3 })
+    expect(urls).toEqual([
+      'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1',
+    ])
+  })
+
+  test('sort=updated stops after a full page whose last row is older than since', async () => {
+    const { gh, urls } = seq([
+      full('2026-10-11T00:00:00Z'),
+      full('2026-10-09T00:00:00Z'),
+      full('2026-10-08T00:00:00Z'),
+    ])
+    const rows = await githubPulls(gh, 'acme/widget', '/r', {
+      state: 'closed',
+      pages: 10,
+      sort: 'updated',
+      since,
+    })
+    expect(rows).toHaveLength(200)
+    expect(urls).toHaveLength(2)
+    expect(urls[0]).toContain('sort=updated&direction=desc')
+  })
+
+  test('sort=updated reads on while the last row is not older than since, up to the page cap', async () => {
+    const { gh, urls } = seq([
+      full('2026-10-11T00:00:00Z'),
+      full('2026-10-11T00:00:00Z'),
+      full('2026-10-11T00:00:00Z'),
+    ])
+    await githubPulls(gh, 'acme/widget', '/r', { state: 'closed', pages: 2, sort: 'updated', since })
+    expect(urls).toHaveLength(2)
+  })
+})
