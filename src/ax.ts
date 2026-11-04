@@ -486,14 +486,7 @@ export function egressPolicy(
       // GITHUB_BASIC_MANAGER, so it gets the REST API rule but not this one
       ...(vault && manager
         ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
-            rule(
-              apiHosts,
-              'Authorization',
-              'Bearer ',
-              reviewer && owner === githubOwner ? 'GITHUB_REVIEWER' : key,
-              undefined,
-              [`/repos/${owner}/`],
-            ),
+            rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
             ...(githubKey === 'GITHUB_BASIC'
               ? [rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`])]
               : []),
