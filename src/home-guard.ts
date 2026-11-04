@@ -2,8 +2,8 @@
  * The home-directory guard (claude-factory: a worktree cleanup script deleted the person's home).
  * Two layers use it:
  *   - `homeReason` runs first in the worker hook. It reads the raw command text, and the text of
- *     each script file the command runs, before any parse. A delete word plus a whole-home
- *     reference denies the call.
+ *     each script file the command names (unless the whole command is read-only), before any
+ *     parse. A delete word plus a whole-home reference denies the call.
  *   - `rmSafe` replaces each recursive `rmSync` in the runner. It refuses `/`, the home dir and
  *     every dir above the home dir.
  */
@@ -70,11 +70,80 @@ const hits = (text: string, word: RegExp) => {
 
 // a word that names a script file: a script extension, or a ./ or / path
 const SCRIPT =
-  /(?:^|[\s'"=])((?:\.{0,2}\/)?[\w./-]+\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)|\.{1,2}\/[\w./-]+)(?=$|[\s'";&|)])/g
+  /(?:^|[\s'"=(`])((?:\.{0,2}\/)?[\w./-]+\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)|\.{1,2}\/[\w./-]+)(?=$|[\s'";&|)`])/g
+
+// the only command words of a read-only command: none of them runs a file it is given
+const READERS = new Set([
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'ls',
+  'diff',
+  'grep',
+  'echo',
+  'printf',
+  'cd',
+  'bd',
+  'git',
+])
+const GIT_SUBS = new Set(['diff', 'log', 'show', 'status', 'blame'])
+
+/**
+ * True when each segment of `command` starts with a bare reader word, and no backtick or `$(`
+ * is outside single quotes. For git, only -C <dir> and --no-pager can come before a read
+ * subcommand. Any other form gives false (fail closed), so the script read runs.
+ * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
+ * textconv) is not covered. False denies stay for bun test with a file, sed, rg, awk, an
+ * absolute-path git, and bd text in double quotes with `$(` or a backtick.
+ */
+function readOnly(command: string): boolean {
+  const cmd = command.replace(/\\\n/g, ' ')
+  const segs: string[] = []
+  let cur = ''
+  let q = ''
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i]!
+    if (q !== "'" && (c === '`' || (c === '$' && cmd[i + 1] === '('))) return false
+    if (q) {
+      if (c === '\\' && q === '"') cur += c + (cmd[++i] ?? '')
+      else {
+        if (c === q) q = ''
+        cur += c
+      }
+      continue
+    }
+    if (c === '\\') {
+      cur += c + (cmd[++i] ?? '')
+      continue
+    }
+    if (c === "'" || c === '"') q = c
+    const redirect = c === '&' && (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>')
+    if (/[;&|()\n]/.test(c) && !redirect) {
+      segs.push(cur)
+      cur = ''
+    } else cur += c
+  }
+  segs.push(cur)
+  return segs.every(s => {
+    const w = s.trim().split(/\s+/).filter(Boolean)
+    if (!w.length) return true
+    if (!READERS.has(w[0]!)) return false
+    if (w[0] !== 'git') return true
+    let i = 1
+    for (;;) {
+      if (w[i] === '-C') i += 2
+      else if (w[i] === '--no-pager') i++
+      else break
+    }
+    return GIT_SUBS.has(w[i] ?? '')
+  })
+}
 
 /**
  * HOME_REASON when `command`, or a script file it names, holds a delete word and a whole-home
  * word. `readFile` reads a named script (small files only); without it, only the command text counts.
+ * A read-only command (see readOnly) runs no file, so its named files are not read.
  * ponytail: one level of scripts, no follow of a script that calls another; add it if a bypass shows
  */
 export function homeReason(
@@ -84,7 +153,7 @@ export function homeReason(
 ): string | undefined {
   const word = homeWord(protect)
   if (hits(command, word)) return HOME_REASON
-  if (!readFile) return undefined
+  if (!readFile || readOnly(command)) return undefined
   for (const m of command.matchAll(SCRIPT)) {
     const text = readFile(m[1]!)
     if (text !== undefined && hits(text, word)) return HOME_REASON
