@@ -2637,6 +2637,8 @@ test('trustedEgress keeps a sane VM egress record and drops the rest (claude-fac
   expect(trustedEgress({ ...ok, x: 1 }, now)).toEqual(ok)
   expect(trustedEgress({ ...ok, last: 'a\nb\x1b[31mcd' }, now)!.last).toBe('a b [31mcd')
   expect(trustedEgress({ ...ok, last: 'a‮b​c﻿d\x7fe' }, now)!.last).toBe('a b c d e')
+  const ls = String.fromCharCode(0x2028, 0x2029) // line and paragraph separators
+  expect(trustedEgress({ ...ok, last: `a${ls}b` }, now)!.last).toBe('a  b')
   expect(trustedEgress({ ...ok, last: 'y'.repeat(500) }, now)!.last).toHaveLength(201)
 })
 

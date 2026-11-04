@@ -1268,6 +1268,7 @@ const post = (id: string, e: Input) =>
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
 
+/** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
 
 /**
@@ -1285,7 +1286,7 @@ export function trustedEgress(
     return undefined
   if (typeof tries !== 'number' || !Number.isSafeInteger(tries) || tries < 0) return undefined
   if (typeof last !== 'string') return undefined
-  return { since, tries, last: clip(last.replace(/[\p{Cc}\p{Cf}]/gu, ' '), 200) }
+  return { since, tries, last: clip(last.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '), 200) }
 }
 /**
  * the cap on one prior report or mail placed whole into a station's brief or a delivered mid-run mail. A
@@ -3315,7 +3316,10 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     // AX worker at once, and a file keyed only by the runner's name would have them overwrite each other's
     // `since` and each mail the manager on every tick
     const paged = join(runDir(run.id), `egress-paged-${node}.json`)
-    if (!existsSync(paged) || egress.since >= readJson<number>(paged) + EGRESS_REPAGE_MS) {
+    // keyed on the laptop's clock: `since` comes from the VM, so only `at` limits how often it can page
+    const prev = existsSync(paged) ? readJson<number | { since: number; at: number }>(paged) : undefined
+    const was = typeof prev === 'number' ? { since: prev, at: 0 } : prev
+    if (!was || (egress.since > was.since && now >= was.at + EGRESS_REPAGE_MS)) {
       const since = new Date(egress.since).toLocaleString()
       // from 'factory', not node: a notice, not a question, so it never reads as the station asking the
       // manager something and awaiting a reply (isAsking keys off mail with from === node)
@@ -3325,7 +3329,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         to: 'manager',
         text: `${node} of ${run.id}: the egress gateway is refusing new connections to the model API (since ${since}, ${retries(egress.tries)} so far). The worker is retrying itself; see docs/remote-runner.md if it does not clear on its own.`,
       })
-      writeJson(paged, egress.since)
+      writeJson(paged, { since: egress.since, at: now })
     }
   }
   const egressReason =

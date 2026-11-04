@@ -1173,10 +1173,31 @@ test('a VM that sends a new egress since on each tick mails the manager once (cl
   rmSync(join(home, 'runs', 'vl2'), { recursive: true })
 })
 
-test('a second egress outage 30 min or more after the first page mails again (claude-factory-vl5j)', () => {
+test('a VM that raises egress since by 30 min on each tick mails the manager once (claude-factory-vl5j)', () => {
+  const m = 30 * 60_000
+  expect(egressTicks('vl6', [1, 1 + m, 1 + 2 * m])).toBe(1)
+  rmSync(join(home, 'runs', 'vl6'), { recursive: true })
+})
+
+test('a second egress outage 30 min or more of laptop time after the first page mails again (claude-factory-vl5j)', () => {
   const t = Date.now()
-  expect(egressTicks('vl3', [t - 40 * 60_000, t - 5 * 60_000])).toBe(2)
-  rmSync(join(home, 'runs', 'vl3'), { recursive: true })
+  expect(egressTicks('vl3', [t - 40 * 60_000])).toBe(1)
+  const runDir = join(home, 'runs', 'vl3')
+  const file = join(
+    runDir,
+    readdirSync(runDir).find(f => f.startsWith('egress-paged-'))!,
+  )
+  const paged = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...paged, at: paged.at - 31 * 60_000 }))
+  cluster('Running', {
+    status: 'working',
+    session: 's1',
+    lines: [],
+    egress: { since: t - 5 * 60_000, tries: 1, last: 'upstream error' },
+  })
+  factory(['tick'])
+  expect(egressMails('vl3')).toBe(2)
+  rmSync(runDir, { recursive: true })
 })
 
 test('an invalid VM egress record is ignored: no throw, no mail, no egress FAIL (claude-factory-vl5j)', () => {
@@ -1195,12 +1216,13 @@ test('an invalid VM egress record is ignored: no throw, no mail, no egress FAIL 
 })
 
 test('control characters in the VM egress text do not reach the FAIL reason (claude-factory-vl5j)', () => {
+  const odd = String.fromCharCode(0x202e, 0x2028) // RLO and line separator
   launched('vl5')
   cluster('Running', {
     status: 'idle',
     session: 's1',
     lines: [],
-    egress: { since: Date.now() - 1000, tries: 2, last: 'upstream\nconnect\x1b[2Jerror' },
+    egress: { since: Date.now() - 1000, tries: 2, last: `upstream\nconnect\x1b[2Jerror${odd}x` },
   })
   factory(['tick'])
   const snap = JSON.parse(readFileSync(join(home, 'runs', 'vl5', 'state.json'), 'utf8')).snapshot
@@ -1208,6 +1230,7 @@ test('control characters in the VM egress text do not reach the FAIL reason (cla
   const summary: string = snap.context.log.at(-1).summary
   expect(summary).toContain('upstream connect [2Jerror')
   expect(summary).not.toMatch(/[\x00-\x1f]/)
+  for (const c of odd) expect(summary).not.toContain(c)
 })
 
 test('an egress outage suppresses the stall guard: standing still that long alone is not nudged or failed', () => {
