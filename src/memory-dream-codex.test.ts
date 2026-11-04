@@ -268,6 +268,18 @@ for (const bad of [
 }
 
 test(
+  'AC5: a .codex dir and an unwritable dream.log still stop the codex dream',
+  () => {
+    seed()
+    mkdirSync(join(memory, '.codex'))
+    mkdirSync(join(home, 'dream.log'))
+    run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra' }))
+    expect(existsSync(mark('codex.argv'))).toBe(false)
+  },
+  SLOW,
+)
+
+test(
   'AC3: an allowed model name reaches codex',
   () => {
     seed()

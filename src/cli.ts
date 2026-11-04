@@ -4340,10 +4340,14 @@ async function dream() {
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model))
         return refuse('FACTORY_DREAM_CODEX is not a model name')
       // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
+      let hasCodexDir = true
       try {
         lstatSync(join(MEMORY, '.codex'))
-        return refuse('the memory holds .codex, which would add codex project config')
-      } catch {}
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+        hasCodexDir = false
+      }
+      if (hasCodexDir) return refuse('the memory holds .codex, which would add codex project config')
       codexHome = dreamCodexHome()
     }
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
