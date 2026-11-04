@@ -341,7 +341,9 @@ test('a pull request names what it waits on, worst first', () => {
   expect(need('REVIEW_REQUIRED', 'DIRTY')).toBe('conflicts')
   expect(need('REVIEW_REQUIRED', 'BLOCKED')).toBe('needs approval')
   expect(need('APPROVED', 'CLEAN')).toBe('ready to merge')
-  expect(need('', 'BLOCKED')).toBe('blocked by a rule')
+  // REST gives no REVIEW_REQUIRED: a blocked PR with no approval waits on a review
+  expect(need('', 'BLOCKED')).toBe('needs approval')
+  expect(need('APPROVED', 'BLOCKED')).toBe('blocked by a rule')
 })
 
 test('a PR row state word: draft and terminal states override prNeed, each with its own checks tally', () => {
