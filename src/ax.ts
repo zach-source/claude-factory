@@ -480,7 +480,9 @@ export function egressPolicy(
       rule(apiHosts, 'Authorization', 'Bearer ', reviewer ? 'GITHUB_REVIEWER' : own || 'GITHUB'),
       rule(['github.com'], 'Authorization', 'Basic ', own ? `${own}_BASIC` : githubKey),
       // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live)
-      ...(vault && githubKey === 'GITHUB_BASIC'
+      // the github.com Basic rule is only for the shared worker key: the manager's backup push must keep
+      // GITHUB_BASIC_MANAGER, so it gets the REST API rule but not this one
+      ...(vault
         ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
             rule(
               apiHosts,
@@ -490,7 +492,9 @@ export function egressPolicy(
               undefined,
               [`/repos/${owner}/`],
             ),
-            rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`]),
+            ...(githubKey === 'GITHUB_BASIC'
+              ? [rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`])]
+              : []),
           ])
         : []),
       ...(gitlabHost ? [gitlabRule(gitlabHost, vault ? uri : undefined)] : []),
