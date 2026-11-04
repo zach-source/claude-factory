@@ -804,6 +804,18 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
     expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
 })
 
+test('qoub.3: review and check never push; with no pull request they report changes', () => {
+  for (const node of ['review', 'check']) {
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
+    expect(prompt.replace('"push the branch and open the draft pull request"', '')).not.toMatch(
+      /push the branch/i,
+    )
+    expect(prompt).toContain('do not push')
+    expect(prompt).toContain('"push the branch and open the draft pull request"')
+  }
+  expect((lifecycle as Factory).nodes.quick!.prompt).toContain('gh pr create --draft')
+})
+
 test('claude-factory-wbac: a security report posts a COMMENT review, only security approves', () => {
   const lc = lifecycle as Factory
   for (const node of ['review', 'security', 'check']) {

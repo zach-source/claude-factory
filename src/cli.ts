@@ -1701,6 +1701,12 @@ export const codexEgress = (egress: Egress[] = []) =>
         },
       ]
 
+/** FACTORY_GH_REVIEWER comes only from launchTask's reviewer flag, never from FACTORY_AX_ENV or a rig's env */
+const noReviewerFlag = (e: Record<string, string> = {}) => {
+  const { FACTORY_GH_REVIEWER: _, ...rest } = e
+  return rest
+}
+
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
@@ -1758,10 +1764,12 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
   const githubOwner = origin?.forge === 'github' ? origin.owner : undefined
-  const reviewer = ax.reviewerTask(node, githubOwner)
+  const reviewer = ax.reviewerTask(node, githubOwner, process.env, hasRunBeads && !rig?.beadsRemote)
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
-    `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+    reviewer
+      ? `- You run in a VM: github.com is read-only for this task. Do not push. Report changes instead.`
+      : `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
     ...(reviewer
       ? [
           `- You review as the reviewer identity (FACTORY_GH_REVIEWER=1): your gh token is not the author's, so you may approve or request changes on the exact head, as your prompt says.`,
@@ -1830,8 +1838,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     gitlabHost,
     sandboxClass: rig?.sandboxClass,
     env: {
-      ...env,
-      ...rig?.env,
+      ...noReviewerFlag(env),
+      ...noReviewerFlag(rig?.env),
       ...(harness === 'codex' ? otel?.codexEnv : otel?.env),
       FACTORY_FROM: node,
       FACTORY_RUN: run.id,
