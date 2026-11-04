@@ -54,11 +54,10 @@ const prio = (b: Pick<Bead, 'priority'>) => b.priority ?? 4
 
 const STATION_FILER = /^factory\/[^/]+\/(review|security|verify|check)$/
 
-/** True for a top-level P0/P1 bead that a review, security, verify or check station filed.
+/** True for a P0/P1 bead that a review, security, verify or check station filed, with or without a parent.
  * Only a person, or triage or plan on the run's own bead, sets P0 or P1. Dispatch sorts such a bead
  * as P2. No bd write happens: the stored priority stays. */
-export const stationDemoted = (b: Bead): boolean =>
-  parentOf(b) === undefined && prio(b) <= 1 && STATION_FILER.test(b.created_by ?? '')
+export const stationDemoted = (b: Bead): boolean => prio(b) <= 1 && STATION_FILER.test(b.created_by ?? '')
 
 /** The priority band a bead sorts in. */
 const band = (b: Bead) => (stationDemoted(b) ? 2 : prio(b))

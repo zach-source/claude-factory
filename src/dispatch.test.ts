@@ -325,7 +325,7 @@ test('a planned P3 never starts before a real P2: priority always sorts ahead of
   expect(startedBead()).toBe('acme-1') // P2 still wins
 })
 
-// claude-factory-nwlh.4: a top-level P1 that review filed sorts as P2, so a person's P1 starts first.
+// claude-factory-nwlh.4: a P1 that review filed sorts as P2, so a person's P1 starts first.
 test('a review-filed top-level P1 (acme-1) starts after a person P1 (acme-2)', () => {
   resetTwo(1, 1, 'factory/lifecycle-x/review')
   expect(factory(['beads']).code).toBe(0)
