@@ -3360,10 +3360,11 @@ test('a hostile VM that sends a fresh limit time and free kind text each tick sw
     factory(['tick'], env)
   }
   // the token refresh runs the command once; the first hit then waits out the 5 minute window
-  expect(readFileSync(log, 'utf8').split('\n').filter(Boolean).length).toBeLessThanOrEqual(1)
+  expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toHaveLength(1)
   const c = stateOf('r7a').snapshot.context
   const mail = (c.mail.manager ?? []) as { text: string }[]
   expect(mail.filter(m => m.text.includes('Swapped')).length).toBeLessThanOrEqual(1)
+  expect(mail.filter(m => m.text.includes('(usage)'))).toHaveLength(1)
   expect(JSON.stringify(c)).not.toContain('evil')
   codexCleanup('r7a')
 })
@@ -3404,4 +3405,45 @@ test('a VM limit hit stamped in the future is ignored: no limit state, no limit 
   const mail = (stateOf('r7d').snapshot.context.mail.manager ?? []) as { text: string }[]
   expect(mail.filter(m => m.text.includes('usage limit'))).toHaveLength(0)
   codexCleanup('r7d')
+})
+
+/** a Claude transcript line that the quota refused, as the VM's poll tail carries it */
+const quotaTail = (at: number, rateLimitType: string, resetsAtSec: number) =>
+  JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date(at).toISOString(),
+    error: 'rate_limit',
+    quotaLimits: { status: 'rejected', rateLimitType, resetsAt: resetsAtSec },
+  })
+const claudeCleanup = (id: string) => {
+  rmSync(join(home, 'runs', id), { recursive: true })
+  rmSync(join(home, 'token-swap-ax.json'), { force: true })
+  rmSync(join(home, 'limit-paged-ax.json'), { force: true })
+}
+
+test('a Claude VM transcript tail stamped in the future runs no swap and sets no limit', () => {
+  launched('r7e')
+  const { swap, log } = swapScript('swap-c')
+  const tail = quotaTail(Date.now() + 10 * 60_000, 'seven_day', 0)
+  cluster('Running', { status: 'idle', session: 's1', lines: [], tail })
+  const env = { FACTORY_AX_TOKEN_SWAP: swap }
+  factory(['tick'], env)
+  const out = factory(['tick'], env)
+  expect(JSON.parse(out.out).runs[0].agent).not.toBe('usage limit')
+  expect(existsSync(log)).toBe(false)
+  claudeCleanup('r7e')
+})
+
+test('a Claude VM transcript tail with free kind text and a far reset is bounded', () => {
+  launched('r7f')
+  const at = Date.now() + 1000
+  const tail = quotaTail(at, 'evil\nkind', Math.floor((Date.now() + 400 * 86_400_000) / 1000))
+  cluster('Running', { status: 'idle', session: 's1', lines: [], tail })
+  factory(['tick'])
+  factory(['tick'])
+  const c = stateOf('r7f').snapshot.context
+  expect(JSON.stringify(c)).not.toContain('evil')
+  expect(c.wakeAt).toBeLessThanOrEqual(at + 3_600_000 + 60_000)
+  expect(c.wakeAt).toBeGreaterThan(at)
+  claudeCleanup('r7f')
 })
