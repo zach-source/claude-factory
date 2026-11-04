@@ -679,7 +679,11 @@ export function prNeed(pr: Pick<FactoryPrs[number]['prs'][number], 'reviewDecisi
   if (pr.reviewDecision === 'CHANGES_REQUESTED') return { word: 'changes requested', color: 'red' }
   if (pr.mergeStateStatus === 'UNSTABLE') return { word: 'checks failing', color: 'yellow' }
   if (pr.mergeStateStatus === 'BEHIND') return { word: 'behind its base', color: 'yellow' }
-  if (pr.reviewDecision === 'REVIEW_REQUIRED') return { word: 'needs approval', color: 'yellow' }
+  if (
+    pr.reviewDecision === 'REVIEW_REQUIRED' ||
+    (pr.mergeStateStatus === 'BLOCKED' && pr.reviewDecision !== 'APPROVED')
+  )
+    return { word: 'needs approval', color: 'yellow' }
   if (pr.mergeStateStatus === 'CLEAN') return { word: 'ready to merge', color: 'green' }
   if (pr.mergeStateStatus === 'BLOCKED') return { word: 'blocked by a rule', color: 'yellow' }
   return { word: 'checking', color: 'gray' }
