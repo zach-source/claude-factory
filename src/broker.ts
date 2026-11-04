@@ -106,7 +106,8 @@ const CREDENTIAL_URI = /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/[A-Z][A-Z0-9_]*$
  */
 export function workerPolicyRefusal(policy: unknown): string | null {
   const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
-  const walk = (v: unknown): string | null => {
+  const walk = (v: unknown, depth: number): string | null => {
+    if (depth > 32) return 'is nested too deep'
     if (typeof v === 'string') {
       const m = MANAGER_ONLY_KEYS.exec(v)
       return m ? `names manager-only vault key ${m[2]!.toUpperCase()}` : null
@@ -116,7 +117,7 @@ export function workerPolicyRefusal(policy: unknown): string | null {
     const keys = Array.isArray(v) ? [] : Object.keys(o)
     for (const k of keys) {
       if (/[^\x20-\x7e]/.test(k)) return 'has a key with a non-ASCII character'
-      const bad = walk(k)
+      const bad = walk(k, depth + 1)
       if (bad) return bad
       if (norm(k) === 'credentialuri' && !(typeof o[k] === 'string' && CREDENTIAL_URI.test(o[k] as string)))
         return 'has a credentialUri that is not an ate-secret://agent-vault/<vault>/<KEY> string'
@@ -130,16 +131,12 @@ export function workerPolicyRefusal(policy: unknown): string | null {
       }
     }
     for (const x of Array.isArray(v) ? v : Object.values(o)) {
-      const bad = walk(x)
+      const bad = walk(x, depth + 1)
       if (bad) return bad
     }
     return null
   }
-  try {
-    return walk(policy)
-  } catch {
-    return 'is nested too deep'
-  }
+  return walk(policy, 0)
 }
 
 /** a policy that is not a JSON object with a rules array is not made */
