@@ -395,9 +395,6 @@ export type Row = {
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
-// gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
-// it. Nothing reads it now: the usage rows keep their own station name (storeUsage).
-const promptsListFile = (id: string) => join(runDir(id), 'prompts.list')
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
 function durable(path: string, text: string, flag: 'w' | 'a') {
@@ -4723,16 +4720,6 @@ function gcPass(days: number, dryRun: boolean) {
   )
   if (dryRun) return
   for (const r of plan.runs) {
-    if (r.paths.includes('prompts')) {
-      const dir = join(runDir(r.id), 'prompts')
-      const listFile = promptsListFile(r.id)
-      // Union with any names prompts.list already held (claude-factory-503.1.7): a goto revive
-      // after an earlier gc can have refilled prompts/ with only its new names, and overwriting
-      // the list here would lose the old station names.
-      const old = existsSync(listFile) ? readJson<string[]>(listFile) : []
-      const current = existsSync(dir) ? readdirSync(dir) : []
-      writeJson(listFile, [...new Set([...old, ...current])])
-    }
     appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
     for (const p of r.paths) rmSafe(join(runDir(r.id), p), { recursive: true, force: true })
   }
