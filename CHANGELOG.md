@@ -16,6 +16,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: the worker hook names the harness of each denial when its argv has no `--harness` (claude-factory-ay4w). It then reads `FACTORY_HARNESS`, which the AX launch env sets. Before, such a denial logged `unknown`. Rebuild the worker image to give the fix to AX workers.
 - Changed: `src/worker-system.md` lists the Bash forms that the worker hook refuses most, and the allowed form for each (claude-factory-ay4w). The forms are a shell expansion in a command word, a shell alias, a push to a protected branch and a merge. Each denial costs a worker turn. Rebuild the worker image to give the list to AX workers.
 - Changed: the patrol prompt tells the manager to fix the memory note that taught the opposite when it mails a station a rule correction (claude-factory-61a). It runs `memory search`, then `memory add --supersedes <old note path> --kind rule`. A person must restart the manager tool after deploy.
+- Fix: the home guard no longer denies a read-only command that only names a script file (claude-factory-lqr3). Examples are `git diff src/cli.ts`, `grep -n x src/cli.ts` and `bd create -d "see src/home-guard.ts"`. A closed one-command grammar skips the script read. Every other form still reads the scripts and fails closed. The raw command-text check is unchanged.
 
 ## 0.16.0 (2026-11-03)
 
