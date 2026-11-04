@@ -447,7 +447,8 @@ test('review security reports (4-7) with security changes between go to security
     expect(where(actor.getSnapshot().value)[0]).toBe('security')
     actor.send({ type: 'GOTO', node: 'security', at: now })
     report('changes')
-    expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+    // security's own cap (x2en): its 4th changes re-plans
+    expect(where(actor.getSnapshot().value)[0]).toBe(i === 4 ? 'plan' : 'implement')
   }
   const ctx = actor.getSnapshot().context
   // review never re-plans on its security outcome; only security's own cap (x2en) re-plans, once
@@ -466,7 +467,13 @@ test("security's round cap re-plans to plan, then holds on a second cap (x2en AC
     const send = (node: string, outcome: string, i = now) => {
       actor.send({ type: 'GOTO', node, at: now })
       const { seq } = actor.getSnapshot().context
-      actor.send({ type: 'DONE', seq, outcome, summary: `${node} ${outcome} round ${i} finding AC${i}`, at: ++now })
+      actor.send({
+        type: 'DONE',
+        seq,
+        outcome,
+        summary: `${node} ${outcome} round ${i} finding AC${i}`,
+        at: ++now,
+      })
     }
     return { actor, send }
   }
@@ -497,7 +504,9 @@ test("security's round cap re-plans to plan, then holds on a second cap (x2en AC
   const s = actor.getSnapshot()
   expect(where(s.value)).toEqual(['security', 'stuck'])
   expect(s.context.error).toBe('security reported changes more than 3 times')
-  expect(s.context.mail.manager?.find(m => m.from === 'security')?.text).toContain('already re-planned once, to plan')
+  expect(s.context.mail.manager?.find(m => m.from === 'security')?.text).toContain(
+    'already re-planned once, to plan',
+  )
 
   // AC5 (a, b): approve never counts; three changes then approve ships
   const b = start()

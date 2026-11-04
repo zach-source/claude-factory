@@ -371,6 +371,12 @@ test('a station that reports one outcome more than its rounds is held for the ma
   expect(() =>
     validate({ ...def, nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 0 } } }),
   ).toThrow('rounds is at least 1')
+  expect(() =>
+    validate({
+      ...def,
+      nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 2, countRounds: ['nope'] } },
+    }),
+  ).toThrow('countRounds names an outcome that is not in next')
 })
 
 test('everyMin marks a sweep station, and must be greater than 0', () => {

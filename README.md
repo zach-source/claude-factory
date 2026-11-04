@@ -1035,7 +1035,7 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `onRounds` (a node for a re-plan at the round cap, below),
+the manager; lifecycle's review and security each have 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `countRounds` (the outcomes that count toward `rounds`, instead of the graph rule; lifecycle's security sets it to `changes`), `onRounds` (a node for a re-plan at the round cap, below),
 `repeatMail` (an outcome that mails the manager on a repeat, below), `mergeCheck` (an outcome the runner reports when the branch conflicts with the default branch, below), `gate: true` for a station the
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
@@ -1062,7 +1062,7 @@ Lifecycle's triage has three outcomes that end the run at once (claude-factory-5
 
 `onRounds` names the node that takes the first capped report, instead of the manager. The run
 carries the round's findings to that node. A second capped report in the same run still goes to
-the manager, and the mail names the earlier re-plan. Lifecycle's review sets `onRounds` to `plan`.
+the manager, and the mail names the earlier re-plan. Lifecycle's review and security set `onRounds` to `plan`.
 
 `repeatMail` names an outcome in `next`. A station can report this outcome two times in a row.
 

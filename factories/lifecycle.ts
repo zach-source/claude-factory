@@ -238,6 +238,9 @@ Report approve; changes with a numbered list of everything to fix, found in one 
       agent: FABLE,
       split: { agent: CODEX_SECURITY, share: 'codex_security_share' },
       timeoutMin: 45,
+      rounds: 3, // security's own cap (review's does not count it): a fourth round of changes re-plans
+      onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto
+      countRounds: ['changes'], // by the graph rule security is nearest through check, so implement is off its path
       // claude-factory-3t2: 5 of 65 security visits timed out at 45 min, all on one large rig. The
       // retry right after a timeout gets 75 min and a narrower brief, instead of the same 45 min
       // and the whole branch again; a 2nd timeout in a row still goes to isRepeatFail's stuck+mail.

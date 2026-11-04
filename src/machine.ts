@@ -69,6 +69,12 @@ export type Node = {
    */
   rounds?: number
   /**
+   * The outcomes that count toward `rounds`. This list replaces the graph rule above.
+   * Use it when the shortest path from `start` does not pass the loop. Lifecycle's security is nearest
+   * through the small route, so the graph rule does not count its `changes` edge to implement.
+   */
+  countRounds?: string[]
+  /**
    * A capped round re-plans to this node (lifecycle's review re-plans to 'plan').
    * This node gets one mail, which holds every round's summary.
    * A loop that misses `rounds` needs a new design, not another hand goto.
@@ -329,6 +335,8 @@ export function validate(def: Factory): Factory {
           !(node.onTimeout.timeoutMin > (node.timeoutMin ?? 60)) &&
           `${id}: onTimeout.timeoutMin must be greater than timeoutMin (${node.timeoutMin ?? 60})`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
+        node.countRounds?.some(o => !(o in node.next)) &&
+          `${id}: countRounds names an outcome that is not in next`,
         node.everyMin !== undefined && !(node.everyMin > 0) && `${id}: everyMin is greater than 0`,
         node.onRounds !== undefined && node.rounds === undefined && `${id}: onRounds needs rounds`,
         node.onRounds === id && `${id}: onRounds must not be the node itself`,
@@ -642,6 +650,7 @@ export function compile(def: Factory) {
   const counts = (id: string, node: Node, outcome: string) => {
     const e = node.next[outcome]
     if (!e) return false
+    if (node.countRounds) return node.countRounds.includes(outcome)
     const t = edgeTo(e)
     if (t === 'done') return false
     for (let x: string | undefined = id; x; x = parent[x]) if (x === t) return true
