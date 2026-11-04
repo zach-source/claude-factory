@@ -436,6 +436,30 @@ test('a repeat crash loop or failed rollout gets the factory label and no other 
   expect(want).not.toMatch(/station:[a-z]|sweep-queue:[a-z]|--add-label (?!factory)/)
 })
 
+const coreText = (s: string) =>
+  s.slice(
+    s.indexOf('Live-object findings:'),
+    s.indexOf("Search and file only in this rig's beads.") +
+      "Search and file only in this rig's beads.".length,
+  )
+
+test('deploy and soak share a live-object dedupe core with no escalation (sjwe.2 AC2)', () => {
+  const want = coreText(prompt('soak'))
+  expect(want.length).toBeGreaterThan(300)
+  expect(coreText(prompt('deploy'))).toBe(want)
+  for (const t of [
+    'bd search "<object name>" --status open',
+    'bd search "<symptom>" --status open',
+    'with no --status',
+    'bd comment <id>',
+    '<context>/<namespace>/<kind>/<name>: <symptom>',
+    'name it in the description',
+  ])
+    expect(want).toContain(t)
+  for (const t of ['bd update', '--add-label', '-p ', 'ship', 'release', '{', 'In deploy and soak'])
+    expect(want).not.toContain(t)
+})
+
 test('deploy checks every Deployment of the released image with reads only (4h8j AC3)', () => {
   const want = deployText(prompt('deploy'))
   expect(want.length).toBeGreaterThan(300)
