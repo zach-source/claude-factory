@@ -1659,6 +1659,10 @@ test('a defer {station} edge defers the bead and moves its station label; defer:
   const plain = run('plain', {}, 'run-d2')
   expect(plain.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
   expect(plain.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0)
+  labels.splice(1, 1) // a hand-started bead has no factory:* label: the swap names the run's factory
+  const bare = run('park', {}, 'run-d4').find(l => l.startsWith('bd update acme-1'))!
+  expect(bare).toContain('--add-label factory:lifecycle')
+  labels.splice(1, 0, 'factory:lifecycle')
   const linear = run('park', { external_ref: 'https://linear.app/acme/issue/STI-1' }, 'run-d3')
   expect(linear.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
   expect(linear.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0)

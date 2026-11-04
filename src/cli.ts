@@ -77,6 +77,7 @@ import {
   OWNER,
   REJECTED,
   LABEL,
+  NAME,
   linearSourced,
   byId,
   parentOf,
@@ -3601,6 +3602,13 @@ export function shipPrOf(
   return links.find(url => headOf(url) === branch) ?? ''
 }
 
+/** the NAME a factory:<name> label takes: the base name of the run's factory file, else the def's name */
+export const factoryLabelName = (run: Run, def: Factory) => {
+  if (!run.factoryFrom) return def.name // run.factory is the pinned factory.json, not a name
+  const base = basename(run.factoryFrom.split(' at ')[0]!, extname(run.factoryFrom.split(' at ')[0]!))
+  return NAME.test(base) ? base : def.name
+}
+
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
 export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
   const b = beads(run.repo, actorOf(run.id))
@@ -3679,7 +3687,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
       // dispatch never reads a station label off a Linear-sourced bead, so it gets a plain defer
       const station = typeof edge.defer === 'object' ? edge.defer.station : undefined
       const current = station ? b.lookup(id) : undefined
-      b.defer(id, reason, current && linearSourced(current) ? undefined : station)
+      b.defer(id, reason, current && linearSourced(current) ? undefined : station, factoryLabelName(run, def))
     }
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)

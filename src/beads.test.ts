@@ -802,8 +802,17 @@ test('defer with a station swaps station:* after bd defer; without one it makes 
     // a bead started by hand has no factory label; undefer must still re-dispatch it (502.6)
     writeFileSync(show, JSON.stringify([{ id: 'fx-1', title: 't', labels: ['station:quick'] }]))
     writeFileSync(log, '')
-    b.defer('fx-1', 'why', 'plan')
+    b.defer('fx-1', 'why', 'plan', 'release')
     expect(readFileSync(log, 'utf8')).toMatch(/--add-label factory( |$)/m)
+    expect(readFileSync(log, 'utf8')).toContain('--add-label factory:release')
+    // a bead that already has a factory:* label keeps it
+    writeFileSync(
+      show,
+      JSON.stringify([{ id: 'fx-1', title: 't', labels: ['factory:release', 'station:quick'] }]),
+    )
+    writeFileSync(log, '')
+    b.defer('fx-1', 'why', 'plan', 'lifecycle')
+    expect(readFileSync(log, 'utf8')).not.toContain('--add-label factory:')
     writeFileSync(log, '')
     b.defer('fx-1', 'why')
     expect(readFileSync(log, 'utf8')).not.toContain('update')
