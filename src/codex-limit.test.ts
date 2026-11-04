@@ -136,3 +136,38 @@ test('the Codex token refresh runs its command once its state file is 12 h old, 
     f.restore()
   }
 })
+
+test('a swap command runs at most once per 5 minutes for each runner and harness, whatever the hit times', () => {
+  const f = swapFixture()
+  const mail: string[] = []
+  const send = (e: { text?: string }) => void mail.push(e.text ?? '')
+  const W = 300_000
+  try {
+    process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
+    process.env.FACTORY_AX_TOKEN_SWAP = f.bin
+    const run = (at: number, now: number, h: 'claude' | 'codex' = 'codex') =>
+      runTokenSwap({ at, resetsAt: 0 }, now, 'ax', send as never, 'implement', h, f.home)
+    run(1_000, 5_000)
+    expect(run(2_000, 6_000)).toBe(5_000 + W) // a newer hit inside the window: no run, wait for the window
+    expect(run(3_000, 7_000)).toBe(5_000 + W)
+    expect(readFileSync(f.log, 'utf8')).toBe('x\n')
+    expect(mail.filter(m => m.includes('Swapped'))).toHaveLength(1)
+    run(4_000, 5_000 + W) // the window ends
+    expect(readFileSync(f.log, 'utf8')).toBe('x\nx\n')
+    run(1_000, 6_000, 'claude') // the other harness has its own window
+    expect(readFileSync(f.log, 'utf8')).toBe('x\nx\nx\n')
+  } finally {
+    f.restore()
+  }
+})
+
+test('the Codex token refresh sets the swap window', () => {
+  const f = swapFixture()
+  try {
+    process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
+    refreshCodexToken(100, 'ax', f.home)
+    expect(JSON.parse(readFileSync(join(f.home, 'token-swap-ax-codex.json'), 'utf8')).ran).toBe(100)
+  } finally {
+    f.restore()
+  }
+})

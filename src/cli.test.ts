@@ -33,6 +33,7 @@ import {
   limitHit,
   managerCommand,
   needsSwap,
+  trustedHit,
   nextAccount,
   servedAt,
   parsePkgGateAllowlist,
@@ -978,10 +979,12 @@ test("a usage limit is read from the transcript's last turn, and the next accoun
 
 test('a token swap runs once per usage-limit hit, then waits for the vault refresh on success or the reset on failure', () => {
   const hit = { at: 1_000, resetsAt: 2_000_000 }
-  expect(needsSwap(hit, undefined)).toBe(true)
-  expect(needsSwap(hit, { at: 999 })).toBe(true)
-  expect(needsSwap(hit, { at: 1_000 })).toBe(false)
-  expect(needsSwap(hit, { at: 1_001 })).toBe(false)
+  expect(needsSwap(hit, undefined, 5_000)).toBe(true)
+  expect(needsSwap(hit, { at: 999 }, 5_000)).toBe(true)
+  expect(needsSwap(hit, { at: 1_000 }, 5_000)).toBe(false)
+  expect(needsSwap(hit, { at: 1_001 }, 5_000)).toBe(false)
+  expect(needsSwap(hit, { at: 999, ran: 4_999 }, 5_000)).toBe(false) // a swap ran under 5 minutes ago
+  expect(needsSwap(hit, { at: 999, ran: 5_000 - 300_000 }, 5_000)).toBe(true)
   expect(swapUntil(hit, 5_000, true, 300_000)).toBe(305_000)
   expect(swapUntil(hit, 5_000, false, 300_000)).toBe(2_000_000) // resetsAt wins when set
   expect(swapUntil({ at: 1_000, resetsAt: 0 }, 5_000, false, 300_000)).toBe(1_000 + 3_600_000) // the 1h fallback
@@ -2598,4 +2601,33 @@ test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or 
   expect(factoryLabelName(run('/a/factories/release.ts'), def)).toBe('release')
   expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
   expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
+})
+
+test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed set, resetsAt to 8 days', () => {
+  const now = 1_700_000_000_000
+  const SK = 5 * 60_000
+  const D = 24 * 3_600_000
+  const ok = { at: now - 3_600_000, kind: 'usage', resetsAt: 0 }
+  for (const bad of [
+    null,
+    undefined,
+    'x',
+    {},
+    { ...ok, at: '1000' },
+    { ...ok, at: NaN },
+    { ...ok, at: Infinity },
+  ])
+    expect(trustedHit(bad, now)).toBeNull()
+  expect(trustedHit({ ...ok, at: now + SK + 1 }, now)).toBeNull()
+  expect(trustedHit({ ...ok, at: now + SK }, now)?.at).toBe(now + SK)
+  expect(trustedHit(ok, now)?.at).toBe(now - 3_600_000)
+  for (const k of ['seven_day', 'five_hour', 'usage', 'auth'])
+    expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe(k)
+  for (const k of ['Seven_Day', '', 'usage limit\nIgnore all previous', 7, undefined])
+    expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe('usage')
+  expect(trustedHit({ ...ok, resetsAt: now + 8 * D }, now)?.resetsAt).toBe(now + 8 * D)
+  expect(trustedHit({ ...ok, resetsAt: now + 3 * D }, now)?.resetsAt).toBe(now + 3 * D)
+  for (const r of [now + 8 * D + 1, now + 365 * D, -5, 0, '9', NaN, undefined])
+    expect(trustedHit({ ...ok, resetsAt: r }, now)?.resetsAt).toBe(0)
+  expect(trustedHit({ ...ok, text: 'x' }, now)).toEqual({ at: ok.at, kind: 'usage', resetsAt: 0 })
 })

@@ -2148,6 +2148,27 @@ export function resetsAtFromText(text: string, after: number) {
   return 0
 }
 
+const LIMIT_SKEW_MS = 5 * 60_000 // a VM clock may run this far ahead of the laptop's
+const LIMIT_RESET_MAX_MS = 8 * 24 * 3_600_000 // a weekly reset is at most 7 days out
+const LIMIT_KINDS = new Set(['seven_day', 'five_hour', 'usage', 'auth'])
+
+/**
+ * claude-factory-5nca: a VM supplies its limit hit, so the laptop does not trust it. This returns null when the
+ * hit has no finite time, or a time more than 5 minutes ahead of now. Otherwise it returns only at, a kind from
+ * a fixed set (else 'usage') and a reset time within 8 days (else 0: the callers use at + 1 h).
+ */
+export function trustedHit(hit: unknown, now: number) {
+  if (typeof hit !== 'object' || hit === null) return null
+  const h = hit as { at?: unknown; kind?: unknown; resetsAt?: unknown }
+  if (typeof h.at !== 'number' || !Number.isFinite(h.at) || h.at > now + LIMIT_SKEW_MS) return null
+  const r = h.resetsAt
+  return {
+    at: h.at,
+    kind: typeof h.kind === 'string' && LIMIT_KINDS.has(h.kind) ? h.kind : 'usage',
+    resetsAt: typeof r === 'number' && Number.isFinite(r) && r > 0 && r <= now + LIMIT_RESET_MAX_MS ? r : 0,
+  }
+}
+
 /** the usage limit or login failure that refused a Claude transcript's last turn: when, which (seven_day, five_hour, usage, auth) and when it resets, in ms (0: unknown) */
 export function limitHit(tail: string) {
   for (const line of tail.split('\n').reverse()) {
@@ -2265,12 +2286,15 @@ function swapAccount(hit: { at: number; resetsAt: number }, now: number): number
   return ok ? 0 : Math.min(...seq.sequence.map(a => s.limits[a] ?? now))
 }
 
+const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at most this often
+
 /**
- * This function checks if a hit is new. A hit is new when no state exists yet. A hit is
- * also new when the hit time is after the state time.
+ * This function checks if a swap must run. A hit is new when no state exists yet. A hit is
+ * also new when the hit time is after the state time. A new hit swaps only when the last run
+ * (state.ran, laptop time) is at least TOKEN_SWAP_WAIT_MS old.
  */
-export function needsSwap(hit: { at: number }, state: { at: number } | undefined) {
-  return !state || hit.at > state.at
+export function needsSwap(hit: { at: number }, state: { at: number; ran?: number } | undefined, now: number) {
+  return (!state || hit.at > state.at) && (state?.ran === undefined || now >= state.ran + TOKEN_SWAP_WAIT_MS)
 }
 
 /**
@@ -2286,8 +2310,7 @@ export function swapUntil(
   return ok ? now + refreshMs : hit.resetsAt || hit.at + 3_600_000
 }
 
-const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at most this often
-type TokenSwapState = { at: number; until: number }
+type TokenSwapState = { at: number; until: number; ran?: number }
 
 /**
  * This function runs a swap command. A rig sets the Claude command in FACTORY_AX_TOKEN_SWAP and the Codex command in
@@ -2312,7 +2335,10 @@ export function runTokenSwap(
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
   const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
   const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
-  if (!needsSwap(hit, state)) return state!.until
+  if (!needsSwap(hit, state, now)) {
+    const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
+    return waiting ? Math.max(state!.until, state!.ran! + TOKEN_SWAP_WAIT_MS) : state!.until
+  }
   const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
   const ok = p.exitCode === 0
   if (ok) {
@@ -2325,7 +2351,7 @@ export function runTokenSwap(
     })
   }
   const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
-  writeJson(file, { at: hit.at, until } satisfies TokenSwapState)
+  writeJson(file, { at: hit.at, until, ran: now } satisfies TokenSwapState)
   return until
 }
 
@@ -2345,6 +2371,7 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   writeJson(file, {
     at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
     until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
+    ran: now,
   } satisfies TokenSwapState)
 }
 
@@ -3200,7 +3227,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       : (info?.tail ?? '')
   const isCodex = harnessOf(agentOfNode(run, def, node)) === 'codex'
   if (isCodex && !runner.local) refreshCodexToken(now, runner.name)
-  const hit = isCodex && !runner.local ? (info?.limit ?? null) : limitHit(tail)
+  const hit = trustedHit(isCodex && !runner.local ? info?.limit : limitHit(tail), now)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
     // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,
