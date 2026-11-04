@@ -4017,6 +4017,7 @@ const isHeld = (name: string) => {
 }
 /** starts a beads pass unless one is running: checked here, so a busy pass costs no process every tick */
 const kickBeads = () =>
+  process.env.FACTORY_NO_KICK === '1' || // tests: a detached pass would recreate a removed home
   isHeld('beads.lock') ||
   spawnChild(CLI, ['beads'], {
     detached: true,
