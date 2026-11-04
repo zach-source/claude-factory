@@ -495,10 +495,16 @@ export function coreNotes(dir: string): Note[] {
 export async function search(
   dir: string,
   query: string,
-  { rig, limit = 5 }: { rig?: string; limit?: number } = {},
+  { rig, limit = 5, core = true }: { rig?: string; limit?: number; core?: boolean } = {},
 ) {
   const { notes, topics } = walk(dir)
-  const all = [...notes, ...coreNotes(dir)]
+  // core=false drops only the bullets the brief prints; the ones coreFor cut stay searchable
+  const printed = new Set(
+    core || !existsSync(join(dir, 'CORE.md'))
+      ? []
+      : coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig).split('\n'),
+  )
+  const all = [...notes, ...coreNotes(dir).filter(n => core || !printed.has(`- ${n.summary}`))]
   if (!all.length) return []
   const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])
@@ -740,10 +746,26 @@ export function outline(dir: string, rig?: string) {
     .filter(t => t !== 'inbox')
     .sort()
     .map(t => `- ${t} (${count(t)}): ${topics.get(t)?.summary ?? ''}`.trimEnd())
-    .map(l => (l.length > 100 ? `${l.slice(0, 99)}…` : l))
+    .map(l => {
+      const cps = Array.from(l)
+      return cps.length > 100 ? `${cps.slice(0, 99).join('')}…` : l
+    })
   const inbox = count('inbox')
-  return { core, topics: inbox ? [...lines, `- inbox (${inbox}): new notes, not yet filed`] : lines }
+  const tail = inbox ? [`- inbox (${inbox}): new notes, not yet filed`] : []
+  // drop topics from the end until the whole list fits; the inbox line stays
+  const size = (a: string[]) => Buffer.byteLength(a.join('\n'))
+  let keep = lines.length
+  const build = () => [
+    ...lines.slice(0, keep),
+    ...(keep < lines.length ? [`- (+${lines.length - keep} more topics; memory search)`] : []),
+    ...tail,
+  ]
+  while (keep > 0 && size(build()) > TOPICS_BUDGET) keep--
+  return { core, topics: build() }
 }
+
+/** bytes the topic list may put in a brief, whatever the number of topics */
+export const TOPICS_BUDGET = 4000
 
 export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n) === 'inbox').length
 /** all of it as one text, to find the beads it names */
