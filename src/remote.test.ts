@@ -2350,7 +2350,9 @@ test('a reviewer station of a rig whose owner is FACTORY_AX_REVIEWER_OWNER gets 
     )
     writeFileSync(
       join(home, 'rigs.json'),
-      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+      JSON.stringify([
+        { name: 'x', repo: worktree, factory: 'one', runner: 'ax', env: { FACTORY_GH_REVIEWER: '1' } },
+      ]),
     )
     cluster('Running', { status: 'idle', lines: [] })
     // the cluster fake, but it keeps the manifest that ax apply reads on stdin
@@ -2382,6 +2384,10 @@ esac
     // claude-factory-dsfg: the laptop replays deny lines, so the VM may send them
     expect(readFileSync(applied, 'utf8')).toContain('FACTORY_DENY_LOG')
     expect(brief.includes('reviewer identity')).toBe(reviewer)
+    expect(policy.includes('GITHUB_REVIEWER_BASIC')).toBe(reviewer)
+    expect(policy.includes('/GITHUB_BASIC')).toBe(!reviewer)
+    expect(brief.includes('push your commits')).toBe(!reviewer)
+    expect(brief.includes('github.com is read-only')).toBe(reviewer)
     rmSync(runDir, { recursive: true })
   }
 }, 90_000) // git clones and whole ticks

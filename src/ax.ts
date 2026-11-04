@@ -413,9 +413,16 @@ export const REVIEWER_STATIONS = ['review', 'security', 'check']
 /**
  * true when this task gets the reviewer App's key on api.github.com: a reviewer station, FACTORY_AX_VAULT set, and
  * FACTORY_AX_REVIEWER_OWNER (the feature flag) equal to the rig's GitHub owner. Unset flag: today's behavior.
+ * `beadsOnGithub`: the run's beads sync over github.com. That host is read-only for a reviewer, so the task gets no reviewer identity.
  */
-export const reviewerTask = (node: string, githubOwner?: string, env: NodeJS.ProcessEnv = process.env) =>
+export const reviewerTask = (
+  node: string,
+  githubOwner?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  beadsOnGithub = false,
+) =>
   REVIEWER_STATIONS.includes(node) &&
+  !beadsOnGithub &&
   !!env.FACTORY_AX_VAULT &&
   !!env.FACTORY_AX_REVIEWER_OWNER &&
   env.FACTORY_AX_REVIEWER_OWNER === githubOwner
@@ -436,7 +443,7 @@ const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). A rig on GitLab host H gets H the same way, with `GITLAB` (an access token) and `GITLAB_BASIC`
  * (base64 of `<user>:<token>`, git's Basic auth). With `reviewer`, api.github.com uses `GITHUB_REVIEWER` (the reviewer App's
- * installation token); github.com keeps the Basic key, as the reviewer App cannot push. Only with `manager` (and GITHUB_BASIC) does it add the
+ * installation token); github.com uses `GITHUB_REVIEWER_BASIC` (base64 of `x-access-token:<reviewer installation token>`, contents read), so the task cannot push. Only with `manager` (and GITHUB_BASIC) does it add the
  * path-prefixed rules that give the zach-source repos their own keys. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  *
  * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
@@ -481,7 +488,7 @@ export function egressPolicy(
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
       rule(apiHosts, 'Authorization', 'Bearer ', reviewer ? 'GITHUB_REVIEWER' : own || 'GITHUB'),
-      rule(['github.com'], 'Authorization', 'Basic ', own ? `${own}_BASIC` : githubKey),
+      rule(['github.com'], 'Authorization', 'Basic ', reviewer ? 'GITHUB_REVIEWER_BASIC' : own ? `${own}_BASIC` : githubKey),
       // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live); manager only
       // the github.com Basic rule is only for the shared worker key: the manager's backup push must keep
       // GITHUB_BASIC_MANAGER, so it gets the REST API rule but not this one
