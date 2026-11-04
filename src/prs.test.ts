@@ -2336,3 +2336,17 @@ test('githubWatchView: 150 reviews make 2 calls named by owner and page, never -
   ])
   expect((await run(true)).v).toBeNull()
 })
+
+// The AX gateway picks the owner key from /repos/<owner>/ in the path. These gh forms send no owner
+// (or follow a /repositories/<id>/ Link URL), so the manager code must not use them.
+test('manager GitHub reads never use a gh form without the owner in the path', async () => {
+  const { readFileSync } = await import('node:fs')
+  const bad = /'--paginate'|'graphql'|\['pr', 'list'|\['pr', 'view'|\['pr', 'checks'|\['search',/
+  const hits: string[] = []
+  for (const f of ['cli.ts', 'prs.ts', 'gc.ts'])
+    for (const l of readFileSync(new URL(`./${f}`, import.meta.url), 'utf8').split('\n'))
+      if (!l.trim().startsWith('//') && bad.test(l)) hits.push(`${f}: ${l.trim()}`)
+  // allowed: githubForge.search only adds hits to the REST own-repo list
+  expect(hits).toHaveLength(1)
+  expect(hits[0]).toContain("prs.ts: ['search', 'prs', '--owner'")
+})
