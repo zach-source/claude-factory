@@ -4304,7 +4304,7 @@ async function dream() {
       },
     )
     // FACTORY_DREAM_CODEX=<model> runs the dream on codex in its workspace-write sandbox (y3zo)
-    const model = process.env.FACTORY_DREAM_CODEX?.trim()
+    const model = process.env.FACTORY_DREAM_CODEX
     let codexHome: string | undefined
     if (model) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model)) return 'FACTORY_DREAM_CODEX is not a model name'
