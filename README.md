@@ -753,7 +753,7 @@ tag has one bead, even a closed one. Start a pass by hand with
 
 `ci` and `flakes` read GitHub Actions on the laptop with `gh`. They start no run unless they find
 new work. `ci` lists the default branch's runs. Each workflow with a red newest run gets the key
-`ci-red:<workflow id>-<first failing SHA, 7 characters>`. If every key is a label on an open bead,
+`ci-red:<workflow id>-<first failing SHA, 7 characters>`. If every key is a label on an open bead, or the exact key is a label on a closed bead,
 nothing starts. If not, one run files ONE P1 bead with the labels `factory`, `station:plan` and
 `sweep-queue:main-ci-red`.
 
