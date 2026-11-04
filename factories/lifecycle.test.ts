@@ -800,6 +800,7 @@ test('qoub.3: review and check never push; with no pull request they report chan
     expect(prompt).toContain('do not push')
     expect(prompt).toContain('"push the branch and open the draft pull request"')
   }
+  expect((lifecycle as Factory).nodes.quick!.prompt).toContain('gh pr create --draft')
 })
 
 test('claude-factory-wbac: a security report posts a COMMENT review, only security approves', () => {

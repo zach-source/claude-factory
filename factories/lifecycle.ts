@@ -264,6 +264,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request.
 ${pushGuard}
+Push the branch and open it as a draft pull request (gh pr create --draft) if this run has none yet.
 ${botFiles}
 ${notBlocked('ready')}
 If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it.`,
