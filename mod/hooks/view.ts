@@ -596,7 +596,7 @@ export function patrolsText(log: readonly FactoryPatrolLogEntry[]) {
         .filter(Boolean)
         .join(', ')
       const acts = e.actions.length ? ` Actions: ${e.actions.join('; ')}.` : ''
-      return `- ${clockOf(e.at)} (${e.reason}, ${cost}): ${line(e.report, 300)}${acts}`
+      return `- ${clockOf(e.at)} (${e.reason}, ${cost}): ${line(e.error ?? e.report, 300)}${acts}`
     })
     .join('\n')
 }
@@ -630,6 +630,13 @@ export function pmRetryDelay(failures: number): number {
  * status line) and `views.tsx` (this line) never drift apart on wording. */
 export function pmBlockedLine(reason: string): string {
   return `pm blocked: ${reason}. The patrol still runs in the main chat. Restart factory manager (exit it, then \`factory manager --resume <session>\`) to bring the pm back.`
+}
+
+/** The Rigs tab's own line after the patrol fell back to `$.prompt.submit` (claude-factory-drr).
+ * `reason` is `register.tsx`'s `rt.patrolFallback`. One function composes the line, so the Rigs
+ * tab and the status line never drift apart on wording. */
+export function patrolFallbackLine(reason: string): string {
+  return `patrol fell back to the main chat: ${reason}. Restart factory manager (exit it, then \`factory manager --resume <session>\`) to bring the patrol subagent back.`
 }
 
 /**
