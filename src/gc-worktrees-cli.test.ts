@@ -20,7 +20,9 @@ const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 // realpath'd: macOS's tmpdir() is a /var symlink to /private/var, and `git worktree list` answers
 // with the resolved path, which would otherwise never string-match a path this file built
 const dir = join(realpathSync(tmpdir()), `gc-wt-${process.pid}`)
-const home = join(dir, 'home')
+// A new home per test: detached tick children of an earlier test write into its old home, not the next one.
+let homeN = 0
+let home = join(dir, 'home')
 const bin = join(dir, 'bin')
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
@@ -276,6 +278,7 @@ function writeRigs(rigs: { name: string; repo: string }[]) {
 
 const reset = () => {
   rmSync(dir, { recursive: true, force: true })
+  home = join(dir, `home-${++homeN}`)
   mkdirSync(home, { recursive: true })
 }
 

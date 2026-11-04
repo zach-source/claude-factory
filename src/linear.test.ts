@@ -566,7 +566,9 @@ async function fakeLinearProcessSlow(hangTeam: string, fastIssues: { ref: string
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const cdir = join(tmpdir(), `linear-cli-${process.pid}`)
-const home = join(cdir, 'home')
+// A new home per test: detached tick children of an earlier test write into its old home, not the next one.
+let homeN = 0
+let home = join(cdir, 'home')
 const bin = join(cdir, 'bin')
 const calls = join(cdir, 'calls.log')
 const mode = join(cdir, 'mode') // pulled | error, read by the fake bd's `linear pull`
@@ -706,6 +708,7 @@ function writeRigs(rigsList: unknown[]) {
 
 function reset() {
   rmSync(cdir, { recursive: true, force: true })
+  home = join(cdir, `home-${++homeN}`)
   mkdirSync(home, { recursive: true })
   mkdirSync(repoA, { recursive: true })
   mkdirSync(repoB, { recursive: true })
