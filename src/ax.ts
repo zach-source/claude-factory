@@ -435,7 +435,8 @@ const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). A rig on GitLab host H gets H the same way, with `GITLAB` (an access token) and `GITLAB_BASIC`
  * (base64 of `<user>:<token>`, git's Basic auth). With `reviewer`, api.github.com uses `GITHUB_REVIEWER` (the reviewer App's
- * installation token); github.com keeps the Basic key, as the reviewer App cannot push. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
+ * installation token); github.com keeps the Basic key, as the reviewer App cannot push. Only with `manager` (and GITHUB_BASIC) does it add the
+ * path-prefixed rules that give the zach-source repos their own keys. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  *
  * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
  * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
@@ -450,6 +451,7 @@ export function egressPolicy(
   githubOwner?: string,
   githubKey = 'GITHUB_BASIC',
   reviewer = false,
+  manager = false,
 ) {
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (
@@ -479,19 +481,12 @@ export function egressPolicy(
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
       rule(apiHosts, 'Authorization', 'Bearer ', reviewer ? 'GITHUB_REVIEWER' : own || 'GITHUB'),
       rule(['github.com'], 'Authorization', 'Basic ', own ? `${own}_BASIC` : githubKey),
-      // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live)
+      // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live); manager only
       // the github.com Basic rule is only for the shared worker key: the manager's backup push must keep
       // GITHUB_BASIC_MANAGER, so it gets the REST API rule but not this one
-      ...(vault
+      ...(vault && manager
         ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
-            rule(
-              apiHosts,
-              'Authorization',
-              'Bearer ',
-              reviewer && owner === githubOwner ? 'GITHUB_REVIEWER' : key,
-              undefined,
-              [`/repos/${owner}/`],
-            ),
+            rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
             ...(githubKey === 'GITHUB_BASIC'
               ? [rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`])]
               : []),
@@ -537,9 +532,10 @@ export function createPolicy(
   githubOwner?: string,
   githubKey?: string,
   reviewer = false,
+  manager = false,
 ) {
   const policy = JSON.stringify(
-    egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer),
+    egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer, manager),
   )
   // the manager and every worker share one vault: a worker policy must not name a manager-only key
   const key = MANAGER_ONLY_KEY.exec(policy)?.[1]
@@ -883,7 +879,17 @@ export async function launchManager(
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress(process.env, rigs), undefined, undefined, managerGithubKey()))
+    if (
+      createPolicy(
+        name,
+        managerEgress(process.env, rigs),
+        undefined,
+        undefined,
+        managerGithubKey(),
+        false,
+        true,
+      )
+    )
       return { name, policy: true }
     await Bun.sleep(waitMs)
   }

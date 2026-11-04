@@ -209,7 +209,7 @@ test('with a vault named, the task sends placeholder auth headers for the gatewa
 const keyOf = (r: { https: { effects?: { replaceHeaders: { credentialUri: string }[] } } }) =>
   r.https.effects!.replaceHeaders[0]!.credentialUri.split('/').at(-1)
 
-test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones keep the default keys', () => {
+test('the manager policy has the path-prefixed zach-source rules; the unprefixed ones keep the default keys', () => {
   type R = {
     https: {
       hostnames: string[]
@@ -217,7 +217,9 @@ test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones 
       effects?: { replaceHeaders: { header: string; prefix: string; credentialUri: string }[] }
     }
   }
-  const rules = ax.egressPolicy('factory').rules as R[]
+  const rules = ax.egressPolicy('factory', [], undefined, undefined, undefined, undefined, false, true)
+    .rules as R[]
+  expect(rules.filter(r => r.https.pathPrefixes)).toHaveLength(2)
   const zsGit = rules.find(r => r.https.pathPrefixes?.[0] === '/zach-source/')!
   expect(zsGit.https).toEqual({
     hostnames: ['github.com'],
@@ -258,7 +260,26 @@ test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones 
         seen.add(`${h} ${p}`)
       }
   // no vault: no prefixed rule
-  expect(JSON.stringify(ax.egressPolicy(''))).not.toContain('pathPrefixes')
+  expect(
+    JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, undefined, false, true)),
+  ).not.toContain('pathPrefixes')
+  // a manager with its own backup key gets the REST prefixed rule but no github.com one
+  const own = JSON.stringify(
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true),
+  )
+  expect(own).toContain('/repos/zach-source/')
+  expect(own).not.toContain('"/zach-source/"')
+})
+
+test('a worker policy has no path-prefixed rule, whatever the rig owner', () => {
+  for (const owner of ['acme', 'zach-source', undefined]) {
+    const json = JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, owner))
+    expect(json).not.toContain('pathPrefixes')
+    expect(json).not.toContain('/zach-source/')
+  }
+  expect(JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, 'acme'))).not.toContain(
+    'GITHUB_ZS',
+  )
 })
 
 test('a worker of a zach-source rig gets the zach-source keys on the unprefixed GitHub rules', () => {
@@ -279,16 +300,12 @@ test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else chan
   expect(keys('acme', true)).toEqual([
     ['', 'GITHUB_REVIEWER'],
     ['', 'GITHUB_BASIC'],
-    ['/repos/zach-source/', 'GITHUB_ZS'],
-    ['/zach-source/', 'GITHUB_ZS_BASIC'],
   ])
   expect(keys('zach-source', true)).toEqual([
     ['', 'GITHUB_REVIEWER'],
     ['', 'GITHUB_ZS_BASIC'],
-    ['/repos/zach-source/', 'GITHUB_REVIEWER'],
-    ['/zach-source/', 'GITHUB_ZS_BASIC'],
   ])
-  expect(keys('acme', true).slice(2)).toEqual(keys('acme', false).slice(2))
+  expect(keys('acme', true).slice(1)).toEqual(keys('acme', false).slice(1))
   expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
   expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
     ax.egressPolicy('v', [], undefined, undefined, 'acme'),
@@ -345,6 +362,17 @@ test('createPolicy passes the rig owner to the policy', () => {
   }
 })
 
+test('createPolicy gives a worker no prefixed rule', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t5', [], undefined, 'acme')
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).not.toContain('pathPrefixes')
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
 test("a worker's egress policy allows Anthropic and GitHub, and injects keys only from a named vault", () => {
   expect(ax.egressPolicy('')).toEqual({
     rules: [
@@ -381,11 +409,12 @@ test('the manager has its own github.com vault key when a backup remote is set; 
   )
   expect(ax.managerGithubKey({})).toBe('GITHUB_BASIC')
   const mgr = JSON.stringify(
-    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER').rules,
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
+      .rules,
   )
   expect(mgr).not.toContain('GITHUB_ZS_BASIC')
   const rows = ax
-    .egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')
+    .egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
     .rules.filter((r: any) => r.https.hostnames.some((h: string) => h.endsWith('github.com')))
     .map((r: any) => [
       r.https.hostnames,
@@ -1566,7 +1595,7 @@ test('a rig egress rule on another port names it, as a Dolt remotesapi needs', (
     prefix: 'Basic ',
     port: 50051,
   }
-  expect(ax.egressPolicy('factory', [dolt]).rules[7]).toEqual({
+  expect(ax.egressPolicy('factory', [dolt]).rules[5]).toEqual({
     https: {
       hostnames: ['dolt.example.com'],
       ports: { numbers: [50051] },
@@ -1590,8 +1619,8 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
     { https: { hostnames: ['pypi.org', 'files.pythonhosted.org'] } },
   ])
   const rules = ax.egressPolicy('factory', extra).rules
-  expect(rules).toHaveLength(9)
-  expect(rules[7]!.https).toEqual({
+  expect(rules).toHaveLength(7)
+  expect(rules[5]!.https).toEqual({
     hostnames: ['api.openai.com'],
     effects: {
       replaceHeaders: [
@@ -1603,13 +1632,13 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
       ],
     },
   })
-  expect(rules[8]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
+  expect(rules[6]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
 })
 
 test('unset, FACTORY_AX_PKG_GATE leaves egressPolicy byte-identical to today, registry hosts and all', () => {
   const extra = [ax.parseEgress('proxy.golang.org,sum.golang.org'), ax.parseEgress('pypi.org,api.openai.com')]
   expect(ax.egressPolicy('factory', extra, undefined)).toEqual(ax.egressPolicy('factory', extra))
-  expect(ax.egressPolicy('factory', extra).rules.slice(7)).toEqual([
+  expect(ax.egressPolicy('factory', extra).rules.slice(5)).toEqual([
     { https: { hostnames: ['proxy.golang.org', 'sum.golang.org'] } },
     { https: { hostnames: ['pypi.org', 'api.openai.com'] } },
   ])
@@ -2076,6 +2105,10 @@ test('launchManager applies the manager task with its command and env, then retr
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
     expect(task.spec.image).toBe('mgr@sha256:abc')
+    const prefixed = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.flatMap(
+      (x: any) => x.https?.pathPrefixes ?? [],
+    )
+    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/'])
     expect(task.spec.debug).toBe(true)
     expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
     const env = Object.fromEntries(
