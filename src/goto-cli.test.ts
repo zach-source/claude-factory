@@ -76,13 +76,13 @@ test('AC1: an applied goto, or pending mail only, does not block a goto', () => 
   expect(factory(['goto', mail.id, 'implement']).code).toBe(0)
 })
 
-test('AC2: a goto that the step budget holds at once is refused', () => {
+test('AC2: a goto on a used-up step budget queues, since goto grants a budget', () => {
   const held = makeRun({ ...DEF, maxSteps: 1 }, [])
   const out = factory(['goto', held.id, 'review'])
-  expect(out.code).toBe(1)
-  expect(out.err).toContain('step budget used up')
-  expect(out.err).toContain('factory retry')
-  expect(held.lines().length).toBe(0)
+  expect(out.code).toBe(0)
+  expect(out.out).toContain(`queued goto review for ${held.id}`)
+  expect(out.err).not.toContain('factory retry')
+  expect(held.lines().length).toBe(1)
   const room = makeRun({ ...DEF, maxSteps: 5 }, [])
   expect(factory(['goto', room.id, 'review']).code).toBe(0)
 })
