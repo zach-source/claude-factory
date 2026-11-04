@@ -359,8 +359,8 @@ The pm pass (`factory plan`) reports a `file-churn` finding when one file change
 ## Hygiene sweep
 
 Once a day, `factory tick` runs the `hygiene` sweep for each rig. The pass is code. It uses no model
-and starts no run. It reads all beads with one `bd list` and the last 500 merged PRs with one
-`gh api repos/<owner>/<repo>/pulls`. It proposes a close for a bead, with one of these kinds:
+and starts no run. It reads all beads with one `bd list` and the merged PRs among the last 500 closed PRs with up to 5
+`gh api repos/<owner>/<repo>/pulls` calls. It proposes a close for a bead, with one of these kinds:
 
 | Kind        | Rule                                                                                                           |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |
