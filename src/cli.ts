@@ -2608,7 +2608,7 @@ export function warnSkillsOff(skills: string[], station: string, on: Record<stri
 }
 
 /** codex and pi workers get plugin dirs, not settings: warn here for a listed skill that is off */
-export function warnSkillsForHarness(h: string, skills: string[], station: string, claudeDir: string) {
+export function warnSkillsForHarness(h: string | null, skills: string[], station: string, claudeDir: string) {
   if (h !== 'codex' && h !== 'pi') return
   let on: Record<string, boolean> | undefined
   try {
