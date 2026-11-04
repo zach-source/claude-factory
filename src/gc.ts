@@ -148,59 +148,47 @@ export type PrFact = {
   isCrossRepository: boolean
 }
 
-type PrPageNode = {
-  number: number
-  state: 'OPEN' | 'MERGED' | 'CLOSED'
-  headRefName: string
-  headRefOid: string
-  isCrossRepository: boolean
-}
-type PrPage = { totalCount: number; nodes: PrPageNode[] }
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 
-function isPrPageNode(n: unknown): n is PrPageNode {
-  if (!n || typeof n !== 'object') return false
-  const o = n as Record<string, unknown>
-  return (
-    typeof o.number === 'number' &&
-    (o.state === 'OPEN' || o.state === 'MERGED' || o.state === 'CLOSED') &&
-    typeof o.headRefName === 'string' &&
-    typeof o.headRefOid === 'string' &&
-    // a missing or non-boolean isCrossRepository (an older `gh`, a malformed entry) must fail
-    // closed (claude-factory-ph8.4): trusting a fork PR as same-repo can cover an unmerged tip
-    typeof o.isCrossRepository === 'boolean'
-  )
-}
-function isPrPage(p: unknown): p is PrPage {
-  if (!p || typeof p !== 'object') return false
-  const o = p as Record<string, unknown>
-  return typeof o.totalCount === 'number' && Array.isArray(o.nodes) && o.nodes.every(isPrPageNode)
+/** one REST pull as a PrFact, or null when a field `gc` relies on is missing or has the wrong type */
+function restPullFact(n: unknown): (PrFact & { number: number }) | null {
+  if (!isObj(n) || typeof n.number !== 'number') return null
+  if (n.state !== 'open' && n.state !== 'closed') return null
+  if (n.merged_at !== null && typeof n.merged_at !== 'string') return null
+  const head = n.head
+  if (!isObj(head) || typeof head.ref !== 'string' || typeof head.sha !== 'string' || head.sha === '')
+    return null
+  // a null head repo is a deleted fork: cross-repository, so never trusted as ours (claude-factory-ph8.4)
+  if (head.repo !== null && !(isObj(head.repo) && typeof head.repo.full_name === 'string')) return null
+  const base = isObj(n.base) && isObj(n.base.repo) ? n.base.repo.full_name : undefined
+  if (typeof base !== 'string') return null
+  return {
+    number: n.number,
+    state: n.merged_at ? 'MERGED' : n.state === 'open' ? 'OPEN' : 'CLOSED',
+    headRefName: head.ref,
+    headRefOid: head.sha,
+    isCrossRepository: head.repo === null || (head.repo as { full_name: string }).full_name !== base,
+  }
 }
 
 /**
- * Parses the stdout of `gh api graphql --paginate`. The `prFacts()` function in cli.ts builds the query and the
- * `--jq` filter that prints this stdout. Each page is one JSON line with the shape `{totalCount, nodes}`.
- * `nodes` holds one entry for each pull request on that page. `totalCount` is the total PR count of the repo.
- * It is the same on every page.
+ * Parses the stdout of `gh api --paginate repos/<owner>/<repo>/pulls --jq tojson`. The `prFacts()` function in
+ * cli.ts builds the call. Each page is one JSON line: an array of REST pulls. A REST read names the owner in the
+ * path, so the AX gateway sends the owner's key. GraphQL has no owner in the path (claude-factory-oz6s).
  *
  * This function returns null, never a partial list, when it has any doubt (claude-factory-ph8):
- * - No line is present, or a line fails to parse
- * - A line does not match the shape of `PrPage`: `totalCount` or `nodes` is missing or has the
- *   wrong type (for example, a null `repository` causes this)
- * - A node's `state` is not `OPEN`, `MERGED` or `CLOSED`
- * - A node's `number` is not a number, or its `headRefName` or `headRefOid` is not a string
- * - A node's `isCrossRepository` is missing or not a boolean (claude-factory-ph8.4): coverTip()
- *   must never trust a fork PR's branch as ours to have merged
- * - Across all pages, the count of distinct PR numbers is less than the first page's `totalCount`
+ * - No line is present, or a line fails to parse or is not an array
+ * - An element lacks `number`, `state` (`open` or `closed`), `merged_at` (string or null), `head.ref`,
+ *   a non-empty `head.sha`, `head.repo` (null or an object with `full_name`) or `base.repo.full_name`
  *
- * A lost or incomplete page can hide an OPEN PR. This can make gc delete a branch that still has
- * an open review (AC5, AC8). A PR number repeats across pages only when two page requests overlap.
- * Remove duplicate entries by number to keep the plan small and correct.
+ * `gh` exits non-zero when any page fails, so a lost page never reaches this function. `prFacts()` lists in
+ * ascending creation order: a PR opened during the read only adds at the end.
+ * A PR number repeats across pages only when two page requests overlap. Remove duplicates by number.
  */
 export function parsePrPages(stdout: string): PrFact[] | null {
   const lines = stdout.split('\n').filter(l => l.trim() !== '')
   if (lines.length === 0) return null
   const byNumber = new Map<number, PrFact>()
-  let totalCount: number | undefined
   for (const line of lines) {
     let page: unknown
     try {
@@ -208,18 +196,14 @@ export function parsePrPages(stdout: string): PrFact[] | null {
     } catch {
       return null
     }
-    if (!isPrPage(page)) return null
-    if (totalCount === undefined) totalCount = page.totalCount
-    for (const n of page.nodes) {
-      byNumber.set(n.number, {
-        state: n.state,
-        headRefName: n.headRefName,
-        headRefOid: n.headRefOid,
-        isCrossRepository: n.isCrossRepository,
-      })
+    if (!Array.isArray(page)) return null
+    for (const n of page) {
+      const fact = restPullFact(n)
+      if (!fact) return null
+      const { number, ...rest } = fact
+      byNumber.set(number, rest)
     }
   }
-  if (totalCount === undefined || byNumber.size < totalCount) return null
   return [...byNumber.values()]
 }
 

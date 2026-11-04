@@ -5049,42 +5049,28 @@ export function githubSlug(url: string): string | null {
   const parts = remote.path.split('/')
   return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
-/** the GraphQL query `prFacts()` sends. On the first page, `$endCursor` has no value. On every
- * page after, `gh --paginate` sets `$endCursor` from the last page's `pageInfo.endCursor`.
- * `orderBy: CREATED_AT ASC` keeps the page order the same across a run. */
-const PR_FACTS_QUERY =
-  'query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){' +
-  'pullRequests(first:100,after:$endCursor,orderBy:{field:CREATED_AT,direction:ASC}){' +
-  'totalCount nodes{number state headRefName headRefOid isCrossRepository} pageInfo{hasNextPage endCursor}}}}'
-
-/** `gh api graphql --paginate`, called once per rig, not once per branch. The plan for
+/** `gh api --paginate repos/<owner>/<repo>/pulls`, called once per rig, not once per branch. The plan for
  * claude-factory-l38 rejected the per-branch call: it would run about 700 calls on the first
  * pass. This function returns null on a non-GitHub forge, or on any `gh` failure (AC5).
  *
  * `gh pr list --limit 1000` (claude-factory-l38.13) capped a rig's pull requests at 1000. A rig
  * with more PRs than that always read as incomplete (claude-factory-ph8: a rig with over 3000
- * pull requests is a real case). So gc never reclaimed a branch on it. GraphQL's `totalCount`
- * proves a read is complete. `gc.parsePrPages()` checks it against the number of distinct PR
- * numbers read, and returns null, never a partial list, on any mismatch. */
+ * pull requests is a real case). `--paginate` has no cap, and `gh` exits non-zero when any page fails.
+ * GraphQL gave no owner in the path, so the AX gateway sent the default key (claude-factory-oz6s).
+ * `--jq tojson` prints one JSON line per page. `gc.parsePrPages()` returns null, never a partial list,
+ * on any unknown form. Ascending creation order means a PR opened during the read only adds at the end. */
 function prFacts(repo: string): gc.PrFact[] | null {
   const url = originConfigUrl(repo)
   const slug = url ? githubSlug(url) : null
   if (!slug) return null
-  const [owner, name] = slug.split('/')
   const p = Bun.spawnSync(
     [
       'gh',
       'api',
-      'graphql',
       '--paginate',
-      '-f',
-      `owner=${owner}`,
-      '-f',
-      `name=${name}`,
-      '-f',
-      `query=${PR_FACTS_QUERY}`,
+      `repos/${slug}/pulls?state=all&sort=created&direction=asc&per_page=100`,
       '--jq',
-      '.data.repository.pullRequests | {totalCount, nodes} | tojson',
+      'tojson',
     ],
     { cwd: repo, timeout: 300_000 },
   )
