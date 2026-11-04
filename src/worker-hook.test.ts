@@ -11023,6 +11023,21 @@ const GLAB_API_DENY = [
   'glab api graphql -f query=@missing.graphql',
   'glab api graphql --input approve.json',
   'glab api graphql --input notjson.json',
+  'glab api -R x/y -X POST projects/:id/merge_requests/5/approve',
+  'glab api --repo x/y projects/:id/merge_requests/5/approve',
+  'glab api -X POST -R x/y projects/:id/merge_requests/5/approve',
+  'glab api -R x/y -f sha=1 projects/:id/merge_requests/5/approve',
+  'glab api >out -X POST projects/:id/merge_requests/5/approve',
+  'glab api 2>/dev/null -X POST projects/:id/merge_requests/5/approve',
+  'glab api -X POST projects/1/merge_requests/5/approve.json',
+  'glab api -X POST projects/1/merge_requests/5//approve',
+  'glab api -X POST projects/1/merge_requests/5/./approve',
+  'glab api -X POST projects/1/merge_requests/5/x/../approve',
+  'glab api -X POST projects/1/merge_requests/5/APPROVE',
+  'glab api -X POST projects/1/merge_requests/5%2Fapprove%2F',
+  'glab api -X POST projects/1/merge_requests/5/approve%3Fa',
+  'glab api -X POST projects/1/merge_requests/5/approve%2Ejson',
+  'glab api --output json -X POST projects/1/merge_requests/5/approve',
 ]
 const GLAB_DYNAMIC_DENY = [
   "printf 'mr approve 5' | xargs glab",
@@ -11033,6 +11048,10 @@ const GLAB_DYNAMIC_DENY = [
   'glab api -X $M projects/1/merge_requests/5/notes',
   'glab api -X POST "$EP"',
   'glab api "$EP" -f a=b',
+  'glab api -R x/y -X POST "$EP"',
+  'glab api --input body.json "$EP"',
+  'glab api --form a=b "$EP"',
+  'glab api --output json "$EP" -f a=b',
 ]
 const GLAB_ALLOW = [
   'glab mr view 5',
@@ -11050,6 +11069,8 @@ const GLAB_ALLOW = [
   'glab api "projects/$ID/merge_requests"',
   `glab api graphql -f query='query { project(fullPath:"a/b") { mergeRequest(iid:"5") { approved } } }'`,
   'glab mr note 5 -m x -- approve',
+  'glab api -R x/y projects/:id/merge_requests/5/approvers',
+  'glab api >out projects/:id/merge_requests/5',
 ]
 for (const g of [
   {},

@@ -5043,9 +5043,18 @@ function ghAliasDenied(subArgs: string[]): string | undefined {
   return sub === 'set' || sub === 'import' ? ALIAS_REASON : undefined
 }
 
-// a glab REST path that approves a merge request
-const GLAB_APPROVE_PATH = /(^|\/)merge_requests\/[^/]+\/approve$/
-const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output'])
+// a glab REST path that approves a merge request; read on the decoded, lower-case path
+const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
+const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output', '-R', '--repo'])
+
+/** True when the decoded endpoint text names a merge request approve path, or cannot be decoded. */
+function glabApprovePath(endpoint: string): boolean {
+  const decoded = decodeApiPath(endpoint)
+  if (decoded === undefined) return true
+  return [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded].some(p =>
+    GLAB_APPROVE_PATH.test(p),
+  )
+}
 
 /**
  * claude-factory-hoz8: the reason to deny a `glab` call that can record a merge request approval,
@@ -5054,9 +5063,17 @@ const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output
  * `gate.reviewer`. It reads three channels, and fails closed on a part it cannot read:
  * `glab mr approve` (a word scan, so an unknown flag cannot hide the word), a REST path
  * `.../merge_requests/N/approve` with any method, and a GraphQL approve mutation.
+ * Like `ghReason`, it scans the words as given and again without redirect words.
  */
 function glabReason(words: string[], gate: HookGate): string | undefined {
   const tail = words.slice(1)
+  const dropped = dropRedirectWords(tail)
+  return (
+    glabReasonOn(tail, gate) ?? (dropped.length === tail.length ? undefined : glabReasonOn(dropped, gate))
+  )
+}
+
+function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
   const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
   if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
   if (hasMutatingWordBeforeDashDash(tail, new Set(['mr']))) {
@@ -5070,23 +5087,26 @@ function glabReason(words: string[], gate: HookGate): string | undefined {
   const apiArgs = expandGhShortClusters(tail.slice(tail.indexOf('api') + 1))
   const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
   if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
-  const { index: ei } = firstVerbIndex(apiArgs, GLAB_API_VALUE_FLAGS)
-  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
-  if (endpoint === undefined) return undefined
-  // a glob word such as `...approve?x=1` still names the approve path in its literal text
-  if (GLAB_APPROVE_PATH.test(normalizeEndpoint(endpoint))) return GLAB_APPROVE_REASON
-  if (dynamicWord(endpoint)) {
-    const hasData =
-      ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
-    return (methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() === 'GET' ? undefined : DYNAMIC_VERB_REASON
+  // every word that is not a flag or a flag value could be the endpoint: check each one
+  const endpoints: string[] = []
+  for (let i = 0; i < apiArgs.length; i++) {
+    const w = apiArgs[i]!
+    if (GLAB_API_VALUE_FLAGS.has(w)) i++
+    else if (!w.startsWith('-')) endpoints.push(w)
   }
-  if (isGraphqlEndpoint(endpoint)) {
-    const { texts, unresolved } = graphqlTexts(apiArgs, gate)
-    if (unresolved) return GLAB_APPROVE_REASON
-    return texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t)) ? GLAB_APPROVE_REASON : undefined
+  for (const endpoint of endpoints) {
+    // a glob word such as `...approve?x=1` still names the approve path in its literal text
+    if (glabApprovePath(endpoint)) return GLAB_APPROVE_REASON
+    if (dynamicWord(endpoint)) {
+      const hasData =
+        ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
+      if ((methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() !== 'GET') return DYNAMIC_VERB_REASON
+    } else if (isGraphqlEndpoint(endpoint)) {
+      const { texts, unresolved } = graphqlTexts(apiArgs, gate)
+      if (unresolved) return GLAB_APPROVE_REASON
+      if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
+    }
   }
-  const path = decodeApiPath(normalizeEndpoint(endpoint))
-  if (path === undefined || GLAB_APPROVE_PATH.test(path)) return GLAB_APPROVE_REASON
   return undefined
 }
 
