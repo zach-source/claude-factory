@@ -256,6 +256,9 @@ for (const bad of [
       seed()
       const r = run(bothFakes({ FACTORY_DREAM_CODEX: bad }))
       expect(r.out).toContain('FACTORY_DREAM_CODEX is not a model name')
+      expect(readFileSync(join(home, 'dream.log'), 'utf8')).toContain(
+        'refused\nFACTORY_DREAM_CODEX is not a model name',
+      )
       expect(existsSync(mark('claude.argv'))).toBe(false)
       expect(existsSync(mark('codex.argv'))).toBe(false)
       expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
@@ -285,6 +288,7 @@ for (const kind of ['dir', 'file', 'symlink'] as const) {
       else symlinkSync('/nonexistent-target', p)
       const r = run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra' }))
       expect(r.out).toContain('the memory holds .codex, which would add codex project config')
+      expect(readFileSync(join(home, 'dream.log'), 'utf8')).toContain('refused\nthe memory holds .codex')
       expect(existsSync(mark('codex.argv'))).toBe(false)
       expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
     },

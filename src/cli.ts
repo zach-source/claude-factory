@@ -4199,15 +4199,16 @@ function compactMessage(
 function dreamCodexUsage(codexHome: string, start: number) {
   const sessions = join(codexHome, 'sessions')
   if (!existsSync(sessions)) return []
+  // ponytail: this reads each whole file; the upgrade is a stream of the last token_count.
   const rows = (readdirSync(sessions, { recursive: true }) as string[])
     .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(basename(f)))
     .sort()
-    .flatMap(f => {
+    .filter(f => {
       const st = lstatSync(join(sessions, f))
-      if (!st.isFile() || st.size > 64 * 1024 * 1024 || st.mtimeMs < start) return []
-      return codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? []
+      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= start
     })
     .slice(0, 20)
+    .flatMap(f => codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? [])
   return validUsage(rows, 'dream', 0)
 }
 
@@ -4307,15 +4308,21 @@ async function dream() {
     const model = process.env.FACTORY_DREAM_CODEX
     let codexHome: string | undefined
     if (model) {
-      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model)) return 'FACTORY_DREAM_CODEX is not a model name'
+      // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
+      const refuse = (why: string) => {
+        appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
+        return why
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model))
+        return refuse('FACTORY_DREAM_CODEX is not a model name')
       // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
       try {
         lstatSync(join(MEMORY, '.codex'))
-        return 'the memory holds .codex, which would add codex project config'
+        return refuse('the memory holds .codex, which would add codex project config')
       } catch {}
       codexHome = dreamCodexHome()
     }
-    // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
+    // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = codexHome
       ? Bun.spawnSync(
           [
