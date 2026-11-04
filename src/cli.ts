@@ -590,7 +590,7 @@ export function summaryArgs(args: string[]): string[] {
     )
   let text: string
   try {
-    if (!statSync(path).isFile()) throw 0
+    if (!statSync(path).isFile()) return fail(`--summary-file ${path} is not a readable file`)
     text = readFileSync(path, 'utf8')
   } catch {
     return fail(`--summary-file ${path} is not a readable file`)
@@ -9674,10 +9674,10 @@ else if (outboxOk) {
   console.error(outboxOk)
   process.exit(1)
 }
-let qargs = args
+let queuedArgs = args
 if (outboxCmd && outboxOk === null && cmd === 'report')
   try {
-    qargs = summaryArgs(args)
+    queuedArgs = summaryArgs(args)
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
@@ -9690,7 +9690,7 @@ if (queued) {
     const sync = worker.syncBeads()
     if (!sync.ok && worker.isSchemaSkew(sync)) {
       // no retry fixes a VM whose bd is too old for the store: the report goes out, and the laptop holds the station
-      worker.queue([cmd!, ...qargs], worker.usageOfSession(args[0]!), sync.error)
+      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error)
       console.log(
         `queued for the factory: report; bd could not sync (schema skew: ${sync.error}), so the factory holds this station for the person; you are done, stop now`,
       )
@@ -9705,7 +9705,7 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...qargs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
+  worker.queue([cmd!, ...queuedArgs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 

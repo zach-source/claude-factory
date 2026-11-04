@@ -166,7 +166,7 @@ test('inside a VM, report --summary-file queues the file text; a bad file queues
   writeFileSync(f, 'long\nsummary "x"\n')
   const blank = join(dir, 'sf-blank')
   writeFileSync(blank, ' \n\t\n')
-  // a fake bd first on PATH leaves a marker if the VM syncs beads: a bad form must refuse before that
+  // a fake bd first on PATH writes a marker when the VM syncs beads. A bad form must refuse first
   const marker = join(dir, 'sf-bd-ran')
   const bin = join(dir, 'sf-bin')
   mkdirSync(bin, { recursive: true })
@@ -454,7 +454,8 @@ test('a tick does not replay a report that still holds --summary-file, and reads
   expect(factory(['tick']).code).toBe(0)
   expect(inbox('r1sf')).not.toContain('"outcome":"ready"')
   expect(inbox('r1sf')).not.toContain('zqsecret')
-  expect(called()).toContain('is not yours to run')
+  const prompt = called().match(/worker prompt (\S+)/)?.[1] ?? ''
+  expect(Buffer.from(prompt, 'base64').toString()).toContain('is not yours to run')
   rmSync(join(home, 'runs', 'r1sf'), { recursive: true })
 })
 
