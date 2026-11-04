@@ -534,6 +534,10 @@ export function createPolicy(
   reviewer = false,
   manager = false,
 ) {
+  if (manager && task !== managerTask())
+    throw new Error(
+      `egress policy for ${task} asks for the manager policy, but the manager task is ${managerTask()}`,
+    )
   const policy = JSON.stringify(
     egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer, manager),
   )

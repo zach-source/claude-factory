@@ -2516,7 +2516,8 @@ test('createPolicy refuses manager=true for any task but the manager task', () =
     delete process.env.FACTORY_POLICY_BROKER
     delete process.env.FACTORY_AX_MANAGER
     writeFileSync(join(dir, 'actor'), '')
-    const asManager = (task: string) => () => ax.createPolicy(task, [], undefined, 'acme', undefined, false, true)
+    const asManager = (task: string) => () =>
+      ax.createPolicy(task, [], undefined, 'acme', undefined, false, true)
     rmSync(calls, { force: true })
     expect(asManager('t9')).toThrow('t9')
     expect(existsSync(calls)).toBe(false)
