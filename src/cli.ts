@@ -5152,47 +5152,48 @@ export function githubSlug(url: string): string | null {
   const parts = remote.path.split('/')
   return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
-/** the GraphQL query `prFacts()` sends. On the first page, `$endCursor` has no value. On every
- * page after, `gh --paginate` sets `$endCursor` from the last page's `pageInfo.endCursor`.
- * `orderBy: CREATED_AT ASC` keeps the page order the same across a run. */
-const PR_FACTS_QUERY =
-  'query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){' +
-  'pullRequests(first:100,after:$endCursor,orderBy:{field:CREATED_AT,direction:ASC}){' +
-  'totalCount nodes{number state headRefName headRefOid isCrossRepository} pageInfo{hasNextPage endCursor}}}}'
-
-/** `gh api graphql --paginate`, called once per rig, not once per branch. The plan for
+/** `gh api repos/<owner>/<repo>/pulls`, one call per page, once per rig, not once per branch. The plan for
  * claude-factory-l38 rejected the per-branch call: it would run about 700 calls on the first
  * pass. This function returns null on a non-GitHub forge, or on any `gh` failure (AC5).
  *
  * `gh pr list --limit 1000` (claude-factory-l38.13) capped a rig's pull requests at 1000. A rig
  * with more PRs than that always read as incomplete (claude-factory-ph8: a rig with over 3000
- * pull requests is a real case). So gc never reclaimed a branch on it. GraphQL's `totalCount`
- * proves a read is complete. `gc.parsePrPages()` checks it against the number of distinct PR
- * numbers read, and returns null, never a partial list, on any mismatch. */
+ * pull requests is a real case). The page loop has no cap, and a failed page gives null.
+ * GraphQL gave no owner in the path, so the AX gateway sent the default key (claude-factory-oz6s).
+ * `--jq tojson` prints one JSON line per call. `gc.parsePrPages()` returns null, never a partial list,
+ * on any unknown form. Ascending creation order means a PR opened during the read only adds at the end. */
 function prFacts(repo: string): gc.PrFact[] | null {
   const url = originConfigUrl(repo)
   const slug = url ? githubSlug(url) : null
   if (!slug) return null
-  const [owner, name] = slug.split('/')
-  const p = Bun.spawnSync(
-    [
-      'gh',
-      'api',
-      'graphql',
-      '--paginate',
-      '-f',
-      `owner=${owner}`,
-      '-f',
-      `name=${name}`,
-      '-f',
-      `query=${PR_FACTS_QUERY}`,
-      '--jq',
-      '.data.repository.pullRequests | {totalCount, nodes} | tojson',
-    ],
-    { cwd: repo, timeout: 300_000 },
-  )
-  if (p.exitCode !== 0) return null
-  return gc.parsePrPages(p.stdout.toString())
+  // One call per page, not `--paginate`: gh follows the Link URL /repositories/<id>/pulls, which has no
+  // owner in the path, so the AX gateway sends the default key for pages 2 and later (claude-factory-oz6s).
+  const pages: string[] = []
+  for (let page = 1; ; page++) {
+    const p = Bun.spawnSync(
+      [
+        'gh',
+        'api',
+        `repos/${slug}/pulls?state=all&sort=created&direction=asc&per_page=100&page=${page}`,
+        '--jq',
+        'tojson',
+      ],
+      { cwd: repo, timeout: 300_000 },
+    )
+    if (p.exitCode !== 0) return null
+    const text = p.stdout.toString().trim()
+    pages.push(text)
+    // a short page is the last one; each call prints one JSON array on one line
+    let n: unknown
+    try {
+      n = JSON.parse(text)
+    } catch {
+      return null
+    }
+    if (!Array.isArray(n)) return null
+    if (n.length < 100) break
+  }
+  return gc.parsePrPages(pages.join('\n'))
 }
 
 type GcRunRef = gc.RunRef & { repo: string }
@@ -6952,10 +6953,10 @@ const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) 
   }
 }
 
-/** the pre-check's merged-PR lookups for a rig on GitHub (`gh pr list --state merged --search`, a REST `head=` call) or GitLab
- * (`glab api` merged MR searches): a title search for the id, a second one for a dotted child's short id, plus a lookup for up to 3
- * local run branches of this bead (a PR that closed the bead's own run but never named it in its title). It throws when the first
- * search fails. A failed short-id or branch call keeps the hits already found. */
+/** the pre-check's merged-PR lookups for a rig on GitHub (one REST list of the newest 300 closed PRs, then a REST `head=` call
+ * per branch) or GitLab (`glab api` merged MR searches: a title search for the id, a second one for a dotted child's short id),
+ * plus a lookup for up to 3 local run branches of this bead (a PR that closed the bead's own run but never named it in its
+ * title). It throws when the first list or search fails. A failed short-id or branch call keeps the hits already found. */
 async function mergedPrsFor(
   repo: string,
   origin: NonNullable<ReturnType<typeof originRef>>,
@@ -6963,34 +6964,31 @@ async function mergedPrsFor(
   branches: string[],
   cli: { gh: Gh; glab: Gh },
 ): Promise<MergedPr[]> {
-  const fields = 'number,url,title,headRefName,mergeCommit'
   const gl = origin.forge === 'gitlab'
   const glabPath = `${origin.owner}/${origin.repo}`
   let firstErr = ''
-  const bySearch = async (q: string): Promise<string | null> => {
-    if (gl) return gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: q }, e => (firstErr = e))
-    const r = await cli.gh(['pr', 'list', '--state', 'merged', '--search', q, '--json', fields, '-L', '30'], {
-      cwd: repo,
-      timeout: PRECHECK_TIMEOUT_MS,
-    })
-    if (r.code !== 0) firstErr = r.err
-    return r.code === 0 ? r.out : null
-  }
-  const search = await bySearch(id)
-  if (search === null)
-    throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh pr list'} failed`, 200))
-  const found = parseMergedPrs(search)
-  // claude-factory-jxl.1: a title may cite only the short child id ("192.6"); the full-id search misses it
-  const short = shortBeadId(id)
+  const ref = rigRef(repo)
+  // GitHub: one REST list of the newest closed PRs. `alreadyDone` matches the id, the short id and the run
+  // branches in it. `gh pr list --search` is GraphQL, which the AX gateway cannot key by owner (oz6s).
+  const list = gl
+    ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: id }, e => (firstErr = e))
+    : ref
+      ? // ponytail: 3 pages = the newest 300 closed PRs; an older merge is missed by the pre-check
+        await githubMergedJson(cli.gh, ref.slug, repo, { pages: 3 }, e => (firstErr = e))
+      : null
+  if (list === null)
+    throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh api pulls'} failed`, 200))
+  const found = parseMergedPrs(list)
+  // claude-factory-jxl.1: a GitLab title may cite only the short child id ("192.6"); the full-id search misses it
+  const short = gl ? shortBeadId(id) : null
   if (short) {
-    const byShort = await bySearch(short)
+    const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: short })
     if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
   // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
-    const ref = rigRef(repo)
     const byHead = gl
       ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { sourceBranch: branch })
       : ref
@@ -9583,9 +9581,11 @@ const cachedMerges = (c: MergedCache) =>
 /** records with mergedAt set from the cache alone; no gh call */
 const withMerges = (recs: RunRecord[]) => attachMerges(recs, cachedMerges(readMerged()))
 
-/** `withMerges`, after one `gh pr list --state merged` for each GitHub rig that has a handed-off run the
+/** `withMerges`, after one REST `pulls?state=closed&sort=updated` read for each GitHub rig that has a handed-off run the
  * cache does not match, at most once in 10 min. A gh failure prints one line and leaves the run handed-off.
- * ponytail: -L 1000 caps one lookup; a full page moves `from` to its oldest row, so older merges stay unmatched. */
+ * GraphQL (`gh pr list --search`) has no owner in the path, so the AX gateway gave it the wrong key (claude-factory-oz6s).
+ * A PR merged at or after `from` was updated at or after `from`, so the read stops after a page that ends before it.
+ * ponytail: 10 pages (1000 PRs) cap one lookup; a capped read moves `from` to its last update time, so older merges stay unmatched. */
 async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
   const cache = readMerged()
   const open = withMerges(recs).filter(r => fate(r) === 'handed-off' && r.rig)
@@ -9599,39 +9599,29 @@ async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
     const oldest = Math.min(...open.filter(r => r.rig === name).map(r => r.createdAt))
     const covered = !!seen && seen.from <= oldest
     const from = covered ? seen.checkedAt - 86_400_000 : oldest
-    const p = await spawnGh(
-      [
-        'pr',
-        'list',
-        '--state',
-        'merged',
-        '--search',
-        `merged:>=${new Date(from).toISOString().slice(0, 10)}`,
-        '-L',
-        '1000',
-        '--json',
-        'url,headRefName,mergedAt',
-      ],
-      { cwd: rig.repo, timeout: 30_000 },
-    )
-    let rows: unknown
-    try {
-      rows = p.code === 0 ? JSON.parse(p.out) : undefined
-    } catch {}
-    if (!Array.isArray(rows)) {
-      console.error(
-        `merged-prs: gh pr list failed for ${name}: ${clip(p.err.trim().split('\n')[0] || 'bad output', 200)}`,
-      )
+    const ref = rigRef(rig.repo)
+    let pullErr = ''
+    const rows = ref
+      ? await githubPulls(
+          spawnGh,
+          ref.slug,
+          rig.repo,
+          { state: 'closed', pages: 10, sort: 'updated', since: from },
+          e => (pullErr = e),
+        )
+      : null
+    if (!rows) {
+      console.error(`merged-prs: gh api pulls failed for ${name}: ${pullErr.trim().split('\n')[0]}`)
       continue
     }
-    let oldestRow = Infinity
+    const text = (v: unknown) => (typeof v === 'string' ? v : '')
     for (const x of rows) {
-      const at = Date.parse(x?.mergedAt)
-      if (typeof x?.url !== 'string' || typeof x?.headRefName !== 'string' || Number.isNaN(at)) continue
-      cache.prs[x.url] = { head: x.headRefName, mergedAt: at }
-      oldestRow = Math.min(oldestRow, at)
+      const at = Date.parse(text(x.merged_at))
+      const head = text((x.head as { ref?: unknown } | undefined)?.ref)
+      if (at >= from && head && text(x.html_url)) cache.prs[text(x.html_url)] = { head, mergedAt: at }
     }
-    const reached = rows.length >= 1000 ? oldestRow : from
+    const lastUpdated = Date.parse(text(rows.at(-1)?.updated_at))
+    const reached = rows.length >= 1000 && lastUpdated >= from ? lastUpdated : from
     cache.rigs[name] = { checkedAt: now, from: covered ? Math.min(seen.from, reached) : reached }
     dirty = true
   }

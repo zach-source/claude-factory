@@ -938,19 +938,31 @@ export async function githubPulls(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { state: 'open' | 'closed' | 'all'; pages: number; head?: string },
+  o: {
+    state: 'open' | 'closed' | 'all'
+    pages: number
+    head?: string
+    /** sort by update time, and stop after a page whose last row was updated before `since` (ms) */
+    sort?: 'updated'
+    since?: number
+  },
+  onErr?: (err: string) => void,
 ): Promise<Json[] | null> {
   const rows: Json[] = []
   for (let page = 1; page <= o.pages; page++) {
-    const q = `state=${o.state}&sort=created&direction=desc&per_page=100&page=${page}`
+    const q = `state=${o.state}&sort=${o.sort ?? 'created'}&direction=desc&per_page=100&page=${page}`
     const res = await gh(
       ['api', `repos/${slug}/pulls?${q}${o.head ? `&head=${encodeURIComponent(o.head)}` : ''}`],
       timed(cwd),
     )
     const list = res.code === 0 ? asJson(res.out) : null
-    if (!Array.isArray(list)) return null
+    if (!Array.isArray(list)) {
+      onErr?.(res.err)
+      return null
+    }
     rows.push(...(list as Json[]))
     if (list.length < 100) break
+    if (o.since !== undefined && !(Date.parse(str((list.at(-1) as Json).updated_at)) >= o.since)) break
   }
   return rows
 }
@@ -961,10 +973,17 @@ export async function githubWatchView(gh: Gh, url: string, cwd: string): Promise
   const slug = githubSlugOf(url)
   if (!slug) return null
   const path = `repos/${slug}/pulls/${prRef(url)!.number}`
+  // One call per page, not `--paginate`: gh follows the Link URL /repositories/<id>/..., which has no owner in
+  // the path, so the AX gateway sends the default key for pages 2 and later (claude-factory-oz6s).
   const pages = async (p: string): Promise<unknown[] | null> => {
-    const res = await gh(['api', '--paginate', '--slurp', p], { cwd, timeout: 60_000 })
-    const list = res.code === 0 ? asJson(res.out) : null
-    return Array.isArray(list) ? list.flat() : null
+    const rows: unknown[] = []
+    for (let page = 1; ; page++) {
+      const res = await gh(['api', `${p}&page=${page}`], { cwd, timeout: 60_000 })
+      const list = res.code === 0 ? asJson(res.out) : null
+      if (!Array.isArray(list)) return null
+      rows.push(...list)
+      if (list.length < 100) return rows
+    }
   }
   const [pull, reviews, comments] = await Promise.all([
     gh(['api', path], { cwd, timeout: 60_000 }),
@@ -996,8 +1015,9 @@ export async function githubMergedJson(
   slug: string,
   cwd: string,
   o: { pages: number; head?: string },
+  onErr?: (err: string) => void,
 ): Promise<string | null> {
-  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o })
+  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o }, onErr)
   return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
 }
 
@@ -1183,11 +1203,28 @@ const githubForge = (gh: Gh): Forge => ({
       : { code: 1, out: '', err: 'gh api: pull list failed' }
   },
   parseList: parseBranchList,
-  search: r =>
-    gh(
-      ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
-      timed(r.repoDir),
-    ),
+  // `gh search prs` finds companion PRs in other repos of the owner. /search/issues has no owner in the
+  // path, so the AX gateway gives it the default key (claude-factory-oz6s). The REST list of the run's own
+  // repo adds that repo's PRs under the owner's key.
+  async search(r) {
+    let pullErr = ''
+    const [found, rows] = await Promise.all([
+      gh(
+        ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
+        timed(r.repoDir),
+      ),
+      // ponytail: one page (the newest 100 PRs); an older own-repo PR is found by the search only
+      githubPulls(gh, r.runRepo, r.repoDir, { state: 'all', pages: 1 }, e => (pullErr = e)),
+    ])
+    if (found.code !== 0) return found
+    if (!rows) return { code: 1, out: '', err: pullErr || 'gh api: pull list failed' }
+    const hits = (asJson(found.out) as { url: string; createdAt: string }[] | null) ?? []
+    // a hit in both lists folds into one record (foldFound dedupes by url)
+    const own = rows
+      .filter(p => !!r.bead && citesBead(r.bead, `${str(p.title)}\n${str(p.body)}`))
+      .map(p => ({ url: str(p.html_url), createdAt: str(p.created_at) }))
+    return { code: 0, out: JSON.stringify([...hits, ...own]), err: '' }
+  },
   parseSearch,
   async view(url, cwd) {
     const slug = githubSlugOf(url)

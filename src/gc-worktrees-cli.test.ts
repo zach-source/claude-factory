@@ -64,20 +64,16 @@ const noPanes = () => {
   return join(bin, 'herdr')
 }
 
-/** A fake `gh` answers `api graphql --paginate` with the given PRs. It splits the PRs into
- * NDJSON pages. Each page has up to 100 nodes.
+/** A fake `gh` answers `api repos/acme/widget/pulls?...&page=N` with page N of the given PRs, as REST pulls.
+ * It splits the PRs into pages of up to 100; each call prints one array on one line, as `--jq tojson` does.
+ * `opts.failPage` makes that page exit 1.
+ * A PR entry keeps the old GraphQL-style fields; the fake maps them onto the REST shape.
  *
- * A real `gh --paginate` run sends many HTTP requests. This fake sends the data in one process
- * call. The call log shows exactly 1 call.
+ * The call log has one line per page.
  *
- * The default value of `totalCount` is `prs.length`. If you set a higher value, a page reports
- * fewer nodes than `totalCount`. Then parsePrPages() must return null (AC4).
- *
- * `isCrossRepository` is optional on a PR entry. If you omit it, the fake shows an older `gh`
- * answer, or an incorrect answer (claude-factory-ulv).
- *
- * `JSON.stringify` removes an `undefined` key from the body. Then parsePrPages() must reject
- * that entry (fail closed, claude-factory-ph8.4). */
+ * `isCrossRepository` is optional on a PR entry. If you omit it, the fake leaves out `head`:
+ * a malformed answer, which parsePrPages() must reject (fail closed, claude-factory-ph8.4).
+ * `opts.badField` blanks `head.sha` on the last PR: a bad field in one element must void the read (AC3). */
 function fakeGh(
   prs: {
     number: number
@@ -86,18 +82,38 @@ function fakeGh(
     headRefOid: string
     isCrossRepository?: boolean
   }[],
-  opts: { totalCount?: number } = {},
+  opts: { badField?: boolean; failPage?: number } = {},
 ) {
   mkdirSync(bin, { recursive: true })
-  const totalCount = opts.totalCount ?? prs.length
+  const rest = prs.map((p, i) => ({
+    number: p.number,
+    state: p.state === 'OPEN' ? 'open' : 'closed',
+    merged_at: p.state === 'MERGED' ? '2026-10-12T10:00:00Z' : null,
+    ...(p.isCrossRepository === undefined
+      ? {}
+      : {
+          head: {
+            ref: p.headRefName,
+            sha: opts.badField && i === prs.length - 1 ? '' : p.headRefOid,
+            repo: { full_name: p.isCrossRepository ? 'fork/widget' : 'acme/widget' },
+          },
+        }),
+    base: { repo: { full_name: 'acme/widget' } },
+  }))
   const pages: string[] = []
-  for (let i = 0; i < prs.length || pages.length === 0; i += 100) {
-    pages.push(JSON.stringify({ totalCount, nodes: prs.slice(i, i + 100) }))
+  for (let i = 0; i < rest.length || pages.length === 0; i += 100) {
+    pages.push(JSON.stringify(rest.slice(i, i + 100)))
   }
-  const body = pages.join('\n').replaceAll("'", "'\\''")
+  pages.forEach((pg, i) => writeFileSync(join(dir, `gh-page-${i + 1}.json`), pg))
+  const cases = pages
+    .map(
+      (_, i) =>
+        `*"&page=${i + 1} --jq"*) ${opts.failPage === i + 1 ? 'exit 1' : `cat '${join(dir, `gh-page-${i + 1}.json`)}'`};;`,
+    )
+    .join('\n')
   writeFileSync(
     join(bin, 'gh'),
-    `#!/bin/sh\necho "$*" >> ${join(dir, 'gh-calls.log')}\nif [ "$1" = "api" ] && [ "$2" = "graphql" ]; then printf '%s' '${body}'; else exit 1; fi\n`,
+    `#!/bin/sh\necho "$*" >> ${join(dir, 'gh-calls.log')}\ncase "$*" in "api repos/acme/widget/pulls?"*) case "$*" in\n${cases}\n*) printf '[]';; esac;; *) exit 1;; esac\n`,
   )
   chmodSync(join(bin, 'gh'), 0o755)
 }
@@ -666,7 +682,7 @@ test('a CLOSED PR with the bead closed deletes the branch; bead open keeps it', 
   expect(git(repo, 'branch', '--list', `factory/${openId}`)).not.toBe('')
 })
 
-test('a cross-repo CLOSED PR with a closed bead never covers the tip, and gh is asked for isCrossRepository (claude-factory-ulv)', () => {
+test('a cross-repo CLOSED PR with a closed bead never covers the tip, and gh reads the REST pulls (claude-factory-ulv)', () => {
   reset()
   const { repo } = makeRig('r1')
   const id = freshId('fork')
@@ -683,7 +699,8 @@ test('a cross-repo CLOSED PR with a closed bead never covers the tip, and gh is 
   expect(out.code).toBe(0)
   expect(git(repo, 'branch', '--list', `factory/${id}`)).not.toBe('')
   const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8')
-  expect(calls).toContain('isCrossRepository')
+  expect(calls).toContain('repos/acme/widget/pulls')
+  expect(calls).not.toContain('graphql')
   // beadClosedFacts must drop the fork PR before it ever looks at a bead (AC5): no `bd show acme-1`
   const bdCalls = existsSync(join(dir, 'bd-calls.log')) ? readFileSync(join(dir, 'bd-calls.log'), 'utf8') : ''
   expect(bdCalls).not.toContain('acme-1')
@@ -836,7 +853,7 @@ test('q: an unknown --rig name fails, naming the known rigs, and never holds the
   expect(existsSync(join(home, 'gc-worktrees.lock'))).toBe(false)
 })
 
-test('r: gh api graphql reads every PR of the origin repo in one call, past the old 1000-PR cap (claude-factory-ph8)', () => {
+test('r: gh api reads every PR of the origin repo one page per call, past the old 1000-PR cap (claude-factory-ph8)', () => {
   reset()
   const { repo } = makeRig('r1')
   const mergedId = freshId('ship')
@@ -864,39 +881,72 @@ test('r: gh api graphql reads every PR of the origin repo in one call, past the 
   const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
   expect(out.code).toBe(0)
   const calls = readFileSync(join(dir, 'gh-calls.log'), 'utf8').trim().split('\n')
-  expect(calls.length).toBe(1)
-  // the call must read the whole origin repo with --paginate and -f (never -F: claude-factory-ph8.5,
-  // `-F` would read a repo named, for example, "2048" as a JSON number and break the GraphQL query forever)
-  expect(calls[0]).toContain('--paginate')
-  expect(calls[0]).toContain('-f owner=acme')
-  expect(calls[0]).toContain('-f name=widget')
+  // 1050 PRs make 11 calls. Every call names the owner in the path: gh --paginate would follow a
+  // /repositories/<id>/pulls Link URL on pages 2 and later (claude-factory-oz6s)
+  expect(calls.length).toBe(11)
+  calls.forEach((c, i) => {
+    expect(c).toContain(
+      `repos/acme/widget/pulls?state=all&sort=created&direction=asc&per_page=100&page=${i + 1}`,
+    )
+    expect(c).not.toContain('--paginate')
+    expect(c).not.toContain('graphql')
+  })
   // a MERGED PR past index 1000, head matching the branch tip: covered, so gc deletes the branch
   expect(git(repo, 'branch', '--list', mergedBranch)).toBe('')
   // a merged-ancestor branch with an OPEN PR past index 1000 on the same name: gc keeps it anyway
   expect(git(repo, 'branch', '--list', openBranch)).not.toBe('')
 })
 
-test('u: a page that reports fewer nodes than totalCount keeps every branch facts-unavailable (AC4)', () => {
+test('u: a bad field in one PR keeps every branch facts-unavailable (AC3)', () => {
   reset()
   const { repo } = makeRig('r1')
   const id = freshId('ship')
   const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
   writeRigs([{ name: 'r1', repo }])
   const herdr = noPanes()
-  // the page's own node count (1) is less than its claimed totalCount (2): parsePrPages() must
-  // return null rather than trust a partial page (AC4), so gc deletes no branch on this rig
+  // the last PR has an empty head.sha: parsePrPages() must return null rather than trust the others (AC3),
+  // so gc deletes no branch on this rig
   fakeGh(
     [
       {
         number: 1,
         state: 'CLOSED',
         headRefName: 'factory/other',
-        headRefOid: '0'.repeat(40),
+        headRefOid: '1'.repeat(40),
+        isCrossRepository: false,
+      },
+      {
+        number: 2,
+        state: 'CLOSED',
+        headRefName: 'factory/other2',
+        headRefOid: '2'.repeat(40),
         isCrossRepository: false,
       },
     ],
-    { totalCount: 2 },
+    { badField: true },
   )
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
+  expect(out.code).toBe(0)
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('')
+})
+
+test('u2: a failed page 2 keeps every branch (claude-factory-oz6s)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([{ name: 'r1', repo }])
+  const herdr = noPanes()
+  const head = git(repo, 'rev-parse', branch)
+  // page 1 holds a MERGED PR for the branch; page 2 fails, so gc must not trust page 1 alone
+  const prs = Array.from({ length: 150 }, (_, i) => ({
+    number: i,
+    state: i === 0 ? 'MERGED' : 'CLOSED',
+    headRefName: i === 0 ? branch : `factory/other-${i}`,
+    headRefOid: i === 0 ? head : '0'.repeat(40),
+    isCrossRepository: false,
+  }))
+  fakeGh(prs, { failPage: 2 })
   const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: herdr })
   expect(out.code).toBe(0)
   expect(git(repo, 'branch', '--list', branch)).not.toBe('')

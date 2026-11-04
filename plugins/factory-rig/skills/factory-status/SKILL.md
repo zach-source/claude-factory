@@ -29,7 +29,7 @@ bd list --status in_progress --json | jq -r '.[] | select(.assignee // "" | star
 bd show <id>                                    # each station's report is a comment on the bead
 bd list --label human --status open             # questions for the user
 bd list --label rejected --status open          # beads a station sent back, with reject_reason
-gh pr list --search "head:factory/" --state open
+gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=100' --jq '.[] | select(.head.ref | startswith("factory/")) | "\(.number) \(.head.ref) \(.title)"'
 ```
 
 ## Report

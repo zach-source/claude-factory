@@ -51,10 +51,10 @@ const who = a => ({ login: a?.login, type: a?.is_bot ? 'Bot' : 'User' })
 if (argv[0] !== 'api') process.exit(1)
 if (/\\/reviews\\?/.test(path)) {
   const page = (j.reviews ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, state: r.state, submitted_at: r.submittedAt, body: r.body }))
-  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+  console.log(JSON.stringify(page))
 } else if (/\\/comments\\?/.test(path)) {
   const page = (j.comments ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, created_at: r.createdAt, body: r.body }))
-  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+  console.log(JSON.stringify(page))
 } else {
   const merged = j.state === 'MERGED'
   console.log(JSON.stringify({
@@ -590,8 +590,8 @@ test('a conflicting pull request on the run branch mails the station once (confl
   conflictJson()
   factory(['watch'])
   expect(ghCallCount()).toContain('api repos/acme/widget/pulls/42')
-  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/pulls/42/reviews?per_page=100')
-  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/issues/42/comments?per_page=100')
+  expect(ghCallCount()).toContain('api repos/acme/widget/pulls/42/reviews?per_page=100&page=1')
+  expect(ghCallCount()).toContain('api repos/acme/widget/issues/42/comments?per_page=100&page=1')
   const mail = inboxOf('r1').filter(e => e.type === 'MAIL')
   expect(mail).toHaveLength(1)
   expect(mail[0]).toMatchObject({ from: 'factory', to: 'deploy', text: CONFLICT_TEXT })
