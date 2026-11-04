@@ -1590,21 +1590,45 @@ function logLaunch(run: Run, node: string, seq: number, agent: string, resume: b
 /**
  * the top notes of a laptop search for the station's goal, as the search prints them; it logs them shown for
  * run/station. A VM has an empty memory store, so the launch searches for it. '' when nothing is found or
- * the search fails or times out: the launch goes on without notes
+ * the search fails or times out (logged in launches.log): the launch goes on without notes.
+ * ponytail: spawnSync blocks the tick up to 60 s per new brief; make it async if that shows in practice
  */
-function launchNotes(run: Run, node: string) {
+export function launchNotes(run: Run, node: string) {
   const rig = rigOf(run.repo)?.name
   try {
     const p = Bun.spawnSync(
-      [CLI, 'memory', 'search', ...(rig ? ['--rig', rig] : []), '--from', `${run.id}/${node}`].concat(
-        `${node}: ${clip(run.goal, 2000)}`,
-      ),
+      [
+        CLI,
+        'memory',
+        'search',
+        '--no-core',
+        ...(rig ? ['--rig', rig] : []),
+        '--from',
+        `${run.id}/${node}`,
+      ].concat(`${node}: ${clip(run.goal, 2000)}`),
       { env: { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '' }, timeout: 60_000 },
     )
-    const out = p.exitCode === 0 ? p.stdout.toString().trim() : ''
+    if (p.exitCode !== 0) {
+      launchNotesFailed(run, node, p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`)
+      return ''
+    }
+    const out = p.stdout.toString().trim()
     return out.startsWith('nothing in ') ? '' : clip(out, 6000)
-  } catch {
+  } catch (e) {
+    launchNotesFailed(run, node, String(e))
     return ''
+  }
+}
+
+/** one line in HOME/launches.log; a write error never blocks the launch */
+function launchNotesFailed(run: Run, node: string, why: string) {
+  try {
+    appendFileSync(
+      join(HOME, 'launches.log'),
+      `${new Date().toISOString()} ${run.id}/${node} launch memory search failed: ${why}\n`,
+    )
+  } catch {
+    // best effort
   }
 }
 
@@ -9908,6 +9932,9 @@ if (import.meta.main && !outboxCmd)
         // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
         // value) looks the same as a caller who never passed --supersedes at all.
         const hasSupersedes = args.includes('--supersedes')
+        // `search --no-core`: the launch brief already prints CORE.md in full
+        const noCore = args.includes('--no-core')
+        if (noCore) args.splice(args.indexOf('--no-core'), 1)
         const [rig, from, kind, until, supersedesArg] = [
           opt('--rig'),
           opt('--from'),
@@ -9917,7 +9944,7 @@ if (import.meta.main && !outboxCmd)
         ]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
-          const found = await memory.search(MEMORY, words.join(' '), { rig })
+          const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
             found.map(f => f.note.path),

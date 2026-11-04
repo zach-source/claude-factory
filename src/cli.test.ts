@@ -2603,6 +2603,47 @@ test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or 
   expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
 })
 
+test('launchNotes logs a failed search once, and a store with only CORE.md gives no notes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'launch-notes-'))
+  const run = (home: string) => {
+    const code = `import { launchNotes } from ${JSON.stringify(join(import.meta.dir, 'cli.ts'))}
+console.log(JSON.stringify(launchNotes({ id: 'r1', repo: '/nowhere', goal: 'agents never approve a pull request' } as any, 'plan')))`
+    const p = Bun.spawnSync(['bun', '-e', code], {
+      env: { ...process.env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    })
+    return JSON.parse(p.stdout.toString().trim().split('\n').pop()!)
+  }
+  // a memory path that is a file: the search exits 1
+  const bad = join(root, 'bad')
+  mkdirSync(bad)
+  writeFileSync(join(bad, 'memory'), 'x')
+  expect(run(bad)).toBe('')
+  const lines = readFileSync(join(bad, 'launches.log'), 'utf8').trim().split('\n')
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toContain('r1/plan launch memory search failed: exit 1')
+  // CORE.md only: the brief prints it in full already
+  const core = join(root, 'core')
+  mkdirSync(join(core, 'memory'), { recursive: true })
+  writeFileSync(join(core, 'memory', 'CORE.md'), '# CORE\n\n- Agents never approve a pull request.\n')
+  expect(run(core)).toBe('')
+  expect(existsSync(join(core, 'launches.log'))).toBe(false)
+  // a bullet that coreFor cut (over CORE_BUDGET) reaches no brief, so the search must still find it
+  const cut = join(root, 'cut')
+  mkdirSync(join(cut, 'memory'), { recursive: true })
+  const filler = Array.from(
+    { length: 40 },
+    (_, i) => `- Filler fact ${i} about unrelated build caches and disk layout.`,
+  )
+  writeFileSync(
+    join(cut, 'memory', 'CORE.md'),
+    `# CORE\n\n${filler.join('\n')}\n- Agents never approve a pull request.\n`,
+  )
+  const out = run(cut)
+  expect(out).toContain('Agents never approve a pull request')
+  expect(out).not.toContain('Filler fact 0 ')
+  rmSync(root, { recursive: true })
+}, 120_000)
+
 test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed set, resetsAt to 8 days', () => {
   const now = 1_700_000_000_000
   const SK = 5 * 60_000
