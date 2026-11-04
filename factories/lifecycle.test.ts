@@ -676,6 +676,9 @@ test('review, security and check share one blocking-scope rule (2ida AC3, AC4)',
     expect(p).toContain('P2 or lower')
     expect(p).toContain('sets P0 or P1')
     expect(p).toContain('and that is not kind 2 or 3 does not block')
+    expect(p).toContain('give the origin/{base_branch} file and line that holds the same gap')
+    expect(p).toContain('git show origin/{base_branch}:<path> | grep -n <symbol>')
+    expect(p).toContain('a finding without that line is not a main gap')
   }
   expect(lifecycle.nodes.security!.prompt).not.toContain('P1 or higher')
   expect(lifecycle.nodes.security!.prompt).toContain('for a person to prioritize')
