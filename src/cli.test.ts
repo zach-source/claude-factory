@@ -930,10 +930,12 @@ test("a usage limit is read from the transcript's last turn, and the next accoun
 
 test('a token swap runs once per usage-limit hit, then waits for the vault refresh on success or the reset on failure', () => {
   const hit = { at: 1_000, resetsAt: 2_000_000 }
-  expect(needsSwap(hit, undefined)).toBe(true)
-  expect(needsSwap(hit, { at: 999 })).toBe(true)
-  expect(needsSwap(hit, { at: 1_000 })).toBe(false)
-  expect(needsSwap(hit, { at: 1_001 })).toBe(false)
+  expect(needsSwap(hit, undefined, 5_000)).toBe(true)
+  expect(needsSwap(hit, { at: 999 }, 5_000)).toBe(true)
+  expect(needsSwap(hit, { at: 1_000 }, 5_000)).toBe(false)
+  expect(needsSwap(hit, { at: 1_001 }, 5_000)).toBe(false)
+  expect(needsSwap(hit, { at: 999, ran: 4_999 }, 5_000)).toBe(false) // a swap ran under 5 minutes ago
+  expect(needsSwap(hit, { at: 999, ran: 5_000 - 300_000 }, 5_000)).toBe(true)
   expect(swapUntil(hit, 5_000, true, 300_000)).toBe(305_000)
   expect(swapUntil(hit, 5_000, false, 300_000)).toBe(2_000_000) // resetsAt wins when set
   expect(swapUntil({ at: 1_000, resetsAt: 0 }, 5_000, false, 300_000)).toBe(1_000 + 3_600_000) // the 1h fallback
