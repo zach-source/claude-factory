@@ -182,6 +182,32 @@ test('queue drafts a ready PR before it pushes a conflict-fix merge, and sends u
   expect(two).toContain('bd update <bead> --remove-label ship --add-label factory --add-label station:review')
 })
 
+test('queue and release carry the same Reviewed-head source rules once (claude-factory-94gg AC1-AC3)', () => {
+  const rel = ship.nodes.release.prompt
+  const start = rel.indexOf('A station that approves writes a line')
+  const endMark = 'ignore that review.'
+  const end = rel.indexOf(endMark) + endMark.length
+  expect(start).toBeGreaterThan(-1)
+  const sources = rel.slice(start, end)
+  const two = (ship.nodes.queue.prompt.split('\n2. ') as [string, string])[1]
+  expect(two).toContain(sources)
+  for (const s of [
+    '^factory/[^/]+$',
+    'factory/<run>/<station>',
+    'bd comments <bead> --json',
+    "comment's author field",
+    'gh api repos/<repo>/collaborators/<login>/permission',
+    'admin, maintain or write',
+    'read, triage or none',
+    'APPROVED',
+    'best effort',
+  ])
+    expect(two, s).toContain(s)
+  expect(two.split(sources).length).toBe(2)
+  expect(ship.nodes.queue.prompt.split(sources).length).toBe(2)
+  expect(rel.split(sources).length).toBe(2)
+})
+
 test('queue can ask for another pass', () => {
   expect(walk(ship, ['again', 'again', 'empty']).visited).toEqual(['queue', 'queue', 'queue', 'done'])
 })
