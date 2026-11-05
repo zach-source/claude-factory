@@ -8602,6 +8602,54 @@ test.each(ALIAS_DEFINE_ALLOW)('denyReason allows a plain alias command: %s (clau
   ).toBeUndefined()
 })
 
+const emptyGate = () => snapGate(() => new Map())
+
+test.each([
+  'alias | wc -l',
+  'alias | grep foo',
+  'alias -p | head -5',
+  'alias -g | wc -l',
+  'alias -L',
+  'alias | sort | head',
+  'alias; ls',
+  'alias ll | wc -l',
+])('denyReason allows a read-only alias listing: %s (claude-factory-kuyx)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, snapGate())).toBeUndefined()
+  expect(denyReason(cmd, '/w', undefined, emptyGate())).toBeUndefined()
+})
+
+test.each([
+  'alias a=b | wc -l',
+  'alias | wc -l; alias a=b',
+  'alias "a=b" | wc -l',
+  'alias a\\=b | wc -l',
+  'alias $x | wc -l',
+  'alias a?b | wc -l',
+  'alias a{,=b} | wc -l',
+  'alias ~ | wc -l',
+  'command alias | wc -l',
+  'unalias -a | wc -l',
+  'alias > .scratch/a.txt',
+  "alias x='echo acme' | wc -l; eval x",
+])('denyReason still denies an alias define: %s (claude-factory-kuyx)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, snapGate())).toBe(SHELL_ALIAS_DEFINE_REASON)
+  expect(denyReason(cmd, '/w', undefined, emptyGate())).toBe(SHELL_ALIAS_DEFINE_REASON)
+})
+
+test.each(['sh', 'bash -s', 'eval g', 'g push origin main', 'gp origin main', 'bad', 'xargs sh -c x'])(
+  'denyReason still checks the sink after a read-only alias: %s (claude-factory-kuyx)',
+  x => {
+    expect(denyReason('alias | ' + x, '/w', undefined, SNAP_GATE)).toBeDefined()
+  },
+)
+
+test.each(['wc -l', 'tee .scratch/a', 'head'])(
+  'denyReason allows a plain sink after a read-only alias: %s (claude-factory-kuyx)',
+  x => {
+    expect(denyReason('alias | ' + x, '/w', undefined, SNAP_GATE)).toBeUndefined()
+  },
+)
+
 test('denyReason denies an alias chain past the depth cap but ends on an alias cycle, as zsh does (claude-factory-1zr5)', () => {
   expect(denyReason('loop1 x', '/w', undefined, SNAP_GATE)).toBeUndefined()
   const long = new Map<string, string | null>()
