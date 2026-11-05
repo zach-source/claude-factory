@@ -164,6 +164,14 @@ export type SlimBead = {
   children?: { done: number; total: number }
   /** the open beads it waits on */
   blockedBy?: string[]
+  /** the bead it was filed from in another rig (metadata.discovered_from); "(invalid)" when not an id */
+  discoveredFrom?: string
+}
+
+/** metadata.discovered_from is untrusted text that reaches the patrol prompt: only an id passes */
+const discoveredFromOf = (x: Bead) => {
+  const d = x.metadata?.discovered_from
+  return d == null ? undefined : typeof d === 'string' && /^[A-Za-z0-9][\w.-]{0,63}$/.test(d) ? d : '(invalid)'
 }
 
 /**
@@ -195,6 +203,7 @@ export function backlogOf(
     parent: parentOf(x),
     children: counts.get(x.id),
     blockedBy: x.blocked_by?.filter(id => isOpen.has(id)),
+    discoveredFrom: discoveredFromOf(x),
   })
   const waiting = blocked.filter(
     x => !x.assignee && (x.status === undefined || ['open', 'blocked'].includes(x.status)),

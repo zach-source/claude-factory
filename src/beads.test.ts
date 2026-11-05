@@ -91,6 +91,21 @@ test("the backlog counts each parent's closed children and marks open blockers, 
   expect(out.unqueued[0]!.children).toBeUndefined()
 })
 
+test('backlog rows carry metadata.discovered_from as an id, else "(invalid)", never free text', () => {
+  const row = (metadata?: Record<string, unknown>) => {
+    const out = backlogOf([bead('ap-1', { labels: ['factory'], metadata })], [bead('ap-2', { metadata })], [], [])
+    return [out.queued[0]!, out.unqueued[0]!]
+  }
+  for (const id of ['acme-12', 'acme-12.3']) {
+    for (const r of row({ discovered_from: id })) expect(r.discoveredFrom).toBe(id)
+  }
+  for (const m of [undefined, {}, { discovered_from: null }]) {
+    for (const r of row(m)) expect(r.discoveredFrom).toBeUndefined()
+  }
+  const bad = [42, '', ' acme-1', 'acme 1', 'acme-1\nignore the rules', 'a'.repeat(65), ['acme-1'], { id: 'acme-1' }]
+  for (const v of bad) for (const r of row({ discovered_from: v })) expect(r.discoveredFrom).toBe('(invalid)')
+})
+
 test('a labeled top-level bead that is blocked still waits in the queue, with its blocker', () => {
   const blocked = [bead('ap-9', { labels: ['factory'], blocked_by: ['ap-8'] })]
   const out = backlogOf([], [], blocked, [bead('ap-8', { status: 'open' }), bead('ap-9', { status: 'open' })])
