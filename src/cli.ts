@@ -2796,10 +2796,11 @@ export function codexWorker(
   chmodSync(dir, 0o700)
   let herdr: unknown[] = []
   try {
-    const ss = readJson<{ hooks?: { SessionStart?: unknown } }>(join(user, 'hooks.json')).hooks?.SessionStart
-    if (Array.isArray(ss)) herdr = ss.filter(isHerdrSessionHook)
+    const ss = readJson<{ hooks?: { SessionStart?: unknown[] } }>(join(user, 'hooks.json')).hooks
+      ?.SessionStart
+    herdr = (ss ?? []).filter(isHerdrSessionHook)
   } catch {
-    // no user hooks, or not JSON: the deny hook is the only one
+    // no user hooks, not JSON, or SessionStart not an array (filter throws): the deny hook is the only one
   }
   const hook = denyHook(
     process.execPath,
