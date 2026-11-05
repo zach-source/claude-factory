@@ -483,9 +483,11 @@ function parseSumdbLatestSize(text: string): number | null {
   return Number.isSafeInteger(size) && size >= 0 ? size : null
 }
 
-async function goSumdbLatestSize(cfg: Resolved): Promise<{ ok: true; size: number } | { ok: false }> {
+async function goSumdbLatestSize(
+  cfg: Resolved,
+): Promise<{ ok: true; size: number } | { ok: false; refused?: true }> {
   const r = await fetchText(cfg, `${cfg.upstream.sumdb}/latest`)
-  if (!r.ok) return { ok: false }
+  if (!r.ok) return r.refused ? { ok: false, refused: true } : { ok: false }
   const size = parseSumdbLatestSize(r.text)
   return size === null ? { ok: false } : { ok: true, size }
 }
@@ -594,7 +596,10 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     })
   const sample = pickEvenlySpaced(entries, GO_FLOOR_SAMPLE_LIMIT)
   const latestSize = await goSumdbLatestSize(cfg)
-  if (!latestSize.ok) return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
+  if (!latestSize.ok) {
+    cfg.goFloorRefusalCounted = !!latestSize.refused
+    return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
+  }
   const wallNow = cfg.now()
   // the history must stay strictly increasing in time: the anchor choice and the span > 0 guard rely on it
   if (cfg.goSizes.length && wallNow <= cfg.goSizes.at(-1)!.at)
