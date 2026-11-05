@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -1177,13 +1178,17 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
     err = r.err
     // not transient: the laptop pushed the branch before the launch, so it is gone (a merge deleted it)
     if (err.includes(`Remote branch ${branch} not found in upstream origin`)) {
+      // build in a sibling dir and rename last: a stop part way leaves no .git for the early return to trust
+      const tmp = repo() + '.tmp'
       rmSafe(repo(), { recursive: true, force: true })
-      const c = sh(['git', 'clone', remote, repo()])
-      const b = c.ok ? sh(['git', '-C', repo(), 'checkout', '-q', '-b', branch]) : c
+      rmSafe(tmp, { recursive: true, force: true })
+      const c = sh(['git', 'clone', remote, tmp])
+      const b = c.ok ? sh(['git', '-C', tmp, 'checkout', '-q', '-b', branch]) : c
       if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
-      excludeScratch(repo())
+      excludeScratch(tmp)
       const note = `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
       writeFileSync(noteFile, note)
+      renameSync(tmp, repo())
       return note
     }
     await Bun.sleep(waitMs)

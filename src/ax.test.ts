@@ -1495,6 +1495,26 @@ test('setup: a run branch that is present is cloned and gives an empty note', as
   }
 })
 
+test('setup: a stop after the fallback clone leaves no repo, and the next start gives the note (claude-factory-lgz1)', async () => {
+  const saved = { ...process.env }
+  const f = cloneFixture('stop', false)
+  const own = process.env.FACTORY_WORKER_DIR!
+  try {
+    mkdirSync(join(own, 'bin'), { recursive: true })
+    chmodSync(own, 0o500) // the note write fails after the clone and checkout
+    await expect(worker.setup({ tries: 1, waitMs: 0 })).rejects.toThrow()
+    chmodSync(own, 0o700)
+    expect(existsSync(join(f.repo, '.git'))).toBe(false)
+    expect(await worker.setup({ tries: 1, waitMs: 0 })).toContain(
+      'your run branch factory/r1 is missing on origin',
+    )
+    expect(f.head().branch).toBe('factory/r1')
+  } finally {
+    chmodSync(own, 0o700)
+    process.env = saved
+  }
+})
+
 test('setup: any other clone error keeps retrying and then throws, with no fallback clone', async () => {
   const saved = { ...process.env }
   const f = cloneFixture('bad', false)
