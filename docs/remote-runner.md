@@ -214,7 +214,7 @@ Set `FACTORY_OTLP_ENDPOINT` to make every Claude and codex worker export OTel. T
 - **Resource tags**: `OTEL_RESOURCE_ATTRIBUTES` holds `factory.run`, `factory.station`, `factory.rig`, `factory.attempt`, `factory.harness` and `factory.model`.
 - **Claude**: the launch env holds `CLAUDE_CODE_ENABLE_TELEMETRY=1`, the OTLP http/json exporters for logs, metrics and traces, and `OTEL_LOG_TOOL_DETAILS=1`. The factory never sets `OTEL_LOG_USER_PROMPTS`.
 - **codex**: the factory appends an `[otel]` block to the worker's `config.toml` (`log_user_prompt = false`). Pane workers and VM workers (`vmCodexHome`) get the same block.
-- **AX**: the laptop reaches the collector at a NodePort and a VM reaches it in the cluster. `FACTORY_AX_OTLP_ENDPOINT` replaces `FACTORY_OTLP_ENDPOINT` for AX tasks. Each task policy gets a plain http rule for that host and port, with no key and no header. A pi worker gets no OTel.
+- **AX**: the laptop reaches the collector at a NodePort and a VM reaches it in the cluster. `FACTORY_AX_OTLP_ENDPOINT` replaces `FACTORY_OTLP_ENDPOINT` for AX tasks. Each task policy gets a plain http rule for that host and port, with no key and no header. A pi worker gets no OTel. The AX manager task gets both variables from the laptop, so tasks it launches export OTel too.
 - **Content off**: a rig with `"otelContent": false` in `rigs.json` gets no `OTEL_LOG_TOOL_DETAILS` for Claude and no codex log exporter, because codex logs hold tool arguments and output. Traces and metrics stay.
 - **Owner step**: set the two variables for the factory runner (and for the AX manager if it launches tasks). New launches use them. A running worker keeps its env. To turn it off, unset them.
 

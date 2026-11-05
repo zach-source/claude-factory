@@ -2238,6 +2238,16 @@ test('launchManager applies the manager task with its command and env, then retr
   }
 })
 
+test('managerEnv passes the OTLP endpoints only when set', () => {
+  const both = {
+    FACTORY_OTLP_ENDPOINT: 'http://otel.example:4318',
+    FACTORY_AX_OTLP_ENDPOINT: 'http://otel.svc:4318',
+  }
+  expect(ax.managerEnv(both)).toMatchObject(both)
+  expect('FACTORY_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
+  expect('FACTORY_AX_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
+})
+
 test('managerEnv sets the token swap to a broker POST only when the broker is set', () => {
   expect(ax.managerEnv({}).FACTORY_AX_TOKEN_SWAP).toBeUndefined()
   expect(
