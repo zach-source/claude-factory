@@ -222,7 +222,9 @@ export function bootstrapBeads(
   // bd bootstraps an empty store, and exits 0, from an origin with no refs/dolt/data: refuse that
   if (!remote) {
     const ls = Bun.spawnSync(['git', 'ls-remote', origin, 'refs/dolt/data'], { env, stderr: 'pipe' })
-    if (ls.exitCode !== 0 || !ls.stdout.toString().trim())
+    if (ls.exitCode !== 0)
+      throw new Error(`beads in the VM: git ls-remote refs/dolt/data: ${lastError(ls.stderr.toString())}`)
+    if (!ls.stdout.toString().trim())
       throw new Error(`beads in the VM: ${origin} has no refs/dolt/data, set the rig's beadsRemote`)
   }
   mkdirSync(join(dir, '.beads'), { recursive: true })
@@ -248,14 +250,27 @@ export function bootstrapBeads(
  * the repo's GitHub origin (refs/dolt/data), in a directory of its own, since the repo's .beads config names
  * the laptop's server; the agent's bd finds it through BEADS_DIR. A resumed task keeps it
  */
-export function setupBeads() {
+export function setupBeads(retryMs = 10_000) {
   if (!process.env.FACTORY_BEADS) return
   const dir = join(own(), 'beads')
   const remote = process.env.FACTORY_BEADS_REMOTE
   // Dolt sends its user and password as an Authorization header, which the egress gateway replaces with the
   // vault's: the VM holds only this placeholder (DOLT_REMOTE_USER comes in the rig's env)
   if (remote) process.env.DOLT_REMOTE_PASSWORD ??= 'placeholder'
-  bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
+  try {
+    bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
+  } catch (e) {
+    const line = /bootstrap -y: (.*)$/.exec((e as Error).message)?.[1]
+    if (line === undefined) throw e
+    // a short git or gateway fault can fail a clone. Retry once from a clean dir: a failed clone can leave a half store
+    appendFileSync(
+      serveLog(),
+      `${new Date().toISOString()} beads: bd bootstrap -y failed, retry 1: ${line}\n`,
+    )
+    rmSafe(dir, { recursive: true, force: true })
+    Bun.sleepSync(retryMs)
+    bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
+  }
   Object.assign(process.env, { ...bdEnv(), BEADS_DIR: join(dir, '.beads') })
 }
 
@@ -268,7 +283,9 @@ export const SKEW_RE = /schema skew|table has unknown fields/i
 export const isSchemaSkew = (s: SyncResult) => !s.ok && s.step === 'pull' && SKEW_RE.test(s.error)
 
 /**
- * This returns the last line of stderr that is not empty. It comes from a bd command that does not succeed, and has a maximum of 300 chars.
+ * This returns the last line of stderr that is not empty and is not a Dolt `hint:` line. Dolt adds fixed hint lines
+ * (about GCM) to each failed git command, and they hide the real git error. If every line is a hint, it keeps the last one.
+ * It comes from a bd command that does not succeed, and has a maximum of 300 chars.
  * src/cli.ts uses this line in its refusal message.
  * Each http(s) or file URL becomes <url>.
  * A Dolt remote URL can contain its host.
@@ -280,6 +297,7 @@ function lastError(stderr: string): string {
       .split('\n')
       .map(l => l.trim())
       .filter(Boolean)
+      .filter((l, _, all) => !l.startsWith('hint:') || all.every(x => x.startsWith('hint:')))
       .at(-1) ?? ''
   return cut(line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>'), 300)
 }
