@@ -355,7 +355,7 @@ test('help prints free-text placeholders in quotes (claude-factory-nt33)', () =>
     "poke <run> '[text...]'",
     "fork <run> <station> '[note...]'",
     "memory search [--rig r] '<query...>'",
-    "--title '<text>' --description '<text>'",
+    '(--title <t> | --title-file <path>) (--description <d> | --description-file <path>)',
     "<rig|repo> '<goal...>'|bead",
     "'<summary...>'|--summary-file",
     "--goal '<text...>'",
