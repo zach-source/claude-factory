@@ -305,6 +305,7 @@ const ALLOWED = [
   'mutate',
   'ci',
   'worker',
+  'file-elsewhere',
   'rig',
 ]
 const DENIED = [
