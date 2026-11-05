@@ -1879,7 +1879,12 @@ test('gitlabChecks tallies the head pipeline of an MR pinned to the SHA; any dou
   const run = (g: Gh, s = sha) => gitlabChecks(g, 'gitlab.example.com', 'acme/widget', 7, s, '/tmp')
   const pipe = (status: string, psha = sha) => ({ sha, head_pipeline: { sha: psha, status } })
   expect(await run(answer(pipe('success')))).toEqual({ pass: 1, fail: 0, pending: 0 })
-  expect(calls[0]).toEqual(['api', '--hostname', 'gitlab.example.com', 'projects/acme%2Fwidget/merge_requests/7'])
+  expect(calls[0]).toEqual([
+    'api',
+    '--hostname',
+    'gitlab.example.com',
+    'projects/acme%2Fwidget/merge_requests/7',
+  ])
   expect(await run(answer(pipe('skipped')))).toEqual({ pass: 1, fail: 0, pending: 0 })
   expect(await run(answer(pipe('failed')))).toEqual({ pass: 0, fail: 1, pending: 0 })
   expect(await run(answer(pipe('canceled')))).toEqual({ pass: 0, fail: 1, pending: 0 })
