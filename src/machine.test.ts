@@ -1270,6 +1270,16 @@ describe('an outage hold parks the station and spends no attempt', () => {
     expect(s.context.log.map(e => `${e.outcome}:${e.attempt}`)).toEqual(['outage:1', 'outage:1', 'outage:1'])
   })
 
+  test('mail --wake ends the hold; plain mail does not', () => {
+    const { send } = run()
+    let s = send(hold(1, 1000))
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'hi', at: 2000 })
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'go', wake: true, at: 3000 })
+    expect(where(s.value)).toEqual(['implement', 'working'])
+  })
+
   test('the wait doubles up to 120 min, and a later hold wins', () => {
     const { send } = run()
     let at = 1000
