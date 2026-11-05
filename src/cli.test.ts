@@ -1119,13 +1119,23 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text).toContain('<cli> mutate')
   expect(text).toContain('git status --short')
   expect(text).not.toContain('GOTOOLCHAIN=auto')
-  expect(text).toContain('GOMAXPROCS=2')
+  expect(text).not.toContain('GOMAXPROCS')
+  expect(text).not.toContain('On a VM')
   expect(text).toContain('pg-scratch start')
   expect(text).toContain('pg-scratch stop')
   expect(text).toContain('TEST_DATABASE_URL')
   expect(text).toContain('Never ask the person')
   expect(text).toContain('any DSN variable')
   expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
+})
+
+// claude-factory-66ib: the VM-only lines sit in worker-vm.md, which only ax workers read
+test('worker-vm.md holds the VM-only lines', () => {
+  const vm = readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8')
+  expect(vm).toContain('GOMAXPROCS=2')
+  expect(vm).toContain('go test -p 1')
+  expect(vm).toContain('nix-shell -p')
+  expect(vm).not.toContain('GOTOOLCHAIN=auto')
 })
 
 // claude-factory-ay4w: the top refused hook forms (7d metrics 2026-11-03) and the allowed form for each
@@ -2548,6 +2558,7 @@ test('piWorker appends the worker rules to pi and passes each plugin skill', () 
   expect(readFileSync(rules, 'utf8')).toStartWith(
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
   )
+  expect(readFileSync(rules, 'utf8')).not.toContain('GOMAXPROCS') // claude-factory-66ib: VM-only
 })
 
 test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {

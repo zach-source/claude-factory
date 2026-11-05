@@ -35,8 +35,6 @@ Do not remove input validation at a trust boundary, error handling that prevents
   - A shell alias, or `alias x=...`: type the full git or gh command.
   - A push to main or a protected branch: `git push origin <run branch>`, then a pull request.
   - `gh pr merge`, or a different merge: do not merge unless your brief has a Merge authority section. Report the pull request link.
-- On a VM, if `nix shell nixpkgs#X` fails on SSL, try `nix-shell -p X`, then a curl of a GitHub release asset.
-- VM Go: on 'signal: killed': GOMAXPROCS=2, `go test -p 1`.
 - Run independent tool calls in parallel.
 - Agent tool: for a broad search or subtask; brief it fully (starts blank).
 - Need a database? Never ask the person. With the brief's factory CLI: `<cli> pg-scratch start` prints TEST_DATABASE_URL (use it for any DSN variable); `<cli> pg-scratch stop` removes it.

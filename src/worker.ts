@@ -345,6 +345,7 @@ export function turnArgv(
         ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
         // the worker rules and the image's skills, as a Claude or codex worker gets them (constitution I)
         ...piFlags(join(import.meta.dir, 'worker-system.md'), o.plugins ?? imagePlugins()),
+        ...['--append-system-prompt', join(import.meta.dir, 'worker-vm.md')],
         ...(o.provider ? ['--provider', o.provider] : []),
         ...model('--model'),
       ]
@@ -1058,6 +1059,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
   writeFileSync(
     join(dir, 'AGENTS.md'),
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
+      readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8') +
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
   )
   codexSkills(dir, plugins)

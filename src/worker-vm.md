@@ -1,0 +1,2 @@
+- On a VM, if `nix shell nixpkgs#X` fails on SSL, try `nix-shell -p X`, then a curl of a GitHub release asset.
+- VM Go: on 'signal: killed': GOMAXPROCS=2, `go test -p 1`.

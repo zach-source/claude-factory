@@ -1556,6 +1556,11 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     },
   })
   expect(flags[flags.indexOf('--system-prompt-file') + 1]).toBe('/opt/factory/src/worker-system.md')
+  // claude-factory-66ib: the VM-only lines, inline (an older image has no worker-vm.md)
+  expect(flags[flags.indexOf('--append-system-prompt') + 1]).toBe(
+    readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8'),
+  )
+  expect(flags.indexOf('--append-system-prompt')).toBeGreaterThan(flags.indexOf('--system-prompt-file'))
   // claude-factory-fxu: the image's plugins, as a laptop worker gets the person's (constitution I)
   expect(flags.slice(-4)).toEqual([
     '--plugin-dir',

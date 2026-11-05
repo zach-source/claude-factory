@@ -2027,6 +2027,8 @@ export function vmClaudeFlags(
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
     ...['--settings', JSON.stringify(settings)],
     ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
+    // inline, not a file: an older VM image has no worker-vm.md (claude-factory-66ib)
+    ...['--append-system-prompt', readFileSync(join(ROOT, 'src', 'worker-vm.md'), 'utf8')],
     // the image's plugins, as a laptop worker gets the person's (constitution I, claude-factory-fxu)
     ...skills.flatMap(k => ['--plugin-dir', VM_PLUGINS[k]!]),
   ]
