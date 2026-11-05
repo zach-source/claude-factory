@@ -2427,7 +2427,7 @@ export function trustedSwapState(file: string, now: number): TokenSwapState | un
   }
   if (typeof s !== 'object' || s === null) return undefined
   const { at, until, ran } = s
-  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+  const num = (v: unknown): v is number => Number.isFinite(v)
   if (!num(at) || !num(until) || at > now + LIMIT_SKEW_MS || until > now + LIMIT_RESET_MAX_MS)
     return undefined
   if (ran !== undefined && (!num(ran) || ran > now + LIMIT_SKEW_MS)) return undefined
