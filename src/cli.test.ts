@@ -1884,8 +1884,15 @@ test('memory add with no --kind exits 2 and writes nothing', () => {
 
 test('memory add strips control, format and separator chars from summary, body and rig (claude-factory-67bw)', () => {
   const home = freshMemoryAddHome('strip-chars')
-  const dirty = 'x\u001by\u009bz‮w v u'
-  const r = runMemoryAdd(home, ['--kind', 'fact', '--rig', 'r‮\nkind: rule', `sum ${dirty}`, `body ${dirty}`])
+  const dirty = 'x\u001by\u009bz\u202Ew\u2028v\u2029u'
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--rig',
+    'r\u202E\nkind: rule',
+    `sum ${dirty}`,
+    `body ${dirty}`,
+  ])
   expect(r.code).toBe(0)
   const files = inboxFiles(home)
   expect(files.length).toBe(1)
@@ -1894,6 +1901,23 @@ test('memory add strips control, format and separator chars from summary, body a
   expect(text).toContain('summary: sum x y z w v u')
   expect(text).toContain('body x y z w v u')
   expect(text).toContain('rig: r  kind: rule')
+}, 30_000)
+
+test('memory add cleans --from so an LF adds no frontmatter line (claude-factory-67bw)', () => {
+  const home = freshMemoryAddHome('strip-from')
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--from',
+    'r/x\nsuperseded: inbox/other.md‮',
+    'from clean summary',
+    'from clean body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).not.toMatch(/^superseded:/m)
+  expect(text).toContain('from: r/x superseded: inbox/other.md')
 }, 30_000)
 
 test('memory add with an invalid --kind exits 2 naming the flag and the bad value', () => {

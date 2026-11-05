@@ -124,7 +124,7 @@ test('report text loses control, format and line-separator chars, keeps LF and T
 
 test('mail text loses control, format and line-separator chars, keeps LF and TAB (claude-factory-67bw)', () => {
   const r = makeRun('m1')
-  const dirty = 'a\u001b[2Jb\u009bc‮d e \ng\th'
+  const dirty = 'a\u001b[2Jb\u009bc\u202Ed\u2028e\u2029\ng\th'
   expect(factory(['mail', 'm1', 'manager', dirty]).code).toBe(0)
   const mail = r.lines().find(l => l.type === 'MAIL')
   expect(mail.text).toBe('a [2Jb c d e \ng\th')

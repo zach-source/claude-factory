@@ -10525,7 +10525,8 @@ if (import.meta.main && !outboxCmd)
         if (noCore) args.splice(args.indexOf('--no-core'), 1)
         const [rig, from, kind, until, supersedesArg] = [
           opt('--rig'),
-          opt('--from'),
+          // claude-factory-67bw: --from lands in frontmatter, so an LF would add a line
+          opt('--from')?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '),
           opt('--kind'),
           opt('--until'),
           opt('--supersedes'),
