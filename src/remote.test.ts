@@ -3443,7 +3443,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     ['no skew text', 'connection refused'],
     ['over 300 chars', `${SKEW_OUT} ${'x'.repeat(300)}`],
     ['a line break', `${SKEW_OUT}\nOptions: evil: x | y`],
-    ['a format character', `${SKEW_OUT} ‮x`],
+    ['a format character', `${SKEW_OUT} \u202ex`],
   ])('AC8: a bad bdSkew (%s) is ignored', (_n, bdSkew) => {
     rmSync(markerFile(), { force: true })
     const seq = launched('sk8')
