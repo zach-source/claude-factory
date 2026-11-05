@@ -2645,6 +2645,10 @@ test('a conflict-only label on a run-owned PR keeps the station mail and no goto
   reworkOwned(labelPr('conflict'), { id: 'r', node: 'review', c, implement: true }, io)
   expect(sent.map(e => e.type)).toEqual(['MAIL'])
   expect(sent[0]).toMatchObject({ to: 'review' })
+  // a run already at implement gets the mail and no goto
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'implement', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
   // a run with no implement station keeps the mail for a rework label too
   sent.length = 0
   reworkOwned(labelPr('rework'), { id: 'r', node: 'resolve', c, implement: false }, io)

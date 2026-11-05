@@ -8206,7 +8206,7 @@ export function reworkOwned(
     post: (runId: string, ev: ReturnType<typeof labelMail> | { type: 'GOTO'; node: string }) => unknown
   },
 ) {
-  const toImplement = wantsChanges(pr) && !!owner.implement
+  const toImplement = wantsChanges(pr) && !!owner.implement && owner.node !== 'implement' // already there: mail only, a goto would restart its work
   const node = toImplement ? 'implement' : owner.node
   const text = toImplement
     ? `[factory] ${pr.url} was ${asksOf(pr)}. Do it at this station, then go on to verify and review.`
@@ -8478,7 +8478,9 @@ async function labelPass() {
           const owner = live.find(r => r.id === runId)!
           const implement = Object.hasOwn((await loadPinned(loadRun(runId).factory)).nodes, 'implement')
           reworkOwned(pr, { ...owner, implement }, { ...forge, post })
-          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${owner.node}`)
+          console.log(
+            `${new Date().toISOString()} rework ${pr.url} → its run ${runId} (was at ${owner.node})`,
+          )
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           forge.unlabel(pr, reworkLabels(pr))
           const start = reworkStart(pr, rig.factory)
