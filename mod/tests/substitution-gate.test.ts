@@ -24,6 +24,10 @@ const GATED = [
   `${F} mail r1 plan "x $\\\n\\\n(id)"`,
   `${F} mail r1 plan =(id)`,
   `${F} mail r1 plan /(e:'id':)`,
+  F + ' mail r1 plan "${x:=\\$(id)}${x@P}"',
+  F + ' mail r1 plan "${(e):-\\$(id)}"',
+  F + ' mail r1 plan "${x:=\\$(id)}${(e)x}"',
+  "x='$(id)'; " + F + ' mail r1 plan ${x@P}',
 ]
 
 const UNREADABLE = [
