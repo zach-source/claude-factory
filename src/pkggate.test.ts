@@ -2940,6 +2940,21 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
     expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
   })
 
+  test('a sum.golang.org /latest 503 counts error once (not refused)', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.origin === 'https://sum.fake.test' ? new Response('x', { status: 503 }) : undefined) ??
+        (u.origin === 'https://idx.fake.test' ? new Response('') : undefined),
+      { sumdb: 'https://sum.fake.test', goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: sum.golang.org /latest unavailable')
+    expect(g.stats().error).toBe(1)
+  })
+
   describe('AC4: every 3xx body is cancelled', () => {
     for (const throws of [false, true]) {
       const label = throws ? 'a throwing cancel changes nothing' : 'cancel'
