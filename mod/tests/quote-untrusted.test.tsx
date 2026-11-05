@@ -31,6 +31,34 @@ test('memory search and --goal placeholders are single-quoted', () => {
   }
 })
 
+const ID_PLACEHOLDERS = new Set([
+  'run',
+  'outcome',
+  'name',
+  'repo',
+  'rig',
+  'bead',
+  'key',
+  'station',
+  'station|done',
+  'factory',
+  'rig|repo',
+  'old note path',
+  'source rig',
+  'source id',
+])
+const badPlaceholders = (t: string) =>
+  (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
+    (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ID_PLACEHOLDERS.has(p.slice(1, -1))),
+  )
+
+test('every non-ID placeholder in a factory command span is single-quoted', () => {
+  for (const t of [manual('factory'), PATROL('factory')]) expect(badPlaceholders(t)).toEqual([])
+  expect(badPlaceholders('`factory memory search <query>`')).toEqual(['<query>'])
+  expect(badPlaceholders('`factory mail <run> <station> "<text>"`')).toEqual(['<text>'])
+  expect(badPlaceholders("`factory show <run> --title '<title>'`")).toEqual([])
+})
+
 test('the patrol passes file-elsewhere text in single quotes', () => {
   expectSingleQuoted(PATROL('factory'), ['title', 'description'])
 })

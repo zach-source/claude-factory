@@ -1089,6 +1089,24 @@ const expectSingleQuoted = (t: string, placeholders: string[]) => {
   expect(t).toContain('single quotes')
 }
 
+test('interviewPrompt: every non-ID placeholder in a factory command span is single-quoted (claude-factory-dgok)', () => {
+  const ids = new Set(['run', 'rig', 'bead', 'key'])
+  const bad = (t: string) =>
+    (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
+      (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ids.has(p.slice(1, -1))),
+    )
+  const need = iv({
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    title: 'api-7: Q',
+    question: 'Q',
+    needsProposal: true,
+  })
+  expect(bad(interviewPrompt([need])!)).toEqual([])
+  expect(bad('`factory decisions answer <rig> <bead> "<text>"`')).toEqual(['<text>'])
+  expect(bad("`factory decisions answer <rig> <bead> '<text>'`")).toEqual([])
+})
+
 test('interviewPrompt passes decisions text in single quotes (claude-factory-dgok)', () => {
   const need = iv({
     key: 'bd:api:api-7',

@@ -1270,6 +1270,17 @@ test('runner-loss scenario matrix: every ADR phrase is in the house rules (s2hn)
 })
 
 // claude-factory-dgok: untrusted text must not sit in shell double quotes ($(...), backticks and $VAR expand there).
+test('triage: every non-ID placeholder in a factory command span is single-quoted (claude-factory-dgok)', () => {
+  const ids = new Set(['rig', 'this rig', "this bead's id"])
+  const bad = (t: string) =>
+    (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
+      (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ids.has(p.slice(1, -1))),
+    )
+  expect(bad(lifecycle.nodes.triage!.prompt)).toEqual([])
+  expect(bad('`factory file-elsewhere <rig> --title <title>`')).toEqual(['<title>'])
+  expect(bad("`factory file-elsewhere <rig> --title '<title>'`")).toEqual([])
+})
+
 test('triage passes file-elsewhere text in single quotes (claude-factory-dgok)', () => {
   const t = lifecycle.nodes.triage!.prompt
   const spans = (t.match(/`[^`]*`/g) ?? []).filter(s => s.includes('file-elsewhere'))
