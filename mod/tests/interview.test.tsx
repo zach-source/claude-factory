@@ -671,7 +671,11 @@ async function failedMergedRow(
     if (e.argv.includes('mail') && e.argv.includes(failing))
       return { value: { exitCode: 1, stdout: '', stderr: `${failing}: no such run` } as never }
     return {
-      value: { exitCode: 0, stdout: e.argv.includes('tick') ? JSON.stringify(tick) : '', stderr: '' } as never,
+      value: {
+        exitCode: 0,
+        stdout: e.argv.includes('tick') ? JSON.stringify(tick) : '',
+        stderr: '',
+      } as never,
     }
   })
   await $.command.run({ command: 'factory', args: 'status' } as never)
