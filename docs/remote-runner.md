@@ -244,7 +244,7 @@ The VM holds no key and no token. Every HTTPS request out goes through Substrate
   - A prefix chooses a key. It is not an access control.
   - Rollout order: first the Substrate fork with `pathPrefixes` (`ateapi`, then `atenet`, then `kubectl-ate` and the broker image). An old `atenet` ignores `pathPrefixes` and applies the rule to all paths. An old `ateapi` or `kubectl-ate` can refuse the field, and then no task gets a policy. Do not merge this change before the rollout.
 - **Reviewer identity** (`reviewerTask` in `src/ax.ts`, claude-factory-0gww): a task can approve a pull request as a second GitHub App, the reviewer App. The author App does not approve. This is off by default. To turn it on, set `FACTORY_AX_REVIEWER_OWNER=<owner>` and `FACTORY_AX_VAULT` on the laptop. A task gets the reviewer identity when two things are true. Its station is `review`, `security` or `check`. The owner of the rig's GitHub origin equals `FACTORY_AX_REVIEWER_OWNER`. For such a task:
-  - `api.github.com` and `uploads.github.com` use the vault key `GITHUB_REVIEWER`. Its value is a raw installation token of the reviewer App (`pull_requests` write, `contents` read). The header is `Authorization: Bearer`, the same as for `GITHUB`.
+  - `api.github.com` and `uploads.github.com` use the vault key `GITHUB_REVIEWER`. Its value is a raw installation token of the reviewer App (`pull_requests` write, `contents` read). The header is `Authorization: Bearer`, the same as for `GITHUB`. The key reaches only two paths. The first is `/repos/<owner>/<repo>/`, a `pathPrefixes` entry from the rig origin. The second is `/graphql`, an exact `paths` entry. The `gh pr view`, `checks` and `review` commands use GraphQL. Every other API path gets 403 from the gateway. The rule needs a Substrate with `HTTPSRule.paths` (Substrate fork commit 6b0654200). An older `ateapi` or `kubectl-ate` refuses the field, and then no reviewer task gets a policy. A reviewer side file with no `githubRepo` (a task from before this rule) gets no policy and ends as gone.
   - `github.com` uses the vault key `GITHUB_REVIEWER_BASIC`. Its value is base64 of `x-access-token:<reviewer installation token>` (`contents` read).
   - So the task can clone but cannot push. An approval covers only commits that the task did not write.
   - If the vault has no `GITHUB_REVIEWER_BASIC`, the clone fails and the station fails. The policy never falls back to the author key.
@@ -458,7 +458,11 @@ Limits:
 - The broker answers 400 and runs no command for a worker policy in these cases:
   - It names the vault key `AX_AUTH` or `GITHUB_BASIC_MANAGER`.
   - A `credentialUri` is not `ate-secret://agent-vault/<vault>/<KEY>`.
-  - A rule has `pathPrefixes` on a hostname pattern that can match a `github.com` host. Examples: `github.com`, `*.github.com`, `*.com`, `*`.
+  - A rule has `pathPrefixes` or `paths` on a hostname pattern that can match a `github.com` host. Examples: `github.com`, `*.github.com`, `*.com`, `*`. The broker accepts one such rule: the reviewer rule. Its keys are exactly these:
+    - `hostnames`: only `api.github.com` and `uploads.github.com`.
+    - `pathPrefixes`: one `/repos/<owner>/<repo>/`.
+    - `paths`: `["/graphql"]`.
+    - `effects`: one `Authorization` `Bearer ` header from `GITHUB_REVIEWER`.
   - A key has a non-ASCII character.
   - The policy nests deeper than 32 levels.
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.

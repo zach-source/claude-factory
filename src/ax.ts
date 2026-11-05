@@ -408,6 +408,17 @@ const gitlabRule = (host: string, uri?: (key: string) => string) => ({
   },
 })
 
+/** a GitHub owner or repo name that is safe in a path prefix: plain characters, not . or .. */
+const safeName = (x?: string): x is string => !!x && /^[A-Za-z0-9_.-]+$/.test(x) && x !== '.' && x !== '..'
+
+/**
+ * The reviewer's API rule. The key reaches the REST paths of the rig repo (the prefix) and /graphql.
+ * A prefix cannot name /graphql, so it is an exact path. The gh commands pr view, checks and review use it.
+ * Any other API path has no rule, and the gateway answers 403.
+ */
+const reviewerApiRule = <T extends { https: object }>(r: T) =>
+  ({ https: { ...r.https, paths: ['/graphql'] } }) as T
+
 /** the stations that post approving reviews as the reviewer App: review, security and check (the small route's review) */
 export const REVIEWER_STATIONS = ['review', 'security', 'check']
 
@@ -421,7 +432,10 @@ export const reviewerTask = (
   githubOwner?: string,
   env: NodeJS.ProcessEnv = process.env,
   beadsOnGithub = false,
+  githubRepo?: string,
 ) =>
+  safeName(githubRepo) &&
+  safeName(githubOwner) &&
   REVIEWER_STATIONS.includes(node) &&
   !beadsOnGithub &&
   !!env.FACTORY_AX_VAULT &&
@@ -444,7 +458,7 @@ const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). A rig on GitLab host H gets H the same way, with `GITLAB` (an access token) and `GITLAB_BASIC`
  * (base64 of `<user>:<token>`, git's Basic auth). With `reviewer`, api.github.com uses `GITHUB_REVIEWER` (the reviewer App's
- * installation token); github.com uses `GITHUB_REVIEWER_BASIC` (base64 of `x-access-token:<reviewer installation token>`, contents read), so the task cannot push. Only with `manager` (and GITHUB_BASIC) does it add the
+ * installation token) only on /repos/<githubOwner>/<githubRepo>/ and /graphql (both names must be plain, or it throws); github.com uses `GITHUB_REVIEWER_BASIC` (base64 of `x-access-token:<reviewer installation token>`, contents read), so the task cannot push. Only with `manager` (and GITHUB_BASIC) does it add the
  * path-prefixed rules that give the zach-source repos their own keys. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  *
  * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
@@ -461,7 +475,10 @@ export function egressPolicy(
   githubKey = 'GITHUB_BASIC',
   reviewer = false,
   manager = false,
+  githubRepo?: string,
 ) {
+  if (vault && reviewer && !(safeName(githubOwner) && safeName(githubRepo)))
+    throw new Error('the reviewer egress policy needs the rig GitHub owner and repo, both plain names')
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (
     hostnames: string[],
@@ -488,7 +505,13 @@ export function egressPolicy(
   return {
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
-      rule(apiHosts, 'Authorization', 'Bearer ', reviewer ? 'GITHUB_REVIEWER' : own || 'GITHUB'),
+      vault && reviewer
+        ? reviewerApiRule(
+            rule(apiHosts, 'Authorization', 'Bearer ', 'GITHUB_REVIEWER', undefined, [
+              `/repos/${githubOwner}/${githubRepo}/`,
+            ]),
+          )
+        : rule(apiHosts, 'Authorization', 'Bearer ', own || 'GITHUB'),
       rule(
         ['github.com'],
         'Authorization',
@@ -544,13 +567,24 @@ export function createPolicy(
   githubKey?: string,
   reviewer = false,
   manager = false,
+  githubRepo?: string,
 ) {
   if (manager && task !== managerTask())
     throw new Error(
       `egress policy for ${task} asks for the manager policy, but the manager task is ${managerTask()}`,
     )
   const policy = JSON.stringify(
-    egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer, manager),
+    egressPolicy(
+      undefined,
+      extra,
+      undefined,
+      gitlabHost,
+      githubOwner,
+      githubKey,
+      reviewer,
+      manager,
+      githubRepo,
+    ),
   )
   // the manager and every worker share one vault: a worker policy must not name a manager-only key
   const why = task !== managerTask() && workerPolicyRefusal(JSON.parse(policy))
