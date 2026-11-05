@@ -651,6 +651,10 @@ test("a worker's settings are its own: the user's environment, herdr's session h
     { PreToolUse: [cmd(herdrCmd)] },
     { PostToolUse: [cmd(herdrCmd)] },
     { SessionStart: [cmd('bd prime --hook-json')] },
+    { SessionStart: [cmd(`bash './herdr-agent-state.sh' session`)] },
+    { SessionStart: [cmd(`bash '../x/hooks/herdr-agent-state.sh' session`)] },
+    { SessionStart: [cmd(`bash 'hooks/herdr-agent-state.sh' session`)] },
+    { SessionStart: [cmd(`bash '~/.claude/hooks/herdr-agent-state.sh' session`)] },
   ]
   for (const h of dropped) {
     const got = workerSettings({ hooks: h }, 200).hooks
