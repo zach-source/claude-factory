@@ -20,6 +20,8 @@ const GATED = [
   `${F} mail r1 plan "x \\\\\n$(id)"`,
   `${F} mail r1 plan x \\\\\n$(id)`,
   `${F} mail r1 plan $\\\n(id)`,
+  `${F} mail r1 plan "x $\\\n(id)"`,
+  `${F} mail r1 plan "x $\\\n\\\n(id)"`,
   `${F} mail r1 plan =(id)`,
   `${F} mail r1 plan /(e:'id':)`,
 ]

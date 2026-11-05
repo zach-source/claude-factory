@@ -1348,9 +1348,10 @@ function substitutionIn(command: string): boolean {
     if (state === 'single') {
       if (c === "'") state = 'plain'
     } else if (state === 'double') {
-      if (c === '\\') i++
+      if (c === '$' && /^(\\\n)*\(/.test(command.slice(i + 1))) return true
+      else if (c === '\\') i++
       else if (c === '"') state = 'plain'
-      else if (two === '$(' || c === '`') return true
+      else if (c === '`') return true
     } else if (c === '\\') i++
     else if (c === "'") state = 'single'
     else if (c === '"') state = 'double'
