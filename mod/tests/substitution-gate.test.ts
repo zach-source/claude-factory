@@ -28,6 +28,7 @@ const UNREADABLE = [
   `${F} mail r1 plan it\\'s "$(id)" '`,
   `${F} mail r1 plan $'\\'' "$(id)" '`,
   `#'\n${F} mail r1 plan "$(id)" '`,
+  `${F} mail r1 plan <<EOF\n'x\nEOF\n'`,
 ]
 
 const PLAIN = [
