@@ -210,6 +210,19 @@ test('a failed fork shows an error row with the URL, and a second pass forks not
   expect(read('orphans.json')).toHaveLength(1)
 })
 
+test('a failed orphan-forks.json write shows a record failed row, not the generic fork failed row', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  mkdirSync(join(home(), 'orphan-forks.json.tmp')) // the atomic write cannot open its temp file
+  pass()
+  expect(runIds()).toHaveLength(1)
+  const rows = read('orphans.json')
+  expect(rows).toHaveLength(1)
+  expect(rows[0].error).toContain(URL)
+  expect(rows[0].error).toContain('record failed')
+  expect(rows[0].error).not.toContain('fork failed or not recorded')
+})
+
 test('failed-fork rows match by exact URL: pull/37 and pull/378 each get a row', () => {
   const src = setup()
   const base = 'https://github.com/acme/widget/pull/'
