@@ -130,7 +130,7 @@ import {
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
-import { REPAIR_CAP, closableParents, repairs, type PrFact } from './repairs'
+import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import { pgScratch } from './pg-scratch'
@@ -8361,7 +8361,20 @@ async function repairPass() {
     try {
       if (!hasBeads(rig.repo)) continue
       const b = beads(rig.repo, 'factory')
-      const todo = repairs(rig.name, b.every(), await rigPrs(rig.repo), live, Date.now()).slice(0, REPAIR_CAP)
+      const every = b.every()
+      const prs = await rigPrs(rig.repo)
+      // queue and release own conflicts while they run; otherwise read mergeable for each queued OPEN PR
+      const owned = liveShipRuns().some(
+        s => s.run.repo === rig.repo && (s.node === 'queue' || s.node === 'release'),
+      )
+      // the probe writes p.mergeable onto the objects in prs; repairs() below reads it
+      if (!owned)
+        for (const p of conflictProbes(every, prs, live)) {
+          const path = githubPullPath(p.url)
+          const res = path ? await spawnGh(['api', path], { cwd: rig.repo, timeout: 30_000 }) : null
+          p.mergeable = res?.code === 0 ? parseGithubView(res.out)?.mergeable : undefined
+        }
+      const todo = repairs(rig.name, every, prs, live, Date.now()).slice(0, REPAIR_CAP)
       const closed = new Set<string>()
       for (const r of todo) {
         const done =
@@ -8373,7 +8386,9 @@ async function repairPass() {
                 ? b.reship(r.id, r.reason)
                 : r.kind === 'unship'
                   ? b.unship(r.id, r.reason)
-                  : false
+                  : r.kind === 'conflict'
+                    ? b.rework(r.id, r.reason)
+                    : false
         if (!done) continue
         const at = new Date().toISOString()
         appendFileSync(repairsFile(), JSON.stringify({ at, rig: rig.name, ...r }) + '\n')

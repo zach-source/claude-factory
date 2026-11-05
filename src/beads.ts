@@ -709,6 +709,21 @@ export const beads = (repo: string, actor: string) => ({
     bd(repo, actor, 'reopen', id, '--reason', reason).isOk &&
     bd(repo, actor, 'update', id, '--add-label', SHIP).isOk &&
     bd(repo, actor, 'comment', id, reason).isOk,
+  /** sends a queued ship bead back to implement (the queue prompt's step 2). The update goes first: it takes
+   * the bead out of the queue, so a failed comment does not repeat every pass. */
+  rework: (id: string, reason: string) =>
+    bd(
+      repo,
+      actor,
+      'update',
+      id,
+      '--remove-label',
+      SHIP,
+      '--add-label',
+      LABEL,
+      '--add-label',
+      'station:implement',
+    ).isOk && bd(repo, actor, 'comment', id, reason).isOk,
   /** takes back a claim another actor abandoned: repairs calls it only for a run that is not live,
    * with an expired lease */
   releaseStale: (id: string, reason: string) =>
