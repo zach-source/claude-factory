@@ -171,7 +171,11 @@ export type SlimBead = {
 /** metadata.discovered_from is untrusted text that reaches the patrol prompt: only an id passes */
 const discoveredFromOf = (x: Bead) => {
   const d = x.metadata?.discovered_from
-  return d == null ? undefined : typeof d === 'string' && /^[A-Za-z0-9][\w.-]{0,63}$/.test(d) ? d : '(invalid)'
+  return d == null
+    ? undefined
+    : typeof d === 'string' && /^[A-Za-z0-9][\w.-]{0,63}$/.test(d)
+      ? d
+      : '(invalid)'
 }
 
 /**
