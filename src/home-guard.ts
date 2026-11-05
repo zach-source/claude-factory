@@ -95,7 +95,7 @@ const GIT_SUBS = new Set(['diff', 'log', 'show', 'status', 'blame'])
 // and a backslash only before a char that bash keeps. The pieces start with different chars, so
 // the regex cannot backtrack badly.
 const TOKEN =
-  /([ \t]+)|(;|&&|\|\||\||\n)|((?:2>&1|2>\/dev\/null|>\/dev\/null)(?=[ \t\n;&|]|$))|((?:[\w./:@%+,=^~-]|"(?:[^"\\$`!]|\\[^"\\$`\n!])*"|'[^']*')+)/y
+  /([ \t]+)|(;|&&|\|\||\||\n)|((?:2>&1|>\/dev\/null)(?=[ \t\n;&|]|$))|((?:[\w./:@%+,=^~-]|"(?:[^"\\$`!]|\\[^"\\$`\n!])*"|'[^']*')+)/y
 const SED_SCRIPT = /^\d+(,\d+)?p(;\d+(,\d+)?p)*$/
 
 // one reader segment: a reader word, git with a read subcommand, or sed -n with line-range p scripts
@@ -117,8 +117,8 @@ function readerSegment(w: string[]): boolean {
 
 /**
  * True when `command` tokenizes fully in the closed grammar (TOKEN) and each segment, split at
- * ; && || | and newline, is a reader (readerSegment). The only redirects are 2>&1, 2>/dev/null and
- * >/dev/null. Any other char (lone &, <, >, (, ), {, }, $, backtick, #, glob, backslash outside
+ * ; && || | and newline, is a reader (readerSegment). The only redirects are 2>&1 and >/dev/null
+ * (2>/dev/null reads as the word 2 and >/dev/null). Any other char (lone &, <, >, (, ), {, }, $, backtick, #, glob, backslash outside
  * quotes) or an empty segment gives false (fail closed), so the script read runs. For git, only
  * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
  * scripts (no w, e, r, -i, -f).
@@ -135,7 +135,7 @@ function readOnly(command: string): boolean {
     pos = TOKEN.lastIndex
     if (m[4] !== undefined) seg.push(m[4])
     else if (m[2] !== undefined) {
-      if (!seg.length || !readerSegment(seg)) return false
+      if (!readerSegment(seg)) return false
       seg = []
     }
   }
