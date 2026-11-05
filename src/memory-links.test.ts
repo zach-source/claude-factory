@@ -13,6 +13,10 @@ import {
   outline,
   search,
   walk,
+  appendStore,
+  readStore,
+  use,
+  writeStore,
 } from './memory'
 
 const MARKER = 'zqsecret-eqxi'
@@ -89,5 +93,30 @@ test('regular notes, README and CORE.md are still read', async () => {
   expect(coreNotes(dir).length).toBe(1)
   expect(noteExists(dir, 'inbox/x.md')).toBe(true)
   expect(JSON.stringify(await search(dir, 'zqplain'))).toContain('zqplain')
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('store helpers throw on a link and leave the target alone; a regular file works', () => {
+  const { root, dir, secret } = linkStore()
+  const before = readFileSync(secret, 'utf8')
+  const link = join(dir, 'inbox', 'z.md')
+  symlinkSync(secret, link)
+  expect(() => readStore(link, 'utf8')).toThrow(/ELOOP/)
+  expect(() => writeStore(link, 'x')).toThrow(/ELOOP/)
+  expect(() => appendStore(link, 'x')).toThrow(/ELOOP/)
+  expect(readFileSync(secret, 'utf8')).toBe(before)
+  const plain = join(dir, 'inbox', 'p.md')
+  writeStore(plain, 'a')
+  appendStore(plain, 'b')
+  expect(readStore(plain, 'utf8')).toBe('ab')
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('a writer with a link at its path throws and the target stays unchanged', () => {
+  const { root, dir, secret } = linkStore()
+  const before = readFileSync(secret, 'utf8')
+  symlinkSync(secret, join(dir, '.usage.jsonl'))
+  expect(() => use(dir, ['topic/a.md'], 'helped')).toThrow(/ELOOP/)
+  expect(readFileSync(secret, 'utf8')).toBe(before)
   rmSync(root, { recursive: true, force: true })
 })

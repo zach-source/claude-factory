@@ -4438,8 +4438,8 @@ async function dream() {
     }
     // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
     // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
-    writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
     const pre = memory.dropLinks(MEMORY)
+    memory.writeStore(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
     const codexLinked = pre.some(l => l.path === '.codex') // a removed .codex link still refuses this dream
     if (pre.length) appendFileSync(join(HOME, 'dream.log'), removedLine(pre))
     commitMemory('notes since the last dream')
