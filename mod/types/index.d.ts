@@ -109,6 +109,8 @@ export type FactoryBead = {
   children?: { done: number; total: number }
   /** the open beads it waits on */
   blockedBy?: string[]
+  /** the bead in another rig it was filed from; "(invalid)" when not an id */
+  discoveredFrom?: string
 }
 export type FactoryBacklog = (FactoryRig & {
   /** its runs holding a worker now */
