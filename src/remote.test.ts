@@ -877,6 +877,41 @@ esac
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
+test('a put error with ESC and U+202E reaches the FAIL reason without them', () => {
+  launched('r7c')
+  const side = join(home, 'runs', 'r7c', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(side, 'utf8')),
+      put: ['brief.md'],
+      putFailedAt: Date.now() - 6 * 60_000,
+    }),
+  )
+  writeFileSync(join(home, 'runs', 'r7c', 't.brief.md'), 'hello')
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) printf 'EACCES \\033[31mred\\342\\200\\256txt' >&2; exit 1 ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7c')
+  expect(row.error).toContain('EACCES  [31mred txt')
+  expect(row.error).not.toMatch(/[\u001b‮]/)
+  expect(JSON.parse(readFileSync(side, 'utf8')).putError).not.toMatch(/[\u001b‮]/)
+  rmSync(join(home, 'runs', 'r7c'), { recursive: true })
+})
+
 test('a task gone because serve exited fails the attempt with serve\'s log, not just "was closed"', () => {
   launched('r8')
   cluster('Running', {
@@ -3280,6 +3315,23 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     expect(inbox('sk3')).not.toContain('"outcome":"ready"')
     expect(existsSync(markerFile())).toBe(true)
     finish('sk3')
+  })
+
+  test('a skew hold strips ESC and U+202E from the outcome and the summary', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3c')
+    const line = JSON.stringify({
+      argv: ['report', 'sk3c', String(seq), 'rea\u001bdy', 'plan ‮text'],
+      from: 'a',
+      at: 1,
+      bdSkew: SKEW_OUT,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+    factory(['tick'])
+    const last = ctxOfRun('sk3c').log.at(-1)
+    expect(last.summary).toContain('rea dy: plan  text')
+    expect(last.summary).not.toMatch(/[\u001b‮]/)
+    finish('sk3c')
   })
 
   test('773c AC3: a skew report keeps since and asks no new Question', () => {
