@@ -629,3 +629,37 @@ test('fill leaves the dedupe core as it is (sjwe AC4)', () => {
   ])
     expect(fill(p, {})).toBe(p)
 })
+
+test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
+  const met = 'ACn: met ('
+  for (const id of ['deploy', 'soak']) {
+    const p = prompt(id)
+    const start = p.indexOf('AC ledger:')
+    expect(start, id).toBeGreaterThan(-1)
+    const ledger = p.slice(start, p.indexOf('\n', start))
+    for (const t of [
+      met,
+      'ACn: not checked (',
+      'ACs: none in plan',
+      'ACn: waived (',
+      '--deps discovered-from:<bead> -d "<evidence>"',
+      'bd children <bead>',
+      'no factory label',
+      'When you report published (deploy) or healthy (soak), never leave the bead open with the ship label',
+      'name each filed id in the close reason',
+    ])
+      expect(p, `${id}: ${t}`).toContain(t)
+    for (const t of [
+      'Question:',
+      'description never counts',
+      'Never close the bead',
+      'unless a filed bead or a waiver carries it',
+    ])
+      expect(ledger, `${id} ledger: ${t}`).toContain(t)
+    expect(ledger).not.toContain('The one exception')
+    expect(p.indexOf('unless a filed bead or a waiver carries it'), id).toBeLessThan(
+      p.indexOf('bd close <bead>'),
+    )
+  }
+  for (const id of ['queue', 'release', 'rollback', 'postmortem']) expect(prompt(id), id).not.toContain(met)
+})

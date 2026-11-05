@@ -248,6 +248,7 @@ import {
 } from './sync'
 import { rmSafe } from './home-guard'
 import { ciReport } from './ci'
+import { cut } from './cut'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -587,8 +588,20 @@ export function summaryArgs(args: string[]): string[] {
       'usage: factory report <run> <seq> <outcome> --summary-file <path> (one path, nothing after it)',
     )
   let text: string
+  let size: number
   try {
-    if (!statSync(path).isFile()) return fail(`--summary-file ${path} is not a readable file`)
+    const st = statSync(path)
+    if (!st.isFile()) return fail(`--summary-file ${path} is not a readable file`)
+    size = st.size
+  } catch {
+    return fail(`--summary-file ${path} is not a readable file`)
+  }
+  // outside the try: fail() throws, and the catch would call this a missing file
+  if (size > worker.OUTBOX_MAX_BYTES)
+    return fail(
+      `--summary-file ${path} is ${size} bytes; the cap is ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB): shorten it`,
+    )
+  try {
     text = readFileSync(path, 'utf8')
   } catch {
     return fail(`--summary-file ${path} is not a readable file`)
@@ -723,7 +736,7 @@ export function overwritten(out: string) {
       .filter(k => k.startsWith('our_') && k !== 'our_diff_type' && k !== 'our_id')
       .map(k => k.slice('our_'.length))
       .filter(k => String(row[`our_${k}`]) !== String(row[`their_${k}`]))
-      .map(k => `${k}=${String(row[`our_${k}`]).slice(0, 200)}`)
+      .map(k => `${k}=${cut(String(row[`our_${k}`]), 200)}`)
     const what =
       row.our_diff_type === 'removed' ? 'had deleted it' : `had ${had.join(', ') || 'the same values'}`
     return {
@@ -930,6 +943,24 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       continue
     }
     const argv = outboxArgv(line)
+    const big = argv && worker.outboxTooBig(argv)
+    if (big && argv) {
+      // Bun.spawnSync throws E2BIG on a huge argv, which would wedge this run on every tick: never spawn it
+      try {
+        appendFileSync(
+          join(runDir(run.id), `${task}.outbox-too-big`),
+          `${new Date().toISOString()} ${big} ${JSON.stringify(argv.slice(0, 3).map(w => cut(w, 80)))}\n`,
+          { mode: 0o600 },
+        )
+      } catch {} // a log failure never blocks the replay of the lines after it
+      seen.seen[h] = (seen.seen[h] ?? 0) + 1
+      writeJson(seenFile(run, task), seen)
+      ax.prompt(
+        task,
+        `[factory] your outbox line \`${cut(argv.slice(0, 3).join(' '), 200)} ...\` is ${big} bytes, over the ${worker.OUTBOX_MAX_BYTES}-byte cap (100 KiB): it was not run. Shorten the text and run the command again (for a report: a shorter --summary-file)`,
+      )
+      continue
+    }
     const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
     const env = {
@@ -945,7 +976,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     if (!p && !skew)
       ax.prompt(
         task,
-        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
+        `[factory] \`${argv?.join(' ') ?? cut(line, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
       )
     else if (p && p.exitCode !== 0)
       ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
@@ -1164,7 +1195,7 @@ export function ownCopy(template: string, name: string) {
 
 /** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
 export function reworkBase(repo: string, branch: string) {
-  if (!/^factory\/[\w.-]+$/.test(branch) || branch.includes('..')) return undefined
+  if (!/^\w[\w./-]*$/.test(branch) || branch.includes('..')) return undefined // any PR branch (8yhq), not a ref option
   Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', branch], { timeout: 30_000 })
   const ref = `origin/${branch}`
   return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
@@ -1283,7 +1314,10 @@ const post = (id: string, e: Input) =>
   durable(join(runDir(id), 'inbox.jsonl'), JSON.stringify({ ...e, at: Date.now() }) + '\n', 'a')
 
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+export const clip = (text: string, max: number) => {
+  if (text.length <= max) return text
+  return `${cut(text, max)}…`
+}
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
@@ -1313,16 +1347,10 @@ export function trustedEgress(
  * under this cap. This const guards the few spots that pasted a report's `.summary` or a mail's `.text` whole.
  */
 export const REPORT_MAX = 32_000
-// text.slice(0, max) can stop between the two UTF-16 code units of a surrogate pair (an emoji, say),
-// leaving a lone lead surrogate. Back off by one unit in that case, so the cut never splits a pair.
-const sliceWhole = (text: string, max: number) => {
-  const lead = text.charCodeAt(max - 1)
-  return text.slice(0, lead >= 0xd800 && lead <= 0xdbff ? max - 1 : max)
-}
 export const clipReport = (text: string) =>
   text.length <= REPORT_MAX
     ? text
-    : `${sliceWhole(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
+    : `${cut(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**
@@ -2027,6 +2055,8 @@ export function vmClaudeFlags(
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
     ...['--settings', JSON.stringify(settings)],
     ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
+    // inline, not a file: an older VM image has no worker-vm.md (claude-factory-66ib)
+    ...['--append-system-prompt', readFileSync(join(ROOT, 'src', 'worker-vm.md'), 'utf8')],
     // the image's plugins, as a laptop worker gets the person's (constitution I, claude-factory-fxu)
     ...skills.flatMap(k => ['--plugin-dir', VM_PLUGINS[k]!]),
   ]
@@ -2381,6 +2411,28 @@ export function swapUntil(
 type TokenSwapState = { at: number; until: number; ran?: number }
 
 /**
+ * This function reads a token-swap state file. A state that is not a well-formed object, or that has an
+ * at or ran more than LIMIT_SKEW_MS ahead, or an until more than LIMIT_RESET_MAX_MS ahead, counts as no state.
+ * A hostile VM can have written such a file before the bound existed.
+ */
+export function trustedSwapState(file: string, now: number): TokenSwapState | undefined {
+  if (!existsSync(file)) return undefined
+  let s: Record<string, unknown>
+  try {
+    s = readJson<Record<string, unknown>>(file)
+  } catch {
+    return undefined
+  }
+  if (typeof s !== 'object' || s === null) return undefined
+  const { at, until, ran } = s
+  const num = (v: unknown): v is number => Number.isFinite(v)
+  if (!num(at) || !num(until) || at > now + LIMIT_SKEW_MS || until > now + LIMIT_RESET_MAX_MS)
+    return undefined
+  if (ran !== undefined && (!num(ran) || ran > now + LIMIT_SKEW_MS)) return undefined
+  return ran === undefined ? { at, until } : { at, until, ran }
+}
+
+/**
  * This function runs a swap command. A rig sets the Claude command in FACTORY_AX_TOKEN_SWAP and the Codex command in
  * FACTORY_AX_CODEX_TOKEN_SWAP. The function runs the command one time for each refusal. It then sends mail to the
  * manager. The mail names the live slot (Claude) or the live label (Codex).
@@ -2402,7 +2454,7 @@ export function runTokenSwap(
   const cmd = codex ? process.env.FACTORY_AX_CODEX_TOKEN_SWAP : process.env.FACTORY_AX_TOKEN_SWAP
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
   const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  const state = trustedSwapState(file, now)
   const gap = codex ? CODEX_SWAP_GAP_MS : TOKEN_SWAP_WAIT_MS
   if (!needsSwap(hit, state, now, gap)) {
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
@@ -2435,7 +2487,7 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const cmd = process.env.FACTORY_AX_CODEX_TOKEN_SWAP
   if (!cmd) return
   const file = join(home, `token-swap-${runnerName}-codex.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  const state = trustedSwapState(file, now)
   if (state && now - state.at < CODEX_REFRESH_MS) return
   const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
   const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
@@ -2451,7 +2503,8 @@ export const HAIKU = 'claude-haiku-5-5'
 
 /**
  * claude-factory-5us3: a closed rule for the one user hook a worker keeps, herdr's session hook.
- * A SessionStart entry passes only when every hook in it is `bash '<path>/hooks/herdr-agent-state.sh' session`.
+ * A SessionStart entry passes only when every hook in it is `bash '<path>/hooks/herdr-agent-state.sh' session`
+ * (Claude) or `bash '<path>/herdr-agent-state.sh' session` (Codex, claude-factory-px98).
  */
 const isHerdrSessionHook = (e: unknown) => {
   const hs = (e as { hooks?: unknown } | null)?.hooks
@@ -2462,7 +2515,7 @@ const isHerdrSessionHook = (e: unknown) => {
       (h: { type?: unknown; command?: unknown } | null) =>
         h?.type === 'command' &&
         typeof h.command === 'string' &&
-        /^bash '[^'\n]*\/hooks\/herdr-agent-state\.sh' session$/.test(h.command),
+        /^bash '[^'\n]*\/(?:hooks\/)?herdr-agent-state\.sh' session$/.test(h.command),
     )
   )
 }
@@ -2757,7 +2810,7 @@ export function piWorker(home = HOME, plugins = userPluginDirs()) {
 
 /**
  * A codex worker gets its own CODEX_HOME at <run dir>/codex/<node>, never the person's ~/.codex. It holds
- * config.toml (context limit), hooks.json (the person's hooks, then the deny hook last), AGENTS.md (the worker
+ * config.toml (context limit), hooks.json (herdr's session hook and the deny hook only, claude-factory-px98), AGENTS.md (the worker
  * rules) and an auth.json link. Codex has the PreToolUse hook, so worker-hook.ts runs as it is. Fail closed:
  * no hook file, or an agent command that turns the guard off, refuses the launch (claude-factory-x0b9).
  */
@@ -2791,11 +2844,13 @@ export function codexWorker(
   const dir = o.dir ?? join(runDir(run.id), 'codex', node)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  let theirs: Record<string, unknown[]> = {}
+  let herdr: unknown[] = []
   try {
-    theirs = readJson<{ hooks?: Record<string, unknown[]> }>(join(user, 'hooks.json')).hooks ?? {}
+    const ss = readJson<{ hooks?: { SessionStart?: unknown[] } }>(join(user, 'hooks.json')).hooks
+      ?.SessionStart
+    herdr = (ss ?? []).filter(isHerdrSessionHook)
   } catch {
-    // no user hooks, or not JSON: the deny hook is the only one
+    // no user hooks, not JSON, or SessionStart not an array (filter throws): the deny hook is the only one
   }
   const hook = denyHook(
     process.execPath,
@@ -2806,7 +2861,7 @@ export function codexWorker(
     mergeAuthority(rig),
   )
   writeJson(join(dir, 'hooks.json'), {
-    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), ...hook] },
+    hooks: { PreToolUse: hook, ...(herdr.length ? { SessionStart: herdr } : {}) },
   })
   writeFileSync(
     join(dir, 'config.toml'),
@@ -3111,13 +3166,44 @@ export function holdFloor(
 export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
   join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
 
+/**
+ * This function reads a limit-paged file. The file can hold data from before the bound. A value that is not a
+ * finite number, or that is more than LIMIT_RESET_MAX_MS ahead, counts as no file (0), so it cannot mute mail or hold a run.
+ */
+export function trustedPaged(file: string, now: number): number {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : 0
+  } catch {
+    return 0
+  }
+  return typeof v === 'number' && Number.isFinite(v) && v <= now + LIMIT_RESET_MAX_MS ? v : 0
+}
+
+/**
+ * This function reads an egress-paged file: a bare number (old form) or {since, at}. A value that is not a finite
+ * number, or that is more than LIMIT_SKEW_MS ahead, counts as no file (undefined), so it cannot mute the notice mail.
+ */
+export function trustedEgressPaged(file: string, now: number): { since: number; at: number } | undefined {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : undefined
+  } catch {
+    return undefined
+  }
+  const ok = (n: unknown): n is number => Number.isFinite(n) && (n as number) <= now + LIMIT_SKEW_MS
+  if (ok(v)) return { since: v, at: 0 }
+  const o = v as { since?: unknown; at?: unknown } | null
+  return o && typeof o === 'object' && ok(o.since) && ok(o.at) ? { since: o.since, at: o.at } : undefined
+}
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
 function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
   const p = progressOf(run)
   const runner = runnerOf(c.pane)
   const paged = limitPagedFile(runner, codex)
-  const until = existsSync(paged) ? readJson<number>(paged) : 0
+  const until = trustedPaged(paged, now)
   return {
     inMin: Math.floor((now - c.startedAt) / 60_000),
     ...(p?.seq === c.seq && { quietMin: Math.floor((now - p.at) / 60_000) }),
@@ -3163,7 +3249,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
         ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
-        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> "<note for the next station>"`,
+        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
       send({ type: 'NUDGED', seq: c.seq })
@@ -3338,7 +3424,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         return 'usage limit'
       }
       const paged = limitPagedFile(runner, isCodex)
-      if (!existsSync(paged) || readJson<number>(paged) < until) {
+      if (trustedPaged(paged, now) < until) {
         const text = runner.local
           ? `Every Claude account is ${refused ? 'login refused' : 'at its usage limit'} (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
           : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is ${refused ? `login refused (${hit.kind})` : `at its usage limit (${hit.kind})`}; they wait until ${new Date(until).toLocaleString()} and go on then.`
@@ -3365,8 +3451,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     // `since` and each mail the manager on every tick
     const paged = join(runDir(run.id), `egress-paged-${node}.json`)
     // keyed on the laptop's clock: `since` comes from the VM, so only `at` limits how often it can page
-    const prev = existsSync(paged) ? readJson<number | { since: number; at: number }>(paged) : undefined
-    const was = typeof prev === 'number' ? { since: prev, at: 0 } : prev
+    const was = trustedEgressPaged(paged, now)
     if (!was || (egress.since > was.since && now >= was.at + EGRESS_REPAGE_MS)) {
       const since = new Date(egress.since).toLocaleString()
       // from 'factory', not node: a notice, not a question, so it never reads as the station asking the
@@ -3384,7 +3469,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     egress &&
     `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${egress.last}`
   const limitPage = limitPagedFile(runner, isCodex)
-  const pagedUntil = existsSync(limitPage) ? readJson<number>(limitPage) : 0
+  const pagedUntil = trustedPaged(limitPage, now)
   // an outage is held, not failed: the machine spends no attempt on it (claude-factory-dhof). Only this
   // reconciler sets hold; a worker's own report never does.
   const failOutage = (reason: string) => {
@@ -3662,7 +3747,7 @@ function storeCodexUsage(run: Run, node: string, seq: number) {
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
 const appendUsage = (id: string, rows: Usage[]) =>
   appendFileSync(usageFile(id), rows.map(r => JSON.stringify(r) + '\n').join(''))
-/** a run's stored rows; a session and model that was stored twice (a resumed worker) keeps its last row */
+/** a run's stored rows; a node, seq, session and model that was stored twice (a resumed worker) keeps its last row */
 function storedUsage(id: string): Usage[] {
   if (!existsSync(usageFile(id))) return []
   const rows = readFileSync(usageFile(id), 'utf8')
@@ -3674,7 +3759,7 @@ function storedUsage(id: string): Usage[] {
         return []
       }
     })
-  return [...new Map(rows.map(r => [`${r.session}\0${r.model}`, r])).values()]
+  return [...new Map(rows.map(r => [`${r.node}\0${r.seq}\0${r.session}\0${r.model}`, r])).values()]
 }
 
 async function tickRun(run: Run, now: number, halt: Halt | null = null) {
@@ -3760,7 +3845,8 @@ export function shipPrOf(
 /** the NAME a factory:<name> label takes: the base name of the run's factory file, else the def's name */
 export const factoryLabelName = (run: Run, def: Factory) => {
   if (!run.factoryFrom) return def.name // run.factory is the pinned factory.json, not a name
-  const base = basename(run.factoryFrom.split(' at ')[0]!, extname(run.factoryFrom.split(' at ')[0]!))
+  const src = run.factoryFrom.replace(/ at [0-9a-f]{7,40}$/, '')
+  const base = basename(src, extname(src))
   return NAME.test(base) ? base : def.name
 }
 
@@ -6985,14 +7071,27 @@ async function mergedPrsFor(
   const gl = origin.forge === 'gitlab'
   const glabPath = `${origin.owner}/${origin.repo}`
   let firstErr = ''
-  const ref = rigRef(repo)
+  const ref = gl ? null : rigRef(repo) // GitLab does not use it: spare the extra git remote get-url
   // GitHub: one REST list of the newest closed PRs. `alreadyDone` matches the id, the short id and the run
   // branches in it. `gh pr list --search` is GraphQL, which the AX gateway cannot key by owner (oz6s).
   const list = gl
-    ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: id }, e => (firstErr = e))
+    ? await gitlabMergedJson(
+        cli.glab,
+        origin.host,
+        glabPath,
+        repo,
+        { search: id, timeoutMs: PRECHECK_TIMEOUT_MS },
+        e => (firstErr = e),
+      )
     : ref
       ? // ponytail: 3 pages = the newest 300 closed PRs; an older merge is missed by the pre-check
-        await githubMergedJson(cli.gh, ref.slug, repo, { pages: 3 }, e => (firstErr = e))
+        await githubMergedJson(
+          cli.gh,
+          ref.slug,
+          repo,
+          { pages: 3, timeoutMs: PRECHECK_TIMEOUT_MS },
+          e => (firstErr = e),
+        )
       : null
   if (list === null)
     throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh api pulls'} failed`, 200))
@@ -7000,7 +7099,10 @@ async function mergedPrsFor(
   // claude-factory-jxl.1: a GitLab title may cite only the short child id ("192.6"); the full-id search misses it
   const short = gl ? shortBeadId(id) : null
   if (short) {
-    const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: short })
+    const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
+      search: short,
+      timeoutMs: PRECHECK_TIMEOUT_MS,
+    })
     if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
   // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
@@ -7008,9 +7110,16 @@ async function mergedPrsFor(
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
     const byHead = gl
-      ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { sourceBranch: branch })
+      ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
+          sourceBranch: branch,
+          timeoutMs: PRECHECK_TIMEOUT_MS,
+        })
       : ref
-        ? await githubMergedJson(cli.gh, ref.slug, repo, { pages: 1, head: `${ref.owner}:${branch}` })
+        ? await githubMergedJson(cli.gh, ref.slug, repo, {
+            pages: 1,
+            head: `${ref.owner}:${branch}`,
+            timeoutMs: PRECHECK_TIMEOUT_MS,
+          })
         : null
     if (byHead !== null) found.push(...parseMergedPrs(byHead))
   }
@@ -7021,12 +7130,13 @@ async function mergedPrsFor(
  * claude-factory-6as: check if a merged PR already proves `bead`'s work is done.
  * If it does, dispatch must reject the bead instead of starting a run for it.
  *
- * This makes no gh or glab call at all in four cases:
+ * This makes no gh or glab call at all in five cases:
  * - `FACTORY_PRECHECK=0`
  * - a person already overrode a prior reject (`rejected_by` metadata still names dispatch after a
  *   requeue)
  * - the id does not look like a bead id
  * - the rig's repo is neither on GitHub nor on GitLab
+ * - this pass already saw a gh or glab failure on the same forge (the `forgeFailed` latch, per forge)
  *
  * A gh or glab failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
  * shows it.
@@ -7491,6 +7601,11 @@ async function dispatch() {
           nodes = loaded.nodes
           spec = source
         }
+        // only shipPass starts a ship run: a ship-named factory here would get merge authority with no run.ship
+        if (name === 'ship') {
+          deferCandidate('factory ship is reserved for the ship queue: only the runner starts a ship run')
+          continue
+        }
         // a station the chosen factory lacks would otherwise start the run quietly at its own
         // first station (`def.start`, below), with no sign anywhere that the label was wrong
         if (at && !Object.hasOwn(nodes, at)) {
@@ -7507,8 +7622,8 @@ async function dispatch() {
           })
           .slice(0, 3)
           .map(id => `factory/${id}`)
-        // claude-factory-6as.9: skip the gh calls outright once this pass already proved gh broken;
-        // the first candidate's row in precheck.jsonl already covers the fail-open for the rest.
+        // claude-factory-6as.9: precheckSkip makes no call for a forge that already failed in this pass;
+        // the first candidate's row in precheck.jsonl covers the fail-open for the rest.
         const { skip, error } = await precheckSkip(
           rig,
           bead,
@@ -8089,21 +8204,39 @@ export const labelMail = (
   ...(isParkedOn(s.c, s.node, url) && { wake: true as const }),
 })
 
-/** a live run owns the PR that got a rework label: remove the label, mail the station, comment on the PR */
+/** a `rework` label asks for changes, so the work goes through implement; a bare `conflict` label only needs a rebase */
+const wantsChanges = (pr: LabeledPr) => reworkLabels(pr).includes(REWORK_LABEL)
+
+/** the run to start for a rework-labeled PR no run owns: implement on the PR's own branch, or the one-station rework.yaml */
+export function reworkStart(pr: LabeledPr, factory: string) {
+  if (!wantsChanges(pr)) return { spec: 'rework', goal: reworkGoal(pr), branch: undefined, at: undefined }
+  const goal = `${reworkGoal(pr)} Your worktree starts from origin/${pr.headRefName}. Push your commits to that branch (git push origin HEAD:${pr.headRefName}). Open no new PR.`
+  return { spec: factory, goal, branch: pr.headRefName, at: 'implement' as const }
+}
+
+/**
+ * a live run owns the PR that got a label: remove the label, mail the station, comment on the PR.
+ * A `rework` label on a run with an implement station also moves the run there (claude-factory-8yhq).
+ */
 export function reworkOwned(
   pr: LabeledPr,
-  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0] },
+  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0]; implement?: boolean },
   io: {
     unlabel: (pr: LabeledPr, labels: string[]) => unknown
     comment: (pr: LabeledPr, body: string) => unknown
-    post: (runId: string, ev: ReturnType<typeof labelMail>) => unknown
+    post: (runId: string, ev: ReturnType<typeof labelMail> | { type: 'GOTO'; node: string }) => unknown
   },
 ) {
-  const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
+  const toImplement = wantsChanges(pr) && !!owner.implement && owner.node !== 'implement' // already there: mail only, a goto would restart its work
+  const node = toImplement ? 'implement' : owner.node
+  const text = toImplement
+    ? `[factory] ${pr.url} was ${asksOf(pr)}. Do it at this station, then go on to verify and review.`
+    : `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
   // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
   io.unlabel(pr, reworkLabels(pr))
-  io.post(owner.id, labelMail(owner, pr.url, text))
-  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${owner.node}), which owns this.`)
+  io.post(owner.id, labelMail({ c: owner.c, node }, pr.url, text))
+  if (toImplement) io.post(owner.id, { type: 'GOTO', node })
+  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${node}), which owns this.`)
 }
 
 /** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
@@ -8364,11 +8497,25 @@ async function labelPass() {
           })
         } else if (action === 'rework' && runId) {
           const owner = live.find(r => r.id === runId)!
-          reworkOwned(pr, owner, { ...forge, post })
-          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${owner.node}`)
+          const implement = Object.hasOwn((await loadPinned(loadRun(runId).factory)).nodes, 'implement')
+          reworkOwned(pr, { ...owner, implement }, { ...forge, post })
+          console.log(
+            `${new Date().toISOString()} rework ${pr.url} → its run ${runId} (was at ${owner.node})`,
+          )
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           forge.unlabel(pr, reworkLabels(pr))
-          const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
+          const start = reworkStart(pr, rig.factory)
+          const { run, def } = await createTracked(
+            start.spec,
+            'rework',
+            rig.repo,
+            start.goal,
+            undefined,
+            undefined,
+            undefined,
+            start.branch,
+          )
+          if (start.at && Object.hasOwn(def.nodes, start.at)) post(run.id, { type: 'GOTO', node: start.at })
           busy.push(rig.name)
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
@@ -8406,11 +8553,13 @@ async function orphanPass() {
   const { busy, held } = await busyRigs()
   const runs = new Map<string, Run>()
   const live: { id: string; log: Entry[]; bead?: string }[] = []
+  const decided = new Set<string>()
   for (const id of startedRunIds()) {
     try {
       const { run, value, c } = current(id)
       const [node] = where(value)
       runs.set(id, run)
+      if (c.log.at(-1)?.outcome === 'decision') decided.add(id)
       if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
     } catch {
       // a run still being written
@@ -8447,8 +8596,9 @@ async function orphanPass() {
       const prs = all.filter(pr => pr.headRefName.startsWith('factory/'))
       if (!prs.length) continue
       const shipQueue = beads(rig.repo, 'factory').shipQueue()
-      const mine = new Map<string, { bead?: string }>()
-      for (const [id, run] of runs) if (run.repo === rig.repo) mine.set(id, { bead: run.bead })
+      const mine = new Map<string, { bead?: string; decided?: boolean }>()
+      for (const [id, run] of runs)
+        if (run.repo === rig.repo) mine.set(id, { bead: run.bead, decided: decided.has(id) })
       const ctx: OrphanCtx = {
         runs: mine,
         liveBeads: new Set(live.flatMap(r => (r.bead ? [r.bead] : []))),
@@ -8703,7 +8853,7 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = body.split('\n', 1)[0]!.slice(0, 80)
+                const first = cut(body.split('\n', 1)[0]!, 80)
                 b.create(
                   `PR change request: ${first}`,
                   `${d.url}\n\n${body}`,
@@ -8999,6 +9149,7 @@ const WORKER_VERBS = [
   'mutate',
   'ci',
   'worker',
+  'file-elsewhere',
 ]
 
 /** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
@@ -9012,6 +9163,66 @@ export function workerVerbRefusal(
     return undefined
   if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
   return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
+}
+
+/**
+ * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title T --description D`.
+ * The label `factory` goes on only when the source bead reads back with its own id and no Linear
+ * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
+ */
+function fileElsewhere(args: string[]) {
+  const usage =
+    'usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title <text> --description <text>'
+  const [target, ...rest] = args
+  const flags = new Map<string, string>()
+  if (!target || target.startsWith('--') || rest.length !== 6) fail(usage)
+  for (let i = 0; i < rest.length; i += 2) {
+    const k = rest[i]!
+    const v = rest[i + 1]
+    if (!['--from', '--title', '--description'].includes(k) || !v || flags.has(k)) fail(usage)
+    flags.set(k, v!)
+  }
+  const [srcName, srcId, ...extra] = flags.get('--from')!.split(':')
+  if (!srcName || !srcId || extra.length || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(srcId)) fail(usage)
+  const rigNamed = (n: string) =>
+    rigs().find(r => r.name === n)?.repo ?? fail(`no rig "${n}" in the factory ${HOME}`)
+  const targetRepo = rigNamed(target!)
+  const sourceRepo = rigNamed(srcName!)
+  if (targetRepo === sourceRepo) fail(`${target} is the source rig: this files elsewhere only`)
+  const marker = workerMarker()
+  if (marker) {
+    const own = process.env.FACTORY_RUN ? loadRun(process.env.FACTORY_RUN) : undefined
+    if (!own || own.bead !== srcId || own.repo !== sourceRepo)
+      fail(`a worker files only from its own run's bead (${marker}): use the File in line`)
+  }
+  const actor = process.env.BEADS_ACTOR || 'factory'
+  const from = `${srcName}:${srcId}`
+  let source: Bead | null
+  try {
+    source = beads(sourceRepo, actor).lookup(srcId!)
+  } catch (e) {
+    return fail(`cannot read ${from}, so nothing was filed: ${(e as Error).message}`)
+  }
+  if (source?.id !== srcId) fail(`${from} did not read back, so nothing was filed`)
+  let id: string
+  try {
+    id = beads(targetRepo, actor).createFrom(
+      !linearSourced(source!),
+      flags.get('--title')!,
+      `${flags.get('--description')!}\n\nFiled from ${from}.`,
+      { discovered_from: srcId! },
+    )
+  } catch (e) {
+    return fail(`nothing was filed: ${(e as Error).message}`)
+  }
+  try {
+    beads(sourceRepo, actor).comment(srcId!, `filed ${id} in ${target}`)
+  } catch (e) {
+    return fail(
+      `filed ${id} in ${target}, but the comment on ${from} failed (${(e as Error).message}): do not file it again`,
+    )
+  }
+  console.log(id)
 }
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
@@ -9754,7 +9965,7 @@ async function status(id: string | undefined) {
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
     if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
     for (const e of id ? c.log : c.log.slice(-1))
-      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${e.summary.replace(/\s+/g, ' ').slice(0, 160)}`)
+      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
   }
   if (!id) {
     const ships = liveShipRuns()
@@ -9833,9 +10044,10 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
+  file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
+  decisions [answer <rig> <bead> <text...> | propose <key> '<question>' '<a | b>']   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -9902,7 +10114,7 @@ const usage = `factory — herdr software factories on xstate
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
   decide <run> <outcome> [note...]   the person: answer a gate station
-  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park
+  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
@@ -9953,7 +10165,7 @@ if (outboxOk === 'help')
   )
 else if (outboxOk) {
   console.error(outboxOk)
-  process.exit(1)
+  process.exit(cmd === 'memory' && args[0] === 'add' ? 2 : 1)
 }
 let queuedArgs = args
 if (outboxCmd && outboxOk === null && cmd === 'report')
@@ -9964,6 +10176,13 @@ if (outboxCmd && outboxOk === null && cmd === 'report')
     process.exit(1)
   }
 const queued = outboxCmd && outboxOk === null
+const tooBig = queued ? worker.outboxTooBig([cmd!, ...queuedArgs]) : undefined
+if (tooBig) {
+  console.error(
+    `refused: this ${cmd} is ${tooBig} bytes; the factory takes at most ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB) in one command: shorten the text and run it again`,
+  )
+  process.exit(1)
+}
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
   // report that went without them would end the VM, and its writes with it
@@ -10441,7 +10660,7 @@ if (import.meta.main && !outboxCmd)
             )
           const bead = memory.installProposalAsBead(MEMORY, name, x =>
             beads(rig!.repo, 'factory/proposals').createUnlabeled(
-              `memory proposal ${x.name}: ${x.change}`.slice(0, 200),
+              cut(`memory proposal ${x.name}: ${x.change}`, 200),
               readFileSync(x.file, 'utf8'),
               { memory_proposal: x.name },
               '-l',
@@ -10559,15 +10778,15 @@ if (import.meta.main && !outboxCmd)
           const [key, question, optionsLine, ...extra] = rest
           if (!key || !question || !optionsLine)
             fail(
-              'usage: factory decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]',
+              "usage: factory decisions propose <key> '<question>' '<label: effect | label: effect>' [--context '<sentence>']",
             )
           const ci = extra.indexOf('--context')
           const context = ci === -1 ? undefined : extra[ci + 1]
-          if (ci !== -1 && !context) fail('usage: ... --context "<sentence>" needs a value')
+          if (ci !== -1 && !context) fail("usage: ... --context '<sentence>' needs a value")
           const leftover = ci === -1 ? extra : extra.filter((_, i) => i !== ci && i !== ci + 1)
           if (leftover.length)
             fail(
-              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context "<sentence>" is allowed`,
+              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context '<sentence>' is allowed`,
             )
           decisionsPropose(key!, question!, optionsLine!, context)
           break
@@ -10629,6 +10848,9 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'file-elsewhere':
+        fileElsewhere(args)
+        break
       case 'hygiene': {
         if (!args[0]) fail('usage: factory hygiene <rig|repo>')
         const repo = repoOf(args[0]!)

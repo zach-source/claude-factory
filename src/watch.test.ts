@@ -528,7 +528,7 @@ test('a person change request routes changes to implement with a bd task each, a
     .split('\n')
     .filter(l => l.startsWith('create '))
   expect(creates).toHaveLength(2)
-  expect(creates.every(l => l.startsWith('create PR change request: '))).toBe(true)
+  expect(creates.every(l => l.startsWith('create --title PR change request: '))).toBe(true)
   // the description holds line breaks, so bd's argv spreads over lines: count the parent flags in all
   expect(readFileSync(bdCalls, 'utf8').split('--parent acme-1')).toHaveLength(3)
   expect(watchJson().routed).toMatchObject([{ outcome: 'changes' }])

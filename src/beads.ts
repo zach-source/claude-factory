@@ -164,6 +164,18 @@ export type SlimBead = {
   children?: { done: number; total: number }
   /** the open beads it waits on */
   blockedBy?: string[]
+  /** the bead it was filed from in another rig (metadata.discovered_from); "(invalid)" when not an id */
+  discoveredFrom?: string
+}
+
+/** metadata.discovered_from is untrusted text that reaches the patrol prompt: only an id passes */
+const discoveredFromOf = (x: Bead) => {
+  const d = x.metadata?.discovered_from
+  return d == null
+    ? undefined
+    : typeof d === 'string' && /^[A-Za-z0-9][\w.-]{0,63}$/.test(d)
+      ? d
+      : '(invalid)'
 }
 
 /**
@@ -195,6 +207,7 @@ export function backlogOf(
     parent: parentOf(x),
     children: counts.get(x.id),
     blockedBy: x.blocked_by?.filter(id => isOpen.has(id)),
+    ...(discoveredFromOf(x) !== undefined && { discoveredFrom: discoveredFromOf(x) }),
   })
   const waiting = blocked.filter(
     x => !x.assignee && (x.status === undefined || ['open', 'blocked'].includes(x.status)),
@@ -299,6 +312,7 @@ function createBead(
       repo,
       actor,
       'create',
+      '--title',
       title,
       '-d',
       description,
@@ -460,6 +474,9 @@ export const beads = (repo: string, actor: string) => ({
   /** `create` without the `factory` label, so dispatch never starts the bead (the hygiene digest) */
   createUnlabeled: (title: string, description: string, meta: Record<string, string>, ...extra: string[]) =>
     createBead(repo, actor, false, title, description, extra, meta),
+  /** `create` for a bead filed from another rig: the caller decides the `factory` label (`factory file-elsewhere`) */
+  createFrom: (labeled: boolean, title: string, description: string, meta: Record<string, string>) =>
+    createBead(repo, actor, labeled, title, description, [], meta),
   /** a bead's comments as bd prints them */
   comments: (id: string): { text: string; created_at: string }[] =>
     JSON.parse(must(bd(repo, actor, 'comments', id, '--json'), 'comments') || '[]'),
@@ -729,6 +746,7 @@ export const beads = (repo: string, actor: string) => ({
         repo,
         actor,
         'create',
+        '--title',
         title,
         '-d',
         description,
@@ -756,6 +774,7 @@ export const beads = (repo: string, actor: string) => ({
         repo,
         actor,
         'create',
+        '--title',
         title,
         '-d',
         description,

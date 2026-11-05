@@ -479,6 +479,13 @@ test('poll, prompt and put run as the worker user over ax ssh, the prompt base64
   ])
 })
 
+test('a VM that prints past the 128 MiB cap fails the call instead of filling laptop memory (claude-factory-cmw9)', () => {
+  writeFileSync(join(dir, 'ssh'), Buffer.alloc(130 * 1024 * 1024, 'a'))
+  expect(() => ax.poll('t', 0)).toThrow('ax ssh t')
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'idle', lines: [] }))
+  expect(ax.poll('t', 0).status).toBe('idle')
+})
+
 test("ax.prompt keeps its base64 argv under Linux's 131072-byte MAX_ARG_STRLEN: a long mail is clipped by bytes, never split mid-character (claude-factory-kcg.3)", () => {
   writeFileSync(join(dir, 'ssh'), 'ok')
   // a 3-byte UTF-8 character ('€'), repeated: 200_000 of them is 600_000 bytes, well past PROMPT_MAX_BYTES
@@ -1396,6 +1403,8 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
     // claude-factory-hg9o: the image's worker rules (no /opt/plugins here, so no --skill)
     ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-system\.md$/)],
+    // claude-factory-66ib: the VM-only lines
+    ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-vm\.md$/)],
     ...['--provider', 'anthropic', '--model', 'm'],
   ])
   expect(worker.turnArgv('claude', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
@@ -1574,7 +1583,7 @@ cat > ${dir}/pi.stdin.$n
     const id = worker.poll(0).session!
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     // no prompt text on argv: it goes on stdin
-    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')}`
+    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')} --append-system-prompt ${join(import.meta.dir, 'worker-vm.md')}`
     expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(readFileSync(join(dir, 'pi.stdin.0'), 'utf8')).toBe('pi brief')
@@ -2229,6 +2238,16 @@ test('launchManager applies the manager task with its command and env, then retr
   }
 })
 
+test('managerEnv passes the OTLP endpoints only when set', () => {
+  const both = {
+    FACTORY_OTLP_ENDPOINT: 'http://otel.example:4318',
+    FACTORY_AX_OTLP_ENDPOINT: 'http://otel.svc:4318',
+  }
+  expect(ax.managerEnv(both)).toMatchObject(both)
+  expect('FACTORY_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
+  expect('FACTORY_AX_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
+})
+
 test('managerEnv sets the token swap to a broker POST only when the broker is set', () => {
   expect(ax.managerEnv({}).FACTORY_AX_TOKEN_SWAP).toBeUndefined()
   expect(
@@ -2389,6 +2408,12 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
     expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+    )
+    // claude-factory-66ib: worker-system.md, then worker-vm.md, then worker-codex.md
+    expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toBe(
+      ['worker-system.md', 'worker-vm.md', 'worker-codex.md']
+        .map(f => readFileSync(join(import.meta.dir, f), 'utf8'))
+        .join(''),
     )
     expect(readFileSync(join(tmp, 'argv'), 'utf8').trim().split('\n')).toEqual([
       ...CODEX_GUARD_FLAGS,

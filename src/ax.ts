@@ -280,6 +280,7 @@ function ax(args: string[], stdin?: string, timeout = 30_000) {
     env: process.env, // the ax CLI sends AX_AUTH_TOKEN over the loopback tunnel
     stdin: stdin ? Buffer.from(stdin) : undefined,
     timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
+    maxBuffer: 128 * 1024 * 1024, // the VM is untrusted: 2x the 64 MiB transcript cap, base64 overhead included
   })
   return {
     ok: p.exitCode === 0,
@@ -743,6 +744,8 @@ const MANAGER_PASS = [
   'FACTORY_AX_BACKUP_REMOTE',
   'FACTORY_AX_BACKUP_BRANCH',
   'FACTORY_AX_BACKUP_EVERY',
+  'FACTORY_OTLP_ENDPOINT',
+  'FACTORY_AX_OTLP_ENDPOINT',
 ]
 
 /**

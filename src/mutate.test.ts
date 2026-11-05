@@ -246,6 +246,32 @@ test('timeout: exit 3, row TIMEOUT, bytes restored, the sleep grandchild is dead
   expect(await dead(Number(readFileSync(pidf, 'utf8')))).toBe(true)
 })
 
+test('SIGINT during the baseline: exit 130, bytes kept, the baseline process group is dead', async () => {
+  const { d, file } = repo()
+  const before = readFileSync(file)
+  const pidf = join(d, 'SLEEPPID')
+  const started = join(d, 'STARTED')
+  const t = script(tmp(), 'slow.sh', `sleep 30 & echo $! > "${pidf}"; touch "${started}"; wait`)
+  const e: Record<string, string | undefined> = {
+    ...process.env,
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_HOME: tmp(),
+  }
+  for (const k of ['FACTORY_OUTBOX', 'FACTORY_FROM', 'FACTORY_RUN']) delete e[k]
+  const p = Bun.spawn([BIN, 'mutate', 'src/widget.ts:2', '>= 2', '> 2', '--', t], {
+    cwd: d,
+    env: e as Record<string, string>,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  for (let i = 0; i < 300 && !existsSync(started); i++) await Bun.sleep(100)
+  expect(existsSync(started)).toBe(true)
+  p.kill('SIGINT')
+  expect(await p.exited).toBe(130)
+  expect(readFileSync(file).equals(before)).toBe(true)
+  expect(await dead(Number(readFileSync(pidf, 'utf8')))).toBe(true)
+})
+
 for (const [sig, code] of [
   ['SIGINT', 130],
   ['SIGTERM', 143],

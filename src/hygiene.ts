@@ -1,5 +1,6 @@
 // claude-factory-8bg: the hygiene sweep's pure matcher. It reads beads and merged PRs and returns
 // proposals. It never calls bd or gh, and it never closes anything.
+import { cut } from './cut'
 import { citesBead, type MergedPr } from './prs'
 
 export const STALE_LABEL = 'stale?'
@@ -26,7 +27,7 @@ export type HygieneBead = {
 export type Kind = 'shipped' | 'duplicate' | 'orphan' | 'deferred' | 'stale'
 export type Finding = { id: string; title: string; kind: Kind; evidence: string }
 
-export const clip = (s: string, n = 120) => (s.length > n ? s.slice(0, n) : s)
+export const clip = (s: string, n = 120) => (s.length > n ? cut(s, n) : s)
 const ms = (s?: string) => (s ? Date.parse(s) || 0 : 0)
 const isOpen = (b: HygieneBead) => b.status === 'open' || b.status === 'blocked'
 const STOP = new Set(['a', 'an', 'the', 'to', 'of', 'for', 'in', 'on', 'and', 'with'])

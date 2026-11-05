@@ -26,6 +26,7 @@ import {
   byRunner,
   clockOf,
   counts,
+  cutText,
   dur,
   isLive,
   line,
@@ -316,7 +317,7 @@ function runDetail(p: Base, d: FactoryDetail | null, peek: string, draft: Factor
     <Box key={`detail-${id}`} flexDirection="column">
       <Text wrap="wrap">
         {d.run.goal.length > 1200
-          ? `${d.run.goal.slice(0, 1200)}… (the rest: bd show ${d.run.bead ?? d.id})`
+          ? `${cutText(d.run.goal, 1200)}… (the rest: bd show ${d.run.bead ?? d.id})`
           : d.run.goal}
       </Text>
       <Text dimColor wrap="truncate-end">

@@ -2,6 +2,7 @@
 // repo. Pure matching/merge/role/budget logic lives here, read-only against a run's log and inbox; the IO
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
+import { cut } from './cut'
 import { mrsIn, prsIn, type Entry } from './machine'
 import { ghNotes, isPerson, type Note, type WatchedPr } from './watch'
 export { mrsIn }
@@ -241,7 +242,7 @@ export function evidenceLine(
   rig: string,
   id: string,
 ): string {
-  const title = pr.title.length > 120 ? pr.title.slice(0, 120) : pr.title
+  const title = cut(pr.title, 120)
   return `already done: ${pr.url} (#${pr.number}, merged ${pr.mergeCommit}) "${title}". Requeue: factory queue ${rig} ${id}`
 }
 
@@ -518,7 +519,7 @@ async function spawnCli(
 
 /** one line of `gh`'s stderr, cut short: never let a raw error carry a password or a full stack into the record */
 const ghError = (err: string) => clip(err.trim().split('\n')[0] ?? 'gh failed', 200)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+const clip = (text: string, max: number) => (text.length > max ? `${cut(text, max)}…` : text)
 
 /** AC2c parsed: `gh search prs ... --json url,createdAt` filtered by `keepSearchHit`, so a resembling PR
  * created before the run started is dropped before it ever becomes a Found */
@@ -973,6 +974,8 @@ export async function githubPulls(
     /** sort by update time, and stop after a page whose last row was updated before `since` (ms) */
     sort?: 'updated'
     since?: number
+    /** per-call timeout in ms; default VIEW_TIMEOUT_MS */
+    timeoutMs?: number
   },
   onErr?: (err: string) => void,
 ): Promise<Json[] | null> {
@@ -981,7 +984,7 @@ export async function githubPulls(
     const q = `state=${o.state}&sort=${o.sort ?? 'created'}&direction=desc&per_page=100&page=${page}`
     const res = await gh(
       ['api', `repos/${slug}/pulls?${q}${o.head ? `&head=${encodeURIComponent(o.head)}` : ''}`],
-      timed(cwd),
+      timed(cwd, o.timeoutMs),
     )
     const list = res.code === 0 ? asJson(res.out) : null
     if (!Array.isArray(list)) {
@@ -1042,7 +1045,7 @@ export async function githubMergedJson(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { pages: number; head?: string },
+  o: { pages: number; head?: string; timeoutMs?: number },
   onErr?: (err: string) => void,
 ): Promise<string | null> {
   const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o }, onErr)
@@ -1057,7 +1060,7 @@ export async function gitlabMergedJson(
   host: string,
   path: string,
   cwd: string,
-  o: { search: string } | { sourceBranch: string },
+  o: ({ search: string } | { sourceBranch: string }) & { timeoutMs?: number },
   onErr?: (err: string) => void,
 ): Promise<string | null> {
   const q =
@@ -1071,7 +1074,7 @@ export async function gitlabMergedJson(
       host,
       `projects/${encodeURIComponent(path)}/merge_requests?state=merged&per_page=30${q}`,
     ],
-    timed(cwd),
+    timed(cwd, o.timeoutMs),
   )
   if (res.code !== 0) {
     onErr?.(res.err)
@@ -1221,7 +1224,7 @@ export type Forge = {
   view(url: string, cwd: string, host?: string): Promise<{ viewed: Viewed } | { err: string }>
 }
 
-const timed = (cwd: string) => ({ cwd, timeout: VIEW_TIMEOUT_MS })
+const timed = (cwd: string, timeout = VIEW_TIMEOUT_MS) => ({ cwd, timeout })
 
 const githubForge = (gh: Gh): Forge => ({
   async list(r) {

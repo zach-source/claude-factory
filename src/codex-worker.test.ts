@@ -69,6 +69,62 @@ function fixture(maxContextK = 200) {
   return { tmp, user, dir, mine, make, run, features, codexBin, fake }
 }
 
+const cmd = (command: string, extra = {}) => ({ type: 'command', command, ...extra })
+const written = (f: ReturnType<typeof fixture>) =>
+  JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks as Record<string, any>
+const HERDR = `bash '/h/.codex/herdr-agent-state.sh' session`
+
+// claude-factory-px98: only herdr's session hook and the deny hook survive
+test("a codex worker hooks.json keeps only herdr's session hook and the deny hook", () => {
+  const f = fixture()
+  const herdr = { hooks: [cmd(HERDR, { timeout: 10 })] }
+  writeFileSync(
+    join(f.user, 'hooks.json'),
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          f.mine,
+          { matcher: 'Bash', hooks: [cmd('/nix/store/x-shunt-guard/bin/shunt-guard')] },
+          { hooks: [cmd('uvx --from headroom-ai headroom init hook pre')] },
+          { hooks: [cmd(HERDR)] },
+        ],
+        SessionStart: [
+          { hooks: [cmd('uvx --from headroom-ai headroom init hook start')] },
+          { hooks: [cmd('ccswitch-codex-autoswitch')] },
+          { hooks: [cmd(HERDR), cmd('other')] },
+          { hooks: [cmd(`bash '/x/herdr-agent-state.sh' session; evil`)] },
+          { hooks: [cmd(`bash '/x/herdr-agent-state.sh.evil' session`)] },
+          { hooks: [{ type: 'prompt', command: HERDR }] },
+          herdr,
+        ],
+        PostToolUse: [{ hooks: [cmd(HERDR)] }],
+        Stop: [{ hooks: [cmd('stop-hook')] }],
+      },
+    }),
+  )
+  f.make()
+  const h = written(f)
+  expect(Object.keys(h).sort()).toEqual(['PreToolUse', 'SessionStart'])
+  expect(h.PreToolUse).toHaveLength(2)
+  expect(h.PreToolUse[0].hooks[0].command).toContain('--harness codex')
+  expect(h.SessionStart).toEqual([herdr])
+})
+
+test('a codex worker with bad user hooks.json writes the deny hook only', () => {
+  for (const bad of ['{', '{"hooks":{"SessionStart":{}}}', '{"hooks":[]}', 'null']) {
+    const f = fixture()
+    writeFileSync(join(f.user, 'hooks.json'), bad)
+    f.make()
+    const h = written(f)
+    expect(Object.keys(h)).toEqual(['PreToolUse'])
+    expect(h.PreToolUse).toHaveLength(2)
+  }
+  const f = fixture()
+  rmSync(join(f.user, 'hooks.json'))
+  f.make()
+  expect(Object.keys(written(f))).toEqual(['PreToolUse'])
+})
+
 test('a codex worker home holds four files, the guard last, and the launch line names it', () => {
   const f = fixture()
   const { env, extra } = f.make()
@@ -81,13 +137,14 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   expect(toml).toContain(`[projects.${JSON.stringify(f.run.worktree)}]\ntrust_level = "trusted"`)
   expect(toml).not.toContain('leak')
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
-  expect(pre).toHaveLength(3)
-  expect(pre[0]).toEqual(f.mine)
-  expect(pre[1].hooks[0].command).toContain("worker-hook.ts' --harness codex --person-only-contexts 'acme'")
-  expect(pre[2].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
+  expect(pre).toHaveLength(2)
+  expect(pre[0].hooks[0].command).toContain("worker-hook.ts' --harness codex --person-only-contexts 'acme'")
+  expect(pre[1].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
+  expect(JSON.stringify(pre)).not.toContain('person-hook')
   const agents = readFileSync(join(f.dir, 'AGENTS.md'), 'utf8')
   expect(agents).toStartWith(readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8'))
   expect(agents).toContain(readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8'))
+  expect(agents).not.toContain('GOMAXPROCS') // claude-factory-66ib: VM-only
   expect(agents).not.toContain('person rules')
   expect(env.CODEX_HOME).toBe(f.dir)
   expect(env.CLAUDE_PROJECT_DIR).toBe(f.run.worktree)

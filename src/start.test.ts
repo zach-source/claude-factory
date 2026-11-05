@@ -36,6 +36,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
       ...laptop,
       FACTORY_HOME: home,
       PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin, 'herdr'),
       // no project is ever trusted here, so the first tick stops at "awaiting trust" instead of
       // reaching a real pane
       CLAUDE_CONFIG_DIR: claudeConfig,
@@ -246,7 +247,7 @@ test("a goal shaped like a bead id but not found under this rig's own prefix sti
   const out = run(['start', factoryFixture(), r, 'fix-login'])
   expect(out.code).toBe(0)
   const log = readFileSync(calls, 'utf8')
-  expect(log).toContain('create fix-login')
+  expect(log).toContain('create --title fix-login')
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
 })
 
@@ -299,7 +300,7 @@ test('a goal with a colon whose head is not a bead id still creates a bead, as b
   writeFileSync(showMode, 'notfound')
   const out = run(['start', factoryFixture(), r, 'fix-login: the form drops the session'])
   expect(out.code).toBe(0)
-  expect(readFileSync(calls, 'utf8')).toContain('create fix-login: the form drops the session')
+  expect(readFileSync(calls, 'utf8')).toContain('create --title fix-login: the form drops the session')
 })
 
 test('--owned starts an owner-only bead for the person, but FACTORY_PATROL refuses it even with --owned (claude-factory-72v.19)', () => {

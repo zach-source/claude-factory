@@ -29,7 +29,9 @@ import {
   VM_PLUGINS,
 } from './harness'
 import { rmSafe } from './home-guard'
+import * as memory from './memory'
 import { sessionOf, type Usage } from './metrics'
+import { cut } from './cut'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -53,6 +55,17 @@ const alive = (pid: number) => {
   } catch {
     return false
   }
+}
+
+/**
+ * the maximum total bytes of one outbox command. A spawn with more bytes throws E2BIG (macOS 1 MiB; Linux 128 KiB
+ * for one word). The VM refuses a larger command. The laptop does not run it
+ */
+export const OUTBOX_MAX_BYTES = 100 * 1024
+/** the byte size of an argv over OUTBOX_MAX_BYTES, else undefined */
+export const outboxTooBig = (argv: string[]) => {
+  const n = argv.reduce((s, w) => s + Buffer.byteLength(w, 'utf8'), 0)
+  return n > OUTBOX_MAX_BYTES ? n : undefined
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
@@ -96,7 +109,7 @@ export function usageOfSession(run: string): Usage[] {
 }
 
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
- * args (exit 1): see `outboxUsage` */
+ * args (exit 1; exit 2 for memory add): see `outboxUsage` */
 export const OUTBOX_USAGE = {
   report: 'usage: factory report <run> <seq> <outcome> <summary...|--summary-file path>',
   mail: 'usage: factory mail <run> <node|manager> <text...>',
@@ -128,6 +141,23 @@ export function outboxUsage(cmd: string, args: string[]): 'help' | string | null
   if (cmd === 'memory' && args[0] === 'add') {
     if (helpAt([args[1]])) return 'help'
     if (!args[1]) return OUTBOX_USAGE.memory
+    // the laptop replay refuses a stray --word and a failed memory.gate with exit 2 and writes nothing; the
+    // VM must refuse them now, or the worker thinks the note was saved (claude-factory-eywj)
+    const words = args.slice(1)
+    const opt = (flag: string) => (words.includes(flag) ? words.splice(words.indexOf(flag), 2)[1] : undefined)
+    const [, , kind, until] = [
+      opt('--rig'),
+      opt('--from'),
+      opt('--kind'),
+      opt('--until'),
+      opt('--supersedes'),
+    ]
+    const stray = words.find(w => w.startsWith('--') && w !== '--anyway')
+    if (stray) return `factory memory add: unknown flag ${stray}\n${OUTBOX_USAGE.memory}`
+    const [summary, ...body] = words.filter(w => w !== '--anyway')
+    if (!summary) return OUTBOX_USAGE.memory
+    const refusal = memory.gate({ summary, body: body.join(' '), kind, until })
+    if (!refusal.ok) return `factory memory add: ${refusal.reason}\n${OUTBOX_USAGE.memory}`
     return null
   }
   if (cmd === 'memory' && args[0] === 'helped') {
@@ -251,7 +281,7 @@ function lastError(stderr: string): string {
       .map(l => l.trim())
       .filter(Boolean)
       .at(-1) ?? ''
-  return line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>').slice(0, 300)
+  return cut(line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>'), 300)
 }
 
 /**
@@ -345,6 +375,7 @@ export function turnArgv(
         ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
         // the worker rules and the image's skills, as a Claude or codex worker gets them (constitution I)
         ...piFlags(join(import.meta.dir, 'worker-system.md'), o.plugins ?? imagePlugins()),
+        ...['--append-system-prompt', join(import.meta.dir, 'worker-vm.md')],
         ...(o.provider ? ['--provider', o.provider] : []),
         ...model('--model'),
       ]
@@ -381,7 +412,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
         if (e.type !== 'result') continue
         if (!e.is_error) return null
         const text = String(e.result ?? '')
-        return EGRESS_SIGNATURE.test(text) ? text.slice(0, 300) : null
+        return EGRESS_SIGNATURE.test(text) ? cut(text, 300) : null
       } catch {
         // the first line of a cut stream
       }
@@ -393,7 +424,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
   // the matching line, not whatever the 4000-char window happens to end on: the signature can sit
   // well before the window's tail, with unrelated agent output after it
   const line = text.split('\n').findLast(l => EGRESS_SIGNATURE.test(l))
-  return (line ?? text).slice(0, 300)
+  return cut(line ?? text, 300)
 }
 
 /**
@@ -508,7 +539,7 @@ async function turnWithRetry(
     onEgress({ since, tries, last: r.egress }, cur)
     appendFileSync(
       serveLog(),
-      `${new Date().toISOString()} egress failure, retry ${tries}: ${r.egress.slice(0, 200)}\n`,
+      `${new Date().toISOString()} egress failure, retry ${tries}: ${cut(r.egress, 200)}\n`,
     )
     if (Date.now() - since >= budgetMs) return cur
     await Bun.sleep(Math.min(waitMs * 2 ** (tries - 1), capMs))
@@ -582,7 +613,7 @@ export function bazelrc() {
       )
     else {
       console.error(`bazel will not trust the egress gateway: keytool: ${made.err || 'wrote no store'}`)
-      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${made.err.slice(0, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
+      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${cut(made.err, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
     }
   }
   // with a pkg-gate (launch() set these in the VM's env), rules_go/rules_python/rules_js fetch through it too,
@@ -1058,6 +1089,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
   writeFileSync(
     join(dir, 'AGENTS.md'),
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
+      readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8') +
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
   )
   codexSkills(dir, plugins)
@@ -1147,11 +1179,13 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
  * must not push the message (for example git's fatal line) out of it (claude-factory-x500).
  */
 export function diedText(e: unknown) {
-  const msg = String((e as Error)?.message ?? e)
-    .trim()
-    .replace(/\s*\n\s*/g, ' | ')
-    .slice(0, 500)
-  return `serve died: ${msg}\n${((e as Error)?.stack ?? '').slice(0, 1200)}`
+  const msg = cut(
+    String((e as Error)?.message ?? e)
+      .trim()
+      .replace(/\s*\n\s*/g, ' | '),
+    500,
+  )
+  return `serve died: ${msg}\n${cut((e as Error)?.stack ?? '', 1200)}`
 }
 
 /**

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { makeGate } from './pkggate'
 
 // Fixtures trimmed from real proxy.golang.org responses (golang.org/x/text), 2026-10-14:
@@ -972,7 +972,7 @@ test("claude-factory-56j: owning every sampled index entry caps one refresh's ri
 // (57_600 records of history).
 function ldbFixture() {
   const PATHS = Array.from({ length: 9 }, (_, i) => `ldb-${String.fromCharCode(97 + i)}.example.com/mod`)
-  const st = { now: NOW, latest: 1_000_000, minId: 942_400, lookups: true }
+  const st = { now: NOW, latest: 1_000_000, minId: 942_400, lookups: true, latestAt: 0 }
   const srv = Bun.serve({
     port: 0,
     fetch(req) {
@@ -984,7 +984,10 @@ function ldbFixture() {
           PATHS.map(p => JSON.stringify({ Path: p, Version: 'v1.0.0', Timestamp: ts })).join('\n') + '\n',
         )
       }
-      if (url.pathname === '/latest') return new Response(sumdbLatestBody(st.latest))
+      if (url.pathname === '/latest') {
+        if (st.latestAt) st.now = st.latestAt // steps the clock mid-refresh
+        return new Response(sumdbLatestBody(st.latest))
+      }
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
         if (key.startsWith('ldbprobe.example.com/mod@')) return new Response('1030000\n')
@@ -1105,6 +1108,81 @@ test('claude-factory-ldb AC4: a cold start gives a finite floor and still refuse
     f.stop()
   }
 })
+
+// claude-factory-35em: the tree-size history must stay strictly increasing in time. A refresh that reads
+// the wall clock at or before its newest read fails and keeps the floor.
+const STEP_BACK = 'wall clock is not after the last tree size read'
+async function stepBackSetup(f: ReturnType<typeof ldbFixture>) {
+  await f.refresh()
+  f.st.now += 31 * 60_000
+  f.st.latest = 1_000_310
+  f.st.minId = f.st.latest - 10
+  const second = await f.refresh()
+  const newest = f.st.now
+  f.st.now += 31 * 60_000
+  f.st.latest = 1_000_620
+  f.st.minId = f.st.latest - 10
+  return { floor: second.floor as number, newest }
+}
+
+test.each([
+  ['a full step back', () => NOW - 3_600_000],
+  ['a partial step back', () => NOW + 15 * 60_000],
+  ['equal time', () => NOW + 31 * 60_000],
+])(
+  'claude-factory-35em: %s mid-refresh fails the refresh and keeps the floor',
+  async (_n, at) => {
+    const f = ldbFixture()
+    try {
+      const { floor } = await stepBackSetup(f)
+      f.st.latestAt = at()
+      const line = await f.refresh()
+      expect(line.decision).toBe('error')
+      expect(line.reason).toContain(STEP_BACK)
+      expect(await f.healthzFloor()).toBe(floor)
+    } finally {
+      f.stop()
+    }
+  },
+  60_000,
+)
+
+test('claude-factory-35em AC6: after a step back failure the gate recovers under the rise bound', async () => {
+  const f = ldbFixture()
+  try {
+    const { floor, newest } = await stepBackSetup(f)
+    f.st.latestAt = NOW - 3_600_000
+    expect((await f.refresh()).decision).toBe('error')
+    f.st.latestAt = 0
+    f.st.now = newest + 31 * 60_000 + 30_000
+    const line = await f.refresh()
+    // short history: the ceiling (943_480) binds below the per-refresh bound (floor + 3 x 310 = 943_640)
+    expect(line.decision).toBeUndefined()
+    expect(floor + 3 * 310).toBe(943_640)
+    expect(line.floor).toBeLessThanOrEqual(943_480)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
+test('claude-factory-35em AC4: a /latest below the anchor gives a finite floor at or below it', async () => {
+  const f = ldbFixture()
+  try {
+    await f.refresh()
+    f.st.now += 31 * 60_000
+    f.st.latest = 1_000_310
+    f.st.minId = f.st.latest - 10
+    await f.refresh()
+    f.st.now += 31 * 60_000
+    f.st.latest = 999_000
+    f.st.minId = 900_000
+    const line = await f.refresh()
+    expect(Number.isFinite(line.floor)).toBe(true)
+    expect(line.floor).toBeLessThanOrEqual(999_000)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
 
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
@@ -2673,6 +2751,228 @@ describe('claude-factory-37s: sumdb lookup key charset', () => {
     } finally {
       console.log = orig
       srv.stop(true)
+    }
+  })
+})
+
+// claude-factory-brvt: one refused redirect counts one error, reads "redirect refused" (never "timeout"),
+// and every 3xx body is cancelled
+describe('claude-factory-brvt: refused redirect accounting', () => {
+  const GO = '/golang.org/x/text/@v/v0.26.0'
+  const EVIL = 'http://evil.test'
+  // runs `fn` with console.log captured; returns the parsed JSON lines
+  async function captured(fn: () => Promise<void>) {
+    const lines: Record<string, unknown>[] = []
+    const spy = spyOn(console, 'log').mockImplementation((s: unknown) => {
+      try {
+        lines.push(JSON.parse(String(s)))
+      } catch {
+        // not a JSON line
+      }
+    })
+    try {
+      await fn()
+    } finally {
+      spy.mockRestore()
+    }
+    return lines
+  }
+  const reasons = (lines: Record<string, unknown>[]) => lines.map(l => String(l.reason ?? ''))
+
+  test('AC1: a go .info 302 off-origin is 502, counts error once, reason redirect refused', async () => {
+    const hits: string[] = []
+    const g = redirectGate(u => {
+      hits.push(u.href)
+      return u.href === `https://go.fake.test${GO}.info`
+        ? found(`${EVIL}/x`)
+        : new Response('x', { status: 404 })
+    })
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(1)
+    expect(reasons(lines).filter(r => r === 'upstream .info: redirect refused').length).toBe(1)
+    expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  test('AC1 negatives: .info 500 and a hanging .info keep their count and reason', async () => {
+    const g500 = redirectGate(() => new Response('x', { status: 500 }))
+    const l500 = await captured(async () => {
+      expect((await g500(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g500.stats().error).toBe(1)
+    expect(reasons(l500)).toContain('upstream .info: 500')
+    const gh = makeGate({
+      upstream: {
+        go: 'https://go.fake.test',
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: base(),
+        goIndex: base(),
+      },
+      now: () => NOW,
+      fetchTimeoutMs: 50,
+      fetch: ((_u: string, init?: RequestInit) =>
+        new Promise<Response>((_res, rej) =>
+          init?.signal?.addEventListener('abort', () => rej(new Error('aborted'))),
+        )) as unknown as typeof fetch,
+    })
+    const lh = await captured(async () => {
+      expect((await gh(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(gh.stats().error).toBe(1)
+    expect(reasons(lh)).toContain('upstream .info: timeout')
+  })
+
+  // a go gate: base() (index, latest, lookup) is real; every other origin answers from `fake`
+  const goGate = (
+    fake: (u: URL) => Response | undefined,
+    over: { sumdb?: string; goIndex?: string } = {},
+  ) => {
+    const hits: string[] = []
+    const g = makeGate({
+      upstream: {
+        go: 'https://go.fake.test',
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: over.sumdb ?? base(),
+        goIndex: over.goIndex ?? base(),
+      },
+      now: () => NOW,
+      fetch: ((input: string | URL | Request, init?: RequestInit) => {
+        const u = new URL(String(input))
+        hits.push(u.href)
+        const r = fake(u)
+        if (r) return Promise.resolve(r)
+        if (u.origin === base()) return fetch(input, init)
+        return Promise.resolve(new Response('x', { status: 404 }))
+      }) as typeof fetch,
+    })
+    return { g, hits }
+  }
+  const infoOk = (u: URL) =>
+    u.href === `https://go.fake.test${GO}.info` ? new Response(GO_INFO_OLD) : undefined
+
+  test('AC2: a sumdb lookup 302 off-origin is 502, counts error once, reason lookup: redirect refused', async () => {
+    const { g, hits } = goGate(
+      u => infoOk(u) ?? (u.pathname === '/lookup/golang.org/x/text@v0.26.0' ? found(`${EVIL}/x`) : undefined),
+      {},
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(1)
+    expect(reasons(lines)).toContain('sum.golang.org lookup: redirect refused')
+    expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  test('AC2 negative: a sumdb lookup 500 keeps count 1 and reason lookup failed', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.pathname === '/lookup/golang.org/x/text@v0.26.0' ? new Response('x', { status: 500 }) : undefined),
+      {},
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(1)
+    expect(reasons(lines)).toContain('sum.golang.org lookup failed')
+  })
+
+  test('AC3: an index 302 off-origin gives floor refresh reason redirect refused, never timeout', async () => {
+    const { g, hits } = goGate(
+      u => infoOk(u) ?? (u.origin === 'https://idx.fake.test' ? found(`${EVIL}/x`) : undefined),
+      { goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org redirect refused')
+    expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  test('AC3 negative: an index 503 keeps reason index.golang.org 503', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ?? (u.origin === 'https://idx.fake.test' ? new Response('x', { status: 503 }) : undefined),
+      { goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      await g(new Request(`http://gate/go${GO}.info`))
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org 503')
+  })
+
+  describe('AC4: every 3xx body is cancelled', () => {
+    for (const throws of [false, true]) {
+      const label = throws ? 'a throwing cancel changes nothing' : 'cancel'
+      const mk = (second: 'same' | 'off') => {
+        let cancels = 0
+        let n = 0
+        const redirect = (loc: string) =>
+          new Response(
+            new ReadableStream({
+              cancel() {
+                cancels++
+                if (throws) throw new Error('cancel failed')
+              },
+            }),
+            { status: 301, headers: { location: loc } },
+          )
+        const g = makeGate({
+          upstream: {
+            go: base(),
+            npm: base(),
+            pypi: FAKE_PYPI,
+            files: FAKE_PYPI,
+            sumdb: base(),
+            goIndex: base(),
+          },
+          now: () => NOW,
+          fetch: (() => {
+            n++
+            if (n === 1) return Promise.resolve(redirect('/simple/demo/b'))
+            if (second === 'off' && n === 2) return Promise.resolve(redirect(`${EVIL}/x`))
+            return Promise.resolve(new Response(pypiIndex(FAKE_PYPI)))
+          }) as unknown as typeof fetch,
+        })
+        return { g, cancels: () => cancels }
+      }
+      test(`row A (${label}): same-origin 301 then 200 cancels once`, async () => {
+        const { g, cancels } = mk('same')
+        expect((await g(new Request('http://gate/pypi/simple/Demo/'))).status).toBe(200)
+        expect(cancels()).toBe(1)
+      })
+      test(`row B (${label}): same-origin 301 then off-origin 302 is 502, cancels twice, error 1`, async () => {
+        const { g, cancels } = mk('off')
+        await captured(async () => {
+          expect((await g(new Request('http://gate/pypi/simple/Demo/'))).status).toBe(502)
+        })
+        expect(cancels()).toBe(2)
+        expect(g.stats().error).toBe(1)
+      })
+    }
+  })
+
+  test('AC5: npm packument same-origin 301 (absolute and relative) keeps redirect manual and accept application/json', async () => {
+    for (const loc of ['https://npm.fake.test/demo', '/demo']) {
+      const seen: { redirect?: string; accept: string | null }[] = []
+      const g = redirectGate((_u, init) => {
+        seen.push({ redirect: init?.redirect, accept: new Headers(init?.headers).get('accept') })
+        return seen.length === 1 ? found(loc) : new Response(npmPackument('https://npm.fake.test'))
+      })
+      expect((await g(new Request('http://gate/npm/demo'))).status).toBe(200)
+      expect(seen.length).toBe(2)
+      for (const s of seen) {
+        expect(s.redirect).toBe('manual')
+        expect(s.accept).toBe('application/json')
+      }
     }
   })
 })

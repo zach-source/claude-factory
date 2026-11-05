@@ -162,7 +162,8 @@ export function metrics(records: RunRecord[]) {
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
     const shippedAt = shipped?.at ?? (f === 'shipped' ? r.mergedAt : undefined)
     if (shippedAt !== undefined) {
-      const hours = (shippedAt - r.createdAt) / HOUR
+      // claude-factory-6o8g: a log can start before the id time, so the clock starts at the earlier of the two
+      const hours = (shippedAt - Math.min(r.createdAt, r.log[0]?.at ?? r.createdAt)) / HOUR
       cycle.push(hours)
       if (isSmall && !wentFull) smallCycle.push(hours)
       implementPassesShipped += r.log.filter(
@@ -226,7 +227,7 @@ export function render(
       `implement passes per shipped run ${m.implementPassesPerShippedRun === null ? '-' : m.implementPassesPerShippedRun.toFixed(2)}`,
     `  triage rejects ${triageRejects} of ${triageVisits} (${m.triageAlreadyDone} already done); ` +
       `dispatch skipped ${precheck.mergedPr + precheck.liveRun} (merged-pr ${precheck.mergedPr}, live-run ${precheck.liveRun}), ` +
-      `gh fail-open ${precheck.failOpen ?? 0}`,
+      `forge fail-open ${precheck.failOpen ?? 0}`,
     '  station      visits  failed  median  outcomes',
   ]
   for (const [id, s] of Object.entries(m.stations))

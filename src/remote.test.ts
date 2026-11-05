@@ -126,16 +126,33 @@ test("inside a VM, a worker's report and mail wait in the outbox instead of touc
   const outbox = join(dir, 'outbox.jsonl')
   const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
   expect(factory(['report', 'r1', '1', 'ready', 'did', 'it'], env).out).toContain('you are done, stop now')
-  expect(factory(['memory', 'add', 'a lesson'], env).code).toBe(0)
+  expect(factory(['memory', 'add', '--kind', 'fact', 'a lesson'], env).code).toBe(0)
   const lines = readFileSync(outbox, 'utf8')
     .trim()
     .split('\n')
     .map(l => JSON.parse(l))
   expect(lines.map(l => [l.argv, l.from])).toEqual([
     [['report', 'r1', '1', 'ready', 'did', 'it'], 'a'],
-    [['memory', 'add', 'a lesson'], 'a'],
+    [['memory', 'add', '--kind', 'fact', 'a lesson'], 'a'],
   ])
   expect(existsSync(home)).toBe(false) // nothing on this side was touched
+})
+
+test('inside a VM, a memory add the laptop would refuse exits 2 and queues nothing (claude-factory-eywj)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-refuse.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  for (const args of [
+    ['memory', 'add', '--kind', 'fact', '--tier', 'long', 's', 'b'], // stray flag
+    ['memory', 'add', 's', 'b'], // no --kind
+    ['memory', 'add', '--kind', 'nope', 's', 'b'], // bad kind
+    ['memory', 'add', '--kind', 'fact', '--until', 'zz zz', 's', 'b'], // bad --until
+  ]) {
+    const r = factory(args, env)
+    expect(r.code).toBe(2)
+    expect(r.out).not.toContain('queued for the factory')
+  }
+  expect(existsSync(outbox)).toBe(false)
 })
 
 test('inside a VM, `report`/`mail`/`memory add --help`|`-h` print usage and exit 0, nothing queued (claude-factory-4x1)', () => {
@@ -242,7 +259,28 @@ test('outboxUsage: --help/-h only in a positional slot, malformed args, else nul
   expect(worker.outboxUsage('memory', ['add'])).toContain('usage: factory memory add')
   expect(worker.outboxUsage('mail', ['r1', 'manager', 'hi'])).toBeNull()
   expect(worker.outboxUsage('report', ['r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'])).toBeNull()
-  expect(worker.outboxUsage('memory', ['add', 'a lesson'])).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', 'a lesson'])).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', '--anyway', '--kind', 'fact', 's', 'b'])).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', '--supersedes', 'fact/x.md', 's'])).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', '--kind', 'fact'])).toBe(worker.OUTBOX_USAGE.memory)
+  expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', '--anyway'])).toBe(worker.OUTBOX_USAGE.memory)
+  expect(
+    worker.outboxUsage('memory', [
+      'add',
+      '--rig',
+      'r',
+      '--from',
+      'r1/plan',
+      '--kind',
+      'fact',
+      '--until',
+      '2026-12-01',
+      's',
+      'b',
+    ]),
+  ).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', 'a lesson'])).toContain('--kind')
+  expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', '--tier', 'long', 's'])).toContain('--tier')
 })
 
 const def: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'do a', next: { ready: 'done' } } } }
@@ -1198,6 +1236,37 @@ test('a second egress outage 30 min or more of laptop time after the first page 
   rmSync(runDir, { recursive: true })
 })
 
+test('a far egress-paged since from before vl5j does not mute the egress mail (claude-factory-rnn8)', () => {
+  launched('rn1')
+  const file = join(home, 'runs', 'rn1', 'egress-paged-a.json')
+  writeFileSync(file, JSON.stringify({ since: Date.now() + 1e12, at: 0 }))
+  const since = Date.now() - 1_000
+  cluster('Running', {
+    status: 'working',
+    session: 's1',
+    lines: [],
+    egress: { since, tries: 1, last: 'upstream error' },
+  })
+  factory(['tick'])
+  expect(egressMails('rn1')).toBe(1)
+  expect(JSON.parse(readFileSync(file, 'utf8')).since).toBe(since)
+  rmSync(join(home, 'runs', 'rn1'), { recursive: true })
+})
+
+test('a garbage egress-paged file does not throw and still mails once (claude-factory-rnn8)', () => {
+  launched('rn2')
+  writeFileSync(join(home, 'runs', 'rn2', 'egress-paged-a.json'), 'not json')
+  cluster('Running', {
+    status: 'working',
+    session: 's1',
+    lines: [],
+    egress: { since: Date.now() - 1_000, tries: 1, last: 'upstream error' },
+  })
+  factory(['tick'])
+  expect(egressMails('rn2')).toBe(1)
+  rmSync(join(home, 'runs', 'rn2'), { recursive: true })
+})
+
 test('an invalid VM egress record is ignored: no throw, no mail, no egress FAIL (claude-factory-vl5j)', () => {
   launched('vl4')
   for (const egress of [
@@ -1556,6 +1625,11 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     },
   })
   expect(flags[flags.indexOf('--system-prompt-file') + 1]).toBe('/opt/factory/src/worker-system.md')
+  // claude-factory-66ib: the VM-only lines, inline (an older image has no worker-vm.md)
+  expect(flags[flags.indexOf('--append-system-prompt') + 1]).toBe(
+    readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8'),
+  )
+  expect(flags.indexOf('--append-system-prompt')).toBeGreaterThan(flags.indexOf('--system-prompt-file'))
   // claude-factory-fxu: the image's plugins, as a laptop worker gets the person's (constitution I)
   expect(flags.slice(-4)).toEqual([
     '--plugin-dir',
@@ -2753,31 +2827,43 @@ test("an AX codex station's usage comes from the kept rollout, with node and seq
   })
 })
 
-test('codex usage: a missing dir, a wrong name, the claude dir, a symlink or a big file add no rows (flhv AC3)', () => {
-  const none = (id: string, kept: (d: string, seq: number) => void) =>
-    expect(codexTick(id, kept).rows).toEqual([])
-  none('rc2', () => {})
-  none('rc3', d => keep(d, 'notes.jsonl', rolloutLines()))
-  none('rc3b', d => keep(d, `x-${ROLL}`, rolloutLines()))
-  none('rc3c', d => keep(d, `${ROLL}.bak`, rolloutLines()))
-  none('rc4', d => keep(d, ROLL, rolloutLines(), 'claude'))
-  none('rc5', d => {
-    const out = join(dir, 'outside.jsonl')
-    writeFileSync(out, rolloutLines())
-    mkdirSync(join(d, 'codex'), { recursive: true })
-    symlinkSync(out, join(d, 'codex', 'rollout-x.jsonl'))
-  })
-  none('rc6', d => {
-    mkdirSync(join(d, 'codex'), { recursive: true })
-    const f = join(d, 'codex', ROLL)
-    writeFileSync(f, rolloutLines() + '\n')
-    truncateSync(f, 64 * 1024 * 1024 + 1)
-  })
-  none('rc7', d => keep(d, ROLL, rolloutLines({ model: 'bad model' })))
-  none('rc8', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) })))
-  for (const [i, out] of [-1, 1.5, '9', 2e12].entries())
-    none(`rd${i}`, d => keep(d, ROLL, rolloutLines({ out })))
-})
+const noRows: [string, (d: string) => void][] = [
+  ['a missing dir', () => {}],
+  ['a wrong name', d => keep(d, 'notes.jsonl', rolloutLines())],
+  ['a name with a prefix', d => keep(d, `x-${ROLL}`, rolloutLines())],
+  ['a name with a suffix', d => keep(d, `${ROLL}.bak`, rolloutLines())],
+  ['the claude dir', d => keep(d, ROLL, rolloutLines(), 'claude')],
+  [
+    'a symlink',
+    d => {
+      const out = join(dir, 'outside.jsonl')
+      writeFileSync(out, rolloutLines())
+      mkdirSync(join(d, 'codex'), { recursive: true })
+      symlinkSync(out, join(d, 'codex', 'rollout-x.jsonl'))
+    },
+  ],
+  [
+    'a big file',
+    d => {
+      mkdirSync(join(d, 'codex'), { recursive: true })
+      const f = join(d, 'codex', ROLL)
+      writeFileSync(f, rolloutLines() + '\n')
+      truncateSync(f, 64 * 1024 * 1024 + 1)
+    },
+  ],
+  ['a bad model', d => keep(d, ROLL, rolloutLines({ model: 'bad model' }))],
+  ['a long model', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) }))],
+  ...[-1, 1.5, '9', 2e12].map((out): [string, (d: string) => void] => [
+    `output count ${JSON.stringify(out)}`,
+    d => keep(d, ROLL, rolloutLines({ out })),
+  ]),
+]
+test.each(noRows.map(([n, k], i) => [n, k, i] as const))(
+  'codex usage: %s adds no rows (flhv AC3)',
+  (_n, kept, i) => {
+    expect(codexTick(`rc${i}`, kept).rows).toEqual([])
+  },
+)
 
 test('codex usage keeps the first 20 rollout files by name (flhv AC3)', () => {
   const { rows } = codexTick('rc9', d => {
@@ -3670,3 +3756,108 @@ test('a Claude VM transcript tail with free kind text and a far reset is bounded
   expect(c.wakeAt).toBeGreaterThan(at)
   claudeCleanup('r7f')
 })
+
+test('outboxTooBig counts bytes of all argv words against the 100 KiB cap (claude-factory-amzl)', () => {
+  expect(worker.outboxTooBig([])).toBeUndefined()
+  expect(worker.outboxTooBig(['x'.repeat(102400)])).toBeUndefined()
+  expect(worker.outboxTooBig(['x'.repeat(102400), 'y'])).toBe(102401)
+  expect(worker.outboxTooBig(['report', '€'.repeat(40000)])).toBe(120006)
+})
+
+function fakeBd(name: string) {
+  const marker = join(dir, `${name}-bd-ran`)
+  const bin = join(dir, `${name}-bin`)
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho ran >> ${marker}\n`)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const env = (outbox: string) => ({
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'a',
+    PATH: `${bin}:${process.env.PATH}`,
+    BEADS_DIR: join(dir, `${name}-beads`),
+  })
+  return { marker, env }
+}
+
+test('inside a VM, an outbox command over 100 KiB is refused with exit 1, nothing queued, no bd sync (claude-factory-amzl)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-big.jsonl')
+  const bd = fakeBd('big')
+  const over = 'x'.repeat(102401)
+  for (const args of [
+    ['report', 'r1', '1', 'ready', over],
+    ['report', 'r1', '1', 'ready', '€'.repeat(34134)],
+    ['mail', 'r1', 'manager', over],
+    ['memory', 'add', '--kind', 'fact', over],
+  ]) {
+    const r = factory(args, bd.env(outbox))
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('102400')
+  }
+  expect(existsSync(outbox)).toBe(false)
+  expect(existsSync(bd.marker)).toBe(false)
+  // exactly at the cap still queues
+  const text = 'x'.repeat(102400 - 'mail'.length - 'r1'.length - 'manager'.length)
+  expect(factory(['mail', 'r1', 'manager', text], bd.env(outbox)).code).toBe(0)
+  expect(readFileSync(outbox, 'utf8').trim().split('\n')).toHaveLength(1)
+})
+
+test('inside a VM, report --summary-file over 100 KiB exits 1 and queues nothing (claude-factory-amzl)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-bigsf.jsonl')
+  const bd = fakeBd('bigsf')
+  const f = join(dir, 'bigsf.md')
+  writeFileSync(f, 'x'.repeat(1_200_000))
+  const r = factory(['report', 'r1', '1', 'ready', '--summary-file', f], bd.env(outbox))
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('--summary-file')
+  expect(r.err).toContain('102400')
+  expect(existsSync(outbox)).toBe(false)
+  expect(existsSync(bd.marker)).toBe(false)
+})
+
+test('a tick never spawns an outbox line over 100 KiB: it marks it seen, logs it and prompts the worker (claude-factory-amzl)', () => {
+  const seq = launched('ramzl')
+  const big = JSON.stringify({
+    argv: ['report', 'ramzl', String(seq), 'ready', 'x'.repeat(1_200_000)],
+    from: 'a',
+    at: 1,
+  })
+  const bigMail = JSON.stringify({
+    argv: ['mail', 'ramzl', 'manager', 'm'.repeat(200_000)],
+    from: 'a',
+    at: 2,
+  })
+  const good = JSON.stringify({
+    argv: ['report', 'ramzl', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 3,
+  })
+  clusterCursor('Running', 'idle', [big, bigMail, good])
+  const first = factory(['tick'])
+  expect(first.code).toBe(0)
+  const row = JSON.parse(first.out).runs.find((r: { id: string }) => r.id === 'ramzl')
+  expect(row.error ?? null).toBeNull()
+  expect(seenTotal('ramzl')).toBe(3)
+  const prompts = [...called().matchAll(/worker prompt (\S+)/g)].map(m =>
+    Buffer.from(m[1]!, 'base64').toString(),
+  )
+  expect(prompts).toHaveLength(2)
+  expect(prompts[0]).toContain('102400')
+  expect(prompts[0]).toContain('not run')
+  expect(prompts.join('')).not.toContain('x'.repeat(1000))
+  expect(prompts.join('')).not.toContain('m'.repeat(1000))
+  expect(inbox('ramzl')).toContain('"outcome":"ready"')
+  expect(inbox('ramzl')).toContain('built a')
+  expect(inbox('ramzl')).not.toContain('x'.repeat(1000))
+  expect(inbox('ramzl')).not.toContain('m'.repeat(1000))
+  const log = readFileSync(join(home, 'runs', 'ramzl', 't.outbox-too-big'), 'utf8')
+    .trim()
+    .split('\n')
+  expect(log).toHaveLength(2)
+  expect(log.join('')).not.toContain('xxxx')
+  const promptsBefore = (called().match(/worker prompt/g) ?? []).length
+  factory(['tick'])
+  expect((called().match(/worker prompt/g) ?? []).length).toBe(promptsBefore)
+  rmSync(join(home, 'runs', 'ramzl'), { recursive: true })
+}, 60_000)

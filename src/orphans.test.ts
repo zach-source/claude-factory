@@ -57,6 +57,13 @@ const rows: [string, OrphanPr, Partial<OrphanCtx>, Partial<OrphanIo>][] = [
   ['a live run on the same bead', pr(), { liveBeads: new Set(['bd-1']) }, {}],
   ['ship-queued', pr(), { queued: () => true }, {}],
   ['bead closed', pr(), {}, { beadStatus: async () => 'closed' }],
+  ['bead deferred', pr(), {}, { beadStatus: async () => 'deferred' }],
+  [
+    'source run ended at a decision',
+    pr(),
+    { runs: new Map([['run-1', { bead: 'bd-1', decided: true }]]) },
+    {},
+  ],
   ['bd show null', pr(), {}, { beadStatus: async () => null }],
   ['CI failed', pr(), {}, { checks: async () => ({ pass: 1, fail: 1, pending: 0 }) }],
   ['CI pending', pr(), {}, { checks: async () => ({ pass: 1, fail: 0, pending: 1 }) }],

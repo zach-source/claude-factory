@@ -15,9 +15,12 @@ import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
+  clip,
   labelMail,
   trustedEgress,
+  trustedEgressPaged,
   reworkOwned,
+  reworkStart,
   brief,
   vmBeads,
   clipFactsJson,
@@ -1119,13 +1122,23 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text).toContain('<cli> mutate')
   expect(text).toContain('git status --short')
   expect(text).not.toContain('GOTOOLCHAIN=auto')
-  expect(text).toContain('GOMAXPROCS=2')
+  expect(text).not.toContain('GOMAXPROCS')
+  expect(text).not.toContain('On a VM')
   expect(text).toContain('pg-scratch start')
   expect(text).toContain('pg-scratch stop')
   expect(text).toContain('TEST_DATABASE_URL')
   expect(text).toContain('Never ask the person')
   expect(text).toContain('any DSN variable')
   expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
+})
+
+// claude-factory-66ib: the VM-only lines sit in worker-vm.md, which only ax workers read
+test('worker-vm.md holds the VM-only lines', () => {
+  const vm = readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8')
+  expect(vm).toContain('GOMAXPROCS=2')
+  expect(vm).toContain('go test -p 1')
+  expect(vm).toContain('nix-shell -p')
+  expect(vm).not.toContain('GOTOOLCHAIN=auto')
 })
 
 // claude-factory-ay4w: the top refused hook forms (7d metrics 2026-11-03) and the allowed form for each
@@ -2548,6 +2561,7 @@ test('piWorker appends the worker rules to pi and passes each plugin skill', () 
   expect(readFileSync(rules, 'utf8')).toStartWith(
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
   )
+  expect(readFileSync(rules, 'utf8')).not.toContain('GOMAXPROCS') // claude-factory-66ib: VM-only
 })
 
 test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {
@@ -2591,6 +2605,66 @@ test('a rework label on a run-owned PR mails the parked station with wake (61pu.
   expect(sent[0]).toMatchObject({ type: 'MAIL', to: 'deploy', wake: true })
   reworkOwned(pr, { id: 'r', node: 'rollback', c }, io)
   expect(sent[1]).not.toHaveProperty('wake')
+})
+
+const labelPr = (...names: string[]) =>
+  ({
+    number: 7,
+    url: 'https://github.com/acme/widget/pull/7',
+    headRefName: 'fix/thing',
+    baseRefName: 'main',
+    labels: names.map(name => ({ name })),
+  }) as never
+
+test('a rework label on a run-owned PR sends the run back to implement with the ask (8yhq gap 1)', () => {
+  const sent: { type: string; node?: string; to?: string; text?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+  expect(sent[0]).toMatchObject({ to: 'implement' })
+  expect(sent[0]!.text).toContain('make the changes its reviews and checks ask for')
+  expect(sent[1]).toMatchObject({ node: 'implement' })
+  // both labels take the implement path too
+  sent.length = 0
+  reworkOwned(labelPr('conflict', 'rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+})
+
+test('a conflict-only label on a run-owned PR keeps the station mail and no goto (8yhq)', () => {
+  const sent: { type: string; to?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('conflict'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  expect(sent[0]).toMatchObject({ to: 'review' })
+  // a run already at implement gets the mail and no goto
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'implement', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  // a run with no implement station keeps the mail for a rework label too
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'resolve', c, implement: false }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+})
+
+test('an unowned rework label starts the rig factory at implement on the PR branch; conflict-only keeps rework.yaml (8yhq gap 2)', () => {
+  const start = reworkStart(labelPr('rework'), 'lifecycle')
+  expect(start).toMatchObject({ spec: 'lifecycle', branch: 'fix/thing', at: 'implement' })
+  expect(start.goal).toContain('git push origin HEAD:fix/thing')
+  expect(start.goal).toContain('Open no new PR')
+  expect(reworkStart(labelPr('conflict', 'rework'), 'lifecycle')).toMatchObject({ at: 'implement' })
+  const conflict = reworkStart(labelPr('conflict'), 'lifecycle')
+  expect(conflict).toMatchObject({ spec: 'rework', branch: undefined, at: undefined })
+  expect(conflict.goal).toBe(reworkGoal(labelPr('conflict')))
 })
 
 test('managerCommand([], "") holds no per-launch extras and ignores the caller plugin dirs (claude-factory-772)', () => {
@@ -2665,6 +2739,10 @@ test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or 
   expect(factoryLabelName(run('/a/factories/release.ts'), def)).toBe('release')
   expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
   expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
+  expect(factoryLabelName(run('/Users/me/work at home/factories/release.ts'), def)).toBe('release')
+  expect(factoryLabelName(run('/Users/me/work at home/factories/release.ts at abc1234f'), def)).toBe(
+    'release',
+  )
 })
 
 test('trustedEgress keeps a sane VM egress record and drops the rest (claude-factory-vl5j)', () => {
@@ -2773,4 +2851,55 @@ test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed 
   for (const r of [now + 8 * D + 1, now + 365 * D, -5, 0, '9', NaN, undefined])
     expect(trustedHit({ ...ok, resetsAt: r }, now)?.resetsAt).toBe(0)
   expect(trustedHit({ ...ok, text: 'x' }, now)).toEqual({ at: ok.at, kind: 'usage', resetsAt: 0 })
+})
+
+test('trustedEgressPaged reads an egress-paged file only inside the skew bound (claude-factory-rnn8)', () => {
+  const now = 1_700_000_000_000
+  const S = 5 * 60_000
+  const dir = mkdtempSync(join(tmpdir(), 'egress-paged-'))
+  try {
+    const file = join(dir, 'p.json')
+    expect(trustedEgressPaged(file, now)).toBeUndefined()
+    const j = JSON.stringify
+    const bad = [
+      'not json',
+      'null',
+      '"5"',
+      '[]',
+      '{}',
+      '{"since":"1","at":0}',
+      '{"since":1,"at":"0"}',
+      '{"since":1}',
+      '{"at":0}',
+      String(now + S + 1),
+      j({ since: now + S + 1, at: 0 }),
+      j({ since: 1, at: now + S + 1 }),
+      '{"since":1e308,"at":0}',
+      '{"since":1,"at":1e999}',
+      '{"since":1e999,"at":0}',
+      '-1e999',
+    ]
+    for (const text of bad) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toBeUndefined()
+    }
+    const kept: [string, { since: number; at: number }][] = [
+      [String(now - 1), { since: now - 1, at: 0 }],
+      [j({ since: now + S, at: now + S }), { since: now + S, at: now + S }],
+      [j({ since: now - 1000, at: now - 1 }), { since: now - 1000, at: now - 1 }],
+      [j({ since: 0, at: 0 }), { since: 0, at: 0 }],
+    ]
+    for (const [text, want] of kept) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toEqual(want)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('clip never leaves a lone high surrogate', () => {
+  expect(clip('a'.repeat(199) + '😀', 200)).toBe('a'.repeat(199) + '…')
+  expect(clip('a'.repeat(198) + '😀', 200)).toBe('a'.repeat(198) + '😀')
+  expect(clip('abc', 5)).toBe('abc')
 })

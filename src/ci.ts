@@ -6,6 +6,8 @@
  * ponytail: it reads the first 100 check runs only. It ignores commit statuses, GHES and GitLab.
  * Upgrade path: page the check-runs API.
  */
+import { cut } from './cut'
+
 export type Gh = (args: string[]) => { code: number; out: string; err: string }
 export type CiResult = { text: string; exit: 0 | 1 | 2 | 3 }
 
@@ -35,12 +37,14 @@ const bad = (why: string): CiResult => ({ text: `factory ci: ${why}`, exit: 3 })
 
 /** one printable-ASCII line for text that came from a tool or a log */
 const clean = (s: string, max: number) =>
-  s
-    // eslint-disable-next-line no-control-regex
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x08\x0a-\x1f\x7f-\x9f‪-‮⁦-⁩]/g, '')
-    .slice(0, max)
+  cut(
+    s
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x08\x0a-\x1f\x7f-\x9f‪-‮⁦-⁩]/g, ''),
+    max,
+  )
 
 export function ciReport(arg: string[], gh: Gh): CiResult {
   if (arg.length !== 1 || !ARG.test(arg[0]!)) return usage()

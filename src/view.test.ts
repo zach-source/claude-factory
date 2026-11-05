@@ -1076,3 +1076,49 @@ test('ownerStep reads the command after "parked, waiting on:"; interviews tag on
   expect(merged.filter(i => i.step)).toHaveLength(2) // same bead, same question: still 2 items
   expect(merged.every(i => !i.step || !i.also)).toBe(true)
 })
+
+// claude-factory-dgok: untrusted text must not sit in shell double quotes ($(...), backticks and $VAR expand there).
+const expectSingleQuoted = (t: string, placeholders: string[]) => {
+  const spans = (t.match(/`[^`]*`/g) ?? []).filter(s =>
+    /file-elsewhere|decisions propose|decisions answer/.test(s),
+  )
+  expect(spans.length).toBeGreaterThan(0)
+  for (const s of spans) expect(s).not.toContain('"<')
+  for (const p of placeholders) expect(spans.join('\n')).toContain(`'<${p}>'`)
+  expect(t).toContain("'\\''")
+  expect(t).toContain('single quotes')
+}
+
+test('interviewPrompt: every non-ID placeholder in a factory command span is single-quoted (claude-factory-dgok)', () => {
+  const ids = new Set(['run', 'rig', 'bead', 'key'])
+  const bad = (t: string) =>
+    (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
+      (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ids.has(p.slice(1, -1))),
+    )
+  const need = iv({
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    title: 'api-7: Q',
+    question: 'Q',
+    needsProposal: true,
+  })
+  expect(bad(interviewPrompt([need])!)).toEqual([])
+  expect(bad('`factory decisions answer <rig> <bead> "<text>"`')).toEqual(['<text>'])
+  expect(bad("`factory decisions answer <rig> <bead> '<text>'`")).toEqual([])
+})
+
+test('interviewPrompt passes decisions text in single quotes (claude-factory-dgok)', () => {
+  const need = iv({
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    title: 'api-7: Q',
+    question: 'Q',
+    needsProposal: true,
+  })
+  expectSingleQuoted(interviewPrompt([need])!, [
+    'question',
+    'label: effect | label: effect',
+    'sentence',
+    'text',
+  ])
+})

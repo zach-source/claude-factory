@@ -7,7 +7,7 @@
  *   - `rmSafe` replaces each recursive `rmSync` in the runner. It refuses `/`, the home dir and
  *     every dir above the home dir.
  */
-import { rmSync, type RmOptions } from 'node:fs'
+import { lstatSync, rmSync, type RmOptions, type Stats } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, resolve, sep } from 'node:path'
 
@@ -36,10 +36,27 @@ export function protectedPath(p: string, protect = homes()): boolean {
   })
 }
 
-/** rmSync, but it throws on `/`, $HOME or a parent of $HOME */
-export function rmSafe(p: string, opts?: RmOptions): void {
+/**
+ * rmSync, but it throws on `/`, $HOME or a parent of $HOME.
+ * Bun rmSync can return with no error and keep the tree while another process writes into it.
+ * So rmSafe checks the path after the delete. It tries up to 3 times, then it throws.
+ * A new object at the same path (a lock that another process took) ends the retry. rmSafe never removes it.
+ * ponytail: the identity is dev, ino and birthtimeMs. A reused inode with the same birthtime can look
+ * the same. Upgrade path: a flock or a unique lock file name.
+ */
+export function rmSafe(p: string, opts?: RmOptions, rm: (p: string, o?: RmOptions) => void = rmSync): void {
   if (protectedPath(p)) throw new Error(`refusing to delete ${p}: it is /, $HOME or a dir above $HOME`)
-  rmSync(p, opts)
+  const id = (s: Stats | undefined) => s && `${s.dev}:${s.ino}:${s.birthtimeMs}`
+  const before = id(lstatSync(p, { throwIfNoEntry: false }))
+  rm(p, opts)
+  if (before === undefined) return
+  for (let i = 2; i <= 3; i++) {
+    if (id(lstatSync(p, { throwIfNoEntry: false })) !== before) return
+    Bun.sleepSync(20 * i)
+    rm(p, opts)
+  }
+  if (id(lstatSync(p, { throwIfNoEntry: false })) === before)
+    throw new Error(`rmSafe: ${p} still exists after 3 tries`)
 }
 
 // a delete or move word in shell or in a script language
@@ -89,24 +106,25 @@ const READERS = new Set([
 ])
 const GIT_SUBS = new Set(['diff', 'log', 'show', 'status', 'blame'])
 
-// One simple command. Outside quotes: only word characters and blanks. A double-quoted string has
-// no backslash, $, backtick or !. A single-quoted string has any character but '.
-const LINE = /^(?:[\w./:@%+,=^~ \t-]|"[^"\\$`!]*"|'[^']*')*$/
-const WORD = /(?:[\w./:@%+,=^~-]|"[^"\\$`!]*"|'[^']*')+/g
+// The closed token grammar of readOnly, matched one token at a time (sticky): blanks, a separator,
+// a redirect, or a word. A redirect must be followed by a blank, a separator or the end. A word
+// piece is a plain char, a single-quoted string, or a double-quoted string with no $, backtick or !
+// and a backslash only before a char that bash keeps. The pieces start with different chars, so
+// the regex cannot backtrack badly.
+const TOKEN =
+  /([ \t]+)|(;|&&|\|\||\||\n)|((?:2>&1|>\/dev\/null)(?=[ \t\n;&|]|$))|((?:[\w./:@%+,=^~-]|"(?:[^"\\$`!]|\\[^"\\$`\n!])*"|'[^']*')+)/y
+const SED_SCRIPT = /^\d+(,\d+)?p(;\d+(,\d+)?p)*$/
 
-/**
- * True when `command` is ONE simple command (see LINE) and its first word is a bare reader.
- * Outside single quotes no pipe, ;, &, redirect, group, line join, $, backtick, backslash, glob,
- * brace or # can pass LINE, so the code needs no shell lexer. For git, only -C <dir> and
- * --no-pager can come before a read subcommand. Any other form gives false (fail closed), so the
- * script read runs.
- * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
- * textconv) is not covered. False denies stay for pipes, &&, redirects, line joins, bun test with a
- * file, sed, rg, awk and an absolute-path git. Upgrade path: a real shell parser.
- */
-function readOnly(command: string): boolean {
-  if (!LINE.test(command)) return false
-  const w = command.match(WORD) ?? []
+// One reader segment: a reader word, git with a read subcommand, or sed -n with line-range p scripts
+function readerSegment(w: string[]): boolean {
+  if (w[0] === 'sed') {
+    const script = (w[2] ?? '').replace(/^(['"])(.*)\1$/, '$2')
+    return (
+      w[1] === '-n' &&
+      SED_SCRIPT.test(script) &&
+      !w.slice(3).some(a => a.replace(/['"]/g, '').startsWith('-'))
+    )
+  }
   if (!READERS.has(w[0] ?? '')) return false
   if (w[0] !== 'git') return true
   let i = 1
@@ -116,6 +134,34 @@ function readOnly(command: string): boolean {
     else break
   }
   return GIT_SUBS.has(w[i] ?? '')
+}
+
+/**
+ * True when `command` tokenizes fully in the closed grammar (TOKEN) and each segment, split at
+ * ; && || | and newline, is a reader (readerSegment). The only redirects are 2>&1 and >/dev/null
+ * (2>/dev/null reads as the word 2 and >/dev/null). Any other char (lone &, <, >, (, ), {, }, $,
+ * backtick, #, glob, backslash outside quotes) or an empty segment gives false (fail closed), so
+ * the script read runs. A sed word after the script, with quotes removed, must not start with -. For git, only
+ * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
+ * scripts (no w, e, r, -i, -f).
+ * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
+ * textconv) is not covered. False denies stay for awk, rg, sort, jq, find, xargs, globs, $,
+ * subshells, heredocs, line joins and non-reader verbs. Upgrade path: a real shell parser.
+ */
+function readOnly(command: string): boolean {
+  let seg: string[] = []
+  for (let pos = 0; pos < command.length;) {
+    TOKEN.lastIndex = pos
+    const m = TOKEN.exec(command)
+    if (!m) return false
+    pos = TOKEN.lastIndex
+    if (m[4] !== undefined) seg.push(m[4])
+    else if (m[2] !== undefined) {
+      if (!readerSegment(seg)) return false
+      seg = []
+    }
+  }
+  return seg.length > 0 && readerSegment(seg)
 }
 
 /**

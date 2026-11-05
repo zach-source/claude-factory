@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HOME_REASON, homeReason, protectedPath, rmSafe } from './home-guard'
@@ -112,14 +112,21 @@ describe('homeReason', () => {
     `git diff HEAD~1 HEAD^ -- ${CLI}`,
     `grep -n 'a|b' ${CLI}`,
     'bd create -d "see src/home-guard.ts"',
+    `cat ${CLI} | head -n 5`,
+    `cd /abs/wt && git diff ${CLI}`,
+    `git diff ${CLI} 2>&1 | tail -n 3`,
+    `grep -n "a\\|b" ${CLI} | head -5; grep -n "c\\(d\\)" ${WRK} | head -3`,
+    `sed -n 1,140p ${CLI}; grep -n "x" ${CLI} | head -80`,
+    `sed -n 1250,1275p ${CLI}; sed -n '1436,1465p;1p' ${CLI}`,
+    `bd show x 2>&1 | head -40; grep -n "a" ${CLI} 2>/dev/null | head`,
+    `git diff ${CLI}\ngrep x ${CLI}`,
+    `cd /abs/wt; git diff origin/main...HEAD -- ${CLI} ${WRK}; echo ===X; grep -n "a\\|b" ${CLI} | head -40`,
+    `ls x >/dev/null || cat ${CLI}`,
   ])('allows a read-only command that names a script: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBeUndefined(),
   )
 
   test.each([
-    `cat ${CLI} | head -n 5`,
-    `cd /abs/wt && git diff ${CLI}`,
-    `git diff ${CLI} 2>&1 | tail -n 3`,
     `git diff \\\n  ${CLI}`,
     `git \\\n diff ${CLI}`,
     `git diff ${CLI} &> /dev/null`,
@@ -127,6 +134,47 @@ describe('homeReason', () => {
   ])('denies a read command outside the one-command grammar: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
+
+  test.each([
+    `grep x ${CLI} | xargs ./x.sh`,
+    `grep x ${CLI} | bash`,
+    `sed -n 1p ${CLI} | sh`,
+    `cat ${CLI} | tee x.sh`,
+    `grep x ${CLI} |& ./x.sh`,
+    `grep x ${CLI} 2>/tmp/f`,
+    `git diff ${CLI} > out`,
+    `grep x ${CLI} >/dev/null./x.sh`,
+    `| head ${CLI}`,
+    `cat ${CLI} ; ; head`,
+    `grep "a\\" ${CLI}; ./x.sh; echo "`,
+    `grep "a\\$(./x.sh)" ${CLI}`,
+    `grep "a\\\\" ${CLI}`,
+    `grep x ${CLI} | awk '{print}'`,
+    `git add ${CLI} && git commit -m x`,
+    `sed -i 1d ${CLI}`,
+    `sed -n 1p ${CLI} -i`,
+    `sed -n '1p;w out' ${CLI}`,
+    `sed -n 'w x.sh' ${CLI}`,
+    `sed -n 1e ${CLI}`,
+    `sed -n -e 1p ${CLI}`,
+    `sed -E -n 1p ${CLI}`,
+    `sed --quiet 1p ${CLI}`,
+    `sed -n '1p' -f x.sed ${CLI}`,
+    `sed -n 1p ${CLI} > out`,
+    `sed -n 1p ${CLI}; ./x.sh`,
+    `sed -n 1p '-e' '1e ./x.sh' ${CLI}`,
+    `sed -n 1p "--expression=1e ./x.sh" ${CLI}`,
+    `sed -n 1p ''-i x.sh ${CLI}`,
+  ])('denies a compound or sed form outside the grammar: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('a 100000-char reader pipeline returns fast', () => {
+    const cmd = `grep -n "a\\|b" ${CLI} | `.repeat(5000) + 'head'
+    const t0 = performance.now()
+    homeReason(cmd, bad, H)
+    expect(performance.now() - t0).toBeLessThan(200)
+  })
 
   test.each([
     'bash .scratch/clean.sh',
@@ -222,5 +270,69 @@ describe('rmSafe', () => {
     const dir = mkdtempSync(join(tmpdir(), 'home-guard-'))
     rmSafe(dir, { recursive: true, force: true })
     expect(existsSync(dir)).toBe(false)
+  })
+
+  const mk = () => mkdtempSync(join(tmpdir(), 'home-guard-rm-'))
+  const opts = { recursive: true, force: true }
+
+  test('throws when the rm keeps the tree (3 tries)', () => {
+    const dir = mk()
+    let n = 0
+    expect(() => rmSafe(dir, opts, () => void n++)).toThrow(/still exists after 3 tries/)
+    expect(() => rmSafe(dir, opts, () => {})).toThrow(dir)
+    expect(n).toBe(3)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('retries when the first rm keeps the tree', () => {
+    const dir = mk()
+    let n = 0
+    rmSafe(dir, opts, (p, o) => {
+      if (++n === 2) rmSync(p, o)
+    })
+    expect(n).toBe(2)
+    expect(existsSync(dir)).toBe(false)
+  })
+
+  test('does not delete a new dir that took the same path', () => {
+    const dir = mk()
+    let n = 0
+    rmSafe(dir, opts, (p, o) => {
+      n++
+      rmSync(p, o)
+      mkdirSync(p)
+    })
+    expect(n).toBe(1)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('a missing path: force is a no-op, no force throws ENOENT, a real dir is deleted once', () => {
+    const dir = join(mk(), 'gone')
+    expect(() => rmSafe(dir, opts)).not.toThrow()
+    expect(() => rmSafe(dir, { recursive: true })).toThrow(/ENOENT/)
+    const real = mk()
+    let n = 0
+    rmSafe(real, opts, (p, o) => {
+      n++
+      rmSync(p, o)
+    })
+    expect(n).toBe(1)
+    expect(existsSync(real)).toBe(false)
+  })
+
+  test('a protected path never reaches the rm', () => {
+    const fake = mk()
+    const old = process.env.HOME
+    process.env.HOME = fake
+    let n = 0
+    try {
+      expect(() => rmSafe(fake, opts, () => void n++)).toThrow(/refusing/)
+    } finally {
+      process.env.HOME = old
+    }
+    expect(n).toBe(0)
+    rmSync(fake, opts)
   })
 })

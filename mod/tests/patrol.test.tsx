@@ -237,7 +237,15 @@ test(
     expect(submits[0]!.text).toContain('"File in: <rig>: <title> | <description>"')
     expect(submits[0]!.text).toContain('`bd undefer` the source bead')
     // claude-factory-5ufp: check the rig, carry the origin, no factory label for a Linear-sourced source
-    for (const s of ['factory rig list', 'discovered_from', 'linear.app'])
+    for (const s of [
+      'factory rig list',
+      'discovered_from',
+      'file-elsewhere',
+      'Never run `bd create` in another rig',
+      'discoveredFrom',
+      'no `factory` label',
+      'never queue or start it',
+    ])
       expect(submits[0]!.text).toContain(s)
     // claude-factory-61a: a rule correction also fixes the memory note that taught the opposite
     expect(submits[0]!.text).toContain('memory add --supersedes <old note path> --kind rule')
