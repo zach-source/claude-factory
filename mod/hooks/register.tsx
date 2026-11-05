@@ -1339,15 +1339,8 @@ async function jump($: EngineInterface, pane: string) {
  * `=(` and glob-qualifier code), or a form
  * this one-pass scan cannot read: `$'`, a here-document, a word-start `#` comment, an unclosed quote. Each
  * of those can hide a `'` that makes a naive scan think later text is quoted, so they fail closed. */
-function substitutionIn(raw: string): boolean {
-  // join a line continuation (backslash-newline) that is not escaped: two backslashes then a newline keep the newline
-  let command = ''
-  for (let i = 0; i < raw.length; i++) {
-    if (raw[i] === '\\') {
-      if (raw[i + 1] !== '\n') command += raw.slice(i, i + 2)
-      i++
-    } else command += raw[i]
-  }
+function substitutionIn(command: string): boolean {
+  // no pre-join of backslash-newline: the scan pairs each backslash with the next char, so `\\` + newline stays literal
   let state: 'plain' | 'single' | 'double' = 'plain'
   for (let i = 0; i < command.length; i++) {
     const c = command[i]!
