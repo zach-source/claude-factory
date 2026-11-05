@@ -14,7 +14,9 @@ import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `watch-${process.pid}`)
-const home = join(dir, 'home')
+// A new home per test: detached tick children of an earlier test write into its old home, not the next one.
+let homeN = 0
+let home = join(dir, 'home')
 const bin = join(dir, 'bin')
 const calls = join(dir, 'gh-calls.log')
 const prState = join(dir, 'pr-state.json')
@@ -49,10 +51,10 @@ const who = a => ({ login: a?.login, type: a?.is_bot ? 'Bot' : 'User' })
 if (argv[0] !== 'api') process.exit(1)
 if (/\\/reviews\\?/.test(path)) {
   const page = (j.reviews ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, state: r.state, submitted_at: r.submittedAt, body: r.body }))
-  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+  console.log(JSON.stringify(page))
 } else if (/\\/comments\\?/.test(path)) {
   const page = (j.comments ?? []).map(r => ({ user: who(r.author), author_association: r.authorAssociation, created_at: r.createdAt, body: r.body }))
-  console.log(JSON.stringify(argv.includes('--slurp') ? [page] : page))
+  console.log(JSON.stringify(page))
 } else {
   const merged = j.state === 'MERGED'
   console.log(JSON.stringify({
@@ -99,7 +101,7 @@ function parkedRun(
   id: string,
   repoDir: string,
   factoryFile: string,
-  opts: { def?: Factory; at?: number; bead?: string; url?: string } = {},
+  opts: { def?: Factory; at?: number; bead?: string; url?: string; reparkUntil?: number } = {},
 ) {
   const actor = createActor(compile(opts.def ?? SHIP)).start()
   actor.send({ type: 'GOTO', node: 'release', at: 0 })
@@ -111,6 +113,8 @@ function parkedRun(
     summary: `ready to ship ${opts.url ?? PR}`,
     at: opts.at ?? PARKED_AT,
   })
+  if (opts.reparkUntil)
+    actor.send({ type: 'REPARK', node: 'deploy', wakeAt: opts.reparkUntil, at: opts.at ?? PARKED_AT })
   const d = join(home, 'runs', id)
   mkdirSync(d, { recursive: true })
   writeFileSync(
@@ -131,6 +135,7 @@ function parkedRun(
 
 function reset() {
   rmSync(dir, { recursive: true, force: true })
+  home = join(dir, `home-${++homeN}`)
   mkdirSync(home, { recursive: true })
   fakeGh()
 }
@@ -203,7 +208,7 @@ test('factory mail: --wake sets wake; a held box prints the held line; later --w
   parkedRun('r1', repo(), f, { def: held })
   const plain = factory(['mail', 'r1', 'deploy', 'Report', 'blocked'])
   expect(plain.out).toContain('held for deploy: parked on ' + PR)
-  expect(plain.out).toContain('add --wake to start one now')
+  expect(plain.out).toContain('add --wake only for an answer that changes the wait')
   expect(mailOf('r1').at(-1)).toMatchObject({ text: 'Report blocked' })
   expect(mailOf('r1').at(-1)).not.toHaveProperty('wake')
   const woken = factory(['mail', 'r1', 'deploy', '--wake', 'answer'])
@@ -227,6 +232,18 @@ test('a merge that predates a pre-launch park still wakes it at once, not out it
   const out = factory(['watch'])
   expect(out.code).toBe(0)
   expect(mailOf('r1')).toHaveLength(1)
+})
+
+test('a pre-launch park the watch moved 48 h past its park still gets the none-open wake (gzdv)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'MERGED', updatedAt: iso(3 * 60_000) }))
+  parkedRun('r1', repo(), f, { reparkUntil: PARKED_AT + 49 * 3_600_000 })
+  expect(factory(['watch']).code).toBe(0)
+  const m = mailOf('r1')
+  expect(m).toHaveLength(1)
+  expect(m[0]?.text).toContain('None of')
 })
 
 test('a run parked on a pull request in another repo is watched and woken on its merge (AC9)', () => {
@@ -511,7 +528,7 @@ test('a person change request routes changes to implement with a bd task each, a
     .split('\n')
     .filter(l => l.startsWith('create '))
   expect(creates).toHaveLength(2)
-  expect(creates.every(l => l.startsWith('create PR change request: '))).toBe(true)
+  expect(creates.every(l => l.startsWith('create --title PR change request: '))).toBe(true)
   // the description holds line breaks, so bd's argv spreads over lines: count the parent flags in all
   expect(readFileSync(bdCalls, 'utf8').split('--parent acme-1')).toHaveLength(3)
   expect(watchJson().routed).toMatchObject([{ outcome: 'changes' }])
@@ -545,6 +562,38 @@ test('a failed gh view posts no route and no re-park (5wav AC6)', () => {
   expect(watchJson().errors).toBe(1)
 })
 
+const managerMail = () => inboxOf('r1').filter(e => e.type === 'MAIL' && e.to === 'manager')
+
+test('five failed view passes in a row mail the manager once (5nb AC1)', () => {
+  reset()
+  routeRun('r1', { at: Date.now() - 475 * 60_000 })
+  rmSync(prState, { force: true })
+  for (let i = 1; i <= 4; i++) {
+    factory(['watch'])
+    expect(managerMail()).toHaveLength(0)
+  }
+  factory(['watch'])
+  expect(managerMail()).toHaveLength(1)
+  expect(managerMail()[0]).toMatchObject({ from: 'factory', to: 'manager' })
+  expect(String(managerMail()[0]!.text)).toContain('r1')
+  expect(String(managerMail()[0]!.text)).toContain(PR)
+  factory(['watch'])
+  expect(managerMail()).toHaveLength(1)
+  expect(inboxOf('r1').filter(e => e.type === 'ROUTE' || e.type === 'REPARK')).toEqual([])
+}, 90000)
+
+test('a good view resets the failed pass count (5nb AC2)', () => {
+  reset()
+  routeRun('r1', { at: Date.now() - 100 * 60_000 })
+  rmSync(prState, { force: true })
+  for (let i = 0; i < 4; i++) factory(['watch'])
+  prJson({ updatedAt: iso(30_000) })
+  factory(['watch'])
+  rmSync(prState, { force: true })
+  for (let i = 0; i < 4; i++) factory(['watch'])
+  expect(managerMail()).toHaveLength(0)
+}, 90000)
+
 const conflictJson = (over: Record<string, unknown> = {}) =>
   prJson({ mergeable: 'CONFLICTING', headRefName: 'factory/r1', baseRefName: 'main', ...over })
 const CONFLICT_TEXT = `[factory] ${PR} is CONFLICTING with main at head aaa1111, so GitHub builds no pull merge ref and no CI can start. Merge origin/main, resolve, push.`
@@ -555,8 +604,8 @@ test('a conflicting pull request on the run branch mails the station once (confl
   conflictJson()
   factory(['watch'])
   expect(ghCallCount()).toContain('api repos/acme/widget/pulls/42')
-  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/pulls/42/reviews?per_page=100')
-  expect(ghCallCount()).toContain('api --paginate --slurp repos/acme/widget/issues/42/comments?per_page=100')
+  expect(ghCallCount()).toContain('api repos/acme/widget/pulls/42/reviews?per_page=100&page=1')
+  expect(ghCallCount()).toContain('api repos/acme/widget/issues/42/comments?per_page=100&page=1')
   const mail = inboxOf('r1').filter(e => e.type === 'MAIL')
   expect(mail).toHaveLength(1)
   expect(mail[0]).toMatchObject({ from: 'factory', to: 'deploy', text: CONFLICT_TEXT })

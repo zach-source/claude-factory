@@ -4,6 +4,7 @@
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
 import { WORKER_USER } from './worker'
+import { workerPolicyRefusal } from './broker'
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
@@ -114,6 +115,33 @@ export type Launch = {
 /** AX's spec.sandboxClass: microvm runs the task in a Cloud Hypervisor guest with a real kernel, where Nix builds work */
 export type SandboxClass = 'gvisor' | 'microvm'
 
+/** Substrate allows 32 env entries in a Task. AX adds 2 of its own. */
+const AX_ENV_MAX = 30
+/** These keys stay flat when the env packs. An image without vm-env.ts still reads them. */
+const FLAT_KEYS = new Set([
+  'FACTORY_OUTBOX',
+  'FACTORY_REPO',
+  'FACTORY_BRANCH',
+  'FACTORY_BRIEF',
+  'FACTORY_HARNESS',
+  'FACTORY_PROVIDER',
+  'FACTORY_CLAUDE_FLAGS',
+  'FACTORY_CODEX_HOME_FILES',
+])
+
+/**
+ * The Task's env list. If it has more than AX_ENV_MAX entries, each key outside FLAT_KEYS moves into one
+ * JSON value, FACTORY_VM_ENV. vm-env.ts unpacks it in the VM. Up to AX_ENV_MAX entries, the list does not change.
+ */
+function packEnv(env: Record<string, string | undefined>) {
+  const all = Object.entries(env)
+  const list = (e: [string, string | undefined][]) => e.map(([name, value]) => ({ name, value }))
+  if (all.length <= AX_ENV_MAX) return list(all)
+  const flat = all.filter(([k]) => FLAT_KEYS.has(k))
+  const packed = Object.fromEntries(all.filter(([k]) => !FLAT_KEYS.has(k)))
+  return list([...flat, ['FACTORY_VM_ENV', JSON.stringify(packed)]])
+}
+
 /** the Task and its Workspace as a multi-document manifest; JSON is YAML, so no YAML library */
 export function manifest(l: Launch) {
   const metadata = { name: l.name, atespace: ATESPACE() }
@@ -132,7 +160,7 @@ export function manifest(l: Launch) {
     spec: {
       image: l.image,
       command: l.command ?? ['factory', 'worker', 'serve', ...(l.model ? ['--model', l.model] : [])],
-      env: Object.entries({
+      env: packEnv({
         ...l.env,
         ...(!l.command && {
           FACTORY_OUTBOX: `${OWN}/outbox.jsonl`,
@@ -145,10 +173,7 @@ export function manifest(l: Launch) {
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
           ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
         }),
-      }).map(([name, value]) => ({
-        name,
-        value,
-      })),
+      }),
       workspaces: [{ name: l.name, path: WS }],
       // ax ssh is how the laptop polls and prompts the worker; the microVM is the boundary
       debug: true,
@@ -246,7 +271,7 @@ export type Poll = {
   log?: string
   /** an egress-gateway outage serve is retrying a turn through: see worker.ts egressFailure */
   egress?: { since: number; tries: number; last: string }
-  /** a codex turn that ended on a usage limit: see worker.ts codexLimit */
+  /** a codex turn that ended on a usage limit or a refused login (kind auth): see worker.ts codexLimit */
   limit?: { at: number; kind: string; resetsAt: number }
 }
 
@@ -255,6 +280,7 @@ function ax(args: string[], stdin?: string, timeout = 30_000) {
     env: process.env, // the ax CLI sends AX_AUTH_TOKEN over the loopback tunnel
     stdin: stdin ? Buffer.from(stdin) : undefined,
     timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
+    maxBuffer: 128 * 1024 * 1024, // the VM is untrusted: 2x the 64 MiB transcript cap, base64 overhead included
   })
   return {
     ok: p.exitCode === 0,
@@ -382,15 +408,36 @@ const gitlabRule = (host: string, uri?: (key: string) => string) => ({
   },
 })
 
+/** a GitHub owner or repo name that is safe in a path prefix: plain characters, not . or .. */
+const safeName = (x?: string): x is string => !!x && /^[A-Za-z0-9_.-]+$/.test(x) && x !== '.' && x !== '..'
+
+/**
+ * The reviewer's API rule. The key reaches the REST paths of the rig repo (the prefix) and /graphql.
+ * A prefix cannot name /graphql, so it is an exact path. The gh commands pr view, checks and review use it.
+ * Any other API path has no rule, and the gateway answers 403.
+ */
+const reviewerApiRule = <T extends { https: object }>(r: T) =>
+  ({ https: { ...r.https, paths: ['/graphql'] } }) as T
+
 /** the stations that post approving reviews as the reviewer App: review, security and check (the small route's review) */
 export const REVIEWER_STATIONS = ['review', 'security', 'check']
 
 /**
  * true when this task gets the reviewer App's key on api.github.com: a reviewer station, FACTORY_AX_VAULT set, and
  * FACTORY_AX_REVIEWER_OWNER (the feature flag) equal to the rig's GitHub owner. Unset flag: today's behavior.
+ * `beadsOnGithub`: the run's beads sync over github.com. That host is read-only for a reviewer, so the task gets no reviewer identity.
  */
-export const reviewerTask = (node: string, githubOwner?: string, env: NodeJS.ProcessEnv = process.env) =>
+export const reviewerTask = (
+  node: string,
+  githubOwner?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  beadsOnGithub = false,
+  githubRepo?: string,
+) =>
+  safeName(githubRepo) &&
+  safeName(githubOwner) &&
   REVIEWER_STATIONS.includes(node) &&
+  !beadsOnGithub &&
   !!env.FACTORY_AX_VAULT &&
   !!env.FACTORY_AX_REVIEWER_OWNER &&
   env.FACTORY_AX_REVIEWER_OWNER === githubOwner
@@ -411,7 +458,8 @@ const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
  * `GITHUB` (a GitHub App installation token) and `GITHUB_BASIC` (base64 of `x-access-token:<token>`, which git sends as
  * Basic auth). A rig on GitLab host H gets H the same way, with `GITLAB` (an access token) and `GITLAB_BASIC`
  * (base64 of `<user>:<token>`, git's Basic auth). With `reviewer`, api.github.com uses `GITHUB_REVIEWER` (the reviewer App's
- * installation token); github.com keeps the Basic key, as the reviewer App cannot push. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
+ * installation token) only on /repos/<githubOwner>/<githubRepo>/ and /graphql (both names must be plain, or it throws); github.com uses `GITHUB_REVIEWER_BASIC` (base64 of `x-access-token:<reviewer installation token>`, contents read), so the task cannot push. Only with `manager` (and GITHUB_BASIC) does it add the
+ * path-prefixed rules that give the zach-source repos their own keys. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  *
  * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
  * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
@@ -426,7 +474,11 @@ export function egressPolicy(
   githubOwner?: string,
   githubKey = 'GITHUB_BASIC',
   reviewer = false,
+  manager = false,
+  githubRepo?: string,
 ) {
+  if (vault && reviewer && !(safeName(githubOwner) && safeName(githubRepo)))
+    throw new Error('the reviewer egress policy needs the rig GitHub owner and repo, both plain names')
   const uri = (key: string) => `ate-secret://agent-vault/${vault}/${key}`
   const rule = (
     hostnames: string[],
@@ -453,20 +505,28 @@ export function egressPolicy(
   return {
     rules: [
       rule(['api.anthropic.com'], 'Authorization', 'Bearer ', 'ANTHROPIC'),
-      rule(apiHosts, 'Authorization', 'Bearer ', reviewer ? 'GITHUB_REVIEWER' : own || 'GITHUB'),
-      rule(['github.com'], 'Authorization', 'Basic ', own ? `${own}_BASIC` : githubKey),
-      // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live)
-      ...(vault && githubKey === 'GITHUB_BASIC'
+      vault && reviewer
+        ? reviewerApiRule(
+            rule(apiHosts, 'Authorization', 'Bearer ', 'GITHUB_REVIEWER', undefined, [
+              `/repos/${githubOwner}/${githubRepo}/`,
+            ]),
+          )
+        : rule(apiHosts, 'Authorization', 'Bearer ', own || 'GITHUB'),
+      rule(
+        ['github.com'],
+        'Authorization',
+        'Basic ',
+        reviewer ? 'GITHUB_REVIEWER_BASIC' : own ? `${own}_BASIC` : githubKey,
+      ),
+      // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live); manager only
+      // the github.com Basic rule is only for the shared worker key: the manager's backup push must keep
+      // GITHUB_BASIC_MANAGER, so it gets the REST API rule but not this one
+      ...(vault && manager
         ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
-            rule(
-              apiHosts,
-              'Authorization',
-              'Bearer ',
-              reviewer && owner === githubOwner ? 'GITHUB_REVIEWER' : key,
-              undefined,
-              [`/repos/${owner}/`],
-            ),
-            rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`]),
+            rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
+            ...(githubKey === 'GITHUB_BASIC'
+              ? [rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`])]
+              : []),
           ])
         : []),
       ...(gitlabHost ? [gitlabRule(gitlabHost, vault ? uri : undefined)] : []),
@@ -495,9 +555,6 @@ export function egressPolicy(
   }
 }
 
-/** a vault key that only the manager task may use: it gives full AX control, or write access to the backup repo */
-const MANAGER_ONLY_KEY = /"credentialUri":"[^"]*\/(AX_AUTH|GITHUB_BASIC_MANAGER)"/
-
 /**
  * the task's egress policy; false while its actor, which appears a moment after `ax apply`, is not there yet.
  * One try: the tick that launched the task does not wait, the next ones try again.
@@ -509,14 +566,29 @@ export function createPolicy(
   githubOwner?: string,
   githubKey?: string,
   reviewer = false,
+  manager = false,
+  githubRepo?: string,
 ) {
+  if (manager && task !== managerTask())
+    throw new Error(
+      `egress policy for ${task} asks for the manager policy, but the manager task is ${managerTask()}`,
+    )
   const policy = JSON.stringify(
-    egressPolicy(undefined, extra, undefined, gitlabHost, githubOwner, githubKey, reviewer),
+    egressPolicy(
+      undefined,
+      extra,
+      undefined,
+      gitlabHost,
+      githubOwner,
+      githubKey,
+      reviewer,
+      manager,
+      githubRepo,
+    ),
   )
   // the manager and every worker share one vault: a worker policy must not name a manager-only key
-  const key = MANAGER_ONLY_KEY.exec(policy)?.[1]
-  if (key && task !== managerTask())
-    throw new Error(`egress policy for ${task} names manager-only vault key ${key}`)
+  const why = task !== managerTask() && workerPolicyRefusal(JSON.parse(policy))
+  if (why) throw new Error(`egress policy for ${task} ${why}`)
   if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
   const p = Bun.spawnSync(
@@ -706,6 +778,8 @@ const MANAGER_PASS = [
   'FACTORY_AX_BACKUP_REMOTE',
   'FACTORY_AX_BACKUP_BRANCH',
   'FACTORY_AX_BACKUP_EVERY',
+  'FACTORY_OTLP_ENDPOINT',
+  'FACTORY_AX_OTLP_ENDPOINT',
 ]
 
 /**
@@ -855,7 +929,17 @@ export async function launchManager(
   const name = managerTask()
   launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
   for (let i = 0; i < tries; i++) {
-    if (createPolicy(name, managerEgress(process.env, rigs), undefined, undefined, managerGithubKey()))
+    if (
+      createPolicy(
+        name,
+        managerEgress(process.env, rigs),
+        undefined,
+        undefined,
+        managerGithubKey(),
+        false,
+        true,
+      )
+    )
       return { name, policy: true }
     await Bun.sleep(waitMs)
   }

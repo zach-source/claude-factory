@@ -360,7 +360,7 @@ test('render prints the triage reject rate and dispatch pre-check skip line', ()
   ])
   const out = render(m, 'title', { mergedPr: 2, liveRun: 1, failOpen: 4 })
   expect(out).toContain(
-    'triage rejects 1 of 2 (1 already done); dispatch skipped 3 (merged-pr 2, live-run 1), gh fail-open 4',
+    'triage rejects 1 of 2 (1 already done); dispatch skipped 3 (merged-pr 2, live-run 1), forge fail-open 4',
   )
 })
 
@@ -368,7 +368,7 @@ test('render defaults the dispatch pre-check counts, including fail-open, to 0 w
   const m = metrics([{ id: 'r1', node: 'implement', createdAt: 0, log: [] }])
   const out = render(m, 'title')
   expect(out).toContain(
-    'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0), gh fail-open 0',
+    'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0), forge fail-open 0',
   )
 })
 
@@ -698,4 +698,37 @@ test('codexUsageOf: odd rows', () => {
   // no turn_context: model codex. No session_meta: the uuid of the file name
   expect(codexUsageOf([a], F)).toMatchObject({ model: 'codex', session: U })
   expect(codexUsageOf([a], 'rollout-x.jsonl')).toBeNull()
+})
+
+// claude-factory-p956: the lifecycle has no approve node since c079623a; the person's merge is the gate
+test('the approve wait is the time from the ship edge to the merge, when no approve node is in the log', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'done',
+      createdAt: 0,
+      mergedAt: 10 * H,
+      log: [e('implement', 'ready', 2), e('review', 'approve', 4)],
+    },
+    { id: 'r2', node: 'done', createdAt: 0, log: [e('review', 'approve', 3)] }, // handed off, not merged yet: no wait
+  ])
+  expect(m.approveWaitHours.median).toBe(6)
+  expect(m.approveWaitHours.p90).toBe(6)
+})
+
+// claude-factory-p956: a tick stamps its own events with the tick's start time, so a later entry can carry
+// an earlier `at` than an inbox line the same tick replayed
+test('a station visit never takes negative time when an entry is stamped before the one before it', () => {
+  const m = metrics([
+    {
+      id: 'r1',
+      node: 'implement',
+      createdAt: 0,
+      log: [
+        e('implement', 'ready', 2),
+        { ...e('verify', 'red', 1.99), summary: 'no worker: merge origin/main' },
+      ],
+    },
+  ])
+  expect(m.stations.verify!.medianHours).toBe(0)
 })

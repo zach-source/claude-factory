@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
@@ -15,8 +15,12 @@ import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
+  clip,
   labelMail,
+  trustedEgress,
+  trustedEgressPaged,
   reworkOwned,
+  reworkStart,
   brief,
   vmBeads,
   clipFactsJson,
@@ -33,6 +37,7 @@ import {
   limitHit,
   managerCommand,
   needsSwap,
+  trustedHit,
   nextAccount,
   servedAt,
   parsePkgGateAllowlist,
@@ -41,6 +46,7 @@ import {
   queuedOwner,
   unshipClosed,
   loadFactory,
+  loadPinned,
   ownCopy,
   paramsOf,
   pickAgent,
@@ -64,6 +70,8 @@ import {
   userPluginDirs,
   workerSettings,
   workerSkills,
+  warnSkillsOff,
+  warnSkillsForHarness,
   WORKER_TOOLS,
   commitIdentity,
   room,
@@ -71,6 +79,7 @@ import {
   slot,
   withoutFleet,
   type RigFacts,
+  factoryLabelName,
 } from './cli'
 
 test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
@@ -283,6 +292,54 @@ test('a factory in TOML or JSON, checked like one in TypeScript, and an extends 
   await expect(loadFactory(join(dir, 'a.json'))).rejects.toThrow('extends loops')
 })
 
+const tinyDef = { start: 'work', nodes: { work: { prompt: 'x', next: { ok: 'done' } } } }
+test('a factory file must be named for its file: loadFactory refuses any other name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fname-'))
+  mkdirSync(join(dir, '.factory'))
+  const at = (file: string, text: string) => {
+    writeFileSync(join(dir, '.factory', file), text)
+    return join(dir, '.factory', file)
+  }
+  const rows: [string, string][] = [
+    ['lifecycle.json', JSON.stringify({ extends: 'lifecycle', name: 'ship' })],
+    ['lifecycle.ts', `export default ${JSON.stringify({ ...tinyDef, name: 'ship' })}`],
+    ['foo.json', JSON.stringify({ extends: 'ship' })],
+    ['ship.yaml', 'extends: lifecycle\nname: lifecycle\n'],
+    ['lifecycle.json', JSON.stringify({ extends: 'lifecycle', name: 'Lifecycle' })],
+    ['lifecycle.json', JSON.stringify({ extends: 'lifecycle', name: 'lifecycle ' })],
+    ['lifecycle.json', JSON.stringify({ ...tinyDef, name: 7 })],
+    ['factory.json', JSON.stringify({ extends: 'lifecycle', name: 'ship' })],
+  ]
+  for (const [file, text] of rows)
+    await expect(loadFactory(at(file, text))).rejects.toThrow('must be the file name')
+  for (const f of ['lifecycle.ts', 'release.ts', 'ship.ts', 'sweeps.ts', 'rework.yaml'])
+    expect((await loadFactory(join(import.meta.dir, '..', 'factories', f))).name).toBe(f.replace(/\..*/, ''))
+})
+
+test('loadPinned takes a run pinned copy whose name is not its file name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pinned-'))
+  const file = join(dir, 'factory.json')
+  writeFileSync(file, JSON.stringify({ ...tinyDef, name: 'lifecycle' }))
+  expect((await loadPinned(file)).name).toBe('lifecycle')
+  await expect(loadFactory(file)).rejects.toThrow('must be the file name')
+})
+
+test('factory check refuses a .factory/lifecycle.json named ship', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fcheck-'))
+  mkdirSync(join(dir, '.factory'))
+  const file = join(dir, '.factory', 'lifecycle.json')
+  writeFileSync(file, JSON.stringify({ extends: 'lifecycle', name: 'ship' }))
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, ...laptop } = process.env
+  const env = { ...laptop, FACTORY_HOME: join(dir, 'home'), FACTORY_SELF_UPDATE: '0' }
+  const run = (f: string) => Bun.spawnSync([MEMORY_ADD_CLI, 'check', f], { env })
+  const bad = run(file)
+  expect(bad.exitCode).not.toBe(0)
+  expect(bad.stderr.toString()).toContain('must be the file name "lifecycle"')
+  const good = run(join(import.meta.dir, '..', 'factories', 'lifecycle.ts'))
+  expect(good.exitCode).toBe(0)
+  expect(good.stdout.toString()).toContain('lifecycle: valid')
+})
+
 test('a skills list names only skills the worker image has: factory and station layers refuse the rest', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'skills-'))
   const tiny = (extra: object) =>
@@ -292,8 +349,8 @@ test('a skills list names only skills the worker image has: factory and station 
       nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
       ...extra,
     })
-  writeFileSync(join(dir, 'ok.json'), tiny({ skills: ['asd-ste100'] }))
-  expect((await loadFactory(join(dir, 'ok.json'))).skills).toEqual(['asd-ste100'])
+  writeFileSync(join(dir, 'tiny.json'), tiny({ skills: ['asd-ste100'] }))
+  expect((await loadFactory(join(dir, 'tiny.json'))).skills).toEqual(['asd-ste100'])
   writeFileSync(join(dir, 'bad.json'), tiny({ skills: ['nope'] }))
   await expect(loadFactory(join(dir, 'bad.json'))).rejects.toThrow('skill "nope" is not asd-ste100')
   for (const bad of ['', 'ASD-STE100']) {
@@ -305,6 +362,67 @@ test('a skills list names only skills the worker image has: factory and station 
     tiny({ nodes: { work: { prompt: 'x', skills: ['nope'], next: { ok: 'done' } } } }),
   )
   await expect(loadFactory(join(dir, 'node.json'))).rejects.toThrow('work: skill "nope" is not asd-ste100')
+})
+
+test('a skills value that is not an array of strings refuses with its layer name', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-str-'))
+  const tiny = (extra: object) =>
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'x', next: { ok: 'done' } } },
+      ...extra,
+    })
+  writeFileSync(join(dir, 'tiny.json'), tiny({ skills: 'asd-ste100' }))
+  await expect(loadFactory(join(dir, 'tiny.json'))).rejects.toThrow(
+    'factory tiny: skills must be an array of strings',
+  )
+  writeFileSync(
+    join(dir, 'node.json'),
+    tiny({ nodes: { work: { prompt: 'x', skills: 'asd-ste100', next: { ok: 'done' } } } }),
+  )
+  await expect(loadFactory(join(dir, 'node.json'))).rejects.toThrow(
+    'work: skills must be an array of strings',
+  )
+  expect(() => workerSkills({}, {}, { skills: 'asd-ste100' as unknown as string[] })).toThrow(
+    'rig: skills must be an array of strings',
+  )
+  expect(() => workerSkills({}, {}, { skills: ['asd-ste100', 1] as unknown as string[] })).toThrow(
+    'rig: skills must be an array of strings',
+  )
+})
+
+test('warnSkillsForHarness warns for codex and pi, not for claude', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-warn-'))
+  const warn = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    for (const h of ['codex', 'pi', 'claude']) warnSkillsForHarness(h, ['asd-ste100'], 'work', dir)
+    expect(warn.mock.calls.length).toBe(2)
+  } finally {
+    warn.mockRestore()
+  }
+})
+
+test('warnSkillsOff warns once per listed skill that is off, for any worker harness', () => {
+  const warn = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    warnSkillsOff(['asd-ste100', 'other'], 'work', { 'asd-ste100@m': true, 'other@m': false })
+    expect(warn.mock.calls.map(c => c[0])).toEqual([
+      'skill other is not on in your Claude settings: the work worker starts without it',
+    ])
+  } finally {
+    warn.mockRestore()
+  }
+})
+
+test('warnSkillsOff with null enabledPlugins warns for each skill and does not throw', () => {
+  const warn = spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    warnSkillsOff(['a', 'b'], 'work', null)
+    expect(warn.mock.calls.length).toBe(2)
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 test('workerSkills is the sorted union of the factory default, the rig and the station', () => {
@@ -928,10 +1046,12 @@ test("a usage limit is read from the transcript's last turn, and the next accoun
 
 test('a token swap runs once per usage-limit hit, then waits for the vault refresh on success or the reset on failure', () => {
   const hit = { at: 1_000, resetsAt: 2_000_000 }
-  expect(needsSwap(hit, undefined)).toBe(true)
-  expect(needsSwap(hit, { at: 999 })).toBe(true)
-  expect(needsSwap(hit, { at: 1_000 })).toBe(false)
-  expect(needsSwap(hit, { at: 1_001 })).toBe(false)
+  expect(needsSwap(hit, undefined, 5_000)).toBe(true)
+  expect(needsSwap(hit, { at: 999 }, 5_000)).toBe(true)
+  expect(needsSwap(hit, { at: 1_000 }, 5_000)).toBe(false)
+  expect(needsSwap(hit, { at: 1_001 }, 5_000)).toBe(false)
+  expect(needsSwap(hit, { at: 999, ran: 4_999 }, 5_000)).toBe(false) // a swap ran under 5 minutes ago
+  expect(needsSwap(hit, { at: 999, ran: 5_000 - 300_000 }, 5_000)).toBe(true)
   expect(swapUntil(hit, 5_000, true, 300_000)).toBe(305_000)
   expect(swapUntil(hit, 5_000, false, 300_000)).toBe(2_000_000) // resetsAt wins when set
   expect(swapUntil({ at: 1_000, resetsAt: 0 }, 5_000, false, 300_000)).toBe(1_000 + 3_600_000) // the 1h fallback
@@ -1002,13 +1122,35 @@ test('the worker system prompt names a .scratch/ scratch dir, bans cd+rm -rf, an
   expect(text).toContain('<cli> mutate')
   expect(text).toContain('git status --short')
   expect(text).not.toContain('GOTOOLCHAIN=auto')
-  expect(text).toContain('GOMAXPROCS=2')
+  expect(text).not.toContain('GOMAXPROCS')
+  expect(text).not.toContain('On a VM')
   expect(text).toContain('pg-scratch start')
   expect(text).toContain('pg-scratch stop')
   expect(text).toContain('TEST_DATABASE_URL')
   expect(text).toContain('Never ask the person')
   expect(text).toContain('any DSN variable')
-  expect(text.length).toBeLessThan(4800)
+  expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
+})
+
+// claude-factory-66ib: the VM-only lines sit in worker-vm.md, which only ax workers read
+test('worker-vm.md holds the VM-only lines', () => {
+  const vm = readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8')
+  expect(vm).toContain('GOMAXPROCS=2')
+  expect(vm).toContain('go test -p 1')
+  expect(vm).toContain('nix-shell -p')
+  expect(vm).not.toContain('GOTOOLCHAIN=auto')
+})
+
+// claude-factory-ay4w: the top refused hook forms (7d metrics 2026-11-03) and the allowed form for each
+test('the worker system prompt names the top refused hook forms and the allowed form for each', () => {
+  const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
+  expect(text).toContain('not `$G push`') // DYNAMIC_VERB_REASON
+  expect(text).toContain('type the full git or gh command') // SHELL_ALIAS_REASON, SHELL_ALIAS_DEFINE_REASON
+  expect(text).toContain('`git push origin <run branch>`') // PUSH_REASON
+  expect(text).toContain('`gh pr merge`') // MERGE_REASON
+  // claude-factory-gclk: the ship release station merges when its brief has a Merge authority section
+  expect(text).toContain('unless your brief has a Merge authority section')
+  expect(text).toContain('bash /abs/path/.scratch/<name>.sh') // loop, function, VAR=value, cd chain
 })
 
 // mv9, claude-factory-qda: the brief of a station with asd-ste100 tells the worker to write in ASD-STE100 and to
@@ -1057,7 +1199,7 @@ test('the brief names the station skills: asd-ste100 tells a worker to write in 
   expect(none).not.toContain('Write every text a person reads')
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
   expect(text).not.toContain('asd-ste100')
-  expect(text.length).toBeLessThan(4800)
+  expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
 })
 
 test('the brief tells a worker on a VM that a live-read block waits for mail; a laptop worker does not read it', () => {
@@ -1805,6 +1947,47 @@ test('memory add gate() runs before dedupe: a refusal fires even when the summar
   expect(r.err).toContain('--kind')
 }, 30_000)
 
+test('memory add refuses a leftover --flag word twice: no false dedupe, no write (claude-factory-4ie)', () => {
+  const home = freshMemoryAddHome('stray-flag')
+  const row = ['--kind', 'fact', '--tier', 'long', 'acme widget retries flush three times', 'a plain body']
+  for (let i = 0; i < 2; i++) {
+    const r = runMemoryAdd(home, row)
+    expect(r.code).toBe(2)
+    expect(r.err).toContain('unknown flag --tier')
+    expect(r.out).not.toContain('already noted')
+  }
+  expect(inboxFiles(home)).toEqual([])
+}, 60_000)
+
+test('memory add refuses a repeated --rig, a bare -- and a flag after the summary', () => {
+  const home = freshMemoryAddHome('stray-flag-rows')
+  const rows: [string[], string][] = [
+    [['--kind', 'fact', '--rig', 'acme', '--rig', 'other', 'a plain summary'], '--rig'],
+    [['--kind', 'fact', '--', 'a plain summary'], 'unknown flag --'],
+    [['--kind', 'fact', 'a plain summary', '--tier', 'x'], '--tier'],
+  ]
+  for (const [row, flag] of rows) {
+    const r = runMemoryAdd(home, row)
+    expect(r.code).toBe(2)
+    expect(r.err).toContain(flag)
+  }
+  expect(inboxFiles(home)).toEqual([])
+}, 60_000)
+
+test('memory add still accepts --anyway on either side, a mid-word -- and a single-dash word', () => {
+  for (const [tag, row] of [
+    ['anyway-before', ['--kind', 'fact', '--anyway', 'a plain summary', 'a body']],
+    ['anyway-after', ['--kind', 'fact', 'a plain summary', '--anyway', 'a body']],
+    ['mid-dash', ['--kind', 'fact', 'a plain summary', 'run bun test --timeout 30000']],
+    ['single-dash', ['--kind', 'fact', 'a plain summary', '-p']],
+  ] as [string, string[]][]) {
+    const home = freshMemoryAddHome(tag)
+    const r = runMemoryAdd(home, row)
+    expect(r.code).toBe(0)
+    expect(inboxFiles(home)).toHaveLength(1)
+  }
+}, 60_000)
+
 test('memory add that cites nothing needs no --until', () => {
   const home = freshMemoryAddHome('no-cite-ok')
   const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body'])
@@ -2378,6 +2561,7 @@ test('piWorker appends the worker rules to pi and passes each plugin skill', () 
   expect(readFileSync(rules, 'utf8')).toStartWith(
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
   )
+  expect(readFileSync(rules, 'utf8')).not.toContain('GOMAXPROCS') // claude-factory-66ib: VM-only
 })
 
 test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {
@@ -2421,6 +2605,66 @@ test('a rework label on a run-owned PR mails the parked station with wake (61pu.
   expect(sent[0]).toMatchObject({ type: 'MAIL', to: 'deploy', wake: true })
   reworkOwned(pr, { id: 'r', node: 'rollback', c }, io)
   expect(sent[1]).not.toHaveProperty('wake')
+})
+
+const labelPr = (...names: string[]) =>
+  ({
+    number: 7,
+    url: 'https://github.com/acme/widget/pull/7',
+    headRefName: 'fix/thing',
+    baseRefName: 'main',
+    labels: names.map(name => ({ name })),
+  }) as never
+
+test('a rework label on a run-owned PR sends the run back to implement with the ask (8yhq gap 1)', () => {
+  const sent: { type: string; node?: string; to?: string; text?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+  expect(sent[0]).toMatchObject({ to: 'implement' })
+  expect(sent[0]!.text).toContain('make the changes its reviews and checks ask for')
+  expect(sent[1]).toMatchObject({ node: 'implement' })
+  // both labels take the implement path too
+  sent.length = 0
+  reworkOwned(labelPr('conflict', 'rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+})
+
+test('a conflict-only label on a run-owned PR keeps the station mail and no goto (8yhq)', () => {
+  const sent: { type: string; to?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('conflict'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  expect(sent[0]).toMatchObject({ to: 'review' })
+  // a run already at implement gets the mail and no goto
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'implement', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  // a run with no implement station keeps the mail for a rework label too
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'resolve', c, implement: false }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+})
+
+test('an unowned rework label starts the rig factory at implement on the PR branch; conflict-only keeps rework.yaml (8yhq gap 2)', () => {
+  const start = reworkStart(labelPr('rework'), 'lifecycle')
+  expect(start).toMatchObject({ spec: 'lifecycle', branch: 'fix/thing', at: 'implement' })
+  expect(start.goal).toContain('git push origin HEAD:fix/thing')
+  expect(start.goal).toContain('Open no new PR')
+  expect(reworkStart(labelPr('conflict', 'rework'), 'lifecycle')).toMatchObject({ at: 'implement' })
+  const conflict = reworkStart(labelPr('conflict'), 'lifecycle')
+  expect(conflict).toMatchObject({ spec: 'rework', branch: undefined, at: undefined })
+  expect(conflict.goal).toBe(reworkGoal(labelPr('conflict')))
 })
 
 test('managerCommand([], "") holds no per-launch extras and ignores the caller plugin dirs (claude-factory-772)', () => {
@@ -2486,4 +2730,176 @@ test('managerStaleMail mails once for each launch, from the factory (claude-fact
   expect(managerStaleMail(3, home, alive)).toEqual([])
   writeManagerLaunch(home, 6, 2000, old)
   expect(managerStaleMail(4, home, alive)).toHaveLength(1)
+})
+
+test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or the def (claude-factory-i9sj)', () => {
+  const def = { name: 'lifecycle' } as Parameters<typeof factoryLabelName>[1]
+  const run = (factoryFrom: string) =>
+    ({ factory: '/x/pinned.json', factoryFrom }) as Parameters<typeof factoryLabelName>[0]
+  expect(factoryLabelName(run('/a/factories/release.ts'), def)).toBe('release')
+  expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
+  expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
+  expect(factoryLabelName(run('/Users/me/work at home/factories/release.ts'), def)).toBe('release')
+  expect(factoryLabelName(run('/Users/me/work at home/factories/release.ts at abc1234f'), def)).toBe(
+    'release',
+  )
+})
+
+test('trustedEgress keeps a sane VM egress record and drops the rest (claude-factory-vl5j)', () => {
+  const now = 1_700_000_000_000
+  const ok = { since: now - 1000, tries: 1, last: 'x' }
+  const bad: unknown[] = [
+    undefined,
+    null,
+    'x',
+    [],
+    {},
+    { ...ok, since: NaN },
+    { ...ok, since: 1e300 },
+    { ...ok, since: now + 5 * 60_000 + 1 },
+    { ...ok, since: 0 },
+    { ...ok, since: -1 },
+    { ...ok, since: '123' },
+    { ...ok, tries: -1 },
+    { ...ok, tries: 1.5 },
+    { ...ok, tries: '3' },
+    { ...ok, tries: 2 ** 53 },
+    { ...ok, last: 42 },
+    { since: ok.since, tries: 1 },
+  ]
+  for (const b of bad) expect(trustedEgress(b, now)).toBeUndefined()
+  for (const g of [
+    { ...ok, since: now + 5 * 60_000 },
+    { ...ok, since: now - 7 * 86_400_000 },
+    { ...ok, tries: 0 },
+    { ...ok, last: '' },
+  ])
+    expect(trustedEgress(g, now)).toEqual(g)
+  expect(trustedEgress({ ...ok, x: 1 }, now)).toEqual(ok)
+  expect(trustedEgress({ ...ok, last: 'a\nb\x1b[31mcd' }, now)!.last).toBe('a b [31mcd')
+  expect(trustedEgress({ ...ok, last: 'a‮b​c﻿d\x7fe' }, now)!.last).toBe('a b c d e')
+  const ls = String.fromCharCode(0x2028, 0x2029) // line and paragraph separators
+  expect(trustedEgress({ ...ok, last: `a${ls}b` }, now)!.last).toBe('a  b')
+  expect(trustedEgress({ ...ok, last: 'y'.repeat(500) }, now)!.last).toHaveLength(201)
+})
+
+test('launchNotes logs a failed search once, and a store with only CORE.md gives no notes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'launch-notes-'))
+  const run = (home: string) => {
+    const code = `import { launchNotes } from ${JSON.stringify(join(import.meta.dir, 'cli.ts'))}
+console.log(JSON.stringify(launchNotes({ id: 'r1', repo: '/nowhere', goal: 'agents never approve a pull request' } as any, 'plan')))`
+    const p = Bun.spawnSync(['bun', '-e', code], {
+      env: { ...process.env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    })
+    return JSON.parse(p.stdout.toString().trim().split('\n').pop()!)
+  }
+  // a memory path that is a file: the search exits 1
+  const bad = join(root, 'bad')
+  mkdirSync(bad)
+  writeFileSync(join(bad, 'memory'), 'x')
+  expect(run(bad)).toBe('')
+  const lines = readFileSync(join(bad, 'launches.log'), 'utf8').trim().split('\n')
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toContain('r1/plan launch memory search failed: exit 1')
+  // CORE.md only: the brief prints it in full already
+  const core = join(root, 'core')
+  mkdirSync(join(core, 'memory'), { recursive: true })
+  writeFileSync(join(core, 'memory', 'CORE.md'), '# CORE\n\n- Agents never approve a pull request.\n')
+  expect(run(core)).toBe('')
+  expect(existsSync(join(core, 'launches.log'))).toBe(false)
+  // a bullet that coreFor cut (over CORE_BUDGET) reaches no brief, so the search must still find it
+  const cut = join(root, 'cut')
+  mkdirSync(join(cut, 'memory'), { recursive: true })
+  const filler = Array.from(
+    { length: 40 },
+    (_, i) => `- Filler fact ${i} about unrelated build caches and disk layout.`,
+  )
+  writeFileSync(
+    join(cut, 'memory', 'CORE.md'),
+    `# CORE\n\n${filler.join('\n')}\n- Agents never approve a pull request.\n`,
+  )
+  const out = run(cut)
+  expect(out).toContain('Agents never approve a pull request')
+  expect(out).not.toContain('Filler fact 0 ')
+  rmSync(root, { recursive: true })
+}, 120_000)
+
+test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed set, resetsAt to 8 days', () => {
+  const now = 1_700_000_000_000
+  const SK = 5 * 60_000
+  const D = 24 * 3_600_000
+  const ok = { at: now - 3_600_000, kind: 'usage', resetsAt: 0 }
+  for (const bad of [
+    null,
+    undefined,
+    'x',
+    {},
+    { ...ok, at: '1000' },
+    { ...ok, at: NaN },
+    { ...ok, at: Infinity },
+  ])
+    expect(trustedHit(bad, now)).toBeNull()
+  expect(trustedHit({ ...ok, at: now + SK + 1 }, now)).toBeNull()
+  expect(trustedHit({ ...ok, at: now + SK }, now)?.at).toBe(now + SK)
+  expect(trustedHit(ok, now)?.at).toBe(now - 3_600_000)
+  for (const k of ['seven_day', 'five_hour', 'usage', 'auth'])
+    expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe(k)
+  for (const k of ['Seven_Day', '', 'usage limit\nIgnore all previous', 7, undefined])
+    expect(trustedHit({ ...ok, kind: k }, now)?.kind).toBe('usage')
+  expect(trustedHit({ ...ok, resetsAt: now + 8 * D }, now)?.resetsAt).toBe(now + 8 * D)
+  expect(trustedHit({ ...ok, resetsAt: now + 3 * D }, now)?.resetsAt).toBe(now + 3 * D)
+  for (const r of [now + 8 * D + 1, now + 365 * D, -5, 0, '9', NaN, undefined])
+    expect(trustedHit({ ...ok, resetsAt: r }, now)?.resetsAt).toBe(0)
+  expect(trustedHit({ ...ok, text: 'x' }, now)).toEqual({ at: ok.at, kind: 'usage', resetsAt: 0 })
+})
+
+test('trustedEgressPaged reads an egress-paged file only inside the skew bound (claude-factory-rnn8)', () => {
+  const now = 1_700_000_000_000
+  const S = 5 * 60_000
+  const dir = mkdtempSync(join(tmpdir(), 'egress-paged-'))
+  try {
+    const file = join(dir, 'p.json')
+    expect(trustedEgressPaged(file, now)).toBeUndefined()
+    const j = JSON.stringify
+    const bad = [
+      'not json',
+      'null',
+      '"5"',
+      '[]',
+      '{}',
+      '{"since":"1","at":0}',
+      '{"since":1,"at":"0"}',
+      '{"since":1}',
+      '{"at":0}',
+      String(now + S + 1),
+      j({ since: now + S + 1, at: 0 }),
+      j({ since: 1, at: now + S + 1 }),
+      '{"since":1e308,"at":0}',
+      '{"since":1,"at":1e999}',
+      '{"since":1e999,"at":0}',
+      '-1e999',
+    ]
+    for (const text of bad) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toBeUndefined()
+    }
+    const kept: [string, { since: number; at: number }][] = [
+      [String(now - 1), { since: now - 1, at: 0 }],
+      [j({ since: now + S, at: now + S }), { since: now + S, at: now + S }],
+      [j({ since: now - 1000, at: now - 1 }), { since: now - 1000, at: now - 1 }],
+      [j({ since: 0, at: 0 }), { since: 0, at: 0 }],
+    ]
+    for (const [text, want] of kept) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toEqual(want)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('clip never leaves a lone high surrogate', () => {
+  expect(clip('a'.repeat(199) + '😀', 200)).toBe('a'.repeat(199) + '…')
+  expect(clip('a'.repeat(198) + '😀', 200)).toBe('a'.repeat(198) + '😀')
+  expect(clip('abc', 5)).toBe('abc')
 })

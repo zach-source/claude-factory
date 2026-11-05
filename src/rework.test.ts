@@ -25,8 +25,8 @@ test('a rework run starts on the queued PR branch from origin, and only when tha
   expect(reworkBase(clone, 'factory/gone')).toBeUndefined()
 })
 
-test('a branch that is not a factory branch name gives no base', () => {
-  for (const b of ['-x', 'main', '../x', 'factory/../x']) expect(reworkBase('.', b)).toBeUndefined()
+test('a branch name that is an option or climbs a path gives no base', () => {
+  for (const b of ['-x', '../x', 'factory/../x']) expect(reworkBase('.', b)).toBeUndefined()
 })
 
 test('freshBase starts at the rig base_branch tip on origin, and otherwise at origin default tip, never an unpushed local HEAD', () => {

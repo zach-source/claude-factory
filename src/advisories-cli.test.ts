@@ -31,7 +31,7 @@ if (a[0] === 'list') {
 } else if (a[0] === 'create') {
   const id = 'fake-' + (beads.length + 1)
   const labels = a.flatMap((x, i) => (x === '-l' ? [a[i + 1]] : []))
-  beads.push({ id, status: 'open', labels, title: a[1], description: val('-d'), priority: val('-p'), metadata: JSON.parse(val('--metadata')) })
+  beads.push({ id, status: 'open', labels, title: val('--title'), description: val('-d'), priority: val('-p'), metadata: JSON.parse(val('--metadata')) })
   writeFileSync(${JSON.stringify(state)}, JSON.stringify(beads))
   console.log('created ' + id)
 } else if (a[0] === 'update') {

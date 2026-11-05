@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test'
 import { makeGate } from './pkggate'
 
 // Fixtures trimmed from real proxy.golang.org responses (golang.org/x/text), 2026-10-14:
@@ -854,7 +854,7 @@ test("claude-factory-56j: owning every sampled index entry caps one refresh's ri
   type Phase = 'start' | 'attack' | 'honest'
   let phase: Phase = 'start'
   let now = NOW
-  const latestByPhase: Record<Phase, number> = { start: 10_000, attack: 10_100, honest: 10_200 }
+  const latestByPhase: Record<Phase, number> = { start: 30_000, attack: 30_100, honest: 30_200 }
   // the probe module, separate from the sampled paths, so its own decisions never feed the floor it is
   // judged against
   const PROBE_RECORDS: Record<string, number> = { 'v1.0.0': 5000, 'v2.0.0': 1200 }
@@ -966,6 +966,223 @@ test("claude-factory-56j: owning every sampled index entry caps one refresh's ri
     srv.stop(true)
   }
 })
+
+// claude-factory-ldb: a tree-size history gives the floor an absolute ceiling, so refreshes cannot compound
+// the per-refresh rise cap. Fixture: 10 records a minute, one refresh every 31 min (310 records), minDays 4
+// (57_600 records of history).
+function ldbFixture() {
+  const PATHS = Array.from({ length: 9 }, (_, i) => `ldb-${String.fromCharCode(97 + i)}.example.com/mod`)
+  const st = { now: NOW, latest: 1_000_000, minId: 942_400, lookups: true, latestAt: 0 }
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index') {
+        const sinceMs = Date.parse(url.searchParams.get('since') ?? new Date(st.now).toISOString())
+        const ts = new Date(sinceMs + 15 * 60_000).toISOString()
+        return new Response(
+          PATHS.map(p => JSON.stringify({ Path: p, Version: 'v1.0.0', Timestamp: ts })).join('\n') + '\n',
+        )
+      }
+      if (url.pathname === '/latest') {
+        if (st.latestAt) st.now = st.latestAt // steps the clock mid-refresh
+        return new Response(sumdbLatestBody(st.latest))
+      }
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        if (key.startsWith('ldbprobe.example.com/mod@')) return new Response('1030000\n')
+        if (!st.lookups) return new Response('gone', { status: 404 })
+        const idx = PATHS.findIndex(p => key === `${escapeGoPath(p)}@v1.0.0`)
+        return new Response(`${idx >= 0 ? st.minId + idx : 999_999_999}\n`)
+      }
+      if (/^\/ldbprobe\.example\.com\/mod\/@v\/v[\d.]+\.info$/.test(url.pathname))
+        return new Response(`{"Version":"v1.0.0","Time":"${GO_INFO_BACKDATED_TIME}"}`)
+      return new Response('not found', { status: 404 })
+    },
+  })
+  const lines: string[] = []
+  const origLog = console.log
+  console.log = (s: string) => lines.push(s)
+  const g = makeGate({
+    upstream: {
+      go: srv.url.origin,
+      npm: base(),
+      pypi: base(),
+      files: base(),
+      sumdb: srv.url.origin,
+      goIndex: srv.url.origin,
+    },
+    now: () => st.now,
+  })
+  let n = 0
+  // one refresh: a decision on a stale floor starts it; wait for its log line, return that line
+  const refresh = async () => {
+    const m = lines.length
+    await g(new Request(`http://gate/go/ldbprobe.example.com/mod/@v/v0.${n++}.0.info`))
+    await waitForFloorRefresh(lines, m)
+    return lines
+      .slice(m)
+      .map(l => JSON.parse(l))
+      .find(j => j.eco === 'go' && (typeof j.floor === 'number' || j.decision === 'error'))
+  }
+  const probe = () => g(new Request('http://gate/go/ldbprobe.example.com/mod/@v/v1.0.0.info'))
+  const healthzFloor = async () =>
+    ((await (await g(new Request('http://gate/healthz'))).json()) as { goFloor: { record: number } | null })
+      .goFloor?.record
+  const stop = () => {
+    console.log = origLog
+    srv.stop(true)
+  }
+  return { st, refresh, probe, healthzFloor, stop }
+}
+
+test('claude-factory-ldb AC1: a sustained attack that owns every sample cannot lift the floor above the traffic ceiling', async () => {
+  const f = ldbFixture()
+  try {
+    await f.refresh()
+    for (let k = 1; k <= 100; k++) {
+      f.st.now += 31 * 60_000
+      f.st.latest = 1_000_000 + 310 * k
+      f.st.minId = f.st.latest - 10
+      const line = await f.refresh()
+      expect(line.floor).toBeLessThanOrEqual(f.st.latest - 57_600)
+    }
+    const floor = (await f.healthzFloor()) as number
+    expect(floor).toBeLessThanOrEqual(973_400)
+    expect(floor).toBeGreaterThan(973_000)
+    const p = await f.probe()
+    expect(p.status).toBe(404)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
+test('claude-factory-ldb AC2: honest steady traffic is not cut by the ceiling', async () => {
+  const f = ldbFixture()
+  try {
+    await f.refresh()
+    for (let k = 1; k <= 5; k++) {
+      f.st.now += 31 * 60_000
+      f.st.latest = 1_000_000 + 310 * k
+      f.st.minId = f.st.latest - 57_700
+      const line = await f.refresh()
+      expect(line).toMatchObject({ floor: f.st.minId, sampled: f.st.minId, capped: false })
+    }
+  } finally {
+    f.stop()
+  }
+})
+
+test('claude-factory-ldb AC3: the anchor is the newest size read at or before now-minDays', async () => {
+  const f = ldbFixture()
+  try {
+    f.st.minId = 900_000
+    await f.refresh()
+    // 1 h later a burst of 100_000 records. The lookups fail, so the floor stays but the size is kept.
+    f.st.now += 3_600_000
+    f.st.latest = 1_100_000
+    f.st.lookups = false
+    await f.refresh()
+    f.st.lookups = true
+    f.st.now = NOW + 98 * 3_600_000
+    f.st.latest = 1_200_000
+    f.st.minId = 1_150_000
+    const line = await f.refresh()
+    // anchor NOW+1h: 1_200_000 - 100_000 * 96/97 = 1_101_031. Anchor NOW would give 1_004_081.
+    expect(line.floor).toBeGreaterThan(1_101_000)
+    expect(line.floor).toBeLessThanOrEqual(1_101_031)
+    expect(line.capped).toBe(true)
+  } finally {
+    f.stop()
+  }
+})
+
+test('claude-factory-ldb AC4: a cold start gives a finite floor and still refuses a newer version', async () => {
+  const f = ldbFixture()
+  try {
+    const line = await f.refresh()
+    expect(line).toMatchObject({ floor: 942_400, sampled: 942_400, capped: false })
+    expect(await f.healthzFloor()).toBe(942_400)
+    expect((await f.probe()).status).toBe(404)
+  } finally {
+    f.stop()
+  }
+})
+
+// claude-factory-35em: the tree-size history must stay strictly increasing in time. A refresh that reads
+// the wall clock at or before its newest read fails and keeps the floor.
+const STEP_BACK = 'wall clock is not after the last tree size read'
+async function stepBackSetup(f: ReturnType<typeof ldbFixture>) {
+  await f.refresh()
+  f.st.now += 31 * 60_000
+  f.st.latest = 1_000_310
+  f.st.minId = f.st.latest - 10
+  const second = await f.refresh()
+  const newest = f.st.now
+  f.st.now += 31 * 60_000
+  f.st.latest = 1_000_620
+  f.st.minId = f.st.latest - 10
+  return { floor: second.floor as number, newest }
+}
+
+test.each([
+  ['a full step back', () => NOW - 3_600_000],
+  ['a partial step back', () => NOW + 15 * 60_000],
+  ['equal time', () => NOW + 31 * 60_000],
+])(
+  'claude-factory-35em: %s mid-refresh fails the refresh and keeps the floor',
+  async (_n, at) => {
+    const f = ldbFixture()
+    try {
+      const { floor } = await stepBackSetup(f)
+      f.st.latestAt = at()
+      const line = await f.refresh()
+      expect(line.decision).toBe('error')
+      expect(line.reason).toContain(STEP_BACK)
+      expect(await f.healthzFloor()).toBe(floor)
+    } finally {
+      f.stop()
+    }
+  },
+  60_000,
+)
+
+test('claude-factory-35em AC6: after a step back failure the gate recovers under the rise bound', async () => {
+  const f = ldbFixture()
+  try {
+    const { floor, newest } = await stepBackSetup(f)
+    f.st.latestAt = NOW - 3_600_000
+    expect((await f.refresh()).decision).toBe('error')
+    f.st.latestAt = 0
+    f.st.now = newest + 31 * 60_000 + 30_000
+    const line = await f.refresh()
+    // short history: the ceiling (943_480) binds below the per-refresh bound (floor + 3 x 310 = 943_640)
+    expect(line.decision).toBeUndefined()
+    expect(floor + 3 * 310).toBe(943_640)
+    expect(line.floor).toBeLessThanOrEqual(943_480)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
+test('claude-factory-35em AC4: a /latest below the anchor gives a finite floor at or below it', async () => {
+  const f = ldbFixture()
+  try {
+    await f.refresh()
+    f.st.now += 31 * 60_000
+    f.st.latest = 1_000_310
+    f.st.minId = f.st.latest - 10
+    await f.refresh()
+    f.st.now += 31 * 60_000
+    f.st.latest = 999_000
+    f.st.minId = 900_000
+    const line = await f.refresh()
+    expect(Number.isFinite(line.floor)).toBe(true)
+    expect(line.floor).toBeLessThanOrEqual(999_000)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
 
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
@@ -2194,4 +2411,568 @@ test('PyPI upstream errors refuse rather than pass through', async () => {
   const broken = await g(new Request('http://gate/pypi/simple/brokenproj/'))
   expect(broken.status).toBe(502)
   expect(await broken.text()).toContain('pkg-gate')
+})
+
+// claude-factory-qls: an upstream 3xx must never take the gate to a host that is not a configured upstream
+const FAKE_PYPI = 'https://pypi.fake.test'
+const redirectGate = (fake: (url: URL, init?: RequestInit) => Response) =>
+  makeGate({
+    upstream: {
+      go: 'https://go.fake.test',
+      npm: 'https://npm.fake.test',
+      pypi: FAKE_PYPI,
+      files: FAKE_PYPI,
+      sumdb: base(),
+      goIndex: base(),
+    },
+    now: () => NOW,
+    fetch: ((input: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(String(input))
+      return u.origin === base() ? fetch(input, init) : Promise.resolve(fake(u, init))
+    }) as typeof fetch,
+  })
+const found = (loc: string) => new Response(null, { status: 302, headers: { location: loc } })
+
+test('claude-factory-qls AC1: a 302 from a configured upstream to an off-origin host is refused 502, never fetched', async () => {
+  const secondHits = { n: 0 }
+  const second = Bun.serve({
+    port: 0,
+    fetch() {
+      secondHits.n++
+      return new Response('should never be reached')
+    },
+  })
+  // each row: the gate path, and the one upstream path that answers 302 (every other path answers normally)
+  const rows: [string, string][] = [
+    ['/npm/@types/ms/-/ms-2.1.0.tgz', '/@types/ms/-/ms-2.1.0.tgz'],
+    ['/npm/@types%2fms', '/@types/ms'],
+    ['/go/golang.org/x/text/@v/v0.26.0.info', '/golang.org/x/text/@v/v0.26.0.info'],
+    ['/go/golang.org/x/text/@v/v0.26.0.zip', '/golang.org/x/text/@v/v0.26.0.zip'],
+    ['/pypi/simple/requests/', '/simple/requests/'],
+    [`/pypi/files/requests${PYPI_OLD_WHEEL_PATH}`, PYPI_OLD_WHEEL_PATH],
+  ]
+  try {
+    for (const [gatePath, redirectedPath] of rows) {
+      const fake = Bun.serve({
+        port: 0,
+        fetch(req) {
+          const url = new URL(req.url)
+          if (
+            url.pathname === redirectedPath ||
+            (url.pathname === '/@types%2fms' && redirectedPath === '/@types/ms')
+          )
+            return found(`${second.url.origin}/latest/meta-data`)
+          if (url.pathname === '/@types/ms' || url.pathname === '/@types%2fms')
+            return new Response(npmPackument(url.origin))
+          if (url.pathname === '/@types/ms/-/ms-2.1.0.tgz') return new Response('TARBALL')
+          if (url.pathname === '/golang.org/x/text/@v/v0.26.0.info') return new Response(GO_INFO_OLD)
+          if (url.pathname === '/golang.org/x/text/@v/v0.26.0.zip') return new Response('ZIP')
+          if (url.pathname === '/simple/requests/') return new Response(pypiIndex(url.origin))
+          if (url.pathname === PYPI_OLD_WHEEL_PATH) return new Response('WHEEL')
+          return new Response('not found', { status: 404 })
+        },
+      })
+      try {
+        const o = fake.url.origin
+        const g = makeGate({
+          upstream: { go: o, npm: o, pypi: o, files: o, sumdb: base(), goIndex: base() },
+          now: () => NOW,
+        })
+        const r = await g(new Request(`http://gate${gatePath}`))
+        expect(`${gatePath} ${r.status}`).toBe(`${gatePath} 502`)
+      } finally {
+        fake.stop(true)
+      }
+    }
+    expect(secondHits.n).toBe(0)
+  } finally {
+    second.stop(true)
+  }
+})
+
+test('claude-factory-qls AC2: a go .zip 302 to https://storage.googleapis.com is followed; other storage hosts are refused unrequested', async () => {
+  const GO_PATH = '/golang.org/x/text/@v/v0.26.0'
+  const requested: string[] = []
+  const mk = (target: string) =>
+    redirectGate(u => {
+      requested.push(u.href)
+      if (u.href === `https://go.fake.test${GO_PATH}.info`) return new Response(GO_INFO_OLD)
+      if (u.href === `https://go.fake.test${GO_PATH}.zip`) return found(target)
+      if (u.href === 'https://storage.googleapis.com/proxy-golang-org-prod/x') return new Response('ZIPBYTES')
+      return new Response('x', { status: 404 })
+    })
+  const ok = await mk('https://storage.googleapis.com/proxy-golang-org-prod/x')(
+    new Request(`http://gate/go${GO_PATH}.zip`),
+  )
+  expect(ok.status).toBe(200)
+  expect(await ok.text()).toBe('ZIPBYTES')
+  for (const bad of [
+    'http://storage.googleapis.com/x',
+    'https://storage.googleapis.com:8443/x',
+    'https://storage.googleapis.com.evil.test/x',
+  ]) {
+    requested.length = 0
+    const r = await mk(bad)(new Request(`http://gate/go${GO_PATH}.zip`))
+    expect(`${bad} ${r.status}`).toBe(`${bad} 502`)
+    expect(requested).not.toContain(bad)
+  }
+})
+
+test('claude-factory-qls AC3/AC6: same-origin 301 hops (absolute and relative) are followed, with redirect manual and the accept header kept', async () => {
+  for (const loc of [`${FAKE_PYPI}/simple/demo/`, '/simple/demo/']) {
+    const seen: { redirect?: string; accept: string | null }[] = []
+    const g = redirectGate((u, init) => {
+      seen.push({ redirect: init?.redirect, accept: new Headers(init?.headers).get('accept') })
+      return u.pathname === '/simple/demo/' && seen.length === 1
+        ? found(loc)
+        : new Response(pypiIndex(FAKE_PYPI))
+    })
+    const r = await g(new Request('http://gate/pypi/simple/Demo/'))
+    expect(r.status).toBe(200)
+    expect(seen.length).toBe(2)
+    for (const s of seen) {
+      expect(s.redirect).toBe('manual')
+      expect(s.accept).toBe('application/vnd.pypi.simple.v1+json')
+    }
+  }
+})
+
+test('claude-factory-qls AC4: 5 same-origin hops are followed; a 6th hop is refused and its target never requested', async () => {
+  for (const [chain, status] of [
+    [5, 200],
+    [6, 502],
+  ] as const) {
+    const requested: string[] = []
+    const g = redirectGate(u => {
+      requested.push(u.href)
+      const n = Number(u.searchParams.get('h') ?? 0)
+      return n < chain ? found(`/simple/requests/?h=${n + 1}`) : new Response(pypiIndex(FAKE_PYPI))
+    })
+    const r = await g(new Request('http://gate/pypi/simple/requests/'))
+    expect(`${chain} ${r.status}`).toBe(`${chain} ${status}`)
+    // the original request plus 5 hops; the 6th hop (the 7th URL) is never requested
+    expect(requested.length).toBe(6)
+    expect(requested.some(h => h.endsWith('?h=6'))).toBe(false)
+  }
+})
+
+test('claude-factory-qls AC5: a 3xx with no, unparseable or file: Location is refused 502 with no further fetch', async () => {
+  const rows: (string | null)[] = [null, 'http://[bad', 'file:///etc/passwd']
+  for (const loc of rows) {
+    let n = 0
+    const g = redirectGate(() => {
+      n++
+      return loc === null ? new Response(null, { status: 302 }) : found(loc)
+    })
+    const r = await g(new Request('http://gate/pypi/simple/requests/'))
+    expect(`${loc} ${r.status}`).toBe(`${loc} 502`)
+    expect(n).toBe(1)
+    expect(g.stats().error).toBe(1) // the refusal is counted, not an accidental TypeError
+  }
+})
+
+// claude-factory-37s: a Version from an upstream body joins the sumdb lookup URL, so it must match Go's grammar first
+function keyFixture(extra: (url: URL) => Response | undefined) {
+  const keys: string[] = []
+  const srv = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const url = new URL(req.url)
+      if (url.pathname === '/index')
+        return new Response(goIndexBody(url.searchParams.get('since') ?? new Date(NOW).toISOString()))
+      if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+      if (url.pathname.startsWith('/lookup/')) {
+        const key = url.pathname.slice('/lookup/'.length)
+        keys.push(key)
+        return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
+      }
+      return extra(url) ?? new Response('not found', { status: 404 })
+    },
+  })
+  const g = makeGate({
+    upstream: {
+      go: srv.url.origin,
+      npm: base(),
+      pypi: base(),
+      files: base(),
+      sumdb: srv.url.origin,
+      goIndex: srv.url.origin,
+    },
+    now: () => NOW,
+  })
+  return { srv, g, keys }
+}
+// a lookup key that is not one of the floor-sample keys, or that names the module under test
+const unexpectedKeys = (keys: string[], mod: string) =>
+  keys.filter(k => k.includes(mod) || GO_FLOOR_RECORDS[k] === undefined)
+
+describe('claude-factory-37s: sumdb lookup key charset', () => {
+  const rejects = [
+    'v1.0.0/../../evil',
+    'v1.0.0/x',
+    'v1.0.0?x=1',
+    'v1.0.0#f',
+    'v1.0.0%2Fx',
+    'v1.0.0 x',
+    'v1.0.0\\x',
+    '1.0.0',
+    '',
+  ]
+  for (const bad of rejects) {
+    test(`.info/.mod/.zip answer 502 for body Version ${JSON.stringify(bad)}, with no lookup`, async () => {
+      const lines: string[] = []
+      const orig = console.log
+      console.log = (s: string) => lines.push(s)
+      const { srv, g, keys } = keyFixture(url =>
+        url.pathname === '/badver.example.com/mod/@v/v1.0.0.info'
+          ? new Response(JSON.stringify({ Version: bad, Time: GO_INFO_BACKDATED_TIME }))
+          : undefined,
+      )
+      try {
+        for (const ext of ['info', 'mod', 'zip'])
+          expect(
+            (await g(new Request(`http://gate/go/badver.example.com/mod/@v/v1.0.0.${ext}`))).status,
+          ).toBe(502)
+        expect(unexpectedKeys(keys, 'badver.example.com')).toEqual([])
+        const line = lines
+          .map(l => JSON.parse(l))
+          .find(l => l.decision === 'error' && String(l.reason).includes('lookup key'))
+        expect(line?.reason).toBe('sum.golang.org lookup key not valid')
+        for (const l of lines) expect(l).not.toContain('http')
+      } finally {
+        console.log = orig
+        srv.stop(true)
+      }
+    })
+  }
+
+  const allows = [
+    'v1.0.0',
+    'v1.0.0-RC1',
+    'v1.1.0-0.20261001120000-abcdef123456',
+    'v2.0.0+incompatible',
+    'v1.0.0-rc.1+build.5',
+  ]
+  for (const ok of allows) {
+    test(`body Version ${ok} stays allowed, with one lookup for its escaped key`, async () => {
+      const { srv, g, keys } = keyFixture(url =>
+        url.pathname === `/okver.example.com/mod/@v/${escapeGoPath(ok)}.info`
+          ? new Response(JSON.stringify({ Version: ok, Time: GO_INFO_BACKDATED_TIME }))
+          : undefined,
+      )
+      try {
+        const r = await g(new Request(`http://gate/go/okver.example.com/mod/@v/${escapeGoPath(ok)}.info`))
+        expect(r.status).toBe(200)
+        expect(keys.filter(k => k.includes('okver.example.com'))).toEqual([
+          `okver.example.com/mod@${escapeGoPath(ok)}`,
+        ])
+      } finally {
+        srv.stop(true)
+      }
+    })
+  }
+
+  test('@latest with a bad Version makes no lookup and falls back to @v/list', async () => {
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (s: string) => lines.push(s)
+    const info = JSON.stringify({ Version: 'v1.0.0', Time: GO_INFO_BACKDATED_TIME })
+    const { srv, g, keys } = keyFixture(url => {
+      if (url.pathname === '/badlatest.example.com/mod/@latest')
+        return new Response(JSON.stringify({ Version: 'v9.9.9/../../evil', Time: GO_INFO_BACKDATED_TIME }))
+      if (url.pathname === '/badlatest.example.com/mod/@v/list') return new Response('v1.0.0\n')
+      if (url.pathname === '/badlatest.example.com/mod/@v/v1.0.0.info') return new Response(info)
+      return undefined
+    })
+    try {
+      const r = await g(new Request('http://gate/go/badlatest.example.com/mod/@latest'))
+      expect(r.status).toBe(200)
+      expect(((await r.json()) as { Version: string }).Version).toBe('v1.0.0')
+      expect(keys.filter(k => k.includes('evil') || k.includes('v9.9.9'))).toEqual([])
+      const bad = lines.map(l => JSON.parse(l)).find(l => l.version === 'v9.9.9/../../evil')
+      expect(bad?.decision).toBe('error')
+    } finally {
+      console.log = orig
+      srv.stop(true)
+    }
+  })
+
+  test('the floor refresh drops index entries with a bad Path or Version before it samples', async () => {
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (s: string) => lines.push(s)
+    const keys: string[] = []
+    const srv = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url)
+        if (url.pathname === '/index') {
+          const ts = new Date(Date.parse(url.searchParams.get('since') ?? '') + 15 * 60_000).toISOString()
+          const bad = [
+            { Path: 'evil.example.com/../x', Version: 'v1.0.0' },
+            { Path: 'ok.example.com/m', Version: 'v1/../x' },
+            { Path: 'q.example.com/m?x=1', Version: 'v1.0.0' },
+          ]
+          // GO_FLOOR_SAMPLE_LIMIT bad entries first: if they took sample slots the floor would starve
+          const badMany = Array.from({ length: 9 }, (_, i) => bad[i % 3]!)
+          const good = GO_FLOOR_SAMPLE_PATHS.map(p => ({ Path: p, Version: GO_FLOOR_SAMPLE_VERSION }))
+          return new Response(
+            [...badMany, ...good].map(e => JSON.stringify({ ...e, Timestamp: ts })).join('\n') + '\n',
+          )
+        }
+        if (url.pathname === '/latest') return new Response(sumdbLatestBody(1_000_000))
+        if (url.pathname.startsWith('/lookup/')) {
+          const key = url.pathname.slice('/lookup/'.length)
+          keys.push(key)
+          return new Response(`${GO_FLOOR_RECORDS[key] ?? GO_FLOOR_RECORD - 1}\n`)
+        }
+        if (url.pathname === '/floorbad.example.com/mod/@v/v1.0.0.info')
+          return new Response(JSON.stringify({ Version: 'v1.0.0', Time: GO_INFO_BACKDATED_TIME }))
+        return new Response('not found', { status: 404 })
+      },
+    })
+    try {
+      const g = makeGate({
+        upstream: {
+          go: srv.url.origin,
+          npm: base(),
+          pypi: base(),
+          files: base(),
+          sumdb: srv.url.origin,
+          goIndex: srv.url.origin,
+        },
+        now: () => NOW,
+      })
+      const r = await g(new Request('http://gate/go/floorbad.example.com/mod/@v/v1.0.0.info'))
+      expect(r.status).toBe(200)
+      expect(unexpectedKeys(keys, 'evil').filter(k => k !== 'floorbad.example.com/mod@v1.0.0')).toEqual([])
+      const floor = lines.map(l => JSON.parse(l)).find(l => typeof l.floor === 'number')
+      expect(floor?.samples).toBe(9)
+    } finally {
+      console.log = orig
+      srv.stop(true)
+    }
+  })
+})
+
+// claude-factory-brvt: one refused redirect counts one error, reads "redirect refused" (never "timeout"),
+// and every 3xx body is cancelled
+describe('claude-factory-brvt: refused redirect accounting', () => {
+  const GO = '/golang.org/x/text/@v/v0.26.0'
+  const EVIL = 'http://evil.test'
+  // runs `fn` with console.log captured; returns the parsed JSON lines
+  async function captured(fn: () => Promise<void>) {
+    const lines: Record<string, unknown>[] = []
+    const spy = spyOn(console, 'log').mockImplementation((s: unknown) => {
+      try {
+        lines.push(JSON.parse(String(s)))
+      } catch {
+        // not a JSON line
+      }
+    })
+    try {
+      await fn()
+    } finally {
+      spy.mockRestore()
+    }
+    return lines
+  }
+  const reasons = (lines: Record<string, unknown>[]) => lines.map(l => String(l.reason ?? ''))
+
+  test('AC1: a go .info 302 off-origin is 502, counts error once, reason redirect refused', async () => {
+    const hits: string[] = []
+    const g = redirectGate(u => {
+      hits.push(u.href)
+      return u.href === `https://go.fake.test${GO}.info`
+        ? found(`${EVIL}/x`)
+        : new Response('x', { status: 404 })
+    })
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(1)
+    expect(reasons(lines).filter(r => r === 'upstream .info: redirect refused').length).toBe(1)
+    expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  test('AC1 negatives: .info 500 and a hanging .info keep their count and reason', async () => {
+    const g500 = redirectGate(() => new Response('x', { status: 500 }))
+    const l500 = await captured(async () => {
+      expect((await g500(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g500.stats().error).toBe(1)
+    expect(reasons(l500)).toContain('upstream .info: 500')
+    const gh = makeGate({
+      upstream: {
+        go: 'https://go.fake.test',
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: base(),
+        goIndex: base(),
+      },
+      now: () => NOW,
+      fetchTimeoutMs: 50,
+      fetch: ((_u: string, init?: RequestInit) =>
+        new Promise<Response>((_res, rej) =>
+          init?.signal?.addEventListener('abort', () => rej(new Error('aborted'))),
+        )) as unknown as typeof fetch,
+    })
+    const lh = await captured(async () => {
+      expect((await gh(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(gh.stats().error).toBe(1)
+    expect(reasons(lh)).toContain('upstream .info: timeout')
+  })
+
+  // a go gate: base() (index, latest, lookup) is real; every other origin answers from `fake`
+  const goGate = (
+    fake: (u: URL) => Response | undefined,
+    over: { sumdb?: string; goIndex?: string } = {},
+  ) => {
+    const hits: string[] = []
+    const g = makeGate({
+      upstream: {
+        go: 'https://go.fake.test',
+        npm: base(),
+        pypi: base(),
+        files: base(),
+        sumdb: over.sumdb ?? base(),
+        goIndex: over.goIndex ?? base(),
+      },
+      now: () => NOW,
+      fetch: ((input: string | URL | Request, init?: RequestInit) => {
+        const u = new URL(String(input))
+        hits.push(u.href)
+        const r = fake(u)
+        if (r) return Promise.resolve(r)
+        if (u.origin === base()) return fetch(input, init)
+        return Promise.resolve(new Response('x', { status: 404 }))
+      }) as typeof fetch,
+    })
+    return { g, hits }
+  }
+  const infoOk = (u: URL) =>
+    u.href === `https://go.fake.test${GO}.info` ? new Response(GO_INFO_OLD) : undefined
+
+  test('AC2: a sumdb lookup 302 off-origin is 502, counts error once, reason lookup: redirect refused', async () => {
+    const { g, hits } = goGate(
+      u => infoOk(u) ?? (u.pathname === '/lookup/golang.org/x/text@v0.26.0' ? found(`${EVIL}/x`) : undefined),
+      {},
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(1)
+    expect(reasons(lines)).toContain('sum.golang.org lookup: redirect refused')
+    expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  test('AC2 negative: a sumdb lookup 500 keeps count 1 and reason lookup failed', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.pathname === '/lookup/golang.org/x/text@v0.26.0' ? new Response('x', { status: 500 }) : undefined),
+      {},
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(1)
+    expect(reasons(lines)).toContain('sum.golang.org lookup failed')
+  })
+
+  test('AC3: an index 302 off-origin gives floor refresh reason redirect refused, never timeout', async () => {
+    const { g, hits } = goGate(
+      u => infoOk(u) ?? (u.origin === 'https://idx.fake.test' ? found(`${EVIL}/x`) : undefined),
+      { goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org redirect refused')
+    expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  test('AC3 negative: an index 503 keeps reason index.golang.org 503', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ?? (u.origin === 'https://idx.fake.test' ? new Response('x', { status: 503 }) : undefined),
+      { goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      await g(new Request(`http://gate/go${GO}.info`))
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org 503')
+  })
+
+  describe('AC4: every 3xx body is cancelled', () => {
+    for (const throws of [false, true]) {
+      const label = throws ? 'a throwing cancel changes nothing' : 'cancel'
+      const mk = (second: 'same' | 'off') => {
+        let cancels = 0
+        let n = 0
+        const redirect = (loc: string) =>
+          new Response(
+            new ReadableStream({
+              cancel() {
+                cancels++
+                if (throws) throw new Error('cancel failed')
+              },
+            }),
+            { status: 301, headers: { location: loc } },
+          )
+        const g = makeGate({
+          upstream: {
+            go: base(),
+            npm: base(),
+            pypi: FAKE_PYPI,
+            files: FAKE_PYPI,
+            sumdb: base(),
+            goIndex: base(),
+          },
+          now: () => NOW,
+          fetch: (() => {
+            n++
+            if (n === 1) return Promise.resolve(redirect('/simple/demo/b'))
+            if (second === 'off' && n === 2) return Promise.resolve(redirect(`${EVIL}/x`))
+            return Promise.resolve(new Response(pypiIndex(FAKE_PYPI)))
+          }) as unknown as typeof fetch,
+        })
+        return { g, cancels: () => cancels }
+      }
+      test(`row A (${label}): same-origin 301 then 200 cancels once`, async () => {
+        const { g, cancels } = mk('same')
+        expect((await g(new Request('http://gate/pypi/simple/Demo/'))).status).toBe(200)
+        expect(cancels()).toBe(1)
+      })
+      test(`row B (${label}): same-origin 301 then off-origin 302 is 502, cancels twice, error 1`, async () => {
+        const { g, cancels } = mk('off')
+        await captured(async () => {
+          expect((await g(new Request('http://gate/pypi/simple/Demo/'))).status).toBe(502)
+        })
+        expect(cancels()).toBe(2)
+        expect(g.stats().error).toBe(1)
+      })
+    }
+  })
+
+  test('AC5: npm packument same-origin 301 (absolute and relative) keeps redirect manual and accept application/json', async () => {
+    for (const loc of ['https://npm.fake.test/demo', '/demo']) {
+      const seen: { redirect?: string; accept: string | null }[] = []
+      const g = redirectGate((_u, init) => {
+        seen.push({ redirect: init?.redirect, accept: new Headers(init?.headers).get('accept') })
+        return seen.length === 1 ? found(loc) : new Response(npmPackument('https://npm.fake.test'))
+      })
+      expect((await g(new Request('http://gate/npm/demo'))).status).toBe(200)
+      expect(seen.length).toBe(2)
+      for (const s of seen) {
+        expect(s.redirect).toBe('manual')
+        expect(s.accept).toBe('application/json')
+      }
+    }
+  })
 })

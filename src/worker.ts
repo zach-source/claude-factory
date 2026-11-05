@@ -29,7 +29,9 @@ import {
   VM_PLUGINS,
 } from './harness'
 import { rmSafe } from './home-guard'
+import * as memory from './memory'
 import { sessionOf, type Usage } from './metrics'
+import { cut } from './cut'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -53,6 +55,17 @@ const alive = (pid: number) => {
   } catch {
     return false
   }
+}
+
+/**
+ * the maximum total bytes of one outbox command. A spawn with more bytes throws E2BIG (macOS 1 MiB; Linux 128 KiB
+ * for one word). The VM refuses a larger command. The laptop does not run it
+ */
+export const OUTBOX_MAX_BYTES = 100 * 1024
+/** the byte size of an argv over OUTBOX_MAX_BYTES, else undefined */
+export const outboxTooBig = (argv: string[]) => {
+  const n = argv.reduce((s, w) => s + Buffer.byteLength(w, 'utf8'), 0)
+  return n > OUTBOX_MAX_BYTES ? n : undefined
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
@@ -96,9 +109,9 @@ export function usageOfSession(run: string): Usage[] {
 }
 
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
- * args (exit 1): see `outboxUsage` */
+ * args (exit 1; exit 2 for memory add): see `outboxUsage` */
 export const OUTBOX_USAGE = {
-  report: 'usage: factory report <run> <seq> <outcome> <summary...>',
+  report: 'usage: factory report <run> <seq> <outcome> <summary...|--summary-file path>',
   mail: 'usage: factory mail <run> <node|manager> <text...>',
   memory:
     'usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]',
@@ -128,6 +141,23 @@ export function outboxUsage(cmd: string, args: string[]): 'help' | string | null
   if (cmd === 'memory' && args[0] === 'add') {
     if (helpAt([args[1]])) return 'help'
     if (!args[1]) return OUTBOX_USAGE.memory
+    // the laptop replay refuses a stray --word and a failed memory.gate with exit 2 and writes nothing; the
+    // VM must refuse them now, or the worker thinks the note was saved (claude-factory-eywj)
+    const words = args.slice(1)
+    const opt = (flag: string) => (words.includes(flag) ? words.splice(words.indexOf(flag), 2)[1] : undefined)
+    const [, , kind, until] = [
+      opt('--rig'),
+      opt('--from'),
+      opt('--kind'),
+      opt('--until'),
+      opt('--supersedes'),
+    ]
+    const stray = words.find(w => w.startsWith('--') && w !== '--anyway')
+    if (stray) return `factory memory add: unknown flag ${stray}\n${OUTBOX_USAGE.memory}`
+    const [summary, ...body] = words.filter(w => w !== '--anyway')
+    if (!summary) return OUTBOX_USAGE.memory
+    const refusal = memory.gate({ summary, body: body.join(' '), kind, until })
+    if (!refusal.ok) return `factory memory add: ${refusal.reason}\n${OUTBOX_USAGE.memory}`
     return null
   }
   if (cmd === 'memory' && args[0] === 'helped') {
@@ -251,7 +281,7 @@ function lastError(stderr: string): string {
       .map(l => l.trim())
       .filter(Boolean)
       .at(-1) ?? ''
-  return line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>').slice(0, 300)
+  return cut(line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>'), 300)
 }
 
 /**
@@ -345,6 +375,7 @@ export function turnArgv(
         ...['-p', '--session-dir', o.piDir!, '--session-id', o.session!],
         // the worker rules and the image's skills, as a Claude or codex worker gets them (constitution I)
         ...piFlags(join(import.meta.dir, 'worker-system.md'), o.plugins ?? imagePlugins()),
+        ...['--append-system-prompt', join(import.meta.dir, 'worker-vm.md')],
         ...(o.provider ? ['--provider', o.provider] : []),
         ...model('--model'),
       ]
@@ -381,7 +412,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
         if (e.type !== 'result') continue
         if (!e.is_error) return null
         const text = String(e.result ?? '')
-        return EGRESS_SIGNATURE.test(text) ? text.slice(0, 300) : null
+        return EGRESS_SIGNATURE.test(text) ? cut(text, 300) : null
       } catch {
         // the first line of a cut stream
       }
@@ -393,7 +424,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
   // the matching line, not whatever the 4000-char window happens to end on: the signature can sit
   // well before the window's tail, with unrelated agent output after it
   const line = text.split('\n').findLast(l => EGRESS_SIGNATURE.test(l))
-  return (line ?? text).slice(0, 300)
+  return cut(line ?? text, 300)
 }
 
 /**
@@ -405,6 +436,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
  * (claude-factory-xq3)
  */
 async function turn(text: string, model?: string, session?: string, onSession?: (id: string) => void) {
+  codexHome() // a turn can rewrite /etc/codex/requirements.toml when serve stays root: check again before each spawn
   const h = harness()
   // pi has no output to read an id from: it takes one on first use
   const id = h === 'pi' ? (session ?? crypto.randomUUID()) : session
@@ -507,7 +539,7 @@ async function turnWithRetry(
     onEgress({ since, tries, last: r.egress }, cur)
     appendFileSync(
       serveLog(),
-      `${new Date().toISOString()} egress failure, retry ${tries}: ${r.egress.slice(0, 200)}\n`,
+      `${new Date().toISOString()} egress failure, retry ${tries}: ${cut(r.egress, 200)}\n`,
     )
     if (Date.now() - since >= budgetMs) return cur
     await Bun.sleep(Math.min(waitMs * 2 ** (tries - 1), capMs))
@@ -548,7 +580,7 @@ function kubeconfig() {
 export let trustNote = ''
 export function bazelrc() {
   trustNote = ''
-  const lines = [process.env.FACTORY_BAZELRC!]
+  const lines = process.env.FACTORY_BAZELRC ? [process.env.FACTORY_BAZELRC] : []
   if (process.env.FACTORY_CA) {
     const ca = join(own(), 'egress-ca.crt')
     const store = join(own(), 'egress.jks')
@@ -581,7 +613,7 @@ export function bazelrc() {
       )
     else {
       console.error(`bazel will not trust the egress gateway: keytool: ${made.err || 'wrote no store'}`)
-      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${made.err.slice(0, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
+      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${cut(made.err, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
     }
   }
   // with a pkg-gate (launch() set these in the VM's env), rules_go/rules_python/rules_js fetch through it too,
@@ -1037,7 +1069,7 @@ export const imagePlugins = (skills = process.env.FACTORY_SKILLS) =>
         .flatMap(s => VM_PLUGINS[s] ?? [])
 
 /**
- * A codex worker's CODEX_HOME, written at each start. It holds the files the laptop sent (cli.ts vmCodexHome)
+ * A codex worker's CODEX_HOME, written at serve start and before each turn. It holds the files the laptop sent (cli.ts vmCodexHome)
  * AGENTS.md from this image's worker rules, and the image's skills (constitution I). It fails closed, as a pane's launch does (cli.ts codexWorker):
  * a .codex directory in the repo would add project config (all but the one `bd init` writes), and `codex features list` must show the guard on
  * (claude-factory-72dq).
@@ -1057,6 +1089,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
   writeFileSync(
     join(dir, 'AGENTS.md'),
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
+      readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8') +
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
   )
   codexSkills(dir, plugins)
@@ -1080,14 +1113,10 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
  * If origin has no such branch (a merge deleted it), clone the default branch, make the branch locally and
  * return a note for the brief; otherwise return ''.
  */
-export async function setup({ tries = 60, waitMs = 5000 } = {}) {
+export async function setup(o: { tries?: number; waitMs?: number } = {}) {
   trustCA()
   localhost()
-  // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
-  // replaces) go in the home rc, which every workspace reads
-  // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
   trustNote = ''
-  if (process.env.FACTORY_BAZELRC) writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
   if (process.env.FACTORY_KUBE_SERVER) kubeconfig()
   nixCache()
   // go's toolchain downloads go nowhere the egress allows: use the go that nix shell gives
@@ -1098,8 +1127,26 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'kube-apiserver'), APISERVER_WRAPPER, { mode: 0o755 })
   process.env.TEST_ASSET_KUBE_APISERVER ??= join(bin, 'kube-apiserver')
+  const missing = await clone(o)
+  // bazel takes no rc file from the env: a rig's remote cache flags (its key a placeholder the gateway
+  // replaces) and the gateway's CA go in the home rc, which every workspace reads. A Bazel repo on a rig
+  // with no flags still needs the CA, or its JVM refuses the gateway's cert for bcr.bazel.build (nebs).
+  // ponytail: root markers only; a Bazel workspace in a subdirectory needs FACTORY_BAZELRC on its rig
+  const bazel = ['MODULE.bazel', 'WORKSPACE', 'WORKSPACE.bazel'].some(f => existsSync(join(repo(), f)))
+  // HOME, not homedir(): Bun's homedir() ignores a HOME set at runtime, so a test would write the real one
+  if (process.env.FACTORY_BAZELRC || (process.env.FACTORY_CA && bazel))
+    writeFileSync(join(process.env.HOME ?? homedir(), '.bazelrc'), bazelrc())
+  return missing
+}
+
+/** clone the run branch once; a note for the brief when origin has lost it */
+async function clone({ tries = 60, waitMs = 5000 } = {}) {
   const remote = process.env.FACTORY_REPO
-  if (!remote || existsSync(join(repo(), '.git'))) return ''
+  const noteFile = join(own(), 'missing-branch-note')
+  if (!remote) return ''
+  // a restart before the first turn saves a session: give the same note again
+  if (existsSync(join(repo(), '.git'))) return existsSync(noteFile) ? readFileSync(noteFile, 'utf8') : ''
+  rmSync(noteFile, { force: true })
   const branch = process.env.FACTORY_BRANCH ?? 'main'
   let err = ''
   for (let i = 0; i < tries; i++) {
@@ -1117,7 +1164,9 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
       const b = c.ok ? sh(['git', '-C', repo(), 'checkout', '-q', '-b', branch]) : c
       if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
       excludeScratch(repo())
-      return `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
+      const note = `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
+      writeFileSync(noteFile, note)
+      return note
     }
     await Bun.sleep(waitMs)
   }
@@ -1130,11 +1179,13 @@ export async function setup({ tries = 60, waitMs = 5000 } = {}) {
  * must not push the message (for example git's fatal line) out of it (claude-factory-x500).
  */
 export function diedText(e: unknown) {
-  const msg = String((e as Error)?.message ?? e)
-    .trim()
-    .replace(/\s*\n\s*/g, ' | ')
-    .slice(0, 500)
-  return `serve died: ${msg}\n${((e as Error)?.stack ?? '').slice(0, 1200)}`
+  const msg = cut(
+    String((e as Error)?.message ?? e)
+      .trim()
+      .replace(/\s*\n\s*/g, ' | '),
+    500,
+  )
+  return `serve died: ${msg}\n${cut((e as Error)?.stack ?? '', 1200)}`
 }
 
 /**
@@ -1215,6 +1266,8 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
 /**
  * Find the usage limit that ended a codex turn. Read the last turn.failed or error line of `codex exec --json`
  * output. It is a limit when the message says "You've hit your usage limit" (curly or plain apostrophe).
+ * It is kind auth when a turn.failed says "unexpected status 401 Unauthorized", "access token could not be
+ * refreshed" or "Failed to refresh token: <status>" (codex rust-v0.160.1 manager.rs). An error line (a retry) never gives auth.
  * A later turn.completed, any other failure or a cut first line gives null. `at` is the time of the last write.
  */
 export function codexLimit(out: string, at = Date.now()) {
@@ -1224,7 +1277,16 @@ export function codexLimit(out: string, at = Date.now()) {
       if (e.type === 'turn.completed') return null
       if (e.type !== 'turn.failed' && e.type !== 'error') continue
       const text = String(e.type === 'error' ? e.message : e.error?.message)
-      return /hit your usage limit/i.test(text) ? { at, kind: 'usage', resetsAt: 0 } : null
+      if (/hit your usage limit/i.test(text)) return { at, kind: 'usage', resetsAt: 0 }
+      // a retry shows as an error line and can recover: only a turn.failed is a refused login
+      if (
+        e.type === 'turn.failed' &&
+        /unexpected status 401 Unauthorized|access token could not be refreshed|Failed to refresh token: \d{3}\b/i.test(
+          text,
+        )
+      )
+        return { at, kind: 'auth', resetsAt: 0 }
+      return null
     } catch {
       // not a JSON line: the cut first line of the tail
     }

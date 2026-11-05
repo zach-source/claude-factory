@@ -233,13 +233,14 @@ export type CiRed = { key: string; workflowId: number; workflow: string; sha: st
 export const ciKey = (workflowId: number, sha: string): string => `ci-red:${workflowId}-${sha.slice(0, 7)}`
 
 const RED = ['failure', 'timed_out', 'startup_failure']
+const EVENTS = new Set(['push', 'schedule', 'workflow_dispatch'])
 const counted = (r: GhRun): boolean =>
   r.status === 'completed' &&
-  !r.event.startsWith('pull_request') &&
+  EVENTS.has(r.event) &&
   (r.conclusion === 'success' || RED.includes(r.conclusion))
 
-/** Per workflow, reports the red newest counted run of main. A pull_request event, an unfinished run
- * and a cancelled, skipped, neutral or action_required run are not counted. The SHA is the oldest run
+/** Per workflow, reports the red newest counted run of main. Only a push, schedule or workflow_dispatch event counts: any other event can start from an outsider.
+ * An unfinished run and a cancelled, skipped, neutral or action_required run are not counted. The SHA is the oldest run
  * of the newest unbroken red streak, so a later red push keeps the same key. */
 export function mainCiReds(runs: GhRun[]): CiRed[] {
   const by = new Map<number, GhRun[]>()
@@ -265,10 +266,17 @@ export function mainCiReds(runs: GhRun[]): CiRed[] {
   return out
 }
 
-/** The reds with no open bead. A label with the prefix `ci-red:<workflow id>-` also tracks the red:
- * a streak longer than the run window moves its first failing SHA, and must not file a second bead. */
-export const newCiReds = (reds: CiRed[], openLabels: Set<string>): CiRed[] =>
-  reds.filter(r => ![...openLabels].some(l => l.startsWith(`ci-red:${r.workflowId}-`)))
+/** The reds with no bead. An open bead label with the prefix `ci-red:<workflow id>-` tracks the red:
+ * a streak longer than the run window moves its first failing SHA, and must not file a second bead.
+ * On a closed bead, only the exact key tracks the red. */
+export const newCiReds = (
+  reds: CiRed[],
+  openLabels: Set<string>,
+  closedLabels: Set<string> = new Set(),
+): CiRed[] =>
+  reds.filter(
+    r => !closedLabels.has(r.key) && ![...openLabels].some(l => l.startsWith(`ci-red:${r.workflowId}-`)),
+  )
 
 /** a run whose failed log holds a flaky test; `attempt` picks the failed attempt of a re-run */
 export type FlakyRun = { id: number; url: string; attempt?: number }

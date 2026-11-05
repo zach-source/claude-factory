@@ -72,6 +72,7 @@ import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
 import { HOME_REASON, homeReason } from './home-guard'
 import * as self from './worker-hook'
+import { cut } from './cut'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -158,6 +159,12 @@ export const APPROVE_REASON =
   'reviewer identity may approve a pull request. Here, post a comment review: gh pr review N ' +
   '--comment --body-file f, or --request-changes. This hook also denies a gh call that creates a ' +
   'review with an event it cannot read. Do not retry this command.'
+
+// claude-factory-hoz8
+export const GLAB_APPROVE_REASON =
+  'The factory denies this command: the factory has no GitLab reviewer identity, so only a person ' +
+  'approves a merge request. Post a note instead: glab mr note N -m "<text>". This hook also denies a ' +
+  'glab approve call it cannot read. Do not retry this command.'
 
 // claude-factory-zl5.22
 export const ALIAS_REASON =
@@ -3076,7 +3083,7 @@ function xargsHidesOperand(words: string[]): boolean {
     if (baseWord(words[i]!.replace(/[<>][\s\S]*$/, '')).toLowerCase() !== 'xargs') continue
     for (let j = i + 1; j < words.length; j++) {
       const b = baseWord(words[j]!)
-      if (b === 'git' || b === 'gh') return true
+      if (b === 'git' || b === 'gh' || b === 'glab') return true
     }
   }
   return false
@@ -5037,6 +5044,73 @@ function ghAliasDenied(subArgs: string[]): string | undefined {
   return sub === 'set' || sub === 'import' ? ALIAS_REASON : undefined
 }
 
+// a glab REST path that approves a merge request; read on the decoded, lower-case path
+const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
+const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output', '-R', '--repo'])
+
+/** True when the decoded endpoint text names a merge request approve path, or cannot be decoded. */
+function glabApprovePath(endpoint: string): boolean {
+  const decoded = decodeApiPath(endpoint)
+  if (decoded === undefined) return true
+  return [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded].some(p =>
+    GLAB_APPROVE_PATH.test(p),
+  )
+}
+
+/**
+ * claude-factory-hoz8: the reason to deny a `glab` call that can record a merge request approval,
+ * or that hides the part which decides this. `words` start at the `glab` word.
+ * The factory has no GitLab reviewer identity, so this denies at every station and ignores
+ * `gate.reviewer`. It reads three channels, and fails closed on a part it cannot read:
+ * `glab mr approve` (a word scan, so an unknown flag cannot hide the word), a REST path
+ * `.../merge_requests/N/approve` with any method, and a GraphQL approve mutation.
+ * Like `ghReason`, it scans the words as given and again without redirect words.
+ */
+function glabReason(words: string[], gate: HookGate): string | undefined {
+  const tail = words.slice(1)
+  const dropped = dropRedirectWords(tail)
+  return (
+    glabReasonOn(tail, gate) ?? (dropped.length === tail.length ? undefined : glabReasonOn(dropped, gate))
+  )
+}
+
+function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
+  const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
+  if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
+  if (hasMutatingWordBeforeDashDash(tail, new Set(['mr']))) {
+    const mi = tail.indexOf('mr')
+    const rest = tail.slice(mi + 1)
+    const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+    if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
+  }
+  if (!hasMutatingWordBeforeDashDash(tail, new Set(['api']))) return undefined
+  const apiArgs = expandGhShortClusters(tail.slice(tail.indexOf('api') + 1))
+  const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
+  if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
+  // every word that is not a flag or a flag value could be the endpoint: check each one
+  const endpoints: string[] = []
+  for (let i = 0; i < apiArgs.length; i++) {
+    const w = apiArgs[i]!
+    if (GLAB_API_VALUE_FLAGS.has(w)) i++
+    else if (!w.startsWith('-')) endpoints.push(w)
+  }
+  for (const endpoint of endpoints) {
+    // a glob word such as `...approve?x=1` still names the approve path in its literal text
+    if (glabApprovePath(endpoint)) return GLAB_APPROVE_REASON
+    if (dynamicWord(endpoint)) {
+      const hasData =
+        ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
+      if ((methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() !== 'GET') return DYNAMIC_VERB_REASON
+    } else if (isGraphqlEndpoint(endpoint)) {
+      const { texts, unresolved } = graphqlTexts(apiArgs, gate)
+      if (unresolved) return GLAB_APPROVE_REASON
+      if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
+    }
+  }
+  return undefined
+}
+
 /**
  * True when a word in `words` is a bare `gh` token (claude-factory-zl5).
  * From that word on, the words can start a command this guard must deny.
@@ -5066,13 +5140,18 @@ function anyGhReason(
       const r = ghReason(words.slice(j), gate, state, moved)
       if (r) return r
     }
+    if (baseWord(words[j]!) === 'glab') {
+      const r = glabReason(words.slice(j), gate)
+      if (r) return r
+    }
   }
   return undefined
 }
 
 export const FACTORY_CONTROL_REASON =
   'The factory denies this command: only the person or the manager runs factory say, stop, resume, ' +
-  'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, beads, watch, sync, dream, devenv, linear, queue, poke, attach, manager, migrate-to-ax and rig with a sub other than list. ' +
+  'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, beads, watch, sync, dream, devenv, linear, queue, poke, attach, manager, migrate-to-ax, ' +
+  'rig with a sub other than list, and memory with a sub other than search, add, helped, eval or compact --dry-run. ' +
   'Mail the manager instead. Do not retry this command.'
 
 // claude-factory-5y7b, claude-factory-3c4w: the verbs only the person or the manager runs.
@@ -5118,6 +5197,16 @@ function anyFactoryControlReason(words: string[]): string | undefined {
       const sub = words[j + 2]!
       if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
       if (sub !== 'list') return FACTORY_CONTROL_REASON
+    }
+    // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.
+    if (next.toLowerCase() === 'memory') {
+      const sub = words[j + 2]
+      if (sub === undefined) return FACTORY_CONTROL_REASON
+      if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+      if (['search', 'add', 'helped', 'eval'].includes(sub)) continue
+      const rest = words.slice(j + 3)
+      if (sub === 'compact' && rest.length > 0 && rest.every(w => w === '--dry-run')) continue
+      return FACTORY_CONTROL_REASON
     }
   }
   return undefined
@@ -5301,7 +5390,10 @@ function segmentDynArg(words: string[]): boolean {
 // claude-factory-mn2y: true when this segment may define a shell alias.
 // W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
 // W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
+// claude-factory-kuyx: a segment that is "alias" with only plain words (no "=", no expansion)
+// lists aliases and defines none, so it is not a define.
 function segmentMayDefineAlias(words: string[]): boolean {
+  if (words[0] === 'alias' && words.slice(1).every(w => /^[A-Za-z0-9_.:@%+,/-]+$/.test(w))) return false
   const anchors = commandAnchors(words)
   const first = anchors[0]
   const safe = first !== undefined && externalProgram(words[first]!)
@@ -7596,6 +7688,14 @@ const MAX_HEAD_DIRS = 8
 // Math.min(2000, remaining) lines below).
 const GATE_BUDGET_MS = 6000
 
+// claude-factory-zzxp: the per-spawn cap of the two alias reads. Only a plain decimal integer
+// in 1..GATE_BUDGET_MS counts. Every other value gives 2000, so a bad value still fails closed.
+export function aliasSpawnCapMs(v: string | undefined): number {
+  return v !== undefined && /^[1-9][0-9]{0,3}$/.test(v) && Number(v) <= GATE_BUDGET_MS ? Number(v) : 2000
+}
+// Test knob, default 2000. The factory never sets it.
+const ALIAS_SPAWN_CAP_MS = aliasSpawnCapMs(process.env.FACTORY_HOOK_ALIAS_TIMEOUT_MS)
+
 /**
  * This memo for `gate` makes `headOf` and `originHead` each spawn git at most one time for one
  * `denyReason` call. One memo covers each push segment, each eval level and each sh -c level that
@@ -7666,7 +7766,7 @@ function memoGate(gate: HookGate): HookGate {
       if (!called) {
         called = true
         const remaining = deadline - Date.now()
-        if (remaining > 0) result = real(Math.min(2000, remaining))
+        if (remaining > 0) result = real(Math.min(ALIAS_SPAWN_CAP_MS, remaining))
       }
       return result
     }
@@ -7683,7 +7783,7 @@ function memoGate(gate: HookGate): HookGate {
       if (!called) {
         called = true
         const remaining = deadline - Date.now()
-        if (remaining > 0) result = real(Math.min(2000, remaining))
+        if (remaining > 0) result = real(Math.min(ALIAS_SPAWN_CAP_MS, remaining))
       }
       return result
     }
@@ -9327,6 +9427,14 @@ export function reasonName(reason: string): string {
 
 const HARNESSES = ['claude', 'codex', 'pi']
 
+/** claude-factory-uzes: replace the value of each NAME=value word with *** so the deny log keeps no secret. */
+export function maskAssignments(command: string): string {
+  return command.replace(
+    /(^|[\s;&|()`])([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=)(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
+    '$1$2***',
+  )
+}
+
 /**
  * claude-factory-dsfg: record one denial as a JSON line in FACTORY_HOME/runs/<FACTORY_RUN>/denials.jsonl, and,
  * for an AX worker whose laptop replays it (FACTORY_DENY_LOG=1), in the outbox. It runs after the deny is
@@ -9339,7 +9447,7 @@ function logDenial(reason: string, command: string, harness: string | undefined)
     const at = Date.now()
     const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
     const name = reasonName(reason)
-    const cmd = command.slice(0, 200)
+    const cmd = cut(maskAssignments(command), 200)
     if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
       appendFileSync(
         process.env.FACTORY_OUTBOX,
@@ -9374,7 +9482,8 @@ async function main() {
     }
   }
   const argh = process.argv.indexOf('--harness')
-  const harness = argh >= 0 ? process.argv[argh + 1] : undefined
+  // claude-factory-ay4w: a hook config with no --harness falls back to the launch env (an AX VM sets FACTORY_HARNESS)
+  const harness = argh >= 0 ? process.argv[argh + 1] : process.env.FACTORY_HARNESS
   if (i?.tool_name && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(i.tool_name)) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,

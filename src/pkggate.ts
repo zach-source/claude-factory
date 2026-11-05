@@ -69,14 +69,15 @@ type Resolved = {
    * An attacker can own every sampled index entry. The attacker can log each one in sum.golang.org right
    * before a refresh. The margin limits the rise of one refresh only.
    *
-   * The margin does not stop a sustained attack across many refreshes. An attacker who owns the samples
-   * at every refresh in a row gains about 2x real traffic per refresh above the truth. The attacker's own
-   * sumdb records count as traffic for the next refresh's cap too. After about minDays / 2 refreshes, the
-   * floor can get near `now`. See claude-factory-ldb for this gap.
+   * The margin does not stop a sustained attack across many refreshes. So refreshGoFloor also caps the
+   * floor at an absolute ceiling from `goSizes` (claude-factory-ldb).
    *
    * The first refresh after a pod start has no earlier `latest` value. This refresh has no cap on its
    * rise. See claude-factory-b9f for this gap. */
   goFloor: { record: number; at: number; latest: number } | null
+  /** goSizes holds the sum.golang.org tree sizes that floor refreshes read, oldest first, with the wall
+   * time of each read. It keeps the newest read at or before now-minDays and every later one. */
+  goSizes: { at: number; size: number }[]
   /** goFloorRefreshing holds the one in-flight floor refresh. Every decision that needs a refresh shares
    * this promise, so concurrent decisions trigger at most one index.golang.org request
    * (claude-factory-8ub). */
@@ -121,8 +122,8 @@ const GO_FLOOR_MIN_SAMPLES = 5
  *
  * A margin of 3 allows normal variance. Examples are bursty publishing and a refresh that runs late. It
  * limits one refresh only: an attacker who controls every sampled entry gains at most this margin over
- * real traffic in that one refresh. It does not stop a sustained attacker who owns the samples at every
- * refresh in a row -- see claude-factory-ldb (claude-factory-56j).
+ * real traffic in that one refresh. The ceiling from `goSizes` stops a sustained attacker who owns the
+ * samples at every refresh in a row (claude-factory-ldb, claude-factory-56j).
  *
  * The cap has no time term. A long idle or backoff gap still shows up as a large `latest` delta. So the
  * floor can still catch up to it in one refresh.
@@ -159,6 +160,7 @@ function resolve(cfg: GateConfig): Resolved {
     pypiCache: new Map(),
     goInfoCache: new Map(),
     goFloor: null,
+    goSizes: [],
     goFloorRefreshing: null,
     goFloorBackoffMs: 0,
     goFloorNextRetryAt: 0,
@@ -196,6 +198,8 @@ type Decision = {
   reason: string
   ageH: number | null
   code?: 'go-sumdb-too-new'
+  /** the upstream fetch already counted this error in `stats.error`, so `logDecision` must not count it again */
+  counted?: true
 }
 
 /** allowlisted, or old enough; a missing or unparseable time is a refusal, same as one still too young */
@@ -229,7 +233,7 @@ function logDecision(
   cfg: Resolved,
   quiet = false,
 ) {
-  cfg.stats[d.decision]++
+  if (!d.counted) cfg.stats[d.decision]++
   if (quiet && d.decision === 'allow') return
   console.log(
     JSON.stringify({
@@ -285,31 +289,80 @@ function refuse(status: number, text: string) {
   return new Response(text, { status, headers: { 'content-type': 'text/plain' } })
 }
 
+const MAX_REDIRECT_HOPS = 5
+/** proxy.golang.org can answer a large .zip with a 302 to this host (claude-factory-qls). */
+const GO_STORAGE_ORIGIN = 'https://storage.googleapis.com'
+
+class RedirectRefused extends Error {}
+
+/**
+ * Fetches `url` and follows each 3xx by hand. Every hop must go to a configured upstream or to
+ * GO_STORAGE_ORIGIN. The gate follows at most MAX_REDIRECT_HOPS hops. Any other redirect throws, so the
+ * caller answers 502 and the gate never requests the target. The default redirect:'follow' of `fetch`
+ * would go to any http(s) host (claude-factory-qls).
+ */
+async function upstreamFetch(
+  cfg: Resolved,
+  url: string,
+  headers?: Record<string, string>,
+): Promise<Response> {
+  const allowed = [...Object.values(cfg.upstream), GO_STORAGE_ORIGIN]
+  const signal = AbortSignal.timeout(cfg.fetchTimeoutMs)
+  let current = url
+  for (let hop = 0; ; hop++) {
+    const r = await cfg.fetch(current, { headers, redirect: 'manual', signal })
+    if (r.status < 300 || r.status > 399) return r
+    // the body of a followed or refused 3xx is never read: free it. A failed cancel must not change the decision.
+    await r.body?.cancel().catch(() => {})
+    const loc = r.headers.get('location')
+    let next: URL | null = null
+    try {
+      next = loc ? new URL(loc, current) : null
+    } catch {
+      // an unparseable Location is refused below, the same as a missing one
+    }
+    if (hop >= MAX_REDIRECT_HOPS || !next || !isConfiguredUpstream(next, allowed)) {
+      cfg.stats.error++
+      console.log(
+        JSON.stringify({
+          eco: 'gate',
+          decision: 'error',
+          reason: 'redirect refused',
+          host: next?.host ?? null,
+        }),
+      )
+      throw new RedirectRefused('redirect refused')
+    }
+    current = next.href
+  }
+}
+
 async function fetchText(
   cfg: Resolved,
   url: string,
-): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
+): Promise<{ ok: true; text: string } | { ok: false; status: number; refused?: true }> {
   try {
-    const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
+    const r = await upstreamFetch(cfg, url)
     const text = await r.text()
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, text }
-  } catch {
-    // a timeout (AbortSignal) lands here too, same as a network error: no status, refused the same as a 5xx
-    return { ok: false, status: 0 }
+  } catch (err) {
+    // a timeout (AbortSignal) lands here too, same as a network error: no status, refused the same as a 5xx.
+    // `refused` marks a redirect the gate refused: upstreamFetch already counted it.
+    return err instanceof RedirectRefused ? { ok: false, status: 0, refused: true } : { ok: false, status: 0 }
   }
 }
 
 async function fetchBytes(
   cfg: Resolved,
   url: string,
-): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number }> {
+): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number; refused?: true }> {
   try {
-    const r = await cfg.fetch(url, { signal: AbortSignal.timeout(cfg.fetchTimeoutMs) })
+    const r = await upstreamFetch(cfg, url)
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, buf: await r.arrayBuffer() }
-  } catch {
-    return { ok: false, status: 0 }
+  } catch (err) {
+    return err instanceof RedirectRefused ? { ok: false, status: 0, refused: true } : { ok: false, status: 0 }
   }
 }
 
@@ -364,6 +417,18 @@ function goModuleEscape(s: string): string {
   return s.replace(/[A-Z]/g, c => `!${c.toLowerCase()}`)
 }
 
+/**
+ * true when an already Go-case-escaped `mod` and `version` can join a sum.golang.org lookup URL as they are.
+ * A version is `v` plus letters, digits and `. + - !`. A module path is `/`-separated elements of
+ * `a-z 0-9 . _ ~ - !`, none of them `.` or `..`. Anything else can steer the lookup path (claude-factory-37s).
+ */
+function goSumdbKeyOk(mod: string, version: string): boolean {
+  return (
+    /^v[0-9a-z.+!-]+$/.test(version) &&
+    mod.split('/').every(e => /^[a-z0-9._~!-]+$/.test(e) && e !== '.' && e !== '..')
+  )
+}
+
 function parseGoInfo(text: string): { version: string; time: string } | null {
   try {
     const j = JSON.parse(text)
@@ -387,9 +452,10 @@ async function goSumdbRecord(
   cfg: Resolved,
   mod: string,
   version: string,
-): Promise<{ ok: true; record: number } | { ok: false }> {
+): Promise<{ ok: true; record: number } | { ok: false; invalid?: true; refused?: true }> {
+  if (!goSumdbKeyOk(mod, version)) return { ok: false, invalid: true }
   const r = await fetchText(cfg, `${cfg.upstream.sumdb}/lookup/${mod}@${version}`)
-  if (!r.ok) return { ok: false }
+  if (!r.ok) return r.refused ? { ok: false, refused: true } : { ok: false }
   const line1 = (r.text.split('\n')[0] ?? '').trim()
   if (!/^\d+$/.test(line1)) return { ok: false }
   const record = Number(line1)
@@ -469,13 +535,25 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
  *
  * `sampled` alone is not the new floor. An attacker can control every sampled index entry. The attacker
  * can record each one in sum.golang.org right before the refresh. Then `sampled` can move close to `now`.
- * So the new floor is `Math.min(sampled, bound)`.
+ * So the new floor is `Math.min(sampled, bound, ceiling)`.
  *
  * Here `bound` sets a limit on this one refresh's increase. Its value is GO_FLOOR_RISE_MARGIN times the
  * real sum.golang.org traffic in that span (`latest - prev.latest`). See `goFloor`'s own doc comment and
- * claude-factory-56j. This bound does not stop a sustained attacker who owns the samples at every refresh
- * in a row -- see claude-factory-ldb. A cold start (no prior floor) has no bound. The new floor can come
- * out below the old one, and a low `bound` makes more versions too new, which is the safe side.
+ * claude-factory-56j. A cold start (no prior floor) has no bound.
+ *
+ * Here `ceiling` is an absolute limit (claude-factory-ldb). `cfg.goSizes` holds each tree size that a
+ * refresh read, with the wall time of the read. The anchor is its newest entry at or before now-minDays,
+ * else its oldest. The ceiling is `latest - (latest - anchor.size) * minDays / (now - anchor.at)`. With
+ * less than minDays of history, this extrapolates the observed rate. With more, it interpolates between
+ * two real reads. An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
+ * does not compound across refreshes. The size delta is clamped at 0, so a smaller `/latest` than the
+ * anchor never puts the ceiling above `latest`. With no elapsed time (a cold start) it is Infinity. A zero
+ * span must never reach the division: a NaN floor would allow every version. The history must stay
+ * strictly increasing in time. If the wall clock is not after the newest read (a clock step back during the
+ * refresh), the refresh fails, keeps the floor and does not store the read (claude-factory-35em).
+ *
+ * The new floor can come out below the old one, and a low `bound` or `ceiling` makes more versions too
+ * new, which is the safe side. The size read is kept even when the sample check later fails.
  *
  * A failed fetch, or fewer than `GO_FLOOR_MIN_SAMPLES` answers left after the drop, leaves the existing
  * floor in place. So a down upstream never blocks every decision behind a refresh.
@@ -491,18 +569,34 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     cfg,
     `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`,
   )
-  if (!r.ok) return noteGoFloorFailure(cfg, `index.golang.org ${r.status || 'timeout'}`)
+  if (!r.ok)
+    return noteGoFloorFailure(
+      cfg,
+      `index.golang.org ${r.refused ? 'redirect refused' : r.status || 'timeout'}`,
+    )
   const entries = r.text
     .split('\n')
     .map(parseGoIndexLine)
     .filter((e): e is GoIndexLine => {
       if (!e) return false
       const ts = Date.parse(e.Timestamp)
-      return !Number.isNaN(ts) && ts >= sinceMs && ts <= t0
+      return (
+        !Number.isNaN(ts) &&
+        ts >= sinceMs &&
+        ts <= t0 &&
+        goSumdbKeyOk(goModuleEscape(e.Path), goModuleEscape(e.Version))
+      )
     })
   const sample = pickEvenlySpaced(entries, GO_FLOOR_SAMPLE_LIMIT)
   const latestSize = await goSumdbLatestSize(cfg)
   if (!latestSize.ok) return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
+  const wallNow = cfg.now()
+  // the history must stay strictly increasing in time: the anchor choice and the span > 0 guard rely on it
+  if (cfg.goSizes.length && wallNow <= cfg.goSizes.at(-1)!.at)
+    return noteGoFloorFailure(cfg, 'wall clock is not after the last tree size read')
+  cfg.goSizes.push({ at: wallNow, size: latestSize.size })
+  const cutoff = wallNow - cfg.minDays * 24 * 3_600_000
+  while (cfg.goSizes.length > 1 && cfg.goSizes[1]!.at <= cutoff) cfg.goSizes.shift()
   const ids: number[] = []
   await mapLimit(sample, GO_LIST_CONCURRENCY, async e => {
     const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
@@ -518,7 +612,17 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const bound = prev
     ? prev.record + GO_FLOOR_RISE_MARGIN * Math.max(0, latestSize.size - prev.latest)
     : Infinity
-  const record = Math.min(sampled, bound)
+  const anchor = cfg.goSizes[0]! // just pushed above, never empty
+  const span = wallNow - anchor.at
+  // span > 0 keeps NaN out: a NaN floor would allow every version (goDecideVersion compares record > floor)
+  const ceiling =
+    span > 0
+      ? Math.floor(
+          latestSize.size -
+            (Math.max(0, latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span,
+        )
+      : Infinity
+  const record = Math.min(sampled, bound, ceiling)
   const capped = record < sampled
   cfg.goFloor = { record, at: t0, latest: latestSize.size }
   cfg.goFloorBackoffMs = 0
@@ -587,7 +691,18 @@ async function goSumdbGate(
   if (record === undefined) {
     const looked = await goSumdbRecord(cfg, mod, version)
     if (!looked.ok)
-      return { decision: 'error', reason: 'sum.golang.org lookup failed', ageH: infoDecision.ageH }
+      return looked.refused
+        ? {
+            decision: 'error',
+            reason: 'sum.golang.org lookup: redirect refused',
+            ageH: infoDecision.ageH,
+            counted: true,
+          }
+        : {
+            decision: 'error',
+            reason: looked.invalid ? 'sum.golang.org lookup key not valid' : 'sum.golang.org lookup failed',
+            ageH: infoDecision.ageH,
+          }
     record = looked.record
     if (cacheEntry) cacheEntry.record = record
   }
@@ -620,7 +735,9 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
         mod,
         version,
         null,
-        { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null },
+        r.refused
+          ? { decision: 'error', reason: 'upstream .info: redirect refused', ageH: null, counted: true }
+          : { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null },
         cfg,
         quiet,
       )
@@ -893,9 +1010,8 @@ async function fetchPackument(cfg: Resolved, pkg: string) {
     cfg.npmCache.delete(pkg) // expired: evict rather than leave it to grow the map forever (ei0.13)
   }
   try {
-    const r = await cfg.fetch(`${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
+    const r = await upstreamFetch(cfg, `${cfg.upstream.npm}/${npmUpstreamName(pkg)}`, {
+      accept: 'application/json',
     })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePackument(await r.text())
@@ -1061,9 +1177,8 @@ async function fetchPypiIndex(cfg: Resolved, project: string) {
     cfg.pypiCache.delete(project) // expired: evict rather than leave it to grow the map forever (ei0.13)
   }
   try {
-    const r = await cfg.fetch(pypiIndexUrl(cfg, project), {
-      headers: { accept: 'application/vnd.pypi.simple.v1+json' },
-      signal: AbortSignal.timeout(cfg.fetchTimeoutMs),
+    const r = await upstreamFetch(cfg, pypiIndexUrl(cfg, project), {
+      accept: 'application/vnd.pypi.simple.v1+json',
     })
     if (!r.ok) return { ok: false as const, status: r.status }
     const parsed = parsePypiIndex(await r.text())

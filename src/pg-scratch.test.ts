@@ -36,6 +36,7 @@ const clean = (extra: Record<string, string> = {}) => {
   const env: Record<string, string | undefined> = {
     ...process.env,
     FACTORY_SELF_UPDATE: '0',
+    FACTORY_NO_KICK: '1',
     FACTORY_HOME: mkdtempSync(join(tmpdir(), 'pgs-home-')),
     ...extra,
   }

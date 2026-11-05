@@ -16,7 +16,14 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 const factory = (extra: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'sweep'], {
-    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...extra },
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin, 'herdr'),
+      FACTORY_SELF_UPDATE: '0',
+      ...extra,
+    },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -139,12 +146,24 @@ test('every key already a label on an open bead: action tracked, no run', () => 
   expect(runDirs()).toEqual([])
 })
 
-test('a closed bead with the key does not dedupe', () => {
+test('a closed bead with the exact key: action tracked, no run', () => {
   setup(['ci'])
   runs([run({ conclusion: 'failure', headSha: 'c'.repeat(40) })])
   writeFileSync(
     join(fx, 'bd-list.json'),
     JSON.stringify([{ id: 'acme-9', status: 'closed', labels: ['ci-red:7-ccccccc'] }]),
+  )
+  factory()
+  expect(journal()).toMatchObject([{ sweep: 'ci', action: 'tracked' }])
+  expect(runDirs()).toEqual([])
+})
+
+test('a closed bead with another SHA of the workflow does not track the red', () => {
+  setup(['ci'])
+  runs([run({ conclusion: 'failure', headSha: 'c'.repeat(40) })])
+  writeFileSync(
+    join(fx, 'bd-list.json'),
+    JSON.stringify([{ id: 'acme-9', status: 'closed', labels: ['ci-red:7-zzzzzzz'] }]),
   )
   factory()
   expect(journal()).toMatchObject([{ sweep: 'ci', action: 'started' }])

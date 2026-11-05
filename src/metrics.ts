@@ -128,14 +128,17 @@ export function metrics(records: RunRecord[]) {
       const s = (stations[e.node] ??= { visits: 0, failed: 0, outcomes: {}, hours: [] })
       s.visits++
       s.outcomes[e.outcome] = (s.outcomes[e.outcome] ?? 0) + 1
-      s.hours.push((e.at - prev) / HOUR)
+      // claude-factory-p956: a tick stamps its own events (a mergeCheck DONE, a timeout) with the tick's
+      // start time, so an entry can carry an earlier `at` than the inbox line before it: that visit took no time
+      const hours = Math.max(0, e.at - prev) / HOUR
+      s.hours.push(hours)
       if (FAILED.has(e.outcome)) {
         s.failed++
         const k = failKind(e.summary)
         fails[k] = (fails[k] ?? 0) + 1
       }
-      // ponytail: a gate's wait is its station's time; gates are named approve in every factory so far
-      if (e.node === 'approve') gateWait.push((e.at - prev) / HOUR)
+      // an older factory's approve gate: its wait is its station's time (a lifecycle run has the merge below)
+      if (e.node === 'approve') gateWait.push(hours)
       // claude-factory-wnn: `check` is the small route's combined verify+review station. It sends
       // work back the same way `review`'s `changes` outcome does. Count it the same way here, and
       // below in the round-cap metric.
@@ -148,13 +151,19 @@ export function metrics(records: RunRecord[]) {
       // round 1 finding .8: those write no log entry of their own, but still sit next to 'plan')
       if (e.replan) capReplans++
       if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
-      prev = e.at
+      prev = Math.max(prev, e.at)
     }
+    // claude-factory-p956: since c079623a the lifecycle has no approve node: the person's merge is the gate,
+    // so the wait runs from the ship edge (the last entry) to the merge
+    const last = r.log.at(-1)
+    if (r.mergedAt !== undefined && last && !r.log.some(e => e.node === 'approve'))
+      gateWait.push(Math.max(0, r.mergedAt - last.at) / HOUR)
     if (reviewChanges >= 3) runsWith3PlusReviewRounds++
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
     const shippedAt = shipped?.at ?? (f === 'shipped' ? r.mergedAt : undefined)
     if (shippedAt !== undefined) {
-      const hours = (shippedAt - r.createdAt) / HOUR
+      // claude-factory-6o8g: a log can start before the id time, so the clock starts at the earlier of the two
+      const hours = (shippedAt - Math.min(r.createdAt, r.log[0]?.at ?? r.createdAt)) / HOUR
       cycle.push(hours)
       if (isSmall && !wentFull) smallCycle.push(hours)
       implementPassesShipped += r.log.filter(
@@ -218,7 +227,7 @@ export function render(
       `implement passes per shipped run ${m.implementPassesPerShippedRun === null ? '-' : m.implementPassesPerShippedRun.toFixed(2)}`,
     `  triage rejects ${triageRejects} of ${triageVisits} (${m.triageAlreadyDone} already done); ` +
       `dispatch skipped ${precheck.mergedPr + precheck.liveRun} (merged-pr ${precheck.mergedPr}, live-run ${precheck.liveRun}), ` +
-      `gh fail-open ${precheck.failOpen ?? 0}`,
+      `forge fail-open ${precheck.failOpen ?? 0}`,
     '  station      visits  failed  median  outcomes',
   ]
   for (const [id, s] of Object.entries(m.stations))

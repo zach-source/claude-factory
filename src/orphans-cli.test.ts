@@ -33,7 +33,9 @@ const factory = (args: string[]) => {
     env: {
       ...laptop,
       FACTORY_HOME: home(),
+      FACTORY_NO_KICK: '1',
       PATH: `${bin()}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin(), 'herdr'),
       CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1',
@@ -55,7 +57,7 @@ const settle = () => {
 }
 
 /** a rig with a GitHub origin and one aborted run (the orphan's source); returns the run id */
-function setup() {
+function setup(origin = 'https://github.com/acme/widget.git') {
   dir = join(root, String(count++))
   mkdirSync(bin(), { recursive: true })
   mkdirSync(join(dir, 'claude-config'), { recursive: true })
@@ -66,7 +68,7 @@ function setup() {
   const git = (...a: string[]) =>
     Bun.spawnSync(['git', '-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a])
   git('init', '-q')
-  git('remote', 'add', 'origin', 'https://github.com/acme/widget.git')
+  git('remote', 'add', 'origin', origin)
   git('commit', '--allow-empty', '-q', '-m', 'init')
   script('bd', [
     'case "$1" in',
@@ -124,6 +126,9 @@ function fakeGh(src: string, sha: string) {
   script('gh', [
     'case "$*" in',
     `  *check-runs*) printf '%s' '{"check_runs":[{"status":"completed","conclusion":"success"}]}';;`,
+    `  "api -X"*) echo "$*" >> "${join(dir, 'writes.txt')}";;`,
+    `  *"pulls/7/reviews"*|*"issues/7/comments"*) printf '%s' '[]';;`,
+    `  "api repos/acme/widget/pulls/7") printf '%s' '{"state":"open","draft":true,"mergeable":true,"head":{"sha":"x"}}';;`,
     `  *"/status"*) printf '%s' '{"statuses":[]}';;`,
     `  "api "*"state=open"*) printf '%s' '${pulls}' | sed "s/SHA/$(cat "${join(dir, 'sha.txt')}")/";;`,
     '  *) exit 0;;',
@@ -205,6 +210,51 @@ test('a failed fork shows an error row with the URL, and a second pass forks not
   expect(read('orphans.json')).toHaveLength(1)
 })
 
+test('failed-fork rows match by exact URL: pull/37 and pull/378 each get a row', () => {
+  const src = setup()
+  const base = 'https://github.com/acme/widget/pull/'
+  const pull = (n: number) => ({
+    number: n,
+    html_url: `${base}${n}`,
+    state: 'open',
+    draft: true,
+    head: { ref: `factory/${src}`, sha: SHA1, repo: { full_name: 'acme/widget' } },
+    base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+    labels: [],
+  })
+  // the longer URL comes first: a substring match on it would hide the row for pull/37
+  writeFileSync(join(dir, 'pulls.json'), JSON.stringify([pull(378), pull(37)]))
+  script('gh', [
+    'case "$*" in',
+    `  "api "*"state=open"*) cat "${join(dir, 'pulls.json')}";;`,
+    '  *) exit 0;;',
+    'esac',
+  ])
+  const rec = (n: number) => [`${base}${n}`, { sha: SHA1, run: '', from: src, at: 'now' }]
+  writeFileSync(join(home(), 'orphan-forks.json'), JSON.stringify(Object.fromEntries([rec(378), rec(37)])))
+  pass()
+  const rows = read('orphans.json')
+  expect(rows).toHaveLength(2)
+  expect(rows.map((r: { error: string }) => r.error).join('\n')).toContain(`${base}37:`)
+})
+
+test('a full rig keeps its failed-fork row and says to check for a review run', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  const rigs = JSON.parse(readFileSync(join(home(), 'rigs.json'), 'utf8'))
+  rigs[0].maxRuns = 0
+  writeFileSync(join(home(), 'rigs.json'), JSON.stringify(rigs))
+  writeFileSync(
+    join(home(), 'orphan-forks.json'),
+    JSON.stringify({ [URL]: { sha: SHA1, run: '', from: src, at: 'now' } }),
+  )
+  pass()
+  const rows = read('orphans.json')
+  expect(rows).toHaveLength(1)
+  expect(rows[0].error).toContain('fork failed or not recorded')
+  expect(rows[0].error).toContain('check for a review run')
+})
+
 test('AC8: a stopped factory skips the pass; resume lets it fork', () => {
   const src = setup()
   fakeGh(src, SHA1)
@@ -215,4 +265,119 @@ test('AC8: a stopped factory skips the pass; resume lets it fork', () => {
   expect(factory(['resume']).code).toBe(0)
   pass()
   expect(runIds()).toHaveLength(2)
+})
+
+const MR_URL = 'https://gitlab.com/acme/widget/-/merge_requests/7'
+type MrOpts = {
+  status?: string
+  pipelineSha?: string
+  draft?: boolean
+  srcProject?: number
+  branch?: string
+  listExit?: number
+}
+
+/** a fake glab: the opened MRs hold one draft on the source run's branch; every call is logged to glab.calls */
+function fakeGlab(src: string, sha: string, o: MrOpts = {}) {
+  const mr = {
+    iid: 7,
+    web_url: MR_URL,
+    sha,
+    draft: o.draft ?? true,
+    source_branch: o.branch ?? `factory/${src}`,
+    target_branch: 'main',
+    source_project_id: o.srcProject ?? 5,
+    target_project_id: 5,
+    head_pipeline: { sha: o.pipelineSha ?? sha, status: o.status ?? 'success' },
+    detailed_merge_status: 'draft_status',
+    has_conflicts: false,
+  }
+  script('glab', [
+    `echo "$*" >> "${join(dir, 'glab.calls')}"`,
+    'case "$*" in',
+    `  *merge_requests?state=opened*) ${o.listExit ? `exit ${o.listExit}` : `printf '%s' '${JSON.stringify([mr])}'`};;`,
+    `  *merge_requests/7*) printf '%s' '${JSON.stringify(mr)}';;`,
+    '  *) exit 1;;',
+    'esac',
+  ])
+  script('gh', [`touch "${join(dir, 'gh.marker')}"`, 'exit 1'])
+}
+
+test('AC5, AC9: a GitLab rig forks the green draft MR once, with glab only on its own host', () => {
+  const src = setup('https://gitlab.com/acme/widget.git')
+  fakeGlab(src, SHA1)
+  pass()
+  expect(runIds()).toHaveLength(2)
+  expect(read('orphan-forks.json')[MR_URL]).toMatchObject({ sha: SHA1, from: src })
+  factory(['tick'])
+  const rec = read('orphan-forks.json')[MR_URL]
+  const mail = read(`runs/${rec.run}/state.json`).snapshot.context.mail.review
+  expect(mail.map((m: { from: string }) => m.from)).toEqual(['factory'])
+  expect(mail[0].text).toContain(SHA1)
+  expect(mail[0].text).toContain(MR_URL)
+  expect(read('orphans.json')).toEqual([])
+  const calls = readFileSync(join(dir, 'glab.calls'), 'utf8').trim().split('\n')
+  expect(calls.length).toBeGreaterThan(1)
+  for (const c of calls) expect(c).toContain('--hostname gitlab.com')
+  pass()
+  expect(runIds()).toHaveLength(2)
+  expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
+})
+
+test('AC6: a GitLab MR that is not green, not a draft, from a fork or off factory/ forks nothing', () => {
+  const rows: (MrOpts | ((src: string) => MrOpts))[] = [
+    { status: 'failed' },
+    { status: 'running' },
+    { pipelineSha: SHA2 },
+    { draft: false },
+    { srcProject: 9 },
+    src => ({ branch: `feat/${src}` }),
+  ]
+  for (const row of rows) {
+    const src = setup('https://gitlab.com/acme/widget.git')
+    fakeGlab(src, SHA1, typeof row === 'function' ? row(src) : row)
+    pass()
+    expect(runIds()).toHaveLength(1)
+  }
+})
+
+test('AC7: a failed glab listing shows one error row and makes no checks call', () => {
+  const src = setup('https://gitlab.com/acme/widget.git')
+  fakeGlab(src, SHA1, { listExit: 1 })
+  pass()
+  expect(runIds()).toHaveLength(1)
+  expect(read('orphans.json')).toEqual([{ id: 'rig:a', error: 'orphans: glab api merge_requests failed' }])
+  const calls = readFileSync(join(dir, 'glab.calls'), 'utf8').trim().split('\n')
+  expect(calls.filter(c => c.includes('merge_requests/7'))).toEqual([])
+})
+
+test('AC8: a rig with neither a GitHub nor a GitLab origin is skipped without any forge call', () => {
+  const src = setup('https://example.com/acme/widget.git')
+  fakeGlab(src, SHA1)
+  script('gh', [`touch "${join(dir, 'gh.marker')}"`, 'exit 1'])
+  pass()
+  expect(runIds()).toHaveLength(1)
+  expect(read('orphans.json')).toEqual([])
+  expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
+  // glab auth status only tells the forge of a host; no API call may follow
+  expect(readFileSync(join(dir, 'glab.calls'), 'utf8')).not.toContain('api')
+})
+
+test('e2xe: a closed bead closes the orphan draft with a comment; the PR gets no fork', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  script('bd', [
+    'case "$1" in',
+    "  config) printf '%s' 'acme';;",
+    `  show) printf '%s' '[{"id":"acme-1","title":"t","status":"closed"}]';;`,
+    "  ready|list|children) printf '%s' '[]';;",
+    '  *) exit 0;;',
+    'esac',
+  ])
+  pass()
+  expect(runIds()).toHaveLength(1)
+  const writes = readFileSync(join(dir, 'writes.txt'), 'utf8')
+  expect(writes).toContain('issues/7/comments')
+  expect(writes).toContain(src)
+  expect(writes).toContain('pulls/7 -f state=closed')
 })

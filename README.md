@@ -753,7 +753,7 @@ tag has one bead, even a closed one. Start a pass by hand with
 
 `ci` and `flakes` read GitHub Actions on the laptop with `gh`. They start no run unless they find
 new work. `ci` lists the default branch's runs. Each workflow with a red newest run gets the key
-`ci-red:<workflow id>-<first failing SHA, 7 characters>`. If every key is a label on an open bead,
+`ci-red:<workflow id>-<first failing SHA, 7 characters>`. If every key is a label on an open bead, or the exact key is a label on a closed bead,
 nothing starts. If not, one run files ONE P1 bead with the labels `factory`, `station:plan` and
 `sweep-queue:main-ci-red`.
 
@@ -835,7 +835,8 @@ commit it, and the repo owns its factory like any other code:
   4 restore failed.
 - `factory check <file>` validates a factory: the graph, its outcomes and timed edges, and a
   way to `done` from every station. A factory whose starting commit does not validate is
-  refused before any worker starts, and its bead is deferred with the reason.
+  refused before any worker starts, and its bead is deferred with the reason. The `name` of a
+  factory file must be its file name: `.factory/lifecycle.ts` is named `lifecycle`.
 
 ## Shared memory and the dream
 
@@ -891,6 +892,14 @@ memory/
   after each dream: `git -C <factory>/memory log -p` shows what a dream did, and a revert undoes it.
   Each commit also carries that step's `.usage.jsonl` (per-note counts) and `.renames.jsonl`
   (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
+  To run the dream on codex, set `FACTORY_DREAM_CODEX=<model>` (for example `gpt-6-astra`) in the
+  environment of the process that runs `factory tick`. Unset, the dream runs on Claude. On codex, the
+  dream runs `codex exec -s workspace-write` in the memory with no network and no `/tmp`. It uses a
+  private `CODEX_HOME` at `<factory>/codex-dream`: a trust line for the memory and a link to your
+  `auth.json`, and nothing else. The sandbox keeps `.git` read-only, so the dream uses plain `mv`
+  and `rm`, and the factory stages the changes with `git add -A`. If the memory holds a `.codex`
+  entry, the codex dream refuses to start. Its usage rows in `manager-usage.jsonl` come from the
+  codex rollout files.
 - **The tiering pass** (`factory memory compact [--dry-run]`) runs right after the dream, unless
   `FACTORY_MEMORY_TIERS=0`. It is deterministic, not an LLM: it merges a short note into its
   topic's `LONG.md` once the note is 7 days old and its activation is above θm, and archives a
@@ -901,8 +910,10 @@ memory/
   days ago), and θc, the promote limit for a LONG.md entry helped across 3 runs, is 0. Set
   `FACTORY_MEMORY_THETA_MERGE`, `FACTORY_MEMORY_THETA_ARCHIVE` or `FACTORY_MEMORY_THETA_PROMOTE`
   to change one. Both
-  usage-based archive rules wait until the store holds at least 14 days of usage history, so a new
-  or lost `.usage.jsonl` cannot be misread as "never shown." A pass archives at most
+  usage-based archive rules wait until the store holds at least 14 days of usage history.
+  So a new or lost `.usage.jsonl` cannot be misread as "never shown." The
+  history length is the age of the oldest last use of an existing note, not how far back the
+  log goes, because compact folds `.usage.jsonl` to one line per note. A pass archives at most
   `FACTORY_MEMORY_ARCHIVE_CAP` notes (default 25), oldest first across every topic; the rest are
   held back for a later pass. The pass writes its plan to `dream.log` before it merges or archives
   anything. A merge keeps the note's usage count under its new `<topic>/LONG.md#<id>` path,
@@ -942,14 +953,37 @@ A PR belongs to a live run when its branch is the run's (`factory/<run>`) or the
   PR's branch, resolves the conflicts, runs the tests and pushes; the label comes off and a comment names
   the run. A worker that can't tell how to resolve one says so on the PR. A PR from a fork shows as
   the rig's error instead, since its branch is not ours to push.
-- **`rework`**: the same run, for a PR that needs changes: it reads the PR's reviews, comments and
-  checks, makes the changes asked for, tests and pushes. A PR with both labels gets one run for both.
+- **`rework`**: for a PR that needs changes. The PR goes through the implement station again, then the
+  normal verify and review. With no live run, the factory starts a run of the rig's factory at implement on
+  the PR's own branch. That run pushes to the PR branch and opens no new PR. A PR with both labels takes
+  this path.
 
-A `conflict` or `rework` PR that belongs to a live run goes to that run instead: its current station
-is mailed what the label asks (a parked one wakes), so two workers never push to one branch.
+A `conflict` or `rework` PR that belongs to a live run goes to that run instead, so two workers never
+push to one branch. For `conflict`, the current station is mailed what the label asks (a parked one wakes).
+For `rework`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
+run's factory has no implement station, the current station gets the mail. A PR that is queued with ship
+is unchanged: the ship run gets the label.
 
 The rework run triages first: a PR that is no longer wanted (already on the base, superseded, or
 rejected in review) gets a comment and the `close` label, and the next pass closes it.
+
+## Orphan draft pull requests
+
+A run that ends (aborted or done) can leave a draft PR on its `factory/<run>` branch. Every 10 minutes the
+orphan pass looks at each rig's open drafts like this. It skips a PR when a live run owns it, a live run holds its
+bead, the ship queue holds it, its branch is not `factory/<run>`, or it comes from a fork. The bead of the run
+then decides:
+
+- **Bead closed or deferred**: the factory closes the PR with a comment. The comment names the run and the bead state.
+- **Bead open, PR not mergeable**: the factory adds the `conflict` label.
+- **Bead open, checks red or a review asks for changes**: the factory adds the `rework` label.
+- **Bead open, PR green and mergeable**: the factory forks the run at `review`, one time for each head commit.
+
+The [label pass](#pull-request-labels) then acts on the new label. A PR that has the label already is not labeled
+again, and a label is set one time for each head commit (`orphan-forks.json` holds the record). A PR whose
+review fork aborted counts as an orphan again. If it is green and mergeable, it gets no second fork.
+A pass makes at most 2 forks and, in a separate count, at most 2 closes or labels for each rig.
+A fork also needs room in the rig. A run with no bead only gets the review fork.
 
 ## Beads: planning and execution
 
@@ -1033,7 +1067,7 @@ export default {
 
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
-the manager; lifecycle's review has 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `onRounds` (a node for a re-plan at the round cap, below),
+the manager; lifecycle's review and security each have 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `countRounds` (the outcomes that count toward `rounds`, instead of the graph rule; lifecycle's security sets it to `changes`), `onRounds` (a node for a re-plan at the round cap, below),
 `repeatMail` (an outcome that mails the manager on a repeat, below), `mergeCheck` (an outcome the runner reports when the branch conflicts with the default branch, below), `gate: true` for a station the
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
@@ -1060,7 +1094,7 @@ Lifecycle's triage has three outcomes that end the run at once (claude-factory-5
 
 `onRounds` names the node that takes the first capped report, instead of the manager. The run
 carries the round's findings to that node. A second capped report in the same run still goes to
-the manager, and the mail names the earlier re-plan. Lifecycle's review sets `onRounds` to `plan`.
+the manager, and the mail names the earlier re-plan. Lifecycle's review and security set `onRounds` to `plan`.
 
 `repeatMail` names an outcome in `next`. A station can report this outcome two times in a row.
 
@@ -1090,6 +1124,8 @@ conflict, no worker starts. The runner reports the outcome at once. The summary 
 conflicting files and tells the next station to merge the default branch and keep both sides of
 `CHANGELOG.md`. Each such report uses one step of the budget. If the check fails (a failed fetch, a
 branch not on origin), the worker starts as usual. Lifecycle's verify sets `mergeCheck` to `red`.
+If the station's previous report has the same conflict summary, the next station did not resolve
+it. The summary names the branch head, so a new push with the same files is a new conflict. The station then parks as `blocked` and mails the manager. It does not report the outcome again.
 
 `onTimeout: { timeoutMin, prompt? }` gives the attempt right after a timeout fail a longer limit
 than the station's own `timeoutMin`, plus an extra brief section carrying `prompt`, instead of the

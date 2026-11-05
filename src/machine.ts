@@ -1,6 +1,7 @@
 // A factory definition compiled to an xstate machine. Pure: no I/O, every
 // event carries its own `at`, so a run is a fold over its events and the
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
+import { cut } from './cut'
 import { assign, createActor, setup, type Snapshot } from 'xstate'
 import { NAME } from './beads'
 
@@ -69,6 +70,12 @@ export type Node = {
    */
   rounds?: number
   /**
+   * The outcomes that count toward `rounds`. This list replaces the graph rule above.
+   * Use it when the shortest path from `start` does not pass the loop. Lifecycle's security is nearest
+   * through the small route, so the graph rule does not count its `changes` edge to implement.
+   */
+  countRounds?: string[]
+  /**
    * A capped round re-plans to this node (lifecycle's review re-plans to 'plan').
    * This node gets one mail, which holds every round's summary.
    * A loop that misses `rounds` needs a new design, not another hand goto.
@@ -109,6 +116,7 @@ export type Node = {
    * with `git merge-tree`.
    * If the merge has a text conflict, no worker starts.
    * The runner reports this outcome at once and names the conflicting files.
+   * If the station's previous report has the same conflict summary (the same files at the same branch head), the station parks as `blocked` for the manager.
    * If the check fails for any other reason, the worker starts as usual.
    * `validate` refuses a value that is not a key of `next`.
    * `validate` refuses this field on a gate.
@@ -221,6 +229,8 @@ export type Entry = {
    * review-then-plan pair, and `repeatMail` reads it to stop comparing acceptance-criterion ids
    * across a re-plan (claude-factory-qgz, review round 1 findings .8 and .9) */
   replan?: true
+  /** a VM live-read park that waits for mail only; the watch reads it */
+  mailOnly?: true
 }
 
 export type Ctx = {
@@ -328,6 +338,8 @@ export function validate(def: Factory): Factory {
           !(node.onTimeout.timeoutMin > (node.timeoutMin ?? 60)) &&
           `${id}: onTimeout.timeoutMin must be greater than timeoutMin (${node.timeoutMin ?? 60})`,
         node.rounds !== undefined && !(node.rounds >= 1) && `${id}: rounds is at least 1`,
+        node.countRounds?.some(o => !(o in node.next)) &&
+          `${id}: countRounds names an outcome that is not in next`,
         node.everyMin !== undefined && !(node.everyMin > 0) && `${id}: everyMin is greater than 0`,
         node.onRounds !== undefined && node.rounds === undefined && `${id}: onRounds needs rounds`,
         node.onRounds === id && `${id}: onRounds must not be the node itself`,
@@ -410,11 +422,22 @@ export const isParked = (c: Ctx, node: string) => {
   return last?.node === node && last.outcome === 'blocked'
 }
 
-/** a holdMail station parked on a pull or merge request: plain mail waits in its box */
+/** the count of worker blocked reports in a row at the node, from the end of the log. A pre-launch park does not count. */
+const blockedStreak = (c: Ctx, node: string) => {
+  let n = 0
+  for (let i = c.log.length - 1; i >= 0 && c.log[i]?.node === node && c.log[i]?.outcome === 'blocked'; i--)
+    if (c.log[i]?.attempt !== 0) n++
+  return n
+}
+
+/** A holdMail station keeps plain mail in its box while it parks on a pull or merge request.
+ * It also keeps it from its second blocked report in a row (claude-factory-nibm).
+ * Before this, each plain mail started a fresh worker, and that worker found the same block. */
 export const isMailHeld = (c: Ctx, node: string, holds?: boolean) =>
   !!holds &&
   isParked(c, node) &&
-  prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0
+  (prsIn(c.log.at(-1)!.summary).length + mrsIn(c.log.at(-1)!.summary).length > 0 ||
+    blockedStreak(c, node) >= 2)
 
 /** whether the station is parked by a blocked report that links this pull or merge request */
 export const isParkedOn = (c: Ctx, node: string, url: string) =>
@@ -506,7 +529,7 @@ export function capReplanMail(prior: Entry[], node: string, outcome: string, lat
     latest,
   ]
   const cap = Math.floor(24_000 / summaries.length)
-  const clip = (s: string) => (s.length > cap ? `${s.slice(0, cap)} [clipped]` : s)
+  const clip = (s: string) => (s.length > cap ? `${cut(s, cap)} [clipped]` : s)
   const rounds = summaries.map((s, i) => `### ${node} round ${i + 1}\n${clip(s)}`).join('\n\n')
   return (
     `${node} hit its round cap reporting ${outcome} again. Find the cause the rounds missed, then ` +
@@ -630,6 +653,7 @@ export function compile(def: Factory) {
   const counts = (id: string, node: Node, outcome: string) => {
     const e = node.next[outcome]
     if (!e) return false
+    if (node.countRounds) return node.countRounds.includes(outcome)
     const t = edgeTo(e)
     if (t === 'done') return false
     for (let x: string | undefined = id; x; x = parent[x]) if (x === t) return true
@@ -724,8 +748,11 @@ export function compile(def: Factory) {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                   event.type === 'MAIL' &&
                   event.to === id &&
-                  isParked(context, id) &&
-                  (!!event.wake || !isMailHeld(context, id, node.holdMail)),
+                  ((isParked(context, id) && (!!event.wake || !isMailHeld(context, id, node.holdMail))) ||
+                    // a manager wake also ends an outage hold
+                    (!!event.wake &&
+                      context.log.at(-1)?.node === id &&
+                      context.log.at(-1)?.outcome === 'outage')),
                 target: 'working',
                 actions: assign(withMail),
               },
@@ -932,7 +959,14 @@ export function compile(def: Factory) {
                 return {
                   log: [
                     ...context.log,
-                    { node: id, attempt: context.attempt, outcome: 'blocked', summary: reason, at },
+                    {
+                      node: id,
+                      attempt: context.attempt,
+                      outcome: 'blocked',
+                      summary: reason,
+                      at,
+                      ...(mailOnly && { mailOnly }),
+                    },
                   ],
                   mail: isRepeat ? context.mail : post(context.mail, 'manager', { from: id, text, at }),
                   pane: null,
@@ -1060,7 +1094,8 @@ export function compile(def: Factory) {
           guard: ({ event }: { event: Ev }) => event.type === 'GOTO' && event.node === id,
           target: `.${id}`,
           reenter: true,
-          actions: assign({ wakeAt: 0 }), // goto skips any wait: "run it now"
+          // goto skips any wait ("run it now") and grants a fresh step budget, the same as RETRY
+          actions: assign(({ context }) => ({ wakeAt: 0, budget: context.seq + (def.maxSteps ?? 20) })),
         })),
       ABORT: '.aborted',
     },

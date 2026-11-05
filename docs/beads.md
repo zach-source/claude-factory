@@ -50,7 +50,7 @@ A bead is **queued** (dispatch starts it) when all of these are true:
 
 A ready bead **without** the `factory` label is **unqueued**: the board's Backlog lists it for you to prioritize, and the manager does not start it. You queue it when you want it done.
 
-**Dispatch's pre-check**: dispatch runs this check before it starts a run for a ready, GitHub-hosted bead. The check runs `gh pr list --state merged --search <id>` in the rig's repo. It also looks up the bead's own run branches with `gh api repos/<owner>/<repo>/pulls?state=closed&head=<owner>:<branch>`. It looks for a merged pull request. The pull request title names the bead's exact id. It can also name a dotted child id of a bead with no open children.
+**Dispatch's pre-check**: dispatch runs this check before it starts a run for a ready bead in a GitHub or GitLab rig. On GitHub, the check reads the newest 300 closed pull requests with `gh api repos/<owner>/<repo>/pulls?state=closed` (3 pages) and keeps the merged ones. It also looks up the bead's own run branches with `gh api repos/<owner>/<repo>/pulls?state=closed&head=<owner>:<branch>`. On GitLab, the check runs `glab api projects/<path>/merge_requests?state=merged&in=title&search=<id>`. It looks up each run branch with `source_branch=<branch>` in the same way. It looks for a merged pull request (on GitLab, a merged merge request). The pull request title names the bead's exact id. It can also name a dotted child id of a bead with no open children.
 
 If the check finds a match, dispatch rejects the bead. Dispatch sets `rejected_by: dispatch`. It puts the pull request's URL, number, merge SHA and title in the reject reason. It leaves one comment with that evidence. It never closes the bead.
 
@@ -58,9 +58,9 @@ The check also runs when a live run already holds a ready, unassigned bead. This
 
 `factory queue <rig> <id>` clears a dispatch reject. It clears the reject in the same way as a station reject. A bead that dispatch already rejected (`rejected_by: dispatch`) skips the check. It starts at once. To turn off the check, set `FACTORY_PRECHECK=0`.
 
-If `gh` fails or times out, the check fails open. The run starts anyway. `factory metrics` counts this as `gh fail-open`, apart from a real skip. `factory metrics` also prints how many triage rejects there were. It prints how many beads the pre-check did skip before a run can start (`dispatch skipped ... (merged-pr ..., live-run ...)`).
+If `gh` or `glab` fails or times out, the check fails open. The run starts anyway. One failure stops all later checks of that forge in the same dispatch pass. A failure on one forge does not stop the checks of the other forge. `factory metrics` counts this, for `gh` and `glab`, as `forge fail-open`, apart from a real skip. `factory metrics` also prints how many triage rejects there were. It prints how many beads the pre-check did skip before a run can start (`dispatch skipped ... (merged-pr ..., live-run ...)`).
 
-A bead that a requeue edge sends on gets the metadata `requeued_from`. This bead skips the pre-check and makes no `gh` call, for the one dispatch that starts its next run. The bead's last run already passed the check, or review's own merge, before it ended. So, a merged pull request that names this bead must not reject it again (claude-factory-wnm). Dispatch clears `requeued_from` right after it starts that run. A later dispatch runs the check again, like it does for any other bead.
+A bead that a requeue edge sends on gets the metadata `requeued_from`. This bead skips the pre-check and makes no `gh` or `glab` call, for the one dispatch that starts its next run. The bead's last run already passed the check, or review's own merge, before it ended. So, a merged pull request that names this bead must not reject it again (claude-factory-wnm). Dispatch clears `requeued_from` right after it starts that run. A later dispatch runs the check again, like it does for any other bead.
 
 **Which factory and station a run starts in**: a `station:<name>` label starts the run at that station, in the rig's own factory (`rig.factory`). A `factory:<name>` label names a different factory. Dispatch looks for the factory file in the repo's own `.factory/` directory, as `<name>.ts` (or `.json`, `.yaml`, `.toml`). If the file is not there, dispatch looks in this repo's `factories/` directory. Dispatch uses the file that it finds.
 
@@ -359,8 +359,8 @@ The pm pass (`factory plan`) reports a `file-churn` finding when one file change
 ## Hygiene sweep
 
 Once a day, `factory tick` runs the `hygiene` sweep for each rig. The pass is code. It uses no model
-and starts no run. It reads all beads with one `bd list` and the last 500 merged PRs with one
-`gh api repos/<owner>/<repo>/pulls`. It proposes a close for a bead, with one of these kinds:
+and starts no run. It reads all beads with one `bd list` and the merged PRs among the last 500 closed PRs with up to 5
+`gh api repos/<owner>/<repo>/pulls` calls. It proposes a close for a bead, with one of these kinds:
 
 | Kind        | Rule                                                                                                           |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |

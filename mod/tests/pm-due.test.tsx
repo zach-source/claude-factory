@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { hasAgentTool, pmDue, pmRetryDelay } from '../hooks/view'
+import { hasAgentTool, patrolsText, pmDue, pmRetryDelay } from '../hooks/view'
 
 // claude-factory-dun.5: pmDue is the pm subagent's pure cadence check. These are plain function
 // calls, no `$`, no mocks. mod/tests/pm.test.tsx covers the `$` integration (spawn, turn.complete,
@@ -83,4 +83,16 @@ test('pmRetryDelay: exponential, capped at 60 minutes', () => {
   expect(pmRetryDelay(3)).toBe(240_000)
   expect(pmRetryDelay(7)).toBe(HOUR)
   expect(pmRetryDelay(50)).toBe(HOUR)
+})
+
+// ---- claude-factory-drr: /factory patrols prints a fallback entry's error ----
+
+test('patrolsText prints e.error when an entry has one, else the report', () => {
+  const base = { at: 0, durationMs: 0, actions: [] as string[] }
+  const out = patrolsText([
+    { ...base, reason: 'fallback', report: '', error: 'this manager has no Agent tool' },
+    { ...base, reason: 'answer', report: 'all quiet' },
+  ])
+  expect(out).toContain('this manager has no Agent tool')
+  expect(out).toContain('all quiet')
 })

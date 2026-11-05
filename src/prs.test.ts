@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { prsIn } from './machine'
 import {
   alreadyDone,
@@ -10,6 +10,7 @@ import {
   due,
   evidenceLine,
   foldFound,
+  gitlabMergedJson,
   foldMentions,
   keepSearchHit,
   namesBead,
@@ -1452,12 +1453,26 @@ test('parseGitlabLabeled gives labelPass the fields gh pr list does', () => {
       url: MR_URL,
       headRefName: 'feat/x',
       baseRefName: 'main',
+      headRefOid: '',
+      isDraft: false,
       isCrossRepository: false,
       labels: [{ name: 'rework' }, { name: 'bug' }],
     },
     expect.objectContaining({ number: 8, isCrossRepository: true }),
   ])
   expect(parseGitlabLabeled(JSON.stringify([{ ...mr, labels: undefined }]))[0]!.labels).toEqual([])
+  const one = (over: object) => parseGitlabLabeled(JSON.stringify([{ ...mr, ...over }]))[0]!
+  expect(one({ sha: 'abc' }).headRefOid).toBe('abc')
+  expect(one({ draft: true }).isDraft).toBe(true)
+  expect(one({ work_in_progress: true }).isDraft).toBe(true)
+  expect(one({ draft: false, work_in_progress: true }).isDraft).toBe(false)
+  expect(one({}).isDraft).toBe(false)
+  expect(one({ draft: 'yes' }).isDraft).toBe(false)
+  expect(one({ source_project_id: 9, target_project_id: 9 }).isCrossRepository).toBe(false)
+  expect(one({ source_project_id: 9, target_project_id: 10 }).isCrossRepository).toBe(true)
+  expect(one({ source_project_id: undefined }).isCrossRepository).toBe(true)
+  expect(one({ source_project_id: undefined, target_project_id: undefined }).isCrossRepository).toBe(true)
+  expect(one({ source_project_id: '9', target_project_id: '9' }).isCrossRepository).toBe(true)
   expect(parseGitlabLabeled('not json')).toEqual([])
   expect(parseGitlabLabeled(JSON.stringify([{ title: 'no iid' }]))).toEqual([])
 })
@@ -1465,8 +1480,11 @@ test('parseGitlabLabeled gives labelPass the fields gh pr list does', () => {
 test('forgeNote tells a GitLab worker the glab equivalents, and a GitHub worker nothing', () => {
   const note = forgeNote('gitlab.example.com').join('\n')
   expect(note).toContain('GitLab at gitlab.example.com')
-  for (const gl of ['glab mr create', 'glab mr note', 'glab mr approve', 'glab ci status', 'glab api'])
+  for (const gl of ['glab mr create', 'glab mr note', 'glab ci status', 'glab api'])
     expect(note).toContain(gl)
+  expect(note).toContain('--target-branch')
+  expect(note).toContain('only a person approves')
+  expect(note.replace('denies glab mr approve', '')).not.toContain('glab mr approve')
   expect(forgeNote()).toEqual([])
 })
 
@@ -1625,6 +1643,7 @@ test('buildPrs: an MR URL on another host is never viewed, on a GitLab rig or a 
 
 import {
   githubChecks,
+  gitlabChecks,
   githubPulls,
   githubRows,
   githubSlugOf,
@@ -1849,6 +1868,53 @@ test('githubChecks tallies check runs and statuses of a 40-hex head; a failed ca
   expect(await githubChecks(answer(runs, status), 'acme/widget', 'abc', '/tmp')).toBeNull()
 })
 
+test('gitlabChecks tallies the head pipeline of an MR pinned to the SHA; any doubt gives null', async () => {
+  const sha = 'a'.repeat(40)
+  const calls: string[][] = []
+  const answer =
+    (mr: unknown, code = 0, raw?: string): Gh =>
+    async argv => {
+      calls.push(argv)
+      return { code, out: raw ?? JSON.stringify(mr), err: '' }
+    }
+  const run = (g: Gh, s = sha) => gitlabChecks(g, 'gitlab.example.com', 'acme/widget', 7, s, '/tmp')
+  const pipe = (status: string, psha = sha) => ({ sha, head_pipeline: { sha: psha, status } })
+  expect(await run(answer(pipe('success')))).toEqual({ pass: 1, fail: 0, pending: 0 })
+  expect(calls[0]).toEqual([
+    'api',
+    '--hostname',
+    'gitlab.example.com',
+    'projects/acme%2Fwidget/merge_requests/7',
+  ])
+  expect(await run(answer(pipe('skipped')))).toEqual({ pass: 1, fail: 0, pending: 0 })
+  expect(await run(answer(pipe('failed')))).toEqual({ pass: 0, fail: 1, pending: 0 })
+  expect(await run(answer(pipe('canceled')))).toEqual({ pass: 0, fail: 1, pending: 0 })
+  for (const st of [
+    'running',
+    'pending',
+    'created',
+    'manual',
+    'scheduled',
+    'preparing',
+    'waiting_for_resource',
+    'canceling',
+    '',
+  ])
+    expect(await run(answer(pipe(st)))).toEqual({ pass: 0, fail: 0, pending: 1 })
+  for (const bad of [false, 0, '', 'x', [], [1]])
+    expect(await run(answer({ sha, head_pipeline: bad }))).toBeNull()
+  expect(await run(answer({ sha, head_pipeline: null }))).toEqual({ pass: 0, fail: 0, pending: 0 })
+  expect(await run(answer({ sha }))).toEqual({ pass: 0, fail: 0, pending: 0 })
+  const n = calls.length
+  expect(await run(answer(pipe('success')), 'abc')).toBeNull()
+  expect(calls.length).toBe(n)
+  expect(await run(answer(pipe('success'), 1))).toBeNull()
+  expect(await run(answer(null, 0, 'not json'))).toBeNull()
+  expect(await run(answer([]))).toBeNull()
+  expect(await run(answer({ ...pipe('success'), sha: 'b'.repeat(40) }))).toBeNull()
+  expect(await run(answer(pipe('success', 'b'.repeat(40))))).toBeNull()
+})
+
 test('buildPrs on GitHub: list and view go through REST only; a failed check-runs call leaves the view applied, a failed pull call is an error', async () => {
   const sha = 'a'.repeat(40)
   const open = {
@@ -1946,7 +2012,7 @@ test('buildPrs on GitHub: list and view go through REST only; a failed check-run
 
 import { githubWatchView } from './prs'
 
-test('githubWatchView: pull, then reviews and comments with --paginate --slurp, flattened; any failed call gives null', async () => {
+test('githubWatchView: pull, then reviews and comments one call per page, flattened; any failed call gives null', async () => {
   const calls: string[][] = []
   const answer =
     (comments: GhResult | null): Gh =>
@@ -1971,24 +2037,20 @@ test('githubWatchView: pull, then reviews and comments with --paginate --slurp, 
           code: 0,
           err: '',
           out: JSON.stringify([
-            [
-              {
-                user: { login: 'a' },
-                author_association: 'MEMBER',
-                state: 'APPROVED',
-                submitted_at: '2026-10-12T09:00:00Z',
-                body: '',
-              },
-            ],
-            [
-              {
-                user: { login: 'b' },
-                author_association: 'NONE',
-                state: 'COMMENTED',
-                submitted_at: '2026-10-12T09:01:00Z',
-                body: '',
-              },
-            ],
+            {
+              user: { login: 'a' },
+              author_association: 'MEMBER',
+              state: 'APPROVED',
+              submitted_at: '2026-10-12T09:00:00Z',
+              body: '',
+            },
+            {
+              user: { login: 'b' },
+              author_association: 'NONE',
+              state: 'COMMENTED',
+              submitted_at: '2026-10-12T09:01:00Z',
+              body: '',
+            },
           ]),
         }
       return (
@@ -1996,14 +2058,12 @@ test('githubWatchView: pull, then reviews and comments with --paginate --slurp, 
           code: 0,
           err: '',
           out: JSON.stringify([
-            [
-              {
-                user: { login: 'a' },
-                author_association: 'OWNER',
-                created_at: '2026-10-12T09:02:00Z',
-                body: 'hi',
-              },
-            ],
+            {
+              user: { login: 'a' },
+              author_association: 'OWNER',
+              created_at: '2026-10-12T09:02:00Z',
+              body: 'hi',
+            },
           ]),
         }
       )
@@ -2021,9 +2081,9 @@ test('githubWatchView: pull, then reviews and comments with --paginate --slurp, 
   })
   expect(v!.notes!.map(n => n.person)).toEqual([true, false, true])
   expect(calls.map(c => c.join(' ')).sort()).toEqual([
-    'api --paginate --slurp repos/acme/widget/issues/5/comments?per_page=100',
-    'api --paginate --slurp repos/acme/widget/pulls/5/reviews?per_page=100',
+    'api repos/acme/widget/issues/5/comments?per_page=100&page=1',
     'api repos/acme/widget/pulls/5',
+    'api repos/acme/widget/pulls/5/reviews?per_page=100&page=1',
   ])
   expect(
     await githubWatchView(
@@ -2096,6 +2156,19 @@ test('githubMergedJson: closed pulls with a merge date only, in the parseMergedP
   ).toBeNull()
 })
 
+test('githubMergedJson and gitlabMergedJson pass timeoutMs to the call, and default to 30 s', async () => {
+  const seen: (number | undefined)[] = []
+  const f: Gh = async (_argv, o) => {
+    seen.push(o?.timeout)
+    return { code: 0, out: '[]', err: '' }
+  }
+  await githubMergedJson(f, 'acme/widget', '/tmp', { pages: 1, timeoutMs: 15_000 })
+  await githubMergedJson(f, 'acme/widget', '/tmp', { pages: 1 })
+  await gitlabMergedJson(f, 'gl.example.com', 'acme/widget', '/tmp', { sourceBranch: 'b', timeoutMs: 15_000 })
+  await gitlabMergedJson(f, 'gl.example.com', 'acme/widget', '/tmp', { search: 'x' })
+  expect(seen).toEqual([15_000, 30_000, 15_000, 30_000])
+})
+
 import { githubCloseArgv, githubCommentArgv, githubUnlabelArgv } from './prs'
 
 test('GitHub PR write argv: comment, unlabel and close go through gh api; a body goes raw with -f; a label is encoded', () => {
@@ -2121,4 +2194,239 @@ test('GitHub PR write argv: comment, unlabel and close go through gh api; a body
     '-f',
     'state=closed',
   ])
+})
+
+test('gitlabMergedJson: one glab api call per lookup, mapped to gh pr list shaped JSON', async () => {
+  const calls: string[][] = []
+  const mr = (iid: number, state: string, sha: unknown, squash: unknown) => ({
+    iid,
+    web_url: `https://gitlab.com/g/s/p/-/merge_requests/${iid}`,
+    title: 't',
+    source_branch: `b${iid}`,
+    state,
+    merge_commit_sha: sha,
+    squash_commit_sha: squash,
+  })
+  const glab = async (argv: string[]) => {
+    calls.push(argv)
+    return {
+      code: 0,
+      err: '',
+      out: JSON.stringify([
+        mr(7, 'merged', 'aa', 'bb'),
+        mr(8, 'merged', null, 'bb'),
+        mr(9, 'opened', 'cc', null),
+      ]),
+    }
+  }
+  const out = await gitlabMergedJson(glab, 'gitlab.com', 'g/s/p', '/r', { search: 'ex 1' })
+  expect(calls[0]).toEqual([
+    'api',
+    '--hostname',
+    'gitlab.com',
+    'projects/g%2Fs%2Fp/merge_requests?state=merged&per_page=30&in=title&search=ex%201',
+  ])
+  expect(parseMergedPrs(out!).map(p => [p.number, p.headRefName, p.mergeCommit])).toEqual([
+    [7, 'b7', 'aa'],
+    [8, 'b8', 'bb'],
+  ])
+  expect(parseMergedPrs(out!).map(p => [p.url, p.title])).toEqual([
+    ['https://gitlab.com/g/s/p/-/merge_requests/7', 't'],
+    ['https://gitlab.com/g/s/p/-/merge_requests/8', 't'],
+  ])
+  const none = async () => ({ code: 0, err: '', out: JSON.stringify([mr(5, 'merged', null, null)]) })
+  const bare = await gitlabMergedJson(none, 'h', 'a/b', '/r', { search: 'i' })
+  expect(parseMergedPrs(bare!).map(p => p.mergeCommit)).toEqual([''])
+  await gitlabMergedJson(glab, 'gitlab.com', 'g/p', '/r', { sourceBranch: 'factory/x' })
+  expect(calls[1]![3]).toBe(
+    'projects/g%2Fp/merge_requests?state=merged&per_page=30&source_branch=factory%2Fx',
+  )
+})
+
+test('gitlabMergedJson: failure is null, garbage is an empty list', async () => {
+  const bad = async () => ({ code: 1, err: 'x', out: '' })
+  const errs: string[] = []
+  expect(await gitlabMergedJson(bad, 'h', 'a/b', '/r', { search: 'i' }, e => errs.push(e))).toBeNull()
+  expect(errs).toEqual(['x'])
+  const junk = async () => ({ code: 0, err: '', out: 'nope' })
+  expect(JSON.parse((await gitlabMergedJson(junk, 'h', 'a/b', '/r', { search: 'i' }))!)).toEqual([])
+})
+
+// claude-factory-oz6s: /search/issues has no owner in the path, so the REST list of the run's own repo also feeds the search
+describe('buildPrs: the search adds the run repo REST list (oz6s)', () => {
+  const REST = 'api repos/acme/widget/pulls?state=all&sort=created&direction=desc&per_page=100&page=1'
+  const row = (n: number, title: string, createdAt = '2026-10-12T08:49:00Z') => ({
+    number: n,
+    html_url: `https://github.com/acme/widget/pull/${n}`,
+    title,
+    body: '',
+    created_at: createdAt,
+    head: { ref: `feature/${n}` },
+  })
+  const search = async (rest: GhResult, searchReply: GhResult, over: Partial<RunMeta> = {}) => {
+    const calls: string[][] = []
+    const gh = fakeGh(
+      [
+        { when: REST, reply: rest },
+        { when: 'search prs --owner acme', reply: searchReply },
+      ],
+      calls,
+    )
+    const out = await buildPrs([run(over)], IS_STATION, gh, 2_000_000_000)
+    return { ...out, calls }
+  }
+  const ok = (v: unknown): GhResult => ({ code: 0, out: JSON.stringify(v), err: '' })
+
+  test('a REST row that cites the bead is a search hit when the search finds nothing', async () => {
+    const { rows } = await search(ok([row(800, 'ex-12.3 fix')]), ok([]))
+    expect(rows[0]!.prs.find(p => p.number === 800)?.source).toBe('search')
+  })
+
+  test.each([
+    ['a longer sibling id', 'ex-12.3x fix'],
+    ['a dotted descendant', 'ex-12.3.4 fix'],
+    ['the parent of the dotted bead', 'ex-12 fix'],
+  ])('a REST row that cites only %s is no hit', async (_n, title) => {
+    const { rows } = await search(ok([row(801, title)]), ok([]))
+    expect(rows[0]!.prs.find(p => p.number === 801)).toBeUndefined()
+  })
+
+  test('a REST row created before the run started is dropped', async () => {
+    const { rows } = await search(ok([row(802, 'ex-12.3 old', '2026-10-12T07:00:00Z')]), ok([]))
+    expect(rows[0]!.prs.find(p => p.number === 802)).toBeUndefined()
+  })
+
+  test('a failed REST list fails the search, so it is not spent', async () => {
+    const { files, rows } = await search({ code: 1, out: '', err: 'boom' }, ok([]), { ended: true })
+    expect(files.get(RUN_ID)!.searchedFinal).not.toBe(true)
+    expect(files.get(RUN_ID)!.searchErrorStreak).toBe(1)
+    expect(rows[0]!.error).toBeDefined()
+  })
+
+  test('a failed search call fails the search even when the REST list works', async () => {
+    const { files } = await search(
+      ok([row(803, 'ex-12.3 fix')]),
+      { code: 1, out: '', err: 'rate' },
+      { ended: true },
+    )
+    expect(files.get(RUN_ID)!.searchErrorStreak).toBe(1)
+  })
+
+  test('a hit in both the search and the REST list counts once', async () => {
+    const { rows } = await search(
+      ok([row(804, 'ex-12.3 fix')]),
+      ok([{ url: 'https://github.com/acme/widget/pull/804', createdAt: '2026-10-12T08:49:00Z' }]),
+    )
+    expect(rows[0]!.prs.filter(p => p.number === 804)).toHaveLength(1)
+  })
+})
+
+describe('githubPulls: sort and since (oz6s)', () => {
+  const full = (updated: string) => Array.from({ length: 100 }, () => ({ updated_at: updated }))
+  const seq = (pages: unknown[][]) => {
+    const urls: string[] = []
+    const gh: Gh = async argv => {
+      urls.push(argv[1]!)
+      const page = pages[urls.length - 1]
+      return page ? { code: 0, out: JSON.stringify(page), err: '' } : { code: 1, out: '', err: 'no page' }
+    }
+    return { gh, urls }
+  }
+  const since = Date.parse('2026-10-10T00:00:00Z')
+
+  test('without sort and since, the URL is the created-order one', async () => {
+    const { gh, urls } = seq([[]])
+    await githubPulls(gh, 'acme/widget', '/r', { state: 'closed', pages: 3 })
+    expect(urls).toEqual([
+      'repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1',
+    ])
+  })
+
+  test('sort=updated stops after a full page whose last row is older than since', async () => {
+    const { gh, urls } = seq([
+      full('2026-10-11T00:00:00Z'),
+      full('2026-10-09T00:00:00Z'),
+      full('2026-10-08T00:00:00Z'),
+    ])
+    const rows = await githubPulls(gh, 'acme/widget', '/r', {
+      state: 'closed',
+      pages: 10,
+      sort: 'updated',
+      since,
+    })
+    expect(rows).toHaveLength(200)
+    expect(urls).toHaveLength(2)
+    expect(urls[0]).toContain('sort=updated&direction=desc')
+  })
+
+  test('sort=updated reads on while the last row is not older than since, up to the page cap', async () => {
+    const { gh, urls } = seq([
+      full('2026-10-11T00:00:00Z'),
+      full('2026-10-11T00:00:00Z'),
+      full('2026-10-11T00:00:00Z'),
+    ])
+    await githubPulls(gh, 'acme/widget', '/r', { state: 'closed', pages: 2, sort: 'updated', since })
+    expect(urls).toHaveLength(2)
+  })
+})
+
+test('githubWatchView: 150 reviews make 2 calls named by owner and page, never --paginate; a failed page 2 gives null', async () => {
+  const run = async (failPage2: boolean) => {
+    const calls: string[] = []
+    const gh: Gh = async argv => {
+      const path = argv.at(-1)!
+      calls.push(argv.join(' '))
+      if (path.endsWith('/pulls/5'))
+        return {
+          code: 0,
+          err: '',
+          out: JSON.stringify({
+            state: 'open',
+            draft: false,
+            updated_at: '2026-10-12T09:00:00Z',
+            mergeable: true,
+            head: { ref: 'factory/x', sha: 'abc' },
+            base: { ref: 'main' },
+          }),
+        }
+      if (path.includes('/comments?')) return { code: 0, err: '', out: '[]' }
+      if (path.endsWith('&page=2') && failPage2) return { code: 1, err: 'boom', out: '' }
+      const n = path.endsWith('&page=1') ? 100 : 50
+      const row = {
+        user: { login: 'a' },
+        author_association: 'MEMBER',
+        state: 'COMMENTED',
+        submitted_at: '2026-10-12T09:00:00Z',
+        body: '',
+      }
+      return { code: 0, err: '', out: JSON.stringify(Array.from({ length: n }, () => row)) }
+    }
+    const v = await githubWatchView(gh, 'https://github.com/acme/widget/pull/5', '/tmp')
+    return { v, calls: calls.filter(c => c.includes('/reviews?')) }
+  }
+  const ok = await run(false)
+  expect(ok.v!.notes).toHaveLength(150)
+  expect(ok.calls).toEqual([
+    'api repos/acme/widget/pulls/5/reviews?per_page=100&page=1',
+    'api repos/acme/widget/pulls/5/reviews?per_page=100&page=2',
+  ])
+  expect((await run(true)).v).toBeNull()
+})
+
+// The AX gateway picks the owner key from /repos/<owner>/ in the path. These gh forms send no owner
+// (or follow a /repositories/<id>/ Link URL), so the manager code must not use them.
+test('manager GitHub reads never use a gh form without the owner in the path', async () => {
+  const { readFileSync } = await import('node:fs')
+  const bad =
+    /['"]--paginate['"]|['"]graphql['"]|['"]pr['"],\s*['"](list|view|checks)['"]|(?<!['"]memory['"],\s*)['"]search['"],/g
+  const hits: string[] = []
+  for (const f of ['cli.ts', 'prs.ts', 'gc.ts']) {
+    const text = readFileSync(new URL(`./${f}`, import.meta.url), 'utf8')
+      .replace(/^\s*\/\*[\s\S]*?\*\//gm, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    for (const m of text.matchAll(bad)) hits.push(`${f}: ${text.slice(m.index, m.index + 40)}`)
+  }
+  // allowed: githubForge.search only adds hits to the REST own-repo list
+  expect(hits).toHaveLength(1)
+  expect(hits[0]).toContain("prs.ts: 'search', 'prs', '--owner'")
 })

@@ -159,6 +159,52 @@ test('the monitor prompt files long-firing alerts and long-False Ready condition
     expect(p(id), id).not.toContain('ALERTS_FOR_STATE')
 })
 
+test('the monitor prompt sends an alert closed in the last 7 days to a person', () => {
+  const m = (sweeps.nodes as Record<string, { prompt: string }>)['monitor']!.prompt
+  for (const t of [
+    '--status closed --closed-after <date 7 days ago>',
+    'closed in the last 7 days',
+    'with no factory label, for a person',
+    'name the closed bead in the description',
+  ])
+    expect(m, t).toContain(t)
+  expect(m.indexOf('closed in the last 7 days')).toBeGreaterThan(-1)
+  expect(m.indexOf('closed in the last 7 days')).toBeLessThan(
+    m.indexOf('labels factory, station:incident and sweep-queue:incident'),
+  )
+  expect(m).not.toContain('bd reopen')
+  expect(m).not.toMatch(/--add-label factory/)
+  const scope =
+    'For a long-lived alert or Ready condition, the 7-day rule below decides how to file when a closed bead matches.'
+  expect(m).toContain(scope)
+  expect(m.indexOf(scope)).toBeGreaterThan(m.indexOf('Live-object findings:'))
+  expect(m.indexOf(scope)).toBeLessThan(m.indexOf('--status closed --closed-after'))
+  expect(scope).not.toContain('closed in the last 7 days')
+  for (const [name, n] of Object.entries(sweeps.nodes as Record<string, { prompt?: string }>))
+    if (name !== 'monitor') expect(n.prompt ?? '', name).not.toContain(scope)
+})
+
+test('the monitor prompt comments on a person-closed P2 and files no second P2', () => {
+  const nodes = sweeps.nodes as Record<string, { prompt?: string }>
+  const m = nodes['monitor']!.prompt!
+  for (const t of ['`bd show <id>`', 'priority 2 and no factory label', 'do not file a new bead'])
+    expect(m, t).toContain(t)
+  const at = (t: string) => m.indexOf(t)
+  const closed = at('--status closed --closed-after')
+  const rule = at('priority 2 and no factory label')
+  const p2 = at('file the new bead with `bd create -t bug -p 2`')
+  expect(closed).toBeGreaterThan(-1)
+  expect(rule).toBeGreaterThan(closed)
+  expect(p2).toBeGreaterThan(rule)
+  expect(p2).toBeLessThan(at('labels factory, station:incident and sweep-queue:incident'))
+  const between = m.slice(rule, p2)
+  expect(between).toContain('do not file a new bead')
+  expect(between).toContain('bd comment')
+  expect(between).not.toContain('bd create')
+  for (const [name, n] of Object.entries(nodes))
+    if (name !== 'monitor') expect(n.prompt ?? '', name).not.toContain('priority 2 and no factory label')
+})
+
 test("sweeps.ts stays self-contained: a repo's own copy keeps no import", async () => {
   const { readFileSync } = await import('node:fs')
   const { ownCopy } = await import('../src/cli')

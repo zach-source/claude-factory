@@ -65,6 +65,13 @@ export const hasBeads = (repo: string) => existsSync(join(repo, '.beads'))
 /** the run owns its bead under this name; its workers write as `<actor>/<station>` */
 export const actorOf = (runId: string) => `factory/${runId}`
 
+/**
+ * Factory text, last in the goal of a Linear-sourced bead, so its author cannot remove it.
+ * The triage prompt reads it: a bead filed from here in another rig gets no `factory` label.
+ */
+export const LINEAR_FILE_RULE =
+  'Linear-sourced: this bead came from a Linear issue. A bead you file from it in another rig must not carry the label `factory`: a person queues it there.'
+
 /** what a run is asked to do, from its bead */
 export const goalOf = (b: Bead) =>
   [
@@ -72,6 +79,7 @@ export const goalOf = (b: Bead) =>
     b.description,
     b.acceptance_criteria && `Acceptance: ${b.acceptance_criteria}`,
     shipRework(b),
+    linearSourced(b) && LINEAR_FILE_RULE,
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -156,6 +164,18 @@ export type SlimBead = {
   children?: { done: number; total: number }
   /** the open beads it waits on */
   blockedBy?: string[]
+  /** the bead it was filed from in another rig (metadata.discovered_from); "(invalid)" when not an id */
+  discoveredFrom?: string
+}
+
+/** metadata.discovered_from is untrusted text that reaches the patrol prompt: only an id passes */
+const discoveredFromOf = (x: Bead) => {
+  const d = x.metadata?.discovered_from
+  return d == null
+    ? undefined
+    : typeof d === 'string' && /^[A-Za-z0-9][\w.-]{0,63}$/.test(d)
+      ? d
+      : '(invalid)'
 }
 
 /**
@@ -187,6 +207,7 @@ export function backlogOf(
     parent: parentOf(x),
     children: counts.get(x.id),
     blockedBy: x.blocked_by?.filter(id => isOpen.has(id)),
+    ...(discoveredFromOf(x) !== undefined && { discoveredFrom: discoveredFromOf(x) }),
   })
   const waiting = blocked.filter(
     x => !x.assignee && (x.status === undefined || ['open', 'blocked'].includes(x.status)),
@@ -232,9 +253,14 @@ const isOrphanChild = (b: Bead, linked: Set<string>, parents?: Map<string, Bead>
 export const byId = (all: Bead[]) => new Map(all.map(b => [b.id, b]))
 
 function bd(repo: string, actor: string, ...args: string[]) {
-  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], { cwd: repo, env: bdEnv(repo) })
+  const p = Bun.spawnSync(['bd', ...args, '--actor', actor], {
+    cwd: repo,
+    env: bdEnv(repo),
+    timeout: syncTimeoutMs(),
+  })
   const out = p.stdout.toString().trim()
-  const stderr = p.stderr.toString().trim()
+  const stderr =
+    p.exitCode === null && p.signalCode ? `timed out after ${syncTimeoutMs()}ms` : p.stderr.toString().trim()
   return { isOk: p.exitCode === 0, out, err: stderr || out, stderr }
 }
 const must = (r: ReturnType<typeof bd>, what: string) => {
@@ -286,6 +312,7 @@ function createBead(
       repo,
       actor,
       'create',
+      '--title',
       title,
       '-d',
       description,
@@ -388,7 +415,12 @@ export const beads = (repo: string, actor: string) => ({
    * again, not at the rig's own factory (claude-factory-wnm.12).
    */
   queue: (id: string, station?: string) => {
-    const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(
+    const cur = lookupBead(repo, actor, id)
+    if (station && cur && linearSourced(cur))
+      throw new Error(
+        `${id} comes from Linear: stationOf ignores a station label there, so it would not start at ${station}. Queue it without a station, or use 'factory fork <run> ${station}'`,
+      )
+    const old = (cur?.labels ?? []).filter(
       l => l.startsWith('factory:') || l.startsWith('station:') || l.startsWith('held:'),
     )
     return must(
@@ -442,6 +474,9 @@ export const beads = (repo: string, actor: string) => ({
   /** `create` without the `factory` label, so dispatch never starts the bead (the hygiene digest) */
   createUnlabeled: (title: string, description: string, meta: Record<string, string>, ...extra: string[]) =>
     createBead(repo, actor, false, title, description, extra, meta),
+  /** `create` for a bead filed from another rig: the caller decides the `factory` label (`factory file-elsewhere`) */
+  createFrom: (labeled: boolean, title: string, description: string, meta: Record<string, string>) =>
+    createBead(repo, actor, labeled, title, description, [], meta),
   /** a bead's comments as bd prints them */
   comments: (id: string): { text: string; created_at: string }[] =>
     JSON.parse(must(bd(repo, actor, 'comments', id, '--json'), 'comments') || '[]'),
@@ -480,12 +515,18 @@ export const beads = (repo: string, actor: string) => ({
   /** false when bd refuses, e.g. while the bead still has open tasks */
   close: (id: string, reason: string) => bd(repo, actor, 'close', id, '--reason', reason).isOk,
   /** unassigned and out of bd ready until a person undefers it, which hands it back to the factory */
-  defer: (id: string, reason: string, station?: string) => {
+  defer: (id: string, reason: string, station?: string, factory?: string) => {
     bd(repo, actor, 'unclaim', id)
     const out = must(bd(repo, actor, 'defer', id, '--reason', reason), 'defer')
     // with a station, the run after an undefer starts there: it replaces every station:* label
     if (station) {
-      const old = (lookupBead(repo, actor, id)?.labels ?? []).filter(l => l.startsWith('station:'))
+      const labels = lookupBead(repo, actor, id)?.labels ?? []
+      const old = labels.filter(l => l.startsWith('station:'))
+      // a bead started by hand has no factory:* label: without one, dispatch would use rig.factory at the station
+      const addFactory =
+        factory && NAME.test(factory) && !labels.some(l => l.startsWith('factory:'))
+          ? ['--add-label', `factory:${factory}`]
+          : []
       must(
         bd(
           repo,
@@ -497,6 +538,7 @@ export const beads = (repo: string, actor: string) => ({
           LABEL, // a bead started by hand lacks it, and dispatch reads only labeled beads
           '--add-label',
           `station:${station}`,
+          ...addFactory,
         ),
         'update',
       )
@@ -704,6 +746,7 @@ export const beads = (repo: string, actor: string) => ({
         repo,
         actor,
         'create',
+        '--title',
         title,
         '-d',
         description,
@@ -731,6 +774,7 @@ export const beads = (repo: string, actor: string) => ({
         repo,
         actor,
         'create',
+        '--title',
         title,
         '-d',
         description,

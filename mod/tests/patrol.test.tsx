@@ -236,6 +236,19 @@ test(
     expect(submits[0]!.text).not.toContain('lifecycle covers build, release')
     expect(submits[0]!.text).toContain('"File in: <rig>: <title> | <description>"')
     expect(submits[0]!.text).toContain('`bd undefer` the source bead')
+    // claude-factory-5ufp: check the rig, carry the origin, no factory label for a Linear-sourced source
+    for (const s of [
+      'factory rig list',
+      'discovered_from',
+      'file-elsewhere',
+      'Never run `bd create` in another rig',
+      'discoveredFrom',
+      'no `factory` label',
+      'never queue or start it',
+    ])
+      expect(submits[0]!.text).toContain(s)
+    // claude-factory-61a: a rule correction also fixes the memory note that taught the opposite
+    expect(submits[0]!.text).toContain('memory add --supersedes <old note path> --kind rule')
     expect(JSON.stringify(status)).toContain('fell back to the main chat')
   },
 )
@@ -1656,4 +1669,186 @@ test('patrolKey lists run ids,URLs, backticked names and question lines, sorted'
     patrolKey('Any news?\nhttps://x.y/1 `n` lifecycle-b2'),
   )
   expect(patrolKey('lifecycle-a1')).not.toBe(patrolKey('lifecycle-a2'))
+})
+
+// ---- claude-factory-drr: the patrol's prompt.submit fallback leaves a log line and a red Rigs line ----
+
+const PATROL_LOG = '/home/acme/patrol-log.jsonl'
+const fallbackLines = (files: Map<string, string>) =>
+  (files.get(PATROL_LOG) ?? '')
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l) as { reason: string; error?: string; durationMs: number; actions: string[] })
+    .filter(e => e.reason === 'fallback')
+
+/** a manager with new mail on every tick, so a patrol is due again and again */
+function fallbackRig(
+  on: On,
+  files: Map<string, string>,
+  submits: { text: string }[],
+  rigs: unknown[] = [],
+  status: unknown[] = [],
+) {
+  let n = 0
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
+  for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
+  on('ui.panes', () => ({ value: [] }) as never)
+  on('process.run', ($, e) => {
+    if (e.argv.includes('tick')) {
+      n += 1
+      const out = JSON.stringify({ manager: [mail(n)], rigs, runs: [RUN] })
+      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+    }
+    if (e.argv.includes('home')) return { value: { exitCode: 0, stdout: '/home/acme', stderr: '' } as never }
+    return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+  })
+  on('fs.read', ($, e) => {
+    const path = (e as { path: string }).path
+    if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
+    return { value: files.get(path)! } as never
+  })
+  on('fs.write', ($, e) => {
+    const { path, text } = e as { path: string; text: string }
+    files.set(path, text)
+    return { value: undefined } as never
+  })
+  on('prompt.submit', ($, e) => {
+    submits.push(e as never)
+    return { text: e.text } as never
+  })
+  on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+}
+
+const NO_AGENT = () => ({ value: [{ name: 'Bash', description: '', mcp: false }] }) as never
+const WITH_AGENT = () =>
+  ({
+    value: [
+      { name: 'Bash', description: '', mcp: false },
+      { name: 'Agent', description: '', mcp: false },
+    ],
+  }) as never
+const RIG = [{ name: 'api', repo: '/w/api', factory: 'lifecycle', maxRuns: 5 }]
+
+async function mountPane($: Parameters<NonNullable<Parameters<typeof test>[2]>>[0]) {
+  await $.command.run({ command: 'factory', args: 'rigs' } as never)
+  return $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+}
+
+test(
+  'no Agent tool: no spawn, many fallback prompts, one fallback log line over 3 h',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const submits: { text: string }[] = []
+    let spawns = 0
+    fallbackRig(on, files, submits)
+    on('tool.list', NO_AGENT)
+    on('agent.spawn', () => {
+      spawns += 1
+      return { model: 'sonnet' } as never
+    })
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await clock.advance(3 * 60 * 60_000)
+
+    expect(spawns).toBe(0)
+    expect(submits.length).toBeGreaterThanOrEqual(3)
+    for (const s of submits) expect(s.text).toContain('## Factory patrol')
+    const log = fallbackLines(files)
+    expect(log).toHaveLength(1)
+    expect(log[0]).toMatchObject({
+      reason: 'fallback',
+      durationMs: 0,
+      actions: [],
+      error: 'this manager has no Agent tool',
+    })
+  },
+)
+
+test('no Agent tool: the Rigs tab draws the red fallback line', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const files = new Map<string, string>()
+  fallbackRig(on, files, [], RIG)
+  on('tool.list', NO_AGENT)
+  on('agent.spawn', () => ({ model: 'sonnet' }) as never)
+
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  const ui = await mountPane($)
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('patrol fell back to the main chat')
+  await ui.unmount()
+})
+
+test(
+  'a spawn that throws: every patrol falls back, one log line holds the thrown text',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    const submits: { text: string }[] = []
+    let spawns = 0
+    fallbackRig(on, files, submits)
+    on('agent.spawn', () => {
+      spawns += 1
+      throw new Error('no tool named "Agent" in this session')
+    })
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await clock.advance(30 * 60_000)
+
+    expect(spawns).toBeGreaterThanOrEqual(2)
+    expect(submits.length).toBe(spawns)
+    const log = fallbackLines(files)
+    expect(log).toHaveLength(1)
+    // the test kit turns a throwing mock into "no implementation for agent.spawn"
+    expect(log[0]!.error).toContain('agent.spawn')
+  },
+)
+
+test('Agent present and spawn works: no fallback line, no red text', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const files = new Map<string, string>()
+  const submits: { text: string }[] = []
+  fallbackRig(on, files, submits, RIG)
+  on('tool.list', WITH_AGENT)
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'patrol-1' }) as never)
+
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  const ui = await mountPane($)
+  expect(submits).toHaveLength(0)
+  expect(fallbackLines(files)).toHaveLength(0)
+  expect(JSON.stringify(await ui.drawn())).not.toContain('patrol fell back')
+  await ui.unmount()
+})
+
+test('a fallback log write that fails still sends the prompt and says why', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const files = new (class extends Map<string, string> {
+    override set(): never {
+      throw new Error('ENOSPC: no space left on device')
+    }
+  })()
+  const submits: { text: string }[] = []
+  const status: unknown[] = []
+  fallbackRig(on, files, submits, [], status)
+  on('tool.list', NO_AGENT)
+
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+
+  expect(submits.length).toBeGreaterThanOrEqual(1)
+  expect(JSON.stringify(status)).toContain('failed to write the patrol log')
 })

@@ -344,6 +344,19 @@ test('a station blocked on pull requests parks long: the runner watches them and
   expect(s.context.mail.manager?.at(-1)?.text).toContain('when one of its pull requests changes')
 })
 
+test('countRounds replaces the graph rule: an outcome it does not list never counts', () => {
+  const { send } = run({
+    ...def,
+    nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 1, countRounds: ['approve'] } },
+  })
+  let seq = 1
+  for (let i = 0; i < 3; i++) {
+    send({ type: 'DONE', seq: seq++, outcome: 'ready', summary: 'built', at: seq })
+    const s = send({ type: 'DONE', seq: seq++, outcome: 'changes', summary: 'fix', at: seq })
+    expect(where(s.value)).toEqual(['implement', 'working'])
+  }
+})
+
 test('a station that reports one outcome more than its rounds is held for the manager', () => {
   const { send } = run({
     ...def,
@@ -371,6 +384,12 @@ test('a station that reports one outcome more than its rounds is held for the ma
   expect(() =>
     validate({ ...def, nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 0 } } }),
   ).toThrow('rounds is at least 1')
+  expect(() =>
+    validate({
+      ...def,
+      nodes: { ...def.nodes, review: { ...def.nodes.review!, rounds: 2, countRounds: ['nope'] } },
+    }),
+  ).toThrow('countRounds names an outcome that is not in next')
 })
 
 test('everyMin marks a sweep station, and must be greater than 0', () => {
@@ -1197,6 +1216,21 @@ test('plain mail still starts a worker: no holdMail, no PR link, or a lifecycle 
   expect(where(m.value)).toEqual(['implement', 'working'])
 })
 
+// claude-factory-nibm: the patrol mailed a parked deploy "Report blocked" each pass. Each mail started
+// a worker that found the same block. From the second blocked report in a row, plain mail waits.
+test('a holdMail station holds plain mail from its second blocked report in a row', () => {
+  const { send } = blockOn(holdGraph(), 'waiting on the rollout of 4 Deployments')
+  const woke = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'Report blocked', at: 30 })
+  expect(where(woke.value)).toEqual(['deploy', 'working'])
+  send({ type: 'SPAWNED', seq: 2, pane: 'w1:p2', at: 40 })
+  send({ type: 'BLOCKED', seq: 2, reason: 'still waiting on the rollout', at: 50 })
+  const held = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'Report blocked', at: 60 })
+  expect(where(held.value)).toEqual(['deploy', 'waiting'])
+  const answer = send({ type: 'MAIL', from: 'manager', to: 'deploy', text: 'rolled', wake: true, at: 70 })
+  expect(where(answer.value)).toEqual(['deploy', 'working'])
+  expect(answer.context.mail.deploy?.map(x => x.text).slice(-2)).toEqual(['Report blocked', 'rolled'])
+})
+
 test('isParkedOn: only the PR the last blocked report links (61pu AC11)', () => {
   const { s } = blockOn(holdGraph(), 'waiting on ' + PR)
   expect(isParkedOn(s.context, 'deploy', PR)).toBe(true)
@@ -1234,6 +1268,16 @@ describe('an outage hold parks the station and spends no attempt', () => {
     expect(where(s.value)).toEqual(['implement', 'waiting'])
     expect(s.context.attempt).toBe(1)
     expect(s.context.log.map(e => `${e.outcome}:${e.attempt}`)).toEqual(['outage:1', 'outage:1', 'outage:1'])
+  })
+
+  test('mail --wake ends the hold; plain mail does not', () => {
+    const { send } = run()
+    let s = send(hold(1, 1000))
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'hi', at: 2000 })
+    expect(where(s.value)).toEqual(['implement', 'waiting'])
+    s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'go', wake: true, at: 3000 })
+    expect(where(s.value)).toEqual(['implement', 'working'])
   })
 
   test('the wait doubles up to 120 min, and a later hold wins', () => {
@@ -1341,17 +1385,33 @@ describe('gotoRefusal (claude-factory-7dd)', () => {
     expect(refusal(r, d, 'implement')).toBeNull()
   })
 
-  test('a budget hold refuses goto; a pending RETRY refills it; goto done is fine', () => {
+  test('goto grants a fresh step budget; a pending RETRY and goto done are fine too', () => {
     const d: Factory = { ...def, maxSteps: 2 }
     const r = run(d)
     r.send({ type: 'DONE', seq: 1, outcome: 'ready', summary: 'a', at: 1 })
     r.send({ type: 'DONE', seq: 2, outcome: 'changes', summary: 'b', at: 2 })
     expect(where(r.now().value)).toEqual(['implement', 'stuck'])
     const before = r.saved()
-    expect(refusal(r, d, 'review')).toContain('step budget used up')
+    expect(refusal(r, d, 'review')).toBeNull()
     expect(refusal(r, d, 'review', [{ type: 'RETRY', at: 5 }])).toBeNull()
     expect(refusal(r, d, 'done')).toBeNull()
     expect(r.saved()).toEqual(before)
+  })
+
+  test('GOTO at a used-up budget lands working with a fresh budget, working or parked', () => {
+    const d: Factory = { ...def, maxSteps: 1 }
+    const w = run(d)
+    expect(w.now().context.seq).toBe(1)
+    const s = w.send({ type: 'GOTO', node: 'review', at: 3 })
+    expect(where(s.value)).toEqual(['review', 'working'])
+    expect(s.context.error).toBeNull()
+    expect(s.context.budget).toBeGreaterThanOrEqual(s.context.seq)
+    const p = run(d)
+    const parked = p.send({ type: 'BLOCKED', seq: 1, reason: 'PR #7 needs a human approval', at: 4 })
+    expect(where(parked.value)).toEqual(['implement', 'waiting'])
+    const t = p.send({ type: 'GOTO', node: 'review', at: 5 })
+    expect(where(t.value)).toEqual(['review', 'working'])
+    expect(t.context.error).toBeNull()
   })
 })
 
@@ -1395,6 +1455,13 @@ test('a mailOnly blocked report parks for 2*OWNER_AFTER_MS: only mail wakes it, 
   s = send({ type: 'MAIL', from: 'manager', to: 'implement', text: 'results', at: 2_000_000 })
   expect(where(s.value)).toEqual(['implement', 'working'])
   expect(s.context.seq).toBe(2)
+})
+
+test('the BLOCKED log entry records mailOnly, and only when set (gzdv)', () => {
+  const a = run().send({ type: 'BLOCKED', seq: 1, reason: 'need kubectl', at: 1000, mailOnly: true })
+  expect(a.context.log.at(-1)?.mailOnly).toBe(true)
+  const b = run().send({ type: 'BLOCKED', seq: 1, reason: 'waiting', at: 1000 })
+  expect(b.context.log.at(-1)).not.toHaveProperty('mailOnly')
 })
 
 test('a repeat mailOnly blocked report does not mail the manager again; the owner handoff still ends it', () => {

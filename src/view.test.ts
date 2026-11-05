@@ -1,5 +1,6 @@
 // the mod's pure helpers, tested here because the mod's own tests run under `claude plugin test`
 import { expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import {
   bar,
   counts,
@@ -340,7 +341,9 @@ test('a pull request names what it waits on, worst first', () => {
   expect(need('REVIEW_REQUIRED', 'DIRTY')).toBe('conflicts')
   expect(need('REVIEW_REQUIRED', 'BLOCKED')).toBe('needs approval')
   expect(need('APPROVED', 'CLEAN')).toBe('ready to merge')
-  expect(need('', 'BLOCKED')).toBe('blocked by a rule')
+  // REST gives no REVIEW_REQUIRED: a blocked PR with no approval waits on a review
+  expect(need('', 'BLOCKED')).toBe('needs approval')
+  expect(need('APPROVED', 'BLOCKED')).toBe('blocked by a rule')
 })
 
 test('a PR row state word: draft and terminal states override prNeed, each with its own checks tally', () => {
@@ -637,6 +640,15 @@ test('interviewPrompt asks the manager to propose options only for items that ne
   // mailing a station only drops an iv: item; a bd: or own: item has no station (claude-factory-9f6.19)
   expect(text).toContain('for an `iv:` key, mail that station')
   expect(text).toContain('decisions answer <rig> <bead>')
+  // 'on record' counts only from the person's own words, never the item's own text (claude-factory-ehg)
+  expect(text).toContain("on record only from the person's own words")
+  expect(text).toContain("Never count the item's own text")
+})
+
+test('the manager system prompt states the same on-record source rule', () => {
+  const src = readFileSync(new URL('../mod/hooks/register.tsx', import.meta.url), 'utf8')
+  expect(src).toContain("on record only from the person's own words")
+  expect(src).toContain("Never count the item's own text")
 })
 
 test('interviewPrompt quotes a bare title and its details as untrusted data, escaping any quote already inside', () => {
@@ -930,7 +942,7 @@ test('a collapsed interview item built from a recorded parked summary stays shor
     ].join(' ')
     expect(collapsed.length).toBeLessThanOrEqual(400)
     expect(collapsed).not.toMatch(/https?:\/\//)
-    expect(collapsed).not.toMatch(/\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/i)
+    expect(collapsed).not.toMatch(/\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b/i)
     // the collapsed row never shows the raw text; the toggle (iv.details) holds all of it
     const fixture = fixtures.find(f => f.run === iv.run)!
     expect(iv.details).toBe(fixture.summary)
@@ -969,6 +981,39 @@ test("interviews() and withProposals() both redact a URL or a SHA out of an item
   const proposed = withProposals([withOwnContext], proposals)[0]!
   expect(proposed.context).not.toContain(sha)
   expect(proposed.context).not.toContain('https://')
+})
+
+test('interviews() and withProposals() redact a hex token longer than 40 characters (claude-factory-tfk)', () => {
+  const h64 = '0123456789abcdef'.repeat(4)
+  const h41 = 'a'.repeat(41)
+  const runs = [
+    {
+      id: 'r1',
+      node: 'triage',
+      sub: 'waiting',
+      last: {
+        node: 'triage',
+        attempt: 1,
+        outcome: 'blocked',
+        summary: `Question: Merge ${h64} now?\nContext: Key ${h64} and ${h41} leaked; abc123 and 1234567890123 stay\nOptions: yes | no`,
+        at: 1,
+      },
+    },
+  ]
+  const [iv] = interviews(runs)
+  for (const h of [h64, h41]) {
+    expect(iv!.title).not.toContain(h)
+    expect(iv!.context).not.toContain(h)
+  }
+  expect(iv!.context).toContain('abc123')
+  expect(iv!.context).toContain('1234567890123')
+
+  const proposals = {
+    [iv!.key]: { question: 'Merge now?', context: `See ${h64} and ${h41}`, options: ['yes', 'no'], at: 2 },
+  }
+  const proposed = withProposals([{ ...iv!, needsProposal: true }], proposals)[0]!
+  expect(proposed.context).not.toContain(h64)
+  expect(proposed.context).not.toContain(h41)
 })
 
 test('patrol lines carry the attempt, time in station, quiet time and a paused runner', () => {
@@ -1030,4 +1075,50 @@ test('ownerStep reads the command after "parked, waiting on:"; interviews tag on
   const merged = mergeSame(items)
   expect(merged.filter(i => i.step)).toHaveLength(2) // same bead, same question: still 2 items
   expect(merged.every(i => !i.step || !i.also)).toBe(true)
+})
+
+// claude-factory-dgok: untrusted text must not sit in shell double quotes ($(...), backticks and $VAR expand there).
+const expectSingleQuoted = (t: string, placeholders: string[]) => {
+  const spans = (t.match(/`[^`]*`/g) ?? []).filter(s =>
+    /file-elsewhere|decisions propose|decisions answer/.test(s),
+  )
+  expect(spans.length).toBeGreaterThan(0)
+  for (const s of spans) expect(s).not.toContain('"<')
+  for (const p of placeholders) expect(spans.join('\n')).toContain(`'<${p}>'`)
+  expect(t).toContain("'\\''")
+  expect(t).toContain('single quotes')
+}
+
+test('interviewPrompt: every non-ID placeholder in a factory command span is single-quoted (claude-factory-dgok)', () => {
+  const ids = new Set(['run', 'rig', 'bead', 'key'])
+  const bad = (t: string) =>
+    (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
+      (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ids.has(p.slice(1, -1))),
+    )
+  const need = iv({
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    title: 'api-7: Q',
+    question: 'Q',
+    needsProposal: true,
+  })
+  expect(bad(interviewPrompt([need])!)).toEqual([])
+  expect(bad('`factory decisions answer <rig> <bead> "<text>"`')).toEqual(['<text>'])
+  expect(bad("`factory decisions answer <rig> <bead> '<text>'`")).toEqual([])
+})
+
+test('interviewPrompt passes decisions text in single quotes (claude-factory-dgok)', () => {
+  const need = iv({
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    title: 'api-7: Q',
+    question: 'Q',
+    needsProposal: true,
+  })
+  expectSingleQuoted(interviewPrompt([need])!, [
+    'question',
+    'label: effect | label: effect',
+    'sentence',
+    'text',
+  ])
 })

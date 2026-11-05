@@ -2,6 +2,7 @@
 // repo. Pure matching/merge/role/budget logic lives here, read-only against a run's log and inbox; the IO
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
+import { cut } from './cut'
 import { mrsIn, prsIn, type Entry } from './machine'
 import { ghNotes, isPerson, type Note, type WatchedPr } from './watch'
 export { mrsIn }
@@ -241,7 +242,7 @@ export function evidenceLine(
   rig: string,
   id: string,
 ): string {
-  const title = pr.title.length > 120 ? pr.title.slice(0, 120) : pr.title
+  const title = cut(pr.title, 120)
   return `already done: ${pr.url} (#${pr.number}, merged ${pr.mergeCommit}) "${title}". Requeue: factory queue ${rig} ${id}`
 }
 
@@ -518,7 +519,7 @@ async function spawnCli(
 
 /** one line of `gh`'s stderr, cut short: never let a raw error carry a password or a full stack into the record */
 const ghError = (err: string) => clip(err.trim().split('\n')[0] ?? 'gh failed', 200)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+const clip = (text: string, max: number) => (text.length > max ? `${cut(text, max)}…` : text)
 
 /** AC2c parsed: `gh search prs ... --json url,createdAt` filtered by `keepSearchHit`, so a resembling PR
  * created before the run started is dropped before it ever becomes a Found */
@@ -675,7 +676,12 @@ export function parseGitlabLabeled(out: string) {
       url: str(m.web_url),
       headRefName: str(m.source_branch),
       baseRefName: str(m.target_branch),
-      isCrossRepository: m.source_project_id !== m.target_project_id,
+      headRefOid: str(m.sha),
+      isDraft: (m.draft ?? m.work_in_progress) === true,
+      // fail closed: same project only when both ids are numbers and equal
+      isCrossRepository: !(
+        typeof m.source_project_id === 'number' && m.source_project_id === m.target_project_id
+      ),
       labels: (Array.isArray(m.labels) ? (m.labels as unknown[]).map(str) : []).map(name => ({ name })),
     }))
 }
@@ -687,10 +693,10 @@ export const forgeNote = (gitlabHost?: string): string[] =>
         '',
         '## Forge',
         `This repo's forge is GitLab at ${gitlabHost}. Where your instructions say \`gh pr <x>\` or "pull request", use \`glab\` on merge requests (\`gh\` does not work here):`,
-        '- gh pr create -> glab mr create',
+        '- gh pr create --base <b> -> glab mr create --target-branch <b>',
         '- gh pr view <n> --comments -> glab mr view <n> --comments',
         '- gh pr comment -> glab mr note <n> -m "<text>"',
-        '- gh pr review --comment -> glab mr note <n> -m "<text>"; --approve -> glab mr approve <n>',
+        '- gh pr review --comment or --approve -> glab mr note <n> -m "<text>" (the factory denies glab mr approve: only a person approves a merge request)',
         '- gh pr checks -> glab ci status',
         '- gh api repos/... -> glab api projects/:id/...',
       ]
@@ -857,6 +863,29 @@ export async function githubChecks(gh: Gh, slug: string, sha: string, cwd: strin
   return runs.code === 0 && status.code === 0 ? checksOf(rollupOf(runs.out, status.out)) : null
 }
 
+/** the CI tally of an MR head from its head pipeline, or null when the SHA is not 40 hex characters, the call
+ * fails, or the MR head or its pipeline is not `sha` (a push after the listing) */
+export async function gitlabChecks(
+  glab: Gh,
+  host: string,
+  project: string,
+  iid: number,
+  sha: string,
+  cwd: string,
+): Promise<Checks | null> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null
+  const r = await glab(
+    ['api', '--hostname', host, `projects/${encodeURIComponent(project)}/merge_requests/${iid}`],
+    { cwd, timeout: 30_000 },
+  )
+  const mr = r.code === 0 ? (asJson(r.out) as Json | null) : null
+  if (!mr || typeof mr !== 'object' || Array.isArray(mr) || mr.sha !== sha) return null
+  const pipeline = mr.head_pipeline as Json | null | undefined
+  if (pipeline == null) return { pass: 0, fail: 0, pending: 0 }
+  if (typeof pipeline !== 'object' || Array.isArray(pipeline) || pipeline.sha !== sha) return null
+  return checksOf([{ conclusion: PIPELINE[str(pipeline.status)] ?? null }])
+}
+
 /** a pull (`pulls/N`), its reviews, its head's check runs and its combined status mapped onto `Viewed`.
  * A missing reviews, checks or status answer leaves that field blank. */
 export function parseGithubView(
@@ -938,19 +967,33 @@ export async function githubPulls(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { state: 'open' | 'closed' | 'all'; pages: number; head?: string },
+  o: {
+    state: 'open' | 'closed' | 'all'
+    pages: number
+    head?: string
+    /** sort by update time, and stop after a page whose last row was updated before `since` (ms) */
+    sort?: 'updated'
+    since?: number
+    /** per-call timeout in ms; default VIEW_TIMEOUT_MS */
+    timeoutMs?: number
+  },
+  onErr?: (err: string) => void,
 ): Promise<Json[] | null> {
   const rows: Json[] = []
   for (let page = 1; page <= o.pages; page++) {
-    const q = `state=${o.state}&sort=created&direction=desc&per_page=100&page=${page}`
+    const q = `state=${o.state}&sort=${o.sort ?? 'created'}&direction=desc&per_page=100&page=${page}`
     const res = await gh(
       ['api', `repos/${slug}/pulls?${q}${o.head ? `&head=${encodeURIComponent(o.head)}` : ''}`],
-      timed(cwd),
+      timed(cwd, o.timeoutMs),
     )
     const list = res.code === 0 ? asJson(res.out) : null
-    if (!Array.isArray(list)) return null
+    if (!Array.isArray(list)) {
+      onErr?.(res.err)
+      return null
+    }
     rows.push(...(list as Json[]))
     if (list.length < 100) break
+    if (o.since !== undefined && !(Date.parse(str((list.at(-1) as Json).updated_at)) >= o.since)) break
   }
   return rows
 }
@@ -961,10 +1004,17 @@ export async function githubWatchView(gh: Gh, url: string, cwd: string): Promise
   const slug = githubSlugOf(url)
   if (!slug) return null
   const path = `repos/${slug}/pulls/${prRef(url)!.number}`
+  // One call per page, not `--paginate`: gh follows the Link URL /repositories/<id>/..., which has no owner in
+  // the path, so the AX gateway sends the default key for pages 2 and later (claude-factory-oz6s).
   const pages = async (p: string): Promise<unknown[] | null> => {
-    const res = await gh(['api', '--paginate', '--slurp', p], { cwd, timeout: 60_000 })
-    const list = res.code === 0 ? asJson(res.out) : null
-    return Array.isArray(list) ? list.flat() : null
+    const rows: unknown[] = []
+    for (let page = 1; ; page++) {
+      const res = await gh(['api', `${p}&page=${page}`], { cwd, timeout: 60_000 })
+      const list = res.code === 0 ? asJson(res.out) : null
+      if (!Array.isArray(list)) return null
+      rows.push(...list)
+      if (list.length < 100) return rows
+    }
   }
   const [pull, reviews, comments] = await Promise.all([
     gh(['api', path], { cwd, timeout: 60_000 }),
@@ -995,10 +1045,59 @@ export async function githubMergedJson(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { pages: number; head?: string },
+  o: { pages: number; head?: string; timeoutMs?: number },
+  onErr?: (err: string) => void,
 ): Promise<string | null> {
-  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o })
+  const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o }, onErr)
   return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
+}
+
+/** the merged MRs of a GitLab project as `gh pr list --json` shaped text (`parseMergedPrs` reads it), found by a
+ * title search or by source branch, or null when the call fails. The API `state=merged` filter is trusted; rows
+ * that say otherwise are dropped. */
+export async function gitlabMergedJson(
+  glab: Gh,
+  host: string,
+  path: string,
+  cwd: string,
+  o: ({ search: string } | { sourceBranch: string }) & { timeoutMs?: number },
+  onErr?: (err: string) => void,
+): Promise<string | null> {
+  const q =
+    'search' in o
+      ? `&in=title&search=${encodeURIComponent(o.search)}`
+      : `&source_branch=${encodeURIComponent(o.sourceBranch)}`
+  const res = await glab(
+    [
+      'api',
+      '--hostname',
+      host,
+      `projects/${encodeURIComponent(path)}/merge_requests?state=merged&per_page=30${q}`,
+    ],
+    timed(cwd, o.timeoutMs),
+  )
+  if (res.code !== 0) {
+    onErr?.(res.err)
+    return null
+  }
+  let v: unknown
+  try {
+    v = JSON.parse(res.out)
+  } catch {
+    return '[]'
+  }
+  if (!Array.isArray(v)) return '[]'
+  return JSON.stringify(
+    (v as Record<string, unknown>[])
+      .filter(m => m.state === 'merged')
+      .map(m => ({
+        number: m.iid,
+        url: m.web_url,
+        title: m.title,
+        headRefName: m.source_branch,
+        mergeCommit: { oid: str(m.merge_commit_sha) || str(m.squash_commit_sha) },
+      })),
+  )
 }
 
 /** `gh api` argv for the three PR writes of labelPass. The body goes through -f (raw): -F would read `@file`. */
@@ -1009,6 +1108,13 @@ export const githubCommentArgv = (slug: string, n: number, body: string) => [
   `repos/${slug}/issues/${n}/comments`,
   '-f',
   `body=${body}`,
+]
+export const githubLabelArgv = (slug: string, n: number, labels: string[]) => [
+  'api',
+  '-X',
+  'POST',
+  `repos/${slug}/issues/${n}/labels`,
+  ...labels.flatMap(l => ['-f', `labels[]=${l}`]),
 ]
 export const githubUnlabelArgv = (slug: string, n: number, label: string) => [
   'api',
@@ -1125,7 +1231,7 @@ export type Forge = {
   view(url: string, cwd: string, host?: string): Promise<{ viewed: Viewed } | { err: string }>
 }
 
-const timed = (cwd: string) => ({ cwd, timeout: VIEW_TIMEOUT_MS })
+const timed = (cwd: string, timeout = VIEW_TIMEOUT_MS) => ({ cwd, timeout })
 
 const githubForge = (gh: Gh): Forge => ({
   async list(r) {
@@ -1135,11 +1241,28 @@ const githubForge = (gh: Gh): Forge => ({
       : { code: 1, out: '', err: 'gh api: pull list failed' }
   },
   parseList: parseBranchList,
-  search: r =>
-    gh(
-      ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
-      timed(r.repoDir),
-    ),
+  // `gh search prs` finds companion PRs in other repos of the owner. /search/issues has no owner in the
+  // path, so the AX gateway gives it the default key (claude-factory-oz6s). The REST list of the run's own
+  // repo adds that repo's PRs under the owner's key.
+  async search(r) {
+    let pullErr = ''
+    const [found, rows] = await Promise.all([
+      gh(
+        ['search', 'prs', '--owner', r.owner, '--json', 'url,createdAt', '--', `"${r.bead}"`],
+        timed(r.repoDir),
+      ),
+      // ponytail: one page (the newest 100 PRs); an older own-repo PR is found by the search only
+      githubPulls(gh, r.runRepo, r.repoDir, { state: 'all', pages: 1 }, e => (pullErr = e)),
+    ])
+    if (found.code !== 0) return found
+    if (!rows) return { code: 1, out: '', err: pullErr || 'gh api: pull list failed' }
+    const hits = (asJson(found.out) as { url: string; createdAt: string }[] | null) ?? []
+    // a hit in both lists folds into one record (foldFound dedupes by url)
+    const own = rows
+      .filter(p => !!r.bead && citesBead(r.bead, `${str(p.title)}\n${str(p.body)}`))
+      .map(p => ({ url: str(p.html_url), createdAt: str(p.created_at) }))
+    return { code: 0, out: JSON.stringify([...hits, ...own]), err: '' }
+  },
   parseSearch,
   async view(url, cwd) {
     const slug = githubSlugOf(url)

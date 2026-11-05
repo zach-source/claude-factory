@@ -2,6 +2,7 @@
 // station links. This module only decides, from plain data, so tests need no gh. A parked station wakes
 // for a real change: a new head commit, a merge, a close, or a review or comment by a person. A bot
 // comment, a CI status or a label changes only `updatedAt`, which is not a reason to start a worker.
+import { cut } from './cut'
 import { WATCHED_PARK_MIN } from './machine'
 
 /** a review or comment on a pull or merge request, as the watch reads it */
@@ -46,7 +47,13 @@ export type Seen = {
   changes?: Record<string, boolean>
   routed?: boolean
   reparkedUntil?: number
+  /** consecutive watch passes with a failed view, and whether the manager got the mail */
+  failedPasses?: number
+  failMailed?: boolean
 }
+
+/** failed view passes in a row before the manager gets one mail */
+export const WATCH_FAIL_PASSES = 5
 
 export type Decision =
   | { kind: 'wake'; text: string; url?: string; state?: string }
@@ -145,7 +152,7 @@ export function conflictText(p: WatchedPr) {
   )
 }
 
-const clip = (s: string) => (s.length > BODY_CLIP ? s.slice(0, BODY_CLIP) : s)
+const clip = (s: string) => (s.length > BODY_CLIP ? cut(s, BODY_CLIP) : s)
 
 /**
  * what a watched park does now: null (stay parked), wake (start a worker with a mail), hold (closed

@@ -4,6 +4,7 @@ import { compile, fill, validate, where, type Factory } from '../src/machine'
 import sweeps from './sweeps'
 import lifecycle from './lifecycle'
 import ship from './ship'
+import release from './release'
 import { brief } from '../src/cli'
 import { actorOf } from '../src/beads'
 
@@ -83,7 +84,7 @@ test('only the release station marks a PR ready: the worker hook allows gh pr re
   for (const [id, node] of Object.entries(ship.nodes)) {
     const stripped = node.prompt.replaceAll('gh pr ready <n> --undo', '')
     expect(stripped.includes('gh pr ready'), id).toBe(id === 'release')
-    expect(node.prompt.includes('--undo'), id).toBe(id === 'queue' || id === 'release')
+    expect(node.prompt.includes('--undo'), id).toBe(id === 'queue' || id === 'release' || id === 'deploy')
   }
 })
 
@@ -180,6 +181,32 @@ test('queue drafts a ready PR before it pushes a conflict-fix merge, and sends u
     'only when the latest `Unreviewed commits:` comment is newer than the latest trusted `Reviewed head:` line (an approve verdict, from the same sources as release;',
   )
   expect(two).toContain('bd update <bead> --remove-label ship --add-label factory --add-label station:review')
+})
+
+test('queue and release carry the same Reviewed-head source rules once (claude-factory-94gg AC1-AC3)', () => {
+  const rel = ship.nodes.release.prompt
+  const start = rel.indexOf('A station that approves writes a line')
+  const endMark = 'ignore that review.'
+  const end = rel.indexOf(endMark) + endMark.length
+  expect(start).toBeGreaterThan(-1)
+  const sources = rel.slice(start, end)
+  const two = (ship.nodes.queue.prompt.split('\n2. ') as [string, string])[1]
+  expect(two).toContain(sources)
+  for (const s of [
+    '^factory/[^/]+$',
+    'factory/<run>/<station>',
+    'bd comments <bead> --json',
+    "comment's author field",
+    'gh api repos/<repo>/collaborators/<login>/permission',
+    'admin, maintain or write',
+    'read, triage or none',
+    'APPROVED',
+    'best effort',
+  ])
+    expect(two, s).toContain(s)
+  expect(two.split(sources).length).toBe(2)
+  expect(ship.nodes.queue.prompt.split(sources).length).toBe(2)
+  expect(rel.split(sources).length).toBe(2)
 })
 
 test('queue can ask for another pass', () => {
@@ -297,6 +324,21 @@ test('no ship station tells a worker to edit CHANGELOG.md (debg AC1, AC2)', () =
   expect(p).toContain('gh pr edit <n> -R <repo> --title')
 })
 
+test('release re-reads headRefOid after gh pr ready and undoes on a moved head (claude-factory-zz7b)', () => {
+  const p = ship.nodes.release.prompt
+  const reread = 'Right after you mark it, read `gh pr view <n> --json headRefOid` again.'
+  const at = p.indexOf(reread)
+  expect(at).toBeGreaterThan(p.indexOf('mark it ready with `gh pr ready`'))
+  const after = p.slice(at)
+  for (const s of [
+    'run `gh pr ready <n> --undo` at once.',
+    'Do the same if the read fails.',
+    'Then report changes with the new SHAs.',
+    'If the undo fails, report blocked with the pull request link.',
+  ])
+    expect(after, s).toContain(s)
+})
+
 test('release keeps version bump, description and ready steps (debg AC3)', () => {
   const p = ship.nodes.release.prompt
   expect(p).toContain("the version bump the repo's conventions call for")
@@ -380,7 +422,10 @@ test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () =>
 // claude-factory-4h8j: live-object findings are deduped by bd search, repeat crash loops escalate, deploy checks every Deployment
 const prompt = (id: string) => (ship.nodes as Record<string, { prompt: string }>)[id]!.prompt
 const liveText = (s: string) =>
-  s.slice(s.indexOf('Live-object findings:'), s.indexOf('Search and file only in this rig'))
+  s.slice(
+    s.indexOf('Live-object findings:'),
+    s.indexOf('no sweep-queue:* label.') + 'no sweep-queue:* label.'.length,
+  )
 const deployText = (s: string) =>
   s.slice(s.indexOf('Check every Deployment'), s.indexOf('A release that builds no container image'))
 
@@ -419,6 +464,37 @@ test('a repeat crash loop or failed rollout gets the factory label and no other 
   ])
     expect(want).toContain(t)
   expect(want).not.toMatch(/station:[a-z]|sweep-queue:[a-z]|--add-label (?!factory)/)
+})
+
+const coreText = (s: string) =>
+  s.slice(
+    s.indexOf('Live-object findings:'),
+    s.indexOf("Search and file only in this rig's beads.") +
+      "Search and file only in this rig's beads.".length,
+  )
+
+test('deploy and soak share a live-object dedupe core with no escalation (sjwe.2 AC2)', () => {
+  const want = coreText(prompt('soak'))
+  expect(want.length).toBeGreaterThan(300)
+  expect(coreText(prompt('deploy'))).toBe(want)
+  for (const t of [
+    'bd search "<object name>" --status open',
+    'bd search "<symptom>" --status open',
+    'with no --status',
+    'bd comment <id>',
+    '<context>/<namespace>/<kind>/<name>: <symptom>',
+    'name it in the description',
+  ])
+    expect(want).toContain(t)
+  const full = liveText(prompt('soak'))
+  expect(full.indexOf(want)).toBeGreaterThanOrEqual(0)
+  for (const t of [
+    'In deploy and soak, put the release version in that comment.',
+    "raise the open bead's priority by one step",
+  ])
+    expect(full.indexOf(t)).toBeGreaterThan(want.length)
+  for (const t of ['bd update', '--add-label', '-p ', 'ship', 'release', '{', 'In deploy and soak'])
+    expect(want).not.toContain(t)
 })
 
 test('deploy checks every Deployment of the released image with reads only (4h8j AC3)', () => {
@@ -482,4 +558,115 @@ test('a replayed second soak reads the first soak report and the dedupe rule (4h
   expect(at('bd comment')).toBeLessThan(at('matches, file one'))
   const { visited } = walk(ship, ['ready', 'ready', 'deployed', 'healthy', 'ready', 'ready', 'unsure'])
   expect(visited.filter(n => n === 'soak')).toHaveLength(2)
+})
+
+// claude-factory-nibm: soak re-checks a block for each plain mail, like deploy did; both hold it from the second block
+test('deploy and soak hold plain mail', () => {
+  expect(ship.nodes.deploy.holdMail).toBe(true)
+  expect(ship.nodes.soak.holdMail).toBe(true)
+})
+
+// claude-factory-sjwe: one live-object dedupe core in deploy, soak, sweeps monitor and lifecycle incident
+const nodePrompt = (f: unknown, id: string) =>
+  (f as { nodes: Record<string, { prompt?: string }> }).nodes[id]!.prompt ?? ''
+const coreOf = (s: string) => {
+  const end = "Search and file only in this rig's beads."
+  return s.slice(s.indexOf('Live-object findings:'), s.indexOf(end) + end.length)
+}
+
+test('deploy, soak, monitor and incident carry one live-object dedupe core (sjwe AC1)', () => {
+  const want = coreOf(prompt('soak'))
+  expect(want.length).toBeGreaterThan(300)
+  expect(coreOf(prompt('deploy'))).toBe(want)
+  expect(coreOf(nodePrompt(sweeps, 'monitor'))).toBe(want)
+  expect(coreOf(nodePrompt(lifecycle, 'incident'))).toBe(want)
+  for (const t of [
+    'bd search "<object name>" --status open',
+    'bd search "<symptom>" --status open',
+    'with no --status',
+    'bd comment <id>',
+    '<context>/<namespace>/<kind>/<name>: <symptom>',
+    'name it in the description',
+  ])
+    expect(want).toContain(t)
+  for (const t of ['bd update', '--add-label', '-p ', 'ship', 'release', '{']) expect(want).not.toContain(t)
+  for (const id of ['queue', 'release', 'rollback', 'postmortem'])
+    expect(prompt(id), id).not.toContain('Live-object findings')
+  for (const [f, keep] of [
+    [sweeps, 'monitor'],
+    [lifecycle, 'incident'],
+  ] as const)
+    for (const id of Object.keys((f as Factory).nodes))
+      if (id !== keep) expect(nodePrompt(f, id), id).not.toContain('Live-object findings')
+})
+
+test('monitor and incident only dedupe: no priority raise, no label (sjwe AC2)', () => {
+  const mon = nodePrompt(sweeps, 'monitor')
+  const inc = nodePrompt(lifecycle, 'incident')
+  for (const p of [mon, inc]) {
+    expect(p).toContain('Live-object findings:')
+    expect(p).not.toContain('bd update <id> -p')
+    expect(p).not.toContain('--add-label')
+    expect(p).not.toContain('this ship run')
+    expect(p).not.toContain('regressed (soak)')
+  }
+  expect(mon).toContain('add no label')
+  expect(mon).toContain('change no priority')
+  expect(mon.indexOf('Never file what is already tracked')).toBeLessThan(mon.indexOf('Live-object findings:'))
+  expect(inc.indexOf('Live-object findings:')).toBeLessThan(inc.indexOf('Report rollback'))
+  const noEsc = coreOf(prompt('soak')) + ' On a matched open bead, add no label and change no priority.'
+  expect(mon).toContain(noEsc)
+  expect(inc).toContain(noEsc)
+  expect(prompt('deploy')).not.toContain(noEsc)
+  expect(prompt('soak')).not.toContain(noEsc)
+})
+
+test('fill leaves the dedupe core as it is (sjwe AC4)', () => {
+  for (const p of [
+    prompt('deploy'),
+    prompt('soak'),
+    nodePrompt(sweeps, 'monitor'),
+    nodePrompt(lifecycle, 'incident'),
+  ])
+    expect(fill(p, {})).toBe(p)
+})
+
+test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
+  const met = 'ACn: met ('
+  for (const id of ['deploy', 'soak']) {
+    const p = prompt(id)
+    const start = p.indexOf('AC ledger:')
+    expect(start, id).toBeGreaterThan(-1)
+    const ledger = p.slice(start, p.indexOf('\n', start))
+    for (const t of [
+      met,
+      'ACn: not checked (',
+      'ACs: none in plan',
+      'ACn: waived (',
+      '--deps discovered-from:<bead> -d "<evidence>"',
+      'bd children <bead>',
+      'no factory label',
+      'When you report published (deploy) or healthy (soak), never leave the bead open with the ship label',
+      'name each filed id in the close reason',
+    ])
+      expect(p, `${id}: ${t}`).toContain(t)
+    for (const t of [
+      'Question:',
+      'description never counts',
+      'Never close the bead',
+      'unless a filed bead or a waiver carries it',
+    ])
+      expect(ledger, `${id} ledger: ${t}`).toContain(t)
+    expect(ledger).not.toContain('The one exception')
+    expect(p.indexOf('unless a filed bead or a waiver carries it'), id).toBeLessThan(
+      p.indexOf('bd close <bead>'),
+    )
+  }
+  for (const id of ['queue', 'release', 'rollback', 'postmortem']) expect(prompt(id), id).not.toContain(met)
+})
+
+test('release.rules holds the runner-loss bullet of lifecycle.rules once', () => {
+  const line = lifecycle.rules!.split('\n').find(l => l.startsWith('- Runner loss in CI:'))
+  expect(line).toBeDefined()
+  expect(release.rules!.split('\n').filter(l => l === line).length).toBe(1)
 })

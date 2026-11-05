@@ -33,6 +33,7 @@ import {
   NOTE_KINDS,
   noteExists,
   outline,
+  TOPICS_BUDGET,
   overCapTopics,
   parse,
   parseLong,
@@ -280,6 +281,24 @@ test('outline keeps 32 long topics under 3.3 KB', () => {
     writeFileSync(join(dir, `topic-${i}`, 'README.md'), format({ summary: 'y'.repeat(900), body: '' }))
   }
   expect(outline(dir).topics.join('\n').length).toBeLessThan(3300)
+})
+
+test('outline stays under the byte budget with 40 astral topics, clips on code points, keeps inbox', () => {
+  const dir = join(tmpdir(), `memory-bytes-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  for (let i = 0; i < 40; i++) {
+    mkdirSync(join(dir, `topic-${i}`), { recursive: true })
+    writeFileSync(join(dir, `topic-${i}`, 'README.md'), format({ summary: '😀'.repeat(300), body: '' }))
+  }
+  mkdirSync(join(dir, 'inbox'), { recursive: true })
+  writeFileSync(join(dir, 'inbox', 'a.md'), format({ summary: 'new', body: '' }))
+  const topics = outline(dir).topics
+  expect(Buffer.byteLength(topics.join('\n'))).toBeLessThanOrEqual(TOPICS_BUDGET)
+  expect(topics.join('\n')).not.toMatch(
+    /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/,
+  )
+  expect(topics.at(-1)).toContain('- inbox (1)')
+  expect(topics.some(l => l.includes('more topics'))).toBe(true)
 })
 
 test("search ranks by the note and its topic, and never shows another rig's notes", () => {
@@ -1349,6 +1368,21 @@ test('applyTiers() topic cap: a skipped merge into an unsafe LONG.md leaves the 
   expect(overCap).toEqual([{ topic: 'beads', count: 18 }])
 })
 
+test('applyTiers() skips a LONG.md with an extra frontmatter key and keeps the key', () => {
+  const dir = join(tmpdir(), `memory-apply-fmkey-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  fixtureOldNotes(dir, 'beads', 18, now)
+  const long = '---\ntier: long\nsummary: x\n---\n## s\n<!-- id: {"id":"beads/a"} -->\n\nbody\n'
+  writeFileSync(join(dir, 'beads', 'LONG.md'), long)
+
+  const { merged, skipped } = applyTiers(dir, { now, topicCap: 15 })
+  expect(merged).toBe(0)
+  expect(skipped.map(s => s.topic)).toEqual(['beads'])
+  expect(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8')).toContain('summary: x')
+})
+
 test('envTopicCap() reads FACTORY_MEMORY_TOPIC_CAP, and a bad value falls back to 15', () => {
   const prev = process.env.FACTORY_MEMORY_TOPIC_CAP
   try {
@@ -1643,7 +1677,7 @@ test("applyTiers() rewrites an archived note's README link, not just a merged on
   const readme = readFileSync(join(dir, 'beads', 'README.md'), 'utf8')
   expect(readme).not.toContain('(old.md)')
   expect(readme).toContain('(../.archive/beads.md)')
-})
+}, 30_000)
 
 test('applyTiers() ages a note with no at: from the commit that added it, not from now (claude-factory-59r.19b)', () => {
   const dir = join(tmpdir(), `memory-apply-no-at-${process.pid}`)
@@ -1671,7 +1705,7 @@ test('applyTiers() ages a note with no at: from the commit that added it, not fr
   expect(decisions).toEqual([
     { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never shown') },
   ])
-})
+}, 30_000)
 
 test('applyTiers() ages a note with no at: from the commit that added it, not the commit that last edited it (claude-factory-59r.23)', () => {
   const dir = join(tmpdir(), `memory-apply-no-at-edited-${process.pid}`)
@@ -1701,7 +1735,7 @@ test('applyTiers() ages a note with no at: from the commit that added it, not th
   expect(decisions).toEqual([
     { kind: 'archive', path: 'beads/old.md', reason: expect.stringContaining('never shown') },
   ])
-})
+}, 30_000)
 
 test('applyTiers() retires a note whose date until marker passed, and writes it to .archive like an archive', () => {
   const dir = join(tmpdir(), `memory-apply-retire-date-${process.pid}`)

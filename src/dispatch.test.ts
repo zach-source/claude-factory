@@ -29,6 +29,7 @@ const factory = (args: string[]) => {
       ...laptop,
       FACTORY_HOME: home,
       PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin, 'herdr'),
       CLAUDE_CONFIG_DIR: claudeConfig,
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
@@ -132,6 +133,21 @@ test("dispatch never starts a run at a Linear-sourced bead's station:<name> labe
   const out = factory(['beads'])
   expect(out.code).toBe(0)
   expect(gotoOf()).toEqual([]) // the run stays at the factory's own start station, not "review"
+})
+
+test('the goal of a Linear-sourced bead carries the Linear-sourced line; another goal does not (claude-factory-5ufp)', () => {
+  const goals = () => {
+    const runsDir = join(home, 'runs')
+    return readdirSync(runsDir)
+      .map(id => readFileSync(join(runsDir, id, 'run.json'), 'utf8'))
+      .join()
+  }
+  reset('https://linear.app/acme/issue/STI-1')
+  expect(factory(['beads']).code).toBe(0)
+  expect(goals()).toContain('Linear-sourced:')
+  reset(undefined)
+  expect(factory(['beads']).code).toBe(0)
+  expect(goals()).not.toContain('Linear-sourced:')
 })
 
 test('a station:<name> label a person wrote by hand (no Linear external_ref) still starts the run there', () => {
@@ -325,7 +341,7 @@ test('a planned P3 never starts before a real P2: priority always sorts ahead of
   expect(startedBead()).toBe('acme-1') // P2 still wins
 })
 
-// claude-factory-nwlh.4: a top-level P1 that review filed sorts as P2, so a person's P1 starts first.
+// claude-factory-nwlh.4: a P1 that review filed sorts as P2, so a person's P1 starts first.
 test('a review-filed top-level P1 (acme-1) starts after a person P1 (acme-2)', () => {
   resetTwo(1, 1, 'factory/lifecycle-x/review')
   expect(factory(['beads']).code).toBe(0)
@@ -350,6 +366,7 @@ const pbin = join(pdir, 'bin')
 const pClaudeConfig = join(pdir, 'claude-config')
 const bdCallsLog = join(pdir, 'bd-calls.log')
 const ghCallsLog = join(pdir, 'gh-calls.log')
+const glabCallsLog = join(pdir, 'glab-calls.log')
 const rejectedFlag = join(pdir, 'rejected.flag')
 
 afterEach(() => rmSync(pdir, { recursive: true, force: true }))
@@ -361,6 +378,7 @@ function pfactory(args: string[], extraEnv: Record<string, string> = {}) {
       ...laptop,
       FACTORY_HOME: phome,
       PATH: `${pbin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(pbin, 'herdr'),
       CLAUDE_CONFIG_DIR: pClaudeConfig,
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
@@ -413,12 +431,13 @@ function fakeGh() {
   const restScript = join(pbin, 'rest-pulls.ts')
   writeFileSync(
     restScript,
-    `const rows = JSON.parse(process.env.GH_JSON || '[]').map((p: any) => ({
+    `const all = [...JSON.parse(process.env.GH_JSON || '[]'), ...(process.argv[2] === 'list' ? JSON.parse(process.env.GH_JSON_SHORT || '[]') : [])]
+const rows = all.map((p: any) => ({
   number: p.number,
   html_url: p.url,
   title: p.title,
   state: 'closed',
-  merged_at: '2026-10-12T10:00:00Z',
+  merged_at: p.unmerged ? null : '2026-10-12T10:00:00Z',
   merge_commit_sha: p.mergeCommit?.oid,
   head: { ref: p.headRefName, repo: { full_name: 'acme/widget' } },
   base: { ref: 'main', repo: { full_name: 'acme/widget' } },
@@ -446,10 +465,10 @@ console.log(JSON.stringify(rows))
     `echo "gh $*" >> "${ghCallsLog}"`,
     'if [ -n "$GH_FAIL" ]; then echo "gh: rate limited" >&2; exit 1; fi',
     'case "$*" in',
-    '  *"--search 192.6 "*) if [ -n "$GH_FAIL_SHORT" ]; then echo "gh: rate limited" >&2; exit 1; fi; if [ -n "$GH_JSON_SHORT" ]; then printf \'%s\' "$GH_JSON_SHORT"; exit 0; fi;;',
     '  "api "*"&head="*) if [ -n "$GH_FAIL_HEAD" ]; then echo "gh: rate limited" >&2; exit 1; fi; bun "' +
       restScript +
       '"; exit 0;;',
+    '  "api "*"state=closed"*) bun "' + restScript + '" list; exit 0;;',
     '  "api -X DELETE "*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi; exit 0;;',
     '  "api "*"state=open"*) bun "' + restOpen + '"; exit 0;;',
     'esac',
@@ -457,6 +476,25 @@ console.log(JSON.stringify(rows))
   ].join('\n')
   writeFileSync(join(pbin, 'gh'), script)
   chmodSync(join(pbin, 'gh'), 0o755)
+}
+
+/** fake glab: it logs every call to glab-calls.log. A merged-MR call (`merge_requests?state=merged`) fails when
+ * `$GLAB_FAIL` is set, or `$GLAB_FAIL_SHORT` for the `search=192.6` call, or `$GLAB_FAIL_BRANCH` for a `source_branch=`
+ * call. Else it answers `$GLAB_JSON`, `$GLAB_JSON_SHORT` or `$GLAB_JSON_BRANCH` (REST MR arrays, default `[]`). */
+function fakeGlab() {
+  const script = [
+    '#!/bin/sh',
+    `echo "glab $*" >> "${glabCallsLog}"`,
+    'if [ "$1" = auth ]; then exit 1; fi', // glabKnows: no host but gitlab.com counts as signed in
+    'if [ -n "$GLAB_FAIL" ]; then echo "glab: boom" >&2; exit 1; fi',
+    'case "$*" in',
+    '  *"search=192.6"*) if [ -n "$GLAB_FAIL_SHORT" ]; then echo "glab: boom" >&2; exit 1; fi; printf \'%s\' "${GLAB_JSON_SHORT:-[]}"; exit 0;;',
+    '  *"source_branch="*) if [ -n "$GLAB_FAIL_BRANCH" ]; then echo "glab: boom" >&2; exit 1; fi; printf \'%s\' "${GLAB_JSON_BRANCH:-[]}"; exit 0;;',
+    'esac',
+    'printf \'%s\' "${GLAB_JSON:-[]}"',
+  ].join('\n')
+  writeFileSync(join(pbin, 'glab'), script)
+  chmodSync(join(pbin, 'glab'), 0o755)
 }
 
 /** fake bd: `ready` answers two beads, `acme-1` and `acme-2`, both unassigned and labeled `factory`
@@ -499,12 +537,12 @@ function fakePrecheckHerdr() {
   chmodSync(join(pbin, 'herdr'), 0o755)
 }
 
-/** a repo with a GitHub origin, so `originRef` reads this rig as GitHub (the pre-check's own gate) */
-function precheckRepo() {
+/** a repo with the given origin (GitHub by default), so `originRef` reads this rig's forge (the pre-check's own gate) */
+function precheckRepo(origin = 'https://github.com/acme/widget.git') {
   const r = join(pdir, 'repo')
   mkdirSync(join(r, '.beads'), { recursive: true })
   Bun.spawnSync(['git', '-C', r, 'init', '-q'])
-  Bun.spawnSync(['git', '-C', r, 'remote', 'add', 'origin', 'https://github.com/acme/widget.git'])
+  Bun.spawnSync(['git', '-C', r, 'remote', 'add', 'origin', origin])
   Bun.spawnSync([
     'git',
     '-C',
@@ -522,7 +560,7 @@ function precheckRepo() {
   return r
 }
 
-function precheckReset(extra: Record<string, unknown> = {}) {
+function precheckReset(extra: Record<string, unknown> = {}, origin?: string) {
   rmSync(pdir, { recursive: true, force: true })
   mkdirSync(pClaudeConfig, { recursive: true })
   writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
@@ -531,9 +569,10 @@ function precheckReset(extra: Record<string, unknown> = {}) {
   // A fresh labels.stamp throttles it out of this pass, so every gh call a test sees is the pre-check's.
   writeFileSync(join(phome, 'labels.stamp'), '')
   writeFileSync(join(phome, 'orphans.stamp'), '') // the orphan pass lists pulls through gh too
-  const r = precheckRepo()
+  const r = precheckRepo(origin)
   fakePrecheckBd(extra)
   fakeGh()
+  fakeGlab()
   fakePrecheckHerdr()
   writeFileSync(join(phome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
 }
@@ -558,6 +597,7 @@ test('a merged PR citing the bead rejects it with one comment, and starts no run
   const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
   expect(calls.filter(l => /^bd comment\b/.test(l))).toHaveLength(1)
   expect(calls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
+  expect(glabCalls()).toEqual([])
 })
 
 test('a second dispatch pass after a reject adds 0 new comments (the bead no longer shows in ready)', () => {
@@ -586,7 +626,10 @@ test('gh failing (or timing out) fails open: the run still starts, with one disp
     id: string
     error?: string
   }[]
-  expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped/.test(r.error ?? ''))).toBe(true)
+  expect(rows.some(r => r.id === 'acme-1' && /pre-check skipped: gh: rate limited/.test(r.error ?? ''))).toBe(
+    true,
+  )
+  expect(glabCalls()).toEqual([])
 })
 
 // claude-factory-6as.9: a hung or rate-limited gh costs up to 5 calls of 15s, for each candidate.
@@ -627,15 +670,32 @@ test('a PR that cites only the short child id rejects a dotted bead (claude-fact
   expect(bdCalls.some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))).toBe(true)
 })
 
-test('a failed short-id search keeps the full-id hit (claude-factory-jxl.1)', () => {
+// claude-factory-oz6s: this replaces the old "failed short-id search keeps the full-id hit" test. The
+// short-id search call no longer exists on GitHub: one REST list of closed PRs covers both ids.
+test('the GitHub pre-check makes one REST list call and no pr list or search (claude-factory-oz6s)', () => {
   precheckReset({ id: 'acme-192.6' })
-  const out = pfactory(['beads'], {
-    GH_JSON: mergedPr('fix: acme-192.6 lands the thing'),
-    GH_FAIL_SHORT: '1',
-  })
+  const out = pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-192.6 lands the thing') })
   expect(out.code).toBe(0)
   expect(runDirs()).toHaveLength(0)
-  expect(readFileSync(ghCallsLog, 'utf8')).toContain('--search 192.6 ')
+  const calls = readFileSync(ghCallsLog, 'utf8').trim().split('\n')
+  expect(calls.filter(l => l.includes('state=closed') && !l.includes('&head='))).toHaveLength(1)
+  expect(calls.some(l => l.includes('pr list') || l.includes('--search') || l.includes('graphql'))).toBe(
+    false,
+  )
+})
+
+test('a merged PR that names a longer id, or a PR closed without a merge, does not reject (claude-factory-oz6s)', () => {
+  precheckReset()
+  expect(pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-12 lands the thing') }).code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+})
+
+test('a PR that names the id but closed without a merge (merged_at null) does not reject (claude-factory-oz6s)', () => {
+  precheckReset()
+  const rows = JSON.parse(mergedPr('fix: acme-1 lands the thing'))
+  rows[0].unmerged = true
+  expect(pfactory(['beads'], { GH_JSON: JSON.stringify(rows) }).code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
 })
 
 test('a person-requeued bead (rejected_by=dispatch metadata) starts, with 0 gh calls', () => {
@@ -822,6 +882,7 @@ function gfactory(args: string[], env: Record<string, string> = {}) {
       ...laptop,
       FACTORY_HOME: ghome,
       PATH: `${gbin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(gbin, 'herdr'),
       CLAUDE_CONFIG_DIR: gClaudeConfig,
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
@@ -1634,6 +1695,10 @@ test('a defer {station} edge defers the bead and moves its station label; defer:
   const plain = run('plain', {}, 'run-d2')
   expect(plain.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
   expect(plain.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0)
+  labels.splice(1, 1) // a hand-started bead has no factory:* label: the swap names the run's factory
+  const bare = run('park', {}, 'run-d4').find(l => l.startsWith('bd update acme-1'))!
+  expect(bare).toContain('--add-label factory:lifecycle')
+  labels.splice(1, 0, 'factory:lifecycle')
   const linear = run('park', { external_ref: 'https://linear.app/acme/issue/STI-1' }, 'run-d3')
   expect(linear.some(l => /^bd defer acme-1\b/.test(l))).toBe(true)
   expect(linear.filter(l => l.startsWith('bd update acme-1'))).toHaveLength(0)
@@ -1871,6 +1936,57 @@ test('a factory:<name> file that fails to load defers only that bead; the next c
   expect(
     calls.some(l => l.startsWith('bd defer acme-1') && l.includes('factory broken failed to load')),
   ).toBe(true)
+})
+
+const SHIP_RESERVED = 'factory ship is reserved for the ship queue'
+
+function rigWithMergeAuthority(factory: string) {
+  const r = precheckRepo()
+  writeFileSync(
+    join(phome, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory, mergeAuthority: true }]),
+  )
+  return r
+}
+
+function expectShipDeferred(ids: string[], started: string[]) {
+  expect(runDirs()).toHaveLength(started.length)
+  for (const d of runDirs()) {
+    const run = JSON.parse(readFileSync(join(phome, 'runs', d, 'run.json'), 'utf8')) as { bead?: string }
+    expect(started).toContain(run.bead as string)
+  }
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  for (const id of ids) {
+    expect(calls.some(l => l.startsWith(`bd defer ${id}`) && l.includes(SHIP_RESERVED))).toBe(true)
+  }
+}
+
+test('a factory:ship label on a merge-authority rig defers that bead and starts no ship run; the next candidate still starts (claude-factory-vhf9)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'factory:ship'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  rigWithMergeAuthority('lifecycle')
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expectShipDeferred(['acme-1'], ['acme-2'])
+})
+
+test('a repo factory file named ship is refused by its loaded name, not the label text (claude-factory-vhf9)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't1', labels: ['factory', 'factory:ship'] }])
+  const r = rigWithMergeAuthority('lifecycle')
+  writeFixtureFactory(r, 'ship', { ...RELEASE_FIXTURE, name: 'ship' } as Factory)
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expectShipDeferred(['acme-1'], [])
+})
+
+test('a rig whose factory is ship starts no run from the beads pass (claude-factory-vhf9)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  rigWithMergeAuthority('ship')
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expectShipDeferred(['acme-1', 'acme-2'], [])
 })
 
 test('a station:<name> the named factory lacks defers only that bead; the next candidate still starts (claude-factory-wnm.15)', () => {
@@ -2573,4 +2689,186 @@ test('claude-factory-z2b1: a re-queued sweep bead stays released after the rig i
   expect(calls.some(l => /^bd defer acme-1\b/.test(l))).toBe(false)
   expect(calls.some(l => /^bd update acme-1\b.*--remove-label factory\b/.test(l))).toBe(false)
   expect(existsSync(join(ghome, 'runs'))).toBe(true)
+})
+
+// claude-factory-1uj: the pre-check also searches merged GitLab MRs
+const GL = 'https://gitlab.com/acme/widget.git'
+const mergedMr = (title: string, branch = 'factory/some-other-run', iid = 57) =>
+  JSON.stringify([
+    {
+      iid,
+      web_url: `https://gitlab.com/acme/widget/-/merge_requests/${iid}`,
+      title,
+      source_branch: branch,
+      state: 'merged',
+      merge_commit_sha: 'deadbeef',
+    },
+  ])
+const glabCalls = () =>
+  existsSync(glabCallsLog) ? readFileSync(glabCallsLog, 'utf8').trim().split('\n').filter(Boolean) : []
+const ghCallCount = () =>
+  existsSync(ghCallsLog) ? readFileSync(ghCallsLog, 'utf8').trim().split('\n').length : 0
+const rejected = () =>
+  readFileSync(bdCallsLog, 'utf8')
+    .split('\n')
+    .some(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))
+
+test('a merged GitLab MR citing the bead rejects it with one comment naming the MR, and starts no run', () => {
+  precheckReset({}, GL)
+  expect(pfactory(['beads'], { GLAB_JSON: mergedMr('fix: acme-1 lands the thing') }).code).toBe(0)
+  expect(runDirs()).toHaveLength(0)
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  const comments = calls.filter(l => /^bd comment\b/.test(l))
+  expect(comments).toHaveLength(1)
+  expect(comments[0]).toContain('https://gitlab.com/acme/widget/-/merge_requests/57')
+  expect(ghCallCount()).toBe(0)
+})
+
+test('GitLab: a title that cites other ids, or no merged MR, starts a run', () => {
+  for (const out of [mergedMr('fix: acme-1.2 other'), mergedMr('fix: acme-10 other'), '[]']) {
+    precheckReset({}, GL)
+    pfactory(['beads'], { GLAB_JSON: out })
+    expect(runDirs()).toHaveLength(1)
+    expect(rejected()).toBe(false)
+  }
+})
+
+test('GitLab: an MR that cites the id only in its description starts a run', () => {
+  precheckReset({}, GL)
+  const mr = JSON.parse(mergedMr('fix: unrelated title')) as Record<string, unknown>[]
+  mr[0]!.description = 'closes acme-1'
+  pfactory(['beads'], { GLAB_JSON: JSON.stringify(mr) })
+  expect(runDirs()).toHaveLength(1)
+  expect(rejected()).toBe(false)
+})
+
+test('GitLab: a short child id in a title rejects a dotted bead', () => {
+  precheckReset({ id: 'acme-192.6' }, GL)
+  pfactory(['beads'], { GLAB_JSON_SHORT: mergedMr('Manager lease (192.6, 192.7)') })
+  expect(runDirs()).toHaveLength(0)
+  expect(rejected()).toBe(true)
+})
+
+test('GitLab: a merged MR from a run branch of the bead rejects it', () => {
+  precheckReset({}, GL)
+  endedRun('ended-run', 'acme-1')
+  pfactory(['beads'], { GLAB_JSON_BRANCH: mergedMr('unrelated title', 'factory/ended-run') })
+  expect(runDirs()).toEqual(['ended-run'])
+  expect(rejected()).toBe(true)
+  expect(glabCalls().some(l => l.includes('source_branch=factory%2Fended-run'))).toBe(true)
+})
+
+test('GitLab: a glab failure fails open with one skip row and one dispatch.json error row', () => {
+  precheckReset({}, GL)
+  expect(pfactory(['beads'], { GLAB_FAIL: '1' }).code).toBe(0)
+  expect(runDirs()).toHaveLength(1)
+  const rows = JSON.parse(readFileSync(join(phome, 'dispatch.json'), 'utf8')) as {
+    id: string
+    error?: string
+  }[]
+  expect(
+    rows.filter(r => r.id === 'acme-1' && /pre-check skipped: glab: boom/.test(r.error ?? '')),
+  ).toHaveLength(1)
+  const log = readFileSync(join(phome, 'precheck.jsonl'), 'utf8').trim().split('\n')
+  expect(log).toHaveLength(1)
+  expect(JSON.parse(log[0]!).kind).toBe('skip')
+})
+
+test('GitLab: a failed short-id or branch call keeps the full-id hit', () => {
+  precheckReset({ id: 'acme-192.6' }, GL)
+  endedRun('ended-run', 'acme-192.6')
+  pfactory(['beads'], {
+    GLAB_JSON: mergedMr('fix: acme-192.6 lands the thing'),
+    GLAB_FAIL_SHORT: '1',
+    GLAB_FAIL_BRANCH: '1',
+  })
+  expect(runDirs()).toEqual(['ended-run'])
+  expect(rejected()).toBe(true)
+  expect(glabCalls().some(l => l.includes('search=192.6'))).toBe(true)
+})
+
+test('GitLab: one failure latches the forge, so the second candidate makes no glab call', () => {
+  precheckReset({}, GL)
+  fakePrecheckBdTwo()
+  pfactory(['beads'], { GLAB_FAIL: '1' })
+  expect(runDirs()).toHaveLength(2)
+  expect(glabCalls().filter(l => l.includes('state=merged'))).toHaveLength(1)
+})
+
+// two rigs, one pass: acme-1 on a GitLab rig, acme-9 on a GitHub rig
+function twoForgeRigs(order: 'gl-first' | 'gh-first') {
+  precheckReset({}, GL)
+  const gl = join(pdir, 'repo')
+  const gh = join(pdir, 'repo-gh')
+  mkdirSync(join(gh, '.beads'), { recursive: true })
+  Bun.spawnSync(['git', '-C', gh, 'init', '-q'])
+  Bun.spawnSync(['git', '-C', gh, 'remote', 'add', 'origin', 'https://github.com/acme/widget.git'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    gh,
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=t',
+    'commit',
+    '--allow-empty',
+    '-q',
+    '-m',
+    'init',
+  ])
+  const script = [
+    '#!/bin/sh',
+    `echo "bd $*" >> "${bdCallsLog}"`,
+    'case "$1" in',
+    `  ready) case "$PWD" in */repo-gh) printf '%s' '[{"id":"acme-9","title":"fix it","labels":["factory"]}]';; *) printf '%s' '[{"id":"acme-1","title":"fix it","labels":["factory"]}]';; esac;;`,
+    "  children) printf '%s' '[]';;",
+    "  list) printf '%s' '[]';;",
+    '  dolt) echo "No remotes configured";;',
+    '  *) exit 0;;',
+    'esac',
+  ].join('\n')
+  writeFileSync(join(pbin, 'bd'), script)
+  const rigs = [
+    { name: 'a', repo: gl, factory: 'lifecycle' },
+    { name: 'b', repo: gh, factory: 'lifecycle' },
+  ]
+  writeFileSync(join(phome, 'rigs.json'), JSON.stringify(order === 'gl-first' ? rigs : rigs.reverse()))
+}
+const rejectedIds = () =>
+  readFileSync(bdCallsLog, 'utf8')
+    .split('\n')
+    .filter(l => /^bd update\b/.test(l) && l.includes('--add-label rejected'))
+    .map(l => /acme-\d+/.exec(l)![0])
+
+test('latch per forge: a failing GitLab rig does not stop the GitHub pre-check', () => {
+  twoForgeRigs('gl-first')
+  pfactory(['beads'], { GLAB_FAIL: '1', GH_JSON: mergedPr('fix: acme-9 lands') })
+  expect(rejectedIds()).toEqual(['acme-9'])
+  expect(runDirs()).toHaveLength(1) // acme-1 failed open
+})
+
+test('latch per forge: a failing GitHub rig does not stop the GitLab pre-check', () => {
+  twoForgeRigs('gh-first')
+  pfactory(['beads'], { GH_FAIL: '1', GLAB_JSON: mergedMr('fix: acme-1 lands') })
+  expect(rejectedIds()).toEqual(['acme-1'])
+  expect(runDirs()).toHaveLength(1) // acme-9 failed open
+})
+
+test('pre-check off switches make no glab call on a GitLab rig; an unknown origin makes no gh or glab call', () => {
+  precheckReset({}, GL)
+  pfactory(['beads'], { FACTORY_PRECHECK: '0', GLAB_JSON: mergedMr('fix: acme-1') })
+  expect(glabCalls().filter(l => l.includes('state=merged'))).toHaveLength(0)
+  expect(runDirs()).toHaveLength(1)
+  precheckReset({ metadata: { rejected_by: 'dispatch' } }, GL)
+  pfactory(['beads'], { GLAB_JSON: mergedMr('fix: acme-1') })
+  expect(glabCalls().filter(l => l.includes('state=merged'))).toHaveLength(0)
+  precheckReset({ metadata: { requeued_from: 'r-1' } }, GL)
+  pfactory(['beads'], { GLAB_JSON: mergedMr('fix: acme-1') })
+  expect(glabCalls().filter(l => l.includes('state=merged'))).toHaveLength(0)
+  precheckReset({}, 'https://example.org/acme/widget.git')
+  pfactory(['beads'], { GH_JSON: mergedPr('fix: acme-1'), GLAB_JSON: mergedMr('fix: acme-1') })
+  expect(glabCalls().filter(l => l.includes('state=merged'))).toHaveLength(0)
+  expect(ghCallCount()).toBe(0)
+  expect(runDirs()).toHaveLength(1)
 })

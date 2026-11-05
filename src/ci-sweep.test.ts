@@ -67,6 +67,28 @@ test('pull_request events and unfinished runs are ignored', () => {
   ).toEqual([])
 })
 
+test.each(['workflow_run', 'issue_comment', 'pull_request', 'pull_request_target', '', 'Push'])(
+  'a red %s run is not counted',
+  event => {
+    expect(mainCiReds([run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure', event })])).toEqual([])
+  },
+)
+
+test.each(['push', 'schedule', 'workflow_dispatch'])('a red %s run reports one key', event => {
+  const reds = mainCiReds([run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure', event })])
+  expect(reds.map(r => r.key)).toEqual(['ci-red:7-aaaaaaa'])
+})
+
+test('flakyRuns ignores a red and green workflow_run pair on one SHA', () => {
+  const sha = 'a'.repeat(40)
+  expect(
+    flakyRuns([
+      run({ sha, at: 1, conclusion: 'failure', event: 'workflow_run' }),
+      run({ sha, at: 2, event: 'workflow_run' }),
+    ]),
+  ).toEqual([])
+})
+
 test('two workflows report separately', () => {
   const reds = mainCiReds([
     run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure' }),
@@ -81,6 +103,13 @@ test('ciKey and newCiReds: a key on an open bead is dropped', () => {
   const reds = mainCiReds([run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure' })])
   expect(newCiReds(reds, new Set(['factory', 'ci-red:7-aaaaaaa']))).toEqual([])
   expect(newCiReds(reds, new Set(['ci-red:9-bbbbbbb']))).toEqual(reds)
+})
+
+test('newCiReds: an exact key on a closed bead is tracked, a prefix there is not', () => {
+  const reds = mainCiReds([run({ sha: 'a'.repeat(40), at: 1, conclusion: 'failure' })])
+  expect(newCiReds(reds, new Set(), new Set(['ci-red:7-aaaaaaa']))).toEqual([])
+  expect(newCiReds(reds, new Set(), new Set(['ci-red:7-zzzzzzz']))).toEqual(reds)
+  expect(newCiReds(reds, new Set(), new Set(['ci-red:8-aaaaaaa']))).toEqual(reds)
 })
 
 test('flakyRuns: a failure and a success on one SHA, and a success after a re-run attempt', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HOME_REASON, homeReason, protectedPath, rmSafe } from './home-guard'
@@ -93,6 +93,153 @@ describe('homeReason', () => {
     expect(homeReason('bash ok.sh', read, H)).toBeUndefined()
   })
 
+  // every named file holds a recursive delete of the home dir (built at run time)
+  const bad = () => 'r' + 'm -rf "$' + 'HOME"\n'
+  const CLI = 'src/cli.ts'
+  const WRK = 'src/worker.ts'
+
+  test.each([
+    `git diff a b ${CLI}`,
+    `git diff origin/main...HEAD -- ${CLI} ${WRK}`,
+    `git -C /abs/wt diff ${CLI}`,
+    `git --no-pager log -p -- ${CLI}`,
+    `grep -n x ${CLI} ${WRK}`,
+    `head -n 50 ${CLI}`,
+    `bd create "t" -d "see src/home-guard.ts (the guard; it reads ${CLI}) & more | x"`,
+    `bd comment x 'see src/home-guard.ts; $(no) \`no\`'`,
+    `git blame ${CLI}`,
+    `git status ${CLI}`,
+    `git diff HEAD~1 HEAD^ -- ${CLI}`,
+    `grep -n 'a|b' ${CLI}`,
+    'bd create -d "see src/home-guard.ts"',
+    `cat ${CLI} | head -n 5`,
+    `cd /abs/wt && git diff ${CLI}`,
+    `git diff ${CLI} 2>&1 | tail -n 3`,
+    `grep -n "a\\|b" ${CLI} | head -5; grep -n "c\\(d\\)" ${WRK} | head -3`,
+    `sed -n 1,140p ${CLI}; grep -n "x" ${CLI} | head -80`,
+    `sed -n 1250,1275p ${CLI}; sed -n '1436,1465p;1p' ${CLI}`,
+    `bd show x 2>&1 | head -40; grep -n "a" ${CLI} 2>/dev/null | head`,
+    `git diff ${CLI}\ngrep x ${CLI}`,
+    `cd /abs/wt; git diff origin/main...HEAD -- ${CLI} ${WRK}; echo ===X; grep -n "a\\|b" ${CLI} | head -40`,
+    `ls x >/dev/null || cat ${CLI}`,
+  ])('allows a read-only command that names a script: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBeUndefined(),
+  )
+
+  test.each([
+    `git diff \\\n  ${CLI}`,
+    `git \\\n diff ${CLI}`,
+    `git diff ${CLI} &> /dev/null`,
+    `(cd /abs/wt && git diff ${CLI})`,
+  ])('denies a read command outside the one-command grammar: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test.each([
+    `grep x ${CLI} | xargs ./x.sh`,
+    `grep x ${CLI} | bash`,
+    `sed -n 1p ${CLI} | sh`,
+    `cat ${CLI} | tee x.sh`,
+    `grep x ${CLI} |& ./x.sh`,
+    `grep x ${CLI} 2>/tmp/f`,
+    `git diff ${CLI} > out`,
+    `grep x ${CLI} >/dev/null./x.sh`,
+    `| head ${CLI}`,
+    `cat ${CLI} ; ; head`,
+    `grep "a\\" ${CLI}; ./x.sh; echo "`,
+    `grep "a\\$(./x.sh)" ${CLI}`,
+    `grep "a\\\\" ${CLI}`,
+    `grep x ${CLI} | awk '{print}'`,
+    `git add ${CLI} && git commit -m x`,
+    `sed -i 1d ${CLI}`,
+    `sed -n 1p ${CLI} -i`,
+    `sed -n '1p;w out' ${CLI}`,
+    `sed -n 'w x.sh' ${CLI}`,
+    `sed -n 1e ${CLI}`,
+    `sed -n -e 1p ${CLI}`,
+    `sed -E -n 1p ${CLI}`,
+    `sed --quiet 1p ${CLI}`,
+    `sed -n '1p' -f x.sed ${CLI}`,
+    `sed -n 1p ${CLI} > out`,
+    `sed -n 1p ${CLI}; ./x.sh`,
+    `sed -n 1p '-e' '1e ./x.sh' ${CLI}`,
+    `sed -n 1p "--expression=1e ./x.sh" ${CLI}`,
+    `sed -n 1p ''-i x.sh ${CLI}`,
+  ])('denies a compound or sed form outside the grammar: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('a 100000-char reader pipeline returns fast', () => {
+    const cmd = `grep -n "a\\|b" ${CLI} | `.repeat(5000) + 'head'
+    const t0 = performance.now()
+    homeReason(cmd, bad, H)
+    expect(performance.now() - t0).toBeLessThan(200)
+  })
+
+  test.each([
+    'bash .scratch/clean.sh',
+    'bun .scratch/x.ts',
+    './cleanup.sh --all',
+    'source x.sh',
+    '. x.sh',
+    'python3 x.py',
+    'deno run x.ts',
+    'tsx x.ts',
+    'timeout 60 bash x.sh',
+    'env ./x.sh',
+    'nohup ./x.sh',
+    'FOO=1 git diff ./x.sh',
+    'GIT_EXTERNAL_DIFF=./x.sh git diff',
+    'cat ./x.sh | bash',
+    `git diff ${CLI}; bash x.sh`,
+    `git diff ${CLI} && ./x.sh`,
+    `git diff ${CLI} & ./x.sh`,
+    `git diff ${CLI}\n./x.sh`,
+    'bd create -d "$(bash x.sh)"',
+    'git -c diff.external=./x.sh diff',
+    'git difftool -x ./x.sh',
+    'git rebase --exec ./x.sh HEAD~1',
+    'git bisect run ./x.sh',
+    '/usr/bin/git diff ./x.sh',
+    '"git" diff ./x.sh',
+    'rg --pre ./x.sh foo',
+    `bash -c 'git diff ${CLI}'`,
+    'git diff x.ts\n{ ./x.sh; }',
+    'cat x;./x.sh',
+    'cat x|./x.sh',
+    'cat x&./x.sh',
+    'cat x||./x.sh',
+  ])('denies a command that can run a script: %s', cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON))
+
+  test.each(['bd create -d "`bash x.sh`"', 'echo $(./x.sh)', '(./x.sh)', 'echo `./x.sh`'])(
+    'denies a script in a backtick, $( or ( word: %s',
+    cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test.each([
+    "git diff #'\n./x.sh #'",
+    "echo $'\\'' ; ./x.sh #'",
+    "cat <<EOF\necho '\nEOF\n./x.sh\necho '",
+    `echo "\${x-"'"}"; ./x.sh; echo "\${x-"'"}"`,
+    `git diff "\${x:-"'"}" ; ./x.sh # "'"`,
+    'cat x \\\\\n./x.sh',
+    'git diff a \\\\\n./x.sh',
+    'cat x \\\\\\\\\n./x.sh',
+    'cat x\\\\\nbash x.sh',
+    'echo "\\" \'"\n./x.sh\necho \'',
+    "cat x \\'\n./x.sh\necho '",
+    'bd create -d "!! x.sh"',
+    "'git' diff ./x.sh",
+    'g""it diff ./x.sh',
+  ])(
+    "denies a fake quote: an unquoted #, $', <<, a nested quote in ${} or an even backslash run before a newline: %j",
+    cmd => expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('allows a # inside double quotes', () => {
+    expect(homeReason('bd create -d "issue #12 see x.sh"', bad, H)).toBeUndefined()
+  })
+
   test('the worker hook gives HOME_REASON first', () => {
     expect(denyReason('find ~ -delete', '/Users/pat/wt')).toBe(HOME_REASON)
   })
@@ -123,5 +270,69 @@ describe('rmSafe', () => {
     const dir = mkdtempSync(join(tmpdir(), 'home-guard-'))
     rmSafe(dir, { recursive: true, force: true })
     expect(existsSync(dir)).toBe(false)
+  })
+
+  const mk = () => mkdtempSync(join(tmpdir(), 'home-guard-rm-'))
+  const opts = { recursive: true, force: true }
+
+  test('throws when the rm keeps the tree (3 tries)', () => {
+    const dir = mk()
+    let n = 0
+    expect(() => rmSafe(dir, opts, () => void n++)).toThrow(/still exists after 3 tries/)
+    expect(() => rmSafe(dir, opts, () => {})).toThrow(dir)
+    expect(n).toBe(3)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('retries when the first rm keeps the tree', () => {
+    const dir = mk()
+    let n = 0
+    rmSafe(dir, opts, (p, o) => {
+      if (++n === 2) rmSync(p, o)
+    })
+    expect(n).toBe(2)
+    expect(existsSync(dir)).toBe(false)
+  })
+
+  test('does not delete a new dir that took the same path', () => {
+    const dir = mk()
+    let n = 0
+    rmSafe(dir, opts, (p, o) => {
+      n++
+      rmSync(p, o)
+      mkdirSync(p)
+    })
+    expect(n).toBe(1)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('a missing path: force is a no-op, no force throws ENOENT, a real dir is deleted once', () => {
+    const dir = join(mk(), 'gone')
+    expect(() => rmSafe(dir, opts)).not.toThrow()
+    expect(() => rmSafe(dir, { recursive: true })).toThrow(/ENOENT/)
+    const real = mk()
+    let n = 0
+    rmSafe(real, opts, (p, o) => {
+      n++
+      rmSync(p, o)
+    })
+    expect(n).toBe(1)
+    expect(existsSync(real)).toBe(false)
+  })
+
+  test('a protected path never reaches the rm', () => {
+    const fake = mk()
+    const old = process.env.HOME
+    process.env.HOME = fake
+    let n = 0
+    try {
+      expect(() => rmSafe(fake, opts, () => void n++)).toThrow(/refusing/)
+    } finally {
+      process.env.HOME = old
+    }
+    expect(n).toBe(0)
+    rmSync(fake, opts)
   })
 })

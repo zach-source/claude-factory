@@ -4,9 +4,10 @@ name: CI
 # (claude-factory-5h9.5).
 #
 # The workflow_dispatch trigger lets release.yml start a run of this workflow on a release
-# PR's branch. GITHUB_TOKEN opens that PR. A GITHUB_TOKEN-opened PR starts no pull_request run.
-# So release.yml dispatches this workflow by name instead, and the checks then report against
-# that PR's head SHA.
+# PR's branch. GITHUB_TOKEN opens that PR. A GITHUB_TOKEN-opened PR starts a
+# pull_request run, but GitHub holds it in action_required until a person approves it.
+# release.yml also dispatches this workflow by name. The dispatched checks do not count
+# toward the PR's check rollup.
 on:
   pull_request:
   push:

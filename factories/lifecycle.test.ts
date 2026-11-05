@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { createActor } from 'xstate'
 import { join } from 'node:path'
 import { modelOf } from '../src/ax'
@@ -73,6 +73,27 @@ test('build: inner loops, a security review, then approve ends the run on a ship
   expect(snapshot.context.error).toBeNull()
   expect(snapshot.context.log.at(-1)).toMatchObject({ node: 'review', outcome: 'approve' })
   for (const n of SHIP_NODES) expect(visited).not.toContain(n)
+})
+
+test('implement reports partial to go on with the open tasks; a fourth partial re-plans (6j5k)', () => {
+  const partials = walk(lifecycle, ['build', 'ready', 'partial', 'partial', 'partial', 'ready'])
+  expect(partials.visited).toEqual([
+    'triage',
+    'plan',
+    'implement',
+    'implement',
+    'implement',
+    'implement',
+    'verify',
+  ])
+  expect(partials.snapshot.context.log.filter(e => e.outcome === 'fail')).toEqual([])
+  expect(
+    partials.snapshot.context.log.filter(e => e.node === 'implement' && e.outcome === 'partial'),
+  ).toHaveLength(3)
+  const capped = walk(lifecycle, ['build', 'ready', 'partial', 'partial', 'partial', 'partial'])
+  expect(capped.visited.at(-1)).toBe('plan')
+  expect(lifecycle.nodes.implement!.prompt).toContain('report partial, not fail')
+  expect(lifecycle.nodes.plan!.prompt).toContain('one implement pass')
 })
 
 test('lifecycle has no release, deploy, soak or postmortem node; incident and rollback stay (rtuw AC14)', () => {
@@ -426,11 +447,78 @@ test('review security reports (4-7) with security changes between go to security
     expect(where(actor.getSnapshot().value)[0]).toBe('security')
     actor.send({ type: 'GOTO', node: 'security', at: now })
     report('changes')
-    expect(where(actor.getSnapshot().value)[0]).toBe('implement')
+    // security's own cap (x2en): its 4th changes re-plans
+    expect(where(actor.getSnapshot().value)[0]).toBe(i === 4 ? 'plan' : 'implement')
   }
   const ctx = actor.getSnapshot().context
-  expect(ctx.log.some(e => e.replan)).toBe(false)
-  expect(ctx.mail.plan ?? []).toEqual([])
+  // review never re-plans on its security outcome; only security's own cap (x2en) re-plans, once
+  expect(ctx.log.some(e => e.replan && e.node === 'review')).toBe(false)
+  expect(ctx.log.filter(e => e.replan).map(e => e.node)).toEqual(['security'])
+})
+
+// claude-factory-x2en: security has its own round cap (3), separate from review's.
+test("security's round cap re-plans to plan, then holds on a second cap (x2en AC1-AC3, AC5)", () => {
+  expect(lifecycle.nodes.security!.rounds).toBe(3)
+  expect(lifecycle.nodes.security!.onRounds).toBe('plan')
+
+  const start = () => {
+    const actor = createActor(compile({ ...lifecycle, maxSteps: 200 })).start()
+    let now = 0
+    const send = (node: string, outcome: string, i = now) => {
+      actor.send({ type: 'GOTO', node, at: now })
+      const { seq } = actor.getSnapshot().context
+      actor.send({
+        type: 'DONE',
+        seq,
+        outcome,
+        summary: `${node} ${outcome} round ${i} finding AC${i}`,
+        at: ++now,
+      })
+    }
+    return { actor, send }
+  }
+  const top = (a: ReturnType<typeof start>['actor']) => where(a.getSnapshot().value)[0]
+
+  const { actor, send } = start()
+  for (let i = 1; i <= 3; i++) {
+    send('security', 'changes', i)
+    expect(top(actor)).toBe('implement')
+  }
+  send('security', 'changes', 4)
+  expect(top(actor)).toBe('plan')
+  const last = actor.getSnapshot().context.log.at(-1)
+  expect(last?.node).toBe('security')
+  expect(last?.replan).toBe(true)
+  const plan = actor.getSnapshot().context.mail.plan?.at(-1)
+  expect(plan?.from).toBe('security')
+  for (let i = 1; i <= 4; i++) {
+    expect(plan?.text).toContain(`### security round ${i}`)
+    expect(plan?.text).toContain(`finding AC${i}`)
+  }
+  expect(actor.getSnapshot().context.mail.manager).toBeUndefined()
+  for (let i = 5; i <= 7; i++) {
+    send('security', 'changes', i)
+    expect(top(actor)).toBe('implement')
+  }
+  send('security', 'changes', 8)
+  const s = actor.getSnapshot()
+  expect(where(s.value)).toEqual(['security', 'stuck'])
+  expect(s.context.error).toBe('security reported changes more than 3 times')
+  expect(s.context.mail.manager?.find(m => m.from === 'security')?.text).toContain(
+    'already re-planned once, to plan',
+  )
+
+  // AC5 (a, b): approve never counts; three changes then approve ships
+  const b = start()
+  for (let i = 1; i <= 3; i++) b.send('security', 'changes', i)
+  b.send('security', 'approve')
+  expect(top(b.actor)).toBe('done')
+
+  // AC5 (c): review's own cap does not count security's changes
+  const c = start()
+  for (let i = 1; i <= 3; i++) c.send('security', 'changes', i)
+  c.send('review', 'changes')
+  expect(top(c.actor)).toBe('implement')
 })
 
 // claude-factory-qgz: review hits its round cap (3) and re-plans once with the round's findings,
@@ -588,6 +676,9 @@ test('review, security and check share one blocking-scope rule (2ida AC3, AC4)',
     expect(p).toContain('P2 or lower')
     expect(p).toContain('sets P0 or P1')
     expect(p).toContain('and that is not kind 2 or 3 does not block')
+    expect(p).toContain('give the origin/{base_branch} file and line that holds the same gap')
+    expect(p).toContain('git show origin/{base_branch}:<path> | grep -n <symbol>')
+    expect(p).toContain('A finding without that line is not a main gap')
   }
   expect(lifecycle.nodes.security!.prompt).not.toContain('P1 or higher')
   expect(lifecycle.nodes.security!.prompt).toContain('for a person to prioritize')
@@ -613,10 +704,32 @@ test('triage rejects a second fix for a red main (claude-factory-yhf5)', () => {
     expect(p).toContain(s)
 })
 
+test('triage bd-searches open beads before it routes (claude-factory-tfdk)', () => {
+  const p = lifecycle.nodes.triage!.prompt
+  const sentence =
+    'bd search the error string, route, service and symptom; link matching open beads (or reject as a duplicate) and name them in the summary.'
+  expect(p).toContain(sentence)
+  expect(p.split(sentence).length - 1).toBe(1)
+  expect(p).toContain('bd search "<words>" --status open')
+  expect(p).toContain('bd dep add <this bead> <id> -t related')
+  const at = p.indexOf(sentence)
+  expect(at).toBeGreaterThan(p.indexOf('- reject: unclear, already tracked'))
+  expect(at).toBeLessThan(p.indexOf('Summary:'))
+})
+
 test('triage rollout requeues into the release factory; decision defers at plan; elsewhere defers (502 AC4-AC7)', () => {
   const decision = { to: 'done', defer: { station: 'plan' } }
   expect(lifecycle.nodes.triage!.next.rollout).toEqual({ to: 'done', requeue: { factory: 'release' } })
   expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
+  const t = lifecycle.nodes.triage!.prompt
+  for (const s of [
+    'factory file-elsewhere <rig> --from <this rig>:<this bead',
+    'Never run bd create in another rig',
+    'discovered_from',
+    'File in: <rig>: <title> | <description>',
+  ])
+    expect(t).toContain(s)
+  expect(t).not.toContain('the label `factory`, and this bead')
   for (const n of ['triage', 'plan', 'implement'] as const)
     expect(lifecycle.nodes[n].next.decision).toEqual(decision)
   expect(lifecycle.nodes.implement!.prompt).toContain('open no new pull request')
@@ -690,6 +803,35 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
   }
   for (const node of ['plan', 'implement', 'quick', 'verify'])
     expect((lifecycle as Factory).nodes[node]!.prompt).not.toContain('event=APPROVE')
+})
+
+test('qoub.3: review and check never push; with no pull request they report changes', () => {
+  for (const node of ['review', 'check']) {
+    const prompt = (lifecycle as Factory).nodes[node]!.prompt
+    expect(prompt.replace('"push the branch and open the draft pull request"', '')).not.toMatch(
+      /push the branch/i,
+    )
+    expect(prompt).toContain('do not push')
+    expect(prompt).toContain('"push the branch and open the draft pull request"')
+  }
+  expect((lifecycle as Factory).nodes.quick!.prompt).toContain('gh pr create --draft')
+})
+
+test('claude-factory-wbac: a security report posts a COMMENT review, only security approves', () => {
+  const lc = lifecycle as Factory
+  for (const node of ['review', 'security', 'check']) {
+    const prompt = lc.nodes[node]!.prompt
+    expect(prompt).toContain('event=COMMENT when you report security')
+    expect(prompt).toContain('event=APPROVE only when you report approve')
+    expect(prompt).not.toContain('also when you report security')
+    expect(prompt).toContain('-f event=<event>')
+    expect(prompt).not.toContain('-f event=APPROVE -F body')
+    expect(prompt).toContain('Do not mark it ready when you report changes or security')
+    expect(prompt).toContain('Reviewed head: <full SHA>')
+  }
+  expect(Object.keys(lc.nodes.security!.next!).sort()).toEqual(['approve', 'changes'])
+  expect(lc.nodes.review!.next!.security).toBe('security')
+  expect(lc.nodes.check!.next!.security).toBe('security')
 })
 
 const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
@@ -786,7 +928,10 @@ test('claude-factory-ocox AC2/AC3 + ye1v AC5: plain gh pr ready only in review, 
     expect(p.replaceAll(/gh pr ready <n> --undo/g, '').includes('gh pr ready'), id).toBe(
       ['review', 'security', 'check'].includes(id),
     )
-    expect(p.includes('gh pr ready <n> --undo'), id).toBe(['implement', 'quick'].includes(id))
+    expect(p.includes('gh pr ready <n> --undo'), id).toBe(
+      // implement and quick undo before a push; review, security and check carry the Made-worse gate
+      ['implement', 'quick', 'review', 'security', 'check'].includes(id),
+    )
   }
   expect(lifecycle.nodes.implement!.prompt).toContain('gh pr create --draft')
 })
@@ -814,6 +959,28 @@ test('claude-factory-ye1v AC3: approvers name the reviewed head and mark ready o
     const p = (lifecycle.nodes as Record<string, { prompt: string }>)[id]!.prompt
     expect(p, id).toContain('Reviewed head: <full SHA>')
     expect(p, id).toContain('headRefOid equals the SHA you reviewed')
+  }
+})
+
+test('claude-factory-97yj: approvers re-read headRefOid after gh pr ready and undo on a moved head', () => {
+  const nodes = lifecycle.nodes as Record<string, { prompt: string }>
+  const reread = 'Right after you mark it, read `gh pr view <n> --json headRefOid` again.'
+  for (const id of Object.keys(nodes)) {
+    const p = nodes[id]!.prompt
+    if (!['review', 'security', 'check'].includes(id)) {
+      expect(p, id).not.toContain(reread)
+      continue
+    }
+    const at = p.indexOf(reread)
+    expect(at, id).toBeGreaterThan(p.indexOf('gh pr ready <n> -R'))
+    const after = p.slice(at)
+    for (const s of [
+      'If it is not the SHA you reviewed, run `gh pr ready <n> --undo` at once.',
+      'Do the same if the read fails.',
+      'Then report changes with the new SHAs.',
+      'If the undo fails, report blocked with the pull request link.',
+    ])
+      expect(after, `${id}: ${s}`).toContain(s)
   }
 })
 
@@ -1028,4 +1195,98 @@ test('ey90 AC4: no PR link, the timer, or another station still start a worker a
 test('ey90 AC5: a GitLab merge request link holds plain mail too', () => {
   const { send } = parkTriage('Waiting on https://gitlab.example.com/acme/widget/-/merge_requests/7')
   expect(where(send(mailTo('triage')).value)).toEqual(['triage', 'waiting'])
+})
+
+const PLAN_RULE =
+  "If this run files a bead for a bug that its own change makes worse in production (more often, wider or longer), put one line `Made worse: <id>: <how>` in the summary. Then do one of these and record the choice and the reason in a bd comment on the run's bead: fix the bug in this run as a task (`--parent <run bead>`), or gate the deploy on it. To gate it, file it with `--deps discovered-from:<run bead>` and put the line `Made worse by: <run bead>` in its description. For a bead that is already open, add that line with `bd comment <id>` and link it with `bd dep add <id> <run bead> -t discovered-from`."
+
+const GATE_RULE =
+  "Made-worse gate: before you mark ready, merge or deploy a pull request, run `bd dep list <bead> --direction=up -t discovered-from` for its bead. Run `bd show <id>` for each open bead in the list. A bead gates the pull request when its description or a comment contains `Made worse by: <bead>`, or says that this change makes it worse in production. The gate clears only when that bead is closed, or when a person's own comment on it or a [factory mail] from the manager says to ship anyway. If a bead gates the pull request, do not mark it ready, merge it or deploy it. If it is not a draft, run `gh pr ready <n> --undo`. Report blocked with each gating bead id and a `Question:` line that asks the person to ship before the fix or to wait. If a bd command fails, report blocked with the command: never ship on a failed read."
+
+test('plan names a bead that its change makes worse and records fix or gate (claude-factory-j2k AC1)', () => {
+  const plan = promptOf(lifecycle, 'plan')
+  expect(plan.split(PLAN_RULE).length - 1).toBe(1)
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const prompt = (node as { prompt?: unknown }).prompt
+    if (id !== 'plan' && typeof prompt === 'string') expect(prompt.includes('Made worse:'), id).toBe(false)
+  }
+})
+
+test('ship release, ship deploy and release rollout gate on a made-worse discovered-from bead (claude-factory-j2k AC2-AC4)', () => {
+  const sites: [string, string, string[]][] = [
+    ['ship release', promptOf(ship, 'release'), ['mark it ready with `gh pr ready`', 'gh pr merge']],
+    ['ship deploy', promptOf(ship, 'deploy'), ['Merged: record the production baseline']],
+    ['release rollout', promptOf(release, 'rollout'), ['Approved: record']],
+  ]
+  for (const [name, p, after] of sites) {
+    expect(p.split(GATE_RULE).length - 1, name).toBe(1)
+    for (const a of after) expect(p.indexOf('Made-worse gate'), name + a).toBeLessThan(p.lastIndexOf(a))
+  }
+  for (const [def, ids] of [
+    [ship, ['queue', 'soak', 'rollback', 'postmortem']],
+    [release, ['recipe', 'gather', 'cut', 'soak', 'rollback']],
+  ] as const)
+    for (const id of ids) {
+      const node = (def.nodes as Record<string, { prompt?: string }>)[id]
+      if (node?.prompt) expect(node.prompt.includes('Made-worse gate'), id).toBe(false)
+    }
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const prompt = (node as { prompt?: unknown }).prompt
+    if (typeof prompt !== 'string') continue
+    const gated = ['review', 'security', 'check'].includes(id)
+    expect(prompt.split(GATE_RULE).length - 1, id).toBe(gated ? 1 : 0)
+    if (gated)
+      expect(prompt.indexOf('Made-worse gate'), id).toBeLessThan(prompt.indexOf('gh pr ready <n> -R'))
+    else expect(prompt.includes('Made-worse gate'), id).toBe(false)
+  }
+  for (const s of [
+    'never ship on a failed read',
+    '--undo',
+    "a person's own comment",
+    '[factory mail]',
+    '`Question:`',
+  ])
+    expect(GATE_RULE).toContain(s)
+})
+
+test('runner-loss scenario matrix: every ADR phrase is in the house rules (s2hn)', () => {
+  const adr = readFileSync(
+    join(import.meta.dir, '..', 'docs/architecture/adr-factory-runner-loss-escalation.md'),
+    'utf8',
+  )
+  const rows = [...adr.matchAll(/^\| S(\d+) \|.*\| `(.+)` \|$/gm)].map(m => ({
+    n: Number(m[1]),
+    phrase: m[2]!.replace(/\\`/g, '`'),
+  }))
+  expect(rows.length).toBeGreaterThanOrEqual(8)
+  expect(rows.map(r => r.n)).toEqual(rows.map((_, i) => i + 1))
+  for (const r of rows) expect(lifecycle.rules!).toContain(r.phrase)
+  const search = lifecycle.rules!.match(/bd search "([^"]+)" --status/)![1]
+  expect(lifecycle.rules!).toContain('bd create "' + search + '"')
+  for (const n of ['implement', 'verify', 'quick'] as const)
+    expect(lifecycle.nodes[n]!.prompt).toContain(
+      'a second runner loss at the same step, after the host bug exists',
+    )
+})
+
+// claude-factory-dgok: untrusted text must not sit in shell double quotes ($(...), backticks and $VAR expand there).
+test('triage: every non-ID placeholder in a factory command span is single-quoted (claude-factory-dgok)', () => {
+  const ids = new Set(['rig', 'this rig', "this bead's id"])
+  const bad = (t: string) =>
+    (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
+      (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ids.has(p.slice(1, -1))),
+    )
+  expect(bad(lifecycle.nodes.triage!.prompt)).toEqual([])
+  expect(bad('`factory file-elsewhere <rig> --title <title>`')).toEqual(['<title>'])
+  expect(bad("`factory file-elsewhere <rig> --title '<title>'`")).toEqual([])
+})
+
+test('triage passes file-elsewhere text in single quotes (claude-factory-dgok)', () => {
+  const t = lifecycle.nodes.triage!.prompt
+  const spans = (t.match(/`[^`]*`/g) ?? []).filter(s => s.includes('file-elsewhere'))
+  expect(spans.length).toBeGreaterThan(0)
+  for (const s of spans) expect(s).not.toContain('"<')
+  for (const p of ['title', 'description']) expect(spans.join('\n')).toContain(`'<${p}>'`)
+  expect(t).toContain("'\\''")
+  expect(t).toContain('single quotes')
 })

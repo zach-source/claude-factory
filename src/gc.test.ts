@@ -410,40 +410,60 @@ test('16: a non-factory branch on a run worktree path removes the worktree, neve
   expect(p.removeBranches).toEqual([])
 })
 
-// parsePrPages() parses the stdout of `gh api graphql --paginate` (claude-factory-ph8): one JSON
-// line per page, each `{totalCount, nodes}`. These tests prove it never returns a partial list.
-const node = (
+// parsePrPages() parses the stdout of `gh api repos/<o>/<r>/pulls?...&page=N --jq tojson` (one call per page) (claude-factory-oz6s):
+// one JSON array of REST pulls per line. These tests prove it never returns a partial list.
+type RestPull = {
+  number: unknown
+  state: unknown
+  merged_at: unknown
+  head: unknown
+  base: unknown
+}
+const rest = (
   number: number,
-  state: 'OPEN' | 'MERGED' | 'CLOSED',
-  headRefName: string,
-  headRefOid: string,
-  isCrossRepository = false,
-) => ({
+  state: 'open' | 'closed',
+  ref: string,
+  sha: string,
+  o: { merged?: boolean; headRepo?: string | null } = {},
+): RestPull => ({
   number,
   state,
-  headRefName,
-  headRefOid,
-  isCrossRepository,
+  merged_at: o.merged ? '2026-10-12T10:00:00Z' : null,
+  head: { ref, sha, repo: o.headRepo === null ? null : { full_name: o.headRepo ?? 'acme/widget' } },
+  base: { repo: { full_name: 'acme/widget' } },
 })
-const pageLine = (totalCount: number, nodes: unknown[]) => JSON.stringify({ totalCount, nodes })
+const pageLine = (nodes: unknown[]) => JSON.stringify(nodes)
 
 test('parsePrPages: a single page returns every PR as a PrFact', () => {
-  const stdout = pageLine(2, [node(1, 'MERGED', 'factory/r1', 'aaa'), node(2, 'OPEN', 'factory/r2', 'bbb')])
+  const stdout = pageLine([
+    rest(1, 'closed', 'factory/r1', 'aaa', { merged: true }),
+    rest(2, 'open', 'factory/r2', 'bbb'),
+  ])
   expect(parsePrPages(stdout)).toEqual([
     { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: false },
     { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'bbb', isCrossRepository: false },
   ])
 })
 
+test('parsePrPages: a closed PR with no merge date is CLOSED, one with a merge date is MERGED', () => {
+  const out = parsePrPages(
+    pageLine([rest(1, 'closed', 'a', 'x'), rest(2, 'closed', 'b', 'y', { merged: true })]),
+  )
+  expect(out!.map(p => p.state)).toEqual(['CLOSED', 'MERGED'])
+})
+
 test('parsePrPages: an 11-page, 1050-PR stdout returns every PR, none dropped', () => {
   const pages: string[] = []
   for (let page = 0; page < 11; page++) {
     const size = page < 10 ? 100 : 50
-    const nodes = Array.from({ length: size }, (_, i) => {
-      const n = page * 100 + i
-      return node(n, 'OPEN', `factory/r${n}`, `sha${n}`)
-    })
-    pages.push(pageLine(1050, nodes))
+    pages.push(
+      pageLine(
+        Array.from({ length: size }, (_, i) => {
+          const n = page * 100 + i
+          return rest(n, 'open', `factory/r${n}`, `sha${n}`)
+        }),
+      ),
+    )
   }
   const out = parsePrPages(pages.join('\n'))
   expect(out).not.toBeNull()
@@ -456,90 +476,64 @@ test('parsePrPages: an 11-page, 1050-PR stdout returns every PR, none dropped', 
   })
 })
 
+test('parsePrPages: an empty repo (one line, an empty array) returns an empty list', () => {
+  expect(parsePrPages('[]')).toEqual([])
+})
+
 test('parsePrPages: empty stdout (no line) returns null', () => {
   expect(parsePrPages('')).toBeNull()
   expect(parsePrPages('\n\n')).toBeNull()
 })
 
-test('parsePrPages: a line that fails to parse returns null', () => {
+test('parsePrPages: a line that fails to parse, or is not an array, returns null', () => {
   expect(parsePrPages('not json')).toBeNull()
-})
-
-test('parsePrPages: a null page (a null `repository`) returns null', () => {
   expect(parsePrPages('null')).toBeNull()
+  expect(parsePrPages('{"message":"Not Found"}')).toBeNull()
+  expect(parsePrPages([pageLine([rest(1, 'open', 'a', 'x')]), 'oops'].join('\n'))).toBeNull()
 })
 
-test('parsePrPages: totalCount not a number returns null', () => {
-  expect(
-    parsePrPages(JSON.stringify({ totalCount: '2', nodes: [node(1, 'OPEN', 'factory/r1', 'aaa')] })),
-  ).toBeNull()
+test.each<[string, (p: Record<string, unknown>) => void]>([
+  ['number is a string', p => (p.number = '1')],
+  ['state is draft', p => (p.state = 'draft')],
+  ['state is missing', p => delete p.state],
+  ['merged_at is a number', p => (p.merged_at = 7)],
+  ['merged_at is missing', p => delete p.merged_at],
+  ['head is missing', p => delete p.head],
+  ['head.ref is a number', p => ((p.head as Record<string, unknown>).ref = 7)],
+  ['head.sha is a number', p => ((p.head as Record<string, unknown>).sha = 7)],
+  ['head.sha is empty', p => ((p.head as Record<string, unknown>).sha = '')],
+  ['head.repo is a string', p => ((p.head as Record<string, unknown>).repo = 'acme/widget')],
+  ['head.repo has no full_name', p => ((p.head as Record<string, unknown>).repo = {})],
+  ['head.repo is missing', p => delete (p.head as Record<string, unknown>).repo],
+  ['base is missing', p => delete p.base],
+  ['base.repo.full_name is missing', p => (p.base = { repo: {} })],
+])('parsePrPages: a PR whose %s returns null', (_name, mutate) => {
+  const bad = rest(2, 'open', 'factory/r2', 'bbb') as unknown as Record<string, unknown>
+  mutate(bad)
+  // the good PR comes first: one bad element must still void the whole read
+  expect(parsePrPages(pageLine([rest(1, 'open', 'factory/r1', 'aaa'), bad]))).toBeNull()
 })
 
-test('parsePrPages: nodes not an array returns null', () => {
-  expect(parsePrPages(JSON.stringify({ totalCount: 1, nodes: 'nope' }))).toBeNull()
-})
-
-test('parsePrPages: a node with a state outside OPEN/MERGED/CLOSED returns null', () => {
-  expect(parsePrPages(pageLine(1, [node(1, 'DRAFT' as never, 'factory/r1', 'aaa')]))).toBeNull()
-})
-
-test('parsePrPages: a node with a non-number `number` returns null', () => {
-  const bad = {
-    number: '1',
-    state: 'OPEN',
-    headRefName: 'factory/r1',
-    headRefOid: 'aaa',
-    isCrossRepository: false,
-  }
-  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
-})
-
-test('parsePrPages: a node with a non-string headRefName returns null', () => {
-  const bad = { number: 1, state: 'OPEN', headRefName: 7, headRefOid: 'aaa', isCrossRepository: false }
-  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
-})
-
-test('parsePrPages: a node with a non-string headRefOid returns null', () => {
-  const bad = { number: 1, state: 'OPEN', headRefName: 'factory/r1', headRefOid: 7, isCrossRepository: false }
-  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
-})
-
-test('parsePrPages: a node with a missing isCrossRepository returns null (claude-factory-ph8.4)', () => {
-  const bad = { number: 1, state: 'OPEN', headRefName: 'factory/r1', headRefOid: 'aaa' }
-  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
-})
-
-test('parsePrPages: a node with a non-boolean isCrossRepository returns null (claude-factory-ph8.4)', () => {
-  const bad = {
-    number: 1,
-    state: 'OPEN',
-    headRefName: 'factory/r1',
-    headRefOid: 'aaa',
-    isCrossRepository: 'false',
-  }
-  expect(parsePrPages(pageLine(1, [bad]))).toBeNull()
-})
-
-test('parsePrPages: fewer distinct PR numbers than the first page totalCount returns null (a lost page)', () => {
-  const stdout = pageLine(2, [node(1, 'OPEN', 'factory/r1', 'aaa')])
-  expect(parsePrPages(stdout)).toBeNull()
-})
-
-test('parsePrPages: a repeated PR number across pages is deduped, not double-counted', () => {
-  const p1 = pageLine(2, [node(1, 'OPEN', 'factory/r1', 'aaa')])
-  const p2 = pageLine(2, [node(1, 'MERGED', 'factory/r1', 'bbb'), node(2, 'OPEN', 'factory/r2', 'ccc')])
-  const out = parsePrPages([p1, p2].join('\n'))
-  expect(out).toEqual([
+test('parsePrPages: a repeated PR number across pages is deduped (a PR that moved between pages)', () => {
+  const p1 = pageLine([rest(1, 'open', 'factory/r1', 'aaa')])
+  const p2 = pageLine([
+    rest(1, 'closed', 'factory/r1', 'bbb', { merged: true }),
+    rest(2, 'open', 'factory/r2', 'ccc'),
+  ])
+  expect(parsePrPages([p1, p2].join('\n'))).toEqual([
     { state: 'MERGED', headRefName: 'factory/r1', headRefOid: 'bbb', isCrossRepository: false },
     { state: 'OPEN', headRefName: 'factory/r2', headRefOid: 'ccc', isCrossRepository: false },
   ])
 })
 
-test('parsePrPages: a cross-repository PR keeps isCrossRepository: true', () => {
-  const stdout = pageLine(1, [node(1, 'CLOSED', 'factory/r1', 'aaa', true)])
-  expect(parsePrPages(stdout)).toEqual([
-    { state: 'CLOSED', headRefName: 'factory/r1', headRefOid: 'aaa', isCrossRepository: true },
-  ])
+test('parsePrPages: a fork head, or a deleted fork (head.repo null), is cross-repository', () => {
+  const out = parsePrPages(
+    pageLine([
+      rest(1, 'closed', 'factory/r1', 'aaa', { headRepo: 'fork/widget' }),
+      rest(2, 'closed', 'factory/r2', 'bbb', { headRepo: null }),
+    ]),
+  )
+  expect(out!.map(p => p.isCrossRepository)).toEqual([true, true])
 })
 
 // scrubUrlUserinfo() (claude-factory-0lt, AC1): removes "user:pass@" or "token@" from each URL in a

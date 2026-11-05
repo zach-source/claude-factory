@@ -181,6 +181,16 @@ describe('bazelrc', () => {
       expect(quiet(bazelrc)).not.toContain('javax.net.ssl')
     })
 
+    // claude-factory-nebs: a rig with no FACTORY_BAZELRC gets the CA lines only
+    test('no FACTORY_BAZELRC: the CA lines come first, with no undefined line', () => {
+      set({ FACTORY_CA: 'PEM' })
+      delete process.env.FACTORY_BAZELRC
+      process.env.FACTORY_KEYTOOL = fake('kt', 0, true)
+      const rc = bazelrc()
+      expect(rc).not.toContain('undefined')
+      expect(rc).toStartWith(`common --tls_certificate=${join(dir, 'egress-ca.crt')}\n`)
+    })
+
     test('keytool on PATH runs when FACTORY_KEYTOOL is unset', () => {
       set({ FACTORY_CA: 'PEM' })
       fake('keytool', 0, true)
@@ -754,7 +764,9 @@ describe('startServices', () => {
     ])
     const results = await startServices()
     expect(results.map(r => r.name)).toEqual(['web', 'after-web'])
-    expect(readFileSync(orderLog, 'utf8').trim().split('\n')).toEqual(['web', 'after-web'])
+    const lines = () => (existsSync(orderLog) ? readFileSync(orderLog, 'utf8').trim().split('\n') : [])
+    for (let i = 0; i < 100 && lines().length < 2; i++) await new Promise(r => setTimeout(r, 50))
+    expect(lines()).toEqual(['web', 'after-web'])
   })
 })
 

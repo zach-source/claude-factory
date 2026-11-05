@@ -105,8 +105,8 @@ test('a conflicting branch goes back to implement with the mail and no launch (A
   const ctx = snap.context
   expect(where(snap.value)[0]).toBe('implement')
   expect(ctx.log.at(-1)).toMatchObject({ node: 'verify', outcome: 'red' })
-  const text =
-    'merge origin/main into b; conflicts in: CHANGELOG.md; keep both sides of CHANGELOG.md [Unreleased]'
+  const head = git(clone, 'rev-parse', '--short', 'origin/b').trim()
+  const text = `merge origin/main into b at ${head}; conflicts in: CHANGELOG.md; keep both sides of CHANGELOG.md [Unreleased]`
   expect(ctx.log.at(-1).summary).toBe(`no worker: ${text}`)
   expect(ctx.mail.implement.at(-1).text).toContain(text)
   expect(existsSync(join(home, 'launches.jsonl'))).toBe(false)
@@ -135,15 +135,15 @@ test('mergeCheck merge-trees against the rig base_branch: clean against deploy, 
   expect(run({ base_branch: 'deploy' })?.outcome).not.toBe('red') // clean: a worker would launch
 
   withDeploy()
-  expect(run({}).summary).toContain('merge origin/main into b; conflicts in: CHANGELOG.md')
+  expect(run({}).summary).toMatch(/merge origin\/main into b at [0-9a-f]+; conflicts in: CHANGELOG.md/)
 
   withDeploy()
   git(other, 'checkout', '-q', 'deploy')
   writeFileSync(join(other, 'CHANGELOG.md'), 'deploy\n')
   git(other, 'commit', '-qam', 'deploy moves')
   git(other, 'push', '-q', 'origin', 'deploy')
-  expect(run({ base_branch: 'deploy' }).summary).toContain(
-    'merge origin/deploy into b; conflicts in: CHANGELOG.md',
+  expect(run({ base_branch: 'deploy' }).summary).toMatch(
+    /merge origin\/deploy into b at [0-9a-f]+; conflicts in: CHANGELOG.md/,
   )
 }, 120_000)
 
@@ -153,4 +153,45 @@ test('a station without mergeCheck runs no fetch (AC4)', () => {
   verifyRun(factoryDef(false))
   tick()
   expect(existsSync(join(clone, '.git', 'refs', 'remotes', 'origin', 'b'))).toBe(false)
+}, 60_000)
+
+// claude-factory-cjqo: implement came back ready with the same conflict (the ax rig merged against
+// upstream origin/main 16 times). The same conflict a second time parks verify for the manager.
+test('the same conflict again after implement parks verify, with no second implement visit', () => {
+  setup(true)
+  mkdirSync(home, { recursive: true })
+  verifyRun(factoryDef(true))
+  tick() // the first conflict: red, back to implement
+  const f = join(home, 'runs', 'r1', 'state.json')
+  const state = JSON.parse(readFileSync(f, 'utf8'))
+  const actor = createActor(compile(factoryDef(true)), { snapshot: state.snapshot }).start()
+  actor.send({ type: 'GOTO', node: 'verify', at: 1 }) // implement reported ready with no change
+  writeFileSync(f, JSON.stringify({ ...state, snapshot: actor.getPersistedSnapshot() }))
+  const snap = tick()
+  expect(where(snap.value)[0]).toBe('verify')
+  expect(snap.context.log.at(-1)).toMatchObject({ node: 'verify', outcome: 'blocked' })
+  expect(snap.context.log.at(-1).summary).toContain('conflicts in: CHANGELOG.md')
+  expect(snap.context.log.filter((e: { outcome: string }) => e.outcome === 'red')).toHaveLength(1)
+  expect(existsSync(join(home, 'launches.jsonl'))).toBe(false)
+}, 60_000)
+
+// claude-factory-gclk: implement pushed a new head, and main moved again with a new conflict in the same
+// file. That is a new conflict, not an unresolved one: verify sends it back to implement, it does not park.
+test('the same conflicting files at a new branch head go back to implement, not to a park', () => {
+  setup(true)
+  mkdirSync(home, { recursive: true })
+  verifyRun(factoryDef(true))
+  tick() // the first conflict: red, back to implement
+  git(other, 'checkout', '-q', 'b')
+  writeFileSync(join(other, 'CHANGELOG.md'), 'branch again\n')
+  git(other, 'commit', '-qam', 'implement resolves, then main moves again')
+  git(other, 'push', '-q', 'origin', 'b')
+  const f = join(home, 'runs', 'r1', 'state.json')
+  const state = JSON.parse(readFileSync(f, 'utf8'))
+  const actor = createActor(compile(factoryDef(true)), { snapshot: state.snapshot }).start()
+  actor.send({ type: 'GOTO', node: 'verify', at: 1 })
+  writeFileSync(f, JSON.stringify({ ...state, snapshot: actor.getPersistedSnapshot() }))
+  const snap = tick()
+  expect(snap.context.log.filter((e: { outcome: string }) => e.outcome === 'red')).toHaveLength(2)
+  expect(snap.context.log.some((e: { outcome: string }) => e.outcome === 'blocked')).toBe(false)
 }, 60_000)

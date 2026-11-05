@@ -604,6 +604,132 @@ test(
 )
 
 test(
+  "a partly failed merged row shows the typed note on the failed member's row (claude-factory-87u)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('mail') && e.argv.includes('rb'))
+        return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.input({ key: 'iv-reply-iv:ra@1', text: 'my note', kind: 'change' } as never)
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-iv:ra@1-0' })
+    await clock.settle()
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('answered (1)')
+    expect(drawn).toMatch(/"key":"iv-reply-iv:rb@\d+"[^}]*"value":"my note"/)
+    await ui.unmount()
+  },
+)
+
+const THREE_TICK = {
+  ...SAME_BEAD_TICK,
+  runs: [
+    ...SAME_BEAD_TICK.runs,
+    {
+      ...SAME_BEAD_TICK.runs[1]!,
+      id: 'rc',
+      last: { ...SAME_BEAD_TICK.runs[1]!.last, at: 9 },
+    },
+  ],
+}
+
+/** answers the merged row's first option with a typed note while the mail to `failing` fails; returns the drawn pane */
+async function failedMergedRow(
+  $: Parameters<NonNullable<Parameters<typeof test>[2]>>[0],
+  on: Parameters<NonNullable<Parameters<typeof test>[2]>>[1],
+  tick: unknown,
+  failing: string,
+  retryFailing?: string,
+) {
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  let down = failing
+  on('process.run', ($, e) => {
+    if (e.argv.includes('mail') && e.argv.includes(down))
+      return { value: { exitCode: 1, stdout: '', stderr: `${down}: no such run` } as never }
+    return {
+      value: {
+        exitCode: 0,
+        stdout: e.argv.includes('tick') ? JSON.stringify(tick) : '',
+        stderr: '',
+      } as never,
+    }
+  })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'interview' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  await ui.input({ key: 'iv-reply-iv:ra@1', text: 'my note', kind: 'change' } as never)
+  await clock.settle()
+  await ui.press({ key: 'iv-opt-iv:ra@1-0' })
+  await clock.settle()
+  if (retryFailing) {
+    // the person clears the note and answers again, now with only `retryFailing` down
+    down = retryFailing
+    await ui.input({ key: 'iv-reply-iv:ra@1', text: '', kind: 'change' } as never)
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-iv:ra@1-0' })
+    await clock.settle()
+  }
+  const drawn = JSON.stringify(await ui.drawn())
+  await ui.unmount()
+  return drawn
+}
+
+test(
+  'when the primary of a merged row fails first, its typed note is not copied to the next member, which would show it later',
+  SLOW,
+  async ($, on) => {
+    const drawn = await failedMergedRow($, on, SAME_BEAD_TICK, 'ra', 'rb')
+    expect(drawn).toContain('answered (1)')
+    expect(drawn).not.toMatch(/"key":"iv-reply-iv:rb@\d+"[^}]*"value":"my note"/)
+  },
+)
+
+test(
+  'when the third member of a merged row fails, the typed note moves to the third row, not the closed second (claude-factory-df80)',
+  SLOW,
+  async ($, on) => {
+    const drawn = await failedMergedRow($, on, THREE_TICK, 'rc')
+    expect(drawn).toContain('answered (2)')
+    expect(drawn).toMatch(/"key":"iv-reply-iv:rc@\d+"[^}]*"value":"my note"/)
+    expect(drawn).not.toMatch(/"key":"iv-reply-iv:rb@\d+"/)
+  },
+)
+
+test(
   'a failed mail on the only member keeps the typed reply, instead of wiping it (claude-factory-9f6.16)',
   SLOW,
   async ($, on) => {

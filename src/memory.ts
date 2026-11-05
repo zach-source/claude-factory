@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { cut } from './cut'
 import {
   appendFileSync,
   cpSync,
@@ -146,6 +147,8 @@ export const isUntil = (v: string): boolean => {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
+/** code-unit compare: the same order in every locale (localeCompare is not) */
+const cmpStr = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
 const PR_URL_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/
 /** Convert "owner/repo#N" or a GitHub pull URL to the GitHub pull URL form. Return null when `v` is
@@ -442,7 +445,7 @@ async function embed(texts: string[]) {
 export const fetchModel = () => embed(['warm'])
 
 type Index = { model: string; vecs: Record<string, { hash: string; vec: number[] }> }
-const textOf = (n: Note) => `${n.summary}\n${n.body}`.slice(0, 2000) // bge reads 512 tokens
+const textOf = (n: Note) => cut(`${n.summary}\n${n.body}`, 2000) // bge reads 512 tokens
 const hashOf = (text: string) => createHash('sha1').update(text).digest('hex')
 
 /** the notes' vectors, embedding only what changed since the last search */
@@ -493,10 +496,16 @@ export function coreNotes(dir: string): Note[] {
 export async function search(
   dir: string,
   query: string,
-  { rig, limit = 5 }: { rig?: string; limit?: number } = {},
+  { rig, limit = 5, core = true }: { rig?: string; limit?: number; core?: boolean } = {},
 ) {
   const { notes, topics } = walk(dir)
-  const all = [...notes, ...coreNotes(dir)]
+  // core=false drops only the bullets the brief prints; the ones coreFor cut stay searchable
+  const printed = new Set(
+    core || !existsSync(join(dir, 'CORE.md'))
+      ? []
+      : coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig).split('\n'),
+  )
+  const all = [...notes, ...coreNotes(dir).filter(n => core || !printed.has(`- ${n.summary}`))]
   if (!all.length) return []
   const vec = await vectors(dir, [...all, ...topics.values()])
   const [q] = await embed([QUERY + query])
@@ -738,10 +747,26 @@ export function outline(dir: string, rig?: string) {
     .filter(t => t !== 'inbox')
     .sort()
     .map(t => `- ${t} (${count(t)}): ${topics.get(t)?.summary ?? ''}`.trimEnd())
-    .map(l => (l.length > 100 ? `${l.slice(0, 99)}…` : l))
+    .map(l => {
+      const cps = Array.from(l)
+      return cps.length > 100 ? `${cps.slice(0, 99).join('')}…` : l
+    })
   const inbox = count('inbox')
-  return { core, topics: inbox ? [...lines, `- inbox (${inbox}): new notes, not yet filed`] : lines }
+  const tail = inbox ? [`- inbox (${inbox}): new notes, not yet filed`] : []
+  // drop topics from the end until the whole list fits; the inbox line stays
+  const size = (a: string[]) => Buffer.byteLength(a.join('\n'))
+  let keep = lines.length
+  const build = () => [
+    ...lines.slice(0, keep),
+    ...(keep < lines.length ? [`- (+${lines.length - keep} more topics; memory search)`] : []),
+    ...tail,
+  ]
+  while (keep > 0 && size(build()) > TOPICS_BUDGET) keep--
+  return { core, topics: build() }
 }
+
+/** bytes the topic list may put in a brief, whatever the number of topics */
+export const TOPICS_BUDGET = 4000
 
 export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n) === 'inbox').length
 /** all of it as one text, to find the beads it names */
@@ -1143,7 +1168,8 @@ export type Decision =
  * an archive. The topic cap below treats a flag like a promote or a dedupe: none of the three count
  * as a decision there.
  *
- * `opts.historyDays` sets how far back the usage log goes.
+ * `opts.historyDays` is the age of the oldest last use of an existing note. compact() folds
+ * `.usage.jsonl` to one line per note, so this is not how far back the log goes.
  * Below ARCHIVE_NEW_DAYS (14 days), decide() does not use either usage-based archive rule.
  * A new or lost `.usage.jsonl` file cannot show if a note was never shown or shown before the log started.
  * The default is Infinity; a caller that does not pass it keeps the old rules, without this check.
@@ -1249,7 +1275,7 @@ export function decide(
       })
   }
   // trims have their own cap (archiveCap): the largest entries first, so one pass stays small
-  trims.sort((a, b) => b.chars - a.chars || a.path.localeCompare(b.path))
+  trims.sort((a, b) => b.chars - a.chars || cmpStr(a.path, b.path))
   trims.forEach((t, i) =>
     decisions.push(
       i < archiveCap
@@ -1281,7 +1307,7 @@ export function decide(
   })
   overCap.sort((x, y) => {
     const diff = (ageOf.get(y.d.path) ?? 0) - (ageOf.get(x.d.path) ?? 0)
-    return diff !== 0 ? diff : x.d.path.localeCompare(y.d.path)
+    return diff !== 0 ? diff : cmpStr(x.d.path, y.d.path)
   })
   for (const { d, i } of overCap.slice(archiveCap))
     decisions[i] = { kind: 'held', path: d.path, reason: `over the archive cap of ${archiveCap} this pass` }
@@ -1310,7 +1336,7 @@ export function decide(
       if (left <= topicCap) continue
       const candidates = topicNotes
         .filter(n => !decided.has(n.path) && !n.superseded && n.ageDays >= MERGE_AGE_DAYS)
-        .sort((a, b) => b.ageDays - a.ageDays || a.path.localeCompare(b.path))
+        .sort((a, b) => b.ageDays - a.ageDays || cmpStr(a.path, b.path))
       for (const n of candidates) {
         if (left <= topicCap) break
         decisions.push({
@@ -1332,7 +1358,8 @@ export function decide(
  * The first line is a header. Each later line reads `kind  path: reason`.
  * A dedupe decision names two notes, so its line reads `dedupe  a ~ b: reason` instead.
  * applyTiers() passes this to its caller through `opts.onPlan`, before it writes or removes anything.
- * The plan on disk then always matches what ran.
+ * The plan lists every decision, also a merge that applyTiers() later skips as unsafe.
+ * The skip is not in the plan: see `skipped`.
  */
 export function planLines(
   decisions: Decision[],
@@ -1381,7 +1408,7 @@ function overCapFrom(counts: Map<string, number>, cap: number): { topic: string;
   return [...counts]
     .filter(([, count]) => count > cap)
     .map(([topic, count]) => ({ topic, count }))
-    .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic))
+    .sort((a, b) => b.count - a.count || cmpStr(a.topic, b.topic))
 }
 
 /**
@@ -1403,7 +1430,7 @@ export function overCapTopics(dir: string, cap = envTopicCap()): { topic: string
 
 /** how many days of usage history the store holds: now minus the oldest note's newest recorded `at`.
  * 0 with no usage file, or when no entry ever recorded an `at` (claude-factory-503.2, AC2's guard). */
-function usageHistoryDays(dir: string, now: number, uses: Map<string, Use>): number {
+function usageHistoryDays(now: number, uses: Map<string, Use>): number {
   const ats = [...uses.values()].map(u => u.at).filter(at => at > 0)
   return ats.length ? (now - Math.min(...ats)) / DAY_MS : 0
 }
@@ -1487,9 +1514,14 @@ function rewriteReadmeLink(dir: string, topic: string, shortPath: string, target
  * block a merge forever (claude-factory-59r.21).
  */
 function longPreambleLoss(text: string): string {
+  const fm = text.startsWith(LONG_HEADER) ? null : /^---\n([\s\S]*?)\n---\n?/.exec(text)
   const body = text.startsWith(LONG_HEADER)
     ? text.slice(LONG_HEADER.length)
-    : text.replace(/^---\n[\s\S]*?\n---\n?/, '')
+    : fm
+      ? text.slice(fm[0].length)
+      : text
+  // formatLong writes only `tier: long`, so any other frontmatter line is lost on rewrite
+  const extra = (fm?.[1] ?? '').split('\n').filter(l => l.trim() && l.trim() !== 'tier: long')
   const lines = body.split('\n')
   let start = lines.length
   for (let i = 0; i < lines.length; i++) {
@@ -1498,7 +1530,7 @@ function longPreambleLoss(text: string): string {
       break
     }
   }
-  return lines.slice(0, start).join('\n').trim()
+  return [...extra, ...lines.slice(0, start)].join('\n').trim()
 }
 
 /**
@@ -1543,7 +1575,8 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
  * So that topic can still appear in `overCap`.
  *
  * `opts.onPlan`, when given, runs once with planLines(). It runs right after decide(), before any
- * write or rmSync, and on a dry run too. This way, the plan a caller logs always matches what ran.
+ * write or rmSync, and on a dry run too. The plan lists every decision, also a merge later skipped
+ * as unsafe. The skip itself is not in the plan: see `skipped`.
  *
  * `opts.untilDeps` (claude-factory-3u1.1.4) feeds untilStatus() for each short note's `until`
  * marker. applyTiers() always checks a date marker with untilStatus(). It checks a bead or PR
@@ -1566,7 +1599,7 @@ export function applyTiers(
   const { notes } = walk(dir)
   const uses = usage(dir)
   const events = usageEvents(dir)
-  const historyDays = usageHistoryDays(dir, now, uses)
+  const historyDays = usageHistoryDays(now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
   const topicCap = opts.topicCap ?? envTopicCap()
   const isDateUntil = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v)
@@ -1605,11 +1638,7 @@ export function applyTiers(
         activation: activation(events.get(n.path) ?? [], now),
         runs: 0, // promote needs a run count that applyTiers does not gather; it never promotes
         ageDays: Number.isFinite(atMs) ? (now - atMs) / DAY_MS : undefined,
-        // a summary with no room left for the pointer line cannot shrink: it gets no trim, or every pass would trim it again
-        chars:
-          n.summary.length + 3 + cutLine(n.path.slice(0, n.path.indexOf('/'))).length >= LONG_ENTRY_CAP
-            ? 0
-            : n.summary.length + 1 + n.body.length,
+        chars: n.summary.length + 1 + n.body.length,
         expired: verdict?.state === 'ended',
         expiredReason: verdict?.state === 'ended' ? verdict.reason : undefined,
         untilFlag: verdict?.state === 'unknown' ? verdict.reason : undefined,
@@ -1763,11 +1792,14 @@ export function applyTiers(
       copies.push(e)
       if (d.kind === 'trim') {
         const ptr = cutLine(topic)
-        const budget = LONG_ENTRY_CAP - e.summary.length - 1 - ptr.length - 2
-        let cut = e.body.slice(0, Math.max(budget, 0))
-        if (e.body.length > cut.length && e.body[cut.length] !== '\n' && cut.includes('\n'))
-          cut = cut.slice(0, cut.lastIndexOf('\n'))
-        kept.push({ ...e, body: `${cut.trimEnd()}\n\n${ptr}`.trim() })
+        // Cut a long summary too, so the entry ends under the cap. The archive keeps the full text.
+        const room = LONG_ENTRY_CAP - 1 - ptr.length
+        const summary = e.summary.length > room - 2 ? `${cut(e.summary, room - 3).trimEnd()}…` : e.summary
+        const budget = LONG_ENTRY_CAP - summary.length - 1 - ptr.length - 2
+        let part = cut(e.body, Math.max(budget, 0))
+        if (e.body.length > part.length && e.body[part.length] !== '\n' && part.includes('\n'))
+          part = part.slice(0, part.lastIndexOf('\n'))
+        kept.push({ ...e, summary, body: `${part.trimEnd()}\n\n${ptr}`.trim() })
         trimmed++
       } else if (d.kind === 'retire') retired++
       else archived++
@@ -1883,7 +1915,7 @@ export function skills(dir: string) {
     })
 }
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s).replace(/\s+/g, ' ')
+const clip = (s: string, n: number) => (s.length > n ? `${cut(s, n)}…` : s).replace(/\s+/g, ' ')
 /**
  * what the manager did, from its session transcripts: what it was asked (the person, or a patrol) and the
  * commands and skills it ran, one line each, after \`since\`. Also every skill's uses, all time: what the dream reaps by
@@ -1974,7 +2006,7 @@ export function failureClasses(journal: AttemptOutcome[]): FailureClass[] {
   }
   return [...groups.values()]
     .filter(g => g.runs.length >= FAILURE_RUNS)
-    .sort((a, b) => b.runs.length - a.runs.length || a.station.localeCompare(b.station))
+    .sort((a, b) => b.runs.length - a.runs.length || cmpStr(a.station, b.station))
 }
 /** every proposal the dream wrote, by name: its frontmatter and the first line of its change */
 export function proposals(dir: string) {
@@ -2118,11 +2150,13 @@ export function parseReview(answer: string): Pick<Review, 'recommendation' | 'wh
     throw new Error('recommendation must be exactly install or reject')
   if (typeof o.why !== 'string' || !o.why.trim()) throw new Error('why must be a non-empty string')
   // eslint-disable-next-line no-control-regex
-  const why = o.why
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300)
+  const why = cut(
+    o.why
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    300,
+  )
   return { recommendation: o.recommendation, why }
 }
 /** CORE.md without its first bullet that reads `line` (claude-factory-3u1.3.3) */

@@ -95,6 +95,88 @@ async function body(req: Request) {
   return raw.length > MAX_BODY ? null : raw
 }
 
+/** only the manager task can use these vault keys: they give full AX control or write access to the backup repo */
+const MANAGER_ONLY_KEYS = /(^|[^A-Za-z0-9_])(AX_AUTH|GITHUB_BASIC_MANAGER)([^A-Za-z0-9_]|$)/i
+const CREDENTIAL_URI = /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/[A-Z][A-Z0-9_]*$/
+
+const same = (a: unknown, b: unknown[]) => JSON.stringify(a) === JSON.stringify(b)
+const safeSegment = (x: string) => /^[A-Za-z0-9_.-]+$/.test(x) && x !== '.' && x !== '..'
+
+/**
+ * True for the one path rule that a worker policy can have on a github host. It gives the reviewer key on the
+ * GitHub API for one repo (/repos/<owner>/<repo>/) and for /graphql, which gh pr view, checks and review use.
+ * The grammar is closed. The broker refuses any other key, host, path or header.
+ */
+function reviewerApiRule(o: Record<string, unknown>): boolean {
+  if (!same(Object.keys(o).sort(), ['effects', 'hostnames', 'pathPrefixes', 'paths'])) return false
+  const hosts = o.hostnames
+  if (
+    !Array.isArray(hosts) ||
+    !hosts.length ||
+    hosts.some(h => h !== 'api.github.com' && h !== 'uploads.github.com')
+  )
+    return false
+  const p = Array.isArray(o.pathPrefixes) && o.pathPrefixes.length === 1 ? o.pathPrefixes[0] : null
+  const m = typeof p === 'string' && /^\/repos\/([^/]+)\/([^/]+)\/$/.exec(p)
+  if (!m || !safeSegment(m[1]!) || !safeSegment(m[2]!) || !same(o.paths, ['/graphql'])) return false
+  const e = o.effects as Record<string, unknown> | null
+  if (!e || typeof e !== 'object' || !same(Object.keys(e), ['replaceHeaders'])) return false
+  const r = e.replaceHeaders
+  if (!Array.isArray(r) || r.length !== 1 || !r[0] || typeof r[0] !== 'object') return false
+  const h = r[0] as Record<string, unknown>
+  return (
+    same(Object.keys(h).sort(), ['credentialUri', 'header', 'prefix']) &&
+    h.header === 'Authorization' &&
+    h.prefix === 'Bearer ' &&
+    typeof h.credentialUri === 'string' &&
+    /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/GITHUB_REVIEWER$/.test(h.credentialUri)
+  )
+}
+
+/**
+ * The reason the broker refuses a worker policy, or null. A worker policy must not name a manager-only
+ * vault key or have a pathPrefixes or paths rule (except reviewerApiRule) on a hostname pattern that can match a github host (github.com,
+ * *.github.com, and the Substrate patterns * and *.com). Those belong to the manager policy. Substrate ignores key
+ * case and underscores, and it folds some non-ASCII letters. So a key with a non-ASCII character fails closed.
+ */
+export function workerPolicyRefusal(policy: unknown): string | null {
+  const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
+  const walk = (v: unknown, depth: number): string | null => {
+    if (depth > 32) return 'is nested too deep'
+    if (typeof v === 'string') {
+      const m = MANAGER_ONLY_KEYS.exec(v)
+      return m ? `names manager-only vault key ${m[2]!.toUpperCase()}` : null
+    }
+    if (!v || typeof v !== 'object') return null
+    const o = v as Record<string, unknown>
+    const keys = Array.isArray(v) ? [] : Object.keys(o)
+    for (const k of keys) {
+      if (/[^\x20-\x7e]/.test(k)) return 'has a key with a non-ASCII character'
+      const bad = walk(k, depth + 1)
+      if (bad) return bad
+      if (norm(k) === 'credentialuri' && !(typeof o[k] === 'string' && CREDENTIAL_URI.test(o[k] as string)))
+        return 'has a credentialUri that is not an ate-secret://agent-vault/<vault>/<KEY> string'
+      if (norm(k) === 'pathprefixes' || norm(k) === 'paths') {
+        const h = keys.find(x => norm(x) === 'hostnames')
+        const hosts = h === undefined ? null : o[h]
+        if (!Array.isArray(hosts) || !hosts.length || hosts.some(x => typeof x !== 'string'))
+          return 'has a path rule without a list of hostnames'
+        if (
+          hosts.some(x => /^(\*|\*\.com|(.*\.)?github\.com)$/.test(x.toLowerCase().replace(/\.$/, ''))) &&
+          !reviewerApiRule(o)
+        )
+          return 'has a path rule on a github host'
+      }
+    }
+    for (const x of Array.isArray(v) ? v : Object.values(o)) {
+      const bad = walk(x, depth + 1)
+      if (bad) return bad
+    }
+    return null
+  }
+  return walk(policy, 0)
+}
+
 /** a policy that is not a JSON object with a rules array is not made */
 function policyText(raw: string) {
   try {
@@ -161,8 +243,8 @@ export async function handle(req: Request, c: Config): Promise<Response> {
       const p = await c.run(c.swap!, undefined, true)
       // the first line only: the script prints "slot N is live", and a token must never leave in a response
       if (p.code === 0) return text(200, firstLine(p.out) + '\n')
-      // the caller is not authenticated and op's stderr is not ours: log it, answer with a fixed body
-      console.error(`token swap failed: ${firstLine(p.err)}`)
+      // op's stderr can echo the token from argv: log the exit code only, answer with a fixed body
+      console.error(`token swap failed: exit ${p.code}`)
       return text(502, 'token swap failed\n')
     } finally {
       swapping = false
@@ -180,6 +262,8 @@ export async function handle(req: Request, c: Config): Promise<Response> {
   if (raw === null) return text(413, 'body too large\n')
   const policy = policyText(raw)
   if (!policy) return text(400, 'body is not an EgressPolicy (a JSON object with rules)\n')
+  const why = workerPolicyRefusal(JSON.parse(policy))
+  if (why) return text(400, `policy refused: it ${why}\n`)
   // ponytail: delete then create, so a repeat is not an error; the actor has no policy for a moment between them.
   // Replacing in place (update egress-policy) needs the stored version; not worth it for one writer
   await c.run([...c.ate, 'delete', 'egress-policy', ...target])

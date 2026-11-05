@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
+import * as broker from './broker'
 import { vmCodexHome } from './cli'
 import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
@@ -209,7 +210,7 @@ test('with a vault named, the task sends placeholder auth headers for the gatewa
 const keyOf = (r: { https: { effects?: { replaceHeaders: { credentialUri: string }[] } } }) =>
   r.https.effects!.replaceHeaders[0]!.credentialUri.split('/').at(-1)
 
-test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones keep the default keys', () => {
+test('the manager policy has the path-prefixed zach-source rules; the unprefixed ones keep the default keys', () => {
   type R = {
     https: {
       hostnames: string[]
@@ -217,7 +218,9 @@ test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones 
       effects?: { replaceHeaders: { header: string; prefix: string; credentialUri: string }[] }
     }
   }
-  const rules = ax.egressPolicy('factory').rules as R[]
+  const rules = ax.egressPolicy('factory', [], undefined, undefined, undefined, undefined, false, true)
+    .rules as R[]
+  expect(rules.filter(r => r.https.pathPrefixes)).toHaveLength(2)
   const zsGit = rules.find(r => r.https.pathPrefixes?.[0] === '/zach-source/')!
   expect(zsGit.https).toEqual({
     hostnames: ['github.com'],
@@ -258,7 +261,26 @@ test('path-prefixed GitHub rules pick the zach-source keys; the unprefixed ones 
         seen.add(`${h} ${p}`)
       }
   // no vault: no prefixed rule
-  expect(JSON.stringify(ax.egressPolicy(''))).not.toContain('pathPrefixes')
+  expect(
+    JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, undefined, false, true)),
+  ).not.toContain('pathPrefixes')
+  // a manager with its own backup key gets the REST prefixed rule but no github.com one
+  const own = JSON.stringify(
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true),
+  )
+  expect(own).toContain('/repos/zach-source/')
+  expect(own).not.toContain('"/zach-source/"')
+})
+
+test('a worker policy has no path-prefixed rule, whatever the rig owner', () => {
+  for (const owner of ['acme', 'zach-source', undefined]) {
+    const json = JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, owner))
+    expect(json).not.toContain('pathPrefixes')
+    expect(json).not.toContain('/zach-source/')
+  }
+  expect(JSON.stringify(ax.egressPolicy('factory', [], undefined, undefined, 'acme'))).not.toContain(
+    'GITHUB_ZS',
+  )
 })
 
 test('a worker of a zach-source rig gets the zach-source keys on the unprefixed GitHub rules', () => {
@@ -271,37 +293,85 @@ test('a worker of a zach-source rig gets the zach-source keys on the unprefixed 
   expect(plainKeys()).toEqual(['GITHUB', 'GITHUB_BASIC'])
 })
 
-test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else changes', () => {
-  const keys = (owner?: string, reviewer?: boolean) =>
-    (ax.egressPolicy('v', [], undefined, undefined, owner, undefined, reviewer).rules as any[])
-      .filter(r => /github\.com/.test(r.https.hostnames[0]))
-      .map(r => [r.https.pathPrefixes?.[0] ?? '', keyOf(r)])
-  expect(keys('acme', true)).toEqual([
-    ['', 'GITHUB_REVIEWER'],
-    ['', 'GITHUB_BASIC'],
-    ['/repos/zach-source/', 'GITHUB_ZS'],
-    ['/zach-source/', 'GITHUB_ZS_BASIC'],
-  ])
-  expect(keys('zach-source', true)).toEqual([
-    ['', 'GITHUB_REVIEWER'],
-    ['', 'GITHUB_ZS_BASIC'],
-    ['/repos/zach-source/', 'GITHUB_REVIEWER'],
-    ['/zach-source/', 'GITHUB_ZS_BASIC'],
-  ])
-  expect(keys('acme', true).slice(2)).toEqual(keys('acme', false).slice(2))
-  expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
-  expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
-    ax.egressPolicy('v', [], undefined, undefined, 'acme'),
-  )
+test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER on the rig repo and /graphql only', () => {
+  const pol = (owner?: string, reviewer?: boolean, repo = 'widget') =>
+    ax.egressPolicy('v', [], undefined, undefined, owner, undefined, reviewer, false, repo)
+  const gh = (owner?: string, reviewer?: boolean) =>
+    (pol(owner, reviewer).rules as any[]).filter(r => /github\.com/.test(r.https.hostnames[0]))
+  for (const o of ['acme', 'zach-source']) {
+    const rules = gh(o, true)
+    expect(rules.map(keyOf)).toEqual(['GITHUB_REVIEWER', 'GITHUB_REVIEWER_BASIC'])
+    expect(rules[0]).toEqual({
+      https: {
+        hostnames: ['api.github.com', 'uploads.github.com'],
+        pathPrefixes: [`/repos/${o}/widget/`],
+        paths: ['/graphql'],
+        effects: {
+          replaceHeaders: [
+            {
+              header: 'Authorization',
+              prefix: 'Bearer ',
+              credentialUri: 'ate-secret://agent-vault/v/GITHUB_REVIEWER',
+            },
+          ],
+        },
+      },
+    })
+    expect(rules[1].https.pathPrefixes).toBeUndefined()
+    expect(rules[1].https.paths).toBeUndefined()
+    expect(JSON.stringify(pol(o, true))).not.toMatch(/GITHUB_(ZS_)?BASIC/)
+    expect(JSON.stringify(pol(o, true)).match(/GITHUB_REVIEWER"/g)).toHaveLength(1)
+  }
+  expect(keyOf(gh('acme', false)[1])).toBe('GITHUB_BASIC')
+  expect(keyOf(gh('zach-source', false)[1])).toBe('GITHUB_ZS_BASIC')
+  expect(keyOf(gh('acme', false)[0])).toBe('GITHUB')
+  for (const r of gh('acme', false)) expect(r.https.pathPrefixes ?? r.https.paths).toBeUndefined()
+  expect(pol('acme', false)).toEqual(ax.egressPolicy('v', [], undefined, undefined, 'acme'))
   expect(ax.egressPolicy('', [], undefined, undefined, 'acme', undefined, true)).toEqual(ax.egressPolicy(''))
   expect(
     JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
   ).not.toContain('REVIEWER')
 })
 
+test('a reviewer policy needs a plain owner and repo: egressPolicy and createPolicy throw, createPolicy runs nothing', () => {
+  const bad: [string | undefined, string | undefined][] = [
+    ['acme', undefined],
+    ['acme', ''],
+    ['acme', '.'],
+    ['acme', '..'],
+    ['acme', 'a/b'],
+    ['acme', 'a?b'],
+    ['acme', 'a%2fb'],
+    ['acme', 'wid get'],
+    ['acme', 'widget/'],
+    [undefined, 'widget'],
+  ]
+  const env = { FACTORY_AX_VAULT: 'v', FACTORY_AX_REVIEWER_OWNER: 'acme' }
+  process.env.FACTORY_AX_VAULT = 'v'
+  try {
+    for (const [o, r] of bad) {
+      expect(() => ax.egressPolicy('v', [], undefined, undefined, o, undefined, true, false, r)).toThrow(
+        /owner and repo/,
+      )
+      rmSync(join(dir, 'calls.log'), { force: true })
+      expect(() => ax.createPolicy('t5', [], undefined, o, undefined, true, false, r)).toThrow(
+        /owner and repo/,
+      )
+      expect(existsSync(calls)).toBe(false)
+      expect(ax.reviewerTask('review', o, env, false, r)).toBe(false)
+    }
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+  expect(() =>
+    ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, true, false, '.github'),
+  ).not.toThrow()
+})
+
 test('reviewerTask is true only for review, security and check with the vault and a matching owner flag', () => {
   const env = { FACTORY_AX_VAULT: 'v', FACTORY_AX_REVIEWER_OWNER: 'acme' }
-  for (const n of ['review', 'security', 'check']) expect(ax.reviewerTask(n, 'acme', env)).toBe(true)
+  for (const n of ['review', 'security', 'check'])
+    expect(ax.reviewerTask(n, 'acme', env, false, 'widget')).toBe(true)
   for (const n of [
     'implement',
     'plan',
@@ -319,14 +389,18 @@ test('reviewerTask is true only for review, security and check with the vault an
   expect(ax.reviewerTask('review', 'acme', { ...env, FACTORY_AX_REVIEWER_OWNER: '' })).toBe(false)
   expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_VAULT: 'v' })).toBe(false)
   expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_REVIEWER_OWNER: 'acme' })).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', env, true)).toBe(false)
+  expect(ax.reviewerTask('check', 'acme', env, true)).toBe(false)
+  expect(ax.reviewerTask('review', 'acme', env, false, 'widget')).toBe(true)
 })
 
 test('createPolicy passes the reviewer flag to the policy', () => {
   process.env.FACTORY_AX_VAULT = 'factory'
   try {
     writeFileSync(join(dir, 'actor'), '')
-    ax.createPolicy('t4', [], undefined, 'acme', undefined, true)
+    ax.createPolicy('t4', [], undefined, 'acme', undefined, true, false, 'widget')
     expect(readFileSync(join(dir, 'policy'), 'utf8')).toContain('factory/GITHUB_REVIEWER')
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).toContain('/repos/acme/widget/')
   } finally {
     delete process.env.FACTORY_AX_VAULT
   }
@@ -340,6 +414,17 @@ test('createPolicy passes the rig owner to the policy', () => {
     expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(
       ax.egressPolicy('factory', [], undefined, undefined, 'zach-source'),
     )
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
+test('createPolicy gives a worker no prefixed rule', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t5', [], undefined, 'acme')
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).not.toContain('pathPrefixes')
   } finally {
     delete process.env.FACTORY_AX_VAULT
   }
@@ -381,10 +466,26 @@ test('the manager has its own github.com vault key when a backup remote is set; 
   )
   expect(ax.managerGithubKey({})).toBe('GITHUB_BASIC')
   const mgr = JSON.stringify(
-    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER').rules,
+    ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
+      .rules,
   )
-  expect(mgr).not.toContain('GITHUB_ZS')
-  expect(mgr).not.toContain('pathPrefixes')
+  expect(mgr).not.toContain('GITHUB_ZS_BASIC')
+  const rows = ax
+    .egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
+    .rules.filter((r: any) => r.https.hostnames.some((h: string) => h.endsWith('github.com')))
+    .map((r: any) => [
+      r.https.hostnames,
+      r.https.pathPrefixes ?? [''],
+      r.https.effects.replaceHeaders[0].credentialUri.split('/').pop(),
+    ])
+  expect(rows).toEqual([
+    [['api.github.com', 'uploads.github.com'], [''], 'GITHUB'],
+    [['github.com'], [''], 'GITHUB_BASIC_MANAGER'],
+    [['api.github.com', 'uploads.github.com'], ['/repos/zach-source/'], 'GITHUB_ZS'],
+  ])
+  expect(
+    JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
+  ).not.toContain('pathPrefixes')
 })
 
 test("a task's phase is read from ax get, and a deleted task has none", () => {
@@ -424,6 +525,13 @@ test('poll, prompt and put run as the worker user over ax ssh, the prompt base64
     `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker prompt ${Buffer.from('-a sneaky').toString('base64')}`,
     `-a factory ssh t -- ${AS_WORKER.join(' ')} factory worker put brief.md 0 1 aGVsbG8=`,
   ])
+})
+
+test('a VM that prints past the 128 MiB cap fails the call instead of filling laptop memory (claude-factory-cmw9)', () => {
+  writeFileSync(join(dir, 'ssh'), Buffer.alloc(130 * 1024 * 1024, 'a'))
+  expect(() => ax.poll('t', 0)).toThrow('ax ssh t')
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'idle', lines: [] }))
+  expect(ax.poll('t', 0).status).toBe('idle')
 })
 
 test("ax.prompt keeps its base64 argv under Linux's 131072-byte MAX_ARG_STRLEN: a long mail is clipped by bytes, never split mid-character (claude-factory-kcg.3)", () => {
@@ -1163,6 +1271,40 @@ test('setup trusts the CA and clones the branch once, retrying while egress is c
   }
 })
 
+// claude-factory-nebs: a Bazel repo on a rig with no FACTORY_BAZELRC still needs the gateway CA in Bazel's JVM
+test('setup writes the CA trust store to ~/.bazelrc for a Bazel repo with no FACTORY_BAZELRC', async () => {
+  const own = join(dir, 'nebs-own')
+  const repo = join(dir, 'nebs-repo')
+  const home = join(dir, 'nebs-home')
+  for (const d of [own, home, join(repo, '.git')]) mkdirSync(d, { recursive: true })
+  const keytool = join(dir, 'nebs-keytool')
+  writeFileSync(keytool, '#!/bin/sh\nfor a; do [ "$p" = -keystore ] && : > "$a"; p=$a; done\n', {
+    mode: 0o755,
+  })
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    HOME: home,
+    FACTORY_KEYTOOL: keytool,
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CA: 'CA-PEM',
+  })
+  delete process.env.FACTORY_BAZELRC
+  delete process.env.FACTORY_REPO
+  try {
+    // not a Bazel repo: no rc, and no keytool run
+    await worker.setup({ tries: 1, waitMs: 0 })
+    expect(existsSync(join(home, '.bazelrc'))).toBe(false)
+    writeFileSync(join(repo, 'MODULE.bazel'), '')
+    await worker.setup({ tries: 1, waitMs: 0 })
+    const rc = readFileSync(join(home, '.bazelrc'), 'utf8').split('\n')
+    expect(rc[0]).toBe(`common --tls_certificate=${join(own, 'egress-ca.crt')}`)
+    expect(rc[1]).toContain(`-Djavax.net.ssl.trustStore=${join(own, 'egress.jks')}`)
+  } finally {
+    process.env = saved
+  }
+})
+
 // an origin with main (and, when withBranch, factory/r1 one commit later); env for a setup() clone of factory/r1
 function cloneFixture(name: string, withBranch: boolean) {
   const origin = join(dir, `${name}-origin.git`)
@@ -1211,6 +1353,18 @@ test('setup: a run branch that is missing on origin does not fail; it clones the
     expect(note).toContain('your run branch factory/r1 is missing on origin')
     expect(f.head()).toEqual({ branch: 'factory/r1', sha: f.mainSha })
     expect(readFileSync(join(f.repo, '.git', 'info', 'exclude'), 'utf8')).toContain('.scratch')
+  } finally {
+    process.env = saved
+  }
+})
+
+test('setup: a restart before the first turn gives the missing-branch note again (claude-factory-awwj)', async () => {
+  const saved = { ...process.env }
+  cloneFixture('miss2', false)
+  try {
+    const first = await worker.setup({ tries: 1, waitMs: 0 })
+    expect(first).toContain('your run branch factory/r1 is missing on origin')
+    expect(await worker.setup({ tries: 1, waitMs: 0 })).toBe(first)
   } finally {
     process.env = saved
   }
@@ -1297,6 +1451,8 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
     // claude-factory-hg9o: the image's worker rules (no /opt/plugins here, so no --skill)
     ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-system\.md$/)],
+    // claude-factory-66ib: the VM-only lines
+    ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-vm\.md$/)],
     ...['--provider', 'anthropic', '--model', 'm'],
   ])
   expect(worker.turnArgv('claude', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
@@ -1399,6 +1555,49 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
   }
 })
 
+test('a codex worker re-checks the guard before each turn and fails closed if a turn dropped it', async () => {
+  const own = join(dir, 'own3b')
+  const repo = join(dir, 'repo3b')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const gone = join(dir, 'pin-gone')
+  const execLog = join(dir, 'codex-pin.log')
+  const codex = join(dir, 'codex-pin')
+  writeFileSync(
+    codex,
+    `#!/bin/sh
+case "$*" in *'features list') if [ -f ${gone} ]; then printf 'hooks stable true\\nunified_exec stable true\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; else printf 'hooks stable true\\nunified_exec stable false\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; fi; exit;; esac
+echo "$*" >> ${execLog}
+cat > /dev/null
+touch ${gone}
+echo '{"type":"thread.started","thread_id":"th-1"}'
+`,
+  )
+  chmodSync(codex, 0o755)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: codex,
+    FACTORY_BRIEF: 'codex brief',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CODEX_HOME: join(own, 'codex'),
+    FACTORY_CODEX_HOME_FILES: '{}',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  try {
+    worker.prompt(Buffer.from('more').toString('base64'))
+    await expect(worker.serve('o3', { once: true })).rejects.toThrow('unified_exec is not off')
+    expect(readFileSync(execLog, 'utf8').trim().split('\n')).toHaveLength(1)
+    expect(readdirSync(join(own, 'prompts'))).toHaveLength(1)
+    expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('serve died')
+  } finally {
+    process.env = saved
+  }
+})
+
 test('a pi worker names its own session and keeps it across turns', async () => {
   const own = join(dir, 'own4')
   const repo = join(dir, 'repo4')
@@ -1432,7 +1631,7 @@ cat > ${dir}/pi.stdin.$n
     const id = worker.poll(0).session!
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     // no prompt text on argv: it goes on stdin
-    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')}`
+    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')} --append-system-prompt ${join(import.meta.dir, 'worker-vm.md')}`
     expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(readFileSync(join(dir, 'pi.stdin.0'), 'utf8')).toBe('pi brief')
@@ -1480,6 +1679,27 @@ test('the AWS broker egress rule sends the vault key as the raw Authorization va
   expect(ax.createPolicy('aws-1', [rule])).toBeBoolean() // the policy builds without a refusal
 })
 
+test('the documented AWS broker egress rule pins one account with pathPrefixes (claude-factory-oibg)', () => {
+  const doc = readFileSync(join(import.meta.dir, '..', 'docs', 'remote-runner.md'), 'utf8')
+  const line = doc.split('\n').find(l => l.includes('**Egress for the broker**')) ?? ''
+  const json = /`(\{"hosts":[^`]*\})`/.exec(line)?.[1] ?? ''
+  expect(json).not.toBe('')
+  const host = 'aws-broker.factory-aws.svc.cluster.local'
+  const rule = JSON.parse(json.replace('<broker host>', host).replace('<account>', 'acme'))
+  const policy = ax.egressPolicy('v', [rule])
+  const found = policy.rules.find(r => r.https?.hostnames?.includes(host))
+  expect((found?.https as { pathPrefixes?: unknown }).pathPrefixes).toEqual(['/v1/aws/acme/'])
+  expect((found?.https as { ports?: unknown }).ports).toEqual({ numbers: [8443] })
+  expect((found?.https as { effects?: { replaceHeaders: unknown } }).effects?.replaceHeaders).toEqual([
+    { header: 'Authorization', prefix: '', credentialUri: 'ate-secret://agent-vault/v/AWS_BROKER' },
+  ])
+  expect(broker.workerPolicyRefusal(policy)).toBeNull()
+  // the code adds no prefix by itself
+  const bare = ax.egressPolicy('v', [{ ...rule, pathPrefixes: undefined }])
+  const open = bare.rules.find(r => r.https?.hostnames?.includes(host))
+  expect(open?.https).not.toHaveProperty('pathPrefixes')
+})
+
 test('the task env holds only a placeholder AWS container token, and only with the broker URI (claude-factory-5n22)', () => {
   const uri = 'https://aws-broker.factory-aws.svc.cluster.local/creds'
   const rows: [Record<string, string>, string | undefined][] = [
@@ -1517,7 +1737,7 @@ test('a rig egress rule on another port names it, as a Dolt remotesapi needs', (
     prefix: 'Basic ',
     port: 50051,
   }
-  expect(ax.egressPolicy('factory', [dolt]).rules[7]).toEqual({
+  expect(ax.egressPolicy('factory', [dolt]).rules[5]).toEqual({
     https: {
       hostnames: ['dolt.example.com'],
       ports: { numbers: [50051] },
@@ -1541,8 +1761,8 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
     { https: { hostnames: ['pypi.org', 'files.pythonhosted.org'] } },
   ])
   const rules = ax.egressPolicy('factory', extra).rules
-  expect(rules).toHaveLength(9)
-  expect(rules[7]!.https).toEqual({
+  expect(rules).toHaveLength(7)
+  expect(rules[5]!.https).toEqual({
     hostnames: ['api.openai.com'],
     effects: {
       replaceHeaders: [
@@ -1554,13 +1774,13 @@ test("a rig's egress rules follow the defaults, injected only from a named vault
       ],
     },
   })
-  expect(rules[8]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
+  expect(rules[6]!.https).toEqual({ hostnames: ['pypi.org', 'files.pythonhosted.org'] }) // no key: no injection
 })
 
 test('unset, FACTORY_AX_PKG_GATE leaves egressPolicy byte-identical to today, registry hosts and all', () => {
   const extra = [ax.parseEgress('proxy.golang.org,sum.golang.org'), ax.parseEgress('pypi.org,api.openai.com')]
   expect(ax.egressPolicy('factory', extra, undefined)).toEqual(ax.egressPolicy('factory', extra))
-  expect(ax.egressPolicy('factory', extra).rules.slice(7)).toEqual([
+  expect(ax.egressPolicy('factory', extra).rules.slice(5)).toEqual([
     { https: { hostnames: ['proxy.golang.org', 'sum.golang.org'] } },
     { https: { hostnames: ['pypi.org', 'api.openai.com'] } },
   ])
@@ -2027,6 +2247,10 @@ test('launchManager applies the manager task with its command and env, then retr
     const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
     expect(task.metadata).toEqual({ name: 'f-manager', atespace: 'factory' })
     expect(task.spec.image).toBe('mgr@sha256:abc')
+    const prefixed = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.flatMap(
+      (x: any) => x.https?.pathPrefixes ?? [],
+    )
+    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/'])
     expect(task.spec.debug).toBe(true)
     expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
     const env = Object.fromEntries(
@@ -2060,6 +2284,16 @@ test('launchManager applies the manager task with its command and env, then retr
   } finally {
     process.env = saved
   }
+})
+
+test('managerEnv passes the OTLP endpoints only when set', () => {
+  const both = {
+    FACTORY_OTLP_ENDPOINT: 'http://otel.example:4318',
+    FACTORY_AX_OTLP_ENDPOINT: 'http://otel.svc:4318',
+  }
+  expect(ax.managerEnv(both)).toMatchObject(both)
+  expect('FACTORY_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
+  expect('FACTORY_AX_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
 })
 
 test('managerEnv sets the token swap to a broker POST only when the broker is set', () => {
@@ -2222,6 +2456,12 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
     expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+    )
+    // claude-factory-66ib: worker-system.md, then worker-vm.md, then worker-codex.md
+    expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toBe(
+      ['worker-system.md', 'worker-vm.md', 'worker-codex.md']
+        .map(f => readFileSync(join(import.meta.dir, f), 'utf8'))
+        .join(''),
     )
     expect(readFileSync(join(tmp, 'argv'), 'utf8').trim().split('\n')).toEqual([
       ...CODEX_GUARD_FLAGS,
@@ -2427,6 +2667,37 @@ test('createPolicy refuses a manager-only vault key in a policy for any task but
   }
 })
 
+test('createPolicy refuses manager=true for any task but the manager task', () => {
+  const saved = { ...process.env }
+  try {
+    process.env.FACTORY_AX_VAULT = 'v1'
+    delete process.env.FACTORY_POLICY_BROKER
+    delete process.env.FACTORY_AX_MANAGER
+    writeFileSync(join(dir, 'actor'), '')
+    const asManager = (task: string) => () =>
+      ax.createPolicy(task, [], undefined, 'acme', undefined, false, true)
+    rmSync(calls, { force: true })
+    expect(asManager('t9')).toThrow('t9')
+    expect(existsSync(calls)).toBe(false)
+    process.env.FACTORY_POLICY_BROKER = 'http://broker.example.svc:8080'
+    expect(asManager('t9')).toThrow('t9')
+    expect(existsSync(calls)).toBe(false)
+    delete process.env.FACTORY_POLICY_BROKER
+    delete process.env.FACTORY_AX_VAULT
+    expect(asManager('t9')).toThrow('t9')
+    expect(existsSync(calls)).toBe(false)
+    process.env.FACTORY_AX_VAULT = 'v1'
+    process.env.FACTORY_AX_MANAGER = 'm9'
+    expect(asManager('f-manager')).toThrow('f-manager')
+    expect(asManager('m9')()).toBe(true)
+    delete process.env.FACTORY_AX_MANAGER
+    expect(asManager(ax.managerTask())()).toBe(true)
+    expect(ax.createPolicy('t9', [], undefined, 'acme')).toBe(true)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('the host ax call inherits AX_AUTH_TOKEN, and the fake records only whether it is set', () => {
   const saved = process.env.AX_AUTH_TOKEN
   try {
@@ -2481,4 +2752,172 @@ test('diedText puts the message on one line, newlines as " | ", before a clipped
   expect(rest.join('\n').length).toBeLessThanOrEqual(1200)
   expect(worker.diedText('plain')).toBe('serve died: plain\n')
   expect(worker.diedText(new Error('x'.repeat(900))).split('\n')[0]?.length).toBe('serve died: '.length + 500)
+})
+
+// Substrate caps a Task's env at 32 and AX adds 2 of its own: more than 30 entries pack into FACTORY_VM_ENV
+const taskEnv = () => {
+  const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+  const flat = Object.fromEntries(
+    task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+  )
+  const packed: string | undefined = flat.FACTORY_VM_ENV
+  return {
+    names: task.spec.env.map((e: { name: string }) => e.name) as string[],
+    packed,
+    effective: { ...flat, ...JSON.parse(packed ?? '{}') } as Record<string, string>,
+  }
+}
+const flatEnv = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`E${i}`, `v${i}`]))
+function withEnv(vars: Record<string, string>, fn: () => void) {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, vars)
+    fn()
+  } finally {
+    process.env = saved
+  }
+}
+const wcRows: [string, Partial<ax.Launch>][] = [
+  ['claude', {}],
+  ['codex apikey', { harness: 'codex', codexAuth: 'apikey' }],
+  ['codex chatgpt', { harness: 'codex', codexAuth: 'chatgpt' }],
+  ['pi', { harness: 'pi', provider: 'openai' }],
+]
+for (const [name, extra] of wcRows)
+  test(`worst-case ${name} launch: at most 30 spec.env entries, the effective env is whole, no real secret`, () => {
+    withEnv(
+      {
+        FACTORY_AX_VAULT: 'factory',
+        FACTORY_AX_PKG_GATE: 'http://gate.example:8080',
+      },
+      () => {
+        ax.launch({
+          name: 'f-wc',
+          repo: 'r',
+          branch: 'b',
+          image: 'i',
+          brief: 'do it',
+          gitlabHost: 'gitlab.example.com',
+          env: {
+            ...flatEnv(25),
+            AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/creds',
+            AWS_CONTAINER_AUTHORIZATION_TOKEN: 'zqsecret',
+          },
+          codexHome: { 'auth.json': 'x' },
+          ...extra,
+        })
+        const { names, packed, effective } = taskEnv()
+        expect(names.length).toBeLessThanOrEqual(30)
+        expect(new Set(names).size).toBe(names.length)
+        expect(packed).toBeDefined()
+        expect(Buffer.byteLength(packed!)).toBeLessThan(32768)
+        expect(effective).toMatchObject({
+          ...flatEnv(25),
+          FACTORY_CA: 'CA-PEM',
+          FACTORY_BRIEF: 'do it',
+          FACTORY_REPO: 'r',
+          FACTORY_BRANCH: 'b',
+          FACTORY_HARNESS: extra.harness ?? 'claude',
+          FACTORY_OUTBOX: '/workspace/w/.factory-worker/outbox.jsonl',
+          GH_TOKEN: 'placeholder',
+          GIT_CONFIG_COUNT: '2',
+          GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+          GIT_CONFIG_VALUE_0: 'Authorization: Basic placeholder',
+          GITLAB_TOKEN: 'placeholder',
+          GITLAB_HOST: 'gitlab.example.com',
+          GIT_CONFIG_KEY_1: 'http.https://gitlab.example.com/.extraHeader',
+          GIT_CONFIG_VALUE_1: 'Authorization: Basic placeholder',
+          GOPROXY: 'http://gate.example:8080/go',
+          NPM_CONFIG_REGISTRY: 'http://gate.example:8080/npm/',
+          PIP_TRUSTED_HOST: 'gate.example',
+          UV_INSECURE_HOST: 'gate.example',
+          YARN_UNSAFE_HTTP_WHITELIST: 'gate.example',
+          AWS_CONTAINER_AUTHORIZATION_TOKEN: 'placeholder',
+          FACTORY_CODEX_HOME_FILES: '{"auth.json":"x"}',
+        })
+        expect(JSON.stringify(effective)).not.toContain('zqsecret')
+        const claude = (extra.harness ?? 'claude') === 'claude'
+        expect(effective.CLAUDE_CODE_OAUTH_TOKEN).toBe(claude ? 'placeholder' : undefined)
+        expect(effective.OPENAI_API_KEY).toBe(extra.codexAuth === 'apikey' ? 'placeholder' : undefined)
+        // the manifest-level keys stay flat: an image without vm-env still reads them
+        for (const k of [
+          'FACTORY_OUTBOX',
+          'FACTORY_REPO',
+          'FACTORY_BRANCH',
+          'FACTORY_BRIEF',
+          'FACTORY_HARNESS',
+        ])
+          expect(names).toContain(k)
+        expect(names).toContain('FACTORY_CODEX_HOME_FILES')
+        expect(JSON.parse(packed!).FACTORY_CODEX_HOME_FILES).toBeUndefined()
+      },
+    )
+  })
+
+test('no vault and no gate: no FACTORY_VM_ENV and the flat env as before', () => {
+  ax.launch({ name: 'f-n', repo: 'r', branch: 'b', image: 'i', brief: 'x', env: { FACTORY_FROM: 'plan' } })
+  const { names, packed } = taskEnv()
+  expect(packed).toBeUndefined()
+  expect(names).toEqual([
+    'FACTORY_FROM',
+    'FACTORY_CA',
+    'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+    'FACTORY_OUTBOX',
+    'FACTORY_REPO',
+    'FACTORY_BRANCH',
+    'FACTORY_BRIEF',
+    'FACTORY_HARNESS',
+  ])
+})
+
+test('a merged env of exactly 30 stays flat; 31 packs', () => {
+  const base = { name: 'f-b', repo: 'r', branch: 'b', image: 'i', brief: 'x' }
+  // launch adds 2 and manifest adds 5 on top of l.env: 23 in l.env gives 30
+  ax.launch({ ...base, env: flatEnv(23) })
+  expect(taskEnv().names.length).toBe(30)
+  expect(taskEnv().packed).toBeUndefined()
+  ax.launch({ ...base, env: flatEnv(24) })
+  expect(taskEnv().names.length).toBeLessThan(30)
+  expect(taskEnv().packed).toBeDefined()
+  expect(Object.keys(taskEnv().effective).length).toBe(24 + 2 + 5 + 1) // +1: FACTORY_VM_ENV itself
+})
+
+test('the manager task over 30 entries keeps only FACTORY_VM_ENV flat and the same effective env', () => {
+  withEnv(
+    { FACTORY_MAX_RUNS: '16', FACTORY_AX_VAULT: 'v1', FACTORY_AX_PKG_GATE: 'http://gate.example:8080' },
+    () => {
+      ax.launch({ name: 'f-manager', image: 'i', command: ['factory', 'manager', 'host'], env: flatEnv(30) })
+      const { names, effective } = taskEnv()
+      expect(names).toEqual(['FACTORY_VM_ENV'])
+      expect(effective).toMatchObject({
+        ...flatEnv(30),
+        GH_TOKEN: 'placeholder',
+        GOPROXY: 'http://gate.example:8080/go',
+      })
+    },
+  )
+})
+
+test('the real manager launch stays within 30 entries with every optional var set', async () => {
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_MAX_RUNS: '16',
+      FACTORY_AX_VAULT: 'v1',
+      FACTORY_AX_PKG_GATE: 'http://gate.example:8080',
+      FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8080',
+      FACTORY_AX_MANAGER_ROUTER: 'http://router.example.svc',
+      FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
+    })
+    await ax.launchManager('mgr@sha256:abc', [], [], { waitMs: 0 })
+    const { names, effective } = taskEnv()
+    expect(names.length).toBeLessThanOrEqual(30)
+    expect(effective).toMatchObject({
+      FACTORY_IN_AX: '1',
+      FACTORY_HOME: '/workspace/w/home',
+      GOPROXY: 'http://gate.example:8080/go',
+    })
+  } finally {
+    process.env = saved
+  }
 })

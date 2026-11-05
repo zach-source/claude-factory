@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { configFrom, handle, MAX_BODY, route, type Run } from './broker'
+import { configFrom, handle, MAX_BODY, route, workerPolicyRefusal, type Run } from './broker'
 
 type Call = { argv: string[]; stdin?: string }
 const setup = (
@@ -179,4 +179,196 @@ test('POST /token/best answers 409 while a swap runs, then 502 with a fixed body
     configFrom(swapEnv, async () => ({ code: 0, out: 'slot 1 is live', err: '' })),
   )
   expect(again.status).toBe(200)
+})
+
+const U = (key: string) => 'ate-secret://agent-vault/v1/' + key
+const withHeader = (h: Record<string, unknown>) => ({
+  rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: [h] } }],
+})
+const withPath = (hostnames: unknown, extra: Record<string, unknown> = { pathPrefixes: ['/x/'] }) => ({
+  rules: [{ https: { hostnames, ...extra } }],
+})
+const hdr = (credentialUri: unknown) => withHeader({ header: 'Authorization', credentialUri })
+
+test('PUT refuses a worker policy that names a manager-only key or a github path rule, before any command runs', async () => {
+  const refused: Record<string, unknown> = {
+    AX_AUTH: hdr(U('AX_AUTH')),
+    GITHUB_BASIC_MANAGER: hdr(U('GITHUB_BASIC_MANAGER')),
+    'key CredentialURI': withHeader({ CredentialURI: U('AX_AUTH') }),
+    'key credential_uri': withHeader({ credential_uri: 'https://x.example.com/ax' }),
+    'key with U+017F': withPath(['a.example.com'], { pathPrefixeſ: ['/x/'] }),
+    'lowercase value': hdr(U('ax_auth')),
+    'query suffix': hdr(U('AX_AUTH') + '?x=1'),
+    'trailing slash': hdr(U('AX_AUTH') + '/'),
+    'percent escape': hdr(U('AX%5FAUTH')),
+    'number value': hdr(5),
+    'object value': hdr({ a: 1 }),
+    'other field': withHeader({ header: 'AX_AUTH' }),
+    'api.github.com path': withPath(['api.github.com'], { pathPrefixes: ['/repos/zach-source/'] }),
+    'github.com path': withPath(['github.com'], { pathPrefixes: ['/zach-source/'] }),
+    'GitHub.COM. path': withPath(['GitHub.COM.']),
+    'wildcard github': withPath(['*.github.com']),
+    'uploads.github.com': withPath(['uploads.github.com']),
+    'any host': withPath(['*']),
+    'any .com host': withPath(['*.com']),
+    'ANY.COM. host': withPath(['*.COM.']),
+    'path_prefixes key': withPath(['github.com'], { path_prefixes: ['/x/'] }),
+    'no hostnames': { rules: [{ https: { pathPrefixes: ['/x/'] } }] },
+    'hostnames string': withPath('github.com'),
+  }
+  for (const [name, body] of Object.entries(refused)) {
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 400])
+    expect(calls).toEqual([])
+  }
+  const deep = '['.repeat(20_000) + ']'.repeat(20_000)
+  const { calls, c } = setup()
+  const res = await handle(req('PUT', '/policy/factory/f-r1-1', `{"rules":[${deep}]}`), c)
+  expect(res.status).toBe(400)
+  expect(calls).toEqual([])
+})
+
+test('PUT still creates a normal worker policy', async () => {
+  const keys = ['AX_AUTH_X', 'MY_AX_AUTH', 'GITHUB_BASIC'].map(k => ({ header: 'A', credentialUri: U(k) }))
+  const allowed: Record<string, unknown> = {
+    current: JSON.parse(POLICY),
+    'github owner key': hdr(U('GITHUB_ZS_BASIC')),
+    gitlab: hdr(U('GITLAB')),
+    'look-alike keys': { rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: keys } }] },
+    'path on other host': withPath(['gitlab.example.com']),
+    'path on look-alike host': withPath(['notgithub.com']),
+    'path on *.org': withPath(['*.org']),
+    'path on *.notgithub.com': withPath(['*.notgithub.com']),
+    'any host no path': withPath(['*'], {}),
+    'any .com no path': withPath(['*.com'], {}),
+  }
+  for (const [name, body] of Object.entries(allowed)) {
+    const { calls, c } = setup()
+    const text = JSON.stringify(body)
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', text), c)
+    expect([name, res.status]).toEqual([name, 200])
+    expect(calls.length).toBe(2)
+    expect(calls[1]!.stdin).toBe(text)
+  }
+})
+
+test('a failed token swap logs the exit code only, never the child stderr', async () => {
+  const logged: unknown[][] = []
+  const old = console.error
+  console.error = (...a: unknown[]) => void logged.push(a)
+  try {
+    const c = configFrom(swapEnv, async () => ({
+      code: 3,
+      out: '',
+      err: "claude-token: couldn't update the item\nzqsecret-tok\n",
+    }))
+    const res = await handle(req('POST', '/token/best'), c)
+    expect(res.status).toBe(502)
+    expect(await res.text()).toBe('token swap failed\n')
+  } finally {
+    console.error = old
+  }
+  expect(logged).toEqual([['token swap failed: exit 3']])
+})
+
+test('spawn strips OP_SERVICE_ACCOUNT_TOKEN from the child env unless op is set', async () => {
+  const old = process.env.OP_SERVICE_ACCOUNT_TOKEN
+  process.env.OP_SERVICE_ACCOUNT_TOKEN = 'zqsecret-op'
+  try {
+    const { run } = configFrom({})
+    const plain = await run(['/usr/bin/env'])
+    expect(plain.code).toBe(0)
+    expect(plain.out).not.toContain('OP_SERVICE_ACCOUNT_TOKEN=')
+    const withOp = await run(['/usr/bin/env'], undefined, true)
+    expect(withOp.out).toContain('OP_SERVICE_ACCOUNT_TOKEN=zqsecret-op')
+  } finally {
+    if (old === undefined) delete process.env.OP_SERVICE_ACCOUNT_TOKEN
+    else process.env.OP_SERVICE_ACCOUNT_TOKEN = old
+  }
+})
+
+const reviewerRule = (over: Record<string, unknown> = {}) => ({
+  hostnames: ['api.github.com', 'uploads.github.com'],
+  pathPrefixes: ['/repos/acme/widget/'],
+  paths: ['/graphql'],
+  effects: {
+    replaceHeaders: [{ header: 'Authorization', prefix: 'Bearer ', credentialUri: U('GITHUB_REVIEWER') }],
+  },
+  ...over,
+})
+const pol = (rule: Record<string, unknown>) => ({ rules: [{ https: rule }] })
+const dropKey = (k: string) => {
+  const r: Record<string, unknown> = reviewerRule()
+  delete r[k]
+  return r
+}
+const withHdr = (h: Record<string, unknown>) =>
+  pol(reviewerRule({ effects: { replaceHeaders: [{ ...reviewerRule().effects.replaceHeaders[0], ...h }] } }))
+
+test('the reviewer API rule is the one path rule a worker policy can have on a github host', async () => {
+  const accept: Record<string, unknown> = {
+    reviewer: pol(reviewerRule()),
+    'api only': pol(reviewerRule({ hostnames: ['api.github.com'] })),
+    'dot repo': pol(reviewerRule({ pathPrefixes: ['/repos/acme/.github/'] })),
+  }
+  for (const [name, body] of Object.entries(accept)) {
+    expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 200])
+    expect(calls.length).toBe(2)
+  }
+  const refused: Record<string, unknown> = {
+    'add github.com': pol(reviewerRule({ hostnames: ['api.github.com', 'github.com'] })),
+    'add gist': pol(reviewerRule({ hostnames: ['api.github.com', 'gist.github.com'] })),
+    'add *': pol(reviewerRule({ hostnames: ['api.github.com', '*'] })),
+    'add *.com': pol(reviewerRule({ hostnames: ['*.com'] })),
+    'upper case host': pol(reviewerRule({ hostnames: ['API.github.com'] })),
+    'trailing dot host': pol(reviewerRule({ hostnames: ['api.github.com.'] })),
+    'no hosts': pol(reviewerRule({ hostnames: [] })),
+    'owner prefix': pol(reviewerRule({ pathPrefixes: ['/repos/acme/'] })),
+    'repos prefix': pol(reviewerRule({ pathPrefixes: ['/repos/'] })),
+    'root prefix': pol(reviewerRule({ pathPrefixes: ['/'] })),
+    'deep prefix': pol(reviewerRule({ pathPrefixes: ['/repos/acme/widget/x/'] })),
+    'dot dot owner': pol(reviewerRule({ pathPrefixes: ['/repos/acme/../'] })),
+    'dot repo segment': pol(reviewerRule({ pathPrefixes: ['/repos/./widget/'] })),
+    'two prefixes': pol(reviewerRule({ pathPrefixes: ['/repos/acme/widget/', '/repos/acme/other/'] })),
+    'paths /user': pol(reviewerRule({ paths: ['/user'] })),
+    'paths two': pol(reviewerRule({ paths: ['/graphql', '/user'] })),
+    'paths slash': pol(reviewerRule({ paths: ['/graphql/'] })),
+    'no paths': pol(dropKey('paths')),
+    'no pathPrefixes': pol(dropKey('pathPrefixes')),
+    'key GITHUB': withHdr({ credentialUri: U('GITHUB') }),
+    'key GITHUB_ZS': withHdr({ credentialUri: U('GITHUB_ZS') }),
+    'key REVIEWER_BASIC': withHdr({ credentialUri: U('GITHUB_REVIEWER_BASIC') }),
+    'key lower case': withHdr({ credentialUri: U('github_reviewer') }),
+    'two headers': pol(
+      reviewerRule({
+        effects: {
+          replaceHeaders: [
+            reviewerRule().effects.replaceHeaders[0],
+            reviewerRule().effects.replaceHeaders[0],
+          ],
+        },
+      }),
+    ),
+    'other header': withHdr({ header: 'X-Key' }),
+    'other prefix': withHdr({ prefix: 'Basic ' }),
+    'no effects': pol(dropKey('effects')),
+    ports: pol(reviewerRule({ ports: { numbers: [443] } })),
+    path_prefixes: pol(reviewerRule({ path_prefixes: ['/repos/acme/widget/'] })),
+    'unknown key': pol(reviewerRule({ extra: 1 })),
+    'paths on github.com': pol({ hostnames: ['github.com'], paths: ['/x'] }),
+    'paths on *': pol({ hostnames: ['*'], paths: ['/x'] }),
+  }
+  for (const [name, body] of Object.entries(refused)) {
+    expect([name, typeof workerPolicyRefusal(body)]).toEqual([name, 'string'])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 400])
+    expect(calls).toEqual([])
+  }
+  for (const h of ['chatgpt.com', 'a.example.com'])
+    expect(workerPolicyRefusal(pol({ hostnames: [h], paths: ['/x'], pathPrefixes: ['/y/'] }))).toBeNull()
 })

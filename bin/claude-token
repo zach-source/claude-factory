@@ -21,6 +21,7 @@
 # If your shell exports a read-only service account token, "use" and "best" fail with
 # "couldn't update the item": unset OP_SERVICE_ACCOUNT_TOKEN for this script.
 #
+# Tokens reach op and curl on stdin, never in argv.
 # This script does not print a token.
 set -euo pipefail
 
@@ -36,12 +37,14 @@ slot_regex() { # CLAUDE_TOKEN_SLOT_FIELD as a jq capture regex, its literal part
   esc=$(printf '%s' "$CLAUDE_TOKEN_SLOT_FIELD" | sed 's/[.[\*^$()+?{|\\]/\\&/g')
   printf '%s' "${esc//%s/(?<n>[0-9]+)}"
 }
+# jq function: set the CONCEALED field $l to $v, or append it. The values come from the environment, never from argv.
+put='def put($l; $v): if any(.fields[]?; .label == $l) then .fields |= map(if .label == $l then .value = $v | .type = "CONCEALED" else . end) else .fields = (.fields // []) + [{label: $l, type: "CONCEALED", value: $v}] end;'
 J=$(op item get "$I" --vault "$V" --format json)
 f() { jq -r --arg l "$1" '.fields[]|select(.label==$l)|.value//""' <<<"$J"; }
 slots() { jq -r --arg re "^$(slot_regex)\$" '.fields[].label|capture($re).n' <<<"$J"; }
 probe() { # prints: 7d-utilization 5h-utilization status, for slot $1
-  curl -s -o /dev/null -D - https://api.anthropic.com/v1/messages \
-    -H "authorization: Bearer $(f "$(field "$1")")" -H 'anthropic-version: 2023-06-01' \
+  printf 'authorization: Bearer %s\n' "$(f "$(field "$1")")" |
+    curl -s -o /dev/null -D - https://api.anthropic.com/v1/messages -H @- -H 'anthropic-version: 2023-06-01' \
     -H 'anthropic-beta: oauth-2025-04-20' -H 'content-type: application/json' \
     -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"."}]}' |
     tr -d '\r' | awk -F': ' 'tolower($1)~/unified-7d-utilization/{d=$2} tolower($1)~/unified-5h-utilization/{h=$2}
@@ -51,8 +54,9 @@ use() {
   local token
   token=$(f "$(field "$1")")
   [ -n "$token" ] || { echo "no token in slot $1" >&2; exit 1; }
-  op item edit "$I" --vault "$V" \
-    "$CLAUDE_TOKEN_LIVE_FIELD[concealed]=$token" "$CLAUDE_TOKEN_ACTIVE_FIELD[concealed]=$1" >/dev/null
+  LIVE="$token" SLOT="$1" jq --arg lf "$CLAUDE_TOKEN_LIVE_FIELD" --arg af "$CLAUDE_TOKEN_ACTIVE_FIELD" \
+    "$put put(\$lf; \$ENV.LIVE) | put(\$af; \$ENV.SLOT)" <<<"$J" |
+    op item edit "$I" --vault "$V" >/dev/null
   echo "slot $1 is live; agent-vault picks it up within 5 minutes"
 }
 case "${1:-}" in

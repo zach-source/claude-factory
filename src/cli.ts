@@ -1,6 +1,7 @@
 // The factory runner: owns .factory/, drives herdr, feeds the xstate machines.
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
+import './vm-env' // first: it may re-run the process with the packed AX env
 import {
   appendFileSync,
   chmodSync,
@@ -40,10 +41,10 @@ import {
   isPrWait,
   WORKER_OUTCOMES,
   parkDelayMin,
+  prevReport,
   prsIn,
   reach,
   shareOk,
-  OWNER_AFTER_MS,
   shouldHandToOwner,
   timeoutOf,
   unread,
@@ -59,7 +60,7 @@ import {
   type Mail,
 } from './machine'
 import { otelOf, type Otel } from './otel'
-import { watchDecide, type Seen, type WatchedPr } from './watch'
+import { watchDecide, WATCH_FAIL_PASSES, type Seen, type WatchedPr } from './watch'
 import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
   actorOf,
@@ -75,6 +76,7 @@ import {
   OWNER,
   REJECTED,
   LABEL,
+  NAME,
   linearSourced,
   byId,
   parentOf,
@@ -198,11 +200,14 @@ import {
   forgeOf,
   gitlabForge,
   githubCloseArgv,
+  githubLabelArgv,
   githubCommentArgv,
   githubMergedJson,
+  gitlabMergedJson,
   githubUnlabelArgv,
   githubPullPath,
   githubChecks,
+  gitlabChecks,
   githubPulls,
   githubRows,
   githubSlugOf,
@@ -244,6 +249,7 @@ import {
 } from './sync'
 import { rmSafe } from './home-guard'
 import { ciReport } from './ci'
+import { cut } from './cut'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -391,9 +397,6 @@ export type Row = {
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
-// gc writes this before it removes prompts/ (claude-factory-503.1.2): the file names that were in
-// it. Nothing reads it now: the usage rows keep their own station name (storeUsage).
-const promptsListFile = (id: string) => join(runDir(id), 'prompts.list')
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
 function durable(path: string, text: string, flag: 'w' | 'a') {
@@ -513,6 +516,8 @@ type TaskSide = {
   githubOwner?: string
   /** the task runs as the reviewer identity: its egress policy holds the reviewer key (claude-factory-0gww.2) */
   reviewer?: boolean
+  /** the rig origin's GitHub repo, for the reviewer's API rule */
+  githubRepo?: string
   policy: boolean
   put?: string[]
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
@@ -562,13 +567,50 @@ export function replayable(
   run: string,
 ): string[] | null {
   const [cmd, id, seq] = argv
-  if (cmd === 'report' && id === run && seq === String(side.seq)) return argv
+  // a VM expands --summary-file before it queues; a line that still has it would read a laptop file
+  if (cmd === 'report' && id === run && seq === String(side.seq))
+    return argv[4] === '--summary-file' ? null : argv
   if (cmd === 'mail' && id === run) return argv
   if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
     return ['memory', id, ...rest, '--from', `${run}/${side.node}`]
   }
   return null
+}
+
+/**
+ * `report <run> <seq> <outcome> --summary-file <path>` -> [run, seq, outcome, <file text>]; any other args pass
+ * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. A bad form
+ * throws. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
+ */
+export function summaryArgs(args: string[]): string[] {
+  if (args[3] !== '--summary-file') return args
+  const path = args[4]
+  if (!path || args.length !== 5)
+    return fail(
+      'usage: factory report <run> <seq> <outcome> --summary-file <path> (one path, nothing after it)',
+    )
+  let text: string
+  let size: number
+  try {
+    const st = statSync(path)
+    if (!st.isFile()) return fail(`--summary-file ${path} is not a readable file`)
+    size = st.size
+  } catch {
+    return fail(`--summary-file ${path} is not a readable file`)
+  }
+  // outside the try: fail() throws, and the catch would call this a missing file
+  if (size > worker.OUTBOX_MAX_BYTES)
+    return fail(
+      `--summary-file ${path} is ${size} bytes; the cap is ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB): shorten it`,
+    )
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch {
+    return fail(`--summary-file ${path} is not a readable file`)
+  }
+  if (!text.trim()) return fail(`--summary-file ${path} is empty`)
+  return [...args.slice(0, 3), text]
 }
 
 const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort', 'fork', 'rm']
@@ -697,7 +739,7 @@ export function overwritten(out: string) {
       .filter(k => k.startsWith('our_') && k !== 'our_diff_type' && k !== 'our_id')
       .map(k => k.slice('our_'.length))
       .filter(k => String(row[`our_${k}`]) !== String(row[`their_${k}`]))
-      .map(k => `${k}=${String(row[`our_${k}`]).slice(0, 200)}`)
+      .map(k => `${k}=${cut(String(row[`our_${k}`]), 200)}`)
     const what =
       row.our_diff_type === 'removed' ? 'had deleted it' : `had ${had.join(', ') || 'the same values'}`
     return {
@@ -712,7 +754,10 @@ function syncRigBeads(
   way: 'push' | 'pull',
   r = rigOf(run.repo)?.beadsRemote,
 ) {
-  const show = r && !inAx() ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree }) : null
+  const show =
+    r && !inAx()
+      ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeout: syncTimeoutMs() })
+      : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
   // the server's own user; its password, if it has one, as bd takes it
   const env = { ...process.env, DOLT_CLI_PASSWORD: process.env.BEADS_DOLT_PASSWORD ?? '' }
@@ -777,11 +822,12 @@ function noSuspend(run: Run) {
 /** write the marker; the text of the one mail that tells the manager */
 function markNoSuspend(run: Run, why: string) {
   const rig = rigOf(run.repo)?.name ?? basename(run.repo)
-  writeJson(noSuspendFile(run), { at: Date.now(), why: clip(why, 500) })
-  return `AX could not restore a ${rig} worker (${clip(why, 300)}). For 24 h the factory does not suspend ${rig} workers that wait on the manager, so no more of them fail the same way.`
+  writeJson(noSuspendFile(run), { at: Date.now(), why: cleanText(why, 500) })
+  return `AX could not restore a ${rig} worker (${cleanText(why, 300)}). For 24 h the factory does not suspend ${rig} workers that wait on the manager, so no more of them fail the same way.`
 }
 
 const SKEW_PROBE_MS = 60 * 60_000
+const SKEW_HOLD_MAX_MS = 3 * SKEW_PROBE_MS
 const bdSkewFile = (run: Run) =>
   join(HOME, `bd-skew-${(rigOf(run.repo)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
 /**
@@ -793,7 +839,7 @@ function bdSkewOf(line: string) {
     const { bdSkew } = JSON.parse(line)
     return typeof bdSkew === 'string' &&
       bdSkew.length <= 300 &&
-      !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
+      !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
       worker.SKEW_RE.test(bdSkew)
       ? bdSkew
       : undefined
@@ -804,14 +850,18 @@ function bdSkewOf(line: string) {
 /**
  * True while this run's rig has a fresh bd skew marker for this runner: no VM of the rig starts. After
  * SKEW_PROBE_MS one start goes through as the probe, and the marker's clock restarts for the others.
- * ponytail: a fixed 60 min window. Upgrade: probe bd on the image at serve setup.
+ * The hold ends SKEW_HOLD_MAX_MS after `since`, the first skew report; no report or probe moves `since`.
+ * ponytail: a rig hold ends 3 h after the first skew report even if bd is still broken (then each station
+ * gets only its own outage holds). Upgrade: probe bd on the image at serve setup.
  */
 function bdSkewHeld(run: Run, runner: string, now: number) {
   const file = bdSkewFile(run)
-  const m = existsSync(file) ? readJson<{ at?: number; runner?: string }>(file) : null
+  const m = existsSync(file) ? readJson<{ at?: number; since?: number; runner?: string }>(file) : null
   if (!m || m.runner !== runner || typeof m.at !== 'number') return false
+  const since = typeof m.since === 'number' ? m.since : m.at
+  if (now - since >= SKEW_HOLD_MAX_MS) return false
   if (now - m.at < SKEW_PROBE_MS) return true
-  writeJson(file, { ...m, at: now })
+  writeJson(file, { ...m, since, at: now })
   return false
 }
 
@@ -829,19 +879,32 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
   const gone = (why: string): WorkerInfo => (
     writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
-    { status: 'gone', failed: clip(why, 500) }
+    { status: 'gone', failed: cleanText(why, 500) }
   )
   if (phase !== 'Running') {
     const info = gone(`phase ${phase ?? 'not found'}${phase === 'Failed' && failure ? `: ${failure}` : ''}`)
     if (phase === 'Failed' && failure?.startsWith('ActorResumeFailed') && !noSuspend(run))
-      info.resumeFailed = markNoSuspend(run, failure)
+      info.resumeFailed = failure
     return info
   }
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
+    // an old reviewer task has no repo in its side file. It has no safe policy, so it gets no GitHub key.
+    if (side.reviewer && !side.githubRepo) return gone('reviewer task has no githubRepo in its side file')
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress, side.gitlabHost, side.githubOwner, undefined, side.reviewer))
+    if (
+      !ax.createPolicy(
+        task,
+        side.egress,
+        side.gitlabHost,
+        side.githubOwner,
+        undefined,
+        side.reviewer,
+        false,
+        side.githubRepo,
+      )
+    )
       return { status: 'pending', agent: 'ax', pending: 'egress policy not created' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
@@ -854,7 +917,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       if (r.ok) continue
       // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
       const failedAt = side!.putFailedAt ?? Date.now()
-      const err = clip(r.err.replace(/\s+/g, ' ').trim(), 300)
+      const err = cleanText(r.err.replace(/\s+/g, ' ').trim(), 300)
       writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
       if (Date.now() - failedAt < PUT_GRACE_MS)
         return { status: 'pending', agent: 'ax', pending: `${name} not yet copied to the VM` }
@@ -896,6 +959,24 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       continue
     }
     const argv = outboxArgv(line)
+    const big = argv && worker.outboxTooBig(argv)
+    if (big && argv) {
+      // Bun.spawnSync throws E2BIG on a huge argv, which would wedge this run on every tick: never spawn it
+      try {
+        appendFileSync(
+          join(runDir(run.id), `${task}.outbox-too-big`),
+          `${new Date().toISOString()} ${big} ${JSON.stringify(argv.slice(0, 3).map(w => cut(w, 80)))}\n`,
+          { mode: 0o600 },
+        )
+      } catch {} // a log failure never blocks the replay of the lines after it
+      seen.seen[h] = (seen.seen[h] ?? 0) + 1
+      writeJson(seenFile(run, task), seen)
+      ax.prompt(
+        task,
+        `[factory] your outbox line \`${cut(argv.slice(0, 3).join(' '), 200)} ...\` is ${big} bytes, over the ${worker.OUTBOX_MAX_BYTES}-byte cap (100 KiB): it was not run. Shorten the text and run the command again (for a report: a shorter --summary-file)`,
+      )
+      continue
+    }
     const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
     const env = {
@@ -911,7 +992,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     if (!p && !skew)
       ax.prompt(
         task,
-        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
+        `[factory] \`${argv?.join(' ') ?? cut(line, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
       )
     else if (p && p.exitCode !== 0)
       ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
@@ -921,7 +1002,9 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     else if (argv![0] === 'report') {
       try {
         const rows = validUsage(JSON.parse(line).usage, side!.node, side!.seq)
-        if (rows.length) appendUsage(run.id, rows)
+        // first report wins per node+seq: a replayed line must not add rows again
+        if (rows.length && !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq))
+          appendUsage(run.id, rows)
       } catch {} // a bad usage never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       if (!skew) {
@@ -937,7 +1020,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         status: 'gone',
         agent: 'ax',
         bdSkew: skew,
-        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${argv![3]}: ${clipReport(argv!.slice(4).join(' '))}`,
+        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${cleanText(argv![3] ?? '', 40)}: ${clipReport(cleanText(argv!.slice(4).join(' '), Infinity))}`,
       }
   }
   // a line this laptop already counted as replayed, now missing from the outbox: the worker edited it after
@@ -1128,7 +1211,7 @@ export function ownCopy(template: string, name: string) {
 
 /** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
 export function reworkBase(repo: string, branch: string) {
-  if (!/^factory\/[\w.-]+$/.test(branch) || branch.includes('..')) return undefined
+  if (!/^\w[\w./-]*$/.test(branch) || branch.includes('..')) return undefined // any PR branch (8yhq), not a ref option
   Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', branch], { timeout: 30_000 })
   const ref = `origin/${branch}`
   return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
@@ -1168,6 +1251,12 @@ const unknownSkill = (skill: string, where: string) =>
     ? []
     : [`${where}: skill "${skill}" is not ${Object.keys(VM_PLUGINS).join(' or ')}`]
 
+/** a skills value must be an array of strings: say so with the layer name, before a flatMap fails with no hint */
+const skillsShape = (v: unknown, where: string) =>
+  v === undefined || (Array.isArray(v) && v.every(s => typeof s === 'string'))
+    ? []
+    : [`${where}: skills must be an array of strings`]
+
 /**
  * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
  * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
@@ -1179,26 +1268,41 @@ export function workerSkills(
   node: { skills?: string[] },
   rig?: { skills?: string[] },
 ) {
-  const bad = (rig?.skills ?? []).flatMap(s => unknownSkill(s, 'rig'))
+  const shape = skillsShape(rig?.skills, 'rig')
+  const bad = shape.length ? shape : (rig?.skills ?? []).flatMap(s => unknownSkill(s, 'rig'))
   if (bad.length) fail(bad.join('; '))
   return [
     ...new Set([...(def.skills ?? ['asd-ste100']), ...(rig?.skills ?? []), ...(node.skills ?? [])]),
   ].sort()
 }
-export const loadFactory = async (file: string): Promise<Factory> => {
+// a factory file's name is its file name: a repo's .factory/lifecycle.ts cannot declare 'ship' (merge authority keys on the name)
+// loadPinned is only for a run's own pinned copy (run.factory, named factory.json), which keeps the name it was started with
+const load = async (file: string, pinned: boolean): Promise<Factory> => {
   const def = validate(await readFactory(file))
   const badSkills = [
-    ...(def.skills ?? []).flatMap(s => unknownSkill(s, `factory ${def.name}`)),
-    ...Object.entries(def.nodes).flatMap(([id, n]) => (n.skills ?? []).flatMap(s => unknownSkill(s, id))),
+    ...skillsShape(def.skills, `factory ${def.name}`),
+    ...Object.entries(def.nodes).flatMap(([id, n]) => skillsShape(n.skills, id)),
   ]
+  if (!badSkills.length)
+    badSkills.push(
+      ...(def.skills ?? []).flatMap(s => unknownSkill(s, `factory ${def.name}`)),
+      ...Object.entries(def.nodes).flatMap(([id, n]) => (n.skills ?? []).flatMap(s => unknownSkill(s, id))),
+    )
   if (badSkills.length) throw new Error(`factory ${def.name}:\n  ${badSkills.join('\n  ')}`)
   const unknown = Object.entries(def.nodes).filter(([, n]) => n.runner && !(n.runner in runners))
   if (unknown.length)
     throw new Error(
       `factory ${def.name}:\n  ${unknown.map(([id, n]) => `${id}: runner "${n.runner}" is not ${Object.keys(runners).join(' or ')}`).join('\n  ')}`,
     )
+  const base = basename(file, extname(file))
+  if (!pinned && def.name !== base)
+    throw new Error(
+      `factory ${JSON.stringify(def.name)}:\n  name ${JSON.stringify(def.name)} must be the file name "${base}"`,
+    )
   return def
 }
+export const loadFactory = (file: string) => load(file, false)
+export const loadPinned = (file: string) => load(file, true)
 // a run moved to another factory leaves a link behind, so its workers' reports still reach it:
 // only the factory holding the run's directory ticks and lists it
 const runIds = () =>
@@ -1226,7 +1330,34 @@ const post = (id: string, e: Input) =>
   durable(join(runDir(id), 'inbox.jsonl'), JSON.stringify({ ...e, at: Date.now() }) + '\n', 'a')
 
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+export const clip = (text: string, max: number) => {
+  if (text.length <= max) return text
+  return `${cut(text, max)}…`
+}
+/** VM free text for a FAIL reason or a mail: control, format and line-separator characters become spaces, then clip */
+export const cleanText = (text: string, max: number) =>
+  clip(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '), max)
+
+/** the least gap, on the laptop's clock, between two egress mails for one run and node */
+const EGRESS_REPAGE_MS = 30 * 60_000
+
+/**
+ * The VM's egress record from a poll, or undefined when any field is off. The laptop does not trust the VM:
+ * a bad `since` would throw in toISOString or mail the manager each tick, and `last` is free text that goes
+ * in the FAIL reason. So control and format characters in `last` become spaces, and `last` is cut to 200.
+ */
+export function trustedEgress(
+  egress: unknown,
+  now: number,
+): { since: number; tries: number; last: string } | undefined {
+  if (!egress || typeof egress !== 'object') return undefined
+  const { since, tries, last } = egress as Record<string, unknown>
+  if (typeof since !== 'number' || !Number.isFinite(since) || since <= 0 || since > now + LIMIT_SKEW_MS)
+    return undefined
+  if (typeof tries !== 'number' || !Number.isSafeInteger(tries) || tries < 0) return undefined
+  if (typeof last !== 'string') return undefined
+  return { since, tries, last: cleanText(last, 200) }
+}
 /**
  * the cap on one prior report or mail placed whole into a station's brief or a delivered mid-run mail. A
  * report that pastes a diff or a log can run past 128 KiB. That broke two things: a station's own argv
@@ -1235,16 +1366,10 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
  * under this cap. This const guards the few spots that pasted a report's `.summary` or a mail's `.text` whole.
  */
 export const REPORT_MAX = 32_000
-// text.slice(0, max) can stop between the two UTF-16 code units of a surrogate pair (an emoji, say),
-// leaving a lone lead surrogate. Back off by one unit in that case, so the cut never splits a pair.
-const sliceWhole = (text: string, max: number) => {
-  const lead = text.charCodeAt(max - 1)
-  return text.slice(0, lead >= 0xd800 && lead <= 0xdbff ? max - 1 : max)
-}
 export const clipReport = (text: string) =>
   text.length <= REPORT_MAX
     ? text
-    : `${sliceWhole(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
+    : `${cut(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**
@@ -1408,6 +1533,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '## Reporting (required)',
     'When you are finished, report exactly once and then stop:',
     `    ${CLI} report ${run.id} ${c.seq} <outcome> "<summary for the next station>"`,
+    'A long summary: write it to a file, then end the command with `--summary-file <path>` in place of the quoted text.',
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
@@ -1549,21 +1675,45 @@ function logLaunch(run: Run, node: string, seq: number, agent: string, resume: b
 /**
  * the top notes of a laptop search for the station's goal, as the search prints them; it logs them shown for
  * run/station. A VM has an empty memory store, so the launch searches for it. '' when nothing is found or
- * the search fails or times out: the launch goes on without notes
+ * the search fails or times out (logged in launches.log): the launch goes on without notes.
+ * ponytail: spawnSync blocks the tick up to 60 s per new brief; make it async if that shows in practice
  */
-function launchNotes(run: Run, node: string) {
+export function launchNotes(run: Run, node: string) {
   const rig = rigOf(run.repo)?.name
   try {
     const p = Bun.spawnSync(
-      [CLI, 'memory', 'search', ...(rig ? ['--rig', rig] : []), '--from', `${run.id}/${node}`].concat(
-        `${node}: ${clip(run.goal, 2000)}`,
-      ),
+      [
+        CLI,
+        'memory',
+        'search',
+        '--no-core',
+        ...(rig ? ['--rig', rig] : []),
+        '--from',
+        `${run.id}/${node}`,
+      ].concat(`${node}: ${clip(run.goal, 2000)}`),
       { env: { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '' }, timeout: 60_000 },
     )
-    const out = p.exitCode === 0 ? p.stdout.toString().trim() : ''
+    if (p.exitCode !== 0) {
+      launchNotesFailed(run, node, p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`)
+      return ''
+    }
+    const out = p.stdout.toString().trim()
     return out.startsWith('nothing in ') ? '' : clip(out, 6000)
-  } catch {
+  } catch (e) {
+    launchNotesFailed(run, node, String(e))
     return ''
+  }
+}
+
+/** one line in HOME/launches.log; a write error never blocks the launch */
+function launchNotesFailed(run: Run, node: string, why: string) {
+  try {
+    appendFileSync(
+      join(HOME, 'launches.log'),
+      `${new Date().toISOString()} ${run.id}/${node} launch memory search failed: ${why}\n`,
+    )
+  } catch {
+    // best effort
   }
 }
 
@@ -1660,6 +1810,12 @@ export const codexEgress = (egress: Egress[] = []) =>
         },
       ]
 
+/** FACTORY_GH_REVIEWER comes only from launchTask's reviewer flag, never from FACTORY_AX_ENV or a rig's env */
+const noReviewerFlag = (e: Record<string, string> = {}) => {
+  const { FACTORY_GH_REVIEWER: _, ...rest } = e
+  return rest
+}
+
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
@@ -1717,10 +1873,19 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
   const githubOwner = origin?.forge === 'github' ? origin.owner : undefined
-  const reviewer = ax.reviewerTask(node, githubOwner)
+  const githubRepo = origin?.forge === 'github' ? origin.repo : undefined
+  const reviewer = ax.reviewerTask(
+    node,
+    githubOwner,
+    process.env,
+    hasRunBeads && !rig?.beadsRemote,
+    githubRepo,
+  )
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
-    `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
+    reviewer
+      ? `- You run in a VM: github.com is read-only for this task. Do not push. Report changes instead.`
+      : `- You run in a VM: push your commits to origin ${run.branch} before you report, or the factory never sees them.`,
     ...(reviewer
       ? [
           `- You review as the reviewer identity (FACTORY_GH_REVIEWER=1): your gh token is not the author's, so you may approve or request changes on the exact head, as your prompt says.`,
@@ -1789,8 +1954,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     gitlabHost,
     sandboxClass: rig?.sandboxClass,
     env: {
-      ...env,
-      ...rig?.env,
+      ...noReviewerFlag(env),
+      ...noReviewerFlag(rig?.env),
       ...(harness === 'codex' ? otel?.codexEnv : otel?.env),
       FACTORY_FROM: node,
       FACTORY_RUN: run.id,
@@ -1822,7 +1987,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(gitlabHost && { gitlabHost }),
     ...(githubOwner && { githubOwner }),
     ...(reviewer && { reviewer }),
-    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer),
+    ...(reviewer && { githubRepo }),
+    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer, false, githubRepo),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -1916,6 +2082,8 @@ export function vmClaudeFlags(
     ...['--tools', WORKER_TOOLS, '--setting-sources', 'project,local'],
     ...['--settings', JSON.stringify(settings)],
     ...['--system-prompt-file', `${ax.FACTORY_DIR}/src/worker-system.md`],
+    // inline, not a file: an older VM image has no worker-vm.md (claude-factory-66ib)
+    ...['--append-system-prompt', readFileSync(join(ROOT, 'src', 'worker-vm.md'), 'utf8')],
     // the image's plugins, as a laptop worker gets the person's (constitution I, claude-factory-fxu)
     ...skills.flatMap(k => ['--plugin-dir', VM_PLUGINS[k]!]),
   ]
@@ -1950,7 +2118,15 @@ export function vmCodexHome(
     'config.toml':
       `model_auto_compact_token_limit = ${Math.max(100, 2 * (def.maxContextK ?? 200)) * 1000}\n` +
       'allow_login_shell = false\n' +
-      (chatgpt ? 'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n' : '') +
+      (chatgpt
+        ? // The gateway denies the plugin and git-attribution GETs (wham/settings/user) under chatgpt.com, and opening them
+          // would put the real token on more endpoints. plugins=false stops the plugin calls. git-attribution has no
+          // flag, so a dead local port makes its call fail in the VM and attribution reads as off. Model turns use a
+          // constant URL, not chatgpt_base_url.
+          // ponytail: drop the override when codex gets a flag, or when Substrate gets an exact-path rule (claude-factory-1817).
+          'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\nchatgpt_base_url = "http://127.0.0.1:9/backend-api"\n'
+        : '') +
+      (chatgpt ? '\n[features]\nplugins = false\n' : '') +
       `\n[projects.${JSON.stringify(ax.REPO)}]\ntrust_level = "trusted"\n` +
       otelToml,
     ...(chatgpt && { 'auth.json': placeholderAuth() }),
@@ -2091,6 +2267,27 @@ export function resetsAtFromText(text: string, after: number) {
   return 0
 }
 
+const LIMIT_SKEW_MS = 5 * 60_000 // a VM clock may run this far ahead of the laptop's
+const LIMIT_RESET_MAX_MS = 8 * 24 * 3_600_000 // a weekly reset is at most 7 days out
+const LIMIT_KINDS = new Set(['seven_day', 'five_hour', 'usage', 'auth'])
+
+/**
+ * claude-factory-5nca: a VM supplies its limit hit, so the laptop does not trust it. This returns null when the
+ * hit has no finite time, or a time more than 5 minutes ahead of now. Otherwise it returns only at, a kind from
+ * a fixed set (else 'usage') and a reset time within 8 days (else 0: the callers use at + 1 h).
+ */
+export function trustedHit(hit: unknown, now: number) {
+  if (typeof hit !== 'object' || hit === null) return null
+  const h = hit as { at?: unknown; kind?: unknown; resetsAt?: unknown }
+  if (typeof h.at !== 'number' || !Number.isFinite(h.at) || h.at > now + LIMIT_SKEW_MS) return null
+  const r = h.resetsAt
+  return {
+    at: h.at,
+    kind: typeof h.kind === 'string' && LIMIT_KINDS.has(h.kind) ? h.kind : 'usage',
+    resetsAt: typeof r === 'number' && Number.isFinite(r) && r > 0 && r <= now + LIMIT_RESET_MAX_MS ? r : 0,
+  }
+}
+
 /** the usage limit or login failure that refused a Claude transcript's last turn: when, which (seven_day, five_hour, usage, auth) and when it resets, in ms (0: unknown) */
 export function limitHit(tail: string) {
   for (const line of tail.split('\n').reverse()) {
@@ -2208,12 +2405,21 @@ function swapAccount(hit: { at: number; resetsAt: number }, now: number): number
   return ok ? 0 : Math.min(...seq.sequence.map(a => s.limits[a] ?? now))
 }
 
+const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at most this often
+const CODEX_SWAP_GAP_MS = 3_600_000 // a Codex swap recopies a ChatGPT token: never more than once an hour
+
 /**
- * This function checks if a hit is new. A hit is new when no state exists yet. A hit is
- * also new when the hit time is after the state time.
+ * This function checks if a swap must run. A hit is new when no state exists yet. A hit is
+ * also new when the hit time is after the state time. A new hit swaps only when the last run
+ * (state.ran, laptop time) is at least TOKEN_SWAP_WAIT_MS old.
  */
-export function needsSwap(hit: { at: number }, state: { at: number } | undefined) {
-  return !state || hit.at > state.at
+export function needsSwap(
+  hit: { at: number },
+  state: { at: number; ran?: number } | undefined,
+  now: number,
+  gap = TOKEN_SWAP_WAIT_MS,
+) {
+  return (!state || hit.at > state.at) && (state?.ran === undefined || now >= state.ran + gap)
 }
 
 /**
@@ -2229,8 +2435,29 @@ export function swapUntil(
   return ok ? now + refreshMs : hit.resetsAt || hit.at + 3_600_000
 }
 
-const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at most this often
-type TokenSwapState = { at: number; until: number }
+type TokenSwapState = { at: number; until: number; ran?: number }
+
+/**
+ * This function reads a token-swap state file. A state that is not a well-formed object, or that has an
+ * at or ran more than LIMIT_SKEW_MS ahead, or an until more than LIMIT_RESET_MAX_MS ahead, counts as no state.
+ * A hostile VM can have written such a file before the bound existed.
+ */
+export function trustedSwapState(file: string, now: number): TokenSwapState | undefined {
+  if (!existsSync(file)) return undefined
+  let s: Record<string, unknown>
+  try {
+    s = readJson<Record<string, unknown>>(file)
+  } catch {
+    return undefined
+  }
+  if (typeof s !== 'object' || s === null) return undefined
+  const { at, until, ran } = s
+  const num = (v: unknown): v is number => Number.isFinite(v)
+  if (!num(at) || !num(until) || at > now + LIMIT_SKEW_MS || until > now + LIMIT_RESET_MAX_MS)
+    return undefined
+  if (ran !== undefined && (!num(ran) || ran > now + LIMIT_SKEW_MS)) return undefined
+  return ran === undefined ? { at, until } : { at, until, ran }
+}
 
 /**
  * This function runs a swap command. A rig sets the Claude command in FACTORY_AX_TOKEN_SWAP and the Codex command in
@@ -2254,8 +2481,12 @@ export function runTokenSwap(
   const cmd = codex ? process.env.FACTORY_AX_CODEX_TOKEN_SWAP : process.env.FACTORY_AX_TOKEN_SWAP
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
   const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
-  if (!needsSwap(hit, state)) return state!.until
+  const state = trustedSwapState(file, now)
+  const gap = codex ? CODEX_SWAP_GAP_MS : TOKEN_SWAP_WAIT_MS
+  if (!needsSwap(hit, state, now, gap)) {
+    const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
+    return waiting ? Math.max(state!.until, state!.ran! + gap) : state!.until
+  }
   const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
   const ok = p.exitCode === 0
   if (ok) {
@@ -2268,10 +2499,11 @@ export function runTokenSwap(
     })
   }
   const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
-  writeJson(file, { at: hit.at, until } satisfies TokenSwapState)
+  writeJson(file, { at: hit.at, until, ran: now } satisfies TokenSwapState)
   return until
 }
 
+const CODEX_TOKEN_FRESH = 3 // exit code of `codex-token refresh` when it changes nothing
 const CODEX_REFRESH_MS = 12 * 3_600_000 // an access token lasts about 10 days; ccswitch renews under 24 h left
 /**
  * Run FACTORY_AX_CODEX_TOKEN_SWAP when the last run is 12 hours old or older, so the live field is never stale.
@@ -2282,12 +2514,14 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const cmd = process.env.FACTORY_AX_CODEX_TOKEN_SWAP
   if (!cmd) return
   const file = join(home, `token-swap-${runnerName}-codex.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  const state = trustedSwapState(file, now)
   if (state && now - state.at < CODEX_REFRESH_MS) return
-  const ok = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode === 0
+  const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
+  const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
   writeJson(file, {
     at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
     until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
+    ran: now,
   } satisfies TokenSwapState)
 }
 
@@ -2296,7 +2530,8 @@ export const HAIKU = 'claude-haiku-5-5'
 
 /**
  * claude-factory-5us3: a closed rule for the one user hook a worker keeps, herdr's session hook.
- * A SessionStart entry passes only when every hook in it is `bash '<path>/hooks/herdr-agent-state.sh' session`.
+ * A SessionStart entry passes only when every hook in it is `bash '<path>/hooks/herdr-agent-state.sh' session`
+ * (Claude) or `bash '<path>/herdr-agent-state.sh' session` (Codex, claude-factory-px98).
  */
 const isHerdrSessionHook = (e: unknown) => {
   const hs = (e as { hooks?: unknown } | null)?.hooks
@@ -2307,7 +2542,7 @@ const isHerdrSessionHook = (e: unknown) => {
       (h: { type?: unknown; command?: unknown } | null) =>
         h?.type === 'command' &&
         typeof h.command === 'string' &&
-        /^bash '[^'\n]*\/hooks\/herdr-agent-state\.sh' session$/.test(h.command),
+        /^bash '[^'\n]*\/(?:hooks\/)?herdr-agent-state\.sh' session$/.test(h.command),
     )
   )
 }
@@ -2478,6 +2713,29 @@ export function userPluginDirs(
     })
 }
 
+/** warn for each listed skill that is not on in the person's Claude settings: the worker starts without it */
+export function warnSkillsOff(skills: string[], station: string, on?: Record<string, boolean> | null) {
+  for (const k of skills)
+    if (!Object.entries(on ?? {}).some(([key, v]) => v && key.split('@')[0] === k))
+      console.warn(
+        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
+      )
+}
+
+/** codex and pi workers get plugin dirs, not settings: warn here for a listed skill that is off */
+export function warnSkillsForHarness(h: string | null, skills: string[], station: string, claudeDir: string) {
+  if (h !== 'codex' && h !== 'pi') return
+  let on: Record<string, boolean> | undefined
+  try {
+    on = readJson<{ enabledPlugins?: Record<string, boolean> }>(
+      join(claudeDir, 'settings.json'),
+    ).enabledPlugins
+  } catch {
+    // no user settings: every skill warns
+  }
+  warnSkillsOff(skills, station, on)
+}
+
 // what workers use; the rest of Claude Code's built-ins only add tool definitions to every turn.
 // ToolSearch keeps MCP tools deferred: without it every MCP server's tools load into every turn (~60k)
 // Skill lets a worker run the asd-ste100 skill (workerSettings carries that one plugin over)
@@ -2517,12 +2775,7 @@ export function workerFlags(
       ? `worker-settings-${rig!.name}${set}.json`
       : `worker-settings${set}.json`,
   )
-  const on = (user as { enabledPlugins?: Record<string, boolean> }).enabledPlugins ?? {}
-  for (const k of skills)
-    if (!Object.entries(on).some(([key, v]) => v && key.split('@')[0] === k))
-      console.warn(
-        `skill ${k} is not on in your Claude settings: the ${station || 'station'} worker starts without it`,
-      )
+  warnSkillsOff(skills, station, (user as { enabledPlugins?: Record<string, boolean> }).enabledPlugins)
   const settings = workerSettings(
     user,
     def.maxContextK ?? 200,
@@ -2584,7 +2837,7 @@ export function piWorker(home = HOME, plugins = userPluginDirs()) {
 
 /**
  * A codex worker gets its own CODEX_HOME at <run dir>/codex/<node>, never the person's ~/.codex. It holds
- * config.toml (context limit), hooks.json (the person's hooks, then the deny hook last), AGENTS.md (the worker
+ * config.toml (context limit), hooks.json (herdr's session hook and the deny hook only, claude-factory-px98), AGENTS.md (the worker
  * rules) and an auth.json link. Codex has the PreToolUse hook, so worker-hook.ts runs as it is. Fail closed:
  * no hook file, or an agent command that turns the guard off, refuses the launch (claude-factory-x0b9).
  */
@@ -2618,11 +2871,13 @@ export function codexWorker(
   const dir = o.dir ?? join(runDir(run.id), 'codex', node)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  let theirs: Record<string, unknown[]> = {}
+  let herdr: unknown[] = []
   try {
-    theirs = readJson<{ hooks?: Record<string, unknown[]> }>(join(user, 'hooks.json')).hooks ?? {}
+    const ss = readJson<{ hooks?: { SessionStart?: unknown[] } }>(join(user, 'hooks.json')).hooks
+      ?.SessionStart
+    herdr = (ss ?? []).filter(isHerdrSessionHook)
   } catch {
-    // no user hooks, or not JSON: the deny hook is the only one
+    // no user hooks, not JSON, or SessionStart not an array (filter throws): the deny hook is the only one
   }
   const hook = denyHook(
     process.execPath,
@@ -2633,7 +2888,7 @@ export function codexWorker(
     mergeAuthority(rig),
   )
   writeJson(join(dir, 'hooks.json'), {
-    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), ...hook] },
+    hooks: { PreToolUse: hook, ...(herdr.length ? { SessionStart: herdr } : {}) },
   })
   writeFileSync(
     join(dir, 'config.toml'),
@@ -2714,6 +2969,7 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const h = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
   const otel = otelFor(run, node, c, agent, process.env.FACTORY_OTLP_ENDPOINT)
+  warnSkillsForHarness(h, skills, node, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'))
   const setup =
     h === 'codex'
       ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)), otel })
@@ -2937,13 +3193,44 @@ export function holdFloor(
 export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
   join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
 
+/**
+ * This function reads a limit-paged file. The file can hold data from before the bound. A value that is not a
+ * finite number, or that is more than LIMIT_RESET_MAX_MS ahead, counts as no file (0), so it cannot mute mail or hold a run.
+ */
+export function trustedPaged(file: string, now: number): number {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : 0
+  } catch {
+    return 0
+  }
+  return typeof v === 'number' && Number.isFinite(v) && v <= now + LIMIT_RESET_MAX_MS ? v : 0
+}
+
+/**
+ * This function reads an egress-paged file: a bare number (old form) or {since, at}. A value that is not a finite
+ * number, or that is more than LIMIT_SKEW_MS ahead, counts as no file (undefined), so it cannot mute the notice mail.
+ */
+export function trustedEgressPaged(file: string, now: number): { since: number; at: number } | undefined {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : undefined
+  } catch {
+    return undefined
+  }
+  const ok = (n: unknown): n is number => Number.isFinite(n) && (n as number) <= now + LIMIT_SKEW_MS
+  if (ok(v)) return { since: v, at: 0 }
+  const o = v as { since?: unknown; at?: unknown } | null
+  return o && typeof o === 'object' && ok(o.since) && ok(o.at) ? { since: o.since, at: o.at } : undefined
+}
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
 function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
   const p = progressOf(run)
   const runner = runnerOf(c.pane)
   const paged = limitPagedFile(runner, codex)
-  const until = existsSync(paged) ? readJson<number>(paged) : 0
+  const until = trustedPaged(paged, now)
   return {
     inMin: Math.floor((now - c.startedAt) / 60_000),
     ...(p?.seq === c.seq && { quietMin: Math.floor((now - p.at) / 60_000) }),
@@ -2989,7 +3276,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
         ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
-        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> "<note for the next station>"`,
+        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
       send({ type: 'NUDGED', seq: c.seq })
@@ -3019,8 +3306,20 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const base = baseBranchOf(def, rigOf(run.repo), run.repo)
       const files = conflictsOf(run.repo, base, run.branch)
       if (files.length) {
-        const summary = `no worker: merge origin/${base} into ${run.branch}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
-        send({ type: 'DONE', seq: c.seq, outcome: n.mergeCheck, summary })
+        // the head names the pushed commit, so a new push with the same files is a new conflict (claude-factory-gclk)
+        const head = Bun.spawnSync(['git', '-C', run.repo, 'rev-parse', '--short', `origin/${run.branch}`])
+          .stdout.toString()
+          .trim()
+        const summary = `no worker: merge origin/${base} into ${run.branch} at ${head}; conflicts in: ${files.join(', ')}; keep both sides of CHANGELOG.md [Unreleased]`
+        // the same conflict at the same head again: implement pushed nothing that resolves it
+        // (claude-factory-cjqo: 16 loops on a wrong base)
+        if (prevReport(c.log, node, n.next)?.summary === summary)
+          send({
+            type: 'BLOCKED',
+            seq: c.seq,
+            reason: `the same merge conflict again after implement: ${summary}`,
+          })
+        else send({ type: 'DONE', seq: c.seq, outcome: n.mergeCheck, summary })
         return 'merge conflict'
       }
     }
@@ -3040,9 +3339,11 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (info.bdSkew) {
       // one Question for each rig: the marker says it was asked. The hold lasts one probe window.
       const file = bdSkewFile(run)
-      const asked = existsSync(file)
+      const old = existsSync(file) ? readJson<{ at?: number; since?: number }>(file) : null
+      const asked = old !== null
       const rig = rigOf(run.repo)?.name ?? basename(run.repo)
-      writeJson(file, { at: now, runner: runner.name, error: info.bdSkew })
+      const since = typeof old?.since === 'number' ? old.since : typeof old?.at === 'number' ? old.at : now
+      writeJson(file, { since, at: now, runner: runner.name, error: info.bdSkew })
       if (!asked)
         send({
           type: 'MAIL',
@@ -3053,7 +3354,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       send({ type: 'FAIL', seq: c.seq, reason: info.failed, hold: now + SKEW_PROBE_MS })
       return info.status
     }
-    if (info.resumeFailed) send({ type: 'MAIL', from: 'factory', to: 'manager', text: info.resumeFailed })
+    if (info.resumeFailed && !noSuspend(run))
+      send({ type: 'MAIL', from: 'factory', to: 'manager', text: markNoSuspend(run, info.resumeFailed) })
     if (isBootstrapFail(info.failed)) {
       // a bd bootstrap outage spends no attempt: 2 min for the first hit, the streak floor and one mail for the next
       const prev = c.log.at(-1)
@@ -3131,27 +3433,28 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       : (info?.tail ?? '')
   const isCodex = harnessOf(agentOfNode(run, def, node)) === 'codex'
   if (isCodex && !runner.local) refreshCodexToken(now, runner.name)
-  const hit = isCodex && !runner.local ? (info?.limit ?? null) : limitHit(tail)
+  const hit = trustedHit(isCodex && !runner.local ? info?.limit : limitHit(tail), now)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
     // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,
     // runTokenSwap moves to a new slot, and the worker goes on when the vault refreshes. With no swap
     // command, the worker waits for the reset, and the nudge below then gives it its next turn.
+    const refused = hit.kind === 'auth'
     const until = runner.local
       ? swapAccount(hit, now)
       : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
       // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
       if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
-        const reason = `usage limit (${hit.kind}) until ${new Date(until).toISOString()}`
+        const reason = `${isCodex ? 'Codex' : 'Claude'} ${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
         send({ type: 'FAIL', seq: c.seq, reason, hold: until })
         return 'usage limit'
       }
       const paged = limitPagedFile(runner, isCodex)
-      if (!existsSync(paged) || readJson<number>(paged) < until) {
+      if (trustedPaged(paged, now) < until) {
         const text = runner.local
-          ? `Every Claude account is at its usage limit (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
-          : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is at its usage limit (${hit.kind}); they wait until ${new Date(until).toLocaleString()} and go on then.`
+          ? `Every Claude account is ${refused ? 'login refused' : 'at its usage limit'} (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
+          : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is ${refused ? `login refused (${hit.kind})` : `at its usage limit (${hit.kind})`}; they wait until ${new Date(until).toLocaleString()} and go on then.`
         send({ type: 'MAIL', from: 'factory', to: 'manager', text })
         writeJson(paged, until)
       }
@@ -3166,14 +3469,17 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // the egress gateway refusing api.anthropic.com (see docs/remote-runner.md): serve is retrying the turn
   // itself, so tell the manager once per outage and, once serve gives up (idle with the outage still set),
   // fail with the cause instead of spending nudges on a worker that was never going to report
-  const egress = info?.egress
+  // the laptop does not trust the VM's egress record (claude-factory-vl5j)
+  const egress = trustedEgress(info?.egress, now)
   const retries = (n: number) => `${n} ${n === 1 ? 'retry' : 'retries'}`
   if (egress) {
     // keyed per run+node, not per runner: the gateway is shared, so a single outage hits every concurrent
     // AX worker at once, and a file keyed only by the runner's name would have them overwrite each other's
     // `since` and each mail the manager on every tick
     const paged = join(runDir(run.id), `egress-paged-${node}.json`)
-    if (!existsSync(paged) || readJson<number>(paged) !== egress.since) {
+    // keyed on the laptop's clock: `since` comes from the VM, so only `at` limits how often it can page
+    const was = trustedEgressPaged(paged, now)
+    if (!was || (egress.since > was.since && now >= was.at + EGRESS_REPAGE_MS)) {
       const since = new Date(egress.since).toLocaleString()
       // from 'factory', not node: a notice, not a question, so it never reads as the station asking the
       // manager something and awaiting a reply (isAsking keys off mail with from === node)
@@ -3183,14 +3489,14 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         to: 'manager',
         text: `${node} of ${run.id}: the egress gateway is refusing new connections to the model API (since ${since}, ${retries(egress.tries)} so far). The worker is retrying itself; see docs/remote-runner.md if it does not clear on its own.`,
       })
-      writeJson(paged, egress.since)
+      writeJson(paged, { since: egress.since, at: now })
     }
   }
   const egressReason =
     egress &&
-    `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${clip(egress.last, 200)}`
+    `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${egress.last}`
   const limitPage = limitPagedFile(runner, isCodex)
-  const pagedUntil = existsSync(limitPage) ? readJson<number>(limitPage) : 0
+  const pagedUntil = trustedPaged(limitPage, now)
   // an outage is held, not failed: the machine spends no attempt on it (claude-factory-dhof). Only this
   // reconciler sets hold; a worker's own report never does.
   const failOutage = (reason: string) => {
@@ -3247,7 +3553,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const min = Math.round((now - seen.at) / 60_000)
     const last = tail.trimEnd().split('\n').at(-1) ?? ''
     send({ type: 'FAIL', seq: c.seq, reason: `stalled: no output for ${min} min` })
-    const text = `${node} of ${run.id} stalled: no output for ${min} min, attempt failed. Last line: ${clip(last, 200)}`
+    const text = `${node} of ${run.id} stalled: no output for ${min} min, attempt failed. Last line: ${cleanText(last, 200)}`
     send({ type: 'MAIL', from: node, to: 'manager', text })
   } else if (stall === 'nudge') {
     const min = Math.round((now - seen.at) / 60_000)
@@ -3316,6 +3622,18 @@ const readReviews = (): Record<string, memory.Review> => {
     return existsSync(reviewsFile()) ? readJson<Record<string, memory.Review>>(reviewsFile()) : {}
   } catch {
     return {} // a corrupt reviews.json must not break the tick
+  }
+}
+/** drop the verdicts of items that are no longer pending (installed, rejected or changed text), so reviews.json stays small */
+const pruneReviews = () => {
+  try {
+    const store = readReviews()
+    const live = new Set(memory.reviewItems(MEMORY).map(i => i.key))
+    const keys = Object.keys(store)
+    const kept = keys.filter(k => live.has(k))
+    if (kept.length < keys.length) writeJson(reviewsFile(), Object.fromEntries(kept.map(k => [k, store[k]!])))
+  } catch {
+    // housekeeping only: a failed prune must not break the tick
   }
 }
 /** the verdict for a skill or proposal as it stands now, or undefined */
@@ -3456,7 +3774,7 @@ function storeCodexUsage(run: Run, node: string, seq: number) {
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
 const appendUsage = (id: string, rows: Usage[]) =>
   appendFileSync(usageFile(id), rows.map(r => JSON.stringify(r) + '\n').join(''))
-/** a run's stored rows; a session and model that was stored twice (a resumed worker) keeps its last row */
+/** a run's stored rows; a node, seq, session and model that was stored twice (a resumed worker) keeps its last row */
 function storedUsage(id: string): Usage[] {
   if (!existsSync(usageFile(id))) return []
   const rows = readFileSync(usageFile(id), 'utf8')
@@ -3468,11 +3786,11 @@ function storedUsage(id: string): Usage[] {
         return []
       }
     })
-  return [...new Map(rows.map(r => [`${r.session}\0${r.model}`, r])).values()]
+  return [...new Map(rows.map(r => [`${r.node}\0${r.seq}\0${r.session}\0${r.model}`, r])).values()]
 }
 
 async function tickRun(run: Run, now: number, halt: Halt | null = null) {
-  const def = await loadFactory(run.factory)
+  const def = await loadPinned(run.factory)
   const file = join(runDir(run.id), 'state.json')
   const saved = readJson<Saved>(file)
   const actor = createActor(compile(def), { snapshot: saved.snapshot }).start()
@@ -3549,6 +3867,14 @@ export function shipPrOf(
 ) {
   if (links.length < 2) return links[0] ?? ''
   return links.find(url => headOf(url) === branch) ?? ''
+}
+
+/** the NAME a factory:<name> label takes: the base name of the run's factory file, else the def's name */
+export const factoryLabelName = (run: Run, def: Factory) => {
+  if (!run.factoryFrom) return def.name // run.factory is the pinned factory.json, not a name
+  const src = run.factoryFrom.replace(/ at [0-9a-f]{7,40}$/, '')
+  const base = basename(src, extname(src))
+  return NAME.test(base) ? base : def.name
 }
 
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
@@ -3629,7 +3955,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
       // dispatch never reads a station label off a Linear-sourced bead, so it gets a plain defer
       const station = typeof edge.defer === 'object' ? edge.defer.station : undefined
       const current = station ? b.lookup(id) : undefined
-      b.defer(id, reason, current && linearSourced(current) ? undefined : station)
+      b.defer(id, reason, current && linearSourced(current) ? undefined : station, factoryLabelName(run, def))
     }
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
@@ -3785,7 +4111,7 @@ async function beadsPass() {
         try {
           track(
             run,
-            await loadFactory(run.factory),
+            await loadPinned(run.factory),
             saved.snapshot.value,
             saved.snapshot.context,
             t,
@@ -4076,10 +4402,49 @@ function compactMessage(
  * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
+/**
+ * The rollouts of the codex dream since start (y3zo). Read at most 20 plain files that have a rollout
+ * name, are 64 MiB or smaller and sit under the private home's sessions/. Send every row through validUsage.
+ */
+function dreamCodexUsage(codexHome: string, start: number) {
+  const sessions = join(codexHome, 'sessions')
+  if (!existsSync(sessions)) return []
+  // ponytail: this reads each whole file; the upgrade is a stream of the last token_count.
+  const rows = (readdirSync(sessions, { recursive: true }) as string[])
+    .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(basename(f)))
+    .sort()
+    .filter(f => {
+      const st = lstatSync(join(sessions, f))
+      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= start
+    })
+    .slice(0, 20)
+    .flatMap(f => codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? [])
+  return validUsage(rows, 'dream', 0)
+}
+
+/**
+ * Make a private CODEX_HOME for the codex dream. It holds a trust line for the memory and a link to the
+ * person's auth.json (one token store, as codexWorker does). The dream copies nothing else.
+ */
+function dreamCodexHome() {
+  const dir = join(HOME, 'codex-dream')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  writeFileSync(join(dir, 'config.toml'), `[projects.${JSON.stringify(MEMORY)}]\ntrust_level = "trusted"\n`)
+  const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
+  const link = join(dir, 'auth.json')
+  rmSync(link, { force: true })
+  if (existsSync(auth)) symlinkSync(auth, link)
+  return dir
+}
+
+const DREAM_CODEX_NOTE =
+  '\n\nYour sandbox keeps .git read-only, so git mv and git rm fail. Use mkdir, mv, rm and rm -r (not rm -f). The factory stages your changes with git add -A.'
+
 /** the dream's own sessions (hr94): one name=dream row for each model in manager-usage.jsonl. Never throws */
-function storeDreamUsage(start: number) {
+function storeDreamUsage(start: number, codexHome?: string) {
   try {
-    const rows = usageIn(MEMORY, '', () => '?', start)
+    const rows = codexHome ? dreamCodexUsage(codexHome, start) : usageIn(MEMORY, '', () => '?', start)
     appendFileSync(
       join(HOME, 'manager-usage.jsonl'),
       rows
@@ -4149,22 +4514,70 @@ async function dream() {
         proposals: proposalsBefore.map(p => `- ${p.name} (${p.status}, rung ${p.rung})`),
       },
     )
-    // edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
-    const p = Bun.spawnSync(
-      [
-        ...claudeCommand().split(/\s+/),
-        ...['-p', '--permission-mode', 'acceptEdits'],
-        ...['--settings', JSON.stringify(withoutFleet())],
-        ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
-      ],
-      { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
-    )
+    // FACTORY_DREAM_CODEX=<model> runs the dream on codex in its workspace-write sandbox (y3zo)
+    const model = process.env.FACTORY_DREAM_CODEX
+    let codexHome: string | undefined
+    if (model) {
+      // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
+      const refuse = (why: string) => {
+        appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
+        return why
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model))
+        return refuse('FACTORY_DREAM_CODEX is not a model name')
+      // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
+      let hasCodexDir = true
+      try {
+        lstatSync(join(MEMORY, '.codex'))
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+        hasCodexDir = false
+      }
+      if (hasCodexDir) return refuse('the memory holds .codex, which would add codex project config')
+      codexHome = dreamCodexHome()
+    }
+    // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
+    const p = codexHome
+      ? Bun.spawnSync(
+          [
+            process.env.FACTORY_CODEX ?? 'codex',
+            ...['exec', '-s', 'workspace-write', '-c', 'approval_policy="never"'],
+            ...['-c', 'sandbox_workspace_write.network_access=false'],
+            ...['-c', 'sandbox_workspace_write.exclude_slash_tmp=true'],
+            ...['-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true'],
+            ...['-C', MEMORY, '-m', model!, '-'],
+          ],
+          {
+            cwd: MEMORY,
+            // 6w0m: the codex sandbox can run printenv, so pass an allowlist, not the tick env.
+            // Add a key only when the live dream fails without it.
+            env: {
+              ...Object.fromEntries(
+                ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
+                  process.env[k] === undefined ? [] : [[k, process.env[k]!]],
+                ),
+              ),
+              CODEX_HOME: codexHome,
+            },
+            stdin: Buffer.from(prompt + DREAM_CODEX_NOTE),
+            timeout: 45 * 60_000,
+          },
+        )
+      : Bun.spawnSync(
+          [
+            ...claudeCommand().split(/\s+/),
+            ...['-p', '--permission-mode', 'acceptEdits'],
+            ...['--settings', JSON.stringify(withoutFleet())],
+            ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
+          ],
+          { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
+        )
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
     // dream.log keeps history: a log past 256 KB moves to dream.log.1 (one old file, replaced each time)
     const dreamLog = join(HOME, 'dream.log')
     if (existsSync(dreamLog) && statSync(dreamLog).size > 256 * 1024) renameSync(dreamLog, `${dreamLog}.1`)
     appendFileSync(dreamLog, `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
-    storeDreamUsage(start)
+    storeDreamUsage(start, codexHome)
     if (p.exitCode !== 0) return said
     // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
     const overProposals = memory.proposalsOverCap(
@@ -4663,16 +5076,6 @@ function gcPass(days: number, dryRun: boolean) {
   )
   if (dryRun) return
   for (const r of plan.runs) {
-    if (r.paths.includes('prompts')) {
-      const dir = join(runDir(r.id), 'prompts')
-      const listFile = promptsListFile(r.id)
-      // Union with any names prompts.list already held (claude-factory-503.1.7): a goto revive
-      // after an earlier gc can have refilled prompts/ with only its new names, and overwriting
-      // the list here would lose the old station names.
-      const old = existsSync(listFile) ? readJson<string[]>(listFile) : []
-      const current = existsSync(dir) ? readdirSync(dir) : []
-      writeJson(listFile, [...new Set([...old, ...current])])
-    }
     appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
     for (const p of r.paths) rmSafe(join(runDir(r.id), p), { recursive: true, force: true })
   }
@@ -4888,47 +5291,48 @@ export function githubSlug(url: string): string | null {
   const parts = remote.path.split('/')
   return parts.length === 2 && parts[0] && parts[1] ? `${parts[0]}/${parts[1]}` : null
 }
-/** the GraphQL query `prFacts()` sends. On the first page, `$endCursor` has no value. On every
- * page after, `gh --paginate` sets `$endCursor` from the last page's `pageInfo.endCursor`.
- * `orderBy: CREATED_AT ASC` keeps the page order the same across a run. */
-const PR_FACTS_QUERY =
-  'query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){' +
-  'pullRequests(first:100,after:$endCursor,orderBy:{field:CREATED_AT,direction:ASC}){' +
-  'totalCount nodes{number state headRefName headRefOid isCrossRepository} pageInfo{hasNextPage endCursor}}}}'
-
-/** `gh api graphql --paginate`, called once per rig, not once per branch. The plan for
+/** `gh api repos/<owner>/<repo>/pulls`, one call per page, once per rig, not once per branch. The plan for
  * claude-factory-l38 rejected the per-branch call: it would run about 700 calls on the first
  * pass. This function returns null on a non-GitHub forge, or on any `gh` failure (AC5).
  *
  * `gh pr list --limit 1000` (claude-factory-l38.13) capped a rig's pull requests at 1000. A rig
  * with more PRs than that always read as incomplete (claude-factory-ph8: a rig with over 3000
- * pull requests is a real case). So gc never reclaimed a branch on it. GraphQL's `totalCount`
- * proves a read is complete. `gc.parsePrPages()` checks it against the number of distinct PR
- * numbers read, and returns null, never a partial list, on any mismatch. */
+ * pull requests is a real case). The page loop has no cap, and a failed page gives null.
+ * GraphQL gave no owner in the path, so the AX gateway sent the default key (claude-factory-oz6s).
+ * `--jq tojson` prints one JSON line per call. `gc.parsePrPages()` returns null, never a partial list,
+ * on any unknown form. Ascending creation order means a PR opened during the read only adds at the end. */
 function prFacts(repo: string): gc.PrFact[] | null {
   const url = originConfigUrl(repo)
   const slug = url ? githubSlug(url) : null
   if (!slug) return null
-  const [owner, name] = slug.split('/')
-  const p = Bun.spawnSync(
-    [
-      'gh',
-      'api',
-      'graphql',
-      '--paginate',
-      '-f',
-      `owner=${owner}`,
-      '-f',
-      `name=${name}`,
-      '-f',
-      `query=${PR_FACTS_QUERY}`,
-      '--jq',
-      '.data.repository.pullRequests | {totalCount, nodes} | tojson',
-    ],
-    { cwd: repo, timeout: 300_000 },
-  )
-  if (p.exitCode !== 0) return null
-  return gc.parsePrPages(p.stdout.toString())
+  // One call per page, not `--paginate`: gh follows the Link URL /repositories/<id>/pulls, which has no
+  // owner in the path, so the AX gateway sends the default key for pages 2 and later (claude-factory-oz6s).
+  const pages: string[] = []
+  for (let page = 1; ; page++) {
+    const p = Bun.spawnSync(
+      [
+        'gh',
+        'api',
+        `repos/${slug}/pulls?state=all&sort=created&direction=asc&per_page=100&page=${page}`,
+        '--jq',
+        'tojson',
+      ],
+      { cwd: repo, timeout: 300_000 },
+    )
+    if (p.exitCode !== 0) return null
+    const text = p.stdout.toString().trim()
+    pages.push(text)
+    // a short page is the last one; each call prints one JSON array on one line
+    let n: unknown
+    try {
+      n = JSON.parse(text)
+    } catch {
+      return null
+    }
+    if (!Array.isArray(n)) return null
+    if (n.length < 100) break
+  }
+  return gc.parsePrPages(pages.join('\n'))
 }
 
 type GcRunRef = gc.RunRef & { repo: string }
@@ -5232,6 +5636,7 @@ async function tick(isPatrol = false) {
     const linearState = existsSync(linearSyncFile())
       ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
       : {}
+    pruneReviews()
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
@@ -5274,7 +5679,8 @@ async function tick(isPatrol = false) {
     return { ...out, halt: halted()?.state }
   } finally {
     release()
-    if (rigs().length || runIds().length) {
+    // FACTORY_NO_KICK=1 (tests): a detached pass would recreate a removed home
+    if (process.env.FACTORY_NO_KICK !== '1' && (rigs().length || runIds().length)) {
       kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
       if (!halted()) kickDream()
       if (!halted()) kickWatch()
@@ -5477,14 +5883,13 @@ const ghRuns = (repo: string, extra: string[]): GhRun[] => {
   return runs
 }
 
-/** the labels of every open bead in `repo`, for the ci-red and flake dedupe; a bd failure throws */
-const openLabels = (repo: string): Set<string> =>
-  new Set(
-    beads(repo, 'factory')
-      .every()
-      .filter(b => b.status !== 'closed')
-      .flatMap(b => b.labels ?? []),
-  )
+/** the labels of the open and the closed beads in `repo`, for the ci-red and flake dedupe; a bd failure throws */
+const beadLabels = (repo: string): { open: Set<string>; closed: Set<string> } => {
+  const all = beads(repo, 'factory').every()
+  const of = (closed: boolean) =>
+    new Set(all.filter(b => (b.status === 'closed') === closed).flatMap(b => b.labels ?? []))
+  return { open: of(false), closed: of(true) }
+}
 
 /** printable ASCII only, so a workflow name or URL cannot carry a control or bidi character into a mail */
 const plain = (s: string, max = 200) => s.replace(/[^\x20-\x7e]/g, '?').slice(0, max)
@@ -5503,7 +5908,8 @@ function ciSweepRead(
   if (station === 'ci') {
     const reds = mainCiReds(ghRuns(rig.repo, ['--branch', branch, '--limit', '100']))
     if (!reds.length) return { action: 'green' }
-    const fresh = newCiReds(reds, openLabels(rig.repo))
+    const { open, closed } = beadLabels(rig.repo)
+    const fresh = newCiReds(reds, open, closed)
     if (!fresh.length) return { action: 'tracked' }
     return {
       action: 'start',
@@ -5522,7 +5928,7 @@ function ciSweepRead(
     ghRuns(rig.repo, ['--branch', branch, '--created', `>=${since}`, '--limit', '1000']),
   ).slice(0, 10)
   if (!flaky.length) return { action: 'quiet' }
-  const labels = openLabels(rig.repo)
+  const labels = beadLabels(rig.repo).open
   const logs = flaky.flatMap(r => {
     try {
       const out = ghRead(rig.repo, [
@@ -6101,7 +6507,7 @@ async function createRun(
   mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
   let def: Factory
   try {
-    def = await loadFactory(source)
+    def = await (from ? loadPinned : loadFactory)(source)
     // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
     if (hasShipEdge(def) && !hasBeads(repo))
       throw new Error('it hands its beads to ship, which needs a repo with .beads')
@@ -6687,36 +7093,70 @@ const logPrecheck = (rig: string, bead: string, kind: string, evidence: string) 
   }
 }
 
-/** `gh pr list --state merged --search <id> ...`, a second `--search <short id>` for a dotted child id, plus a REST `head=<owner>:<branch>` lookup for up to 3 local run
- * branches of this bead (a PR that closed the bead's own run but never named it in its title) */
-async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh): Promise<MergedPr[]> {
-  const fields = 'number,url,title,headRefName,mergeCommit'
-  const search = await gh(['pr', 'list', '--state', 'merged', '--search', id, '--json', fields, '-L', '30'], {
-    cwd: repo,
-    timeout: PRECHECK_TIMEOUT_MS,
-  })
-  if (search.code !== 0) throw new Error(clip(search.err.trim().split('\n')[0] || 'gh pr list failed', 200))
-  const found = parseMergedPrs(search.out)
-  // claude-factory-jxl.1: a title may cite only the short child id ("192.6"); the full-id search misses it
-  const short = shortBeadId(id)
+/** the pre-check's merged-PR lookups for a rig on GitHub (one REST list of the newest 300 closed PRs, then a REST `head=` call
+ * per branch) or GitLab (`glab api` merged MR searches: a title search for the id, a second one for a dotted child's short id),
+ * plus a lookup for up to 3 local run branches of this bead (a PR that closed the bead's own run but never named it in its
+ * title). It throws when the first list or search fails. A failed short-id or branch call keeps the hits already found. */
+async function mergedPrsFor(
+  repo: string,
+  origin: NonNullable<ReturnType<typeof originRef>>,
+  id: string,
+  branches: string[],
+  cli: { gh: Gh; glab: Gh },
+): Promise<MergedPr[]> {
+  const gl = origin.forge === 'gitlab'
+  const glabPath = `${origin.owner}/${origin.repo}`
+  let firstErr = ''
+  const ref = gl ? null : rigRef(repo) // GitLab does not use it: spare the extra git remote get-url
+  // GitHub: one REST list of the newest closed PRs. `alreadyDone` matches the id, the short id and the run
+  // branches in it. `gh pr list --search` is GraphQL, which the AX gateway cannot key by owner (oz6s).
+  const list = gl
+    ? await gitlabMergedJson(
+        cli.glab,
+        origin.host,
+        glabPath,
+        repo,
+        { search: id, timeoutMs: PRECHECK_TIMEOUT_MS },
+        e => (firstErr = e),
+      )
+    : ref
+      ? // ponytail: 3 pages = the newest 300 closed PRs; an older merge is missed by the pre-check
+        await githubMergedJson(
+          cli.gh,
+          ref.slug,
+          repo,
+          { pages: 3, timeoutMs: PRECHECK_TIMEOUT_MS },
+          e => (firstErr = e),
+        )
+      : null
+  if (list === null)
+    throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh api pulls'} failed`, 200))
+  const found = parseMergedPrs(list)
+  // claude-factory-jxl.1: a GitLab title may cite only the short child id ("192.6"); the full-id search misses it
+  const short = gl ? shortBeadId(id) : null
   if (short) {
-    const byShort = await gh(
-      ['pr', 'list', '--state', 'merged', '--search', short, '--json', fields, '-L', '30'],
-      {
-        cwd: repo,
-        timeout: PRECHECK_TIMEOUT_MS,
-      },
-    )
-    if (byShort.code === 0) found.push(...parseMergedPrs(byShort.out))
+    const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
+      search: short,
+      timeoutMs: PRECHECK_TIMEOUT_MS,
+    })
+    if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
-  // claude-factory-6as.9: a failed `--head` call must not discard a hit `--search` already found.
+  // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
   // Each branch is a supplementary lookup, so this keeps every row a call did return and skips only
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
-    const ref = rigRef(repo)
-    const byHead = ref
-      ? await githubMergedJson(gh, ref.slug, repo, { pages: 1, head: `${ref.owner}:${branch}` })
-      : null
+    const byHead = gl
+      ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
+          sourceBranch: branch,
+          timeoutMs: PRECHECK_TIMEOUT_MS,
+        })
+      : ref
+        ? await githubMergedJson(cli.gh, ref.slug, repo, {
+            pages: 1,
+            head: `${ref.owner}:${branch}`,
+            timeoutMs: PRECHECK_TIMEOUT_MS,
+          })
+        : null
     if (byHead !== null) found.push(...parseMergedPrs(byHead))
   }
   return found
@@ -6726,14 +7166,15 @@ async function mergedPrsFor(repo: string, id: string, branches: string[], gh: Gh
  * claude-factory-6as: check if a merged PR already proves `bead`'s work is done.
  * If it does, dispatch must reject the bead instead of starting a run for it.
  *
- * This makes no gh call at all in four cases:
+ * This makes no gh or glab call at all in five cases:
  * - `FACTORY_PRECHECK=0`
  * - a person already overrode a prior reject (`rejected_by` metadata still names dispatch after a
  *   requeue)
  * - the id does not look like a bead id
- * - the rig's repo is not on GitHub
+ * - the rig's repo is neither on GitHub nor on GitLab
+ * - this pass already saw a gh or glab failure on the same forge (the `forgeFailed` latch, per forge)
  *
- * A gh failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
+ * A gh or glab failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
  * shows it.
  */
 async function precheckSkip(
@@ -6741,7 +7182,8 @@ async function precheckSkip(
   bead: Bead,
   b: ReturnType<typeof beads>,
   runBranches: string[],
-  gh: Gh,
+  cli: { gh: Gh; glab: Gh },
+  forgeFailed: Set<ForgeKind>,
 ): Promise<{ skip: boolean; error?: string }> {
   if (process.env.FACTORY_PRECHECK === '0') return { skip: false }
   if (bead.metadata?.rejected_by === 'dispatch') return { skip: false }
@@ -6752,13 +7194,17 @@ async function precheckSkip(
   // through the pre-check like any other.
   if (bead.metadata?.requeued_from) return { skip: false }
   if (!/^[\w.-]+$/.test(bead.id)) return { skip: false }
-  if (originRef(rig.repo)?.forge !== 'github') return { skip: false }
+  const origin = originRef(rig.repo)
+  if (!origin) return { skip: false }
+  // claude-factory-6as.9: one failed call already proved this forge broken for the pass; fail every later candidate open
+  if (forgeFailed.has(origin.forge)) return { skip: false }
   let merged: MergedPr[]
   try {
-    merged = await mergedPrsFor(rig.repo, bead.id, runBranches, gh)
+    merged = await mergedPrsFor(rig.repo, origin, bead.id, runBranches, cli)
   } catch (err) {
     const error = `pre-check skipped: ${(err as Error).message}`
     logPrecheck(rig.name, bead.id, 'skip', error)
+    forgeFailed.add(origin.forge)
     return { skip: false, error }
   }
   const children = b.children(bead.id)
@@ -6792,9 +7238,10 @@ async function dispatch() {
   const { busy, held } = await busyRigs()
   const { ids: linearIds, rigs: linearRigs } = linearExcluded()
   // claude-factory-6as.9: one hung gh call already proved gh broken for this pass (5 calls, up to
-  // 15s each). The other candidates, in this rig or the next, must fail open with no further gh
-  // calls, not wait out the same timeout again.
-  let ghFailed = false
+  // 15s each). The other candidates on that forge, in this rig or the next, must fail open with no
+  // further calls, not wait out the same timeout again. The latch is per forge: a broken glab
+  // must not turn off the GitHub pre-check.
+  const forgeFailed = new Set<ForgeKind>()
   // live runs only: a finished run's deferred bead, undeferred by a person, is new work again.
   // claude-factory-6as.3: a Map, not a Set, so dispatch can name the run working a bead that is
   // still `ready` and unassigned (it lost its own claim on the bead), for one comment.
@@ -7084,7 +7531,10 @@ async function dispatch() {
           if (!signing.ok)
             errors.push({
               id: 'signing',
-              error: `commit signing failed: ${signing.error}. Unlock the signing agent (or fix it); local runs wait. No unsigned fallback.`,
+              error:
+                signing.kind === 'identity'
+                  ? `git identity missing in the rig repo (${signing.error}). Set user.name and user.email there; local runs wait. No unsigned fallback.`
+                  : `commit signing failed: ${signing.error}. Unlock the signing agent (or fix it); local runs wait. No unsigned fallback.`,
             })
         }
         if (!signing.ok) {
@@ -7187,6 +7637,11 @@ async function dispatch() {
           nodes = loaded.nodes
           spec = source
         }
+        // only shipPass starts a ship run: a ship-named factory here would get merge authority with no run.ship
+        if (name === 'ship') {
+          deferCandidate('factory ship is reserved for the ship queue: only the runner starts a ship run')
+          continue
+        }
         // a station the chosen factory lacks would otherwise start the run quietly at its own
         // first station (`def.start`, below), with no sign anywhere that the label was wrong
         if (at && !Object.hasOwn(nodes, at)) {
@@ -7203,15 +7658,17 @@ async function dispatch() {
           })
           .slice(0, 3)
           .map(id => `factory/${id}`)
-        // claude-factory-6as.9: skip the gh calls outright once this pass already proved gh broken;
-        // the first candidate's row in precheck.jsonl already covers the fail-open for the rest.
-        const { skip, error } = ghFailed
-          ? { skip: false, error: undefined }
-          : await precheckSkip(rig, bead, b, runBranches, spawnGh)
-        if (error) {
-          errors.push({ id: bead.id, error })
-          ghFailed = true
-        }
+        // claude-factory-6as.9: precheckSkip makes no call for a forge that already failed in this pass;
+        // the first candidate's row in precheck.jsonl covers the fail-open for the rest.
+        const { skip, error } = await precheckSkip(
+          rig,
+          bead,
+          b,
+          runBranches,
+          { gh: spawnGh, glab: spawnGlab },
+          forgeFailed,
+        )
+        if (error) errors.push({ id: bead.id, error })
         if (skip) {
           skips.set(bead.id, 'pre-check: already done')
           continue
@@ -7783,21 +8240,39 @@ export const labelMail = (
   ...(isParkedOn(s.c, s.node, url) && { wake: true as const }),
 })
 
-/** a live run owns the PR that got a rework label: remove the label, mail the station, comment on the PR */
+/** a `rework` label asks for changes, so the work goes through implement; a bare `conflict` label only needs a rebase */
+const wantsChanges = (pr: LabeledPr) => reworkLabels(pr).includes(REWORK_LABEL)
+
+/** the run to start for a rework-labeled PR no run owns: implement on the PR's own branch, or the one-station rework.yaml */
+export function reworkStart(pr: LabeledPr, factory: string) {
+  if (!wantsChanges(pr)) return { spec: 'rework', goal: reworkGoal(pr), branch: undefined, at: undefined }
+  const goal = `${reworkGoal(pr)} Your worktree starts from origin/${pr.headRefName}. Push your commits to that branch (git push origin HEAD:${pr.headRefName}). Open no new PR.`
+  return { spec: factory, goal, branch: pr.headRefName, at: 'implement' as const }
+}
+
+/**
+ * a live run owns the PR that got a label: remove the label, mail the station, comment on the PR.
+ * A `rework` label on a run with an implement station also moves the run there (claude-factory-8yhq).
+ */
 export function reworkOwned(
   pr: LabeledPr,
-  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0] },
+  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0]; implement?: boolean },
   io: {
     unlabel: (pr: LabeledPr, labels: string[]) => unknown
     comment: (pr: LabeledPr, body: string) => unknown
-    post: (runId: string, ev: ReturnType<typeof labelMail>) => unknown
+    post: (runId: string, ev: ReturnType<typeof labelMail> | { type: 'GOTO'; node: string }) => unknown
   },
 ) {
-  const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
+  const toImplement = wantsChanges(pr) && !!owner.implement && owner.node !== 'implement' // already there: mail only, a goto would restart its work
+  const node = toImplement ? 'implement' : owner.node
+  const text = toImplement
+    ? `[factory] ${pr.url} was ${asksOf(pr)}. Do it at this station, then go on to verify and review.`
+    : `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
   // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
   io.unlabel(pr, reworkLabels(pr))
-  io.post(owner.id, labelMail(owner, pr.url, text))
-  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${owner.node}), which owns this.`)
+  io.post(owner.id, labelMail({ c: owner.c, node }, pr.url, text))
+  if (toImplement) io.post(owner.id, { type: 'GOTO', node })
+  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${node}), which owns this.`)
 }
 
 /** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
@@ -7823,7 +8298,7 @@ async function liveByBead() {
   for (const id of startedRunIds()) {
     const { run, value, c } = current(id)
     if (!run.bead || ['done', 'aborted'].includes(where(value)[0])) continue
-    const r = row(run, await loadFactory(run.factory), value, c)
+    const r = row(run, await loadPinned(run.factory), value, c)
     out.set(run.bead, {
       blocked: !!holdOf(r),
       why: r.gate?.question ?? r.last?.summary,
@@ -8058,11 +8533,25 @@ async function labelPass() {
           })
         } else if (action === 'rework' && runId) {
           const owner = live.find(r => r.id === runId)!
-          reworkOwned(pr, owner, { ...forge, post })
-          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${owner.node}`)
+          const implement = Object.hasOwn((await loadPinned(loadRun(runId).factory)).nodes, 'implement')
+          reworkOwned(pr, { ...owner, implement }, { ...forge, post })
+          console.log(
+            `${new Date().toISOString()} rework ${pr.url} → its run ${runId} (was at ${owner.node})`,
+          )
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           forge.unlabel(pr, reworkLabels(pr))
-          const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
+          const start = reworkStart(pr, rig.factory)
+          const { run, def } = await createTracked(
+            start.spec,
+            'rework',
+            rig.repo,
+            start.goal,
+            undefined,
+            undefined,
+            undefined,
+            start.branch,
+          )
+          if (start.at && Object.hasOwn(def.nodes, start.at)) post(run.id, { type: 'GOTO', node: start.at })
           busy.push(rig.name)
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
@@ -8077,7 +8566,7 @@ async function labelPass() {
 
 /**
  * Start a review run for each green draft pull request that no run owns (claude-factory-pff5).
- * An aborted run that blocked leaves such a PR. In each GitHub rig, `orphanSweep` forks the source run
+ * An aborted run that blocked leaves such a PR. In each GitHub or GitLab rig, `orphanSweep` forks the source run
  * at `review`. It forks ORPHAN_CAP runs at most in one pass, and only where the rig has room.
  * Each fork goes in orphan-forks.json, keyed by PR URL and head SHA: one review for each head.
  * If that file is unreadable, the rig is skipped: with no record, a PR can get two forks.
@@ -8100,11 +8589,13 @@ async function orphanPass() {
   const { busy, held } = await busyRigs()
   const runs = new Map<string, Run>()
   const live: { id: string; log: Entry[]; bead?: string }[] = []
+  const decided = new Set<string>()
   for (const id of startedRunIds()) {
     try {
       const { run, value, c } = current(id)
       const [node] = where(value)
       runs.set(id, run)
+      if (c.log.at(-1)?.outcome === 'decision') decided.add(id)
       if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
     } catch {
       // a run still being written
@@ -8113,23 +8604,50 @@ async function orphanPass() {
   for (const rig of rigs()) {
     try {
       const ref = rigRef(rig.repo)
-      if (!ref) continue // GitLab rigs: claude-factory-9t7v
+      const gl = originRef(rig.repo)
+      if (!ref && gl?.forge !== 'gitlab') continue
       if (!records) throw new Error('orphan-forks.json is unreadable')
       const cap = Math.min(ORPHAN_CAP, room(rig, busy, undefined, held))
-      if (cap <= 0) continue
-      const rows = await githubPulls(spawnGh, ref.slug, rig.repo, { state: 'open', pages: 2 })
-      if (!rows) throw new Error('gh api pulls failed')
-      const prs = (githubRows(rows) as OrphanPr[]).filter(pr => pr.headRefName.startsWith('factory/'))
+      // a full rig forks nothing (cap 0), but its failed-fork rows stay
+      const project = gl ? `${gl.owner}/${gl.repo}` : ''
+      let all: OrphanPr[]
+      if (ref) {
+        const rows = await githubPulls(spawnGh, ref.slug, rig.repo, { state: 'open', pages: 2 })
+        if (!rows) throw new Error('gh api pulls failed')
+        all = githubRows(rows) as OrphanPr[]
+      } else {
+        // ponytail: one page of 100 MRs; a project with more open MRs misses the older ones. Upgrade: page=2, as githubPulls does.
+        const r = await spawnGlab(
+          [
+            'api',
+            '--hostname',
+            gl!.host,
+            `projects/${encodeURIComponent(project)}/merge_requests?state=opened&per_page=100`,
+          ],
+          { cwd: rig.repo, timeout: 60_000 },
+        )
+        if (r.code !== 0) throw new Error('glab api merge_requests failed')
+        all = parseGitlabLabeled(r.out)
+      }
+      const prs = all.filter(pr => pr.headRefName.startsWith('factory/'))
       if (!prs.length) continue
       const shipQueue = beads(rig.repo, 'factory').shipQueue()
-      const mine = new Map<string, { bead?: string }>()
-      for (const [id, run] of runs) if (run.repo === rig.repo) mine.set(id, { bead: run.bead })
+      const mine = new Map<string, { bead?: string; decided?: boolean }>()
+      for (const [id, run] of runs)
+        if (run.repo === rig.repo) mine.set(id, { bead: run.bead, decided: decided.has(id) })
       const ctx: OrphanCtx = {
         runs: mine,
         liveBeads: new Set(live.flatMap(r => (r.bead ? [r.bead] : []))),
         owner: pr => prOwner(pr, live),
         queued: pr => !!queuedOwner(pr, shipQueue),
         records: records,
+        forkAborted: id => {
+          try {
+            return where(current(id).value)[0] === 'aborted'
+          } catch {
+            return false // no such run: the fork did not abort
+          }
+        },
       }
       const { skipped } = await orphanSweep(
         prs,
@@ -8142,11 +8660,71 @@ async function orphanPass() {
               return null
             }
           },
-          checks: pr => githubChecks(spawnGh, ref.slug, pr.headRefOid, rig.repo),
+          checks: pr =>
+            ref
+              ? githubChecks(spawnGh, ref.slug, pr.headRefOid, rig.repo)
+              : gitlabChecks(spawnGlab, gl!.host, project, pr.number, pr.headRefOid, rig.repo),
+          view: async pr => {
+            if (ref) {
+              const v = await githubWatchView(spawnGh, pr.url, rig.repo)
+              return (
+                v && {
+                  mergeable: v.mergeable ?? 'UNKNOWN',
+                  changes: v.reviewDecision === 'CHANGES_REQUESTED',
+                }
+              )
+            }
+            const r = await spawnGlab(
+              [
+                'api',
+                '--hostname',
+                gl!.host,
+                `projects/${encodeURIComponent(project)}/merge_requests/${pr.number}`,
+              ],
+              { cwd: rig.repo, timeout: 60_000 },
+            )
+            const mr = r.code === 0 ? (JSON.parse(r.out || 'null') as Record<string, unknown> | null) : null
+            if (!mr) return null
+            // a draft MR reports detailed_merge_status "draft_status", so read has_conflicts and the review ask directly
+            const status = String(mr.detailed_merge_status ?? '')
+            return {
+              mergeable:
+                mr.has_conflicts === true || status === 'conflict'
+                  ? 'CONFLICTING'
+                  : mr.has_conflicts === false && ['mergeable', 'draft_status'].includes(status)
+                    ? 'MERGEABLE'
+                    : 'UNKNOWN',
+              changes: status === 'requested_changes',
+            }
+          },
+          label: async (pr, labels) => {
+            const r = ref
+              ? await spawnGh(githubLabelArgv(ref.slug, pr.number, labels), {
+                  cwd: rig.repo,
+                  timeout: 60_000,
+                })
+              : await spawnGlab(['mr', 'update', String(pr.number), '--label', labels.join(',')], {
+                  cwd: rig.repo,
+                  timeout: 60_000,
+                })
+            if (r.code !== 0) throw new Error(r.err.trim().split('\n')[0] || 'label call failed')
+          },
+          close: async (pr, body) => {
+            const calls = ref
+              ? [githubCommentArgv(ref.slug, pr.number, body), githubCloseArgv(ref.slug, pr.number)]
+              : [
+                  ['mr', 'note', String(pr.number), '-m', body],
+                  ['mr', 'close', String(pr.number)],
+                ]
+            for (const argv of calls) {
+              const r = await (ref ? spawnGh : spawnGlab)(argv, { cwd: rig.repo, timeout: 60_000 })
+              if (r.code !== 0) throw new Error(r.err.trim().split('\n')[0] || 'close call failed')
+            }
+          },
           fork: async (pr, srcId, note) => {
             const { value } = current(srcId)
             const src = runs.get(srcId)!
-            const def = await loadFactory(src.factory)
+            const def = await loadPinned(src.factory)
             if (!Object.hasOwn(def.nodes, 'review'))
               throw new Error(`${srcId}: its factory has no review station`)
             const run = await forkRun(src, value, def.name, 'review', note, 'factory')
@@ -8162,21 +8740,20 @@ async function orphanPass() {
               )
           },
         },
-        cap,
+        Math.max(cap, 0),
       )
+      const shown = new Set<string>()
       for (const s of skipped)
-        if (/^(fork|record) failed/.test(s.why))
+        if (/^(fork|record) failed/.test(s.why)) {
+          shown.add(s.url)
           errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
+        }
       // a failed fork keeps its record, so later passes skip the PR: show the row every pass until a person removes the entry
       for (const pr of prs)
-        if (
-          records![pr.url]?.sha === pr.headRefOid &&
-          records![pr.url]?.run === '' &&
-          !errors.some(e => e.error?.includes(pr.url))
-        )
+        if (records![pr.url]?.sha === pr.headRefOid && records![pr.url]?.run === '' && !shown.has(pr.url))
           errors.push({
             id: `rig:${rig.name}`,
-            error: `orphans: ${pr.url}: fork failed at ${pr.headRefOid.slice(0, 7)}; remove its orphan-forks.json entry to retry`,
+            error: `orphans: ${pr.url}: fork failed or not recorded at ${pr.headRefOid.slice(0, 7)}; check for a review run, then remove its orphan-forks.json entry to retry`,
           })
     } catch (err) {
       errors.push({ id: `rig:${rig.name}`, error: `orphans: ${(err as Error).message}` })
@@ -8276,7 +8853,7 @@ async function watchPass() {
         ])
         const prs = views.filter(v => v !== null)
         const failed = prs.length < views.length
-        const def = await loadFactory(run.factory)
+        const def = await loadPinned(run.factory)
         // the plain park this report would have had, had it linked nothing
         const plainMin = parkDelayMin({ ...c, log: c.log.slice(0, -1) }, node, def.nodes[node]?.parkMin ?? 60)
         const key = `${id}:${parked.at}`
@@ -8303,6 +8880,19 @@ async function watchPass() {
               seen.decisions[p.url] = p.reviewDecision
             if (seen.changes && !(p.url in seen.changes)) seen.changes[p.url] = !!p.changesRequested
           }
+        const fs = store[key]!
+        fs.failedPasses = failed ? (fs.failedPasses ?? 0) + 1 : 0
+        if (fs.failedPasses >= WATCH_FAIL_PASSES && !fs.failMailed) {
+          fs.failMailed = true
+          const bad = [...urls, ...mrUrls].filter((_, n) => views[n] === null)
+          post(id, {
+            type: 'MAIL',
+            from: 'factory',
+            to: 'manager',
+            text: `[factory] watch: gh/glab could not view ${bad.join(', ')} on ${WATCH_FAIL_PASSES} passes in a row. Run ${id} stays parked at ${node} with no worker until ${new Date(c.wakeAt).toISOString()}. Check gh/glab auth, rate limit and repo access.`,
+          })
+          console.log(`${new Date().toISOString()} ${id}: mailed the manager: ${bad.length} failed view(s)`)
+        }
         const now = Date.now()
         const d = watchDecide({
           prs,
@@ -8311,8 +8901,7 @@ async function watchPass() {
           now,
           wakeAt: c.wakeAt,
           plainMin,
-          // machine.ts BLOCKED mailOnly parks until 2x OWNER_AFTER_MS
-          mailOnly: c.wakeAt - parked.at >= 2 * OWNER_AFTER_MS,
+          mailOnly: !!parked.mailOnly,
           isPreLaunch: isPrWait(parked),
           seen,
           canHold: !!def.nodes[node]?.next.hold,
@@ -8364,7 +8953,7 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = body.split('\n', 1)[0]!.slice(0, 80)
+                const first = cut(body.split('\n', 1)[0]!, 80)
                 b.create(
                   `PR change request: ${first}`,
                   `${d.url}\n\n${body}`,
@@ -8412,7 +9001,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
     const { run, value } = cur
     if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
     const [node, sub] = where(value)
-    const n = (await loadFactory(run.factory)).nodes[node]
+    const n = (await loadPinned(run.factory)).nodes[node]
     const s = slot(n, sub)
     if (s === 'busy') busy.push(rigOf(run.repo)?.name)
     else if (s === 'rig') held.push(rigOf(run.repo)?.name)
@@ -8630,16 +9219,110 @@ function managerSender(run: Run): 'manager' {
  * forMail skips FACTORY_FROM and FACTORY_RUN: the manager mails with FACTORY_FROM=manager (remote.test.ts) and a run worker mails its own station (run-scope.test.ts), so managerSender keeps its old three markers.
  * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
  */
-function workerMarker(forMail = false): string | undefined {
-  return process.env.FACTORY_FROM && !forMail
+function workerMarker(
+  forMail = false,
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  return env.FACTORY_FROM && !forMail
     ? 'FACTORY_FROM is set'
-    : process.env.FACTORY_RUN && !forMail
+    : env.FACTORY_RUN && !forMail
       ? 'FACTORY_RUN is set'
-      : process.env.FACTORY_DEF_NAME
+      : env.FACTORY_DEF_NAME
         ? 'FACTORY_DEF_NAME is set'
-        : process.env.BEADS_ACTOR?.startsWith('factory/')
+        : env.BEADS_ACTOR?.startsWith('factory/')
           ? 'BEADS_ACTOR names a factory worker'
           : undefined
+}
+
+/** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
+const WORKER_VERBS = [
+  'report',
+  'mail',
+  'memory',
+  'status',
+  'show',
+  'check',
+  'home',
+  'ship',
+  'advisories',
+  'pg-scratch',
+  'mutate',
+  'ci',
+  'worker',
+  'file-elsewhere',
+]
+
+/** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
+export function workerVerbRefusal(
+  cmd: string | undefined,
+  args: string[],
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const marker = workerMarker(false, env)
+  if (!marker || !cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || WORKER_VERBS.includes(cmd))
+    return undefined
+  if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
+  return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
+}
+
+/**
+ * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title T --description D`.
+ * The label `factory` goes on only when the source bead reads back with its own id and no Linear
+ * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
+ */
+function fileElsewhere(args: string[]) {
+  const usage =
+    'usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title <text> --description <text>'
+  const [target, ...rest] = args
+  const flags = new Map<string, string>()
+  if (!target || target.startsWith('--') || rest.length !== 6) fail(usage)
+  for (let i = 0; i < rest.length; i += 2) {
+    const k = rest[i]!
+    const v = rest[i + 1]
+    if (!['--from', '--title', '--description'].includes(k) || !v || flags.has(k)) fail(usage)
+    flags.set(k, v!)
+  }
+  const [srcName, srcId, ...extra] = flags.get('--from')!.split(':')
+  if (!srcName || !srcId || extra.length || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(srcId)) fail(usage)
+  const rigNamed = (n: string) =>
+    rigs().find(r => r.name === n)?.repo ?? fail(`no rig "${n}" in the factory ${HOME}`)
+  const targetRepo = rigNamed(target!)
+  const sourceRepo = rigNamed(srcName!)
+  if (targetRepo === sourceRepo) fail(`${target} is the source rig: this files elsewhere only`)
+  const marker = workerMarker()
+  if (marker) {
+    const own = process.env.FACTORY_RUN ? loadRun(process.env.FACTORY_RUN) : undefined
+    if (!own || own.bead !== srcId || own.repo !== sourceRepo)
+      fail(`a worker files only from its own run's bead (${marker}): use the File in line`)
+  }
+  const actor = process.env.BEADS_ACTOR || 'factory'
+  const from = `${srcName}:${srcId}`
+  let source: Bead | null
+  try {
+    source = beads(sourceRepo, actor).lookup(srcId!)
+  } catch (e) {
+    return fail(`cannot read ${from}, so nothing was filed: ${(e as Error).message}`)
+  }
+  if (source?.id !== srcId) fail(`${from} did not read back, so nothing was filed`)
+  let id: string
+  try {
+    id = beads(targetRepo, actor).createFrom(
+      !linearSourced(source!),
+      flags.get('--title')!,
+      `${flags.get('--description')!}\n\nFiled from ${from}.`,
+      { discovered_from: srcId! },
+    )
+  } catch (e) {
+    return fail(`nothing was filed: ${(e as Error).message}`)
+  }
+  try {
+    beads(sourceRepo, actor).comment(srcId!, `filed ${id} in ${target}`)
+  } catch (e) {
+    return fail(
+      `filed ${id} in ${target}, but the comment on ${from} failed (${(e as Error).message}): do not file it again`,
+    )
+  }
+  console.log(id)
 }
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
@@ -8663,7 +9346,7 @@ function insideWorktree(run: Run): boolean {
 
 async function fork(id: string | undefined, station: string | undefined, note: string) {
   const { run: src, value } = current(id)
-  const def = await loadFactory(src.factory)
+  const def = await loadPinned(src.factory)
   if (!Object.hasOwn(def.nodes, station ?? ''))
     fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
   const sender = note ? managerSender(src) : undefined
@@ -8722,7 +9405,7 @@ function current(id: string | undefined) {
 /** everything the manager's run view draws, in one read */
 async function show(id: string | undefined) {
   const { run, value, c } = current(id)
-  const def = await loadFactory(run.factory)
+  const def = await loadPinned(run.factory)
   const [node, sub] = where(value)
   const tasks = run.bead ? beads(run.repo, 'factory').children(run.bead) : null
   return {
@@ -8810,7 +9493,7 @@ async function isLiveGateVisit(id: string, startedAt: number): Promise<boolean> 
     const { run, value, c } = current(id)
     const [node, sub] = where(value)
     if (sub !== 'working' || c.startedAt !== startedAt) return false
-    return (await loadFactory(run.factory)).nodes[node]?.gate === true
+    return (await loadPinned(run.factory)).nodes[node]?.gate === true
   } catch {
     return false // the run is gone, or its state is unreadable: not a live gate either way
   }
@@ -8822,7 +9505,7 @@ async function isLiveGateVisit(id: string, startedAt: number): Promise<boolean> 
 async function gateBriefFacts(id: string | undefined) {
   const { run, value, c } = current(id)
   const [node, sub] = where(value)
-  const def = await loadFactory(run.factory)
+  const def = await loadPinned(run.factory)
   const n = def.nodes[node]
   if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
   const file = existsSync(prsFile(run.id))
@@ -8972,7 +9655,7 @@ async function prs() {
       const { value, c } = current(id)
       const [node] = where(value)
       const ended = ['done', 'aborted'].includes(node)
-      const def = await loadFactory(run.factory).catch(() => undefined)
+      const def = await loadPinned(run.factory).catch(() => undefined)
       if (def) for (const k of Object.keys(def.nodes)) stations.add(k)
       metas.push({ id, rig: rigOf(run.repo)?.name, bead: run.bead, node, ended, at: createdAt(id) })
       const ref = cachedOriginRef(run.repo)
@@ -9280,9 +9963,11 @@ const cachedMerges = (c: MergedCache) =>
 /** records with mergedAt set from the cache alone; no gh call */
 const withMerges = (recs: RunRecord[]) => attachMerges(recs, cachedMerges(readMerged()))
 
-/** `withMerges`, after one `gh pr list --state merged` for each GitHub rig that has a handed-off run the
+/** `withMerges`, after one REST `pulls?state=closed&sort=updated` read for each GitHub rig that has a handed-off run the
  * cache does not match, at most once in 10 min. A gh failure prints one line and leaves the run handed-off.
- * ponytail: -L 1000 caps one lookup; a full page moves `from` to its oldest row, so older merges stay unmatched. */
+ * GraphQL (`gh pr list --search`) has no owner in the path, so the AX gateway gave it the wrong key (claude-factory-oz6s).
+ * A PR merged at or after `from` was updated at or after `from`, so the read stops after a page that ends before it.
+ * ponytail: 10 pages (1000 PRs) cap one lookup; a capped read moves `from` to its last update time, so older merges stay unmatched. */
 async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
   const cache = readMerged()
   const open = withMerges(recs).filter(r => fate(r) === 'handed-off' && r.rig)
@@ -9296,39 +9981,29 @@ async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
     const oldest = Math.min(...open.filter(r => r.rig === name).map(r => r.createdAt))
     const covered = !!seen && seen.from <= oldest
     const from = covered ? seen.checkedAt - 86_400_000 : oldest
-    const p = await spawnGh(
-      [
-        'pr',
-        'list',
-        '--state',
-        'merged',
-        '--search',
-        `merged:>=${new Date(from).toISOString().slice(0, 10)}`,
-        '-L',
-        '1000',
-        '--json',
-        'url,headRefName,mergedAt',
-      ],
-      { cwd: rig.repo, timeout: 30_000 },
-    )
-    let rows: unknown
-    try {
-      rows = p.code === 0 ? JSON.parse(p.out) : undefined
-    } catch {}
-    if (!Array.isArray(rows)) {
-      console.error(
-        `merged-prs: gh pr list failed for ${name}: ${clip(p.err.trim().split('\n')[0] || 'bad output', 200)}`,
-      )
+    const ref = rigRef(rig.repo)
+    let pullErr = ''
+    const rows = ref
+      ? await githubPulls(
+          spawnGh,
+          ref.slug,
+          rig.repo,
+          { state: 'closed', pages: 10, sort: 'updated', since: from },
+          e => (pullErr = e),
+        )
+      : null
+    if (!rows) {
+      console.error(`merged-prs: gh api pulls failed for ${name}: ${pullErr.trim().split('\n')[0]}`)
       continue
     }
-    let oldestRow = Infinity
+    const text = (v: unknown) => (typeof v === 'string' ? v : '')
     for (const x of rows) {
-      const at = Date.parse(x?.mergedAt)
-      if (typeof x?.url !== 'string' || typeof x?.headRefName !== 'string' || Number.isNaN(at)) continue
-      cache.prs[x.url] = { head: x.headRefName, mergedAt: at }
-      oldestRow = Math.min(oldestRow, at)
+      const at = Date.parse(text(x.merged_at))
+      const head = text((x.head as { ref?: unknown } | undefined)?.ref)
+      if (at >= from && head && text(x.html_url)) cache.prs[text(x.html_url)] = { head, mergedAt: at }
     }
-    const reached = rows.length >= 1000 ? oldestRow : from
+    const lastUpdated = Date.parse(text(rows.at(-1)?.updated_at))
+    const reached = rows.length >= 1000 && lastUpdated >= from ? lastUpdated : from
     cache.rigs[name] = { checkedAt: now, from: covered ? Math.min(seen.from, reached) : reached }
     dirty = true
   }
@@ -9370,7 +10045,7 @@ async function status(id: string | undefined) {
   if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
-    const def = await loadFactory(run.factory)
+    const def = await loadPinned(run.factory)
     const r = row(run, def, value, c, agentOf(def, value, c))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
@@ -9390,7 +10065,7 @@ async function status(id: string | undefined) {
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
     if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
     for (const e of id ? c.log : c.log.slice(-1))
-      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${e.summary.replace(/\s+/g, ' ').slice(0, 160)}`)
+      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
   }
   if (!id) {
     const ships = liveShipRuns()
@@ -9469,9 +10144,10 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
+  file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
+  decisions [answer <rig> <bead> <text...> | propose <key> '<question>' '<a | b>']   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -9531,14 +10207,14 @@ const usage = `factory — herdr software factories on xstate
   watch                              one pass of the pull request watch that wakes a parked station (each
                                      tick starts one, at most once a minute)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
-  report <run> <seq> <outcome> <summary...>   worker: finish its station
+  report <run> <seq> <outcome> <summary...|--summary-file path>   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
   decide <run> <outcome> [note...]   the person: answer a gate station
-  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park
+  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
@@ -9565,7 +10241,9 @@ or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
 {
-  const why = import.meta.main ? otherRunRefusal(cmd, args, process.env) : undefined
+  const why = import.meta.main
+    ? (otherRunRefusal(cmd, args, process.env) ?? workerVerbRefusal(cmd, args, process.env))
+    : undefined
   if (why) {
     console.error(why)
     process.exit(1)
@@ -9587,9 +10265,24 @@ if (outboxOk === 'help')
   )
 else if (outboxOk) {
   console.error(outboxOk)
+  process.exit(cmd === 'memory' && args[0] === 'add' ? 2 : 1)
+}
+let queuedArgs = args
+if (outboxCmd && outboxOk === null && cmd === 'report')
+  try {
+    queuedArgs = summaryArgs(args)
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(1)
+  }
+const queued = outboxCmd && outboxOk === null
+const tooBig = queued ? worker.outboxTooBig([cmd!, ...queuedArgs]) : undefined
+if (tooBig) {
+  console.error(
+    `refused: this ${cmd} is ${tooBig} bytes; the factory takes at most ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB) in one command: shorten the text and run it again`,
+  )
   process.exit(1)
 }
-const queued = outboxCmd && outboxOk === null
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
   // report that went without them would end the VM, and its writes with it
@@ -9597,7 +10290,7 @@ if (queued) {
     const sync = worker.syncBeads()
     if (!sync.ok && worker.isSchemaSkew(sync)) {
       // no retry fixes a VM whose bd is too old for the store: the report goes out, and the laptop holds the station
-      worker.queue([cmd!, ...args], worker.usageOfSession(args[0]!), sync.error)
+      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error)
       console.log(
         `queued for the factory: report; bd could not sync (schema skew: ${sync.error}), so the factory holds this station for the person; you are done, stop now`,
       )
@@ -9612,7 +10305,7 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...args], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
+  worker.queue([cmd!, ...queuedArgs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
@@ -9758,6 +10451,9 @@ if (import.meta.main && !outboxCmd)
         // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
         // value) looks the same as a caller who never passed --supersedes at all.
         const hasSupersedes = args.includes('--supersedes')
+        // `search --no-core`: the launch brief already prints CORE.md in full
+        const noCore = args.includes('--no-core')
+        if (noCore) args.splice(args.indexOf('--no-core'), 1)
         const [rig, from, kind, until, supersedesArg] = [
           opt('--rig'),
           opt('--from'),
@@ -9767,7 +10463,7 @@ if (import.meta.main && !outboxCmd)
         ]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
-          const found = await memory.search(MEMORY, words.join(' '), { rig })
+          const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
             found.map(f => f.note.path),
@@ -9789,6 +10485,15 @@ if (import.meta.main && !outboxCmd)
               .join('\n\n') || `nothing in ${MEMORY} yet`,
           )
         } else if (sub === 'add' && words[0]) {
+          // a --word left after the opt() splices (typo, repeat, flag an older bin lacks) would become the
+          // summary and false-dedupe against the next such add (claude-factory-4ie)
+          const stray = words.find(w => w.startsWith('--') && w !== '--anyway')
+          if (stray) {
+            console.error(`factory memory add: unknown flag ${stray}`)
+            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+            process.exitCode = 2
+            break
+          }
           const isAnyway = words.includes('--anyway')
           const [summary, ...body] = words.filter(w => w !== '--anyway')
           const note = { summary: summary!, body: body.join(' '), rig, kind, until }
@@ -9877,14 +10582,14 @@ if (import.meta.main && !outboxCmd)
             )
             console.log(
               [
-                decisions.length
-                  ? memory.planLines(decisions, { archiveCap, historyDays }).join('\n')
-                  : 'nothing to merge or archive',
+                memory.planLines(decisions, { archiveCap, historyDays }).join('\n'),
+                ...(decisions.length ? [] : ['nothing to merge or archive']),
                 ...skipped.map(s => `skip  ${s.topic}: ${s.reason}`),
                 ...overCap.map(o => `over  ${o.topic}: ${o.count} short notes, cap ${topicCap}`),
               ].join('\n'),
             )
           } else {
+            refuseWorker('memory compact')
             // the same lock dream() holds while it runs: a live dream already writes LONG.md and the
             // usage log, and a concurrent compact racing it can lose a rename or an archive decision
             // (claude-factory-59r.13)
@@ -10055,7 +10760,7 @@ if (import.meta.main && !outboxCmd)
             )
           const bead = memory.installProposalAsBead(MEMORY, name, x =>
             beads(rig!.repo, 'factory/proposals').createUnlabeled(
-              `memory proposal ${x.name}: ${x.change}`.slice(0, 200),
+              cut(`memory proposal ${x.name}: ${x.change}`, 200),
               readFileSync(x.file, 'utf8'),
               { memory_proposal: x.name },
               '-l',
@@ -10173,15 +10878,15 @@ if (import.meta.main && !outboxCmd)
           const [key, question, optionsLine, ...extra] = rest
           if (!key || !question || !optionsLine)
             fail(
-              'usage: factory decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]',
+              "usage: factory decisions propose <key> '<question>' '<label: effect | label: effect>' [--context '<sentence>']",
             )
           const ci = extra.indexOf('--context')
           const context = ci === -1 ? undefined : extra[ci + 1]
-          if (ci !== -1 && !context) fail('usage: ... --context "<sentence>" needs a value')
+          if (ci !== -1 && !context) fail("usage: ... --context '<sentence>' needs a value")
           const leftover = ci === -1 ? extra : extra.filter((_, i) => i !== ci && i !== ci + 1)
           if (leftover.length)
             fail(
-              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context "<sentence>" is allowed`,
+              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context '<sentence>' is allowed`,
             )
           decisionsPropose(key!, question!, optionsLine!, context)
           break
@@ -10243,6 +10948,9 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'file-elsewhere':
+        fileElsewhere(args)
+        break
       case 'hygiene': {
         if (!args[0]) fail('usage: factory hygiene <rig|repo>')
         const repo = repoOf(args[0]!)
@@ -10265,7 +10973,7 @@ if (import.meta.main && !outboxCmd)
         const rows = await Promise.all(
           startedRunIds().map(async id => {
             const { run, value, c } = current(id)
-            const def = await loadFactory(run.factory)
+            const def = await loadPinned(run.factory)
             return row(run, def, value, c, agentOf(def, value, c))
           }),
         )
@@ -10273,16 +10981,16 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'report': {
-        const [id, seq, outcome, ...summary] = args
+        const [id, seq, outcome] = args
         const { run, value, c } = current(id)
         const [node] = where(value)
-        const n = (await loadFactory(run.factory)).nodes[node]
+        const n = (await loadPinned(run.factory)).nodes[node]
         if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
         const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-        const text = summary.join(' ')
+        const text = summaryArgs(args).slice(3).join(' ')
         post(
           run.id,
           outcome === 'fail'
@@ -10313,7 +11021,7 @@ if (import.meta.main && !outboxCmd)
         if (process.env.FACTORY_PATROL) fail('a patrol cannot decide a gate: leave it for the person')
         const { run, value, c } = current(id)
         const [node, sub] = where(value)
-        const n = (await loadFactory(run.factory)).nodes[node]
+        const n = (await loadPinned(run.factory)).nodes[node]
         if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
         const outcomes = Object.keys(n!.next)
         if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
@@ -10328,7 +11036,7 @@ if (import.meta.main && !outboxCmd)
         const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
         const run = loadRun(id)
-        const def = await loadFactory(run.factory)
+        const def = await loadPinned(run.factory)
         const workerFrom =
           process.env.FACTORY_FROM && process.env.FACTORY_FROM !== 'manager'
             ? process.env.FACTORY_FROM
@@ -10349,8 +11057,11 @@ if (import.meta.main && !outboxCmd)
         if (!wake && isMailHeld(c, to!, def.nodes[to!]?.holdMail)) {
           const last = c.log.at(-1)!
           const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
+          const on = urls.length
+            ? `parked on ${urls.join(', ')}; it starts a worker when one changes or`
+            : `blocked twice in a row on the same wait; it starts a worker`
           console.log(
-            `held for ${to}: parked on ${urls.join(', ')}; it starts a worker when one changes or at ${new Date(c.wakeAt).toISOString()}; add --wake to start one now`,
+            `held for ${to}: ${on} at ${new Date(c.wakeAt).toISOString()}; add --wake only for an answer that changes the wait`,
           )
         }
         break
@@ -10361,7 +11072,7 @@ if (import.meta.main && !outboxCmd)
         const [id, ...text] = args
         const { run, value, c } = current(id)
         const [node, sub] = where(value)
-        if (sub !== 'working' || (await loadFactory(run.factory)).nodes[node]?.gate)
+        if (sub !== 'working' || (await loadPinned(run.factory)).nodes[node]?.gate)
           fail(`${run.id} has no worker to poke: it is at ${node}${sub ? `/${sub}` : ''}`)
         const nudge = `[factory] The manager is checking in. When you are finished run: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"; if something blocks you, mail the manager what it is.`
         post(run.id, { type: 'MAIL', from: managerSender(run), to: node, text: text.join(' ') || nudge })
@@ -10376,7 +11087,7 @@ if (import.meta.main && !outboxCmd)
           fail(
             `${run.id} is at ${node}${sub ? `/${sub}` : ''}, not stuck: RETRY only applies to a stuck station; run ${CLI} goto ${run.id} ${node} to restart it`,
           )
-        const runner = c.pane ? runnerOf(c.pane) : runnerOfStation(run, await loadFactory(run.factory), node)
+        const runner = c.pane ? runnerOf(c.pane) : runnerOfStation(run, await loadPinned(run.factory), node)
         const unavailable = runner.name === 'ax' ? ax.unavailable() : undefined
         if (unavailable) fail(unavailable)
         post(run.id, { type: 'RETRY' })
@@ -10385,7 +11096,7 @@ if (import.meta.main && !outboxCmd)
       case 'goto': {
         refuseWorker('goto')
         const run = loadRun(args[0])
-        const nodes = Object.keys((await loadFactory(run.factory)).nodes).concat('done')
+        const nodes = Object.keys((await loadPinned(run.factory)).nodes).concat('done')
         if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
         const target = args[1]!
         const saved = readJson<Saved>(join(runDir(run.id), 'state.json'))
@@ -10397,14 +11108,8 @@ if (import.meta.main && !outboxCmd)
           fail(
             `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
           )
-        const why = gotoRefusal(await loadFactory(run.factory), saved.snapshot, pending, target, Date.now())
-        if (why)
-          fail(
-            `goto ${target} would not move ${run.id}: ${why}` +
-              (why.includes('step budget')
-                ? `; run factory retry ${run.id} to grant more launches first`
-                : ''),
-          )
+        const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
+        if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
         post(run.id, { type: 'GOTO', node: target })
         console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
         break

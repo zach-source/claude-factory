@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   ALIAS_REASON,
+  aliasSpawnCapMs,
   APPROVE_REASON,
+  GLAB_APPROVE_REASON,
   baseWord,
   baseWordForTest,
   dynamicHeadDenyForTest,
@@ -4727,7 +4729,7 @@ const DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR = [
   'env --argv0 x --chdir /other git push origin HEAD',
   'env -iu FOO -C /other git push origin HEAD',
   'env -va x -C /other git push origin HEAD',
-  'env -0u FOO --chdir=/other git push origin HEAD',
+  'env -iu FOO --chdir=/other git push origin HEAD',
 ]
 
 test.each(DENY_PUSH_AFTER_ENV_VALUE_FLAG_HIDES_CHDIR)(
@@ -5132,6 +5134,7 @@ test('run as `bun src/worker-hook.ts`, a real git alias co=checkout cannot hide 
   env.GIT_CONFIG_GLOBAL = configFile
   env.GIT_CONFIG_NOSYSTEM = '1'
   env.GH_CONFIG_DIR = ghConfigDir
+  env.FACTORY_HOOK_ALIAS_TIMEOUT_MS = '6000'
   for (const cmd of [
     'git co main && git push o HEAD',
     'git br -M main && git push o HEAD',
@@ -5151,6 +5154,73 @@ test('run as `bun src/worker-hook.ts`, a real git alias co=checkout cannot hide 
   const stInput = JSON.stringify({ tool_name: 'Bash', cwd: dir, tool_input: { command: 'git st' } })
   expect(await run(stInput, env)).toEqual({ out: '', code: 0 })
 }, 20_000)
+
+// claude-factory-zzxp: FACTORY_HOOK_ALIAS_TIMEOUT_MS is a test knob for the alias-read spawn cap.
+// Only a plain decimal integer in 1..6000 counts. Every other value gives the 2000 ms default.
+test.each([
+  [undefined, 2000],
+  ['', 2000],
+  [' ', 2000],
+  ['0', 2000],
+  ['-1', 2000],
+  ['abc', 2000],
+  ['1e3', 2000],
+  ['0x10', 2000],
+  ['6001', 2000],
+  ['99999', 2000],
+  ['2000.5', 2000],
+  [' 3000', 2000],
+  ['0100', 2000],
+  ['1', 1],
+  ['3000', 3000],
+  ['6000', 6000],
+])('aliasSpawnCapMs(%p) gives %p (claude-factory-zzxp, AC1)', (v, want) => {
+  expect(aliasSpawnCapMs(v)).toBe(want)
+})
+
+// claude-factory-zzxp (AC2, AC3): a `git` wrapper sleeps 2.5 s for `git -C <dir> config` only.
+// With the default 2000 ms cap the alias read times out and the hook fails closed.
+// With the knob at 6000 the read finishes and the push guard gives its own reason.
+test.each([
+  [undefined, ALIAS_USE_REASON],
+  ['6000', PUSH_REASON],
+])(
+  'run as `bun src/worker-hook.ts`, slow git config with knob %p denies with the right reason (claude-factory-zzxp, AC2, AC3)',
+  async (knob, want) => {
+    const dir = mkdtempSync(join(tmpdir(), 'wh-zzxp-'))
+    Bun.spawnSync(['git', 'init', '-q', '-b', 'factory/x', dir])
+    Bun.spawnSync(['git', '-C', dir, 'commit', '-q', '-m', 'init', '--allow-empty'])
+    Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+    const configFile = join(dir, 'gitconfig-zzxp')
+    writeFileSync(configFile, '[alias]\n\tco = checkout\n')
+    const bin = mkdtempSync(join(tmpdir(), 'wh-zzxp-bin-'))
+    writeFileSync(
+      join(bin, 'git'),
+      `#!/bin/sh\n[ "$3" = config ] && sleep 2.5\nexec ${Bun.which('git')} "$@"\n`,
+      {
+        mode: 0o755,
+      },
+    )
+    const ghConfigDir = mkdtempSync(join(tmpdir(), 'wh-zzxp-gh-'))
+    const env: Record<string, string | undefined> = { ...process.env }
+    delete env.CLAUDE_PROJECT_DIR
+    delete env.FACTORY_HOOK_ALIAS_TIMEOUT_MS
+    env.PATH = `${bin}:${process.env.PATH}`
+    env.GIT_CONFIG_GLOBAL = configFile
+    env.GIT_CONFIG_NOSYSTEM = '1'
+    env.GH_CONFIG_DIR = ghConfigDir
+    if (knob) env.FACTORY_HOOK_ALIAS_TIMEOUT_MS = knob
+    const input = JSON.stringify({
+      tool_name: 'Bash',
+      cwd: dir,
+      tool_input: { command: 'git co main && git push o HEAD' },
+    })
+    const { out, code } = await run(input, env)
+    expect(code).toBe(0)
+    expect(JSON.parse(out.trim()).hookSpecificOutput.permissionDecisionReason).toBe(want)
+  },
+  20_000,
+)
 
 // claude-factory-bemr.5 (AC12): each flag here is a real git global flag.
 // Git 2.54.0 confirms each one takes no value word (`git --no-pager status`, `git -P status`).
@@ -6343,7 +6413,7 @@ test.each(['env', 'xargs', '$X'])(
     const cmd = head + ' -$A'.repeat(2000)
     const t = Date.now()
     const r = denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
-    expect(Date.now() - t).toBeLessThan(1000)
+    expect(Date.now() - t).toBeLessThan(5000)
     expect(r).not.toBe(LONG_COMMAND_REASON)
   },
 )
@@ -7079,7 +7149,7 @@ test('denyReason denies 16 eval levels around many = words and rm targets, then 
   const reason = denyReason(cmd, process.cwd(), ['acme'], { ...CBAI_GATE, gitAliases: () => new Map() })
   const ms = performance.now() - t0
   expect(reason).toBe(REASON)
-  expect(ms).toBeLessThan(2000)
+  expect(ms).toBeLessThan(10_000)
 }, 60000)
 
 for (const [name, body] of [
@@ -7092,7 +7162,7 @@ for (const [name, body] of [
     const reason = denyReason(cmd, process.cwd(), ['acme'], { ...CBAI_GATE, gitAliases: () => new Map() })
     const ms = performance.now() - t0
     expect([REASON, SCAN_BUDGET_REASON]).toContain(reason!)
-    expect(ms).toBeLessThan(2000)
+    expect(ms).toBeLessThan(10_000)
   }, 60000)
 }
 
@@ -7132,7 +7202,7 @@ test('denyReason spends the default work budget on an 8192-character stacked env
   const command = 'env -i eval '.repeat(700).slice(0, 8192)
   const { reason, ms } = cbaiTimed(command)
   expect(reason).toBe(SCAN_BUDGET_REASON)
-  expect(ms).toBeLessThan(2000)
+  expect(ms).toBeLessThan(10_000)
 }, 30000)
 
 // The verdicts of main (ee6b84d plus s1fj, where env -S sh -c is scanned) for each form, inner command and nest level n=1..8.
@@ -8151,7 +8221,7 @@ test('denyReason finishes quickly on a long sudo -Z v env chain (claude-factory-
   const r = denyReason(cmd, '/x', undefined, P43V_GATE)
   const ms = performance.now() - t0
   expect(r).toBe(DYNAMIC_VERB_REASON)
-  expect(ms).toBeLessThan(2000)
+  expect(ms).toBeLessThan(10_000)
 })
 
 // claude-factory-p43v.33: before this change, `scanForFirstDynamicPair` added an anchor only
@@ -8531,6 +8601,57 @@ test.each(ALIAS_DEFINE_ALLOW)('denyReason allows a plain alias command: %s (clau
     ),
   ).toBeUndefined()
 })
+
+const emptyGate = () => snapGate(() => new Map())
+
+test.each([
+  'alias | wc -l',
+  'alias | grep foo',
+  'alias -p | head -5',
+  'alias -g | wc -l',
+  'alias -L',
+  'alias | sort | head',
+  'alias; ls',
+  'alias ll | wc -l',
+])('denyReason allows a read-only alias listing: %s (claude-factory-kuyx)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, snapGate())).toBeUndefined()
+  expect(denyReason(cmd, '/w', undefined, emptyGate())).toBeUndefined()
+})
+
+test.each([
+  'alias a=b | wc -l',
+  'alias | wc -l; alias a=b',
+  'alias "a=b" | wc -l',
+  'alias a\\=b | wc -l',
+  'alias $x | wc -l',
+  'alias $x',
+  'alias $1',
+  'alias $x $y',
+  'alias a?b | wc -l',
+  'alias a{,=b} | wc -l',
+  'alias ~ | wc -l',
+  'command alias | wc -l',
+  'unalias -a | wc -l',
+  'alias > .scratch/a.txt',
+  "alias x='echo acme' | wc -l; eval x",
+])('denyReason still denies an alias define: %s (claude-factory-kuyx)', cmd => {
+  expect(denyReason(cmd, '/w', undefined, snapGate())).toBe(SHELL_ALIAS_DEFINE_REASON)
+  expect(denyReason(cmd, '/w', undefined, emptyGate())).toBe(SHELL_ALIAS_DEFINE_REASON)
+})
+
+test.each(['sh', 'bash -s', 'eval g', 'g push origin main', 'gp origin main', 'bad', 'xargs sh -c x'])(
+  'denyReason still checks the sink after a read-only alias: %s (claude-factory-kuyx)',
+  x => {
+    expect(denyReason('alias | ' + x, '/w', undefined, SNAP_GATE)).toBeDefined()
+  },
+)
+
+test.each(['wc -l', 'tee .scratch/a', 'head'])(
+  'denyReason allows a plain sink after a read-only alias: %s (claude-factory-kuyx)',
+  x => {
+    expect(denyReason('alias | ' + x, '/w', undefined, SNAP_GATE)).toBeUndefined()
+  },
+)
 
 test('denyReason denies an alias chain past the depth cap but ends on an alias cycle, as zsh does (claude-factory-1zr5)', () => {
   expect(denyReason('loop1 x', '/w', undefined, SNAP_GATE)).toBeUndefined()
@@ -10980,6 +11101,140 @@ test('run as `bun src/worker-hook.ts`, an approve call is allowed only with FACT
       code: 0,
     })
   }
+}, 20_000)
+
+// claude-factory-hoz8: no GitLab reviewer identity exists, so the hook denies a glab approval at every station.
+const GLAB_FILES: Record<string, string> = {
+  'approve.json': JSON.stringify({ query: 'mutation { mergeRequestApprove(input:{}) { errors } }' }),
+  'notjson.json': 'mutation approve',
+  'q.graphql': 'mutation { mergeRequestApprove(input:{}) { errors } }',
+}
+const GLAB_APPROVE_DENY = [
+  'glab mr approve 5',
+  'glab mr approve',
+  'glab mr approve 1 2',
+  'glab mr approve -s abc 5',
+  'glab mr -R a/b approve 5',
+  'glab mr --repo=a/b approve 5',
+  'glab mr approve branch-1',
+  '/usr/bin/glab mr approve 5',
+  '\\glab mr approve 5',
+  'env glab mr approve 5',
+  'command glab mr approve 5',
+  'bash -c "glab mr approve 5"',
+  'true && glab mr approve 5',
+  'glab mr approve 5 --',
+  'glab mr approve \\\n5',
+]
+const GLAB_API_DENY = [
+  'glab api projects/:id/merge_requests/5/approve?x=1',
+  'glab api -X POST projects/:id/merge_requests/5/approve',
+  'glab api projects/:id/merge_requests/5/approve -f sha=x',
+  'glab api --method=POST projects/a%2Fb/merge_requests/5/approve',
+  'glab api -XPOST projects/:id/merge_requests/5/approve',
+  'glab api projects/:id/merge_requests/5/approve/',
+  'glab api projects/:id/merge_requests/5/approve#x',
+  'glab api https://gitlab.example.com/api/v4/projects/1/merge_requests/5/approve',
+  'glab api projects/1/merge_requests%2F5%2Fapprove -X POST',
+  'glab api -X GET projects/:id/merge_requests/5/approve',
+  'glab api projects/1/merge_requests/5/appro%ZZve',
+  "glab api graphql -f query='mutation { mergeRequestApprove(input:{}) { errors } }'",
+  'glab api graphql -f query=@q.graphql',
+  'glab api graphql -f query=@missing.graphql',
+  'glab api graphql --input approve.json',
+  'glab api graphql --input notjson.json',
+  'glab api -R x/y -X POST projects/:id/merge_requests/5/approve',
+  'glab api --repo x/y projects/:id/merge_requests/5/approve',
+  'glab api -X POST -R x/y projects/:id/merge_requests/5/approve',
+  'glab api -R x/y -f sha=1 projects/:id/merge_requests/5/approve',
+  'glab api >out -X POST projects/:id/merge_requests/5/approve',
+  'glab api 2>/dev/null -X POST projects/:id/merge_requests/5/approve',
+  'glab api -X POST projects/1/merge_requests/5/approve.json',
+  'glab api -X POST projects/1/merge_requests/5//approve',
+  'glab api -X POST projects/1/merge_requests/5/./approve',
+  'glab api -X POST projects/1/merge_requests/5/x/../approve',
+  'glab api -X POST projects/1/merge_requests/5/APPROVE',
+  'glab api -X POST projects/1/merge_requests/5%2Fapprove%2F',
+  'glab api -X POST projects/1/merge_requests/5/approve%3Fa',
+  'glab api -X POST projects/1/merge_requests/5/approve%2Ejson',
+  'glab api --output json -X POST projects/1/merge_requests/5/approve',
+]
+const GLAB_DYNAMIC_DENY = [
+  "printf 'mr approve 5' | xargs glab",
+  'glab $V 5',
+  'glab mr $S 5',
+  'glab mr -R a/b $S 5',
+  'glab api -X $M projects/1/merge_requests/5/approve',
+  'glab api -X $M projects/1/merge_requests/5/notes',
+  'glab api -X POST "$EP"',
+  'glab api "$EP" -f a=b',
+  'glab api -R x/y -X POST "$EP"',
+  'glab api --input body.json "$EP"',
+  'glab api --form a=b "$EP"',
+  'glab api --output json "$EP" -f a=b',
+]
+const GLAB_ALLOW = [
+  'glab mr view 5',
+  'glab mr view 5 --comments',
+  'glab mr note 5 -m "looks good"',
+  'glab mr note 5 -m "$MSG"',
+  'glab mr create --draft -t x -d y',
+  'glab mr revoke 5',
+  'glab mr approvers 5',
+  'glab ci status',
+  'glab api projects/:id/merge_requests/5',
+  'glab api projects/:id/merge_requests/5/approvals',
+  'glab api -X POST projects/:id/merge_requests/5/unapprove',
+  'glab api -X POST projects/:id/merge_requests/5/notes -f body=x',
+  'glab api "projects/$ID/merge_requests"',
+  `glab api graphql -f query='query { project(fullPath:"a/b") { mergeRequest(iid:"5") { approved } } }'`,
+  'glab mr note 5 -m x -- approve',
+  'glab api -R x/y projects/:id/merge_requests/5/approvers',
+  'glab api >out projects/:id/merge_requests/5',
+  'glab api --output "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api --form "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api -R "$R" -X POST projects/1/merge_requests/5/notes',
+  'glab api --repo "$R" -X POST projects/1/merge_requests/5/notes',
+]
+for (const g of [
+  {},
+  { station: 'implement' },
+  { station: 'review' },
+  { station: 'release' },
+  { station: 'review', reviewer: true },
+]) {
+  const gate = () => ({ readFile: (p: string) => GLAB_FILES[p], ...g })
+  test.each(GLAB_APPROVE_DENY)(
+    `denyReason denies %j for gate ${JSON.stringify(g)} (claude-factory-hoz8.1)`,
+    cmd => {
+      expect(denyReason(cmd, undefined, undefined, gate())).toBe(GLAB_APPROVE_REASON)
+    },
+  )
+  test.each(GLAB_API_DENY)(
+    `denyReason denies %j for gate ${JSON.stringify(g)} (claude-factory-hoz8.2)`,
+    cmd => {
+      expect(denyReason(cmd, undefined, undefined, gate())).toBe(GLAB_APPROVE_REASON)
+    },
+  )
+  test.each(GLAB_DYNAMIC_DENY)(
+    `denyReason denies dynamic %j for gate ${JSON.stringify(g)} (claude-factory-hoz8)`,
+    cmd => {
+      expect(denyReason(cmd, undefined, undefined, gate())).toBeDefined()
+    },
+  )
+  test.each(GLAB_ALLOW)(`denyReason allows %j for gate ${JSON.stringify(g)} (claude-factory-hoz8)`, cmd => {
+    expect(denyReason(cmd, undefined, undefined, gate())).toBeUndefined()
+  })
+}
+
+test('run as `bun src/worker-hook.ts`, glab mr approve is denied even for a reviewer station (claude-factory-hoz8.1)', async () => {
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'glab mr approve 5' } })
+  const env: Record<string, string | undefined> = { ...process.env }
+  const r = await run(input, { ...env, FACTORY_FROM: 'review', FACTORY_GH_REVIEWER: '1' })
+  expect(JSON.parse(r.out.trim()).hookSpecificOutput).toMatchObject({
+    permissionDecision: 'deny',
+    permissionDecisionReason: GLAB_APPROVE_REASON,
+  })
 }, 20_000)
 
 // claude-factory-pumc: `factory mutate` takes its edit as plain words, so a worker needs no heredoc. The

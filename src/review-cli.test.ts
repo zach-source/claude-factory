@@ -160,6 +160,17 @@ test('under FACTORY_FROM (a worker) install and reject refuse and change nothing
   expect(readFileSync(join(mem, '.proposals', 'pr.md'), 'utf8')).toContain('status: pending')
 })
 
+test('the tick prunes the verdict of an installed item and keeps the pending one', () => {
+  const sk = keyOf('skill')
+  const pk = keyOf('proposal')
+  run(['review', 'set', sk, answer({ recommendation: 'install', why: 'Safe.' })])
+  run(['review', 'set', pk, answer({ recommendation: 'install', why: 'Safe.' })])
+  expect(Object.keys(JSON.parse(readFileSync(reviews, 'utf8')))).toHaveLength(2)
+  expect(run(['skills', 'install', 'sk']).code).toBe(0)
+  run(['tick'])
+  expect(Object.keys(JSON.parse(readFileSync(reviews, 'utf8')))).toEqual([pk])
+})
+
 test('without FACTORY_PATROL install still works', () => {
   expect(run(['skills', 'install', 'sk']).code).toBe(0)
   expect(existsSync(join(mem, '.manager', '.claude', 'skills', 'sk', 'SKILL.md'))).toBe(true)
