@@ -545,9 +545,10 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
  * refresh read, with the wall time of the read. The anchor is its newest entry at or before now-minDays,
  * else its oldest. The ceiling is `latest - (latest - anchor.size) * minDays / (now - anchor.at)`. With
  * less than minDays of history, this extrapolates the observed rate. With more, it interpolates between
- * two real reads. An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
+ * two real reads. With less than 30 min of history (GO_FLOOR_WINDOW_MS) there is no ceiling: a short span
+ * multiplies noise by minDays/span (claude-factory-qyuu). An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
  * does not compound across refreshes. The size delta is clamped at 0, so a smaller `/latest` than the
- * anchor never puts the ceiling above `latest`. With no elapsed time (a cold start) it is Infinity. A zero
+ * anchor never puts the ceiling above `latest`. With less than GO_FLOOR_WINDOW_MS elapsed (a cold start, or its retry) it is Infinity. A zero
  * span must never reach the division: a NaN floor would allow every version. The history must stay
  * strictly increasing in time. If the wall clock is not after the newest read (a clock step back during the
  * refresh), the refresh fails, keeps the floor and does not store the read (claude-factory-35em).
@@ -614,9 +615,10 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     : Infinity
   const anchor = cfg.goSizes[0]! // just pushed above, never empty
   const span = wallNow - anchor.at
-  // span > 0 keeps NaN out: a NaN floor would allow every version (goDecideVersion compares record > floor)
+  // span >= GO_FLOOR_WINDOW_MS also keeps NaN out (span 0): a NaN floor would allow every version
+  // (goDecideVersion compares record > floor)
   const ceiling =
-    span > 0
+    span >= GO_FLOOR_WINDOW_MS
       ? Math.floor(
           latestSize.size -
             (Math.max(0, latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span,
