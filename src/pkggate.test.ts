@@ -972,7 +972,7 @@ test("claude-factory-56j: owning every sampled index entry caps one refresh's ri
 // (57_600 records of history).
 function ldbFixture() {
   const PATHS = Array.from({ length: 9 }, (_, i) => `ldb-${String.fromCharCode(97 + i)}.example.com/mod`)
-  const st = { now: NOW, latest: 1_000_000, minId: 942_400, lookups: true }
+  const st = { now: NOW, latest: 1_000_000, minId: 942_400, lookups: true, latestAt: 0 }
   const srv = Bun.serve({
     port: 0,
     fetch(req) {
@@ -984,7 +984,10 @@ function ldbFixture() {
           PATHS.map(p => JSON.stringify({ Path: p, Version: 'v1.0.0', Timestamp: ts })).join('\n') + '\n',
         )
       }
-      if (url.pathname === '/latest') return new Response(sumdbLatestBody(st.latest))
+      if (url.pathname === '/latest') {
+        if (st.latestAt) st.now = st.latestAt // steps the clock mid-refresh
+        return new Response(sumdbLatestBody(st.latest))
+      }
       if (url.pathname.startsWith('/lookup/')) {
         const key = url.pathname.slice('/lookup/'.length)
         if (key.startsWith('ldbprobe.example.com/mod@')) return new Response('1030000\n')
@@ -1105,6 +1108,80 @@ test('claude-factory-ldb AC4: a cold start gives a finite floor and still refuse
     f.stop()
   }
 })
+
+// claude-factory-35em: the tree-size history must stay strictly increasing in time. A refresh that reads
+// the wall clock at or before its newest read fails and keeps the floor.
+const STEP_BACK = 'wall clock is not after the last tree size read'
+async function stepBackSetup(f: ReturnType<typeof ldbFixture>) {
+  await f.refresh()
+  f.st.now += 31 * 60_000
+  f.st.latest = 1_000_310
+  f.st.minId = f.st.latest - 10
+  const second = await f.refresh()
+  const newest = f.st.now
+  f.st.now += 31 * 60_000
+  f.st.latest = 1_000_620
+  f.st.minId = f.st.latest - 10
+  return { floor: second.floor as number, newest }
+}
+
+test.each([
+  ['a full step back', () => NOW - 3_600_000],
+  ['a partial step back', () => NOW + 15 * 60_000],
+  ['equal time', () => NOW + 31 * 60_000],
+])(
+  'claude-factory-35em: %s mid-refresh fails the refresh and keeps the floor',
+  async (_n, at) => {
+    const f = ldbFixture()
+    try {
+      const { floor } = await stepBackSetup(f)
+      f.st.latestAt = at()
+      const line = await f.refresh()
+      expect(line.decision).toBe('error')
+      expect(line.reason).toContain(STEP_BACK)
+      expect(await f.healthzFloor()).toBe(floor)
+    } finally {
+      f.stop()
+    }
+  },
+  60_000,
+)
+
+test('claude-factory-35em AC6: after a step back failure the gate recovers under the rise bound', async () => {
+  const f = ldbFixture()
+  try {
+    const { floor, newest } = await stepBackSetup(f)
+    f.st.latestAt = NOW - 3_600_000
+    expect((await f.refresh()).decision).toBe('error')
+    f.st.latestAt = 0
+    f.st.now = newest + 31 * 60_000 + 30_000
+    const line = await f.refresh()
+    // short history: the per-refresh bound (3 x 620 records of traffic since the last good read) still holds
+    expect(line.decision).toBeUndefined()
+    expect(line.floor).toBeLessThanOrEqual(floor + 3 * 620)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
+test('claude-factory-35em AC4: a /latest below the anchor gives a finite floor at or below it', async () => {
+  const f = ldbFixture()
+  try {
+    await f.refresh()
+    f.st.now += 31 * 60_000
+    f.st.latest = 1_000_310
+    f.st.minId = f.st.latest - 10
+    await f.refresh()
+    f.st.now += 31 * 60_000
+    f.st.latest = 999_000
+    f.st.minId = 900_000
+    const line = await f.refresh()
+    expect(Number.isFinite(line.floor)).toBe(true)
+    expect(line.floor).toBeLessThanOrEqual(999_000)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
 
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
