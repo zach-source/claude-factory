@@ -2422,7 +2422,7 @@ test('manager GitHub reads never use a gh form without the owner in the path', a
   const hits: string[] = []
   for (const f of ['cli.ts', 'prs.ts', 'gc.ts']) {
     const text = readFileSync(new URL(`./${f}`, import.meta.url), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\*[\s\S]*?\*\//gm, '')
       .replace(/^\s*\/\/.*$/gm, '')
     for (const m of text.matchAll(bad)) hits.push(`${f}: ${text.slice(m.index, m.index + 40)}`)
   }
