@@ -644,6 +644,63 @@ test(
   },
 )
 
+test(
+  "a partly failed merged row clears the typed note under the closed primary's key (claude-factory-pqqv)",
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      if (e.argv.includes('mail') && e.argv.includes('rb'))
+        return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+          stderr: '',
+        } as never,
+      }
+    })
+    // the test keeps the plugin's state itself, so it can read the draft the plugin wrote
+    type Ref = { plugin: string; key: string; id?: string }
+    const stored = new Map<string, { value: unknown; version: number }>()
+    const at = (e: Ref) => `${e.plugin}/${e.key}/${e.id ?? ''}`
+    on('state.get', (_$, e) => {
+      const s = stored.get(at(e as Ref))
+      return { value: { value: s?.value, version: s?.version ?? 0 } } as never
+    })
+    on('state.set', (_$, e) => {
+      const { value, ifVersion } = e as Ref & { value: unknown; ifVersion?: number }
+      const held = stored.get(at(e as Ref))?.version ?? 0
+      if (ifVersion !== undefined && ifVersion !== held)
+        return { value: { isSet: false, version: held } } as never
+      stored.set(at(e as Ref), { value, version: held + 1 })
+      return { value: { isSet: true, version: held + 1 } } as never
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'factory', args: 'interview' } as never)
+    const ui = await $.ui.mount({
+      plugin: 'factory',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'factory',
+      props: { bodyColumns: 100, placement: 'dock' } as never,
+      viewport: { columns: 100, rows: 60 },
+    })
+    await ui.input({ key: 'iv-reply-iv:ra@1', text: 'my note', kind: 'change' } as never)
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-iv:ra@1-0' })
+    await clock.settle()
+    const replies = (stored.get('factory/draft/')?.value as { replies: Record<string, string> }).replies
+    expect(replies['iv:ra@1']).toBe('')
+    expect(replies['iv:rb@5']).toBe('my note')
+    await ui.unmount()
+  },
+)
+
 const THREE_TICK = {
   ...SAME_BEAD_TICK,
   runs: [

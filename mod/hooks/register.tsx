@@ -1286,7 +1286,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
         replies: clearReply
           ? { ...d.replies, [iv.key]: '' }
           : move
-            ? { ...d.replies, [heir.key]: typed }
+            ? { ...d.replies, [iv.key]: '', [heir.key]: typed }
             : d.replies,
         interviewed: [...(d.interviewed ?? []), ...entries].slice(-100),
       }
