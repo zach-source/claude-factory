@@ -1,3 +1,4 @@
+import { cut } from './cut'
 // The gate briefer's pure logic. It has no IO.
 // `factory gate-brief facts|set` (src/cli.ts) uses this module for two things.
 // It builds the key for one gate visit. It also cleans the briefer subagent's raw answer.
@@ -37,6 +38,6 @@ export function clipBrief(raw: string, maxLines = 8, maxLineLen = 200): string {
     .map(l => l.replace(/\t/g, ' ').trim())
     .filter(Boolean)
     .slice(0, maxLines)
-    .map(l => (l.length > maxLineLen ? `${l.slice(0, maxLineLen - 1)}…` : l))
+    .map(l => (l.length > maxLineLen ? `${cut(l, maxLineLen - 1)}…` : l))
     .join('\n')
 }

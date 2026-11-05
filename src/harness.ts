@@ -3,6 +3,7 @@
 // MCP config are spelled on the command line.
 import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { cut } from './cut'
 
 export type Harness = 'claude' | 'codex' | 'pi'
 
@@ -162,7 +163,7 @@ export function cutOffNote(call: { name: string; input: Record<string, unknown> 
     return ` Your last tool call (${call.name}) was cut off before it finished. It only read, so it is safe to repeat.`
   const what =
     typeof call.input.command === 'string'
-      ? `the ${call.name} command \`${call.input.command.slice(0, 300)}\``
+      ? `the ${call.name} command \`${cut(call.input.command, 300)}\``
       : typeof call.input.file_path === 'string'
         ? `${call.name} on ${call.input.file_path}`
         : call.name

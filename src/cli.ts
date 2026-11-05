@@ -248,6 +248,7 @@ import {
 } from './sync'
 import { rmSafe } from './home-guard'
 import { ciReport } from './ci'
+import { cut } from './cut'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -737,7 +738,7 @@ export function overwritten(out: string) {
       .filter(k => k.startsWith('our_') && k !== 'our_diff_type' && k !== 'our_id')
       .map(k => k.slice('our_'.length))
       .filter(k => String(row[`our_${k}`]) !== String(row[`their_${k}`]))
-      .map(k => `${k}=${String(row[`our_${k}`]).slice(0, 200)}`)
+      .map(k => `${k}=${cut(String(row[`our_${k}`]), 200)}`)
     const what =
       row.our_diff_type === 'removed' ? 'had deleted it' : `had ${had.join(', ') || 'the same values'}`
     return {
@@ -963,7 +964,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       try {
         appendFileSync(
           join(runDir(run.id), `${task}.outbox-too-big`),
-          `${new Date().toISOString()} ${big} ${JSON.stringify(argv.slice(0, 3).map(w => w.slice(0, 80)))}\n`,
+          `${new Date().toISOString()} ${big} ${JSON.stringify(argv.slice(0, 3).map(w => cut(w, 80)))}\n`,
           { mode: 0o600 },
         )
       } catch {} // a log failure never blocks the replay of the lines after it
@@ -971,7 +972,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       writeJson(seenFile(run, task), seen)
       ax.prompt(
         task,
-        `[factory] your outbox line \`${argv.slice(0, 3).join(' ').slice(0, 200)} ...\` is ${big} bytes, over the ${worker.OUTBOX_MAX_BYTES}-byte cap (100 KiB): it was not run. Shorten the text and run the command again (for a report: a shorter --summary-file)`,
+        `[factory] your outbox line \`${cut(argv.slice(0, 3).join(' '), 200)} ...\` is ${big} bytes, over the ${worker.OUTBOX_MAX_BYTES}-byte cap (100 KiB): it was not run. Shorten the text and run the command again (for a report: a shorter --summary-file)`,
       )
       continue
     }
@@ -990,7 +991,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     if (!p && !skew)
       ax.prompt(
         task,
-        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
+        `[factory] \`${argv?.join(' ') ?? cut(line, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
       )
     else if (p && p.exitCode !== 0)
       ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
@@ -1328,7 +1329,10 @@ const post = (id: string, e: Input) =>
   durable(join(runDir(id), 'inbox.jsonl'), JSON.stringify({ ...e, at: Date.now() }) + '\n', 'a')
 
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+export const clip = (text: string, max: number) => {
+  if (text.length <= max) return text
+  return `${cut(text, max)}…`
+}
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
@@ -1358,16 +1362,10 @@ export function trustedEgress(
  * under this cap. This const guards the few spots that pasted a report's `.summary` or a mail's `.text` whole.
  */
 export const REPORT_MAX = 32_000
-// text.slice(0, max) can stop between the two UTF-16 code units of a surrogate pair (an emoji, say),
-// leaving a lone lead surrogate. Back off by one unit in that case, so the cut never splits a pair.
-const sliceWhole = (text: string, max: number) => {
-  const lead = text.charCodeAt(max - 1)
-  return text.slice(0, lead >= 0xd800 && lead <= 0xdbff ? max - 1 : max)
-}
 export const clipReport = (text: string) =>
   text.length <= REPORT_MAX
     ? text
-    : `${sliceWhole(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
+    : `${cut(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**
@@ -2436,6 +2434,28 @@ export function swapUntil(
 type TokenSwapState = { at: number; until: number; ran?: number }
 
 /**
+ * This function reads a token-swap state file. A state that is not a well-formed object, or that has an
+ * at or ran more than LIMIT_SKEW_MS ahead, or an until more than LIMIT_RESET_MAX_MS ahead, counts as no state.
+ * A hostile VM can have written such a file before the bound existed.
+ */
+export function trustedSwapState(file: string, now: number): TokenSwapState | undefined {
+  if (!existsSync(file)) return undefined
+  let s: Record<string, unknown>
+  try {
+    s = readJson<Record<string, unknown>>(file)
+  } catch {
+    return undefined
+  }
+  if (typeof s !== 'object' || s === null) return undefined
+  const { at, until, ran } = s
+  const num = (v: unknown): v is number => Number.isFinite(v)
+  if (!num(at) || !num(until) || at > now + LIMIT_SKEW_MS || until > now + LIMIT_RESET_MAX_MS)
+    return undefined
+  if (ran !== undefined && (!num(ran) || ran > now + LIMIT_SKEW_MS)) return undefined
+  return ran === undefined ? { at, until } : { at, until, ran }
+}
+
+/**
  * This function runs a swap command. A rig sets the Claude command in FACTORY_AX_TOKEN_SWAP and the Codex command in
  * FACTORY_AX_CODEX_TOKEN_SWAP. The function runs the command one time for each refusal. It then sends mail to the
  * manager. The mail names the live slot (Claude) or the live label (Codex).
@@ -2457,7 +2477,7 @@ export function runTokenSwap(
   const cmd = codex ? process.env.FACTORY_AX_CODEX_TOKEN_SWAP : process.env.FACTORY_AX_TOKEN_SWAP
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
   const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  const state = trustedSwapState(file, now)
   const gap = codex ? CODEX_SWAP_GAP_MS : TOKEN_SWAP_WAIT_MS
   if (!needsSwap(hit, state, now, gap)) {
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
@@ -2490,7 +2510,7 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const cmd = process.env.FACTORY_AX_CODEX_TOKEN_SWAP
   if (!cmd) return
   const file = join(home, `token-swap-${runnerName}-codex.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  const state = trustedSwapState(file, now)
   if (state && now - state.at < CODEX_REFRESH_MS) return
   const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
   const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
@@ -3169,13 +3189,27 @@ export function holdFloor(
 export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
   join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
 
+/**
+ * This function reads a limit-paged file. The file can hold data from before the bound. A value that is not a
+ * finite number, or that is more than LIMIT_RESET_MAX_MS ahead, counts as no file (0), so it cannot mute mail or hold a run.
+ */
+export function trustedPaged(file: string, now: number): number {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : 0
+  } catch {
+    return 0
+  }
+  return typeof v === 'number' && Number.isFinite(v) && v <= now + LIMIT_RESET_MAX_MS ? v : 0
+}
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
 function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
   const p = progressOf(run)
   const runner = runnerOf(c.pane)
   const paged = limitPagedFile(runner, codex)
-  const until = existsSync(paged) ? readJson<number>(paged) : 0
+  const until = trustedPaged(paged, now)
   return {
     inMin: Math.floor((now - c.startedAt) / 60_000),
     ...(p?.seq === c.seq && { quietMin: Math.floor((now - p.at) / 60_000) }),
@@ -3396,7 +3430,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         return 'usage limit'
       }
       const paged = limitPagedFile(runner, isCodex)
-      if (!existsSync(paged) || readJson<number>(paged) < until) {
+      if (trustedPaged(paged, now) < until) {
         const text = runner.local
           ? `Every Claude account is ${refused ? 'login refused' : 'at its usage limit'} (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
           : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is ${refused ? `login refused (${hit.kind})` : `at its usage limit (${hit.kind})`}; they wait until ${new Date(until).toLocaleString()} and go on then.`
@@ -3442,7 +3476,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     egress &&
     `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${egress.last}`
   const limitPage = limitPagedFile(runner, isCodex)
-  const pagedUntil = existsSync(limitPage) ? readJson<number>(limitPage) : 0
+  const pagedUntil = trustedPaged(limitPage, now)
   // an outage is held, not failed: the machine spends no attempt on it (claude-factory-dhof). Only this
   // reconciler sets hold; a worker's own report never does.
   const failOutage = (reason: string) => {
@@ -8789,7 +8823,7 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = body.split('\n', 1)[0]!.slice(0, 80)
+                const first = cut(body.split('\n', 1)[0]!, 80)
                 b.create(
                   `PR change request: ${first}`,
                   `${d.url}\n\n${body}`,
@@ -9085,6 +9119,7 @@ const WORKER_VERBS = [
   'mutate',
   'ci',
   'worker',
+  'file-elsewhere',
 ]
 
 /** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
@@ -9098,6 +9133,66 @@ export function workerVerbRefusal(
     return undefined
   if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
   return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
+}
+
+/**
+ * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title T --description D`.
+ * The label `factory` goes on only when the source bead reads back with its own id and no Linear
+ * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
+ */
+function fileElsewhere(args: string[]) {
+  const usage =
+    'usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title <text> --description <text>'
+  const [target, ...rest] = args
+  const flags = new Map<string, string>()
+  if (!target || target.startsWith('--') || rest.length !== 6) fail(usage)
+  for (let i = 0; i < rest.length; i += 2) {
+    const k = rest[i]!
+    const v = rest[i + 1]
+    if (!['--from', '--title', '--description'].includes(k) || !v || flags.has(k)) fail(usage)
+    flags.set(k, v!)
+  }
+  const [srcName, srcId, ...extra] = flags.get('--from')!.split(':')
+  if (!srcName || !srcId || extra.length || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(srcId)) fail(usage)
+  const rigNamed = (n: string) =>
+    rigs().find(r => r.name === n)?.repo ?? fail(`no rig "${n}" in the factory ${HOME}`)
+  const targetRepo = rigNamed(target!)
+  const sourceRepo = rigNamed(srcName!)
+  if (targetRepo === sourceRepo) fail(`${target} is the source rig: this files elsewhere only`)
+  const marker = workerMarker()
+  if (marker) {
+    const own = process.env.FACTORY_RUN ? loadRun(process.env.FACTORY_RUN) : undefined
+    if (!own || own.bead !== srcId || own.repo !== sourceRepo)
+      fail(`a worker files only from its own run's bead (${marker}): use the File in line`)
+  }
+  const actor = process.env.BEADS_ACTOR || 'factory'
+  const from = `${srcName}:${srcId}`
+  let source: Bead | null
+  try {
+    source = beads(sourceRepo, actor).lookup(srcId!)
+  } catch (e) {
+    return fail(`cannot read ${from}, so nothing was filed: ${(e as Error).message}`)
+  }
+  if (source?.id !== srcId) fail(`${from} did not read back, so nothing was filed`)
+  let id: string
+  try {
+    id = beads(targetRepo, actor).createFrom(
+      !linearSourced(source!),
+      flags.get('--title')!,
+      `${flags.get('--description')!}\n\nFiled from ${from}.`,
+      { discovered_from: srcId! },
+    )
+  } catch (e) {
+    return fail(`nothing was filed: ${(e as Error).message}`)
+  }
+  try {
+    beads(sourceRepo, actor).comment(srcId!, `filed ${id} in ${target}`)
+  } catch (e) {
+    return fail(
+      `filed ${id} in ${target}, but the comment on ${from} failed (${(e as Error).message}): do not file it again`,
+    )
+  }
+  console.log(id)
 }
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
@@ -9840,7 +9935,7 @@ async function status(id: string | undefined) {
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
     if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
     for (const e of id ? c.log : c.log.slice(-1))
-      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${e.summary.replace(/\s+/g, ' ').slice(0, 160)}`)
+      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
   }
   if (!id) {
     const ships = liveShipRuns()
@@ -9919,6 +10014,7 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
+  file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
   decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
@@ -9988,7 +10084,7 @@ const usage = `factory — herdr software factories on xstate
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
   decide <run> <outcome> [note...]   the person: answer a gate station
-  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park
+  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
@@ -10534,7 +10630,7 @@ if (import.meta.main && !outboxCmd)
             )
           const bead = memory.installProposalAsBead(MEMORY, name, x =>
             beads(rig!.repo, 'factory/proposals').createUnlabeled(
-              `memory proposal ${x.name}: ${x.change}`.slice(0, 200),
+              cut(`memory proposal ${x.name}: ${x.change}`, 200),
               readFileSync(x.file, 'utf8'),
               { memory_proposal: x.name },
               '-l',
@@ -10722,6 +10818,9 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'file-elsewhere':
+        fileElsewhere(args)
+        break
       case 'hygiene': {
         if (!args[0]) fail('usage: factory hygiene <rig|repo>')
         const repo = repoOf(args[0]!)

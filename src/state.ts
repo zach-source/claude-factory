@@ -1,6 +1,7 @@
 // One state for each bead, and the text of `factory digest`. These functions do no I/O.
 import { LABEL, REJECTED, SHIP, type Bead } from './beads'
 import type { PrFact } from './repairs'
+import { cut } from './cut'
 
 export type BeadState =
   | 'unowned'
@@ -65,7 +66,7 @@ const age = (ms: number) => {
   const h = Math.floor(ms / 3_600_000)
   return h >= 24 ? `${Math.floor(h / 24)}d` : h >= 1 ? `${h}h` : `${Math.max(0, Math.floor(ms / 60_000))}m`
 }
-const flat = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 160)
+const flat = (s: string) => cut(s.replace(/\s+/g, ' ').trim(), 160)
 
 /** what waits on the owner in one rig: the bead, its priority, its age and what it asks */
 export function ownerQueue(r: DigestRig, now: number) {

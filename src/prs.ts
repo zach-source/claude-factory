@@ -2,6 +2,7 @@
 // repo. Pure matching/merge/role/budget logic lives here, read-only against a run's log and inbox; the IO
 // half (`buildPrs`) calls `gh` (or `glab`, for a GitLab rig's merge requests) through injected functions, so
 // tests never shell out for real.
+import { cut } from './cut'
 import { mrsIn, prsIn, type Entry } from './machine'
 import { ghNotes, isPerson, type Note, type WatchedPr } from './watch'
 export { mrsIn }
@@ -241,7 +242,7 @@ export function evidenceLine(
   rig: string,
   id: string,
 ): string {
-  const title = pr.title.length > 120 ? pr.title.slice(0, 120) : pr.title
+  const title = cut(pr.title, 120)
   return `already done: ${pr.url} (#${pr.number}, merged ${pr.mergeCommit}) "${title}". Requeue: factory queue ${rig} ${id}`
 }
 
@@ -518,7 +519,7 @@ async function spawnCli(
 
 /** one line of `gh`'s stderr, cut short: never let a raw error carry a password or a full stack into the record */
 const ghError = (err: string) => clip(err.trim().split('\n')[0] ?? 'gh failed', 200)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+const clip = (text: string, max: number) => (text.length > max ? `${cut(text, max)}…` : text)
 
 /** AC2c parsed: `gh search prs ... --json url,createdAt` filtered by `keepSearchHit`, so a resembling PR
  * created before the run started is dropped before it ever becomes a Found */

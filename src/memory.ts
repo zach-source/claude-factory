@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { cut } from './cut'
 import {
   appendFileSync,
   cpSync,
@@ -444,7 +445,7 @@ async function embed(texts: string[]) {
 export const fetchModel = () => embed(['warm'])
 
 type Index = { model: string; vecs: Record<string, { hash: string; vec: number[] }> }
-const textOf = (n: Note) => `${n.summary}\n${n.body}`.slice(0, 2000) // bge reads 512 tokens
+const textOf = (n: Note) => cut(`${n.summary}\n${n.body}`, 2000) // bge reads 512 tokens
 const hashOf = (text: string) => createHash('sha1').update(text).digest('hex')
 
 /** the notes' vectors, embedding only what changed since the last search */
@@ -1793,12 +1794,12 @@ export function applyTiers(
         const ptr = cutLine(topic)
         // Cut a long summary too, so the entry ends under the cap. The archive keeps the full text.
         const room = LONG_ENTRY_CAP - 1 - ptr.length
-        const summary = e.summary.length > room - 2 ? `${e.summary.slice(0, room - 3).trimEnd()}…` : e.summary
+        const summary = e.summary.length > room - 2 ? `${cut(e.summary, room - 3).trimEnd()}…` : e.summary
         const budget = LONG_ENTRY_CAP - summary.length - 1 - ptr.length - 2
-        let cut = e.body.slice(0, Math.max(budget, 0))
-        if (e.body.length > cut.length && e.body[cut.length] !== '\n' && cut.includes('\n'))
-          cut = cut.slice(0, cut.lastIndexOf('\n'))
-        kept.push({ ...e, summary, body: `${cut.trimEnd()}\n\n${ptr}`.trim() })
+        let part = cut(e.body, Math.max(budget, 0))
+        if (e.body.length > part.length && e.body[part.length] !== '\n' && part.includes('\n'))
+          part = part.slice(0, part.lastIndexOf('\n'))
+        kept.push({ ...e, summary, body: `${part.trimEnd()}\n\n${ptr}`.trim() })
         trimmed++
       } else if (d.kind === 'retire') retired++
       else archived++
@@ -1914,7 +1915,7 @@ export function skills(dir: string) {
     })
 }
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s).replace(/\s+/g, ' ')
+const clip = (s: string, n: number) => (s.length > n ? `${cut(s, n)}…` : s).replace(/\s+/g, ' ')
 /**
  * what the manager did, from its session transcripts: what it was asked (the person, or a patrol) and the
  * commands and skills it ran, one line each, after \`since\`. Also every skill's uses, all time: what the dream reaps by
@@ -2149,11 +2150,13 @@ export function parseReview(answer: string): Pick<Review, 'recommendation' | 'wh
     throw new Error('recommendation must be exactly install or reject')
   if (typeof o.why !== 'string' || !o.why.trim()) throw new Error('why must be a non-empty string')
   // eslint-disable-next-line no-control-regex
-  const why = o.why
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300)
+  const why = cut(
+    o.why
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    300,
+  )
   return { recommendation: o.recommendation, why }
 }
 /** CORE.md without its first bullet that reads `line` (claude-factory-3u1.3.3) */

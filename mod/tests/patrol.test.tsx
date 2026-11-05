@@ -240,7 +240,8 @@ test(
     for (const s of [
       'factory rig list',
       'discovered_from',
-      'linear.app',
+      'file-elsewhere',
+      'Never run `bd create` in another rig',
       'discoveredFrom',
       'no `factory` label',
       'never queue or start it',

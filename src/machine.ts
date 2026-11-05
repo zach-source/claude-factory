@@ -1,6 +1,7 @@
 // A factory definition compiled to an xstate machine. Pure: no I/O, every
 // event carries its own `at`, so a run is a fold over its events and the
 // persisted snapshot is the whole truth. The runner (cli.ts) does the effects.
+import { cut } from './cut'
 import { assign, createActor, setup, type Snapshot } from 'xstate'
 import { NAME } from './beads'
 
@@ -528,7 +529,7 @@ export function capReplanMail(prior: Entry[], node: string, outcome: string, lat
     latest,
   ]
   const cap = Math.floor(24_000 / summaries.length)
-  const clip = (s: string) => (s.length > cap ? `${s.slice(0, cap)} [clipped]` : s)
+  const clip = (s: string) => (s.length > cap ? `${cut(s, cap)} [clipped]` : s)
   const rounds = summaries.map((s, i) => `### ${node} round ${i + 1}\n${clip(s)}`).join('\n\n')
   return (
     `${node} hit its round cap reporting ${outcome} again. Find the cause the rounds missed, then ` +
@@ -747,8 +748,11 @@ export function compile(def: Factory) {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                   event.type === 'MAIL' &&
                   event.to === id &&
-                  isParked(context, id) &&
-                  (!!event.wake || !isMailHeld(context, id, node.holdMail)),
+                  ((isParked(context, id) && (!!event.wake || !isMailHeld(context, id, node.holdMail))) ||
+                    // a manager wake also ends an outage hold
+                    (!!event.wake &&
+                      context.log.at(-1)?.node === id &&
+                      context.log.at(-1)?.outcome === 'outage')),
                 target: 'working',
                 actions: assign(withMail),
               },

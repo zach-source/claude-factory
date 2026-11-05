@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { refreshCodexToken, runTokenSwap } from './cli'
+import { refreshCodexToken, runTokenSwap, trustedPaged } from './cli'
 import { codexLimit } from './worker'
 
 const jl = (...e: object[]) => e.map(x => JSON.stringify(x)).join('\n')
@@ -188,5 +188,130 @@ test('the Codex token refresh sets the swap window', () => {
     expect(JSON.parse(readFileSync(join(f.home, 'token-swap-ax-codex.json'), 'utf8')).ran).toBe(100)
   } finally {
     f.restore()
+  }
+})
+
+const SKEW = 5 * 60_000
+const RESET_MAX = 8 * 24 * 3_600_000
+const NOW = 1_000_000_000_000
+
+test('a token-swap state that is not trusted counts as no state: the swap runs and the file is rewritten', () => {
+  const A = NOW - 500 // a trusted state would hold the swap back: this hit is not newer
+  const bad: [string, string][] = [
+    ['far at', JSON.stringify({ at: NOW + SKEW + 1, until: NOW })],
+    ['far until', JSON.stringify({ at: A, until: NOW + RESET_MAX + 1 })],
+    ['far ran', JSON.stringify({ at: 1, until: NOW, ran: NOW + SKEW + 1 })],
+    ['huge at', '{"at":1e308,"until":1}'],
+    ['huge until', `{"at":${A},"until":1e308}`],
+    ['huge ran', '{"at":1,"until":1,"ran":1e308}'],
+    ['neg inf until', `{"at":${A},"until":-1e999}`],
+    ['string at', '{"at":"x","until":1}'],
+    ['null at', `{"at":null,"until":${NOW}}`],
+    ['string until', `{"at":${A},"until":"1"}`],
+    ['null until', `{"at":${A},"until":null}`],
+    ['string ran', '{"at":1,"until":1,"ran":"9999999999999"}'],
+    ['null ran', `{"at":${A},"until":1,"ran":null}`],
+    ['not json', 'not json'],
+    ['array', '[]'],
+    ['number', '5'],
+    ['null', 'null'],
+  ]
+  for (const harness of ['claude', 'codex'] as const) {
+    for (const [name, text] of bad) {
+      const f = swapFixture()
+      try {
+        process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
+        process.env.FACTORY_AX_TOKEN_SWAP = f.bin
+        const file = join(f.home, `token-swap-ax${harness === 'codex' ? '-codex' : ''}.json`)
+        writeFileSync(file, text)
+        const hit = { at: NOW - 1000, resetsAt: 0 }
+        expect(runTokenSwap(hit, NOW, 'ax', (() => {}) as never, 'implement', harness, f.home), name).toBe(
+          NOW + 300_000,
+        )
+        expect(readFileSync(f.log, 'utf8'), name).toBe('x\n')
+        expect(JSON.parse(readFileSync(file, 'utf8')).ran, name).toBe(NOW)
+      } finally {
+        f.restore()
+      }
+    }
+  }
+})
+
+test('a token-swap state on the bound stays trusted', () => {
+  for (const state of [
+    { at: NOW + SKEW, until: NOW + RESET_MAX, ran: NOW - 1 },
+    { at: NOW + SKEW, until: NOW + RESET_MAX },
+  ]) {
+    const f = swapFixture()
+    try {
+      process.env.FACTORY_AX_TOKEN_SWAP = f.bin
+      writeFileSync(join(f.home, 'token-swap-ax.json'), JSON.stringify(state))
+      const hit = { at: NOW - 1000, resetsAt: 0 }
+      runTokenSwap(hit, NOW, 'ax', (() => {}) as never, 'implement', 'claude', f.home)
+      expect(existsSync(f.log)).toBe(false)
+    } finally {
+      f.restore()
+    }
+  }
+  const f = swapFixture()
+  try {
+    process.env.FACTORY_AX_TOKEN_SWAP = f.bin
+    writeFileSync(join(f.home, 'token-swap-ax.json'), JSON.stringify({ at: 1, until: NOW + 7, ran: NOW - 1 }))
+    const hit = { at: 2, resetsAt: 0 }
+    expect(runTokenSwap(hit, NOW, 'ax', (() => {}) as never, 'implement', 'claude', f.home)).toBe(
+      Math.max(NOW + 7, NOW - 1 + 300_000),
+    )
+  } finally {
+    f.restore()
+  }
+})
+
+test('the Codex token refresh ignores an untrusted state file', () => {
+  const H = 3_600_000
+  for (const text of [JSON.stringify({ at: NOW + SKEW + 1, until: 1 }), 'not json']) {
+    const f = swapFixture()
+    try {
+      process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
+      writeFileSync(join(f.home, 'token-swap-ax-codex.json'), text)
+      refreshCodexToken(NOW, 'ax', f.home)
+      expect(readFileSync(f.log, 'utf8')).toBe('x\n')
+    } finally {
+      f.restore()
+    }
+  }
+  const f = swapFixture()
+  try {
+    process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
+    writeFileSync(join(f.home, 'token-swap-ax-codex.json'), JSON.stringify({ at: NOW - H, until: 1 }))
+    refreshCodexToken(NOW, 'ax', f.home)
+    expect(existsSync(f.log)).toBe(false)
+  } finally {
+    f.restore()
+  }
+})
+
+test('trustedPaged reads a limit-paged file only inside the reset bound', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'paged-'))
+  try {
+    const file = join(dir, 'p.json')
+    expect(trustedPaged(file, NOW)).toBe(0)
+    const rows: [string, number][] = [
+      ['not json', 0],
+      ['"x"', 0],
+      ['null', 0],
+      ['"5"', 0],
+      ['-1e999', 0],
+      ['[]', 0],
+      [String(NOW + RESET_MAX + 1), 0],
+      ['1e308', 0],
+      [String(NOW + RESET_MAX), NOW + RESET_MAX],
+      [String(NOW - 1), NOW - 1],
+    ]
+    for (const [text, want] of rows) {
+      writeFileSync(file, text)
+      expect(trustedPaged(file, NOW), text).toBe(want)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
