@@ -1,0 +1,113 @@
+import { expect, mock, test } from 'claude-code/testing'
+
+// raises the kit's 5000ms default, as in gate.test.ts (claude-factory-abm)
+const SLOW = { timeoutMs: 30_000 }
+
+const BT = '`'
+const F = '/repo/bin/factory'
+
+const GATED = [
+  `${F} file-elsewhere acme --from widget:w-1 --title "$(id)"`,
+  `${F} decisions propose k "${BT}id${BT}" o`,
+  `${F} mail r1 plan "x $(id) y"`,
+  `${F} mail r1 plan <(id)`,
+  `${F} mail r1 plan >(id)`,
+  `${F} mail r1 plan "it's $(id)"`,
+  `${F} mail r1 plan it\\'s "$(id)"`,
+  `${F} mail r1 plan "a" \\\n"$(id)"`,
+  `${F} mail r1 plan $(id)`,
+  `${F} decide lifecycle-abc ship "$(id)"`,
+  `${F} mail r1 plan "x \\\\\n$(id)"`,
+  `${F} mail r1 plan x \\\\\n$(id)`,
+  `${F} mail r1 plan $\\\n(id)`,
+  `${F} mail r1 plan "x $\\\n(id)"`,
+  `${F} mail r1 plan "x $\\\n\\\n(id)"`,
+  `${F} mail r1 plan =(id)`,
+  `${F} mail r1 plan /(e:'id':)`,
+  F + ' mail r1 plan "${x:=\\$(id)}${x@P}"',
+  F + ' mail r1 plan "${(e):-\\$(id)}"',
+  F + ' mail r1 plan "${x:=\\$(id)}${(e)x}"',
+  "x='$(id)'; " + F + ' mail r1 plan ${x@P}',
+  F + ' mail r1 plan "$x"',
+  F + ' mail r1 plan $x',
+  F + ' mail r1 plan "$[x]"',
+  F + ' mail r1 plan $[x]',
+]
+
+const UNREADABLE = [
+  `${F} mail r1 plan $'\\'' "x"`,
+  `${F} status # it's\n${F} mail r1 plan "$(id)" #'`,
+  `${F} mail r1 plan <<EOF\nit's $(id)\nEOF`,
+  `${F} mail r1 plan 'open`,
+  // each ends balanced if the scan misreads the first quote, so only the rule itself gates it
+  `${F} mail r1 plan it\\'s "$(id)" '`,
+  `${F} mail r1 plan $'\\'' "$(id)" '`,
+  `#'\n${F} mail r1 plan "$(id)" '`,
+  `${F} mail r1 plan <<EOF\n'x\nEOF\n'`,
+]
+
+const PLAIN = [
+  `${F} file-elsewhere acme --from widget:w-1 --title '$(id)'`,
+  `${F} decisions propose k '${BT}id${BT}' o`,
+  `${F} mail r1 plan "Fix #12 \\$HOME"`,
+  `${F} status`,
+  'echo "$(id)"',
+  `${F} mail r1 plan "a <(b)"`,
+  F + " mail r1 plan '$x'",
+  F + ' mail r1 plan "a \\$(id)"',
+]
+
+function harness(on: any, answer: string) {
+  mock.clock(on)
+  const n = { asked: 0, ran: 0 }
+  const questions: string[] = []
+  on('tool.call', { tool: 'AskUserQuestion' }, (_: unknown, e: any) => {
+    n.asked += 1
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: answer } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    n.ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  return { n, questions }
+}
+
+test('a substitution in a factory command asks the person and does not run on Deny', SLOW, async ($, on) => {
+  const { n, questions } = harness(on, 'Deny')
+  for (const command of [...GATED, ...UNREADABLE]) {
+    const asked = n.asked
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toContain('shell substitution')
+    expect(n.asked, command).toBe(asked + 1)
+  }
+  expect(n.ran).toBe(0)
+  expect(questions[9]).toContain('shell substitution')
+})
+
+test('Allow runs a gated substitution command', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Allow')
+  const r = await $.tool.call({ tool: 'Bash', command: GATED[0]!, description: 'x' })
+  expect(r.deny).toBeUndefined()
+  expect(n.ran).toBe(1)
+})
+
+test('a single-quoted or non-factory command is not gated', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Deny')
+  for (const command of PLAIN) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toBeUndefined()
+  }
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(PLAIN.length)
+})
+
+test('a subagent is denied a substitution without a dialog', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Allow')
+  on('agent.list', () => ({ value: [] }) as never)
+  const r = await $.tool.call({ tool: 'Bash', command: GATED[0]!, agentId: 'some-other-agent' } as never)
+  expect(r.deny).toContain('shell substitution')
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(0)
+})

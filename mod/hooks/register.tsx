@@ -1335,15 +1335,45 @@ async function jump($: EngineInterface, pane: string) {
   if (r?.exitCode !== 0) $.ui.toast(`factory: could not focus ${pane}`)
 }
 
+/** true when a command holds an unescaped `$` or backtick outside single quotes (one rule for `$(`, `${`,
+ * `$'`, `$[`, `$x` and any later `$` form), or an unquoted `(` (`<(`, `>(`, zsh `=(` and glob-qualifier code),
+ * or a form this one-pass scan cannot read: a here-document, a word-start `#` comment, an unclosed quote.
+ * Each of those can hide a `'` that makes a naive scan think later text is quoted, so they fail closed. */
+function substitutionIn(command: string): boolean {
+  // no pre-join of backslash-newline: the scan pairs each backslash with the next char, so `\\` + newline stays literal
+  let state: 'plain' | 'single' | 'double' = 'plain'
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    const two = command.slice(i, i + 2)
+    if (state === 'single') {
+      if (c === "'") state = 'plain'
+    } else if (c === '\\') i++
+    else if (c === '$' || c === '`') return true
+    else if (state === 'double') {
+      if (c === '"') state = 'plain'
+    } else if (c === "'") state = 'single'
+    else if (c === '"') state = 'double'
+    else if (c === '(' || two === '<<') return true
+    else if (c === '#' && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) return true
+  }
+  return state !== 'plain'
+}
+
 /** which Bash commands the manager model may not run without the person's explicit Allow: a gate decision,
  * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
  * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
  * The shell still runs a backslash-newline line continuation and a quoted newline as one command, so this
  * normalizes the first away (bash joins a `\`-newline pair with NO character, even mid-word, so this drops
  * it rather than replacing it with a space) and matches across the second ([\s\S] instead of [^\n]) rather
- * than testing the raw text verbatim. */
+ * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
+ * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
   const command = rawCommand.replace(/\\\n/g, '')
+  if (/\bfactory\b/.test(command) && substitutionIn(rawCommand))
+    return {
+      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${cutText(command, 300)}. Allow it?`,
+      deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
+    }
   if (/\bfactory\s+decide\b/.test(command))
     return {
       question: `The manager model wants to decide a factory gate: ${cutText(command, 300)}. Allow it?`,
