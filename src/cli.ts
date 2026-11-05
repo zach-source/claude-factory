@@ -6994,10 +6994,23 @@ async function mergedPrsFor(
   // GitHub: one REST list of the newest closed PRs. `alreadyDone` matches the id, the short id and the run
   // branches in it. `gh pr list --search` is GraphQL, which the AX gateway cannot key by owner (oz6s).
   const list = gl
-    ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: id }, e => (firstErr = e))
+    ? await gitlabMergedJson(
+        cli.glab,
+        origin.host,
+        glabPath,
+        repo,
+        { search: id, timeoutMs: PRECHECK_TIMEOUT_MS },
+        e => (firstErr = e),
+      )
     : ref
       ? // ponytail: 3 pages = the newest 300 closed PRs; an older merge is missed by the pre-check
-        await githubMergedJson(cli.gh, ref.slug, repo, { pages: 3 }, e => (firstErr = e))
+        await githubMergedJson(
+          cli.gh,
+          ref.slug,
+          repo,
+          { pages: 3, timeoutMs: PRECHECK_TIMEOUT_MS },
+          e => (firstErr = e),
+        )
       : null
   if (list === null)
     throw new Error(clip(firstErr.trim().split('\n')[0] || `${gl ? 'glab api' : 'gh api pulls'} failed`, 200))
@@ -7005,7 +7018,10 @@ async function mergedPrsFor(
   // claude-factory-jxl.1: a GitLab title may cite only the short child id ("192.6"); the full-id search misses it
   const short = gl ? shortBeadId(id) : null
   if (short) {
-    const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { search: short })
+    const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
+      search: short,
+      timeoutMs: PRECHECK_TIMEOUT_MS,
+    })
     if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
   // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
@@ -7013,9 +7029,16 @@ async function mergedPrsFor(
   // the one call that failed.
   for (const branch of branches.slice(0, 3)) {
     const byHead = gl
-      ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, { sourceBranch: branch })
+      ? await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
+          sourceBranch: branch,
+          timeoutMs: PRECHECK_TIMEOUT_MS,
+        })
       : ref
-        ? await githubMergedJson(cli.gh, ref.slug, repo, { pages: 1, head: `${ref.owner}:${branch}` })
+        ? await githubMergedJson(cli.gh, ref.slug, repo, {
+            pages: 1,
+            head: `${ref.owner}:${branch}`,
+            timeoutMs: PRECHECK_TIMEOUT_MS,
+          })
         : null
     if (byHead !== null) found.push(...parseMergedPrs(byHead))
   }

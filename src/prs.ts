@@ -973,6 +973,8 @@ export async function githubPulls(
     /** sort by update time, and stop after a page whose last row was updated before `since` (ms) */
     sort?: 'updated'
     since?: number
+    /** per-call timeout in ms; default VIEW_TIMEOUT_MS */
+    timeoutMs?: number
   },
   onErr?: (err: string) => void,
 ): Promise<Json[] | null> {
@@ -981,7 +983,7 @@ export async function githubPulls(
     const q = `state=${o.state}&sort=${o.sort ?? 'created'}&direction=desc&per_page=100&page=${page}`
     const res = await gh(
       ['api', `repos/${slug}/pulls?${q}${o.head ? `&head=${encodeURIComponent(o.head)}` : ''}`],
-      timed(cwd),
+      timed(cwd, o.timeoutMs),
     )
     const list = res.code === 0 ? asJson(res.out) : null
     if (!Array.isArray(list)) {
@@ -1042,7 +1044,7 @@ export async function githubMergedJson(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { pages: number; head?: string },
+  o: { pages: number; head?: string; timeoutMs?: number },
   onErr?: (err: string) => void,
 ): Promise<string | null> {
   const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o }, onErr)
@@ -1057,7 +1059,7 @@ export async function gitlabMergedJson(
   host: string,
   path: string,
   cwd: string,
-  o: { search: string } | { sourceBranch: string },
+  o: ({ search: string } | { sourceBranch: string }) & { timeoutMs?: number },
   onErr?: (err: string) => void,
 ): Promise<string | null> {
   const q =
@@ -1071,7 +1073,7 @@ export async function gitlabMergedJson(
       host,
       `projects/${encodeURIComponent(path)}/merge_requests?state=merged&per_page=30${q}`,
     ],
-    timed(cwd),
+    timed(cwd, o.timeoutMs),
   )
   if (res.code !== 0) {
     onErr?.(res.err)
@@ -1221,7 +1223,7 @@ export type Forge = {
   view(url: string, cwd: string, host?: string): Promise<{ viewed: Viewed } | { err: string }>
 }
 
-const timed = (cwd: string) => ({ cwd, timeout: VIEW_TIMEOUT_MS })
+const timed = (cwd: string, timeout = VIEW_TIMEOUT_MS) => ({ cwd, timeout })
 
 const githubForge = (gh: Gh): Forge => ({
   async list(r) {
