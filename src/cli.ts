@@ -3193,8 +3193,7 @@ export function trustedEgressPaged(file: string, now: number): { since: number; 
   } catch {
     return undefined
   }
-  const ok = (n: unknown): n is number =>
-    typeof n === 'number' && Number.isFinite(n) && n <= now + LIMIT_SKEW_MS
+  const ok = (n: unknown): n is number => Number.isFinite(n) && (n as number) <= now + LIMIT_SKEW_MS
   if (ok(v)) return { since: v, at: 0 }
   const o = v as { since?: unknown; at?: unknown } | null
   return o && typeof o === 'object' && ok(o.since) && ok(o.at) ? { since: o.since, at: o.at } : undefined
