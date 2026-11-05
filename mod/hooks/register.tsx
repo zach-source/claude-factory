@@ -1377,10 +1377,11 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
   const command = rawCommand.replace(/\\\n/g, '')
   const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
   if (at >= 0) {
-    // the head stops at 300 characters, so show the text around the first hit too. Do not start on a low surrogate.
+    // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
     let from = Math.max(0, at - 40)
-    if (/[\uDC00-\uDFFF]/.test(rawCommand[from] ?? '')) from--
-    const to = at + 40
+    if (from > 0 && /[\uDC00-\uDFFF]/.test(rawCommand[from] ?? '')) from--
+    let to = at + 40
+    if (to < rawCommand.length && /[\uD800-\uDBFF]/.test(rawCommand[to - 1] ?? '')) to--
     const around = `${from > 0 ? '…' : ''}${rawCommand.slice(from, to)}${to < rawCommand.length ? '…' : ''}`
     return {
       question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${cutText(command, 300)}. The first one is at character ${at}: «${around}». Allow it?`,
