@@ -69,6 +69,7 @@ function fakeBd(prefix: string) {
     '  show)',
     `    m=$(cat ${showMode} 2>/dev/null || echo found)`,
     '    case "$m" in',
+    `      by-id) f=${dir}/show-$2; [ -e "$f.timeout" ] && { echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1; }; if [ -e "$f" ]; then cat "$f"; else echo "Issue $2 not found" >&2; printf '%s' '{"error":"no issues found matching the provided IDs"}'; exit 1; fi;;`,
     '      found) printf \'%s\' \'[{"id":"acme-1","title":"t"}]\';;',
     '      owned) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_decisions":{}}}]\';;',
     '      handed-off) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"],"metadata":{"owner_question":"q","owner_since":"2026-11-01"}}]\';;',
@@ -501,4 +502,69 @@ test('a bead that keeps only the owner label, only owner_question or only owner_
     expect(t.out.code).toBe(0)
     expect(t.updates.filter(l => l.startsWith(CLEAR)).length).toBe(1)
   }
+})
+
+// claude-factory-7a7e: a patrol (FACTORY_PATROL) cannot start a bead from another rig, or a child of one,
+// until a person adds the factory label
+const PATROL_MSG = 'a patrol cannot start it: a person queues it'
+const showById = (rows: Record<string, unknown>, timeouts: string[] = []) => {
+  writeFileSync(showMode, 'by-id')
+  for (const [id, row] of Object.entries(rows))
+    writeFileSync(join(dir, `show-${id}`), JSON.stringify([{ id, title: 't', ...(row as object) }]))
+  for (const id of timeouts) writeFileSync(join(dir, `show-${id}.timeout`), '')
+}
+const patrolStart = (goal: string, env: Record<string, string> = { FACTORY_PATROL: '1' }) => {
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  return run(['start', factoryFixture(), r, goal], env)
+}
+const runCount = () => (existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0)
+const expectRefused = (out: { code: number | null; err: string }) => {
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain(PATROL_MSG)
+  expect(readFileSync(calls, 'utf8')).not.toContain('update')
+  expect(runCount()).toBe(0)
+}
+const fromElsewhere = { metadata: { discovered_from: 'other-9' } }
+
+test('a patrol cannot start a bead with discovered_from and no factory label (7a7e AC1)', () => {
+  reset()
+  showById({ 'acme-1': fromElsewhere })
+  expectRefused(patrolStart('acme-1'))
+})
+
+test('a patrol cannot start a child, or a grandchild, of a bead with discovered_from (7a7e AC2)', () => {
+  reset()
+  showById({ 'acme-1': fromElsewhere, 'acme-1.1': { parent: 'acme-1' } })
+  expectRefused(patrolStart('acme-1.1'))
+  reset()
+  showById({
+    'acme-1': fromElsewhere,
+    'acme-1.1': { parent: 'acme-1' },
+    'acme-1.1.1': { parent: 'acme-1.1' },
+  })
+  expectRefused(patrolStart('acme-1.1.1'))
+})
+
+test('a patrol start fails closed on an unreadable parent or a junk discovered_from (7a7e AC3)', () => {
+  reset()
+  showById({ 'acme-1.1': { parent: 'acme-1' } }, ['acme-1'])
+  expectRefused(patrolStart('acme-1.1'))
+  reset()
+  showById({ 'acme-1': { metadata: { discovered_from: 'a b' } } })
+  expectRefused(patrolStart('acme-1'))
+})
+
+test('a start that the guard allows still starts one run (7a7e AC4)', () => {
+  const ok = (rows: Record<string, unknown>, goal: string, env?: Record<string, string>) => {
+    reset()
+    showById(rows)
+    expect(patrolStart(goal, env).code).toBe(0)
+    expect(runCount()).toBe(1)
+  }
+  ok({ 'acme-1': fromElsewhere }, 'acme-1', {}) // a person
+  ok({ 'acme-1': { ...fromElsewhere, labels: ['factory'] } }, 'acme-1')
+  ok({ 'acme-1': { ...fromElsewhere, labels: ['factory'] }, 'acme-1.1': { parent: 'acme-1' } }, 'acme-1.1')
+  ok({ 'acme-1': { labels: ['found'] } }, 'acme-1')
 })

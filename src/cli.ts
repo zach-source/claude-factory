@@ -6601,6 +6601,32 @@ const isWaitingOnPerson = (x: Bead) =>
 const openChildren = (b: ReturnType<typeof beads>, id: string) =>
   b.children(id).filter(x => x.status !== 'closed')
 
+/** claude-factory-7a7e: the CLI layer behind PATROL step 4 (register.tsx). A patrol cannot start or queue a
+ * bead filed from another rig (metadata.discovered_from), or a child of one, until a person adds the
+ * `factory` label. Fail closed: an unreadable parent or a chain longer than 8 refuses too. */
+function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
+  if (!process.env.FACTORY_PATROL) return
+  const no = (why: string): never => fail(`${x.id} ${why}: a patrol cannot start it: a person queues it`)
+  const seen = new Set<string>()
+  let cur: Bead = x
+  for (;;) {
+    if (seen.has(cur.id) || seen.size >= 8) no('has a parent chain the patrol cannot read')
+    seen.add(cur.id)
+    if (cur.metadata?.discovered_from != null && !cur.labels?.includes(LABEL))
+      no(`came from another rig (metadata.discovered_from on ${cur.id})`)
+    const p = parentOf(cur)
+    if (!p) return
+    let next: Bead | null = null
+    try {
+      next = b.lookup(p)
+    } catch {
+      // next stays null: refused below
+    }
+    if (!next) return no(`has a parent ${p} the patrol cannot read`)
+    cur = next
+  }
+}
+
 function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk = false } = {}) {
   if (!hasBeads(repo)) return { goal, handedOff: false }
   const b = beads(repo, 'factory')
@@ -6642,6 +6668,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
     // below for a worker.
     if (isOwned(named) && process.env.FACTORY_PATROL)
       fail(`${named.id} carries its owner's decisions: a patrol cannot start it, even with --owned`)
+    refusePatrolDiscovered(b, named)
     const open = openChildren(b, named.id)
     if (open.length)
       fail(
@@ -10974,7 +11001,18 @@ if (import.meta.main && !outboxCmd)
         const [repo, id, station] = args
         if (!repo || !id) fail('usage: factory queue <rig|repo> <bead> [station]')
         const root = repoOf(repo!)
-        beads(root, 'factory').queue(id!, station)
+        const b = beads(root, 'factory')
+        if (process.env.FACTORY_PATROL) {
+          let cur: Bead | null = null
+          try {
+            cur = b.lookup(id!)
+          } catch {
+            // refused below
+          }
+          if (!cur) fail(`${id} cannot be read: a patrol cannot start it: a person queues it`)
+          refusePatrolDiscovered(b, cur!)
+        }
+        b.queue(id!, station)
         console.log(
           `queued ${id}${station ? ` at ${station}` : ''}: ${rigOf(root) ? 'it starts at the next dispatch' : 'make the repo a rig (factory rig add) for it to start'}`,
         )
