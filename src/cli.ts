@@ -18,6 +18,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  utimesSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -247,7 +248,7 @@ import {
   timedOutText,
   type SyncEntry,
 } from './sync'
-import { rmSafe } from './home-guard'
+import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport } from './ci'
 import { cut } from './cut'
 
@@ -3988,9 +3989,9 @@ const isAlive = (pid: number) => {
 }
 
 /** a lock held while its process lives, however long it takes: a pass over slow bd can take minutes */
-function hold(name: string): (() => void) | null {
-  const dir = join(HOME, name)
-  mkdirSync(HOME, { recursive: true })
+export function hold(name: string, rm?: Parameters<typeof rmSafe>[2], home = HOME): (() => void) | null {
+  const dir = join(home, name)
+  mkdirSync(home, { recursive: true })
   try {
     mkdirSync(dir)
   } catch {
@@ -4007,7 +4008,17 @@ function hold(name: string): (() => void) | null {
     }
   }
   writeFileSync(join(dir, 'pid'), String(process.pid))
-  return () => rmSafe(dir, { recursive: true, force: true })
+  return () => {
+    try {
+      rmSafe(dir, { recursive: true, force: true }, rm)
+    } catch {
+      // release runs in finally: do not throw. Drop the live pid and age the dir, so the next hold() takes over.
+      try {
+        rmSync(join(dir, 'pid'), { force: true })
+        utimesSync(dir, 0, 0)
+      } catch {}
+    }
+  }
 }
 
 const trackOf = (id: string, saved?: Saved): Track => {
@@ -5415,7 +5426,7 @@ function snapshotWorktree(path: string, runId: string): string {
     git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
     return commit
   } finally {
-    rmSafe(indexDir, { recursive: true, force: true })
+    rmQuiet(indexDir, { recursive: true, force: true })
   }
 }
 
