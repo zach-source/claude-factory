@@ -4522,7 +4522,16 @@ async function dream() {
           ],
           {
             cwd: MEMORY,
-            env: { ...process.env, CODEX_HOME: codexHome },
+            // 6w0m: the codex sandbox can run printenv, so pass an allowlist, not the tick env.
+            // Add a key only when the live dream fails without it.
+            env: {
+              ...Object.fromEntries(
+                ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
+                  process.env[k] === undefined ? [] : [[k, process.env[k]!]],
+                ),
+              ),
+              CODEX_HOME: codexHome,
+            },
             stdin: Buffer.from(prompt + DREAM_CODEX_NOTE),
             timeout: 45 * 60_000,
           },
