@@ -177,7 +177,8 @@ function nonRunner(w: string[]): boolean {
   }
   if (v === 'git') {
     const i = gitSub(w)
-    const s = GIT_NON_RUNNERS[w[i] ?? '']
+    const k = w[i] ?? ''
+    const s = Object.hasOwn(GIT_NON_RUNNERS, k) ? GIT_NON_RUNNERS[k] : undefined
     return !!s && argsOk(w.slice(i + 1), s)
   }
   return false

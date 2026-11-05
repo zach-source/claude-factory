@@ -313,6 +313,9 @@ describe('homeReason', () => {
     `git commit -m"'" --template=x.sh`,
     `factory report r 1 ready --summary-file"'" --x=x.sh`,
     `bunx prettier3 ${CLI}`,
+    `git toString -x ${CLI}`,
+    `git __proto__ ${CLI}`,
+    `git constructor ${CLI}`,
   ]
 
   test.each(NON_RUNNER_DENY)('denies a non-runner verb outside its closed grammar: %s', cmd =>
@@ -354,6 +357,14 @@ describe('homeReason', () => {
         readFile: read,
       }),
     ).toBeUndefined()
+  })
+
+  test('a prototype key as the git sub does not throw and does not hide a later push', () => {
+    const root = join(import.meta.dir, '..')
+    const got = denyReason('git toString -x; git push --force origin main', root, undefined, {
+      readFile: () => undefined,
+    })
+    expect(got).toBeDefined()
   })
 
   test('the worker hook gives HOME_REASON first', () => {
