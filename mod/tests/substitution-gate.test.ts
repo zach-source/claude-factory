@@ -111,3 +111,37 @@ test('a subagent is denied a substitution without a dialog', SLOW, async ($, on)
   expect(n.asked).toBe(0)
   expect(n.ran).toBe(0)
 })
+
+test('the Allow question shows the first hit even after a long harmless prefix', SLOW, async ($, on) => {
+  const { n, questions } = harness(on, 'Deny')
+  const pad = 'a'.repeat(350)
+  const rows: [string, string][] = [
+    [`${F} mail r1 plan "${pad} $(id)"`, '$(id)'],
+    [`${F} mail r1 plan "${pad} ${BT}id${BT}"`, `${BT}id${BT}`],
+    [`${F} mail r1 plan ${pad}<<EOF\nit's $(id)\nEOF`, '<<EOF'],
+    [`${F} mail r1 plan ${pad} 'open`, "'open"],
+  ]
+  for (const [command, shown] of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toContain('shell substitution')
+    expect(questions.at(-1), command).toContain(shown)
+  }
+  expect(n.ran).toBe(0)
+})
+
+test('a short gated command shows in full in the question', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  await $.tool.call({ tool: 'Bash', command: GATED[0]!, description: 'x' })
+  expect(questions[0]).toContain(GATED[0]!)
+})
+
+test('the question window does not split a surrogate pair', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+  for (let k = 0; k < 2; k++) {
+    const command = `${F} mail r1 plan "${'a'.repeat(350)}${'😀'.repeat(30 + k)}${'a'.repeat(k)} $(id)"`
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1)).toContain('$(id)')
+    expect(questions.at(-1)).not.toMatch(lone)
+  }
+})
