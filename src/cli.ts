@@ -2530,8 +2530,8 @@ export const HAIKU = 'claude-haiku-5-5'
 
 /**
  * claude-factory-5us3: a closed rule for the one user hook a worker keeps, herdr's session hook.
- * A SessionStart entry passes only when every hook in it is `bash '<path>/hooks/herdr-agent-state.sh' session`
- * (Claude) or `bash '<path>/herdr-agent-state.sh' session` (Codex, claude-factory-px98).
+ * A SessionStart entry passes only when every hook in it is `bash '/<abs path>/hooks/herdr-agent-state.sh' session`
+ * (Claude) or `bash '/<abs path>/herdr-agent-state.sh' session` (Codex, claude-factory-px98).
  */
 const isHerdrSessionHook = (e: unknown) => {
   const hs = (e as { hooks?: unknown } | null)?.hooks
@@ -2542,7 +2542,7 @@ const isHerdrSessionHook = (e: unknown) => {
       (h: { type?: unknown; command?: unknown } | null) =>
         h?.type === 'command' &&
         typeof h.command === 'string' &&
-        /^bash '[^'\n]*\/(?:hooks\/)?herdr-agent-state\.sh' session$/.test(h.command),
+        /^bash '\/[^'\n]*\/(?:hooks\/)?herdr-agent-state\.sh' session$/.test(h.command),
     )
   )
 }
