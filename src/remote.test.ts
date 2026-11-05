@@ -3717,7 +3717,7 @@ test('inside a VM, an outbox command over 100 KiB is refused with exit 1, nothin
   const over = 'x'.repeat(102401)
   for (const args of [
     ['report', 'r1', '1', 'ready', over],
-    ['report', 'r1', '1', 'ready', '€'.repeat(60000)],
+    ['report', 'r1', '1', 'ready', '€'.repeat(34134)],
     ['mail', 'r1', 'manager', over],
     ['memory', 'add', '--kind', 'fact', over],
   ]) {
