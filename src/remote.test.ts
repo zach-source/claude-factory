@@ -2758,38 +2758,43 @@ test("an AX codex station's usage comes from the kept rollout, with node and seq
   })
 })
 
-const none = (id: string, kept: (d: string, seq: number) => void) =>
-  expect(codexTick(id, kept).rows).toEqual([])
-
-test('codex usage: a missing dir, a wrong name or the claude dir add no rows (flhv AC3)', () => {
-  none('rc2', () => {})
-  none('rc3', d => keep(d, 'notes.jsonl', rolloutLines()))
-  none('rc3b', d => keep(d, `x-${ROLL}`, rolloutLines()))
-  none('rc3c', d => keep(d, `${ROLL}.bak`, rolloutLines()))
-  none('rc4', d => keep(d, ROLL, rolloutLines(), 'claude'))
-})
-
-test('codex usage: a symlink or a big file add no rows (flhv AC3)', () => {
-  none('rc5', d => {
-    const out = join(dir, 'outside.jsonl')
-    writeFileSync(out, rolloutLines())
-    mkdirSync(join(d, 'codex'), { recursive: true })
-    symlinkSync(out, join(d, 'codex', 'rollout-x.jsonl'))
-  })
-  none('rc6', d => {
-    mkdirSync(join(d, 'codex'), { recursive: true })
-    const f = join(d, 'codex', ROLL)
-    writeFileSync(f, rolloutLines() + '\n')
-    truncateSync(f, 64 * 1024 * 1024 + 1)
-  })
-})
-
-test('codex usage: a bad model or a bad output count add no rows (flhv AC3)', () => {
-  none('rc7', d => keep(d, ROLL, rolloutLines({ model: 'bad model' })))
-  none('rc8', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) })))
-  for (const [i, out] of [-1, 1.5, '9', 2e12].entries())
-    none(`rd${i}`, d => keep(d, ROLL, rolloutLines({ out })))
-})
+const noRows: [string, (d: string) => void][] = [
+  ['a missing dir', () => {}],
+  ['a wrong name', d => keep(d, 'notes.jsonl', rolloutLines())],
+  ['a name with a prefix', d => keep(d, `x-${ROLL}`, rolloutLines())],
+  ['a name with a suffix', d => keep(d, `${ROLL}.bak`, rolloutLines())],
+  ['the claude dir', d => keep(d, ROLL, rolloutLines(), 'claude')],
+  [
+    'a symlink',
+    d => {
+      const out = join(dir, 'outside.jsonl')
+      writeFileSync(out, rolloutLines())
+      mkdirSync(join(d, 'codex'), { recursive: true })
+      symlinkSync(out, join(d, 'codex', 'rollout-x.jsonl'))
+    },
+  ],
+  [
+    'a big file',
+    d => {
+      mkdirSync(join(d, 'codex'), { recursive: true })
+      const f = join(d, 'codex', ROLL)
+      writeFileSync(f, rolloutLines() + '\n')
+      truncateSync(f, 64 * 1024 * 1024 + 1)
+    },
+  ],
+  ['a bad model', d => keep(d, ROLL, rolloutLines({ model: 'bad model' }))],
+  ['a long model', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) }))],
+  ...[-1, 1.5, '9', 2e12].map((out): [string, (d: string) => void] => [
+    `output count ${JSON.stringify(out)}`,
+    d => keep(d, ROLL, rolloutLines({ out })),
+  ]),
+]
+test.each(noRows.map(([n, k], i) => [n, k, i] as const))(
+  'codex usage: %s adds no rows (flhv AC3)',
+  (_n, kept, i) => {
+    expect(codexTick(`rc${i}`, kept).rows).toEqual([])
+  },
+)
 
 test('codex usage keeps the first 20 rollout files by name (flhv AC3)', () => {
   const { rows } = codexTick('rc9', d => {
