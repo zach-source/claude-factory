@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Bead } from './beads'
-import { closableParents, repairs, type PrFact } from './repairs'
+import { closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: id, status: 'open', ...extra })
 const pr = (number: number, state: string, extra: Partial<PrFact> = {}): PrFact => ({
@@ -140,6 +140,64 @@ describe('repairs', () => {
       const b = qbi3({ metadata: { ship_run: 'run-1', ship_branch: 'factory/x' } })
       expect(run([b], [pr(9, 'OPEN', { headRefName: 'factory/x' })]).map(r => r.kind)).toEqual(['reship'])
     })
+  })
+})
+
+describe('conflict', () => {
+  const B = 'factory/x'
+  const qb = (extra: Partial<Bead> = {}) =>
+    bead('c-1', {
+      labels: ['ship'],
+      metadata: { ship_pr: pr(9, 'OPEN').url, ship_branch: B },
+      ...extra,
+    })
+  const op = (extra: Partial<PrFact> = {}) =>
+    pr(9, 'OPEN', { headRefName: B, mergeable: 'CONFLICTING', ...extra })
+  const kinds = (every: Bead[], prs: PrFact[], live: string[] = []) => run(every, prs, live).map(r => r.kind)
+
+  test('a queued bead with an OPEN CONFLICTING PR goes back to implement', () => {
+    const out = run([qb()], [op()])
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ kind: 'conflict', id: 'c-1' })
+    for (const w of [op().url, 'CONFLICTING', 'station:implement', B]) expect(out[0]!.reason).toContain(w)
+  })
+
+  test('only the literal CONFLICTING acts', () => {
+    for (const m of ['MERGEABLE', 'UNKNOWN', undefined, 'conflicting'])
+      expect(kinds([qb()], [op({ mergeable: m })])).toEqual([])
+  })
+
+  test('other PR states, beads and branches give no conflict', () => {
+    expect(kinds([qb()], [op({ state: 'MERGED' })])).toEqual(['close'])
+    expect(kinds([qb()], [op({ state: 'CLOSED' })])).toEqual(['unship'])
+    expect(kinds([qb()], [op()], ['c-1'])).toEqual([])
+    expect(kinds([qb({ labels: [] })], [op()])).toEqual([])
+    expect(kinds([qb({ status: 'deferred' })], [op()])).toEqual([])
+    expect(kinds([qb({ status: 'closed' })], [op()])).toEqual([])
+    expect(kinds([qb()], [op({ headRefName: 'factory/y' })])).toEqual([])
+    expect(kinds([qb({ metadata: { ship_pr: op().url } })], [op()])).toEqual([])
+    expect(kinds([qb({ metadata: { ship_pr: op().url, ship_branch: 'main' } })], [op()])).toEqual([])
+    expect(kinds([qb({ metadata: { ship_pr: 'o/r#77', ship_branch: B } })], [op()])).toEqual([])
+  })
+
+  test('a stale claim is released first, not reworked', () => {
+    const b = qb({ assignee: 'factory/old', lease_expires_at: '2000-01-01T00:00:00Z' })
+    expect(kinds([b], [op()])).toEqual(['release'])
+  })
+
+  test('conflictProbes returns the OPEN PRs of the allowed beads, once', () => {
+    const probe = (every: Bead[], prs: PrFact[], live: string[] = []) =>
+      conflictProbes(every, prs, new Set(live)).map(p => p.number)
+    expect(probe([qb(), qb({ id: 'c-2' })], [op({ mergeable: undefined })])).toEqual([9])
+    expect(probe([qb()], [op({ state: 'MERGED' })])).toEqual([])
+    expect(probe([qb()], [op({ state: 'CLOSED' })])).toEqual([])
+    expect(probe([qb()], [op()], ['c-1'])).toEqual([])
+    expect(probe([qb({ labels: [] })], [op()])).toEqual([])
+    expect(probe([qb({ status: 'deferred' })], [op()])).toEqual([])
+    expect(probe([qb({ status: 'closed' })], [op()])).toEqual([])
+    expect(probe([qb()], [op({ headRefName: 'factory/y' })])).toEqual([])
+    expect(probe([qb({ metadata: { ship_pr: op().url } })], [op()])).toEqual([])
+    expect(probe([qb({ metadata: { ship_pr: 'o/r#77', ship_branch: B } })], [op()])).toEqual([])
   })
 })
 

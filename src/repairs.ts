@@ -10,8 +10,14 @@ export type PrFact = {
   isDraft?: boolean
   body?: string
   headRefName?: string
+  /** GitHub's literal answer (MERGEABLE, CONFLICTING, UNKNOWN); the REST list lacks it, repairPass reads it */
+  mergeable?: string
 }
-export type Repair = { kind: 'close' | 'unship' | 'release' | 'reship'; id: string; reason: string }
+export type Repair = {
+  kind: 'close' | 'unship' | 'release' | 'reship' | 'conflict'
+  id: string
+  reason: string
+}
 
 /** most repairs one pass makes in one rig */
 export const REPAIR_CAP = 20
@@ -48,6 +54,19 @@ function staleClaim(b: Bead, now: number): string | undefined {
   const lease = b.lease_expires_at
   if (!b.assignee?.startsWith('factory/') || !lease || Date.parse(lease) >= now) return undefined
   return `${b.assignee} is not live and its lease expired at ${lease}`
+}
+
+/** the OPEN PR of a queued ship bead that nothing else owns, or undefined: the beads a conflict check applies to */
+function queuedOpenPr(b: Bead, prs: PrFact[], live: Set<string>): PrFact | undefined {
+  if (b.status !== 'open' || live.has(b.id) || !b.labels?.includes(SHIP)) return undefined
+  const branch = shipBranchOf(b)
+  const pr = branch ? prOf(prs, meta(b, 'ship_pr')) : undefined
+  return pr?.state === 'OPEN' && pr.headRefName === branch ? pr : undefined
+}
+
+/** the PRs whose `mergeable` repairPass must read before `repairs` can find a conflict */
+export function conflictProbes(every: Bead[], prs: PrFact[], live: Set<string>): PrFact[] {
+  return [...new Set(every.flatMap(b => queuedOpenPr(b, prs, live) ?? []))]
 }
 
 /**
@@ -96,6 +115,14 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
     const pr = b.labels?.includes(SHIP) ? prOf(prs, meta(b, 'ship_pr')) : undefined
     if (pr?.state === 'CLOSED')
       out.push({ kind: 'unship', id: b.id, reason: `${pr.url} was closed unmerged` })
+    const open = queuedOpenPr(b, prs, live)
+    // fail closed: only the literal CONFLICTING from GitHub counts
+    if (open?.mergeable === 'CONFLICTING')
+      out.push({
+        kind: 'conflict',
+        id: b.id,
+        reason: `${open.url} is CONFLICTING with main: sent back to station:implement on ${open.headRefName}`,
+      })
   }
   return out
 }

@@ -104,6 +104,29 @@ test('ship comments before it updates, so a failed comment retries the whole han
   }
 })
 
+test('rework sends a queued bead back to implement: update, then comment; a failed step returns false', () => {
+  const f = fakeBd('fake-bd-rework')
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    writeFileSync(f.log, '')
+    expect(beads(tmpdir(), 'factory').rework('fx-1', 'conflicting')).toBe(true)
+    const calls = readFileSync(f.log, 'utf8').trim().split('\n')
+    expect(calls[0]).toContain(
+      'update fx-1 --remove-label ship --add-label factory --add-label station:implement',
+    )
+    expect(calls[1]).toContain('comment fx-1 conflicting')
+    writeFileSync(join(f.bin, 'bd'), `#!/bin/sh\necho "$*" >> ${f.log}\ncase "$1" in update) exit 1;; esac\n`)
+    writeFileSync(f.log, '')
+    expect(beads(tmpdir(), 'factory').rework('fx-1', 'conflicting')).toBe(false)
+    expect(readFileSync(f.log, 'utf8')).not.toContain('comment')
+    writeFileSync(join(f.bin, 'bd'), `#!/bin/sh\ncase "$1" in comment) exit 1;; esac\n`)
+    expect(beads(tmpdir(), 'factory').rework('fx-1', 'conflicting')).toBe(false)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
 test('unship drops the ship label and defers the bead', () => {
   const f = fakeBd('fake-bd-unship')
   const path = process.env.PATH
