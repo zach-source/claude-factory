@@ -227,7 +227,7 @@ export function render(
       `implement passes per shipped run ${m.implementPassesPerShippedRun === null ? '-' : m.implementPassesPerShippedRun.toFixed(2)}`,
     `  triage rejects ${triageRejects} of ${triageVisits} (${m.triageAlreadyDone} already done); ` +
       `dispatch skipped ${precheck.mergedPr + precheck.liveRun} (merged-pr ${precheck.mergedPr}, live-run ${precheck.liveRun}), ` +
-      `gh fail-open ${precheck.failOpen ?? 0}`,
+      `forge fail-open ${precheck.failOpen ?? 0}`,
     '  station      visits  failed  median  outcomes',
   ]
   for (const [id, s] of Object.entries(m.stations))
