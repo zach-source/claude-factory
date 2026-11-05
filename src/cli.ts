@@ -3664,7 +3664,7 @@ function storeCodexUsage(run: Run, node: string, seq: number) {
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
 const appendUsage = (id: string, rows: Usage[]) =>
   appendFileSync(usageFile(id), rows.map(r => JSON.stringify(r) + '\n').join(''))
-/** a run's stored rows; a session and model that was stored twice (a resumed worker) keeps its last row */
+/** a run's stored rows; a node, seq, session and model that was stored twice (a resumed worker) keeps its last row */
 function storedUsage(id: string): Usage[] {
   if (!existsSync(usageFile(id))) return []
   const rows = readFileSync(usageFile(id), 'utf8')
@@ -3676,7 +3676,7 @@ function storedUsage(id: string): Usage[] {
         return []
       }
     })
-  return [...new Map(rows.map(r => [`${r.session}\0${r.model}`, r])).values()]
+  return [...new Map(rows.map(r => [`${r.node}\0${r.seq}\0${r.session}\0${r.model}`, r])).values()]
 }
 
 async function tickRun(run: Run, now: number, halt: Halt | null = null) {

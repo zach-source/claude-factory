@@ -61,6 +61,19 @@ test('hoursToShip: a merge-shipped run ends at mergedAt; a deploy-shipped run ke
   expect(m.small.hoursToShip.median).toBe(4)
 })
 
+test('hoursToShip: a log older than the run id time starts the clock at the first log entry, never negative', () => {
+  const m = metrics([
+    handed('a', {
+      createdAt: 5 * H,
+      mergedAt: 4 * H,
+      log: [e('triage', 'small', 1), e('review', 'approve', 2)],
+    }),
+    { id: 's', node: 'done', createdAt: 5 * H, log: [e('triage', 'x', 1), e('deploy', 'published', 3)] },
+  ])
+  expect(m.hoursToShip.median).toBeGreaterThanOrEqual(2) // 3h and 2h
+  expect(m.hoursToShip.p90).toBe(3)
+})
+
 test('implementPassesPerShippedRun counts a merge-shipped run', () => {
   const m = metrics([
     handed('a', { mergedAt: H, log: [e('implement', 'ready', 1), e('review', 'approve', 2)] }),

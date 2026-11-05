@@ -36,6 +36,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
       ...laptop,
       FACTORY_HOME: home,
       PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin, 'herdr'),
       // no project is ever trusted here, so the first tick stops at "awaiting trust" instead of
       // reaching a real pane
       CLAUDE_CONFIG_DIR: claudeConfig,

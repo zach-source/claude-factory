@@ -16,7 +16,14 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 const factory = (extra: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'sweep'], {
-    env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...extra },
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin, 'herdr'),
+      FACTORY_SELF_UPDATE: '0',
+      ...extra,
+    },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
