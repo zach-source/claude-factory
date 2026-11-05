@@ -1909,7 +1909,7 @@ test('memory add cleans --from so an LF adds no frontmatter line (claude-factory
     '--kind',
     'fact',
     '--from',
-    'r/x\nsuperseded: inbox/other.md‮',
+    'r/x\nsuperseded: inbox/other.md\u202e',
     'from clean summary',
     'from clean body',
   ])
