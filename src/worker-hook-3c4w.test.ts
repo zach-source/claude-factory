@@ -34,6 +34,18 @@ const CONTROL = [
   'factory rig 2>/dev/null rm w',
   'factory rig 2 >f add',
   'factory rig --max 2',
+  'factory 2>&1 tick',
+  'factory >f tick',
+  'factory > f tick',
+  'factory 2>&1 TICK',
+  'factory 2>/dev/null say hi',
+  'factory </dev/null goto r1 x',
+  'factory 2>&1 rm r1',
+  'factory 2>&1 rig add w x',
+  'factory > f rig add w x',
+  'factory 2>&1 rig 2>&1 add w x',
+  'sudo factory 2>&1 tick',
+  'factory\\\n 2>&1 tick',
   'FACTORY TICK',
   '\\factory tick',
   "factory 'goto' r1 x",
@@ -43,7 +55,8 @@ const CONTROL = [
   'true && factory goto r1 done',
   "bash -c 'factory tick'",
 ]
-const DYNAMIC = ['factory rig "$X"', 'factory $(echo goto) r1']
+const DYNAMIC = [
+  'factory 2>&1 ~/tick','factory rig "$X"', 'factory $(echo goto) r1']
 const DENIED = ['factory rig 2>"$X" add', 'factory rig {fd}>f add', 'factory rig 2>&1 "$X"']
 const ALLOW = [
   'factory rig',
@@ -58,6 +71,11 @@ const ALLOW = [
   'factory rig < f',
   'factory rig 2>&1 list',
   'factory rig\\\n 2>&1',
+  'factory 2>&1 rig',
+  'factory 2>&1 rig list',
+  'factory > f rig list',
+  'factory 2>&1 status',
+  'factory 2>&1 report r1 2 ready x',
   'factory status',
   'factory report r1 2 ready "goto done"',
   'factory mail r1 manager "please factory tick"',
