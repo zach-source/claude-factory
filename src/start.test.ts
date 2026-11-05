@@ -355,9 +355,15 @@ test('help prints free-text placeholders in quotes (claude-factory-nt33)', () =>
     "fork <run> <station> '[note...]'",
     "memory search [--rig r] '<query...>'",
     "--title '<text>' --description '<text>'",
+    "<rig|repo> '<goal...>'|bead",
+    "'<summary...>'|--summary-file",
+    "--goal '<text...>'",
+    "'<summary>' '[body...]'",
   ])
     expect(text).toContain(p)
-  expect(text).not.toMatch(/ <text\.\.\.>| \[text\.\.\.\]| \[note\.\.\.\]| <query\.\.\.>/)
+  expect(text).not.toMatch(
+    / <text\.\.\.>| \[text\.\.\.\]| \[note\.\.\.\]| <query\.\.\.>| <goal\.\.\.[>|]| <summary> \[body| <summary\.\.\.\||\[--goal text/,
+  )
 })
 
 // claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
