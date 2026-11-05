@@ -375,10 +375,19 @@ const { O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_NOFOLLOW } = constants
 /** store I/O: a link at the last path part throws ELOOP, so a link that a live process plants is never read or written through (claude-factory-eqxi) */
 export const readStore = (f: string, encoding: 'utf8') =>
   readFileSync(f, { encoding, flag: O_RDONLY | O_NOFOLLOW })
+/** readStore for a reader: null when the path is a link (ELOOP) or gone (ENOENT), so the reader skips it; other errors throw */
+export const tryRead = (f: string): string | null => {
+  try {
+    return readStore(f, 'utf8')
+  } catch (e) {
+    if (['ELOOP', 'ENOENT'].includes((e as NodeJS.ErrnoException).code ?? '')) return null
+    throw e
+  }
+}
 const put = (f: string, data: string, flags: number) => {
   const fd = openSync(f, flags | O_WRONLY | O_CREAT | O_NOFOLLOW, 0o666)
   try {
-    writeSync(fd, data)
+    writeFileSync(fd, data)
   } finally {
     closeSync(fd)
   }
@@ -421,7 +430,8 @@ export function walk(dir: string) {
     for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
       const f = e.name
       if (!e.isFile() || !f.endsWith('.md')) continue
-      const text = readStore(join(dir, topic.name, f), 'utf8')
+      const text = tryRead(join(dir, topic.name, f))
+      if (text === null) continue
       if (f === 'LONG.md') {
         for (const e of parseLong(text))
           notes.push({
@@ -520,24 +530,22 @@ export function coreNotes(dir: string): Note[] {
   const file = join(dir, 'CORE.md')
   if (!regular(file)) return []
   let rig: string | undefined
-  return readStore(file, 'utf8')
-    .split('\n')
-    .flatMap(line => {
-      const h = /^##\s+rig:\s*(\S+)/.exec(line)
-      if (h) {
-        rig = h[1]
-        return []
-      }
-      if (/^##\s/.test(line)) {
-        rig = undefined
-        return []
-      }
-      const m = /^-\s+(.*\S)\s*$/.exec(line)
-      if (!m || m[1]!.startsWith('(cut:')) return []
-      const summary = m[1]!
-      const id = createHash('sha1').update(summary).digest('hex').slice(0, 8)
-      return [{ path: `CORE.md#${id}`, summary, rig, body: summary, tier: 'fact' as const }]
-    })
+  return (tryRead(file) ?? '').split('\n').flatMap(line => {
+    const h = /^##\s+rig:\s*(\S+)/.exec(line)
+    if (h) {
+      rig = h[1]
+      return []
+    }
+    if (/^##\s/.test(line)) {
+      rig = undefined
+      return []
+    }
+    const m = /^-\s+(.*\S)\s*$/.exec(line)
+    if (!m || m[1]!.startsWith('(cut:')) return []
+    const summary = m[1]!
+    const id = createHash('sha1').update(summary).digest('hex').slice(0, 8)
+    return [{ path: `CORE.md#${id}`, summary, rig, body: summary, tier: 'fact' as const }]
+  })
 }
 
 export async function search(
@@ -550,7 +558,7 @@ export async function search(
   const printed = new Set(
     core || !regular(join(dir, 'CORE.md'))
       ? []
-      : coreFor(readStore(join(dir, 'CORE.md'), 'utf8'), rig).split('\n'),
+      : coreFor(tryRead(join(dir, 'CORE.md')) ?? '', rig).split('\n'),
   )
   const all = [...notes, ...coreNotes(dir).filter(n => core || !printed.has(`- ${n.summary}`))]
   if (!all.length) return []
@@ -785,7 +793,7 @@ export function coreFor(text: string, rig?: string) {
 
 /** level 0 and level 1, for a brief: the core in full, then one line per topic */
 export function outline(dir: string, rig?: string) {
-  const core = regular(join(dir, 'CORE.md')) ? coreFor(readStore(join(dir, 'CORE.md'), 'utf8'), rig) : ''
+  const core = coreFor(tryRead(join(dir, 'CORE.md')) ?? '', rig)
   const { notes, topics } = walk(dir)
   const count = (t: string) => notes.filter(n => topicOf(n) === t).length
   const lines = [...new Set([...topics.keys(), ...notes.map(topicOf)])]
@@ -817,7 +825,7 @@ export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n
 /** all of it as one text, to find the beads it names */
 export const corpus = (dir: string) =>
   [
-    regular(join(dir, 'CORE.md')) ? readStore(join(dir, 'CORE.md'), 'utf8') : '',
+    tryRead(join(dir, 'CORE.md')) ?? '',
     ...[...walk(dir).topics.values(), ...walk(dir).notes].map(n => `${n.summary}\n${n.body}`),
   ].join('\n')
 
@@ -1004,7 +1012,7 @@ export function noteExists(dir: string, path: string): boolean {
   }
   const file = join(dir, path.slice(0, i))
   if (!regular(file)) return false
-  return parseLong(readStore(file, 'utf8')).some(e => e.id === path.slice(i + 1))
+  return parseLong(tryRead(file) ?? '').some(e => e.id === path.slice(i + 1))
 }
 
 /**
@@ -1899,7 +1907,7 @@ export const skillsDir = (dir: string) => join(managerDir(dir), '.claude', 'skil
 
 const skillText = (root: string, name: string) => {
   const file = join(root, name, 'SKILL.md')
-  return existsSync(file) ? readStore(file, 'utf8') : null
+  return existsSync(file) ? tryRead(file) : null
 }
 const skillNames = (root: string) =>
   existsSync(root)
@@ -1922,13 +1930,16 @@ export function pendingSkills(dir: string) {
   })
 }
 
+/** cpSync filter: a link in a skill folder is not copied (claude-factory-eqxi) */
+const notLink = (src: string) => !lstatSync(src).isSymbolicLink()
+
 /** the manager accepts a proposal: installed as the dream wrote it, or gone when the dream reaped it */
 export function installSkill(dir: string, name: string) {
   if (!isSkillName(name) || !pendingSkills(dir).some(p => p.name === name))
     throw new Error(`no proposed skill ${name}: factory skills lists them`)
   rmSafe(join(skillsDir(dir), name), { recursive: true, force: true })
   if (existsSync(join(skillSources(dir), name)))
-    cpSync(join(skillSources(dir), name), join(skillsDir(dir), name), { recursive: true })
+    cpSync(join(skillSources(dir), name), join(skillsDir(dir), name), { recursive: true, filter: notLink })
 }
 
 /** the manager refuses a proposal: what is installed stands, and the dream reads why in its inbox */
@@ -1937,7 +1948,7 @@ export function rejectSkill(dir: string, name: string, why: string) {
     throw new Error(`no proposed skill ${name}: factory skills lists them`)
   rmSafe(join(skillSources(dir), name), { recursive: true, force: true })
   if (existsSync(join(skillsDir(dir), name)))
-    cpSync(join(skillsDir(dir), name), join(skillSources(dir), name), { recursive: true })
+    cpSync(join(skillsDir(dir), name), join(skillSources(dir), name), { recursive: true, filter: notLink })
   return add(dir, {
     summary: `The manager rejected the proposed skill ${name}: ${why}`,
     from: 'manager',
@@ -1951,9 +1962,11 @@ export function skills(dir: string) {
   if (!existsSync(root)) return []
   return readdirSync(root, { withFileTypes: true })
     .filter(d => d.isDirectory() && existsSync(join(root, d.name, 'SKILL.md')))
-    .map(d => {
-      const text = readFileSync(join(root, d.name, 'SKILL.md'), 'utf8')
-      return { name: d.name, description: /^description:\s*(.*)$/m.exec(text)?.[1] ?? '' }
+    .flatMap(d => {
+      const text = tryRead(join(root, d.name, 'SKILL.md'))
+      return text === null
+        ? []
+        : [{ name: d.name, description: /^description:\s*(.*)$/m.exec(text)?.[1] ?? '' }]
     })
 }
 

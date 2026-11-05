@@ -9514,7 +9514,7 @@ function reviewFacts(key: string | undefined) {
   const installedFile = join(memory.skillsDir(MEMORY), item!.name, 'SKILL.md')
   const installed =
     item!.kind === 'skill' && existsSync(installedFile)
-      ? clip(readFileSync(installedFile, 'utf8'), 16384)
+      ? clip(memory.tryRead(installedFile) ?? '', 16384)
       : undefined
   const { key: k, kind, name, change, text } = item!
   return {

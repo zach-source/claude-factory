@@ -1,6 +1,6 @@
 // claude-factory-eqxi: a symlink in the memory store is never read and a dream removes it
 import { expect, test } from 'bun:test'
-import { lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -17,6 +17,12 @@ import {
   readStore,
   use,
   writeStore,
+  tryRead,
+  skills,
+  skillSources,
+  skillsDir,
+  pendingSkills,
+  installSkill,
 } from './memory'
 
 const MARKER = 'zqsecret-eqxi'
@@ -118,5 +124,42 @@ test('a writer with a link at its path throws and the target stays unchanged', (
   symlinkSync(secret, join(dir, '.usage.jsonl'))
   expect(() => use(dir, ['topic/a.md'], 'helped')).toThrow(/ELOOP/)
   expect(readFileSync(secret, 'utf8')).toBe(before)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('writeStore truncates a longer file', () => {
+  const { root, dir } = linkStore()
+  const f = join(dir, 'inbox', 't.md')
+  writeStore(f, 'a long text of many bytes')
+  writeStore(f, 'short')
+  expect(readFileSync(f, 'utf8')).toBe('short')
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('tryRead gives null on a link or a missing file and rethrows other errors', () => {
+  const { root, dir, secret } = linkStore()
+  const link = join(dir, 'inbox', 'z.md')
+  symlinkSync(secret, link)
+  expect(tryRead(link)).toBeNull()
+  expect(tryRead(join(dir, 'inbox', 'missing.md'))).toBeNull()
+  expect(() => tryRead(join(dir, 'inbox'))).toThrow(/EISDIR/)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('skills skips a linked SKILL.md; installSkill copies no link', () => {
+  const { root, dir, secret } = linkStore()
+  const src = join(skillSources(dir), 'a')
+  mkdirSync(src, { recursive: true })
+  writeFileSync(join(src, 'SKILL.md'), 'description: real\n')
+  symlinkSync(secret, join(src, 'leak.md'))
+  const b = join(skillSources(dir), 'b')
+  mkdirSync(b, { recursive: true })
+  symlinkSync(secret, join(b, 'SKILL.md'))
+  expect(skills(dir)).toEqual([{ name: 'a', description: 'real' }])
+  mkdirSync(skillsDir(dir), { recursive: true })
+  expect(pendingSkills(dir).some(p => p.name === 'a')).toBe(true)
+  installSkill(dir, 'a')
+  expect(existsSync(join(skillsDir(dir), 'a', 'SKILL.md'))).toBe(true)
+  expect(existsSync(join(skillsDir(dir), 'a', 'leak.md'))).toBe(false)
   rmSync(root, { recursive: true, force: true })
 })
