@@ -2453,7 +2453,8 @@ export const HAIKU = 'claude-haiku-5-5'
 
 /**
  * claude-factory-5us3: a closed rule for the one user hook a worker keeps, herdr's session hook.
- * A SessionStart entry passes only when every hook in it is `bash '<path>/hooks/herdr-agent-state.sh' session`.
+ * A SessionStart entry passes only when every hook in it is `bash '<path>/hooks/herdr-agent-state.sh' session`
+ * (Claude) or `bash '<path>/herdr-agent-state.sh' session` (Codex, claude-factory-px98).
  */
 const isHerdrSessionHook = (e: unknown) => {
   const hs = (e as { hooks?: unknown } | null)?.hooks
@@ -2464,7 +2465,7 @@ const isHerdrSessionHook = (e: unknown) => {
       (h: { type?: unknown; command?: unknown } | null) =>
         h?.type === 'command' &&
         typeof h.command === 'string' &&
-        /^bash '[^'\n]*\/hooks\/herdr-agent-state\.sh' session$/.test(h.command),
+        /^bash '[^'\n]*\/(?:hooks\/)?herdr-agent-state\.sh' session$/.test(h.command),
     )
   )
 }
@@ -2759,7 +2760,7 @@ export function piWorker(home = HOME, plugins = userPluginDirs()) {
 
 /**
  * A codex worker gets its own CODEX_HOME at <run dir>/codex/<node>, never the person's ~/.codex. It holds
- * config.toml (context limit), hooks.json (the person's hooks, then the deny hook last), AGENTS.md (the worker
+ * config.toml (context limit), hooks.json (herdr's session hook and the deny hook only, claude-factory-px98), AGENTS.md (the worker
  * rules) and an auth.json link. Codex has the PreToolUse hook, so worker-hook.ts runs as it is. Fail closed:
  * no hook file, or an agent command that turns the guard off, refuses the launch (claude-factory-x0b9).
  */
@@ -2793,9 +2794,10 @@ export function codexWorker(
   const dir = o.dir ?? join(runDir(run.id), 'codex', node)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  let theirs: Record<string, unknown[]> = {}
+  let herdr: unknown[] = []
   try {
-    theirs = readJson<{ hooks?: Record<string, unknown[]> }>(join(user, 'hooks.json')).hooks ?? {}
+    const ss = readJson<{ hooks?: { SessionStart?: unknown } }>(join(user, 'hooks.json')).hooks?.SessionStart
+    if (Array.isArray(ss)) herdr = ss.filter(isHerdrSessionHook)
   } catch {
     // no user hooks, or not JSON: the deny hook is the only one
   }
@@ -2808,7 +2810,7 @@ export function codexWorker(
     mergeAuthority(rig),
   )
   writeJson(join(dir, 'hooks.json'), {
-    hooks: { ...theirs, PreToolUse: [...(theirs.PreToolUse ?? []), ...hook] },
+    hooks: { PreToolUse: hook, ...(herdr.length ? { SessionStart: herdr } : {}) },
   })
   writeFileSync(
     join(dir, 'config.toml'),

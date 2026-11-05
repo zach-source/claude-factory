@@ -71,7 +71,7 @@ function fixture(maxContextK = 200) {
 
 const cmd = (command: string, extra = {}) => ({ type: 'command', command, ...extra })
 const written = (f: ReturnType<typeof fixture>) =>
-  JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks as Record<string, any[]>
+  JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks as Record<string, any>
 const HERDR = `bash '/h/.codex/herdr-agent-state.sh' session`
 
 // claude-factory-px98: only herdr's session hook and the deny hook survive
