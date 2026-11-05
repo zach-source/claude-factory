@@ -3187,6 +3187,50 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     finish('sk3')
   })
 
+  test('773c AC3: a skew report keeps since and asks no new Question', () => {
+    const seq = launched('sk3k')
+    const since = Date.now() - 120 * 60_000
+    writeFileSync(
+      markerFile(),
+      JSON.stringify({ since, at: Date.now() - 5 * 60_000, runner: 'ax', error: 'x' }),
+    )
+    cluster('Running', { status: 'idle', session: 's1', lines: [skewLine('sk3k', seq)] })
+    const before = Date.now()
+    factory(['tick'])
+    const ctx = ctxOfRun('sk3k')
+    expect(ctx.log.at(-1).outcome).toBe('outage')
+    expect(ctx.wakeAt).toBeGreaterThanOrEqual(before + 60 * 60_000)
+    const m = JSON.parse(readFileSync(markerFile(), 'utf8'))
+    expect(m.since).toBe(since)
+    expect(Date.now() - m.at).toBeLessThan(60_000)
+    expect(
+      (ctx.mail.manager ?? []).filter((x: { text: string }) => x.text.includes('Question:')),
+    ).toHaveLength(0)
+    finish('sk3k')
+  })
+
+  test('773c AC3: a first skew report sets since and at together', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3n')
+    cluster('Running', { status: 'idle', session: 's1', lines: [skewLine('sk3n', seq)] })
+    factory(['tick'])
+    const m = JSON.parse(readFileSync(markerFile(), 'utf8'))
+    expect(Date.now() - m.since).toBeLessThan(60_000)
+    expect(Date.now() - m.at).toBeLessThan(60_000)
+    finish('sk3n')
+  })
+
+  test('773c AC4: a renewing report after 3 h still holds the station but keeps since', () => {
+    const seq = launched('sk4r')
+    const since = Date.now() - 181 * 60_000
+    writeFileSync(markerFile(), JSON.stringify({ since, at: Date.now() - 60_000, runner: 'ax', error: 'x' }))
+    cluster('Running', { status: 'idle', session: 's1', lines: [skewLine('sk4r', seq)] })
+    factory(['tick'])
+    expect(ctxOfRun('sk4r').log.at(-1).outcome).toBe('outage')
+    expect(JSON.parse(readFileSync(markerFile(), 'utf8')).since).toBe(since)
+    finish('sk4r')
+  })
+
   test('AC4: one Question for each rig, sent from the factory', () => {
     rmSync(markerFile(), { force: true })
     const a = launched('sk4a', true, 't')
@@ -3271,11 +3315,19 @@ describe('a bd skew hold on the rig starts (claude-factory-lahb)', () => {
     return { repo, fdefFile, env }
   }
   const markerOf = (rig: string) => join(home, `bd-skew-${rig}.json`)
-  const mark = (rig: string, ageMin: number) =>
+  const mark = (rig: string, ageMin: number, sinceMin?: number | string) =>
     writeFileSync(
       markerOf(rig),
-      JSON.stringify({ at: Date.now() - ageMin * 60_000, runner: 'ax', error: 'x' }),
+      JSON.stringify({
+        ...(sinceMin === undefined
+          ? {}
+          : { since: typeof sinceMin === 'string' ? sinceMin : Date.now() - sinceMin * 60_000 }),
+        at: Date.now() - ageMin * 60_000,
+        runner: 'ax',
+        error: 'x',
+      }),
     )
+  const markerJson = (rig: string) => JSON.parse(readFileSync(markerOf(rig), 'utf8'))
   const applies = () =>
     called()
       .split('\n')
@@ -3307,6 +3359,58 @@ describe('a bd skew hold on the rig starts (claude-factory-lahb)', () => {
     expect(Date.now() - JSON.parse(readFileSync(markerOf('acme'), 'utf8')).at).toBeLessThan(60_000)
     cluster('Running', { status: 'idle', lines: [] })
     start(s)
+    expect(applies()).toBe(0)
+    rmSync(markerOf('acme'))
+  }, 60_000)
+
+  test('773c AC1: a marker older than 3 h from its first report holds nothing and is not written', () => {
+    const s = rigSetup('skew-cap', 'acme', 'ax')
+    mark('acme', 0, 181)
+    const before = readFileSync(markerOf('acme'), 'utf8')
+    start(s)
+    expect(applies()).toBe(1)
+    expect(readFileSync(markerOf('acme'), 'utf8')).toBe(before)
+    rmSync(markerOf('acme'))
+    // 179 min after the first report the hold still stands
+    const t = rigSetup('skew-cap2', 'acme', 'ax')
+    mark('acme', 0, 179)
+    start(t)
+    expect(applies()).toBe(0)
+    expect(factory(['tick'], t.env).out).toContain('needs the person: bd version skew on ax')
+    rmSync(markerOf('acme'))
+  }, 60_000)
+
+  test('773c AC2: a probe start keeps since and moves at', () => {
+    const s = rigSetup('skew-since', 'acme', 'ax')
+    mark('acme', 61, 90)
+    const since = markerJson('acme').since
+    start(s)
+    expect(applies()).toBe(1)
+    const m = markerJson('acme')
+    expect(m.since).toBe(since)
+    expect(Date.now() - m.at).toBeLessThan(60_000)
+    cluster('Running', { status: 'idle', lines: [] })
+    start(s)
+    expect(applies()).toBe(0)
+    rmSync(markerOf('acme'))
+  }, 60_000)
+
+  test('773c AC5: a marker without since uses at; a bad since falls back to at', () => {
+    const s = rigSetup('skew-legacy', 'acme', 'ax')
+    mark('acme', 1)
+    start(s)
+    expect(applies()).toBe(0)
+    rmSync(markerOf('acme'))
+    const t = rigSetup('skew-legacy2', 'acme', 'ax')
+    mark('acme', 181)
+    const before = readFileSync(markerOf('acme'), 'utf8')
+    start(t)
+    expect(applies()).toBe(1)
+    expect(readFileSync(markerOf('acme'), 'utf8')).toBe(before)
+    rmSync(markerOf('acme'))
+    const u = rigSetup('skew-legacy3', 'acme', 'ax')
+    mark('acme', 1, 'x')
+    start(u)
     expect(applies()).toBe(0)
     rmSync(markerOf('acme'))
   }, 60_000)
