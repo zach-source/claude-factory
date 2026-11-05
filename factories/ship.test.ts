@@ -726,6 +726,13 @@ test('3w8o AC3 must-see-live changes keep the block', () => {
   expect(p).toContain('at most twice in a row for a must-see-live change')
 })
 
+test('3w8o AC3b any other change reports unsure until the deadline, not blocked', () => {
+  const s = soakSentence('For any other change, report')
+  expect(s).toContain('report unsure until the deadline')
+  expect(s).not.toContain('report blocked')
+  expect(prompt('soak')).toContain('for any other change, until the soak deadline)')
+})
+
 test('3w8o AC4 only soak carries the deadline rule', () => {
   for (const id of ['deploy', 'queue', 'release', 'rollback', 'postmortem']) {
     expect(prompt(id), id).not.toContain('verify:live')
