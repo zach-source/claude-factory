@@ -8406,7 +8406,7 @@ async function orphanPass() {
       if (!ref) continue // GitLab rigs: claude-factory-9t7v
       if (!records) throw new Error('orphan-forks.json is unreadable')
       const cap = Math.min(ORPHAN_CAP, room(rig, busy, undefined, held))
-      if (cap <= 0) continue
+      // a full rig forks nothing (cap 0), but its failed-fork rows stay
       const rows = await githubPulls(spawnGh, ref.slug, rig.repo, { state: 'open', pages: 2 })
       if (!rows) throw new Error('gh api pulls failed')
       const prs = (githubRows(rows) as OrphanPr[]).filter(pr => pr.headRefName.startsWith('factory/'))
@@ -8452,21 +8452,20 @@ async function orphanPass() {
               )
           },
         },
-        cap,
+        Math.max(cap, 0),
       )
+      const shown = new Set<string>()
       for (const s of skipped)
-        if (/^(fork|record) failed/.test(s.why))
+        if (/^(fork|record) failed/.test(s.why)) {
+          shown.add(s.url)
           errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
+        }
       // a failed fork keeps its record, so later passes skip the PR: show the row every pass until a person removes the entry
       for (const pr of prs)
-        if (
-          records![pr.url]?.sha === pr.headRefOid &&
-          records![pr.url]?.run === '' &&
-          !errors.some(e => e.error?.includes(pr.url))
-        )
+        if (records![pr.url]?.sha === pr.headRefOid && records![pr.url]?.run === '' && !shown.has(pr.url))
           errors.push({
             id: `rig:${rig.name}`,
-            error: `orphans: ${pr.url}: fork failed at ${pr.headRefOid.slice(0, 7)}; remove its orphan-forks.json entry to retry`,
+            error: `orphans: ${pr.url}: fork failed or not recorded at ${pr.headRefOid.slice(0, 7)}; check for a review run, then remove its orphan-forks.json entry to retry`,
           })
     } catch (err) {
       errors.push({ id: `rig:${rig.name}`, error: `orphans: ${(err as Error).message}` })
