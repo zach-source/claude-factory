@@ -173,7 +173,10 @@ export function plan(
   const bytes =
     take.reduce((n, f) => n + sizeOf(join(home, f)), 0) +
     claude.reduce((n, f) => n + sizeOf(f), 0) +
-    move.reduce((n, id) => n + sizeOf(join(runsDir, id)), 0) +
+    move.reduce((n, id) => {
+      const t = join(runsDir, id, 'transcripts') // pack() leaves these out
+      return n + sizeOf(join(runsDir, id)) - (existsSync(t) ? sizeOf(t) : 0)
+    }, 0) +
     statSync(rigsFile).size
   return {
     top: take,
@@ -193,7 +196,7 @@ export const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`
 /** the plan in words, for --dry-run and before an upload */
 export const describe = (p: Plan) =>
   [
-    `moves: ${p.top.join(', ')}, and ${p.runs.length} run dirs (${p.left} finished runs stay behind)`,
+    `moves: ${p.top.join(', ')}, and ${p.runs.length} run dirs (${p.left} finished runs stay behind; runs/*/transcripts stay behind)`,
     `the manager's Claude: ${p.claude.length ? p.claude.map(f => basename(f)).join(', ') : 'nothing found (no memory or transcript)'}`,
     ...(p.skipped.length ? [`left behind (big or laptop-only): ${p.skipped.join(', ')}`] : []),
     `size before compression: ${mb(p.bytes)}`,
@@ -219,10 +222,13 @@ export function pack(home: string, p: Plan, out: string) {
     ].map(n => `./${n}`)
     const fromTmp = ['rigs.json', 'manager-sessions.json', ...(p.claude.length ? [CLAUDE_STAGE] : [])]
     // COPYFILE_DISABLE: macOS tar adds an AppleDouble ._ file for each file with extended attributes
-    const r = Bun.spawnSync(['tar', '-czf', out, '-C', home, ...names, '-C', tmp, ...fromTmp], {
-      env: { ...process.env, COPYFILE_DISABLE: '1' },
-      stderr: 'pipe',
-    })
+    const r = Bun.spawnSync(
+      ['tar', '-czf', out, '--exclude=./runs/*/transcripts', '-C', home, ...names, '-C', tmp, ...fromTmp],
+      {
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
+        stderr: 'pipe',
+      },
+    )
     if (r.exitCode !== 0) throw new Error(`tar: ${r.stderr.toString().trim().split('\n').at(-1)}`)
     return statSync(out).size
   } finally {
