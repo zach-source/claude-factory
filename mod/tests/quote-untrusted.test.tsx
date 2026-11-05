@@ -83,6 +83,7 @@ test('the manual and the patrol pass file-elsewhere and decisions propose text b
   for (const t of [manual('factory'), PATROL('factory')]) {
     expect(fileSpans(t).length).toBeGreaterThan(0)
     expect(fileFormBad(t)).toEqual([])
+    expect(t).toMatch(/never put (them|the question, options and context) in the command/)
     expect(t).toContain('Write tool')
     expect(t).toContain('`factory home`')
   }

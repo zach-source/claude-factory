@@ -1141,6 +1141,7 @@ test('interviewPrompt passes decisions propose text by file (claude-factory-2z48
   expect(fileSpans(t).length).toBeGreaterThan(0)
   expect(fileFormBad(t)).toEqual([])
   expect(t).toContain('--question-file <path>')
+  expect(t).toContain('never put them in the command')
   expect(t).toContain('Write tool')
   expect(t).toContain('`factory home`')
   expect(fileFormBad("`factory decisions propose <key> '<question>'`")).toEqual(["'<question>'"])
