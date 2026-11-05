@@ -479,6 +479,13 @@ test('poll, prompt and put run as the worker user over ax ssh, the prompt base64
   ])
 })
 
+test('a VM that prints past the 128 MiB cap fails the call instead of filling laptop memory (claude-factory-cmw9)', () => {
+  writeFileSync(join(dir, 'ssh'), Buffer.alloc(130 * 1024 * 1024, 'a'))
+  expect(() => ax.poll('t', 0)).toThrow('ax ssh t')
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'idle', lines: [] }))
+  expect(ax.poll('t', 0).status).toBe('idle')
+})
+
 test("ax.prompt keeps its base64 argv under Linux's 131072-byte MAX_ARG_STRLEN: a long mail is clipped by bytes, never split mid-character (claude-factory-kcg.3)", () => {
   writeFileSync(join(dir, 'ssh'), 'ok')
   // a 3-byte UTF-8 character ('€'), repeated: 200_000 of them is 600_000 bytes, well past PROMPT_MAX_BYTES
