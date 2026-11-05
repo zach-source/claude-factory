@@ -2906,11 +2906,15 @@ test('clip never leaves a lone high surrogate', () => {
 })
 
 test('hold: a release whose delete keeps the dir does not throw and frees the lock', () => {
-  const name = `test-19gy-${process.pid}.lock`
-  const release = hold(name, () => {})! // a rm that deletes nothing
-  expect(release).not.toBeNull()
-  expect(() => release()).not.toThrow()
-  const again = hold(name)
-  expect(again).not.toBeNull()
-  again!()
+  const home = mkdtempSync(join(tmpdir(), 'hold-19gy-'))
+  try {
+    const release = hold('t.lock', () => {}, home)! // a rm that deletes nothing
+    expect(release).not.toBeNull()
+    expect(() => release()).not.toThrow()
+    const again = hold('t.lock', undefined, home)
+    expect(again).not.toBeNull()
+    again!()
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })

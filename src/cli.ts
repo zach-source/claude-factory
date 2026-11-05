@@ -3989,9 +3989,9 @@ const isAlive = (pid: number) => {
 }
 
 /** a lock held while its process lives, however long it takes: a pass over slow bd can take minutes */
-export function hold(name: string, rm?: Parameters<typeof rmSafe>[2]): (() => void) | null {
-  const dir = join(HOME, name)
-  mkdirSync(HOME, { recursive: true })
+export function hold(name: string, rm?: Parameters<typeof rmSafe>[2], home = HOME): (() => void) | null {
+  const dir = join(home, name)
+  mkdirSync(home, { recursive: true })
   try {
     mkdirSync(dir)
   } catch {
