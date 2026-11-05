@@ -662,14 +662,16 @@ async function failedMergedRow(
   on: Parameters<Parameters<typeof test>[2]>[1],
   tick: unknown,
   failing: string,
+  retryFailing?: string,
 ) {
   const clock = mock.clock(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
     on(event, () => ({ value: undefined }) as never)
+  let down = failing
   on('process.run', ($, e) => {
-    if (e.argv.includes('mail') && e.argv.includes(failing))
-      return { value: { exitCode: 1, stdout: '', stderr: `${failing}: no such run` } as never }
+    if (e.argv.includes('mail') && e.argv.includes(down))
+      return { value: { exitCode: 1, stdout: '', stderr: `${down}: no such run` } as never }
     return {
       value: {
         exitCode: 0,
@@ -693,18 +695,25 @@ async function failedMergedRow(
   await clock.settle()
   await ui.press({ key: 'iv-opt-iv:ra@1-0' })
   await clock.settle()
+  if (retryFailing) {
+    // the person clears the note and answers again, now with only `retryFailing` down
+    down = retryFailing
+    await ui.input({ key: 'iv-reply-iv:ra@1', text: '', kind: 'change' } as never)
+    await clock.settle()
+    await ui.press({ key: 'iv-opt-iv:ra@1-0' })
+    await clock.settle()
+  }
   const drawn = JSON.stringify(await ui.drawn())
   await ui.unmount()
   return drawn
 }
 
 test(
-  'when the primary of a merged row fails first, the typed note stays on the primary and is not copied to the next member',
+  'when the primary of a merged row fails first, its typed note is not copied to the next member, which would show it later',
   SLOW,
   async ($, on) => {
-    const drawn = await failedMergedRow($, on, SAME_BEAD_TICK, 'ra')
-    expect(drawn).toContain('answered (0)')
-    expect(drawn).toMatch(/"key":"iv-reply-iv:ra@\d+"[^}]*"value":"my note"/)
+    const drawn = await failedMergedRow($, on, SAME_BEAD_TICK, 'ra', 'rb')
+    expect(drawn).toContain('answered (1)')
     expect(drawn).not.toMatch(/"key":"iv-reply-iv:rb@\d+"[^}]*"value":"my note"/)
   },
 )
