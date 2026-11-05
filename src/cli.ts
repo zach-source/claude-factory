@@ -1313,7 +1313,11 @@ const post = (id: string, e: Input) =>
   durable(join(runDir(id), 'inbox.jsonl'), JSON.stringify({ ...e, at: Date.now() }) + '\n', 'a')
 
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+export const clip = (text: string, max: number) => {
+  if (text.length <= max) return text
+  const high = (text.charCodeAt(max - 1) & 0xfc00) === 0xd800
+  return `${text.slice(0, high ? max - 1 : max)}…`
+}
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000

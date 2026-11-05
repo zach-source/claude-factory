@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
+  clip,
   labelMail,
   trustedEgress,
   reworkOwned,
@@ -2788,4 +2789,10 @@ test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed 
   for (const r of [now + 8 * D + 1, now + 365 * D, -5, 0, '9', NaN, undefined])
     expect(trustedHit({ ...ok, resetsAt: r }, now)?.resetsAt).toBe(0)
   expect(trustedHit({ ...ok, text: 'x' }, now)).toEqual({ at: ok.at, kind: 'usage', resetsAt: 0 })
+})
+
+test('clip never leaves a lone high surrogate', () => {
+  expect(clip('a'.repeat(199) + '😀', 200)).toBe('a'.repeat(199) + '…')
+  expect(clip('a'.repeat(198) + '😀', 200)).toBe('a'.repeat(198) + '😀')
+  expect(clip('abc', 5)).toBe('abc')
 })
