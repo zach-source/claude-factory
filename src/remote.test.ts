@@ -2891,6 +2891,25 @@ test('ActorResumeFailed writes the rig no-suspend marker and mails the manager o
   rmSync(join(home, 'runs', 'r34'), { recursive: true })
 })
 
+test('a halt that reads the Failed task first does not drop the one ActorResumeFailed mail', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r42')
+  clusterConds('Failed', RESUME_FAILED)
+  writeFileSync(
+    join(home, 'halt.json'),
+    JSON.stringify({ state: 'stopping', at: Date.now(), told: {}, closed: {} }),
+  )
+  factory(['tick']) // halted: the halt path reads the task
+  expect(resumeMails('r42')).toHaveLength(0)
+  rmSync(join(home, 'halt.json'), { force: true })
+  factory(['tick'])
+  expect(resumeMails('r42')).toHaveLength(1)
+  factory(['tick'])
+  expect(resumeMails('r42')).toHaveLength(1)
+  rmSync(markerOf('wt'), { force: true })
+  rmSync(join(home, 'runs', 'r42'), { recursive: true })
+})
+
 test('only an ActorResumeFailed writes the marker: another reason, no condition or a serve exit does not', () => {
   rmSync(markerOf('wt'), { force: true })
   launched('r35')

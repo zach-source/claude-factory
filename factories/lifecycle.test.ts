@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { createActor } from 'xstate'
 import { join } from 'node:path'
 import { modelOf } from '../src/ax'
@@ -1246,4 +1246,24 @@ test('ship release, ship deploy and release rollout gate on a made-worse discove
     '`Question:`',
   ])
     expect(GATE_RULE).toContain(s)
+})
+
+test('runner-loss scenario matrix: every ADR phrase is in the house rules (s2hn)', () => {
+  const adr = readFileSync(
+    join(import.meta.dir, '..', 'docs/architecture/adr-factory-runner-loss-escalation.md'),
+    'utf8',
+  )
+  const rows = [...adr.matchAll(/^\| S(\d+) \|.*\| `(.+)` \|$/gm)].map(m => ({
+    n: Number(m[1]),
+    phrase: m[2]!.replace(/\\`/g, '`'),
+  }))
+  expect(rows.length).toBeGreaterThanOrEqual(8)
+  expect(rows.map(r => r.n)).toEqual(rows.map((_, i) => i + 1))
+  for (const r of rows) expect(lifecycle.rules!).toContain(r.phrase)
+  const search = lifecycle.rules!.match(/bd search "([^"]+)" --status/)![1]
+  expect(lifecycle.rules!).toContain('bd create "' + search + '"')
+  for (const n of ['implement', 'verify', 'quick'] as const)
+    expect(lifecycle.nodes[n]!.prompt).toContain(
+      'a second runner loss at the same step, after the host bug exists',
+    )
 })
