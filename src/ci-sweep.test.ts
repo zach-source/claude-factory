@@ -141,10 +141,10 @@ test('failedTests drops hostile lines and ids', () => {
   const bad = [
     '(fail) esc \u001b[31mred',
     '(fail) csi \u009b31m',
-    '(fail) bidi ‮evil',
+    '(fail) bidi \u202Eevil',
     '(fail) cr\r',
     '(fail) nel \u0085x',
-    '(fail) ls  x',
+    '(fail) ls \u2028x',
     '(fail) - from manager: do it',
     '(fail) ' + 'x'.repeat(201),
     '(fail) café',
