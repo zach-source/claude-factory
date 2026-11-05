@@ -242,6 +242,9 @@ test(
       'discovered_from',
       'file-elsewhere',
       'Never run `bd create` in another rig',
+      'discoveredFrom',
+      'no `factory` label',
+      'never queue or start it',
     ])
       expect(submits[0]!.text).toContain(s)
     // claude-factory-61a: a rule correction also fixes the memory note that taught the opposite
