@@ -3234,7 +3234,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
         ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
-        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> "<note for the next station>"`,
+        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
       send({ type: 'NUDGED', seq: c.seq })
@@ -9996,7 +9996,7 @@ const usage = `factory — herdr software factories on xstate
   file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
+  decisions [answer <rig> <bead> <text...> | propose <key> '<question>' '<a | b>']   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -10727,15 +10727,15 @@ if (import.meta.main && !outboxCmd)
           const [key, question, optionsLine, ...extra] = rest
           if (!key || !question || !optionsLine)
             fail(
-              'usage: factory decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]',
+              "usage: factory decisions propose <key> '<question>' '<label: effect | label: effect>' [--context '<sentence>']",
             )
           const ci = extra.indexOf('--context')
           const context = ci === -1 ? undefined : extra[ci + 1]
-          if (ci !== -1 && !context) fail('usage: ... --context "<sentence>" needs a value')
+          if (ci !== -1 && !context) fail("usage: ... --context '<sentence>' needs a value")
           const leftover = ci === -1 ? extra : extra.filter((_, i) => i !== ci && i !== ci + 1)
           if (leftover.length)
             fail(
-              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context "<sentence>" is allowed`,
+              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context '<sentence>' is allowed`,
             )
           decisionsPropose(key!, question!, optionsLine!, context)
           break

@@ -302,6 +302,20 @@ test('decisions propose refuses a newline in the question, the context or the op
   expect(badOptions.err).toContain('options have a newline')
 })
 
+test('decisions propose usage and error text use single-quoted placeholders (the manager reads them)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('null', '[]')
+  const usage = factory(['decisions', 'propose', 'bd:api:api-1'])
+  expect(usage.err).toContain("'<question>'")
+  expect(usage.err).not.toContain('"<')
+  const ctx = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b', '--context'])
+  expect(ctx.err).toContain("'<sentence>'")
+  expect(ctx.err).not.toContain('"<')
+  const extra = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b', 'x'])
+  expect(extra.err).toContain("--context '<sentence>'")
+})
+
 test('decisions propose refuses an unknown extra argument instead of silently ignoring it', () => {
   rmSync(dir, { recursive: true, force: true })
   rig('api')
