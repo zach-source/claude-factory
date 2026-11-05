@@ -293,14 +293,14 @@ const MAX_REDIRECT_HOPS = 5
 /** proxy.golang.org can answer a large .zip with a 302 to this host (claude-factory-qls). */
 const GO_STORAGE_ORIGIN = 'https://storage.googleapis.com'
 
+class RedirectRefused extends Error {}
+
 /**
  * Fetches `url` and follows each 3xx by hand. Every hop must go to a configured upstream or to
  * GO_STORAGE_ORIGIN. The gate follows at most MAX_REDIRECT_HOPS hops. Any other redirect throws, so the
  * caller answers 502 and the gate never requests the target. The default redirect:'follow' of `fetch`
  * would go to any http(s) host (claude-factory-qls).
  */
-class RedirectRefused extends Error {}
-
 async function upstreamFetch(
   cfg: Resolved,
   url: string,
