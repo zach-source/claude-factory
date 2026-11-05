@@ -25,6 +25,12 @@ test('no cli command span in the manual or the patrol holds a double-quoted plac
   }
 })
 
+test('memory search and --goal placeholders are single-quoted', () => {
+  for (const t of [manual('factory'), PATROL('factory')]) {
+    expect(t).not.toMatch(/memory search <|--goal <|memory search "/)
+  }
+})
+
 test('the patrol passes file-elsewhere text in single quotes', () => {
   expectSingleQuoted(PATROL('factory'), ['title', 'description'])
 })
