@@ -164,6 +164,7 @@ const verbRows: { args: string[]; verb: string; patrol: boolean }[] = [
   { args: ['watch'], verb: 'watch', patrol: false },
   { args: ['sync'], verb: 'sync', patrol: false },
   { args: ['dream'], verb: 'dream', patrol: false },
+  { args: ['memory', 'compact'], verb: 'memory compact', patrol: false },
   { args: ['devenv'], verb: 'devenv', patrol: false },
   { args: ['linear', '--force'], verb: 'linear', patrol: false },
   { args: ['queue', 'acme', 'b1'], verb: 'queue', patrol: false },
@@ -234,6 +235,18 @@ for (const [name, env] of [...Object.entries(workerMarkers), ['patrol', { FACTOR
     })
   }
 }
+// claude-factory-6rmg: compact --dry-run only reads, so a worker keeps it
+for (const [name, env] of Object.entries(workerMarkers)) {
+  test(`${name}: memory compact --dry-run is allowed`, () => {
+    const p = run(['memory', 'compact', '--dry-run'], env, false, seedAll)
+    expect(p.stderr.toString()).not.toContain('a worker cannot')
+    expect(p.exitCode).toBe(0)
+  })
+}
+test('no marker: memory compact is not refused', () => {
+  const p = run(['memory', 'compact'], {}, false, seedAll)
+  expect(p.stderr.toString()).not.toContain('a worker cannot')
+})
 test('no marker: abort keeps working', () => {
   expect(run(['abort', 'r1'], {}, false, seedAll).exitCode).toBe(0)
   expect(readFileSync(inbox(), 'utf8')).toContain('"ABORT"')

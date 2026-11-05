@@ -10242,6 +10242,7 @@ if (import.meta.main && !outboxCmd)
               ].join('\n'),
             )
           } else {
+            refuseWorker('memory compact')
             // the same lock dream() holds while it runs: a live dream already writes LONG.md and the
             // usage log, and a concurrent compact racing it can lose a rename or an archive decision
             // (claude-factory-59r.13)

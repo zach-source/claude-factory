@@ -5149,7 +5149,8 @@ function anyGhReason(
 
 export const FACTORY_CONTROL_REASON =
   'The factory denies this command: only the person or the manager runs factory say, stop, resume, ' +
-  'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, beads, watch, sync, dream, devenv, linear, queue, poke, attach, manager, migrate-to-ax and rig with a sub other than list. ' +
+  'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, beads, watch, sync, dream, devenv, linear, queue, poke, attach, manager, migrate-to-ax, ' +
+  'rig with a sub other than list, and memory with a sub other than search, add, helped, eval or compact --dry-run. ' +
   'Mail the manager instead. Do not retry this command.'
 
 // claude-factory-5y7b, claude-factory-3c4w: the verbs only the person or the manager runs.
@@ -5195,6 +5196,16 @@ function anyFactoryControlReason(words: string[]): string | undefined {
       const sub = words[j + 2]!
       if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
       if (sub !== 'list') return FACTORY_CONTROL_REASON
+    }
+    // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.
+    if (next.toLowerCase() === 'memory') {
+      const sub = words[j + 2]
+      if (sub === undefined) return FACTORY_CONTROL_REASON
+      if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+      if (['search', 'add', 'helped', 'eval'].includes(sub)) continue
+      const rest = words.slice(j + 3)
+      if (sub === 'compact' && rest.length > 0 && rest.every(w => w === '--dry-run')) continue
+      return FACTORY_CONTROL_REASON
     }
   }
   return undefined
