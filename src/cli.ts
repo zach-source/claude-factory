@@ -1532,7 +1532,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Reporting (required)',
     'When you are finished, report exactly once and then stop:',
-    `    ${CLI} report ${run.id} ${c.seq} <outcome> "<summary for the next station>"`,
+    `    ${CLI} report ${run.id} ${c.seq} <outcome> '<summary for the next station>'`,
     'A long summary: write it to a file, then end the command with `--summary-file <path>` in place of the quoted text.',
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
@@ -1540,7 +1540,8 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it.${runnerOfStation(run, def, node).local ? '' : ' A blocked report that names a live read (kubectl, Mimir, Loki, Alertmanager, a live DB or pod) waits for mail or the person, with no timer re-check.'} When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
-    `To ask the manager, run \`${CLI} mail ${run.id} manager "<question>"\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
+    `Put each free-text value of a shell command in single quotes and write each ' in it as '\\'': bash expands $VAR, $(...) and backticks in double quotes.`,
+    `To ask the manager, run \`${CLI} mail ${run.id} manager '<question>'\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
     '',
     ...tracking(run, node),
   ].join('\n')
@@ -1561,9 +1562,9 @@ function remembered(run: Run, node: string, notes = '') {
     `What this factory's workers learned before you, in ${MEMORY}.`,
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
-    `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
+    `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} '<query>'. It prints the closest notes in full.`,
     ...(notes ? [`- The factory already searched for your goal and station. The closest notes:`, notes] : []),
-    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} '<one-line summary>' '<what, why, how you know>'${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
 }
@@ -1585,9 +1586,9 @@ function tracking(run: Run, node: string) {
     // factory or station. Its comments are those earlier runs' reports: read them first.
     `- Read ${b}'s comments first (bd show ${b}): they are earlier runs' reports on this bead.`,
     `- The plan's tasks: bd children ${b}; the unblocked ones: bd ready --parent ${b}`,
-    `- Add a task: bd create "<title>" --parent ${b} -t task|bug -p <0-4> -d "<what, and how to verify it>"; order two with bd dep <first> --blocks <second>`,
-    `- Work a task: bd update <id> -s in_progress, then bd close <id> --reason "<what changed, the commit>"`,
-    `- Separate work outside this run: look for it first (bd search "<words>"), then bd create "<title>" -t bug|task|feature -p <0-4> -d "<evidence>" --deps discovered-from:${b}`,
+    `- Add a task: bd create '<title>' --parent ${b} -t task|bug -p <0-4> -d '<what, and how to verify it>'; order two with bd dep <first> --blocks <second>`,
+    `- Work a task: bd update <id> -s in_progress, then bd close <id> --reason '<what changed, the commit>'`,
+    `- Separate work outside this run: look for it first (bd search '<words>'), then bd create '<title>' -t bug|task|feature -p <0-4> -d '<evidence>' --deps discovered-from:${b}`,
     `  - that starts on its own: add -l factory; for a person to prioritize: no factory label`,
     `  - to start at a station: add -l station:<name>`,
     `- Never close or defer ${b} itself: the factory does when the run ends.`,
@@ -1604,7 +1605,7 @@ const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed.` +
   cutOffNote(c.session ? cutOffCall(tailOf(run.worktree, c.session)) : undefined) +
   ` Carry on as the "${node}" station where you left off: ` +
-  `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
+  `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'`
 
 /** where a station's workers run: the station's own runner, else the rig's */
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
@@ -3516,7 +3517,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     return 'handed off'
   }
   if (k > maxK && !isHandoffAsked) {
-    const cmd = `${CLI} report ${run.id} ${c.seq} handoff "<what is done, what is left and how, what you learned that the code does not show>"`
+    const cmd = `${CLI} report ${run.id} ${c.seq} handoff '<what is done, what is left and how, what you learned that the code does not show>'`
     const text = `[factory] This session's context is ${k}k tokens, ${HANDOFF_ASK} of ${maxK}k: every turn re-reads all of it. At the next safe point, commit your work in progress (a WIP commit is fine) and hand off to a fresh worker, then stop: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text })
   }
@@ -3557,13 +3558,13 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     send({ type: 'MAIL', from: node, to: 'manager', text })
   } else if (stall === 'nudge') {
     const min = Math.round((now - seen.at) / 60_000)
-    const cmd = `${CLI} report ${run.id} ${c.seq} blocked "<why>"`
+    const cmd = `${CLI} report ${run.id} ${c.seq} blocked '<why>'`
     runner.deliver(
       c.pane,
       `[factory] Nothing in your session or branch has changed for ${min} min. If you are stuck, report what blocks you: ${cmd}. Otherwise carry on.`,
     )
   } else if (due === 'warn') {
-    const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
+    const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'`
     const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
   } else if (inbox.length && status !== 'blocked') {
@@ -3584,7 +3585,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   ) {
     if (c.nudges >= NUDGES) failOutage(egressReason ?? 'worker stopped without reporting')
     else {
-      const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"`
+      const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'`
       runner.deliver(
         c.pane,
         `[factory] You have not reported. If you are finished run: ${cmd}. If you are still working or waiting on something, say in one line what, and carry on.`,
@@ -11095,7 +11096,7 @@ if (import.meta.main && !outboxCmd)
         const [node, sub] = where(value)
         if (sub !== 'working' || (await loadPinned(run.factory)).nodes[node]?.gate)
           fail(`${run.id} has no worker to poke: it is at ${node}${sub ? `/${sub}` : ''}`)
-        const nudge = `[factory] The manager is checking in. When you are finished run: ${CLI} report ${run.id} ${c.seq} <outcome> "<summary>"; if something blocks you, mail the manager what it is.`
+        const nudge = `[factory] The manager is checking in. When you are finished run: ${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'; if something blocks you, mail the manager what it is.`
         post(run.id, { type: 'MAIL', from: managerSender(run), to: node, text: text.join(' ') || nudge })
         console.log(`poked ${node} of ${run.id}`)
         break

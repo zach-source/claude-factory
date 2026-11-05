@@ -710,7 +710,7 @@ test('triage bd-searches open beads before it routes (claude-factory-tfdk)', () 
     'bd search the error string, route, service and symptom; link matching open beads (or reject as a duplicate) and name them in the summary.'
   expect(p).toContain(sentence)
   expect(p.split(sentence).length - 1).toBe(1)
-  expect(p).toContain('bd search "<words>" --status open')
+  expect(p).toContain("bd search '<words>' --status open")
   expect(p).toContain('bd dep add <this bead> <id> -t related')
   const at = p.indexOf(sentence)
   expect(at).toBeGreaterThan(p.indexOf('- reject: unclear, already tracked'))

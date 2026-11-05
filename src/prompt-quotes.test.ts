@@ -21,12 +21,13 @@ const files = [
   'src/prs.ts',
   'src/worker-hook.ts',
 ]
-// not shell text: JSON file content, a code comment, and two usage errors for the person who runs `factory start`
+// not shell text: JSON file content, a code comment, a regex class, and two usage errors for the person who runs `factory start`
 const allowed: [file: string, text: string][] = [
   ['factories/sweeps.ts', '{"repo":"<owner>/<repo>"'],
   ['factories/release.ts', 'factory start release <rig> "<version or bead>'],
   ['src/cli.ts', '--slo "<read-only command>"'],
   ['src/cli.ts', '--drift "<read-only command>"'],
+  ['src/worker-hook.ts', '$\\\\\'"<>&|]*$/'],
 ]
 
 /** the lines of a source file that hold a double-quoted placeholder, after the allowlisted text is removed */
