@@ -670,3 +670,74 @@ test('release.rules holds the runner-loss bullet of lifecycle.rules once', () =>
   expect(line).toBeDefined()
   expect(release.rules!.split('\n').filter(l => l === line).length).toBe(1)
 })
+
+const soakSentence = (needle: string) => {
+  const p = prompt('soak')
+  const i = p.indexOf(needle)
+  expect(i, needle).toBeGreaterThan(-1)
+  const start = p.lastIndexOf('. ', i) + 2
+  return p.slice(start, p.indexOf('. ', i) + 1)
+}
+
+test('3w8o AC1 soak has a deadline rule for unseen own output', () => {
+  const p = prompt('soak')
+  for (const t of [
+    'Soak deadline',
+    'fourth such soak',
+    '24 hours after deploy',
+    'rollout is complete',
+    'logs are clean',
+    'nothing regressed',
+    'report healthy',
+  ])
+    expect(p, t).toContain(t)
+  expect(p).not.toMatch(/(^|\. )After two unsure soaks in a row with the output still unseen, report blocked/)
+})
+
+test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => {
+  const p = prompt('soak')
+  for (const t of [
+    'bd list -l verify:live --status open',
+    '-l verify:live --deps discovered-from:<bead>',
+    'the output to see, its trigger, the release version',
+    'ACn: not checked (not fired yet: filed <id>)',
+  ])
+    expect(p, t).toContain(t)
+  const s = soakSentence('-l verify:live --deps')
+  expect(s).toContain('no factory label')
+  expect(s).not.toContain('--add-label factory')
+  expect(s).not.toContain('-l factory')
+  expect(p.indexOf('verify:live')).toBeLessThan(p.indexOf('bd close <bead>'))
+})
+
+test('3w8o AC3 must-see-live changes keep the block', () => {
+  const p = prompt('soak')
+  for (const t of [
+    'security-sensitive',
+    'data or schema migration',
+    'must-see-live',
+    'the deadline never applies',
+  ])
+    expect(p, t).toContain(t)
+  const after = p.slice(p.indexOf('the deadline never applies'))
+  expect(after).toContain('report blocked')
+  expect(after).toContain('`Question:`')
+  expect(p).toContain('at most twice in a row for a must-see-live change')
+})
+
+test('3w8o AC4 only soak carries the deadline rule', () => {
+  for (const id of ['deploy', 'queue', 'release', 'rollback', 'postmortem']) {
+    expect(prompt(id), id).not.toContain('verify:live')
+    expect(prompt(id), id).not.toContain('Soak deadline')
+  }
+  for (const [id, node] of Object.entries(lifecycle.nodes))
+    expect((node as { prompt?: string }).prompt ?? '', id).not.toContain('verify:live')
+  for (const [id, node] of Object.entries(release.nodes))
+    expect((node as { prompt?: string }).prompt ?? '', id).not.toContain('verify:live')
+})
+
+test('3w8o AC5 four unsure soaks then healthy need no machine change', () => {
+  // green on origin/main too: pins that the prompt rule needs no machine change
+  const { visited } = walk(ship, ['ready', 'ready', 'deployed', 'unsure', 'unsure', 'unsure', 'healthy'])
+  expect(visited.slice(3)).toEqual(['soak', 'soak', 'soak', 'soak', 'queue'])
+})
