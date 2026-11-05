@@ -3393,6 +3393,14 @@ describe('a bd skew hold on the rig starts (claude-factory-lahb)', () => {
     start(s)
     expect(applies()).toBe(0)
     rmSync(markerOf('acme'))
+    // a legacy marker gets since = its old at on the probe write
+    const t = rigSetup('skew-since2', 'acme', 'ax')
+    mark('acme', 61)
+    const at = markerJson('acme').at
+    start(t)
+    expect(applies()).toBe(1)
+    expect(markerJson('acme').since).toBe(at)
+    rmSync(markerOf('acme'))
   }, 60_000)
 
   test('773c AC5: a marker without since uses at; a bad since falls back to at', () => {
