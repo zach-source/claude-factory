@@ -680,13 +680,21 @@ const soakSentence = (needle: string) => {
 }
 
 test('3w8o AC1 soak has a deadline rule for unseen own output', () => {
-  expect(soakSentence('fourth such soak')).toContain('24 hours after deploy')
+  const dl = soakSentence('fourth such soak')
+  for (const t of ['24 hours after deploy', 'whichever comes first']) expect(dl, t).toContain(t)
+  const cnt = soakSentence('Soak deadline: count')
+  for (const t of [
+    'did not see the output',
+    '(unsure and blocked reports in the journal)',
+    "read the deploy time from deploy's report",
+  ])
+    expect(cnt, t).toContain(t)
   const ok = soakSentence('At the deadline, if the rollout')
   for (const t of [
     'rollout is complete (ready, no restarts)',
     'logs are clean',
     'nothing regressed',
-    'report healthy',
+    'file one follow-up bead and report healthy',
   ])
     expect(ok, t).toContain(t)
   expect(prompt('soak')).not.toMatch(
@@ -709,6 +717,8 @@ test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => 
     'ACn: not checked (not fired yet: filed <id>)',
   ])
     expect(p, t).toContain(t)
+  expect(soakSentence('First run'), 'reuse').toContain('use an open bead that names this release')
+  expect(soakSentence('Write `ACn'), 'id').toContain('and name the id in the close reason')
   const s = soakSentence('-l verify:live --deps')
   expect(s).toContain('no factory label')
   expect(s).not.toContain('--add-label factory')
@@ -719,7 +729,11 @@ test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => 
 test('3w8o AC3 must-see-live changes keep the block', () => {
   const p = prompt('soak')
   const cls = soakSentence('Must-see-live:')
-  for (const t of ['security-sensitive', 'data or schema migration', 'plan marks an AC must-see-live'])
+  for (const t of [
+    'the bead or the plan is security-sensitive',
+    'data or schema migration',
+    'plan marks an AC must-see-live',
+  ])
     expect(cls, t).toContain(t)
   const s = soakSentence('the deadline never applies')
   for (const t of ['report blocked', '`Question:`', 'two unsure soaks in a row']) expect(s, t).toContain(t)
@@ -727,6 +741,9 @@ test('3w8o AC3 must-see-live changes keep the block', () => {
 })
 
 test('3w8o AC3b any other change reports unsure until the deadline, not blocked', () => {
+  const fired = soakSentence('If the change has not fired yet')
+  expect(fired).toContain('report unsure')
+  expect(fired).not.toContain('report healthy')
   const s = soakSentence('For any other change, report')
   expect(s).toContain('report unsure until the deadline')
   expect(s).not.toContain('report blocked')
