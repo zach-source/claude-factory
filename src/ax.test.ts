@@ -1614,6 +1614,7 @@ test('the documented AWS broker egress rule pins one account with pathPrefixes (
   const doc = readFileSync(join(import.meta.dir, '..', 'docs', 'remote-runner.md'), 'utf8')
   const line = doc.split('\n').find(l => l.includes('**Egress for the broker**')) ?? ''
   const json = /`(\{"hosts":[^`]*\})`/.exec(line)?.[1] ?? ''
+  expect(json).not.toBe('')
   const host = 'aws-broker.factory-aws.svc.cluster.local'
   const rule = JSON.parse(json.replace('<broker host>', host).replace('<account>', 'acme'))
   const policy = ax.egressPolicy('v', [rule])
