@@ -1335,10 +1335,19 @@ async function jump($: EngineInterface, pane: string) {
   if (r?.exitCode !== 0) $.ui.toast(`factory: could not focus ${pane}`)
 }
 
-/** true when a command holds a substitution (`$(`, a backtick, `<(`, `>(`) outside single quotes, or a form
+/** true when a command holds `$(` or a backtick outside single quotes, or an unquoted `(` (`<(`, `>(`, zsh
+ * `=(` and glob-qualifier code), or a form
  * this one-pass scan cannot read: `$'`, a here-document, a word-start `#` comment, an unclosed quote. Each
  * of those can hide a `'` that makes a naive scan think later text is quoted, so they fail closed. */
-function substitutionIn(command: string): boolean {
+function substitutionIn(raw: string): boolean {
+  // join a line continuation (backslash-newline) that is not escaped: two backslashes then a newline keep the newline
+  let command = ''
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === '\\') {
+      if (raw[i + 1] !== '\n') command += raw.slice(i, i + 2)
+      i++
+    } else command += raw[i]
+  }
   let state: 'plain' | 'single' | 'double' = 'plain'
   for (let i = 0; i < command.length; i++) {
     const c = command[i]!
@@ -1352,7 +1361,7 @@ function substitutionIn(command: string): boolean {
     } else if (c === '\\') i++
     else if (c === "'") state = 'single'
     else if (c === '"') state = 'double'
-    else if (two === '$(' || c === '`' || two === '<(' || two === '>(') return true
+    else if (two === '$(' || c === '`' || c === '(') return true
     else if (two === "$'" || two === '<<') return true
     else if (c === '#' && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) return true
   }
@@ -1369,9 +1378,9 @@ function substitutionIn(command: string): boolean {
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
   const command = rawCommand.replace(/\\\n/g, '')
-  if (/\bfactory\b/.test(command) && substitutionIn(command))
+  if (/\bfactory\b/.test(command) && substitutionIn(rawCommand))
     return {
-      question: `The manager model wants to run a factory command with a shell substitution ($(, a backtick, <( or >() or a form the hook cannot read: ${cutText(command, 300)}. Allow it?`,
+      question: `The manager model wants to run a factory command with a shell substitution ($(, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${cutText(command, 300)}. Allow it?`,
       deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
     }
   if (/\bfactory\s+decide\b/.test(command))

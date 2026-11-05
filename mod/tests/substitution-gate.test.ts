@@ -17,6 +17,11 @@ const GATED = [
   `${F} mail r1 plan "a" \\\n"$(id)"`,
   `${F} mail r1 plan $(id)`,
   `${F} decide lifecycle-abc ship "$(id)"`,
+  `${F} mail r1 plan "x \\\\\n$(id)"`,
+  `${F} mail r1 plan x \\\\\n$(id)`,
+  `${F} mail r1 plan $\\\n(id)`,
+  `${F} mail r1 plan =(id)`,
+  `${F} mail r1 plan /(e:'id':)`,
 ]
 
 const UNREADABLE = [
