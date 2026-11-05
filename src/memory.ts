@@ -9,7 +9,10 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  lstatSync,
+  readlinkSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
@@ -365,6 +368,31 @@ export function parseLong(text: string): LongEntry[] {
   })
 }
 
+/** true for a regular file; a link, a FIFO or a missing path is false, so a reader never follows a link out of the store */
+const regular = (f: string) => {
+  try {
+    return lstatSync(f).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** unlinks every symlink under dir (not the top-level .git) and returns what each pointed at; never follows one (claude-factory-eqxi) */
+export function dropLinks(dir: string): { path: string; target: string }[] {
+  const out: { path: string; target: string }[] = []
+  const walkDir = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const f = join(d, e.name)
+      if (e.isSymbolicLink()) {
+        out.push({ path: relative(dir, f), target: readlinkSync(f) })
+        unlinkSync(f)
+      } else if (e.isDirectory() && !(d === dir && e.name === '.git')) walkDir(f)
+    }
+  }
+  if (existsSync(dir)) walkDir(dir)
+  return out
+}
+
 /** every note, with its topic's README beside it: the dot folders (.git, the index, .archive) are not memory */
 export function walk(dir: string) {
   const notes: Note[] = []
@@ -372,8 +400,9 @@ export function walk(dir: string) {
   if (!existsSync(dir)) return { notes, topics }
   for (const topic of readdirSync(dir, { withFileTypes: true })) {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
-    for (const f of readdirSync(join(dir, topic.name))) {
-      if (!f.endsWith('.md')) continue
+    for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
+      const f = e.name
+      if (!e.isFile() || !f.endsWith('.md')) continue
       const text = readFileSync(join(dir, topic.name, f), 'utf8')
       if (f === 'LONG.md') {
         for (const e of parseLong(text))
@@ -471,7 +500,7 @@ async function vectors(dir: string, all: Note[], text = textOf, name = '.index.j
 /** each bullet in CORE.md, as its own fact note: path CORE.md#<8 hex of its sha1>, rig from its `## rig:` section */
 export function coreNotes(dir: string): Note[] {
   const file = join(dir, 'CORE.md')
-  if (!existsSync(file)) return []
+  if (!regular(file)) return []
   let rig: string | undefined
   return readFileSync(file, 'utf8')
     .split('\n')
@@ -501,7 +530,7 @@ export async function search(
   const { notes, topics } = walk(dir)
   // core=false drops only the bullets the brief prints; the ones coreFor cut stay searchable
   const printed = new Set(
-    core || !existsSync(join(dir, 'CORE.md'))
+    core || !regular(join(dir, 'CORE.md'))
       ? []
       : coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig).split('\n'),
   )
@@ -738,9 +767,7 @@ export function coreFor(text: string, rig?: string) {
 
 /** level 0 and level 1, for a brief: the core in full, then one line per topic */
 export function outline(dir: string, rig?: string) {
-  const core = existsSync(join(dir, 'CORE.md'))
-    ? coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig)
-    : ''
+  const core = regular(join(dir, 'CORE.md')) ? coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig) : ''
   const { notes, topics } = walk(dir)
   const count = (t: string) => notes.filter(n => topicOf(n) === t).length
   const lines = [...new Set([...topics.keys(), ...notes.map(topicOf)])]
@@ -772,7 +799,7 @@ export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n
 /** all of it as one text, to find the beads it names */
 export const corpus = (dir: string) =>
   [
-    existsSync(join(dir, 'CORE.md')) ? readFileSync(join(dir, 'CORE.md'), 'utf8') : '',
+    regular(join(dir, 'CORE.md')) ? readFileSync(join(dir, 'CORE.md'), 'utf8') : '',
     ...[...walk(dir).topics.values(), ...walk(dir).notes].map(n => `${n.summary}\n${n.body}`),
   ].join('\n')
 
@@ -955,10 +982,10 @@ export function noteExists(dir: string, path: string): boolean {
   const i = path.indexOf('#')
   if (i < 0) {
     const f = join(dir, path)
-    return path.endsWith('.md') && existsSync(f) && statSync(f).isFile()
+    return path.endsWith('.md') && regular(f)
   }
   const file = join(dir, path.slice(0, i))
-  if (!existsSync(file) || !statSync(file).isFile()) return false
+  if (!regular(file)) return false
   return parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
 }
 

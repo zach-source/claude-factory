@@ -93,6 +93,10 @@ function fakeCodex() {
     `  cp "${roll}" "$d/rollout-old-${U}.jsonl"; touch -t 202001010000 "$d/rollout-old-${U}.jsonl"`,
     `  ln -s "${roll}" "$d/rollout-link-${U}.jsonl"; cp "${roll}" "$d/notes.jsonl"`,
     `fi`,
+    `if [ "$FAKE_LINK" = 1 ]; then`,
+    `  ln -s "$FAKE_DIR/secret" inbox/y.md; mkdir -p topic/sub`,
+    `  ln -s "$FAKE_DIR/secretdir" topic/linkdir; ln -s /nonexistent topic/sub/dangle.md`,
+    `fi`,
     `if [ "$FAKE_BOOM" = 1 ]; then exit 3; fi`,
     `mkdir -p topic && mv inbox/x.md topic/x.md`,
     `echo "filed x.md under topic/x.md"`,
@@ -319,6 +323,48 @@ test(
     expect(log).toContain('the dream exited 3: boom')
     expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
     expect(dreamRows()).toHaveLength(1)
+  },
+  SLOW,
+)
+
+for (const boom of ['', '1']) {
+  test(
+    `eqxi AC1/AC2: a link the codex dream makes is removed (exit ${boom ? 3 : 0}), logged, and never committed`,
+    () => {
+      seed()
+      const secret = join(dir, 'secret')
+      writeFileSync(secret, 'zqsecret-eqxi')
+      mkdirSync(join(dir, 'secretdir'))
+      writeFileSync(join(dir, 'secretdir', 'a.md'), 'zqsecret-eqxi')
+      run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', FAKE_LINK: '1', FAKE_BOOM: boom, FAKE_DIR: dir }))
+      for (const p of ['inbox/y.md', 'topic/linkdir', 'topic/sub/dangle.md'])
+        expect(() => lstatSync(join(memory, p))).toThrow()
+      expect(readFileSync(secret, 'utf8')).toBe('zqsecret-eqxi')
+      expect(readFileSync(join(dir, 'secretdir', 'a.md'), 'utf8')).toBe('zqsecret-eqxi')
+      expect(gitMemory('log', '-p', '--raw', '--format=')).not.toContain('120000')
+      expect(gitMemory('ls-files', '-s')).not.toContain('120000')
+      const log = readFileSync(join(home, 'dream.log'), 'utf8')
+      expect(log).toContain(`inbox/y.md -> ${secret}`)
+      expect(log).toContain('removed symlinks: ')
+      if (!boom) expect(existsSync(join(memory, 'topic', 'x.md'))).toBe(true)
+    },
+    SLOW,
+  )
+}
+
+test(
+  'eqxi AC1: a link already in the store goes before the first commit; no link means no log line',
+  () => {
+    seed()
+    const secret = join(dir, 'secret')
+    writeFileSync(secret, 'zqsecret-eqxi')
+    symlinkSync(secret, join(memory, 'inbox', 'pre.md'))
+    run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra' }))
+    expect(gitMemory('log', '-p', '--raw', '--format=')).not.toContain('120000')
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).toContain('inbox/pre.md')
+    seed()
+    run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra' }))
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).not.toContain('removed symlinks')
   },
   SLOW,
 )
