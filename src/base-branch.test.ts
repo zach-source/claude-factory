@@ -87,6 +87,21 @@ test('AC3: a bad base_branch never reaches a brief; the default branch is used',
   expect(branchOk('acme/deploy')).toBe(true)
 })
 
+test('kut8: implement and quick open the PR with --base <base_branch>', () => {
+  const count = (t: string, s: string) => t.split(s).length - 1
+  for (const s of ['implement', 'quick']) {
+    const raw = nodes[s]!.prompt as string
+    expect(count(raw, 'gh pr create')).toBeGreaterThan(0)
+    expect(count(raw, 'gh pr create --draft --base {base_branch}')).toBe(count(raw, 'gh pr create'))
+    process.env.FACTORY_BASE_BRANCH = 'acme/deploy'
+    expect(briefOf(s)).toContain('gh pr create --draft --base acme/deploy')
+    for (const v of ['', ' ', 'a..b', '-x', 'x y', 'x`y`', '$(id)', 'a;b']) {
+      process.env.FACTORY_BASE_BRANCH = v
+      expect(briefOf(s)).toContain('gh pr create --draft --base main')
+    }
+  }
+})
+
 test('AC4: a factory without a base_branch param keeps a literal {name} in its prompt', () => {
   const def: Factory = {
     name: 'f',

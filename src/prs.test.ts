@@ -1482,6 +1482,7 @@ test('forgeNote tells a GitLab worker the glab equivalents, and a GitHub worker 
   expect(note).toContain('GitLab at gitlab.example.com')
   for (const gl of ['glab mr create', 'glab mr note', 'glab ci status', 'glab api'])
     expect(note).toContain(gl)
+  expect(note).toContain('--target-branch')
   expect(note).toContain('only a person approves')
   expect(note.replace('denies glab mr approve', '')).not.toContain('glab mr approve')
   expect(forgeNote()).toEqual([])
