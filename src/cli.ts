@@ -863,7 +863,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   if (phase !== 'Running') {
     const info = gone(`phase ${phase ?? 'not found'}${phase === 'Failed' && failure ? `: ${failure}` : ''}`)
     if (phase === 'Failed' && failure?.startsWith('ActorResumeFailed') && !noSuspend(run))
-      info.resumeFailed = markNoSuspend(run, failure)
+      info.resumeFailed = failure
     return info
   }
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
@@ -3225,7 +3225,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       send({ type: 'FAIL', seq: c.seq, reason: info.failed, hold: now + SKEW_PROBE_MS })
       return info.status
     }
-    if (info.resumeFailed) send({ type: 'MAIL', from: 'factory', to: 'manager', text: info.resumeFailed })
+    if (info.resumeFailed && !noSuspend(run))
+      send({ type: 'MAIL', from: 'factory', to: 'manager', text: markNoSuspend(run, info.resumeFailed) })
     if (isBootstrapFail(info.failed)) {
       // a bd bootstrap outage spends no attempt: 2 min for the first hit, the streak floor and one mail for the next
       const prev = c.log.at(-1)

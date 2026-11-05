@@ -19,7 +19,7 @@ export type WorkerInfo = {
   limit?: { at: number; kind: string; resetsAt: number }
   /** set once a runner gives up retrying something itself (a put stuck over ax ssh): the reconciler fails the attempt with this reason instead of retrying silently */
   failed?: string
-  /** the text of the one manager mail. Set only when AX failed to restore the task (ActorResumeFailed) and this call wrote the rig's no-suspend marker */
+  /** the ActorResumeFailed failure text. Set only when AX failed to restore the task and the rig has no fresh no-suspend marker; the reconciler writes the marker and mails the manager */
   resumeFailed?: string
   /** the redacted bd error of a report that went out without its bd sync: see worker.isSchemaSkew */
   bdSkew?: string
