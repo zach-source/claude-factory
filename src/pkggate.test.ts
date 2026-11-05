@@ -1156,9 +1156,10 @@ test('claude-factory-35em AC6: after a step back failure the gate recovers under
     f.st.latestAt = 0
     f.st.now = newest + 31 * 60_000 + 30_000
     const line = await f.refresh()
-    // short history: the per-refresh bound (3 x 620 records of traffic since the last good read) still holds
+    // short history: the ceiling (943_480) binds below the per-refresh bound (floor + 3 x 310 = 943_640)
     expect(line.decision).toBeUndefined()
-    expect(line.floor).toBeLessThanOrEqual(floor + 3 * 620)
+    expect(floor + 3 * 310).toBe(943_640)
+    expect(line.floor).toBeLessThanOrEqual(943_480)
   } finally {
     f.stop()
   }
