@@ -200,6 +200,7 @@ import {
   forgeOf,
   gitlabForge,
   githubCloseArgv,
+  githubLabelArgv,
   githubCommentArgv,
   githubMergedJson,
   gitlabMergedJson,
@@ -8640,6 +8641,13 @@ async function orphanPass() {
         owner: pr => prOwner(pr, live),
         queued: pr => !!queuedOwner(pr, shipQueue),
         records: records,
+        forkAborted: id => {
+          try {
+            return where(current(id).value)[0] === 'aborted'
+          } catch {
+            return false // no such run: the fork did not abort
+          }
+        },
       }
       const { skipped } = await orphanSweep(
         prs,
@@ -8656,6 +8664,63 @@ async function orphanPass() {
             ref
               ? githubChecks(spawnGh, ref.slug, pr.headRefOid, rig.repo)
               : gitlabChecks(spawnGlab, gl!.host, project, pr.number, pr.headRefOid, rig.repo),
+          view: async pr => {
+            if (ref) {
+              const v = await githubWatchView(spawnGh, pr.url, rig.repo)
+              return (
+                v && {
+                  mergeable: v.mergeable ?? 'UNKNOWN',
+                  changes: v.reviewDecision === 'CHANGES_REQUESTED',
+                }
+              )
+            }
+            const r = await spawnGlab(
+              [
+                'api',
+                '--hostname',
+                gl!.host,
+                `projects/${encodeURIComponent(project)}/merge_requests/${pr.number}`,
+              ],
+              { cwd: rig.repo, timeout: 60_000 },
+            )
+            const mr = r.code === 0 ? (JSON.parse(r.out || 'null') as Record<string, unknown> | null) : null
+            if (!mr) return null
+            // a draft MR reports detailed_merge_status "draft_status", so read has_conflicts and the review ask directly
+            const status = String(mr.detailed_merge_status ?? '')
+            return {
+              mergeable:
+                mr.has_conflicts === true || status === 'conflict'
+                  ? 'CONFLICTING'
+                  : mr.has_conflicts === false && ['mergeable', 'draft_status'].includes(status)
+                    ? 'MERGEABLE'
+                    : 'UNKNOWN',
+              changes: status === 'requested_changes',
+            }
+          },
+          label: async (pr, labels) => {
+            const r = ref
+              ? await spawnGh(githubLabelArgv(ref.slug, pr.number, labels), {
+                  cwd: rig.repo,
+                  timeout: 60_000,
+                })
+              : await spawnGlab(['mr', 'update', String(pr.number), '--label', labels.join(',')], {
+                  cwd: rig.repo,
+                  timeout: 60_000,
+                })
+            if (r.code !== 0) throw new Error(r.err.trim().split('\n')[0] || 'label call failed')
+          },
+          close: async (pr, body) => {
+            const calls = ref
+              ? [githubCommentArgv(ref.slug, pr.number, body), githubCloseArgv(ref.slug, pr.number)]
+              : [
+                  ['mr', 'note', String(pr.number), '-m', body],
+                  ['mr', 'close', String(pr.number)],
+                ]
+            for (const argv of calls) {
+              const r = await (ref ? spawnGh : spawnGlab)(argv, { cwd: rig.repo, timeout: 60_000 })
+              if (r.code !== 0) throw new Error(r.err.trim().split('\n')[0] || 'close call failed')
+            }
+          },
           fork: async (pr, srcId, note) => {
             const { value } = current(srcId)
             const src = runs.get(srcId)!

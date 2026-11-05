@@ -31,12 +31,21 @@ const ctx = (over: Partial<OrphanCtx> = {}, ids = [1, 2, 3, 4, 5, 6, 7, 8]): Orp
   ...over,
 })
 const io = (over: Partial<OrphanIo> = {}) => {
-  const calls = { checks: 0, fork: [] as [string, string, string][], record: [] as string[] }
+  const calls = {
+    checks: 0,
+    fork: [] as [string, string, string][],
+    record: [] as string[],
+    close: [] as [string, string][],
+    label: [] as [string, string[]][],
+  }
   const o: OrphanIo = {
     beadStatus: async () => 'open',
     checks: async () => (calls.checks++, green),
     fork: async (p, src, note) => (calls.fork.push([p.url, src, note]), `fork-${p.number}`),
     record: p => void calls.record.push(p.url),
+    view: async () => ({ mergeable: 'MERGEABLE', changes: false }),
+    label: async (p, labels) => void calls.label.push([p.url, labels]),
+    close: async (p, body) => void calls.close.push([p.url, body]),
     ...over,
   }
   return { o, calls }
@@ -56,8 +65,6 @@ const rows: [string, OrphanPr, Partial<OrphanCtx>, Partial<OrphanIo>][] = [
   ['live owner by branch or report link', pr(), { owner: () => 'run-9' }, {}],
   ['a live run on the same bead', pr(), { liveBeads: new Set(['bd-1']) }, {}],
   ['ship-queued', pr(), { queued: () => true }, {}],
-  ['bead closed', pr(), {}, { beadStatus: async () => 'closed' }],
-  ['bead deferred', pr(), {}, { beadStatus: async () => 'deferred' }],
   [
     'source run ended at a decision',
     pr(),
@@ -65,7 +72,6 @@ const rows: [string, OrphanPr, Partial<OrphanCtx>, Partial<OrphanIo>][] = [
     {},
   ],
   ['bd show null', pr(), {}, { beadStatus: async () => null }],
-  ['CI failed', pr(), {}, { checks: async () => ({ pass: 1, fail: 1, pending: 0 }) }],
   ['CI pending', pr(), {}, { checks: async () => ({ pass: 1, fail: 0, pending: 1 }) }],
   ['checks call null', pr(), {}, { checks: async () => null }],
   ['not a draft', pr(1, { isDraft: false }), {}, {}],
@@ -161,7 +167,7 @@ test('AC4: 5 green orphans give ORPHAN_CAP forks; cap 1 gives 1; cap 0 gives 0 a
   const b = io()
   expect((await orphanSweep(five, ctx(), b.o, 1)).forked).toHaveLength(1)
   const c = io()
-  expect((await orphanSweep(five, ctx(), c.o, 0)).forked).toHaveLength(0)
+  expect((await orphanSweep(five, ctx(), c.o, 0, 0)).forked).toHaveLength(0)
   expect(c.calls.checks).toBe(0)
 })
 
@@ -206,4 +212,145 @@ test('ciVerdict: null is unknown, fail wins over pending, zero checks are green'
   expect(ciVerdict({ pass: 0, fail: 1, pending: 1 })).toBe('red')
   expect(ciVerdict({ pass: 1, fail: 0, pending: 1 })).toBe('pending')
   expect(ciVerdict({ pass: 0, fail: 0, pending: 0 })).toBe('green')
+})
+
+// claude-factory-e2xe: the bead decides what happens to an orphan draft
+const sweep = (
+  prs: OrphanPr[],
+  c: Partial<OrphanCtx>,
+  i: Partial<OrphanIo>,
+  cap = ORPHAN_CAP,
+  acts = ORPHAN_CAP,
+) => {
+  const x = io(i)
+  return orphanSweep(prs, ctx(c), x.o, cap, acts).then(res => ({ res, calls: x.calls }))
+}
+const red = async () => ({ pass: 1, fail: 1, pending: 0 })
+
+for (const status of ['closed', 'deferred'])
+  test(`e2xe: a ${status} bead closes the PR with a comment that names the run and the bead state`, async () => {
+    const { res, calls } = await sweep([pr()], {}, { beadStatus: async () => status })
+    expect(res.closed).toEqual([pr().url])
+    expect(calls.close).toHaveLength(1)
+    expect(calls.close[0]![1]).toContain('run-1')
+    expect(calls.close[0]![1]).toContain(status)
+    expect(calls.fork).toEqual([])
+    expect(calls.checks).toBe(0)
+  })
+
+test('e2xe: a closed bead closes a PR that was forked at this head before', async () => {
+  const records = { [pr().url]: { sha: SHA, run: 'fork-1', from: 'run-1', at: '' } }
+  const { res } = await sweep([pr()], { records }, { beadStatus: async () => 'closed' })
+  expect(res.closed).toEqual([pr().url])
+})
+
+test('e2xe: an open bead and a conflicting PR get the conflict label', async () => {
+  const { res, calls } = await sweep(
+    [pr()],
+    {},
+    { view: async () => ({ mergeable: 'CONFLICTING', changes: false }) },
+  )
+  expect(res.labeled).toEqual([{ url: pr().url, labels: ['conflict'] }])
+  expect(calls.label).toEqual([[pr().url, ['conflict']]])
+  expect(calls.fork).toEqual([])
+})
+
+test('e2xe: an open bead and red checks get the rework label', async () => {
+  const { res, calls } = await sweep([pr()], {}, { checks: red })
+  expect(res.labeled).toEqual([{ url: pr().url, labels: ['rework'] }])
+  expect(calls.fork).toEqual([])
+})
+
+test('e2xe: changes asked by a review get the rework label, and red checks plus a conflict get both', async () => {
+  const asked = await sweep([pr()], {}, { view: async () => ({ mergeable: 'MERGEABLE', changes: true }) })
+  expect(asked.res.labeled[0]!.labels).toEqual(['rework'])
+  const both = await sweep(
+    [pr()],
+    {},
+    { checks: red, view: async () => ({ mergeable: 'CONFLICTING', changes: false }) },
+  )
+  expect(both.res.labeled[0]!.labels).toEqual(['conflict', 'rework'])
+})
+
+test('e2xe: a label the PR has already is not set again', async () => {
+  const labeled = pr(1, { labels: [{ name: 'rework' }] })
+  const { res, calls } = await sweep([labeled], {}, { checks: red })
+  expect(calls.label).toEqual([])
+  expect(res.skipped).toHaveLength(1)
+})
+
+test('e2xe: a green mergeable draft keeps the review fork', async () => {
+  const { res, calls } = await sweep([pr()], {}, {})
+  expect(res.forked).toEqual([{ url: pr().url, run: 'fork-1' }])
+  expect(calls.label).toEqual([])
+  expect(calls.close).toEqual([])
+})
+
+test('e2xe: a PR whose review fork aborted counts as an orphan again; a live or ended fork does not', async () => {
+  const records = { [pr().url]: { sha: SHA, run: 'fork-1', from: 'run-1', at: '' } }
+  const again = await sweep([pr()], { records, forkAborted: r => r === 'fork-1' }, { checks: red })
+  expect(again.res.labeled).toHaveLength(1)
+  const live = await sweep([pr()], { records, forkAborted: () => false }, { checks: red })
+  expect(live.res.labeled).toEqual([])
+  // a green mergeable PR whose fork aborted gets no second fork: it would abort the same way
+  const green = await sweep([pr()], { records, forkAborted: r => r === 'fork-1' }, {})
+  expect(green.res.forked).toEqual([])
+})
+
+test('e2xe: a label is recorded at the head, so the next pass leaves the PR alone', async () => {
+  const records: OrphanCtx['records'] = {}
+  const o = io({
+    record: (p, from, run) => void (records[p.url] = { sha: p.headRefOid, run, from, at: 'now' }),
+    checks: red,
+  }).o
+  await orphanSweep([pr()], ctx({ records }), o, ORPHAN_CAP, ORPHAN_CAP)
+  expect(records[pr().url]!.run).toBe('labeled')
+  const next = io({ checks: red })
+  const res = await orphanSweep([pr()], ctx({ records }), next.o, ORPHAN_CAP, ORPHAN_CAP)
+  expect(next.calls.label).toEqual([])
+  expect(res.skipped).toHaveLength(1)
+})
+
+test('e2xe: a PR on a non-factory branch or from a fork is not closed or labeled', async () => {
+  const closed = { beadStatus: async () => 'closed' }
+  for (const p of [pr(1, { headRefName: 'feature/x' }), pr(1, { isCrossRepository: true })]) {
+    const { res, calls } = await sweep([p], {}, closed)
+    expect(res.closed).toEqual([])
+    expect(calls.close).toEqual([])
+    const labeled = await sweep([p], {}, { checks: red })
+    expect(labeled.calls.label).toEqual([])
+  }
+})
+
+test('e2xe: close and label actions share one cap; forks keep their own', async () => {
+  const prs = [1, 2, 3, 4].map(n => pr(n))
+  const { res, calls } = await sweep(prs, {}, { beadStatus: async () => 'closed' }, ORPHAN_CAP, 3)
+  expect(res.closed).toHaveLength(3)
+  expect(calls.close).toHaveLength(3)
+  const mix = await sweep(prs, {}, { checks: red }, ORPHAN_CAP, 1)
+  expect(mix.res.labeled).toHaveLength(1)
+  const forks = await sweep(prs, {}, {}, 1, 0)
+  expect(forks.res.forked).toHaveLength(1)
+})
+
+test('e2xe: a failed close, label or view call skips the PR and the sweep goes on', async () => {
+  const boom = async () => {
+    throw new Error('boom')
+  }
+  const c = await sweep([pr(1), pr(2)], {}, { beadStatus: async () => 'closed', close: boom })
+  expect(c.res.closed).toEqual([])
+  expect(c.res.skipped.map(s => s.why)).toEqual(['close failed: boom', 'close failed: boom'])
+  const l = await sweep([pr()], {}, { checks: red, label: boom })
+  expect(l.res.skipped[0]!.why).toContain('label failed: boom')
+  const v = await sweep([pr()], {}, { view: async () => null })
+  expect(v.res.skipped[0]!.why).toBe('view unreadable')
+})
+
+test('e2xe: a live owner or live bead stops the close, even when the PR has a record at this head', async () => {
+  const records = { [pr().url]: { sha: SHA, run: 'labeled', from: 'run-1', at: '' } }
+  const closed = { beadStatus: async () => 'closed' }
+  const owned = await sweep([pr()], { records, owner: () => 'run-9' }, closed)
+  expect(owned.res.closed).toEqual([])
+  const held = await sweep([pr()], { records, liveBeads: new Set(['bd-1']) }, closed)
+  expect(held.res.closed).toEqual([])
 })

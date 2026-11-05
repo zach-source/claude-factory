@@ -1109,6 +1109,13 @@ export const githubCommentArgv = (slug: string, n: number, body: string) => [
   '-f',
   `body=${body}`,
 ]
+export const githubLabelArgv = (slug: string, n: number, labels: string[]) => [
+  'api',
+  '-X',
+  'POST',
+  `repos/${slug}/issues/${n}/labels`,
+  ...labels.flatMap(l => ['-f', `labels[]=${l}`]),
+]
 export const githubUnlabelArgv = (slug: string, n: number, label: string) => [
   'api',
   '-X',
