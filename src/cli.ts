@@ -8363,6 +8363,7 @@ async function repairPass() {
       const owned = liveShipRuns().some(
         s => s.run.repo === rig.repo && (s.node === 'queue' || s.node === 'release'),
       )
+      // the probe writes p.mergeable onto the objects in prs; repairs() below reads it
       if (!owned)
         for (const p of conflictProbes(every, prs, live)) {
           const path = githubPullPath(p.url)

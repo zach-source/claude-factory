@@ -720,7 +720,7 @@ export const beads = (repo: string, actor: string) => ({
       '--remove-label',
       SHIP,
       '--add-label',
-      'factory',
+      LABEL,
       '--add-label',
       'station:implement',
     ).isOk && bd(repo, actor, 'comment', id, reason).isOk,

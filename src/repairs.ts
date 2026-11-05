@@ -1,7 +1,7 @@
-// Repairs in code, not in prompts: a bead whose work is plainly done or dead gets closed or
-// deferred by the factory. `repairs` is pure: it decides. cli.ts's `repairPass` does the effects.
+// Repairs in code, not in prompts: a bead whose work is plainly done or dead gets closed,
+// deferred or sent back to implement by the factory. `repairs` is pure: it decides. cli.ts's `repairPass` does the effects.
 import { findings } from './plan'
-import { SHIP, REJECTED, parentOf, shipBranchOf, type Bead } from './beads'
+import { SHIP, REJECTED, isOwned, parentOf, shipBranchOf, type Bead } from './beads'
 
 export type PrFact = {
   number: number
@@ -56,9 +56,13 @@ function staleClaim(b: Bead, now: number): string | undefined {
   return `${b.assignee} is not live and its lease expired at ${lease}`
 }
 
-/** the OPEN PR of a queued ship bead that nothing else owns, or undefined: the beads a conflict check applies to */
+// labels that keep a bead out of dispatch: the conflict rework adds `factory`, so it must skip them (as autoqueue does)
+const HELD = [REJECTED, 'owner', 'human']
+
+/** the OPEN PR of a queued ship bead that nothing else owns and no hold covers, or undefined: where a conflict check applies */
 function queuedOpenPr(b: Bead, prs: PrFact[], live: Set<string>): PrFact | undefined {
   if (b.status !== 'open' || live.has(b.id) || !b.labels?.includes(SHIP)) return undefined
+  if (isOwned(b) || b.labels.some(l => l.startsWith('held:') || HELD.includes(l))) return undefined
   const branch = shipBranchOf(b)
   const pr = branch ? prOf(prs, meta(b, 'ship_pr')) : undefined
   return pr?.state === 'OPEN' && pr.headRefName === branch ? pr : undefined
@@ -73,7 +77,7 @@ export function conflictProbes(every: Bead[], prs: PrFact[], live: Set<string>):
  * What to fix in one rig. `every` is the rig's whole bead list (closed too), `prs` its pull requests
  * of any state, `live` the bead ids a live run owns. A bead with a live run is never touched.
  * One action for each bead, in this order: a stale claim, merged evidence, a done epic, a ship PR
- * closed unmerged. A stale claim goes first because bd refuses to close a bead another actor holds:
+ * closed unmerged, a conflicting queued ship PR. A stale claim goes first because bd refuses to close a bead another actor holds:
  * the next pass closes it.
  */
 export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<string>, now: number): Repair[] {
@@ -121,7 +125,7 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
       out.push({
         kind: 'conflict',
         id: b.id,
-        reason: `${open.url} is CONFLICTING with main: sent back to station:implement on ${open.headRefName}`,
+        reason: `${open.url} is CONFLICTING with its base: sent back to station:implement on ${open.headRefName}`,
       })
   }
   return out

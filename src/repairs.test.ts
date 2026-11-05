@@ -180,6 +180,18 @@ describe('conflict', () => {
     expect(kinds([qb({ metadata: { ship_pr: 'o/r#77', ship_branch: B } })], [op()])).toEqual([])
   })
 
+  const held: [string, Partial<Bead>][] = [
+    ['rejected', { labels: ['ship', 'rejected'] }],
+    ['owner', { labels: ['ship', 'owner'] }],
+    ['human', { labels: ['ship', 'human'] }],
+    ['held:x', { labels: ['ship', 'held:x'] }],
+    ['owner_decisions', { metadata: { ship_pr: pr(9, 'OPEN').url, ship_branch: B, owner_decisions: 'x' } }],
+  ]
+  test.each(held)('a held bead (%s) is not reworked and not probed', (_n, extra) => {
+    expect(kinds([qb(extra)], [op()])).toEqual([])
+    expect(conflictProbes([qb(extra)], [op()], new Set())).toEqual([])
+  })
+
   test('a stale claim is released first, not reworked', () => {
     const b = qb({ assignee: 'factory/old', lease_expires_at: '2000-01-01T00:00:00Z' })
     expect(kinds([b], [op()])).toEqual(['release'])
