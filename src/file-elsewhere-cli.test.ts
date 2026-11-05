@@ -1,7 +1,7 @@
 // claude-factory-mrfa: `factory file-elsewhere` decides the factory label in code and fails closed.
 // A fake bd on PATH logs every call. Fixtures use acme names only.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -207,4 +207,72 @@ test('a comment failure after the create names the new id (AC6)', () => {
   expect(r.code).toBe(1)
   expect(r.err).toContain('acme-b-9')
   expect(creates()).toHaveLength(1)
+})
+
+// claude-factory-2z48: untrusted text reaches the CLI by file, read only inside <FACTORY_HOME>/text/
+const FROM = ['file-elsewhere', 'acme-b', '--from', 'acme-a:acme-1']
+const txt = (name: string, body: string | Buffer) => {
+  const p = join(home, 'text', name)
+  mkdirSync(join(p, '..'), { recursive: true })
+  writeFileSync(p, body)
+  return p
+}
+
+test('--title-file and --description-file file the text as written, and nothing runs', () => {
+  setup()
+  const t = txt('t.txt', "x'; id; '\n")
+  const d = txt('sub/d.txt', "a $(id) and a ' here\n")
+  const r = factory([...FROM, '--title-file', t, '--description-file', d])
+  expect(r.code).toBe(0)
+  const c = creates()[0]!
+  expect(c).toContain("x'; id; '")
+  expect(c).toContain("a $(id) and a ' here  Filed from acme-a:acme-1.")
+})
+
+test('a -file flag refuses a bad path with exit 1 and zero bd calls (AC1)', () => {
+  setup()
+  const outside = join(dir, 'outside.txt')
+  writeFileSync(outside, 'secret')
+  mkdirSync(join(home, 'text'), { recursive: true })
+  symlinkSync(outside, join(home, 'text', 'link.txt'))
+  mkdirSync(join(home, 'text', 'adir'))
+  const good = txt('ok.txt', 'ok')
+  const bad: Record<string, string> = {
+    'outside text/': join(home, 'rigs.json'),
+    dotdot: join(home, 'text', '..', 'rigs.json'),
+    'symlink out': join(home, 'text', 'link.txt'),
+    directory: join(home, 'text', 'adir'),
+    missing: join(home, 'text', 'nope.txt'),
+    empty: txt('empty.txt', ''),
+    whitespace: txt('ws.txt', ' \n\t\n'),
+    'over cap': txt('big.txt', Buffer.alloc(100 * 1024 + 1, 'a')),
+  }
+  for (const [name, p] of Object.entries(bad)) {
+    const r = factory([...FROM, '--title-file', p, '--description-file', good])
+    expect([name, r.code]).toEqual([name, 1])
+    expect(r.err).toContain('--title-file')
+    expect(lines()).toHaveLength(0)
+  }
+  const max = txt('max.txt', Buffer.alloc(100 * 1024, 'a'))
+  expect(factory([...FROM, '--title-file', good, '--description-file', max]).code).toBe(0)
+})
+
+test('file-elsewhere refuses a bad grammar with usage and zero bd calls (AC2)', () => {
+  setup()
+  const f = txt('f.txt', 'one')
+  const nl = txt('nl.txt', 'one\ntwo')
+  const rows: Record<string, string[]> = {
+    'unknown flag': [...FROM, '--title', 't', '--description', 'd', '--x', 'y'],
+    'both title': [...FROM, '--title', 't', '--title-file', f, '--description', 'd'],
+    'both description': [...FROM, '--title', 't', '--description', 'd', '--description-file', f],
+    repeated: [...FROM, '--title', 't', '--title', 'u', '--description', 'd'],
+    'no value': [...FROM, '--title', 't', '--description'],
+    'extra word': [...FROM, '--title', 't', '--description', 'd', 'extra'],
+    'newline title': [...FROM, '--title-file', nl, '--description', 'd'],
+  }
+  for (const [name, a] of Object.entries(rows)) {
+    const r = factory(a)
+    expect([name, r.code]).toEqual([name, 1])
+    expect(lines()).toHaveLength(0)
+  }
 })
