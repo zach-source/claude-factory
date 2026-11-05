@@ -463,6 +463,11 @@ Limits:
     - `pathPrefixes`: one `/repos/<owner>/<repo>/`.
     - `paths`: `["/graphql"]`.
     - `effects`: one `Authorization` `Bearer ` header from `GITHUB_REVIEWER`.
+  - It names `GITHUB_REVIEWER` or `GITHUB_REVIEWER_BASIC` (in any case or spelling) outside two whole rules in `rules[i]`.
+    - One rule is the reviewer rule above.
+    - The other rule is a `github.com` rule. It has one `Authorization` `Basic ` header from `GITHUB_REVIEWER_BASIC` and no other key.
+    - The policy can have each rule once. The `github.com` rule needs the reviewer rule.
+    - The broker does not bind `<owner>/<repo>` to the actor. Bead claude-factory-rfjn limits the reviewer App installation.
   - A key has a non-ASCII character.
   - The policy nests deeper than 32 levels.
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.
