@@ -1383,8 +1383,14 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
     let to = at + 40
     if (to < rawCommand.length && /[\uD800-\uDBFF]/.test(rawCommand[to - 1] ?? '')) to--
     const around = `${from > 0 ? '…' : ''}${rawCommand.slice(from, to)}${to < rawCommand.length ? '…' : ''}`
+    // a harmless first hit must not hide a later one: count the candidates after the head and the window (no quote state, so it over-counts)
+    const more = (rawCommand.slice(Math.max(to, 300)).match(/[$`(]/g) ?? []).length
+    const unseen =
+      more > 0
+        ? ` ${more} more dollar signs, backticks or parentheses come after this text and are not shown.`
+        : ''
     return {
-      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${cutText(command, 300)}. The first one is at character ${at}: «${around}». Allow it?`,
+      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${cutText(command, 300)}. The first one is at character ${at}: «${around}».${unseen} Allow it?`,
       deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
     }
   }

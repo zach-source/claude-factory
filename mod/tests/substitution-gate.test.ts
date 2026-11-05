@@ -172,7 +172,9 @@ test('the question counts the later hits that it does not show', SLOW, async ($,
   ]
   for (const command of rows) {
     await $.tool.call({ tool: 'Bash', command, description: 'x' })
-    expect(questions.at(-1), command).toContain('2 more dollar signs, backticks or parentheses come after this text and are not shown.')
+    expect(questions.at(-1), command).toContain(
+      '2 more dollar signs, backticks or parentheses come after this text and are not shown.',
+    )
   }
   for (const command of [GATED[0]!, `${F} mail r1 plan "${a} $(id)"`]) {
     await $.tool.call({ tool: 'Bash', command, description: 'x' })
