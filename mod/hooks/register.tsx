@@ -52,6 +52,7 @@ import {
   pmRetryDelay,
   quickAnswer,
   statusText,
+  cutText,
   type Interview,
 } from './view'
 
@@ -1652,7 +1653,7 @@ export const register: Register = (on, options) => {
       rt.patrolId = undefined
       rt.patrolStartedAt = undefined
       await appendManagerUsage($, 'patrol', e.usage)
-      const report = e.answer.length > 600 ? `${e.answer.slice(0, 599)}…` : e.answer
+      const report = e.answer.length > 600 ? `${cutText(e.answer, 599)}…` : e.answer
       const last = (await readPatrolLog($).catch(() => [])).at(-1)
       const entry: FactoryPatrolLogEntry = {
         at: await $.clock.now(),

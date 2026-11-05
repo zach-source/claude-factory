@@ -1,3 +1,4 @@
+import { cut } from './cut'
 // This is the Linear pull loop (claude-factory-b6c).
 // The loop moves Linear issues from each opted-in rig's configured team(s) into that rig's beads
 // store, routing each issue to at most one rig (claude-factory-b6c.18). It never pushes a change
@@ -467,5 +468,5 @@ export function redact(text: string, secrets: string[]): string {
   let out = text
   for (const s of secrets.filter(Boolean)) out = out.split(s).join('***')
   out = out.replace(TOKEN_SHAPE, '***').replace(CONTROL_CHARS, '')
-  return out.length > 200 ? `${out.slice(0, 200)}…` : out
+  return out.length > 200 ? `${cut(out, 200)}…` : out
 }

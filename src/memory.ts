@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { cut } from './cut'
 import {
   appendFileSync,
   cpSync,
@@ -1914,7 +1915,7 @@ export function skills(dir: string) {
     })
 }
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s).replace(/\s+/g, ' ')
+const clip = (s: string, n: number) => (s.length > n ? `${cut(s, n)}…` : s).replace(/\s+/g, ' ')
 /**
  * what the manager did, from its session transcripts: what it was asked (the person, or a patrol) and the
  * commands and skills it ran, one line each, after \`since\`. Also every skill's uses, all time: what the dream reaps by

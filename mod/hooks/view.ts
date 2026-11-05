@@ -195,6 +195,10 @@ export function byState(runs: readonly FactoryRun[]) {
 }
 
 /** a run id short enough for a column: the part after the factory's prefix, cut to its first and last 4 */
+// Cut at n UTF-16 units; back off one unit rather than leave a lone high surrogate.
+export const cutText = (s: string, n: number) =>
+  s.length <= n ? s : s.slice(0, n > 0 && (s.charCodeAt(n - 1) & 0xfc00) === 0xd800 ? n - 1 : n)
+
 export function shortId(id: string) {
   const tail = id.slice(id.lastIndexOf('-') + 1) || id
   return tail.length <= 9 ? tail : `${tail.slice(0, 4)}…${tail.slice(-4)}`
