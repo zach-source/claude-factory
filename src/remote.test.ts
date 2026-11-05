@@ -894,11 +894,11 @@ test('a task gone because serve exited fails the attempt with serve\'s log, not 
 
 test('a serve exit log with ESC and U+202E reaches the FAIL reason without them', () => {
   launched('r8c')
-  cluster('Running', { status: 'exited', log: 'serve died: bad \u001b[31mred‮txt', lines: [] })
+  cluster('Running', { status: 'exited', log: 'serve died: bad \u001b[31mred\u202etxt', lines: [] })
   const out = factory(['tick'])
   const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8c')
   expect(row.error).toContain('serve died: bad  [31mred txt')
-  expect(row.error).not.toMatch(/[\u001b‮]/)
+  expect(row.error).not.toMatch(/[\u001b\u202e]/)
   rmSync(join(home, 'runs', 'r8c'), { recursive: true })
 })
 
@@ -1348,6 +1348,23 @@ test('a committing AX worker IS called stalled when its tail, head and bytes all
   const state = readFileSync(join(home, 'runs', 'r14', 'state.json'), 'utf8')
   expect(state).toContain('stalled: no output for') // failed as stalled
   rmSync(join(home, 'runs', 'r14'), { recursive: true })
+})
+
+test('the stall mail Last line holds no ESC or U+202E from the VM tail (claude-factory-tzqf)', () => {
+  const seq = launched('r14c')
+  const tail = 'x\nlast \u001b[31mred\u202etxt'
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  writeFileSync(
+    join(home, 'runs', 'r14c', 'progress.json'),
+    JSON.stringify({ seq, sig: progressSig(tail, 'sha1', 100), at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  const mail = JSON.stringify(ctxOf('r14c').mail.manager)
+  expect(mail).toContain('Last line: last  [31mred txt')
+  expect(mail).not.toMatch(/[\u001b\u202e]|\\u001b|\\u202e/i)
+  rmSync(join(home, 'runs', 'r14c'), { recursive: true })
 })
 
 // claude-factory-9ff: reconcile()'s real FAIL/warn path must use timeoutOf()'s escalated deadline
@@ -2952,6 +2969,19 @@ test('ActorResumeFailed writes the rig no-suspend marker and mails the manager o
   rmSync(join(home, 'runs', 'r41'), { recursive: true })
   rmSync(markerOf('wt'), { force: true })
   rmSync(join(home, 'runs', 'r34'), { recursive: true })
+})
+
+test('the no-suspend marker and mail hold no ESC or U+202E from the condition text (claude-factory-tzqf)', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r34c')
+  clusterConds('Failed', RESUME_FAILED.replace('exit status 128', 'bad \\u001b[31mred\\u202etxt'))
+  factory(['tick'])
+  const marker = readFileSync(markerOf('wt'), 'utf8')
+  const text = resumeMails('r34c')[0]!.text
+  expect(text).toContain('bad  [31mred txt')
+  for (const s of [marker, JSON.stringify(text)]) expect(s).not.toMatch(/[\u001b\u202e]|\\u001b|\\u202e/i)
+  rmSync(markerOf('wt'), { force: true })
+  rmSync(join(home, 'runs', 'r34c'), { recursive: true })
 })
 
 test('a halt that reads the Failed task first does not drop the one ActorResumeFailed mail', () => {
