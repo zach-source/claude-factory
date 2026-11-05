@@ -8579,6 +8579,25 @@ async function labelPass() {
   writeJson(join(HOME, 'labels.json'), errors)
 }
 
+/** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
+export function orphanRuns(ids: string[], read: typeof current = current) {
+  const runs = new Map<string, Run>()
+  const live: { id: string; log: Entry[]; bead?: string }[] = []
+  const decided = new Set<string>()
+  for (const id of ids) {
+    try {
+      const { run, value, c } = read(id)
+      const [node] = where(value)
+      runs.set(id, run)
+      if (c.log.at(-1)?.outcome === 'decision') decided.add(id)
+      if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
+    } catch {
+      // the run has no readable state yet
+    }
+  }
+  return { runs, live, decided }
+}
+
 /**
  * Start a review run for each green draft pull request that no run owns (claude-factory-pff5).
  * An aborted run that blocked leaves such a PR. In each GitHub or GitLab rig, `orphanSweep` forks the source run
@@ -8602,20 +8621,7 @@ async function orphanPass() {
     // left undefined
   }
   const { busy, held } = await busyRigs()
-  const runs = new Map<string, Run>()
-  const live: { id: string; log: Entry[]; bead?: string }[] = []
-  const decided = new Set<string>()
-  for (const id of startedRunIds()) {
-    try {
-      const { run, value, c } = current(id)
-      const [node] = where(value)
-      runs.set(id, run)
-      if (c.log.at(-1)?.outcome === 'decision') decided.add(id)
-      if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
-    } catch {
-      // a run still being written
-    }
-  }
+  const { runs, live, decided } = orphanRuns(startedRunIds())
   for (const rig of rigs()) {
     try {
       const ref = rigRef(rig.repo)
