@@ -3384,6 +3384,24 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     finish('sk3c')
   })
 
+  test('a skew hold clips a 10 KB outcome word', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3w')
+    const line = JSON.stringify({
+      argv: ['report', 'sk3w', String(seq), 'x'.repeat(10_000), 'plan text'],
+      from: 'a',
+      at: 1,
+      bdSkew: SKEW_OUT,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+    factory(['tick'])
+    const last = ctxOfRun('sk3w').log.at(-1)
+    expect(last.summary).toContain('needs the person: bd version skew on ax')
+    expect(last.summary).toContain('plan text')
+    expect(last.summary.length).toBeLessThan(400)
+    finish('sk3w')
+  })
+
   test('773c AC3: a skew report keeps since and asks no new Question', () => {
     const seq = launched('sk3k')
     const since = Date.now() - 120 * 60_000

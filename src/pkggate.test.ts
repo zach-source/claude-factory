@@ -2949,6 +2949,7 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
       expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
     })
     expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org redirect refused')
+    expect(g.stats().error).toBe(1)
     expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
     expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
   })
@@ -2963,6 +2964,51 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
       await g(new Request(`http://gate/go${GO}.info`))
     })
     expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org 503')
+    expect(g.stats().error).toBe(1)
+  })
+
+  test('AC3: a second .info inside the backoff after an index refusal counts its own error', async () => {
+    const { g } = goGate(
+      u => infoOk(u) ?? (u.origin === 'https://idx.fake.test' ? found(`${EVIL}/x`) : undefined),
+      { goIndex: 'https://idx.fake.test' },
+    )
+    await captured(async () => {
+      await g(new Request(`http://gate/go${GO}.info`))
+      expect(g.stats().error).toBe(1)
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(2)
+  })
+
+  test('AC3: a sum.golang.org /latest 302 off-origin in the floor refresh counts error once', async () => {
+    const { g, hits } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.origin === 'https://sum.fake.test' ? found(`${EVIL}/x`) : undefined) ??
+        (u.origin === 'https://idx.fake.test' ? new Response('') : undefined),
+      { sumdb: 'https://sum.fake.test', goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: sum.golang.org /latest unavailable')
+    expect(g.stats().error).toBe(1)
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  test('a sum.golang.org /latest 503 counts error once (not refused)', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.origin === 'https://sum.fake.test' ? new Response('x', { status: 503 }) : undefined) ??
+        (u.origin === 'https://idx.fake.test' ? new Response('') : undefined),
+      { sumdb: 'https://sum.fake.test', goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: sum.golang.org /latest unavailable')
+    expect(g.stats().error).toBe(1)
   })
 
   describe('AC4: every 3xx body is cancelled', () => {
