@@ -644,6 +644,78 @@ test(
   },
 )
 
+const THREE_TICK = {
+  ...SAME_BEAD_TICK,
+  runs: [
+    ...SAME_BEAD_TICK.runs,
+    {
+      ...SAME_BEAD_TICK.runs[1],
+      id: 'rc',
+      last: { ...SAME_BEAD_TICK.runs[1].last, at: 9 },
+    },
+  ],
+}
+
+/** answers the merged row's first option with a typed note while the mail to `failing` fails; returns the drawn pane */
+async function failedMergedRow(
+  $: Parameters<Parameters<typeof test>[2]>[0],
+  on: Parameters<Parameters<typeof test>[2]>[1],
+  tick: unknown,
+  failing: string,
+) {
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  on('process.run', ($, e) => {
+    if (e.argv.includes('mail') && e.argv.includes(failing))
+      return { value: { exitCode: 1, stdout: '', stderr: `${failing}: no such run` } as never }
+    return {
+      value: { exitCode: 0, stdout: e.argv.includes('tick') ? JSON.stringify(tick) : '', stderr: '' } as never,
+    }
+  })
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'interview' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  await ui.input({ key: 'iv-reply-iv:ra@1', text: 'my note', kind: 'change' } as never)
+  await clock.settle()
+  await ui.press({ key: 'iv-opt-iv:ra@1-0' })
+  await clock.settle()
+  const drawn = JSON.stringify(await ui.drawn())
+  await ui.unmount()
+  return drawn
+}
+
+test(
+  'when the primary of a merged row fails first, the typed note stays on the primary and is not copied to the next member',
+  SLOW,
+  async ($, on) => {
+    const drawn = await failedMergedRow($, on, SAME_BEAD_TICK, 'ra')
+    expect(drawn).toContain('answered (0)')
+    expect(drawn).toMatch(/"key":"iv-reply-iv:ra@\d+"[^}]*"value":"my note"/)
+    expect(drawn).not.toMatch(/"key":"iv-reply-iv:rb@\d+"[^}]*"value":"my note"/)
+  },
+)
+
+test(
+  'when the third member of a merged row fails, the typed note moves to the third row, not the closed second (claude-factory-df80)',
+  SLOW,
+  async ($, on) => {
+    const drawn = await failedMergedRow($, on, THREE_TICK, 'rc')
+    expect(drawn).toContain('answered (2)')
+    expect(drawn).toMatch(/"key":"iv-reply-iv:rc@\d+"[^}]*"value":"my note"/)
+    expect(drawn).not.toMatch(/"key":"iv-reply-iv:rb@\d+"/)
+  },
+)
+
 test(
   'a failed mail on the only member keeps the typed reply, instead of wiping it (claude-factory-9f6.16)',
   SLOW,
