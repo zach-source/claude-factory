@@ -9423,6 +9423,14 @@ export function reasonName(reason: string): string {
 
 const HARNESSES = ['claude', 'codex', 'pi']
 
+/** claude-factory-uzes: replace the value of each NAME=value word with *** so the deny log keeps no secret. */
+export function maskAssignments(command: string): string {
+  return command.replace(
+    /(^|[\s;&|()`])([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=)(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
+    '$1$2***',
+  )
+}
+
 /**
  * claude-factory-dsfg: record one denial as a JSON line in FACTORY_HOME/runs/<FACTORY_RUN>/denials.jsonl, and,
  * for an AX worker whose laptop replays it (FACTORY_DENY_LOG=1), in the outbox. It runs after the deny is
@@ -9435,7 +9443,7 @@ function logDenial(reason: string, command: string, harness: string | undefined)
     const at = Date.now()
     const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
     const name = reasonName(reason)
-    const cmd = command.slice(0, 200)
+    const cmd = maskAssignments(command).slice(0, 200)
     if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
       appendFileSync(
         process.env.FACTORY_OUTBOX,
