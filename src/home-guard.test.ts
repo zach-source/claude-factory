@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HOME_REASON, homeReason, protectedPath, rmSafe } from './home-guard'
@@ -222,5 +222,69 @@ describe('rmSafe', () => {
     const dir = mkdtempSync(join(tmpdir(), 'home-guard-'))
     rmSafe(dir, { recursive: true, force: true })
     expect(existsSync(dir)).toBe(false)
+  })
+
+  const mk = () => mkdtempSync(join(tmpdir(), 'home-guard-rm-'))
+  const opts = { recursive: true, force: true }
+
+  test('throws when the rm keeps the tree (3 tries)', () => {
+    const dir = mk()
+    let n = 0
+    expect(() => rmSafe(dir, opts, () => void n++)).toThrow(/still exists after 3 tries/)
+    expect(() => rmSafe(dir, opts, () => {})).toThrow(dir)
+    expect(n).toBe(3)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('retries when the first rm keeps the tree', () => {
+    const dir = mk()
+    let n = 0
+    rmSafe(dir, opts, (p, o) => {
+      if (++n === 2) rmSync(p, o)
+    })
+    expect(n).toBe(2)
+    expect(existsSync(dir)).toBe(false)
+  })
+
+  test('does not delete a new dir that took the same path', () => {
+    const dir = mk()
+    let n = 0
+    rmSafe(dir, opts, (p, o) => {
+      n++
+      rmSync(p, o)
+      mkdirSync(p)
+    })
+    expect(n).toBe(1)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('a missing path: force is a no-op, no force throws ENOENT, a real dir is deleted once', () => {
+    const dir = join(mk(), 'gone')
+    expect(() => rmSafe(dir, opts)).not.toThrow()
+    expect(() => rmSafe(dir, { recursive: true })).toThrow(/ENOENT/)
+    const real = mk()
+    let n = 0
+    rmSafe(real, opts, (p, o) => {
+      n++
+      rmSync(p, o)
+    })
+    expect(n).toBe(1)
+    expect(existsSync(real)).toBe(false)
+  })
+
+  test('a protected path never reaches the rm', () => {
+    const fake = mk()
+    const old = process.env.HOME
+    process.env.HOME = fake
+    let n = 0
+    try {
+      expect(() => rmSafe(fake, opts, () => void n++)).toThrow(/refusing/)
+    } finally {
+      process.env.HOME = old
+    }
+    expect(n).toBe(0)
+    rmSync(fake, opts)
   })
 })

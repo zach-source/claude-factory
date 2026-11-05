@@ -7,7 +7,7 @@
  *   - `rmSafe` replaces each recursive `rmSync` in the runner. It refuses `/`, the home dir and
  *     every dir above the home dir.
  */
-import { rmSync, type RmOptions } from 'node:fs'
+import { lstatSync, rmSync, type RmOptions, type Stats } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, resolve, sep } from 'node:path'
 
@@ -36,10 +36,27 @@ export function protectedPath(p: string, protect = homes()): boolean {
   })
 }
 
-/** rmSync, but it throws on `/`, $HOME or a parent of $HOME */
-export function rmSafe(p: string, opts?: RmOptions): void {
+/**
+ * rmSync, but it throws on `/`, $HOME or a parent of $HOME.
+ * Bun rmSync can return with no error and keep the tree while another process writes into it.
+ * So rmSafe checks the path after the delete. It tries up to 3 times, then it throws.
+ * A new object at the same path (a lock that another process took) ends the retry. rmSafe never removes it.
+ * ponytail: the identity is dev, ino and birthtimeMs. A reused inode with the same birthtime can look
+ * the same. Upgrade path: a flock or a unique lock file name.
+ */
+export function rmSafe(p: string, opts?: RmOptions, rm: (p: string, o?: RmOptions) => void = rmSync): void {
   if (protectedPath(p)) throw new Error(`refusing to delete ${p}: it is /, $HOME or a dir above $HOME`)
-  rmSync(p, opts)
+  const id = (s: Stats | undefined) => s && `${s.dev}:${s.ino}:${s.birthtimeMs}`
+  const before = id(lstatSync(p, { throwIfNoEntry: false }))
+  rm(p, opts)
+  if (before === undefined) return
+  for (let i = 2; i <= 3; i++) {
+    if (id(lstatSync(p, { throwIfNoEntry: false })) !== before) return
+    Bun.sleepSync(20 * i)
+    rm(p, opts)
+  }
+  if (id(lstatSync(p, { throwIfNoEntry: false })) === before)
+    throw new Error(`rmSafe: ${p} still exists after 3 tries`)
 }
 
 // a delete or move word in shell or in a script language
