@@ -28,6 +28,10 @@ const GATED = [
   F + ' mail r1 plan "${(e):-\\$(id)}"',
   F + ' mail r1 plan "${x:=\\$(id)}${(e)x}"',
   "x='$(id)'; " + F + ' mail r1 plan ${x@P}',
+  F + ' mail r1 plan "$x"',
+  F + ' mail r1 plan $x',
+  F + ' mail r1 plan "$[x]"',
+  F + ' mail r1 plan $[x]',
 ]
 
 const UNREADABLE = [
@@ -49,6 +53,8 @@ const PLAIN = [
   `${F} status`,
   'echo "$(id)"',
   `${F} mail r1 plan "a <(b)"`,
+  F + " mail r1 plan '$x'",
+  F + ' mail r1 plan "a \\$(id)"',
 ]
 
 function harness(on: any, answer: string) {
