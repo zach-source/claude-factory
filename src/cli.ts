@@ -2411,6 +2411,28 @@ export function swapUntil(
 type TokenSwapState = { at: number; until: number; ran?: number }
 
 /**
+ * This function reads a token-swap state file. A state that is not a well-formed object, or that has an
+ * at or ran more than LIMIT_SKEW_MS ahead, or an until more than LIMIT_RESET_MAX_MS ahead, counts as no state.
+ * A hostile VM can have written such a file before the bound existed.
+ */
+export function trustedSwapState(file: string, now: number): TokenSwapState | undefined {
+  if (!existsSync(file)) return undefined
+  let s: Record<string, unknown>
+  try {
+    s = readJson<Record<string, unknown>>(file)
+  } catch {
+    return undefined
+  }
+  if (typeof s !== 'object' || s === null) return undefined
+  const { at, until, ran } = s
+  const num = (v: unknown): v is number => Number.isFinite(v)
+  if (!num(at) || !num(until) || at > now + LIMIT_SKEW_MS || until > now + LIMIT_RESET_MAX_MS)
+    return undefined
+  if (ran !== undefined && (!num(ran) || ran > now + LIMIT_SKEW_MS)) return undefined
+  return ran === undefined ? { at, until } : { at, until, ran }
+}
+
+/**
  * This function runs a swap command. A rig sets the Claude command in FACTORY_AX_TOKEN_SWAP and the Codex command in
  * FACTORY_AX_CODEX_TOKEN_SWAP. The function runs the command one time for each refusal. It then sends mail to the
  * manager. The mail names the live slot (Claude) or the live label (Codex).
@@ -2432,7 +2454,7 @@ export function runTokenSwap(
   const cmd = codex ? process.env.FACTORY_AX_CODEX_TOKEN_SWAP : process.env.FACTORY_AX_TOKEN_SWAP
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
   const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  const state = trustedSwapState(file, now)
   const gap = codex ? CODEX_SWAP_GAP_MS : TOKEN_SWAP_WAIT_MS
   if (!needsSwap(hit, state, now, gap)) {
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
@@ -2465,7 +2487,7 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const cmd = process.env.FACTORY_AX_CODEX_TOKEN_SWAP
   if (!cmd) return
   const file = join(home, `token-swap-${runnerName}-codex.json`)
-  const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
+  const state = trustedSwapState(file, now)
   if (state && now - state.at < CODEX_REFRESH_MS) return
   const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
   const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
@@ -3144,13 +3166,27 @@ export function holdFloor(
 export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
   join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
 
+/**
+ * This function reads a limit-paged file. The file can hold data from before the bound. A value that is not a
+ * finite number, or that is more than LIMIT_RESET_MAX_MS ahead, counts as no file (0), so it cannot mute mail or hold a run.
+ */
+export function trustedPaged(file: string, now: number): number {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : 0
+  } catch {
+    return 0
+  }
+  return typeof v === 'number' && Number.isFinite(v) && v <= now + LIMIT_RESET_MAX_MS ? v : 0
+}
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
 function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
   const p = progressOf(run)
   const runner = runnerOf(c.pane)
   const paged = limitPagedFile(runner, codex)
-  const until = existsSync(paged) ? readJson<number>(paged) : 0
+  const until = trustedPaged(paged, now)
   return {
     inMin: Math.floor((now - c.startedAt) / 60_000),
     ...(p?.seq === c.seq && { quietMin: Math.floor((now - p.at) / 60_000) }),
@@ -3371,7 +3407,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         return 'usage limit'
       }
       const paged = limitPagedFile(runner, isCodex)
-      if (!existsSync(paged) || readJson<number>(paged) < until) {
+      if (trustedPaged(paged, now) < until) {
         const text = runner.local
           ? `Every Claude account is ${refused ? 'login refused' : 'at its usage limit'} (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
           : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is ${refused ? `login refused (${hit.kind})` : `at its usage limit (${hit.kind})`}; they wait until ${new Date(until).toLocaleString()} and go on then.`
@@ -3417,7 +3453,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     egress &&
     `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${egress.last}`
   const limitPage = limitPagedFile(runner, isCodex)
-  const pagedUntil = existsSync(limitPage) ? readJson<number>(limitPage) : 0
+  const pagedUntil = trustedPaged(limitPage, now)
   // an outage is held, not failed: the machine spends no attempt on it (claude-factory-dhof). Only this
   // reconciler sets hold; a worker's own report never does.
   const failOutage = (reason: string) => {
