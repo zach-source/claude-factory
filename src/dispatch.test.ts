@@ -29,6 +29,7 @@ const factory = (args: string[]) => {
       ...laptop,
       FACTORY_HOME: home,
       PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin, 'herdr'),
       CLAUDE_CONFIG_DIR: claudeConfig,
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
@@ -377,6 +378,7 @@ function pfactory(args: string[], extraEnv: Record<string, string> = {}) {
       ...laptop,
       FACTORY_HOME: phome,
       PATH: `${pbin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(pbin, 'herdr'),
       CLAUDE_CONFIG_DIR: pClaudeConfig,
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows
@@ -880,6 +882,7 @@ function gfactory(args: string[], env: Record<string, string> = {}) {
       ...laptop,
       FACTORY_HOME: ghome,
       PATH: `${gbin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(gbin, 'herdr'),
       CLAUDE_CONFIG_DIR: gClaudeConfig,
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1', // claude-factory-8je: no signing probe in these rows

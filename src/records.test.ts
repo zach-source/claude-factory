@@ -285,13 +285,18 @@ test('factory rm keeps the last row of a session and model stored twice (hr94 re
       turns: 1,
       peak: 5,
     })
-  writeFileSync(join(runDir, 'usage.jsonl'), `${row('implement', 10)}\n${row('verify', 99)}\n`)
+  writeFileSync(
+    join(runDir, 'usage.jsonl'),
+    `${row('implement', 10)}\n${row('implement', 99)}\n${row('verify', 7)}\n`,
+  )
   rmSync(join(dir, 'wt-u3'), { recursive: true })
   const rm = factory(['rm', id], env)
   expect(rm.err).toBe('')
   const line = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n').at(-1)!)
-  expect(line.sessions).toHaveLength(1)
-  expect(line.sessions[0]).toMatchObject({ node: 'verify', cacheRead: 99 })
+  // cyvx: the same node+seq replays and keeps its last row; another station with the same session+model keeps its own row
+  expect(line.sessions).toHaveLength(2)
+  expect(line.sessions[0]).toMatchObject({ node: 'implement', cacheRead: 99 })
+  expect(line.sessions[1]).toMatchObject({ node: 'verify', cacheRead: 7 })
 })
 
 // claude-factory-dsfg: `factory metrics` counts the worker hook's denials from runs/*/denials.jsonl
