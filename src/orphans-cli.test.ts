@@ -125,6 +125,9 @@ function fakeGh(src: string, sha: string) {
   script('gh', [
     'case "$*" in',
     `  *check-runs*) printf '%s' '{"check_runs":[{"status":"completed","conclusion":"success"}]}';;`,
+    `  "api -X"*) echo "$*" >> "${join(dir, 'writes.txt')}";;`,
+    `  *"pulls/7/reviews"*|*"issues/7/comments"*) printf '%s' '[]';;`,
+    `  "api repos/acme/widget/pulls/7") printf '%s' '{"state":"open","draft":true,"mergeable":true,"head":{"sha":"x"}}';;`,
     `  *"/status"*) printf '%s' '{"statuses":[]}';;`,
     `  "api "*"state=open"*) printf '%s' '${pulls}' | sed "s/SHA/$(cat "${join(dir, 'sha.txt')}")/";;`,
     '  *) exit 0;;',
@@ -285,6 +288,7 @@ function fakeGlab(src: string, sha: string, o: MrOpts = {}) {
     source_project_id: o.srcProject ?? 5,
     target_project_id: 5,
     head_pipeline: { sha: o.pipelineSha ?? sha, status: o.status ?? 'success' },
+    detailed_merge_status: 'mergeable',
   }
   script('glab', [
     `echo "$*" >> "${join(dir, 'glab.calls')}"`,
@@ -355,4 +359,23 @@ test('AC8: a rig with neither a GitHub nor a GitLab origin is skipped without an
   expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
   // glab auth status only tells the forge of a host; no API call may follow
   expect(readFileSync(join(dir, 'glab.calls'), 'utf8')).not.toContain('api')
+})
+
+test('e2xe: a closed bead closes the orphan draft with a comment; the PR gets no fork', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  script('bd', [
+    'case "$1" in',
+    "  config) printf '%s' 'acme';;",
+    `  show) printf '%s' '[{"id":"acme-1","title":"t","status":"closed"}]';;`,
+    "  ready|list|children) printf '%s' '[]';;",
+    '  *) exit 0;;',
+    'esac',
+  ])
+  pass()
+  expect(runIds()).toHaveLength(1)
+  const writes = readFileSync(join(dir, 'writes.txt'), 'utf8')
+  expect(writes).toContain('issues/7/comments')
+  expect(writes).toContain(src)
+  expect(writes).toContain('pulls/7 -f state=closed')
 })
