@@ -121,7 +121,7 @@ test('decisions answer responds to a human-flagged bead, comments on an owner-on
 
   const refused = factory(['decisions', 'answer', 'api', 'api-2', 'nope'], { FACTORY_FROM: 'implement' })
   expect(refused.code).not.toBe(0)
-  expect(refused.err).toContain('a worker cannot answer')
+  expect(refused.err).toContain('a worker cannot run factory decisions')
 
   // claude-factory-72v.19: FACTORY_PATROL is the mod's own marker for a patrol subagent's Bash
   // call, a 2nd CLI-side layer behind the mod's regex deny (which an obfuscated command can defeat)
@@ -150,7 +150,7 @@ test('decisions propose refuses a gate key and a malformed one, a worker, and ot
     FACTORY_FROM: 'implement',
   })
   expect(refused.code).not.toBe(0)
-  expect(refused.err).toContain('a worker cannot propose')
+  expect(refused.err).toContain('a worker cannot run factory decisions')
 
   // claude-factory-72v.19: same 2nd CLI-side layer as decisions answer's own FACTORY_PATROL check
   const refusedPatrol = factory(['decisions', 'propose', 'bd:api:api-1', 'q', 'a | b'], {
@@ -169,7 +169,7 @@ test('decide refuses a worker and a patrol before it ever looks up the run (clau
   fakeBd('null', '[]')
   const worker = factory(['decide', 'r1', 'approve'], { FACTORY_FROM: 'implement' })
   expect(worker.code).not.toBe(0)
-  expect(worker.err).toContain('a worker cannot decide')
+  expect(worker.err).toContain('a worker cannot run factory decide')
 
   // claude-factory-72v.19: a patrol subagent's own Bash call carries FACTORY_PATROL=1, a 2nd
   // CLI-side layer behind the mod's regex deny for this same command
