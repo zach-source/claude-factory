@@ -184,6 +184,27 @@ test('the monitor prompt sends an alert closed in the last 7 days to a person', 
     if (name !== 'monitor') expect(n.prompt ?? '', name).not.toContain(scope)
 })
 
+test('the monitor prompt comments on a person-closed P2 and files no second P2', () => {
+  const nodes = sweeps.nodes as Record<string, { prompt?: string }>
+  const m = nodes['monitor']!.prompt!
+  for (const t of ['`bd show <id>`', 'priority 2 and no factory label', 'do not file a new bead'])
+    expect(m, t).toContain(t)
+  const at = (t: string) => m.indexOf(t)
+  const closed = at('--status closed --closed-after')
+  const rule = at('priority 2 and no factory label')
+  const p2 = at('file the new bead with `bd create -t bug -p 2`')
+  expect(closed).toBeGreaterThan(-1)
+  expect(rule).toBeGreaterThan(closed)
+  expect(p2).toBeGreaterThan(rule)
+  expect(p2).toBeLessThan(at('labels factory, station:incident and sweep-queue:incident'))
+  const between = m.slice(rule, p2)
+  expect(between).toContain('do not file a new bead')
+  expect(between).toContain('bd comment')
+  expect(between).not.toContain('bd create')
+  for (const [name, n] of Object.entries(nodes))
+    if (name !== 'monitor') expect(n.prompt ?? '', name).not.toContain('priority 2 and no factory label')
+})
+
 test("sweeps.ts stays self-contained: a repo's own copy keeps no import", async () => {
   const { readFileSync } = await import('node:fs')
   const { ownCopy } = await import('../src/cli')
