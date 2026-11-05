@@ -9031,6 +9031,7 @@ const WORKER_VERBS = [
   'mutate',
   'ci',
   'worker',
+  'file-elsewhere',
 ]
 
 /** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
@@ -9044,6 +9045,66 @@ export function workerVerbRefusal(
     return undefined
   if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
   return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
+}
+
+/**
+ * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title T --description D`.
+ * The label `factory` goes on only when the source bead reads back with its own id and no Linear
+ * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
+ */
+function fileElsewhere(args: string[]) {
+  const usage =
+    'usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title <text> --description <text>'
+  const [target, ...rest] = args
+  const flags = new Map<string, string>()
+  if (!target || target.startsWith('--') || rest.length !== 6) fail(usage)
+  for (let i = 0; i < rest.length; i += 2) {
+    const k = rest[i]!
+    const v = rest[i + 1]
+    if (!['--from', '--title', '--description'].includes(k) || !v || flags.has(k)) fail(usage)
+    flags.set(k, v!)
+  }
+  const [srcName, srcId, ...extra] = flags.get('--from')!.split(':')
+  if (!srcName || !srcId || extra.length || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(srcId)) fail(usage)
+  const rigNamed = (n: string) =>
+    rigs().find(r => r.name === n)?.repo ?? fail(`no rig "${n}" in the factory ${HOME}`)
+  const targetRepo = rigNamed(target!)
+  const sourceRepo = rigNamed(srcName!)
+  if (targetRepo === sourceRepo) fail(`${target} is the source rig: this files elsewhere only`)
+  const marker = workerMarker()
+  if (marker) {
+    const own = process.env.FACTORY_RUN ? loadRun(process.env.FACTORY_RUN) : undefined
+    if (!own || own.bead !== srcId || own.repo !== sourceRepo)
+      fail(`a worker files only from its own run's bead (${marker}): use the File in line`)
+  }
+  const actor = process.env.BEADS_ACTOR || 'factory'
+  const from = `${srcName}:${srcId}`
+  let source: Bead | null
+  try {
+    source = beads(sourceRepo, actor).lookup(srcId!)
+  } catch (e) {
+    return fail(`cannot read ${from}, so nothing was filed: ${(e as Error).message}`)
+  }
+  if (source?.id !== srcId) fail(`${from} did not read back, so nothing was filed`)
+  let id: string
+  try {
+    id = beads(targetRepo, actor).createFrom(
+      !linearSourced(source!),
+      flags.get('--title')!,
+      `${flags.get('--description')!}\n\nFiled from ${from}.`,
+      { discovered_from: srcId! },
+    )
+  } catch (e) {
+    return fail(`nothing was filed: ${(e as Error).message}`)
+  }
+  try {
+    beads(sourceRepo, actor).comment(srcId!, `filed ${id} in ${target}`)
+  } catch (e) {
+    return fail(
+      `filed ${id} in ${target}, but the comment on ${from} failed (${(e as Error).message}): do not file it again`,
+    )
+  }
+  console.log(id)
 }
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
@@ -9865,6 +9926,7 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
+  file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
   decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
@@ -10661,6 +10723,9 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
+      case 'file-elsewhere':
+        fileElsewhere(args)
+        break
       case 'hygiene': {
         if (!args[0]) fail('usage: factory hygiene <rig|repo>')
         const repo = repoOf(args[0]!)

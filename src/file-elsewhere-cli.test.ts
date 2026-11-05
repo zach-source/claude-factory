@@ -41,7 +41,7 @@ function setup(source: unknown = [{ id: 'acme-1' }], fail?: string) {
     join(bin, 'bd'),
     [
       '#!/bin/sh',
-      `printf '%s|%s|%s\\n' "$PWD" "$BEADS_ACTOR" "$*" >> '${calls}'`,
+      `printf '%s|%s|%s\\n' "$PWD" "$BEADS_ACTOR" "$(printf '%s' "$*" | tr '\\n' ' ')" >> '${calls}'`,
       'case "$1" in',
       `  show) if [ -e '${failShow}' ]; then printf '%s' '{"error":"not found"}'; cat '${showErr}' >&2; exit 1; fi; cat '${showFile}';;`,
       `  create) if [ -e '${failCreate}' ]; then echo 'create boom' >&2; exit 1; fi; printf '%s' 'acme-b-9';;`,
@@ -61,7 +61,13 @@ function setup(source: unknown = [{ id: 'acme-1' }], fail?: string) {
   )
 }
 
-const lines = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : [])
+const lines = () =>
+  existsSync(calls)
+    ? readFileSync(calls, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(l => l.split('|').length >= 3)
+    : []
 const verb = (l: string) => l.split('|')[2]!.split(' ')[0]
 const creates = () => lines().filter(l => verb(l) === 'create')
 const ARGS = [
@@ -84,7 +90,7 @@ test('a plain source files with the factory label and discovered_from, then comm
   expect(creates()).toHaveLength(1)
   const c = creates()[0]!
   expect(c.split('|')[0]!.endsWith('/acme-b')).toBe(true)
-  expect(c.split('|')[1]).toBe('factory')
+  expect(c).toContain('--actor factory')
   expect(c).toContain('-l factory')
   expect(meta(c).discovered_from).toBe('acme-1')
   expect(c).toContain('acme-a:acme-1')
@@ -98,7 +104,7 @@ test('a plain source files with the factory label and discovered_from, then comm
 test('BEADS_ACTOR from the env is the bd actor (AC7)', () => {
   setup()
   expect(factory(ARGS, { BEADS_ACTOR: 'alice' }).code).toBe(0)
-  expect(creates()[0]!.split('|')[1]).toBe('alice')
+  expect(creates()[0]).toContain('--actor alice')
 })
 
 test.each(['https://linear.app/acme/issue/W-1', 'https://LINEAR.APP/acme/issue/W-1'])(

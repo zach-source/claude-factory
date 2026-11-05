@@ -460,6 +460,9 @@ export const beads = (repo: string, actor: string) => ({
   /** `create` without the `factory` label, so dispatch never starts the bead (the hygiene digest) */
   createUnlabeled: (title: string, description: string, meta: Record<string, string>, ...extra: string[]) =>
     createBead(repo, actor, false, title, description, extra, meta),
+  /** `create` for a bead filed from another rig: the caller decides the `factory` label (`factory file-elsewhere`) */
+  createFrom: (labeled: boolean, title: string, description: string, meta: Record<string, string>) =>
+    createBead(repo, actor, labeled, title, description, [], meta),
   /** a bead's comments as bd prints them */
   comments: (id: string): { text: string; created_at: string }[] =>
     JSON.parse(must(bd(repo, actor, 'comments', id, '--json'), 'comments') || '[]'),
