@@ -31,7 +31,15 @@ function setup() {
   writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
   writeFileSync(
     join(d, 'run.json'),
-    JSON.stringify({ id: 'r1', factory: factoryFile, repo: dir, goal: 'g', ws: 'w1', worktree: dir, branch: 'b' }),
+    JSON.stringify({
+      id: 'r1',
+      factory: factoryFile,
+      repo: dir,
+      goal: 'g',
+      ws: 'w1',
+      worktree: dir,
+      branch: 'b',
+    }),
   )
   const actor = createActor(compile(DEF)).start()
   actor.send({ type: 'TICK', at: 0 })
