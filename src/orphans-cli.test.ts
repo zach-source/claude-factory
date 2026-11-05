@@ -233,6 +233,23 @@ test('failed-fork rows match by exact URL: pull/37 and pull/378 each get a row',
   expect(rows.map((r: { error: string }) => r.error).join('\n')).toContain(`${base}37:`)
 })
 
+test('a full rig keeps its failed-fork row and says to check for a review run', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  const rigs = JSON.parse(readFileSync(join(home(), 'rigs.json'), 'utf8'))
+  rigs[0].maxRuns = 0
+  writeFileSync(join(home(), 'rigs.json'), JSON.stringify(rigs))
+  writeFileSync(
+    join(home(), 'orphan-forks.json'),
+    JSON.stringify({ [URL]: { sha: SHA1, run: '', from: src, at: 'now' } }),
+  )
+  pass()
+  const rows = read('orphans.json')
+  expect(rows).toHaveLength(1)
+  expect(rows[0].error).toContain('fork failed or not recorded')
+  expect(rows[0].error).toContain('check for a review run')
+})
+
 test('AC8: a stopped factory skips the pass; resume lets it fork', () => {
   const src = setup()
   fakeGh(src, SHA1)

@@ -8465,7 +8465,7 @@ async function orphanPass() {
         if (records![pr.url]?.sha === pr.headRefOid && records![pr.url]?.run === '' && !shown.has(pr.url))
           errors.push({
             id: `rig:${rig.name}`,
-            error: `orphans: ${pr.url}: fork failed at ${pr.headRefOid.slice(0, 7)}; remove its orphan-forks.json entry to retry`,
+            error: `orphans: ${pr.url}: fork failed or not recorded at ${pr.headRefOid.slice(0, 7)}; check for a review run, then remove its orphan-forks.json entry to retry`,
           })
     } catch (err) {
       errors.push({ id: `rig:${rig.name}`, error: `orphans: ${(err as Error).message}` })
