@@ -509,6 +509,11 @@ test('decisions propose --question-file stores the text as written and refuses a
     context: "ctx $(id) '",
   })
   expect(factory(['decisions', 'propose', 'own:api-2', '--question-file', q]).code).toBe(0)
+  // an own: key never reads --options-file, so a path outside text/ does not matter
+  expect(
+    factory(['decisions', 'propose', 'own:api-3', '--question-file', q, '--options-file', '/nonexistent'])
+      .code,
+  ).toBe(0)
 
   const file = join(home, 'decisions.json')
   const before = readFileSync(file)
@@ -528,6 +533,8 @@ test('decisions propose --question-file stores the text as written and refuses a
   for (const [name, a] of Object.entries(rows)) {
     const r = factory(['decisions', 'propose', ...a])
     expect([name, r.code]).toEqual([name, 1])
+    if (/^(no |unknown|repeated|positional options)/.test(name))
+      expect(r.err).toContain('usage: factory decisions propose')
     expect(readFileSync(file).equals(before)).toBe(true)
   }
 })

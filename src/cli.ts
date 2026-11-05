@@ -10982,7 +10982,6 @@ if (import.meta.main && !outboxCmd)
             'usage: factory decisions propose <key> --question-file <path> --options-file <path> [--context-file <path>]'
           const [key, ...pairs] = rest
           const files = new Map<string, string>()
-          if (pairs.length % 2) fail(usage)
           for (let i = 0; i < pairs.length; i += 2) {
             const k = pairs[i]!
             const v = pairs[i + 1]
