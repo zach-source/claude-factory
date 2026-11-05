@@ -9427,10 +9427,10 @@ export function reasonName(reason: string): string {
 
 const HARNESSES = ['claude', 'codex', 'pi']
 
-/** claude-factory-uzes: replace the value of each NAME=value word with *** so the deny log keeps no secret. */
+/** claude-factory-uzes: replace the value of each NAME=value word with *** so the deny log keeps no secret. A NAME can follow a quote (bash -c "X=v"); this can mask more than needed, never less. */
 export function maskAssignments(command: string): string {
   return command.replace(
-    /(^|[\s;&|()`])([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=)(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
+    /(^|[\s;&|()`"'])([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=)(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
     '$1$2***',
   )
 }
