@@ -1195,7 +1195,7 @@ export function ownCopy(template: string, name: string) {
 
 /** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
 export function reworkBase(repo: string, branch: string) {
-  if (!/^factory\/[\w.-]+$/.test(branch) || branch.includes('..')) return undefined
+  if (!/^\w[\w./-]*$/.test(branch) || branch.includes('..')) return undefined // any PR branch (8yhq), not a ref option
   Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', branch], { timeout: 30_000 })
   const ref = `origin/${branch}`
   return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
@@ -3180,6 +3180,23 @@ export function trustedPaged(file: string, now: number): number {
   return typeof v === 'number' && Number.isFinite(v) && v <= now + LIMIT_RESET_MAX_MS ? v : 0
 }
 
+/**
+ * This function reads an egress-paged file: a bare number (old form) or {since, at}. A value that is not a finite
+ * number, or that is more than LIMIT_SKEW_MS ahead, counts as no file (undefined), so it cannot mute the notice mail.
+ */
+export function trustedEgressPaged(file: string, now: number): { since: number; at: number } | undefined {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : undefined
+  } catch {
+    return undefined
+  }
+  const ok = (n: unknown): n is number => Number.isFinite(n) && (n as number) <= now + LIMIT_SKEW_MS
+  if (ok(v)) return { since: v, at: 0 }
+  const o = v as { since?: unknown; at?: unknown } | null
+  return o && typeof o === 'object' && ok(o.since) && ok(o.at) ? { since: o.since, at: o.at } : undefined
+}
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
 function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
@@ -3232,7 +3249,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
         ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
-        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> "<note for the next station>"`,
+        `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
       send({ type: 'NUDGED', seq: c.seq })
@@ -3434,8 +3451,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     // `since` and each mail the manager on every tick
     const paged = join(runDir(run.id), `egress-paged-${node}.json`)
     // keyed on the laptop's clock: `since` comes from the VM, so only `at` limits how often it can page
-    const prev = existsSync(paged) ? readJson<number | { since: number; at: number }>(paged) : undefined
-    const was = typeof prev === 'number' ? { since: prev, at: 0 } : prev
+    const was = trustedEgressPaged(paged, now)
     if (!was || (egress.since > was.since && now >= was.at + EGRESS_REPAGE_MS)) {
       const since = new Date(egress.since).toLocaleString()
       // from 'factory', not node: a notice, not a question, so it never reads as the station asking the
@@ -4513,7 +4529,16 @@ async function dream() {
           ],
           {
             cwd: MEMORY,
-            env: { ...process.env, CODEX_HOME: codexHome },
+            // 6w0m: the codex sandbox can run printenv, so pass an allowlist, not the tick env.
+            // Add a key only when the live dream fails without it.
+            env: {
+              ...Object.fromEntries(
+                ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
+                  process.env[k] === undefined ? [] : [[k, process.env[k]!]],
+                ),
+              ),
+              CODEX_HOME: codexHome,
+            },
             stdin: Buffer.from(prompt + DREAM_CODEX_NOTE),
             timeout: 45 * 60_000,
           },
@@ -8197,21 +8222,39 @@ export const labelMail = (
   ...(isParkedOn(s.c, s.node, url) && { wake: true as const }),
 })
 
-/** a live run owns the PR that got a rework label: remove the label, mail the station, comment on the PR */
+/** a `rework` label asks for changes, so the work goes through implement; a bare `conflict` label only needs a rebase */
+const wantsChanges = (pr: LabeledPr) => reworkLabels(pr).includes(REWORK_LABEL)
+
+/** the run to start for a rework-labeled PR no run owns: implement on the PR's own branch, or the one-station rework.yaml */
+export function reworkStart(pr: LabeledPr, factory: string) {
+  if (!wantsChanges(pr)) return { spec: 'rework', goal: reworkGoal(pr), branch: undefined, at: undefined }
+  const goal = `${reworkGoal(pr)} Your worktree starts from origin/${pr.headRefName}. Push your commits to that branch (git push origin HEAD:${pr.headRefName}). Open no new PR.`
+  return { spec: factory, goal, branch: pr.headRefName, at: 'implement' as const }
+}
+
+/**
+ * a live run owns the PR that got a label: remove the label, mail the station, comment on the PR.
+ * A `rework` label on a run with an implement station also moves the run there (claude-factory-8yhq).
+ */
 export function reworkOwned(
   pr: LabeledPr,
-  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0] },
+  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0]; implement?: boolean },
   io: {
     unlabel: (pr: LabeledPr, labels: string[]) => unknown
     comment: (pr: LabeledPr, body: string) => unknown
-    post: (runId: string, ev: ReturnType<typeof labelMail>) => unknown
+    post: (runId: string, ev: ReturnType<typeof labelMail> | { type: 'GOTO'; node: string }) => unknown
   },
 ) {
-  const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
+  const toImplement = wantsChanges(pr) && !!owner.implement && owner.node !== 'implement' // already there: mail only, a goto would restart its work
+  const node = toImplement ? 'implement' : owner.node
+  const text = toImplement
+    ? `[factory] ${pr.url} was ${asksOf(pr)}. Do it at this station, then go on to verify and review.`
+    : `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
   // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
   io.unlabel(pr, reworkLabels(pr))
-  io.post(owner.id, labelMail(owner, pr.url, text))
-  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${owner.node}), which owns this.`)
+  io.post(owner.id, labelMail({ c: owner.c, node }, pr.url, text))
+  if (toImplement) io.post(owner.id, { type: 'GOTO', node })
+  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${node}), which owns this.`)
 }
 
 /** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
@@ -8472,11 +8515,25 @@ async function labelPass() {
           })
         } else if (action === 'rework' && runId) {
           const owner = live.find(r => r.id === runId)!
-          reworkOwned(pr, owner, { ...forge, post })
-          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${owner.node}`)
+          const implement = Object.hasOwn((await loadPinned(loadRun(runId).factory)).nodes, 'implement')
+          reworkOwned(pr, { ...owner, implement }, { ...forge, post })
+          console.log(
+            `${new Date().toISOString()} rework ${pr.url} → its run ${runId} (was at ${owner.node})`,
+          )
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           forge.unlabel(pr, reworkLabels(pr))
-          const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
+          const start = reworkStart(pr, rig.factory)
+          const { run, def } = await createTracked(
+            start.spec,
+            'rework',
+            rig.repo,
+            start.goal,
+            undefined,
+            undefined,
+            undefined,
+            start.branch,
+          )
+          if (start.at && Object.hasOwn(def.nodes, start.at)) post(run.id, { type: 'GOTO', node: start.at })
           busy.push(rig.name)
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
@@ -10008,7 +10065,7 @@ const usage = `factory — herdr software factories on xstate
   file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> <text...> | propose <key> "<question>" "<a | b>"]   JSON of every rig's open
+  decisions [answer <rig> <bead> <text...> | propose <key> '<question>' '<a | b>']   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -10739,15 +10796,15 @@ if (import.meta.main && !outboxCmd)
           const [key, question, optionsLine, ...extra] = rest
           if (!key || !question || !optionsLine)
             fail(
-              'usage: factory decisions propose <key> "<question>" "<label: effect | label: effect>" [--context "<sentence>"]',
+              "usage: factory decisions propose <key> '<question>' '<label: effect | label: effect>' [--context '<sentence>']",
             )
           const ci = extra.indexOf('--context')
           const context = ci === -1 ? undefined : extra[ci + 1]
-          if (ci !== -1 && !context) fail('usage: ... --context "<sentence>" needs a value')
+          if (ci !== -1 && !context) fail("usage: ... --context '<sentence>' needs a value")
           const leftover = ci === -1 ? extra : extra.filter((_, i) => i !== ci && i !== ci + 1)
           if (leftover.length)
             fail(
-              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context "<sentence>" is allowed`,
+              `unknown argument${leftover.length > 1 ? 's' : ''} "${leftover.join(' ')}": only --context '<sentence>' is allowed`,
             )
           decisionsPropose(key!, question!, optionsLine!, context)
           break
