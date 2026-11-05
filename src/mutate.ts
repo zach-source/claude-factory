@@ -143,18 +143,9 @@ export async function mutate(args: string[], cwd = process.cwd()): Promise<numbe
     console.error(`refused: ${e.message}\n${USAGE}`)
     return 2
   }
-  const base = await runTest(p.argv, cwd, p.seconds, () => {})
-  if (base.code !== 0) {
-    console.error(
-      `refused: baseline fails on the clean file (${base.timedOut ? 'timeout' : `exit ${base.code}`})\n${base.tail}`,
-    )
-    return 2
-  }
-
   let child: number | undefined
   let restored = false
   const restore = () => {
-    if (restored) return true
     try {
       writeFileSync(p.abs, p.original)
       restored = readFileSync(p.abs).equals(p.original)
@@ -177,6 +168,15 @@ export async function mutate(args: string[], cwd = process.cwd()): Promise<numbe
     ['SIGHUP', 129],
   ]
   for (const [s, c] of sigs) process.on(s, onSignal(c))
+
+  const base = await runTest(p.argv, cwd, p.seconds, pid => (child = pid))
+  child = undefined
+  if (base.code !== 0) {
+    console.error(
+      `refused: baseline fails on the clean file (${base.timedOut ? 'timeout' : `exit ${base.code}`})\n${base.tail}`,
+    )
+    return 2
+  }
 
   let r: Run
   try {
