@@ -649,17 +649,17 @@ const THREE_TICK = {
   runs: [
     ...SAME_BEAD_TICK.runs,
     {
-      ...SAME_BEAD_TICK.runs[1],
+      ...SAME_BEAD_TICK.runs[1]!,
       id: 'rc',
-      last: { ...SAME_BEAD_TICK.runs[1].last, at: 9 },
+      last: { ...SAME_BEAD_TICK.runs[1]!.last, at: 9 },
     },
   ],
 }
 
 /** answers the merged row's first option with a typed note while the mail to `failing` fails; returns the drawn pane */
 async function failedMergedRow(
-  $: Parameters<Parameters<typeof test>[2]>[0],
-  on: Parameters<Parameters<typeof test>[2]>[1],
+  $: Parameters<NonNullable<Parameters<typeof test>[2]>>[0],
+  on: Parameters<NonNullable<Parameters<typeof test>[2]>>[1],
   tick: unknown,
   failing: string,
   retryFailing?: string,
