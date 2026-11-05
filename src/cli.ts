@@ -836,7 +836,7 @@ function bdSkewOf(line: string) {
     const { bdSkew } = JSON.parse(line)
     return typeof bdSkew === 'string' &&
       bdSkew.length <= 300 &&
-      !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
+      !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
       worker.SKEW_RE.test(bdSkew)
       ? bdSkew
       : undefined

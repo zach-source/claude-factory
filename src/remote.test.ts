@@ -907,8 +907,8 @@ esac
   writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
   const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7c')
   expect(row.error).toContain('EACCES  [31mred txt')
-  expect(row.error).not.toMatch(/[\u001b‮]/)
-  expect(JSON.parse(readFileSync(side, 'utf8')).putError).not.toMatch(/[\u001b‮]/)
+  expect(row.error).not.toMatch(/[\u001b\u202e]/)
+  expect(JSON.parse(readFileSync(side, 'utf8')).putError).not.toMatch(/[\u001b\u202e]/)
   rmSync(join(home, 'runs', 'r7c'), { recursive: true })
 })
 
@@ -3352,7 +3352,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     rmSync(markerFile(), { force: true })
     const seq = launched('sk3c')
     const line = JSON.stringify({
-      argv: ['report', 'sk3c', String(seq), 'rea\u001bdy', 'plan ‮text'],
+      argv: ['report', 'sk3c', String(seq), 'rea\u001bdy', 'plan \u202etext'],
       from: 'a',
       at: 1,
       bdSkew: SKEW_OUT,
@@ -3361,7 +3361,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     factory(['tick'])
     const last = ctxOfRun('sk3c').log.at(-1)
     expect(last.summary).toContain('rea dy: plan  text')
-    expect(last.summary).not.toMatch(/[\u001b‮]/)
+    expect(last.summary).not.toMatch(/[\u001b\u202e]/)
     finish('sk3c')
   })
 
@@ -3443,6 +3443,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     ['no skew text', 'connection refused'],
     ['over 300 chars', `${SKEW_OUT} ${'x'.repeat(300)}`],
     ['a line break', `${SKEW_OUT}\nOptions: evil: x | y`],
+    ['a format character', `${SKEW_OUT} ‮x`],
   ])('AC8: a bad bdSkew (%s) is ignored', (_n, bdSkew) => {
     rmSync(markerFile(), { force: true })
     const seq = launched('sk8')
