@@ -564,3 +564,68 @@ test('deploy and soak hold plain mail', () => {
   expect(ship.nodes.deploy.holdMail).toBe(true)
   expect(ship.nodes.soak.holdMail).toBe(true)
 })
+
+// claude-factory-sjwe: one live-object dedupe core in deploy, soak, sweeps monitor and lifecycle incident
+const nodePrompt = (f: unknown, id: string) =>
+  (f as { nodes: Record<string, { prompt?: string }> }).nodes[id]!.prompt ?? ''
+const coreOf = (s: string) => {
+  const end = "Search and file only in this rig's beads."
+  return s.slice(s.indexOf('Live-object findings:'), s.indexOf(end) + end.length)
+}
+
+test('deploy, soak, monitor and incident carry one live-object dedupe core (sjwe AC1)', () => {
+  const want = coreOf(prompt('soak'))
+  expect(want.length).toBeGreaterThan(300)
+  expect(coreOf(prompt('deploy'))).toBe(want)
+  expect(coreOf(nodePrompt(sweeps, 'monitor'))).toBe(want)
+  expect(coreOf(nodePrompt(lifecycle, 'incident'))).toBe(want)
+  for (const t of [
+    'bd search "<object name>" --status open',
+    'bd search "<symptom>" --status open',
+    'with no --status',
+    'bd comment <id>',
+    '<context>/<namespace>/<kind>/<name>: <symptom>',
+    'name it in the description',
+  ])
+    expect(want).toContain(t)
+  for (const t of ['bd update', '--add-label', '-p ', 'ship', 'release', '{']) expect(want).not.toContain(t)
+  for (const id of ['queue', 'release', 'rollback', 'postmortem'])
+    expect(prompt(id), id).not.toContain('Live-object findings')
+  for (const [f, keep] of [
+    [sweeps, 'monitor'],
+    [lifecycle, 'incident'],
+  ] as const)
+    for (const id of Object.keys((f as Factory).nodes))
+      if (id !== keep) expect(nodePrompt(f, id), id).not.toContain('Live-object findings')
+})
+
+test('monitor and incident only dedupe: no priority raise, no label (sjwe AC2)', () => {
+  const mon = nodePrompt(sweeps, 'monitor')
+  const inc = nodePrompt(lifecycle, 'incident')
+  for (const p of [mon, inc]) {
+    expect(p).toContain('Live-object findings:')
+    expect(p).not.toContain('bd update <id> -p')
+    expect(p).not.toContain('--add-label')
+    expect(p).not.toContain('this ship run')
+    expect(p).not.toContain('regressed (soak)')
+  }
+  expect(mon).toContain('add no label')
+  expect(mon).toContain('change no priority')
+  expect(mon.indexOf('Never file what is already tracked')).toBeLessThan(mon.indexOf('Live-object findings:'))
+  expect(inc.indexOf('Live-object findings:')).toBeLessThan(inc.indexOf('Report rollback'))
+  const noEsc = coreOf(prompt('soak')) + ' On a matched open bead, add no label and change no priority.'
+  expect(mon).toContain(noEsc)
+  expect(inc).toContain(noEsc)
+  expect(prompt('deploy')).not.toContain(noEsc)
+  expect(prompt('soak')).not.toContain(noEsc)
+})
+
+test('fill leaves the dedupe core as it is (sjwe AC4)', () => {
+  for (const p of [
+    prompt('deploy'),
+    prompt('soak'),
+    nodePrompt(sweeps, 'monitor'),
+    nodePrompt(lifecycle, 'incident'),
+  ])
+    expect(fill(p, {})).toBe(p)
+})

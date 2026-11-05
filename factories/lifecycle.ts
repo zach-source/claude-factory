@@ -1,5 +1,13 @@
 import type { Factory } from '../src/machine'
 
+/** deploy, soak, sweeps monitor and lifecycle incident interpolate this; each file keeps its own copy (a test keeps them equal) */
+const liveDedupe =
+  `Live-object findings: a problem you see on one named object in a cluster (a Deployment, Pod, Job, Service or certificate). ` +
+  `Before you file one, run \`bd search "<object name>" --status open\`, then \`bd search "<symptom>" --status open\`, then \`bd search "<object name>"\` with no --status to find a closed bead. ` +
+  `If an open bead names the same object and symptom, do not file a new bead: run \`bd comment <id> "<time, evidence>"\` on it. ` +
+  `If no open bead matches, file one with the title \`<context>/<namespace>/<kind>/<name>: <symptom>\` (for example \`prod/acme/deploy/widget: CrashLoopBackOff\`), so the next search finds it. If a closed bead matches, name it in the description. ` +
+  `Search and file only in this rig's beads.`
+
 // The whole software lifecycle as one graph. A run enters at triage (or at a
 // station, `lifecycle@incident`) and walks one of these loops:
 //
@@ -303,6 +311,7 @@ Report recovered with what you did, the evidence of recovery, the revert pull re
       agent: OPUS,
       timeoutMin: 30,
       prompt: `Production is degraded. Diagnose, read-only: the impact and blast radius, when it started, what changed then (deploys, config, dependencies, traffic), and the evidence in metrics, logs and traces.
+${liveDedupe} On a matched open bead, add no label and change no priority.
 Report rollback when a recent release caused it (name it and the version to return to); fix when it needs a code or config change (say how urgent, and what mitigates it meanwhile); noise when it is a false alarm (file a run to tune the alert).`,
       next: { rollback: 'rollback', fix: 'plan', noise: 'done' },
     },
