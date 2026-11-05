@@ -198,6 +198,7 @@ test('the monitor prompt comments on a person-closed P2 and files no second P2',
   expect(p2).toBeGreaterThan(rule)
   expect(p2).toBeLessThan(at('labels factory, station:incident and sweep-queue:incident'))
   const between = m.slice(rule, p2)
+  expect(between).toContain('do not file a new bead')
   expect(between).toContain('bd comment')
   expect(between).not.toContain('bd create')
   for (const [name, n] of Object.entries(nodes))
