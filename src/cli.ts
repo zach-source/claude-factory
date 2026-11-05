@@ -1195,7 +1195,7 @@ export function ownCopy(template: string, name: string) {
 
 /** the queued PR's branch on origin, fetched, so a rework run starts on the PR's own commits; undefined when it is gone */
 export function reworkBase(repo: string, branch: string) {
-  if (!/^factory\/[\w.-]+$/.test(branch) || branch.includes('..')) return undefined
+  if (!/^\w[\w./-]*$/.test(branch) || branch.includes('..')) return undefined // any PR branch (8yhq), not a ref option
   Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', 'origin', '--', branch], { timeout: 30_000 })
   const ref = `origin/${branch}`
   return Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref]).exitCode === 0
@@ -8204,21 +8204,39 @@ export const labelMail = (
   ...(isParkedOn(s.c, s.node, url) && { wake: true as const }),
 })
 
-/** a live run owns the PR that got a rework label: remove the label, mail the station, comment on the PR */
+/** a `rework` label asks for changes, so the work goes through implement; a bare `conflict` label only needs a rebase */
+const wantsChanges = (pr: LabeledPr) => reworkLabels(pr).includes(REWORK_LABEL)
+
+/** the run to start for a rework-labeled PR no run owns: implement on the PR's own branch, or the one-station rework.yaml */
+export function reworkStart(pr: LabeledPr, factory: string) {
+  if (!wantsChanges(pr)) return { spec: 'rework', goal: reworkGoal(pr), branch: undefined, at: undefined }
+  const goal = `${reworkGoal(pr)} Your worktree starts from origin/${pr.headRefName}. Push your commits to that branch (git push origin HEAD:${pr.headRefName}). Open no new PR.`
+  return { spec: factory, goal, branch: pr.headRefName, at: 'implement' as const }
+}
+
+/**
+ * a live run owns the PR that got a label: remove the label, mail the station, comment on the PR.
+ * A `rework` label on a run with an implement station also moves the run there (claude-factory-8yhq).
+ */
 export function reworkOwned(
   pr: LabeledPr,
-  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0] },
+  owner: { id: string; node: string; c: Parameters<typeof isParkedOn>[0]; implement?: boolean },
   io: {
     unlabel: (pr: LabeledPr, labels: string[]) => unknown
     comment: (pr: LabeledPr, body: string) => unknown
-    post: (runId: string, ev: ReturnType<typeof labelMail>) => unknown
+    post: (runId: string, ev: ReturnType<typeof labelMail> | { type: 'GOTO'; node: string }) => unknown
   },
 ) {
-  const text = `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
+  const toImplement = wantsChanges(pr) && !!owner.implement && owner.node !== 'implement' // already there: mail only, a goto would restart its work
+  const node = toImplement ? 'implement' : owner.node
+  const text = toImplement
+    ? `[factory] ${pr.url} was ${asksOf(pr)}. Do it at this station, then go on to verify and review.`
+    : `[factory] ${pr.url} was ${asksOf(pr)}. Do it as part of this station's work, or say on the pull request why not.`
   // the label first: if it cannot come off, the next pass would mail (or start a run) again, every pass
   io.unlabel(pr, reworkLabels(pr))
-  io.post(owner.id, labelMail(owner, pr.url, text))
-  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${owner.node}), which owns this.`)
+  io.post(owner.id, labelMail({ c: owner.c, node }, pr.url, text))
+  if (toImplement) io.post(owner.id, { type: 'GOTO', node })
+  io.comment(pr, `Handed to claude-factory run \`${owner.id}\` (${node}), which owns this.`)
 }
 
 /** a queued PR closed unmerged leaves the queue (label off, bead deferred): the ship run would name it next again */
@@ -8479,11 +8497,25 @@ async function labelPass() {
           })
         } else if (action === 'rework' && runId) {
           const owner = live.find(r => r.id === runId)!
-          reworkOwned(pr, owner, { ...forge, post })
-          console.log(`${new Date().toISOString()} rework ${pr.url} → its run ${runId} at ${owner.node}`)
+          const implement = Object.hasOwn((await loadPinned(loadRun(runId).factory)).nodes, 'implement')
+          reworkOwned(pr, { ...owner, implement }, { ...forge, post })
+          console.log(
+            `${new Date().toISOString()} rework ${pr.url} → its run ${runId} (was at ${owner.node})`,
+          )
         } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
           forge.unlabel(pr, reworkLabels(pr))
-          const { run } = await createTracked('rework', 'rework', rig.repo, reworkGoal(pr))
+          const start = reworkStart(pr, rig.factory)
+          const { run, def } = await createTracked(
+            start.spec,
+            'rework',
+            rig.repo,
+            start.goal,
+            undefined,
+            undefined,
+            undefined,
+            start.branch,
+          )
+          if (start.at && Object.hasOwn(def.nodes, start.at)) post(run.id, { type: 'GOTO', node: start.at })
           busy.push(rig.name)
           forge.comment(pr, `claude-factory run \`${run.id}\` is reworking this.`)
           console.log(`${new Date().toISOString()} rework ${pr.url} → ${run.id}`)
