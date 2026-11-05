@@ -55,6 +55,17 @@ const alive = (pid: number) => {
   }
 }
 
+/**
+ * the maximum total bytes of one outbox command. A spawn with more bytes throws E2BIG (macOS 1 MiB; Linux 128 KiB
+ * for one word). The VM refuses a larger command. The laptop does not run it
+ */
+export const OUTBOX_MAX_BYTES = 100 * 1024
+/** the byte size of an argv over OUTBOX_MAX_BYTES, else undefined */
+export const outboxTooBig = (argv: string[]) => {
+  const n = argv.reduce((s, w) => s + Buffer.byteLength(w, 'utf8'), 0)
+  return n > OUTBOX_MAX_BYTES ? n : undefined
+}
+
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
 export function queue(argv: string[], usage?: Usage[], bdSkew?: string) {
   appendFileSync(

@@ -3687,3 +3687,109 @@ test('a Claude VM transcript tail with free kind text and a far reset is bounded
   expect(c.wakeAt).toBeGreaterThan(at)
   claudeCleanup('r7f')
 })
+
+test('outboxTooBig counts bytes of all argv words against the 100 KiB cap (claude-factory-amzl)', () => {
+  expect(worker.outboxTooBig([])).toBeUndefined()
+  expect(worker.outboxTooBig(['x'.repeat(102400)])).toBeUndefined()
+  expect(worker.outboxTooBig(['x'.repeat(102400), 'y'])).toBe(102401)
+  expect(worker.outboxTooBig(['report', '€'.repeat(40000)])).toBe(120006)
+})
+
+function fakeBd(name: string) {
+  const marker = join(dir, `${name}-bd-ran`)
+  const bin = join(dir, `${name}-bin`)
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho ran >> ${marker}\n`)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const env = (outbox: string) => ({
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'a',
+    PATH: `${bin}:${process.env.PATH}`,
+    BEADS_DIR: join(dir, `${name}-beads`),
+  })
+  return { marker, env }
+}
+
+test('inside a VM, an outbox command over 100 KiB is refused with exit 1, nothing queued, no bd sync (claude-factory-amzl)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-big.jsonl')
+  const bd = fakeBd('big')
+  const over = 'x'.repeat(102401)
+  for (const args of [
+    ['report', 'r1', '1', 'ready', over],
+    ['report', 'r1', '1', 'ready', '€'.repeat(60000)],
+    ['mail', 'r1', 'manager', over],
+    ['memory', 'add', '--kind', 'fact', over],
+  ]) {
+    const r = factory(args, bd.env(outbox))
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('102400')
+  }
+  expect(existsSync(outbox)).toBe(false)
+  expect(existsSync(bd.marker)).toBe(false)
+  // exactly at the cap still queues
+  const text = 'x'.repeat(102400 - 'mail'.length - 'r1'.length - 'manager'.length)
+  expect(factory(['mail', 'r1', 'manager', text], bd.env(outbox)).code).toBe(0)
+  expect(readFileSync(outbox, 'utf8').trim().split('\n')).toHaveLength(1)
+})
+
+test('inside a VM, report --summary-file over 100 KiB exits 1 and queues nothing (claude-factory-amzl)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-bigsf.jsonl')
+  const bd = fakeBd('bigsf')
+  const f = join(dir, 'bigsf.md')
+  writeFileSync(f, 'x'.repeat(1_200_000))
+  const r = factory(['report', 'r1', '1', 'ready', '--summary-file', f], bd.env(outbox))
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('--summary-file')
+  expect(r.err).toContain('102400')
+  expect(existsSync(outbox)).toBe(false)
+  expect(existsSync(bd.marker)).toBe(false)
+})
+
+test('a tick never spawns an outbox line over 100 KiB: it marks it seen, logs it and prompts the worker (claude-factory-amzl)', () => {
+  const seq = launched('ramzl')
+  const big = JSON.stringify({
+    argv: ['report', 'ramzl', String(seq), 'ready', 'x'.repeat(1_200_000)],
+    from: 'a',
+    at: 1,
+  })
+  const bigMail = JSON.stringify({
+    argv: ['mail', 'ramzl', 'manager', 'm'.repeat(200_000)],
+    from: 'a',
+    at: 2,
+  })
+  const good = JSON.stringify({
+    argv: ['report', 'ramzl', String(seq), 'ready', 'built a'],
+    from: 'a',
+    at: 3,
+  })
+  clusterCursor('Running', 'idle', [big, bigMail, good])
+  const first = factory(['tick'])
+  expect(first.code).toBe(0)
+  const row = JSON.parse(first.out).runs[0]
+  expect(row.id).toBe('ramzl')
+  expect(row.error ?? null).toBeNull()
+  expect(seenTotal('ramzl')).toBe(3)
+  const prompts = [...called().matchAll(/worker prompt (\S+)/g)].map(m =>
+    Buffer.from(m[1]!, 'base64').toString(),
+  )
+  expect(prompts).toHaveLength(2)
+  expect(prompts[0]).toContain('102400')
+  expect(prompts[0]).toContain('not run')
+  expect(prompts.join('')).not.toContain('x'.repeat(1000))
+  expect(prompts.join('')).not.toContain('m'.repeat(1000))
+  expect(inbox('ramzl')).toContain('"outcome":"ready"')
+  expect(inbox('ramzl')).toContain('built a')
+  expect(inbox('ramzl')).not.toContain('x'.repeat(1000))
+  expect(inbox('ramzl')).not.toContain('m'.repeat(1000))
+  const log = readFileSync(join(home, 'runs', 'ramzl', 't.outbox-too-big'), 'utf8')
+    .trim()
+    .split('\n')
+  expect(log).toHaveLength(2)
+  expect(log.join('')).not.toContain('xxxx')
+  const promptsBefore = (called().match(/worker prompt/g) ?? []).length
+  factory(['tick'])
+  expect((called().match(/worker prompt/g) ?? []).length).toBe(promptsBefore)
+  rmSync(join(home, 'runs', 'ramzl'), { recursive: true })
+}, 60_000)
