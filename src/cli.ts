@@ -18,6 +18,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  utimesSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -3988,7 +3989,7 @@ const isAlive = (pid: number) => {
 }
 
 /** a lock held while its process lives, however long it takes: a pass over slow bd can take minutes */
-function hold(name: string): (() => void) | null {
+export function hold(name: string, rm?: Parameters<typeof rmSafe>[2]): (() => void) | null {
   const dir = join(HOME, name)
   mkdirSync(HOME, { recursive: true })
   try {
@@ -4007,7 +4008,17 @@ function hold(name: string): (() => void) | null {
     }
   }
   writeFileSync(join(dir, 'pid'), String(process.pid))
-  return () => rmSafe(dir, { recursive: true, force: true })
+  return () => {
+    try {
+      rmSafe(dir, { recursive: true, force: true }, rm)
+    } catch {
+      // release runs in finally: do not throw. Drop the live pid and age the dir, so the next hold() takes over.
+      try {
+        rmSync(join(dir, 'pid'), { force: true })
+        utimesSync(dir, 0, 0)
+      } catch {}
+    }
+  }
 }
 
 const trackOf = (id: string, saved?: Saved): Track => {

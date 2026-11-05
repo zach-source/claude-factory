@@ -80,6 +80,7 @@ import {
   withoutFleet,
   type RigFacts,
   factoryLabelName,
+  hold,
 } from './cli'
 
 test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
@@ -2902,4 +2903,14 @@ test('clip never leaves a lone high surrogate', () => {
   expect(clip('a'.repeat(199) + '😀', 200)).toBe('a'.repeat(199) + '…')
   expect(clip('a'.repeat(198) + '😀', 200)).toBe('a'.repeat(198) + '😀')
   expect(clip('abc', 5)).toBe('abc')
+})
+
+test('hold: a release whose delete keeps the dir does not throw and frees the lock', () => {
+  const name = `test-19gy-${process.pid}.lock`
+  const release = hold(name, () => {})! // a rm that deletes nothing
+  expect(release).not.toBeNull()
+  expect(() => release()).not.toThrow()
+  const again = hold(name)
+  expect(again).not.toBeNull()
+  again!()
 })
