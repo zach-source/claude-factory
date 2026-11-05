@@ -26,14 +26,13 @@ const SLOW = 30_000
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const run = (env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DREAM_CODEX, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DREAM_CODEX, LANG, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'dream'], {
     env: {
       ...laptop,
       FACTORY_HOME: home,
       FACTORY_SELF_UPDATE: '0',
       CODEX_HOME: userCodex,
-      FAKE_MARKS: marks,
       ...env,
     },
   })
@@ -72,13 +71,13 @@ const ROLLOUT = [
 
 function fake(name: string, body: string[]) {
   const file = join(dir, name)
-  writeFileSync(file, ['#!/bin/sh', 'set -e', 'm="$FAKE_MARKS"', ...body, ''].join('\n'))
+  writeFileSync(file, ['#!/bin/sh', 'set -e', `m="${marks}"`, ...body, ''].join('\n'))
   chmodSync(file, 0o755)
   return file
 }
 
 /** the fake codex: records argv, cwd, CODEX_HOME and stdin, then files x.md with a plain mv */
-function fakeCodex() {
+function fakeCodex(opt: { boom?: boolean; extras?: boolean } = {}) {
   const roll = join(dir, 'rollout.jsonl')
   writeFileSync(roll, ROLLOUT + '\n')
   return fake('fake-codex.sh', [
@@ -86,14 +85,17 @@ function fakeCodex() {
     `pwd > "$m/codex.pwd"`,
     `echo "$CODEX_HOME" > "$m/codex.home"`,
     `cat > "$m/codex.stdin"`,
-    `if [ "$FAKE_BOOM" = 1 ]; then echo boom >&2; fi`,
+    `env > "$m/codex.env"`,
+    ...(opt.boom ? ['echo boom >&2'] : []),
     `d="$CODEX_HOME/sessions/2026/11/04"; mkdir -p "$d"`,
     `cp "${roll}" "$d/rollout-2026-11-04T00-00-00-${U}.jsonl"`,
-    `if [ "$FAKE_EXTRAS" = 1 ]; then`,
-    `  cp "${roll}" "$d/rollout-old-${U}.jsonl"; touch -t 202001010000 "$d/rollout-old-${U}.jsonl"`,
-    `  ln -s "${roll}" "$d/rollout-link-${U}.jsonl"; cp "${roll}" "$d/notes.jsonl"`,
-    `fi`,
-    `if [ "$FAKE_BOOM" = 1 ]; then exit 3; fi`,
+    ...(opt.extras
+      ? [
+          `cp "${roll}" "$d/rollout-old-${U}.jsonl"; touch -t 202001010000 "$d/rollout-old-${U}.jsonl"`,
+          `ln -s "${roll}" "$d/rollout-link-${U}.jsonl"; cp "${roll}" "$d/notes.jsonl"`,
+        ]
+      : []),
+    ...(opt.boom ? ['exit 3'] : []),
     `mkdir -p topic && mv inbox/x.md topic/x.md`,
     `echo "filed x.md under topic/x.md"`,
   ])
@@ -123,11 +125,15 @@ function seed() {
   )
 }
 
-const bothFakes = (env: Record<string, string> = {}) => ({
-  FACTORY_CLAUDE: fakeClaude(),
-  FACTORY_CODEX: fakeCodex(),
-  ...env,
-})
+// the codex dream child gets a minimal env, so FAKE_BOOM and FAKE_EXTRAS become script text
+const bothFakes = (env: Record<string, string> = {}) => {
+  const { FAKE_BOOM, FAKE_EXTRAS, ...rest } = env
+  return {
+    FACTORY_CLAUDE: fakeClaude(),
+    FACTORY_CODEX: fakeCodex({ boom: FAKE_BOOM === '1', extras: FAKE_EXTRAS === '1' }),
+    ...rest,
+  }
+}
 
 const dreamRows = () =>
   existsSync(join(home, 'manager-usage.jsonl'))
@@ -319,6 +325,34 @@ test(
     expect(log).toContain('the dream exited 3: boom')
     expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
     expect(dreamRows()).toHaveLength(1)
+  },
+  SLOW,
+)
+
+test(
+  '6w0m: the codex dream child gets only the allowlisted env, not the tick env',
+  () => {
+    seed()
+    const parentPath = process.env.PATH
+    const r = run({
+      ...bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra' }),
+      FACTORY_PROBE_SECRET: '1',
+    })
+    expect(r.code).toBe(0)
+    const env = Object.fromEntries(
+      read('codex.env')
+        .split('\n')
+        .filter(l => l.includes('='))
+        .map(l => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
+    )
+    for (const k of ['FACTORY_PROBE_SECRET', 'FACTORY_HOME', 'FACTORY_DREAM_CODEX', 'FACTORY_CODEX'])
+      expect(env[k]).toBeUndefined()
+    const allowed = new Set(['PATH', 'HOME', 'TERM', 'LANG', 'CODEX_HOME', 'PWD', 'SHLVL', '_', 'OLDPWD'])
+    expect(Object.keys(env).filter(k => !allowed.has(k))).toEqual([])
+    expect(env.CODEX_HOME).toBe(join(home, 'codex-dream'))
+    expect(env.PATH).toBe(parentPath)
+    expect(env.HOME).toBeDefined()
+    expect(env.LANG).toBeUndefined()
   },
   SLOW,
 )

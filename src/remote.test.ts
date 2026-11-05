@@ -2346,10 +2346,12 @@ describe('an AX worker that never started', () => {
   test('a retried policy uses the reviewer key only when the side file says reviewer (claude-factory-0gww.2)', () => {
     const sent = join(dir, 'rv-retry-sent')
     const kubectl = join(dir, 'capture-rv-retry')
-    for (const [id, reviewer] of [
-      ['rvretry-yes', true],
-      ['rvretry-old', undefined],
+    for (const [id, reviewer, repo] of [
+      ['rvretry-yes', true, 'widget'],
+      ['rvretry-old', undefined, undefined],
+      ['rvretry-norepo', true, undefined],
     ] as const) {
+      rmSync(sent, { force: true })
       launchedAfterFail(id, 'old failure', 120)
       writeFileSync(
         kubectl,
@@ -2357,9 +2359,21 @@ describe('an AX worker that never started', () => {
       )
       chmodSync(kubectl, 0o755)
       cluster('Running', { status: 'working', lines: [] })
-      setSide(id, { policy: false, egress: [], githubOwner: 'acme', ...(reviewer && { reviewer }) })
+      setSide(id, {
+        policy: false,
+        egress: [],
+        githubOwner: 'acme',
+        ...(reviewer && { reviewer }),
+        ...(repo && { githubRepo: repo }),
+      })
       factory(['tick'], { FACTORY_KUBECTL: kubectl, FACTORY_AX_VAULT: 'factory' })
-      expect(readFileSync(sent, 'utf8').includes('GITHUB_REVIEWER')).toBe(!!reviewer)
+      // a reviewer side file with no repo (a task launched before githubRepo) gets no policy and no key
+      if (reviewer && !repo) expect(existsSync(sent)).toBe(false)
+      else {
+        const policy = readFileSync(sent, 'utf8')
+        expect(policy.includes('GITHUB_REVIEWER')).toBe(!!reviewer)
+        expect(policy.includes('/repos/acme/widget/')).toBe(!!reviewer)
+      }
       rmSync(join(home, 'runs', id), { recursive: true })
     }
   })
@@ -2539,6 +2553,10 @@ esac
     const policy = readFileSync(sent, 'utf8')
     const brief = readFileSync(join(runDir, sideName.replace(/\.json$/, '.brief.md')), 'utf8')
     expect(side.reviewer).toBe(reviewer ? true : undefined)
+    expect(side.githubRepo).toBe(reviewer ? 'widget' : undefined)
+    const rule = JSON.parse(policy).rules.find((r: any) => r.https.hostnames.includes('api.github.com')).https
+    expect(rule.pathPrefixes).toEqual(reviewer ? [`/repos/${owner}/widget/`] : undefined)
+    expect(rule.paths).toEqual(reviewer ? ['/graphql'] : undefined)
     expect(policy.includes('GITHUB_REVIEWER')).toBe(reviewer)
     expect(readFileSync(applied, 'utf8').includes('FACTORY_GH_REVIEWER')).toBe(reviewer)
     // claude-factory-dsfg: the laptop replays deny lines, so the VM may send them
