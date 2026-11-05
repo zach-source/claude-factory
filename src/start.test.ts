@@ -346,6 +346,27 @@ test('fork <run> constructor (an Object.prototype key) prints the usage line (cl
   expect(out.err).toContain('usage: factory fork')
 })
 
+test('help prints free-text placeholders in quotes (claude-factory-nt33)', () => {
+  reset()
+  const h = run(['help'])
+  const text = h.out + h.err
+  for (const p of [
+    "say '<text...>'",
+    "poke <run> '[text...]'",
+    "fork <run> <station> '[note...]'",
+    "memory search [--rig r] '<query...>'",
+    "--title '<text>' --description '<text>'",
+    "<rig|repo> '<goal...>'|bead",
+    "'<summary...>'|--summary-file",
+    "--goal '<text...>'",
+    "'<summary>' '[body...]'",
+  ])
+    expect(text).toContain(p)
+  expect(text).not.toMatch(
+    / <text\.\.\.>| \[text\.\.\.\]| \[note\.\.\.\]| <query\.\.\.>| <goal\.\.\.[>|]| <summary> \[body| <summary\.\.\.\||\[--goal text/,
+  )
+})
+
 // claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
 // person must run `factory retry` to free it. A stuck run must not fill FACTORY_MAX_RUNS, the
 // town cap. The person already holds the run, the same way as a wait or a gate. The control

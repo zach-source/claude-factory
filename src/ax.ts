@@ -750,7 +750,7 @@ const MANAGER_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
 export function managerRefusal(phase: string | null, env: Record<string, string | undefined>, task: string) {
   if (env.FACTORY_IN_AX === '1' || !['Running', 'Pending', 'Suspended'].includes(phase ?? ''))
     return undefined
-  return `the factory manager runs in AX task ${task} (${phase}): attach with \`factory attach\`, steer with \`factory say <text>\``
+  return `the factory manager runs in AX task ${task} (${phase}): attach with \`factory attach\`, steer with \`factory say '<text>'\``
 }
 
 /**
