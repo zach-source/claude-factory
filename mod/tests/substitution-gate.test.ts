@@ -137,11 +137,24 @@ test('a short gated command shows in full in the question', SLOW, async ($, on) 
 
 test('the question window does not split a surrogate pair', SLOW, async ($, on) => {
   const { questions } = harness(on, 'Deny')
-  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\uFFFD/
   for (let k = 0; k < 2; k++) {
     const command = `${F} mail r1 plan "${'a'.repeat(350)}${'😀'.repeat(30 + k)}${'a'.repeat(k)} $(id)"`
     await $.tool.call({ tool: 'Bash', command, description: 'x' })
     expect(questions.at(-1)).toContain('$(id)')
     expect(questions.at(-1)).not.toMatch(lone)
+  }
+})
+
+test('the question window is surrogate-safe at the end edge and at index 0', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\uFFFD/
+  const rows = [0, 2].map((k) => `${F} mail r1 plan "$(id)${'a'.repeat(k)}${'😀'.repeat(30)}"`)
+  rows.push(`\uDC00${F} mail r1 plan "$(id)"`)
+  for (const command of rows) {
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1)).toContain('$(id)')
+    const around = questions.at(-1)!.split('«')[1]!
+    expect(lone.test(around)).toBe(false)
   }
 })
