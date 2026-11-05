@@ -321,6 +321,7 @@ test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER on the rig repo an
     expect(rules[1].https.paths).toBeUndefined()
     expect(JSON.stringify(pol(o, true))).not.toMatch(/GITHUB_(ZS_)?BASIC/)
     expect(JSON.stringify(pol(o, true)).match(/GITHUB_REVIEWER"/g)).toHaveLength(1)
+    expect(broker.workerPolicyRefusal(pol(o, true))).toBeNull()
   }
   expect(keyOf(gh('acme', false)[1])).toBe('GITHUB_BASIC')
   expect(keyOf(gh('zach-source', false)[1])).toBe('GITHUB_ZS_BASIC')
