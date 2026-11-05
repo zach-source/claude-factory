@@ -2893,6 +2893,7 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
       expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
     })
     expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org redirect refused')
+    expect(g.stats().error).toBe(1)
     expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
     expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
   })

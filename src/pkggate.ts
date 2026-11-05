@@ -90,6 +90,8 @@ type Resolved = {
    * built from the same samples, so a decision never waits on a refresh -- the backoff only throttles the
    * refresh attempt itself (claude-factory-8ub.7) */
   goFloorNextRetryAt: number
+  /** the last floor refresh failed on a refused redirect that upstreamFetch already counted; the next decision that fails for it must not count it again */
+  goFloorRefusalCounted: boolean
 }
 
 const REGISTRY_CACHE_MS = 60_000
@@ -164,6 +166,7 @@ function resolve(cfg: GateConfig): Resolved {
     goFloorRefreshing: null,
     goFloorBackoffMs: 0,
     goFloorNextRetryAt: 0,
+    goFloorRefusalCounted: false,
   }
 }
 
@@ -569,11 +572,13 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     cfg,
     `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`,
   )
-  if (!r.ok)
+  if (!r.ok) {
+    cfg.goFloorRefusalCounted = !!r.refused
     return noteGoFloorFailure(
       cfg,
       `index.golang.org ${r.refused ? 'redirect refused' : r.status || 'timeout'}`,
     )
+  }
   const entries = r.text
     .split('\n')
     .map(parseGoIndexLine)
@@ -685,8 +690,16 @@ async function goSumdbGate(
   infoDecision: Decision,
 ): Promise<Decision> {
   const floor = await ensureGoFloor(cfg)
-  if (!floor)
-    return { decision: 'error', reason: 'sum.golang.org floor unavailable', ageH: infoDecision.ageH }
+  if (!floor) {
+    const counted = cfg.goFloorRefusalCounted
+    cfg.goFloorRefusalCounted = false
+    return {
+      decision: 'error',
+      reason: 'sum.golang.org floor unavailable',
+      ageH: infoDecision.ageH,
+      ...(counted && { counted: true as const }),
+    }
+  }
   let record = cacheEntry?.record
   if (record === undefined) {
     const looked = await goSumdbRecord(cfg, mod, version)
