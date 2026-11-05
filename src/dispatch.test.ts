@@ -1938,6 +1938,57 @@ test('a factory:<name> file that fails to load defers only that bead; the next c
   ).toBe(true)
 })
 
+const SHIP_RESERVED = 'factory ship is reserved for the ship queue'
+
+function rigWithMergeAuthority(factory: string) {
+  const r = precheckRepo()
+  writeFileSync(
+    join(phome, 'rigs.json'),
+    JSON.stringify([{ name: 'a', repo: r, factory, mergeAuthority: true }]),
+  )
+  return r
+}
+
+function expectShipDeferred(ids: string[], started: string[]) {
+  expect(runDirs()).toHaveLength(started.length)
+  for (const d of runDirs()) {
+    const run = JSON.parse(readFileSync(join(phome, 'runs', d, 'run.json'), 'utf8')) as { bead?: string }
+    expect(started).toContain(run.bead as string)
+  }
+  const calls = readFileSync(bdCallsLog, 'utf8').trim().split('\n')
+  for (const id of ids) {
+    expect(calls.some(l => l.startsWith(`bd defer ${id}`) && l.includes(SHIP_RESERVED))).toBe(true)
+  }
+}
+
+test('a factory:ship label on a merge-authority rig defers that bead and starts no ship run; the next candidate still starts (claude-factory-vhf9)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory', 'factory:ship'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  rigWithMergeAuthority('lifecycle')
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expectShipDeferred(['acme-1'], ['acme-2'])
+})
+
+test('a repo factory file named ship is refused by its loaded name, not the label text (claude-factory-vhf9)', () => {
+  fixtureReset([{ id: 'acme-1', title: 't1', labels: ['factory', 'factory:ship'] }])
+  const r = rigWithMergeAuthority('lifecycle')
+  writeFixtureFactory(r, 'ship', { ...RELEASE_FIXTURE, name: 'ship' } as Factory)
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expectShipDeferred(['acme-1'], [])
+})
+
+test('a rig whose factory is ship starts no run from the beads pass (claude-factory-vhf9)', () => {
+  fixtureReset([
+    { id: 'acme-1', title: 't1', labels: ['factory'] },
+    { id: 'acme-2', title: 't2', labels: ['factory'] },
+  ])
+  rigWithMergeAuthority('ship')
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expectShipDeferred(['acme-1', 'acme-2'], [])
+})
+
 test('a station:<name> the named factory lacks defers only that bead; the next candidate still starts (claude-factory-wnm.15)', () => {
   fixtureReset([
     { id: 'acme-1', title: 't1', labels: ['factory', 'factory:release', 'station:nope'] },
