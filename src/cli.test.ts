@@ -2924,9 +2924,23 @@ test('hold: a release whose delete keeps the dir does not throw and frees the lo
   }
 })
 
-test('cleanReport blanks control, format and line-separator chars but keeps LF, TAB and text', () => {
-  const bad = ['\u001b', '\u009b', '‮', ' ', ' ', '\u0000', '\r', '\u0085', '‍', '﻿', '\u007f']
+test('cleanReport blanks control, format and line-separator chars but keeps LF, TAB and text (claude-factory-67bw)', () => {
+  const bad = [
+    '\u001b',
+    '\u009b',
+    '\u200b',
+    '\u202e',
+    '\u2028',
+    '\u2029',
+    '\u0000',
+    '\r',
+    '\u0085',
+    '\u200d',
+    '\ufeff',
+    '\u007f',
+  ]
   expect(cleanReport(`a${bad.join('b')}c\n\td`)).toBe(`a${bad.map(() => ' ').join('b')}c\n\td`)
   for (const c of bad) expect(cleanReport(c)).toBe(' ')
-  expect(cleanReport('é 😀   plain\n\t')).toBe('é 😀   plain\n\t')
+  expect(cleanReport('é 😀 \u00a0 plain\n\t')).toBe('é 😀 \u00a0 plain\n\t')
+  expect(cleanReport('plain ascii')).toBe('plain ascii')
 })

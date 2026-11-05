@@ -102,8 +102,8 @@ test('--summary-file after summary words stays plain text', () => {
   expect(r.lines().at(-1).summary).toBe(`see --summary-file ${f}`)
 })
 
-test('report text loses control, format and line-separator chars, keeps LF and TAB', () => {
-  const dirty = 'a\u001b[2Jb\u009bc‮d e \ng\th'
+test('report text loses control, format and line-separator chars, keeps LF and TAB (claude-factory-67bw)', () => {
+  const dirty = 'a\u001b[2Jb\u009bc\u202ed\u2028e\u2029\ng\th'
   const clean = 'a [2Jb c d e \ng\th'
   for (const [outcome, key] of [
     ['ready', 'summary'],
