@@ -310,6 +310,9 @@ describe('homeReason', () => {
     `factory memory compact x.ts`,
     `mkdir -m 700 x.sh`,
     `GIT_DIR=x git add ${CLI}`,
+    `git commit -m"'" --template=x.sh`,
+    `factory report r 1 ready --summary-file"'" --x=x.sh`,
+    `bunx prettier3 ${CLI}`,
   ]
 
   test.each(NON_RUNNER_DENY)('denies a non-runner verb outside its closed grammar: %s', cmd =>
