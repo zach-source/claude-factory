@@ -293,38 +293,85 @@ test('a worker of a zach-source rig gets the zach-source keys on the unprefixed 
   expect(plainKeys()).toEqual(['GITHUB', 'GITHUB_BASIC'])
 })
 
-test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER, nothing else changes', () => {
-  const keys = (owner?: string, reviewer?: boolean) =>
-    (ax.egressPolicy('v', [], undefined, undefined, owner, undefined, reviewer).rules as any[])
-      .filter(r => /github\.com/.test(r.https.hostnames[0]))
-      .map(r => [r.https.pathPrefixes?.[0] ?? '', keyOf(r)])
-  expect(keys('acme', true)).toEqual([
-    ['', 'GITHUB_REVIEWER'],
-    ['', 'GITHUB_REVIEWER_BASIC'],
-  ])
-  expect(keys('zach-source', true)).toEqual([
-    ['', 'GITHUB_REVIEWER'],
-    ['', 'GITHUB_REVIEWER_BASIC'],
-  ])
-  expect(keys('acme', false)[1]).toEqual(['', 'GITHUB_BASIC'])
-  expect(keys('zach-source', false)[1]).toEqual(['', 'GITHUB_ZS_BASIC'])
-  for (const o of ['acme', 'zach-source'])
-    expect(JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, o, undefined, true))).not.toMatch(
-      /GITHUB_(ZS_)?BASIC/,
-    )
-  expect(keys('acme', false)[0]).toEqual(['', 'GITHUB'])
-  expect(ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, false)).toEqual(
-    ax.egressPolicy('v', [], undefined, undefined, 'acme'),
-  )
+test('reviewer flag: the GitHub API rule uses GITHUB_REVIEWER on the rig repo and /graphql only', () => {
+  const pol = (owner?: string, reviewer?: boolean, repo = 'widget') =>
+    ax.egressPolicy('v', [], undefined, undefined, owner, undefined, reviewer, false, repo)
+  const gh = (owner?: string, reviewer?: boolean) =>
+    (pol(owner, reviewer).rules as any[]).filter(r => /github\.com/.test(r.https.hostnames[0]))
+  for (const o of ['acme', 'zach-source']) {
+    const rules = gh(o, true)
+    expect(rules.map(keyOf)).toEqual(['GITHUB_REVIEWER', 'GITHUB_REVIEWER_BASIC'])
+    expect(rules[0]).toEqual({
+      https: {
+        hostnames: ['api.github.com', 'uploads.github.com'],
+        pathPrefixes: [`/repos/${o}/widget/`],
+        paths: ['/graphql'],
+        effects: {
+          replaceHeaders: [
+            {
+              header: 'Authorization',
+              prefix: 'Bearer ',
+              credentialUri: 'ate-secret://agent-vault/v/GITHUB_REVIEWER',
+            },
+          ],
+        },
+      },
+    })
+    expect(rules[1].https.pathPrefixes).toBeUndefined()
+    expect(rules[1].https.paths).toBeUndefined()
+    expect(JSON.stringify(pol(o, true))).not.toMatch(/GITHUB_(ZS_)?BASIC/)
+    expect(JSON.stringify(pol(o, true)).match(/GITHUB_REVIEWER"/g)).toHaveLength(1)
+  }
+  expect(keyOf(gh('acme', false)[1])).toBe('GITHUB_BASIC')
+  expect(keyOf(gh('zach-source', false)[1])).toBe('GITHUB_ZS_BASIC')
+  expect(keyOf(gh('acme', false)[0])).toBe('GITHUB')
+  for (const r of gh('acme', false)) expect(r.https.pathPrefixes ?? r.https.paths).toBeUndefined()
+  expect(pol('acme', false)).toEqual(ax.egressPolicy('v', [], undefined, undefined, 'acme'))
   expect(ax.egressPolicy('', [], undefined, undefined, 'acme', undefined, true)).toEqual(ax.egressPolicy(''))
   expect(
     JSON.stringify(ax.egressPolicy('v', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
   ).not.toContain('REVIEWER')
 })
 
+test('a reviewer policy needs a plain owner and repo: egressPolicy and createPolicy throw, createPolicy runs nothing', () => {
+  const bad: [string | undefined, string | undefined][] = [
+    ['acme', undefined],
+    ['acme', ''],
+    ['acme', '.'],
+    ['acme', '..'],
+    ['acme', 'a/b'],
+    ['acme', 'a?b'],
+    ['acme', 'a%2fb'],
+    ['acme', 'wid get'],
+    ['acme', 'widget/'],
+    [undefined, 'widget'],
+  ]
+  const env = { FACTORY_AX_VAULT: 'v', FACTORY_AX_REVIEWER_OWNER: 'acme' }
+  process.env.FACTORY_AX_VAULT = 'v'
+  try {
+    for (const [o, r] of bad) {
+      expect(() => ax.egressPolicy('v', [], undefined, undefined, o, undefined, true, false, r)).toThrow(
+        /owner and repo/,
+      )
+      rmSync(join(dir, 'calls.log'), { force: true })
+      expect(() => ax.createPolicy('t5', [], undefined, o, undefined, true, false, r)).toThrow(
+        /owner and repo/,
+      )
+      expect(existsSync(calls)).toBe(false)
+      expect(ax.reviewerTask('review', o, env, false, r)).toBe(false)
+    }
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+  expect(() =>
+    ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, true, false, '.github'),
+  ).not.toThrow()
+})
+
 test('reviewerTask is true only for review, security and check with the vault and a matching owner flag', () => {
   const env = { FACTORY_AX_VAULT: 'v', FACTORY_AX_REVIEWER_OWNER: 'acme' }
-  for (const n of ['review', 'security', 'check']) expect(ax.reviewerTask(n, 'acme', env)).toBe(true)
+  for (const n of ['review', 'security', 'check'])
+    expect(ax.reviewerTask(n, 'acme', env, false, 'widget')).toBe(true)
   for (const n of [
     'implement',
     'plan',
@@ -344,15 +391,16 @@ test('reviewerTask is true only for review, security and check with the vault an
   expect(ax.reviewerTask('review', 'acme', { FACTORY_AX_REVIEWER_OWNER: 'acme' })).toBe(false)
   expect(ax.reviewerTask('review', 'acme', env, true)).toBe(false)
   expect(ax.reviewerTask('check', 'acme', env, true)).toBe(false)
-  expect(ax.reviewerTask('review', 'acme', env, false)).toBe(true)
+  expect(ax.reviewerTask('review', 'acme', env, false, 'widget')).toBe(true)
 })
 
 test('createPolicy passes the reviewer flag to the policy', () => {
   process.env.FACTORY_AX_VAULT = 'factory'
   try {
     writeFileSync(join(dir, 'actor'), '')
-    ax.createPolicy('t4', [], undefined, 'acme', undefined, true)
+    ax.createPolicy('t4', [], undefined, 'acme', undefined, true, false, 'widget')
     expect(readFileSync(join(dir, 'policy'), 'utf8')).toContain('factory/GITHUB_REVIEWER')
+    expect(readFileSync(join(dir, 'policy'), 'utf8')).toContain('/repos/acme/widget/')
   } finally {
     delete process.env.FACTORY_AX_VAULT
   }
