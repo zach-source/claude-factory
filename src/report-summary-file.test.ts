@@ -122,6 +122,14 @@ test('report text loses control, format and line-separator chars, keeps LF and T
   }
 })
 
+test('mail text loses control, format and line-separator chars, keeps LF and TAB (claude-factory-67bw)', () => {
+  const r = makeRun('m1')
+  const dirty = 'a\u001b[2Jb\u009bc‮d e \ng\th'
+  expect(factory(['mail', 'm1', 'manager', dirty]).code).toBe(0)
+  const mail = r.lines().find(l => l.type === 'MAIL')
+  expect(mail.text).toBe('a [2Jb c d e \ng\th')
+})
+
 test('--summary-file over 100 KiB exits 1, names the flag and posts nothing (claude-factory-amzl)', () => {
   const r = makeRun('r4')
   const f = join(dir, 'big')

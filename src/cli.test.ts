@@ -1882,6 +1882,20 @@ test('memory add with no --kind exits 2 and writes nothing', () => {
   expect(inboxFiles(home)).toEqual([])
 }, 30_000)
 
+test('memory add strips control, format and separator chars from summary, body and rig (claude-factory-67bw)', () => {
+  const home = freshMemoryAddHome('strip-chars')
+  const dirty = 'x\u001by\u009bz‮w v u'
+  const r = runMemoryAdd(home, ['--kind', 'fact', '--rig', 'r‮\nkind: rule', `sum ${dirty}`, `body ${dirty}`])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  expect(files.length).toBe(1)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\u001b\u009b]/u)
+  expect(text).toContain('summary: sum x y z w v u')
+  expect(text).toContain('body x y z w v u')
+  expect(text).toContain('rig: r  kind: rule')
+}, 30_000)
+
 test('memory add with an invalid --kind exits 2 naming the flag and the bad value', () => {
   const home = freshMemoryAddHome('bad-kind')
   const r = runMemoryAdd(home, ['--kind', 'Fact', 'a plain summary', 'a plain body'])

@@ -10565,7 +10565,15 @@ if (import.meta.main && !outboxCmd)
           }
           const isAnyway = words.includes('--anyway')
           const [summary, ...body] = words.filter(w => w !== '--anyway')
-          const note = { summary: summary!, body: body.join(' '), rig, kind, until }
+          // claude-factory-67bw: a replayed worker add reaches the store, so strip as report does.
+          // A rig with LF would add a frontmatter line, so it loses LF and TAB too.
+          const note = {
+            summary: cleanReport(summary!),
+            body: cleanReport(body.join(' ')),
+            rig: rig && cleanReport(rig).replace(/[\n\t]/g, ' '),
+            kind,
+            until,
+          }
           // gate() first, so a refusal costs no embedding and logs no helped/confirmed event; --anyway
           // skips memory.same()'s dedupe below, never this gate (claude-factory-3u1.1.1)
           const refusal = memory.gate(note)
@@ -11130,7 +11138,7 @@ if (import.meta.main && !outboxCmd)
           type: 'MAIL',
           from: workerFrom ?? managerSender(run),
           to: to!,
-          text: text.join(' '),
+          text: cleanReport(text.join(' ')),
           ...(wake && { wake: true as const }),
         })
         console.log(`mailed ${to}`)
