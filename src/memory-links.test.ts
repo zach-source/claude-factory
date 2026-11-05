@@ -3,7 +3,17 @@ import { expect, test } from 'bun:test'
 import { lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { coreNotes, corpus, dropLinks, inboxCount, noteExists, outline, search, walk } from './memory'
+import {
+  coreNotes,
+  corpus,
+  dropLinks,
+  formatLong,
+  inboxCount,
+  noteExists,
+  outline,
+  search,
+  walk,
+} from './memory'
 
 const MARKER = 'zqsecret-eqxi'
 const linkStore = () => {
@@ -48,7 +58,9 @@ test('dropLinks removes every kind of link and keeps files, targets and .git lin
 test('a link to a secret gives no text from walk, corpus, outline, coreNotes, search, inboxCount, noteExists', async () => {
   const { root, dir, secret } = linkStore()
   symlinkSync(secret, join(dir, 'inbox', 'y.md'))
-  symlinkSync(secret, join(dir, 'topic', 'LONG.md'))
+  const longSecret = join(root, 'long-secret')
+  writeFileSync(longSecret, formatLong([{ id: 'bd-lock', summary: MARKER, body: MARKER }]))
+  symlinkSync(longSecret, join(dir, 'topic', 'LONG.md'))
   symlinkSync(secret, join(dir, 'topic', 'README.md'))
   symlinkSync(secret, join(dir, 'CORE.md'))
   const w = walk(dir)
@@ -61,7 +73,7 @@ test('a link to a secret gives no text from walk, corpus, outline, coreNotes, se
   expect(JSON.stringify(await search(dir, 'zqsecret', { core: false }))).not.toContain(MARKER)
   expect(inboxCount(dir)).toBe(0)
   expect(noteExists(dir, 'inbox/y.md')).toBe(false)
-  expect(noteExists(dir, 'topic/LONG.md#abcd1234')).toBe(false)
+  expect(noteExists(dir, 'topic/LONG.md#bd-lock')).toBe(false)
   rmSync(root, { recursive: true, force: true })
 })
 
