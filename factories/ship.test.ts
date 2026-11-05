@@ -259,6 +259,40 @@ test('queue does not send a PR back when its red tests are held assertions', () 
   expect(Object.keys(ship.nodes.queue.next)).toEqual(['ready', 'again', 'empty'])
 })
 
+test('queue step 2 and postmortem check for a hold before they add factory (claude-factory-5nh2)', () => {
+  const two = ship.nodes.queue.prompt.split('\n2. ')[1]!
+  const pm = ship.nodes.postmortem.prompt
+  const start = two.indexOf('Hold check:')
+  expect(start).toBeGreaterThan(-1)
+  const endMark = '`factory queue <rig> <bead>`'
+  const end = two.indexOf(endMark, start)
+  expect(end).toBeGreaterThan(start)
+  const check = two.slice(start, end + endMark.length)
+  for (const t of [
+    'bd show <bead> --json',
+    'rejected',
+    'human',
+    'owner',
+    'held:',
+    'owner_decisions',
+    'factory queue <rig> <bead>',
+    'If the read fails, treat the bead as held',
+  ])
+    expect(check).toContain(t)
+  for (const p of [two, pm]) {
+    expect(p).toContain(check)
+    expect(p.indexOf(check)).toBeLessThan(p.indexOf('--add-label factory'))
+  }
+  for (const [name, node] of Object.entries(ship.nodes)) {
+    const prompt = (node as { prompt: string }).prompt
+    for (const m of prompt.matchAll(/bd update <bead>[^`]*--add-label factory/g)) {
+      const at = prompt.indexOf(check)
+      expect(at, `${name} adds factory without the hold check`).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(m.index!)
+    }
+  }
+})
+
 test('a run ships 30 PRs in a row without a stuck step budget', () => {
   const round = ['ready', 'ready', 'published']
   const outcomes = [...Array(30).keys()].flatMap(() => round)
