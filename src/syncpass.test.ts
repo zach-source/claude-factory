@@ -26,6 +26,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
       ...laptop,
       FACTORY_HOME: home,
       PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin, 'herdr'),
       CLAUDE_CONFIG_DIR: claudeConfig,
       FACTORY_SELF_UPDATE: '0',
       ...env,

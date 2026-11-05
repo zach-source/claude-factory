@@ -27,6 +27,7 @@ function run(gpgsign: string, program: string) {
     ...(laptop as Record<string, string>),
     FACTORY_HOME: home,
     PATH: `${bin}:${laptop.PATH}`,
+    FACTORY_HERDR: join(bin, 'herdr'),
     CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
     FACTORY_SELF_UPDATE: '0',
     GIT_CONFIG_COUNT: String(conf.length),
