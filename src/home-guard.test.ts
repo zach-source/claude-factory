@@ -302,7 +302,7 @@ describe('homeReason', () => {
     `git checkout -p ${CLI}`,
     `git add ''-x ${CLI}`,
     `factory check factories/x.ts`,
-    `factory mutate ${CLI}:1 a b -- bun test`,
+    `factory mutate ${CLI} 1 a b -- bun test`,
     `./factory report r 1 ready "x.ts"`,
     'factory report r 1 ready "`bash x.sh`"',
     'factory report r 1 ready "$(bash x.sh)"',
