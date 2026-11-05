@@ -194,6 +194,10 @@ export function byState(runs: readonly FactoryRun[]) {
   }))
 }
 
+// Cut at n UTF-16 units; back off one unit rather than leave a lone high surrogate.
+export const cutText = (s: string, n: number) =>
+  s.length <= n ? s : s.slice(0, (s.charCodeAt(n - 1) & 0xfc00) === 0xd800 ? n - 1 : n)
+
 /** a run id short enough for a column: the part after the factory's prefix, cut to its first and last 4 */
 export function shortId(id: string) {
   const tail = id.slice(id.lastIndexOf('-') + 1) || id
@@ -224,7 +228,7 @@ export function statusText(runs: FactoryRun[]) {
 /** one line of at most `max` characters */
 export const line = (text: string, max: number) => {
   const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1))}…` : flat
+  return flat.length > max ? `${cutText(flat, Math.max(0, max - 1))}…` : flat
 }
 
 export const clockOf = (ms: number) =>

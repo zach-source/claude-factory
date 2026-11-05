@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
+  clip,
   labelMail,
   trustedEgress,
   trustedEgressPaged,
@@ -2834,4 +2835,10 @@ test('trustedEgressPaged reads an egress-paged file only inside the skew bound (
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('clip never leaves a lone high surrogate', () => {
+  expect(clip('a'.repeat(199) + '😀', 200)).toBe('a'.repeat(199) + '…')
+  expect(clip('a'.repeat(198) + '😀', 200)).toBe('a'.repeat(198) + '😀')
+  expect(clip('abc', 5)).toBe('abc')
 })

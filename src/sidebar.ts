@@ -1,5 +1,6 @@
 // What herdr's sidebar shows for the factory: a $factory token on each run's workspace (its station and
 // what holds it) and one on the manager's (the rollup). Pure: the runner reports what this returns.
+import { cut } from './cut'
 import type { Bead } from './beads'
 import type { Row } from './cli'
 import { ownerStep } from '../mod/hooks/view'
@@ -107,7 +108,7 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
           const t = h === 'parked' ? r.last?.at : r.since
           return [
             `  ${r.id} ${r.node} · ${h}${t ? ` ${ago(now - t)}` : ''}${r.bead ? ` · ${r.bead}` : ''}`,
-            `    ${flat.length > 400 ? `${flat.slice(0, 399)}…` : flat}`,
+            `    ${flat.length > 400 ? `${cut(flat, 399)}…` : flat}`,
             ...prs.map(p => `    ${p}`),
             `    → ${answer}`,
           ].join('\n')
