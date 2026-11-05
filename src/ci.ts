@@ -42,7 +42,7 @@ const clean = (s: string, max: number) =>
       // eslint-disable-next-line no-control-regex
       .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
       // eslint-disable-next-line no-control-regex
-      .replace(/[\x00-\x08\x0a-\x1f\x7f-\x9f‪-‮⁦-⁩]/g, ''),
+      .replace(/[\x00-\x08\x0a-\x1f\x7f-\x9f\u202A-\u202E\u2066-\u2069]/g, ''),
     max,
   )
 

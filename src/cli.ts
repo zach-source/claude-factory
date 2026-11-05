@@ -424,7 +424,7 @@ async function launchAxManager(args: string[]) {
   console.log(
     `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
   )
-  console.log('attach with `factory attach`, steer with `factory say <text>`')
+  console.log("attach with `factory attach`, steer with `factory say '<text>'`")
 }
 /** refuse to run a manager or a tick here while the AX manager task lives (claude-factory-192.6) */
 const lease = () => {
@@ -9059,7 +9059,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
       continue // run dir exists before run.json and state.json (createRun writes state.json last)
     }
     const { run, value } = cur
-    if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
+    if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this, and a fork copies it from its source
     const [node, sub] = where(value)
     const n = (await loadPinned(run.factory)).nodes[node]
     const s = slot(n, sub)
@@ -9233,7 +9233,7 @@ async function defineRig(
 }
 
 async function start(factory: string | undefined, repo: string | undefined, goal: string, isOwnerOk = false) {
-  if (!factory || !repo || !goal) fail('usage: factory start <factory>[@station] <rig|repo> <goal...>')
+  if (!factory || !repo || !goal) fail("usage: factory start <factory>[@station] <rig|repo> '<goal...>'")
   const root = repoOf(repo!)
   await assertRoom(root)
   // <factory>@<station> starts past the triage when the caller already knows the kind of work
@@ -9326,13 +9326,13 @@ export function workerVerbRefusal(
 }
 
 /**
- * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title T --description D`.
+ * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title '<text>' --description '<text>'`.
  * The label `factory` goes on only when the source bead reads back with its own id and no Linear
  * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
  */
 function fileElsewhere(args: string[]) {
   const usage =
-    'usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title <text> --description <text>'
+    "usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title '<text>' --description '<text>'"
   const [target, ...rest] = args
   const flags = new Map<string, string>()
   if (!target || target.startsWith('--') || rest.length !== 6) fail(usage)
@@ -9408,7 +9408,7 @@ async function fork(id: string | undefined, station: string | undefined, note: s
   const { run: src, value } = current(id)
   const def = await loadPinned(src.factory)
   if (!Object.hasOwn(def.nodes, station ?? ''))
-    fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
+    fail(`usage: factory fork <run> <station> '[note...]'; stations: ${Object.keys(def.nodes).join(', ')}`)
   const sender = note ? managerSender(src) : undefined
   refuseWorker('fork') // managerSender lets FACTORY_FROM and FACTORY_RUN through for mail
   await assertRoom(src.repo)
@@ -9449,7 +9449,15 @@ export async function forkRun(
         ...['--deps', `related:${src.bead}`],
       )
     : undefined
-  const { run } = await createTracked(src.factory, factoryName, src.repo, src.goal, bead, { run: src, saved })
+  const { run } = await createTracked(
+    src.factory,
+    factoryName,
+    src.repo,
+    src.goal,
+    bead,
+    { run: src, saved },
+    src.ship,
+  )
   const [node, sub] = where(value)
   if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station })
   if (from) post(run.id, { type: 'MAIL', from, to: station, text: note })
@@ -10102,7 +10110,7 @@ async function status(id: string | undefined) {
         (err ? `; last run failed: ${err}` : ''),
     )
   }
-  if (!runIds().length) console.log('no runs yet: factory start <factory> <repo> <goal...>')
+  if (!runIds().length) console.log("no runs yet: factory start <factory> <repo> '<goal...>'")
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
     const def = await loadPinned(run.factory)
@@ -10120,7 +10128,7 @@ async function status(id: string | undefined) {
     } else if (run.bead) console.log(`  bead: ${run.bead}`)
     if (r.gate)
       console.log(
-        `  gate: ${r.gate.question}\n  decide: factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`,
+        `  gate: ${r.gate.question}\n  decide: factory decide ${r.id} <${r.gate.outcomes.join('|')}> '[note]'`,
       )
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
     if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
@@ -10153,7 +10161,7 @@ function shipQueues() {
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
-const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] <summary> [body...]`
+const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' '[body...]'`
 
 /**
  * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
@@ -10189,10 +10197,10 @@ function supersedesRefusal(dir: string, p: string): string | null {
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
-  start <factory>[@station] <rig|repo> <goal...|bead> [--owned]   new run: herdr worktree off the repo, first worker
+  start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name>]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -10204,10 +10212,10 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
-  file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
+  file-elsewhere <rig> --from <rig>:<bead> --title '<text>' --description '<text>'  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> <text...> | propose <key> '<question>' '<a | b>']   JSON of every rig's open
+  decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>']   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -10234,11 +10242,11 @@ const usage = `factory — herdr software factories on xstate
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
-  say <text...>                      type text and Enter into the AX manager's pane
+  say '<text...>'                    type text and Enter into the AX manager's pane
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
-  memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
+  memory search [--rig r] '<query...>'  the closest notes in the factory's shared memory (semantic search)
   memory add ${MEMORY_ADD_USAGE}   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping;
                                      a note that names a bead or PR needs --until unless --kind recipe
@@ -10267,17 +10275,17 @@ const usage = `factory — herdr software factories on xstate
   watch                              one pass of the pull request watch that wakes a parked station (each
                                      tick starts one, at most once a minute)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
-  report <run> <seq> <outcome> <summary...|--summary-file path>   worker: finish its station
+  report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
-  decide <run> <outcome> [note...]   the person: answer a gate station
-  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
-  poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
+  decide <run> <outcome> '[note...]' the person: answer a gate station
+  mail <run> <node|manager> [--wake] '<text...>'  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
+  poke <run> '[text...]'             nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
-  fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
+  fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
                                      drop prompts, briefs and stray backups, and a dead launch script;
@@ -10481,7 +10489,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'say':
         refuseWorker('say', true)
-        if (!args.length) fail('usage: factory say <text...>')
+        if (!args.length) fail("usage: factory say '<text...>'")
         ax.say(args.join(' '))
         break
       case 'stop': {
@@ -10711,7 +10719,7 @@ if (import.meta.main && !outboxCmd)
           )
         } else
           fail(
-            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
+            `usage: factory memory search [--rig r] '<query...>' | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
           )
         break
       }
@@ -10930,7 +10938,8 @@ if (import.meta.main && !outboxCmd)
         }
         if (sub === 'answer') {
           const [rigName, id, ...text] = rest
-          if (!rigName || !id || !text.length) fail('usage: factory decisions answer <rig> <bead> <text...>')
+          if (!rigName || !id || !text.length)
+            fail("usage: factory decisions answer <rig> <bead> '<text...>'")
           decisionsAnswer(rigName!, id!, text.join(' '))
           break
         }
@@ -11276,7 +11285,7 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal text...]`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>']`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,

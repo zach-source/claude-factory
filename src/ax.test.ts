@@ -2346,7 +2346,7 @@ test('a GitLab rig gets placeholders and a second extraHeader; a GitHub rig keep
 test('the manager lease refuses only a live manager task, and never inside it', () => {
   const t = 'f-manager'
   for (const p of ['Running', 'Pending', 'Suspended'])
-    expect(ax.managerRefusal(p, {}, t)).toMatch(/f-manager.*factory attach.*factory say <text>/)
+    expect(ax.managerRefusal(p, {}, t)).toMatch(/f-manager.*factory attach.*factory say '<text>'/)
   for (const p of ['Failed', 'Terminating', null]) expect(ax.managerRefusal(p, {}, t)).toBeUndefined()
   expect(ax.managerRefusal('Running', { FACTORY_IN_AX: '1' }, t)).toBeUndefined()
 })

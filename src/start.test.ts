@@ -346,6 +346,27 @@ test('fork <run> constructor (an Object.prototype key) prints the usage line (cl
   expect(out.err).toContain('usage: factory fork')
 })
 
+test('help prints free-text placeholders in quotes (claude-factory-nt33)', () => {
+  reset()
+  const h = run(['help'])
+  const text = h.out + h.err
+  for (const p of [
+    "say '<text...>'",
+    "poke <run> '[text...]'",
+    "fork <run> <station> '[note...]'",
+    "memory search [--rig r] '<query...>'",
+    "--title '<text>' --description '<text>'",
+    "<rig|repo> '<goal...>'|bead",
+    "'<summary...>'|--summary-file",
+    "--goal '<text...>'",
+    "'<summary>' '[body...]'",
+  ])
+    expect(text).toContain(p)
+  expect(text).not.toMatch(
+    / <text\.\.\.>| \[text\.\.\.\]| \[note\.\.\.\]| <query\.\.\.>| <goal\.\.\.[>|]| <summary> \[body| <summary\.\.\.\||\[--goal text/,
+  )
+})
+
 // claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
 // person must run `factory retry` to free it. A stuck run must not fill FACTORY_MAX_RUNS, the
 // town cap. The person already holds the run, the same way as a wait or a gate. The control
@@ -422,7 +443,28 @@ test('fork of a live run is refused and makes nothing; after abort it works', ()
   const ids = readdirSync(join(home, 'runs'))
   expect(ids).toHaveLength(2)
   const child = ids.find(x => x !== id)!
-  expect(JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8')).forkedFrom).toBe(id)
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(id)
+  expect(childRun).not.toHaveProperty('ship')
+})
+
+test('fork of a ship run keeps run.ship (claude-factory-0qh0)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  expect(run(['start', factoryFixture(), r, 'a goal']).code).toBe(0)
+  const id = readdirSync(join(home, 'runs'))[0]!
+  const file = join(home, 'runs', id, 'run.json')
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ship: true }))
+  expect(run(['abort', id]).code).toBe(0)
+  const forked = run(['fork', id, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+  const child = readdirSync(join(home, 'runs')).find(x => x !== id)!
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(id)
+  expect(childRun.ship).toBe(true)
 })
 
 const CLEAR =
