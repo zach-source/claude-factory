@@ -70,6 +70,7 @@ const ALLOW = [
   'factory rig < f',
   'factory rig 2>&1 list',
   'factory rig\\\n 2>&1',
+  'factory 2>&1',
   'factory 2>&1 rig',
   'factory 2>&1 rig list',
   'factory > f rig list',
