@@ -4,6 +4,7 @@ import { compile, fill, validate, where, type Factory } from '../src/machine'
 import sweeps from './sweeps'
 import lifecycle from './lifecycle'
 import ship from './ship'
+import release from './release'
 import { brief } from '../src/cli'
 import { actorOf } from '../src/beads'
 
@@ -662,4 +663,10 @@ test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
     )
   }
   for (const id of ['queue', 'release', 'rollback', 'postmortem']) expect(prompt(id), id).not.toContain(met)
+})
+
+test('release.rules holds the runner-loss bullet of lifecycle.rules once', () => {
+  const line = lifecycle.rules!.split('\n').find(l => l.startsWith('- Runner loss in CI:'))
+  expect(line).toBeDefined()
+  expect(release.rules!.split('\n').filter(l => l === line).length).toBe(1)
 })
