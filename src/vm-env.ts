@@ -10,7 +10,9 @@ if (raw !== undefined) {
       v &&
       typeof v === 'object' &&
       !Array.isArray(v) &&
-      Object.entries(v).every(([k, x]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof x === 'string')
+      Object.entries(v).every(
+        ([k, x]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof x === 'string' && !x.includes('\0'),
+      )
     )
       packed = v as Record<string, string>
   } catch {}
