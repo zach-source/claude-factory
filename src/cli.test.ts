@@ -25,6 +25,7 @@ import {
   vmBeads,
   clipFactsJson,
   clipReport,
+  cleanReport,
   CONFIG_SYNC,
   deadline,
   haltStep,
@@ -2921,4 +2922,11 @@ test('hold: a release whose delete keeps the dir does not throw and frees the lo
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('cleanReport blanks control, format and line-separator chars but keeps LF, TAB and text', () => {
+  const bad = ['\u001b', '\u009b', '‮', ' ', ' ', '\u0000', '\r', '\u0085', '‍', '﻿', '\u007f']
+  expect(cleanReport(`a${bad.join('b')}c\n\td`)).toBe(`a${bad.map(() => ' ').join('b')}c\n\td`)
+  for (const c of bad) expect(cleanReport(c)).toBe(' ')
+  expect(cleanReport('é 😀   plain\n\t')).toBe('é 😀   plain\n\t')
 })

@@ -1338,6 +1338,8 @@ export const clip = (text: string, max: number) => {
 /** VM free text for a FAIL reason or a mail: control, format and line-separator characters become spaces, then clip */
 export const cleanText = (text: string, max: number) =>
   clip(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '), max)
+/** report text: like cleanText but LF and TAB stay, and no clip */
+export const cleanReport = (text: string) => text.replace(/[^\P{Cc}\t\n]|[\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
@@ -11069,7 +11071,7 @@ if (import.meta.main && !outboxCmd)
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-        const text = summaryArgs(args).slice(3).join(' ')
+        const text = cleanReport(summaryArgs(args).slice(3).join(' '))
         post(
           run.id,
           outcome === 'fail'
