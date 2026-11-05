@@ -539,7 +539,7 @@ async function turnWithRetry(
     onEgress({ since, tries, last: r.egress }, cur)
     appendFileSync(
       serveLog(),
-      `${new Date().toISOString()} egress failure, retry ${tries}: ${r.egress.slice(0, 200)}\n`,
+      `${new Date().toISOString()} egress failure, retry ${tries}: ${cut(r.egress, 200)}\n`,
     )
     if (Date.now() - since >= budgetMs) return cur
     await Bun.sleep(Math.min(waitMs * 2 ** (tries - 1), capMs))

@@ -438,7 +438,7 @@ export async function fetchLinearIssues(
       // shell runs, but a ref shaped like a flag, for example "--force", would still reach bd as
       // one). This check fails the whole pass instead of silently dropping the bad ref.
       if (!REF_SHAPE.test(n.identifier))
-        throw new Error(`Linear API: issue identifier "${n.identifier.slice(0, 40)}" is not shaped <KEY>-<n>`)
+        throw new Error(`Linear API: issue identifier "${cut(n.identifier, 40)}" is not shaped <KEY>-<n>`)
       issues.push({
         ref: n.identifier,
         updatedAt: n.updatedAt,
