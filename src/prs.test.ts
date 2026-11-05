@@ -1889,8 +1889,20 @@ test('gitlabChecks tallies the head pipeline of an MR pinned to the SHA; any dou
   expect(await run(answer(pipe('skipped')))).toEqual({ pass: 1, fail: 0, pending: 0 })
   expect(await run(answer(pipe('failed')))).toEqual({ pass: 0, fail: 1, pending: 0 })
   expect(await run(answer(pipe('canceled')))).toEqual({ pass: 0, fail: 1, pending: 0 })
-  for (const st of ['running', 'pending', 'created', 'manual', ''])
+  for (const st of [
+    'running',
+    'pending',
+    'created',
+    'manual',
+    'scheduled',
+    'preparing',
+    'waiting_for_resource',
+    'canceling',
+    '',
+  ])
     expect(await run(answer(pipe(st)))).toEqual({ pass: 0, fail: 0, pending: 1 })
+  for (const bad of [false, 0, '', 'x', [], [1]])
+    expect(await run(answer({ sha, head_pipeline: bad }))).toBeNull()
   expect(await run(answer({ sha, head_pipeline: null }))).toEqual({ pass: 0, fail: 0, pending: 0 })
   expect(await run(answer({ sha }))).toEqual({ pass: 0, fail: 0, pending: 0 })
   const n = calls.length

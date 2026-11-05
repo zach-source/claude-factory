@@ -137,18 +137,18 @@ test('the Codex token refresh runs its command once its state file is 12 h old, 
   }
 })
 
-test('a swap command runs at most once per 5 minutes for each runner and harness, whatever the hit times', () => {
+test('a swap command runs at most once per 5 minutes (Codex: 1 hour) for each runner and harness, whatever the hit times', () => {
   const f = swapFixture()
   const mail: string[] = []
   const send = (e: { text?: string }) => void mail.push(e.text ?? '')
-  const W = 300_000
+  const W = 3_600_000 // Codex
   try {
     process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
     process.env.FACTORY_AX_TOKEN_SWAP = f.bin
     const run = (at: number, now: number, h: 'claude' | 'codex' = 'codex') =>
       runTokenSwap({ at, resetsAt: 0 }, now, 'ax', send as never, 'implement', h, f.home)
     run(1_000, 5_000)
-    expect(run(2_000, 6_000)).toBe(5_000 + W) // a newer hit inside the window: no run, wait for the window
+    expect(run(2_000, 6_000)).toBe(5_000 + W) // a newer hit inside the gap: no run, wait for the gap
     expect(run(3_000, 7_000)).toBe(5_000 + W)
     expect(readFileSync(f.log, 'utf8')).toBe('x\n')
     expect(mail.filter(m => m.includes('Swapped'))).toHaveLength(1)
@@ -156,6 +156,25 @@ test('a swap command runs at most once per 5 minutes for each runner and harness
     expect(readFileSync(f.log, 'utf8')).toBe('x\nx\n')
     run(1_000, 6_000, 'claude') // the other harness has its own window
     expect(readFileSync(f.log, 'utf8')).toBe('x\nx\nx\n')
+  } finally {
+    f.restore()
+  }
+})
+
+test('a Codex refresh command that exits 3 (token fresh) counts as done, other failures retry in 1 h', () => {
+  const f = swapFixture()
+  const H = 3_600_000
+  try {
+    for (const [code, at] of [
+      [3, 100 * H],
+      [1, 100 * H - 12 * H + H],
+    ] as const) {
+      writeFileSync(f.bin, `#!/bin/sh\nexit ${code}\n`, { mode: 0o755 })
+      process.env.FACTORY_AX_CODEX_TOKEN_SWAP = f.bin
+      rmSync(join(f.home, 'token-swap-ax-codex.json'), { force: true })
+      refreshCodexToken(100 * H, 'ax', f.home)
+      expect(JSON.parse(readFileSync(join(f.home, 'token-swap-ax-codex.json'), 'utf8')).at).toBe(at)
+    }
   } finally {
     f.restore()
   }

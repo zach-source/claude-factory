@@ -247,7 +247,9 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 
 The console also has a `stop` button and a `resume` button.
 
-Only the person and the manager run `factory stop`, `resume`, `say`, `start`, `fork`, `goto`, `retry`, `abort`, `rm`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue`, `poke`, `attach`, `manager`, `migrate-to-ax`, `rig add` and `rig rm`. The CLI refuses a worker (it has `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME` or a `factory/` `BEADS_ACTOR`), and the worker hook denies them. A worker mails the manager instead. `factory rig` and `factory rig list` stay open to a worker. A patrol (`FACTORY_PATROL`) can run `goto`, `retry`, `abort`, `rm`, `start`, `fork`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue` and `poke`. It cannot run `stop`, `resume`, `say`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `attach`, `manager`, `migrate-to-ax`, `rig add` or `rig rm`.
+A worker has `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME` or a `factory/` `BEADS_ACTOR`. A worker can run only these verbs: `report`, `mail`, `memory`, `status`, `show`, `check`, `home`, `ship`, `advisories`, `pg-scratch`, `mutate`, `ci`, `worker`, `factory rig` and `factory rig list`. Usage (`help`, `--help`, `-h`) is also open. The CLI refuses every other verb, also a new verb. The worker hook denies the control verbs. A worker mails the manager instead.
+
+Only the person and the manager run `factory stop`, `resume`, `say`, `start`, `fork`, `goto`, `retry`, `abort`, `rm`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue`, `poke`, `attach`, `manager`, `migrate-to-ax`, `rig add` and `rig rm`. A patrol (`FACTORY_PATROL`) can run `goto`, `retry`, `abort`, `rm`, `start`, `fork`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue` and `poke`. It cannot run `stop`, `resume`, `say`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `attach`, `manager`, `migrate-to-ax`, `rig add` or `rig rm`.
 
 ### Attach to the AX manager
 

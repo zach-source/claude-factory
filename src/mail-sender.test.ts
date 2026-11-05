@@ -92,7 +92,7 @@ test('AC4: fork with a note is refused for a worker, before it makes a run', () 
     FACTORY_DEF_NAME: 'lifecycle',
   })
   expect(out.code).not.toBe(0)
-  expect(out.err).toContain('cannot send mail as the manager')
+  expect(out.err).toContain('a worker cannot run factory fork')
   expect(r.runs()).toBe(before)
 })
 

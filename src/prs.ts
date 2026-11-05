@@ -880,8 +880,8 @@ export async function gitlabChecks(
   const mr = r.code === 0 ? (asJson(r.out) as Json | null) : null
   if (!mr || typeof mr !== 'object' || Array.isArray(mr) || mr.sha !== sha) return null
   const pipeline = mr.head_pipeline as Json | null | undefined
-  if (!pipeline) return { pass: 0, fail: 0, pending: 0 }
-  if (pipeline.sha !== sha) return null
+  if (pipeline == null) return { pass: 0, fail: 0, pending: 0 }
+  if (typeof pipeline !== 'object' || Array.isArray(pipeline) || pipeline.sha !== sha) return null
   return checksOf([{ conclusion: PIPELINE[str(pipeline.status)] ?? null }])
 }
 

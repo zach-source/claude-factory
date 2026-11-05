@@ -2345,14 +2345,20 @@ function swapAccount(hit: { at: number; resetsAt: number }, now: number): number
 }
 
 const TOKEN_SWAP_WAIT_MS = 5 * 60_000 // agent-vault reads the vault again at most this often
+const CODEX_SWAP_GAP_MS = 3_600_000 // a Codex swap recopies a ChatGPT token: never more than once an hour
 
 /**
  * This function checks if a swap must run. A hit is new when no state exists yet. A hit is
  * also new when the hit time is after the state time. A new hit swaps only when the last run
  * (state.ran, laptop time) is at least TOKEN_SWAP_WAIT_MS old.
  */
-export function needsSwap(hit: { at: number }, state: { at: number; ran?: number } | undefined, now: number) {
-  return (!state || hit.at > state.at) && (state?.ran === undefined || now >= state.ran + TOKEN_SWAP_WAIT_MS)
+export function needsSwap(
+  hit: { at: number },
+  state: { at: number; ran?: number } | undefined,
+  now: number,
+  gap = TOKEN_SWAP_WAIT_MS,
+) {
+  return (!state || hit.at > state.at) && (state?.ran === undefined || now >= state.ran + gap)
 }
 
 /**
@@ -2393,9 +2399,10 @@ export function runTokenSwap(
   if (!cmd) return hit.resetsAt || hit.at + 3_600_000
   const file = join(home, `token-swap-${runnerName}${codex ? '-codex' : ''}.json`)
   const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
-  if (!needsSwap(hit, state, now)) {
+  const gap = codex ? CODEX_SWAP_GAP_MS : TOKEN_SWAP_WAIT_MS
+  if (!needsSwap(hit, state, now, gap)) {
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
-    return waiting ? Math.max(state!.until, state!.ran! + TOKEN_SWAP_WAIT_MS) : state!.until
+    return waiting ? Math.max(state!.until, state!.ran! + gap) : state!.until
   }
   const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
   const ok = p.exitCode === 0
@@ -2413,6 +2420,7 @@ export function runTokenSwap(
   return until
 }
 
+const CODEX_TOKEN_FRESH = 3 // exit code of `codex-token refresh` when it changes nothing
 const CODEX_REFRESH_MS = 12 * 3_600_000 // an access token lasts about 10 days; ccswitch renews under 24 h left
 /**
  * Run FACTORY_AX_CODEX_TOKEN_SWAP when the last run is 12 hours old or older, so the live field is never stale.
@@ -2425,7 +2433,8 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const file = join(home, `token-swap-${runnerName}-codex.json`)
   const state = existsSync(file) ? readJson<TokenSwapState>(file) : undefined
   if (state && now - state.at < CODEX_REFRESH_MS) return
-  const ok = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode === 0
+  const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
+  const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
   writeJson(file, {
     at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
     until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
@@ -3318,7 +3327,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (until > now) {
       // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
       if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
-        const reason = `${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
+        const reason = `${isCodex ? 'Codex' : 'Claude'} ${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
         send({ type: 'FAIL', seq: c.seq, reason, hold: until })
         return 'usage limit'
       }
@@ -8408,7 +8417,7 @@ async function orphanPass() {
       if (!ref && gl?.forge !== 'gitlab') continue
       if (!records) throw new Error('orphan-forks.json is unreadable')
       const cap = Math.min(ORPHAN_CAP, room(rig, busy, undefined, held))
-      if (cap <= 0) continue
+      // a full rig forks nothing (cap 0), but its failed-fork rows stay
       const project = gl ? `${gl.owner}/${gl.repo}` : ''
       let all: OrphanPr[]
       if (ref) {
@@ -8475,21 +8484,20 @@ async function orphanPass() {
               )
           },
         },
-        cap,
+        Math.max(cap, 0),
       )
+      const shown = new Set<string>()
       for (const s of skipped)
-        if (/^(fork|record) failed/.test(s.why))
+        if (/^(fork|record) failed/.test(s.why)) {
+          shown.add(s.url)
           errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
+        }
       // a failed fork keeps its record, so later passes skip the PR: show the row every pass until a person removes the entry
       for (const pr of prs)
-        if (
-          records![pr.url]?.sha === pr.headRefOid &&
-          records![pr.url]?.run === '' &&
-          !errors.some(e => e.error?.includes(pr.url))
-        )
+        if (records![pr.url]?.sha === pr.headRefOid && records![pr.url]?.run === '' && !shown.has(pr.url))
           errors.push({
             id: `rig:${rig.name}`,
-            error: `orphans: ${pr.url}: fork failed at ${pr.headRefOid.slice(0, 7)}; remove its orphan-forks.json entry to retry`,
+            error: `orphans: ${pr.url}: fork failed or not recorded at ${pr.headRefOid.slice(0, 7)}; check for a review run, then remove its orphan-forks.json entry to retry`,
           })
     } catch (err) {
       errors.push({ id: `rig:${rig.name}`, error: `orphans: ${(err as Error).message}` })
@@ -8956,16 +8964,49 @@ function managerSender(run: Run): 'manager' {
  * forMail skips FACTORY_FROM and FACTORY_RUN: the manager mails with FACTORY_FROM=manager (remote.test.ts) and a run worker mails its own station (run-scope.test.ts), so managerSender keeps its old three markers.
  * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
  */
-function workerMarker(forMail = false): string | undefined {
-  return process.env.FACTORY_FROM && !forMail
+function workerMarker(
+  forMail = false,
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  return env.FACTORY_FROM && !forMail
     ? 'FACTORY_FROM is set'
-    : process.env.FACTORY_RUN && !forMail
+    : env.FACTORY_RUN && !forMail
       ? 'FACTORY_RUN is set'
-      : process.env.FACTORY_DEF_NAME
+      : env.FACTORY_DEF_NAME
         ? 'FACTORY_DEF_NAME is set'
-        : process.env.BEADS_ACTOR?.startsWith('factory/')
+        : env.BEADS_ACTOR?.startsWith('factory/')
           ? 'BEADS_ACTOR names a factory worker'
           : undefined
+}
+
+/** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
+const WORKER_VERBS = [
+  'report',
+  'mail',
+  'memory',
+  'status',
+  'show',
+  'check',
+  'home',
+  'ship',
+  'advisories',
+  'pg-scratch',
+  'mutate',
+  'ci',
+  'worker',
+]
+
+/** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
+export function workerVerbRefusal(
+  cmd: string | undefined,
+  args: string[],
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const marker = workerMarker(false, env)
+  if (!marker || !cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || WORKER_VERBS.includes(cmd))
+    return undefined
+  if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
+  return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
 }
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
@@ -9883,7 +9924,9 @@ or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
 {
-  const why = import.meta.main ? otherRunRefusal(cmd, args, process.env) : undefined
+  const why = import.meta.main
+    ? (otherRunRefusal(cmd, args, process.env) ?? workerVerbRefusal(cmd, args, process.env))
+    : undefined
   if (why) {
     console.error(why)
     process.exit(1)
@@ -10222,6 +10265,7 @@ if (import.meta.main && !outboxCmd)
               ].join('\n'),
             )
           } else {
+            refuseWorker('memory compact')
             // the same lock dream() holds while it runs: a live dream already writes LONG.md and the
             // usage log, and a concurrent compact racing it can lose a rename or an archive decision
             // (claude-factory-59r.13)
