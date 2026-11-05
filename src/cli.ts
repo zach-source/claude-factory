@@ -514,6 +514,8 @@ type TaskSide = {
   githubOwner?: string
   /** the task runs as the reviewer identity: its egress policy holds the reviewer key (claude-factory-0gww.2) */
   reviewer?: boolean
+  /** the rig origin's GitHub repo, for the reviewer's API rule */
+  githubRepo?: string
   policy: boolean
   put?: string[]
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
@@ -886,8 +888,21 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   // a task this laptop did not launch (or launched before this file) has no station to act as: nothing replays
   const side: TaskSide | null = existsSync(sideFile(run, task)) ? readJson(sideFile(run, task)) : null
   if (side && !side.policy) {
+    // an old reviewer task has no repo in its side file. It has no safe policy, so it gets no GitHub key.
+    if (side.reviewer && !side.githubRepo) return gone('reviewer task has no githubRepo in its side file')
     // until it is in, the VM reaches nothing; the station's deadline fails a task whose actor never shows
-    if (!ax.createPolicy(task, side.egress, side.gitlabHost, side.githubOwner, undefined, side.reviewer))
+    if (
+      !ax.createPolicy(
+        task,
+        side.egress,
+        side.gitlabHost,
+        side.githubOwner,
+        undefined,
+        side.reviewer,
+        false,
+        side.githubRepo,
+      )
+    )
       return { status: 'pending', agent: 'ax', pending: 'egress policy not created' }
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
@@ -1856,7 +1871,14 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
   const githubOwner = origin?.forge === 'github' ? origin.owner : undefined
-  const reviewer = ax.reviewerTask(node, githubOwner, process.env, hasRunBeads && !rig?.beadsRemote)
+  const githubRepo = origin?.forge === 'github' ? origin.repo : undefined
+  const reviewer = ax.reviewerTask(
+    node,
+    githubOwner,
+    process.env,
+    hasRunBeads && !rig?.beadsRemote,
+    githubRepo,
+  )
   const brief = [
     text().replaceAll(CLI, 'factory').replaceAll(run.worktree, ax.REPO),
     reviewer
@@ -1963,7 +1985,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(gitlabHost && { gitlabHost }),
     ...(githubOwner && { githubOwner }),
     ...(reviewer && { reviewer }),
-    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer),
+    ...(reviewer && { githubRepo }),
+    policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer, false, githubRepo),
     put: ['brief.md'],
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
