@@ -17,6 +17,7 @@ import { watchDecide } from './watch'
 import {
   labelMail,
   trustedEgress,
+  trustedEgressPaged,
   reworkOwned,
   brief,
   vmBeads,
@@ -2788,4 +2789,49 @@ test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed 
   for (const r of [now + 8 * D + 1, now + 365 * D, -5, 0, '9', NaN, undefined])
     expect(trustedHit({ ...ok, resetsAt: r }, now)?.resetsAt).toBe(0)
   expect(trustedHit({ ...ok, text: 'x' }, now)).toEqual({ at: ok.at, kind: 'usage', resetsAt: 0 })
+})
+
+test('trustedEgressPaged reads an egress-paged file only inside the skew bound (claude-factory-rnn8)', () => {
+  const now = 1_700_000_000_000
+  const S = 5 * 60_000
+  const dir = mkdtempSync(join(tmpdir(), 'egress-paged-'))
+  try {
+    const file = join(dir, 'p.json')
+    expect(trustedEgressPaged(file, now)).toBeUndefined()
+    const j = JSON.stringify
+    const bad = [
+      'not json',
+      'null',
+      '"5"',
+      '[]',
+      '{}',
+      '{"since":"1","at":0}',
+      '{"since":1,"at":"0"}',
+      '{"since":1}',
+      '{"at":0}',
+      String(now + S + 1),
+      j({ since: now + S + 1, at: 0 }),
+      j({ since: 1, at: now + S + 1 }),
+      '{"since":1e308,"at":0}',
+      '{"since":1,"at":1e999}',
+      '{"since":1e999,"at":0}',
+      '-1e999',
+    ]
+    for (const text of bad) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toBeUndefined()
+    }
+    const kept: [string, { since: number; at: number }][] = [
+      [String(now - 1), { since: now - 1, at: 0 }],
+      [j({ since: now + S, at: now + S }), { since: now + S, at: now + S }],
+      [j({ since: now - 1000, at: now - 1 }), { since: now - 1000, at: now - 1 }],
+      [j({ since: 0, at: 0 }), { since: 0, at: 0 }],
+    ]
+    for (const [text, want] of kept) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toEqual(want)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
