@@ -1206,20 +1206,24 @@ test('claude-factory-qyuu AC1: the retry 30 s after a failed cold start does not
 test.each([
   ['exactly 30 min', 1_800_000, 942_700, true],
   ['29 min 59 s', 1_799_000, 950_000, false],
-])('claude-factory-qyuu AC2: the ceiling starts at a %s span', async (_n, dt, floor, capped) => {
-  const f = ldbFixture()
-  try {
-    f.st.lookups = false
-    expect((await f.refresh()).decision).toBe('error')
-    f.st.now = NOW + dt
-    f.st.latest = 1_000_300
-    f.st.minId = 950_000
-    f.st.lookups = true
-    expect(await f.refresh()).toMatchObject({ floor, capped })
-  } finally {
-    f.stop()
-  }
-}, 60_000)
+])(
+  'claude-factory-qyuu AC2: the ceiling starts at a %s span',
+  async (_n, dt, floor, capped) => {
+    const f = ldbFixture()
+    try {
+      f.st.lookups = false
+      expect((await f.refresh()).decision).toBe('error')
+      f.st.now = NOW + dt
+      f.st.latest = 1_000_300
+      f.st.minId = 950_000
+      f.st.lookups = true
+      expect(await f.refresh()).toMatchObject({ floor, capped })
+    } finally {
+      f.stop()
+    }
+  },
+  60_000,
+)
 
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
