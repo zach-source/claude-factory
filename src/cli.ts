@@ -7594,6 +7594,11 @@ async function dispatch() {
           nodes = loaded.nodes
           spec = source
         }
+        // only shipPass starts a ship run: a ship-named factory here would get merge authority with no run.ship
+        if (name === 'ship') {
+          deferCandidate('factory ship is reserved for the ship queue: only the runner starts a ship run')
+          continue
+        }
         // a station the chosen factory lacks would otherwise start the run quietly at its own
         // first station (`def.start`, below), with no sign anywhere that the label was wrong
         if (at && !Object.hasOwn(nodes, at)) {
