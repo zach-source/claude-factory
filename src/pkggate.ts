@@ -198,6 +198,8 @@ type Decision = {
   reason: string
   ageH: number | null
   code?: 'go-sumdb-too-new'
+  /** the upstream fetch already counted this error in `stats.error`, so `logDecision` must not count it again */
+  counted?: true
 }
 
 /** allowlisted, or old enough; a missing or unparseable time is a refusal, same as one still too young */
@@ -231,7 +233,7 @@ function logDecision(
   cfg: Resolved,
   quiet = false,
 ) {
-  cfg.stats[d.decision]++
+  if (!d.counted) cfg.stats[d.decision]++
   if (quiet && d.decision === 'allow') return
   console.log(
     JSON.stringify({
@@ -297,6 +299,8 @@ const GO_STORAGE_ORIGIN = 'https://storage.googleapis.com'
  * caller answers 502 and the gate never requests the target. The default redirect:'follow' of `fetch`
  * would go to any http(s) host (claude-factory-qls).
  */
+class RedirectRefused extends Error {}
+
 async function upstreamFetch(
   cfg: Resolved,
   url: string,
@@ -308,6 +312,8 @@ async function upstreamFetch(
   for (let hop = 0; ; hop++) {
     const r = await cfg.fetch(current, { headers, redirect: 'manual', signal })
     if (r.status < 300 || r.status > 399) return r
+    // the body of a followed or refused 3xx is never read: free it. A failed cancel must not change the decision.
+    await r.body?.cancel().catch(() => {})
     const loc = r.headers.get('location')
     let next: URL | null = null
     try {
@@ -325,7 +331,7 @@ async function upstreamFetch(
           host: next?.host ?? null,
         }),
       )
-      throw new Error('redirect refused')
+      throw new RedirectRefused('redirect refused')
     }
     current = next.href
   }
@@ -334,28 +340,29 @@ async function upstreamFetch(
 async function fetchText(
   cfg: Resolved,
   url: string,
-): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
+): Promise<{ ok: true; text: string } | { ok: false; status: number; refused?: true }> {
   try {
     const r = await upstreamFetch(cfg, url)
     const text = await r.text()
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, text }
-  } catch {
-    // a timeout (AbortSignal) lands here too, same as a network error: no status, refused the same as a 5xx
-    return { ok: false, status: 0 }
+  } catch (err) {
+    // a timeout (AbortSignal) lands here too, same as a network error: no status, refused the same as a 5xx.
+    // `refused` marks a redirect the gate refused: upstreamFetch already counted it.
+    return err instanceof RedirectRefused ? { ok: false, status: 0, refused: true } : { ok: false, status: 0 }
   }
 }
 
 async function fetchBytes(
   cfg: Resolved,
   url: string,
-): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number }> {
+): Promise<{ ok: true; buf: ArrayBuffer } | { ok: false; status: number; refused?: true }> {
   try {
     const r = await upstreamFetch(cfg, url)
     if (!r.ok) return { ok: false, status: r.status }
     return { ok: true, buf: await r.arrayBuffer() }
-  } catch {
-    return { ok: false, status: 0 }
+  } catch (err) {
+    return err instanceof RedirectRefused ? { ok: false, status: 0, refused: true } : { ok: false, status: 0 }
   }
 }
 
@@ -445,10 +452,10 @@ async function goSumdbRecord(
   cfg: Resolved,
   mod: string,
   version: string,
-): Promise<{ ok: true; record: number } | { ok: false; invalid?: true }> {
+): Promise<{ ok: true; record: number } | { ok: false; invalid?: true; refused?: true }> {
   if (!goSumdbKeyOk(mod, version)) return { ok: false, invalid: true }
   const r = await fetchText(cfg, `${cfg.upstream.sumdb}/lookup/${mod}@${version}`)
-  if (!r.ok) return { ok: false }
+  if (!r.ok) return r.refused ? { ok: false, refused: true } : { ok: false }
   const line1 = (r.text.split('\n')[0] ?? '').trim()
   if (!/^\d+$/.test(line1)) return { ok: false }
   const record = Number(line1)
@@ -559,7 +566,11 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     cfg,
     `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`,
   )
-  if (!r.ok) return noteGoFloorFailure(cfg, `index.golang.org ${r.status || 'timeout'}`)
+  if (!r.ok)
+    return noteGoFloorFailure(
+      cfg,
+      `index.golang.org ${r.refused ? 'redirect refused' : r.status || 'timeout'}`,
+    )
   const entries = r.text
     .split('\n')
     .map(parseGoIndexLine)
@@ -671,11 +682,18 @@ async function goSumdbGate(
   if (record === undefined) {
     const looked = await goSumdbRecord(cfg, mod, version)
     if (!looked.ok)
-      return {
-        decision: 'error',
-        reason: looked.invalid ? 'sum.golang.org lookup key not valid' : 'sum.golang.org lookup failed',
-        ageH: infoDecision.ageH,
-      }
+      return looked.refused
+        ? {
+            decision: 'error',
+            reason: 'sum.golang.org lookup: redirect refused',
+            ageH: infoDecision.ageH,
+            counted: true,
+          }
+        : {
+            decision: 'error',
+            reason: looked.invalid ? 'sum.golang.org lookup key not valid' : 'sum.golang.org lookup failed',
+            ageH: infoDecision.ageH,
+          }
     record = looked.record
     if (cacheEntry) cacheEntry.record = record
   }
@@ -708,7 +726,9 @@ async function goDecideVersion(cfg: Resolved, mod: string, version: string, quie
         mod,
         version,
         null,
-        { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null },
+        r.refused
+          ? { decision: 'error', reason: 'upstream .info: redirect refused', ageH: null, counted: true }
+          : { decision: 'error', reason: `upstream .info: ${r.status || 'timeout'}`, ageH: null },
         cfg,
         quiet,
       )
