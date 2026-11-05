@@ -1261,8 +1261,8 @@ test('runner-loss scenario matrix: every ADR phrase is in the house rules (s2hn)
   expect(rows.length).toBeGreaterThanOrEqual(8)
   expect(rows.map(r => r.n)).toEqual(rows.map((_, i) => i + 1))
   for (const r of rows) expect(lifecycle.rules!).toContain(r.phrase)
-  const search = lifecycle.rules!.match(/bd search "([^"]+)" --status/)![1]
-  expect(lifecycle.rules!).toContain('bd create "' + search + '"')
+  const search = lifecycle.rules!.match(/bd search '([^']+)' --status/)![1]
+  expect(lifecycle.rules!).toContain("bd create '" + search + "'")
   for (const n of ['implement', 'verify', 'quick'] as const)
     expect(lifecycle.nodes[n]!.prompt).toContain(
       'a second runner loss at the same step, after the host bug exists',

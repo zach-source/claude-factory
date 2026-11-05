@@ -35,7 +35,9 @@ const scan = (file: string, text: string) =>
   text.split('\n').flatMap((line, i) => {
     let rest = line
     for (const [f, t] of allowed) if (f === file) rest = rest.split(t).join('')
-    return rest.includes('"<') || /\bbd (?:search|create|comment|close) [^`"]*"[^"`]*<[^"`]*"/.test(rest) ? [file + ':' + (i + 1) + ': ' + line.trim().slice(0, 100)] : []
+    return rest.includes('"<') || /\bbd (?:search|create|comment|close) [^`"]*"[^"`]*<[^"`]*"/.test(rest)
+      ? [file + ':' + (i + 1) + ': ' + line.trim().slice(0, 100)]
+      : []
   })
 
 test('no prompt source holds a double-quoted placeholder', () => {
@@ -100,7 +102,7 @@ test('every brief of lifecycle, ship, sweeps and release has no double-quoted pl
         "'<query>'",
         "'\\''",
         'single quotes',
-        ...(text.includes('bd create') ? ["'<title>'"] : []),
+        ...(text.includes('- Add a task:') ? ["'<title>'"] : []),
       ])
         expect(text.includes(s) ? '' : node + ': lacks ' + s).toBe('')
     }
