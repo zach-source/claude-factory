@@ -768,14 +768,16 @@ test('fileFinding creates with the pm_finding metadata and no factory label; hum
     writeFileSync(log, '')
     expect(b.fileFinding('t', 'd', 'epic-done-open:a:fx-1')).toBe('new-1')
     const unlabeled = readFileSync(log, 'utf8').trim()
-    expect(unlabeled).toBe('create t -d d --metadata {"pm_finding":"epic-done-open:a:fx-1"} --actor factory')
+    expect(unlabeled).toBe(
+      'create --title t -d d --metadata {"pm_finding":"epic-done-open:a:fx-1"} --actor factory',
+    )
     expect(unlabeled).not.toContain('-l factory')
     expect(unlabeled).not.toContain('-l human')
 
     writeFileSync(log, '')
     b.fileFinding('t2', 'd2', 'starved-epic:a:fx-2', { human: true })
     expect(readFileSync(log, 'utf8').trim()).toBe(
-      'create t2 -d d2 --metadata {"pm_finding":"starved-epic:a:fx-2"} -l human --actor factory',
+      'create --title t2 -d d2 --metadata {"pm_finding":"starved-epic:a:fx-2"} -l human --actor factory',
     )
   } finally {
     process.env.PATH = path
@@ -807,6 +809,31 @@ test('fileFinding JSON-encodes a key with a quote or backslash, instead of break
     const argv = readFileSync(log, 'utf8').split('\n')
     const metaIdx = argv.indexOf('--metadata')
     expect(JSON.parse(argv[metaIdx + 1]!)).toEqual({ pm_finding: key })
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('a title that starts with - is passed after --title, never as a bare positional (create, fileFinding)', () => {
+  const bin = join(tmpdir(), `fake-bd-dash-title-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = ['#!/bin/sh', `echo "$*" >> ${log}`, 'case "$1" in', '  create) echo new-1;;', 'esac'].join(
+    '\n',
+  )
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    writeFileSync(log, '')
+    b.fileFinding('--labels=factory', 'd', 'k')
+    b.create('--labels=factory', 'd')
+    const lines = readFileSync(log, 'utf8').trim().split('\n')
+    expect(lines.length).toBeGreaterThanOrEqual(2)
+    for (const l of lines.filter(l => l.startsWith('create')))
+      expect(l).toStartWith('create --title --labels=factory -d d')
   } finally {
     process.env.PATH = path
   }
