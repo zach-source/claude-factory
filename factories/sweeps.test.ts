@@ -174,7 +174,14 @@ test('the monitor prompt sends an alert closed in the last 7 days to a person', 
   )
   expect(m).not.toContain('bd reopen')
   expect(m).not.toMatch(/--add-label factory/)
-  expect(m).not.toContain('If a closed bead matches, name it in the description.')
+  const scope =
+    'For a long-lived alert or Ready condition, the 7-day rule below decides how to file when a closed bead matches.'
+  expect(m).toContain(scope)
+  expect(m.indexOf(scope)).toBeGreaterThan(m.indexOf('Live-object findings:'))
+  expect(m.indexOf(scope)).toBeLessThan(m.indexOf('--status closed --closed-after'))
+  expect(scope).not.toContain('closed in the last 7 days')
+  for (const [name, n] of Object.entries(sweeps.nodes as Record<string, { prompt?: string }>))
+    if (name !== 'monitor') expect(n.prompt ?? '', name).not.toContain(scope)
 })
 
 test("sweeps.ts stays self-contained: a repo's own copy keeps no import", async () => {
