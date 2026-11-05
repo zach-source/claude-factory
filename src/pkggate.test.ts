@@ -1225,6 +1225,21 @@ test.each([
   60_000,
 )
 
+test('claude-factory-qyuu.3: a floor present keeps the ceiling when the history span is under 30 min', async () => {
+  const f = ldbFixture()
+  try {
+    f.st.latestAt = NOW + 5_000 // slow fetches in refresh 1 push the anchor time past its start
+    expect((await f.refresh()).decision).toBeUndefined()
+    f.st.latestAt = 0
+    f.st.now = NOW + 30 * 60_000 + 1_000
+    f.st.latest = 1_000_310
+    f.st.minId = f.st.latest - 10
+    expect(await f.refresh()).toMatchObject({ floor: 940_657, capped: true })
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
   // records differ by phase (below), to prove the floor cannot be poisoned upward.
