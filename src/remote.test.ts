@@ -126,16 +126,33 @@ test("inside a VM, a worker's report and mail wait in the outbox instead of touc
   const outbox = join(dir, 'outbox.jsonl')
   const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
   expect(factory(['report', 'r1', '1', 'ready', 'did', 'it'], env).out).toContain('you are done, stop now')
-  expect(factory(['memory', 'add', 'a lesson'], env).code).toBe(0)
+  expect(factory(['memory', 'add', '--kind', 'fact', 'a lesson'], env).code).toBe(0)
   const lines = readFileSync(outbox, 'utf8')
     .trim()
     .split('\n')
     .map(l => JSON.parse(l))
   expect(lines.map(l => [l.argv, l.from])).toEqual([
     [['report', 'r1', '1', 'ready', 'did', 'it'], 'a'],
-    [['memory', 'add', 'a lesson'], 'a'],
+    [['memory', 'add', '--kind', 'fact', 'a lesson'], 'a'],
   ])
   expect(existsSync(home)).toBe(false) // nothing on this side was touched
+})
+
+test('inside a VM, a memory add the laptop would refuse exits 2 and queues nothing (claude-factory-eywj)', () => {
+  mkdirSync(dir, { recursive: true })
+  const outbox = join(dir, 'outbox-refuse.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  for (const args of [
+    ['memory', 'add', '--kind', 'fact', '--tier', 'long', 's', 'b'], // stray flag
+    ['memory', 'add', 's', 'b'], // no --kind
+    ['memory', 'add', '--kind', 'nope', 's', 'b'], // bad kind
+    ['memory', 'add', '--kind', 'fact', '--until', 'zz zz', 's', 'b'], // bad --until
+  ]) {
+    const r = factory(args, env)
+    expect(r.code).toBe(2)
+    expect(r.out).not.toContain('queued for the factory')
+  }
+  expect(existsSync(outbox)).toBe(false)
 })
 
 test('inside a VM, `report`/`mail`/`memory add --help`|`-h` print usage and exit 0, nothing queued (claude-factory-4x1)', () => {
@@ -242,7 +259,9 @@ test('outboxUsage: --help/-h only in a positional slot, malformed args, else nul
   expect(worker.outboxUsage('memory', ['add'])).toContain('usage: factory memory add')
   expect(worker.outboxUsage('mail', ['r1', 'manager', 'hi'])).toBeNull()
   expect(worker.outboxUsage('report', ['r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'])).toBeNull()
-  expect(worker.outboxUsage('memory', ['add', 'a lesson'])).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', 'a lesson'])).toBeNull()
+  expect(worker.outboxUsage('memory', ['add', 'a lesson'])).toContain('--kind')
+  expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', '--tier', 'long', 's'])).toContain('--tier')
 })
 
 const def: Factory = { name: 'one', start: 'a', nodes: { a: { prompt: 'do a', next: { ready: 'done' } } } }

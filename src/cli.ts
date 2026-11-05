@@ -9985,7 +9985,7 @@ if (outboxOk === 'help')
   )
 else if (outboxOk) {
   console.error(outboxOk)
-  process.exit(1)
+  process.exit(cmd === 'memory' && args[0] === 'add' ? 2 : 1)
 }
 let queuedArgs = args
 if (outboxCmd && outboxOk === null && cmd === 'report')
