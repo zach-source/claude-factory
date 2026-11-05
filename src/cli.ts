@@ -587,8 +587,20 @@ export function summaryArgs(args: string[]): string[] {
       'usage: factory report <run> <seq> <outcome> --summary-file <path> (one path, nothing after it)',
     )
   let text: string
+  let size: number
   try {
-    if (!statSync(path).isFile()) return fail(`--summary-file ${path} is not a readable file`)
+    const st = statSync(path)
+    if (!st.isFile()) return fail(`--summary-file ${path} is not a readable file`)
+    size = st.size
+  } catch {
+    return fail(`--summary-file ${path} is not a readable file`)
+  }
+  // outside the try: fail() throws, and the catch would call this a missing file
+  if (size > worker.OUTBOX_MAX_BYTES)
+    return fail(
+      `--summary-file ${path} is ${size} bytes; the cap is ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB): shorten it`,
+    )
+  try {
     text = readFileSync(path, 'utf8')
   } catch {
     return fail(`--summary-file ${path} is not a readable file`)
@@ -930,6 +942,24 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       continue
     }
     const argv = outboxArgv(line)
+    const big = argv && worker.outboxTooBig(argv)
+    if (big && argv) {
+      // Bun.spawnSync throws E2BIG on a huge argv, which would wedge this run on every tick: never spawn it
+      try {
+        appendFileSync(
+          join(runDir(run.id), `${task}.outbox-too-big`),
+          `${new Date().toISOString()} ${big} ${JSON.stringify(argv.slice(0, 3).map(w => w.slice(0, 80)))}\n`,
+          { mode: 0o600 },
+        )
+      } catch {} // a log failure never blocks the replay of the lines after it
+      seen.seen[h] = (seen.seen[h] ?? 0) + 1
+      writeJson(seenFile(run, task), seen)
+      ax.prompt(
+        task,
+        `[factory] your outbox line \`${argv.slice(0, 3).join(' ').slice(0, 200)} ...\` is ${big} bytes, over the ${worker.OUTBOX_MAX_BYTES}-byte cap (100 KiB): it was not run. Shorten the text and run the command again (for a report: a shorter --summary-file)`,
+      )
+      continue
+    }
     const cmd = side && argv && replayable(argv, side, run.id)
     // FACTORY_OUTBOX off: here the command must act, not queue itself again; the sender is the station
     const env = {
@@ -3765,7 +3795,8 @@ export function shipPrOf(
 /** the NAME a factory:<name> label takes: the base name of the run's factory file, else the def's name */
 export const factoryLabelName = (run: Run, def: Factory) => {
   if (!run.factoryFrom) return def.name // run.factory is the pinned factory.json, not a name
-  const base = basename(run.factoryFrom.split(' at ')[0]!, extname(run.factoryFrom.split(' at ')[0]!))
+  const src = run.factoryFrom.replace(/ at [0-9a-f]{7,40}$/, '')
+  const base = basename(src, extname(src))
   return NAME.test(base) ? base : def.name
 }
 
@@ -10047,7 +10078,7 @@ if (outboxOk === 'help')
   )
 else if (outboxOk) {
   console.error(outboxOk)
-  process.exit(1)
+  process.exit(cmd === 'memory' && args[0] === 'add' ? 2 : 1)
 }
 let queuedArgs = args
 if (outboxCmd && outboxOk === null && cmd === 'report')
@@ -10058,6 +10089,13 @@ if (outboxCmd && outboxOk === null && cmd === 'report')
     process.exit(1)
   }
 const queued = outboxCmd && outboxOk === null
+const tooBig = queued ? worker.outboxTooBig([cmd!, ...queuedArgs]) : undefined
+if (tooBig) {
+  console.error(
+    `refused: this ${cmd} is ${tooBig} bytes; the factory takes at most ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB) in one command: shorten the text and run it again`,
+  )
+  process.exit(1)
+}
 if (queued) {
   // the station's bd writes go to GitHub before the report, so the laptop has them when it acts on it; a
   // report that went without them would end the VM, and its writes with it

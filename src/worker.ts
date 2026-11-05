@@ -29,6 +29,7 @@ import {
   VM_PLUGINS,
 } from './harness'
 import { rmSafe } from './home-guard'
+import * as memory from './memory'
 import { sessionOf, type Usage } from './metrics'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
@@ -53,6 +54,17 @@ const alive = (pid: number) => {
   } catch {
     return false
   }
+}
+
+/**
+ * the maximum total bytes of one outbox command. A spawn with more bytes throws E2BIG (macOS 1 MiB; Linux 128 KiB
+ * for one word). The VM refuses a larger command. The laptop does not run it
+ */
+export const OUTBOX_MAX_BYTES = 100 * 1024
+/** the byte size of an argv over OUTBOX_MAX_BYTES, else undefined */
+export const outboxTooBig = (argv: string[]) => {
+  const n = argv.reduce((s, w) => s + Buffer.byteLength(w, 'utf8'), 0)
+  return n > OUTBOX_MAX_BYTES ? n : undefined
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
@@ -96,7 +108,7 @@ export function usageOfSession(run: string): Usage[] {
 }
 
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
- * args (exit 1): see `outboxUsage` */
+ * args (exit 1; exit 2 for memory add): see `outboxUsage` */
 export const OUTBOX_USAGE = {
   report: 'usage: factory report <run> <seq> <outcome> <summary...|--summary-file path>',
   mail: 'usage: factory mail <run> <node|manager> <text...>',
@@ -128,6 +140,23 @@ export function outboxUsage(cmd: string, args: string[]): 'help' | string | null
   if (cmd === 'memory' && args[0] === 'add') {
     if (helpAt([args[1]])) return 'help'
     if (!args[1]) return OUTBOX_USAGE.memory
+    // the laptop replay refuses a stray --word and a failed memory.gate with exit 2 and writes nothing; the
+    // VM must refuse them now, or the worker thinks the note was saved (claude-factory-eywj)
+    const words = args.slice(1)
+    const opt = (flag: string) => (words.includes(flag) ? words.splice(words.indexOf(flag), 2)[1] : undefined)
+    const [, , kind, until] = [
+      opt('--rig'),
+      opt('--from'),
+      opt('--kind'),
+      opt('--until'),
+      opt('--supersedes'),
+    ]
+    const stray = words.find(w => w.startsWith('--') && w !== '--anyway')
+    if (stray) return `factory memory add: unknown flag ${stray}\n${OUTBOX_USAGE.memory}`
+    const [summary, ...body] = words.filter(w => w !== '--anyway')
+    if (!summary) return OUTBOX_USAGE.memory
+    const refusal = memory.gate({ summary, body: body.join(' '), kind, until })
+    if (!refusal.ok) return `factory memory add: ${refusal.reason}\n${OUTBOX_USAGE.memory}`
     return null
   }
   if (cmd === 'memory' && args[0] === 'helped') {

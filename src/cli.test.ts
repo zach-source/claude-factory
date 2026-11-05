@@ -2676,6 +2676,10 @@ test('factoryLabelName gives a NAME from a path, a pinned "at <sha>" source, or 
   expect(factoryLabelName(run('/a/factories/release.ts'), def)).toBe('release')
   expect(factoryLabelName(run('.factory/ship.ts at abcd1234'), def)).toBe('ship')
   expect(factoryLabelName(run('/a/Bad Name.ts'), def)).toBe('lifecycle')
+  expect(factoryLabelName(run('/Users/me/work at home/factories/release.ts'), def)).toBe('release')
+  expect(factoryLabelName(run('/Users/me/work at home/factories/release.ts at abc1234f'), def)).toBe(
+    'release',
+  )
 })
 
 test('trustedEgress keeps a sane VM egress record and drops the rest (claude-factory-vl5j)', () => {

@@ -101,3 +101,14 @@ test('--summary-file after summary words stays plain text', () => {
   expect(factory(['report', 'r3', String(r.seq), 'ready', 'see', '--summary-file', f]).code).toBe(0)
   expect(r.lines().at(-1).summary).toBe(`see --summary-file ${f}`)
 })
+
+test('--summary-file over 100 KiB exits 1, names the flag and posts nothing (claude-factory-amzl)', () => {
+  const r = makeRun('r4')
+  const f = join(dir, 'big')
+  writeFileSync(f, 'x'.repeat(1_200_000))
+  const p = factory(['report', 'r4', String(r.seq), 'ready', '--summary-file', f])
+  expect(p.code).toBe(1)
+  expect(p.err).toContain('--summary-file')
+  expect(p.err).toContain('102400')
+  expect(r.lines()).toEqual([])
+})
