@@ -892,6 +892,16 @@ test('a task gone because serve exited fails the attempt with serve\'s log, not 
   rmSync(join(home, 'runs', 'r8'), { recursive: true })
 })
 
+test('a serve exit log with ESC and U+202E reaches the FAIL reason without them', () => {
+  launched('r8c')
+  cluster('Running', { status: 'exited', log: 'serve died: bad \u001b[31mred‮txt', lines: [] })
+  const out = factory(['tick'])
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8c')
+  expect(row.error).toContain('serve died: bad  [31mred txt')
+  expect(row.error).not.toMatch(/[\u001b‮]/)
+  rmSync(join(home, 'runs', 'r8c'), { recursive: true })
+})
+
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
   launched('r4', false)
   const kubectl = join(dir, 'kubectl')
