@@ -747,8 +747,11 @@ export function compile(def: Factory) {
                 guard: ({ context, event }: { context: Ctx; event: Ev }) =>
                   event.type === 'MAIL' &&
                   event.to === id &&
-                  isParked(context, id) &&
-                  (!!event.wake || !isMailHeld(context, id, node.holdMail)),
+                  ((isParked(context, id) && (!!event.wake || !isMailHeld(context, id, node.holdMail))) ||
+                    // a manager wake also ends an outage hold
+                    (!!event.wake &&
+                      context.log.at(-1)?.node === id &&
+                      context.log.at(-1)?.outcome === 'outage')),
                 target: 'working',
                 actions: assign(withMail),
               },
