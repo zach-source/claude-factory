@@ -79,3 +79,13 @@ test('never picks a bead that carries pm_finding metadata (legacy pm finding or 
   ]
   expect(ids(autoPick(ready, NOW, [], cfg, 10)).sort()).toEqual(['h', 'n'])
 })
+
+test('never picks a bead that carries discovered_from metadata, any value (a person queues it)', () => {
+  const ready = [
+    bead('a', { metadata: { discovered_from: 'acme-1' } }),
+    bead('b', { metadata: { discovered_from: '(invalid)' } }),
+    bead('c', { metadata: { discovered_from: '' } }),
+    bead('n'),
+  ]
+  expect(ids(autoPick(ready, NOW, [], cfg, 10))).toEqual(['n'])
+})
