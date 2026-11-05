@@ -20,6 +20,7 @@ import {
   trustedEgress,
   trustedEgressPaged,
   reworkOwned,
+  reworkStart,
   brief,
   vmBeads,
   clipFactsJson,
@@ -2604,6 +2605,66 @@ test('a rework label on a run-owned PR mails the parked station with wake (61pu.
   expect(sent[0]).toMatchObject({ type: 'MAIL', to: 'deploy', wake: true })
   reworkOwned(pr, { id: 'r', node: 'rollback', c }, io)
   expect(sent[1]).not.toHaveProperty('wake')
+})
+
+const labelPr = (...names: string[]) =>
+  ({
+    number: 7,
+    url: 'https://github.com/acme/widget/pull/7',
+    headRefName: 'fix/thing',
+    baseRefName: 'main',
+    labels: names.map(name => ({ name })),
+  }) as never
+
+test('a rework label on a run-owned PR sends the run back to implement with the ask (8yhq gap 1)', () => {
+  const sent: { type: string; node?: string; to?: string; text?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+  expect(sent[0]).toMatchObject({ to: 'implement' })
+  expect(sent[0]!.text).toContain('make the changes its reviews and checks ask for')
+  expect(sent[1]).toMatchObject({ node: 'implement' })
+  // both labels take the implement path too
+  sent.length = 0
+  reworkOwned(labelPr('conflict', 'rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+})
+
+test('a conflict-only label on a run-owned PR keeps the station mail and no goto (8yhq)', () => {
+  const sent: { type: string; to?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('conflict'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  expect(sent[0]).toMatchObject({ to: 'review' })
+  // a run already at implement gets the mail and no goto
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'implement', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  // a run with no implement station keeps the mail for a rework label too
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'resolve', c, implement: false }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+})
+
+test('an unowned rework label starts the rig factory at implement on the PR branch; conflict-only keeps rework.yaml (8yhq gap 2)', () => {
+  const start = reworkStart(labelPr('rework'), 'lifecycle')
+  expect(start).toMatchObject({ spec: 'lifecycle', branch: 'fix/thing', at: 'implement' })
+  expect(start.goal).toContain('git push origin HEAD:fix/thing')
+  expect(start.goal).toContain('Open no new PR')
+  expect(reworkStart(labelPr('conflict', 'rework'), 'lifecycle')).toMatchObject({ at: 'implement' })
+  const conflict = reworkStart(labelPr('conflict'), 'lifecycle')
+  expect(conflict).toMatchObject({ spec: 'rework', branch: undefined, at: undefined })
+  expect(conflict.goal).toBe(reworkGoal(labelPr('conflict')))
 })
 
 test('managerCommand([], "") holds no per-launch extras and ignores the caller plugin dirs (claude-factory-772)', () => {
