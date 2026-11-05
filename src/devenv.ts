@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { REPO } from './ax'
-import { rmSafe } from './home-guard'
+import { rmQuiet } from './home-guard'
 
 /**
  * `$FACTORY_HOME/devenv.json`: the buildx builder, a command printing the cache's push token, and the shell
@@ -117,7 +117,7 @@ export function build(
     writeFileSync(a.log, `${p.out}\n${p.err}\n`)
     return { ok: p.ok, why: p.ok ? '' : p.err.split('\n').slice(-15).join('\n') }
   } finally {
-    rmSafe(ctx, { recursive: true, force: true })
+    rmQuiet(ctx, { recursive: true, force: true })
   }
 }
 

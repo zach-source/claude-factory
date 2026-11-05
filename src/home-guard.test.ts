@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HOME_REASON, homeReason, protectedPath, rmSafe } from './home-guard'
+import { HOME_REASON, homeReason, protectedPath, rmQuiet, rmSafe } from './home-guard'
 import { denyReason } from './worker-hook'
 
 const H = ['/Users/pat']
@@ -281,6 +281,20 @@ describe('rmSafe', () => {
     expect(() => rmSafe(dir, opts, () => void n++)).toThrow(/still exists after 3 tries/)
     expect(() => rmSafe(dir, opts, () => {})).toThrow(dir)
     expect(n).toBe(3)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('rmQuiet swallows a kept dir, so a finally block keeps the try error', () => {
+    const dir = mk()
+    const f = () => {
+      try {
+        throw new Error('try error')
+      } finally {
+        rmQuiet(dir, opts, () => {})
+      }
+    }
+    expect(f).toThrow('try error')
     expect(existsSync(dir)).toBe(true)
     rmSync(dir, opts)
   })

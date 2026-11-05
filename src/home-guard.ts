@@ -59,6 +59,13 @@ export function rmSafe(p: string, opts?: RmOptions, rm: (p: string, o?: RmOption
     throw new Error(`rmSafe: ${p} still exists after 3 tries`)
 }
 
+/** rmSafe for a finally block: a failed cleanup must not hide the try block's error or result. */
+export function rmQuiet(p: string, opts?: RmOptions, rm?: (p: string, o?: RmOptions) => void): void {
+  try {
+    rmSafe(p, opts, rm)
+  } catch {}
+}
+
 // a delete or move word in shell or in a script language
 const DELETE =
   /(^|[^\w-])(rm|rmdir|unlink|shred|trash|mv)\b|-delete\b|--delete|\bgit\b[^\n;&|]*\bclean\b|\bworktree\s+remove\b|rmtree|rmSync|rimraf|unlinkSync|remove_dir_all|RemoveAll|os\.remove|Remove-Item|fs\.rm\b|\.rm\(/

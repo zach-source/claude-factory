@@ -248,7 +248,7 @@ import {
   timedOutText,
   type SyncEntry,
 } from './sync'
-import { rmSafe } from './home-guard'
+import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport } from './ci'
 import { cut } from './cut'
 
@@ -5426,7 +5426,7 @@ function snapshotWorktree(path: string, runId: string): string {
     git(path, 'update-ref', `refs/factory-gc/${runId}`, commit)
     return commit
   } finally {
-    rmSafe(indexDir, { recursive: true, force: true })
+    rmQuiet(indexDir, { recursive: true, force: true })
   }
 }
 
