@@ -134,20 +134,70 @@ function reviewerApiRule(o: Record<string, unknown>): boolean {
 }
 
 /**
- * The reason the broker refuses a worker policy, or null. A worker policy must not name a manager-only
+ * True for the one github.com rule that gives the reviewer Basic key for git. egressPolicy builds this rule for
+ * a reviewer task. The broker refuses any other key, host or header, as in reviewerApiRule.
+ */
+function reviewerGitRule(o: Record<string, unknown>): boolean {
+  if (!same(Object.keys(o).sort(), ['effects', 'hostnames']) || !same(o.hostnames, ['github.com']))
+    return false
+  const e = o.effects as Record<string, unknown> | null
+  if (!e || typeof e !== 'object' || !same(Object.keys(e), ['replaceHeaders'])) return false
+  const r = e.replaceHeaders
+  if (!Array.isArray(r) || r.length !== 1 || !r[0] || typeof r[0] !== 'object') return false
+  const h = r[0] as Record<string, unknown>
+  return (
+    same(Object.keys(h).sort(), ['credentialUri', 'header', 'prefix']) &&
+    h.header === 'Authorization' &&
+    h.prefix === 'Basic ' &&
+    typeof h.credentialUri === 'string' &&
+    /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/GITHUB_REVIEWER_BASIC$/.test(h.credentialUri)
+  )
+}
+
+/** a string that names a reviewer key in any spelling: case, underscores and other punctuation do not count */
+const namesReviewerKey = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .includes('githubreviewer')
+
+/**
+ * The reason the broker refuses a worker policy, or null. A worker policy can name a reviewer key only in one
+ * reviewerApiRule and one reviewerGitRule. Each must be a whole rule in rules[i]. The git rule needs the API rule.
+ * A worker policy must not name a manager-only
  * vault key or have a pathPrefixes or paths rule (except reviewerApiRule) on a hostname pattern that can match a github host (github.com,
  * *.github.com, and the Substrate patterns * and *.com). Those belong to the manager policy. Substrate ignores key
  * case and underscores, and it folds some non-ASCII letters. So a key with a non-ASCII character fails closed.
  */
 export function workerPolicyRefusal(policy: unknown): string | null {
   const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
+  const reviewerRules = new Set<unknown>()
+  let apiRules = 0
+  let gitRules = 0
+  const top = (policy as { rules?: unknown } | null)?.rules
+  for (const r of Array.isArray(top) ? top : []) {
+    const https =
+      r && typeof r === 'object' && same(Object.keys(r), ['https']) ? (r as { https: unknown }).https : null
+    if (!https || typeof https !== 'object' || Array.isArray(https)) continue
+    const h = https as Record<string, unknown>
+    const api = reviewerApiRule(h)
+    if (api || reviewerGitRule(h)) {
+      reviewerRules.add(https)
+      if (api) apiRules++
+      else gitRules++
+    }
+  }
+  if (apiRules > 1 || gitRules > 1) return 'has more than one reviewer rule'
+  if (gitRules && !apiRules) return 'has a reviewer git rule without a reviewer API rule'
   const walk = (v: unknown, depth: number): string | null => {
     if (depth > 32) return 'is nested too deep'
     if (typeof v === 'string') {
       const m = MANAGER_ONLY_KEYS.exec(v)
-      return m ? `names manager-only vault key ${m[2]!.toUpperCase()}` : null
+      if (m) return `names manager-only vault key ${m[2]!.toUpperCase()}`
+      return namesReviewerKey(v) ? 'names a reviewer-only vault key outside the reviewer rules' : null
     }
     if (!v || typeof v !== 'object') return null
+    if (reviewerRules.has(v)) return null
     const o = v as Record<string, unknown>
     const keys = Array.isArray(v) ? [] : Object.keys(o)
     for (const k of keys) {
