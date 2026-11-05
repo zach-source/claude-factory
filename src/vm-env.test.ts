@@ -62,6 +62,7 @@ describe('vm-env', () => {
     ['a key with a space', '{"A B":"x"}'],
     ['an empty key', '{"":"x"}'],
     ['a key that starts with a digit', '{"1A":"x"}'],
+    ['a value with a NUL', '{"A":"x\\u0000y"}'],
   ]
   for (const [name, v] of bad)
     test(`fails closed: ${name}`, () => {
@@ -87,5 +88,12 @@ describe('vm-env', () => {
   })
   test('the error never prints a value', () => {
     expect(run('{"A":1,"SECRETISH":"zqsecret"}').err).not.toContain('zqsecret')
+  })
+  test('a NUL in a value fails closed with the fixed message, not a TypeError that prints the value', () => {
+    const r = run('{"A":"ok","B":"zqsecret\\u0000tail"}')
+    expect(r.code).toBe(1)
+    expect(r.runs).toBe(0)
+    expect(r.err).toContain('FACTORY_VM_ENV')
+    for (const s of ['zqsecret', 'tail', 'TypeError']) expect(r.err).not.toContain(s)
   })
 })
