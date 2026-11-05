@@ -212,7 +212,6 @@ import {
   githubRows,
   githubSlugOf,
   githubWatchView,
-  parseGitlabView,
   parseGithubView,
   gitlabWatchNotes,
   mrsIn,
@@ -8681,13 +8680,19 @@ async function orphanPass() {
               ],
               { cwd: rig.repo, timeout: 60_000 },
             )
-            const v = r.code === 0 ? parseGitlabView(r.out) : null
-            return (
-              v && {
-                mergeable: { DIRTY: 'CONFLICTING', CLEAN: 'MERGEABLE' }[v.mergeStateStatus] ?? 'UNKNOWN',
-                changes: v.reviewDecision === 'CHANGES_REQUESTED',
-              }
-            )
+            const mr = r.code === 0 ? (JSON.parse(r.out || 'null') as Record<string, unknown> | null) : null
+            if (!mr) return null
+            // a draft MR reports detailed_merge_status "draft_status", so read has_conflicts and the review ask directly
+            const status = String(mr.detailed_merge_status ?? '')
+            return {
+              mergeable:
+                mr.has_conflicts === true || status === 'conflict'
+                  ? 'CONFLICTING'
+                  : mr.has_conflicts === false && ['mergeable', 'draft_status'].includes(status)
+                    ? 'MERGEABLE'
+                    : 'UNKNOWN',
+              changes: status === 'requested_changes',
+            }
           },
           label: async (pr, labels) => {
             const r = ref

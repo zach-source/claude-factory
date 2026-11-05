@@ -71,14 +71,14 @@ export function orphanSkip(pr: OrphanPr, ctx: OrphanCtx): string | undefined {
   if (!src) return 'not a factory branch'
   if (!ctx.runs.has(src)) return 'no run dir'
   if (!/^[0-9a-f]{40}$/.test(pr.headRefOid)) return 'no head SHA'
-  const rec = ctx.records[pr.url]
-  if (rec?.sha === pr.headRefOid && !(rec.run && ctx.forkAborted?.(rec.run)))
-    return 'already forked at this head'
   if (ctx.owner(pr)) return 'a live run owns it'
   const bead = ctx.runs.get(src)!.bead
   if (bead && ctx.liveBeads.has(bead)) return 'a live run holds the bead'
   if (ctx.queued(pr)) return 'in the ship queue'
   if (ctx.runs.get(src)!.decided) return 'source run ended at a decision'
+  const rec = ctx.records[pr.url]
+  if (rec?.sha === pr.headRefOid && !(rec.run && ctx.forkAborted?.(rec.run)))
+    return 'already forked at this head'
   return undefined
 }
 

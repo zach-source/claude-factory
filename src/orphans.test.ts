@@ -345,3 +345,12 @@ test('e2xe: a failed close, label or view call skips the PR and the sweep goes o
   const v = await sweep([pr()], {}, { view: async () => null })
   expect(v.res.skipped[0]!.why).toBe('view unreadable')
 })
+
+test('e2xe: a live owner or live bead stops the close, even when the PR has a record at this head', async () => {
+  const records = { [pr().url]: { sha: SHA, run: 'labeled', from: 'run-1', at: '' } }
+  const closed = { beadStatus: async () => 'closed' }
+  const owned = await sweep([pr()], { records, owner: () => 'run-9' }, closed)
+  expect(owned.res.closed).toEqual([])
+  const held = await sweep([pr()], { records, liveBeads: new Set(['bd-1']) }, closed)
+  expect(held.res.closed).toEqual([])
+})

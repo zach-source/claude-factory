@@ -288,7 +288,8 @@ function fakeGlab(src: string, sha: string, o: MrOpts = {}) {
     source_project_id: o.srcProject ?? 5,
     target_project_id: 5,
     head_pipeline: { sha: o.pipelineSha ?? sha, status: o.status ?? 'success' },
-    detailed_merge_status: 'mergeable',
+    detailed_merge_status: 'draft_status',
+    has_conflicts: false,
   }
   script('glab', [
     `echo "$*" >> "${join(dir, 'glab.calls')}"`,
