@@ -63,6 +63,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     env: {
       ...laptop,
       FACTORY_HOME: home,
+      FACTORY_NO_KICK: '1',
       FACTORY_AX: join(dir, 'ax'),
       FACTORY_KUBECTL: readyController(),
       FACTORY_SELF_UPDATE: '0',
