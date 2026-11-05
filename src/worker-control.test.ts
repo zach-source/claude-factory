@@ -32,6 +32,7 @@ function run(args: string[], env: Record<string, string>, seedHalt = false, seed
   } = process.env
   void [FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, FACTORY_PATROL]
   return Bun.spawnSync([CLI, ...args], {
+    timeout: 15000,
     env: { ...rest, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', FACTORY_AX: ax, ...env },
   })
 }
@@ -270,7 +271,140 @@ for (const [name, env] of Object.entries(plain)) {
   }
 }
 for (const verb of ['skills', 'proposals']) {
-  test(`FACTORY_RUN: ${verb} list still works`, () => {
-    expect(run([verb], { FACTORY_RUN: 'lifecycle-x' }).exitCode).toBe(0)
+  test(`FACTORY_RUN: ${verb} list is refused (e10f: not on the worker allowlist)`, () => {
+    expect(run([verb], { FACTORY_RUN: 'lifecycle-x' }).exitCode).toBe(1)
   })
 }
+
+// claude-factory-e10f: a worker runs only the verbs on an allowlist; a new verb is refused until someone lists it.
+const ALLOWED = [
+  'report',
+  'mail',
+  'memory',
+  'status',
+  'show',
+  'check',
+  'home',
+  'ship',
+  'advisories',
+  'pg-scratch',
+  'mutate',
+  'ci',
+  'worker',
+  'rig',
+]
+const DENIED = [
+  'pkg-gate',
+  'start',
+  'fork',
+  'tick',
+  'beads',
+  'watch',
+  'sync',
+  'broker',
+  'manager',
+  'repos',
+  'migrate-to-ax',
+  'attach',
+  'say',
+  'stop',
+  'resume',
+  'dream',
+  'devenv',
+  'linear',
+  'self-update',
+  'skills',
+  'proposals',
+  'loop',
+  'metrics',
+  'backlog',
+  'prs',
+  'decisions',
+  'plan',
+  'review',
+  'gate-brief',
+  'queue',
+  'hygiene',
+  'digest',
+  'waiting',
+  'decide',
+  'poke',
+  'retry',
+  'goto',
+  'abort',
+  'init',
+  'adopt',
+  'rm',
+  'gc',
+  'sweep',
+]
+const switchCases = () => {
+  const src = readFileSync(join(import.meta.dir, 'cli.ts'), 'utf8')
+  const from = src.indexOf('    switch (cmd) {')
+  const body = src.slice(from, src.indexOf('\n      default:', from))
+  return [...body.matchAll(/^ {6}case '([^']+)':/gm)].map(m => m[1]!)
+}
+test('e10f: every dispatch case is allowed or denied for a worker', () => {
+  expect(switchCases().sort()).toEqual([...ALLOWED, ...DENIED].sort())
+})
+
+type Refusal = (
+  c: string | undefined,
+  a: string[],
+  e: Record<string, string | undefined>,
+) => string | undefined
+const workerVerbRefusal: Refusal = (...a) =>
+  ((require('./cli') as { workerVerbRefusal?: Refusal }).workerVerbRefusal ?? (() => 'missing export'))(...a)
+for (const [name, env] of Object.entries(markers)) {
+  const call = (c: string | undefined, a: string[] = []) => workerVerbRefusal(c, a, env)
+  test(`e10f unit ${name}`, () => {
+    for (const v of ALLOWED) expect(call(v)).toBeUndefined()
+    for (const v of DENIED) expect(call(v)).toContain(`a worker cannot run factory ${v} (`)
+    expect(call('rig', ['list'])).toBeUndefined()
+    for (const a of [['add'], ['rm', 'w'], ['--max', '3', 'add']]) expect(call('rig', a)).toBeDefined()
+    expect(call('zz-new-verb')).toBeDefined()
+    for (const v of [undefined, 'help', '--help', '-h']) expect(call(v)).toBeUndefined()
+  })
+}
+test('e10f unit: no marker and patrol alone are not refused', () => {
+  for (const env of [{}, { FACTORY_PATROL: '1' }])
+    for (const v of [...ALLOWED, ...DENIED, 'zz-new-verb'])
+      expect(workerVerbRefusal(v, [], env)).toBeUndefined()
+})
+
+const spawned: [string[], string][] = [
+  [['zz-new-verb'], 'zz-new-verb'],
+  [['review', 'set', 'k', 'f'], 'review'],
+  [['gate-brief', 'set', 'k', 'f'], 'gate-brief'],
+  [['plan', 'set', 'f'], 'plan'],
+  [['decisions', 'answer', 'acme', 'b1', 't'], 'decisions'],
+  [['skills'], 'skills'],
+  [['proposals'], 'proposals'],
+  [['init'], 'init'],
+  [['adopt', join(dir, 'adopted')], 'adopt'],
+  [['repos', 'sync'], 'repos'],
+  [['broker', 'serve', '--port', '0'], 'broker'],
+  [['pkg-gate', 'serve', '--port', '0'], 'pkg-gate'],
+  [['metrics'], 'metrics'],
+  [['hygiene', 'acme'], 'hygiene'],
+]
+for (const [name, env] of Object.entries(markers)) {
+  for (const [args, verb] of spawned) {
+    test(`e10f ${name}: ${args.slice(0, 3).join(' ')} is refused and changes nothing`, () => {
+      const p = run(args, env, false, seedAll)
+      expect(p.exitCode).toBe(1)
+      expect(p.stderr.toString()).toContain(`a worker cannot run factory ${verb} (`)
+      untouched()
+      expect(existsSync(join(dir, 'adopted', '.factory'))).toBe(false)
+    })
+  }
+}
+test('e10f: allowed verbs still run under FACTORY_FROM', () => {
+  const env = { FACTORY_FROM: 'implement' }
+  const p = run(['home'], env)
+  expect(p.exitCode).toBe(0)
+  expect(p.stdout.toString().trim()).toBe(home)
+  expect(run(['check', join(import.meta.dir, '..', 'factories', 'lifecycle.ts')], env).exitCode).toBe(0)
+  expect(run(['rig', 'list'], env).exitCode).toBe(0)
+  expect(run(['help'], env).exitCode).toBe(0)
+})
