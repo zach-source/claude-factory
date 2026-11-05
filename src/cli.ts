@@ -8451,7 +8451,7 @@ async function orphanPass() {
       const prs = all.filter(pr => pr.headRefName.startsWith('factory/'))
       if (!prs.length) continue
       const shipQueue = beads(rig.repo, 'factory').shipQueue()
-      const mine = new Map<string, { bead?: string }>()
+      const mine = new Map<string, { bead?: string; decided?: boolean }>()
       for (const [id, run] of runs)
         if (run.repo === rig.repo) mine.set(id, { bead: run.bead, decided: decided.has(id) })
       const ctx: OrphanCtx = {
