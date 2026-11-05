@@ -105,7 +105,10 @@ test('backlog rows carry metadata.discovered_from as an id, else "(invalid)", ne
     for (const r of row({ discovered_from: id })) expect(r.discoveredFrom).toBe(id)
   }
   for (const m of [undefined, {}, { discovered_from: null }]) {
-    for (const r of row(m)) expect(r.discoveredFrom).toBeUndefined()
+    for (const r of row(m)) {
+      expect(r.discoveredFrom).toBeUndefined()
+      expect('discoveredFrom' in r).toBe(false)
+    }
   }
   const bad = [
     42,

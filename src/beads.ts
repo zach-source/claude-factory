@@ -207,7 +207,7 @@ export function backlogOf(
     parent: parentOf(x),
     children: counts.get(x.id),
     blockedBy: x.blocked_by?.filter(id => isOpen.has(id)),
-    discoveredFrom: discoveredFromOf(x),
+    ...(discoveredFromOf(x) !== undefined && { discoveredFrom: discoveredFromOf(x) }),
   })
   const waiting = blocked.filter(
     x => !x.assignee && (x.status === undefined || ['open', 'blocked'].includes(x.status)),
