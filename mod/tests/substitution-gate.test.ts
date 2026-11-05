@@ -159,3 +159,23 @@ test('the question window is surrogate-safe at the end edge and at index 0', SLO
     if (!command.startsWith('\uDC00')) expect(lone.test(around)).toBe(false)
   }
 })
+
+test('the question counts the later hits that it does not show', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  const a = 'a'.repeat(350)
+  const rows = [
+    `${F} mail r1 plan "it costs $5 ${a} $(id)"`,
+    `${F} mail r1 plan "${a} it costs $5 ${'b'.repeat(60)} $(id)"`,
+    `${F} mail r1 plan x(note) "${a} $(id)"`,
+    `${F} status # ${a}\n${F} mail r1 plan "$(id)"`,
+    `${F} mail r1 plan "US$ ${a} $(id)"`,
+  ]
+  for (const command of rows) {
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1), command).toContain('2 more dollar signs, backticks or parentheses come after this text and are not shown.')
+  }
+  for (const command of [GATED[0]!, `${F} mail r1 plan "${a} $(id)"`]) {
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1), command).not.toContain('are not shown')
+  }
+})
