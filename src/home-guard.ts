@@ -122,38 +122,101 @@ const TOKEN =
   /([ \t]+)|(;|&&|\|\||\||\n)|((?:2>&1|>\/dev\/null)(?=[ \t\n;&|]|$))|((?:[\w./:@%+,=^~-]|"(?:[^"\\$`!]|\\[^"\\$`\n!])*"|'[^']*')+)/y
 const SED_SCRIPT = /^\d+(,\d+)?p(;\d+(,\d+)?p)*$/
 
-// One reader segment: a reader word, git with a read subcommand, or sed -n with line-range p scripts
-function readerSegment(w: string[]): boolean {
-  if (w[0] === 'sed') {
-    const script = (w[2] ?? '').replace(/^(['"])(.*)\1$/, '$2')
-    return (
-      w[1] === '-n' &&
-      SED_SCRIPT.test(script) &&
-      !w.slice(3).some(a => a.replace(/['"]/g, '').startsWith('-'))
-    )
-  }
-  if (!READERS.has(w[0] ?? '')) return false
-  if (w[0] !== 'git') return true
+const unquote = (a: string) => a.replace(/['"]/g, '')
+
+// A Spec lists the words of a verb that never runs a file it names. `flags` and `value` are
+// closed sets with exact match. The next word after a `value` flag is its value. `noColon`
+// denies a positional word with a colon.
+type Spec = { flags: string[]; value?: string[]; noColon?: boolean }
+const GIT_NON_RUNNERS: Record<string, Spec> = {
+  add: { flags: ['--', '-A', '--all', '-u', '--update', '-N', '--intent-to-add', '-v', '-f'] },
+  commit: {
+    flags: ['--', '-a', '-q', '--quiet', '--amend', '--no-edit', '-s', '-v'],
+    value: ['-m', '-am', '-F'],
+  },
+  checkout: { flags: ['--', '-q', '-b', '-B'] },
+  restore: { flags: ['--', '--staged', '--worktree', '-S', '-W', '-q'] },
+  fetch: { flags: ['-q', '--quiet', '--prune', '-p', '--all', '--tags', '--no-tags'], noColon: true },
+}
+const FACTORY_SPEC: Spec = {
+  flags: [],
+  value: ['--summary-file', '--from', '--kind', '--rig', '--until', '--supersedes'],
+}
+const FACTORY_SUBS = new Set(['report', 'mail'])
+const FACTORY_MEMORY_SUBS = new Set(['add', 'search', 'helped'])
+const PRETTIER_SPEC: Spec = { flags: ['--write', '-w', '--check', '-c', '-l', '--list-different'] }
+const MKDIR_SPEC: Spec = { flags: ['-p', '-v'] }
+
+// the index of the git subcommand: only -C <dir> and --no-pager can come before it
+function gitSub(w: string[]): number {
   let i = 1
   for (;;) {
     if (w[i] === '-C') i += 2
     else if (w[i] === '--no-pager') i++
-    else break
+    else return i
   }
-  return GIT_SUBS.has(w[i] ?? '')
+}
+
+// each word is a positional word, a flag of the closed set, or a value flag and its value
+function argsOk(w: string[], s: Spec): boolean {
+  for (let i = 0; i < w.length; i++) {
+    const a = unquote(w[i]!)
+    if (s.value?.includes(w[i]!)) i++
+    else if (a.startsWith('-')) {
+      if (!s.flags.includes(a)) return false
+    } else if (s.noColon && a.includes(':')) return false
+  }
+  return true
+}
+
+// One non-runner segment: a verb of the closed table above, with words only from its grammar
+function nonRunner(w: string[]): boolean {
+  const v = w[0] ?? ''
+  if (v === 'mkdir') return argsOk(w.slice(1), MKDIR_SPEC)
+  if (v === 'bunx') return /^prettier(@[\d.]+)?$/.test(w[1] ?? '') && argsOk(w.slice(2), PRETTIER_SPEC)
+  if (v === 'factory' || /^\/[\w./-]*\/factory$/.test(v)) {
+    const sub = FACTORY_SUBS.has(w[1] ?? '')
+      ? 2
+      : w[1] === 'memory' && FACTORY_MEMORY_SUBS.has(w[2] ?? '')
+        ? 3
+        : 0
+    return sub > 0 && argsOk(w.slice(sub), FACTORY_SPEC)
+  }
+  if (v === 'git') {
+    const i = gitSub(w)
+    const k = w[i] ?? ''
+    const s = Object.hasOwn(GIT_NON_RUNNERS, k) ? GIT_NON_RUNNERS[k] : undefined
+    return !!s && argsOk(w.slice(i + 1), s)
+  }
+  return false
+}
+
+// One reader or non-runner segment: a reader word, git with a read subcommand, or sed -n with line-range p scripts
+function readerSegment(w: string[]): boolean {
+  if (nonRunner(w)) return true
+  if (w[0] === 'sed') {
+    const script = (w[2] ?? '').replace(/^(['"])(.*)\1$/, '$2')
+    return w[1] === '-n' && SED_SCRIPT.test(script) && !w.slice(3).some(a => unquote(a).startsWith('-'))
+  }
+  if (!READERS.has(w[0] ?? '')) return false
+  if (w[0] !== 'git') return true
+  return GIT_SUBS.has(w[gitSub(w)] ?? '')
 }
 
 /**
  * True when `command` tokenizes fully in the closed grammar (TOKEN) and each segment, split at
- * ; && || | and newline, is a reader (readerSegment). The only redirects are 2>&1 and >/dev/null
+ * ; && || | and newline, is a reader or a non-runner (readerSegment). A non-runner is git add,
+ * commit, checkout, restore or fetch, bunx prettier, factory report, mail or memory add|search|helped,
+ * or mkdir. Its words must be positional or in the verb's closed flag sets (nonRunner). The only redirects are 2>&1 and >/dev/null
  * (2>/dev/null reads as the word 2 and >/dev/null). Any other char (lone &, <, >, (, ), {, }, $,
  * backtick, #, glob, backslash outside quotes) or an empty segment gives false (fail closed), so
  * the script read runs. A sed word after the script, with quotes removed, must not start with -. For git, only
  * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
  * scripts (no w, e, r, -i, -f).
  * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
- * textconv) is not covered. False denies stay for awk, rg, sort, jq, find, xargs, globs, $,
- * subshells, heredocs, line joins and non-reader verbs. Upgrade path: a real shell parser.
+ * textconv), a git hook and a prettier config file are not covered. False denies stay for awk,
+ * rg, sort, jq, find, xargs, globs, $, subshells, heredocs, line joins and verbs outside the
+ * reader and non-runner tables. Upgrade path: a real shell parser.
  */
 function readOnly(command: string): boolean {
   let seg: string[] = []
@@ -174,7 +237,7 @@ function readOnly(command: string): boolean {
 /**
  * HOME_REASON when `command`, or a script file it names, holds a delete word and a whole-home
  * word. `readFile` reads a named script (small files only); without it, only the command text counts.
- * A read-only command (see readOnly) runs no file, so its named files are not read.
+ * A read-only command (see readOnly: readers and non-runners) runs no file, so its named files are not read.
  * ponytail: one level of scripts, no follow of a script that calls another; add it if a bypass shows
  */
 export function homeReason(
