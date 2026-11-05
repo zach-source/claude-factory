@@ -1169,18 +1169,19 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
   const branch = process.env.FACTORY_BRANCH ?? 'main'
   let err = ''
   for (let i = 0; i < tries; i++) {
+    // build in a sibling dir and rename last: a stop part way leaves no .git for the early return to trust
+    const tmp = repo() + '.tmp'
     rmSafe(repo(), { recursive: true, force: true })
-    const r = sh(['git', 'clone', '--branch', branch, remote, repo()])
+    rmSafe(tmp, { recursive: true, force: true })
+    const r = sh(['git', 'clone', '--branch', branch, remote, tmp])
     if (r.ok) {
-      excludeScratch(repo())
+      excludeScratch(tmp)
+      renameSync(tmp, repo())
       return ''
     }
     err = r.err
     // not transient: the laptop pushed the branch before the launch, so it is gone (a merge deleted it)
     if (err.includes(`Remote branch ${branch} not found in upstream origin`)) {
-      // build in a sibling dir and rename last: a stop part way leaves no .git for the early return to trust
-      const tmp = repo() + '.tmp'
-      rmSafe(repo(), { recursive: true, force: true })
       rmSafe(tmp, { recursive: true, force: true })
       const c = sh(['git', 'clone', remote, tmp])
       const b = c.ok ? sh(['git', '-C', tmp, 'checkout', '-q', '-b', branch]) : c

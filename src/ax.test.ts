@@ -1515,6 +1515,24 @@ test('setup: a stop after the fallback clone leaves no repo, and the next start 
   }
 })
 
+test('setup: a stop after the normal clone leaves no repo (claude-factory-lgz1)', async () => {
+  const saved = { ...process.env }
+  const f = cloneFixture('nstop', true)
+  const tpl = join(dir, 'nstop-tpl')
+  mkdirSync(tpl, { recursive: true })
+  writeFileSync(join(tpl, 'info'), 'not a dir') // excludeScratch then fails to make .git/info
+  try {
+    process.env.GIT_TEMPLATE_DIR = tpl
+    await expect(worker.setup({ tries: 1, waitMs: 0 })).rejects.toThrow()
+    expect(existsSync(join(f.repo, '.git'))).toBe(false)
+    delete process.env.GIT_TEMPLATE_DIR
+    expect(await worker.setup({ tries: 1, waitMs: 0 })).toBe('')
+    expect(f.head().branch).toBe('factory/r1')
+  } finally {
+    process.env = saved
+  }
+})
+
 test('setup: any other clone error keeps retrying and then throws, with no fallback clone', async () => {
   const saved = { ...process.env }
   const f = cloneFixture('bad', false)
