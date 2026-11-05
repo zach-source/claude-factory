@@ -3765,7 +3765,8 @@ export function shipPrOf(
 /** the NAME a factory:<name> label takes: the base name of the run's factory file, else the def's name */
 export const factoryLabelName = (run: Run, def: Factory) => {
   if (!run.factoryFrom) return def.name // run.factory is the pinned factory.json, not a name
-  const base = basename(run.factoryFrom.split(' at ')[0]!, extname(run.factoryFrom.split(' at ')[0]!))
+  const src = run.factoryFrom.replace(/ at [0-9a-f]{7,40}$/, '')
+  const base = basename(src, extname(src))
   return NAME.test(base) ? base : def.name
 }
 
