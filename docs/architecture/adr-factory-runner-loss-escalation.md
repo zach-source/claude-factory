@@ -55,6 +55,6 @@ this table. Each phrase must appear in `lifecycle.rules`.
 ## Consequences
 
 - Runs that start before the merge keep the old text.
-- Each brief grows by about 1.2 KB.
+- Each brief grows by about 1.9 KB.
 - Rollback: a pull request that reverts the merge commit. Beads that the rule
   filed stay open for the person.
