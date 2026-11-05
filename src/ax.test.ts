@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
+import * as broker from './broker'
 import { vmCodexHome } from './cli'
 import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
@@ -1607,6 +1608,27 @@ test('the AWS broker egress rule sends the vault key as the raw Authorization va
     { header: 'Authorization', prefix: '', credentialUri: 'ate-secret://agent-vault/v/AWS_BROKER' },
   ])
   expect(ax.createPolicy('aws-1', [rule])).toBeBoolean() // the policy builds without a refusal
+})
+
+test('the documented AWS broker egress rule pins one account with pathPrefixes (claude-factory-oibg)', () => {
+  const doc = readFileSync(join(import.meta.dir, '..', 'docs', 'remote-runner.md'), 'utf8')
+  const line = doc.split('\n').find(l => l.includes('**Egress for the broker**')) ?? ''
+  const json = /`(\{"hosts":[^`]*\})`/.exec(line)?.[1] ?? ''
+  expect(json).not.toBe('')
+  const host = 'aws-broker.factory-aws.svc.cluster.local'
+  const rule = JSON.parse(json.replace('<broker host>', host).replace('<account>', 'acme'))
+  const policy = ax.egressPolicy('v', [rule])
+  const found = policy.rules.find(r => r.https?.hostnames?.includes(host))
+  expect((found?.https as { pathPrefixes?: unknown }).pathPrefixes).toEqual(['/v1/aws/acme/'])
+  expect((found?.https as { ports?: unknown }).ports).toEqual({ numbers: [8443] })
+  expect((found?.https as { effects?: { replaceHeaders: unknown } }).effects?.replaceHeaders).toEqual([
+    { header: 'Authorization', prefix: '', credentialUri: 'ate-secret://agent-vault/v/AWS_BROKER' },
+  ])
+  expect(broker.workerPolicyRefusal(policy)).toBeNull()
+  // the code adds no prefix by itself
+  const bare = ax.egressPolicy('v', [{ ...rule, pathPrefixes: undefined }])
+  const open = bare.rules.find(r => r.https?.hostnames?.includes(host))
+  expect(open?.https).not.toHaveProperty('pathPrefixes')
 })
 
 test('the task env holds only a placeholder AWS container token, and only with the broker URI (claude-factory-5n22)', () => {
