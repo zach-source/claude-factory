@@ -9086,7 +9086,7 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
       continue // run dir exists before run.json and state.json (createRun writes state.json last)
     }
     const { run, value } = cur
-    if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this
+    if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this, and a fork copies it from its source
     const [node, sub] = where(value)
     const n = (await loadPinned(run.factory)).nodes[node]
     const s = slot(n, sub)
@@ -9490,7 +9490,15 @@ export async function forkRun(
         ...['--deps', `related:${src.bead}`],
       )
     : undefined
-  const { run } = await createTracked(src.factory, factoryName, src.repo, src.goal, bead, { run: src, saved })
+  const { run } = await createTracked(
+    src.factory,
+    factoryName,
+    src.repo,
+    src.goal,
+    bead,
+    { run: src, saved },
+    src.ship,
+  )
   const [node, sub] = where(value)
   if (node !== station || sub !== 'working') post(run.id, { type: 'GOTO', node: station })
   if (from) post(run.id, { type: 'MAIL', from, to: station, text: note })
