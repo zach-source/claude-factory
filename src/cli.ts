@@ -811,6 +811,7 @@ function markNoSuspend(run: Run, why: string) {
 }
 
 const SKEW_PROBE_MS = 60 * 60_000
+const SKEW_HOLD_MAX_MS = 3 * SKEW_PROBE_MS
 const bdSkewFile = (run: Run) =>
   join(HOME, `bd-skew-${(rigOf(run.repo)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
 /**
@@ -833,14 +834,18 @@ function bdSkewOf(line: string) {
 /**
  * True while this run's rig has a fresh bd skew marker for this runner: no VM of the rig starts. After
  * SKEW_PROBE_MS one start goes through as the probe, and the marker's clock restarts for the others.
- * ponytail: a fixed 60 min window. Upgrade: probe bd on the image at serve setup.
+ * The hold ends SKEW_HOLD_MAX_MS after `since`, the first skew report; no report or probe moves `since`.
+ * ponytail: a rig hold ends 3 h after the first skew report even if bd is still broken (then each station
+ * gets only its own outage holds). Upgrade: probe bd on the image at serve setup.
  */
 function bdSkewHeld(run: Run, runner: string, now: number) {
   const file = bdSkewFile(run)
-  const m = existsSync(file) ? readJson<{ at?: number; runner?: string }>(file) : null
+  const m = existsSync(file) ? readJson<{ at?: number; since?: number; runner?: string }>(file) : null
   if (!m || m.runner !== runner || typeof m.at !== 'number') return false
+  const since = typeof m.since === 'number' ? m.since : m.at
+  if (now - since >= SKEW_HOLD_MAX_MS) return false
   if (now - m.at < SKEW_PROBE_MS) return true
-  writeJson(file, { ...m, at: now })
+  writeJson(file, { ...m, since, at: now })
   return false
 }
 
@@ -3221,9 +3226,11 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (info.bdSkew) {
       // one Question for each rig: the marker says it was asked. The hold lasts one probe window.
       const file = bdSkewFile(run)
-      const asked = existsSync(file)
+      const old = existsSync(file) ? readJson<{ at?: number; since?: number }>(file) : null
+      const asked = old !== null
       const rig = rigOf(run.repo)?.name ?? basename(run.repo)
-      writeJson(file, { at: now, runner: runner.name, error: info.bdSkew })
+      const since = typeof old?.since === 'number' ? old.since : typeof old?.at === 'number' ? old.at : now
+      writeJson(file, { since, at: now, runner: runner.name, error: info.bdSkew })
       if (!asked)
         send({
           type: 'MAIL',
