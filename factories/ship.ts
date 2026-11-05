@@ -172,7 +172,7 @@ Report healthy when it holds, after you close its bead with \`bd close <bead>\`;
       runner: LAPTOP,
       retries: 3,
       timeoutMin: 45,
-      prompt: `Restore service. Check what is already rolled back, then roll back the release your inbox names the repo's way: redeploy the previous version, turn the flag off, or open a pull request that reverts the merge, since you never push the default branch directly. Confirm recovery against the baseline.
+      prompt: `Restore service. Check what is already rolled back, then roll back the release your inbox names the repo's way: redeploy the previous version, turn the flag off, or open a pull request that reverts the merge (gh pr create --base {base_branch}), since you never push the default branch directly. Confirm recovery against the baseline.
 Report recovered with what you did, the evidence of recovery, the revert pull request's link if you opened one, and everything learned about the cause. A cause is a hypothesis unless you reproduced it: say how you reproduced it, or what would prove it. The postmortem takes it from there.`,
       next: { recovered: 'postmortem' },
     },
