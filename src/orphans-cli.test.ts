@@ -34,6 +34,7 @@ const factory = (args: string[]) => {
       ...laptop,
       FACTORY_HOME: home(),
       PATH: `${bin()}:${laptop.PATH}`,
+      FACTORY_HERDR: join(bin(), 'herdr'),
       CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
       FACTORY_SELF_UPDATE: '0',
       GIT_CONFIG_COUNT: '1',
