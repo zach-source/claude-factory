@@ -6990,7 +6990,7 @@ async function mergedPrsFor(
   const gl = origin.forge === 'gitlab'
   const glabPath = `${origin.owner}/${origin.repo}`
   let firstErr = ''
-  const ref = rigRef(repo)
+  const ref = gl ? null : rigRef(repo) // GitLab does not use it: spare the extra git remote get-url
   // GitHub: one REST list of the newest closed PRs. `alreadyDone` matches the id, the short id and the run
   // branches in it. `gh pr list --search` is GraphQL, which the AX gateway cannot key by owner (oz6s).
   const list = gl
@@ -7049,12 +7049,13 @@ async function mergedPrsFor(
  * claude-factory-6as: check if a merged PR already proves `bead`'s work is done.
  * If it does, dispatch must reject the bead instead of starting a run for it.
  *
- * This makes no gh or glab call at all in four cases:
+ * This makes no gh or glab call at all in five cases:
  * - `FACTORY_PRECHECK=0`
  * - a person already overrode a prior reject (`rejected_by` metadata still names dispatch after a
  *   requeue)
  * - the id does not look like a bead id
  * - the rig's repo is neither on GitHub nor on GitLab
+ * - this pass already saw a gh or glab failure on the same forge (the `forgeFailed` latch, per forge)
  *
  * A gh or glab failure or timeout fails open: the run starts, and the caller gets one dispatch.json row that
  * shows it.
@@ -7535,8 +7536,8 @@ async function dispatch() {
           })
           .slice(0, 3)
           .map(id => `factory/${id}`)
-        // claude-factory-6as.9: skip the gh calls outright once this pass already proved gh broken;
-        // the first candidate's row in precheck.jsonl already covers the fail-open for the rest.
+        // claude-factory-6as.9: precheckSkip makes no call for a forge that already failed in this pass;
+        // the first candidate's row in precheck.jsonl covers the fail-open for the rest.
         const { skip, error } = await precheckSkip(
           rig,
           bead,

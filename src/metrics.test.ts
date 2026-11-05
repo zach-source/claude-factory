@@ -360,7 +360,7 @@ test('render prints the triage reject rate and dispatch pre-check skip line', ()
   ])
   const out = render(m, 'title', { mergedPr: 2, liveRun: 1, failOpen: 4 })
   expect(out).toContain(
-    'triage rejects 1 of 2 (1 already done); dispatch skipped 3 (merged-pr 2, live-run 1), gh fail-open 4',
+    'triage rejects 1 of 2 (1 already done); dispatch skipped 3 (merged-pr 2, live-run 1), forge fail-open 4',
   )
 })
 
@@ -368,7 +368,7 @@ test('render defaults the dispatch pre-check counts, including fail-open, to 0 w
   const m = metrics([{ id: 'r1', node: 'implement', createdAt: 0, log: [] }])
   const out = render(m, 'title')
   expect(out).toContain(
-    'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0), gh fail-open 0',
+    'triage rejects 0 of 0 (0 already done); dispatch skipped 0 (merged-pr 0, live-run 0), forge fail-open 0',
   )
 })
 
