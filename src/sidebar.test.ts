@@ -55,7 +55,8 @@ test('waiting lists what holds on the person, by rig, with how to answer', () =>
   expect(text).not.toContain('  a ')
   expect(text).toContain('b deploy · parked 2.0h · web-1')
   expect(text).toContain('    https://github.com/o/r/pull/7')
-  expect(text).toContain('factory mail b deploy')
+  expect(text).toContain("factory mail b deploy '<what changed>'")
+  expect(text).not.toContain('"<') // the manager reads this hint: no double-quoted placeholder
   expect(text).toContain('factory decide c <ship|hold> [note]')
   expect(text.indexOf('api')).toBeLessThan(text.indexOf('web')) // what needs you leads: the gate's rig first
   expect(waiting([rows[0]!], now)).toBe('nothing waits on you')

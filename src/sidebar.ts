@@ -82,7 +82,7 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
     r.gate
       ? `factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`
       : hold(r) === 'parked'
-        ? `factory mail ${r.id} ${r.node} "<what changed>"`
+        ? `factory mail ${r.id} ${r.node} '<what changed>'`
         : hold(r) === 'stuck'
           ? `factory retry ${r.id}`
           : `herdr pane read ${r.pane}`
