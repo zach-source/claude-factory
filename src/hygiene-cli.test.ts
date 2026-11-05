@@ -247,6 +247,14 @@ test('factory queue under FACTORY_PATROL refuses discovered_from without the fac
   refuses('acme-1.1')
   rows({ 'acme-1.1': { parent: 'acme-1' } }) // a parent that cannot be read
   refuses('acme-1.1')
+  rows({}) // the named bead is not found
+  refuses('acme-1')
+  rows({ 'acme-1': { parent: 'acme-2' }, 'acme-2': { parent: 'acme-1' } }) // a cycle
+  refuses('acme-1')
+  const deep = (n: number) => `acme-1${'.1'.repeat(n)}`
+  rows(Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8].map(n => [deep(n), {}]))) // 9 rows: too long
+  refuses(deep(8))
+  expect(factory(['queue', 'a', deep(7)], patrol).code).toBe(0) // 8 rows: allowed
   // allowed: a person, or the factory label present
   rows({ 'acme-1': from })
   expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
