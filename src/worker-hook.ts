@@ -72,6 +72,7 @@ import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
 import { HOME_REASON, homeReason } from './home-guard'
 import * as self from './worker-hook'
+import { cut } from './cut'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -9438,7 +9439,7 @@ function logDenial(reason: string, command: string, harness: string | undefined)
     const at = Date.now()
     const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
     const name = reasonName(reason)
-    const cmd = command.slice(0, 200)
+    const cmd = cut(command, 200)
     if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
       appendFileSync(
         process.env.FACTORY_OUTBOX,

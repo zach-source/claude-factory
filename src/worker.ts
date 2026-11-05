@@ -31,6 +31,7 @@ import {
 import { rmSafe } from './home-guard'
 import * as memory from './memory'
 import { sessionOf, type Usage } from './metrics'
+import { cut } from './cut'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -280,7 +281,7 @@ function lastError(stderr: string): string {
       .map(l => l.trim())
       .filter(Boolean)
       .at(-1) ?? ''
-  return line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>').slice(0, 300)
+  return cut(line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>'), 300)
 }
 
 /**
@@ -411,7 +412,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
         if (e.type !== 'result') continue
         if (!e.is_error) return null
         const text = String(e.result ?? '')
-        return EGRESS_SIGNATURE.test(text) ? text.slice(0, 300) : null
+        return EGRESS_SIGNATURE.test(text) ? cut(text, 300) : null
       } catch {
         // the first line of a cut stream
       }
@@ -423,7 +424,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
   // the matching line, not whatever the 4000-char window happens to end on: the signature can sit
   // well before the window's tail, with unrelated agent output after it
   const line = text.split('\n').findLast(l => EGRESS_SIGNATURE.test(l))
-  return (line ?? text).slice(0, 300)
+  return cut(line ?? text, 300)
 }
 
 /**
@@ -612,7 +613,7 @@ export function bazelrc() {
       )
     else {
       console.error(`bazel will not trust the egress gateway: keytool: ${made.err || 'wrote no store'}`)
-      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${made.err.slice(0, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
+      trustNote = `\n\n[factory] serve wrote no JVM trust store for the egress gateway${made.ok ? '' : ` (keytool: ${cut(made.err, 200)})`}. Bazel fetches will fail with PKIX errors. This is why.`
     }
   }
   // with a pkg-gate (launch() set these in the VM's env), rules_go/rules_python/rules_js fetch through it too,
@@ -1178,11 +1179,13 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
  * must not push the message (for example git's fatal line) out of it (claude-factory-x500).
  */
 export function diedText(e: unknown) {
-  const msg = String((e as Error)?.message ?? e)
-    .trim()
-    .replace(/\s*\n\s*/g, ' | ')
-    .slice(0, 500)
-  return `serve died: ${msg}\n${((e as Error)?.stack ?? '').slice(0, 1200)}`
+  const msg = cut(
+    String((e as Error)?.message ?? e)
+      .trim()
+      .replace(/\s*\n\s*/g, ' | '),
+    500,
+  )
+  return `serve died: ${msg}\n${cut((e as Error)?.stack ?? '', 1200)}`
 }
 
 /**

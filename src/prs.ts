@@ -242,7 +242,7 @@ export function evidenceLine(
   rig: string,
   id: string,
 ): string {
-  const title = pr.title.length > 120 ? pr.title.slice(0, 120) : pr.title
+  const title = cut(pr.title, 120)
   return `already done: ${pr.url} (#${pr.number}, merged ${pr.mergeCommit}) "${title}". Requeue: factory queue ${rig} ${id}`
 }
 

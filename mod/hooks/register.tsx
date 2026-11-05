@@ -1143,7 +1143,7 @@ async function sweepDecisions($: EngineInterface) {
   rt.decisionsAt = await $.clock.now()
   const { isOk, out } = await factory($, ['decisions'])
   if (isOk) await update($, decisions, () => JSON.parse(out) as FactoryDecisions)
-  else $.ui.status(`factory decisions failed: ${out.split('\n')[0]?.slice(0, 80)}`)
+  else $.ui.status(`factory decisions failed: ${cutText(out.split('\n')[0] ?? '', 80)}`)
 }
 
 /**
@@ -1346,17 +1346,17 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
   const command = rawCommand.replace(/\\\n/g, '')
   if (/\bfactory\s+decide\b/.test(command))
     return {
-      question: `The manager model wants to decide a factory gate: ${command.slice(0, 300)}. Allow it?`,
+      question: `The manager model wants to decide a factory gate: ${cutText(command, 300)}. Allow it?`,
       deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
     }
   if (/\bfactory\s+decisions\s+answer\b/.test(command))
     return {
-      question: `The manager model wants to answer a person's bd decision: ${command.slice(0, 300)}. Allow it?`,
+      question: `The manager model wants to answer a person's bd decision: ${cutText(command, 300)}. Allow it?`,
       deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
     }
   if (/\bfactory\s+start\b[\s\S]*--owned\b/.test(command))
     return {
-      question: `The manager model wants to start a bead carrying its owner's decisions: ${command.slice(0, 300)}. Allow it?`,
+      question: `The manager model wants to start a bead carrying its owner's decisions: ${cutText(command, 300)}. Allow it?`,
       deny: 'The person did not confirm starting this owner-only bead.',
     }
   return null

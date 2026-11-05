@@ -3,6 +3,8 @@
 // Treat the input as untrusted. Each field must match a strict pattern.
 // A bead holds only checked fields, never free text.
 
+import { cut } from './cut'
+
 export type Severity = 'critical' | 'high' | 'medium' | 'low'
 export type Advisory = {
   id: string
@@ -162,7 +164,7 @@ export function planAdvisories(input: AdvisoryInput, seen: (field: string, value
     const pkgs = [...new Set(g.map(a => a.package))]
     plan.files.push({
       keys,
-      title: `advisory ${ids[0]}: ${worst} in ${pkgs.join(', ')}`.slice(0, 200),
+      title: cut(`advisory ${ids[0]}: ${worst} in ${pkgs.join(', ')}`, 200),
       body: [
         `Repo: ${input.repo}`,
         `Severity: ${worst}`,

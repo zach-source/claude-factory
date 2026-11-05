@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { cut } from './cut'
 
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
@@ -31,7 +32,7 @@ export function signingProbe(
     const line = err.split('\n').find(l => l.trim()) ?? `git exited ${p.exitCode}`
     // git stops with this before it calls the signer: the fix is user.name/user.email, not an unlock.
     const kind = /identity unknown|empty ident/i.test(err) ? 'identity' : 'signer'
-    return { ok: false, kind, error: line.trim().slice(0, 200) }
+    return { ok: false, kind, error: cut(line.trim(), 200) }
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
