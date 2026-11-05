@@ -2758,14 +2758,18 @@ test("an AX codex station's usage comes from the kept rollout, with node and seq
   })
 })
 
-test('codex usage: a missing dir, a wrong name, the claude dir, a symlink or a big file add no rows (flhv AC3)', () => {
-  const none = (id: string, kept: (d: string, seq: number) => void) =>
-    expect(codexTick(id, kept).rows).toEqual([])
+const none = (id: string, kept: (d: string, seq: number) => void) =>
+  expect(codexTick(id, kept).rows).toEqual([])
+
+test('codex usage: a missing dir, a wrong name or the claude dir add no rows (flhv AC3)', () => {
   none('rc2', () => {})
   none('rc3', d => keep(d, 'notes.jsonl', rolloutLines()))
   none('rc3b', d => keep(d, `x-${ROLL}`, rolloutLines()))
   none('rc3c', d => keep(d, `${ROLL}.bak`, rolloutLines()))
   none('rc4', d => keep(d, ROLL, rolloutLines(), 'claude'))
+})
+
+test('codex usage: a symlink or a big file add no rows (flhv AC3)', () => {
   none('rc5', d => {
     const out = join(dir, 'outside.jsonl')
     writeFileSync(out, rolloutLines())
@@ -2778,6 +2782,9 @@ test('codex usage: a missing dir, a wrong name, the claude dir, a symlink or a b
     writeFileSync(f, rolloutLines() + '\n')
     truncateSync(f, 64 * 1024 * 1024 + 1)
   })
+})
+
+test('codex usage: a bad model or a bad output count add no rows (flhv AC3)', () => {
   none('rc7', d => keep(d, ROLL, rolloutLines({ model: 'bad model' })))
   none('rc8', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) })))
   for (const [i, out] of [-1, 1.5, '9', 2e12].entries())
