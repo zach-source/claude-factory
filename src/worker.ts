@@ -1110,7 +1110,11 @@ export async function setup(o: { tries?: number; waitMs?: number } = {}) {
 /** clone the run branch once; a note for the brief when origin has lost it */
 async function clone({ tries = 60, waitMs = 5000 } = {}) {
   const remote = process.env.FACTORY_REPO
-  if (!remote || existsSync(join(repo(), '.git'))) return ''
+  const noteFile = join(own(), 'missing-branch-note')
+  if (!remote) return ''
+  // a restart before the first turn saves a session: give the same note again
+  if (existsSync(join(repo(), '.git'))) return existsSync(noteFile) ? readFileSync(noteFile, 'utf8') : ''
+  rmSync(noteFile, { force: true })
   const branch = process.env.FACTORY_BRANCH ?? 'main'
   let err = ''
   for (let i = 0; i < tries; i++) {
@@ -1128,7 +1132,9 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
       const b = c.ok ? sh(['git', '-C', repo(), 'checkout', '-q', '-b', branch]) : c
       if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
       excludeScratch(repo())
-      return `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
+      const note = `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
+      writeFileSync(noteFile, note)
+      return note
     }
     await Bun.sleep(waitMs)
   }

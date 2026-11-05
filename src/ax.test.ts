@@ -1303,6 +1303,18 @@ test('setup: a run branch that is missing on origin does not fail; it clones the
   }
 })
 
+test('setup: a restart before the first turn gives the missing-branch note again (claude-factory-awwj)', async () => {
+  const saved = { ...process.env }
+  cloneFixture('miss2', false)
+  try {
+    const first = await worker.setup({ tries: 1, waitMs: 0 })
+    expect(first).toContain('your run branch factory/r1 is missing on origin')
+    expect(await worker.setup({ tries: 1, waitMs: 0 })).toBe(first)
+  } finally {
+    process.env = saved
+  }
+})
+
 test('setup: a run branch that is present is cloned and gives an empty note', async () => {
   const saved = { ...process.env }
   const f = cloneFixture('have', true)
