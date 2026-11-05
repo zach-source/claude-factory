@@ -723,7 +723,11 @@ test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => 
   expect(s).toContain('no factory label')
   expect(s).not.toContain('--add-label factory')
   expect(s).not.toContain('-l factory')
-  expect(p.indexOf('bd create "verify live')).toBeLessThan(p.indexOf('bd close <bead>'))
+  expect(p.indexOf("bd create 'verify live")).toBeLessThan(p.indexOf('bd close <bead>'))
+  expect(s).toContain("bd create 'verify live: <output> (<release version>)'")
+  expect(s).toContain("-d '<the output to see, its trigger, the release version>'")
+  expect(s).not.toContain('"')
+  expect(soakSentence('Put each value in single quotes')).toContain("write each ' in it as '\\''")
 })
 
 test('3w8o AC3 must-see-live changes keep the block', () => {
@@ -733,8 +737,10 @@ test('3w8o AC3 must-see-live changes keep the block', () => {
     'the bead or the plan is security-sensitive',
     'data or schema migration',
     'plan marks an AC must-see-live',
+    'a bead comment starts `review#<n> security:`, `check#<n> security:` or `security#<n>`',
   ])
     expect(cls, t).toContain(t)
+  expect(soakSentence('If you cannot tell')).toBe('If you cannot tell, the change is must-see-live.')
   const s = soakSentence('the deadline never applies')
   for (const t of ['report blocked', '`Question:`', 'two unsure soaks in a row']) expect(s, t).toContain(t)
   expect(p).toContain('at most twice in a row for a must-see-live change')
