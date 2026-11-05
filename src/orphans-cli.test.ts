@@ -33,6 +33,7 @@ const factory = (args: string[]) => {
     env: {
       ...laptop,
       FACTORY_HOME: home(),
+      FACTORY_NO_KICK: '1',
       PATH: `${bin()}:${laptop.PATH}`,
       FACTORY_HERDR: join(bin(), 'herdr'),
       CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
