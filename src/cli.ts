@@ -3180,6 +3180,23 @@ export function trustedPaged(file: string, now: number): number {
   return typeof v === 'number' && Number.isFinite(v) && v <= now + LIMIT_RESET_MAX_MS ? v : 0
 }
 
+/**
+ * This function reads an egress-paged file: a bare number (old form) or {since, at}. A value that is not a finite
+ * number, or that is more than LIMIT_SKEW_MS ahead, counts as no file (undefined), so it cannot mute the notice mail.
+ */
+export function trustedEgressPaged(file: string, now: number): { since: number; at: number } | undefined {
+  let v: unknown
+  try {
+    v = existsSync(file) ? readJson<unknown>(file) : undefined
+  } catch {
+    return undefined
+  }
+  const ok = (n: unknown): n is number => Number.isFinite(n) && (n as number) <= now + LIMIT_SKEW_MS
+  if (ok(v)) return { since: v, at: 0 }
+  const o = v as { since?: unknown; at?: unknown } | null
+  return o && typeof o === 'object' && ok(o.since) && ok(o.at) ? { since: o.since, at: o.at } : undefined
+}
+
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
 function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
@@ -3434,8 +3451,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     // `since` and each mail the manager on every tick
     const paged = join(runDir(run.id), `egress-paged-${node}.json`)
     // keyed on the laptop's clock: `since` comes from the VM, so only `at` limits how often it can page
-    const prev = existsSync(paged) ? readJson<number | { since: number; at: number }>(paged) : undefined
-    const was = typeof prev === 'number' ? { since: prev, at: 0 } : prev
+    const was = trustedEgressPaged(paged, now)
     if (!was || (egress.since > was.since && now >= was.at + EGRESS_REPAGE_MS)) {
       const since = new Date(egress.since).toLocaleString()
       // from 'factory', not node: a notice, not a question, so it never reads as the station asking the
@@ -7584,6 +7600,11 @@ async function dispatch() {
           name = loaded.name
           nodes = loaded.nodes
           spec = source
+        }
+        // only shipPass starts a ship run: a ship-named factory here would get merge authority with no run.ship
+        if (name === 'ship') {
+          deferCandidate('factory ship is reserved for the ship queue: only the runner starts a ship run')
+          continue
         }
         // a station the chosen factory lacks would otherwise start the run quietly at its own
         // first station (`def.start`, below), with no sign anywhere that the label was wrong
