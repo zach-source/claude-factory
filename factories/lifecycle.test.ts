@@ -1268,3 +1268,25 @@ test('runner-loss scenario matrix: every ADR phrase is in the house rules (s2hn)
       'a second runner loss at the same step, after the host bug exists',
     )
 })
+
+// claude-factory-dgok: untrusted text must not sit in shell double quotes ($(...), backticks and $VAR expand there).
+test('triage: every non-ID placeholder in a factory command span is single-quoted (claude-factory-dgok)', () => {
+  const ids = new Set(['rig', 'this rig', "this bead's id"])
+  const bad = (t: string) =>
+    (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
+      (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ids.has(p.slice(1, -1))),
+    )
+  expect(bad(lifecycle.nodes.triage!.prompt)).toEqual([])
+  expect(bad('`factory file-elsewhere <rig> --title <title>`')).toEqual(['<title>'])
+  expect(bad("`factory file-elsewhere <rig> --title '<title>'`")).toEqual([])
+})
+
+test('triage passes file-elsewhere text in single quotes (claude-factory-dgok)', () => {
+  const t = lifecycle.nodes.triage!.prompt
+  const spans = (t.match(/`[^`]*`/g) ?? []).filter(s => s.includes('file-elsewhere'))
+  expect(spans.length).toBeGreaterThan(0)
+  for (const s of spans) expect(s).not.toContain('"<')
+  for (const p of ['title', 'description']) expect(spans.join('\n')).toContain(`'<${p}>'`)
+  expect(t).toContain("'\\''")
+  expect(t).toContain('single quotes')
+})

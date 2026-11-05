@@ -18,7 +18,9 @@ import {
   clip,
   labelMail,
   trustedEgress,
+  trustedEgressPaged,
   reworkOwned,
+  reworkStart,
   brief,
   vmBeads,
   clipFactsJson,
@@ -2605,6 +2607,66 @@ test('a rework label on a run-owned PR mails the parked station with wake (61pu.
   expect(sent[1]).not.toHaveProperty('wake')
 })
 
+const labelPr = (...names: string[]) =>
+  ({
+    number: 7,
+    url: 'https://github.com/acme/widget/pull/7',
+    headRefName: 'fix/thing',
+    baseRefName: 'main',
+    labels: names.map(name => ({ name })),
+  }) as never
+
+test('a rework label on a run-owned PR sends the run back to implement with the ask (8yhq gap 1)', () => {
+  const sent: { type: string; node?: string; to?: string; text?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+  expect(sent[0]).toMatchObject({ to: 'implement' })
+  expect(sent[0]!.text).toContain('make the changes its reviews and checks ask for')
+  expect(sent[1]).toMatchObject({ node: 'implement' })
+  // both labels take the implement path too
+  sent.length = 0
+  reworkOwned(labelPr('conflict', 'rework'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+})
+
+test('a conflict-only label on a run-owned PR keeps the station mail and no goto (8yhq)', () => {
+  const sent: { type: string; to?: string }[] = []
+  const io = {
+    unlabel: () => 0,
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  const c = { log: [] } as never
+  reworkOwned(labelPr('conflict'), { id: 'r', node: 'review', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  expect(sent[0]).toMatchObject({ to: 'review' })
+  // a run already at implement gets the mail and no goto
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'implement', c, implement: true }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+  // a run with no implement station keeps the mail for a rework label too
+  sent.length = 0
+  reworkOwned(labelPr('rework'), { id: 'r', node: 'resolve', c, implement: false }, io)
+  expect(sent.map(e => e.type)).toEqual(['MAIL'])
+})
+
+test('an unowned rework label starts the rig factory at implement on the PR branch; conflict-only keeps rework.yaml (8yhq gap 2)', () => {
+  const start = reworkStart(labelPr('rework'), 'lifecycle')
+  expect(start).toMatchObject({ spec: 'lifecycle', branch: 'fix/thing', at: 'implement' })
+  expect(start.goal).toContain('git push origin HEAD:fix/thing')
+  expect(start.goal).toContain('Open no new PR')
+  expect(reworkStart(labelPr('conflict', 'rework'), 'lifecycle')).toMatchObject({ at: 'implement' })
+  const conflict = reworkStart(labelPr('conflict'), 'lifecycle')
+  expect(conflict).toMatchObject({ spec: 'rework', branch: undefined, at: undefined })
+  expect(conflict.goal).toBe(reworkGoal(labelPr('conflict')))
+})
+
 test('managerCommand([], "") holds no per-launch extras and ignores the caller plugin dirs (claude-factory-772)', () => {
   const env = (c: string[]) => JSON.parse(c[c.indexOf('--settings') + 1]!).env.CLAUDE_CODE_PLUGIN_DIRS
   expect(env(managerCommand([], 'x/herdr-fleet:y'))).toBe('y')
@@ -2789,6 +2851,51 @@ test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed 
   for (const r of [now + 8 * D + 1, now + 365 * D, -5, 0, '9', NaN, undefined])
     expect(trustedHit({ ...ok, resetsAt: r }, now)?.resetsAt).toBe(0)
   expect(trustedHit({ ...ok, text: 'x' }, now)).toEqual({ at: ok.at, kind: 'usage', resetsAt: 0 })
+})
+
+test('trustedEgressPaged reads an egress-paged file only inside the skew bound (claude-factory-rnn8)', () => {
+  const now = 1_700_000_000_000
+  const S = 5 * 60_000
+  const dir = mkdtempSync(join(tmpdir(), 'egress-paged-'))
+  try {
+    const file = join(dir, 'p.json')
+    expect(trustedEgressPaged(file, now)).toBeUndefined()
+    const j = JSON.stringify
+    const bad = [
+      'not json',
+      'null',
+      '"5"',
+      '[]',
+      '{}',
+      '{"since":"1","at":0}',
+      '{"since":1,"at":"0"}',
+      '{"since":1}',
+      '{"at":0}',
+      String(now + S + 1),
+      j({ since: now + S + 1, at: 0 }),
+      j({ since: 1, at: now + S + 1 }),
+      '{"since":1e308,"at":0}',
+      '{"since":1,"at":1e999}',
+      '{"since":1e999,"at":0}',
+      '-1e999',
+    ]
+    for (const text of bad) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toBeUndefined()
+    }
+    const kept: [string, { since: number; at: number }][] = [
+      [String(now - 1), { since: now - 1, at: 0 }],
+      [j({ since: now + S, at: now + S }), { since: now + S, at: now + S }],
+      [j({ since: now - 1000, at: now - 1 }), { since: now - 1000, at: now - 1 }],
+      [j({ since: 0, at: 0 }), { since: 0, at: 0 }],
+    ]
+    for (const [text, want] of kept) {
+      writeFileSync(file, text)
+      expect(trustedEgressPaged(file, now), text).toEqual(want)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('clip never leaves a lone high surrogate', () => {
