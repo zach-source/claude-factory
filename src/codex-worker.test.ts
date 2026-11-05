@@ -88,6 +88,7 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   const agents = readFileSync(join(f.dir, 'AGENTS.md'), 'utf8')
   expect(agents).toStartWith(readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8'))
   expect(agents).toContain(readFileSync(join(ROOT, 'src', 'worker-codex.md'), 'utf8'))
+  expect(agents).not.toContain('GOMAXPROCS') // claude-factory-66ib: VM-only
   expect(agents).not.toContain('person rules')
   expect(env.CODEX_HOME).toBe(f.dir)
   expect(env.CLAUDE_PROJECT_DIR).toBe(f.run.worktree)

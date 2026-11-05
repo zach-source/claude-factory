@@ -1396,6 +1396,8 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
     // claude-factory-hg9o: the image's worker rules (no /opt/plugins here, so no --skill)
     ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-system\.md$/)],
+    // claude-factory-66ib: the VM-only lines
+    ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-vm\.md$/)],
     ...['--provider', 'anthropic', '--model', 'm'],
   ])
   expect(worker.turnArgv('claude', { session: 's', claudeFlags: ['--tools', 'Bash'] })).toEqual([
@@ -2389,6 +2391,12 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
     expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
+    )
+    // claude-factory-66ib: worker-system.md, then worker-vm.md, then worker-codex.md
+    expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toBe(
+      ['worker-system.md', 'worker-vm.md', 'worker-codex.md']
+        .map(f => readFileSync(join(import.meta.dir, f), 'utf8'))
+        .join(''),
     )
     expect(readFileSync(join(tmp, 'argv'), 'utf8').trim().split('\n')).toEqual([
       ...CODEX_GUARD_FLAGS,
