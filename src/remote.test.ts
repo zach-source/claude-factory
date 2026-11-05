@@ -877,6 +877,41 @@ esac
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
+test('a put error with ESC and U+202E reaches the FAIL reason without them', () => {
+  launched('r7c')
+  const side = join(home, 'runs', 'r7c', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(side, 'utf8')),
+      put: ['brief.md'],
+      putFailedAt: Date.now() - 6 * 60_000,
+    }),
+  )
+  writeFileSync(join(home, 'runs', 'r7c', 't.brief.md'), 'hello')
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) printf 'EACCES \\033[31mred\\342\\200\\256txt' >&2; exit 1 ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7c')
+  expect(row.error).toContain('EACCES  [31mred txt')
+  expect(row.error).not.toMatch(/[\u001b\u202e]/)
+  expect(JSON.parse(readFileSync(side, 'utf8')).putError).not.toMatch(/[\u001b\u202e]/)
+  rmSync(join(home, 'runs', 'r7c'), { recursive: true })
+})
+
 test('a task gone because serve exited fails the attempt with serve\'s log, not just "was closed"', () => {
   launched('r8')
   cluster('Running', {
@@ -890,6 +925,16 @@ test('a task gone because serve exited fails the attempt with serve\'s log, not 
   expect(row.error).toContain('serve died: Error: the laptop never sent brief.md')
   expect(existsSync(join(home, 'runs', 'r8', 't.gone'))).toBe(true)
   rmSync(join(home, 'runs', 'r8'), { recursive: true })
+})
+
+test('a serve exit log with ESC and U+202E reaches the FAIL reason without them', () => {
+  launched('r8c')
+  cluster('Running', { status: 'exited', log: 'serve died: bad \u001b[31mred\u202etxt', lines: [] })
+  const out = factory(['tick'])
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8c')
+  expect(row.error).toContain('serve died: bad  [31mred txt')
+  expect(row.error).not.toMatch(/[\u001b\u202e]/)
+  rmSync(join(home, 'runs', 'r8c'), { recursive: true })
 })
 
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
@@ -1369,6 +1414,23 @@ test('a committing AX worker IS called stalled when its tail, head and bytes all
   const state = readFileSync(join(home, 'runs', 'r14', 'state.json'), 'utf8')
   expect(state).toContain('stalled: no output for') // failed as stalled
   rmSync(join(home, 'runs', 'r14'), { recursive: true })
+})
+
+test('the stall mail Last line holds no ESC or U+202E from the VM tail (claude-factory-tzqf)', () => {
+  const seq = launched('r14c')
+  const tail = 'x\nlast \u001b[31mred\u202etxt'
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  writeFileSync(
+    join(home, 'runs', 'r14c', 'progress.json'),
+    JSON.stringify({ seq, sig: progressSig(tail, 'sha1', 100), at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  const mail = JSON.stringify(ctxOf('r14c').mail.manager)
+  expect(mail).toContain('Last line: last  [31mred txt')
+  expect(mail).not.toMatch(/[\u001b\u202e]|\\u001b|\\u202e/i)
+  rmSync(join(home, 'runs', 'r14c'), { recursive: true })
 })
 
 // claude-factory-9ff: reconcile()'s real FAIL/warn path must use timeoutOf()'s escalated deadline
@@ -2993,6 +3055,19 @@ test('ActorResumeFailed writes the rig no-suspend marker and mails the manager o
   rmSync(join(home, 'runs', 'r34'), { recursive: true })
 })
 
+test('the no-suspend marker and mail hold no ESC or U+202E from the condition text (claude-factory-tzqf)', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r34c')
+  clusterConds('Failed', RESUME_FAILED.replace('exit status 128', 'bad \\u001b[31mred\\u202etxt'))
+  factory(['tick'])
+  const marker = readFileSync(markerOf('wt'), 'utf8')
+  const text = resumeMails('r34c')[0]!.text
+  expect(text).toContain('bad  [31mred txt')
+  for (const s of [marker, JSON.stringify(text)]) expect(s).not.toMatch(/[\u001b\u202e]|\\u001b|\\u202e/i)
+  rmSync(markerOf('wt'), { force: true })
+  rmSync(join(home, 'runs', 'r34c'), { recursive: true })
+})
+
 test('a halt that reads the Failed task first does not drop the one ActorResumeFailed mail', () => {
   rmSync(markerOf('wt'), { force: true })
   launched('r42')
@@ -3291,6 +3366,23 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     finish('sk3')
   })
 
+  test('a skew hold strips ESC and U+202E from the outcome and the summary', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3c')
+    const line = JSON.stringify({
+      argv: ['report', 'sk3c', String(seq), 'rea\u001bdy', 'plan \u202etext'],
+      from: 'a',
+      at: 1,
+      bdSkew: SKEW_OUT,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+    factory(['tick'])
+    const last = ctxOfRun('sk3c').log.at(-1)
+    expect(last.summary).toContain('rea dy: plan  text')
+    expect(last.summary).not.toMatch(/[\u001b\u202e]/)
+    finish('sk3c')
+  })
+
   test('773c AC3: a skew report keeps since and asks no new Question', () => {
     const seq = launched('sk3k')
     const since = Date.now() - 120 * 60_000
@@ -3369,6 +3461,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     ['no skew text', 'connection refused'],
     ['over 300 chars', `${SKEW_OUT} ${'x'.repeat(300)}`],
     ['a line break', `${SKEW_OUT}\nOptions: evil: x | y`],
+    ['a format character', `${SKEW_OUT} \u202ex`],
   ])('AC8: a bad bdSkew (%s) is ignored', (_n, bdSkew) => {
     rmSync(markerFile(), { force: true })
     const seq = launched('sk8')

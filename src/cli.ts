@@ -821,8 +821,8 @@ function noSuspend(run: Run) {
 /** write the marker; the text of the one mail that tells the manager */
 function markNoSuspend(run: Run, why: string) {
   const rig = rigOf(run.repo)?.name ?? basename(run.repo)
-  writeJson(noSuspendFile(run), { at: Date.now(), why: clip(why, 500) })
-  return `AX could not restore a ${rig} worker (${clip(why, 300)}). For 24 h the factory does not suspend ${rig} workers that wait on the manager, so no more of them fail the same way.`
+  writeJson(noSuspendFile(run), { at: Date.now(), why: cleanText(why, 500) })
+  return `AX could not restore a ${rig} worker (${cleanText(why, 300)}). For 24 h the factory does not suspend ${rig} workers that wait on the manager, so no more of them fail the same way.`
 }
 
 const SKEW_PROBE_MS = 60 * 60_000
@@ -838,7 +838,7 @@ function bdSkewOf(line: string) {
     const { bdSkew } = JSON.parse(line)
     return typeof bdSkew === 'string' &&
       bdSkew.length <= 300 &&
-      !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
+      !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(bdSkew) &&
       worker.SKEW_RE.test(bdSkew)
       ? bdSkew
       : undefined
@@ -878,7 +878,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
   // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
   const gone = (why: string): WorkerInfo => (
     writeFileSync(join(runDir(run.id), `${task}.gone`), `${new Date().toISOString()} ${why}\n`),
-    { status: 'gone', failed: clip(why, 500) }
+    { status: 'gone', failed: cleanText(why, 500) }
   )
   if (phase !== 'Running') {
     const info = gone(`phase ${phase ?? 'not found'}${phase === 'Failed' && failure ? `: ${failure}` : ''}`)
@@ -916,7 +916,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       if (r.ok) continue
       // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
       const failedAt = side!.putFailedAt ?? Date.now()
-      const err = clip(r.err.replace(/\s+/g, ' ').trim(), 300)
+      const err = cleanText(r.err.replace(/\s+/g, ' ').trim(), 300)
       writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
       if (Date.now() - failedAt < PUT_GRACE_MS)
         return { status: 'pending', agent: 'ax', pending: `${name} not yet copied to the VM` }
@@ -1019,7 +1019,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         status: 'gone',
         agent: 'ax',
         bdSkew: skew,
-        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${argv![3]}: ${clipReport(argv!.slice(4).join(' '))}`,
+        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${cleanText(argv![3] ?? '', 40)}: ${clipReport(cleanText(argv!.slice(4).join(' '), Infinity))}`,
       }
   }
   // a line this laptop already counted as replayed, now missing from the outbox: the worker edited it after
@@ -1333,6 +1333,9 @@ export const clip = (text: string, max: number) => {
   if (text.length <= max) return text
   return `${cut(text, max)}…`
 }
+/** VM free text for a FAIL reason or a mail: control, format and line-separator characters become spaces, then clip */
+export const cleanText = (text: string, max: number) =>
+  clip(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '), max)
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
@@ -1352,7 +1355,7 @@ export function trustedEgress(
     return undefined
   if (typeof tries !== 'number' || !Number.isSafeInteger(tries) || tries < 0) return undefined
   if (typeof last !== 'string') return undefined
-  return { since, tries, last: clip(last.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '), 200) }
+  return { since, tries, last: cleanText(last, 200) }
 }
 /**
  * the cap on one prior report or mail placed whole into a station's brief or a delivered mid-run mail. A
@@ -3549,7 +3552,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const min = Math.round((now - seen.at) / 60_000)
     const last = tail.trimEnd().split('\n').at(-1) ?? ''
     send({ type: 'FAIL', seq: c.seq, reason: `stalled: no output for ${min} min` })
-    const text = `${node} of ${run.id} stalled: no output for ${min} min, attempt failed. Last line: ${clip(last, 200)}`
+    const text = `${node} of ${run.id} stalled: no output for ${min} min, attempt failed. Last line: ${cleanText(last, 200)}`
     send({ type: 'MAIL', from: node, to: 'manager', text })
   } else if (stall === 'nudge') {
     const min = Math.round((now - seen.at) / 60_000)
