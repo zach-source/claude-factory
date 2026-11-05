@@ -119,7 +119,7 @@ test('the Allow question shows the first hit even after a long harmless prefix',
     [`${F} mail r1 plan "${pad} $(id)"`, '$(id)'],
     [`${F} mail r1 plan "${pad} ${BT}id${BT}"`, `${BT}id${BT}`],
     [`${F} mail r1 plan ${pad}<<EOF\nit's $(id)\nEOF`, '<<EOF'],
-    [`${F} mail r1 plan ${pad} 'open`, "'open"],
+    [`${F} mail r1 plan ${pad} 'open ${'b'.repeat(100)}`, "'open"],
   ]
   for (const [command, shown] of rows) {
     const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
