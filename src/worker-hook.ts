@@ -5389,7 +5389,10 @@ function segmentDynArg(words: string[]): boolean {
 // claude-factory-mn2y: true when this segment may define a shell alias.
 // W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
 // W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
+// claude-factory-kuyx: a segment that is "alias" with only plain words (no "=", no expansion)
+// lists aliases and defines none, so it is not a define.
 function segmentMayDefineAlias(words: string[]): boolean {
+  if (words[0] === 'alias' && words.slice(1).every(w => /^[A-Za-z0-9_.:@%+,/-]+$/.test(w))) return false
   const anchors = commandAnchors(words)
   const first = anchors[0]
   const safe = first !== undefined && externalProgram(words[first]!)
