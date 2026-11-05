@@ -243,7 +243,7 @@ test('a pre-launch park the watch moved 48 h past its park still gets the none-o
   expect(factory(['watch']).code).toBe(0)
   const m = mailOf('r1')
   expect(m).toHaveLength(1)
-  expect(m[0].text).toContain('None of')
+  expect(m[0]?.text).toContain('None of')
 })
 
 test('a run parked on a pull request in another repo is watched and woken on its merge (AC9)', () => {
