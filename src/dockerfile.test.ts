@@ -40,6 +40,12 @@ test('the worker image pins nixpkgs at the rev with a current Go (claude-factory
   expect(docker).not.toContain('6510408d')
 })
 
+test('the nixpkgs prefetch pins the content by narHash, not only the rev (claude-factory-zgaa)', () => {
+  const worker = workerStage()
+  expect(worker).toMatch(/^ARG NIXPKGS_NARHASH=sha256-[A-Za-z0-9%]+$/m)
+  expect(worker).toContain('nixpkgs/${NIXPKGS_REV}?narHash=${NIXPKGS_NARHASH} --out-link')
+})
+
 test('the worker NIX_PATH resolves nixpkgs to the pin, never a channel (claude-factory-823x)', () => {
   const worker = workerStage()
   expect(worker).toMatch(/^ENV NIX_PATH=nixpkgs=\/nix\/var\/nix\/gcroots\/nixpkgs-pin$/m)
