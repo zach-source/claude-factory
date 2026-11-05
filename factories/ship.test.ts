@@ -645,13 +645,21 @@ test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
       '--deps discovered-from:<bead> -d "<evidence>"',
       'bd children <bead>',
       'no factory label',
-      'Never leave the bead open with the ship label',
+      'When you report published (deploy) or healthy (soak), never leave the bead open with the ship label',
       'name each filed id in the close reason',
     ])
       expect(p, `${id}: ${t}`).toContain(t)
-    for (const t of ['Question:', 'description never counts', 'Never close the bead'])
+    for (const t of [
+      'Question:',
+      'description never counts',
+      'Never close the bead',
+      'unless a filed bead or a waiver carries it',
+    ])
       expect(ledger, `${id} ledger: ${t}`).toContain(t)
-    expect(p.indexOf('Never close the bead'), id).toBeLessThan(p.indexOf('bd close <bead>'))
+    expect(ledger).not.toContain('The one exception')
+    expect(p.indexOf('unless a filed bead or a waiver carries it'), id).toBeLessThan(
+      p.indexOf('bd close <bead>'),
+    )
   }
   for (const id of ['queue', 'release', 'rollback', 'postmortem']) expect(prompt(id), id).not.toContain(met)
 })
