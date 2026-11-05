@@ -1184,6 +1184,62 @@ test('claude-factory-35em AC4: a /latest below the anchor gives a finite floor a
   }
 }, 60_000)
 
+// claude-factory-qyuu: a history shorter than GO_FLOOR_WINDOW_MS (30 min) gives no ceiling, because a short
+// span multiplies noise by minDays/span.
+test('claude-factory-qyuu AC1: the retry 30 s after a failed cold start does not extrapolate a ceiling', async () => {
+  const f = ldbFixture()
+  try {
+    f.st.lookups = false
+    expect((await f.refresh()).decision).toBe('error')
+    f.st.now = NOW + 30_000
+    f.st.latest = 1_000_050
+    f.st.lookups = true
+    const line = await f.refresh()
+    expect(line).toMatchObject({ floor: 942_400, sampled: 942_400, capped: false })
+    expect(await f.healthzFloor()).toBe(942_400)
+    expect((await f.probe()).status).toBe(404)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
+test.each([
+  ['exactly 30 min', 1_800_000, 942_700, true],
+  ['29 min 59 s', 1_799_000, 950_000, false],
+])(
+  'claude-factory-qyuu AC2: the ceiling starts at a %s span',
+  async (_n, dt, floor, capped) => {
+    const f = ldbFixture()
+    try {
+      f.st.lookups = false
+      expect((await f.refresh()).decision).toBe('error')
+      f.st.now = NOW + dt
+      f.st.latest = 1_000_300
+      f.st.minId = 950_000
+      f.st.lookups = true
+      expect(await f.refresh()).toMatchObject({ floor, capped })
+    } finally {
+      f.stop()
+    }
+  },
+  60_000,
+)
+
+test('claude-factory-qyuu.3: a floor present keeps the ceiling when the history span is under 30 min', async () => {
+  const f = ldbFixture()
+  try {
+    f.st.latestAt = NOW + 5_000 // slow fetches in refresh 1 push the anchor time past its start
+    expect((await f.refresh()).decision).toBeUndefined()
+    f.st.latestAt = 0
+    f.st.now = NOW + 30 * 60_000 + 1_000
+    f.st.latest = 1_000_310
+    f.st.minId = f.st.latest - 10
+    expect(await f.refresh()).toMatchObject({ floor: 940_657, capped: true })
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
   // records differ by phase (below), to prove the floor cannot be poisoned upward.
