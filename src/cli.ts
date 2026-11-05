@@ -8408,11 +8408,13 @@ async function orphanPass() {
   const { busy, held } = await busyRigs()
   const runs = new Map<string, Run>()
   const live: { id: string; log: Entry[]; bead?: string }[] = []
+  const decided = new Set<string>()
   for (const id of startedRunIds()) {
     try {
       const { run, value, c } = current(id)
       const [node] = where(value)
       runs.set(id, run)
+      if (c.log.at(-1)?.outcome === 'decision') decided.add(id)
       if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
     } catch {
       // a run still being written
@@ -8450,7 +8452,8 @@ async function orphanPass() {
       if (!prs.length) continue
       const shipQueue = beads(rig.repo, 'factory').shipQueue()
       const mine = new Map<string, { bead?: string }>()
-      for (const [id, run] of runs) if (run.repo === rig.repo) mine.set(id, { bead: run.bead })
+      for (const [id, run] of runs)
+        if (run.repo === rig.repo) mine.set(id, { bead: run.bead, decided: decided.has(id) })
       const ctx: OrphanCtx = {
         runs: mine,
         liveBeads: new Set(live.flatMap(r => (r.bead ? [r.bead] : []))),

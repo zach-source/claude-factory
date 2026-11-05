@@ -23,7 +23,7 @@ export type OrphanRecord = { sha: string; run: string; from: string; at: string 
 
 export type OrphanCtx = {
   /** the run ids that have a run dir, each with its bead (if any) */
-  runs: Map<string, { bead?: string }>
+  runs: Map<string, { bead?: string; decided?: boolean }>
   /** the bead of every live run */
   liveBeads: Set<string>
   /** a live run owns the PR (its branch, or its reports link it): the id */
@@ -63,6 +63,7 @@ export function orphanSkip(pr: OrphanPr, ctx: OrphanCtx): string | undefined {
   const bead = ctx.runs.get(src)!.bead
   if (bead && ctx.liveBeads.has(bead)) return 'a live run holds the bead'
   if (ctx.queued(pr)) return 'in the ship queue'
+  if (ctx.runs.get(src)!.decided) return 'source run ended at a decision'
   return undefined
 }
 
@@ -87,8 +88,8 @@ export async function orphanSweep(prs: OrphanPr[], ctx: OrphanCtx, io: OrphanIo,
     if (lookups >= ORPHAN_CHECKS_MAX) break
     if (bead) {
       const status = await io.beadStatus(bead)
-      if (status === null || status === 'closed') {
-        skipped.push({ url: pr.url, why: status === null ? 'bead unreadable' : 'bead closed' })
+      if (status === null || status === 'closed' || status === 'deferred') {
+        skipped.push({ url: pr.url, why: status === null ? 'bead unreadable' : `bead ${status}` })
         continue
       }
     }
