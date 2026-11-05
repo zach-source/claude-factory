@@ -207,6 +207,7 @@ import {
   githubUnlabelArgv,
   githubPullPath,
   githubChecks,
+  gitlabChecks,
   githubPulls,
   githubRows,
   githubSlugOf,
@@ -8383,7 +8384,7 @@ async function labelPass() {
 
 /**
  * Start a review run for each green draft pull request that no run owns (claude-factory-pff5).
- * An aborted run that blocked leaves such a PR. In each GitHub rig, `orphanSweep` forks the source run
+ * An aborted run that blocked leaves such a PR. In each GitHub or GitLab rig, `orphanSweep` forks the source run
  * at `review`. It forks ORPHAN_CAP runs at most in one pass, and only where the rig has room.
  * Each fork goes in orphan-forks.json, keyed by PR URL and head SHA: one review for each head.
  * If that file is unreadable, the rig is skipped: with no record, a PR can get two forks.
@@ -8419,13 +8420,32 @@ async function orphanPass() {
   for (const rig of rigs()) {
     try {
       const ref = rigRef(rig.repo)
-      if (!ref) continue // GitLab rigs: claude-factory-9t7v
+      const gl = originRef(rig.repo)
+      if (!ref && gl?.forge !== 'gitlab') continue
       if (!records) throw new Error('orphan-forks.json is unreadable')
       const cap = Math.min(ORPHAN_CAP, room(rig, busy, undefined, held))
       // a full rig forks nothing (cap 0), but its failed-fork rows stay
-      const rows = await githubPulls(spawnGh, ref.slug, rig.repo, { state: 'open', pages: 2 })
-      if (!rows) throw new Error('gh api pulls failed')
-      const prs = (githubRows(rows) as OrphanPr[]).filter(pr => pr.headRefName.startsWith('factory/'))
+      const project = gl ? `${gl.owner}/${gl.repo}` : ''
+      let all: OrphanPr[]
+      if (ref) {
+        const rows = await githubPulls(spawnGh, ref.slug, rig.repo, { state: 'open', pages: 2 })
+        if (!rows) throw new Error('gh api pulls failed')
+        all = githubRows(rows) as OrphanPr[]
+      } else {
+        // ponytail: one page of 100 MRs; a project with more open MRs misses the older ones. Upgrade: page=2, as githubPulls does.
+        const r = await spawnGlab(
+          [
+            'api',
+            '--hostname',
+            gl!.host,
+            `projects/${encodeURIComponent(project)}/merge_requests?state=opened&per_page=100`,
+          ],
+          { cwd: rig.repo, timeout: 60_000 },
+        )
+        if (r.code !== 0) throw new Error('glab api merge_requests failed')
+        all = parseGitlabLabeled(r.out)
+      }
+      const prs = all.filter(pr => pr.headRefName.startsWith('factory/'))
       if (!prs.length) continue
       const shipQueue = beads(rig.repo, 'factory').shipQueue()
       const mine = new Map<string, { bead?: string }>()
@@ -8448,7 +8468,10 @@ async function orphanPass() {
               return null
             }
           },
-          checks: pr => githubChecks(spawnGh, ref.slug, pr.headRefOid, rig.repo),
+          checks: pr =>
+            ref
+              ? githubChecks(spawnGh, ref.slug, pr.headRefOid, rig.repo)
+              : gitlabChecks(spawnGlab, gl!.host, project, pr.number, pr.headRefOid, rig.repo),
           fork: async (pr, srcId, note) => {
             const { value } = current(srcId)
             const src = runs.get(srcId)!

@@ -1453,12 +1453,26 @@ test('parseGitlabLabeled gives labelPass the fields gh pr list does', () => {
       url: MR_URL,
       headRefName: 'feat/x',
       baseRefName: 'main',
+      headRefOid: '',
+      isDraft: false,
       isCrossRepository: false,
       labels: [{ name: 'rework' }, { name: 'bug' }],
     },
     expect.objectContaining({ number: 8, isCrossRepository: true }),
   ])
   expect(parseGitlabLabeled(JSON.stringify([{ ...mr, labels: undefined }]))[0]!.labels).toEqual([])
+  const one = (over: object) => parseGitlabLabeled(JSON.stringify([{ ...mr, ...over }]))[0]!
+  expect(one({ sha: 'abc' }).headRefOid).toBe('abc')
+  expect(one({ draft: true }).isDraft).toBe(true)
+  expect(one({ work_in_progress: true }).isDraft).toBe(true)
+  expect(one({ draft: false, work_in_progress: true }).isDraft).toBe(false)
+  expect(one({}).isDraft).toBe(false)
+  expect(one({ draft: 'yes' }).isDraft).toBe(false)
+  expect(one({ source_project_id: 9, target_project_id: 9 }).isCrossRepository).toBe(false)
+  expect(one({ source_project_id: 9, target_project_id: 10 }).isCrossRepository).toBe(true)
+  expect(one({ source_project_id: undefined }).isCrossRepository).toBe(true)
+  expect(one({ source_project_id: undefined, target_project_id: undefined }).isCrossRepository).toBe(true)
+  expect(one({ source_project_id: '9', target_project_id: '9' }).isCrossRepository).toBe(true)
   expect(parseGitlabLabeled('not json')).toEqual([])
   expect(parseGitlabLabeled(JSON.stringify([{ title: 'no iid' }]))).toEqual([])
 })
@@ -1629,6 +1643,7 @@ test('buildPrs: an MR URL on another host is never viewed, on a GitLab rig or a 
 
 import {
   githubChecks,
+  gitlabChecks,
   githubPulls,
   githubRows,
   githubSlugOf,
@@ -1851,6 +1866,53 @@ test('githubChecks tallies check runs and statuses of a 40-hex head; a failed ca
   expect(await githubChecks(none, 'acme/widget', sha, '/tmp')).toEqual({ pass: 0, fail: 0, pending: 0 })
   expect(await githubChecks(answer(runs, status, 1), 'acme/widget', sha, '/tmp')).toBeNull()
   expect(await githubChecks(answer(runs, status), 'acme/widget', 'abc', '/tmp')).toBeNull()
+})
+
+test('gitlabChecks tallies the head pipeline of an MR pinned to the SHA; any doubt gives null', async () => {
+  const sha = 'a'.repeat(40)
+  const calls: string[][] = []
+  const answer =
+    (mr: unknown, code = 0, raw?: string): Gh =>
+    async argv => {
+      calls.push(argv)
+      return { code, out: raw ?? JSON.stringify(mr), err: '' }
+    }
+  const run = (g: Gh, s = sha) => gitlabChecks(g, 'gitlab.example.com', 'acme/widget', 7, s, '/tmp')
+  const pipe = (status: string, psha = sha) => ({ sha, head_pipeline: { sha: psha, status } })
+  expect(await run(answer(pipe('success')))).toEqual({ pass: 1, fail: 0, pending: 0 })
+  expect(calls[0]).toEqual([
+    'api',
+    '--hostname',
+    'gitlab.example.com',
+    'projects/acme%2Fwidget/merge_requests/7',
+  ])
+  expect(await run(answer(pipe('skipped')))).toEqual({ pass: 1, fail: 0, pending: 0 })
+  expect(await run(answer(pipe('failed')))).toEqual({ pass: 0, fail: 1, pending: 0 })
+  expect(await run(answer(pipe('canceled')))).toEqual({ pass: 0, fail: 1, pending: 0 })
+  for (const st of [
+    'running',
+    'pending',
+    'created',
+    'manual',
+    'scheduled',
+    'preparing',
+    'waiting_for_resource',
+    'canceling',
+    '',
+  ])
+    expect(await run(answer(pipe(st)))).toEqual({ pass: 0, fail: 0, pending: 1 })
+  for (const bad of [false, 0, '', 'x', [], [1]])
+    expect(await run(answer({ sha, head_pipeline: bad }))).toBeNull()
+  expect(await run(answer({ sha, head_pipeline: null }))).toEqual({ pass: 0, fail: 0, pending: 0 })
+  expect(await run(answer({ sha }))).toEqual({ pass: 0, fail: 0, pending: 0 })
+  const n = calls.length
+  expect(await run(answer(pipe('success')), 'abc')).toBeNull()
+  expect(calls.length).toBe(n)
+  expect(await run(answer(pipe('success'), 1))).toBeNull()
+  expect(await run(answer(null, 0, 'not json'))).toBeNull()
+  expect(await run(answer([]))).toBeNull()
+  expect(await run(answer({ ...pipe('success'), sha: 'b'.repeat(40) }))).toBeNull()
+  expect(await run(answer(pipe('success', 'b'.repeat(40))))).toBeNull()
 })
 
 test('buildPrs on GitHub: list and view go through REST only; a failed check-runs call leaves the view applied, a failed pull call is an error', async () => {

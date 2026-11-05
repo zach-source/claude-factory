@@ -675,7 +675,12 @@ export function parseGitlabLabeled(out: string) {
       url: str(m.web_url),
       headRefName: str(m.source_branch),
       baseRefName: str(m.target_branch),
-      isCrossRepository: m.source_project_id !== m.target_project_id,
+      headRefOid: str(m.sha),
+      isDraft: (m.draft ?? m.work_in_progress) === true,
+      // fail closed: same project only when both ids are numbers and equal
+      isCrossRepository: !(
+        typeof m.source_project_id === 'number' && m.source_project_id === m.target_project_id
+      ),
       labels: (Array.isArray(m.labels) ? (m.labels as unknown[]).map(str) : []).map(name => ({ name })),
     }))
 }
@@ -855,6 +860,29 @@ export async function githubChecks(gh: Gh, slug: string, sha: string, cwd: strin
     api(`repos/${slug}/commits/${sha}/status`),
   ])
   return runs.code === 0 && status.code === 0 ? checksOf(rollupOf(runs.out, status.out)) : null
+}
+
+/** the CI tally of an MR head from its head pipeline, or null when the SHA is not 40 hex characters, the call
+ * fails, or the MR head or its pipeline is not `sha` (a push after the listing) */
+export async function gitlabChecks(
+  glab: Gh,
+  host: string,
+  project: string,
+  iid: number,
+  sha: string,
+  cwd: string,
+): Promise<Checks | null> {
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null
+  const r = await glab(
+    ['api', '--hostname', host, `projects/${encodeURIComponent(project)}/merge_requests/${iid}`],
+    { cwd, timeout: 30_000 },
+  )
+  const mr = r.code === 0 ? (asJson(r.out) as Json | null) : null
+  if (!mr || typeof mr !== 'object' || Array.isArray(mr) || mr.sha !== sha) return null
+  const pipeline = mr.head_pipeline as Json | null | undefined
+  if (pipeline == null) return { pass: 0, fail: 0, pending: 0 }
+  if (typeof pipeline !== 'object' || Array.isArray(pipeline) || pipeline.sha !== sha) return null
+  return checksOf([{ conclusion: PIPELINE[str(pipeline.status)] ?? null }])
 }
 
 /** a pull (`pulls/N`), its reviews, its head's check runs and its combined status mapped onto `Viewed`.
