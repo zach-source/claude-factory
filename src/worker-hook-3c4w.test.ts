@@ -55,8 +55,7 @@ const CONTROL = [
   'true && factory goto r1 done',
   "bash -c 'factory tick'",
 ]
-const DYNAMIC = [
-  'factory 2>&1 ~/tick','factory rig "$X"', 'factory $(echo goto) r1']
+const DYNAMIC = ['factory 2>&1 ~/tick', 'factory rig "$X"', 'factory $(echo goto) r1']
 const DENIED = ['factory rig 2>"$X" add', 'factory rig {fd}>f add', 'factory rig 2>&1 "$X"']
 const ALLOW = [
   'factory rig',
