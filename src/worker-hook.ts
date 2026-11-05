@@ -5184,16 +5184,18 @@ const FACTORY_CONTROL_VERBS = new Set([
 /**
  * claude-factory-5y7b: a factory word at any position (after sudo, env, timeout, bash -c) whose next
  * word is a control verb, or is dynamic, so the guard cannot read it. Same any-position scan as anyGhReason.
- * claude-factory-rtbv: a redirect word after `rig` is not the rig sub (dropRedirectWords skips it).
+ * claude-factory-rtbv: a redirect word before the verb or after `rig` is not the verb or sub (dropRedirectWords skips it).
  */
 function anyFactoryControlReason(words: string[]): string | undefined {
   for (let j = 0; j + 1 < words.length; j++) {
     if (baseWord(words[j]!) !== 'factory') continue
-    const next = words[j + 1]!
+    const rest = dropRedirectWords(words.slice(j + 1))
+    const next = rest[0]
+    if (next === undefined) continue
     if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
     if (dynamicWord(next)) return DYNAMIC_VERB_REASON
-    if (next.toLowerCase() === 'rig' && j + 2 < words.length) {
-      const sub = dropRedirectWords(words.slice(j + 2))[0]
+    if (next.toLowerCase() === 'rig') {
+      const sub = rest[1]
       if (sub === undefined) continue
       if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
       if (sub !== 'list') return FACTORY_CONTROL_REASON
