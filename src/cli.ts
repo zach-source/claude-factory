@@ -3568,7 +3568,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (
       runner.deliver(
         c.pane,
-        inbox.map(m => `[factory mail from ${m.from}] ${clipReport(m.text)}`).join('\n\n'),
+        inbox.map(m => `[factory mail from ${m.from}] ${indentRest(clipReport(m.text))}`).join('\n\n'),
       )
     )
       send({ type: 'READ', box: node, seen: c.mail[node]!.length })
