@@ -6,6 +6,7 @@
 // The pm subagent has no Bash tool.
 // It picks an order and a one-line why for each id that the CLI already offers.
 // It proposes a change that it cannot make itself (claude-factory-dun).
+import { cut } from './cut'
 import { createHash } from 'node:crypto'
 import { isOwned, parentOf, SHIP, type Bead } from './beads'
 
@@ -69,7 +70,7 @@ const band = (b: Bead) => (stationDemoted(b) ? 2 : prio(b))
 // text) (claude-factory-dun.26).
 const stripControl = (s: string) =>
   s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g, '')
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+const clip = (s: string, n: number) => (s.length > n ? `${cut(s, n - 1)}…` : s)
 
 /**
  * Cleans untrusted bead text, such as a Linear-synced title or a pm-proposed `why`.

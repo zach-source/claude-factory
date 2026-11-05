@@ -13,11 +13,15 @@ const marker = join(dir, 'marker')
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-function run(gpgsign: string, program: string) {
+function run(gpgsign: string, program: string, identity = true) {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   const conf = [
-    ['user.name', 't'],
-    ['user.email', 't@t'],
+    ...(identity
+      ? [
+          ['user.name', 't'],
+          ['user.email', 't@t'],
+        ]
+      : [['user.useConfigOnly', 'true']]),
     ['commit.gpgsign', gpgsign],
     ['gpg.format', 'ssh'],
     ['user.signingkey', join(dir, 'key.pub')],
@@ -31,7 +35,11 @@ function run(gpgsign: string, program: string) {
     CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
     FACTORY_SELF_UPDATE: '0',
     GIT_CONFIG_COUNT: String(conf.length),
+    ...(identity ? {} : { HOME: dir, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', EMAIL: '' }),
   }
+  if (!identity)
+    for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'])
+      delete env[k]
   conf.forEach(([k, v], i) => {
     env[`GIT_CONFIG_KEY_${i}`] = k!
     env[`GIT_CONFIG_VALUE_${i}`] = v!
@@ -118,7 +126,19 @@ test('a failing signer starts no run, shows one signing row and marks the bead',
   run('true', failing())
   expect(runDirs()).toHaveLength(0)
   expect(signingRows()).toHaveLength(1)
+  expect(signingRows()[0]!.error).toContain('commit signing failed:')
   expect(signingRows()[0]!.error).toContain('Unlock the signing agent')
+  expect(rows().find(r => r.id === 'acme-1')?.skip).toBe('commit signing down')
+})
+
+test('a missing git identity shows the identity row, not the unlock hint, and marks the bead', () => {
+  setup([{ name: 'a' }])
+  run('true', failing(), false)
+  expect(runDirs()).toHaveLength(0)
+  expect(signingRows()).toHaveLength(1)
+  expect(signingRows()[0]!.error).toContain('git identity missing in the rig repo')
+  expect(signingRows()[0]!.error).toContain('Set user.name and user.email')
+  expect(signingRows()[0]!.error).not.toContain('Unlock')
   expect(rows().find(r => r.id === 'acme-1')?.skip).toBe('commit signing down')
 })
 

@@ -72,6 +72,7 @@ import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
 import { HOME_REASON, homeReason } from './home-guard'
 import * as self from './worker-hook'
+import { cut } from './cut'
 
 export const REASON =
   'The factory denies this command: do not run rm -r or rm -rf, do not chain cd with rm, and do not ' +
@@ -5389,7 +5390,10 @@ function segmentDynArg(words: string[]): boolean {
 // claude-factory-mn2y: true when this segment may define a shell alias.
 // W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
 // W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
+// claude-factory-kuyx: a segment that is "alias" with only plain words (no "=", no expansion)
+// lists aliases and defines none, so it is not a define.
 function segmentMayDefineAlias(words: string[]): boolean {
+  if (words[0] === 'alias' && words.slice(1).every(w => /^[A-Za-z0-9_.:@%+,/-]+$/.test(w))) return false
   const anchors = commandAnchors(words)
   const first = anchors[0]
   const safe = first !== undefined && externalProgram(words[first]!)
@@ -9435,7 +9439,7 @@ function logDenial(reason: string, command: string, harness: string | undefined)
     const at = Date.now()
     const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
     const name = reasonName(reason)
-    const cmd = command.slice(0, 200)
+    const cmd = cut(command, 200)
     if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
       appendFileSync(
         process.env.FACTORY_OUTBOX,

@@ -723,7 +723,8 @@ test('triage rollout requeues into the release factory; decision defers at plan;
   expect(lifecycle.nodes.triage!.next.elsewhere).toEqual({ to: 'done', defer: true })
   const t = lifecycle.nodes.triage!.prompt
   for (const s of [
-    'Add the label `factory` only when the Goal has no `Linear-sourced:` line',
+    'factory file-elsewhere <rig> --from <this rig>:<this bead',
+    'Never run bd create in another rig',
     'discovered_from',
     'File in: <rig>: <title> | <description>',
   ])
