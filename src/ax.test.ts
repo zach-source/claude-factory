@@ -1576,7 +1576,7 @@ cat > ${dir}/pi.stdin.$n
     const id = worker.poll(0).session!
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     // no prompt text on argv: it goes on stdin
-    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')}`
+    const rules = `--append-system-prompt ${join(import.meta.dir, 'worker-system.md')} --append-system-prompt ${join(import.meta.dir, 'worker-vm.md')}`
     expect(first).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(second).toBe(`-p --session-dir ${join(own, 'pi')} --session-id ${id} ${rules}`)
     expect(readFileSync(join(dir, 'pi.stdin.0'), 'utf8')).toBe('pi brief')
