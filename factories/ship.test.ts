@@ -629,3 +629,24 @@ test('fill leaves the dedupe core as it is (sjwe AC4)', () => {
   ])
     expect(fill(p, {})).toBe(p)
 })
+
+test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
+  for (const id of ['deploy', 'soak']) {
+    const p = prompt(id)
+    for (const t of [
+      'ACn: met (',
+      'ACn: not checked (',
+      'ACs: none in plan',
+      'ACn: waived (',
+      '--deps discovered-from:<bead>',
+      'bd children <bead>',
+      'Question:',
+      'no factory label',
+      'description never counts',
+    ])
+      expect(p, `${id}: ${t}`).toContain(t)
+    expect(p.indexOf('ACn: met ('), id).toBeLessThan(p.indexOf('bd close <bead>'))
+  }
+  for (const id of ['queue', 'release', 'rollback', 'postmortem'])
+    expect(prompt(id), id).not.toContain('ACn: met (')
+})
