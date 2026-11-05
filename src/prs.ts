@@ -679,9 +679,7 @@ export function parseGitlabLabeled(out: string) {
       isDraft: (m.draft ?? m.work_in_progress) === true,
       // fail closed: same project only when both ids are numbers and equal
       isCrossRepository: !(
-        typeof m.source_project_id === 'number' &&
-        typeof m.target_project_id === 'number' &&
-        m.source_project_id === m.target_project_id
+        typeof m.source_project_id === 'number' && m.source_project_id === m.target_project_id
       ),
       labels: (Array.isArray(m.labels) ? (m.labels as unknown[]).map(str) : []).map(name => ({ name })),
     }))
