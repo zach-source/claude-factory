@@ -248,6 +248,7 @@ import {
 } from './sync'
 import { rmSafe } from './home-guard'
 import { ciReport } from './ci'
+import { cut } from './cut'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -735,7 +736,7 @@ export function overwritten(out: string) {
       .filter(k => k.startsWith('our_') && k !== 'our_diff_type' && k !== 'our_id')
       .map(k => k.slice('our_'.length))
       .filter(k => String(row[`our_${k}`]) !== String(row[`their_${k}`]))
-      .map(k => `${k}=${String(row[`our_${k}`]).slice(0, 200)}`)
+      .map(k => `${k}=${cut(String(row[`our_${k}`]), 200)}`)
     const what =
       row.our_diff_type === 'removed' ? 'had deleted it' : `had ${had.join(', ') || 'the same values'}`
     return {
@@ -948,7 +949,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       try {
         appendFileSync(
           join(runDir(run.id), `${task}.outbox-too-big`),
-          `${new Date().toISOString()} ${big} ${JSON.stringify(argv.slice(0, 3).map(w => w.slice(0, 80)))}\n`,
+          `${new Date().toISOString()} ${big} ${JSON.stringify(argv.slice(0, 3).map(w => cut(w, 80)))}\n`,
           { mode: 0o600 },
         )
       } catch {} // a log failure never blocks the replay of the lines after it
@@ -956,7 +957,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       writeJson(seenFile(run, task), seen)
       ax.prompt(
         task,
-        `[factory] your outbox line \`${argv.slice(0, 3).join(' ').slice(0, 200)} ...\` is ${big} bytes, over the ${worker.OUTBOX_MAX_BYTES}-byte cap (100 KiB): it was not run. Shorten the text and run the command again (for a report: a shorter --summary-file)`,
+        `[factory] your outbox line \`${cut(argv.slice(0, 3).join(' '), 200)} ...\` is ${big} bytes, over the ${worker.OUTBOX_MAX_BYTES}-byte cap (100 KiB): it was not run. Shorten the text and run the command again (for a report: a shorter --summary-file)`,
       )
       continue
     }
@@ -975,7 +976,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     if (!p && !skew)
       ax.prompt(
         task,
-        `[factory] \`${argv?.join(' ') ?? line.slice(0, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
+        `[factory] \`${argv?.join(' ') ?? cut(line, 200)}\` is not yours to run: a worker reports on its own attempt, mails, adds memory and says which memory helped`,
       )
     else if (p && p.exitCode !== 0)
       ax.prompt(task, `[factory] \`${argv!.join(' ')}\` was refused: ${p.stderr.toString().trim()}`)
@@ -1313,7 +1314,10 @@ const post = (id: string, e: Input) =>
   durable(join(runDir(id), 'inbox.jsonl'), JSON.stringify({ ...e, at: Date.now() }) + '\n', 'a')
 
 const edgeText = (e: Edge) => (typeof e === 'string' ? e : `${e.to} after ${e.delayMin} min`)
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
+export const clip = (text: string, max: number) => {
+  if (text.length <= max) return text
+  return `${cut(text, max)}…`
+}
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
@@ -1343,16 +1347,10 @@ export function trustedEgress(
  * under this cap. This const guards the few spots that pasted a report's `.summary` or a mail's `.text` whole.
  */
 export const REPORT_MAX = 32_000
-// text.slice(0, max) can stop between the two UTF-16 code units of a surrogate pair (an emoji, say),
-// leaving a lone lead surrogate. Back off by one unit in that case, so the cut never splits a pair.
-const sliceWhole = (text: string, max: number) => {
-  const lead = text.charCodeAt(max - 1)
-  return text.slice(0, lead >= 0xd800 && lead <= 0xdbff ? max - 1 : max)
-}
 export const clipReport = (text: string) =>
   text.length <= REPORT_MAX
     ? text
-    : `${sliceWhole(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
+    : `${cut(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**
@@ -8802,7 +8800,7 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = body.split('\n', 1)[0]!.slice(0, 80)
+                const first = cut(body.split('\n', 1)[0]!, 80)
                 b.create(
                   `PR change request: ${first}`,
                   `${d.url}\n\n${body}`,
@@ -9914,7 +9912,7 @@ async function status(id: string | undefined) {
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
     if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
     for (const e of id ? c.log : c.log.slice(-1))
-      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${e.summary.replace(/\s+/g, ' ').slice(0, 160)}`)
+      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
   }
   if (!id) {
     const ships = liveShipRuns()
@@ -10609,7 +10607,7 @@ if (import.meta.main && !outboxCmd)
             )
           const bead = memory.installProposalAsBead(MEMORY, name, x =>
             beads(rig!.repo, 'factory/proposals').createUnlabeled(
-              `memory proposal ${x.name}: ${x.change}`.slice(0, 200),
+              cut(`memory proposal ${x.name}: ${x.change}`, 200),
               readFileSync(x.file, 'utf8'),
               { memory_proposal: x.name },
               '-l',

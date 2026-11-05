@@ -1,3 +1,4 @@
+import { cut } from './cut'
 // This is the Linear pull loop (claude-factory-b6c).
 // The loop moves Linear issues from each opted-in rig's configured team(s) into that rig's beads
 // store, routing each issue to at most one rig (claude-factory-b6c.18). It never pushes a change
@@ -437,7 +438,7 @@ export async function fetchLinearIssues(
       // shell runs, but a ref shaped like a flag, for example "--force", would still reach bd as
       // one). This check fails the whole pass instead of silently dropping the bad ref.
       if (!REF_SHAPE.test(n.identifier))
-        throw new Error(`Linear API: issue identifier "${n.identifier.slice(0, 40)}" is not shaped <KEY>-<n>`)
+        throw new Error(`Linear API: issue identifier "${cut(n.identifier, 40)}" is not shaped <KEY>-<n>`)
       issues.push({
         ref: n.identifier,
         updatedAt: n.updatedAt,
@@ -467,5 +468,5 @@ export function redact(text: string, secrets: string[]): string {
   let out = text
   for (const s of secrets.filter(Boolean)) out = out.split(s).join('***')
   out = out.replace(TOKEN_SHAPE, '***').replace(CONTROL_CHARS, '')
-  return out.length > 200 ? `${out.slice(0, 200)}…` : out
+  return out.length > 200 ? `${cut(out, 200)}…` : out
 }
