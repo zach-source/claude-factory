@@ -10248,7 +10248,7 @@ const usage = `factory — herdr software factories on xstate
   file-elsewhere <rig> --from <rig>:<bead> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>']   JSON of every rig's open
+  decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>' | propose <key> --question-file <p> --options-file <p> [--context-file <p>]]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -10974,6 +10974,32 @@ if (import.meta.main && !outboxCmd)
           if (!rigName || !id || !text.length)
             fail("usage: factory decisions answer <rig> <bead> '<text...>'")
           decisionsAnswer(rigName!, id!, text.join(' '))
+          break
+        }
+        if (sub === 'propose' && rest[1]?.startsWith('--')) {
+          // claude-factory-2z48: the file form takes untrusted text from <FACTORY_HOME>/text/, never from the command
+          const usage =
+            'usage: factory decisions propose <key> --question-file <path> --options-file <path> [--context-file <path>]'
+          const [key, ...pairs] = rest
+          const files = new Map<string, string>()
+          if (pairs.length % 2) fail(usage)
+          for (let i = 0; i < pairs.length; i += 2) {
+            const k = pairs[i]!
+            const v = pairs[i + 1]
+            if (!['--question-file', '--options-file', '--context-file'].includes(k) || !v || files.has(k))
+              fail(usage)
+            files.set(k, v!)
+          }
+          const isOwn = /^own:/.test(key!)
+          if (!files.has('--question-file') || (!isOwn && !files.has('--options-file'))) fail(usage)
+          const read = (k: string) => (files.has(k) ? textFileArg(k, files.get(k)!) : undefined)
+          // an own: key ignores --options-file, as the positional form does: do not read it
+          decisionsPropose(
+            key!,
+            read('--question-file')!,
+            isOwn ? '' : read('--options-file')!,
+            read('--context-file'),
+          )
           break
         }
         if (sub === 'propose') {
