@@ -149,4 +149,55 @@ describe('deny log', () => {
     expect(o.from).toBe('implement')
     expect(o.argv).toBeUndefined()
   })
+
+  test('a NAME=value word is masked in denials.jsonl and the outbox (claude-factory-uzes)', () => {
+    const box = join(home, 'outbox.jsonl')
+    run(bash('f() { ls; }; X=zqsecret ls'), { FACTORY_OUTBOX: box, FACTORY_DENY_LOG: '1' })
+    expect(readFileSync(file(), 'utf8')).not.toContain('zqsecret')
+    expect(lines()[0].command).toContain('X=***')
+    const o = JSON.parse(readFileSync(box, 'utf8').trim())
+    expect(JSON.stringify(o)).not.toContain('zqsecret')
+    expect(o.deny.command).toContain('X=***')
+  })
+
+  test('the mask runs before the 200-char cut', () => {
+    run(bash('f() { ls; } X=' + 'zqsecret'.repeat(40)))
+    const c = lines()[0].command
+    expect(c).not.toContain('zqsecret')
+    expect(c.length).toBeLessThanOrEqual(200)
+  })
+})
+
+describe('maskAssignments', () => {
+  const m = (hook as any).maskAssignments as (s: string) => string
+  test.each([
+    ['X=zqsecret ls', 'X=*** ls'],
+    ['A=1 B=zqsecret ls', 'A=*** B=*** ls'],
+    ["X='zq secret' ls", 'X=*** ls'],
+    ['X="zq secret" ls', 'X=*** ls'],
+    ['X=zq"sec ret" ls', 'X=*** ls'],
+    ['X=zq\\ secret ls', 'X=*** ls'],
+    ['X="zqsecret', 'X=***'],
+    ['f() { ls; }', 'f() { ls; }'],
+    ['ls -la /tmp', 'ls -la /tmp'],
+    ['echo hello', 'echo hello'],
+    ['--token=zqsecret', '--token=zqsecret'],
+    ['git -c http.extraHeader=zqsecret', 'git -c http.extraHeader=zqsecret'],
+  ])('%s', (i, o) => expect(m(i)).toBe(o))
+  test.each([
+    'export X=zqsecret',
+    'env X=zqsecret ls',
+    'ls;X=zqsecret ls',
+    'ls&&X=zqsecret ls',
+    '(X=zqsecret ls)',
+    'X+=zqsecret ls',
+    'a[1]=zqsecret ls',
+  ])('%s hides the value', i => expect(m(i)).not.toContain('zqsecret'))
+  test('long rows are fast', () => {
+    for (const i of ['X=' + '"'.repeat(1e5), 'a='.repeat(5e4)]) {
+      const t = performance.now()
+      m(i)
+      expect(performance.now() - t).toBeLessThan(100)
+    }
+  })
 })
