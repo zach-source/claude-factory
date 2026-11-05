@@ -160,6 +160,12 @@ describe('deny log', () => {
     expect(o.deny.command).toContain('X=***')
   })
 
+  test('a quoted NAME=value inside bash -c is masked end to end', () => {
+    run(bash('f() { ls; }; bash -c "GH_TOKEN=zqsecret gh pr list"'))
+    expect(readFileSync(file(), 'utf8')).not.toContain('zqsecret')
+    expect(lines()[0].command).toContain('GH_TOKEN=***')
+  })
+
   test('the mask runs before the 200-char cut', () => {
     run(bash('f() { ls; } X=' + 'zqsecret'.repeat(40)))
     const c = lines()[0].command
@@ -183,6 +189,11 @@ describe('maskAssignments', () => {
     ['echo hello', 'echo hello'],
     ['--token=zqsecret', '--token=zqsecret'],
     ['git -c http.extraHeader=zqsecret', 'git -c http.extraHeader=zqsecret'],
+    ['bash -c "GH_TOKEN=zqsecret gh pr list"', 'bash -c "GH_TOKEN=*** gh pr list"'],
+    ["sh -c 'X=zqsecret ls'", "sh -c 'X=*** ls'"],
+    ['eval "X=zqsecret ls"', 'eval "X=*** ls"'],
+    ['env -S "X=zqsecret ls"', 'env -S "X=*** ls"'],
+    ['bash -c "sh -c \'X=zqsecret ls\'"', 'bash -c "sh -c \'X=*** ls\'"'],
   ])('%s', (i, o) => expect(m(i)).toBe(o))
   test.each([
     'export X=zqsecret',
@@ -192,6 +203,10 @@ describe('maskAssignments', () => {
     '(X=zqsecret ls)',
     'X+=zqsecret ls',
     'a[1]=zqsecret ls',
+    'bash -c "GH_TOKEN=zqsecret gh pr list"',
+    "sh -c 'X=zqsecret ls'",
+    'eval "X=zqsecret ls"',
+    'env -S "X=zqsecret ls"',
   ])('%s hides the value', i => expect(m(i)).not.toContain('zqsecret'))
   test('an unclosed subscript tail is linear', () => {
     const t = performance.now()
@@ -199,7 +214,7 @@ describe('maskAssignments', () => {
     expect(performance.now() - t).toBeLessThan(2000)
   })
   test('long rows are fast', () => {
-    for (const i of ['X=' + '"'.repeat(1e5), 'a='.repeat(5e4)]) {
+    for (const i of ['X=' + '"'.repeat(1e5), 'a='.repeat(5e4), '"a='.repeat(4e4), "'a=".repeat(4e4)]) {
       const t = performance.now()
       m(i)
       expect(performance.now() - t).toBeLessThan(100)
