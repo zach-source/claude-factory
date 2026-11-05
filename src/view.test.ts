@@ -1090,7 +1090,7 @@ const expectSingleQuoted = (t: string, placeholders: string[]) => {
 }
 
 test('interviewPrompt: every non-ID placeholder in a factory command span is single-quoted (claude-factory-dgok)', () => {
-  const ids = new Set(['run', 'rig', 'bead', 'key'])
+  const ids = new Set(['run', 'rig', 'bead', 'key', 'path'])
   const bad = (t: string) =>
     (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
       (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ids.has(p.slice(1, -1))),
@@ -1115,10 +1115,36 @@ test('interviewPrompt passes decisions text in single quotes (claude-factory-dgo
     question: 'Q',
     needsProposal: true,
   })
-  expectSingleQuoted(interviewPrompt([need])!, [
-    'question',
-    'label: effect | label: effect',
-    'sentence',
-    'text',
-  ])
+  expectSingleQuoted(interviewPrompt([need])!, ['text'])
+})
+
+// claude-factory-2z48: decisions propose text from a bead reaches the CLI by file, never in a shell argument
+const FILE_OK = new Set(['run', 'rig', 'bead', 'key', 'source rig', 'source id', 'path'])
+const fileSpans = (t: string) =>
+  (t.match(/`[^`]*`/g) ?? []).filter(s => /file-elsewhere|decisions propose/.test(s))
+const fileFormBad = (t: string) =>
+  fileSpans(t).flatMap(s =>
+    (s.match(/['"]?<[^>]*>['"]?/g) ?? []).filter(
+      p => /^['"]/.test(p) || !FILE_OK.has(p.replace(/^<|>$/g, '')),
+    ),
+  )
+
+test('interviewPrompt passes decisions propose text by file (claude-factory-2z48)', () => {
+  const need = iv({
+    key: 'bd:api:api-7',
+    kind: 'bead',
+    title: 'api-7: Q',
+    question: 'Q',
+    needsProposal: true,
+  })
+  const t = interviewPrompt([need])!
+  expect(fileSpans(t).length).toBeGreaterThan(0)
+  expect(fileFormBad(t)).toEqual([])
+  expect(t).toContain('--question-file <path>')
+  expect(t).toContain('Write tool')
+  expect(t).toContain('`factory home`')
+  expect(fileFormBad("`factory decisions propose <key> '<question>'`")).toEqual(["'<question>'"])
+  expect(fileFormBad('`factory file-elsewhere <rig> --title "<title>"`')).toEqual(['"<title>"'])
+  expect(fileFormBad('`factory file-elsewhere <rig> --title <title>`')).toEqual(['<title>'])
+  expect(fileFormBad('`factory file-elsewhere <rig> --title-file <path>`')).toEqual([])
 })

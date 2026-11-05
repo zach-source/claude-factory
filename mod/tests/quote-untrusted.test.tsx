@@ -14,7 +14,7 @@ const expectSingleQuoted = (t: string, placeholders: string[]) => {
 }
 
 test('the manager manual passes decisions text in single quotes', () => {
-  expectSingleQuoted(manual('factory'), ['question', 'label: effect | label: effect', 'sentence', 'text'])
+  expectSingleQuoted(manual('factory'), ['text'])
 })
 
 test('no cli command span in the manual or the patrol holds a double-quoted placeholder', () => {
@@ -46,6 +46,7 @@ const ID_PLACEHOLDERS = new Set([
   'old note path',
   'source rig',
   'source id',
+  'path',
 ])
 const badPlaceholders = (t: string) =>
   (t.match(/`factory [^`]*`/g) ?? []).flatMap(s =>
@@ -59,6 +60,32 @@ test('every non-ID placeholder in a factory command span is single-quoted', () =
   expect(badPlaceholders("`factory show <run> --title '<title>'`")).toEqual([])
 })
 
-test('the patrol passes file-elsewhere text in single quotes', () => {
-  expectSingleQuoted(PATROL('factory'), ['title', 'description'])
+// claude-factory-2z48: text from a bead, Linear or a worker report reaches file-elsewhere and decisions propose by file
+const FILE_OK = new Set(['run', 'rig', 'bead', 'key', 'source rig', 'source id', 'path'])
+const fileSpans = (t: string) =>
+  (t.match(/`[^`]*`/g) ?? []).filter(s => /file-elsewhere|decisions propose/.test(s))
+const fileFormBad = (t: string) =>
+  fileSpans(t).flatMap(s =>
+    (s.match(/['"]?<[^>]*>['"]?/g) ?? []).filter(
+      p => /^['"]/.test(p) || !FILE_OK.has(p.replace(/^<|>$/g, '')),
+    ),
+  )
+
+test('the checker refuses a quoted or unlisted placeholder and accepts a path', () => {
+  expect(fileFormBad("`factory file-elsewhere <rig> --title '<title>'`")).toEqual(["'<title>'"])
+  expect(fileFormBad('`factory file-elsewhere <rig> --title "<title>"`')).toEqual(['"<title>"'])
+  expect(fileFormBad('`factory file-elsewhere <rig> --title <title>`')).toEqual(['<title>'])
+  expect(fileFormBad("`factory decisions propose <key> '<question>'`")).toEqual(["'<question>'"])
+  expect(fileFormBad('`factory file-elsewhere <rig> --title-file <path>`')).toEqual([])
+})
+
+test('the manual and the patrol pass file-elsewhere and decisions propose text by file', () => {
+  for (const t of [manual('factory'), PATROL('factory')]) {
+    expect(fileSpans(t).length).toBeGreaterThan(0)
+    expect(fileFormBad(t)).toEqual([])
+    expect(t).toContain('Write tool')
+    expect(t).toContain('`factory home`')
+  }
+  expect(manual('factory')).toContain('--question-file <path>')
+  expect(PATROL('factory')).toContain('--title-file <path>')
 })
