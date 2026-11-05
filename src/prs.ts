@@ -687,7 +687,7 @@ export const forgeNote = (gitlabHost?: string): string[] =>
         '',
         '## Forge',
         `This repo's forge is GitLab at ${gitlabHost}. Where your instructions say \`gh pr <x>\` or "pull request", use \`glab\` on merge requests (\`gh\` does not work here):`,
-        '- gh pr create -> glab mr create',
+        '- gh pr create --base <b> -> glab mr create --target-branch <b>',
         '- gh pr view <n> --comments -> glab mr view <n> --comments',
         '- gh pr comment -> glab mr note <n> -m "<text>"',
         '- gh pr review --comment or --approve -> glab mr note <n> -m "<text>" (the factory denies glab mr approve: only a person approves a merge request)',

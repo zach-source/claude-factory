@@ -200,7 +200,7 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 6. Add no changelog entry and no version bump: the repo's release step writes the changelog at release time.
 7. ${botFiles}
 8. ${layerVersion}
-Close every task of this run (see Tracking). Push the branch and open it as a draft pull request (gh pr create --draft) if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
+Close every task of this run (see Tracking). Push the branch and open it as a draft pull request (gh pr create --draft --base {base_branch}) if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
 Partial progress: when this pass ends with tasks of this run still open, push what is done and report partial, not fail. Name the pull request link, each closed task and each open task in the summary. The next implement pass starts from the open tasks. After three partial reports, the fourth re-plans the run.
 Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), the pull request already exists. Work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request. Name the ship pull request in the summary.
@@ -274,7 +274,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request.
 ${pushGuard}
-Push the branch and open it as a draft pull request (gh pr create --draft) if this run has none yet.
+Push the branch and open it as a draft pull request (gh pr create --draft --base {base_branch}) if this run has none yet.
 ${botFiles}
 ${notBlocked('ready')}
 If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it.`,
