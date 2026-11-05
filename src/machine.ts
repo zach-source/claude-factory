@@ -228,6 +228,8 @@ export type Entry = {
    * review-then-plan pair, and `repeatMail` reads it to stop comparing acceptance-criterion ids
    * across a re-plan (claude-factory-qgz, review round 1 findings .8 and .9) */
   replan?: true
+  /** a VM live-read park that waits for mail only; the watch reads it */
+  mailOnly?: true
 }
 
 export type Ctx = {
@@ -953,7 +955,14 @@ export function compile(def: Factory) {
                 return {
                   log: [
                     ...context.log,
-                    { node: id, attempt: context.attempt, outcome: 'blocked', summary: reason, at },
+                    {
+                      node: id,
+                      attempt: context.attempt,
+                      outcome: 'blocked',
+                      summary: reason,
+                      at,
+                      ...(mailOnly && { mailOnly }),
+                    },
                   ],
                   mail: isRepeat ? context.mail : post(context.mail, 'manager', { from: id, text, at }),
                   pane: null,

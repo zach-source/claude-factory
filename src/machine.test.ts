@@ -1447,6 +1447,13 @@ test('a mailOnly blocked report parks for 2*OWNER_AFTER_MS: only mail wakes it, 
   expect(s.context.seq).toBe(2)
 })
 
+test('the BLOCKED log entry records mailOnly, and only when set (gzdv)', () => {
+  const a = run().send({ type: 'BLOCKED', seq: 1, reason: 'need kubectl', at: 1000, mailOnly: true })
+  expect(a.context.log.at(-1)?.mailOnly).toBe(true)
+  const b = run().send({ type: 'BLOCKED', seq: 1, reason: 'waiting', at: 1000 })
+  expect(b.context.log.at(-1)).not.toHaveProperty('mailOnly')
+})
+
 test('a repeat mailOnly blocked report does not mail the manager again; the owner handoff still ends it', () => {
   const { send } = run()
   send({ type: 'BLOCKED', seq: 1, reason: 'need kubectl', at: 1000, mailOnly: true })

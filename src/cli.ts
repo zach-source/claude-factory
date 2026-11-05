@@ -45,7 +45,6 @@ import {
   prsIn,
   reach,
   shareOk,
-  OWNER_AFTER_MS,
   shouldHandToOwner,
   timeoutOf,
   unread,
@@ -8645,8 +8644,7 @@ async function watchPass() {
           now,
           wakeAt: c.wakeAt,
           plainMin,
-          // machine.ts BLOCKED mailOnly parks until 2x OWNER_AFTER_MS
-          mailOnly: c.wakeAt - parked.at >= 2 * OWNER_AFTER_MS,
+          mailOnly: !!parked.mailOnly,
           isPreLaunch: isPrWait(parked),
           seen,
           canHold: !!def.nodes[node]?.next.hold,

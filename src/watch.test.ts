@@ -101,7 +101,7 @@ function parkedRun(
   id: string,
   repoDir: string,
   factoryFile: string,
-  opts: { def?: Factory; at?: number; bead?: string; url?: string } = {},
+  opts: { def?: Factory; at?: number; bead?: string; url?: string; reparkUntil?: number } = {},
 ) {
   const actor = createActor(compile(opts.def ?? SHIP)).start()
   actor.send({ type: 'GOTO', node: 'release', at: 0 })
@@ -113,6 +113,8 @@ function parkedRun(
     summary: `ready to ship ${opts.url ?? PR}`,
     at: opts.at ?? PARKED_AT,
   })
+  if (opts.reparkUntil)
+    actor.send({ type: 'REPARK', node: 'deploy', wakeAt: opts.reparkUntil, at: opts.at ?? PARKED_AT })
   const d = join(home, 'runs', id)
   mkdirSync(d, { recursive: true })
   writeFileSync(
@@ -230,6 +232,18 @@ test('a merge that predates a pre-launch park still wakes it at once, not out it
   const out = factory(['watch'])
   expect(out.code).toBe(0)
   expect(mailOf('r1')).toHaveLength(1)
+})
+
+test('a pre-launch park the watch moved 48 h past its park still gets the none-open wake (gzdv)', () => {
+  reset()
+  const f = join(dir, 'ship.json')
+  writeFileSync(f, JSON.stringify(SHIP))
+  writeFileSync(prState, JSON.stringify({ state: 'MERGED', updatedAt: iso(3 * 60_000) }))
+  parkedRun('r1', repo(), f, { reparkUntil: PARKED_AT + 49 * 3_600_000 })
+  expect(factory(['watch']).code).toBe(0)
+  const m = mailOf('r1')
+  expect(m).toHaveLength(1)
+  expect(m[0]?.text).toContain('None of')
 })
 
 test('a run parked on a pull request in another repo is watched and woken on its merge (AC9)', () => {
