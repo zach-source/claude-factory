@@ -1099,13 +1099,127 @@ test("a failed bd bootstrap shows bd's last error line, not its metrics notice o
   try {
     let msg = ''
     try {
-      worker.setupBeads()
+      worker.setupBeads(0)
     } catch (e) {
       msg = (e as Error).message
     }
     expect(msg).toContain('authentication handshake failed: EOF')
     expect(msg).not.toContain('Thanks for using bd')
     expect(msg).not.toContain('https://')
+  } finally {
+    process.env = saved
+  }
+})
+
+const HINTS = [
+  'hint: ensure non-interactive auth is configured for GCM',
+  'hint: set GIT_TERMINAL_PROMPT=0',
+  'hint: use a credential helper',
+  'hint: see the docs',
+]
+
+/** run setupBeads with a Dolt remote and a fake bd; returns the thrown message, bd call count and serve.log */
+function bootstrapWith(name: string, script: (count: string) => string) {
+  const own = join(dir, `own-${name}`)
+  const bd = join(dir, `bd-${name}`)
+  const count = join(dir, `bd-${name}.count`)
+  writeFileSync(bd, `#!/bin/sh\necho x >> ${count}\n${script(count)}`, { mode: 0o755 })
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_BEADS_REMOTE: 'https://dolt.example.com:50051/x',
+    FACTORY_BD: bd,
+  })
+  mkdirSync(own, { recursive: true })
+  try {
+    let msg = ''
+    try {
+      worker.setupBeads(0)
+    } catch (e) {
+      msg = (e as Error).message
+    }
+    const calls = existsSync(count) ? readFileSync(count, 'utf8').trim().split('\n').length : 0
+    const log = existsSync(join(own, 'serve.log')) ? readFileSync(join(own, 'serve.log'), 'utf8') : ''
+    return { msg, calls, log, beadsDir: process.env.BEADS_DIR }
+  } finally {
+    process.env = saved
+  }
+}
+
+test('a failed bd bootstrap keeps the real git line above the dolt hint lines', () => {
+  const fail = `echo 'Thanks for using bd!' >&2\necho "fatal: unable to access 'https://github.com/acme/widget.git/': The requested URL returned error: 401" >&2\n${HINTS.map(h => `echo '${h}' >&2`).join('\n')}\nexit 1\n`
+  const { msg } = bootstrapWith('hint', () => fail)
+  expect(msg).toContain('bootstrap -y: ')
+  expect(msg).toContain('returned error: 401')
+  expect(msg).not.toContain('hint:')
+  expect(msg).not.toContain('https://')
+})
+
+test('a stderr with only hint lines keeps the last hint line', () => {
+  const { msg } = bootstrapWith('hintonly', () => `${HINTS.map(h => `echo '${h}' >&2`).join('\n')}\nexit 1\n`)
+  expect(msg).toContain('hint: see the docs')
+})
+
+test('an origin that git cannot reach names the git ls-remote error', () => {
+  const own = join(dir, 'own-beads-unreach')
+  const saved = { ...process.env }
+  delete process.env.FACTORY_BEADS_REMOTE
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_REPO: join(dir, 'no-such-origin'),
+    FACTORY_BD: '/bin/true',
+  })
+  try {
+    let msg = ''
+    try {
+      worker.setupBeads()
+    } catch (e) {
+      msg = (e as Error).message
+    }
+    expect(msg).toContain('git ls-remote refs/dolt/data: ')
+    expect(msg).not.toContain('has no refs/dolt/data')
+  } finally {
+    process.env = saved
+  }
+})
+
+test('setupBeads retries a failed bd bootstrap one time and logs it', () => {
+  const r = bootstrapWith(
+    'retry',
+    count =>
+      `[ "$(wc -l < ${count})" -ge 2 ] && { mkdir -p .beads/embeddeddolt; exit 0; }\necho 'fatal: boom 502' >&2\nexit 1\n`,
+  )
+  expect(r.msg).toBe('')
+  expect(r.calls).toBe(2)
+  expect(r.beadsDir).toBeTruthy()
+  expect(r.log).toContain('beads: bd bootstrap -y failed, retry 1: fatal: boom 502')
+})
+
+test('setupBeads throws the real line when the retry fails too', () => {
+  const r = bootstrapWith('retry2', () => `echo 'fatal: boom 502' >&2\nexit 1\n`)
+  expect(r.msg).toContain('fatal: boom 502')
+  expect(r.calls).toBe(2)
+})
+
+test('an origin with no refs/dolt/data does not retry', () => {
+  const own = join(dir, 'own-beads-noretry')
+  const count = join(dir, 'bd-noretry.count')
+  const bd = join(dir, 'bd-noretry')
+  writeFileSync(bd, `#!/bin/sh\necho x >> ${count}\n`, { mode: 0o755 })
+  const saved = { ...process.env }
+  delete process.env.FACTORY_BEADS_REMOTE
+  Object.assign(process.env, {
+    FACTORY_WORKER_DIR: own,
+    FACTORY_BEADS: '1',
+    FACTORY_REPO: gitOrigin('origin-noretry', false),
+    FACTORY_BD: bd,
+  })
+  try {
+    expect(() => worker.setupBeads(0)).toThrow('has no refs/dolt/data')
+    expect(existsSync(count)).toBe(false)
+    expect(existsSync(join(own, 'serve.log'))).toBe(false)
   } finally {
     process.env = saved
   }
