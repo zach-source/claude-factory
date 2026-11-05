@@ -23,6 +23,7 @@ import {
   skillsDir,
   pendingSkills,
   installSkill,
+  rejectSkill,
 } from './memory'
 
 const MARKER = 'zqsecret-eqxi'
@@ -143,6 +144,19 @@ test('tryRead gives null on a link or a missing file and rethrows other errors',
   expect(tryRead(link)).toBeNull()
   expect(tryRead(join(dir, 'inbox', 'missing.md'))).toBeNull()
   expect(() => tryRead(join(dir, 'inbox'))).toThrow(/EISDIR/)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('rejectSkill copies no link back to the sources', () => {
+  const { root, dir, secret } = linkStore()
+  const inst = join(skillsDir(dir), 'c')
+  mkdirSync(inst, { recursive: true })
+  writeFileSync(join(inst, 'SKILL.md'), 'description: c\n')
+  symlinkSync(secret, join(inst, 'leak.md'))
+  expect(pendingSkills(dir).some(p => p.name === 'c')).toBe(true)
+  rejectSkill(dir, 'c', 'no')
+  expect(existsSync(join(skillSources(dir), 'c', 'SKILL.md'))).toBe(true)
+  expect(existsSync(join(skillSources(dir), 'c', 'leak.md'))).toBe(false)
   rmSync(root, { recursive: true, force: true })
 })
 
