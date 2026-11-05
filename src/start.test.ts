@@ -35,6 +35,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
     env: {
       ...laptop,
       FACTORY_HOME: home,
+      FACTORY_NO_KICK: '1',
       PATH: `${bin}:${laptop.PATH}`,
       FACTORY_HERDR: join(bin, 'herdr'),
       // no project is ever trusted here, so the first tick stops at "awaiting trust" instead of
@@ -391,7 +392,7 @@ test('`factory help` names the committed default FACTORY_MAX_RUNS as 16 (claude-
   reset()
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_MAX_RUNS, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'help'], {
-    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1' },
   })
   expect(p.stdout.toString()).toContain('FACTORY_MAX_RUNS (16)')
 })

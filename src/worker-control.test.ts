@@ -34,7 +34,15 @@ function run(args: string[], env: Record<string, string>, seedHalt = false, seed
   void [FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DEF_NAME, BEADS_ACTOR, FACTORY_PATROL]
   return Bun.spawnSync([CLI, ...args], {
     timeout: 15000,
-    env: { ...rest, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', FACTORY_AX: ax, ...env },
+    env: {
+      ...rest,
+      FACTORY_HOME: home,
+      FACTORY_SELF_UPDATE: '0',
+      FACTORY_GC: '0',
+      FACTORY_NO_KICK: '1',
+      FACTORY_AX: ax,
+      ...env,
+    },
   })
 }
 const runs = () => readdirSync(join(home, 'runs')).length

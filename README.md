@@ -967,6 +967,24 @@ is unchanged: the ship run gets the label.
 The rework run triages first: a PR that is no longer wanted (already on the base, superseded, or
 rejected in review) gets a comment and the `close` label, and the next pass closes it.
 
+## Orphan draft pull requests
+
+A run that ends (aborted or done) can leave a draft PR on its `factory/<run>` branch. Every 10 minutes the
+orphan pass looks at each rig's open drafts like this. It skips a PR when a live run owns it, a live run holds its
+bead, the ship queue holds it, its branch is not `factory/<run>`, or it comes from a fork. The bead of the run
+then decides:
+
+- **Bead closed or deferred**: the factory closes the PR with a comment. The comment names the run and the bead state.
+- **Bead open, PR not mergeable**: the factory adds the `conflict` label.
+- **Bead open, checks red or a review asks for changes**: the factory adds the `rework` label.
+- **Bead open, PR green and mergeable**: the factory forks the run at `review`, one time for each head commit.
+
+The [label pass](#pull-request-labels) then acts on the new label. A PR that has the label already is not labeled
+again, and a label is set one time for each head commit (`orphan-forks.json` holds the record). A PR whose
+review fork aborted counts as an orphan again. If it is green and mergeable, it gets no second fork.
+A pass makes at most 2 forks and, in a separate count, at most 2 closes or labels for each rig.
+A fork also needs room in the rig. A run with no bead only gets the review fork.
+
 ## Beads: planning and execution
 
 In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](docs/beads.md) is the guide: making a rig, queueing work, epics, claims, sharing across machines and common problems.

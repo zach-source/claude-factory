@@ -2,10 +2,14 @@
 // a green draft PR that nothing reviews. `orphanPass` in cli.ts lists a rig's open pull requests and
 // `orphanSweep` here decides which ones get a review fork. It reads plain data and calls injected io, so
 // tests need no gh. Any unknown value (a failed call, a bad row) means skip: the sweep starts runs with no person.
+// The bead decides (claude-factory-e2xe): a closed or deferred bead closes the PR. An open bead gets the `conflict`
+// or `rework` label, which the label pass picks up. Only a green mergeable draft gets a review fork.
 import type { Checks } from './prs'
 
 /** the most review forks one rig gets in one pass */
 export const ORPHAN_CAP = 2
+/** the most closes and labels one rig gets in one pass */
+export const ORPHAN_ACTS = ORPHAN_CAP
 /** the most CI lookups one rig gets in one pass: a skip after the lookup still costs a call */
 export const ORPHAN_CHECKS_MAX = ORPHAN_CAP * 3
 
@@ -16,6 +20,7 @@ export type OrphanPr = {
   headRefOid: string
   isDraft: boolean
   isCrossRepository: boolean
+  labels?: { name: string }[]
 }
 
 /** a fork the sweep made: keyed by PR URL, valid for that head SHA only, so a new push can be reviewed again */
@@ -31,6 +36,8 @@ export type OrphanCtx = {
   /** the ship queue holds the PR */
   queued: (pr: OrphanPr) => boolean
   records: Record<string, OrphanRecord>
+  /** the review fork run ended aborted: its PR counts as an orphan again */
+  forkAborted?: (run: string) => boolean
 }
 
 export type OrphanIo = {
@@ -38,6 +45,12 @@ export type OrphanIo = {
   beadStatus: (id: string) => Promise<string | null>
   /** the PR head's CI, or null when the call failed */
   checks: (pr: OrphanPr) => Promise<Checks | null>
+  /** the PR's mergeable state ('MERGEABLE', 'CONFLICTING' or other) and whether a review asks for changes; null when unreadable */
+  view: (pr: OrphanPr) => Promise<{ mergeable: string; changes: boolean } | null>
+  /** adds labels to the PR */
+  label: (pr: OrphanPr, labels: string[]) => Promise<void> | void
+  /** closes the PR with a comment */
+  close: (pr: OrphanPr, body: string) => Promise<void> | void
   /** starts the review run from the source run: the new run's id */
   fork: (pr: OrphanPr, src: string, note: string) => Promise<string>
   /** run is '' for the attempt, written before the fork, then the new run's id */
@@ -58,12 +71,14 @@ export function orphanSkip(pr: OrphanPr, ctx: OrphanCtx): string | undefined {
   if (!src) return 'not a factory branch'
   if (!ctx.runs.has(src)) return 'no run dir'
   if (!/^[0-9a-f]{40}$/.test(pr.headRefOid)) return 'no head SHA'
-  if (ctx.records[pr.url]?.sha === pr.headRefOid) return 'already forked at this head'
   if (ctx.owner(pr)) return 'a live run owns it'
   const bead = ctx.runs.get(src)!.bead
   if (bead && ctx.liveBeads.has(bead)) return 'a live run holds the bead'
   if (ctx.queued(pr)) return 'in the ship queue'
   if (ctx.runs.get(src)!.decided) return 'source run ended at a decision'
+  const rec = ctx.records[pr.url]
+  if (rec?.sha === pr.headRefOid && !(rec.run && ctx.forkAborted?.(rec.run)))
+    return 'already forked at this head'
   return undefined
 }
 
@@ -71,55 +86,139 @@ export function orphanSkip(pr: OrphanPr, ctx: OrphanCtx): string | undefined {
 export const ciVerdict = (c: Checks | null) =>
   !c ? 'unknown' : c.fail > 0 ? 'red' : c.pending > 0 ? 'pending' : 'green'
 
-/** forks a review run for each orphan, at most `cap` (and `ORPHAN_CHECKS_MAX` CI lookups); who it skipped and why */
-export async function orphanSweep(prs: OrphanPr[], ctx: OrphanCtx, io: OrphanIo, cap: number) {
+const hasLabel = (pr: OrphanPr, name: string) => !!pr.labels?.some(l => l.name === name)
+const FORKED = 'already forked at this head'
+
+/** the labels an open bead's PR needs: conflict for a merge conflict, rework for red checks or asked changes */
+export const labelsFor = (mergeable: string, changes: boolean, ci: string) => [
+  ...(mergeable === 'CONFLICTING' ? ['conflict'] : []),
+  ...(ci === 'red' || changes ? ['rework'] : []),
+]
+
+/**
+ * Decides each orphan by its bead. It closes the PR of a closed or deferred bead, labels the PR of an open bead
+ * that conflicts or fails, and forks a review run for a green mergeable one. Closes and labels share `acts`;
+ * forks have their own `cap`. It reports who it skipped and why.
+ */
+export async function orphanSweep(
+  prs: OrphanPr[],
+  ctx: OrphanCtx,
+  io: OrphanIo,
+  cap: number,
+  acts = ORPHAN_ACTS,
+) {
   const forked: { url: string; run: string }[] = []
+  const closed: string[] = []
+  const labeled: { url: string; labels: string[] }[] = []
   const skipped: { url: string; why: string }[] = []
   let lookups = 0
+  const done = () => closed.length + labeled.length
+  const skip = (url: string, why: string) => void skipped.push({ url, why })
   for (const pr of prs) {
-    if (forked.length >= cap) break
+    if (forked.length >= cap && done() >= acts) break
     const why = orphanSkip(pr, ctx)
-    if (why) {
-      skipped.push({ url: pr.url, why })
+    if (why && why !== FORKED) {
+      skip(pr.url, why)
       continue
     }
     const src = runOf(pr)!
     const bead = ctx.runs.get(src)!.bead
-    if (lookups >= ORPHAN_CHECKS_MAX) break
     if (bead) {
       const status = await io.beadStatus(bead)
-      if (status === null || status === 'closed' || status === 'deferred') {
-        skipped.push({ url: pr.url, why: status === null ? 'bead unreadable' : `bead ${status}` })
+      if (status === null) {
+        skip(pr.url, 'bead unreadable')
+        continue
+      }
+      if (status === 'closed' || status === 'deferred') {
+        if (done() >= acts) continue
+        try {
+          await io.close(
+            pr,
+            `Closed by claude-factory: run \`${src}\` is not live and its bead ${bead} is ${status}.`,
+          )
+          closed.push(pr.url)
+        } catch (err) {
+          skip(pr.url, `close failed: ${(err as Error).message}`)
+        }
         continue
       }
     }
-    lookups++
-    const verdict = ciVerdict(await io.checks(pr))
-    if (verdict !== 'green') {
-      skipped.push({ url: pr.url, why: `CI ${verdict}` })
+    if (why) {
+      skip(pr.url, why)
       continue
     }
-    // the record comes first: a fork that fails or a record write that fails after it must not repeat every pass
+    if (lookups >= ORPHAN_CHECKS_MAX) break
+    lookups++
+    const verdict = ciVerdict(await io.checks(pr))
+    const view = await io.view(pr)
+    if (!view) {
+      skip(pr.url, 'view unreadable')
+      continue
+    }
+    const rec = ctx.records[pr.url]
+    const reForked = rec?.sha === pr.headRefOid // an aborted fork came back as an orphan
+    const wanted = bead ? labelsFor(view.mergeable, view.changes, verdict).filter(l => !hasLabel(pr, l)) : []
+    const needs = bead && labelsFor(view.mergeable, view.changes, verdict).length > 0
+    if (needs) {
+      if (!wanted.length) skip(pr.url, 'already labeled')
+      else if (done() < acts) await label(pr, src, wanted)
+      continue
+    }
+    if (verdict !== 'green') {
+      skip(pr.url, `CI ${verdict}`)
+      continue
+    }
+    if (view.mergeable !== 'MERGEABLE') {
+      skip(pr.url, 'mergeability unknown')
+      continue
+    }
+    if (reForked) {
+      skip(pr.url, 'review fork aborted') // a second fork would end the same way
+      continue
+    }
+    if (forked.length >= cap) continue
+    await fork(pr, src)
+  }
+  return { forked, closed, labeled, skipped }
+
+  // the record comes first: a call that fails, or a record write that fails after it, must not repeat every pass
+  async function label(pr: OrphanPr, src: string, labels: string[]) {
     try {
       io.record(pr, src, '')
     } catch (err) {
-      skipped.push({ url: pr.url, why: `record failed: ${(err as Error).message}` })
-      continue
+      return skip(pr.url, `record failed: ${(err as Error).message}`)
+    }
+    try {
+      await io.label(pr, labels)
+    } catch (err) {
+      return skip(pr.url, `label failed: ${(err as Error).message}`)
+    }
+    labeled.push({ url: pr.url, labels })
+    try {
+      io.record(pr, src, 'labeled')
+    } catch (err) {
+      skip(pr.url, `record failed after label: ${(err as Error).message}`)
+    }
+  }
+
+  async function fork(pr: OrphanPr, src: string) {
+    try {
+      io.record(pr, src, '')
+    } catch (err) {
+      return skip(pr.url, `record failed: ${(err as Error).message}`)
     }
     let run: string
     try {
       run = await io.fork(pr, src, orphanNote(pr))
     } catch (err) {
-      skipped.push({ url: pr.url, why: `fork failed: ${(err as Error).message}` })
-      continue
+      return skip(pr.url, `fork failed: ${(err as Error).message}`)
     }
     try {
       io.record(pr, src, run)
     } catch (err) {
       // the first record (run '') still holds this PR at this head: say the fork ran, so the row does not claim it failed
-      skipped.push({ url: pr.url, why: `record failed after fork ${run}: ${(err as Error).message}` })
+      skip(pr.url, `record failed after fork ${run}: ${(err as Error).message}`)
     }
     forked.push({ url: pr.url, run })
   }
-  return { forked, skipped }
 }
