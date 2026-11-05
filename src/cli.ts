@@ -9287,13 +9287,13 @@ export function workerVerbRefusal(
 }
 
 /**
- * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title T --description D`.
+ * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title '<text>' --description '<text>'`.
  * The label `factory` goes on only when the source bead reads back with its own id and no Linear
  * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
  */
 function fileElsewhere(args: string[]) {
   const usage =
-    'usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title <text> --description <text>'
+    "usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title '<text>' --description '<text>'"
   const [target, ...rest] = args
   const flags = new Map<string, string>()
   if (!target || target.startsWith('--') || rest.length !== 6) fail(usage)
@@ -9369,7 +9369,7 @@ async function fork(id: string | undefined, station: string | undefined, note: s
   const { run: src, value } = current(id)
   const def = await loadPinned(src.factory)
   if (!Object.hasOwn(def.nodes, station ?? ''))
-    fail(`usage: factory fork <run> <station> [note...]; stations: ${Object.keys(def.nodes).join(', ')}`)
+    fail(`usage: factory fork <run> <station> '[note...]'; stations: ${Object.keys(def.nodes).join(', ')}`)
   const sender = note ? managerSender(src) : undefined
   refuseWorker('fork') // managerSender lets FACTORY_FROM and FACTORY_RUN through for mail
   await assertRoom(src.repo)
@@ -10165,10 +10165,10 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
-  file-elsewhere <rig> --from <rig>:<bead> --title T --description D  file a bead in another rig; labels it factory unless the source is Linear
+  file-elsewhere <rig> --from <rig>:<bead> --title '<text>' --description '<text>'  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> <text...> | propose <key> '<question>' '<a | b>']   JSON of every rig's open
+  decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>']   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -10195,11 +10195,11 @@ const usage = `factory — herdr software factories on xstate
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
-  say <text...>                      type text and Enter into the AX manager's pane
+  say '<text...>'                      type text and Enter into the AX manager's pane
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
-  memory search [--rig r] <query...>  the closest notes in the factory's shared memory (semantic search)
+  memory search [--rig r] '<query...>'  the closest notes in the factory's shared memory (semantic search)
   memory add ${MEMORY_ADD_USAGE}   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping;
                                      a note that names a bead or PR needs --until unless --kind recipe
@@ -10234,11 +10234,11 @@ const usage = `factory — herdr software factories on xstate
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
-  decide <run> <outcome> [note...]   the person: answer a gate station
-  mail <run> <node|manager> [--wake] <text...>  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
-  poke <run> [text...]               nudge the current station's worker: report, or say what blocks it
+  decide <run> <outcome> '[note...]'   the person: answer a gate station
+  mail <run> <node|manager> [--wake] '<text...>'  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
+  poke <run> '[text...]'               nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
-  fork <run> <station> [note...]     new run from <run>'s branch and state, restarted at <station>
+  fork <run> <station> '[note...]'     new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
                                      drop prompts, briefs and stray backups, and a dead launch script;
@@ -10442,7 +10442,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'say':
         refuseWorker('say', true)
-        if (!args.length) fail('usage: factory say <text...>')
+        if (!args.length) fail("usage: factory say '<text...>'")
         ax.say(args.join(' '))
         break
       case 'stop': {
@@ -10672,7 +10672,7 @@ if (import.meta.main && !outboxCmd)
           )
         } else
           fail(
-            `usage: factory memory search [--rig r] <query...> | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
+            `usage: factory memory search [--rig r] '<query...>' | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
           )
         break
       }
@@ -10891,7 +10891,8 @@ if (import.meta.main && !outboxCmd)
         }
         if (sub === 'answer') {
           const [rigName, id, ...text] = rest
-          if (!rigName || !id || !text.length) fail('usage: factory decisions answer <rig> <bead> <text...>')
+          if (!rigName || !id || !text.length)
+            fail("usage: factory decisions answer <rig> <bead> '<text...>'")
           decisionsAnswer(rigName!, id!, text.join(' '))
           break
         }
