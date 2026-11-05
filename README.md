@@ -953,11 +953,16 @@ A PR belongs to a live run when its branch is the run's (`factory/<run>`) or the
   PR's branch, resolves the conflicts, runs the tests and pushes; the label comes off and a comment names
   the run. A worker that can't tell how to resolve one says so on the PR. A PR from a fork shows as
   the rig's error instead, since its branch is not ours to push.
-- **`rework`**: the same run, for a PR that needs changes: it reads the PR's reviews, comments and
-  checks, makes the changes asked for, tests and pushes. A PR with both labels gets one run for both.
+- **`rework`**: for a PR that needs changes. The PR goes through the implement station again, then the
+  normal verify and review. With no live run, the factory starts a run of the rig's factory at implement on
+  the PR's own branch. That run pushes to the PR branch and opens no new PR. A PR with both labels takes
+  this path.
 
-A `conflict` or `rework` PR that belongs to a live run goes to that run instead: its current station
-is mailed what the label asks (a parked one wakes), so two workers never push to one branch.
+A `conflict` or `rework` PR that belongs to a live run goes to that run instead, so two workers never
+push to one branch. For `conflict`, the current station is mailed what the label asks (a parked one wakes).
+For `rework`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
+run's factory has no implement station, the current station gets the mail. A PR that is queued with ship
+is unchanged: the ship run gets the label.
 
 The rework run triages first: a PR that is no longer wanted (already on the base, superseded, or
 rejected in review) gets a comment and the `close` label, and the next pass closes it.
