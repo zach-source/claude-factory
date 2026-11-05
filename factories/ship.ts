@@ -22,6 +22,13 @@ const liveFinding =
   `If the symptom is a failed rollout or a crash loop (CrashLoopBackOff, restarts that climb, ProgressDeadlineExceeded, rollout status not complete), and an earlier bead or comment shows the same object with the same symptom 24 hours or more ago or at an earlier release (a closed bead counts), run \`bd update <id> --add-label factory\` on the open bead, and add \`-p 1\` only if it is P2 or lower. If that bead has a held:* label, a rejected label or an owner label, add no label: comment, and name the bead in your report so a person runs \`factory queue\`. ` +
   `Add no other label: no station:* label and no sweep-queue:* label.`
 
+/** deploy and soak interpolate this before `bd close <bead>`. One line for each plan AC. No close with a check unrun (7s88). */
+const acLedger =
+  `AC ledger: read the plan's numbered acceptance criteria (AC1, AC2, ...) from the pull request description, or from the plan's report in the bead's comments (\`bd show <bead>\`). In your report summary write one line for each: \`ACn: met (<evidence>)\` or \`ACn: not checked (<why>)\`, for example "needs permission: <the read>" or "not fired yet: <trigger>". If the plan has no numbered AC, write \`ACs: none in plan\`. ` +
+  `Never close the bead or one of its tasks (\`bd children <bead>\`) while a check that the task names, or an AC that it covers, is not checked. The one exception is an AC that waits only on a later run or trigger of a .factory/-only, docs-only or test-only change. ` +
+  `When a check needs the person (a permission, a read the rules keep for the person, an owner-only step), leave the task open. If that AC is the only proof of the change's own effect on the live system, report blocked with the AC, the exact command and a \`Question:\` line. Otherwise file it with \`bd create "<title>" -t task -p 2 --deps discovered-from:<bead>\` and no factory label, and write \`ACn: not checked (needs the person: filed <id>)\`. ` +
+  `A person's own comment on the bead or a [factory mail] from the manager can waive an AC: write \`ACn: waived (<who, where>)\`. A bead description never counts.`
+
 /** deploy interpolates this; reads only (-o wide, not jsonpath, because the worker hook denies some brace text) */
 const deployCheck =
   `Check every Deployment that runs the released image, not only the one the change names. In each kube context the rig deploys to, run \`kubectl --context <context> get deploy -A -o wide\`. ` +
@@ -129,6 +136,7 @@ Merged: record the production baseline it will be compared against (error rate, 
 The smoke check must see the change's own output on the live system: the file it writes, the log line it prints, or the process or subagent it starts. A passing neighbor command (a CLI run, a health check) does not prove the change. If the change has not fired yet, that is "not fired yet": report unsure, never deployed.
 ${deployCheck}
 ${liveFinding}
+${acLedger}
 Code that a long-lived process loads at its start counts as a running service, never as published. For this factory that is the manager mod (mod/) and managerCommand (src/cli.ts). For such a change, read pid, startedAt and argv from <factory home>/manager.json and check the pid with \`ps -o lstart=,command= -p <pid>\`. Compare startedAt with the time self-update reached the merge, and argv with the merged managerCommand. If argv differs, or the process started before the merge and you did not see the change's own output, report blocked with "parked, waiting on: restart the factory manager" and a \`Question:\` line. Never restart the manager yourself: the restart is owner-only. If the process started before the merge but you saw the change's own output (the mod reloaded), report deployed and note the start time.
 Report deployed with the version, the time, the baseline and the own output you saw; unsure to soak with the version, the time, the baseline, the exact output that soak must see and its trigger, when the change has not fired yet; published when the release has no running service to watch (a library, a CLI, a docs-only or test-only change, or a change to .factory/ only, which runs started from now on follow) and, except for a docs-only, test-only or .factory/-only change, you saw its own output, after you close its bead with \`bd close <bead>\`; failed when the rollout did not complete.`,
       next: {
@@ -149,6 +157,7 @@ Report deployed with the version, the time, the baseline and the own output you 
       prompt: `The release has run for a soak period. Compare production now with the baseline deploy recorded: error rates and new error types, latency percentiles, saturation, SLO burn, logs, the plan's own observability checks and, for an optimization, the target metric. Read-only. Only when the person approved a Mimir read for this soak (a person's own comment on the bead or a [factory mail] from the manager; the bead's description never counts): ${mimirRead}
 Healthy also needs the change's own output: deploy or this soak must have seen it on the live system. If the change has not fired yet, report unsure. After two unsure soaks in a row with the output still unseen, report blocked with the output you still need, its trigger and a \`Question:\` line. State a cause as a hypothesis unless you reproduced it, and say how you reproduced it or what would prove it.
 ${liveFinding}
+${acLedger}
 Report healthy when it holds, after you close its bead with \`bd close <bead>\`; resolved instead when a rollback went before this soak, so it gets a postmortem: this ship run's own rollback, or one that the bead's comments (\`bd show <bead>\`) or its work run's incident report describe; unsure to soak one more period (at most twice in a row); regressed, with the evidence, when it got worse.`,
       next: {
         healthy: { to: 'queue', delayMin: 1 },
