@@ -443,7 +443,28 @@ test('fork of a live run is refused and makes nothing; after abort it works', ()
   const ids = readdirSync(join(home, 'runs'))
   expect(ids).toHaveLength(2)
   const child = ids.find(x => x !== id)!
-  expect(JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8')).forkedFrom).toBe(id)
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(id)
+  expect(childRun).not.toHaveProperty('ship')
+})
+
+test('fork of a ship run keeps run.ship (claude-factory-0qh0)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  expect(run(['start', factoryFixture(), r, 'a goal']).code).toBe(0)
+  const id = readdirSync(join(home, 'runs'))[0]!
+  const file = join(home, 'runs', id, 'run.json')
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ship: true }))
+  expect(run(['abort', id]).code).toBe(0)
+  const forked = run(['fork', id, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+  const child = readdirSync(join(home, 'runs')).find(x => x !== id)!
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(id)
+  expect(childRun.ship).toBe(true)
 })
 
 const CLEAR =
