@@ -263,8 +263,9 @@ test('file-elsewhere refuses a bad grammar with usage and zero bd calls (AC2)', 
   const nl = txt('nl.txt', 'one\ntwo')
   const rows: Record<string, string[]> = {
     'unknown flag': [...FROM, '--title', 't', '--description', 'd', '--x', 'y'],
-    'both title': [...FROM, '--title', 't', '--title-file', f, '--description', 'd'],
-    'both description': [...FROM, '--title', 't', '--description', 'd', '--description-file', f],
+    'both title': [...FROM, '--title', 't', '--title-file', f],
+    'both description': [...FROM, '--description', 'd', '--description-file', f],
+    'repeated file': [...FROM, '--title-file', f, '--title-file', f],
     repeated: [...FROM, '--title', 't', '--title', 'u', '--description', 'd'],
     'no value': [...FROM, '--title', 't', '--description'],
     'extra word': [...FROM, '--title', 't', '--description', 'd', 'extra'],
