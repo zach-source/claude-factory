@@ -196,18 +196,21 @@ const RESET_MAX = 8 * 24 * 3_600_000
 const NOW = 1_000_000_000_000
 
 test('a token-swap state that is not trusted counts as no state: the swap runs and the file is rewritten', () => {
+  const A = NOW - 500 // a trusted state would hold the swap back: this hit is not newer
   const bad: [string, string][] = [
     ['far at', JSON.stringify({ at: NOW + SKEW + 1, until: NOW })],
-    ['far until', JSON.stringify({ at: 1, until: NOW + RESET_MAX + 1 })],
+    ['far until', JSON.stringify({ at: A, until: NOW + RESET_MAX + 1 })],
     ['far ran', JSON.stringify({ at: 1, until: NOW, ran: NOW + SKEW + 1 })],
     ['huge at', '{"at":1e308,"until":1}'],
-    ['huge until', '{"at":1,"until":1e308}'],
+    ['huge until', `{"at":${A},"until":1e308}`],
     ['huge ran', '{"at":1,"until":1,"ran":1e308}'],
-    ['string at', '{"at":"1","until":1}'],
-    ['null at', '{"at":null,"until":1}'],
-    ['string until', '{"at":1,"until":"1"}'],
-    ['null until', '{"at":1,"until":null}'],
-    ['string ran', '{"at":1,"until":1,"ran":"1"}'],
+    ['neg inf until', `{"at":${A},"until":-1e999}`],
+    ['string at', '{"at":"x","until":1}'],
+    ['null at', `{"at":null,"until":${NOW}}`],
+    ['string until', `{"at":${A},"until":"1"}`],
+    ['null until', `{"at":${A},"until":null}`],
+    ['string ran', '{"at":1,"until":1,"ran":"9999999999999"}'],
+    ['null ran', `{"at":${A},"until":1,"ran":null}`],
     ['not json', 'not json'],
     ['array', '[]'],
     ['number', '5'],
@@ -296,6 +299,8 @@ test('trustedPaged reads a limit-paged file only inside the reset bound', () => 
       ['not json', 0],
       ['"x"', 0],
       ['null', 0],
+      ['"5"', 0],
+      ['-1e999', 0],
       ['[]', 0],
       [String(NOW + RESET_MAX + 1), 0],
       ['1e308', 0],
