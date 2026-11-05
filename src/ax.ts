@@ -416,7 +416,8 @@ const safeName = (x?: string): x is string => !!x && /^[A-Za-z0-9_.-]+$/.test(x)
  * A prefix cannot name /graphql, so it is an exact path. The gh commands pr view, checks and review use it.
  * Any other API path has no rule, and the gateway answers 403.
  */
-const reviewerApiRule = (r: { https: object }) => ({ https: { ...r.https, paths: ['/graphql'] } })
+const reviewerApiRule = <T extends { https: object }>(r: T) =>
+  ({ https: { ...r.https, paths: ['/graphql'] } }) as T
 
 /** the stations that post approving reviews as the reviewer App: review, security and check (the small route's review) */
 export const REVIEWER_STATIONS = ['review', 'security', 'check']
