@@ -80,6 +80,7 @@ import {
   withoutFleet,
   type RigFacts,
   factoryLabelName,
+  hold,
 } from './cli'
 
 test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
@@ -2906,4 +2907,18 @@ test('clip never leaves a lone high surrogate', () => {
   expect(clip('a'.repeat(199) + '😀', 200)).toBe('a'.repeat(199) + '…')
   expect(clip('a'.repeat(198) + '😀', 200)).toBe('a'.repeat(198) + '😀')
   expect(clip('abc', 5)).toBe('abc')
+})
+
+test('hold: a release whose delete keeps the dir does not throw and frees the lock', () => {
+  const home = mkdtempSync(join(tmpdir(), 'hold-19gy-'))
+  try {
+    const release = hold('t.lock', () => {}, home)! // a rm that deletes nothing
+    expect(release).not.toBeNull()
+    expect(() => release()).not.toThrow()
+    const again = hold('t.lock', undefined, home)
+    expect(again).not.toBeNull()
+    again!()
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
