@@ -154,7 +154,7 @@ function gitSub(w: string[]): number {
 function argsOk(w: string[], s: Spec): boolean {
   for (let i = 0; i < w.length; i++) {
     const a = unquote(w[i]!)
-    if (s.value?.includes(a)) i++
+    if (s.value?.includes(w[i]!)) i++
     else if (a.startsWith('-')) {
       if (!s.flags.includes(a)) return false
     } else if (s.noColon && a.includes(':')) return false
@@ -188,11 +188,7 @@ function readerSegment(w: string[]): boolean {
   if (nonRunner(w)) return true
   if (w[0] === 'sed') {
     const script = (w[2] ?? '').replace(/^(['"])(.*)\1$/, '$2')
-    return (
-      w[1] === '-n' &&
-      SED_SCRIPT.test(script) &&
-      !w.slice(3).some(a => a.replace(/['"]/g, '').startsWith('-'))
-    )
+    return w[1] === '-n' && SED_SCRIPT.test(script) && !w.slice(3).some(a => unquote(a).startsWith('-'))
   }
   if (!READERS.has(w[0] ?? '')) return false
   if (w[0] !== 'git') return true
@@ -210,8 +206,9 @@ function readerSegment(w: string[]): boolean {
  * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
  * scripts (no w, e, r, -i, -f).
  * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
- * textconv) is not covered. False denies stay for awk, rg, sort, jq, find, xargs, globs, $,
- * subshells, heredocs, line joins and non-reader verbs. Upgrade path: a real shell parser.
+ * textconv), a git hook and a prettier config file are not covered. False denies stay for awk,
+ * rg, sort, jq, find, xargs, globs, $, subshells, heredocs, line joins and verbs outside the
+ * reader and non-runner tables. Upgrade path: a real shell parser.
  */
 function readOnly(command: string): boolean {
   let seg: string[] = []
