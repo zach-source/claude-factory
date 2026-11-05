@@ -218,3 +218,46 @@ test('factory queue removes the stale label so a held bead starts again (AC13)',
   const upd = callLines().find(l => l.startsWith('update acme-1'))
   expect(upd).toContain('--remove-label stale?')
 })
+
+// claude-factory-7a7e: a patrol cannot queue a bead from another rig, or a child of one
+test('factory queue under FACTORY_PATROL refuses discovered_from without the factory label (7a7e)', () => {
+  setup([])
+  const rows = (o: Record<string, unknown>) =>
+    writeFileSync(
+      join(bin, 'bd'),
+      readFileSync(join(bin, 'bd'), 'utf8').replace(
+        /  show\) .*\n/,
+        `  show) case "$2" in ${Object.entries(o)
+          .map(([id, r]) => `${id}) printf '%s' '${JSON.stringify([{ id, ...(r as object) }])}';;`)
+          .join(' ')} *) exit 1;; esac;;\n`,
+      ),
+    )
+  const msg = 'a patrol cannot start it: a person queues it'
+  const patrol = { FACTORY_PATROL: '1' }
+  const from = { metadata: { discovered_from: 'other-9' } }
+  const refuses = (id: string) => {
+    const r = factory(['queue', 'a', id], patrol)
+    expect(r.code).not.toBe(0)
+    expect(r.err + r.out).toContain(msg)
+    expect(callLines().some(l => l.startsWith(`update ${id}`))).toBe(false)
+  }
+  rows({ 'acme-1': from })
+  refuses('acme-1')
+  rows({ 'acme-1': from, 'acme-1.1': { parent: 'acme-1' } }) // a child of such a bead
+  refuses('acme-1.1')
+  rows({ 'acme-1.1': { parent: 'acme-1' } }) // a parent that cannot be read
+  refuses('acme-1.1')
+  rows({}) // the named bead is not found
+  refuses('acme-1')
+  rows({ 'acme-1': { parent: 'acme-2' }, 'acme-2': { parent: 'acme-1' } }) // a cycle
+  refuses('acme-1')
+  const deep = (n: number) => `acme-1${'.1'.repeat(n)}`
+  rows(Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8].map(n => [deep(n), {}]))) // 9 rows: too long
+  refuses(deep(8))
+  expect(factory(['queue', 'a', deep(7)], patrol).code).toBe(0) // 8 rows: allowed
+  // allowed: a person, or the factory label present
+  rows({ 'acme-1': from })
+  expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
+  rows({ 'acme-1': { ...from, labels: ['factory'] } })
+  expect(factory(['queue', 'a', 'acme-1'], patrol).code).toBe(0)
+})

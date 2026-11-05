@@ -550,9 +550,10 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
  * refresh read, with the wall time of the read. The anchor is its newest entry at or before now-minDays,
  * else its oldest. The ceiling is `latest - (latest - anchor.size) * minDays / (now - anchor.at)`. With
  * less than minDays of history, this extrapolates the observed rate. With more, it interpolates between
- * two real reads. An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
+ * two real reads. With a floor present, the ceiling applies at every span > 0. A cold start with less than 30 min of history (GO_FLOOR_WINDOW_MS) has no ceiling: a short span
+ * multiplies noise by minDays/span (claude-factory-qyuu). An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
  * does not compound across refreshes. The size delta is clamped at 0, so a smaller `/latest` than the
- * anchor never puts the ceiling above `latest`. With no elapsed time (a cold start) it is Infinity. A zero
+ * anchor never puts the ceiling above `latest`. With no floor and less than GO_FLOOR_WINDOW_MS elapsed (a cold start, or its retry) it is Infinity. A zero
  * span must never reach the division: a NaN floor would allow every version. The history must stay
  * strictly increasing in time. If the wall clock is not after the newest read (a clock step back during the
  * refresh), the refresh fails, keeps the floor and does not store the read (claude-factory-35em).
@@ -601,7 +602,7 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
   }
   const wallNow = cfg.now()
-  // the history must stay strictly increasing in time: the anchor choice and the span > 0 guard rely on it
+  // the history must stay strictly increasing in time: the anchor choice and the span guard rely on it
   if (cfg.goSizes.length && wallNow <= cfg.goSizes.at(-1)!.at)
     return noteGoFloorFailure(cfg, 'wall clock is not after the last tree size read')
   cfg.goSizes.push({ at: wallNow, size: latestSize.size })
@@ -624,14 +625,13 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     : Infinity
   const anchor = cfg.goSizes[0]! // just pushed above, never empty
   const span = wallNow - anchor.at
-  // span > 0 keeps NaN out: a NaN floor would allow every version (goDecideVersion compares record > floor)
-  const ceiling =
-    span > 0
-      ? Math.floor(
-          latestSize.size -
-            (Math.max(0, latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span,
-        )
-      : Infinity
+  // the guard also keeps NaN out (span 0): a NaN floor would allow every version
+  // (goDecideVersion compares record > floor)
+  const ceiling = (prev ? span > 0 : span >= GO_FLOOR_WINDOW_MS)
+    ? Math.floor(
+        latestSize.size - (Math.max(0, latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span,
+      )
+    : Infinity
   const record = Math.min(sampled, bound, ceiling)
   const capped = record < sampled
   cfg.goFloor = { record, at: t0, latest: latestSize.size }
