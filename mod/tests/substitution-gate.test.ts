@@ -35,12 +35,11 @@ const PLAIN = [
   `${F} mail r1 plan "a <(b)"`,
 ]
 
-function harness($: unknown, on: Parameters<Parameters<typeof test>[2]>[1], answer: string) {
-  void $
+function harness(on: any, answer: string) {
   mock.clock(on)
   const n = { asked: 0, ran: 0 }
   const questions: string[] = []
-  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+  on('tool.call', { tool: 'AskUserQuestion' }, (_: unknown, e: any) => {
     n.asked += 1
     const question = e.questions[0]!.question
     questions.push(question)
@@ -54,7 +53,7 @@ function harness($: unknown, on: Parameters<Parameters<typeof test>[2]>[1], answ
 }
 
 test('a substitution in a factory command asks the person and does not run on Deny', SLOW, async ($, on) => {
-  const { n, questions } = harness($, on, 'Deny')
+  const { n, questions } = harness(on, 'Deny')
   for (const command of [...GATED, ...UNREADABLE]) {
     const asked = n.asked
     const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
@@ -66,14 +65,14 @@ test('a substitution in a factory command asks the person and does not run on De
 })
 
 test('Allow runs a gated substitution command', SLOW, async ($, on) => {
-  const { n } = harness($, on, 'Allow')
+  const { n } = harness(on, 'Allow')
   const r = await $.tool.call({ tool: 'Bash', command: GATED[0]!, description: 'x' })
   expect(r.deny).toBeUndefined()
   expect(n.ran).toBe(1)
 })
 
 test('a single-quoted or non-factory command is not gated', SLOW, async ($, on) => {
-  const { n } = harness($, on, 'Deny')
+  const { n } = harness(on, 'Deny')
   for (const command of PLAIN) {
     const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
     expect(r.deny, command).toBeUndefined()
@@ -83,7 +82,7 @@ test('a single-quoted or non-factory command is not gated', SLOW, async ($, on) 
 })
 
 test('a subagent is denied a substitution without a dialog', SLOW, async ($, on) => {
-  const { n } = harness($, on, 'Allow')
+  const { n } = harness(on, 'Allow')
   on('agent.list', () => ({ value: [] }) as never)
   const r = await $.tool.call({ tool: 'Bash', command: GATED[0]!, agentId: 'some-other-agent' } as never)
   expect(r.deny).toContain('shell substitution')
