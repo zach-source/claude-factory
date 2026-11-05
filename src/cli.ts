@@ -8579,15 +8579,6 @@ async function labelPass() {
   writeJson(join(HOME, 'labels.json'), errors)
 }
 
-/**
- * Start a review run for each green draft pull request that no run owns (claude-factory-pff5).
- * An aborted run that blocked leaves such a PR. In each GitHub or GitLab rig, `orphanSweep` forks the source run
- * at `review`. It forks ORPHAN_CAP runs at most in one pass, and only where the rig has room.
- * Each fork goes in orphan-forks.json, keyed by PR URL and head SHA: one review for each head.
- * If that file is unreadable, the rig is skipped: with no record, a PR can get two forks.
- * The mail to the station is from `factory`. Mail from `manager` counts as owner approval.
- * The new run starts at the next tick.
- */
 /** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
 export function orphanRuns(ids: string[], read: typeof current = current) {
   const runs = new Map<string, Run>()
@@ -8607,6 +8598,15 @@ export function orphanRuns(ids: string[], read: typeof current = current) {
   return { runs, live, decided }
 }
 
+/**
+ * Start a review run for each green draft pull request that no run owns (claude-factory-pff5).
+ * An aborted run that blocked leaves such a PR. In each GitHub or GitLab rig, `orphanSweep` forks the source run
+ * at `review`. It forks ORPHAN_CAP runs at most in one pass, and only where the rig has room.
+ * Each fork goes in orphan-forks.json, keyed by PR URL and head SHA: one review for each head.
+ * If that file is unreadable, the rig is skipped: with no record, a PR can get two forks.
+ * The mail to the station is from `factory`. Mail from `manager` counts as owner approval.
+ * The new run starts at the next tick.
+ */
 async function orphanPass() {
   const stamp = join(HOME, 'orphans.stamp')
   if (halted() || isFresh(stamp, ORPHANS_MS)) return

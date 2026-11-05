@@ -15,15 +15,16 @@ const fake = (state: Record<string, { node: string; outcome?: string; bead?: str
 
 test('decided is set only for a run whose last outcome is decision', () => {
   const { runs, live, decided } = orphanRuns(
-    ['a', 'b', 'c', 'gone'],
+    ['a', 'b', 'c', 'd', 'e', 'gone'],
     fake({
       a: { node: 'implement', outcome: 'decision', bead: 'b-1' },
       b: { node: 'implement', outcome: 'ready', bead: 'b-2' },
       c: { node: 'done', outcome: 'decision' },
+      d: { node: 'implement', outcome: 'approve' },
+      e: { node: 'implement' },
     }),
   )
-  expect([...runs.keys()]).toEqual(['a', 'b', 'c'])
-  expect(decided.has('a')).toBe(true)
-  expect(decided.has('b')).toBe(false)
-  expect(live.map(r => r.id)).toEqual(['a', 'b'])
+  expect([...runs.keys()]).toEqual(['a', 'b', 'c', 'd', 'e'])
+  expect([...decided]).toEqual(['a', 'c'])
+  expect(live.map(r => r.id)).toEqual(['a', 'b', 'd', 'e'])
 })
