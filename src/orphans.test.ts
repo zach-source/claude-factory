@@ -182,6 +182,18 @@ test('AC5: at most ORPHAN_CHECKS_MAX checks calls per pass; no-io skips come fir
   expect(calls).toBe(1)
 })
 
+test('a second record write that fails after a good fork is reported as record failed, with the fork', async () => {
+  let n = 0
+  const f = io({
+    record: () => {
+      if (++n === 2) throw new Error('disk')
+    },
+  })
+  const res = await orphanSweep([pr()], ctx(), f.o, ORPHAN_CAP)
+  expect(res.forked).toHaveLength(1)
+  expect(res.skipped[0]!.why).toMatch(/^record failed after fork .*: disk$/)
+})
+
 test('ciVerdict: null is unknown, fail wins over pending, zero checks are green', () => {
   expect(ciVerdict(null)).toBe('unknown')
   expect(ciVerdict({ pass: 0, fail: 1, pending: 1 })).toBe('red')

@@ -205,6 +205,34 @@ test('a failed fork shows an error row with the URL, and a second pass forks not
   expect(read('orphans.json')).toHaveLength(1)
 })
 
+test('failed-fork rows match by exact URL: pull/37 and pull/378 each get a row', () => {
+  const src = setup()
+  const base = 'https://github.com/acme/widget/pull/'
+  const pull = (n: number) => ({
+    number: n,
+    html_url: `${base}${n}`,
+    state: 'open',
+    draft: true,
+    head: { ref: `factory/${src}`, sha: SHA1, repo: { full_name: 'acme/widget' } },
+    base: { ref: 'main', repo: { full_name: 'acme/widget' } },
+    labels: [],
+  })
+  // the longer URL comes first: a substring match on it would hide the row for pull/37
+  writeFileSync(join(dir, 'pulls.json'), JSON.stringify([pull(378), pull(37)]))
+  script('gh', [
+    'case "$*" in',
+    `  "api "*"state=open"*) cat "${join(dir, 'pulls.json')}";;`,
+    '  *) exit 0;;',
+    'esac',
+  ])
+  const rec = (n: number) => [`${base}${n}`, { sha: SHA1, run: '', from: src, at: 'now' }]
+  writeFileSync(join(home(), 'orphan-forks.json'), JSON.stringify(Object.fromEntries([rec(378), rec(37)])))
+  pass()
+  const rows = read('orphans.json')
+  expect(rows).toHaveLength(2)
+  expect(rows.map((r: { error: string }) => r.error).join('\n')).toContain(`${base}37:`)
+})
+
 test('AC8: a stopped factory skips the pass; resume lets it fork', () => {
   const src = setup()
   fakeGh(src, SHA1)

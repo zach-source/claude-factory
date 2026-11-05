@@ -114,7 +114,10 @@ export async function orphanSweep(prs: OrphanPr[], ctx: OrphanCtx, io: OrphanIo,
     }
     try {
       io.record(pr, src, run)
-    } catch {} // the first record still holds this PR at this head
+    } catch (err) {
+      // the first record (run '') still holds this PR at this head: say the fork ran, so the row does not claim it failed
+      skipped.push({ url: pr.url, why: `record failed after fork ${run}: ${(err as Error).message}` })
+    }
     forked.push({ url: pr.url, run })
   }
   return { forked, skipped }
