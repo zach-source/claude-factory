@@ -35,7 +35,7 @@ const scan = (file: string, text: string) =>
   text.split('\n').flatMap((line, i) => {
     let rest = line
     for (const [f, t] of allowed) if (f === file) rest = rest.split(t).join('')
-    return rest.includes('"<') ? [file + ':' + (i + 1) + ': ' + line.trim().slice(0, 100)] : []
+    return rest.includes('"<') || /\bbd (?:search|create|comment|close) [^`"]*"[^"`]*<[^"`]*"/.test(rest) ? [file + ':' + (i + 1) + ': ' + line.trim().slice(0, 100)] : []
   })
 
 test('no prompt source holds a double-quoted placeholder', () => {
@@ -53,6 +53,8 @@ test('each allowlisted text occurs exactly once', () => {
 test('scan flags a double-quoted placeholder, passes a single-quoted one', () => {
   expect(scan('x.ts', 'bd comment <id> "<time, evidence>"')).toHaveLength(1)
   expect(scan('x.ts', 'report r 1 <outcome> "<summary>"')).toHaveLength(1)
+  expect(scan('x.ts', 'run `bd search "CI runner loss: <workflow> / <job>"` now')).toHaveLength(1)
+  expect(scan('x.ts', "run `bd search 'CI runner loss: <workflow> / <job>'` now")).toEqual([])
   expect(scan('x.ts', "bd comment <id> '<time, evidence>'")).toEqual([])
   expect(scan('src/cli.ts', '{"repo":"<owner>/<repo>"')).toHaveLength(1)
   expect(scan('factories/sweeps.ts', '{"repo":"<owner>/<repo>"')).toEqual([])
@@ -98,6 +100,7 @@ test('every brief of lifecycle, ship, sweeps and release has no double-quoted pl
         "'<query>'",
         "'\\''",
         'single quotes',
+        ...(text.includes('bd create') ? ["'<title>'"] : []),
       ])
         expect(text.includes(s) ? '' : node + ': lacks ' + s).toBe('')
     }
