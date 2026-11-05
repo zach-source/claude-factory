@@ -8932,16 +8932,49 @@ function managerSender(run: Run): 'manager' {
  * forMail skips FACTORY_FROM and FACTORY_RUN: the manager mails with FACTORY_FROM=manager (remote.test.ts) and a run worker mails its own station (run-scope.test.ts), so managerSender keeps its old three markers.
  * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
  */
-function workerMarker(forMail = false): string | undefined {
-  return process.env.FACTORY_FROM && !forMail
+function workerMarker(
+  forMail = false,
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  return env.FACTORY_FROM && !forMail
     ? 'FACTORY_FROM is set'
-    : process.env.FACTORY_RUN && !forMail
+    : env.FACTORY_RUN && !forMail
       ? 'FACTORY_RUN is set'
-      : process.env.FACTORY_DEF_NAME
+      : env.FACTORY_DEF_NAME
         ? 'FACTORY_DEF_NAME is set'
-        : process.env.BEADS_ACTOR?.startsWith('factory/')
+        : env.BEADS_ACTOR?.startsWith('factory/')
           ? 'BEADS_ACTOR names a factory worker'
           : undefined
+}
+
+/** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
+const WORKER_VERBS = [
+  'report',
+  'mail',
+  'memory',
+  'status',
+  'show',
+  'check',
+  'home',
+  'ship',
+  'advisories',
+  'pg-scratch',
+  'mutate',
+  'ci',
+  'worker',
+]
+
+/** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
+export function workerVerbRefusal(
+  cmd: string | undefined,
+  args: string[],
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const marker = workerMarker(false, env)
+  if (!marker || !cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || WORKER_VERBS.includes(cmd))
+    return undefined
+  if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
+  return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
 }
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
@@ -9859,7 +9892,9 @@ or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
 {
-  const why = import.meta.main ? otherRunRefusal(cmd, args, process.env) : undefined
+  const why = import.meta.main
+    ? (otherRunRefusal(cmd, args, process.env) ?? workerVerbRefusal(cmd, args, process.env))
+    : undefined
   if (why) {
     console.error(why)
     process.exit(1)

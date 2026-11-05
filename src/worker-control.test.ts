@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
 import { compile, type Factory } from './machine'
+import { workerVerbRefusal } from './cli'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `worker-control-${process.pid}`)
@@ -348,13 +349,6 @@ test('e10f: every dispatch case is allowed or denied for a worker', () => {
   expect(switchCases().sort()).toEqual([...ALLOWED, ...DENIED].sort())
 })
 
-type Refusal = (
-  c: string | undefined,
-  a: string[],
-  e: Record<string, string | undefined>,
-) => string | undefined
-const workerVerbRefusal: Refusal = (...a) =>
-  ((require('./cli') as { workerVerbRefusal?: Refusal }).workerVerbRefusal ?? (() => 'missing export'))(...a)
 for (const [name, env] of Object.entries(markers)) {
   const call = (c: string | undefined, a: string[] = []) => workerVerbRefusal(c, a, env)
   test(`e10f unit ${name}`, () => {
