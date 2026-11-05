@@ -24,6 +24,10 @@ const UNREADABLE = [
   `${F} status # it's\n${F} mail r1 plan "$(id)" #'`,
   `${F} mail r1 plan <<EOF\nit's $(id)\nEOF`,
   `${F} mail r1 plan 'open`,
+  // each ends balanced if the scan misreads the first quote, so only the rule itself gates it
+  `${F} mail r1 plan it\\'s "$(id)" '`,
+  `${F} mail r1 plan $'\\'' "$(id)" '`,
+  `#'\n${F} mail r1 plan "$(id)" '`,
 ]
 
 const PLAIN = [
