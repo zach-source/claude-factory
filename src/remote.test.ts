@@ -264,6 +264,21 @@ test('outboxUsage: --help/-h only in a positional slot, malformed args, else nul
   expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', '--supersedes', 'fact/x.md', 's'])).toBeNull()
   expect(worker.outboxUsage('memory', ['add', '--kind', 'fact'])).toBe(worker.OUTBOX_USAGE.memory)
   expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', '--anyway'])).toBe(worker.OUTBOX_USAGE.memory)
+  expect(
+    worker.outboxUsage('memory', [
+      'add',
+      '--rig',
+      'r',
+      '--from',
+      'r1/plan',
+      '--kind',
+      'fact',
+      '--until',
+      '2026-12-01',
+      's',
+      'b',
+    ]),
+  ).toBeNull()
   expect(worker.outboxUsage('memory', ['add', 'a lesson'])).toContain('--kind')
   expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', '--tier', 'long', 's'])).toContain('--tier')
 })
