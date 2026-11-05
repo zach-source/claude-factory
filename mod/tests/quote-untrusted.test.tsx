@@ -17,6 +17,14 @@ test('the manager manual passes decisions text in single quotes', () => {
   expectSingleQuoted(manual('factory'), ['question', 'label: effect | label: effect', 'sentence', 'text'])
 })
 
+test('no cli command span in the manual or the patrol holds a double-quoted placeholder', () => {
+  for (const t of [manual('factory'), PATROL('factory')]) {
+    const spans = (t.match(/`factory [^`]*`/g) ?? []).filter(s => s.includes('<'))
+    expect(spans.length).toBeGreaterThan(5)
+    for (const s of spans) expect(s).not.toContain('"<')
+  }
+})
+
 test('the patrol passes file-elsewhere text in single quotes', () => {
   expectSingleQuoted(PATROL('factory'), ['title', 'description'])
 })
