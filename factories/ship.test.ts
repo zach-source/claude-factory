@@ -670,3 +670,14 @@ test('release.rules holds the runner-loss bullet of lifecycle.rules once', () =>
   expect(line).toBeDefined()
   expect(release.rules!.split('\n').filter(l => l === line).length).toBe(1)
 })
+
+test('soak has a deadline that releases a healthy, unseen-output rollout, and keeps the block for risky changes (claude-factory-3w8o)', () => {
+  const soak = prompt('soak')
+  expect(soak).toContain('Soak deadline')
+  expect(soak).toContain('24 hours have passed since the deploy')
+  expect(soak).toContain('fourth unsure soak in a row')
+  expect(soak).toContain('verify:live')
+  expect(soak).toContain('filed <id>')
+  expect(soak).toContain('security-sensitive, a data migration, or marks an AC as must-see-live')
+  expect(soak).toContain('report blocked with the output you still need')
+})
