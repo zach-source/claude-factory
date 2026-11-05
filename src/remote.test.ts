@@ -1236,6 +1236,37 @@ test('a second egress outage 30 min or more of laptop time after the first page 
   rmSync(runDir, { recursive: true })
 })
 
+test('a far egress-paged since from before vl5j does not mute the egress mail (claude-factory-rnn8)', () => {
+  launched('rn1')
+  const file = join(home, 'runs', 'rn1', 'egress-paged-a.json')
+  writeFileSync(file, JSON.stringify({ since: Date.now() + 1e12, at: 0 }))
+  const since = Date.now() - 1_000
+  cluster('Running', {
+    status: 'working',
+    session: 's1',
+    lines: [],
+    egress: { since, tries: 1, last: 'upstream error' },
+  })
+  factory(['tick'])
+  expect(egressMails('rn1')).toBe(1)
+  expect(JSON.parse(readFileSync(file, 'utf8')).since).toBe(since)
+  rmSync(join(home, 'runs', 'rn1'), { recursive: true })
+})
+
+test('a garbage egress-paged file does not throw and still mails once (claude-factory-rnn8)', () => {
+  launched('rn2')
+  writeFileSync(join(home, 'runs', 'rn2', 'egress-paged-a.json'), 'not json')
+  cluster('Running', {
+    status: 'working',
+    session: 's1',
+    lines: [],
+    egress: { since: Date.now() - 1_000, tries: 1, last: 'upstream error' },
+  })
+  factory(['tick'])
+  expect(egressMails('rn2')).toBe(1)
+  rmSync(join(home, 'runs', 'rn2'), { recursive: true })
+})
+
 test('an invalid VM egress record is ignored: no throw, no mail, no egress FAIL (claude-factory-vl5j)', () => {
   launched('vl4')
   for (const egress of [
