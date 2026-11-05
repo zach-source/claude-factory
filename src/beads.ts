@@ -299,6 +299,7 @@ function createBead(
       repo,
       actor,
       'create',
+      '--title',
       title,
       '-d',
       description,

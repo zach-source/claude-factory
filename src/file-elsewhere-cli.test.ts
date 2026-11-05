@@ -183,6 +183,15 @@ test('a worker is refused for another bead, another rig or no run (AC5)', () => 
   expect(lines()).toHaveLength(0)
 })
 
+test('a title that starts with a dash is a title, never a bd flag', () => {
+  setup()
+  const a = [...ARGS]
+  a[a.indexOf('Fix widget')] = '--labels=factory'
+  expect(factory(a).code).toBe(0)
+  expect(creates()).toHaveLength(1)
+  expect(creates()[0]).toContain('create --title --labels=factory -d')
+})
+
 test('a create failure exits 1 and checks the token before any retry (AC6)', () => {
   setup()
   writeFileSync(failCreate, '')
