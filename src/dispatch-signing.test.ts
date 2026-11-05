@@ -21,7 +21,7 @@ function run(gpgsign: string, program: string, identity = true) {
           ['user.name', 't'],
           ['user.email', 't@t'],
         ]
-      : []),
+      : [['user.useConfigOnly', 'true']]),
     ['commit.gpgsign', gpgsign],
     ['gpg.format', 'ssh'],
     ['user.signingkey', join(dir, 'key.pub')],
