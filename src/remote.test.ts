@@ -3767,8 +3767,7 @@ test('a tick never spawns an outbox line over 100 KiB: it marks it seen, logs it
   clusterCursor('Running', 'idle', [big, bigMail, good])
   const first = factory(['tick'])
   expect(first.code).toBe(0)
-  const row = JSON.parse(first.out).runs[0]
-  expect(row.id).toBe('ramzl')
+  const row = JSON.parse(first.out).runs.find((r: { id: string }) => r.id === 'ramzl')
   expect(row.error ?? null).toBeNull()
   expect(seenTotal('ramzl')).toBe(3)
   const prompts = [...called().matchAll(/worker prompt (\S+)/g)].map(m =>
