@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fix: a Codex ChatGPT token copy no longer expires without notice (claude-factory-rcxu). New `bin/codex-token refresh` copies the live label again when its token expires within `CODEX_TOKEN_MARGIN_HOURS` (default 48). Set `FACTORY_AX_CODEX_TOKEN_SWAP="bin/codex-token refresh"` so the reconciler runs it every 12 hours and after a refused login. The Codex swap command now runs at most one time each hour.
+- Fix: the park reason names the harness (claude-factory-rcxu). It reads "Codex login refused (auth) until …" or "Claude usage limit (seven_day) until …". Before, the manager read a Codex refusal as a Claude login problem.
 - Fix: worker OTel metrics reach Prometheus (claude-factory-gclk). A worker launch sets `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative`. Claude Code sends delta sums by default, and the Prometheus OTLP endpoint refused them with HTTP 500 (`invalid temporality and type combination`).
 - Fix: `src/worker-system.md` lets a worker merge when its brief has a Merge authority section, as the ship `release` station does (claude-factory-gclk). Before, the list of refused forms told every worker not to merge.
 - Fix: a verify merge conflict parks only when the branch head did not change (claude-factory-gclk). The conflict summary now names the head. Before, a new conflict in the same files after a real resolution, for example in `CHANGELOG.md`, also parked the run.
