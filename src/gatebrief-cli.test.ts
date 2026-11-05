@@ -207,7 +207,7 @@ test('gate-brief set refuses a worker env, a patrol env, and a malformed key, wr
 
   const asWorker = factory(['gate-brief', 'set', key, briefFile], { FACTORY_FROM: 'implement' })
   expect(asWorker.code).toBe(1)
-  expect(asWorker.err).toContain('worker cannot set')
+  expect(asWorker.err).toContain('worker cannot run factory gate-brief')
 
   const asPatrol = factory(['gate-brief', 'set', key, briefFile], { FACTORY_PATROL: '1' })
   expect(asPatrol.code).toBe(1)
