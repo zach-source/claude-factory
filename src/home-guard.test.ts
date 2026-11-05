@@ -162,6 +162,9 @@ describe('homeReason', () => {
     `sed -n '1p' -f x.sed ${CLI}`,
     `sed -n 1p ${CLI} > out`,
     `sed -n 1p ${CLI}; ./x.sh`,
+    `sed -n 1p '-e' '1e ./x.sh' ${CLI}`,
+    `sed -n 1p "--expression=1e ./x.sh" ${CLI}`,
+    `sed -n 1p ''-i x.sh ${CLI}`,
   ])('denies a compound or sed form outside the grammar: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )

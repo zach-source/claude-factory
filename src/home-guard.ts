@@ -98,11 +98,15 @@ const TOKEN =
   /([ \t]+)|(;|&&|\|\||\||\n)|((?:2>&1|>\/dev\/null)(?=[ \t\n;&|]|$))|((?:[\w./:@%+,=^~-]|"(?:[^"\\$`!]|\\[^"\\$`\n!])*"|'[^']*')+)/y
 const SED_SCRIPT = /^\d+(,\d+)?p(;\d+(,\d+)?p)*$/
 
-// one reader segment: a reader word, git with a read subcommand, or sed -n with line-range p scripts
+// One reader segment: a reader word, git with a read subcommand, or sed -n with line-range p scripts
 function readerSegment(w: string[]): boolean {
   if (w[0] === 'sed') {
     const script = (w[2] ?? '').replace(/^(['"])(.*)\1$/, '$2')
-    return w[1] === '-n' && SED_SCRIPT.test(script) && !w.slice(3).some(a => a.startsWith('-'))
+    return (
+      w[1] === '-n' &&
+      SED_SCRIPT.test(script) &&
+      !w.slice(3).some(a => a.replace(/['"]/g, '').startsWith('-'))
+    )
   }
   if (!READERS.has(w[0] ?? '')) return false
   if (w[0] !== 'git') return true
@@ -118,8 +122,9 @@ function readerSegment(w: string[]): boolean {
 /**
  * True when `command` tokenizes fully in the closed grammar (TOKEN) and each segment, split at
  * ; && || | and newline, is a reader (readerSegment). The only redirects are 2>&1 and >/dev/null
- * (2>/dev/null reads as the word 2 and >/dev/null). Any other char (lone &, <, >, (, ), {, }, $, backtick, #, glob, backslash outside
- * quotes) or an empty segment gives false (fail closed), so the script read runs. For git, only
+ * (2>/dev/null reads as the word 2 and >/dev/null). Any other char (lone &, <, >, (, ), {, }, $,
+ * backtick, #, glob, backslash outside quotes) or an empty segment gives false (fail closed), so
+ * the script read runs. A sed word after the script, with quotes removed, must not start with -. For git, only
  * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
  * scripts (no w, e, r, -i, -f).
  * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
