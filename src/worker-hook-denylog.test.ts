@@ -193,6 +193,11 @@ describe('maskAssignments', () => {
     'X+=zqsecret ls',
     'a[1]=zqsecret ls',
   ])('%s hides the value', i => expect(m(i)).not.toContain('zqsecret'))
+  test('an unclosed subscript tail is linear', () => {
+    const t = performance.now()
+    m(' a['.repeat(1e5))
+    expect(performance.now() - t).toBeLessThan(2000)
+  })
   test('long rows are fast', () => {
     for (const i of ['X=' + '"'.repeat(1e5), 'a='.repeat(5e4)]) {
       const t = performance.now()
