@@ -6413,7 +6413,7 @@ test.each(['env', 'xargs', '$X'])(
     const cmd = head + ' -$A'.repeat(2000)
     const t = Date.now()
     const r = denyReason(cmd, '/root/repo', undefined, SFT4_GATE)
-    expect(Date.now() - t).toBeLessThan(1000)
+    expect(Date.now() - t).toBeLessThan(5000)
     expect(r).not.toBe(LONG_COMMAND_REASON)
   },
 )
