@@ -2156,6 +2156,19 @@ test('githubMergedJson: closed pulls with a merge date only, in the parseMergedP
   ).toBeNull()
 })
 
+test('githubMergedJson and gitlabMergedJson pass timeoutMs to the call, and default to 30 s', async () => {
+  const seen: (number | undefined)[] = []
+  const f: Gh = async (_argv, o) => {
+    seen.push(o?.timeout)
+    return { code: 0, out: '[]', err: '' }
+  }
+  await githubMergedJson(f, 'acme/widget', '/tmp', { pages: 1, timeoutMs: 15_000 })
+  await githubMergedJson(f, 'acme/widget', '/tmp', { pages: 1 })
+  await gitlabMergedJson(f, 'gl.example.com', 'acme/widget', '/tmp', { sourceBranch: 'b', timeoutMs: 15_000 })
+  await gitlabMergedJson(f, 'gl.example.com', 'acme/widget', '/tmp', { search: 'x' })
+  expect(seen).toEqual([15_000, 30_000, 15_000, 30_000])
+})
+
 import { githubCloseArgv, githubCommentArgv, githubUnlabelArgv } from './prs'
 
 test('GitHub PR write argv: comment, unlabel and close go through gh api; a body goes raw with -f; a label is encoded', () => {
