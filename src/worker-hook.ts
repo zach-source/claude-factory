@@ -9466,11 +9466,15 @@ export function reasonName(reason: string): string {
 
 const HARNESSES = ['claude', 'codex', 'pi']
 
-/** claude-factory-uzes: replace the value of each NAME=value word with *** so the deny log keeps no secret. A NAME can follow a quote (bash -c "X=v"); this can mask more than needed, never less. */
+/**
+ * claude-factory-uzes, -wkg4: replace the value of each NAME=value word with *** so the deny log keeps no secret.
+ * A NAME can follow a quote (bash -c "X=v"). `]=` starts a value at any position and `${NAME:=` or `${NAME:-` too.
+ * A `(` or backtick in a value masks to the end of the text. This can mask more than needed, never less. No subscript scan: linear.
+ */
 export function maskAssignments(command: string): string {
   return command.replace(
-    /(^|[\s;&|()`"'])([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=)(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
-    '$1$2***',
+    /((?:^|[\s;&|()`"'])[A-Za-z_][A-Za-z0-9_]*\+?=|\]\+?=|\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=])(?:[(`][\s\S]*|\\[\s\S]|"(?:[(`][\s\S]*|\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
+    '$1***',
   )
 }
 
