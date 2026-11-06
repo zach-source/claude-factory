@@ -25,7 +25,7 @@ export function homes(): string[] {
  * The APFS full case fold: ASCII lower case, else upper then lower case, so U+017F and the sharp s
  * fold as the file system folds them. It runs on every OS (fail closed).
  */
-const fold = (s: string) => (/[^\x00-\x7f]/.test(s) ? s.toUpperCase().toLowerCase() : s.toLowerCase())
+export const fold = (s: string) => (/[^\x00-\x7f]/.test(s) ? s.toUpperCase().toLowerCase() : s.toLowerCase())
 
 /** true for `/`, a home dir and every dir above a home dir, by case-folded compare */
 export function protectedPath(p: string, protect = homes()): boolean {
@@ -106,8 +106,8 @@ const isFile = (w: string) => w.includes('/') || /\.(?:sh|bash|zsh|py|ts|js|mjs|
 // a quoted string (an unclosed quote runs to the end).
 // Out of scope (denyReason denies most): a bare word without / or extension, $VAR, $(...), brace and glob
 // expansion, ~user/, a script that calls a script, a file over the read limit.
-const WORD = /(?:[^\s'"\\;&|<>()`]|\\[\s\S]|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?)+/g
-const unshell = (w: string) =>
+export const WORD = /(?:[^\s'"\\;&|<>()`]|\\[\s\S]|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?)+/g
+export const unshell = (w: string) =>
   w.replace(/\\([\s\S])|'([^']*)'?|"((?:[^"\\]|\\[\s\S])*)"?/g, (_, esc, sq, dq) =>
     esc !== undefined
       ? esc === '\n'

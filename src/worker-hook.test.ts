@@ -1,5 +1,5 @@
-import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { afterAll, expect, spyOn, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -37,6 +37,8 @@ import {
   QUOTED_ASSIGNMENT_REASON,
   GLOBAL_GIT_CONFIG_REASON,
   HOOK_ERROR_REASON,
+  reasonName,
+  TOKEN_READ_REASON,
   READY_REASON,
   REASON,
   SCAN_BUDGET_REASON,
@@ -356,6 +358,208 @@ test.each([...DENY_LIVE, ...ALLOW_LIVE])(
   cmd => {
     expect(denyReason(cmd)).toBeUndefined()
     expect(denyReason(cmd, undefined, [])).toBeUndefined()
+  },
+)
+
+// claude-factory-qn8a.17: the flux CLI. The guard denies a mutating verb on a person-only context.
+// An unknown verb fails closed at a command anchor. The rows are literal. A row built from a Set
+// cannot kill a mutation that removes a Set member.
+const FLUX_DENY_LIVE = [
+  'flux --context acme -h get suspend ks apps -h=false',
+  'flux --context acme --help get suspend ks apps --help=false',
+  'flux --context acme -h get resume ks apps -h=false',
+  'flux --context acme -h get uninstall --silent -h=false',
+  'flux --context acme -v version install -v v2.9.5',
+  'flux --context acme --version version install --version=v2.9.5',
+  'flux -h get suspend ks apps -h=false',
+  'caffeinate flux --context acme -h get suspend ks apps -h=false',
+  'bash -c "flux --context acme -h get suspend ks apps -h=false"',
+  'flux -h get ks',
+  'flux --help get ks',
+  'flux -v get ks',
+  'flux --version get ks',
+  'flux --context acme suspend kustomization apps',
+  'flux --context acme reconcile kustomization apps --with-source',
+  'flux --context acme resume helmrelease -n ns x',
+  'flux --context acme delete kustomization apps --silent',
+  'flux --context=acme suspend ks apps',
+  'flux suspend ks apps',
+  'flux -n ns --context acme reconcile hr x',
+  'flux --kubeconfig k --timeout 1m --context acme resume ks apps',
+  'flux --context other --context acme suspend ks apps',
+  'flux --context other --cluster acme suspend ks apps',
+  'CTX=acme; flux --context "$CTX" suspend ks apps',
+  'flux --context acme $V ks apps',
+  'flux --context acme zzz',
+  'flux zzz ks apps',
+  'flux --context acme --bogus get ks',
+  'flux --context acme "" suspend ks apps',
+  'flux --context acme -- suspend ks apps',
+  'flux --context acme bootstrap github --owner o',
+  'flux --context acme create source oci s --url u',
+  'flux --context acme install',
+  'flux --context acme migrate',
+  'flux --context acme plugin install operator',
+  'flux --context acme push artifact oci://r/a:1 --path . --source s --revision r',
+  'flux --context acme tag artifact oci://r/a:1 --tag v',
+  'flux --context acme trigger receiver x',
+  'flux --context acme uninstall --silent',
+  'watch flux --context acme reconcile ks apps',
+  'sudo -u root flux --context acme suspend ks apps',
+  'env KUBECONFIG=k flux suspend ks apps',
+  'bash -c "flux --context acme suspend ks apps"',
+  'eval "flux --context acme resume ks apps"',
+  '/usr/local/bin/flux --context acme suspend ks apps',
+  'flux \\\n --context acme suspend ks apps',
+  'flux --context acme create source oci s --export=false',
+  'flux --context acme install --export --export=false',
+  'flux --context acme bootstrap github --export',
+  'flux --context acme install --registry --export',
+  'flux --context acme install -v --export -v v2.9.5',
+  'flux --context acme install --version --export --version=v2.9.5',
+  'flux --context acme install --registry $X --export',
+  'flux --context acme install $X --export',
+  'flux --context acme install ${X} --export',
+  'flux --context acme install "$X" --export',
+  'flux --context acme install x$X --export',
+  'flux --context acme install $X foo --export',
+  'flux --context acme install --export $X',
+  'flux --context acme install --export "$X"',
+  'flux --context acme create hr h --chart $X --export',
+  'flux --context acme create ks apps --export --path "$P"',
+  'flux --context acme create ks apps --source s --path --export',
+  'flux --context acme create source oci s --export=1',
+  'flux --context acme create source oci s --export=$X',
+  'flux create source oci s --url u --export',
+  'flux --context acme install --export',
+  'flux --context acme install --registry=r --export',
+  'flux --context acme install --verbose --export',
+  'flux --context acme create ks apps --source s --export=true',
+  'nice -n 5 flux --context acme suspend ks apps',
+  'timeout 30 flux --context acme suspend ks apps',
+  'command flux --context acme suspend ks apps',
+  'flux suspend ks apps --context acme',
+]
+
+const FLUX_DENY_WRAPPED_VERB = [
+  'caffeinate flux --context acme bootstrap x',
+  'caffeinate flux --context acme create x',
+  'caffeinate flux --context acme delete x',
+  'caffeinate flux --context acme install x',
+  'caffeinate flux --context acme migrate x',
+  'caffeinate flux --context acme plugin x',
+  'caffeinate flux --context acme push x',
+  'caffeinate flux --context acme reconcile x',
+  'caffeinate flux --context acme resume x',
+  'caffeinate flux --context acme suspend x',
+  'caffeinate flux --context acme tag x',
+  'caffeinate flux --context acme trigger x',
+  'caffeinate flux --context acme uninstall x',
+]
+
+const FLUX_ALLOW_READ_VERB = [
+  'flux --context acme build x',
+  'flux --context acme check x',
+  'flux --context acme completion x',
+  'flux --context acme debug x',
+  'flux --context acme diff x',
+  'flux --context acme envsubst x',
+  'flux --context acme events x',
+  'flux --context acme export x',
+  'flux --context acme get x',
+  'flux --context acme help x',
+  'flux --context acme list x',
+  'flux --context acme logs x',
+  'flux --context acme pull x',
+  'flux --context acme stats x',
+  'flux --context acme trace x',
+  'flux --context acme tree x',
+  'flux --context acme version x',
+]
+
+const FLUX_ALLOW_LIVE = [
+  'flux -h',
+  'flux -v',
+  'flux --version',
+  'flux --context acme get ks --help',
+  'flux --context acme get kustomizations -A',
+  'flux get kustomizations -A',
+  'flux get helmreleases -A',
+  'flux --context acme trace deploy x -n ns',
+  'flux --context acme help reconcile',
+  'flux',
+  'flux --help',
+  'flux --context kind-kind suspend ks apps',
+  'flux --context kind-kind install --export',
+  'grep -rn flux src/',
+  'git commit -m "flux suspend ks apps"',
+  'brew install flux',
+]
+
+const FLUX_FLAG_ALLOW = [
+  'flux --as v get ks',
+  'flux --as-group v get ks',
+  'flux --as-uid v get ks',
+  'flux --as-user-extra v get ks',
+  'flux --cache-dir v get ks',
+  'flux --certificate-authority v get ks',
+  'flux --client-certificate v get ks',
+  'flux --client-key v get ks',
+  'flux --cluster v get ks',
+  'flux --context v get ks',
+  'flux --kube-api-burst v get ks',
+  'flux --kube-api-qps v get ks',
+  'flux --kubeconfig v get ks',
+  'flux -n v get ks',
+  'flux --namespace v get ks',
+  'flux --server v get ks',
+  'flux --timeout v get ks',
+  'flux --tls-server-name v get ks',
+  'flux --token v get ks',
+  'flux --user v get ks',
+  'flux --disable-compression get ks',
+  'flux --insecure-skip-tls-verify get ks',
+  'flux --ns-follows-kube-context get ks',
+  'flux --verbose get ks',
+]
+
+test.each([...FLUX_DENY_LIVE, ...FLUX_DENY_WRAPPED_VERB])(
+  'denyReason denies a flux command %j with personOnly acme',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBe(LIVE_REASON)
+  },
+)
+
+test.each([...FLUX_ALLOW_LIVE, ...FLUX_ALLOW_READ_VERB, ...FLUX_FLAG_ALLOW])(
+  'denyReason allows a flux command %j with personOnly acme',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
+  },
+)
+
+// The CTX= row is out: another guard denies an assignment before an unknown command with a variable word.
+test.each([
+  ...FLUX_DENY_LIVE.filter(c => !c.startsWith('CTX=')),
+  ...FLUX_DENY_WRAPPED_VERB,
+  ...FLUX_ALLOW_LIVE,
+])('denyReason allows a flux command %j when personOnly is empty or absent', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+  expect(denyReason(cmd, undefined, [])).toBeUndefined()
+})
+
+// A dynamic word before a flux verb names a hidden tool. A flux verb in the list fails closed.
+test.each([
+  '$F --context acme suspend ks apps',
+  '$F suspend ks apps',
+  '$F --context acme -h get suspend ks apps -h=false',
+])('denyReason denies a dynamic tool word before a flux verb %j', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
+})
+
+test.each(['$F --context acme get ks', '"$PY" script.py'])(
+  'denyReason allows a dynamic head %j (flux, strict off)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
   },
 )
 
@@ -11673,4 +11877,106 @@ test('denyReason alias memo hit puts back state.outer (claude-factory-qn8a.9.16)
   expect(denyReason('$D/t y; a0', '/acme/root', undefined, gate)).toBe(REASON)
   expect(denyReason('$D/t y; m; m', '/acme/root', undefined, gate)).toBeUndefined()
   expect(denyReason('ll m; ls; ll m', '/acme/root', undefined, gate)).toBeUndefined()
+}, 30_000)
+
+// claude-factory-qn8a.19: the token guard through denyReason and through the hook process
+const TG = mkdtempSync(join(tmpdir(), 'tokenhook-'))
+const TG_HOME = join(TG, 'home')
+const TG_ROOT = join(TG, 'root')
+const TG_CODEX = join(TG, 'runs', 'r1', 'codex', 'plan')
+for (const d of [
+  join(TG_HOME, '.codex'),
+  join(TG_HOME, '.claude'),
+  join(TG_HOME, 'repos', 'x'),
+  join(TG_ROOT, '.scratch'),
+  join(TG_ROOT, 'fixtures'),
+  join(TG_ROOT, 'src'),
+  TG_CODEX,
+])
+  mkdirSync(d, { recursive: true })
+for (const f of [
+  join(TG_HOME, '.codex', 'auth.json'),
+  join(TG_HOME, '.claude', '.credentials.json'),
+  join(TG_HOME, '.claude.json'),
+  join(TG_ROOT, 'fixtures', 'auth.json'),
+  join(TG_ROOT, 'src', 'cli.ts'),
+])
+  writeFileSync(f, 'x')
+symlinkSync(join(TG_HOME, '.codex', 'auth.json'), join(TG_CODEX, 'auth.json'))
+symlinkSync(join(TG_HOME, '.codex', 'auth.json'), join(TG_ROOT, '.scratch', 'x'))
+afterAll(() => rmSync(TG, { recursive: true, force: true }))
+
+const TG_DENY = [
+  'cat ~/.codex/auth.json',
+  'cat $CODEX_HOME/auth.json',
+  'head -c 100 /Users/acme/.codex/auth.json',
+  'tail ~/.claude/.credentials.json',
+  'jq . ~/.claude.json',
+  `bun -e "console.log(require('fs').readFileSync(process.env.HOME+'/.codex/auth.json','utf8'))"`,
+  `python3 -c "import os;open(os.path.join(os.environ['HOME'],'.codex','auth.json'))"`,
+  'cat .scratch/x',
+  'cat ~/.codex/auth.js\\\non',
+  'cat ~/.c*/a*',
+  'tar cf - ~/.codex',
+  'security dump-keychain',
+]
+const TG_ALLOW = [
+  'cat fixtures/auth.json',
+  'grep -n auth.json src/cli.ts',
+  "git commit -m 'fix auth.json read'",
+  'ls ~/.claude/plugins',
+  'cd $TMPDIR',
+  'bun test src/codex-worker.test.ts',
+]
+
+test.each(TG_DENY)('the token guard denies %s through denyReason', c => {
+  expect(denyReason(c, TG_ROOT, undefined, { cwd: TG_ROOT })).toBe(TOKEN_READ_REASON)
+})
+test.each(TG_ALLOW)('the token guard allows %s through denyReason', c => {
+  expect(denyReason(c, TG_ROOT, undefined, { cwd: TG_ROOT }) == null).toBe(true)
+})
+test('reasonName names TOKEN_READ_REASON', () =>
+  expect(reasonName(TOKEN_READ_REASON)).toBe('TOKEN_READ_REASON'))
+
+test('run as `bun src/worker-hook.ts`, a Read or Grep of a token path prints one TOKEN_READ_REASON deny (claude-factory-qn8a.19)', async () => {
+  const env = {
+    ...process.env,
+    HOME: TG_HOME,
+    CODEX_HOME: TG_CODEX,
+    CLAUDE_PROJECT_DIR: TG_ROOT,
+    CLAUDE_CONFIG_DIR: undefined,
+  }
+  const call = (tool_name: string, tool_input: unknown) =>
+    run(JSON.stringify({ tool_name, cwd: TG_ROOT, tool_input }), env, [], TG_ROOT)
+  const denied = {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: TOKEN_READ_REASON,
+    },
+  }
+  for (const [t, i] of [
+    ['Read', { file_path: join(TG_HOME, '.codex', 'auth.json') }],
+    ['Read', { file_path: join(TG_CODEX, 'auth.json') }],
+    ['Read', { file_path: join(TG_HOME, '.claude', '.credentials.json') }],
+    ['Read', { file_path: join(TG_HOME, '.claude.json') }],
+    ['Read', { file_path: join(TG_ROOT, '.scratch', 'x') }],
+    ['Read', { file_path: 7 }],
+    ['Grep', { path: join(TG_HOME, '.codex') }],
+    ['Grep', { path: TG_HOME }],
+    ['Grep', { path: '/' }],
+    ['Grep', { path: join(TG_HOME, '.claude') }],
+  ] as const) {
+    const r = await call(t, i)
+    expect([t, i, r.code, JSON.parse(r.out.trim() || 'null')]).toEqual([t, i, 0, denied])
+  }
+  for (const [t, i] of [
+    ['Read', { file_path: join(TG_ROOT, 'src', 'cli.ts') }],
+    ['Read', { file_path: 'a' }],
+    ['Read', { file_path: join(TG_ROOT, 'fixtures', 'auth.json') }],
+    ['Grep', {}],
+    ['Grep', { path: join(TG_ROOT, 'src') }],
+    ['Grep', { path: join(TG_HOME, 'repos', 'x') }],
+  ] as const)
+    expect([t, i, await call(t, i)]).toEqual([t, i, { out: '', code: 0 }])
 }, 30_000)

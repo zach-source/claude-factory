@@ -4,9 +4,9 @@
 
 **Created**: 2026-10-29
 
-**Status**: Draft — specification only; implementation and deployment are not authorized by this document.
+**Status**: Planned — the owner authorized planning and implementation on 2026-11-06. Deployment, provisioning, and cutover are not authorized by this document.
 
-**Tracking**: `claude-factory-09lo` tracks specification authoring only. Implementation work belongs in Beads after planning.
+**Tracking**: `claude-factory-09lo` tracks specification authoring only. Implementation work belongs in Beads (epic `claude-factory-aya5`).
 
 **Input**: User description: "consider how to build the manager ui and interface to run the factory with claude, codex or other harnesses if so choose; basically extend our idea to be more of a product", followed by "let's create a spec to represent the entire work".
 

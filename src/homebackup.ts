@@ -32,28 +32,12 @@ export const EXCLUDES = [
   '/home/backup.json',
   '/home/manager-host.log',
   '/home/.restoring',
+  '/home/ui-cache/',
   'worktrees/',
 ]
 
-const SECRETS = [
-  /gh[pousr]_[A-Za-z0-9]{30,}/,
-  /github_pat_[A-Za-z0-9_]{20,}/,
-  /sk-ant-[A-Za-z0-9_-]{20,}/,
-  /AKIA[0-9A-Z]{16}/,
-  /xox[bpsa]-[A-Za-z0-9-]{10,}/,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /Authorization:\s*(Basic|Bearer)\s+[A-Za-z0-9+/=._-]{20,}/i,
-  /:\/\/[^\s/:@]+:[^\s/@]+@/, // URL userinfo
-  /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./, // JWT
-  /sk-proj-[A-Za-z0-9_-]{20,}/,
-  /lin_api_[A-Za-z0-9]{20,}/,
-  /glpat-[A-Za-z0-9_-]{20,}/,
-  /AIza[0-9A-Za-z_-]{35}/,
-  /ops_[A-Za-z0-9+/=_-]{30,}/,
-  /npm_[A-Za-z0-9]{36}/,
-  /xapp-[A-Za-z0-9-]{10,}/,
-  /PRIVATE-TOKEN:\s*\S{16,}/i,
-]
+import { SECRETS } from './secrets'
+export { SECRETS }
 /** whether a file holds a token shape. Only a yes or no: the match never leaves this function */
 export const secretFile = (b: Buffer) => {
   const s = b.toString('latin1')

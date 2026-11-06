@@ -87,6 +87,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
+import { editRigs } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -131,7 +132,7 @@ import {
   VM_PLUGINS,
   writeLaunch,
 } from './harness'
-import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
+import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -164,6 +165,7 @@ import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axre
 import * as broker from './broker'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
+import { startUi, withBeads } from './ui'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import { signingProbe } from './signing'
 import {
@@ -1941,8 +1943,8 @@ export { httpsRemote }
  * and its codex would run with no deny hook. So the person sets FACTORY_AX_CODEX=1 with FACTORY_AX_IMAGE.
  */
 export const axCodex = (env = process.env) => env.FACTORY_AX_CODEX === '1'
-export function axCodexRefused(agent: string) {
-  if (harnessOf(agent) === 'codex' && !axCodex())
+export function axCodexRefused(agent: string, env = process.env) {
+  if (harnessOf(agent) === 'codex' && !axCodex(env))
     fail(
       'the ax runner runs codex only with FACTORY_AX_CODEX=1: set it with an image that has the codex guard',
     )
@@ -2161,7 +2163,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 }
 
 /**
- * Two PreToolUse entries that run `bun` on `file`: one for Bash, one for the file tools (claude-factory-g4du). It denies rm -r/-rf, a cd+rm chain, an rm with a
+ * Three PreToolUse entries that run `bun` on `file`: Bash, the file-write tools (claude-factory-g4du), and Read and Grep (claude-factory-qn8a.19). It denies rm -r/-rf, a cd+rm chain, an rm with a
  * $variable or glob target, and an rm outside the worktree root. It gives a reason.
  * `contexts` names kube contexts the rig reserves for a person alone (claude-factory-25z).
  * When the list is not empty, the hook's own argv carries it: `--person-only-contexts a,b`.
@@ -2171,6 +2173,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * release station run one strict `gh pr merge` form, for that repo only (-R required).
  * `harness` adds `--harness claude|codex`: the hook logs it with each denial (claude-factory-dsfg).
  * An older VM image's hook copy ignores argv it does not know.
+ * The claude entry has `onFailure: 'block'` (claude-factory-qn8a.36).
+ * Claude Code 2.1.295 or later then blocks the call if the hook times out, crashes or gives bad output.
+ * Codex has no such key (claude-factory-qn8a.75), and the VM image needs a newer Claude Code (claude-factory-6kzz).
  */
 const denyHook = (
   bun: string,
@@ -2185,6 +2190,9 @@ const denyHook = (
       type: 'command',
       command: [
         sq(bun),
+        // claude-factory-qn8a.21: bun reads bunfig.toml and the env file from the worktree; a preload there turns the hook off.
+        '--no-env-file',
+        '--config=/dev/null',
         sq(file),
         '--harness',
         harness,
@@ -2193,11 +2201,14 @@ const denyHook = (
         ...(merge ? ['--merge-authority', sq(merge)] : []),
       ].join(' '),
       timeout: 10,
+      ...(harness === 'claude' ? { onFailure: 'block' } : {}),
     },
   ]
   return [
     { matcher: 'Bash', hooks },
     { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks },
+    // claude-factory-qn8a.19: Read and Grep must not reach the harness token files
+    { matcher: 'Read|Grep', hooks },
   ]
 }
 
@@ -7115,6 +7126,14 @@ async function migrateToAx(args: string[]) {
 const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
 const rigs = (): Rig[] => mapRigs(rawRigs())
+/** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
+function edit(fn: (list: Rig[]) => Rig[]) {
+  try {
+    editRigs(rigsFile(), fn)
+  } catch (e) {
+    fail((e as Error).message)
+  }
+}
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
 /** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
@@ -9279,6 +9298,53 @@ async function assertRoom(repo: string) {
 }
 
 /** a rig as `rig add` defines it, checked: its repo tracks beads, its factory loads, its sweeps exist */
+const runnerMsg = (runner: string) => `--runner is ${Object.keys(runners).join(', ')} (not "${runner}")`
+
+/** Check a built Rig. It does no I/O. It fails on the first bad field and returns warning lines. */
+export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): string[] {
+  const warnings: string[] = []
+  const { runner, agent, mcp, egress } = rig
+  if (runner !== undefined && !Object.hasOwn(runners, runner)) fail(runnerMsg(runner))
+  const remote = runners[runner ?? DEFAULT_RUNNER]!.local === false
+  if (remote && mcp !== undefined)
+    fail(`--mcp does not reach a ${runner} worker: its servers' commands would have to exist in the VM`)
+  if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'pi')
+    fail('--mcp does not reach a pi worker: pi has no MCP client (constitution I)')
+  if (remote && agent !== undefined && !harnessOf(agent))
+    fail(`--agent for the ${runner} runner is claude, codex or pi (not "${agent}")`)
+  if (remote && agent !== undefined) axCodexRefused(agent, env)
+  if (egress?.length) {
+    if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
+    for (const host of egress.flatMap(e => e.hosts).filter(h => ax.isRegistryHost(h)))
+      warnings.push(
+        `warning: --egress ${host} is a package registry host; once a pkg-gate is on (FACTORY_AX_PKG_GATE), ` +
+          `it is stripped from this rig's policy and never reaches the VM directly`,
+      )
+  }
+  if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
+  if (rig.maxRuns !== undefined && !(Number.isInteger(rig.maxRuns) && rig.maxRuns >= 1))
+    fail(`--max is a number of runs, at least 1 (not "${rig.maxRuns}")`)
+  if (rig.slo !== undefined && !rig.slo.trim())
+    fail('--slo is a read-only command, e.g. --slo "kubectl get pods -A | grep -v Running"')
+  if (rig.drift !== undefined && !rig.drift.trim())
+    fail(
+      '--drift is a read-only command, e.g. --drift "flux get kustomizations -A; flux get helmreleases -A"',
+    )
+  // monitor reads rig.slo; an explicit opt-in with no command set would never fire (src/sweeps.ts's
+  // dueSweeps already gates it), which is a silent no-op a person is better off told about now
+  if (rig.sweeps?.includes('monitor') && !rig.slo)
+    fail('monitor needs --slo "<read-only command>": add it, or drop monitor from --sweeps')
+  if (rig.sweeps?.includes('drift') && !rig.drift)
+    fail('drift needs --drift "<read-only command>": add it, or drop drift from --sweeps')
+  const b = rig.beadsRemote
+  if (b) {
+    if (![b.name, b.user].every(s => /^[\w.-]+$/.test(s)))
+      fail('beadsRemote name and user are [A-Za-z0-9_.-]')
+    if (!URL.canParse(b.url)) fail(`beadsRemote url is not a URL (not "${b.url}")`)
+  }
+  return warnings
+}
+
 async function defineRig(
   name: string,
   path: string,
@@ -9328,35 +9394,24 @@ async function defineRig(
       `warning: Claude does not trust ${repo} yet, so its runs wait to start: run claude there once and accept its trust dialog`,
     )
   const def = await loadFactory(factorySource(factory, repo))
-  const rig: Rig = { name, repo, factory, ...(goal && { goal }), ...(agent && { agent }) }
-  if (runner !== undefined) {
-    if (!(runner in runners)) fail(`--runner is ${Object.keys(runners).join(', ')} (not "${runner}")`)
-    if (runner !== DEFAULT_RUNNER) rig.runner = runner
-  }
-  const remote = runners[rig.runner ?? DEFAULT_RUNNER]!.local === false
-  if (remote && mcp !== undefined)
-    fail(`--mcp does not reach a ${rig.runner} worker: its servers' commands would have to exist in the VM`)
-  if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'pi')
-    fail('--mcp does not reach a pi worker: pi has no MCP client (constitution I)')
-  if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${rig.runner} runner is claude, codex or pi (not "${agent}")`)
-  if (remote && agent !== undefined) axCodexRefused(agent)
+  const rig: Rig = { name, repo, factory, ...(goal && { goal }), ...(agent !== undefined && { agent }) }
+  if (runner !== undefined && runner !== DEFAULT_RUNNER) rig.runner = runner
+  if (slo !== undefined) rig.slo = slo
+  if (drift !== undefined) rig.drift = drift
   if (egress?.length) {
-    if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
-    let parsed: Egress[] | undefined
     try {
-      parsed = egress.map(ax.parseEgress)
+      rig.egress = egress.map(ax.parseEgress)
     } catch (err) {
       fail((err as Error).message)
     }
-    rig.egress = parsed!
-    for (const host of parsed!.flatMap(e => e.hosts).filter(h => ax.isRegistryHost(h)))
-      console.warn(
-        `warning: --egress ${host} is a package registry host; once a pkg-gate is on (FACTORY_AX_PKG_GATE), ` +
-          `it is stripped from this rig's policy and never reaches the VM directly`,
-      )
   }
-  if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
+  if (max !== undefined) {
+    if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
+    rig.maxRuns = Number(max)
+  }
+  if (sweeps !== undefined) rig.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
+  if (mcp !== undefined) rig.mcp = mcp
+  for (const w of validateRig(rig)) console.warn(w)
   if (mcp !== undefined) {
     rig.mcp = expand(mcp)
     try {
@@ -9375,34 +9430,12 @@ async function defineRig(
       fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
     rig.params = { ...rig.params, [k]: v }
   }
-  if (max !== undefined) {
-    if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
-    rig.maxRuns = Number(max)
-  }
-  if (slo !== undefined) {
-    if (!slo.trim()) fail('--slo is a read-only command, e.g. --slo "kubectl get pods -A | grep -v Running"')
-    rig.slo = slo
-  }
-  if (drift !== undefined) {
-    if (!drift.trim())
-      fail(
-        '--drift is a read-only command, e.g. --drift "flux get kustomizations -A; flux get helmreleases -A"',
-      )
-    rig.drift = drift
-  }
   if (sweeps !== undefined) {
-    rig.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
     const sweepsDef = await loadFactory(factorySource(rig.sweepsFactory ?? 'sweeps', repo))
     const names = sweepNames(sweepsDef)
-    const unknown = rig.sweeps.filter(s => !names.includes(s))
+    const unknown = (rig.sweeps ?? []).filter(s => !names.includes(s))
     if (unknown.length)
       fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
-    // monitor reads rig.slo; an explicit opt-in with no command set would never fire (src/sweeps.ts's
-    // dueSweeps already gates it), which is a silent no-op a person is better off told about now
-    if (rig.sweeps.includes('monitor') && !rig.slo)
-      fail('monitor needs --slo "<read-only command>": add it, or drop monitor from --sweeps')
-    if (rig.sweeps.includes('drift') && !rig.drift)
-      fail('drift needs --drift "<read-only command>": add it, or drop drift from --sweeps')
   }
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
@@ -10379,6 +10412,16 @@ async function status(id: string | undefined) {
 }
 
 /** each rig's ship queue, the next PR first; a rig whose bd cannot be read is left out */
+/** the row of each started run, as `factory waiting` and `factory ui` read them */
+const runRows = () =>
+  Promise.all(
+    startedRunIds().map(async id => {
+      const { run, value, c } = current(id)
+      const def = await loadPinned(run.factory)
+      return row(run, def, value, c, agentOf(def, value, c))
+    }),
+  )
+
 function shipQueues() {
   const out: Record<string, Bead[]> = {}
   for (const rig of rigs()) {
@@ -10510,6 +10553,7 @@ const usage = `factory — herdr software factories on xstate
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
+  ui [--port 4792] [--no-sync]       a local web page (127.0.0.1) of every rig's beads and epic progress (docs/ui.md)
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
@@ -10623,6 +10667,22 @@ if (import.meta.main && !outboxCmd)
           fail(
             'usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | put <name> <part> <parts> <base64>',
           )
+        break
+      }
+      case 'ui': {
+        const portIdx = args.indexOf('--port')
+        const port = portIdx >= 0 ? Number(args[portIdx + 1]) : 4792
+        if (!Number.isInteger(port) || port < 0) fail(`--port "${args[portIdx + 1]}" is not a number`)
+        const found = withBeads(rigs())
+        if (!found.length) fail(`no rig with a .beads directory in ${rigsFile()}`)
+        const ui = startUi({
+          rigs: found,
+          port,
+          sync: !args.includes('--no-sync'),
+          cacheDir: join(HOME, 'ui-cache'),
+          runNeeds: async () => waitingItems(await runRows(), shipQueues()),
+        })
+        console.log(`factory ui on http://127.0.0.1:${ui.server.port} for ${found.length} rigs`)
         break
       }
       case 'pkg-gate': {
@@ -11345,14 +11405,7 @@ if (import.meta.main && !outboxCmd)
         await digest()
         break
       case 'waiting': {
-        const rows = await Promise.all(
-          startedRunIds().map(async id => {
-            const { run, value, c } = current(id)
-            const def = await loadPinned(run.factory)
-            return row(run, def, value, c, agentOf(def, value, c))
-          }),
-        )
-        console.log(waiting(rows, Date.now(), shipQueues()))
+        console.log(waiting(await runRows(), Date.now(), shipQueues()))
         break
       }
       case 'report': {
@@ -11612,28 +11665,23 @@ if (import.meta.main && !outboxCmd)
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
-          const taken = rigs().find(r => r.repo === rig.repo && r.name !== rig.name)
-          if (taken)
-            fail(
-              `${rig.repo} is already rig ${taken.name}: redefine it under that name, or rig rm ${taken.name} first`,
-            )
-          writeJson(rigsFile(), [...rawRigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
+          edit(list => {
+            const taken = mapRigs(list).find(r => r.repo === rig.repo && r.name !== rig.name)
+            if (taken)
+              throw new Error(
+                `${rig.repo} is already rig ${taken.name}: redefine it under that name, or rig rm ${taken.name} first`,
+              )
+            return [...list.filter(r => r.name !== rig.name && r.repo !== rig.repo), rig]
+          })
           console.log(
             `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}${rig.runner ? `, workers run by ${rig.runner}` : ''}`,
           )
         } else if (sub === 'rm') {
-          if (!rigs().some(r => r.name === name))
-            fail(
-              `no rig "${name}" (rigs: ${
-                rigs()
-                  .map(r => r.name)
-                  .join(', ') || 'none'
-              })`,
-            )
-          writeJson(
-            rigsFile(),
-            rawRigs().filter(r => r.name !== name),
-          )
+          edit(list => {
+            if (!list.some(r => r.name === name))
+              throw new Error(`no rig "${name}" (rigs: ${list.map(r => r.name).join(', ') || 'none'})`)
+            return list.filter(r => r.name !== name)
+          })
           console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
         } else if (sub === 'list') {
           const { busy, held } = await busyRigs()

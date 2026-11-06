@@ -318,6 +318,7 @@ const ALLOWED = [
 ]
 const DENIED = [
   'pkg-gate',
+  'ui',
   'start',
   'fork',
   'tick',
