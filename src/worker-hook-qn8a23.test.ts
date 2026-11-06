@@ -21,6 +21,7 @@ const DENY = [
   'gh pr --zz ready --undo --undo=false 1',
   'gh --zz pr ready --undo --undo=false 1',
   'gh pr --zz ready --undo "$X" 1',
+  'gh pr --zz 3 ready --undo --undo=false 1',
 ]
 const ALLOW = [
   'gh pr ready 5 --undo',
@@ -28,6 +29,7 @@ const ALLOW = [
   'gh pr ready --undo',
   'gh pr -R o/r ready --undo 1',
   'gh pr --zz ready --undo 1',
+  'gh pr --zz 3 ready --undo 1',
   "gh pr ready 5 '--undo'",
   'gh pr ready 5 --undo -- --undo=false',
   'gh pr ready https://github.com/acme/widget/pull/5 --undo',
