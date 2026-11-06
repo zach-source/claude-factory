@@ -11716,8 +11716,8 @@ if (import.meta.main && !outboxCmd)
           if (name !== undefined && !/^[1-9][0-9]*$/.test(name))
             fail(`rig undo: "${name}" is not a snapshot number`)
           const n = Number(name ?? 1)
-          const from = snaps[n - 1]
-          if (!from) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
+          const from = snaps[n - 1]!
+          if (!snaps[n - 1]) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
           edit(() => {
             try {
               return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
