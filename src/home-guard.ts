@@ -1,7 +1,7 @@
 /**
  * The home-directory guard (claude-factory: a worktree cleanup script deleted the person's home).
  * Two layers use it:
- *   - `homeReason` runs first in the worker hook. It reads the raw command text, and the text of
+ *   - `homeReason` runs first in the worker hook. It reads the raw and the backslash-newline-joined command text, and the text of
  *     each script file the command names (unless the whole command is read-only), before any
  *     parse. A delete word plus a whole-home reference denies the call.
  *   - `rmSafe` replaces each recursive `rmSync` in the runner. It refuses `/`, the home dir and
@@ -87,10 +87,15 @@ function homeWord(protect: string[]): RegExp {
 }
 
 // The word regex holds folded text, so it tests folded text. DELETE and API also test the original: rmSync is case-sensitive.
-const hits = (text: string, word: RegExp) => {
+// Bash joins backslash-newline before it splits words, so the guard tests the joined text too. The join
+// reads backslash pairs left to right: an escaped backslash stays, so an even run keeps its newline as a
+// separator and a later backslash-newline in the next word still joins. The raw text stays tested too.
+const join = (s: string) => s.replace(/\\([\s\S])/g, (m, c) => (c === '\n' ? '' : m))
+const test1 = (text: string, word: RegExp) => {
   const f = fold(text)
   return (DELETE.test(text) || DELETE.test(f)) && (word.test(f) || API.test(text))
 }
+const hits = (text: string, word: RegExp) => test1(text, word) || test1(join(text), word)
 
 // a run of path chars between a lead and a terminator char; ':' ends a path:line word
 const SCRIPT = /(?:^|[\s'"=(`;&|:<>])([\w./-]+)(?=$|[\s'";&|)`:<>])/g
@@ -273,6 +278,7 @@ export function homeReason(
   const seen = new Set<string>()
   const paths = [
     ...[...command.matchAll(SCRIPT)].map(m => m[1]!),
+    ...[...join(command).matchAll(SCRIPT)].map(m => m[1]!),
     ...[...command.matchAll(WORD)].flatMap(m => candidates(unshell(m[0]), protect)),
   ]
   for (const w of paths) {
