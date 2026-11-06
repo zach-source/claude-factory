@@ -70,6 +70,8 @@ const MERGE_ALLOW = [
   'glab mr create --draft -t x -d y',
 ]
 
+const APPROVE_DENY = ['glab mr approve 5', 'glab mr -d x approve 5', 'glab mr note 5 -m x -- approve']
+
 // every glab api call outside the 3 closed forms: GLAB_API_REASON at every gate
 const API_DENY = [
   'glab api -X PUT projects/:id/merge_requests/5/merge',
@@ -144,6 +146,8 @@ const API_DENY = [
   'glab api -- projects/1',
   'glab mr note 5 -m api',
   'glab api -X DELETE projects/1/merge_requests/5/notes/3',
+  'glab api -X PUT projects/1/merge_requests/5/notes -f body=x',
+  'glab api -R -i projects/1',
   'glab api -XGET --method=GET projects/1',
   'glab api -X POST graphql',
   'glab api -X POST projects/1/merge_requests/5/notes -f body=x -X PUT',
@@ -217,6 +221,9 @@ for (const g of GATES) {
   const name = JSON.stringify(g)
   test.each(MERGE_DENY)(`denyReason denies %j with MERGE_REASON for gate ${name}`, cmd => {
     expect(ask(cmd, g)).toBe(MERGE_REASON)
+  })
+  test.each(APPROVE_DENY)(`denyReason denies %j with GLAB_APPROVE_REASON for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBe(GLAB_APPROVE_REASON)
   })
   test.each(API_DENY)(`denyReason denies %j with GLAB_API_REASON for gate ${name}`, cmd => {
     expect(ask(cmd, g)).toBe(GLAB_API_REASON)
