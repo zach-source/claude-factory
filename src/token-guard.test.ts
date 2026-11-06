@@ -57,6 +57,7 @@ const DENY = [
   'cat ../auth.json',
   'cat ~/other/auth.json',
   'cat ~/.codex/config.toml',
+  'cat /Users/acme/.codex/config.toml',
   'cat {x,~/.codex/auth.json}',
   'cat {x,~/other/auth.json}',
   'ls $CLAUDE_CONFIG_DIR',
