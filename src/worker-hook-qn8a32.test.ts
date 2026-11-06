@@ -81,6 +81,7 @@ const MERGE_DENY = [
   'glab api -X PUT projects/1/merge_requests/:branch',
   `glab api graphql -F query='mutation { :branch(input:{}) { errors } }'`,
   'glab api graphql -F query=@ph.graphql',
+  `glab api graphql -f query='query { a }' -F v=:branch`,
 ]
 const MERGE_ALLOW = [
   'glab mr view 5',
@@ -177,6 +178,7 @@ const READY_DENY = [
   'glab mr --ready -- update 5',
   'glab mr -f -- update 5',
   'glab -r -- mr update 5',
+  'glab mr update 5 --draft -y -- --ready',
   'glab -X PUT -f title=Foo -i -- api projects/1/merge_requests/5',
   'glab -ry mr update 5',
   'glab --ready=true mr update 5',
