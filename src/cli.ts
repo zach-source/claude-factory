@@ -575,7 +575,8 @@ export function replayable(
   if (cmd === 'mail' && id === run) return argv
   if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
-    return ['memory', id, ...rest, '--from', `${run}/${side.node}`]
+    // the forced --from goes first: a bare trailing flag (--rig) cannot take it as its value (claude-factory-zw2n)
+    return ['memory', id, '--from', `${run}/${side.node}`, ...rest]
   }
   return null
 }
@@ -3317,7 +3318,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       // ask once per visit; NUDGED records that it was asked
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
-        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
+        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${indentRest(m.text)}`),
         `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
