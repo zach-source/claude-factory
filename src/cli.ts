@@ -162,6 +162,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import * as client from './client'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
@@ -10931,6 +10932,18 @@ if (queued) {
   }
   worker.queue([cmd!, ...queuedArgs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
+}
+
+// claude-factory-akiq.6: with FACTORY_SERVER set, a manager's CLI call goes to the server (src/client.ts); a worker keeps the local path
+if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
+  let sent: number | null
+  try {
+    sent = await client.main(cmd, cmd === 'mail' ? fileArgs('mail', args) : args, process.env)
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(1)
+  }
+  if (sent !== null) process.exit(sent)
 }
 
 if (import.meta.main && !outboxCmd)
