@@ -608,7 +608,7 @@ test("a worker's settings are its own: the user's environment, herdr's session h
   expect(w.hooks.PostToolUse).toEqual([{ hooks: guard }])
   expect(JSON.stringify(w.hooks)).not.toContain('follow.sh')
   expect(JSON.stringify(w.hooks)).not.toContain('bd prime')
-  expect(pre).toHaveLength(3)
+  expect(pre).toHaveLength(4)
   // ctxguard first, the factory's deny entries last
   expect(pre[0]).toMatchObject({ matcher: 'Bash', hooks: guard })
   expect(pre[1]).toMatchObject({ matcher: 'Bash' })
@@ -616,10 +616,13 @@ test("a worker's settings are its own: the user's environment, herdr's session h
   // claude-factory-g4du: the same command guards Write, Edit, MultiEdit and NotebookEdit file paths
   expect(pre[2]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit' })
   expect(pre[2]!.hooks[0]!.command).toBe(pre[1]!.hooks[0]!.command)
+  // claude-factory-qn8a.19: and Read and Grep paths (the harness token files)
+  expect(pre[3]).toMatchObject({ matcher: 'Read|Grep' })
+  expect(pre[3]!.hooks[0]!.command).toBe(pre[1]!.hooks[0]!.command)
   expect(w.hooks.SessionStart).toEqual([herdr])
   // a user with no hooks at all gets only the factory's entries
   expect(Object.keys(workerSettings({}, 200).hooks)).toEqual(['PreToolUse'])
-  expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(2)
+  expect(workerSettings({}, 200).hooks.PreToolUse).toHaveLength(3)
   // each of these is not herdr's hook, so it goes
   const cmd = (command: string, type = 'command') => ({ hooks: [{ type, command }] })
   const herdrCmd = "bash '/h/.claude/hooks/herdr-agent-state.sh' session"
@@ -639,7 +642,7 @@ test("a worker's settings are its own: the user's environment, herdr's session h
   for (const h of guardDropped) {
     const got = workerSettings({ hooks: h }, 200).hooks
     expect(Object.keys(got)).toEqual(['PreToolUse'])
-    expect(got.PreToolUse).toHaveLength(2)
+    expect(got.PreToolUse).toHaveLength(3)
   }
   const dropped: Record<string, unknown[]>[] = [
     { SessionStart: [cmd(`${herdrCmd}; /x/bin/ctxguard`)] },
@@ -661,7 +664,7 @@ test("a worker's settings are its own: the user's environment, herdr's session h
   for (const h of dropped) {
     const got = workerSettings({ hooks: h }, 200).hooks
     expect(Object.keys(got)).toEqual(['PreToolUse'])
-    expect(got.PreToolUse).toHaveLength(2)
+    expect(got.PreToolUse).toHaveLength(3)
   }
   // ctxguard's allow list: the user's value first, then the memory-search text (no kube config text: it would exempt kube config reads)
   expect(workerSettings({ env: { CTXGUARD_ALLOW: 'a/b.pem' } }, 200).env.CTXGUARD_ALLOW).toBe(
@@ -755,10 +758,10 @@ test('workerFlags writes a clean worker config: ctxguard and herdr only, the ali
     const commands = Object.values(s.hooks as Record<string, { hooks: { command: string }[] }[]>)
       .flat()
       .flatMap(e => e.hooks.map(h => h.command))
-    expect(commands).toHaveLength(5)
+    expect(commands).toHaveLength(6)
     expect(commands.filter(c => c.endsWith('/bin/ctxguard'))).toHaveLength(2)
     expect(s.env.CTXGUARD_ALLOW).toContain('factory memory search')
-    expect(commands.filter(c => /worker-hook\.ts' --harness claude$/.test(c))).toHaveLength(2)
+    expect(commands.filter(c => /worker-hook\.ts' --harness claude$/.test(c))).toHaveLength(3)
     expect(commands.filter(c => c.includes('herdr-agent-state.sh'))).toHaveLength(1)
     expect(s.env.CLAUDE_ENV_FILE).toBe(join(import.meta.dir, 'worker-shell-env.sh'))
   } finally {

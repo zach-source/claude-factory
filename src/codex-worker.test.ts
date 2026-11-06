@@ -109,7 +109,7 @@ test("a codex worker hooks.json keeps only herdr's session hook and the deny hoo
   f.make()
   const h = written(f)
   expect(Object.keys(h).sort()).toEqual(['PreToolUse', 'SessionStart'])
-  expect(h.PreToolUse).toHaveLength(2)
+  expect(h.PreToolUse).toHaveLength(3)
   expect(h.PreToolUse[0].hooks[0].command).toContain('--harness codex')
   expect(h.SessionStart).toEqual([herdr])
 })
@@ -121,7 +121,7 @@ test('a codex worker with bad user hooks.json writes the deny hook only', () => 
     f.make()
     const h = written(f)
     expect(Object.keys(h)).toEqual(['PreToolUse'])
-    expect(h.PreToolUse).toHaveLength(2)
+    expect(h.PreToolUse).toHaveLength(3)
   }
   const f = fixture()
   rmSync(join(f.user, 'hooks.json'))
@@ -141,9 +141,10 @@ test('a codex worker home holds four files, the guard last, and the launch line 
   expect(toml).toContain(`[projects.${JSON.stringify(f.run.worktree)}]\ntrust_level = "trusted"`)
   expect(toml).not.toContain('leak')
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
-  expect(pre).toHaveLength(2)
+  expect(pre).toHaveLength(3)
   expect(pre[0].hooks[0].command).toContain("worker-hook.ts' --harness codex --person-only-contexts 'acme'")
   expect(pre[1].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
+  expect(pre[2].matcher).toBe('Read|Grep')
   expect(JSON.stringify(pre)).not.toContain('person-hook')
   const agents = readFileSync(join(f.dir, 'AGENTS.md'), 'utf8')
   expect(agents).toStartWith(readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8'))
@@ -330,10 +331,12 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   const h = vmCodexHome({ maxContextK: 150 }, ['acme'], ['release'])
   expect(Object.keys(h).sort()).toEqual(['config.toml', 'hooks.json'])
   const hook = JSON.parse(h['hooks.json']).hooks.PreToolUse
-  expect(hook).toHaveLength(2)
+  expect(hook).toHaveLength(3)
   expect(hook[0].matcher).toBe('Bash')
   expect(hook[1].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
+  expect(hook[2].matcher).toBe('Read|Grep')
   expect(hook[1].hooks).toEqual(hook[0].hooks)
+  expect(hook[2].hooks).toEqual(hook[0].hooks)
   const cmd: string = hook[0].hooks[0].command
   expect(cmd).toContain("'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'")
   expect(cmd).toContain('--harness codex')
