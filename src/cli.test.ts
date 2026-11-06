@@ -617,7 +617,8 @@ test("a worker's settings are its own: the user's environment, herdr's session h
   expect(pre[2]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit' })
   expect(pre[2]!.hooks[0]!.command).toBe(pre[1]!.hooks[0]!.command)
   // claude-factory-qn8a.36: a timed-out or crashed deny hook blocks the call; the user's own hooks keep their shape
-  for (const i of [1, 2]) expect(pre[i]!.hooks[0]).toMatchObject({ type: 'command', timeout: 10, onFailure: 'block' })
+  for (const i of [1, 2])
+    expect(pre[i]!.hooks[0]).toMatchObject({ type: 'command', timeout: 10, onFailure: 'block' })
   expect(JSON.stringify(pre[0])).not.toContain('onFailure')
   expect(JSON.stringify(w.hooks.SessionStart)).not.toContain('onFailure')
   expect(w.hooks.SessionStart).toEqual([herdr])
