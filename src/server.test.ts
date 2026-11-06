@@ -3,7 +3,7 @@ import type { Subprocess } from 'bun'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { claim, leaseFile, release, serve } from './server'
+import { claim, guardedTick, leaseFile, release, serve, serverRigsRefusal } from './server'
 
 const dirs: string[] = []
 const lease = () => {

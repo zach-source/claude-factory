@@ -10818,7 +10818,7 @@ if (import.meta.main && !outboxCmd)
       case 'server':
         refuseWorker('server', true)
         lease()
-        server.main(args, HOME, () => tick())
+        server.main(args, HOME, () => tick(), rigs)
         break
       case 'manager':
         refuseWorker('manager', true)

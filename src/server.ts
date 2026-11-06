@@ -184,10 +184,34 @@ export function parseFlags(args: string[]) {
   return v
 }
 
-/** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000]`. The caller passes the tick, so there is no import cycle with cli.ts. */
-export function main(args: string[], home: string, tick: () => unknown) {
+/** Refuse each rig whose runner is not exactly 'ax'. A missing runner means herdr. One writer for each rig (FR-007, FR-014). */
+export function serverRigsRefusal(rigs: { name: string; runner?: string }[]): string | undefined {
+  const bad = rigs.filter(r => r.runner !== 'ax').map(r => r.name)
+  return bad.length
+    ? `server home holds rig(s) ${bad.join(', ')} with a local runner: a server home runs only AX rigs (FR-014). Move them to a local home: factory home join`
+    : undefined
+}
+
+/** Wrap the tick. Read the rigs first. Throw, and do not tick, if a rig is not AX or the rigs cannot be read. */
+export function guardedTick(rigs: () => { name: string; runner?: string }[], tick: () => unknown) {
+  return () => {
+    const refusal = serverRigsRefusal(rigs())
+    if (refusal) throw new Error(refusal)
+    return tick()
+  }
+}
+
+/** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000]`. The caller passes the tick and the rigs, so there is no import cycle with cli.ts. */
+export function main(
+  args: string[],
+  home: string,
+  tick: () => unknown,
+  rigs: () => { name: string; runner?: string }[],
+) {
   const f = parseFlags(args)
-  const s = serve({ home, ...f, tick })
+  // detached passes (kickBeads and others) inherit this and hold a station that needs a local runner
+  process.env.FACTORY_SERVER_MODE = '1'
+  const s = serve({ home, ...f, tick: guardedTick(rigs, tick) })
   console.log(`factory server on :${s.port} as ${s.holder}`)
   const stop = () => void s.stop().then(() => process.exit(0))
   process.once('SIGTERM', stop)
