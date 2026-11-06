@@ -5098,10 +5098,9 @@ function ghApiRepoSettingDenied(apiArgs: string[], gate: HookGate): boolean {
   if ((method || (hasData ? 'POST' : 'GET')) === 'GET') return false
   const decoded = decodeApiPath(normalizeEndpoint(endpoint))
   if (decoded === undefined) return true
-  const segments = decoded.replace(/\/+/g, '/').split('/')
-  if (segments.some(s => s === '.' || s === '..')) return true
-  const path = decoded
-    .replace(/\/+/g, '/')
+  const flat = decoded.replace(/\/+/g, '/')
+  if (flat.split('/').some(s => s === '.' || s === '..')) return true
+  const path = flat
     .replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/[^/]+/, '')
     .replace(/^\/api\/v3(?=\/|$)/, '')
     .replace(/^\//, '')
