@@ -2,7 +2,7 @@
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { brief } from './cli'
+import { brief, reportCmd, resumeNote } from './cli'
 import { forgeNote } from './prs'
 import { GLAB_APPROVE_REASON } from './worker-hook'
 import lifecycle from '../factories/lifecycle'
@@ -20,6 +20,11 @@ const files = [
   'src/cli.ts',
   'src/prs.ts',
   'src/worker-hook.ts',
+  'src/worker-system.md',
+  'src/worker-vm.md',
+  'src/worker-codex.md',
+  'src/worker.ts',
+  'src/home-guard.ts',
 ]
 // not shell text: JSON file content, a code comment, a regex class, and two usage errors for the person who runs `factory start`
 const allowed: [file: string, text: string][] = [
@@ -109,10 +114,92 @@ test('every brief of lifecycle, ship, sweeps and release has no double-quoted pl
   }
 })
 
-test('forge note and the glab approve reason use a single-quoted note text', () => {
+/**
+ * claude-factory-jho3: find each quoted placeholder that is not in a slot with no file form.
+ * The model must escape a quote in untrusted text by hand. The hook cannot find an injected quote.
+ * An allowed slot holds a short label. All other free text goes by file.
+ * A command that is not known is a defect. A double quote is always a defect.
+ */
+export function quotedSlots(text: string): string[] {
+  const hits: string[] = []
+  const quoted = /(['"])([^'"\n]*<[^<>\n]+>[^'"\n]*)\1/g
+  for (const line of text.split('\n')) {
+    for (const m of line.matchAll(quoted)) {
+      const before = line.slice(0, m.index)
+      const cmds = [
+        ...before.matchAll(
+          /\b(?:bd (?:search|create|comment|close|update|show)|factory (?:memory (?:add|search|helped)|[\w-]+)|glab (?:mr note|api)|gh pr (?:comment|review|create))\b/g,
+        ),
+      ]
+      const last = cmds.at(-1)
+      const cmd = last?.[0].replace(/^.*\bfactory /, '')
+      // the first quoted word after the command is the slot; a second one is body text
+      const first = last !== undefined && !/['"]/.test(before.slice(last.index! + last[0].length))
+      const slot = ['bd search', 'bd create', 'memory search', 'memory add'].includes(cmd ?? '')
+      if (m[1] === "'" && first && slot) continue
+      hits.push(m[0])
+    }
+  }
+  return hits
+}
+
+test('quotedSlots flags a quoted placeholder outside the allowed slots', () => {
+  for (const t of [
+    "bd comment <id> '<evidence>'",
+    "bd create '<t>' -d '<e>'",
+    "bd close <id> --reason '<r>'",
+    "factory report r 1 <outcome> '<summary>'",
+    "factory mail r manager '<question>'",
+    "factory memory add --kind fact '<s>' '<body>'",
+    "glab mr note 5 -m '<text>'",
+    "gh pr comment 5 --body '<text>'",
+    "factory file-elsewhere x --from a:b --title '<t>' --description-file <p>",
+    "foo '<x>'",
+    'bd comment <id> "<e>"',
+    'bd search "<words>"',
+  ])
+    expect([t, quotedSlots(t).length]).toEqual([t, 1])
+})
+
+test('quotedSlots passes the allowed slots and a file form', () => {
+  for (const t of [
+    "bd search '<words>' --status open",
+    "bd create '<title>' --parent b --body-file <path>",
+    "factory memory add --kind fact '<summary>' --body-file <path>",
+    "factory memory search '<query>'",
+    'bd comment <id> --file <path>',
+    "bd search 'CI runner loss: <workflow> / <job>' --status open",
+  ])
+    expect([t, quotedSlots(t)]).toEqual([t, []])
+})
+
+test('every rendered worker text has no quoted placeholder outside the allowed slots', () => {
+  const texts: [string, string][] = []
+  for (const def of [lifecycle, ship, sweeps, release] as Factory[])
+    for (const node of Object.keys(def.nodes))
+      texts.push([
+        `${def.name}/${node}`,
+        brief(run, def, node, { ...c, log: [] } as never, [])
+          .split('{"repo":"<owner>/<repo>"')
+          .join(''),
+      ])
+  const ctx = { ...c, log: [] } as never
+  texts.push(['resume note', resumeNote(run, 'implement', ctx)])
+  for (const outcome of [undefined, 'blocked', 'handoff'])
+    texts.push([`reportCmd ${outcome}`, reportCmd(run, ctx, outcome)])
+  texts.push(
+    ['forgeNote', forgeNote('gitlab.example.com').join('\n')],
+    ['GLAB_APPROVE_REASON', GLAB_APPROVE_REASON],
+  )
+  for (const f of ['worker-system.md', 'worker-vm.md', 'worker-codex.md'])
+    texts.push([f, readFileSync(join(root, 'src', f), 'utf8')])
+  expect(texts.flatMap(([name, t]) => quotedSlots(t).map(h => `${name}: ${h}`))).toEqual([])
+})
+
+test('forge note and the glab approve reason use the file form for a note text', () => {
   const note = forgeNote('gitlab.example.com').join('\n')
   for (const t of [note, GLAB_APPROVE_REASON]) {
-    expect(t).toContain("-m '<text>'")
+    expect(t).toContain('glab api --method POST projects/:id/merge_requests/<n>/notes -F body=@<path>')
     expect(t).not.toContain('"<')
   }
 })

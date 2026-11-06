@@ -1681,7 +1681,11 @@ function tracking(run: Run, node: string) {
   ]
 }
 
-const resumeNote = (run: Run, node: string, c: Ctx) =>
+/** the report command that a nudge shows: the summary goes by file, never in a shell argument (claude-factory-jho3) */
+export const reportCmd = (run: Run, c: Ctx, outcome = '<outcome>') =>
+  `${CLI} report ${run.id} ${c.seq} ${outcome} --summary-file <path>`
+
+export const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed.` +
   cutOffNote(c.session ? cutOffCall(tailOf(run.worktree, c.session)) : undefined) +
   ` Carry on as the "${node}" station where you left off: ` +

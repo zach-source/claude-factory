@@ -260,7 +260,7 @@ test('outboxUsage: --help/-h only in a positional slot, malformed args, else nul
   expect(worker.outboxUsage('memory', ['add'])).toContain('usage: factory memory add')
   expect(worker.OUTBOX_USAGE.report).toContain("'<summary...>'")
   expect(worker.OUTBOX_USAGE.mail).toContain("'<text...>'")
-  expect(worker.OUTBOX_USAGE.memory).toContain("'<summary>' '[body...]'")
+  expect(worker.OUTBOX_USAGE.memory).toContain("'<summary>' ('[body...]'|--body-file path)")
   expect(worker.outboxUsage('mail', ['r1', 'manager', 'hi'])).toBeNull()
   expect(worker.outboxUsage('report', ['r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'])).toBeNull()
   expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', 'a lesson'])).toBeNull()
