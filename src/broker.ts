@@ -175,8 +175,8 @@ const namesReviewerKey = (s: string) =>
  * vault key or have a pathPrefixes or paths rule (except reviewerApiRule) on a hostname pattern that can match a github host (github.com,
  * *.github.com, and the Substrate patterns * and *.com). Those belong to the manager policy. Substrate ignores key
  * case and underscores, and it folds some non-ASCII letters. So a key with a non-ASCII character fails closed.
- * With a reviewer API rule, no other rule can have a GitHub author key (a vault key that starts with GITHUB).
- * No rule can have an extra key on a github host. One policy cannot hold the two keys.
+ * With a reviewer API rule, no other rule can have a GitHub author key (a vault key that starts with GITHUB)
+ * or an extra key on a github host. One policy cannot hold the two keys.
  */
 export function workerPolicyRefusal(policy: unknown): string | null {
   const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
