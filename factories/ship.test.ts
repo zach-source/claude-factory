@@ -262,35 +262,52 @@ test('queue does not send a PR back when its red tests are held assertions', () 
 test('queue step 2 and postmortem check for a hold before they add factory (claude-factory-5nh2)', () => {
   const two = ship.nodes.queue.prompt.split('\n2. ')[1]!
   const pm = ship.nodes.postmortem.prompt
-  const start = two.indexOf('Hold check:')
-  expect(start).toBeGreaterThan(-1)
-  const endMark = '`factory queue <rig> <bead>`'
-  const end = two.indexOf(endMark, start)
-  expect(end).toBeGreaterThan(start)
-  const check = two.slice(start, end + endMark.length)
+  const extract = (p: string) => {
+    const start = p.indexOf('Hold check:')
+    expect(start).toBeGreaterThan(-1)
+    const endMark = '(lifecycle on most rigs).'
+    const end = p.indexOf(endMark, start)
+    expect(end).toBeGreaterThan(start)
+    return p.slice(start, end + endMark.length)
+  }
+  const check = extract(two)
+  const pmCheck = extract(pm)
+  expect(pmCheck).toBe(check.replaceAll('<station>', 'plan'))
   for (const t of [
     'bd show <bead> --json',
-    'rejected',
-    'human',
     'rejected, human or owner,',
+    'when a label starts with held:',
+    'the key owner_decisions (any value)',
+    'when the read fails,',
+    'If the read fails, treat the bead as held.',
     'If the bead is held, do not add or remove a label.',
-    'If the bead is held, write the evidence in a bead comment',
-    'owner',
-    'held:',
-    'owner_decisions',
-    'factory queue <rig> <bead>',
-    'If the read fails, treat the bead as held',
+    'If no comment names the same hold reason, or the read fails, write the evidence in a bead comment.',
+    'Read only the labels and metadata of its first element, the bead itself.',
+    'Ignore the labels and metadata of the dependencies and dependents',
+    'in your report, so that a person queues it.',
+    'The steps are `bd update <bead> --remove-label ship`, then `factory queue <rig> <bead> <station>`.',
+    'factory start <factory>@<station> <rig> <bead> --owned',
+    'because dispatch skips an owner_decisions bead',
   ])
     expect(check).toContain(t)
+  expect(two).toContain('<station> is review when the pull request needs review')
+  expect(pmCheck).toContain('`factory queue <rig> <bead> plan`')
+  expect(pmCheck).toContain('factory start <factory>@plan <rig> <bead> --owned')
+  expect(pm).toContain('bd update <bead> --remove-label ship --add-label factory --add-label station:plan')
   for (const p of [two, pm]) {
-    expect(p).toContain(check)
-    expect(p.indexOf(check)).toBeLessThan(p.indexOf('--add-label factory'))
+    expect(p).not.toContain('`factory queue <rig> <bead>`')
+    expect(p).not.toContain('--station')
   }
+  for (const [p, own] of [
+    [two, check],
+    [pm, pmCheck],
+  ] as const)
+    expect(p.indexOf(own)).toBeLessThan(p.indexOf('--add-label factory'))
   expect(pm).toContain('If the bead is not held, send the released bead back')
   for (const [name, node] of Object.entries(ship.nodes)) {
     const prompt = (node as { prompt: string }).prompt
     for (const m of prompt.matchAll(/bd update <bead>[^`]*--add-label factory/g)) {
-      const at = prompt.indexOf(check)
+      const at = prompt.indexOf('Hold check:')
       expect(at, `${name} adds factory without the hold check`).toBeGreaterThan(-1)
       expect(at).toBeLessThan(m.index!)
     }
