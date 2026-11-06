@@ -126,6 +126,7 @@ const fixedSlots: [before: RegExp, quoted: string][] = [
   [/--header=$/, "'X-Scope-OrgID: <tenant>'"],
   [/--post-data=$/, "'query=<promql>'"],
   [/gh pr list [^']*--search $/, "'<failing name> in:title,body'"],
+  [/glab api [^']*-f title=$/, "'<title>'"],
   [/gh api --paginate $/, "'repos/<owner>/<repo>/dependabot/alerts?state=open'"],
 ]
 
@@ -173,6 +174,8 @@ test('quotedSlots flags a quoted placeholder outside the allowed slots', () => {
     "gh api --paginate '<owner>/<repo>'",
     'bd comment <id> "<e>"',
     'bd search "<words>"',
+    "glab api --method POST projects/:id/merge_requests -F title='<title>'",
+    "glab api --method POST projects/:id/merge_requests -f title='<title>' -f x='<e>'",
   ])
     expect([t, quotedSlots(t).length]).toEqual([t, 1])
 })
@@ -188,6 +191,7 @@ test('quotedSlots passes the allowed slots and a file form', () => {
     "wget --header='X-Scope-OrgID: <tenant>' --post-data='query=<promql>' 'http://h'",
     "gh pr list --state open --search '<failing name> in:title,body'",
     "gh api --paginate 'repos/<owner>/<repo>/dependabot/alerts?state=open'",
+    "glab api --method POST projects/:id/merge_requests -f title='<title>' -F description=@<path>",
   ])
     expect([t, quotedSlots(t)]).toEqual([t, []])
 })
@@ -244,9 +248,11 @@ test('each gh pr create and gh pr review in a factory prompt names a body file',
     'gh pr edit <n> -R <repo> --body-file <path>',
   )
   const mr = forgeNote('gitlab.example.com').find(
-    l => l.includes('glab mr create') || l.includes('merge_requests -F'),
+    l => l.includes('glab mr create') || l.includes('projects/:id/merge_requests -'),
   )
   expect(mr).toContain('description=@<path>')
+  expect(mr).toContain("-f title='<title>'")
+  for (const f of ['-F title=', '-F source_branch=', '-F target_branch=']) expect(mr).not.toContain(f)
   const text = brief(run, lifecycle as Factory, 'implement', { ...c, log: [] } as never, [])
   expect(text).toContain('a pull request body, a review body')
 })
