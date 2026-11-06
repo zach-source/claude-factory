@@ -9604,6 +9604,7 @@ async function defineRig(
 async function start(factory: string | undefined, repo: string | undefined, goal: string, isOwnerOk = false) {
   if (!factory || !repo || !goal) fail("usage: factory start <factory>[@station] <rig|repo> '<goal...>'")
   const root = repoOf(repo!)
+  refuseMoved(undefined, root) // before beadFor: it creates a bead
   await assertRoom(root)
   // <factory>@<station> starts past the triage when the caller already knows the kind of work
   const [spec, at] = factory!.split(/@(?=[^@/]+$)/)
@@ -9841,6 +9842,7 @@ export async function forkRun(
     throw new Error(
       `${other.run.id} is a live ship run on ${src.repo}: a fork of ${src.id} would put a second ship run on the rig. Run factory abort ${other.run.id}, then fork it again.`,
     )
+  refuseMoved(undefined, src.repo) // before the fork bead
   const bead = src.bead
     ? beads(src.repo, 'factory').create(
         `fork of ${src.bead}${note ? `: ${clip(note, 80)}` : ''}`,
@@ -11788,7 +11790,7 @@ if (import.meta.main && !outboxCmd)
             fail(
               `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>']`,
             )
-          refuseMoved(name, resolve(repo!)) // before defineRig: it reads the repo's .beads
+          refuseMoved(name, toplevel(repo!)) // the git top level, as defineRig stores it; before defineRig: it reads the repo's .beads
           const rig = await defineRig(name!, repo!, factory, {
             max,
             sweeps,

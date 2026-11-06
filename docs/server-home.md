@@ -6,7 +6,7 @@ Only the owner can do the steps that are marked **Owner step**. The factory does
 
 ## The rule
 
-- The server home (`/var/lib/factory` in `deploy/server.yaml`) runs only rigs with `runner: ax`.
+- The server home (`/var/lib/factory/home` in `deploy/server.yaml`) runs only rigs with `runner: ax`.
 
 - If a rig in the server home has another runner, `factory server` fails its tick. It does not run the tick.
   - `/healthz` shows `tickOk: false`.
@@ -57,7 +57,7 @@ The command refuses to run in an AX task. It refuses when `FACTORY_SERVER` is se
 
 1. **Owner step.** Create the namespace, the PVC, the Secrets and the gateway route for port 8444. Apply `deploy/server.yaml`.
 
-2. **Owner step.** Copy `<dir>` to the PVC at `/var/lib/factory`. The server must not run while you copy.
+2. **Owner step.** Copy `<dir>` to the PVC at `/var/lib/factory/home`. The server must not run while you copy.
 
 3. **Owner step.** Stop the laptop manager. Start the server (`replicas: 1`).
 

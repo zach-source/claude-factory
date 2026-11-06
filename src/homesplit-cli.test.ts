@@ -1,5 +1,14 @@
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -181,4 +190,33 @@ test('a bad home-split.json makes rig list fail with its error', () => {
   const p = cli(home, ['rig', 'list'])
   expect(p.code).not.toBe(0)
   expect(p.err).toContain('home-split.json')
+})
+
+test('a bad home-split.json makes start and rig add fail with its error', () => {
+  const { home, widget } = fixture()
+  writeFileSync(join(home, 'home-split.json'), '{nope')
+  for (const args of [
+    ['start', 'lifecycle', widget, 'x'],
+    ['rig', 'add', 'other', widget],
+  ]) {
+    const p = cli(home, args)
+    expect(p.code).not.toBe(0)
+    expect(p.err).toContain('home-split.json')
+  }
+  writeFileSync(join(home, 'home-split.json'), JSON.stringify({ to: 'x', at: 'y', rigs: 'z', runs: [] }))
+  expect(cli(home, ['rig', 'add', 'other', widget]).err).toContain('bad shape')
+})
+
+test('rig add refuses a subdirectory or a symlink of a moved repo', () => {
+  const { home, widget, to } = fixture()
+  expect(cli(home, ['home', 'split', to]).code).toBe(0)
+  const sub = join(widget, 'sub')
+  mkdirSync(sub)
+  const link = join(tmp(), 'link')
+  symlinkSync(widget, link)
+  for (const path of [sub, link]) {
+    const p = cli(home, ['rig', 'add', 'other', path])
+    expect(p.code).not.toBe(0)
+    expect(p.err).toContain('moved to the server home')
+  }
 })
