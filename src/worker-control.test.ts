@@ -360,6 +360,7 @@ const DENIED = [
   'rm',
   'gc',
   'sweep',
+  'wiki',
 ]
 const switchCases = () => {
   const src = readFileSync(join(import.meta.dir, 'cli.ts'), 'utf8')
