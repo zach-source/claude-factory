@@ -3619,20 +3619,34 @@ const FACTORY_CONFIG_MAY_RE = /rigs|settings|[*?[{<>\\"']/i
 const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:=/-]+$/
 
 /** claude-factory-qn8a.20: true when a path word can name rigs.json or a worker-settings file. */
-function namesFactoryConfig(word: string, state?: ScanState): boolean {
-  let c = foldNonAscii(normalizeConfigPath(word))
+function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 {
+  const c = foldNonAscii(normalizeConfigPath(word))
     .toLowerCase()
     .replace(/["'\\]/g, '')
-  if (c.includes('rigs.json') || c.includes('worker-settings')) return true
-  for (let p = ''; p !== c;) {
-    p = c
-    c = c.replace(/\{[^{}]*\}/, '*')
-  }
+  // a list brace expands to each member; a range or a long list reads as a star; {} and {x} stay literal
+  let all = [c]
+  for (let n = 0; n < 8 && all.some(s => /\{[^{}]*\}/.test(s)); n++)
+    all = all.flatMap(s => {
+      const m = /\{([^{}]*)\}/.exec(s)
+      if (!m) return [s]
+      const at = (body: string) => s.slice(0, m.index) + body + s.slice(m.index + m[0].length)
+      if (m[1]!.includes('..')) return [at('*')]
+      return m[1]!.includes(',') ? m[1]!.split(',').map(at) : [at('\u0001' + m[1] + '\u0002')]
+    })
+  if (all.length > 64) return 2
+  return Math.max(...all.map(s => namesFactoryConfigPlain(s.replace(/[\u0001\u0002]/g, ''), state))) as
+    0 | 1 | 2
+}
+
+// 1: the word names the file. 2: a glob with a literal letter can match it.
+function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 {
+  if (c.includes('rigs.json') || c.includes('worker-settings')) return 1
   const last = c.split('/').pop() ?? c
-  if (!/[*?[]/.test(last)) return false
+  if (!/[*?[]/.test(last)) return 0
   // a class names its first member, so w[o]rker-settings-acme.json reads as the settings file
   const first = last.replace(/\[[!^]?([^\]])[^\]]*\]/g, '$1')
-  return /rigs\.json|worker-settings/.test(first) || globCanMatch(last, FACTORY_CONFIG_SAMPLES, state)
+  if (/rigs\.json|worker-settings/.test(first)) return 1
+  return /[a-z]/.test(last) && globCanMatch(last, FACTORY_CONFIG_SAMPLES, state) ? 2 : 0
 }
 
 /**
@@ -3652,8 +3666,9 @@ function factoryConfigWrite(
   cwd: string | undefined,
   moved: boolean,
   state?: ScanState,
-): boolean {
-  if (!FACTORY_CONFIG_MAY_RE.test(foldNonAscii(joinedWords(words)))) return false
+): 'name' | 'glob' | undefined {
+  if (!FACTORY_CONFIG_MAY_RE.test(foldNonAscii(joinedWords(words)))) return undefined
+  let found: 'glob' | undefined
   const relativeOk = !moved && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
   const exempt = (w: string): boolean => {
     const v = normalizeConfigPath(w.replace(/["']/g, ''))
@@ -3686,9 +3701,11 @@ function factoryConfigWrite(
       if (skip === 'reader' || isCd) continue
       if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
     }
-    if (namesFactoryConfig(target, state) && !exempt(target)) return true
+    const named = namesFactoryConfig(target, state)
+    if (named === 1 && !exempt(target)) return 'name'
+    if (named === 2 && !exempt(target)) found = 'glob'
   }
-  return false
+  return found
 }
 
 /** claude-factory-ty8y: true when a dequoted word of a segment is a git or git-<verb> word. */
@@ -9043,18 +9060,18 @@ function denyAtScan(
         )
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true
-    if (
-      factoryConfigWrite(
-        words,
-        operandSkip,
-        b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
-        root,
-        g.cwd,
-        movedSoFar,
-        state,
-      )
+    const cfgWrite = factoryConfigWrite(
+      words,
+      operandSkip,
+      b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+      root,
+      g.cwd,
+      movedSoFar,
+      state,
     )
-      return FACTORY_CONFIG_REASON
+    if (cfgWrite === 'name') return FACTORY_CONFIG_REASON
+    // a glob is a guess: a later real reason wins over it
+    if (cfgWrite === 'glob') late.reason ??= FACTORY_CONFIG_REASON
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
     // hide a kubectl, ko or helm word that follows it.
     //
