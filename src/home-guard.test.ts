@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HOME_REASON, homeReason, protectedPath, rmQuiet, rmSafe } from './home-guard'
+import { FACTORY_BIN, HOME_REASON, homeReason, protectedPath, rmQuiet, rmSafe } from './home-guard'
 import { denyReason } from './worker-hook'
 
 const H = ['/Users/pat']
@@ -309,7 +309,7 @@ describe('homeReason', () => {
     `git fetch -q origin main && git diff origin/main -- ${CLI}`,
     `bunx prettier@3.9.9 --write ${CLI} ${WRK}`,
     `bunx prettier --check ${CLI} 2>&1 | tail -7`,
-    `/abs/bin/factory report run-1 2 ready "see ${CLI} and ${WRK}"`,
+    `${FACTORY_BIN} report run-1 2 ready "see ${CLI} and ${WRK}"`,
     `factory report run-1 2 ready --summary-file .scratch/s.md ${CLI}`,
     `factory memory add --from r/plan --kind fact --rig acme "x" "see ${CLI}"`,
     `factory mail run-1 manager 'see ${CLI}; $(no)'`,
@@ -361,6 +361,11 @@ describe('homeReason', () => {
     `factory check factories/x.ts`,
     `factory mutate ${CLI} 1 a b -- bun test`,
     `./factory report r 1 ready "x.ts"`,
+    `/abs/bin/factory report r 1 ready x`,
+    `/abs/wt/.scratch/factory report r 1 ready x.sh`,
+    `.scratch/factory report r 1 ready x`,
+    `'/wt/factory' report r 1 ready x`,
+    `'${FACTORY_BIN}' report r 1 ready x`,
     'factory report r 1 ready "`bash x.sh`"',
     'factory report r 1 ready "$(bash x.sh)"',
     `factory report r 1 ready --summary-file=x.sh`,

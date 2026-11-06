@@ -139,6 +139,8 @@ const GIT_NON_RUNNERS: Record<string, Spec> = {
   restore: { flags: ['--', '--staged', '--worktree', '-S', '-W', '-q'] },
   fetch: { flags: ['-q', '--quiet', '--prune', '-p', '--all', '--tags', '--no-tags'], noColon: true },
 }
+/** The only factory path that is a non-runner, besides the bare word. Any other path is a file to read. */
+export const FACTORY_BIN = resolve(import.meta.dir, '..', 'bin', 'factory')
 const FACTORY_SPEC: Spec = {
   flags: [],
   value: ['--summary-file', '--from', '--kind', '--rig', '--until', '--supersedes'],
@@ -175,7 +177,7 @@ function nonRunner(w: string[]): boolean {
   const v = w[0] ?? ''
   if (v === 'mkdir') return argsOk(w.slice(1), MKDIR_SPEC)
   if (v === 'bunx') return /^prettier(@[\d.]+)?$/.test(w[1] ?? '') && argsOk(w.slice(2), PRETTIER_SPEC)
-  if (v === 'factory' || /^\/[\w./-]*\/factory$/.test(v)) {
+  if (v === 'factory' || v === FACTORY_BIN) {
     const sub = FACTORY_SUBS.has(w[1] ?? '')
       ? 2
       : w[1] === 'memory' && FACTORY_MEMORY_SUBS.has(w[2] ?? '')
