@@ -88,6 +88,24 @@ const AC4 = [
   'tee /h/*.*',
   'echo [] > /h/*',
   'cp x /h/*',
+  'cp -t/h .scratch/rigs.json',
+  'cp .scratch/rigs.json -t/h',
+  'cp -vt/h .scratch/rigs.json',
+  'mv -t/h .scratch/rigs.json',
+  'mv -ft/h .scratch/rigs.json',
+  'install -t/h .scratch/rigs.json',
+  'ln -st/h /w/acme/.scratch/rigs.json',
+  'cp -t.. .scratch/rigs.json',
+  'cp -t~ .scratch/rigs.json',
+  'cp .scratch/worker-settings-acme.json -t/h',
+  'unzip -d/h a.zip rigs.json',
+  'env -iC/h tee rigs.json',
+  'env -vC/h tee rigs.json',
+  'env -i0C/h tee rigs.json',
+  'tar -xC/h -f a.tar rigs.json',
+  'cd / && cp /w/acme/.scratch/rigs.json h/',
+  'cd / && cp /w/acme/.scratch/rigs.json h',
+  'cd / ; mv /w/acme/.scratch/rigs.json h/',
 ]
 const ALLOW = [
   'cat /h/rigs.json',
@@ -113,6 +131,11 @@ describe('qn8a.20 Bash guard', () => {
   })
   test('AC3: relative write with gate.cwd outside root', () => {
     expect(reason('echo [] > rigs.json', ROOT, { cwd: '/h' } as HookGate)).toBe(FACTORY_CONFIG_REASON)
+  })
+  test.each(['/', '/w'])('AC4: copy to a relative dir with gate.cwd %p', cwd => {
+    const gate = { cwd } as HookGate
+    expect(reason('cp /w/acme/.scratch/rigs.json h/', ROOT, gate)).toBe(FACTORY_CONFIG_REASON)
+    expect(reason('cp /w/acme/.scratch/worker-settings-acme.json h', ROOT, gate)).toBe(FACTORY_CONFIG_REASON)
   })
   test('AC3: relative write with no root', () => {
     expect(denyReason('echo [] > rigs.json', undefined, [])).toBe(FACTORY_CONFIG_REASON)

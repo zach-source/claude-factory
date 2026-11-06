@@ -3680,7 +3680,7 @@ function factoryConfigWrite(
 ): 'name' | 'glob' | undefined {
   if (!FACTORY_CONFIG_MAY_RE.test(foldNonAscii(joinedWords(words)))) return undefined
   let found: 'glob' | undefined
-  const chdir = words.some(w => /^(-C|--chdir)/.test(w.replace(/["']/g, '')))
+  const chdir = words.some(w => /^(-[A-Za-z0-9]*C|--chdir)/.test(w.replace(/["']/g, '')))
   const relativeOk = !moved && !chdir && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
   const exempt = (w: string): boolean => {
     const v = normalizeConfigPath(w.replace(/["']/g, ''))
@@ -3693,10 +3693,17 @@ function factoryConfigWrite(
     if (!root || !/^[\w.@%+,:/-]*$/.test(dir) || dir.split('/').includes('..')) return false
     return dir.startsWith('/') ? dir.startsWith(root + '/') : relativeOk
   }
-  const escapes = (w: string): boolean => {
-    const v = normalizeConfigPath(w.replace(/["']/g, '')).replace(/^-[^=]*=/, '')
-    if (/^[~$]|^\.\/?$/.test(v) || v.split('/').includes('..')) return true
-    return v.startsWith('/') && v !== root && !v.startsWith(root + '/')
+  const escapes = (w: string, i: number): boolean => {
+    const v = normalizeConfigPath(w.replace(/["']/g, ''))
+    // a relative word points outside the root when the cwd is not inside it
+    if (!relativeOk && i > 0 && !v.startsWith('-') && !v.startsWith('/')) return true
+    // a glued short-flag value (-t/h, -vt/h, -t..) reads as its value; -x=/h and --opt=/h too
+    return [v, v.replace(/^-[^=]*=/, ''), v.replace(/^-[A-Za-z0-9]+/, '')].some(
+      c =>
+        /^[~$]|^\.\/?$/.test(c) ||
+        c.split('/').includes('..') ||
+        (c.startsWith('/') && c !== root && !c.startsWith(root + '/')),
+    )
   }
   let exemptSeen = false
   let pending = false
@@ -3733,7 +3740,7 @@ function factoryConfigWrite(
     if (named === 2 && !exempt(target)) found = 'glob'
     if (named === 3 && !insideDir(target)) found = 'glob'
   }
-  if (exemptSeen && words.some(escapes)) return 'name'
+  if (exemptSeen && words.some((w, i) => escapes(w, i))) return 'name'
   return found
 }
 
