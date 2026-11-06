@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import * as ax from './ax'
 import { configFrom, handle, MAX_BODY, route, workerPolicyRefusal, type Run } from './broker'
 
 type Call = { argv: string[]; stdin?: string }
@@ -371,4 +372,84 @@ test('the reviewer API rule is the one path rule a worker policy can have on a g
   }
   for (const h of ['chatgpt.com', 'a.example.com'])
     expect(workerPolicyRefusal(pol({ hostnames: [h], paths: ['/x'], pathPrefixes: ['/y/'] }))).toBeNull()
+})
+
+const gitRule = (over: Record<string, unknown> = {}) => ({
+  hostnames: ['github.com'],
+  effects: {
+    replaceHeaders: [
+      { header: 'Authorization', prefix: 'Basic ', credentialUri: U('GITHUB_REVIEWER_BASIC') },
+    ],
+  },
+  ...over,
+})
+const hostRule = (hostnames: string[], key: string) => ({
+  hostnames,
+  effects: { replaceHeaders: [{ header: 'Authorization', prefix: 'Bearer ', credentialUri: U(key) }] },
+})
+const rulesOf = (...rs: Record<string, unknown>[]) => ({ rules: rs.map(https => ({ https })) })
+
+test('the reviewer keys appear only in one pair of reviewer rules', async () => {
+  const api = reviewerRule()
+  const gitHdr = gitRule().effects.replaceHeaders[0]
+  const gitWith = (over: Record<string, unknown>) => rulesOf(api, gitRule(over))
+  const refused: Record<string, unknown> = {
+    'host-only api+uploads': rulesOf(hostRule(['api.github.com', 'uploads.github.com'], 'GITHUB_REVIEWER')),
+    'host-only api': rulesOf(hostRule(['api.github.com'], 'GITHUB_REVIEWER')),
+    'reviewer key on other host': rulesOf(hostRule(['a.example.com'], 'GITHUB_REVIEWER')),
+    'host-only basic, no api rule': rulesOf(gitRule()),
+    'basic key on other host': rulesOf(hostRule(['a.example.com'], 'GITHUB_REVIEWER_BASIC')),
+    'two api rules, two repos': rulesOf(api, reviewerRule({ pathPrefixes: ['/repos/acme/other/'] })),
+    'two api rules, same repo': rulesOf(api, api),
+    'two git rules': rulesOf(api, gitRule(), gitRule()),
+    'api plus third rule': rulesOf(api, hostRule(['a.example.com'], 'GITHUB_REVIEWER')),
+    'spelling GITHUBREVIEWER': rulesOf(api, hostRule(['a.example.com'], 'GITHUBREVIEWER')),
+    'spelling GITHUB__REVIEWER': rulesOf(api, hostRule(['a.example.com'], 'GITHUB__REVIEWER')),
+    'spelling in header field': rulesOf(api, { hostnames: ['a.example.com'], header: 'github_reviewer' }),
+    'token as object key': rulesOf(api, { hostnames: ['a.example.com'], GITHUB_REVIEWER: 1 }),
+    'git extra ports': gitWith({ ports: { numbers: [443] } }),
+    'git pathPrefixes': gitWith({ pathPrefixes: ['/acme/'] }),
+    'git extra host': gitWith({ hostnames: ['github.com', 'gist.github.com'] }),
+    'git prefix Bearer': gitWith({ effects: { replaceHeaders: [{ ...gitHdr, prefix: 'Bearer ' }] } }),
+    'git header X-Key': gitWith({ effects: { replaceHeaders: [{ ...gitHdr, header: 'X-Key' }] } }),
+    'git key GITHUB_REVIEWER': gitWith({
+      effects: { replaceHeaders: [{ ...gitHdr, credentialUri: U('GITHUB_REVIEWER') }] },
+    }),
+    'git two headers': gitWith({ effects: { replaceHeaders: [gitHdr, gitHdr] } }),
+    'api rule with extra key': { rules: [{ https: api, extra: 1 }] },
+    'api rule nested in an array': { rules: [[{ https: api }]] },
+  }
+  for (const [name, body] of Object.entries(refused)) {
+    expect([name, typeof workerPolicyRefusal(body)]).toEqual([name, 'string'])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 400])
+    expect(calls).toEqual([])
+  }
+  const accepted: Record<string, unknown> = {
+    'api rule alone': rulesOf(api),
+    'api plus git rule': rulesOf(api, gitRule()),
+    'look-alike GITHUB_REVIEW': rulesOf(hostRule(['a.example.com'], 'GITHUB_REVIEW')),
+    'look-alike REVIEWER': rulesOf(hostRule(['a.example.com'], 'REVIEWER')),
+    'egressPolicy non-reviewer': ax.egressPolicy('v', [], undefined, undefined, 'acme'),
+  }
+  for (const o of ['acme', 'zach-source'])
+    accepted['egressPolicy ' + o] = ax.egressPolicy(
+      'v',
+      [],
+      undefined,
+      undefined,
+      o,
+      undefined,
+      true,
+      false,
+      'widget',
+    )
+  for (const [name, body] of Object.entries(accepted)) {
+    expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 200])
+    expect(calls.length).toBe(2)
+  }
 })

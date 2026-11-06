@@ -1290,3 +1290,13 @@ test('triage passes file-elsewhere text in single quotes (claude-factory-dgok)',
   expect(t).toContain("'\\''")
   expect(t).toContain('single quotes')
 })
+
+test('3w8o AC6 only the plan prompt names must-see-live', () => {
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    const p = (node as { prompt?: string }).prompt ?? ''
+    if (id === 'plan') {
+      expect(p).toContain('must-see-live')
+      expect(p.slice(p.indexOf('6. Observability'), p.indexOf('7. Tasks'))).toContain('must-see-live')
+    } else expect(p, id).not.toContain('must-see-live')
+  }
+})

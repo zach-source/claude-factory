@@ -1365,6 +1365,15 @@ function substitutionIn(command: string): number {
   return state === 'plain' ? -1 : open
 }
 
+/** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
+ * person sees that a longer command may hold a second command. */
+function shownCommand(command: string): string {
+  const head = cutText(command, 300)
+  return head.length === command.length
+    ? command
+    : `${head}… (${command.length - head.length} of ${command.length} characters not shown)`
+}
+
 /** which Bash commands the manager model may not run without the person's explicit Allow: a gate decision,
  * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
  * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
@@ -1390,23 +1399,23 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
         ? ` ${more} more dollar signs, backticks or parentheses come after this text and are not shown.`
         : ''
     return {
-      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${cutText(command, 300)}. The first one is at character ${at}: «${around}».${unseen} Allow it?`,
+      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${shownCommand(command)}. The first one is at character ${at}: «${around}».${unseen} Allow it?`,
       deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
     }
   }
   if (/\bfactory\s+decide\b/.test(command))
     return {
-      question: `The manager model wants to decide a factory gate: ${cutText(command, 300)}. Allow it?`,
+      question: `The manager model wants to decide a factory gate: ${shownCommand(command)}. Allow it?`,
       deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
     }
   if (/\bfactory\s+decisions\s+answer\b/.test(command))
     return {
-      question: `The manager model wants to answer a person's bd decision: ${cutText(command, 300)}. Allow it?`,
+      question: `The manager model wants to answer a person's bd decision: ${shownCommand(command)}. Allow it?`,
       deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
     }
   if (/\bfactory\s+start\b[\s\S]*--owned\b/.test(command))
     return {
-      question: `The manager model wants to start a bead carrying its owner's decisions: ${cutText(command, 300)}. Allow it?`,
+      question: `The manager model wants to start a bead carrying its owner's decisions: ${shownCommand(command)}. Allow it?`,
       deny: 'The person did not confirm starting this owner-only bead.',
     }
   return null
