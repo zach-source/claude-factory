@@ -550,12 +550,9 @@ test.each([
   '$F --context acme suspend ks apps',
   '$F suspend ks apps',
   '$F --context acme -h get suspend ks apps -h=false',
-])(
-  'denyReason denies a dynamic tool word before a flux verb %j',
-  cmd => {
-    expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
-  },
-)
+])('denyReason denies a dynamic tool word before a flux verb %j', cmd => {
+  expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)
+})
 
 test.each(['$F --context acme get ks', '"$PY" script.py'])(
   'denyReason allows a dynamic head %j (flux, strict off)',
