@@ -1487,7 +1487,7 @@ function loadRun(id: string | undefined): Run {
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
   const run: Run = readJson(file)
   // a run dir can move (home split). Its pinned factory.json lives in the new home. run.json still names the old path.
-  if (basename(run.factory) === 'factory.json') run.factory = join(runDir(id!), 'factory.json')
+  if (run.factory && basename(run.factory) === 'factory.json') run.factory = join(runDir(id!), 'factory.json')
   // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
   return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
 }
