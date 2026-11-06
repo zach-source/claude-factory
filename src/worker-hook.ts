@@ -5343,6 +5343,26 @@ function glabReason(words: string[], gate: HookGate): string | undefined {
   )
 }
 
+/** True when the `--` at `words[i]` ends the options. cobra gives a `--` that follows a dash word with no `=` to that flag as its value. */
+function glabDashDashEnds(words: string[], i: number): boolean {
+  const p = words[i - 1]
+  return !(p !== undefined && p !== '--' && p.startsWith('-') && !p.includes('='))
+}
+
+/** `hasMutatingWordBeforeDashDash` for glab: a `--` that a dash word may take as its value does not end the scan. */
+function glabHasWord(words: string[], verbs: Set<string>): boolean {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (w === '--') {
+      if (glabDashDashEnds(words, i)) return false
+    } else if (verbs.has(w)) return true
+  }
+  return false
+}
+
+// a glab api placeholder that glab fills from the checkout (a worker can name a branch)
+const GLAB_PLACEHOLDER = /:(branch|repo|namespace|group|user|username)(?![A-Za-z0-9_])/
+
 const GLAB_UPDATE_VALUE_FLAGS = new Set([
   '-a',
   '--assignee',
@@ -5375,8 +5395,12 @@ function glabUpdateMayReady(words: string[]): boolean {
   let title = false
   let keepsDraft = false
   let valueMayVanish = false // a dynamic value word can expand to nothing, then the flag takes the next word
-  for (let i = 0; i < words.length && words[i] !== '--'; i++) {
+  for (let i = 0; i < words.length; i++) {
     const w = words[i]!
+    if (w === '--') {
+      if (glabDashDashEnds(words, i)) break
+      continue
+    }
     if (GLAB_UPDATE_VALUE_FLAGS.has(w)) {
       if (w === '-t' || w === '--title') title = true
       if (dynamicWord(words[i + 1] ?? '')) valueMayVanish = true
@@ -5410,25 +5434,29 @@ function glabUpdateMayReady(words: string[]): boolean {
 function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
   const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
   if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
-  if (hasMutatingWordBeforeDashDash(tail, new Set(['mr']))) {
+  if (glabHasWord(tail, new Set(['mr']))) {
     const mi = tail.indexOf('mr')
     const rest = tail.slice(mi + 1)
     const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
     if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
-    if (hasMutatingWordBeforeDashDash(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
-    if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'accept']))) return MERGE_REASON
+    if (glabHasWord(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
+    if (glabHasWord(rest, new Set(['merge', 'accept']))) return MERGE_REASON
+    // cobra gives a flag before `mr` to the sub command too, so read those words with the rest
     if (
       !mayReady(gate) &&
-      hasMutatingWordBeforeDashDash(rest, new Set(['update'])) &&
-      glabUpdateMayReady(rest)
+      glabHasWord(rest, new Set(['update'])) &&
+      glabUpdateMayReady([...tail.slice(0, mi), ...rest])
     ) {
       return READY_REASON
     }
   }
-  if (!hasMutatingWordBeforeDashDash(tail, new Set(['api']))) return undefined
-  const apiArgs = expandGhShortClusters(tail.slice(tail.indexOf('api') + 1))
-  const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
-  if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
+  if (!glabHasWord(tail, new Set(['api']))) return undefined
+  const ai = tail.indexOf('api')
+  // cobra gives a flag before `api` to the sub command too
+  const apiArgs = expandGhShortClusters([...tail.slice(0, ai), ...tail.slice(ai + 1)])
+  // a method text in the value slot of another flag also reads as a method: any non-GET value writes
+  const methods = flagValuesInOrder(apiArgs, new Set(['-X', '--method'])).map(m => m ?? '')
+  if (methods.some(dynamicWord)) return DYNAMIC_VERB_REASON
   const hasData =
     ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
   // every word that is not a flag or a flag value could be the endpoint: check each one
@@ -5438,17 +5466,21 @@ function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
     if (GLAB_API_VALUE_FLAGS.has(w)) i++
     else if (!w.startsWith('-')) endpoints.push(w)
   }
+  const writes = (methods.length ? methods : [hasData ? 'POST' : 'GET']).some(m => m.toUpperCase() !== 'GET')
   for (const endpoint of endpoints) {
     // a glob word such as `...approve?x=1` still names the approve path in its literal text
     if (glabPathMatch(endpoint, GLAB_APPROVE_PATH, true)) return GLAB_APPROVE_REASON
     if (glabPathMatch(endpoint, GLAB_MERGE_PATH)) return MERGE_REASON
-    const writes = (methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() !== 'GET'
+    if (writes && GLAB_PLACEHOLDER.test(endpoint)) return MERGE_REASON
     if (writes && !mayReady(gate) && glabPathMatch(endpoint, GLAB_MR_PATH)) return READY_REASON
     if (dynamicWord(endpoint)) {
       if (writes) return DYNAMIC_VERB_REASON
     } else if (isGraphqlEndpoint(endpoint)) {
       const { texts, unresolved } = graphqlTexts(apiArgs, gate)
       if (unresolved) return GLAB_APPROVE_REASON
+      // glab fills a placeholder in a -F value, so the real query text is unknown
+      if (apiArgs.some(a => GLAB_PLACEHOLDER.test(a)) || texts.some(t => GLAB_PLACEHOLDER.test(t)))
+        return MERGE_REASON
       if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
       if (texts.some(t => /\bmutation\b/.test(t) && /mergeRequestAccept|automerge/i.test(t)))
         return MERGE_REASON
