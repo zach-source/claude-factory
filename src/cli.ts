@@ -622,8 +622,8 @@ export function fileArgs(cmd: string, args: string[]): string[] {
   if (cmd !== 'memory' || args[0] !== 'add' || !args.includes('--body-file')) return args
   const i = args.indexOf('--body-file')
   const path = args[i + 1]
-  if (args.indexOf('--body-file', i + 1) >= 0) return fail('--body-file twice')
-  if (!path || path.startsWith('--')) return fail('--body-file needs a path')
+  // a second --body-file, or a flag as the value, stays in the positional words or fails to read: both refuse
+  if (!path) return fail('--body-file needs a path')
   const rest = args.filter((_, j) => j !== i && j !== i + 1)
   const words = rest
     .slice(1)
