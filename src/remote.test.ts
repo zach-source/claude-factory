@@ -896,6 +896,49 @@ esac
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
+test('a part that lands clears the put failure, so a later failure gets a new 5 min grace', () => {
+  launched('r7d')
+  const side = join(home, 'runs', 'r7d', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(side, 'utf8')),
+      put: ['memory.tgz'],
+      putPart: 8,
+      putFailedAt: Date.now() - 6 * 60_000,
+      putError: 'old',
+    }),
+  )
+  writeFileSync(join(home, 'runs', 'r7d', 't.memory.tgz'), 'x'.repeat(20 * 72_000))
+  const fail = join(dir, 'putfail')
+  rmSync(fail, { force: true })
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) if [ -e ${fail} ]; then echo 'ssh down' >&2; exit 1; fi ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+  factory(['tick'])
+  const after = JSON.parse(readFileSync(side, 'utf8'))
+  expect(after.putPart).toBe(16)
+  expect(after.putFailedAt).toBeUndefined()
+  expect(after.putError).toBeUndefined()
+  writeFileSync(fail, '')
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7d')
+  expect(row.agent).toBe('pending')
+  rmSync(join(home, 'runs', 'r7d'), { recursive: true })
+})
+
 test('a put error with ESC and U+202E reaches the FAIL reason without them', () => {
   launched('r7c')
   const side = join(home, 'runs', 'r7c', 't.json')

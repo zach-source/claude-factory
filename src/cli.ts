@@ -979,7 +979,11 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         break put
       }
       const r = ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART))
-      if (r.ok) continue
+      if (r.ok) {
+        side!.putFailedAt = undefined // a part landed: the 5 min grace restarts at the next failure
+        side!.putError = undefined
+        continue
+      }
       // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
       const failedAt = side!.putFailedAt ?? Date.now()
       const err = cleanText(r.err.replace(/\s+/g, ' ').trim(), 300)
