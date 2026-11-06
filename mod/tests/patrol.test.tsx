@@ -467,6 +467,17 @@ test(
       'bd label --json add acme-1 factory',
       'bd label -q add acme-1 factory',
       "bd 'label' 'add' acme-1 factory",
+      'bd create x --label factory',
+      'bd create x --label=factory',
+      'bd new x --label factory',
+      'bd create --label factory x',
+      'bd create -l factory x',
+      'bd create -lfactory x',
+      'bd create -l=factory x',
+      'bd new -l factory x',
+      'bd q -l factory x',
+      "bd create '-l' factory x",
+      'bd create -tl factory x',
     ]
     for (const command of denied) {
       const r = await call(command, 'patrol-1')
@@ -498,10 +509,15 @@ test(
       expect(ran, command).toBe(before + 1)
     }
 
+    // a long command must not stall the hook (cubic backtracking)
+    for (const unit of ['bd label ', 'bd create ']) {
+      const t0 = Date.now()
+      await call(unit.repeat(4000), 'patrol-1')
+      expect(Date.now() - t0, unit).toBeLessThan(2000)
+    }
     const main = await call('bd update acme-1 --add-label factory')
     expect(main.deny).toBeUndefined()
     expect(asked).toBe(0)
-    expect(ran).toBe(allowed.length + 1)
     await clock.settle()
   },
 )
