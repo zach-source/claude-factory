@@ -9468,15 +9468,14 @@ const HARNESSES = ['claude', 'codex', 'pi']
 
 /**
  * claude-factory-uzes, -wkg4: replace the value of each NAME=value word with *** so the deny log keeps no secret.
- * A NAME can follow a quote (bash -c "X=v"). `]=` and `]+=` start a value at any position.
+ * A value starts after NAME= or NAME+=, or after `]=` or `]+=`. NAME= can follow the start, a space, `;&|()`, a backtick or a quote.
  * Text after `${NAME=`, `${NAME:=`, `${NAME-`, `${NAME:-` or `${NAME[` masks to the end of the text.
- * If a value holds `(`, a backtick, `${`, `$'` or `$[`, the mask runs to the end of the text.
- * It does the same for `(`, a backtick or `${` inside double quotes. The mask can hide more than needed, never less.
- * A value ends at space, tab, newline or an unquoted `;&|()`, as in bash. CR, VT, FF and NBSP stay in the value.
+ * A value ends only if it has only [A-Za-z0-9_./:@%+,=-] characters. A space, tab, newline, `;&|)` or the end of the text must follow.
+ * Any other value (a quote, backslash, `$`, `(`, a backtick, CR, non-ASCII ...) masks to the end of the text. It can hide more than needed, never less.
  */
 export function maskAssignments(command: string): string {
   return command.replace(
-    /((?:^|[\s;&|()`"'])[A-Za-z_][A-Za-z0-9_]*\+?=|\]\+?=)(?:(?:[(`]|\$[{'[])[\s\S]*|\\[\s\S]|"(?:(?:[(`]|\$\{)[\s\S]*|\\[\s\S]|[^"\\])*"?|'[^']*'?|[^ \t\n"'\\;&|()`])*|(\$\{[A-Za-z_][A-Za-z0-9_]*(?:\[|:?[-=]))[\s\S]*/g,
+    /(\$\{[A-Za-z_][A-Za-z0-9_]*(?:\[|:?[-=]))[\s\S]*|((?:^|[\s;&|()`"'])[A-Za-z_][A-Za-z0-9_]*\+?=|\]\+?=)(?:[A-Za-z0-9_.\/:@%+,=-]*(?=[ \t\n;&|)]|$)|[\s\S]*)/g,
     (_m, a, b) => (a ?? b) + '***',
   )
 }
