@@ -92,6 +92,10 @@ const BRIEFER_WATCHDOG_MS = 10 * 60_000
 const BRIEFER_LOG_CAP = 50
 const REVIEWER_TYPE = 'factory:reviewer'
 /** `factory skills|proposals install|reject`, with the path before `factory` and quotes or extra space between the words */
+// [SECURITY] claude-factory-ruq0: a bd metadata write flag removes a hold mark. Best-effort text match
+// with no anchor on bd; a split flag in quotes, a script or bd sql get past it (claude-factory-lmi6).
+// `--metadata-field` (a read filter) does not match: the lookahead refuses a word char or '-'.
+const META_WRITE = /--(?:set-|unset-)?metadata(?![\w-])/
 const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
@@ -1596,6 +1600,10 @@ export const register: Register = (on, options) => {
     if (e.agentId && INSTALL_VERB.test(e.command.replace(/\\\n/g, '')))
       return {
         deny: 'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
+      }
+    if (e.agentId && META_WRITE.test(e.command.replace(/\\\n/g, '')))
+      return {
+        deny: 'a subagent never writes bead metadata: a hold such as discovered_from, pm_finding or owner_decisions lives there',
       }
 
     // the model's shell cd's into rigs to read them: its factory commands still work this factory.
