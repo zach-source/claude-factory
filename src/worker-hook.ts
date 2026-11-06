@@ -5355,6 +5355,8 @@ const GLAB_UPDATE_VALUE_FLAGS = new Set([
   '--target-branch',
   '-u',
   '--unlabel',
+  '-t',
+  '--title',
 ])
 
 /**
@@ -5365,20 +5367,36 @@ const GLAB_UPDATE_VALUE_FLAGS = new Set([
  * A dynamic word that is not a flag value can hide any of these flags, so it counts too.
  */
 function glabUpdateMayReady(words: string[]): boolean {
-  const flags: string[] = []
   let dynamic = false
+  let ready = false
+  let title = false
+  let keepsDraft = false
   for (let i = 0; i < words.length && words[i] !== '--'; i++) {
     const w = words[i]!
-    if (GLAB_UPDATE_VALUE_FLAGS.has(w)) i++
-    else if (w.startsWith('--') && w.includes('=') && !dynamicWord(w.split('=')[0]!)) flags.push(w)
-    else if (dynamicWord(w)) dynamic = true
-    else flags.push(w)
+    if (GLAB_UPDATE_VALUE_FLAGS.has(w)) {
+      if (w === '-t' || w === '--title') title = true
+      i++ // pflag takes the next word as the value, also a dash word and `--`
+    } else if (w.startsWith('--')) {
+      const name = w.split('=')[0]!
+      if (dynamicWord(name)) dynamic = true
+      else if (/^--(ready|draft=|wip=)/.test(w)) ready = true
+      else if (/^--(title|fill)/.test(w)) title = true
+      else if (w === '--draft' || w === '--wip') keepsDraft = true
+    } else if (dynamicWord(w)) dynamic = true
+    else if (/^-[^-]/.test(w)) {
+      for (let j = 1; j < w.length; j++) {
+        const c = w[j]!
+        if (c === 'r') ready = true
+        else if (c === 'f') title = true
+        else if ('adlmRtu'.includes(c)) {
+          if (c === 't') title = true
+          if (j === w.length - 1) i++
+          break
+        }
+      }
+    }
   }
-  const cluster = (w: string, re: RegExp) => /^-[^-R]/.test(w) && re.test(w)
-  const readyFlag = (w: string) => /^--(ready|draft=|wip=)/.test(w) || cluster(w, /r/)
-  const titleFlag = (w: string) => /^--(title|fill)/.test(w) || cluster(w, /[tf]/)
-  if (dynamic || flags.some(readyFlag)) return true
-  return flags.some(titleFlag) && !flags.some(w => w === '--draft' || w === '--wip')
+  return dynamic || ready || (title && !keepsDraft)
 }
 
 function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
