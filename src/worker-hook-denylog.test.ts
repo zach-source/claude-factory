@@ -329,6 +329,7 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
   test.each([
     ['git -c http.extraHeader="Authorization: Bearer zqsecret" ls-remote', 'http.extraHeader=***'],
     ['docker run --env=GH_TOKEN=zqsecret img', '--env=***'],
+    ["X=$'a\\' b'zqsecret ls", 'X=***'],
   ])('%s is masked end to end', (c, want) => {
     mkdirSync(join(home, 'runs', 'r1'), { recursive: true })
     const box = join(home, 'outbox.jsonl')
