@@ -225,6 +225,13 @@ export const PUSH_REASON =
   'for the change, or a revert pull request for a rollback. Only a person pushes or merges a ' +
   'protected branch. Do not retry this command.'
 
+// claude-factory-qn8a.18
+export const REPO_SETTING_REASON =
+  'The factory denies this command: a gh api write to repository settings, security features, ' +
+  'access, secrets or the repository itself is owner-only. Do not retry this command. Report ' +
+  'blocked: parked, waiting on: the owner step and the exact command. Issue, pull request, ' +
+  'status, check, commit, release and workflow-run writes stay allowed.'
+
 // claude-factory-68gn: a cd, pushd, popd or chdir word can change the directory before a git
 // push or git send-pack word. An env -C flag, an env --chdir flag, or a git --git-dir flag can
 // do the same thing. Each one can move the push to a different repository.
@@ -4659,6 +4666,19 @@ const READY_MUTATIONS = ['markPullRequestReadyForReview']
 // It does not read the mutation input for a branch name. The REST checks below do read one.
 // Few tools outside release tooling use these names. A simple, strict rule is safe here.
 const PUSH_MUTATIONS = ['createCommitOnBranch', 'updateRef', 'updateRefs', 'deleteRef']
+// ponytail: a deny list. A GitHub mutation added later passes. Upgrade path: an allow-list (claude-factory-qn8a.81).
+const REPO_SETTING_MUTATIONS = [
+  'updateRepository',
+  'archiveRepository',
+  'unarchiveRepository',
+  'createBranchProtectionRule',
+  'updateBranchProtectionRule',
+  'deleteBranchProtectionRule',
+  'createRepositoryRuleset',
+  'updateRepositoryRuleset',
+  'deleteRepositoryRuleset',
+  'updateRepositoryWebCommitSignoffSetting',
+]
 
 /**
  * Collects every `-f`/`--raw-field`/`-F`/`--field` name=value pair in `words`, a `gh api` call's
@@ -4828,6 +4848,34 @@ function isGraphqlEndpoint(endpoint: string): boolean {
 }
 
 /**
+ * True when `endpoint` is surely the GraphQL endpoint: the bare word, `/graphql`, or a URL whose
+ * path is exactly `/graphql` or `/api/graphql`. Only this narrow form lets a guard skip its REST
+ * check (claude-factory-qn8a.18.7). Any other URL that ends in `/graphql` (`//graphql`,
+ * `/api//graphql`, `/x/graphql`) is read as GraphQL and as REST: a host can route it to
+ * GraphQL (GitLab answers `//api/graphql` with a 308), and `.../contents/api/graphql` is a file path.
+ */
+function isNarrowGraphqlEndpoint(endpoint: string): boolean {
+  const path = normalizeEndpoint(endpoint)
+  if (path === 'graphql' || path === '/graphql') return true
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+(?:\/api)?\/graphql$/.test(path)
+}
+
+/**
+ * For a guard that reads a mutation list: true = deny, false = allow (narrow GraphQL endpoint),
+ * undefined = the guard must go on to its REST check.
+ */
+function graphqlVerdict(
+  endpoint: string,
+  apiArgs: string[],
+  gate: HookGate,
+  mutations: string[],
+): boolean | undefined {
+  if (!isGraphqlEndpoint(endpoint)) return undefined
+  if (hasGraphqlMutation(apiArgs, gate, mutations)) return true
+  return isNarrowGraphqlEndpoint(endpoint) ? false : undefined
+}
+
+/**
  * True when a `gh api` call merges a pull request or a branch through the REST or GraphQL API.
  * `apiArgs` is the call's own arguments, after the `api` word.
  *
@@ -4849,7 +4897,8 @@ function ghApiMergeDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
-  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, MERGE_MUTATIONS)
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, MERGE_MUTATIONS)
+  if (gql !== undefined) return gql
   // claude-factory-zl5.25: gh drops a `#fragment` before it sends the request, so this guard
   // must read the normalized path, not the raw endpoint text.
   const path = normalizeEndpoint(endpoint)
@@ -4905,7 +4954,8 @@ function ghApiReviewDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
-  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, REVIEW_MUTATIONS)
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, REVIEW_MUTATIONS)
+  if (gql !== undefined) return gql
   const path = decodeApiPath(normalizeEndpoint(endpoint))
   if (path === undefined) return true
   const match = REVIEWS_PATH.exec(path)
@@ -5010,7 +5060,8 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
-  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, PUSH_MUTATIONS)
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, PUSH_MUTATIONS)
+  if (gql !== undefined) return gql
   // claude-factory-zl5.25: read the normalized path, which has no `#fragment` or `?query`, for every REST pattern below.
   // claude-factory-zl5.30: then decode the whole path once. Do this before any pattern reads it.
   // GitHub decodes a percent-encoded slash in the path. `heads%2Fmain` names the same path as `heads/main`.
@@ -5048,6 +5099,46 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
     )
   }
   return false
+}
+
+// claude-factory-qn8a.18: the repository sub-resources that a worker can write with `gh api`.
+// All other paths under a repository are settings.
+const REPO_WRITE_OK =
+  /^(?!check-suites\/preferences(?:\/|$))(?:(?:issues|pulls|git|contents|statuses|check-runs|check-suites|commits|comments|releases|dispatches)(?:\/|$)|actions\/runs\/[^/]+\/(?:rerun|rerun-failed-jobs|cancel)$|actions\/jobs\/[^/]+\/rerun$|actions\/workflows\/[^/]+\/dispatches$)/
+
+/**
+ * True when a `gh api` call writes to a repository setting (claude-factory-qn8a.18).
+ * A write is a call whose effective method is not GET. `ghApiMergeDenied` uses the same rule.
+ * A repository path is `repos/<o>/<r>/...` or `repositories/<id>/...`, with an optional URL prefix.
+ * The call passes only if the part after the repository root matches `REPO_WRITE_OK`.
+ * The repository itself (an empty tail) is a setting.
+ * This is an allow-list, so a new GitHub setting endpoint fails closed.
+ *
+ * The call is also denied in these cases:
+ * - The path has a bad percent-encoding or a `.` or `..` segment.
+ * - A `repos` word is in the path, but no repository root explains it.
+ * - A GraphQL query names a `REPO_SETTING_MUTATIONS` entry, or this hook cannot read the query.
+ */
+function ghApiRepoSettingDenied(apiArgs: string[], gate: HookGate): boolean {
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint) return false
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, REPO_SETTING_MUTATIONS)
+  if (gql !== undefined) return gql
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  const hasData = ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
+  if ((method || (hasData ? 'POST' : 'GET')) === 'GET') return false
+  const decoded = decodeApiPath(normalizeEndpoint(endpoint))
+  if (decoded === undefined) return true
+  // ponytail: a doubled slash is not collapsed, so such a path fails closed (no repository root matches).
+  if (decoded.split('/').some(s => s === '.' || s === '..')) return true
+  const path = decoded
+    .replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]+/, '')
+    .replace(/^\/api\/v3(?=\/|$)/, '')
+    .replace(/^\//, '')
+  const root = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)(?:\/(.*))?$/i.exec(path)
+  if (root) return !REPO_WRITE_OK.test(root[1] ?? '')
+  return path.split('/').some(s => /^repos(?:itories)?$/i.test(s))
 }
 
 // claude-factory-bemr: the builtin top-level `gh` commands, from `gh help`'s `CORE COMMANDS`,
@@ -5343,8 +5434,9 @@ function ghReasonOn(
     // words. Every check below already reads these words, so this runs first.
     const apiArgs = expandGhShortClusters(tail.slice(vi + 1))
     if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
-    if (ghApiReadyDenied(apiArgs, gate)) return mayReady(gate) ? undefined : READY_REASON
+    if (ghApiReadyDenied(apiArgs, gate) && !mayReady(gate)) return READY_REASON
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
+    if (ghApiRepoSettingDenied(apiArgs, gate)) return REPO_SETTING_REASON
     if (!gate.reviewer && ghApiReviewDenied(apiArgs, gate)) return APPROVE_REASON
 
     // claude-factory-p43v.11: a dynamic endpoint or method can still hide a merge or push call

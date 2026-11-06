@@ -356,6 +356,19 @@ The manager runs in the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another n
 
 `ax ssh` has no stdin and no PTY. So `factory attach` shows a snapshot and does not give you a keyboard. A real `herdr attach` waits for stdin and a PTY in `ax ssh`.
 
+### The AX sweep
+
+A failed `ax delete`, or a run that ends with its worker up, can leave a task or a workspace on the cluster. The `factory beads` pass removes them. It runs at most every 10 minutes, only when a rig has `runner: 'ax'`, and not after `factory stop`.
+
+The pass lists `ax get tasks` and `ax get workspaces`. If one list fails, it deletes nothing and shows a row from `ax-sweep.json` on the board. It deletes a name only when all of these are true:
+
+- The name is not the manager task (`f-manager`).
+- The name is `f-<run>-<seq>` for exactly one run of this home. A name that this home does not own stays.
+- `<seq>` is not above the run's `seq` in `state.json`. A higher number is a launch that the state does not show yet.
+- The run is done or aborted, or `<seq>` is below the run's `seq` and the run's worker is not `ax://<name>`.
+
+One pass deletes 10 names at most. `ax.log` in the factory home gets one `ax-sweep:` summary line for each pass, a `swept` line for each name, and a `remove ... failed` line for each failed delete. The close path writes the same failed line. `factory stop` halts the pass.
+
 ### Move the factory to AX
 
 This section moves a running laptop factory to the manager task. The task needs the rig repos, the beads stores and the factory home. Use this runbook.

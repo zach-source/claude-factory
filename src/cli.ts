@@ -2,6 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
+import { loadIntoEnv } from './settings'
 import {
   appendFileSync,
   chmodSync,
@@ -62,6 +63,7 @@ import {
 } from './machine'
 import { otelOf, type Otel } from './otel'
 import { watchDecide, WATCH_FAIL_PASSES, type Seen, type WatchedPr } from './watch'
+import { sweepNames as axSweepNames, type SweepRun } from './axsweep'
 import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
   actorOf,
@@ -87,7 +89,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { applyRigChange, editRigs, redactRig } from './rigs-edit'
+import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -271,9 +273,11 @@ const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
+loadIntoEnv(join(HOME, 'settings.json')) // stored settings fill unset env vars; the environment wins
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
+const AX_SWEEP_MS = 10 * 60_000 // how often leaked AX tasks and workspaces are deleted (axSweep)
 const ORPHANS_MS = 10 * 60_000 // how often the rigs' open factory drafts are swept for orphans (orphanPass)
 // ponytail: pr-merger's default label names; make them a rig setting when a repo uses others
 const CLOSE_LABEL = 'close'
@@ -1242,7 +1246,13 @@ const axRunner: Runner = {
     ax.prompt(task, text.replaceAll(CLI, 'factory'))
     return true
   },
-  close: address => ax.remove(ax.taskOf(address)),
+  close(address) {
+    const task = ax.taskOf(address)
+    const failed = ax.remove(task)
+    // the axSweep pass retries a delete that failed here
+    if (failed)
+      appendFileSync(join(HOME, 'ax.log'), `${new Date().toISOString()} remove ${task} failed: ${failed}\n`)
+  },
   // waiting on the manager costs nothing: the VM is snapshotted until the answer wakes it
   suspend: address => ax.suspend(ax.taskOf(address)),
   phase: address => ax.phase(ax.taskOf(address))?.toLowerCase() ?? null,
@@ -4327,6 +4337,7 @@ async function beadsPass() {
     const labelsDue = !isFresh(join(HOME, 'labels.stamp'), LABELS_MS)
     await labelPass()
     await orphanPass()
+    axSweep()
     if (labelsDue) await repairPass()
   } finally {
     release()
@@ -5887,6 +5898,9 @@ async function tick(isPatrol = false) {
     )
     out.runs.push(
       ...(existsSync(join(HOME, 'orphans.json')) ? readJson<Row[]>(join(HOME, 'orphans.json')) : []),
+    )
+    out.runs.push(
+      ...(existsSync(join(HOME, 'ax-sweep.json')) ? readJson<Row[]>(join(HOME, 'ax-sweep.json')) : []),
     )
     showInSidebar(out.runs, now, isPatrol)
     reap(out.runs)
@@ -8837,6 +8851,66 @@ async function labelPass() {
   writeJson(join(HOME, 'labels.json'), errors)
 }
 
+/**
+ * Delete the AX tasks and workspaces that no live run owns (claude-factory-sps9): a failed delete in the close
+ * path, or a run that ended with its worker up, leaks them. sweepNames picks the names; it keeps everything this
+ * home does not own. Every AX_SWEEP_MS, only with an ax rig and no halt. If a list call fails, nothing is deleted.
+ * It writes ax.log (one summary line for each pass) and ax-sweep.json (the board rows).
+ * ponytail: a name that never deletes holds one of the SWEEP_CAP slots for ever; the ax.log line names it.
+ */
+function axSweep() {
+  const stamp = join(HOME, 'ax-sweep.stamp')
+  if (halted() || !rigs().some(r => r.runner === 'ax') || isFresh(stamp, AX_SWEEP_MS)) return
+  writeFileSync(stamp, '')
+  const log = (line: string) => appendFileSync(join(HOME, 'ax.log'), `${new Date().toISOString()} ${line}\n`)
+  const errors: Row[] = []
+  const fail = (error: string) => errors.push({ id: 'ax-sweep', error: `ax-sweep: ${error}` })
+  try {
+    const workspaces = ax.names('workspaces')
+    const tasks = ax.names('tasks')
+    if (!workspaces || !tasks) {
+      fail(`ax get ${tasks ? 'workspaces' : 'tasks'} failed; nothing deleted`)
+    } else {
+      // the run states last, so they are as new as the lists allow
+      const runs: SweepRun[] = []
+      for (const id of startedRunIds())
+        try {
+          const { run, value, c } = current(id)
+          runs.push({
+            id: run.id,
+            seq: c.seq,
+            pane: c.pane,
+            over: ['done', 'aborted'].includes(where(value)[0]),
+          })
+        } catch {
+          // no readable state: keep an owner that never gets a delete (seq -1)
+          runs.push({ id, seq: -1, pane: null, over: false })
+        }
+      const picked = axSweepNames([...tasks, ...workspaces], runs, ax.managerTask())
+      let removed = 0
+      for (const name of picked) {
+        const failed = ax.remove(name)
+        if (failed) {
+          fail(`remove ${name} failed: ${failed}`)
+        } else {
+          removed++
+          log(
+            `swept ${name} run ${runs.find(r => ax.taskName(r.id, Number(/\d+$/.exec(name)![0])) === name)?.id}`,
+          )
+        }
+      }
+      log(
+        `ax-sweep: tasks ${tasks.length} workspaces ${workspaces.length} removed ${removed} failed ${picked.length - removed}`,
+      )
+    }
+  } catch (e) {
+    // a missing ax binary throws: the pass ends, the stamp stays, the next try is one AX_SWEEP_MS away
+    fail((e as Error).message.slice(0, 200))
+  }
+  writeJson(join(HOME, 'ax-sweep.json'), errors)
+  if (errors.length) log(errors.map(e => e.error).join('; '))
+}
+
 /** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
 export function orphanRuns(ids: string[], read: typeof current = current) {
   const runs = new Map<string, Run>()
@@ -10491,7 +10565,7 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -11809,7 +11883,35 @@ if (import.meta.main && !outboxCmd)
             }
           }
           console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
-        } else fail(`unknown rig command "${sub}": add, rm or list`)
+        } else if (sub === 'history') {
+          const snaps = snapshots(rigsFile())
+          if (!snaps.length) console.log('no rig history')
+          snaps.forEach((f, i) => {
+            const stem = basename(f, '.json')
+            let line = 'not valid JSON'
+            try {
+              const list = JSON.parse(readFileSync(f, 'utf8'))
+              if (!Array.isArray(list)) throw new Error('not an array')
+              line = `${list.length} rigs: ${list.map((r: { name?: string }) => r?.name).join(', ')}`
+            } catch {}
+            console.log(`${i + 1}  ${stem}  ${line}`)
+          })
+        } else if (sub === 'undo') {
+          const snaps = snapshots(rigsFile())
+          if (name !== undefined && !/^[1-9][0-9]*$/.test(name))
+            fail(`rig undo: "${name}" is not a snapshot number`)
+          const n = Number(name ?? 1)
+          const from = snaps[n - 1]!
+          if (!snaps[n - 1]) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
+          edit(() => {
+            try {
+              return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
+            } catch (e) {
+              throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
+            }
+          })
+          console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
+        } else fail(`unknown rig command "${sub}": add, rm, list, history or undo`)
         break
       }
       case 'rm': {

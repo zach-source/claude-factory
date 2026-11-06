@@ -5,6 +5,7 @@
 
 import { WORKER_USER } from './worker'
 import { workerPolicyRefusal } from './broker'
+import { parseNames } from './axsweep'
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
@@ -736,10 +737,24 @@ export function put(task: string, name: string, part: number, parts: number, bas
 export const PUT_PART = 96_000
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
-/** the task (its actor's egress policy goes with it) and its workspace; gone already is fine */
+/**
+ * the task (its actor's egress policy goes with it) and its workspace; gone already is fine. Both deletes always run.
+ * Returns undefined when each worked or was gone, else the failure text (200 characters at most for each delete).
+ */
 export function remove(task: string) {
-  ax(['delete', 'task', task])
-  ax(['delete', 'workspace', task])
+  const fails: string[] = []
+  for (const kind of ['task', 'workspace']) {
+    const r = ax(['delete', kind, task])
+    if (!r.ok && !/not ?found/i.test(r.err))
+      fails.push(`delete ${kind}: ${(r.err || r.out.trim()).slice(0, 200)}`)
+  }
+  return fails.length ? fails.join('; ') : undefined
+}
+
+/** the names `ax get tasks|workspaces` lists; null when ax fails or prints no NAME header (an empty cluster is []) */
+export function names(kind: 'tasks' | 'workspaces') {
+  const r = ax(['get', kind])
+  return r.ok && /^\s*NAME\b/.test(r.out) ? parseNames(r.out) : null
 }
 
 /** the AX task the manager runs in; it is the one-manager lease (docs/remote-runner.md, Attach to the AX manager) */
