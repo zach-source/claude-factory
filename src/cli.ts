@@ -6638,6 +6638,8 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
   if (!process.env.FACTORY_PATROL) return
   const no = (why: string): never => fail(`${x.id} ${why}: a patrol cannot start it: a person queues it`)
+  const hold = x.labels?.find(isHoldLabel)
+  if (hold) no(`carries the hold ${hold}`)
   const seen = new Set<string>()
   let cur: Bead = x
   for (;;) {

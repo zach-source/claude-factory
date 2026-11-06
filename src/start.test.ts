@@ -610,3 +610,15 @@ test('a start that the guard allows still starts one run (7a7e AC4)', () => {
   ok({ 'acme-1': { ...fromElsewhere, labels: ['factory'] }, 'acme-1.1': { parent: 'acme-1' } }, 'acme-1.1')
   ok({ 'acme-1': { labels: ['found'] } }, 'acme-1')
 })
+
+test('a patrol cannot start a bead with a hold label; a person can (9kou.4)', () => {
+  for (const hold of ['human', 'rejected', 'held:station']) {
+    reset()
+    showById({ 'acme-1': { labels: ['factory', hold] } })
+    expectRefused(patrolStart('acme-1'))
+    reset()
+    showById({ 'acme-1': { labels: ['factory', hold] } })
+    expect(patrolStart('acme-1', {}).code).toBe(0)
+    expect(runCount()).toBe(1)
+  }
+}, 30000)
