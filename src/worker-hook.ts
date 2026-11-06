@@ -1115,7 +1115,8 @@ function segments(
   }
   const endWord = () => {
     if (hasWord && quotedBrace.length && info?.state) {
-      const chars = [...word]
+      // UTF-16 units, the unit that qb() counts (a code-point array shifts after an astral char)
+      const chars = word.split('')
       for (const k of quotedBrace) if (k < chars.length) chars[k] = BRACE_SENTINEL[chars[k]!] ?? chars[k]!
       const hid = info.state.quotedBraces.get(word)
       const form = chars.join('')
@@ -9910,7 +9911,7 @@ export function expandBraces(w: string, cap = 64, budget = { n: 200_000 }): stri
         at = c + 1
       }
     } else {
-      const sq = body.match(/^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$/)
+      const sq = body.match(/^([-+]?\d+|[A-Za-z])\.\.([-+]?\d+|[A-Za-z])(?:\.\.([-+]?\d+))?$/)
       if (sq && /\d/.test(sq[1]!) === /\d/.test(sq[2]!)) {
         const num = /\d/.test(sq[1]!)
         const x = num ? Number(sq[1]) : sq[1]!.charCodeAt(0)
@@ -10041,6 +10042,8 @@ function gluedTails(x: string): string[] {
   return out
 }
 
+const OVERCAP_WRITE_MARK_RE =
+  /-[oOD]|--(?:output|dir|reporter-outfile)|of=|\.claude|settings|worker-hook|home-guard|cut\.ts|package|\//i
 const HOOK_CONTROL_MAY_RE = /[\/$`~*?[{<>\\]|\.claude|settings|worker-hook|home-guard|cut\.ts|package/i
 
 /**
@@ -10121,6 +10124,8 @@ function hookControlWrite(
         continue
       }
       if (!redirect) {
+        // claude-factory-qn8a.21.22: an over-cap list with a write marker must not take the operand skip
+        if (!variants && skip === 'operands' && OVERCAP_WRITE_MARK_RE.test(word)) return true
         if (skip === 'reader') continue
         if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(v) && !gluedTails(v).length)
           continue
