@@ -5559,69 +5559,223 @@ function ghAliasDenied(subArgs: string[]): string | undefined {
 
 // a glab REST path that approves a merge request; read on the decoded, lower-case path
 const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
-const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output', '-R', '--repo'])
 
-/** True when the decoded endpoint text names a merge request approve path, or cannot be decoded. */
-function glabApprovePath(endpoint: string): boolean {
+// claude-factory-qn8a.32.11
+export const GLAB_DYNAMIC_REASON =
+  'The factory denies this command: a glab word holds a shell expansion ($, a backtick, a glob, a brace ' +
+  'or a leading ~) that this guard cannot read. Write the glab words plainly. For a text value, use ' +
+  '--description="$X" or --message="$X", or single quotes. Do not retry this exact command.'
+
+// claude-factory-qn8a.32.15: glab has more write paths than a deny list holds, so only these forms pass
+const GLAB_COMMANDS = new Map<string, Set<string> | undefined>([
+  [
+    'mr',
+    new Set([
+      'create',
+      'list',
+      'view',
+      'diff',
+      'note',
+      'update',
+      'checkout',
+      'rebase',
+      'revoke',
+      'approvers',
+    ]),
+  ],
+  ['ci', new Set(['status', 'list', 'get', 'trace'])],
+  ['issue', new Set(['list', 'view', 'note'])],
+  ['repo', new Set(['view'])],
+  ['api', undefined],
+  ['version', undefined],
+])
+
+export const GLAB_VERB_REASON =
+  'The factory denies this command: glab is allowed in these forms only: mr (create, list, view, diff, ' +
+  'note, update, checkout, rebase, revoke, approvers), ci (status, list, get, trace), issue (list, view, ' +
+  'note), repo view, api and version. Write the command and the sub word first, then the flags ' +
+  '(glab mr list -R a/b, not glab -R a/b mr list). Do not retry this exact command.'
+
+export const GLAB_API_REASON =
+  'The factory denies this command: glab api is allowed in 3 forms only. A read: one endpoint, GET, no ' +
+  'field. A GraphQL read: glab api graphql -f query=<text>, with no mutation. A note write: POST to ' +
+  'projects/<id>/merge_requests[/<n>/notes|unapprove] with -f or -F fields. Use glab mr note or ' +
+  'glab issue note for other text. Do not retry this exact command.'
+
+const GLAB_SEG = '[A-Za-z0-9_-][A-Za-z0-9_.-]*'
+const GLAB_NOTE_PATH = new RegExp(
+  `^projects/(:id|\\d+|${GLAB_SEG}(%2[Ff]${GLAB_SEG})*)/merge_requests(/\\d+/(notes|unapprove))?$`,
+)
+// a single-quoted static word, and a long flag with a double-quoted value: bash expands nothing that splits or vanishes
+const GLAB_SINGLE_WORD = /^[^'"$`\\*?[{}~]*'[^']*'$/
+const GLAB_QUOTED_VALUE = /^--([a-z][a-z0-9-]*)="(?:[^"`\\$[]|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})*"$/
+const GLAB_NO_QUOTED_VALUE = new Set([
+  'ready',
+  'title',
+  'fill',
+  'fill-commit-body',
+  'draft',
+  'wip',
+  'method',
+  'field',
+  'raw-field',
+  'input',
+  'form',
+  'header',
+  'hostname',
+  'repo',
+  'output',
+])
+
+/**
+ * The words that the raw command text makes safe for rule 1, as the hook sees them without quotes.
+ * `segments()` drops quotes, so this reads the raw text. A word is in `ok` when its raw form is a
+ * single-quoted static word or `--name="..."`. It is in `bad` when any other raw word has the same text.
+ */
+function glabRawWords(command: string): (w: string) => boolean {
+  const ok = new Set<string>()
+  const bad = new Set<string>()
+  const s = command.replace(/\\\n/g, '')
+  let w = ''
+  let q = ''
+  const end = () => {
+    if (!w) return
+    const m = GLAB_QUOTED_VALUE.exec(w)
+    if (GLAB_SINGLE_WORD.test(w)) ok.add(w.replace(/'/g, ''))
+    else if (m && !GLAB_NO_QUOTED_VALUE.has(m[1]!)) ok.add(w.replace(/"/g, ''))
+    else bad.add(w.replace(/['"]/g, ''))
+    w = ''
+  }
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!
+    if (q) {
+      w += c
+      if (c === q) q = ''
+      else if (q === '"' && c === '\\') w += s[++i] ?? ''
+    } else if (c === "'" || c === '"') {
+      q = c
+      w += c
+    } else if (c === '\\') w += c + (s[++i] ?? '')
+    else if (/[\s;|&<>()]/.test(c)) end()
+    else w += c
+  }
+  end()
+  return x => ok.has(x) && !bad.has(x)
+}
+
+const GLAB_API_PLAIN = new Set(['-i', '--include', '--paginate', '--silent'])
+const GLAB_API_FIELD = new Set(['-f', '-F', '--field', '--raw-field'])
+
+/**
+ * claude-factory-qn8a.32.11: true when the words of a `glab api` call (without the `api` word) fit one of
+ * 3 closed forms. R reads one endpoint with GET. Q reads GraphQL with one `-f query=` text and no
+ * mutation. W posts fields to a merge request note, unapprove or create path.
+ * It reads every word and skips no flag value, so a flag cannot hide a word.
+ */
+function glabApiAllowed(args: string[]): boolean {
+  const methods: (string | undefined)[] = []
+  const pos: string[] = []
+  const fields: { flag: string; value: string }[] = []
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!
+    if (GLAB_API_PLAIN.has(w)) continue
+    const eq = w.startsWith('--') ? w.indexOf('=') : -1
+    const name = eq > 0 ? w.slice(0, eq) : w
+    const inline = eq > 0 ? w.slice(eq + 1) : undefined
+    const next = () => inline ?? args[++i]
+    if (name === '--output') {
+      const v = next()
+      if (v !== 'json' && v !== 'ndjson') return false
+    } else if (name === '-R' || name === '--repo' || name === '--hostname') {
+      const v = next()
+      if (!v || v.startsWith('-')) return false
+    } else if (name === '-X' || name === '--method') methods.push(next())
+    else if (/^-X./.test(w)) methods.push(w.slice(2))
+    else if (GLAB_API_FIELD.has(name)) {
+      const v = next()
+      if (v === undefined || v.startsWith('-')) return false
+      fields.push({ flag: name, value: v })
+    } else if (w.startsWith('-')) return false
+    else pos.push(w)
+  }
+  const method = methods[0]
+  if (pos.length !== 1 || methods.length > 1 || (methods.length === 1 && method === undefined)) return false
+  if (fields.length === 0 && (method === undefined || method === 'GET')) return true
+  if (pos[0] === 'graphql') {
+    const f = fields[0]
+    if (!f) return false
+    return (
+      method === undefined &&
+      fields.length === 1 &&
+      (f.flag === '-f' || f.flag === '--raw-field') &&
+      f.value.startsWith('query=') &&
+      !f.value.startsWith('query=@') &&
+      !/mutation|subscription/i.test(f.value)
+    )
+  }
+  return (method === undefined || method === 'POST') && GLAB_NOTE_PATH.test(pos[0]!)
+}
+
+/** True when the raw or decoded endpoint text matches `re`. An endpoint that cannot be decoded gives `undecodable`. */
+function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boolean {
   const decoded = decodeApiPath(endpoint)
-  if (decoded === undefined) return true
-  return [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded].some(p =>
-    GLAB_APPROVE_PATH.test(p),
-  )
+  if (decoded === undefined) return undecodable
+  const views = [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded]
+  // resolve dot segments and repeated slashes, then drop a trailing slash
+  const resolved = views.map(p => posix.normalize(p).replace(/(.)\/+$/, '$1'))
+  return [...views, ...resolved].some(p => re.test(p))
 }
 
 /**
- * claude-factory-hoz8: the reason to deny a `glab` call that can record a merge request approval,
- * or that hides the part which decides this. `words` start at the `glab` word.
- * The factory has no GitLab reviewer identity, so this denies at every station and ignores
- * `gate.reviewer`. It reads three channels, and fails closed on a part it cannot read:
- * `glab mr approve` (a word scan, so an unknown flag cannot hide the word), a REST path
- * `.../merge_requests/N/approve` with any method, and a GraphQL approve mutation.
- * Like `ghReason`, it scans the words as given and again without redirect words.
+ * claude-factory-hoz8, claude-factory-qn8a.32: the reason to deny a `glab` call that can approve or merge
+ * a merge request, mark a draft ready, or hide any of these. `words` start at the `glab` word.
+ * The factory has no GitLab reviewer identity, so approve is denied at every station.
+ * This is a closed grammar, not a model of the glab flag parser. It reads every word of the call and
+ * skips no flag value, so a flag cannot hide a word (rounds 1 to 3 of qn8a.32 each found a new parser gap).
+ * Like `ghReason`, it scans the words as given and again without redirect words. Only the second scan
+ * checks `glab api` against its 3 closed forms.
  */
-function glabReason(words: string[], gate: HookGate): string | undefined {
+function glabReason(words: string[], gate: HookGate, command: string): string | undefined {
   const tail = words.slice(1)
   const dropped = dropRedirectWords(tail)
+  const exempt = glabRawWords(command)
+  const same = dropped.length === tail.length
   return (
-    glabReasonOn(tail, gate) ?? (dropped.length === tail.length ? undefined : glabReasonOn(dropped, gate))
+    glabReasonOn(tail, gate, same, exempt) ?? (same ? undefined : glabReasonOn(dropped, gate, true, exempt))
   )
 }
 
-function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
-  const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
-  if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
-  if (hasMutatingWordBeforeDashDash(tail, new Set(['mr']))) {
-    const mi = tail.indexOf('mr')
-    const rest = tail.slice(mi + 1)
-    const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
-    if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
-    if (hasMutatingWordBeforeDashDash(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
+function glabReasonOn(
+  tail: string[],
+  gate: HookGate,
+  checkApi: boolean,
+  exempt: (w: string) => boolean,
+): string | undefined {
+  if (tail.includes('approve')) return GLAB_APPROVE_REASON
+  const api = tail.indexOf('api')
+  const args = api < 0 ? [] : [...tail.slice(0, api), ...tail.slice(api + 1)]
+  // a glob word such as `...approve?x=1` still names the approve path in its literal text
+  if (args.some(w => !w.startsWith('-') && glabPathMatch(w, GLAB_APPROVE_PATH, /merge_requests/i.test(w))))
+    return GLAB_APPROVE_REASON
+  if (tail.includes('merge') || tail.includes('accept') || tail.some(w => /^--auto-merge(=|$)/.test(w)))
+    return MERGE_REASON
+  if (tail.some(w => dynamicWord(w) && !exempt(w))) return GLAB_DYNAMIC_REASON
+  const subs = GLAB_COMMANDS.get(tail[0] ?? '')
+  if (!GLAB_COMMANDS.has(tail[0] ?? '') || (subs && !subs.has(tail[1] ?? ''))) return GLAB_VERB_REASON
+  if (
+    !mayReady(gate) &&
+    tail.includes('update') &&
+    tail.some(w => /^--(ready|title|fill|draft=|wip=)/.test(w) || /^-[^-]*[rtf]/.test(w))
+  ) {
+    return READY_REASON
   }
-  if (!hasMutatingWordBeforeDashDash(tail, new Set(['api']))) return undefined
-  const apiArgs = expandGhShortClusters(tail.slice(tail.indexOf('api') + 1))
-  const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
-  if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
-  // every word that is not a flag or a flag value could be the endpoint: check each one
-  const endpoints: string[] = []
-  for (let i = 0; i < apiArgs.length; i++) {
-    const w = apiArgs[i]!
-    if (GLAB_API_VALUE_FLAGS.has(w)) i++
-    else if (!w.startsWith('-')) endpoints.push(w)
+  if (api < 0 || !checkApi || glabApiAllowed(args)) return undefined
+  if (/approv/i.test(args.join(' '))) return GLAB_APPROVE_REASON
+  if (args.some(isGraphqlEndpoint)) {
+    const { texts, unresolved } = graphqlTexts(expandGhShortClusters(args), gate)
+    if (unresolved || texts.some(t => /approv/i.test(t))) return GLAB_APPROVE_REASON
   }
-  for (const endpoint of endpoints) {
-    // a glob word such as `...approve?x=1` still names the approve path in its literal text
-    if (glabApprovePath(endpoint)) return GLAB_APPROVE_REASON
-    if (dynamicWord(endpoint)) {
-      const hasData =
-        ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
-      if ((methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() !== 'GET') return DYNAMIC_VERB_REASON
-    } else if (isGraphqlEndpoint(endpoint)) {
-      const { texts, unresolved } = graphqlTexts(apiArgs, gate)
-      if (unresolved) return GLAB_APPROVE_REASON
-      if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
-    }
-  }
-  return undefined
+  return GLAB_API_REASON
 }
 
 /**
@@ -5642,6 +5796,7 @@ function anyGhReason(
   gate: HookGate,
   state: ScanState,
   movedBefore: boolean,
+  command: string,
 ): string | undefined {
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
@@ -5654,7 +5809,7 @@ function anyGhReason(
       if (r) return r
     }
     if (baseWord(words[j]!) === 'glab') {
-      const r = glabReason(words.slice(j), gate)
+      const r = glabReason(words.slice(j), gate, command)
       if (r) return r
     }
   }
@@ -9594,7 +9749,7 @@ function denyAtScan(
     }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.
-    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar)
+    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar, command)
     if (ghFound) return ghFound
     const controlFound = anyFactoryControlReason(words)
     if (controlFound) return controlFound
