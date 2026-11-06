@@ -323,6 +323,7 @@ test('AC8 links', () => {
   expect(t).toContain('[review](../glossary.md#review)')
   expect(t).toContain('2 h.')
   expect(t).toContain('30 min.')
+  expect(page([run('h', { createdAt: ago(90 * 60_000) })])).toContain('1 h.')
   expect(t).toContain('[PR #123](https://github.com/acme/widget/pull/123)')
   expect(t).toContain('[Solution](../solutions/2026-11/x.md)')
 })
