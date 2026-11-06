@@ -34,6 +34,7 @@ function fixture() {
   const home = tmp()
   writeFileSync(join(home, 'rigs.json'), JSON.stringify(rigRows(), null, 2))
   writeFileSync(join(home, 'dispatch.json'), '{}')
+  writeFileSync(join(home, 'manager-sessions.json'), '[]')
   run(home, 'r-web', '/lap/web')
   writeFileSync(join(home, 'runs', 'r-web', 'build.seen'), '3')
   run(home, 'r-cli', '/lap/cli')
@@ -131,6 +132,7 @@ test('split moves the run dir byte-equal with its .seen file and writes the tomb
   const server = JSON.parse(readFileSync(join(to, 'rigs.json'), 'utf8'))
   expect(server.map((r: any) => [r.name, r.remote])).toEqual([['web', 'https://example.com/acme/web.git']])
   expect(readFileSync(join(to, 'dispatch.json'), 'utf8')).toBe('{}')
+  expect(existsSync(join(to, 'manager-sessions.json'))).toBe(false)
   expect(tombstone(home)?.runs).toEqual(['r-web'])
 })
 
