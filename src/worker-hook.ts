@@ -9563,12 +9563,13 @@ export function reasonName(reason: string): string {
 
 const HARNESSES = ['claude', 'codex', 'pi']
 
-/** claude-factory-uzes: replace the value of each NAME=value word with *** so the deny log keeps no secret. A NAME can follow a quote (bash -c "X=v"); this can mask more than needed, never less. */
+/**
+ * claude-factory-uzes, -wkg4: the deny log keeps no secret. The first `=` or `${` and all text after it become ***.
+ * Why: bash word rules (quotes, IFS, braces, substitutions) are not regular, so no regex finds where a value ends.
+ * Out of scope (claude-factory-pwg3): a secret with no `=` and no `${` before it, as in `printf -v X v`.
+ */
 export function maskAssignments(command: string): string {
-  return command.replace(
-    /(^|[\s;&|()`"'])([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]{0,64}\])?\+?=)(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
-    '$1$2***',
-  )
+  return command.replace(/(=|\$\{)[\s\S]*/, '$1***')
 }
 
 /**
@@ -9583,7 +9584,7 @@ function logDenial(reason: string, command: string, harness: string | undefined)
     const at = Date.now()
     const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
     const name = reasonName(reason)
-    const cmd = cut(maskAssignments(maskKeyValues(command)), 200)
+    const cmd = cut(maskAssignments(command), 200)
     if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
       appendFileSync(
         process.env.FACTORY_OUTBOX,
@@ -9596,17 +9597,6 @@ function logDenial(reason: string, command: string, harness: string | undefined)
         { mode: 0o600 },
       )
   } catch {}
-}
-
-// claude-factory-1as9: a shell word. Each part starts with a different char, so the scan is linear.
-const MASK_WORD_RE = /(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'(?:\\[\s\S]|[^'\\])*'?|[^ \t\n;&|()`"'\\])+/g
-
-/** claude-factory-1as9: split the text into shell words (a word ends only at space, tab, newline or ; & | ( ) backtick), and in each word that holds a literal =, replace all text after the first = with ***. Masks more than needed, never less. logDenial runs it before maskAssignments. */
-export function maskKeyValues(command: string): string {
-  return command.replace(MASK_WORD_RE, w => {
-    const i = w.indexOf('=')
-    return i < 0 ? w : w.slice(0, i + 1) + '***'
-  })
 }
 
 /** claude-factory-sibp: main() prints this when a guard throws. It holds no exception text and no command text. */
