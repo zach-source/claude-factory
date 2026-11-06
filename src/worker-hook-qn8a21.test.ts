@@ -7,7 +7,7 @@ import * as hook from './worker-hook'
 // claude-factory-qn8a.21: a write to the hook source or to .claude/settings(.local).json turns the guard off.
 const H = '/f/acme-factory'
 const ROOT = '/w/acme'
-const R = hook.HOOK_CONTROL_REASON
+const R: string = hook.HOOK_CONTROL_REASON ?? 'missing'
 const env = { home: '/h/u', xdg: undefined }
 const bash = (cmd: string, cwd = ROOT) => hook.denyReason(cmd, ROOT, undefined, { cwd, hookDir: H })
 const file = (p: string, cwd = ROOT) => hook.fileWriteReason(p, cwd, env, ROOT, H)
