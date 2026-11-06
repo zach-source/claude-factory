@@ -424,6 +424,173 @@ test(
 )
 
 test(
+  '[SECURITY] claude-factory-0wv6: a subagent never adds a bd label; neighbours and the main chat run',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    let asked = 0
+    let ran = 0
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      asked += 1
+      return { result: { questions: e.questions, answers: {} } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+    const call = (command: string, agentId?: string) =>
+      $.tool.call({ tool: 'Bash', command, ...(agentId ? { agentId } : {}) } as never)
+
+    const denied = [
+      'bd update acme-1 --add-label factory',
+      'bd update acme-1 --add-label=factory',
+      'bd update acme-1 --set-labels bug,factory',
+      'bd label add acme-1 factory',
+      'bd -C /repo/acme label add acme-1 factory',
+      'bd label propagate acme-1 factory',
+      "bd create 'x' -t task -l factory",
+      "bd create 'x' --labels factory",
+      'bd update acme-1 \\\n--add-label factory',
+      'bd update acme-1 --add-la\\\nbel factory',
+      'cd /repo/acme && bd update acme-1 --add-label held:x',
+      'bd tag acme-1 factory',
+      "bd 'tag' acme-1 factory",
+      'bd q x -l factory',
+      'bd q x --labels factory',
+      'bd new x -l factory',
+      'bd new x --labels factory',
+      'bd new x -tl factory',
+      "bd create x '-l' factory",
+      'bd label --json add acme-1 factory',
+      'bd label -q add acme-1 factory',
+      "bd 'label' 'add' acme-1 factory",
+      'bd create x --label factory',
+      'bd create x --label=factory',
+      'bd new x --label factory',
+      'bd create --label factory x',
+      'bd create -l factory x',
+      'bd create -lfactory x',
+      'bd create -l=factory x',
+      'bd new -l factory x',
+      'bd q -l factory x',
+      "bd create '-l' factory x",
+      'bd create -tl factory x',
+      'bd -l factory create x',
+      'bd -lfactory create x',
+      'bd -l=factory create x',
+      'bd --labels factory create x',
+      'bd --labels=factory create x',
+      'bd --label factory create x',
+      'bd --label factory new x',
+      'bd -l factory new x',
+      'bd -l factory q x',
+      'bd --labels factory q x',
+      "bd '-l' factory create x",
+      'bd -C /repo/acme -l factory create x',
+      'bd -ql factory create x',
+      'bd -l factory --title x create',
+      'bd --labels factory --title x new',
+      'bd -l factory --title x create;echo done',
+      'bd -l factory --title x create&&echo done',
+      'bd -l factory --title x create|cat',
+      '(bd -l factory --title x create)',
+      'bd -l factory --title x create>out.txt',
+      "bd -l factory --title x 'create'",
+      'bd update acme-1 --remove-label factory',
+      'bd label remove acme-1 held:x',
+      "bd q 'x' -p 3",
+      'bd new x -t task -p 3',
+      "bd create 'x' -t task -p 3 -d 'text'",
+      'bd label list acme-1',
+      'bd update acme-1 --status open',
+      "b''d tag acme-1 factory",
+      'b\\d tag acme-1 factory',
+      "bd 'cre'ate -l factory x",
+      'bd cr\\eate -l factory x',
+      'bd showx acme-1',
+      'bd show$(echo x) acme-1',
+      'bd $V acme-1',
+      'bd show acme-1; bd tag acme-1 factory',
+      'bd show acme-1 && bd tag acme-1 factory',
+      'bd show $(bd tag acme-1 factory)',
+      'bd show `bd tag acme-1 factory`',
+      '(bd tag acme-1 factory)',
+      'bd\ntag acme-1 factory',
+      'echo acme-1 | xargs bd',
+      'env bd tag acme-1 factory',
+      'command bd tag acme-1 factory',
+      '/usr/local/bin/bd tag acme-1 factory',
+      './bd tag acme-1 factory',
+      'bd --json update acme-1 --status open',
+      'bd -C /repo/acme show acme-1',
+      'bd update acme-1 --unset-metadata discovered_from',
+      "bd sql 'select 1'",
+      'bd import x.jsonl',
+      'bd batch < x',
+      'bd create -f x.md',
+      'bd create x --parent acme-1',
+      'bd',
+      'bd;ls',
+      '$B update acme-1 --add-label factory',
+      'bd show acme-1 --add-la\\\nbel factory',
+      'BD tag acme-1 factory',
+      'Bd tag acme-1 factory',
+      'bD create -l factory x',
+      '/Users/x/.nix-profile/bin/BD tag acme-1 factory',
+      'bd show acme-1 && BD label add acme-1 factory',
+    ]
+    for (const command of denied) {
+      const r = await call(command, 'patrol-1')
+      expect(r.deny, command).toContain('runs bd only')
+    }
+    expect((await call('bd tag acme-1 factory', 'other-1')).deny).toContain('runs bd only')
+    expect(asked).toBe(0)
+    expect(ran).toBe(0)
+
+    const allowed = [
+      "bd comment acme-1 'queued it for the person'",
+      'bd ready --label factory --json',
+      'bd list --label factory',
+      'bd undefer acme-1',
+      'bd show acme-1 --json',
+      'bd view acme-1',
+      "bd comments add acme-1 'x'",
+      'bd comments acme-1',
+      "bd search 'x' --label factory",
+      'bd children acme-1',
+      'bd show acme-1 && bd ready --json',
+      "bd 'show' acme-1",
+      'cd /repo/acme && bd ready',
+      'bd show acme-1|head',
+      'bd show acme-1>out.txt',
+      'ls .beads',
+      'git log --oneline -3',
+      '/repo/bin/factory queue acme acme-1',
+    ]
+    for (const command of allowed) {
+      const before = ran
+      const r = await call(command, 'patrol-1')
+      expect(r.deny, command).toBeUndefined()
+      expect(ran, command).toBe(before + 1)
+    }
+
+    // a long command must not stall the hook (cubic backtracking)
+    for (const unit of ['bd show ', 'bd ']) {
+      const t0 = Date.now()
+      await call(unit.repeat(4000), 'patrol-1')
+      expect(Date.now() - t0, unit).toBeLessThan(2000)
+    }
+    const main = await call('bd update acme-1 --add-label factory')
+    expect(main.deny).toBeUndefined()
+    expect(asked).toBe(0)
+    await clock.settle()
+  },
+)
+
+test(
   'a run the main chat touched is held out of the next patrol; its mail stays queued until the hold clears',
   SLOW,
   async ($, on) => {

@@ -21,6 +21,7 @@ import {
   DYNAMIC_VERB_REASON,
   ASSIGNMENT_PREFIX_REASON,
   FUNCTION_DEF_REASON,
+  FUNSUB_REASON,
   ENV_SPLIT_ESCAPE_REASON,
   ENV_SPLIT_VAR_REASON,
   GH_BUILTIN_VERBS,
@@ -9869,7 +9870,8 @@ test.each([
   String.raw`git${'${IFS}'}\${$IFS''push$IFS''origin$IFS''main$IFS}`,
   "git${IFS}'${'$IFS''push$IFS''origin$IFS''main$IFS}",
 ])('claude-factory-dnw1: a hidden dollar-brace and bare IFS breaks: git %s', cmd => {
-  expect(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)).toBe(DYNAMIC_VERB_REASON)
+  // claude-factory-qn8a.5: the decoded text holds `${` + blank, so the funsub rule can win. Both reasons deny.
+  expect([DYNAMIC_VERB_REASON, FUNSUB_REASON]).toContain(denyReason(cmd, '/root/repo', undefined, J1KI_GATE)!)
 })
 test.each([
   'ls $HOME/x',
