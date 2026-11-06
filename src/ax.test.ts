@@ -149,36 +149,15 @@ test('remove runs both deletes and returns the failure text, not a not-found', (
   expect(ax.remove('f-a-1')!.length).toBeLessThanOrEqual(220)
 })
 
-test('a missing ax binary fails the call and does not throw', () => {
+test('a missing ax binary throws for read, remove and names, as for every ax call', () => {
   const prev = process.env.FACTORY_AX
-  process.env.FACTORY_AX = join(dir, 'no-such-ax')
+  process.env.FACTORY_AX = 'ax-no-such-binary-zq'
   try {
-    expect(ax.names('tasks')).toBeNull()
-    expect(ax.remove('f-a-1')).toContain('ax did not run')
+    expect(() => ax.read('f-a-1')).toThrow()
+    expect(() => ax.remove('f-a-1')).toThrow()
+    expect(() => ax.names('tasks')).toThrow()
   } finally {
     process.env.FACTORY_AX = prev
-  }
-})
-
-test('a bare ax name that PATH lacks is not "task not found" for read, remove or remoteManager', () => {
-  const saved = { ...process.env }
-  try {
-    process.env.FACTORY_AX = 'ax-no-such-binary-zq' // Bun's message holds "not found in $PATH"
-    expect(() => ax.read('f-a-1')).toThrow('ax did not run')
-    expect(ax.remove('f-a-1')).toContain('ax did not run')
-    delete process.env.FACTORY_IN_AX
-    process.env.FACTORY_AX_CONTEXT = 'c'
-    const warn: string[] = []
-    const prev = console.error
-    console.error = (m: string) => void warn.push(m)
-    try {
-      expect(ax.remoteManager()).toBeUndefined()
-    } finally {
-      console.error = prev
-    }
-    expect(warn.join()).toContain('manager lease not checked')
-  } finally {
-    process.env = saved
   }
 })
 

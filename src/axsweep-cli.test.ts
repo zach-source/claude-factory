@@ -24,7 +24,7 @@ const bin = () => join(dir, 'bin')
 
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
-const factory = (args: string[]) => {
+const factory = (args: string[], extra: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_AX_CONTEXT, FACTORY_AX_MANAGER, ...laptop } =
     process.env
   const p = Bun.spawnSync([CLI, ...args], {
@@ -40,6 +40,7 @@ const factory = (args: string[]) => {
       GIT_CONFIG_COUNT: '1',
       GIT_CONFIG_KEY_0: 'commit.gpgsign',
       GIT_CONFIG_VALUE_0: 'false',
+      ...extra,
     },
   })
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
@@ -207,4 +208,18 @@ test('AC8: a failed list deletes nothing and shows an error row; a failed delete
   expect(axLog()).toContain(`remove ${a} failed: delete task: forbidden`)
   expect(axLog()).toMatch(/removed 1 failed 1\n/)
   expect(JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))[0].error).toContain(a)
+})
+
+test('AC8: a missing ax binary does not break the beads pass; the sweep deletes nothing', () => {
+  const { liveId } = setup()
+  const state = join(home(), 'runs', liveId, 'state.json')
+  const before = readFileSync(state, 'utf8')
+  rmSync(join(home(), 'ax-sweep.stamp'), { force: true })
+  expect(factory(['beads'], { FACTORY_AX: 'ax-no-such-binary-zq' }).code).toBe(0)
+  settle()
+  expect(calls()).toEqual([])
+  const rows = JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))
+  expect(rows).toHaveLength(1)
+  expect(rows[0].error).toStartWith('ax-sweep:')
+  expect(readFileSync(state, 'utf8')).toBe(before)
 })

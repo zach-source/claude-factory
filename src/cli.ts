@@ -8863,43 +8863,47 @@ function axSweep() {
   const log = (line: string) => appendFileSync(join(HOME, 'ax.log'), `${new Date().toISOString()} ${line}\n`)
   const errors: Row[] = []
   const fail = (error: string) => errors.push({ id: 'ax-sweep', error: `ax-sweep: ${error}` })
-  const workspaces = ax.names('workspaces')
-  const tasks = ax.names('tasks')
-  if (!workspaces || !tasks) {
-    fail(`ax get ${tasks ? 'workspaces' : 'tasks'} failed; nothing deleted`)
-  } else {
-    // the run states last, so they are as new as the lists allow
-    const runs: SweepRun[] = []
-    for (const id of startedRunIds())
-      try {
-        const { run, value, c } = current(id)
-        runs.push({
-          id: run.id,
-          seq: c.seq,
-          pane: c.pane,
-          over: ['done', 'aborted'].includes(where(value)[0]),
-        })
-      } catch {
-        // no readable state: keep an owner that never gets a delete (seq -1)
-        runs.push({ id, seq: -1, pane: null, over: false })
+  try {
+    const workspaces = ax.names('workspaces')
+    const tasks = ax.names('tasks')
+    if (!workspaces || !tasks) {
+      fail(`ax get ${tasks ? 'workspaces' : 'tasks'} failed; nothing deleted`)
+    } else {
+      // the run states last, so they are as new as the lists allow
+      const runs: SweepRun[] = []
+      for (const id of startedRunIds())
+        try {
+          const { run, value, c } = current(id)
+          runs.push({
+            id: run.id,
+            seq: c.seq,
+            pane: c.pane,
+            over: ['done', 'aborted'].includes(where(value)[0]),
+          })
+        } catch {
+          // no readable state: keep an owner that never gets a delete (seq -1)
+          runs.push({ id, seq: -1, pane: null, over: false })
+        }
+      const picked = axSweepNames([...tasks, ...workspaces], runs, ax.managerTask())
+      let removed = 0
+      for (const name of picked) {
+        const failed = ax.remove(name)
+        if (failed) {
+          fail(`remove ${name} failed: ${failed}`)
+        } else {
+          removed++
+          log(
+            `swept ${name} run ${runs.find(r => ax.taskName(r.id, Number(/\d+$/.exec(name)![0])) === name)?.id}`,
+          )
+        }
       }
-    const picked = axSweepNames([...tasks, ...workspaces], runs, ax.managerTask())
-    let removed = 0
-    for (const name of picked) {
-      const failed = ax.remove(name)
-      if (failed) {
-        log(`remove ${name} failed: ${failed}`)
-        fail(`remove ${name} failed: ${failed}`)
-      } else {
-        removed++
-        log(
-          `swept ${name} run ${runs.find(r => ax.taskName(r.id, Number(/\d+$/.exec(name)![0])) === name)?.id}`,
-        )
-      }
+      log(
+        `ax-sweep: tasks ${tasks.length} workspaces ${workspaces.length} removed ${removed} failed ${picked.length - removed}`,
+      )
     }
-    log(
-      `ax-sweep: tasks ${tasks.length} workspaces ${workspaces.length} removed ${removed} failed ${picked.length - removed}`,
-    )
+  } catch (e) {
+    // a missing ax binary throws: the pass ends, the stamp stays, the next try is one AX_SWEEP_MS away
+    fail((e as Error).message.slice(0, 200))
   }
   writeJson(join(HOME, 'ax-sweep.json'), errors)
   if (errors.length) log(errors.map(e => e.error).join('; '))

@@ -277,21 +277,16 @@ export type Poll = {
 }
 
 function ax(args: string[], stdin?: string, timeout = 30_000) {
-  try {
-    const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
-      env: process.env, // the ax CLI sends AX_AUTH_TOKEN over the loopback tunnel
-      stdin: stdin ? Buffer.from(stdin) : undefined,
-      timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
-      maxBuffer: 128 * 1024 * 1024, // the VM is untrusted: 2x the 64 MiB transcript cap, base64 overhead included
-    })
-    return {
-      ok: p.exitCode === 0,
-      out: p.stdout.toString(),
-      err: p.stderr.toString().trim(),
-      ran: true,
-    }
-  } catch (e) {
-    return { ok: false, ran: false, out: '', err: `ax did not run: ${(e as Error).message}` } // a missing ax binary
+  const p = Bun.spawnSync([AX(), ...context(), '-a', ATESPACE(), ...args], {
+    env: process.env, // the ax CLI sends AX_AUTH_TOKEN over the loopback tunnel
+    stdin: stdin ? Buffer.from(stdin) : undefined,
+    timeout, // a tick waits on it: an ssh into a VM that is still waking fails this tick, not every run's
+    maxBuffer: 128 * 1024 * 1024, // the VM is untrusted: 2x the 64 MiB transcript cap, base64 overhead included
+  })
+  return {
+    ok: p.exitCode === 0,
+    out: p.stdout.toString(),
+    err: p.stderr.toString().trim(),
   }
 }
 function must(args: string[], stdin?: string) {
@@ -664,7 +659,7 @@ export const launch = (l: Launch) => {
 export function read(task: string): { phase: string | null; failure?: string } {
   const r = ax(['get', 'task', task])
   if (r.ok) return { phase: phaseOf(r.out), failure: failureOf(r.out) }
-  if (r.ran && /not ?found/i.test(r.err)) return { phase: null }
+  if (/not ?found/i.test(r.err)) return { phase: null }
   throw new Error(`ax get task: ${r.err}`)
 }
 export const phase = (task: string) => read(task).phase
@@ -750,7 +745,7 @@ export function remove(task: string) {
   const fails: string[] = []
   for (const kind of ['task', 'workspace']) {
     const r = ax(['delete', kind, task])
-    if (!r.ok && !(r.ran && /not ?found/i.test(r.err)))
+    if (!r.ok && !/not ?found/i.test(r.err))
       fails.push(`delete ${kind}: ${(r.err || r.out.trim()).slice(0, 200)}`)
   }
   return fails.length ? fails.join('; ') : undefined
@@ -783,7 +778,7 @@ export function remoteManager(): string | undefined {
   const task = managerTask()
   const r = ax(['get', 'task', task], undefined, 5_000)
   if (r.ok) return managerRefusal(phaseOf(r.out), process.env, task)
-  if (!(r.ran && /not ?found/i.test(r.err)))
+  if (!/not ?found/i.test(r.err))
     console.error(`warning: AX unreachable, manager lease not checked: ${r.err}`)
   return undefined
 }
