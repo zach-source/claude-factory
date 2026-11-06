@@ -113,6 +113,10 @@ const ALLOW = [
 describe('tokenReason', () => {
   test.each(DENY)('denies %s', c => expect(deny(c)).toBe(TOKEN_READ_REASON))
   test.each(ALLOW)('allows %s', c => expect(deny(c) == null).toBe(true))
+  test('a glued brace word is no wildcard, even where realpath of the root fails (Linux CI, EACCES on /root)', () => {
+    expect(tokenReason('echo {a[0]} x', '/nonexistent/repo', undefined)).toBeUndefined()
+    expect(tokenReason('echo {auth.json}', '/nonexistent/repo', undefined)).toBe(TOKEN_READ_REASON)
+  })
   test('no root: nothing is inside', () => {
     expect(tokenReason('cat auth.json', root, undefined)).toBe(TOKEN_READ_REASON)
     expect(tokenReason('cat ./fixtures/auth.json', root, undefined)).toBe(TOKEN_READ_REASON)
