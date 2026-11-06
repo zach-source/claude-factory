@@ -198,6 +198,15 @@ test('PUT refuses a worker policy that names a manager-only key or a github path
     'key CredentialURI': withHeader({ CredentialURI: U('AX_AUTH') }),
     'key credential_uri': withHeader({ credential_uri: 'https://x.example.com/ax' }),
     'key with U+017F': withPath(['a.example.com'], { pathPrefixeſ: ['/x/'] }),
+    'vault x%2FAX_AUTH%23': hdr('ate-secret://agent-vault/x%2FAX_AUTH%23/X'),
+    'vault v%2FGITHUB_%52EVIEWER': hdr('ate-secret://agent-vault/v%2FGITHUB_%52EVIEWER/X'),
+    'vault %76': hdr('ate-secret://agent-vault/%76/X'),
+    'vault ..': hdr('ate-secret://agent-vault/../X'),
+    'vault .': hdr('ate-secret://agent-vault/./X'),
+    'vault upper Factory': hdr('ate-secret://agent-vault/Factory/X'),
+    'vault underscore my_vault': hdr('ate-secret://agent-vault/my_vault/X'),
+    'vault non-ASCII': hdr('ate-secret://agent-vault/vı/X'),
+    'vault empty': hdr('ate-secret://agent-vault//X'),
     'lowercase value': hdr(U('ax_auth')),
     'query suffix': hdr(U('AX_AUTH') + '?x=1'),
     'trailing slash': hdr(U('AX_AUTH') + '/'),
@@ -236,6 +245,8 @@ test('PUT still creates a normal worker policy', async () => {
     current: JSON.parse(POLICY),
     'github owner key': hdr(U('GITHUB_ZS_BASIC')),
     gitlab: hdr(U('GITLAB')),
+    'vault factory': hdr('ate-secret://agent-vault/factory/GITHUB'),
+    'vault with hyphen and digit': hdr('ate-secret://agent-vault/my-vault-2/GITHUB'),
     'look-alike keys': { rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: keys } }] },
     'path on other host': withPath(['gitlab.example.com']),
     'path on look-alike host': withPath(['notgithub.com']),
@@ -344,6 +355,12 @@ test('the reviewer API rule is the one path rule a worker policy can have on a g
     'key GITHUB_ZS': withHdr({ credentialUri: U('GITHUB_ZS') }),
     'key REVIEWER_BASIC': withHdr({ credentialUri: U('GITHUB_REVIEWER_BASIC') }),
     'key lower case': withHdr({ credentialUri: U('github_reviewer') }),
+    'vault v%2FGITHUB_%52EVIEWER': withHdr({
+      credentialUri: 'ate-secret://agent-vault/v%2FGITHUB_%52EVIEWER/GITHUB_REVIEWER',
+    }),
+    'vault AX_AUTH': withHdr({ credentialUri: 'ate-secret://agent-vault/AX_AUTH/GITHUB_REVIEWER' }),
+    'vault ..': withHdr({ credentialUri: 'ate-secret://agent-vault/../GITHUB_REVIEWER' }),
+    'vault Factory': withHdr({ credentialUri: 'ate-secret://agent-vault/Factory/GITHUB_REVIEWER' }),
     'two headers': pol(
       reviewerRule({
         effects: {
@@ -416,6 +433,25 @@ test('the reviewer keys appear only in one pair of reviewer rules', async () => 
       effects: { replaceHeaders: [{ ...gitHdr, credentialUri: U('GITHUB_REVIEWER') }] },
     }),
     'git two headers': gitWith({ effects: { replaceHeaders: [gitHdr, gitHdr] } }),
+    'git vault v%2FX': gitWith({
+      effects: {
+        replaceHeaders: [
+          { ...gitHdr, credentialUri: 'ate-secret://agent-vault/v%2FX/GITHUB_REVIEWER_BASIC' },
+        ],
+      },
+    }),
+    'git vault AX_AUTH': gitWith({
+      effects: {
+        replaceHeaders: [
+          { ...gitHdr, credentialUri: 'ate-secret://agent-vault/AX_AUTH/GITHUB_REVIEWER_BASIC' },
+        ],
+      },
+    }),
+    'git vault ..': gitWith({
+      effects: {
+        replaceHeaders: [{ ...gitHdr, credentialUri: 'ate-secret://agent-vault/../GITHUB_REVIEWER_BASIC' }],
+      },
+    }),
     'api effects extra key': rulesOf(
       reviewerRule({ effects: { replaceHeaders: api.effects.replaceHeaders, replace_headers: [] } }),
     ),
