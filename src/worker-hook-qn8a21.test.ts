@@ -112,9 +112,43 @@ describe('AC3 Bash, a parent of the hook dir', () => {
     'mv .scratch/acme-factory /f/',
     'cp -R .scratch/root/. /',
     'cd /f && tar -xf a.tar',
+    // round 2 (A): copy or extract commands outside the first list
+    'ditto .scratch/f /f',
+    'bsdtar -C /f -xf a.tar',
+    'gtar -C /f -xf a.tar',
+    'pax -rw .scratch/f /f',
+    'cpio -pdm /f < list',
+    '7z x a.7z -o/f',
+    'busybox cp -R .scratch/f/. /f/',
+    'gcp -R .scratch/f/. /f/',
+    'patch -d /f -p0 < p',
+    'find .scratch -exec cp -R {} /f/ \\;',
+    'git -C /f clone x acme-factory',
+    // (B): a bare / that is not the last word
+    'tar -C / -xf a.tar',
+    'tar -xf a.tar -C / -v',
+    'cp -t / -R .scratch/root/.',
+    'mv -t / .scratch/f',
+    'install -t / x',
+    'cp --target-directory=/ -R .scratch/f/.',
+    'rsync -a .scratch/root/ / -v',
+    'cp -R .scratch/root/. / -v',
+    'unzip -d / a.zip',
+    // (C): an expansion in an ancestor position
+    'cp -R x/. "$HOME"',
+    'cp -R x ${HOME}/',
+    'cd "$HOME" && tar -xf a.tar',
+    // (D): a cd target the guard does not resolve
+    'cd && tar -xf a.tar',
+    'cd - && tar -xf a.tar',
+    'cd .. && cd .. && cd .. && tar -xf a.tar',
+    'cd / && tar -xf a.tar',
+    'pushd / && tar -xf a.tar',
+    'popd && tar -xf a.tar',
   ])('denies %s', c => expect(bash(c)).toBe(R))
-  test.each(['ls -d /', 'find / -name x', 'cat /f/x', 'cd / && ls', 'tar -C / -tf a.tar'])('allows %s', c =>
-    expect(bash(c)).toBeUndefined(),
+  test.each(['ls -d /', 'find / -name x', 'cat /f/x', 'cd .scratch && ls', 'cd src', 'cp -R x .scratch/y'])(
+    'allows %s',
+    c => expect(bash(c)).toBeUndefined(),
   )
 })
 

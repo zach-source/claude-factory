@@ -8048,7 +8048,7 @@ export function scanReason(
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
-  if (state.hookControl) return HOOK_CONTROL_REASON
+  if (state.hookControl) return state.stdinDeferred ? SHELL_STDIN_REASON : HOOK_CONTROL_REASON
   if (state.bodyDeny && !state.stdinDeferred) return REASON
   // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
   // trap, source or substitution reads it after this hook ran. Deny unless the command is only
@@ -9151,7 +9151,8 @@ function denyAtScan(
         root ?? process.cwd(),
         g.hookDir ?? dirname(import.meta.dir),
         state,
-        COPY_INTO_COMMANDS.has(b),
+        words.some(w => COPY_INTO_COMMANDS.has(baseWord(w))) ||
+          (b === 'git' && words.some(w => GIT_OPERAND_WRITER_RE.test(w))),
       )
     )
       state.hookControl = true
@@ -9532,7 +9533,28 @@ export const HOOK_CONTROL_REASON =
 
 // a parent of the hook dir (also a bare /) is a hook-control path only for these commands and for cd:
 // find / and ls -d / and alias ~ must stay allowed
-const COPY_INTO_COMMANDS = new Set(['cp', 'mv', 'rsync', 'install', 'ln', 'tar', 'unzip'])
+const COPY_INTO_COMMANDS = new Set([
+  'cp',
+  'mv',
+  'rsync',
+  'install',
+  'ln',
+  'tar',
+  'unzip',
+  'ditto',
+  'bsdtar',
+  'gtar',
+  'pax',
+  'cpio',
+  '7z',
+  '7za',
+  '7zr',
+  'gcp',
+  'gmv',
+  'ginstall',
+  'patch',
+])
+const CD_WORDS = new Set(['cd', 'pushd', 'popd', 'chdir'])
 const HOOK_MODULES = ['worker-hook.ts', 'home-guard.ts', 'cut.ts']
 const SETTINGS_NAMES = ['settings.json', 'settings.local.json']
 
@@ -9591,6 +9613,8 @@ function hookControlWord(
   if (!alts) return true
   const base = hookDir.split('/').filter(Boolean).pop()?.toLowerCase() ?? '\0'
   for (const x of alts) {
+    // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
+    if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
     if (/[$`]|^~[^/]/.test(x)) {
       const ps = x.toLowerCase().split('/').filter(Boolean)
       const last = ps[ps.length - 1] ?? ''
@@ -9627,7 +9651,7 @@ function hookControlWord(
         return true
       continue
     }
-    if (hookControlPath(abs, root, hookDir, copyInto || (isCd && abs !== '/'))) return true
+    if (hookControlPath(abs, root, hookDir, copyInto || isCd)) return true
   }
   return false
 }
@@ -9650,15 +9674,35 @@ function hookControlWrite(
   state?: ScanState,
   copyInto = false,
 ): boolean {
+  if (isCd) {
+    // cd with no operand, cd -, or a .. that leaves root: the guard does not track the cwd across segments
+    const ops = words.filter(w => !CD_WORDS.has(baseWord(w)) && !/^-./.test(w))
+    if (!ops.length || ops.includes('-')) return true
+    if (
+      ops.some(
+        w => /(^|\/)\.\.(\/|$)/.test(w) && !resolvePath(cwd, w.replace(/["'\\]/g, '')).startsWith(root + '/'),
+      )
+    )
+      return true
+  }
   if (!hookControlPath(cwd, root, hookDir) && !HOOK_CONTROL_MAY_RE.test(foldNonAscii(joinedWords(words))))
     return false
   let pending = false
   let prevWriterFlag = false
-  // a bare / counts only as the last word (the target of cp, tar, unzip), not as an option value
+  // a bare / counts as the last word, as a cd word, or in a copy word after a dir flag or a plain operand
+  // (tar -C /, cp -t /, rsync x / -v); sudo -R / stays allowed
   const last = words[words.length - 1]
+  let prev = ''
   const test = (x: string) =>
-    (x !== '/' || x === last) && hookControlWord(x, cwd, root, hookDir, state, copyInto, isCd)
-  for (const word of words) {
+    (x !== '/' ||
+      x === last ||
+      isCd ||
+      (copyInto && (!prev.startsWith('-') || /^-[CtdDo]$|^--target-directory$/.test(prev)))) &&
+    (hookControlWord(x, cwd, root, hookDir, state, copyInto, isCd) ||
+      // a glued output value (7z -o/f, tar -C/f)
+      (copyInto && /^-[oCtD]./.test(x) && hookControlWord(x.slice(2), cwd, root, hookDir, state, true, isCd)))
+  for (const [k, word] of words.entries()) {
+    prev = words[k - 1] ?? ''
     const afterWriterFlag = prevWriterFlag
     prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
     const wasPending = pending
