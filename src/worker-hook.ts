@@ -3639,10 +3639,7 @@ function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 | 3 {
     })
   if (all.length > 64) return 2
   return Math.max(...all.map(s => namesFactoryConfigPlain(s.replace(/[\u0001\u0002]/g, ''), state))) as
-    | 0
-    | 1
-    | 2
-    | 3
+    0 | 1 | 2 | 3
 }
 
 // 1: the word names the file. 2: a glob with a literal letter can match it. 3: a glob with no letter can.

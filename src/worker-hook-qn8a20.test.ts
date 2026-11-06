@@ -82,6 +82,8 @@ const AC4 = [
   'cp .scratch/rigs.json ../x/',
   'env -C /h tee rigs.json',
   'env --chdir=/h tee rigs.json',
+  'env -C sub tee rigs.json',
+  'env --chdir=sub tee rigs.json',
   'tee /h/*',
   'tee /h/*.*',
   'echo [] > /h/*',
