@@ -422,7 +422,7 @@ test('a laptop codex station end stores its rollout usage; --tokens shows the gp
   rmSync(join(dir, 'wt-c1'), { recursive: true })
   expect(factory(['rm', id], env).code).toBe(0)
   const t = factory(['metrics', '--tokens'], env).out
-  expect(t).toMatch(/implement\s+gpt-6\.1-sol/)
+  expect(t).toMatch(/implement\s+gpt-6\.1-sol(\s+\S+){6}\s+\d+%\s+-\s/)
   expect(t).toContain('rows of an unknown model not priced')
 })
 
@@ -451,7 +451,8 @@ const none: [string, (runDir: string, codex: string) => void][] = [
     'a file over 64 MiB', // a valid rollout, a newline, then zeros: only the size check stops it
     (_r, c) => truncateSync(putRollout(c, RNAME, rollout() + '\n'), 64 * 1024 * 1024 + 1),
   ],
-  ['a bad model', (_r, c) => void putRollout(c, RNAME, rollout({ model: 'x'.repeat(65) }))],
+  ['a too long model', (_r, c) => void putRollout(c, RNAME, rollout({ model: 'gpt-' + 'x'.repeat(61) }))],
+  ['a model with a space', (_r, c) => void putRollout(c, RNAME, rollout({ model: 'gpt bad model' }))],
   ['a negative count', (_r, c) => void putRollout(c, RNAME, rollout({ out: -1 }))],
   ['a fractional count', (_r, c) => void putRollout(c, RNAME, rollout({ out: 1.5 }))],
   ['a string count', (_r, c) => void putRollout(c, RNAME, rollout({ out: '9' }))],
@@ -469,4 +470,6 @@ test('a laptop codex station end stores at most 20 rollouts (vffe.3 AC3)', () =>
     }
   })
   expect(rows).toHaveLength(20)
+  expect(rows.filter(r => r.session === 's20')).toHaveLength(0)
+  expect(rows.filter(r => r.session === 's00')).toHaveLength(1)
 })
