@@ -279,6 +279,61 @@ test('bad flags exit non-zero with the usage and make no lease file', () => {
   }
 }, 30_000)
 
+test('serverRigsRefusal names each rig whose runner is not exactly ax', () => {
+  expect(serverRigsRefusal([{ name: 'a', runner: 'ax' }])).toBeUndefined()
+  expect(serverRigsRefusal([])).toBeUndefined()
+  for (const runner of [undefined, 'herdr', 'AX', '']) {
+    const r = serverRigsRefusal([
+      { name: 'a', runner: 'ax' },
+      { name: 'b', runner },
+    ])
+    expect(r).toContain('server home holds rig(s) b with a local runner')
+  }
+  expect(serverRigsRefusal([{ name: 'x' }, { name: 'y', runner: 'herdr' }])).toContain('x, y')
+})
+
+test('a server home with a herdr rig never calls the tick and reports tickOk false', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'server-guard-'))
+  dirs.push(home)
+  const lines: string[] = []
+  let n = 0
+  const s = serve({
+    home,
+    port: 0,
+    everyMs: 20,
+    leaseMs: 200,
+    holder: 'me',
+    log: l => lines.push(l),
+    tick: guardedTick(
+      () => [{ name: 'a', runner: 'herdr' }],
+      () => void n++,
+    ),
+  })
+  await sleep(200)
+  const h = (await fetch(`http://127.0.0.1:${s.port}/healthz`).then(r => r.json())) as any
+  await s.stop()
+  expect(n).toBe(0)
+  expect(lines.some(l => l.startsWith('tick failed: server home holds'))).toBe(true)
+  expect(h.tickOk).toBe(false)
+}, 30_000)
+
+test('guardedTick ticks for AX rigs and does not tick when rigs() throws', () => {
+  let n = 0
+  guardedTick(
+    () => [{ name: 'a', runner: 'ax' }],
+    () => void n++,
+  )()
+  expect(n).toBe(1)
+  const bad = guardedTick(
+    () => {
+      throw new Error('rigs.json unreadable')
+    },
+    () => void n++,
+  )
+  expect(bad).toThrow('unreadable')
+  expect(n).toBe(1)
+})
+
 test('a worker cannot run factory server', () => {
   const home = newHome()
   const e = { ...env(home), FACTORY_RUN: 'r1', FACTORY_OUTBOX: join(home, 'o') }
