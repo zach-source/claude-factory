@@ -292,6 +292,11 @@ test('the question names every gated kind and the kinds in the text it cuts', SL
   expect(g).toContain('characters not shown')
   expect(g).not.toContain(HIDDEN)
 
+  // the cut edge: a match that ends at character 300 is shown, one that ends at 301 is not
+  const edge = (end: number) => `${'a'.repeat(end - 'factory decide'.length - 1)} factory decide x`
+  expect(await ask(edge(300))).not.toContain(HIDDEN)
+  expect(await ask(edge(301))).toContain(HIDDEN)
+
   // no question for a plain or single-quoted command
   const before = asked
   await $.tool.call({ tool: 'Bash', command: '/repo/bin/factory status', description: 'x' })
