@@ -8396,25 +8396,12 @@ function flattenBraceExpansions(w: string, byDepth: boolean): string {
   }
   return out
 }
-// claude-factory-qn8a.10: true when an unquoted ${...} span holds unquoted whitespace, ; | or &, or has no
-// close brace. bash splits such a span into words. segments() cuts the word at the first break and drops
-// quotes, so this reads the raw text. A close brace in quotes or after a backslash does not close a
-// span. A stray close brace at depth 0 is ignored. Quoted text outside a span is skipped.
+// claude-factory-qn8a.10: true when a ${ is not followed by a simple closed body. A simple body holds no
+// whitespace, ; | &, quote, backslash, backtick, $, brace, paren or angle bracket. bash splits any other
+// span into words, and segments() cuts the word early and drops quotes. This rule reads no quotes, so no
+// quote form hides a span. It fails closed and only denies.
 function hasSplitBrace(text: string): boolean {
-  let d = 0
-  let split = false
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]!
-    if (c === '\\') i++
-    else if (c === "'" || c === '"') {
-      for (i++; i < text.length && text[i] !== c; i++) if (c === '"' && text[i] === '\\') i++
-    } else if (c === '$' && text[i + 1] === '{') (d++, i++)
-    else if (c === '}' && d) {
-      if (--d === 0 && split) return true
-      if (d === 0) split = false
-    } else if (d && /[\s;|&]/.test(c)) split = true
-  }
-  return d > 0
+  return /\$\{(?![^\s;|&'"`$(){}<>\\]*\})/.test(text)
 }
 function splitGluedExpansions(words: string[], byDepth = true): string[] | undefined {
   let out: string[] | undefined
