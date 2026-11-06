@@ -224,13 +224,9 @@ describe('homeReason', () => {
     cmd => expect(homeReason(cmd, onlyX, H)).toBe(HOME_REASON),
   )
 
-  test.each([
-    'mv /Users/pa\\\nt /x',
-    'rm -rf $HO\\\nME',
-    'rm -rf ~\\\n',
-    'mv "${HO\\\nME}" /x',
-  ])('denies a home word that a backslash-newline splits: %j', cmd =>
-    expect(homeReason(cmd, undefined, H)).toBe(HOME_REASON),
+  test.each(['mv /Users/pa\\\nt /x', 'rm -rf $HO\\\nME', 'rm -rf ~\\\n', 'mv "${HO\\\nME}" /x'])(
+    'denies a home word that a backslash-newline splits: %j',
+    cmd => expect(homeReason(cmd, undefined, H)).toBe(HOME_REASON),
   )
 
   test('denyReason denies a split home path', () => {

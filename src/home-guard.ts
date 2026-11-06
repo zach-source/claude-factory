@@ -1,7 +1,7 @@
 /**
  * The home-directory guard (claude-factory: a worktree cleanup script deleted the person's home).
  * Two layers use it:
- *   - `homeReason` runs first in the worker hook. It reads the raw command text, and the text of
+ *   - `homeReason` runs first in the worker hook. It reads the raw and the backslash-newline-joined command text, and the text of
  *     each script file the command names (unless the whole command is read-only), before any
  *     parse. A delete word plus a whole-home reference denies the call.
  *   - `rmSafe` replaces each recursive `rmSync` in the runner. It refuses `/`, the home dir and
@@ -87,10 +87,14 @@ function homeWord(protect: string[]): RegExp {
 }
 
 // The word regex holds folded text, so it tests folded text. DELETE and API also test the original: rmSync is case-sensitive.
-const hits = (text: string, word: RegExp) => {
+// Bash joins backslash-newline before it splits words, so the guard tests the joined text too. The raw
+// text stays tested: an even backslash run keeps its newline as a separator.
+const join = (s: string) => s.replace(/\\\n/g, '')
+const test1 = (text: string, word: RegExp) => {
   const f = fold(text)
   return (DELETE.test(text) || DELETE.test(f)) && (word.test(f) || API.test(text))
 }
+const hits = (text: string, word: RegExp) => test1(text, word) || test1(join(text), word)
 
 // a run of path chars between a lead and a terminator char; ':' ends a path:line word
 const SCRIPT = /(?:^|[\s'"=(`;&|:<>])([\w./-]+)(?=$|[\s'";&|)`:<>])/g
@@ -252,12 +256,13 @@ export function homeReason(
   if (hits(command, word)) return HOME_REASON
   if (!readFile || readOnly(command)) return undefined
   const seen = new Set<string>()
-  for (const m of command.matchAll(SCRIPT)) {
-    const w = m[1]!
-    if (!isFile(w) || seen.has(w)) continue
-    seen.add(w)
-    const text = readFile(w)
-    if (text !== undefined && hits(text, word)) return HOME_REASON
-  }
+  for (const src of new Set([command, join(command)]))
+    for (const m of src.matchAll(SCRIPT)) {
+      const w = m[1]!
+      if (!isFile(w) || seen.has(w)) continue
+      seen.add(w)
+      const text = readFile(w)
+      if (text !== undefined && hits(text, word)) return HOME_REASON
+    }
   return undefined
 }
