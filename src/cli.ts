@@ -5511,7 +5511,11 @@ const kickWiki = () => {
   const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
   if (age < (min > 0 ? min : 30) * 60_000) return
   writeFileSync(stamp, '')
-  spawnChild(CLI, ['wiki', 'refresh'], { detached: true, stdio: 'ignore', env: kickEnv(process.env, HOME) }).unref()
+  spawnChild(CLI, ['wiki', 'refresh'], {
+    detached: true,
+    stdio: 'ignore',
+    env: kickEnv(process.env, HOME),
+  }).unref()
 }
 
 // ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
