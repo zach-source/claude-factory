@@ -527,6 +527,7 @@ interface ScanState {
   globDeferred: boolean
   /** claude-factory-4iod: set when a brace body reads as a risky rm. denyReason returns REASON after the older reasons. */
   bodyDeny: boolean
+  cfgGlob: boolean
   /** claude-factory-3frd: set when a word after a sh -c cluster holds a dollar or backtick. scanReason returns SH_DYNAMIC_SCRIPT_REASON last. */
   dynamicScript: boolean
   globalGitConfig: boolean
@@ -3646,6 +3647,214 @@ function globalGitConfigUse(
     if (GLOBAL_GIT_CONFIG_RE.test(candidate)) use = 'mention'
   }
   return use
+}
+
+// the protected files as globs: rigs.json and one worker-settings file per rig (and per skills set)
+const FACTORY_CONFIG_GLOBS = ['rigs.json', 'worker-settings*.json']
+
+type GlobTok = { star: true } | { star: false; test: (c: string) => boolean; lit?: string }
+
+// End index of the bracket class that opens at g[i]. odd: bash reads it (a leading ], [:x:], [=x=], [.x.]) in a way a JS class cannot.
+function classEnd(g: string, i: number): { j: number; odd: boolean } | undefined {
+  let k = i + 1
+  if (g[k] === '!' || g[k] === '^') k++
+  let odd = false
+  if (g[k] === ']') {
+    odd = true
+    k++
+  }
+  for (; k < g.length; k++) {
+    if (g[k] === '[' && /[:=.]/.test(g[k + 1] ?? '')) {
+      const e = g.indexOf(g[k + 1]! + ']', k + 2)
+      odd = true
+      if (e >= 0) k = e + 1
+    } else if (g[k] === ']') return { j: k, odd }
+  }
+  return undefined
+}
+
+function globToks(g: string): GlobTok[] {
+  const out: GlobTok[] = []
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i]!
+    const cls = c === '[' ? classEnd(g, i) : undefined
+    if (c === '*') out.push({ star: true })
+    else if (c === '?') out.push({ star: false, test: () => true })
+    else if (cls?.odd) {
+      // ponytail: an odd class reads as any one char (fail closed); an exact read would be tighter
+      out.push({ star: false, test: () => true })
+      i = cls.j
+    } else if (cls) {
+      const j = cls.j
+      let re: RegExp
+      try {
+        re = new RegExp(
+          '^[' +
+            g
+              .slice(i + 1, j)
+              .replace(/^!/, '^')
+              .replace(/\\/g, '\\\\') +
+            ']$',
+          'i',
+        )
+      } catch {
+        re = /^/
+      }
+      out.push({ star: false, test: x => re.test(x) })
+      i = j
+    } else out.push({ star: false, test: x => x === c, lit: c })
+  }
+  return out
+}
+
+/**
+ * claude-factory-qn8a.20: returns `true` when glob `a` and glob `b` can match one common string.
+ * The tokens are `*`, `?`, `[class]` and a literal. Two classes, or a class and `?`, count as a meet.
+ * The search visits each pair of token positions once, so the cost is O(|a|*|b|).
+ * With a `state`, the search spends scan work. An empty budget also fails closed.
+ */
+export function globsMeet(a: string, b: string, state?: ScanState): boolean {
+  const p = globToks(a)
+  const q = globToks(b)
+  if (state && spendWork(state, (p.length + 1) * (q.length + 1))) return true
+  const seen = new Set<number>()
+  const go = (i: number, j: number): boolean => {
+    const k = i * (q.length + 1) + j
+    if (seen.has(k)) return false
+    seen.add(k)
+    if (i === p.length && j === q.length) return true
+    const x = p[i]
+    const y = q[j]
+    if (x?.star && go(i + 1, j)) return true
+    if (y?.star && go(i, j + 1)) return true
+    if (!x || !y) return false
+    if (x.star && y.star) return go(i + 1, j + 1)
+    if (x.star) return go(i, j + 1)
+    if (y.star) return go(i + 1, j)
+    if (x.lit !== undefined) return y.test(x.lit) && go(i + 1, j + 1)
+    if (y.lit !== undefined) return x.test(y.lit) && go(i + 1, j + 1)
+    return go(i + 1, j + 1)
+  }
+  return go(0, 0)
+}
+const FACTORY_CONFIG_MAY_RE = /rigs|settings|[*?[{<>\\"']/i
+// no `=` and no leading `-`: a flag with a glued value (--output=/h/rigs.json) is no path
+const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:/][\w.@%+,:/-]*$/
+
+/**
+ * claude-factory-qn8a.20: 1 when a path word names rigs.json or a worker-settings file, 2 when a
+ * glob with a letter can match one, 3 when a glob with no letter can match one, else 0.
+ */
+function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 | 3 {
+  const c = foldNonAscii(normalizeConfigPath(word))
+    .toLowerCase()
+    .replace(/["'\\]/g, '')
+  // a list brace expands to each member; a range or a long list reads as a star; {} and {x} stay literal
+  let all = [c]
+  for (let n = 0; n < 8 && all.some(s => /\{[^{}]*\}/.test(s)); n++)
+    all = all.flatMap(s => {
+      const m = /\{([^{}]*)\}/.exec(s)
+      if (!m) return [s]
+      const at = (body: string) => s.slice(0, m.index) + body + s.slice(m.index + m[0].length)
+      if (m[1]!.includes('..')) return [at('*')]
+      return m[1]!.includes(',') ? m[1]!.split(',').map(at) : [at('\u0001' + m[1] + '\u0002')]
+    })
+  if (all.length > 64) return 2
+  return Math.max(...all.map(s => namesFactoryConfigPlain(s.replace(/[\u0001\u0002]/g, ''), state))) as
+    0 | 1 | 2 | 3
+}
+
+// 1: the word names the file. 2: a glob with a literal letter can match it. 3: a glob with no letter can.
+function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
+  if (c.includes('rigs.json') || c.includes('worker-settings')) return 1
+  const last = c.split('/').pop() ?? c
+  if (!/[*?[]/.test(last)) return 0
+  // a class names its first member, so w[o]rker-settings-acme.json reads as the settings file
+  let first = ''
+  for (let i = 0; i < last.length; i++) {
+    const cls = last[i] === '[' ? classEnd(last, i) : undefined
+    if (!cls) first += last[i]
+    else {
+      first += cls.odd ? '?' : last[i + 1] === '!' || last[i + 1] === '^' ? last[i + 2] : last[i + 1]
+      i = cls.j
+    }
+  }
+  if (/rigs\.json|worker-settings/.test(first)) return 1
+  if (!FACTORY_CONFIG_GLOBS.some(g => globsMeet(last, g, state))) return 0
+  return /[a-z]/.test(last) ? 2 : 3
+}
+
+/**
+ * claude-factory-qn8a.20: 'name' when one segment writes the factory home rigs.json or a
+ * worker-settings*.json file, 'glob' when a glob guess can match one. Only a redirect or `of=`
+ * target is exempt, and only as a plain path inside `root`. Any other write word that names the
+ * file denies, because the hook cannot tell the source of a cp or mv from its destination.
+ * A glob with no letter (`*`) is a guess only when its directory part is not a plain path inside `root`.
+ * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
+ * flag value, and every word of a segment that does not skip its operands.
+ * ponytail: these pass: a name built at run time (a variable, printf), a script file, a symlink
+ * from an earlier call, a program that picks the path, git config -f (qn8a.50), codex apply_patch
+ * (qn8a.22), the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
+ * directory copy that names no file (qn8a.52), and a symlink made earlier in the same command (qn8a.54).
+ * The sandbox is the barrier.
+ * Upgrade path: resolve each word against the real FACTORY_HOME.
+ */
+function factoryConfigWrite(
+  words: string[],
+  skip: OperandSkip,
+  isCd: boolean,
+  root: string | undefined,
+  cwd: string | undefined,
+  moved: boolean,
+  state?: ScanState,
+): 'name' | 'glob' | undefined {
+  if (!FACTORY_CONFIG_MAY_RE.test(foldNonAscii(joinedWords(words)))) return undefined
+  let found: 'glob' | undefined
+  const relativeOk = !moved && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
+  const exempt = (w: string): boolean => {
+    const v = normalizeConfigPath(w.replace(/["']/g, ''))
+    if (!root || !FACTORY_CONFIG_EXEMPT_RE.test(v) || v.split('/').includes('..')) return false
+    return v.startsWith('/') ? v.startsWith(root + '/') : relativeOk
+  }
+  const insideDir = (w: string): boolean => {
+    const v = normalizeConfigPath(w.replace(/["']/g, ''))
+    const dir = v.slice(0, v.lastIndexOf('/') + 1)
+    if (!root || !/^[\w.@%+,:/-]*$/.test(dir) || dir.split('/').includes('..')) return false
+    return dir.startsWith('/') ? dir.startsWith(root + '/') : relativeOk
+  }
+  let pending = false
+  let prevWriterFlag = false
+  for (const word of words) {
+    const afterWriterFlag = prevWriterFlag
+    prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
+    const wasPending = pending
+    pending = false
+    if (!wasPending && !FACTORY_CONFIG_MAY_RE.test(foldNonAscii(word))) continue
+    let target = word
+    let redirect = wasPending
+    const m = word.match(REDIRECT_PREFIX_RE)
+    if (m && m[0].length === word.length) {
+      pending = true
+      continue
+    }
+    if (m) {
+      target = word.slice(m[0].length)
+      redirect = true
+    } else if (!wasPending && /^of=/i.test(word)) {
+      target = word.slice(3)
+      redirect = true
+    }
+    if (!redirect) {
+      if (skip === 'reader' || isCd) continue
+      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
+    }
+    const named = namesFactoryConfig(target, state)
+    // an operand of cp, mv or ln can be a source or a destination: only a redirect or of= target is exempt
+    if (named === 1 && !(redirect && exempt(target))) return 'name'
+    if (named === 2) found = 'glob'
+    if (named === 3 && !insideDir(target)) found = 'glob'
+  }
+  return found
 }
 
 /** claude-factory-ty8y: true when a dequoted word of a segment is a git or git-<verb> word. */
@@ -8009,6 +8218,7 @@ export function scanReason(
     ifsLate: false,
     globDeferred: false,
     bodyDeny: false,
+    cfgGlob: false,
     dynamicScript: false,
     globalGitConfig: false,
     gitWord: false,
@@ -8044,6 +8254,7 @@ export function scanReason(
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
   if (state.bodyDeny && !state.stdinDeferred) return REASON
+  if (state.cfgGlob) return FACTORY_CONFIG_REASON
   // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
   // trap, source or substitution reads it after this hook ran. Deny unless the command is only
   // plain alias segments.
@@ -9063,6 +9274,18 @@ function denyAtScan(
         )
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true
+    const cfgWrite = factoryConfigWrite(
+      words,
+      operandSkip,
+      b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+      root,
+      g.cwd,
+      movedSoFar,
+      state,
+    )
+    if (cfgWrite === 'name') return FACTORY_CONFIG_REASON
+    // a glob is a guess: a later real reason wins over it
+    if (cfgWrite === 'glob') state.cfgGlob = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
     // hide a kubectl, ko or helm word that follows it.
     //
@@ -9507,6 +9730,9 @@ export function clampTimeout(
   return left < (input.timeout ?? BASH_DEFAULT_MS) ? left : undefined
 }
 
+export const FACTORY_CONFIG_REASON =
+  'The factory denies this write: it targets the factory home rigs.json or a worker-settings*.json file, or a path with that name that the hook cannot place inside the worktree. These files set the rig merge authority and the deny hook; only a person edits them. To read one, use cat. To make a test copy, redirect into .scratch/ in the worktree: cat /h/rigs.json > .scratch/rigs.json. Do not retry this exact command.'
+
 export const FILE_WRITE_REASON =
   "The factory denies this file write: it targets a .git dir, the global git config or Claude Code's shell-snapshots folder. A worker never needs to write these. Use git commands for repo state."
 
@@ -9532,6 +9758,7 @@ export function fileWriteReason(
   path: unknown,
   cwd: string,
   env: { home: string; xdg?: string | undefined } = { home: homedir(), xdg: process.env.XDG_CONFIG_HOME },
+  root?: string,
 ): string | undefined {
   if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
     return FILE_WRITE_REASON
@@ -9551,7 +9778,16 @@ export function fileWriteReason(
       real = dirname(real)
     }
   }
-  return protectedParts(split(abs), xdg) || protectedParts(split(real), xdg) ? FILE_WRITE_REASON : undefined
+  if (protectedParts(split(abs), xdg) || protectedParts(split(real), xdg)) return FILE_WRITE_REASON
+  // claude-factory-qn8a.20: rigs.json and worker-settings*.json set the merge authority and the hook.
+  // Only a path inside the worktree root (lexical, and real) may carry one of these names.
+  let realRoot = root
+  try {
+    if (root) realRoot = realpathSync(root)
+  } catch {}
+  const inside = (p: string) => [root, realRoot].some(r => !!r && p.startsWith(r.endsWith(sep) ? r : r + sep))
+  const config = (p: string) => /^(rigs|worker-settings.*)\.json$/i.test(p.split(sep).pop() ?? '')
+  return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
 }
 
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
@@ -9653,6 +9889,8 @@ function handle(input: unknown) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
       i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      undefined,
+      process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd(),
     )
     if (reason) {
       console.log(
