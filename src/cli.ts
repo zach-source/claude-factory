@@ -4519,15 +4519,17 @@ function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<
 /**
  * Stage the wiki, put every staged page that fails a check back at its last version, and commit the rest
  * as the factory identity. A page passes when its path, size (65,536 bytes) and scanPages() are clean.
- * A journal line names the path and a fixed reason, never page text. True when it made a commit.
+ * A journal line names the path and a fixed reason, never page text. `paths` limits the staging to those pages
+ * (none: the whole tree). True when it made a commit, null when nothing was staged, false on a failure.
  */
-export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki')) {
+export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki'), paths?: string[]) {
   const clean = (s: string) =>
     s
       .split('\n')[0]!
       .replace(/\p{Cc}/gu, ' ')
       .slice(0, 200)
-  if (wikiGit(dir, ['add', '-A']).code !== 0) return (wikiLog('wiki: stage failed, nothing committed'), false)
+  if (wikiGit(dir, ['add', '-A', '--', ...(paths ?? [])]).code !== 0)
+    return (wikiLog('wiki: stage failed, nothing committed'), false)
   const list = wikiGit(dir, ['diff', '--cached', '--raw', '--no-renames', '-z', '--diff-filter=d'])
   if (list.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
   // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
@@ -4560,7 +4562,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   // a refused path that is still staged (an unstage that failed) must never reach a commit
   if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
     return (wikiLog('wiki: unstage failed, nothing committed'), false)
-  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return false
+  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return null
   const c = wikiGit(
     dir,
     [
@@ -4620,6 +4622,18 @@ function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh 
   return value
 }
 
+/** True only when the remote is PRIVATE or INTERNAL; every other answer logs one fixed line and refuses. */
+function wikiAllowed(r: { host: string; owner: string; repo: string }, fresh = false) {
+  const vis = wikiVisibility(r, fresh)
+  if (vis === 'PRIVATE' || vis === 'INTERNAL') return true
+  wikiLog(
+    vis === 'PUBLIC'
+      ? 'wiki: remote is public, push refused'
+      : 'wiki: remote visibility unknown, push refused',
+  )
+  return false
+}
+
 /**
  * Push HEAD to main of origin only when origin passes wikiRemote() and its visibility is PRIVATE or INTERNAL.
  * It pushes to the checked URL, never to the name `origin`, so a pushurl set by hand is not used. No origin:
@@ -4630,9 +4644,7 @@ export function pushWiki(dir = join(HOME, 'wiki')) {
   if (!url) return false
   const r = wikiRemote(url)
   if (!r) return (wikiLog('wiki: remote not allowed, push refused'), false)
-  const vis = wikiVisibility(r)
-  if (!vis) return (wikiLog('wiki: remote visibility unknown, push refused'), false)
-  if (vis === 'PUBLIC') return (wikiLog('wiki: remote is public, push refused'), false)
+  if (!wikiAllowed(r)) return false
   const p = wikiGit(dir, ['push', url, 'HEAD:main'], true)
   if (p.code !== 0) wikiLog(`wiki: push failed (exit ${p.code})`)
   return p.code === 0
@@ -11371,12 +11383,12 @@ if (import.meta.main && !outboxCmd)
           }
           for (const [name, text] of Object.entries(WIKI_SEEDS))
             if (!existsSync(join(dir, name))) writeFileSync(join(dir, name), text)
-          commitWiki('init', 'seed index and glossary', dir)
+          if (commitWiki('init', 'seed index and glossary', dir, Object.keys(WIKI_SEEDS)) === false) {
+            process.exitCode = 1
+            break
+          }
           if (remote && url) {
-            const vis = wikiVisibility(remote, true)
-            if (!vis) wikiLog('wiki: remote visibility unknown, push refused')
-            else if (vis === 'PUBLIC') wikiLog('wiki: remote is public, push refused')
-            if (vis !== 'PRIVATE' && vis !== 'INTERNAL') {
+            if (!wikiAllowed(remote, true)) {
               process.exitCode = 1
               break
             }
