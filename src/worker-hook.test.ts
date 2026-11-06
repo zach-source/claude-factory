@@ -11522,6 +11522,10 @@ test('testBuiltinSafe closed grammar (claude-factory-qn8a.9.12)', () => {
     '[[ -n "$X" ]',
     '[ -n "$X" ] ]',
     '[ -n $X ]',
+    '[[ -n $X',
+    '[[ -v $X ]]',
+    '[[ $X -eq 0 ]]',
+    '[[ $X == y z ]]',
   ])
     expect(ask(c)).toBeDefined()
 })
