@@ -151,6 +151,12 @@ describe('AC3 Bash, a parent of the hook dir', () => {
     'allows %s',
     c => expect(bash(c)).toBeUndefined(),
   )
+  test.each([
+    ['cd ..', `${ROOT}/src`],
+    ['cd ../..', `${ROOT}/src/a`],
+    [`cd ${ROOT}/src/..`, ROOT],
+  ])('allows %s when it ends at the root', (c, cwd) => expect(bash(c, cwd)).toBeUndefined())
+  test('denies cd .. from the root', () => expect(bash('cd ..', ROOT)).toBe(R))
 })
 
 describe('AC7 allowed rows', () => {

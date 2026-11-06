@@ -9681,9 +9681,11 @@ function hookControlWrite(
     const ops = words.filter(w => !CD_WORDS.has(baseWord(w)) && !/^-./.test(w))
     if (!ops.length || ops.includes('-')) return true
     if (
-      ops.some(
-        w => /(^|\/)\.\.(\/|$)/.test(w) && !resolvePath(cwd, w.replace(/["'\\]/g, '')).startsWith(root + '/'),
-      )
+      ops.some(w => {
+        if (!/(^|\/)\.\.(\/|$)/.test(w)) return false
+        const r = resolvePath(cwd, w.replace(/["'\\]/g, ''))
+        return r !== root && !r.startsWith(root + '/')
+      })
     )
       return true
   }
