@@ -5430,11 +5430,132 @@ function ghAliasDenied(subArgs: string[]): string | undefined {
 
 // a glab REST path that approves a merge request; read on the decoded, lower-case path
 const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
-// claude-factory-qn8a.32: a glab REST path that merges (or queues a merge of) a merge request
-const GLAB_MERGE_PATH = /merge_requests\/.*\/merge(?!_ref)(?![a-z])|merge_trains\/merge_requests(?![a-z_])/i
-// a glab REST path of one merge request; a write to it can change the draft state
-const GLAB_MR_PATH = /merge_requests\/[^/]+$/i
-const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output', '-R', '--repo'])
+
+// claude-factory-qn8a.32.11
+export const GLAB_DYNAMIC_REASON =
+  'The factory denies this command: a glab word holds a shell expansion ($, a backtick, a glob, a brace ' +
+  'or a leading ~) that this guard cannot read. Write the glab words plainly. For a text value, use ' +
+  '--description="$X" or --message="$X", or single quotes. Do not retry this exact command.'
+
+export const GLAB_API_REASON =
+  'The factory denies this command: glab api is allowed in 3 forms only. A read: one endpoint, GET, no ' +
+  'field. A GraphQL read: glab api graphql -f query=<text>, with no mutation. A note write: POST to ' +
+  'projects/<id>/merge_requests[/<n>/notes|unapprove] with -f or -F fields. Use glab mr note or ' +
+  'glab issue note for other text. Do not retry this exact command.'
+
+const GLAB_SEG = '[A-Za-z0-9_-][A-Za-z0-9_.-]*'
+const GLAB_NOTE_PATH = new RegExp(
+  `^projects/(:id|\\d+|${GLAB_SEG}(%2[Ff]${GLAB_SEG})*)/merge_requests(/\\d+/(notes|unapprove))?$`,
+)
+// a single-quoted static word, and a long flag with a double-quoted value: bash expands nothing that splits or vanishes
+const GLAB_SINGLE_WORD = /^[^'"$`\\*?[{}~]*'[^']*'$/
+const GLAB_QUOTED_VALUE = /^--([a-z][a-z0-9-]*)="[^"`\\]*"$/
+const GLAB_NO_QUOTED_VALUE = new Set([
+  'ready',
+  'title',
+  'fill',
+  'fill-commit-body',
+  'draft',
+  'wip',
+  'method',
+  'field',
+  'raw-field',
+  'input',
+  'form',
+  'header',
+  'hostname',
+  'repo',
+  'output',
+])
+
+/**
+ * The words that the raw command text makes safe for rule 1, as the hook sees them without quotes.
+ * `segments()` drops quotes, so this reads the raw text. A word is in `ok` when its raw form is a
+ * single-quoted static word or `--name="..."`. It is in `bad` when any other raw word has the same text.
+ */
+function glabRawWords(command: string): (w: string) => boolean {
+  const ok = new Set<string>()
+  const bad = new Set<string>()
+  const s = command.replace(/\\\n/g, '')
+  let w = ''
+  let q = ''
+  const end = () => {
+    if (!w) return
+    const m = GLAB_QUOTED_VALUE.exec(w)
+    if (GLAB_SINGLE_WORD.test(w)) ok.add(w.replace(/'/g, ''))
+    else if (m && !GLAB_NO_QUOTED_VALUE.has(m[1]!)) ok.add(w.replace(/"/g, ''))
+    else bad.add(w.replace(/['"]/g, ''))
+    w = ''
+  }
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!
+    if (q) {
+      w += c
+      if (c === q) q = ''
+      else if (q === '"' && c === '\\') w += s[++i] ?? ''
+    } else if (c === "'" || c === '"') {
+      q = c
+      w += c
+    } else if (c === '\\') w += c + (s[++i] ?? '')
+    else if (/[\s;|&<>()]/.test(c)) end()
+    else w += c
+  }
+  end()
+  return x => ok.has(x) && !bad.has(x)
+}
+
+const GLAB_API_PLAIN = new Set(['-i', '--include', '--paginate', '--silent'])
+const GLAB_API_FIELD = new Set(['-f', '-F', '--field', '--raw-field'])
+
+/**
+ * claude-factory-qn8a.32.11: true when the words of a `glab api` call (without the `api` word) fit one of
+ * 3 closed forms. R reads one endpoint with GET. Q reads GraphQL with one `-f query=` text and no
+ * mutation. W posts fields to a merge request note, unapprove or create path.
+ * It reads every word and skips no flag value, so a flag cannot hide a word.
+ */
+function glabApiAllowed(args: string[]): boolean {
+  const methods: (string | undefined)[] = []
+  const pos: string[] = []
+  const fields: { flag: string; value: string }[] = []
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!
+    if (GLAB_API_PLAIN.has(w)) continue
+    const eq = w.startsWith('--') ? w.indexOf('=') : -1
+    const name = eq > 0 ? w.slice(0, eq) : w
+    const inline = eq > 0 ? w.slice(eq + 1) : undefined
+    const next = () => inline ?? args[++i]
+    if (name === '--output') {
+      const v = next()
+      if (v !== 'json' && v !== 'ndjson') return false
+    } else if (name === '-R' || name === '--repo' || name === '--hostname') {
+      const v = next()
+      if (!v || v.startsWith('-')) return false
+    } else if (name === '-X' || name === '--method') methods.push(next())
+    else if (/^-X./.test(w)) methods.push(w.slice(2))
+    else if (GLAB_API_FIELD.has(name)) {
+      const v = next()
+      if (v === undefined || v.startsWith('-')) return false
+      fields.push({ flag: name, value: v })
+    } else if (w.startsWith('-')) return false
+    else pos.push(w)
+  }
+  const method = methods[0]
+  if (pos.length !== 1 || methods.length > 1 || (methods.length === 1 && method === undefined)) return false
+  if (fields.length === 0 && (method === undefined || method === 'GET')) return true
+  if (pos[0] === 'graphql') {
+    const f = fields[0]
+    if (!f) return false
+    return (
+      method === undefined &&
+      fields.length === 1 &&
+      (f.flag === '-f' || f.flag === '--raw-field') &&
+      f.value.startsWith('query=') &&
+      !f.value.startsWith('query=@') &&
+      !/mutation|subscription/i.test(f.value)
+    )
+  }
+  return (method === undefined || method === 'POST') && GLAB_NOTE_PATH.test(pos[0]!)
+}
 
 /** True when the raw or decoded endpoint text matches `re`. An endpoint that cannot be decoded gives `undecodable`. */
 function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boolean {
@@ -5447,172 +5568,60 @@ function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boole
 }
 
 /**
- * claude-factory-hoz8: the reason to deny a `glab` call that can record a merge request approval,
- * or that hides the part which decides this. `words` start at the `glab` word.
- * The factory has no GitLab reviewer identity, so this denies at every station and ignores
- * `gate.reviewer`. It reads three channels, and fails closed on a part it cannot read:
- * `glab mr approve` (a word scan, so an unknown flag cannot hide the word), a REST path
- * `.../merge_requests/N/approve` with any method, and a GraphQL approve mutation.
- * Like `ghReason`, it scans the words as given and again without redirect words.
+ * claude-factory-hoz8, claude-factory-qn8a.32: the reason to deny a `glab` call that can approve or merge
+ * a merge request, mark a draft ready, or hide any of these. `words` start at the `glab` word.
+ * The factory has no GitLab reviewer identity, so approve is denied at every station.
+ * This is a closed grammar, not a model of the glab flag parser. It reads every word of the call and
+ * skips no flag value, so a flag cannot hide a word (rounds 1 to 3 of qn8a.32 each found a new parser gap).
+ * Like `ghReason`, it scans the words as given and again without redirect words. Only the second scan
+ * checks `glab api` against its 3 closed forms.
  */
-function glabReason(words: string[], gate: HookGate): string | undefined {
+function glabReason(words: string[], gate: HookGate, command: string): string | undefined {
   const tail = words.slice(1)
   const dropped = dropRedirectWords(tail)
+  const exempt = glabRawWords(command)
+  const same = dropped.length === tail.length
   return (
-    glabReasonOn(tail, gate) ?? (dropped.length === tail.length ? undefined : glabReasonOn(dropped, gate))
+    glabReasonOn(tail, gate, same, exempt) ?? (same ? undefined : glabReasonOn(dropped, gate, true, exempt))
   )
 }
 
-/** True when the `--` at `words[i]` ends the options. cobra gives a `--` that follows a dash word with no `=` to that flag as its value. */
-function glabDashDashEnds(words: string[], i: number): boolean {
-  const p = words[i - 1]
-  return !(p !== undefined && p !== '--' && p.startsWith('-') && !p.includes('='))
-}
-
-/** `hasMutatingWordBeforeDashDash` for glab: a `--` that a dash word may take as its value does not end the scan. */
-function glabHasWord(words: string[], verbs: Set<string>): boolean {
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!
-    if (w === '--') {
-      if (glabDashDashEnds(words, i)) return false
-    } else if (verbs.has(w)) return true
-  }
-  return false
-}
-
-// a glab api placeholder that glab fills from the checkout (a worker can name a branch)
-const GLAB_PLACEHOLDER = /:(branch|repo|namespace|group|user|username)(?![A-Za-z0-9_])/
-
-const GLAB_UPDATE_VALUE_FLAGS = new Set([
-  '-a',
-  '--assignee',
-  '-d',
-  '--description',
-  '-l',
-  '--label',
-  '-m',
-  '--milestone',
-  '-R',
-  '--repo',
-  '--reviewer',
-  '--target-branch',
-  '-u',
-  '--unlabel',
-  '-t',
-  '--title',
-])
-
-/**
- * claude-factory-qn8a.32: true when a `glab mr update` call can mark a draft merge request ready.
- * `words` are the words after `mr`. GitLab reads the draft state from the title prefix.
- * So `--ready`, a new title (`--title`, `--fill`) and a short flag cluster with r, t or f can do it.
- * Only a literal `--draft` or `--wip` with no ready flag keeps the draft state.
- * A dynamic word that is not a flag value can hide any of these flags, so it counts too.
- */
-function glabUpdateMayReady(words: string[]): boolean {
-  let dynamic = false
-  let ready = false
-  let title = false
-  let keepsDraft = false
-  let valueMayVanish = false // a dynamic value word can expand to nothing, then the flag takes the next word
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!
-    if (w === '--') {
-      if (glabDashDashEnds(words, i)) break
-      continue
-    }
-    if (GLAB_UPDATE_VALUE_FLAGS.has(w)) {
-      if (w === '-t' || w === '--title') title = true
-      if (dynamicWord(words[i + 1] ?? '')) valueMayVanish = true
-      i++ // pflag takes the next word as the value, also a dash word and `--`
-    } else if (w.startsWith('--')) {
-      const name = w.split('=')[0]!
-      if (dynamicWord(name)) dynamic = true
-      else if (/^--(ready|draft=|wip=)/.test(w)) ready = true
-      else if (/^--(title|fill)/.test(w)) title = true
-      else if (w === '--draft' || w === '--wip') keepsDraft = true
-    } else if (dynamicWord(w)) dynamic = true
-    else if (/^-[^-]/.test(w)) {
-      for (let j = 1; j < w.length; j++) {
-        const c = w[j]!
-        if (c === 'r') ready = true
-        else if (c === 'f') title = true
-        else if ('adlmRtu'.includes(c)) {
-          if (c === 't') title = true
-          if (j === w.length - 1) {
-            if (dynamicWord(words[i + 1] ?? '')) valueMayVanish = true
-            i++
-          }
-          break
-        }
-      }
-    }
-  }
-  return dynamic || ready || (title && (!keepsDraft || valueMayVanish))
-}
-
-function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
+function glabReasonOn(
+  tail: string[],
+  gate: HookGate,
+  checkApi: boolean,
+  exempt: (w: string) => boolean,
+): string | undefined {
   const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
   if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
-  if (glabHasWord(tail, new Set(['mr']))) {
-    const mi = tail.indexOf('mr')
+  const mi = tail.indexOf('mr')
+  if (mi >= 0) {
     const rest = tail.slice(mi + 1)
     const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
     if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
-    if (glabHasWord(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
-    if (glabHasWord(rest, new Set(['merge', 'accept']))) return MERGE_REASON
-    // cobra gives a flag before `mr` to the sub command too, so read those words with the rest
-    if (
-      !mayReady(gate) &&
-      glabHasWord(rest, new Set(['update'])) &&
-      glabUpdateMayReady([...tail.slice(0, mi), ...rest])
-    ) {
-      return READY_REASON
-    }
   }
-  if (!glabHasWord(tail, new Set(['api']))) return undefined
-  const ai = tail.indexOf('api')
-  // cobra gives a flag before `api` to the sub command too
-  const apiArgs = expandGhShortClusters([...tail.slice(0, ai), ...tail.slice(ai + 1)])
-  // a method text in the value slot of another flag also reads as a method: any non-GET value writes
-  const methods = flagValuesInOrder(apiArgs, new Set(['-X', '--method'])).map(m => m ?? '')
-  if (methods.some(dynamicWord)) return DYNAMIC_VERB_REASON
-  const hasData =
-    ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
-  // every word that is not a flag or a flag value could be the endpoint: check each one
-  const endpoints: string[] = []
-  for (let i = 0; i < apiArgs.length; i++) {
-    const w = apiArgs[i]!
-    if (GLAB_API_VALUE_FLAGS.has(w)) i++
-    else if (!w.startsWith('-')) endpoints.push(w)
+  if (tail.includes('approve')) return GLAB_APPROVE_REASON
+  const api = tail.indexOf('api')
+  const args = api < 0 ? [] : [...tail.slice(0, api), ...tail.slice(api + 1)]
+  // a glob word such as `...approve?x=1` still names the approve path in its literal text
+  if (args.some(w => !w.startsWith('-') && glabPathMatch(w, GLAB_APPROVE_PATH, /merge_requests/i.test(w))))
+    return GLAB_APPROVE_REASON
+  if (tail.includes('merge') || tail.includes('accept')) return MERGE_REASON
+  if (tail.some(w => dynamicWord(w) && !exempt(w))) return GLAB_DYNAMIC_REASON
+  if (
+    !mayReady(gate) &&
+    tail.includes('update') &&
+    tail.some(w => /^--(ready|title|fill|draft=|wip=)/.test(w) || /^-[^-]*[rtf]/.test(w))
+  ) {
+    return READY_REASON
   }
-  const writes = (methods.length ? methods : [hasData ? 'POST' : 'GET']).some(m => m.toUpperCase() !== 'GET')
-  for (const endpoint of endpoints) {
-    // a glob word such as `...approve?x=1` still names the approve path in its literal text
-    if (glabPathMatch(endpoint, GLAB_APPROVE_PATH, true)) return GLAB_APPROVE_REASON
-    if (glabPathMatch(endpoint, GLAB_MERGE_PATH)) return MERGE_REASON
-    if (writes && GLAB_PLACEHOLDER.test(endpoint)) return MERGE_REASON
-    if (writes && !mayReady(gate) && glabPathMatch(endpoint, GLAB_MR_PATH)) return READY_REASON
-    if (dynamicWord(endpoint)) {
-      if (writes) return DYNAMIC_VERB_REASON
-    } else if (isGraphqlEndpoint(endpoint)) {
-      const { texts, unresolved } = graphqlTexts(apiArgs, gate)
-      if (unresolved) return GLAB_APPROVE_REASON
-      // glab fills a placeholder in a -F value, so the real query text is unknown
-      if (apiArgs.some(a => GLAB_PLACEHOLDER.test(a)) || texts.some(t => GLAB_PLACEHOLDER.test(t)))
-        return MERGE_REASON
-      if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
-      if (texts.some(t => /\bmutation\b/.test(t) && /mergeRequestAccept|automerge/i.test(t)))
-        return MERGE_REASON
-      if (
-        !mayReady(gate) &&
-        texts.some(t => /\bmutation\b/.test(t) && /mergeRequestSetDraft|mergeRequestUpdate/i.test(t))
-      ) {
-        return READY_REASON
-      }
-    }
+  if (api < 0 || !checkApi || glabApiAllowed(args)) return undefined
+  if (/approv/i.test(args.join(' '))) return GLAB_APPROVE_REASON
+  if (args.some(isGraphqlEndpoint)) {
+    const { texts, unresolved } = graphqlTexts(expandGhShortClusters(args), gate)
+    if (unresolved || texts.some(t => /approv/i.test(t))) return GLAB_APPROVE_REASON
   }
-  return undefined
+  return GLAB_API_REASON
 }
 
 /**
@@ -5633,6 +5642,7 @@ function anyGhReason(
   gate: HookGate,
   state: ScanState,
   movedBefore: boolean,
+  command: string,
 ): string | undefined {
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
@@ -5645,7 +5655,7 @@ function anyGhReason(
       if (r) return r
     }
     if (baseWord(words[j]!) === 'glab') {
-      const r = glabReason(words.slice(j), gate)
+      const r = glabReason(words.slice(j), gate, command)
       if (r) return r
     }
   }
@@ -9583,7 +9593,7 @@ function denyAtScan(
     }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.
-    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar)
+    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar, command)
     if (ghFound) return ghFound
     const controlFound = anyFactoryControlReason(words)
     if (controlFound) return controlFound

@@ -1,12 +1,21 @@
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
-import { denyReason, GLAB_APPROVE_REASON, MERGE_REASON, READY_REASON } from './worker-hook'
+import {
+  denyReason,
+  DYNAMIC_VERB_REASON,
+  GLAB_API_REASON,
+  GLAB_APPROVE_REASON,
+  GLAB_DYNAMIC_REASON,
+  MERGE_REASON,
+  READY_REASON,
+} from './worker-hook'
 
 // claude-factory-qn8a.32: glab merge and glab ready are gated like their gh twins.
 const FILES: Record<string, string> = {
   'ph.graphql': 'mutation { :branch(input:{}) { errors } }',
   'merge.graphql': 'mutation { mergeRequestAccept(input:{}) { errors } }',
   'merge.json': JSON.stringify({ query: 'mutation { mergeRequestAccept(input:{}) { errors } }' }),
+  'q.graphql': 'mutation { a }',
   'draft.graphql': 'mutation { mergeRequestSetDraft(input:{draft:false}) { errors } }',
   'draft.json': JSON.stringify({
     query: 'mutation { mergeRequestSetDraft(input:{draft:false}) { errors } }',
@@ -43,13 +52,32 @@ const MERGE_DENY = [
   'glab mr merge \\\n5',
   'glab mr merge 5 >out',
   'glab mr note 5 -m merge',
+  'glab mr -y -- merge 5',
+  'glab mr --yes -- merge 5',
+  'glab mr -d -- accept 5',
+  'glab -y -- mr merge 5',
+  'glab mr -d x merge 5',
+  'glab mr -t -d merge 5',
+  'glab -t -y mr merge 5',
+  'glab mr note 5 -m x -- merge',
+]
+const MERGE_ALLOW = [
+  'glab mr view 5',
+  'glab mr list',
+  'glab mr list --merged',
+  'glab mr rebase 5',
+  'glab mr view merge-fix',
+  'glab mr create --draft -t x -d y',
+]
+
+// every glab api call outside the 3 closed forms: GLAB_API_REASON at every gate
+const API_DENY = [
   'glab api -X PUT projects/:id/merge_requests/5/merge',
   'glab api projects/:id/merge_requests/5/merge -f sha=x',
   'glab api --method=PUT projects/a%2Fb/merge_requests/5/merge',
   'glab api -XPUT projects/1/merge_requests/5/merge',
   'glab api -X PUT projects/1/merge_requests/5/merge/',
   'glab api -X PUT projects/1/merge_requests/5/merge#x',
-  'glab api -X PUT projects/1/merge_requests/5/merge?squash=true',
   'glab api -X PUT https://gitlab.example.com/api/v4/projects/1/merge_requests/5/merge',
   'glab api projects/1/merge_requests%2F5%2Fmerge -X PUT',
   'glab api -X PUT projects/1/merge_requests/5/MERGE',
@@ -58,6 +86,7 @@ const MERGE_DENY = [
   'glab api -X PUT projects/1/merge_requests/5//merge',
   'glab api -X PUT projects/1/merge_requests/5/x/../merge',
   'glab api -X POST projects/1/merge_requests/5/merge_when_pipeline_succeeds',
+  'glab api -X POST projects/1/merge_requests/5/cancel_merge_when_pipeline_succeeds',
   'glab api -X POST projects/1/merge_trains/merge_requests/5',
   'glab api -R x/y -X PUT projects/1/merge_requests/5/merge',
   'glab api >out -X PUT projects/1/merge_requests/5/merge',
@@ -65,11 +94,6 @@ const MERGE_DENY = [
   'glab api graphql -f query=@merge.graphql',
   'glab api graphql --input merge.json',
   `glab api graphql -f query='mutation { mergeRequestSetAutoMerge(input:{}) { errors } }'`,
-
-  'glab mr -y -- merge 5',
-  'glab mr --yes -- merge 5',
-  'glab mr -d -- accept 5',
-  'glab -y -- mr merge 5',
   'glab -X PUT -i -- api projects/1/merge_requests/5/merge',
   `glab -F query=@merge.graphql api graphql`,
   'glab --input merge.json api graphql',
@@ -82,20 +106,111 @@ const MERGE_DENY = [
   `glab api graphql -F query='mutation { :branch(input:{}) { errors } }'`,
   'glab api graphql -F query=@ph.graphql',
   `glab api graphql -f query='query { a }' -F v=:branch`,
+  'glab api -X PUT projects/1/merge_requests/5 -f title=Foo',
+  'glab api projects/1/merge_requests/5 -f title=Foo',
+  'glab api -X PUT projects/1/merge_requests/5 --input body.json',
+  'glab api -X PUT projects%2F1%2Fmerge_requests%2F5',
+  `glab api graphql -f query='mutation { mergeRequestSetDraft(input:{draft:false}) { errors } }'`,
+  `glab api graphql -f query='mutation { mergeRequestUpdate(input:{title:"x"}) { errors } }'`,
+  'glab api graphql -f query=@draft.graphql',
+  'glab api graphql --input draft.json',
+  'glab -X PUT -f title=Foo -i -- api projects/1/merge_requests/5',
+  'glab -X PUT -f title=Foo api projects/1/merge_requests/5',
+  'glab -XPUT -ftitle=Foo api projects/1/merge_requests/5',
+  'glab --method=PUT --raw-field=title=Foo api projects/1/merge_requests/5',
+  'glab -X PUT --input body.json api projects/1/merge_requests/5',
+  'glab api -X PUT projects/1/merge_requests/5 -f -X=GET',
+  'glab api -X PUT projects/1/merge_requests/5 -f title=Foo -f --method=GET',
+  'glab api -X PUT projects/1/merge_requests/5 -F -X=GET',
+  'glab api -X PUT projects/1/merge_requests/5 --input -X=GET',
+  'glab api -X PUT projects/1/merge_requests/5 --input -XGET',
+  'glab api -X PUT projects/1/merge_requests/5 --form title=Foo --form -X=GET',
+  'glab api -X PUT projects/1/merge_requests/5 -f title=Foo --hostname -XGET',
+  'glab api -X PUT projects/1/merge_requests/5/./ -f title=Foo',
+  'glab api -X PUT projects/1/merge_requests/5/x/.. -f title=Foo',
+  'glab api -X PUT projects/1/merge_requests//5 -f title=Foo',
+  'glab -X PUT -i -- api projects/1/merge_requests/5',
+  'glab api -X GET -X PUT projects/1/merge_requests/5',
+  'glab api -X POST projects/1/merge_requests/5/notes -X PUT',
+  'glab api -X POST projects/1/merge_requests/5/notes/../merge',
+  'glab api -X POST projects/1/MERGE_REQUESTS/5/notes',
+  'glab api -X POST projects/1/merge_requests/5/notes -H x:y',
+  'glab api -X POST projects/1/merge_requests/5/notes --input b.json',
+  `glab api graphql -f query='mutation { a }'`,
+  'glab api graphql -F query=@q.graphql',
+  'glab api graphql -f query=@q.graphql',
+  `glab api graphql -f query='query { a }' -f x=y`,
+  'glab api projects/1 projects/2',
+  'glab api -- projects/1',
+  'glab mr note 5 -m api',
+  'glab api -X DELETE projects/1/merge_requests/5/notes/3',
+  'glab api -XGET --method=GET projects/1',
+  'glab api -X POST graphql',
+  'glab api -X POST projects/1/merge_requests/5/notes -f body=x -X PUT',
+  'glab api --output txt projects/1',
+  'glab api -R projects/1',
+  'glab api -X',
+  'glab api',
 ]
-const MERGE_ALLOW = [
-  'glab mr view 5',
-  'glab mr list',
-  'glab mr note 5 -m x -- merge',
-  'glab mr rebase 5',
-  'glab mr view merge-fix',
-  'glab mr create --draft -t x -d y',
-  'glab api projects/1/merge_requests/5/merge_ref',
-  'glab api -X POST projects/1/merge_requests/5/cancel_merge_when_pipeline_succeeds',
+const API_ALLOW = [
   'glab api projects/1/merge_requests/5',
-  'glab api projects/1/merge_requests?state=merged',
-  'glab api projects/1/merge_trains',
-  `glab api graphql -f query='query { project(fullPath:"a/b") { mergeRequest(iid:"5") { mergeable } } }'`,
+  'glab api -X GET projects/1/merge_requests/5/:id',
+  'glab api projects/1/merge_requests/5/:branch',
+  `glab api 'projects/1/merge_requests?state=merged'`,
+  'glab api projects/1/merge_trains --paginate',
+  'glab api projects/1/merge_requests/5/merge_ref',
+  'glab api >out projects/:id/merge_requests/5',
+  'glab api -XGET projects/1',
+  'glab api --method=GET -i --silent projects/1',
+  'glab api --output json -R a/b --hostname gitlab.example.com projects/1',
+  'glab api --output=ndjson --repo=a/b projects/1',
+  `glab api graphql -f query='query { project(fullPath:"a/b") { mergeRequest(iid:"5") { title } } }'`,
+  `glab api graphql --raw-field query='query { a }' --paginate`,
+  `glab api graphql --raw-field=query='query { a }'`,
+  'glab api --method POST projects/:id/merge_requests/5/notes -F body=@f.md',
+  'glab api -X POST projects/1/merge_requests/5/notes -f body=x',
+  'glab api -X POST projects/a%2Fb/merge_requests/5/notes -f body=x',
+  'glab api -X POST projects/a%2Fb%2Fc/merge_requests/5/notes --field=body=x',
+  'glab api -X POST projects/1/merge_requests -f title=Draft:x',
+  'glab api -X POST projects/:id/merge_requests/5/unapprove',
+  'glab api projects/1/merge_requests/5/notes -f body=x --raw-field=a=b',
+]
+// a dynamic word that the guard cannot read, at every gate
+const DYNAMIC_DENY = [
+  'glab mr -d x "$V" 5',
+  'glab mr -d x $V 5',
+  'glab mr -t -d "$V" 5',
+  'glab mr note 5 -m "$MSG"',
+  'glab api "projects/$ID/merge_requests"',
+  'glab api -R "$R" -X POST projects/1/merge_requests/5/notes',
+  'glab mr update 5 -d "$DESC"',
+  'glab mr update 5 --title="$T"',
+  'glab mr update 5 --ready="$X"',
+  'glab api --method="$M" projects/1/merge_requests/5',
+  `glab mr update 5 '$F'x`,
+  'glab mr view ~/x',
+  'glab mr view *',
+  'glab mr note 5 --message="$MSG" --message=$MSG',
+  'glab mr note 5 --message=$MSG',
+  'glab api --output "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api --form "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api --repo "$R" -X POST projects/1/merge_requests/5/notes',
+  'glab api -X PUT projects/1/merge_requests/5/merge?squash=true',
+  'glab mr update 5 $F',
+  'glab mr update 5 -t x -d $D --draft',
+  'glab mr update 5 -t $T --draft',
+  'glab mr update 5 -t x -l "$L" --wip',
+  'glab mr update 5 --fill -a $A --draft',
+  'glab mr update 5 -t x -yd $D --draft',
+  'glab mr update 5 -t x --reviewer $R --draft',
+  `glab api 'projects/1' $X`,
+]
+const DYNAMIC_ALLOW = [
+  'glab mr note 5 --message="$MSG"',
+  'glab mr update 5 --description="$D"',
+  'glab mr update 5 --draft --description="$D"',
+  `glab mr view 'a b'`,
+  `glab mr note 5 -m 'a $b'`,
 ]
 
 for (const g of GATES) {
@@ -103,9 +218,18 @@ for (const g of GATES) {
   test.each(MERGE_DENY)(`denyReason denies %j with MERGE_REASON for gate ${name}`, cmd => {
     expect(ask(cmd, g)).toBe(MERGE_REASON)
   })
-  test.each(MERGE_ALLOW)(`denyReason allows %j for gate ${name}`, cmd => {
-    expect(ask(cmd, g)).toBeUndefined()
+  test.each(API_DENY)(`denyReason denies %j with GLAB_API_REASON for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBe(GLAB_API_REASON)
   })
+  test.each(DYNAMIC_DENY)(`denyReason denies dynamic %j for gate ${name}`, cmd => {
+    expect([GLAB_DYNAMIC_REASON, DYNAMIC_VERB_REASON]).toContain(ask(cmd, g) as string)
+  })
+  test.each([...MERGE_ALLOW, ...API_ALLOW, ...DYNAMIC_ALLOW])(
+    `denyReason allows %j for gate ${name}`,
+    cmd => {
+      expect(ask(cmd, g)).toBeUndefined()
+    },
+  )
 }
 
 test('an unreadable glab graphql text still denies with GLAB_APPROVE_REASON', () => {
@@ -142,16 +266,6 @@ const READY_DENY = [
   'glab mr update 5 --draft=false',
   'glab mr update 5 --wip=false',
   'glab mr -R a/b update 5 --ready',
-  'glab mr update 5 $F',
-  'glab mr update 5 -t x -d $D --draft',
-  'glab mr update 5 -t $T --draft',
-  'glab mr update 5 -t x -l "$L" --wip',
-  'glab mr update 5 --fill -a $A --draft',
-  'glab mr update 5 -t x -yd $D --draft',
-  'glab mr update 5 -t x --reviewer $R --draft',
-  'glab api -X PUT projects/1/merge_requests/5/./ -f title=Foo',
-  'glab api -X PUT projects/1/merge_requests/5/x/.. -f title=Foo',
-  'glab api -X PUT projects/1/merge_requests//5 -f title=Foo',
   'glab mr update 5 -t --draft',
   'glab mr update 5 --title --draft',
   'glab mr update 5 -t --wip',
@@ -166,63 +280,32 @@ const READY_DENY = [
   'glab mr update 5 -yl -- -r',
   'glab mr update 5 --ready \\\n',
   'bash -c "glab mr update 5 -r"',
-  'glab api -X PUT projects/1/merge_requests/5 -f title=Foo',
-  'glab api projects/1/merge_requests/5 -f title=Foo',
-  'glab api -X PUT projects/1/merge_requests/5 --input body.json',
-  'glab api -X PUT projects%2F1%2Fmerge_requests%2F5',
-  `glab api graphql -f query='mutation { mergeRequestSetDraft(input:{draft:false}) { errors } }'`,
-  `glab api graphql -f query='mutation { mergeRequestUpdate(input:{title:"x"}) { errors } }'`,
-  'glab api graphql -f query=@draft.graphql',
-  'glab api graphql --input draft.json',
   'glab mr -r -- update 5',
   'glab mr --ready -- update 5',
   'glab mr -f -- update 5',
   'glab -r -- mr update 5',
   'glab mr update 5 --draft -y -- --ready',
-  'glab -X PUT -f title=Foo -i -- api projects/1/merge_requests/5',
   'glab -ry mr update 5',
   'glab --ready=true mr update 5',
   'glab --title=Foo mr update 5',
   'glab -tFoo mr update 5',
   'glab -t Foo mr update 5',
   'glab -yf mr update 5',
-  'glab -X PUT -f title=Foo api projects/1/merge_requests/5',
-  'glab -XPUT -ftitle=Foo api projects/1/merge_requests/5',
-  'glab --method=PUT --raw-field=title=Foo api projects/1/merge_requests/5',
-  'glab -X PUT --input body.json api projects/1/merge_requests/5',
-  'glab api -X PUT projects/1/merge_requests/5 -f -X=GET',
-  'glab api -X PUT projects/1/merge_requests/5 -f title=Foo -f --method=GET',
-  'glab api -X PUT projects/1/merge_requests/5 -F -X=GET',
-  'glab api -X PUT projects/1/merge_requests/5 --input -X=GET',
-  'glab api -X PUT projects/1/merge_requests/5 --input -XGET',
-  'glab api -X PUT projects/1/merge_requests/5 --form title=Foo --form -X=GET',
-  'glab api -X PUT projects/1/merge_requests/5 -f title=Foo --hostname -XGET',
+  'glab mr update 5 --draft -t Foo',
+  'glab mr update 5 -- --ready',
+  'glab mr update 5 --draft --title=x',
 ]
 const READY_ALLOW = [
   'glab mr update 5 --draft',
   'glab mr update 5 --wip',
-  'glab mr update 5 --draft -t Foo',
-  'glab mr update 5 -d "$DESC"',
-  'glab mr update 5 --description="$D"',
   'glab mr update 5 -l bug -a me',
-  'glab mr update 5 -- --ready',
-  'glab mr update 5 --draft -t Foo',
-  'glab -R a/b mr update 5 --draft',
-  'glab api -X GET projects/1/merge_requests/5/:id',
-  'glab api projects/1/merge_requests/5/:branch',
   'glab mr update 5 --target-branch main',
-  'glab api projects/1/merge_requests/5',
-  'glab api -X GET projects/1/merge_requests/5',
-  'glab api -X POST projects/1/merge_requests -f title=Draft:x',
-  'glab api -X POST projects/1/merge_requests/5/notes -f body=x',
-  `glab api graphql -f query='query { project(fullPath:"a/b") { mergeRequest(iid:"5") { title } } }'`,
+  'glab -R a/b mr update 5 --draft',
+  'glab mr update 5 -yd x --draft',
 ]
 
 for (const g of NOT_READY_GATES) {
   const name = JSON.stringify(g)
-  test(`denyReason denies a query string on the merge request path for gate ${name}`, () => {
-    expect(ask(`glab api -X PUT 'projects/1/merge_requests/5?title=Foo'`, g)).toBe(READY_REASON)
-  })
   test.each(READY_DENY)(`denyReason denies %j with READY_REASON for gate ${name}`, cmd => {
     expect(ask(cmd, g)).toBe(READY_REASON)
   })

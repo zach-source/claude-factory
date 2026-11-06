@@ -11409,6 +11409,7 @@ const GLAB_APPROVE_DENY = [
   'true && glab mr approve 5',
   'glab mr approve 5 --',
   'glab mr approve \\\n5',
+  'glab mr note 5 -m x -- approve',
 ]
 const GLAB_API_DENY = [
   'glab api projects/:id/merge_requests/5/approve?x=1',
@@ -11456,12 +11457,17 @@ const GLAB_DYNAMIC_DENY = [
   'glab api --input body.json "$EP"',
   'glab api --form a=b "$EP"',
   'glab api --output json "$EP" -f a=b',
+  'glab mr note 5 -m "$MSG"',
+  'glab api "projects/$ID/merge_requests"',
+  'glab api --output "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api --form "$F" -X POST projects/1/merge_requests/5/notes',
+  'glab api -R "$R" -X POST projects/1/merge_requests/5/notes',
+  'glab api --repo "$R" -X POST projects/1/merge_requests/5/notes',
 ]
 const GLAB_ALLOW = [
   'glab mr view 5',
   'glab mr view 5 --comments',
   'glab mr note 5 -m "looks good"',
-  'glab mr note 5 -m "$MSG"',
   'glab mr create --draft -t x -d y',
   'glab mr revoke 5',
   'glab mr approvers 5',
@@ -11470,15 +11476,9 @@ const GLAB_ALLOW = [
   'glab api projects/:id/merge_requests/5/approvals',
   'glab api -X POST projects/:id/merge_requests/5/unapprove',
   'glab api -X POST projects/:id/merge_requests/5/notes -f body=x',
-  'glab api "projects/$ID/merge_requests"',
   `glab api graphql -f query='query { project(fullPath:"a/b") { mergeRequest(iid:"5") { approved } } }'`,
-  'glab mr note 5 -m x -- approve',
   'glab api -R x/y projects/:id/merge_requests/5/approvers',
   'glab api >out projects/:id/merge_requests/5',
-  'glab api --output "$F" -X POST projects/1/merge_requests/5/notes',
-  'glab api --form "$F" -X POST projects/1/merge_requests/5/notes',
-  'glab api -R "$R" -X POST projects/1/merge_requests/5/notes',
-  'glab api --repo "$R" -X POST projects/1/merge_requests/5/notes',
 ]
 for (const g of [
   {},
