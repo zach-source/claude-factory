@@ -93,7 +93,9 @@ function verifyRun(def: Factory) {
 
 const tick = () => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...env } = process.env
-  Bun.spawnSync([CLI, 'tick'], { env: { ...env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' } })
+  Bun.spawnSync([CLI, 'tick'], {
+    env: { ...env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1' },
+  })
   return JSON.parse(readFileSync(join(home, 'runs', 'r1', 'state.json'), 'utf8')).snapshot
 }
 
