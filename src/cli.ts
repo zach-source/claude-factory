@@ -4215,17 +4215,19 @@ const kickBeads = () =>
     env: { ...process.env, FACTORY_HOME: HOME },
   }).unref()
 
-/** one dream journal entry. A line break in worker text (the str.splitlines set) starts a line with 4 spaces, so it cannot forge a journal line. */
+/** A line break in worker text (the str.splitlines set) gets 4 spaces after it. The text cannot forge a dream prompt line. */
+const indentRest = (s: string) => s.split(/\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/).join('\n    ')
+
+/** one dream journal entry */
 export const journalLine = (
   id: string,
   rig: string,
   e: Pick<Entry, 'node' | 'attempt' | 'outcome' | 'summary'>,
-) => {
-  const [first, ...rest] = clip(e.summary, 600).split(/\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/)
-  return [`- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${first}`, ...rest.map(l => `    ${l}`)].join(
-    '\n',
-  )
-}
+) => `- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${indentRest(clip(e.summary, 600))}`
+
+/** one closed-bead line of the dream prompt: the title and the close reason come from workers */
+export const closedLine = (id: string, rig: string, bead: { title: string; close_reason?: string | null }) =>
+  indentRest(`- ${id} (${rig}): ${bead.title}. Closed: ${clip(bead.close_reason ?? '', 300)}`)
 
 /** the journal entries the dream has not read yet, newest kept when there are too many */
 const journalSince = (since: number) =>
@@ -4326,9 +4328,7 @@ function closedBeads() {
       const ids = prefix ? new Set(text.match(new RegExp(`\\b${prefix}-[a-z0-9]+(?:\\.\\d+)*\\b`, 'g'))) : []
       return [...ids].flatMap(id => {
         const bead = b.show(id) // not a bead after all (a word with the prefix's shape): null
-        return bead?.status === 'closed'
-          ? [`- ${id} (${r.name}): ${bead.title}. Closed: ${clip(bead.close_reason ?? '', 300)}`]
-          : []
+        return bead?.status === 'closed' ? [closedLine(id, r.name, bead)] : []
       })
     })
 }
