@@ -204,7 +204,7 @@ for (const c of [
   ": 'gh pr merge 1'; ${(@)=_}; echo '${() }'",
   ": 'git push origin main'; ${(z)_}; echo '${() }'",
   ": 'factory tick'; ${(z)_}; echo '${() }'",
-  ": 'gh pr merge 1'; ${(z)_}; echo \"${(L) x}\"",
+  ': \'gh pr merge 1\'; ${(z)_}; echo "${(L) x}"',
   ": 'gh pr merge 1'; ${(z)_}\necho '${() }'",
 ])
   test(`5.7 denies ${JSON.stringify(c)}`, () => {
