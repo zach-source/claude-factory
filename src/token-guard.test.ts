@@ -104,7 +104,7 @@ describe('tokenReason', () => {
     expect(deny(`cat ${codexHome}/auth.json`)).toBe(TOKEN_READ_REASON)
   })
   test('a pattern with a marker in the text denies a relative file', () => {
-    expect(deny('ls .codex; cat a*')).toBe(TOKEN_READ_REASON)
+    expect(deny('ls .codex; cat auth.js*')).toBe(TOKEN_READ_REASON)
   })
   test('an 8192-char command stays fast', () => {
     const t = Date.now()

@@ -126,14 +126,21 @@ function globRe(f: string): RegExp {
 /** can the last component `f` (folded) name a token file or a token dir? */
 function kind(f: string): { file: boolean; dir: boolean } {
   if (!PATTERN.test(f)) return { file: TOKEN_FILES.has(f), dir: TOKEN_DIRS.has(f) }
-  const one = /^\$(?:(\w+)|\{(\w+)\})$/.exec(f)
-  if (one) return { file: false, dir: TOKEN_VARS.has((one[1] ?? one[2]) as string) }
+  const one = /^\$(?:(\w+)|\{(\w+)\}|\{[^}]*\}|[@*#?!$-])$/.exec(f)
+  if (one) return { file: false, dir: TOKEN_VARS.has(one[1] ?? one[2] ?? '') }
+  // A name with no literal char ({}, [, *, &!) is shell syntax or a bare wildcard. A variable stands for any text:
+  // with fewer than 3 literal chars it would match every token name. A wildcard-only name is covered by rule 6.
+  const lits = f.replace(/\$(?:\{[^}]*\}?|\w+|[@*#?!$-])|[*?[\]{}!\\,&()]/g, '').length
+  if (lits < (f.includes('$') ? 3 : 2)) return { file: false, dir: false }
   const res = expand(f).map(globRe)
   const hit = (names: Set<string>) => [...names].some(n => res.some(r => r.test(n)))
   return { file: hit(TOKEN_FILES), dir: hit(TOKEN_DIRS) }
 }
 
-const isVarDir = (c: string) => /^\$(?:\{?)(codex_home|claude_config_dir)\}?$/.test(c)
+/** can the folded component `c` name ~/.codex or $CODEX_HOME? A glob needs 2 literal chars (.c*). */
+const codexComp = (c: string) =>
+  /^\$\{?codex_home\}?$/.test(c) ||
+  (PATTERN.test(c) ? expand(c).some(x => globRe(x).test('.codex')) && kind(c).dir : c === '.codex')
 
 function pieceDenied(
   p: string,
@@ -149,7 +156,7 @@ function pieceDenied(
   const dyn = p.startsWith('~') || p.startsWith('$') || dirParts.some(c => c.includes('$'))
   const k = kind(f)
   // rule 6: a .codex component or a CODEX_HOME var component anywhere, outside the worktree
-  if (comps.some(c => fold(c) === '.codex' || isVarDir(fold(c))) && (dyn || !inside(p, base))) return true
+  if (comps.some(c => codexComp(fold(c))) && (dyn || !inside(p, base))) return true
   if (!k.file && !k.dir) return false
   if (dyn) return true // rule 5a: never guess an expansion
   // rule 5b: a pattern in the name or in a dir part checks the literal dir prefix
