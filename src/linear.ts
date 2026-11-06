@@ -453,7 +453,7 @@ export async function fetchLinearIssues(
   return { issues, truncated }
 }
 
-const TOKEN_SHAPE = /lin_(api|oauth)_\S+/g
+export const TOKEN_SHAPE = /lin_(api|oauth)_\S+/g
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/g
 
