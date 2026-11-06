@@ -3834,6 +3834,10 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
   try {
     if (runnerOf(pane).name !== 'herdr' || !startedAt) return
     const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
+    // a codex pane keeps its rollouts in its own CODEX_HOME (codexWorker): store them as the AX path does
+    try {
+      rows.push(...codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
+    } catch {} // a bad codex file must not drop the Claude rows
     if (rows.length) appendUsage(run.id, rows)
   } catch {}
 }
@@ -4524,10 +4528,10 @@ function compactMessage(
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
 /**
- * The rollouts of the codex dream since start (y3zo). Read at most 20 plain files that have a rollout
+ * The rollouts of a private CODEX_HOME since `since` (y3zo dream; vffe.3 laptop codex station). Read at most 20 plain files that have a rollout
  * name, are 64 MiB or smaller and sit under the private home's sessions/. Send every row through validUsage.
  */
-function dreamCodexUsage(codexHome: string, start: number) {
+function codexHomeUsage(codexHome: string, since: number, node: string, seq: number) {
   const sessions = join(codexHome, 'sessions')
   if (!existsSync(sessions)) return []
   // ponytail: this reads each whole file; the upgrade is a stream of the last token_count.
@@ -4536,11 +4540,11 @@ function dreamCodexUsage(codexHome: string, start: number) {
     .sort()
     .filter(f => {
       const st = lstatSync(join(sessions, f))
-      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= start
+      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= since
     })
     .slice(0, 20)
     .flatMap(f => codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? [])
-  return validUsage(rows, 'dream', 0)
+  return validUsage(rows, node, seq)
 }
 
 /**
@@ -4565,7 +4569,9 @@ const DREAM_CODEX_NOTE =
 /** the dream's own sessions (hr94): one name=dream row for each model in manager-usage.jsonl. Never throws */
 function storeDreamUsage(start: number, codexHome?: string) {
   try {
-    const rows = codexHome ? dreamCodexUsage(codexHome, start) : usageIn(MEMORY, '', () => '?', start)
+    const rows = codexHome
+      ? codexHomeUsage(codexHome, start, 'dream', 0)
+      : usageIn(MEMORY, '', () => '?', start)
     appendFileSync(
       join(HOME, 'manager-usage.jsonl'),
       rows
