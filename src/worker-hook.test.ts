@@ -523,9 +523,12 @@ test.each(['$F --context acme suspend ks apps', '$F suspend ks apps'])(
   },
 )
 
-test.each(['$F --context acme get ks', '"$PY" script.py'])('denyReason allows a dynamic head %j', cmd => {
-  expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
-})
+test.each(['$F --context acme get ks', '"$PY" script.py'])(
+  'denyReason allows a dynamic head %j (flux, strict off)',
+  cmd => {
+    expect(denyReason(cmd, undefined, ACME)).toBeUndefined()
+  },
+)
 
 // claude-factory-25z.17: a stack of `eval` words timed out the 10 s hook. The old anyShellReason
 // re-read the same words at each later loop step. Each re-read doubled the cost of the one
