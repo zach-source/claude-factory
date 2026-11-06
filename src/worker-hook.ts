@@ -3656,10 +3656,10 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
 
 /**
  * claude-factory-qn8a.20: 'name' when one segment writes the factory home rigs.json or a
- * worker-settings*.json file, 'glob' when a glob guess can match one. A write word is not exempt
- * unless it is a plain path inside `root`. An exempt name still denies when another word of the
- * segment can point outside `root` (an outside path, `..`, `.`, `~`, `$`), because a copy then
- * moves the file out. A word `-C` or `--chdir` counts as a directory change.
+ * worker-settings*.json file, 'glob' when a glob guess can match one. Only a redirect or `of=`
+ * target is exempt, and only as a plain path inside `root`. Any other write word that names the
+ * file denies, because the hook cannot tell the source of a cp or mv from its destination.
+ * A word `-C` or `--chdir` counts as a directory change for a relative redirect target.
  * A glob with no letter (`*`) is a guess only when its directory part is not a plain path inside `root`.
  * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
  * flag value, and every word of a segment that does not skip its operands.
@@ -3693,19 +3693,6 @@ function factoryConfigWrite(
     if (!root || !/^[\w.@%+,:/-]*$/.test(dir) || dir.split('/').includes('..')) return false
     return dir.startsWith('/') ? dir.startsWith(root + '/') : relativeOk
   }
-  const escapes = (w: string, i: number): boolean => {
-    const v = normalizeConfigPath(w.replace(/["']/g, ''))
-    // a relative word points outside the root when the cwd is not inside it
-    if (!relativeOk && i > 0 && !v.startsWith('-') && !v.startsWith('/')) return true
-    // a glued short-flag value (-t/h, -vt/h, -t..) reads as its value; -x=/h and --opt=/h too
-    return [v, v.replace(/^-[^=]*=/, ''), v.replace(/^-[A-Za-z0-9]+/, '')].some(
-      c =>
-        /^~|[${]|^\.\/?$/.test(c) ||
-        c.split('/').includes('..') ||
-        (c.startsWith('/') && c !== root && !c.startsWith(root + '/')),
-    )
-  }
-  let exemptSeen = false
   let pending = false
   let prevWriterFlag = false
   for (const word of words) {
@@ -3733,14 +3720,11 @@ function factoryConfigWrite(
       if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
     }
     const named = namesFactoryConfig(target, state)
-    if (named === 1) {
-      if (!exempt(target)) return 'name'
-      if (!redirect) exemptSeen = true
-    }
-    if (named === 2 && !exempt(target)) found = 'glob'
+    // an operand of cp, mv or ln can be a source or a destination: only a redirect or of= target is exempt
+    if (named === 1 && !(redirect && exempt(target))) return 'name'
+    if (named === 2 && !(redirect && exempt(target))) found = 'glob'
     if (named === 3 && !insideDir(target)) found = 'glob'
   }
-  if (exemptSeen && words.some((w, i) => escapes(w, i))) return 'name'
   return found
 }
 
@@ -9553,7 +9537,7 @@ export function clampTimeout(
 }
 
 export const FACTORY_CONFIG_REASON =
-  'The factory denies this write: it targets the factory home rigs.json or a worker-settings*.json file, or a path with that name that the hook cannot place inside the worktree. These files set the rig merge authority and the deny hook; only a person edits them. To read one, use cat. To make a test copy, write it under .scratch/ in the worktree. Do not retry this exact command.'
+  'The factory denies this write: it targets the factory home rigs.json or a worker-settings*.json file, or a path with that name that the hook cannot place inside the worktree. These files set the rig merge authority and the deny hook; only a person edits them. To read one, use cat. To make a test copy, redirect into .scratch/ in the worktree: cat /h/rigs.json > .scratch/rigs.json. Do not retry this exact command.'
 
 export const FILE_WRITE_REASON =
   "The factory denies this file write: it targets a .git dir, the global git config or Claude Code's shell-snapshots folder. A worker never needs to write these. Use git commands for repo state."

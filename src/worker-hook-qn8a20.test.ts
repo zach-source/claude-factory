@@ -121,7 +121,7 @@ const AC11 = [
   'tee .scratch/rigs.json',
   'cp /h/rigs.json .scratch/',
   'cp .scratch/r*.json /h/',
-  'mv .scratch/rigs.js? /h/',
+  'mv .scratch/rigs.jso? /h/',
   'ln -s /h l && cp .scratch/rigs.json l/',
   `env -C /h bash -c 'echo [] > rigs.json'`,
 ]
