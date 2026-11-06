@@ -11306,7 +11306,9 @@ test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slo
 // claude-factory-0hkb: a lone [ or [[ is the test builtin, not a glob command word.
 test('denyReason allows [ and [[ test forms; a bracket glob command word stays denied (claude-factory-0hkb)', () => {
   const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
-  for (const c of ['[ -n "$X" ]', '[[ -n $X ]]', '[ -n "$_" ] && echo y']) expect(ask(c)).toBeUndefined()
+  for (const c of ['[ -n "$X" ]', '[[ -n $X ]]', '[ -n "$_" ] && echo y', '[[ -n "$_" ]] && echo y'])
+    expect(ask(c)).toBeUndefined()
+  for (const c of ['[g]it status', '[[x]] push origin main']) expect(ask(c)).toBe(DYNAMIC_VERB_REASON)
   expect(ask(': rm; [[ x ]] && $_ -rf /')).toBe(REASON)
   expect(ask('[ x ] && $X push origin main')).toBe(DYNAMIC_VERB_REASON)
   expect(ask('[x] -rf /')).toBe(DYNAMIC_VERB_REASON)
