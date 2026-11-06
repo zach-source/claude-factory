@@ -121,7 +121,15 @@ test('AC6: a token outside the closed grammar is malformed; check never throws',
   const h = home()
   const t = sign(h, key, claims, NOW)
   const [, p, s] = t.split('.')
-  for (const bad of ['', 'Bearer x', `v2.${p}.${s}`, `v1.${p}`, `${t}.x`, `v1.${p}.${s}!`, `${t}${'a'.repeat(4096)}`])
+  for (const bad of [
+    '',
+    'Bearer x',
+    `v2.${p}.${s}`,
+    `v1.${p}`,
+    `${t}.x`,
+    `v1.${p}.${s}!`,
+    `${t}${'a'.repeat(4096)}`,
+  ])
     expect(reason(check(h, key, bad, NOW))).toBe('malformed')
   expect(reason(check(h, key, 'v1.%%.%%', NOW))).toBe('malformed')
   expect(reason(check(h, key, forge('x').replace(/\.[^.]+$/, '.' + b64('x')), NOW))).toBe('bad signature')
@@ -150,6 +158,6 @@ test('AC7: the store holds no token or signature and has mode 0600', () => {
 test('sign drops rows that expired before it', () => {
   const h = home()
   sign(h, key, claims, NOW)
-  sign(h, key, { ...claims, node: 'review' }, claims.exp + 1)
+  sign(h, key, { ...claims, node: 'review', exp: claims.exp + 100 }, claims.exp + 1)
   expect(Object.keys(JSON.parse(readFileSync(join(h, 'worker-tokens.json'), 'utf8')))).toHaveLength(1)
 })
