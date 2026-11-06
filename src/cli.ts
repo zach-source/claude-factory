@@ -4232,9 +4232,6 @@ const kickBeads = () =>
     env: { ...process.env, FACTORY_HOME: HOME },
   }).unref()
 
-/** A line break in worker text (the str.splitlines set) gets 4 spaces after it. The text cannot forge a dream prompt line. */
-const indentRest = (s: string) => s.split(/\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/).join('\n    ')
-
 /** one dream journal entry */
 export const journalLine = (
   id: string,
