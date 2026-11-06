@@ -63,6 +63,7 @@ import {
 } from './machine'
 import { otelOf, type Otel } from './otel'
 import { watchDecide, WATCH_FAIL_PASSES, type Seen, type WatchedPr } from './watch'
+import { sweepNames as axSweepNames, type SweepRun } from './axsweep'
 import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
   actorOf,
@@ -276,6 +277,7 @@ loadIntoEnv(join(HOME, 'settings.json')) // stored settings fill unset env vars;
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
+const AX_SWEEP_MS = 10 * 60_000 // how often leaked AX tasks and workspaces are deleted (axSweep)
 const ORPHANS_MS = 10 * 60_000 // how often the rigs' open factory drafts are swept for orphans (orphanPass)
 // ponytail: pr-merger's default label names; make them a rig setting when a repo uses others
 const CLOSE_LABEL = 'close'
@@ -1244,7 +1246,13 @@ const axRunner: Runner = {
     ax.prompt(task, text.replaceAll(CLI, 'factory'))
     return true
   },
-  close: address => ax.remove(ax.taskOf(address)),
+  close(address) {
+    const task = ax.taskOf(address)
+    const failed = ax.remove(task)
+    // the axSweep pass retries a delete that failed here
+    if (failed)
+      appendFileSync(join(HOME, 'ax.log'), `${new Date().toISOString()} remove ${task} failed: ${failed}\n`)
+  },
   // waiting on the manager costs nothing: the VM is snapshotted until the answer wakes it
   suspend: address => ax.suspend(ax.taskOf(address)),
   phase: address => ax.phase(ax.taskOf(address))?.toLowerCase() ?? null,
@@ -4329,6 +4337,7 @@ async function beadsPass() {
     const labelsDue = !isFresh(join(HOME, 'labels.stamp'), LABELS_MS)
     await labelPass()
     await orphanPass()
+    axSweep()
     if (labelsDue) await repairPass()
   } finally {
     release()
@@ -5889,6 +5898,9 @@ async function tick(isPatrol = false) {
     )
     out.runs.push(
       ...(existsSync(join(HOME, 'orphans.json')) ? readJson<Row[]>(join(HOME, 'orphans.json')) : []),
+    )
+    out.runs.push(
+      ...(existsSync(join(HOME, 'ax-sweep.json')) ? readJson<Row[]>(join(HOME, 'ax-sweep.json')) : []),
     )
     showInSidebar(out.runs, now, isPatrol)
     reap(out.runs)
@@ -8837,6 +8849,66 @@ async function labelPass() {
     }
   }
   writeJson(join(HOME, 'labels.json'), errors)
+}
+
+/**
+ * Delete the AX tasks and workspaces that no live run owns (claude-factory-sps9): a failed delete in the close
+ * path, or a run that ended with its worker up, leaks them. sweepNames picks the names; it keeps everything this
+ * home does not own. Every AX_SWEEP_MS, only with an ax rig and no halt. If a list call fails, nothing is deleted.
+ * It writes ax.log (one summary line for each pass) and ax-sweep.json (the board rows).
+ * ponytail: a name that never deletes holds one of the SWEEP_CAP slots for ever; the ax.log line names it.
+ */
+function axSweep() {
+  const stamp = join(HOME, 'ax-sweep.stamp')
+  if (halted() || !rigs().some(r => r.runner === 'ax') || isFresh(stamp, AX_SWEEP_MS)) return
+  writeFileSync(stamp, '')
+  const log = (line: string) => appendFileSync(join(HOME, 'ax.log'), `${new Date().toISOString()} ${line}\n`)
+  const errors: Row[] = []
+  const fail = (error: string) => errors.push({ id: 'ax-sweep', error: `ax-sweep: ${error}` })
+  try {
+    const workspaces = ax.names('workspaces')
+    const tasks = ax.names('tasks')
+    if (!workspaces || !tasks) {
+      fail(`ax get ${tasks ? 'workspaces' : 'tasks'} failed; nothing deleted`)
+    } else {
+      // the run states last, so they are as new as the lists allow
+      const runs: SweepRun[] = []
+      for (const id of startedRunIds())
+        try {
+          const { run, value, c } = current(id)
+          runs.push({
+            id: run.id,
+            seq: c.seq,
+            pane: c.pane,
+            over: ['done', 'aborted'].includes(where(value)[0]),
+          })
+        } catch {
+          // no readable state: keep an owner that never gets a delete (seq -1)
+          runs.push({ id, seq: -1, pane: null, over: false })
+        }
+      const picked = axSweepNames([...tasks, ...workspaces], runs, ax.managerTask())
+      let removed = 0
+      for (const name of picked) {
+        const failed = ax.remove(name)
+        if (failed) {
+          fail(`remove ${name} failed: ${failed}`)
+        } else {
+          removed++
+          log(
+            `swept ${name} run ${runs.find(r => ax.taskName(r.id, Number(/\d+$/.exec(name)![0])) === name)?.id}`,
+          )
+        }
+      }
+      log(
+        `ax-sweep: tasks ${tasks.length} workspaces ${workspaces.length} removed ${removed} failed ${picked.length - removed}`,
+      )
+    }
+  } catch (e) {
+    // a missing ax binary throws: the pass ends, the stamp stays, the next try is one AX_SWEEP_MS away
+    fail((e as Error).message.slice(0, 200))
+  }
+  writeJson(join(HOME, 'ax-sweep.json'), errors)
+  if (errors.length) log(errors.map(e => e.error).join('; '))
 }
 
 /** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
