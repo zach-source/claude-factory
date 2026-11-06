@@ -55,6 +55,7 @@ function ticks(env: Record<string, string> = {}): number {
       ...process.env,
       FACTORY_HOME: home,
       FACTORY_SELF_UPDATE: '0',
+      FACTORY_NO_KICK: '1',
       PATH: `${bin}:${process.env['PATH']}`,
       ...env,
     },
