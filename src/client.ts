@@ -192,6 +192,7 @@ export async function main(
         req.method === 'POST' ? { 'content-type': 'application/json', 'Idempotency-Key': randomUUID() } : {},
       ...(req.body && { body: JSON.stringify(req.body) }),
       ...(tls && { tls }),
+      redirect: 'error',
       signal: AbortSignal.timeout(60_000),
     } as RequestInit)
     text = await res.text()

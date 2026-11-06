@@ -430,3 +430,31 @@ test('spawn: patrol refusal and no fallback leave the home untouched (AC5, AC7)'
   expect(readdirSync(dead.home)).toEqual(['rigs.json'])
   expect(readdirSync(d2.home)).toEqual(['rigs.json'])
 })
+
+test('spawn: a redirect is refused and the target gets no request', async () => {
+  const third: string[] = []
+  const target = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(req) {
+      third.push(req.url)
+      return new Response('leak')
+    },
+  })
+  const redirector = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch: () =>
+      new Response(null, { status: 307, headers: { location: `http://127.0.0.1:${target.port}/leak` } }),
+  })
+  try {
+    const d = await cli(['decide', 'r1', 'approve', 'note'], {
+      FACTORY_SERVER: `http://127.0.0.1:${redirector.port}`,
+    })
+    expect(d.code).toBe(1)
+    expect(third.length).toBe(0)
+  } finally {
+    redirector.stop(true)
+    target.stop(true)
+  }
+})
