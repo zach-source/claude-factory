@@ -22,6 +22,12 @@ const DENY = [
   'gh --zz pr ready --undo --undo=false 1',
   'gh pr --zz ready --undo "$X" 1',
   'gh pr --zz 3 ready --undo --undo=false 1',
+  'gh pr ready 5 --undo (-)-undo=false',
+  'gh pr ready 5 --undo (--undo=false)',
+  'gh pr -R o/r ready --undo (-)-undo=false 1',
+  'gh pr --zz ready --undo (-)-undo=false 1',
+  'gh pr ready 5 --undo ^x',
+  'gh pr ready 5 --undo !(x)',
 ]
 const ALLOW = [
   'gh pr ready 5 --undo',
