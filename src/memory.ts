@@ -541,28 +541,27 @@ export const MEMORY_SNAPSHOT_MAX = 8 * 1024 * 1024
 export function snapshot(dir: string, rig: string | undefined, out: string): { bytes: number } | null {
   if (!existsSync(dir)) return null
   const keep = (r?: string) => !r || r === rig
-  const regular = (p: string) => lstatSync(p).isFile()
   const stage = mkdtempSync(`${out}.stage-`)
   try {
     const core = join(dir, 'CORE.md')
-    if (existsSync(core) && regular(core)) {
+    const coreText = tryRead(core)
+    if (coreText !== null) {
       let ok = true
-      const lines = readFileSync(core, 'utf8')
-        .split('\n')
-        .filter(line => {
-          const h = /^##\s+rig:\s*(\S+)/.exec(line)
-          if (h) ok = keep(h[1])
-          else if (/^##\s/.test(line)) ok = true
-          return ok
-        })
+      const lines = coreText.split('\n').filter(line => {
+        const h = /^##\s+rig:\s*(\S+)/.exec(line)
+        if (h) ok = keep(h[1])
+        else if (/^##\s/.test(line)) ok = true
+        return ok
+      })
       writeFileSync(join(stage, 'CORE.md'), lines.join('\n'))
     }
     for (const topic of readdirSync(dir, { withFileTypes: true })) {
       if (!topic.isDirectory() || topic.name.startsWith('.')) continue
       for (const f of readdirSync(join(dir, topic.name))) {
         const src = join(dir, topic.name, f)
-        if (!f.endsWith('.md') || !regular(src)) continue
-        const text = readFileSync(src, 'utf8')
+        if (!f.endsWith('.md')) continue
+        const text = tryRead(src)
+        if (text === null) continue
         let body: string | null = keep(parse(f, text).rig) ? text : null
         if (f === 'LONG.md') {
           // always re-format: text that no entry holds (a preamble, a file with no entry) must not travel
@@ -578,16 +577,18 @@ export function snapshot(dir: string, rig: string | undefined, out: string): { b
     const paths = new Set([...notes, ...topics.values(), ...coreNotes(stage)].map(n => n.path))
     if (!paths.size) return null
     const index = join(dir, '.index.json')
-    if (existsSync(index) && regular(index)) {
-      const idx: Index = JSON.parse(readFileSync(index, 'utf8'))
+    const indexText = tryRead(index)
+    if (indexText !== null) {
+      const idx: Index = JSON.parse(indexText)
       const vecs = Object.fromEntries(Object.entries(idx.vecs).filter(([p]) => paths.has(p)))
       writeFileSync(join(stage, '.index.json'), JSON.stringify({ model: idx.model, vecs }))
     }
     const usage = join(dir, '.usage.jsonl')
-    if (existsSync(usage) && regular(usage))
+    const usageText = tryRead(usage)
+    if (usageText !== null)
       writeFileSync(
         join(stage, '.usage.jsonl'),
-        readFileSync(usage, 'utf8')
+        usageText
           .split('\n')
           .filter(line => {
             try {

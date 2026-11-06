@@ -12,6 +12,7 @@ import {
   noteExists,
   outline,
   search,
+  snapshot,
   walk,
   appendStore,
   readStore,
@@ -175,5 +176,22 @@ test('skills skips a linked SKILL.md; installSkill copies no link', () => {
   installSkill(dir, 'a')
   expect(existsSync(join(skillsDir(dir), 'a', 'SKILL.md'))).toBe(true)
   expect(existsSync(join(skillsDir(dir), 'a', 'leak.md'))).toBe(false)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('snapshot puts no text from a linked CORE.md, topic note, index or usage log in the tar', () => {
+  const { root, dir, secret } = linkStore()
+  writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')
+  symlinkSync(secret, join(dir, 'CORE.md'))
+  symlinkSync(secret, join(dir, 'topic', 'x.md'))
+  symlinkSync(secret, join(dir, '.index.json'))
+  symlinkSync(secret, join(dir, '.usage.jsonl'))
+  const out = join(root, 'snap.tgz')
+  expect(snapshot(dir, undefined, out)).not.toBeNull()
+  const x = join(root, 'x')
+  mkdirSync(x)
+  expect(Bun.spawnSync(['tar', '-xzf', out, '-C', x]).exitCode).toBe(0)
+  expect(Bun.spawnSync(['grep', '-r', MARKER, x]).exitCode).toBe(1)
+  expect(existsSync(join(x, 'topic', 'ok.md'))).toBe(true)
   rmSync(root, { recursive: true, force: true })
 })
