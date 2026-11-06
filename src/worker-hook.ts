@@ -546,6 +546,8 @@ interface ScanState {
   substFallbacks: number
   /** claude-factory-4iod.11: dequoted words that began with an unquoted `{`. Only these can open a zsh brace group. */
   braceWords: Set<string>
+  /** claude-factory-qn8a.21.19: dequoted word -> its forms with each quoted or escaped { } , replaced by a sentinel char. */
+  quotedBraces: Map<string, string[]>
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
   // reads. Below zero, the scan stops and denies (fail closed).
   work: number
@@ -559,7 +561,15 @@ interface ScanState {
 }
 
 // Each field here is a budget or the memo. Any other ScanState field goes into the alias memo key.
-const MEMO_SKIP = new Set<string>(['work', 'deadline', 'now', 'timedOut', 'substFallbacks', 'aliasSeen'])
+const MEMO_SKIP = new Set<string>([
+  'work',
+  'deadline',
+  'now',
+  'timedOut',
+  'substFallbacks',
+  'aliasSeen',
+  'quotedBraces',
+])
 
 // claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
 export const SCAN_BUDGET_REASON =
@@ -1098,7 +1108,20 @@ function segments(
   let wordBrace = false
   let nameRaw = false
   let sawEq = false
+  // claude-factory-qn8a.21.19: indexes of a quoted or escaped { } or , in the word. The shell keeps them as text.
+  let quotedBrace: number[] = []
+  const qb = (c: string) => {
+    if (c === '{' || c === '}' || c === ',') quotedBrace.push(word.length)
+  }
   const endWord = () => {
+    if (hasWord && quotedBrace.length && info?.state) {
+      const chars = [...word]
+      for (const k of quotedBrace) if (k < chars.length) chars[k] = BRACE_SENTINEL[chars[k]!] ?? chars[k]!
+      const hid = info.state.quotedBraces.get(word)
+      if (hid) hid.push(chars.join(''))
+      else info.state.quotedBraces.set(word, [chars.join('')])
+    }
+    quotedBrace = []
     if (hasWord && nameRaw && word.includes('=') && info?.quotedNames) {
       const m = info.quotedNames.get(cur)
       if (m) m.push(cur.length)
@@ -1137,7 +1160,10 @@ function segments(
     redirPrev = false
     if (quote === "'") {
       if (c === "'") quote = null
-      else word += c
+      else {
+        qb(c)
+        word += c
+      }
       hasWord = true
       continue
     }
@@ -1164,8 +1190,13 @@ function segments(
       // a backslash-newline is a POSIX line continuation even inside double quotes: the shell
       // removes both characters and joins the surrounding text, it does not keep a literal newline.
       else if (c === '\\' && cmd[i + 1] === '\n') i++
-      else if (c === '\\' && '"\\$`'.includes(cmd[i + 1] ?? '')) word += cmd[++i]
-      else word += c
+      else if (c === '\\' && '"\\$`'.includes(cmd[i + 1] ?? '')) {
+        qb(cmd[i + 1]!)
+        word += cmd[++i]
+      } else {
+        qb(c)
+        word += c
+      }
       hasWord = true
       continue
     }
@@ -1188,6 +1219,7 @@ function segments(
         continue
       }
       if (!sawEq) nameRaw = true
+      qb(cmd[i + 1]!)
       word += cmd[++i]
       hasWord = true
       continue
@@ -8233,6 +8265,7 @@ export function scanReason(
     substFallbacks: 0,
     outer: NO_OTHER_SEGS,
     braceWords: new Set(),
+    quotedBraces: new Map(),
     work: budget,
     deadline,
     now: gate?.now ?? Date.now,
@@ -9831,7 +9864,9 @@ function hookControlPath(abs: string, root: string, hookDir: string, ancestor = 
 
 // `{a,b}` and `{x..y}` expansion with nesting, capped. undefined means over the cap. A group with no comma
 // and no sequence stays literal, as in bash.
-export function expandBraces(w: string, cap = 64): string[] | undefined {
+// claude-factory-qn8a.21.17: `budget.n` counts the characters read; at zero the result is undefined (deny), so
+// the hook stays inside its 10 s timeout.
+export function expandBraces(w: string, cap = 64, budget = { n: 200_000 }): string[] | undefined {
   let from = 0
   for (;;) {
     const open = w.indexOf('{', from)
@@ -9839,6 +9874,7 @@ export function expandBraces(w: string, cap = 64): string[] | undefined {
     let depth = 0
     let close = -1
     const cuts: number[] = []
+    if ((budget.n -= w.length - open) < 0) return undefined
     for (let i = open; i < w.length; i++) {
       const c = w[i]
       if (c === '{') depth++
@@ -9886,7 +9922,7 @@ export function expandBraces(w: string, cap = 64): string[] | undefined {
     }
     const out: string[] = []
     for (const alt of alts) {
-      const sub = expandBraces(pre + alt + post, cap)
+      const sub = expandBraces(pre + alt + post, cap, budget)
       if (!sub) return undefined
       out.push(...sub)
       if (out.length > cap) return undefined
@@ -9911,54 +9947,68 @@ function hookControlWord(
   copyInto = false,
   isCd = false,
 ): boolean {
-  const w = word.replace(/["'\\]/g, '')
-  if (!w) return false
-  const alts = expandBraces(w)
-  if (!alts) return true
+  const x = word.replace(/["'\\]/g, '')
+  if (!x) return false
+  // the caller expanded the braces (braceVariants); a charge per word keeps the scan inside the work budget
+  if (state && spendWork(state, x.length + 1)) return true
   const base = foldLower(hookDir.split('/').filter(Boolean).pop() ?? '\0')
-  for (const x of [w, ...alts]) {
-    // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
-    if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
-    if (/[$`]|^~[^/]/.test(x)) {
-      const ps = foldLower(x).split('/').filter(Boolean)
-      const last = ps[ps.length - 1] ?? ''
-      if (
-        ps.includes(base) ||
-        ps.includes('.claude') ||
-        HOOK_MODULES.includes(last) ||
-        SETTINGS_NAMES.includes(last)
-      )
-        return true
-      continue
-    }
-    const abs = resolvePath(cwd, x === '~' || x.startsWith('~/') ? homedir() + x.slice(1) : x)
-    if (/[*?[]/.test(x)) {
-      const fabs = foldNonAscii(abs)
-      const samples = [
-        hookDir,
-        `${hookDir}/src`,
-        `${hookDir}/package.json`,
-        ...HOOK_MODULES.map(m => `${hookDir}/src/${m}`),
-      ]
-      if (!abs.startsWith(root + '/') && globCanMatch(fabs, samples.map(foldNonAscii), state)) return true
-      const ps = fabs.split('/').filter(Boolean)
-      const last = ps[ps.length - 1]
-      const prev = ps[ps.length - 2]
-      if (last?.startsWith('.') && globCanMatch(last, ['.claude'], state)) return true
-      if (
-        prev?.startsWith('.') &&
-        globCanMatch(
-          `${prev}/${last}`,
-          SETTINGS_NAMES.map(s => `.claude/${s}`),
-          state,
-        )
-      )
-        return true
-      continue
-    }
-    if (hookControlPath(abs, root, hookDir, copyInto || isCd)) return true
+  // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
+  if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
+  if (/[$`]|^~[^/]/.test(x)) {
+    const ps = foldLower(x).split('/').filter(Boolean)
+    const last = ps[ps.length - 1] ?? ''
+    return (
+      ps.includes(base) ||
+      ps.includes('.claude') ||
+      HOOK_MODULES.includes(last) ||
+      SETTINGS_NAMES.includes(last)
+    )
   }
-  return false
+  const abs = resolvePath(cwd, x === '~' || x.startsWith('~/') ? homedir() + x.slice(1) : x)
+  if (/[*?[]/.test(x)) {
+    const fabs = foldNonAscii(abs)
+    const samples = [
+      hookDir,
+      `${hookDir}/src`,
+      `${hookDir}/package.json`,
+      ...HOOK_MODULES.map(m => `${hookDir}/src/${m}`),
+    ]
+    if (!abs.startsWith(root + '/') && globCanMatch(fabs, samples.map(foldNonAscii), state)) return true
+    const ps = fabs.split('/').filter(Boolean)
+    const last = ps[ps.length - 1]
+    const prev = ps[ps.length - 2]
+    if (last?.startsWith('.') && globCanMatch(last, ['.claude'], state)) return true
+    return !!(
+      prev?.startsWith('.') &&
+      globCanMatch(
+        `${prev}/${last}`,
+        SETTINGS_NAMES.map(s => `.claude/${s}`),
+        state,
+      )
+    )
+  }
+  return hookControlPath(abs, root, hookDir, copyInto || isCd)
+}
+
+const BRACE_SENTINEL: Record<string, string> = { '{': '\u0001', '}': '\u0002', ',': '\u0003' }
+
+/**
+ * claude-factory-qn8a.21.17 .18 .19: the word, then each brace expansion of it, so the caller reads every result
+ * with the flag rules. The tokenizer removed the quotes, so a quoted or escaped brace or comma may be text for the
+ * shell. `hidden` holds the word with those chars replaced by sentinels. The word is expanded both ways and the
+ * sentinels go back in each result. undefined means over the cap or the work bound (deny).
+ */
+function braceVariants(word: string, hidden: string[] = []): string[] | undefined {
+  if (!word.includes('{')) return [word]
+  const out = [word]
+  const back = ['{', '}', ',']
+  for (const h of [word, ...hidden]) {
+    const alts = expandBraces(h)
+    if (!alts) return undefined
+    for (const a of alts) out.push(a.replace(/[\u0001-\u0003]/g, c => back[c.charCodeAt(0) - 1]!))
+  }
+  // a stray { or } the shell keeps as text: read the result without it too (ponytail: only adds deny readings)
+  return out.flatMap(v => (/[{}]/.test(v) ? [v, v.replace(/[{}]/g, '')] : [v]))
 }
 
 // claude-factory-qn8a.21.12 .15: every tail of a single-dash word (-s4o/f gives 4o/f, o/f and /f).
@@ -10026,35 +10076,41 @@ function hookControlWrite(
   for (const [k, word] of words.entries()) {
     prev = words[k - 1] ?? ''
     const afterWriterFlag = prevWriterFlag
-    prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
     const wasPending = pending
     pending = false
-    let candidate = word
-    let redirect = wasPending
-    const m = word.match(REDIRECT_PREFIX_RE)
-    if (m && m[0].length === word.length) {
-      pending = true
-      continue
-    }
-    if (m) {
-      candidate = word.slice(m[0].length)
-      redirect = true
-    } else if (!wasPending && /^of=/i.test(word)) {
-      candidate = word.slice(3)
-      redirect = true
-    }
-    if (isCd && !redirect) {
-      if (test(word) || /(^|\/)\.claude(\/|$)/i.test(word.replace(/["'\\]/g, ''))) return true
-      continue
-    }
-    if (!redirect) {
-      if (skip === 'reader') continue
-      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word) && !gluedTails(word).length)
+    prevWriterFlag = false
+    // claude-factory-qn8a.21.18: read the word and each brace expansion of it with the same flag rules
+    const variants = braceVariants(word, state?.quotedBraces.get(word))
+    for (const v of variants ?? [word]) {
+      prevWriterFlag ||= skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(v)
+      let candidate = v
+      let redirect = wasPending
+      const m = v.match(REDIRECT_PREFIX_RE)
+      if (m && m[0].length === v.length) {
+        pending = true
         continue
+      }
+      if (m) {
+        candidate = v.slice(m[0].length)
+        redirect = true
+      } else if (!wasPending && /^of=/i.test(v)) {
+        candidate = v.slice(3)
+        redirect = true
+      }
+      if (isCd && !redirect) {
+        if (!variants || test(v) || /(^|\/)\.claude(\/|$)/i.test(v.replace(/["'\\]/g, ''))) return true
+        continue
+      }
+      if (!redirect) {
+        if (skip === 'reader') continue
+        if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(v) && !gluedTails(v).length)
+          continue
+      }
+      // an over-cap list denies where the word would be read as a write target
+      if (!variants || test(candidate)) return true
+      const eq = candidate.match(/^(?:--[\w-]+|[A-Za-z_]\w*)=([\s\S]+)$/)
+      if (eq && test(eq[1]!)) return true
     }
-    if (test(candidate)) return true
-    const eq = candidate.match(/^(?:--[\w-]+|[A-Za-z_]\w*)=([\s\S]+)$/)
-    if (eq && test(eq[1]!)) return true
   }
   return false
 }

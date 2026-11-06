@@ -367,3 +367,72 @@ describe('qn8a.21.15 glued flag value after any flag char', () => {
     expect(bash('curl -so. https://example.com/s', `${ROOT}/.claude`)).toBe(R)
   })
 })
+
+describe('qn8a.21.17 work bound', () => {
+  test.each([
+    'x -' + '{'.repeat(1010) + '{1..64}',
+    'true -' + '{'.repeat(1040) + '{1..64}; git push origin HEAD:main',
+    'tee ' + '{'.repeat(8000) + '{1..64}',
+    Array.from({ length: 7 }, () => 'tee ' + '{'.repeat(900) + '{1..64}').join('; '),
+  ])('answers fast and does not allow %#', cmd => {
+    const t = Date.now()
+    const r = bash(cmd)
+    expect(Date.now() - t).toBeLessThan(1000)
+    expect(r).toBeDefined()
+  })
+  test('a short brace list still allows', () =>
+    expect(bash('mkdir -p .scratch/{a,b}; touch f{01..03}.txt')).toBeUndefined())
+})
+
+describe('qn8a.21.18 a brace list that expands to a flag word', () => {
+  const S = '.claude/settings.local.json'
+  const U = 'https://example.com/s'
+  test.each([
+    `curl {-s,-o${S}} ${U}`,
+    `curl {-o${S},-s} ${U}`,
+    `curl {-s,-so${S}} ${U}`,
+    `wget {-q,-O${S}} ${U}`,
+    `sort {-u,-o${S}} x`,
+    `curl {-s,-o${H}/src/cut.ts} ${U}`,
+    `make {-C.claude,-s}`,
+    `dd {if=x,of=${S}}`,
+    `dd if=x o{f,f}=${S}`,
+    `dd if=x {of,of}=${S}`,
+    `curl {--output=${S},-s} ${U}`,
+    `curl --out{put,put}=${S} ${U}`,
+    `curl {-s,--output=${H}/src/cut.ts} ${U}`,
+    `git diff {--output=${S},-p}`,
+    `git diff {-p,--output=${S}}`,
+    `gh api x {--jq=.,-o${S}}`,
+    `bd export {-q,-o${S}}`,
+  ])('denies %s', c => expect(bash(c)).toBe(R))
+  test.each(['curl {-s,-o.scratch/a} https://example.com/s', 'ls {-l,-a}'])('allows %s', c =>
+    expect(bash(c)).toBeUndefined(),
+  )
+})
+
+describe('qn8a.21.19 a quoted or escaped brace inside a list', () => {
+  const S = 'settings.local.json'
+  test.each([
+    `tee .claude/{${S},'{'}`,
+    `tee .claude/{${S},'}'}`,
+    `tee .claude/{${S},"}"}`,
+    `tee .claude/{${S},}}`,
+    `tee .claude/{'}',${S}}`,
+    `tee .claude/settings.local.jso{n,'}'}`,
+    `tee {.claude,'{'}/${S}`,
+    `tee .claude/{${S},'{',x}`,
+    `tee .claude/{x,{${S},'}'}}`,
+    `cd {.claude,'}'}`,
+    `curl -o.claude/{${S},'}'} https://example.com/s`,
+  ])('denies %s', c => expect(bash(c)).toBe(R))
+  test.each([
+    `jq '{a:1}' x.json`,
+    `awk '{print $1}' x`,
+    `find . -name '*.ts' -exec cp {} .scratch/ \\;`,
+    `git commit -m 'fix {a,b}'`,
+    `cp x .scratch/{a,b}`,
+    // bash and zsh keep an unclosed list as text: the file name is not settings.local.json
+    `tee .claude/{settings.local.json,{}`,
+  ])('allows %s', c => expect(bash(c)).toBeUndefined())
+})
