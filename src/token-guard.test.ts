@@ -91,6 +91,8 @@ const DENY = [
 ]
 
 const ALLOW = [
+  'echo {a[0]} x',
+  'printf %s {a[1]} y',
   'cat auth.json',
   'cat fixtures/auth.json',
   './fixtures/auth.json',

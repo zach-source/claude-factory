@@ -182,7 +182,9 @@ export function tokenReason(command: string, base: string, root?: string): strin
     const marker = MARKER.test(fold(words.join(' ')))
     for (const w of words) {
       if (KEYCHAIN.has(fold(w))) return TOKEN_READ_REASON
-      for (const p of w.split(SPLIT).flatMap(x => (/[,{}]/.test(x) ? [x, ...x.split(/[,{}]/)] : [x]))) {
+      for (const p of w
+        .split(SPLIT)
+        .flatMap(x => (/,/.test(x) ? [x, ...x.split(/[,{}]/)] : x.split(/[{}]/)))) {
         if (!p) continue
         const key = `${marker ? 1 : 0}${p}`
         if (seen.has(key)) continue
