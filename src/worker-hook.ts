@@ -4444,6 +4444,20 @@ function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boo
 }
 
 /**
+ * claude-factory-qn8a.23: true for the plain `gh pr ready --undo` form only. gh uses the last value
+ * of a bool flag, so any `--undo=<value>` word or dynamic word before a literal `--` can cancel it.
+ */
+function plainUndo(words: string[]): boolean {
+  let undo = false
+  for (const w of words) {
+    if (w === '--') break
+    if (w.startsWith('--undo=') || dynamicWord(w)) return false
+    if (w === '--undo') undo = true
+  }
+  return undo
+}
+
+/**
  * True when `ctx` names a context this hook must deny: it is missing, it is an unresolved shell
  * expansion (claude-factory-25z.9), or it is in `personOnly`.
  * A missing `ctx` fails closed: this function does not then know the current context.
@@ -5327,7 +5341,7 @@ function ghReasonOn(
   if (verb === 'pr' && sub === 'merge') return prMergeReason(tail, gate, aliasDepth, skipBlank)
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
   if (verb === 'pr' && sub === 'ready') {
-    if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
+    if (plainUndo(tail)) return undefined
     return mayReady(gate) ? undefined : READY_REASON
   }
   if (
@@ -5373,7 +5387,7 @@ function ghReasonOn(
   if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
     if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return mergeDenyReason(gate)
     if (verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['ready']))) {
-      if (hasMutatingWordBeforeDashDash(rest, new Set(['--undo']))) return undefined
+      if (plainUndo(rest)) return undefined
       return mayReady(gate) ? undefined : READY_REASON
     }
     if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
