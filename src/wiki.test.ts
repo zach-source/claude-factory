@@ -26,7 +26,7 @@ const reasons = (text: string) => scanPages([{ path: 'p.md', text }])[0]?.reason
 test('AC1 a valid page of each kind parses and scans clean', () => {
   for (const [kind, text] of Object.entries(good)) {
     const r = parse(text)
-    expect('page' in r && r.page.kind).toBe(kind)
+    expect('page' in r ? r.page.kind : r.reasons).toBe(kind as Page['kind'])
     expect(reasons(text)).toBeUndefined()
   }
 })
