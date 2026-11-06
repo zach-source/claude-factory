@@ -11299,6 +11299,6 @@ test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slo
   const a = denyReason('find . ' + '-exec $X a '.repeat(735) + "';'", '/acme/root')
   expect([REASON, SCAN_TIME_REASON]).toContain(a)
   const b = denyReason('find . ' + '-exec $X {} + '.repeat(578), '/acme/root')
-  expect([undefined, SCAN_TIME_REASON]).toContain(b)
+  expect(b === undefined || b === SCAN_TIME_REASON).toBe(true)
   expect(performance.now() - t0).toBeLessThan(2 * SCAN_TIME_MS + 2000)
 }, 30_000)
