@@ -571,8 +571,9 @@ test('decisions propose refuses a control character in the question, the context
       refuse(`${key} question ${name}`, [key, v, 'a | b'], code)
       refuse(`${key} context ${name}`, [key, 'q', 'a | b', '--context', v], code)
     }
-    refuse(`${key} question-file ESC`, [key, '--question-file', txt('q1', 'x\x1b[2Jy')], 'U+001B')
-    refuse(`${key} question-file NUL`, [key, '--question-file', txt('q2', 'x\x00y')], 'U+0000')
+    const o = ['--options-file', txt('o1', 'a | b')]
+    refuse(`${key} question-file ESC`, [key, '--question-file', txt('q1', 'x\x1b[2Jy'), ...o], 'U+001B')
+    refuse(`${key} question-file NUL`, [key, '--question-file', txt('q2', 'x\x00y'), ...o], 'U+0000')
     refuse(
       `${key} context-file NUL`,
       [
