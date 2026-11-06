@@ -5373,13 +5373,26 @@ function dynamicWord(w: string): boolean {
 // denyAt strips `(...)`, so `${(@)_}` reads as `${_}` there.
 const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])/
 
-// claude-factory-qn8a.9.10: bash reads an operand of -v, -eq, -ne, -lt, -le, -gt or -ge as a subscript.
-// A value such as `a[$(cmd)]` from `$_` or from `read` then runs the command. The exemption holds
-// only if no word has `(` or a backtick. It also fails if a `$` word shares the test with one of
-// these operators. A `[` word (a subscript such as `a[_]`) fails it too (qn8a.9.11). String tests (-n, -z, ==, =~) stay exempt.
-function testBuiltinSafe(args: readonly string[]): boolean {
-  if (args.some(x => /[(`]/.test(x))) return false
-  return !(args.some(x => /^(-v|-eq|-ne|-lt|-le|-gt|-ge)$/.test(x)) && args.some(x => /[$[]/.test(x)))
+// claude-factory-qn8a.9.12: the exemption for `[` and `[[` is a closed grammar.
+// Bash reads the operand of -v, -eq, -ne, -lt, -le, -gt and -ge as arithmetic.
+// A value such as `a[$(cmd)]` then runs a command.
+// Only string tests pass: `W`, `U W` and `W B W`, then the closer as the last word.
+// W is a plain literal. In `[[` it can also be a $NAME or ${NAME} word, because `[[` does not split words.
+// The scan reads each word in two views. One view masks a quoted word to one space.
+// The other view removes the quotes, so "$X" and $X look the same in `[`. `[` takes no expansion.
+// Every other form returns false, so the head stays dynamic.
+const TEST_UNARY = new Set(['-n', '-z', '-e', '-f', '-d', '-s', '-r', '-w', '-x', '-L', '-h'])
+const TEST_BINARY = new Set(['=', '==', '!='])
+const TEST_LITERAL = /^[A-Za-z0-9_.\/:@%+,-]+$/
+const TEST_EXPANSION = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/
+function testBuiltinSafe(head: string, args: readonly string[]): boolean {
+  const closer = head === '[[' ? ']]' : ']'
+  if (args[args.length - 1] !== closer) return false
+  const ops = args.slice(0, -1)
+  const ok = (w: string) => TEST_LITERAL.test(w) || w === ' ' || (head === '[[' && TEST_EXPANSION.test(w))
+  if (ops.length === 1) return ok(ops[0]!)
+  if (ops.length === 2) return TEST_UNARY.has(ops[0]!) && ok(ops[1]!)
+  return ops.length === 3 && TEST_BINARY.has(ops[1]!) && ok(ops[0]!) && ok(ops[2]!)
 }
 
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
@@ -5393,7 +5406,7 @@ function testBuiltinSafe(args: readonly string[]): boolean {
 // the caller passes the segment words and no later word holds `(` or a backtick. Without them, deny.
 function dynamicCommandWord(w: string, words?: readonly string[], i?: number): boolean {
   // claude-factory-0hkb: the exact words `[` and `[[` are the test builtin. A word that only starts with `[` stays dynamic.
-  if ((w === '[' || w === '[[') && words && i !== undefined && testBuiltinSafe(words.slice(i + 1)))
+  if ((w === '[' || w === '[[') && words && i !== undefined && testBuiltinSafe(w, words.slice(i + 1)))
     return false
   return w !== '{}' && dynamicWord(w)
 }
@@ -5442,7 +5455,8 @@ function segmentDynArg(words: string[]): boolean {
     words[first] === 'echo' ||
     words[first] === 'cd' ||
     // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
-    ((words[first] === '[' || words[first] === '[[') && testBuiltinSafe(words.slice(first + 1))) ||
+    ((words[first] === '[' || words[first] === '[[') &&
+      testBuiltinSafe(words[first]!, words.slice(first + 1))) ||
     words[first]!.startsWith('#')
   )
     return false
