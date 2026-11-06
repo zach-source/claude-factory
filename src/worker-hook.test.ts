@@ -11303,6 +11303,29 @@ test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slo
   expect(performance.now() - t0).toBeLessThan(2 * SCAN_TIME_MS + 2000)
 }, 30_000)
 
+// claude-factory-jsoe: env -i with a closed reader command word does not run a bd word that is only its argument.
+test('denyReason allows env -i with a reader and a bd argument; every other bd form under env -i stays denied (claude-factory-jsoe)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of ['env -i grep -rn bd src', 'env -i cat bd', 'env -i printf bd', 'env -i wc -l bd'])
+    expect(ask(c)).toBeUndefined()
+  for (const c of [
+    'env -i bd list',
+    'env -i nice bd list',
+    'env -i rg --pre bd x',
+    'env -i xargs bd',
+    'env -i find . -exec bd \\;',
+    'env -i grep "$X" bd',
+    'env -i grep bd `x`',
+    'env -i grep bd (x)',
+    "env -i sh -c 'bd x'",
+    'env -i grep x bd; env -i bd list',
+    'bd list env -i grep x',
+    'env -i grep x env -i bd list',
+    'env -i grep x env -i nice bd',
+  ])
+    expect(ask(c)).toBe(BEADS_ACTOR_REASON)
+})
+
 // claude-factory-0hkb: a lone [ or [[ is the test builtin, not a glob command word.
 test('denyReason allows [ and [[ test forms; a bracket glob command word stays denied (claude-factory-0hkb)', () => {
   const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
