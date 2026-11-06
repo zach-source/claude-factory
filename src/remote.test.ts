@@ -1797,16 +1797,24 @@ test('a replayed memory helped carries the run id in --from; other memory words 
   expect(replayable(['memory', 'helped', '--from', 'forged/x', 'p'], side, 'r1')).toEqual([
     'memory',
     'helped',
-    'p',
     '--from',
     'r1/plan',
+    'p',
   ])
   expect(replayable(['memory', 'helped', 'p', '--from'], side, 'r1')).toEqual([
     'memory',
     'helped',
-    'p',
     '--from',
     'r1/plan',
+    'p',
+  ])
+  expect(replayable(['memory', 'helped', 'p', '--rig'], side, 'r1')).toEqual([
+    'memory',
+    'helped',
+    '--from',
+    'r1/plan',
+    'p',
+    '--rig',
   ])
   for (const sub of ['search', 'compact', 'dream', 'confirmed'])
     expect(replayable(['memory', sub, 'x'], side, 'r1')).toBeNull()
@@ -1847,13 +1855,60 @@ test('a replayed memory add carries the run id in --from', () => {
   expect(replayable(argv, { node: 'plan', seq: 1 }, 'r1')).toEqual([
     'memory',
     'add',
+    '--from',
+    'r1/plan',
     '--kind',
     'fact',
     's',
     'b',
+  ])
+  expect(
+    replayable(['memory', 'add', '--kind', 'fact', 's', 'b', '--rig'], { node: 'plan', seq: 1 }, 'r1'),
+  ).toEqual(['memory', 'add', '--from', 'r1/plan', '--kind', 'fact', 's', 'b', '--rig'])
+})
+
+test('a replayed memory add or helped always starts with the forced --from (claude-factory-zw2n)', () => {
+  const side = { node: 'plan', seq: 1 }
+  const tails = [
+    ['x'],
+    ['--from', 'forged/x', 'x'],
+    ['x', '--from'],
+    ['--from', '--from', 'x'],
+    ['x', '--rig'],
+    ['--rig', '--from', 'x'],
+  ]
+  for (const verb of ['add', 'helped'])
+    for (const t of tails) {
+      const out = replayable(['memory', verb, ...t], side, 'r1')!
+      expect(out.slice(0, 4)).toEqual(['memory', verb, '--from', 'r1/plan'])
+      expect(out.filter(w => w === '--from')).toHaveLength(1)
+    }
+  expect(replayable(['memory', 'add', '--from=x', 's'], side, 'r1')).toEqual([
+    'memory',
+    'add',
     '--from',
     'r1/plan',
+    '--from=x',
+    's',
   ])
+})
+
+test('a replayed memory add that ends with a bare --rig keeps its from (claude-factory-zw2n)', () => {
+  const h = join(dir, 'zw2n-home')
+  mkdirSync(h, { recursive: true })
+  const argv = replayable(
+    ['memory', 'add', '--kind', 'fact', 'sum four', 'body four', '--rig'],
+    { node: 'plan', seq: 1 },
+    'r1',
+  )!
+  const r = factory(argv, { FACTORY_HOME: h, FACTORY_OUTBOX: '', FACTORY_FROM: 'plan', FACTORY_RUN: 'r1' })
+  expect(r.code).toBe(0)
+  const files = readdirSync(join(h, 'memory', 'inbox'))
+  expect(files).toHaveLength(1)
+  const note = readFileSync(join(h, 'memory', 'inbox', files[0]), 'utf8')
+  expect(note).toMatch(/^from: r1\/plan$/m)
+  expect(note).not.toContain('rig: --from')
+  expect(note.split('---').slice(2).join('---')).not.toContain('r1/plan')
 })
 
 test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them first", () => {
