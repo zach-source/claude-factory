@@ -105,6 +105,18 @@ test('rig add refuses a moved name or repo, and a split.json it cannot read', ()
   expect(movedRigRefusal('{}', 'x', '/r/x')).toContain('not a JSON array')
 })
 
+test('agentOfNode in server mode does not throw for a herdr station, so reconcile reaches the hold', async () => {
+  const { agentOfNode, setServerMode } = await import('./cli')
+  const run = { id: 'r1', repo: '/r/none' } as never
+  const def = { agent: 'claude', nodes: { h: { runner: 'herdr' } } } as never
+  setServerMode(true)
+  try {
+    expect(() => agentOfNode(run, def, 'h')).not.toThrow()
+  } finally {
+    setServerMode(false)
+  }
+})
+
 test('holdNonAxStation mails the manager once for a herdr station, and passes an ax station', async () => {
   const { holdNonAxStation, setServerMode } = await import('./cli')
   const run = { id: 'r1', repo: '/r/none' } as never

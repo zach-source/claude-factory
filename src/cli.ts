@@ -2414,8 +2414,8 @@ export const pickAgent = (
     splitPick(runId, split.share, params[split.share])
   return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
 }
-const agentOfNode = (run: Run, def: Factory, node: string) =>
-  pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
+export const agentOfNode = (run: Run, def: Factory, node: string) =>
+  pickAgent(run.id, def, node, rigOf(run.repo), stationRunnerName(run, def, node))
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 /** the context of the last turn in a Claude transcript's tail, in tokens; 0 when it has none */
 export function lastContext(tail: string) {
