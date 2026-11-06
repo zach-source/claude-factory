@@ -242,6 +242,25 @@ describe('homeReason', () => {
   test.each(['cat x \\\\\n./x.sh'])('an even backslash run keeps the raw scan: %j', cmd =>
     expect(homeReason(cmd, onlyX, H)).toBe(HOME_REASON),
   )
+  // an even run ends its line; the next word still holds a backslash-newline that bash joins
+  test.each([
+    'echo a \\\\\n.scr\\\natch/x',
+    'echo a \\\\\n./x\\\n.sh',
+    'echo a \\\\\n.scratch/x\\\n',
+    'echo a\\\\\n.scr\\\natch/x',
+    'echo a \\\\\\\\\n.scr\\\natch/x',
+  ])('denies a split path word after an even backslash run: %j', cmd =>
+    expect(homeReason(cmd, onlyX, H)).toBe(HOME_REASON),
+  )
+  test.each([
+    'a=( \\\\\n~\\\n); mv "${a[2]}" /x',
+    'a=( \\\\\n/Users/pa\\\nt ); mv "${a[2]}" /x',
+    'sh <<EOF\nmv \\\\\n~\\\n /x\nEOF',
+  ])('denies a split home word after an even backslash run: %j', cmd =>
+    expect(homeReason(cmd, undefined, H)).toBe(HOME_REASON),
+  )
+  test('denies a script file text with an even run and a split home word', () =>
+    expect(homeReason('bash c.sh', () => 'a=( \\\\\n~\\\n); mv "${a[2]}" /x\n', H)).toBe(HOME_REASON))
   test('an even backslash run keeps the raw home scan', () =>
     expect(homeReason('rm -rf a \\\\\n~', undefined, H)).toBe(HOME_REASON))
 
