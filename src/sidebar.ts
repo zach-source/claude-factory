@@ -4,6 +4,7 @@ import { cut } from './cut'
 import type { Bead } from './beads'
 import type { Row } from './cli'
 import { ownerStep } from '../mod/hooks/view'
+import type { NeedItem } from './ui-data'
 
 /** why a run waits on someone, or null while it moves on its own */
 export function hold(r: Row): 'needs you' | 'stuck' | 'parked' | null {
@@ -57,6 +58,30 @@ export function shipLines(queue: Bead[], run?: { id: string; node: string }) {
   ]
 }
 
+/** why a held run waits, on one line */
+export const whyOf = (r: Row) => {
+  const h = hold(r)!
+  const why =
+    r.gate?.question ??
+    (h === 'needs you'
+      ? `its worker waits on a prompt in pane ${r.pane}`
+      : (r.error ?? r.last?.summary ?? ''))
+  return why.replace(/\s+/g, ' ').trim()
+}
+/** the command that answers a held run */
+export const answerOf = (r: Row) =>
+  r.gate
+    ? `factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`
+    : hold(r) === 'parked'
+      ? `factory mail ${r.id} ${r.node} '<what changed>'`
+      : hold(r) === 'stuck'
+        ? `factory retry ${r.id}`
+        : `herdr pane read ${r.pane}`
+/** the pull request URLs in a text, once each */
+export const prsOf = (flat: string) => [
+  ...new Set(flat.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/g) ?? []),
+]
+
 /**
  * every run that waits on someone, by rig, with what it waits on and how to answer: one pass for the person.
  * Each rig with a ship queue names its next PR to merge. Every owner-only step ("parked, waiting on:") from
@@ -69,24 +94,6 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
     .sort((a, b) => ORDER.indexOf(hold(a)!) - ORDER.indexOf(hold(b)!))
   const steps = held.filter(r => stepOf(r))
   const others = held.filter(r => !stepOf(r))
-  const whyOf = (r: Row) => {
-    const h = hold(r)!
-    const why =
-      r.gate?.question ??
-      (h === 'needs you'
-        ? `its worker waits on a prompt in pane ${r.pane}`
-        : (r.error ?? r.last?.summary ?? ''))
-    return why.replace(/\s+/g, ' ').trim()
-  }
-  const answerOf = (r: Row) =>
-    r.gate
-      ? `factory decide ${r.id} <${r.gate.outcomes.join('|')}> [note]`
-      : hold(r) === 'parked'
-        ? `factory mail ${r.id} ${r.node} '<what changed>'`
-        : hold(r) === 'stuck'
-          ? `factory retry ${r.id}`
-          : `herdr pane read ${r.pane}`
-  const prsOf = (flat: string) => [...new Set(flat.match(/https:\/\/github\.com\/[^\s)]+\/pull\/\d+/g) ?? [])]
   const queued = Object.entries(queues).filter(([, q]) => q.length)
   if (!held.length && !queued.length) return 'nothing waits on you'
   const rigs = [...new Set([...others.map(r => r.rig ?? '(no rig)'), ...queued.map(([rig]) => rig)])]
@@ -130,4 +137,44 @@ export function waiting(rows: Row[], now: number, queues: Record<string, Bead[]>
       ].join('\n'),
     )
   return blocks.join('\n\n')
+}
+
+/**
+ * The same data as `waiting`, as items for the factory ui: each held run, and the next PR of each ship queue.
+ * The age is the time since the run parked (parked) or since its worker started (the other holds).
+ */
+export function waitingItems(rows: Row[], queues: Record<string, Bead[]> = {}): NeedItem[] {
+  const runs = rows
+    .filter(isLive)
+    .filter(r => hold(r))
+    .map((r): NeedItem => {
+      const why = whyOf(r)
+      return {
+        kind: 'run',
+        rig: r.rig ?? '(no rig)',
+        id: r.id,
+        title: why.length > 400 ? `${cut(why, 399)}…` : why,
+        hold: hold(r)!,
+        station: r.node,
+        bead: r.bead,
+        since: hold(r) === 'parked' ? r.last?.at : r.since,
+        prs: prsOf(why),
+        answer: answerOf(r),
+      }
+    })
+  const ships = Object.entries(queues)
+    .filter(([, q]) => q.length)
+    .map(([rig, q]): NeedItem => {
+      const next = q[0]!
+      const at = Date.parse(String(next.metadata?.ship_at ?? ''))
+      return {
+        kind: 'ship',
+        rig,
+        id: next.id,
+        title: `next to merge: ${next.metadata?.ship_pr ?? '-'}, ${q.length} queued`,
+        since: Number.isFinite(at) ? at : undefined,
+        prs: [],
+      }
+    })
+  return [...runs, ...ships]
 }

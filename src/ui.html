@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>factory ui</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        --bg: #f7f7f5;
+        --panel: #fff;
+        --ink: #1d1d1b;
+        --muted: #6b6b66;
+        --line: #e3e2dc;
+        --accent: #2f5fd0;
+        --chip: #efeee9;
+        --err: #c0392b;
+        --closed: #2e8b57;
+        --in_progress: #b7791f;
+        --blocked: #c0392b;
+        --deferred: #4a78c2;
+        --open: #b9b8b0;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141413;
+          --panel: #1e1e1c;
+          --ink: #ecebe6;
+          --muted: #9b9a93;
+          --line: #33332f;
+          --accent: #7aa2f7;
+          --chip: #2a2a27;
+          --err: #ef6b5b;
+          --closed: #5cc08a;
+          --in_progress: #e0a84a;
+          --blocked: #ef6b5b;
+          --deferred: #7aa2f7;
+          --open: #55554f;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          14px/1.4 system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      header {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 16px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0 12px 0 0;
+      }
+      nav {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        flex: 1;
+      }
+      button,
+      select,
+      input {
+        font: inherit;
+        color: inherit;
+        background: var(--chip);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 3px 10px;
+      }
+      button {
+        cursor: pointer;
+      }
+      button.on {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      main {
+        padding: 16px;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        gap: 12px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        cursor: pointer;
+      }
+      .card h2 {
+        margin: 0 0 6px;
+        font-size: 15px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .err {
+        color: var(--err);
+        font-size: 12px;
+        word-break: break-word;
+      }
+      .bar {
+        display: flex;
+        height: 10px;
+        border-radius: 5px;
+        overflow: hidden;
+        background: var(--chip);
+        min-width: 80px;
+      }
+      .bar span {
+        display: block;
+      }
+      .legend span,
+      .tot span {
+        margin-right: 10px;
+        white-space: nowrap;
+      }
+      .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        margin-right: 4px;
+      }
+      .epic {
+        display: grid;
+        grid-template-columns: 1fr 180px 90px;
+        gap: 8px;
+        align-items: center;
+        padding: 4px 0;
+      }
+      .epic .t {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--line);
+      }
+      tr.row {
+        cursor: pointer;
+      }
+      tr.row:hover {
+        background: var(--chip);
+      }
+      .filters {
+        display: flex;
+        gap: 8px;
+        margin: 12px 0;
+        flex-wrap: wrap;
+      }
+      .detail {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        margin: 12px 0;
+      }
+      .detail pre {
+        white-space: pre-wrap;
+        margin: 4px 0 10px;
+        font: inherit;
+      }
+      .sub {
+        margin-left: 16px;
+      }
+      .badge {
+        background: var(--err);
+        color: #fff;
+        border-radius: 9px;
+        padding: 0 7px;
+        margin-left: 6px;
+        font-size: 12px;
+      }
+      .need {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin: 8px 0;
+      }
+      .need code {
+        background: var(--chip);
+        padding: 1px 5px;
+        border-radius: 4px;
+        user-select: all;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>factory ui</h1>
+      <nav id="nav"></nav>
+      <span id="busy" class="muted"></span>
+      <button id="sync">Sync</button>
+    </header>
+    <main id="main"></main>
+    <script>
+      const STATUS = ['closed', 'in_progress', 'blocked', 'deferred', 'open']
+      let rigs = []
+      let tab = 'needs'
+      let needs = { count: 0, items: [] }
+      let detail = null
+      let filt = { status: '', type: '', prio: '', q: '' }
+      let openEpics = new Set()
+      let picked = null
+
+      // h(tag, props, ...kids): DOM only. Bead text goes in through textContent, never innerHTML.
+      const h = (tag, props, ...kids) => {
+        const el = document.createElement(tag)
+        for (const [k, v] of Object.entries(props || {})) {
+          if (k === 'on') for (const [e, f] of Object.entries(v)) el.addEventListener(e, f)
+          else if (k === 'style') el.style.cssText = v
+          else if (k === 'class') el.className = v
+          else el.setAttribute(k, v)
+        }
+        for (const k of kids.flat(Infinity)) if (k != null) el.append(k)
+        return el
+      }
+      const bar = c =>
+        h(
+          'div',
+          { class: 'bar', title: STATUS.map(s => `${s} ${c[s]}`).join(', ') },
+          STATUS.map(s =>
+            h('span', { style: `width:${c.total ? (100 * c[s]) / c.total : 0}%;background:var(--${s})` }),
+          ),
+        )
+      const legend = () =>
+        h(
+          'div',
+          { class: 'legend muted' },
+          STATUS.map(s =>
+            h('span', {}, h('i', { class: 'dot', style: `background:var(--${s})` }), s.replace('_', ' ')),
+          ),
+        )
+      const totals = c =>
+        h(
+          'div',
+          { class: 'tot muted' },
+          STATUS.filter(s => c[s]).map(s =>
+            h(
+              'span',
+              {},
+              h('i', { class: 'dot', style: `background:var(--${s})` }),
+              `${c[s]} ${s.replace('_', ' ')}`,
+            ),
+          ),
+          h('span', {}, `${c.total} total`),
+        )
+      const pct = c => (c.total ? Math.floor((100 * c.closed) / c.total) + '%' : '-')
+      const ago = t => (t ? Math.round((Date.now() - t) / 60000) + ' min ago' : 'never')
+      const asOf = r =>
+        h(
+          'div',
+          { class: r.stale ? 'err' : 'muted' },
+          r.asOf
+            ? `as of ${new Date(r.asOf).toLocaleTimeString()} (${ago(r.asOf)})${r.stale ? ' · STALE' : ''}`
+            : 'no data yet',
+        )
+      const syncLine = r => h('div', {}, asOf(r), syncLine1(r))
+      const syncLine1 = r =>
+        r.error
+          ? h('div', { class: 'err' }, 'bd list failed: ' + r.error)
+          : r.sync.state === 'failed'
+            ? h('div', { class: 'err' }, `sync failed ${ago(r.sync.at)}: ${r.sync.message}`)
+            : h(
+                'div',
+                { class: 'muted' },
+                r.sync.state === 'ok'
+                  ? `synced ${ago(r.sync.at)}`
+                  : r.sync.state === 'skipped'
+                    ? `not synced: ${r.sync.message}`
+                    : 'not synced yet',
+              )
+
+      function epicRow(e, rows) {
+        return h(
+          'div',
+          { class: 'epic', style: `padding-left:${e.depth * 16}px` },
+          h(
+            'div',
+            {
+              class: 't',
+              title: e.id,
+              on: {
+                click: () => (openEpics.has(e.id) ? openEpics.delete(e.id) : openEpics.add(e.id), render()),
+              },
+            },
+            `${openEpics.has(e.id) ? '▾' : '▸'} P${e.priority} ${e.title}`,
+          ),
+          bar(e.counts),
+          h('div', { class: 'muted' }, `${e.counts.closed}/${e.counts.total} ${pct(e.counts)}`),
+        )
+      }
+
+      const KIND = { run: 'run', ship: 'ship lane', owner: 'owner bead', human: 'human bead' }
+      const age = t => {
+        if (!t) return 'age unknown'
+        const m = Math.round((Date.now() - t) / 60000)
+        return m < 120 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'
+      }
+      const needsList = items =>
+        items.map(n =>
+          h(
+            'div',
+            { class: 'need' },
+            h(
+              'div',
+              { class: 'muted' },
+              [
+                KIND[n.kind],
+                n.rig,
+                n.id,
+                n.station,
+                n.hold,
+                n.priority != null && 'P' + n.priority,
+                age(n.since),
+              ]
+                .filter(Boolean)
+                .join(' · '),
+            ),
+            h('div', {}, n.title),
+            n.bead ? h('div', { class: 'muted' }, 'bead ' + n.bead) : null,
+            n.blocks
+              ? h('div', { class: 'muted' }, `blocks ${n.blocks} open bead${n.blocks > 1 ? 's' : ''}`)
+              : null,
+            n.prs
+              .filter(u => u.startsWith('https://github.com/'))
+              .map(u => h('div', {}, h('a', { href: u, target: '_blank', rel: 'noreferrer' }, u))),
+            n.answer ? h('div', {}, '→ ', h('code', {}, n.answer)) : null,
+          ),
+        )
+      const needsTab = () =>
+        h(
+          'div',
+          {},
+          h('h2', {}, `Needs you (${needs.count})`),
+          h('div', { class: 'muted' }, 'oldest first'),
+          needs.error ? h('div', { class: 'err' }, 'runs not read: ' + needs.error) : null,
+          needs.items.length ? needsList(needs.items) : h('div', { class: 'muted' }, 'nothing waits on you'),
+        )
+
+      function overview() {
+        return h(
+          'div',
+          { class: 'grid' },
+          rigs.map(r =>
+            h(
+              'div',
+              { class: 'card', on: { click: () => go(r.name) } },
+              h('h2', {}, r.name, r.needs ? h('span', { class: 'badge' }, `${r.needs} need you`) : null),
+              totals(r.totals),
+              bar(r.totals),
+              syncLine(r),
+              h('div', { class: 'muted' }, `${r.oneOffs} one-off open`),
+              r.epics
+                .filter(e => e.status !== 'closed')
+                .slice(0, 6)
+                .map(e =>
+                  h(
+                    'div',
+                    { class: 'epic', style: 'grid-template-columns:1fr 100px 60px' },
+                    h('div', { class: 't', title: e.id }, e.title),
+                    bar(e.counts),
+                    h('div', { class: 'muted' }, `${e.counts.closed}/${e.counts.total}`),
+                  ),
+                ),
+            ),
+          ),
+        )
+      }
+
+      function rigTab(d) {
+        const issues = d.issues
+        const byId = Object.fromEntries(issues.map(i => [i.id, i]))
+        const q = filt.q.toLowerCase()
+        const shown = issues.filter(
+          i =>
+            (!filt.status || (i.status || 'open') === filt.status) &&
+            (!filt.type || i.issue_type === filt.type) &&
+            (filt.prio === '' || String(i.priority) === filt.prio) &&
+            (!q || (i.id + ' ' + i.title).toLowerCase().includes(q)),
+        )
+        const opt = (v, l) => h('option', { value: v }, l)
+        const sel = (key, all, vals) =>
+          h(
+            'select',
+            {
+              on: {
+                change: e => {
+                  filt[key] = e.target.value
+                  render()
+                },
+              },
+            },
+            opt('', all),
+            vals.map(v => {
+              const o = opt(v, v)
+              if (String(v) === filt[key]) o.selected = true
+              return o
+            }),
+          )
+        return h(
+          'div',
+          {},
+          h('h2', {}, d.name),
+          d.needItems.length
+            ? [h('h3', {}, `Needs you (${d.needItems.length})`), needsList(d.needItems)]
+            : null,
+          totals(d.totals),
+          bar(d.totals),
+          syncLine(d),
+          legend(),
+          h('h3', {}, 'Epics'),
+          d.epicRows.length
+            ? d.epicRows.map(e => [
+                epicRow(e),
+                openEpics.has(e.id)
+                  ? h(
+                      'div',
+                      { class: 'sub' },
+                      e.beads
+                        .map(id => byId[id])
+                        .filter(Boolean)
+                        .map(b =>
+                          h(
+                            'div',
+                            {
+                              class: 'muted row',
+                              style: 'cursor:pointer',
+                              on: {
+                                click: () => {
+                                  picked = b.id
+                                  render()
+                                },
+                              },
+                            },
+                            h('i', {
+                              class: 'dot',
+                              style: `background:var(--${STATUS.includes(b.status) ? b.status : 'open'})`,
+                            }),
+                            `${b.id} ${b.title}`,
+                          ),
+                        ),
+                    )
+                  : null,
+              ])
+            : h('div', { class: 'muted' }, 'no open epics'),
+          h('h3', {}, `Beads (${shown.length} of ${issues.length})`),
+          h(
+            'div',
+            { class: 'filters' },
+            sel('status', 'any status', STATUS),
+            sel('type', 'any type', [...new Set(issues.map(i => i.issue_type))].sort()),
+            sel('prio', 'any priority', [0, 1, 2, 3, 4]),
+            h('input', {
+              type: 'search',
+              placeholder: 'search id or title',
+              value: filt.q,
+              on: {
+                input: e => {
+                  filt.q = e.target.value
+                  render(true)
+                },
+              },
+            }),
+          ),
+          picked && byId[picked] ? beadDetail(byId[picked]) : null,
+          h(
+            'table',
+            {},
+            h(
+              'thead',
+              {},
+              h(
+                'tr',
+                {},
+                ['id', 'status', 'type', 'P', 'title'].map(c => h('th', {}, c)),
+              ),
+            ),
+            h(
+              'tbody',
+              {},
+              shown.slice(0, 500).map(i =>
+                h(
+                  'tr',
+                  {
+                    class: 'row',
+                    on: {
+                      click: () => {
+                        picked = i.id
+                        render()
+                      },
+                    },
+                  },
+                  h('td', {}, i.id),
+                  h(
+                    'td',
+                    {},
+                    h('i', {
+                      class: 'dot',
+                      style: `background:var(--${STATUS.includes(i.status) ? i.status : 'open'})`,
+                    }),
+                    i.status || 'open',
+                  ),
+                  h('td', {}, i.issue_type),
+                  h('td', {}, i.priority ?? ''),
+                  h('td', {}, i.title),
+                ),
+              ),
+            ),
+          ),
+          shown.length > 500 ? h('div', { class: 'muted' }, 'first 500 shown; narrow the filter') : null,
+        )
+      }
+
+      function beadDetail(b) {
+        const f = (k, v) => (v ? [h('b', {}, k), h('pre', {}, v)] : [])
+        return h(
+          'div',
+          { class: 'detail' },
+          h(
+            'button',
+            {
+              on: {
+                click: () => {
+                  picked = null
+                  render()
+                },
+              },
+            },
+            'close',
+          ),
+          h('h3', {}, `${b.id} ${b.title}`),
+          h(
+            'div',
+            { class: 'muted' },
+            [
+              b.status,
+              b.issue_type,
+              'P' + b.priority,
+              b.assignee,
+              b.parent && 'parent ' + b.parent,
+              (b.labels || []).join(', '),
+            ]
+              .filter(Boolean)
+              .join(' · '),
+          ),
+          f('Description', b.description),
+          f('Acceptance', b.acceptance_criteria),
+          f('Close reason', b.close_reason),
+          h(
+            'div',
+            { class: 'muted' },
+            [b.created_at && 'created ' + b.created_at, b.closed_at && 'closed ' + b.closed_at]
+              .filter(Boolean)
+              .join(' · '),
+          ),
+        )
+      }
+
+      function render(keepFocus) {
+        const nav = document.getElementById('nav')
+        nav.replaceChildren(
+          ...['needs', 'overview', ...rigs.map(r => r.name)].map(n =>
+            h(
+              'button',
+              { class: n === tab ? 'on' : '', on: { click: () => go(n) } },
+              n === 'needs' ? 'Needs you' : n,
+              n === 'needs' ? h('span', { class: 'badge' }, String(needs.count)) : null,
+            ),
+          ),
+        )
+        const main = document.getElementById('main')
+        const body =
+          tab === 'needs'
+            ? needsTab()
+            : tab === 'overview'
+              ? overview()
+              : detail
+                ? rigTab(detail)
+                : h('div', { class: 'muted' }, 'loading')
+        main.replaceChildren(body)
+        if (keepFocus) {
+          const s = main.querySelector('input[type=search]')
+          if (s) {
+            s.focus()
+            s.setSelectionRange(s.value.length, s.value.length)
+          }
+        }
+      }
+
+      async function go(name) {
+        tab = name
+        detail = null
+        picked = null
+        render()
+        if (name !== 'overview' && name !== 'needs') {
+          detail = await (await fetch('/api/rigs/' + encodeURIComponent(name))).json()
+          render()
+        }
+      }
+
+      async function poll() {
+        const d = await (await fetch('/api/rigs')).json()
+        rigs = d.rigs
+        needs = await (await fetch('/api/needs')).json()
+        const busy = rigs.some(r => r.syncing)
+        document.getElementById('busy').textContent = busy ? 'syncing…' : ''
+        if (tab !== 'overview' && tab !== 'needs')
+          detail = await (await fetch('/api/rigs/' + encodeURIComponent(tab))).json()
+        render()
+      }
+      document.getElementById('sync').addEventListener('click', async () => {
+        document.getElementById('busy').textContent = 'syncing…'
+        await fetch('/api/sync', { method: 'POST' })
+        poll()
+      })
+      poll()
+      setInterval(poll, 5000)
+    </script>
+  </body>
+</html>
