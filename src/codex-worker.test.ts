@@ -111,6 +111,7 @@ test("a codex worker hooks.json keeps only herdr's session hook and the deny hoo
   expect(Object.keys(h).sort()).toEqual(['PreToolUse', 'SessionStart'])
   expect(h.PreToolUse).toHaveLength(2)
   expect(h.PreToolUse[0].hooks[0].command).toContain('--harness codex')
+  expect(JSON.stringify(h.PreToolUse)).not.toContain('onFailure')
   expect(h.SessionStart).toEqual([herdr])
 })
 
@@ -334,6 +335,8 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   expect(hook[0].matcher).toBe('Bash')
   expect(hook[1].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
   expect(hook[1].hooks).toEqual(hook[0].hooks)
+  // claude-factory-qn8a.36: codex 0.163.0 has no onFailure key, so the entry must not carry one
+  expect(hook[0].hooks[0]).not.toHaveProperty('onFailure')
   const cmd: string = hook[0].hooks[0].command
   expect(cmd).toContain("'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts'")
   expect(cmd).toContain('--harness codex')

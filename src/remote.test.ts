@@ -1802,6 +1802,7 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
               type: 'command',
               command: "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude",
               timeout: 10,
+              onFailure: 'block',
             },
           ],
         })),
