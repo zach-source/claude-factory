@@ -482,3 +482,80 @@ export function writePrompt(
     '',
   ].join('\n')
 }
+
+/** A page path the wiki accepts: a relative .md path. A caller must also refuse a `..` segment. */
+export const WIKI_PAGE_PATH = /^[A-Za-z0-9_][A-Za-z0-9_./-]*\.md$/
+
+const LCS_CELLS = 4_000_000
+
+/**
+ * The lines of a person that `after` changed or removed. `blameBefore` is `git blame --line-porcelain` of the page.
+ * Fail closed: a line is a person's line unless its record has `author-mail <factoryEmail>` exactly.
+ * It matches the common head and tail, then an LCS on the middle; a middle over 4,000,000 cells counts as changed.
+ * `line` is 1-based in the old text.
+ */
+export function humanLines(blameBefore: string, after: string, factoryEmail: string) {
+  const rows: { text: string; person: boolean }[] = []
+  let mail: string | undefined
+  let open = false
+  for (const l of blameBefore.split('\n')) {
+    if (!open) {
+      if (/^[0-9a-f]{40,64} \d+ \d+( \d+)?$/.test(l)) ((open = true), (mail = undefined))
+    } else if (l.startsWith('\t')) {
+      rows.push({ text: l.slice(1), person: mail !== `<${factoryEmail}>` })
+      open = false
+    } else if (l.startsWith('author-mail ')) mail = l.slice(12)
+  }
+  const a = after.split('\n')
+  if (a[a.length - 1] === '') a.pop()
+  const n = rows.length
+  let head = 0
+  while (head < n && head < a.length && rows[head]!.text === a[head]) head++
+  let tail = 0
+  while (tail < n - head && tail < a.length - head && rows[n - 1 - tail]!.text === a[a.length - 1 - tail])
+    tail++
+  const mid = rows.slice(head, n - tail).map(r => r.text)
+  const aft = a.slice(head, a.length - tail)
+  const kept = new Set<number>()
+  if (mid.length * aft.length <= LCS_CELLS) {
+    const w = aft.length + 1
+    const t = new Uint32Array((mid.length + 1) * w)
+    for (let i = mid.length - 1; i >= 0; i--)
+      for (let j = aft.length - 1; j >= 0; j--)
+        t[i * w + j] =
+          mid[i] === aft[j] ? t[(i + 1) * w + j + 1]! + 1 : Math.max(t[(i + 1) * w + j]!, t[i * w + j + 1]!)
+    for (let i = 0, j = 0; i < mid.length && j < aft.length;)
+      if (mid[i] === aft[j]) (kept.add(i++), j++)
+      else if (t[(i + 1) * w + j]! >= t[i * w + j + 1]!) i++
+      else j++
+  }
+  const out: { line: number; text: string }[] = []
+  rows.forEach((r, k) => {
+    if (r.person && k >= head && k < n - tail && !kept.has(k - head)) out.push({ line: k + 1, text: r.text })
+  })
+  return out
+}
+
+/**
+ * Deleted pages by a person, from `git log --diff-filter=D --no-renames --name-only --format=%x01%ae%x01%aI`.
+ * A header is `\x01<email>\x01<date>` with a valid date; a bad header clears the author. Every other line is a path.
+ * It keeps a path when its author is not the factory and it is a page path outside rigs/. One entry per path, newest date.
+ */
+export function tombstones(log: string, factoryEmail: string) {
+  const found = new Map<string, { path: string; at: string }>()
+  let at: string | undefined
+  for (const l of log.split('\n')) {
+    if (l.startsWith('\x01')) {
+      const p = l.split('\x01')
+      at = p.length === 3 && p[1] !== factoryEmail && !Number.isNaN(Date.parse(p[2]!)) ? p[2] : undefined
+    } else if (l && at && WIKI_PAGE_PATH.test(l) && !l.split('/').includes('..') && !l.startsWith('rigs/')) {
+      const old = found.get(l)
+      if (!old || Date.parse(at) > Date.parse(old.at)) found.set(l, { path: l, at })
+    }
+  }
+  return [...found.values()]
+}
+
+/** One needs-person.md bullet. The reason goes through line() and is cut to 200 characters. */
+export const flagLine = (path: string, n: number, reason: string) =>
+  `- \`${path}\` line ${n}: ${line(reason).slice(0, 200)}`
