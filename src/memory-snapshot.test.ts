@@ -114,6 +114,21 @@ test("snapshot keeps only the rig's notes", () => {
   const z = tmp('z')
   tar('-xzf', all, '-C', z)
   expect(readFileSync(join(z, 'solo/LONG.md'), 'utf8')).toBe(readFileSync(join(dir, 'solo/LONG.md'), 'utf8'))
+  // text that parseLong puts in no entry never travels
+  mkdirSync(join(dir, 'old'))
+  writeFileSync(join(dir, 'old', 'LONG.md'), '## stray\n<!-- not json -->\nOLDMARKER\n')
+  mkdirSync(join(dir, 'pre'))
+  writeFileSync(
+    join(dir, 'pre', 'LONG.md'),
+    'PREAMBLEMARKER\n\n' + formatLong([{ id: 'p', summary: 'pre', rig: 'acme', body: 'b' }]),
+  )
+  const strays = join(tmp('out'), 's.tgz')
+  snapshot(dir, 'acme', strays)
+  const w = tmp('w')
+  tar('-xzf', strays, '-C', w)
+  expect(existsSync(join(w, 'old/LONG.md'))).toBe(false)
+  expect(readFileSync(join(w, 'pre/LONG.md'), 'utf8')).not.toContain('PREAMBLEMARKER')
+  expect(readFileSync(join(w, 'pre/LONG.md'), 'utf8')).toContain('pre')
   // empty or missing store: null, no file
   const o2 = join(tmp('out'), 'e.tgz')
   expect(snapshot(join(tmp('empty')), 'acme', o2)).toBeNull()

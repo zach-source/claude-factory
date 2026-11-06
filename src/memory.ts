@@ -508,9 +508,9 @@ export function snapshot(dir: string, rig: string | undefined, out: string): { b
         const text = readFileSync(src, 'utf8')
         let body: string | null = keep(parse(f, text).rig) ? text : null
         if (f === 'LONG.md') {
-          const all = parseLong(text)
-          const kept = all.filter(e => keep(e.rig))
-          body = kept.length === all.length ? text : kept.length ? formatLong(kept) : null
+          // always re-format: text that no entry holds (a preamble, a file with no entry) must not travel
+          const kept = parseLong(text).filter(e => keep(e.rig))
+          body = kept.length ? formatLong(kept) : null
         }
         if (body === null) continue
         mkdirSync(join(stage, topic.name), { recursive: true })
