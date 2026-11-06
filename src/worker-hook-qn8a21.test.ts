@@ -392,6 +392,7 @@ describe('qn8a.21.18 a brace list that expands to a flag word', () => {
     `curl {-s,-o${S}} ${U}`,
     `curl {-o${S},-s} ${U}`,
     `curl {-o,-s} ${S} ${U}`,
+    `git diff {--output,-p} ${S}`,
     `curl {-s,-so${S}} ${U}`,
     `wget {-q,-O${S}} ${U}`,
     `sort {-u,-o${S}} x`,
