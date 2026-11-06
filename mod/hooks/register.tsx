@@ -92,11 +92,15 @@ const BRIEFER_WATCHDOG_MS = 10 * 60_000
 const BRIEFER_LOG_CAP = 50
 const REVIEWER_TYPE = 'factory:reviewer'
 /** `factory skills|proposals install|reject`, with the path before `factory` and quotes or extra space between the words */
+const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
 // [SECURITY] claude-factory-ruq0: a bd metadata write flag removes a hold mark. Best-effort text match
 // with no anchor on bd; a split flag in quotes, a script or bd sql get past it (claude-factory-lmi6).
-// `--metadata-field` (a read filter) does not match: the lookahead refuses a word char or '-'.
+// The `--metadata-field` read filter does not match: the lookahead refuses a word char or '-'.
+/** a bd metadata write flag */
 const META_WRITE = /--(?:set-|unset-)?metadata(?![\w-])/
-const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
+/** a bd label removal (update --remove-label or --set-labels, label remove): a hold such as held:* is a label */
+const LABEL_REMOVE =
+  /\bbd\b[^\n;&|]*\bupdate\b[^\n;&|]*--(?:remove-label|set-labels)(?![\w-])|\bbd\b[^\n;&|]*\blabel\s+remove\b/
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
 /** review-log.jsonl keeps at most this many lines, oldest dropped first */
@@ -1597,14 +1601,17 @@ export const register: Register = (on, options) => {
     // [SECURITY] no subagent installs or rejects a skill or proposal: the manager or the person does.
     // This is best-effort text matching on the joined command; src/cli.ts refuses the same verbs when
     // FACTORY_PATROL is set, which the prefix below adds for every subagent.
-    if (e.agentId && INSTALL_VERB.test(e.command.replace(/\\\n/g, '')))
+    const joined = e.command.replace(/\\\n/g, '')
+    if (e.agentId && INSTALL_VERB.test(joined))
       return {
         deny: 'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
       }
-    if (e.agentId && META_WRITE.test(e.command.replace(/\\\n/g, '')))
+    if (e.agentId && META_WRITE.test(joined))
       return {
         deny: 'a subagent never writes bead metadata: a hold such as discovered_from, pm_finding or owner_decisions lives there',
       }
+    if (e.agentId && LABEL_REMOVE.test(joined))
+      return { deny: 'a subagent never removes a bead label: a hold such as held:* or rejected is a label' }
 
     // the model's shell cd's into rigs to read them: its factory commands still work this factory.
     // claude-factory-72v.19: a subagent's prefix also carries FACTORY_PATROL=1. This is a second,
@@ -1621,7 +1628,7 @@ export const register: Register = (on, options) => {
     const gated = gatedCommand(e.command)
     // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
     // (a line continuation or a quoted newline must not hide a run-acting command from either)
-    const normalized = e.command.replace(/\\\n/g, '')
+    const normalized = joined
 
     // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
     // gated command outright, for every subagent. The run-touched hold below, and the patrol-log

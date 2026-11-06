@@ -455,6 +455,15 @@ test('a patrol subagent can list skills and proposals; the main chat can install
   expect(ran).toHaveLength(3)
 })
 
+const LABEL_DENY_ROWS = [
+  'bd update acme-1 --remove-label held:x',
+  'bd update acme-1 --remove-label=held:x',
+  'bd update acme-1 --set-labels factory',
+  'bd -C /repo/acme update acme-1 --remove-label held:x',
+  'bd update acme-1 \\\n--remove-label held:x',
+  'bd label remove acme-1 held:x',
+]
+
 const META_DENY_ROWS = [
   'bd update acme-1 --unset-metadata discovered_from',
   'bd update acme-1 --unset-metadata=pm_finding',
@@ -483,13 +492,19 @@ test(
     }
     const other = await $.tool.call({ tool: 'Bash', command: META_DENY_ROWS[0], agentId: 'other-1' } as never)
     expect(other.deny).toContain('never writes bead metadata')
+    for (const command of LABEL_DENY_ROWS) {
+      const d = await $.tool.call({ tool: 'Bash', command, agentId: 'patrol-1' } as never)
+      expect(d.deny, command).toContain('never removes a bead label')
+    }
     expect(ran).toEqual([])
     const allowed = [
       'bd list --metadata-field factory_create=t --json',
       'bd show acme-1 --json',
-      "bd update acme-1 --notes 'metadata'",
+      'bd show acme-1 --long',
       "bd comment acme-1 'see --metadata-field'",
-      'bd update acme-1 --remove-label held:x',
+      'bd label add acme-1 x',
+      'bd update acme-1 --add-label x',
+      'gh issue edit 1 --remove-label x',
       '/repo/bin/factory queue acme acme-1',
       'herdr workspace report-metadata ws',
     ]
