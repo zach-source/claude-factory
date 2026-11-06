@@ -3737,7 +3737,7 @@ export function globsMeet(a: string, b: string, state?: ScanState): boolean {
   }
   return go(0, 0)
 }
-const FACTORY_CONFIG_MAY_RE = /rigs|settings|inbox|[*?[{<>\\"']/i
+const FACTORY_CONFIG_MAY_RE = /rigs|settings|inbox|state|[*?[{<>\\"']/i
 // no `=` and no leading `-`: a flag with a glued value (--output=/h/rigs.json) is no path
 const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:/][\w.@%+,:/-]*$/
 
@@ -3766,7 +3766,13 @@ function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 | 3 {
 
 // 1: the word names the file. 2: a glob with a literal letter can match it. 3: a glob with no letter can.
 function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
-  if (c.includes('rigs.json') || c.includes('worker-settings') || c.includes('inbox.jsonl')) return 1
+  if (
+    c.includes('rigs.json') ||
+    c.includes('worker-settings') ||
+    c.includes('inbox.jsonl') ||
+    c.includes('state.json')
+  )
+    return 1
   const last = c.split('/').pop() ?? c
   if (!/[*?[]/.test(last)) return 0
   // a class names its first member, so w[o]rker-settings-acme.json reads as the settings file
@@ -3779,14 +3785,14 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
       i = cls.j
     }
   }
-  if (/rigs\.json|worker-settings|inbox\.jsonl/.test(first)) return 1
+  if (/rigs\.json|worker-settings|inbox\.jsonl|state\.json/.test(first)) return 1
   if (!FACTORY_CONFIG_GLOBS.some(g => globsMeet(last, g, state))) return 0
   return /[a-z]/.test(last) ? 2 : 3
 }
 
 /**
  * claude-factory-qn8a.20, -qn8a.24: 'name' when one segment writes the factory home rigs.json, a
- * worker-settings*.json file or a run inbox.jsonl (a write there forges manager mail),
+ * worker-settings*.json file or a run inbox.jsonl or state.json (a write there forges manager mail),
  * 'glob' when a glob guess can match one. Only a redirect or `of=`
  * target is exempt, and only as a plain path inside `root`. Any other write word that names the
  * file denies, because the hook cannot tell the source of a cp or mv from its destination.
@@ -9755,7 +9761,7 @@ export function clampTimeout(
 }
 
 export const FACTORY_CONFIG_REASON =
-  'The factory denies this write: it targets the factory home rigs.json, a worker-settings*.json file or a run inbox.jsonl, or a path with that name that the hook cannot place inside the worktree. The first two set the rig merge authority and the deny hook; only a person edits them. A write to inbox.jsonl forges manager mail. To read one, use cat. To make a test copy, redirect into .scratch/ in the worktree: cat /h/rigs.json > .scratch/rigs.json. Do not retry this exact command.'
+  'The factory denies this write: it targets the factory home rigs.json, a worker-settings*.json file or a run inbox.jsonl or state.json, or a path with that name that the hook cannot place inside the worktree. The first two set the rig merge authority and the deny hook; only a person edits them. A write to inbox.jsonl or state.json forges manager mail. To read one, use cat. To make a test copy, redirect into .scratch/ in the worktree: cat /h/rigs.json > .scratch/rigs.json. Do not retry this exact command.'
 
 export const FILE_WRITE_REASON =
   "The factory denies this file write: it targets a .git dir, the global git config or Claude Code's shell-snapshots folder. A worker never needs to write these. Use git commands for repo state."
@@ -9811,7 +9817,7 @@ export function fileWriteReason(
   } catch {}
   const inside = (p: string) => [root, realRoot].some(r => !!r && p.startsWith(r.endsWith(sep) ? r : r + sep))
   const config = (p: string) =>
-    /^((rigs|worker-settings.*)\.json|inbox\.jsonl)$/i.test(p.split(sep).pop() ?? '')
+    /^((rigs|worker-settings.*)\.json|inbox\.jsonl|state\.json)$/i.test(p.split(sep).pop() ?? '')
   return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
 }
 

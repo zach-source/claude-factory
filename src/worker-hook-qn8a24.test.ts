@@ -25,6 +25,9 @@ const DENY = [
   'ln -s /h/runs/r1/inbox.jsonl .scratch/l',
   `bun -e "require('fs').appendFileSync('/h/runs/r1/inbox.jsonl','x')"`,
   'cd /h/runs/r1 && echo x >> inbox.jsonl',
+  'echo x > /h/runs/r1/state.json',
+  'cp .scratch/s /h/runs/r1/state.json',
+  'echo x > /h/runs/r1/STATE.JSON',
   // known false positives, the same as rigs.json today
   'jq . /h/runs/r1/inbox.jsonl',
   'cp /h/runs/r1/inbox.jsonl .scratch/',
@@ -40,6 +43,10 @@ const ALLOW = [
   'echo x > .scratch/out.jsonl',
   'echo x >> /w/acme/.scratch/inbox.jsonl',
   'echo x > /h/runs/r1/outbox.jsonl',
+  'cat /h/runs/r1/state.json',
+  'tail -5 /h/runs/r1/state.json',
+  'echo x > .scratch/state.json',
+  `git commit -m 'read state.json'`,
 ]
 
 describe('qn8a.24 Bash guard', () => {
@@ -70,7 +77,7 @@ describe('qn8a.24 file tools', () => {
   afterAll(() => rmSync(base, { recursive: true }))
 
   test('denies a home inbox.jsonl, in any case', () => {
-    for (const n of ['inbox.jsonl', 'Inbox.JSONL'])
+    for (const n of ['inbox.jsonl', 'Inbox.JSONL', 'state.json', 'State.JSON'])
       expect(fileWriteReason(join(home, 'runs', 'r1', n), root, env(), root)).toBe(FACTORY_CONFIG_REASON)
   })
   test('denies a symlink in root that points to a home inbox.jsonl', () => {
@@ -79,6 +86,7 @@ describe('qn8a.24 file tools', () => {
   })
   test('allows inbox.jsonl in root and outbox.jsonl in the home', () => {
     expect(fileWriteReason(join(root, '.scratch', 'inbox.jsonl'), root, env(), root)).toBeUndefined()
+    expect(fileWriteReason(join(root, '.scratch', 'state.json'), root, env(), root)).toBeUndefined()
     expect(fileWriteReason(join(home, 'runs', 'r1', 'outbox.jsonl'), root, env(), root)).toBeUndefined()
   })
 })
