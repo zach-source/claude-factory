@@ -751,6 +751,15 @@ test.each([
   expect(outboxDenial(denyLine(deny))).toEqual(ok ? goodDeny : null)
 })
 
+test('outboxDenial masks NAME=value in the command, and a masked command stays the same (claude-factory-ktrl)', () => {
+  const cmd = (command: string) => outboxDenial(denyLine({ ...goodDeny, command }))?.command
+  expect(cmd('f() { ls; }; X=zqsecret')).toBe('f() { ls; }; X=***')
+  expect(cmd('f() { ls; }; X=***')).toBe('f() { ls; }; X=***')
+  const out = cmd('X=a '.repeat(50)) // 200 chars in: the mask grows it, the cut keeps 200
+  expect(out?.length).toBeLessThanOrEqual(200)
+  expect(out).not.toContain('=a')
+})
+
 test('outboxDenial and isDenyLine: an argv key, bad JSON or no deny key is not a denial', () => {
   expect(outboxDenial(denyLine(goodDeny, { argv: ['report'] }))).toBeNull()
   expect(isDenyLine(denyLine(goodDeny, { argv: ['report'] }))).toBe(false)
@@ -774,6 +783,22 @@ test("a tick writes an AX worker's valid deny line to the run's denials.jsonl, o
   expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(1)
   expect(called().match(/worker prompt/g)).toBeNull()
   rmSync(join(home, 'runs', 'rd1'), { recursive: true })
+})
+
+test('a tick masks NAME=value in an AX deny line before it writes denials.jsonl (claude-factory-ktrl)', () => {
+  launched('rdm')
+  clusterCursor('Running', 'idle', [denyLine({ ...goodDeny, command: 'f() { ls; }; X=zqsecret' })])
+  factory(['tick'])
+  const file = join(home, 'runs', 'rdm', 'denials.jsonl')
+  const text = readFileSync(file, 'utf8')
+  expect(text).not.toContain('zqsecret')
+  const rows = text
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(rows).toHaveLength(1)
+  expect(rows[0].command).toBe('f() { ls; }; X=***')
+  rmSync(join(home, 'runs', 'rdm'), { recursive: true })
 })
 
 test('a tick drops an invalid AX deny line: no file, no prompt, and it is not read again (claude-factory-dsfg)', () => {
