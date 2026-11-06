@@ -62,13 +62,17 @@ test('route: the closed table', () => {
       {
         method: 'POST',
         path: '/v1/runs/r1/mail',
-        body: { to: 'manager', text: 'hi there', from: 'manager', wake: true },
+        body: { to: 'manager', text: 'hi there', from: 'manager', cwd: process.cwd(), wake: true },
       },
     ],
     [
       'mail',
       ['r1', 'plan', 'hi'],
-      { method: 'POST', path: '/v1/runs/r1/mail', body: { to: 'plan', text: 'hi', from: 'manager' } },
+      {
+        method: 'POST',
+        path: '/v1/runs/r1/mail',
+        body: { to: 'plan', text: 'hi', from: 'manager', cwd: process.cwd() },
+      },
     ],
     ['goto', ['r1', 'plan'], { method: 'POST', path: '/v1/runs/r1/goto', body: { node: 'plan' } }],
     ['abort', ['r1'], { method: 'POST', path: '/v1/runs/r1/abort', body: {} }],
@@ -180,6 +184,39 @@ test('main: headers, body, response and exit code', async () => {
   const d = io()
   expect(await main('prs', [], env, fake(500, 'x'.repeat(2000)), d.io)).toBe(1)
   expect(d.o.err).toBe(`factory server: 500 ${'x'.repeat(500)}\n`)
+})
+
+test('main: FACTORY_FROM and patrol refuse what local mode refuses', async () => {
+  const calls: Call[] = []
+  const S = 'http://127.0.0.1:9'
+  const code = async (cmd: string, args: string[], env: Record<string, string>) =>
+    main(cmd, args, { FACTORY_SERVER: S, ...env }, fake(200, '{}', calls), io().io)
+  const forms: [string, string[]][] = [
+    ['decide', ['r1', 'approve']],
+    ['start', ['lifecycle', 'rig', 'goal', '--owned']],
+    ['stop', []],
+    ['resume', []],
+    ['goto', ['r1', 'plan']],
+    ['abort', ['r1']],
+    ['decisions', ['answer', 'rig', 'b1', 'yes']],
+    ['tick', []],
+  ]
+  for (const [c, a] of forms) expect(await code(c, a, { FACTORY_FROM: 'manager' })).toBe(1)
+  for (const [c, a] of forms.filter(([c]) => c === 'start' || c === 'decisions'))
+    expect(await code(c, a, { FACTORY_PATROL: '1' })).toBe(1)
+  expect(calls.length).toBe(0)
+  for (const [c, a] of <[string, string[]][]>[
+    ['mail', ['r1', 'plan', 'hi']],
+    ['show', ['r1']],
+    ['status', []],
+    ['prs', []],
+    ['backlog', []],
+    ['decisions', []],
+    ['plan', []],
+    ['metrics', []],
+  ])
+    expect(await code(c, a, { FACTORY_FROM: 'manager' })).toBe(0)
+  expect(calls.length).toBe(8)
 })
 
 test('main: refusals make zero requests; local commands return null', async () => {
@@ -294,12 +331,49 @@ async function cli(args: string[], extra: Record<string, string> = {}) {
 }
 const url = () => `http://127.0.0.1:${server.port}`
 
+/** a FACTORY_HOME with text/<name>, the only place textFileArg reads from */
+function textHome(name: string, text: string) {
+  const home = tmp(`th-${Math.random().toString(36).slice(2)}`)
+  mkdirSync(join(home, 'text'))
+  writeFileSync(join(home, 'rigs.json'), '[]')
+  const file = join(home, 'text', name)
+  writeFileSync(file, text)
+  return { home, file }
+}
+
 test('spawn: local mode makes no request (AC1, AC9)', async () => {
   hits.length = 0
   const s = await cli(['status'])
   const show = await cli(['show', 'nope'])
+  const tick = await cli(['tick'])
+  const decide = await cli(['decide', 'nope', 'approve'])
+  const th = textHome('mail.txt', 'from file')
+  const mail = await cli(['mail', 'nope', 'plan', '--text-file', th.file], { FACTORY_HOME: th.home })
   expect(s.code).toBe(0)
   expect(show.code).toBe(1)
+  expect(show.err).not.toContain('factory server')
+  expect(tick.code).toBe(0)
+  expect(tick.out).not.toContain('"fake"')
+  expect([decide.code, mail.code]).toEqual([1, 1])
+  expect(decide.err + mail.err).not.toContain('factory server')
+  expect(hits.length).toBe(0)
+})
+
+test('spawn: mail --text-file reads the file in server mode (AC9)', async () => {
+  hits.length = 0
+  const th = textHome('mail2.txt', 'long text')
+  const m = await cli(['mail', 'r1', 'plan', '--text-file', th.file], {
+    FACTORY_SERVER: url(),
+    FACTORY_HOME: th.home,
+  })
+  expect(m.code).toBe(0)
+  expect(JSON.parse(hits[0]!.body).text).toBe('long text')
+})
+
+test('spawn: AC7 patrol refusal for decide, resume and tick', async () => {
+  hits.length = 0
+  for (const a of [['decide', 'r1', 'approve'], ['resume'], ['tick'], ['start', 'f', 'r', 'g']])
+    expect((await cli(a, { FACTORY_SERVER: url(), FACTORY_PATROL: '1' })).code).toBe(1)
   expect(hits.length).toBe(0)
 })
 
@@ -325,7 +399,12 @@ test('spawn: mail text goes through; a worker marker keeps the local path (AC8)'
   hits.length = 0
   const m = await cli(['mail', 'r1', 'manager', 'hello'], { FACTORY_SERVER: url() })
   expect(m.code).toBe(0)
-  expect(JSON.parse(hits[0]!.body)).toEqual({ to: 'manager', text: 'hello', from: 'manager' })
+  expect(JSON.parse(hits[0]!.body)).toEqual({
+    to: 'manager',
+    text: 'hello',
+    from: 'manager',
+    cwd: process.cwd(),
+  })
   hits.length = 0
   for (const extra of <Record<string, string>[]>[
     { FACTORY_FROM: 'implement' },

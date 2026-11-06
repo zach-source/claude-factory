@@ -13,7 +13,9 @@ export type Io = { out: (s: string) => void; err: (s: string) => void }
 const SEG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 /** commands that stay on this machine in server mode */
 const LOCAL = new Set(['help', '--help', '-h', 'check', 'mutate', 'ci', 'pg-scratch', 'devenv'])
-const PATROL_REFUSED = new Set(['tick', 'stop', 'resume', 'decide'])
+const PATROL_REFUSED = new Set(['tick', 'stop', 'resume', 'decide', 'start'])
+/** with FACTORY_FROM set (the manager), local mode refuses all but mail and reads */
+const FROM_ALLOWED = new Set(['mail', 'show', 'status', 'prs', 'backlog', 'decisions', 'plan', 'metrics'])
 
 /** a worker keeps the local path (FR-018); FACTORY_FROM=manager is the manager, not a worker */
 export function isWorker(env: Env): boolean {
@@ -105,7 +107,7 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
         ? {
             method: 'POST',
             path: `/v1/runs/${a}/mail`,
-            body: { to: b, text, from: 'manager', ...(wake && { wake: true }) },
+            body: { to: b, text, from: 'manager', cwd: process.cwd(), ...(wake && { wake: true }) },
           }
         : bad
     }
@@ -169,8 +171,11 @@ export async function main(
   if (!found) return null
   if ('error' in found) return refuse(found.error)
   if (typeof req === 'string') return refuse(req)
-  if (env.FACTORY_PATROL && PATROL_REFUSED.has(cmd!))
+  const answer = cmd === 'decisions' && args[0] === 'answer'
+  if (env.FACTORY_PATROL && (PATROL_REFUSED.has(cmd!) || answer))
     return refuse(`a patrol cannot run factory ${cmd}: leave it for the person or the manager`)
+  if (env.FACTORY_FROM && (!FROM_ALLOWED.has(cmd!) || answer))
+    return refuse(`a worker cannot run factory ${cmd} (FACTORY_FROM is set): mail the manager instead`)
   let tls
   try {
     tls = tlsFor(found.url, env.HOME ?? homedir())

@@ -45,6 +45,10 @@ Set `FACTORY_SERVER` to an origin to send CLI forms to this API. Without it, the
 - The origin must be `https:`, or `http:` on `127.0.0.1`, `localhost` or `[::1]`. It has no user, path, query or hash. If it is not valid, the CLI exits 1 and sends no request.
 - For `https:`, the client reads `~/.config/factory/person.crt`, `person.key` and `ca.crt`. If one file is missing, the CLI exits 1 and names the path.
 - A worker ignores `FACTORY_SERVER`. A worker has `FACTORY_FROM` other than `manager`, or `FACTORY_RUN`, `FACTORY_DEF_NAME`, or `BEADS_ACTOR` that starts with `factory/`.
+- If `FACTORY_FROM` is `manager`, the client refuses all forms except `mail` and the reads. The reads are `show`, `status`, `prs`, `backlog`, `decisions [list]`, `plan` and `metrics`.
+- If `FACTORY_PATROL` is set, the client refuses `tick`, `stop`, `resume`, `decide`, `start` and `decisions answer`.
+- A refusal sends no request.
+- `mail` sends the `cwd` of the client. If `cwd` is inside the run worktree, the server must answer with a 4xx. This is the `managerSender` check in `src/cli.ts`. It is a duty of claude-factory-akiq.7.
 - Each path segment (run, node, rig, bead) must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`.
 - Each POST has a new `Idempotency-Key` and `content-type: application/json`.
 - A 2xx body goes to stdout and the exit code is 0. Any other status writes `factory server: <status> <first 500 characters>` to stderr and the exit code is 1.
@@ -58,7 +62,7 @@ Set `FACTORY_SERVER` to an origin to send CLI forms to this API. Without it, the
 | `prs`, `backlog`, `decisions [list]`, `plan [show]`   | `GET /v1/prs`, `/v1/backlog`, `/v1/decisions`, `/v1/plan`     |
 | `metrics [--rig r] [--since s] [--json] [--tokens]`   | `GET /v1/metrics` with `rig`, `since`, `json=1`, `tokens=1`   |
 | `decide <run> <outcome> [note...]`                    | `POST /v1/runs/<run>/decide {outcome, note}`                  |
-| `mail <run> <to> [--wake] <text...>`                  | `POST /v1/runs/<run>/mail {to, text, from: "manager", wake?}` |
+| `mail <run> <to> [--wake] <text...>`                  | `POST /v1/runs/<run>/mail {to, text, from: "manager", cwd, wake?}` |
 | `goto <run> <node>`, `abort <run>`                    | `POST /v1/runs/<run>/goto {node}`, `/abort {}`                |
 | `start <factory>[@station] <rig> <goal...> [--owned]` | `POST /v1/start {factory, station?, rig, goal, owned?}`       |
 | `stop`, `resume`                                      | `POST /v1/halt {mode}`                                        |
