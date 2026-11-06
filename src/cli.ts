@@ -76,6 +76,7 @@ import {
   isOwned,
   OWNER,
   REJECTED,
+  isHoldLabel,
   LABEL,
   NAME,
   linearSourced,
@@ -7540,17 +7541,20 @@ async function dispatch() {
         )
       }
       const eligible = startable.filter(x => {
-        const open = isOwned(x) || x.labels?.includes(OWNER) ? [] : openChildren(b, x.id)
+        const hold = x.labels?.find(isHoldLabel)
+        const open = isOwned(x) || x.labels?.includes(OWNER) || hold ? [] : openChildren(b, x.id)
         const why =
           isOwned(x) || x.labels?.includes(OWNER) || (open.length && open.every(isWaitingOnPerson))
             ? 'owner decisions pending'
-            : hygieneHeld(x)
-              ? 'hygiene proposed close (factory queue releases it)'
-              : open.length
-                ? 'open children'
-                : linearIds.has(x.id)
-                  ? 'Linear id unconfirmed'
-                  : ''
+            : hold
+              ? `held: ${hold} (factory queue releases it)`
+              : hygieneHeld(x)
+                ? 'hygiene proposed close (factory queue releases it)'
+                : open.length
+                  ? 'open children'
+                  : linearIds.has(x.id)
+                    ? 'Linear id unconfirmed'
+                    : ''
         if (why) skips.set(x.id, why)
         return !why
       })
