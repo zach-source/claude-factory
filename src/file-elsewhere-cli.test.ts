@@ -20,10 +20,11 @@ const repoB = join(dir, 'acme-b')
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-const factory = (args: string[], env: Record<string, string> = {}) => {
+const factory = (args: string[], env: Record<string, string> = {}, cwd?: string) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...env },
+    cwd,
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -256,6 +257,77 @@ test('a -file flag refuses a bad path with exit 1 and zero bd calls (AC1)', () =
   const max = txt('max.txt', Buffer.alloc(100 * 1024, 'a'))
   expect(factory([...FROM, '--title-file', good, '--description-file', max]).code).toBe(0)
 })
+
+test('a -file flag also reads a file in .scratch/ of the git toplevel of the cwd (jho3 AC3)', () => {
+  setup()
+  const wt = join(dir, 'wt')
+  mkdirSync(join(wt, '.scratch'), { recursive: true })
+  mkdirSync(join(wt, 'sub'))
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const outside = join(dir, 'outside.txt')
+  writeFileSync(outside, 'secret')
+  symlinkSync(outside, join(wt, '.scratch', 'link.txt'))
+  writeFileSync(join(wt, '.scratch', 'ok.md'), "x'; id; ' and $(id)\n")
+  writeFileSync(join(wt, 'notes.md'), 'notes')
+  const good = txt('ok.txt', 'ok')
+  const run = (p: string, cwd = wt) =>
+    factory([...FROM, '--title-file', p, '--description-file', good], {}, cwd)
+  const r = run(join(wt, '.scratch', 'ok.md'), join(wt, 'sub'))
+  expect(r.code).toBe(0)
+  expect(creates()[0]).toContain("x'; id; ' and $(id)")
+  mkdirSync(join(wt, '.scratch-x'))
+  writeFileSync(join(wt, '.scratch-x', 'a.md'), 'a')
+  const bad: Record<string, string> = {
+    'sibling folder': join(wt, '.scratch-x', 'a.md'),
+    dotdot: join(wt, '.scratch', '..', 'notes.md'),
+    'symlink out': join(wt, '.scratch', 'link.txt'),
+    'outside .scratch': join(wt, 'notes.md'),
+  }
+  for (const [name, p] of Object.entries(bad)) expect([name, run(p).code]).toEqual([name, 1])
+  // not a git worktree: only text/ counts
+  mkdirSync(join(dir, 'plain', '.scratch'), { recursive: true })
+  writeFileSync(join(dir, 'plain', '.scratch', 'a.md'), 'a')
+  expect(run(join(dir, 'plain', '.scratch', 'a.md'), join(dir, 'plain')).code).toBe(1)
+}, 30000)
+
+test('a .scratch/ that is a symlink to an outside folder is no root (jho3.12)', () => {
+  setup()
+  const wt = join(dir, 'wt2')
+  mkdirSync(wt)
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const out = join(dir, 'outdir')
+  mkdirSync(out)
+  writeFileSync(join(out, 'token.txt'), 'secret')
+  symlinkSync(out, join(wt, '.scratch'))
+  const good = txt('ok2.txt', 'ok')
+  const r = factory(
+    [...FROM, '--title-file', join(wt, '.scratch', 'token.txt'), '--description-file', good],
+    {},
+    wt,
+  )
+  expect(r.code).toBe(1)
+  expect(lines()).toHaveLength(0)
+}, 30000)
+
+test('a .scratch/ of a toplevel that GIT_WORK_TREE moves outside the cwd is no root (jho3.13)', () => {
+  setup()
+  const wt = join(dir, 'wt3')
+  mkdirSync(wt)
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const out = join(dir, 'outtree')
+  mkdirSync(join(out, '.scratch'), { recursive: true })
+  writeFileSync(join(out, '.scratch', 'token.txt'), 'secret')
+  const good = txt('ok3.txt', 'ok')
+  const r = factory(
+    [...FROM, '--title-file', join(out, '.scratch', 'token.txt'), '--description-file', good],
+    { GIT_DIR: join(wt, '.git'), GIT_WORK_TREE: out },
+    wt,
+  )
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('is outside')
+  expect(r.err).toContain('.scratch/ of the git worktree')
+  expect(lines()).toHaveLength(0)
+}, 30000)
 
 test('file-elsewhere refuses a bad grammar with usage and zero bd calls (AC2)', () => {
   setup()
