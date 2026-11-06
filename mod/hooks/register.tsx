@@ -92,10 +92,10 @@ const BRIEFER_WATCHDOG_MS = 10 * 60_000
 const BRIEFER_LOG_CAP = 50
 const REVIEWER_TYPE = 'factory:reviewer'
 /** `factory skills|proposals install|reject`, with the path before `factory` and quotes or extra space between the words */
+const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
 // [SECURITY] a bd label write can queue a bead for dispatch; best-effort text match (see the tool.call deny).
 const LABEL_ADD =
-  /--add-label|--set-labels|\bbd\b[\s\S]*(?:\blabel['"]?\s+['"]?(?:add|propagate)\b|\bcreate\b[\s\S]*(?:--labels\b|\s['"]?-[A-Za-z]*l))/
-const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
+  /--add-label|--set-labels|\bbd\b[\s\S]*(?:\btag['"]?\s|\blabel['"]?\s[\s\S]*?\b(?:add|propagate)\b|\b(?:create|new|q)['"]?\s[\s\S]*(?:--labels\b|\s['"]?-[A-Za-z]*l))/
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
 /** review-log.jsonl keeps at most this many lines, oldest dropped first */
@@ -1596,11 +1596,14 @@ export const register: Register = (on, options) => {
     // [SECURITY] no subagent installs or rejects a skill or proposal: the manager or the person does.
     // This is best-effort text matching on the joined command; src/cli.ts refuses the same verbs when
     // FACTORY_PATROL is set, which the prefix below adds for every subagent.
-    if (e.agentId && INSTALL_VERB.test(e.command.replace(/\\\n/g, '')))
+    const joined = e.command.replace(/\\\n/g, '')
+    if (e.agentId && INSTALL_VERB.test(joined))
       return {
         deny: 'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
       }
-    if (e.agentId && LABEL_ADD.test(e.command.replace(/\\\n/g, '')))
+    // [SECURITY] no subagent adds a bd label: a label such as factory queues a bead for dispatch with no check.
+    // Best-effort text match; the hook cannot read the label value, so it denies every add.
+    if (e.agentId && LABEL_ADD.test(joined))
       return {
         deny: 'a subagent never adds a bd label: queue or start a bead with factory queue or factory start, which check it',
       }
