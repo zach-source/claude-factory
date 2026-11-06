@@ -154,7 +154,18 @@ function tokenBench(): void {
   if (ms >= 50 || reason) process.exit(1)
 }
 
+// claude-factory-qn8a.19.5: 40 brace groups of two must take under 50 ms. Run `bun run src/worker-hook.bench.ts brace`.
+function braceBench(): void {
+  const command = 'cat ' + '{a,b}'.repeat(40) + ' ; cat ~/.codex/auth.json'
+  const t0 = performance.now()
+  const reason = tokenReason(command, '/w', '/w')
+  const ms = performance.now() - t0
+  console.log(`brace 40 groups\t${ms.toFixed(1)} ms\treason=${reason ? 'denied' : 'none'}`)
+  if (ms >= 50 || !reason) process.exit(1)
+}
+
 async function main() {
+  if (process.argv[2] === 'brace') return braceBench()
   if (process.argv[2] === 'snapshot') return snapshotBench()
   if (process.argv[2] === 'token') return tokenBench()
   const args = process.argv.slice(2)

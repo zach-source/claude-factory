@@ -30,6 +30,8 @@ const KEYCHAIN = new Set(['find-generic-password', 'find-internet-password', 'du
 const SPLIT = /[\s'"`()<>;|&=:]+/
 const PATTERN = /[*?[\]{}!\\$]/
 const MARKER = /(?:^|[^\w.-])\.(?:codex|claude)(?![\w.-])|codex_home|claude_config_dir/
+// a cd or pushd moves the shell, but pieces resolve against base: a relative token file name then counts as marked
+const CD = /(?:^|[\s;&|(])(?:cd|pushd)(?=[\s;&|)]|$)/
 
 export interface TokenEnv {
   home: string
@@ -71,6 +73,7 @@ function insideOf(root: string | undefined) {
 
 /** expand the brace groups of `s` that hold a top-level comma. Past 256 results it gives ['*'] (fail closed). */
 function expand(s: string, left = { n: 256 }): string[] {
+  if (--left.n < 0) return ['*'] // the budget counts each call, so the work stays bounded
   let depth = 0
   let start = -1
   for (let i = 0; i < s.length; i++) {
@@ -90,9 +93,7 @@ function expand(s: string, left = { n: 256 }): string[] {
       }
       if (!alts.length) continue
       alts.push(s.slice(from, i))
-      const out = alts.flatMap(a => expand(s.slice(0, start) + a + s.slice(i + 1), left))
-      left.n -= out.length
-      return left.n < 0 ? ['*'] : out
+      return alts.flatMap(a => expand(s.slice(0, start) + a + s.slice(i + 1), left))
     }
   }
   return [s]
@@ -179,7 +180,8 @@ export function tokenReason(command: string, base: string, root?: string): strin
   const literal = new Set<string>()
   for (const text of texts) {
     const words = [...text.matchAll(WORD)].map(m => unshell(m[0]))
-    const marker = MARKER.test(fold(words.join(' ')))
+    const joined = fold(words.join(' '))
+    const marker = MARKER.test(joined) || CD.test(joined)
     for (const w of words) {
       if (KEYCHAIN.has(fold(w))) return TOKEN_READ_REASON
       for (const p of w

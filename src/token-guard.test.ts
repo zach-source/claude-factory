@@ -39,6 +39,13 @@ afterAll(() => {
 const deny = (c: string) => tokenReason(c, root, root)
 
 const DENY = [
+  ...[
+    ['cd', '~', '&&'],
+    ['cd', '&&'],
+    ['cd', '$' + 'HOME;'],
+    ['pushd', '\x7e;'],
+    ['cd', '/Users/acme', '&&'],
+  ].map(w => [...w, 'cat .claude.json'].join(' ')),
   'cat ~/.codex/auth.json',
   'cat $CODEX_HOME/auth.json',
   'cat "${CODEX_HOME}/auth.json"',
@@ -111,6 +118,12 @@ const ALLOW = [
 ]
 
 describe('tokenReason', () => {
+  test.each([20, 40])('%d brace groups before a token path deny fast', n => {
+    const t0 = performance.now()
+    const r = deny('cat ' + '{a,b}'.repeat(n) + ' ; cat ~/.codex/auth.json')
+    expect(r).toBe(TOKEN_READ_REASON)
+    expect(performance.now() - t0).toBeLessThan(50)
+  })
   test.each(DENY)('denies %s', c => expect(deny(c)).toBe(TOKEN_READ_REASON))
   test.each(ALLOW)('allows %s', c => expect(deny(c) == null).toBe(true))
   test('a glued brace word is no wildcard, even where realpath of the root fails (Linux CI, EACCES on /root)', () => {
