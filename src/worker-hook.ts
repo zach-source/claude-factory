@@ -416,6 +416,8 @@ export interface HookGate {
    * It does not know where the command runs.
    * So it denies nothing on that fact alone. */
   cwd?: string
+  /** claude-factory-qn8a.21: the dir that holds the running hook's src/ (default: the parent of this file's dir). */
+  hookDir?: string
   /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
    * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
   headOf?: (dir?: string, timeoutMs?: number) => string | undefined
@@ -530,6 +532,8 @@ interface ScanState {
   /** claude-factory-3frd: set when a word after a sh -c cluster holds a dollar or backtick. scanReason returns SH_DYNAMIC_SCRIPT_REASON last. */
   dynamicScript: boolean
   globalGitConfig: boolean
+  /** claude-factory-qn8a.21: a segment can write a hook-control path. scanReason denies it after any more specific reason. */
+  hookControl: boolean
   gitWord: boolean
   /** claude-factory-mn2y: set when any segment, at any depth, may define a shell alias. */
   aliasWrite: boolean
@@ -8011,6 +8015,7 @@ export function scanReason(
     bodyDeny: false,
     dynamicScript: false,
     globalGitConfig: false,
+    hookControl: false,
     gitWord: false,
     aliasWrite: false,
     aliasArgsOff: false,
@@ -8043,6 +8048,7 @@ export function scanReason(
   // claude-factory-ty8y: a global git config path word plus any git word denies, before the
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
+  if (state.hookControl) return HOOK_CONTROL_REASON
   if (state.bodyDeny && !state.stdinDeferred) return REASON
   // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
   // trap, source or substitution reads it after this hook ran. Deny unless the command is only
@@ -9136,6 +9142,19 @@ function denyAtScan(
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true
     if (
+      !state.hookControl &&
+      hookControlWrite(
+        words,
+        operandSkip,
+        b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+        g.cwd ?? root ?? process.cwd(),
+        root ?? process.cwd(),
+        g.hookDir ?? dirname(import.meta.dir),
+        state,
+      )
+    )
+      state.hookControl = true
+    if (
       configUse === 'write' ||
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
@@ -9507,6 +9526,162 @@ export function clampTimeout(
   return left < (input.timeout ?? BASH_DEFAULT_MS) ? left : undefined
 }
 
+export const HOOK_CONTROL_REASON =
+  'The factory denies this write: it targets the hook source or a .claude/settings.json or settings.local.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
+
+const HOOK_MODULES = ['worker-hook.ts', 'home-guard.ts', 'cut.ts']
+const SETTINGS_NAMES = ['settings.json', 'settings.local.json']
+
+/**
+ * claude-factory-qn8a.21: true when `abs` is a hook-control path. That is a `.claude` dir, a settings.json or
+ * settings.local.json in one, or (outside `root`) the hook dir or a path under it.
+ * ponytail: an ancestor of the hook dir passes, because `find / ...` and `ls -d /` must stay allowed.
+ * Case folds to lower. If root and the hook dir overlap, only the hook modules count.
+ */
+function hookControlPath(abs: string, root: string, hookDir: string): boolean {
+  const a = abs.toLowerCase()
+  const parts = a.split('/').filter(Boolean)
+  const n = parts.length
+  if (parts[n - 1] === '.claude') return true
+  if (n >= 2 && parts[n - 2] === '.claude' && SETTINGS_NAMES.includes(parts[n - 1]!)) return true
+  const h = hookDir.toLowerCase()
+  const r = root.toLowerCase()
+  const under = (p: string, d: string) => p === d || p.startsWith(d.endsWith('/') ? d : d + '/')
+  if (under(h, r) || under(r, h)) return HOOK_MODULES.some(m => a === `${h}/src/${m}`)
+  return !under(a, r) && under(a, h)
+}
+
+// One-level-at-a-time `{a,b}` expansion, capped. undefined means over the cap.
+function expandBraces(w: string, cap = 64): string[] | undefined {
+  const m = w.match(/^([^{]*)\{([^{}]*,[^{}]*)\}([\s\S]*)$/)
+  if (!m) return [w]
+  const out: string[] = []
+  for (const alt of m[2]!.split(',')) {
+    const sub = expandBraces(m[1]! + alt + m[3]!, cap)
+    if (!sub) return undefined
+    out.push(...sub)
+    if (out.length > cap) return undefined
+  }
+  return out
+}
+
+/**
+ * claude-factory-qn8a.21: true when one word, read as a write target, can name a hook-control path.
+ * A word with an expansion (`$`, a backtick, ~user) denies when a part of it names the hook dir, a hook module,
+ * `.claude` or a settings file. A glob denies when it can match one (a `*` never matches a leading dot).
+ * Out of scope (ponytail): a path built at run time, a symlink made in the same command.
+ */
+function hookControlWord(
+  word: string,
+  cwd: string,
+  root: string,
+  hookDir: string,
+  state?: ScanState,
+): boolean {
+  const w = word.replace(/["'\\]/g, '')
+  if (!w) return false
+  const alts = expandBraces(w)
+  if (!alts) return true
+  const base = hookDir.split('/').filter(Boolean).pop()?.toLowerCase() ?? '\0'
+  for (const x of alts) {
+    if (/[$`]|^~[^/]/.test(x)) {
+      const ps = x.toLowerCase().split('/').filter(Boolean)
+      const last = ps[ps.length - 1] ?? ''
+      if (
+        ps.includes(base) ||
+        ps.includes('.claude') ||
+        HOOK_MODULES.includes(last) ||
+        SETTINGS_NAMES.includes(last)
+      )
+        return true
+      continue
+    }
+    const abs = resolvePath(cwd, x === '~' || x.startsWith('~/') ? homedir() + x.slice(1) : x)
+    if (/[*?[]/.test(x)) {
+      const samples = [
+        hookDir,
+        `${hookDir}/src`,
+        `${hookDir}/package.json`,
+        ...HOOK_MODULES.map(m => `${hookDir}/src/${m}`),
+      ]
+      if (!abs.startsWith(root + '/') && globCanMatch(abs, samples, state)) return true
+      const ps = abs.split('/').filter(Boolean)
+      const last = ps[ps.length - 1]
+      const prev = ps[ps.length - 2]
+      if (last?.startsWith('.') && globCanMatch(last, ['.claude'], state)) return true
+      if (
+        prev?.startsWith('.') &&
+        globCanMatch(
+          `${prev}/${last}`,
+          SETTINGS_NAMES.map(s => `.claude/${s}`),
+          state,
+        )
+      )
+        return true
+      continue
+    }
+    if (hookControlPath(abs, root, hookDir)) return true
+  }
+  return false
+}
+
+const HOOK_CONTROL_MAY_RE = /[\/$`~*?[{<>\\]|\.claude|settings|worker-hook|home-guard|cut\.ts|package/i
+
+/**
+ * claude-factory-qn8a.21: true when a segment can write a hook-control path. It uses the model of
+ * `globalGitConfigUse`: a redirect target, an `of=` value, an output-flag value, or an operand of a command
+ * that is not a reader. A git or text-operand segment skips its operands. A cd, pushd or popd into a hook-control
+ * dir or any `.claude` dir denies. The value of an `--opt=value` word is tested too.
+ */
+function hookControlWrite(
+  words: string[],
+  skip: OperandSkip,
+  isCd: boolean,
+  cwd: string,
+  root: string,
+  hookDir: string,
+  state?: ScanState,
+): boolean {
+  if (!hookControlPath(cwd, root, hookDir) && !HOOK_CONTROL_MAY_RE.test(foldNonAscii(joinedWords(words))))
+    return false
+  let pending = false
+  let prevWriterFlag = false
+  const test = (x: string) => hookControlWord(x, cwd, root, hookDir, state)
+  for (const word of words) {
+    const afterWriterFlag = prevWriterFlag
+    prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
+    const wasPending = pending
+    pending = false
+    let candidate = word
+    let redirect = wasPending
+    const m = word.match(REDIRECT_PREFIX_RE)
+    if (m && m[0].length === word.length) {
+      pending = true
+      continue
+    }
+    if (m) {
+      candidate = word.slice(m[0].length)
+      redirect = true
+    } else if (!wasPending && /^of=/i.test(word)) {
+      candidate = word.slice(3)
+      redirect = true
+    }
+    if (isCd && !redirect) {
+      if (word.startsWith('-')) continue
+      if (test(word) || /(^|\/)\.claude(\/|$)/i.test(word.replace(/["'\\]/g, ''))) return true
+      continue
+    }
+    if (!redirect) {
+      if (skip === 'reader') continue
+      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
+    }
+    if (test(candidate)) return true
+    const eq = candidate.match(/^(?:--[\w-]+|[A-Za-z_]\w*)=([\s\S]+)$/)
+    if (eq && test(eq[1]!)) return true
+  }
+  return false
+}
+
 export const FILE_WRITE_REASON =
   "The factory denies this file write: it targets a .git dir, the global git config or Claude Code's shell-snapshots folder. A worker never needs to write these. Use git commands for repo state."
 
@@ -9526,12 +9701,15 @@ function protectedParts(parts: string[], xdg: string[]): boolean {
  * It fails closed on a missing, empty, NUL or ~user path. It checks the lexical path and the real path
  * (the nearest existing ancestor through realpath), in lower case, so a symlink or a case change does not pass.
  * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config,
- * codex apply_patch (claude-factory-qn8a.22), and the hook source and settings (claude-factory-qn8a.21).
+ * codex apply_patch (claude-factory-qn8a.22). The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
+ * (claude-factory-qn8a.21); rigs.json and worker-settings*.json are claude-factory-qn8a.20.
  */
 export function fileWriteReason(
   path: unknown,
   cwd: string,
   env: { home: string; xdg?: string | undefined } = { home: homedir(), xdg: process.env.XDG_CONFIG_HOME },
+  root: string = process.env.CLAUDE_PROJECT_DIR || cwd,
+  hookDir: string = dirname(import.meta.dir),
 ): string | undefined {
   if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
     return FILE_WRITE_REASON
@@ -9551,6 +9729,16 @@ export function fileWriteReason(
       real = dirname(real)
     }
   }
+  let realHook = hookDir
+  try {
+    realHook = realpathSync(hookDir)
+  } catch {}
+  if (
+    hookControlPath(abs, root, hookDir) ||
+    hookControlPath(real, root, hookDir) ||
+    hookControlPath(real, root, realHook)
+  )
+    return HOOK_CONTROL_REASON
   return protectedParts(split(abs), xdg) || protectedParts(split(real), xdg) ? FILE_WRITE_REASON : undefined
 }
 
@@ -9653,6 +9841,8 @@ function handle(input: unknown) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
       i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      undefined,
+      process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd(),
     )
     if (reason) {
       console.log(

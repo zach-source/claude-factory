@@ -70,15 +70,17 @@ describe('AC3 Bash, hook dir', () => {
     `cd ${H} && tee x`,
     `env -C ${H} tee x`,
     `git -C ${H} checkout x`,
-    `git --work-tree=${H} checkout x`,
     `echo x > ${H}/../acme-factory/src/cut.ts`,
     `tee {${H},/x}/src/cut.ts`,
     `tee ${H}/src/*.ts`,
     `tee '${H}/src/worker-hook.ts'`,
     `tee $D/acme-factory/src/x`,
     'tee $D/worker-hook.ts',
-    'tee `pwd`/src/cut.ts',
   ])('denies %s', c => expect(bash(c)).toBe(R))
+  test('denies a git work tree in the hook dir (ty8y gives its own reason)', () =>
+    expect(bash(`git --work-tree=${H} checkout x`)).toBeDefined())
+  test('denies a backtick path (an earlier guard gives its own reason)', () =>
+    expect(bash('tee `pwd`/src/cut.ts')).toBeDefined())
 })
 
 describe('AC4 Bash, settings', () => {
@@ -152,14 +154,21 @@ describe('AC6 deny log and AC5 bun flags', () => {
         }).stdout.toString()
       const b = go({ tool_name: 'Bash', cwd, tool_input: { command: 'tee .claude/settings.json' } })
       expect(JSON.parse(b).hookSpecificOutput.permissionDecision).toBe('deny')
-      const w = go({ tool_name: 'Write', cwd, tool_input: { file_path: join(cwd, '.claude', 'settings.local.json') } })
+      const w = go({
+        tool_name: 'Write',
+        cwd,
+        tool_input: { file_path: join(cwd, '.claude', 'settings.local.json') },
+      })
       expect(JSON.parse(w).hookSpecificOutput.permissionDecision).toBe('deny')
       const rows = require('node:fs')
         .readFileSync(join(home, 'runs', 'r1', 'denials.jsonl'), 'utf8')
         .split('\n')
         .filter(Boolean)
         .map((l: string) => JSON.parse(l))
-      expect(rows.map((r: { reason: string }) => r.reason)).toEqual(['HOOK_CONTROL_REASON', 'HOOK_CONTROL_REASON'])
+      expect(rows.map((r: { reason: string }) => r.reason)).toEqual([
+        'HOOK_CONTROL_REASON',
+        'HOOK_CONTROL_REASON',
+      ])
     } finally {
       rmSync(home, { recursive: true })
       rmSync(cwd, { recursive: true })
