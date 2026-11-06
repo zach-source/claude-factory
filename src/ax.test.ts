@@ -3146,3 +3146,76 @@ test('the real manager launch stays within 30 entries with every optional var se
     process.env = saved
   }
 })
+
+const SERVER = 'https://factory.factory.svc.cluster.local:8443'
+const SERVER_RULE = {
+  https: { hostnames: ['factory.factory.svc.cluster.local'], ports: { numbers: [8443] } },
+}
+const serverRules = (p: { rules: unknown[] }) =>
+  p.rules.filter(r => JSON.stringify(r).includes('factory.factory.svc'))
+const polWith = (server: string | undefined, vault: string, reviewer = false, manager = false) =>
+  ax.egressPolicy(
+    vault,
+    [],
+    undefined,
+    undefined,
+    'acme',
+    undefined,
+    reviewer,
+    manager,
+    reviewer ? 'widget' : undefined,
+    server,
+  )
+
+test('a set server URL adds one https rule to the default, reviewer and manager policies, with no effects (akiq.13)', () => {
+  for (const p of [polWith(SERVER, ''), polWith(SERVER, 'v', true), polWith(SERVER, 'v', false, true)])
+    expect(serverRules(p)).toEqual([SERVER_RULE])
+})
+
+test('FACTORY_AX_WORKER_SERVER feeds createPolicy, and the broker accepts that policy (akiq.13)', () => {
+  process.env.FACTORY_AX_VAULT = 'factory'
+  process.env.FACTORY_AX_WORKER_SERVER = SERVER
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t6', [], undefined, 'acme')
+    const pol = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))
+    expect(serverRules(pol)).toEqual([SERVER_RULE])
+    expect(broker.workerPolicyRefusal(pol)).toBeNull()
+    writeFileSync(join(dir, 'actor'), '')
+    ax.createPolicy('t7', [], undefined, 'acme', undefined, true, false, 'widget')
+    const rev = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))
+    expect(serverRules(rev)).toEqual([SERVER_RULE])
+    expect(broker.workerPolicyRefusal(rev)).toBeNull()
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+    delete process.env.FACTORY_AX_WORKER_SERVER
+  }
+})
+
+test('unset or empty, the server env leaves every policy unchanged (akiq.13)', () => {
+  for (const [r, m] of [
+    [false, false],
+    [true, false],
+    [false, true],
+  ] as const) {
+    expect(polWith('', 'v', r, m)).toEqual(polWith(undefined, 'v', r, m))
+    expect(serverRules(polWith(undefined, 'v', r, m))).toEqual([])
+  }
+})
+
+test('a bad server URL fails closed: http, junk and the person-CA port 8444 throw and createPolicy writes nothing (akiq.13)', () => {
+  for (const bad of ['http://factory.factory.svc:8443', 'not a url', 'https://factory.factory.svc:8444']) {
+    expect(() => polWith(bad, '')).toThrow('FACTORY_AX_WORKER_SERVER')
+    process.env.FACTORY_AX_WORKER_SERVER = bad
+    try {
+      writeFileSync(join(dir, 'actor'), '')
+      expect(() => ax.createPolicy('t8')).toThrow('FACTORY_AX_WORKER_SERVER')
+      expect(existsSync(join(dir, 'policy'))).toBe(false)
+    } finally {
+      delete process.env.FACTORY_AX_WORKER_SERVER
+    }
+  }
+  expect(serverRules(polWith('https://factory.factory.svc.cluster.local', ''))).toEqual([
+    { https: { hostnames: ['factory.factory.svc.cluster.local'] } },
+  ])
+})
