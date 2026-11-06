@@ -14,6 +14,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { SECRETS } from './secrets'
 
 export const LOCK_WAIT_MS = 5_000
 export const LOCK_STALE_MS = 30_000
@@ -114,4 +115,41 @@ export function editRigs<R extends Rig>(
   } finally {
     rmdirSync(dir)
   }
+}
+
+/** Write the `set` fields over `rig` and remove the `unset` keys. A key that exists keeps its place. */
+export function applyRigChange<R extends object>(
+  rig: R,
+  set: Record<string, unknown>,
+  unset: string[],
+): Partial<R> {
+  const next: Record<string, unknown> = { ...rig, ...set }
+  for (const k of unset) delete next[k]
+  return next as Partial<R>
+}
+
+const HIDDEN = '<hidden>'
+const SECRET_KEY = /(TOKEN|SECRET|KEY|PASSWORD)/i
+
+/**
+ * Return a copy of the rig that is safe to print. Each string that matches SECRETS becomes `<hidden>`.
+ * In `env` and `params`, each string value with a secret-like key also becomes `<hidden>`.
+ * ponytail: a secret of unknown shape outside `env` and `params` is not found. Upgrade: a field table.
+ */
+export function redactRig<R extends object>(rig: R): R {
+  const walk = (v: unknown, keyed: boolean): unknown => {
+    if (typeof v === 'string') return SECRETS.some(p => p.test(v)) ? HIDDEN : v
+    if (Array.isArray(v)) return v.map(x => walk(x, false))
+    if (v && typeof v === 'object')
+      return Object.fromEntries(
+        Object.entries(v).map(([k, x]) => [
+          k,
+          keyed && SECRET_KEY.test(k) && typeof x === 'string' ? HIDDEN : walk(x, false),
+        ]),
+      )
+    return v
+  }
+  return Object.fromEntries(
+    Object.entries(rig).map(([k, v]) => [k, walk(v, k === 'env' || k === 'params')]),
+  ) as R
 }
