@@ -9794,7 +9794,7 @@ export function fileWriteReason(
   if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
     return FILE_WRITE_REASON
   const abs = resolvePath(cwd, path === '~' || path.startsWith('~/') ? env.home + path.slice(1) : path)
-  const split = (x: string) => x.toLowerCase().split(sep).filter(Boolean)
+  const split = (x: string) => foldNonAscii(x).toLowerCase().split(sep).filter(Boolean)
   const xdg = env.xdg ? split(resolvePath(env.xdg)) : []
   let real = abs
   const rest: string[] = []
@@ -9818,7 +9818,9 @@ export function fileWriteReason(
   } catch {}
   const inside = (p: string) => [root, realRoot].some(r => !!r && p.startsWith(r.endsWith(sep) ? r : r + sep))
   const config = (p: string) =>
-    /^((rigs|worker-settings.*)\.json|inbox\.jsonl|state\.json)$/i.test(p.split(sep).pop() ?? '')
+    /^((rigs|worker-settings.*)\.json|inbox\.jsonl|state\.json)$/i.test(
+      foldNonAscii(p.split(sep).pop() ?? ''),
+    )
   return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
 }
 

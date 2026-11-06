@@ -3,7 +3,13 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FACTORY_CONFIG_REASON, denyReason, fileWriteReason, type HookGate } from './worker-hook'
+import {
+  FACTORY_CONFIG_REASON,
+  FILE_WRITE_REASON,
+  denyReason,
+  fileWriteReason,
+  type HookGate,
+} from './worker-hook'
 
 const ROOT = '/w/acme'
 const reason = (c: string, root: string | undefined = ROOT, gate?: HookGate) => denyReason(c, root, [], gate)
@@ -82,6 +88,15 @@ describe('qn8a.24 file tools', () => {
   test('denies a home inbox.jsonl, in any case', () => {
     for (const n of ['inbox.jsonl', 'Inbox.JSONL', 'state.json', 'State.JSON'])
       expect(fileWriteReason(join(home, 'runs', 'r1', n), root, env(), root)).toBe(FACTORY_CONFIG_REASON)
+  })
+  test('denies a non-ASCII name that APFS folds, when the file does not exist', () => {
+    mkdirSync(join(home, 'runs', 'r2'), { recursive: true })
+    for (const n of ['inbox.jſonl', 'ſtate.json', 'ﬆate.json'])
+      expect(fileWriteReason(join(home, 'runs', 'r2', n), root, env(), root)).toBe(FACTORY_CONFIG_REASON)
+  })
+  test('denies a folded protected dir name that does not exist', () => {
+    for (const n of ['.gitconﬁg', 'ſhell-snapshots'])
+      expect(fileWriteReason(join(home, 'runs', 'r2', n), root, env(), root)).toBe(FILE_WRITE_REASON)
   })
   test('denies a symlink in root that points to a home inbox.jsonl', () => {
     symlinkSync(join(home, 'runs', 'r1', 'inbox.jsonl'), join(root, 'link.txt'))
