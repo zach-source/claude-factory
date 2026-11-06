@@ -2,7 +2,7 @@ import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { editRigs } from './rigs-edit'
+import { applyRigChange, editRigs, redactRig } from './rigs-edit'
 
 const dir = join(tmpdir(), `rigs-edit-${process.pid}`)
 const file = join(dir, 'rigs.json')
@@ -125,4 +125,31 @@ test('a fresh lock makes the edit wait, then refuse, and stays', () => {
   expect(Date.now() - t).toBeGreaterThanOrEqual(300)
   expect(existsSync(`${file}.lock`)).toBe(true)
   expect(readFileSync(file, 'utf8')).toBe(before)
+})
+
+test('applyRigChange keeps key order and drops unset keys; redactRig hides secret leaves', () => {
+  const tok = 'ghp_' + 'z'.repeat(36)
+  const r = { name: 'x', repo: '/r/x', goal: 'g', runner: 'ax', extra: { a: 1 } }
+  expect(JSON.stringify(applyRigChange(r, { goal: 'n' }, []))).toBe(JSON.stringify({ ...r, goal: 'n' }))
+  expect(applyRigChange(r, {}, ['runner'])).toEqual({ name: 'x', repo: '/r/x', goal: 'g', extra: { a: 1 } })
+  const red = redactRig({
+    name: 'x',
+    repo: '/r/x',
+    goal: `use ${tok}`,
+    maxRuns: 2,
+    env: { FOO_TOKEN: 'plain', OK: 'fine' },
+    params: { base_branch: 'main', API_KEY: 'v' },
+    beadsRemote: { name: 'o', user: 'u', url: 'https://u:pw@h/x' },
+    egress: [{ hosts: ['h'], key: 'VAULT_KEY' }],
+  })
+  expect(red).toEqual({
+    name: 'x',
+    repo: '/r/x',
+    goal: '<hidden>',
+    maxRuns: 2,
+    env: { FOO_TOKEN: '<hidden>', OK: 'fine' },
+    params: { base_branch: 'main', API_KEY: '<hidden>' },
+    beadsRemote: { name: 'o', user: 'u', url: '<hidden>' },
+    egress: [{ hosts: ['h'], key: 'VAULT_KEY' }],
+  })
 })
