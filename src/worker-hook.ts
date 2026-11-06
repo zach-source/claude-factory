@@ -8924,6 +8924,11 @@ function denyAtScan(
       let k = 0
       while (k < skipped.length && /^[A-Za-z_]\w*\+?=/.test(skipped[k]!)) k++
       for (const w of skipped.slice(k)) {
+        // claude-factory-qn8a.10: segments() ends the word early. bash reads on to the matching
+        // close brace and splits it, so an unclosed ${ in a wrapper slot can hide the command.
+        let d = 0
+        for (const m of w.matchAll(/\$\{|\}/g)) d = m[0] === '}' ? Math.max(0, d - 1) : d + 1
+        if (d) late.reason ??= DYNAMIC_VERB_REASON
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
           const n = m[1]!
           if (IMPLICIT_VARS.has(n) || vars.has(n) || mentions(n) >= 2 || m[0].startsWith('${!') || dynWrite())
