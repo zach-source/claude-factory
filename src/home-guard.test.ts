@@ -266,6 +266,8 @@ describe('homeReason', () => {
   // on-purpose over-deny: the joined text is "rm -rf a~" and "cat x./x.sh", so only the raw text denies
   test('the raw text alone denies a home word after a joined line', () =>
     expect(homeReason('rm -rf a\\\n~', undefined, H)).toBe(HOME_REASON))
+  test('the joined text alone reads a split path word inside a bash -c string', () =>
+    expect(homeReason("bash -c 'bash .scr\\\natch/x'", onlyX, H)).toBe(HOME_REASON))
   test('the raw text alone denies a path word after a joined line', () =>
     expect(homeReason('cat x\\\n./x.sh', onlyX, H)).toBe(HOME_REASON))
 
@@ -312,6 +314,85 @@ describe('homeReason', () => {
     homeReason(cmd, bad, H)
     expect(performance.now() - t0).toBeLessThan(200)
   })
+
+  // exact-path reader: bad text only for the expected path, so a wrong read does not pass
+  const T = String.fromCharCode(126)
+  const X = '.scratch/x+'
+  const rows: [string, string][] = [
+    ['bash .scratch/x@', '.scratch/x@'],
+    ['.scratch/x+', '.scratch/x+'],
+    ['bash .scratch/x,', '.scratch/x,'],
+    ['bash .scratch/x#', '.scratch/x#'],
+    ['/abs/x' + T, '/abs/x' + T],
+    ['bash .scratch/x}', '.scratch/x}'],
+    ['bash .scratch/x]', '.scratch/x]'],
+    ['/wt/a+b/x', '/wt/a+b/x'],
+    ['bash .scratch/\u00e9', '.scratch/\u00e9'],
+    ['bash x.SH', 'x.SH'],
+    ["bash '.scratch/x y'", '.scratch/x y'],
+    ['bash ".scratch/x y"', '.scratch/x y'],
+    ['bash .scratch/x\\ y', '.scratch/x y'],
+    ['bash .scratch/"x"', '.scratch/x'],
+    ['bash .scratch/"x.sh"', '.scratch/x.sh'],
+    ['bash .scratch/\\x', '.scratch/x'],
+    ['bash .scr\\\natch/x', '.scratch/x'],
+    ['bash ".scr\\\natch/x"', '.scratch/x'],
+    ['bash ".scratch/a\\"b"', '.scratch/a"b'],
+    [T + '/.scratch/x', '/Users/pat/.scratch/x'],
+    ['PATH=/a:/b/x+y foo', '/b/x+y'],
+    ['bash --rcfile=.scratch/x+', '.scratch/x+'],
+    ['bash .scratch/a:b+', '.scratch/a:b+'],
+    ['bash .scratch/a=b+', '.scratch/a=b+'],
+    ["bash '.scratch/x y", '.scratch/x y'],
+    ['bash ".scratch/x y', '.scratch/x y'],
+    ['bash ".scratch/a\\$b"', '.scratch/a$b'],
+    ['bash ".scratch/a\\\\b"', '.scratch/a\\b'],
+    ['bash ".scratch/a\\`b"', '.scratch/a`b'],
+    ...[
+      `(${X})`,
+      `bash ${X}>o`,
+      `bash<${X}`,
+      `bash ${X}&`,
+      `a&${X}`,
+      `bash ${X}|cat`,
+      `a|${X}`,
+      '`' + X + '`',
+      `a;${X}`,
+      `${X};a`,
+      `a\n${X}`,
+    ].map((c): [string, string] => [c, X]),
+  ]
+  const exact = (path: string) => (p: string) => (p === path ? bad() : undefined)
+
+  test.each(rows)('denies a path word with a char outside the old class: %s', (cmd, path) =>
+    expect(homeReason(cmd, exact(path), H)).toBe(HOME_REASON),
+  )
+
+  test.each(rows)('allows the same word with a benign file: %s', cmd =>
+    expect(homeReason(cmd, () => 'echo ok', H)).toBeUndefined(),
+  )
+
+  test('an unclosed quote still reads the path', () => {
+    expect(homeReason("bash '.scratch/x", exact('.scratch/x'), H)).toBe(HOME_REASON)
+  })
+
+  test.each([`cat '.scratch/x y' ${CLI}`, `grep -n "a b" ${CLI}`])(
+    'a read-only command reads no file: %s',
+    cmd => {
+      let reads = 0
+      homeReason(cmd, () => (reads++, undefined), H)
+      expect(reads).toBe(0)
+    },
+  )
+
+  test.each(['bash "a\\'.repeat(30000), "bash '" + "a'b".repeat(30000)])(
+    'an unclosed quote input returns fast',
+    cmd => {
+      const t0 = performance.now()
+      homeReason(cmd, () => undefined, H)
+      expect(performance.now() - t0).toBeLessThan(200)
+    },
+  )
 
   test.each([
     'bash .scratch/clean.sh',

@@ -100,7 +100,26 @@ const hits = (text: string, word: RegExp) => test1(text, word) || test1(join(tex
 // a run of path chars between a lead and a terminator char; ':' ends a path:line word
 const SCRIPT = /(?:^|[\s'"=(`;&|:<>])([\w./-]+)(?=$|[\s'";&|)`:<>])/g
 // a word names a file to read when it holds a / or ends in a script extension
-const isFile = (w: string) => w.includes('/') || /\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)$/.test(w)
+const isFile = (w: string) => w.includes('/') || /\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)$/i.test(w)
+
+// A shell word is a run of: a char that is no blank, quote, backslash or metachar; a backslash and its next char;
+// a quoted string (an unclosed quote runs to the end).
+// Out of scope (denyReason denies most): a bare word without / or extension, $VAR, $(...), brace and glob
+// expansion, ~user/, a script that calls a script, a file over the read limit.
+const WORD = /(?:[^\s'"\\;&|<>()`]|\\[\s\S]|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?)+/g
+const unshell = (w: string) =>
+  w.replace(/\\([\s\S])|'([^']*)'?|"((?:[^"\\]|\\[\s\S])*)"?/g, (_, esc, sq, dq) =>
+    esc !== undefined
+      ? esc === '\n'
+        ? ''
+        : esc
+      : sq !== undefined
+        ? sq
+        : dq.replace(/\\\n/g, '').replace(/\\([$`"\\])/g, '$1'),
+  )
+// the word, its pieces split at = and :, and a leading ~/ replaced by each protected home
+const candidates = (w: string, protect: string[]) =>
+  [w, ...w.split(/[=:]/)].flatMap(c => (c.startsWith('~/') ? protect.map(h => h + c.slice(1)) : [c]))
 
 // the only command words of a read-only command: none of them runs a file it is given
 const READERS = new Set([
@@ -257,13 +276,16 @@ export function homeReason(
   if (hits(command, word)) return HOME_REASON
   if (!readFile || readOnly(command)) return undefined
   const seen = new Set<string>()
-  for (const src of new Set([command, join(command)]))
-    for (const m of src.matchAll(SCRIPT)) {
-      const w = m[1]!
-      if (!isFile(w) || seen.has(w)) continue
-      seen.add(w)
-      const text = readFile(w)
-      if (text !== undefined && hits(text, word)) return HOME_REASON
-    }
+  const paths = [
+    ...[...command.matchAll(SCRIPT)].map(m => m[1]!),
+    ...[...join(command).matchAll(SCRIPT)].map(m => m[1]!),
+    ...[...command.matchAll(WORD)].flatMap(m => candidates(unshell(m[0]), protect)),
+  ]
+  for (const w of paths) {
+    if (!isFile(w) || seen.has(w)) continue
+    seen.add(w)
+    const text = readFile(w)
+    if (text !== undefined && hits(text, word)) return HOME_REASON
+  }
   return undefined
 }
