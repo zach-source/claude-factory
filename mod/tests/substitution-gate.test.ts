@@ -111,3 +111,78 @@ test('a subagent is denied a substitution without a dialog', SLOW, async ($, on)
   expect(n.asked).toBe(0)
   expect(n.ran).toBe(0)
 })
+
+test('the Allow question shows the first hit even after a long harmless prefix', SLOW, async ($, on) => {
+  const { n, questions } = harness(on, 'Deny')
+  const pad = 'a'.repeat(350)
+  const rows: [string, string][] = [
+    [`${F} mail r1 plan "${pad} $(id)"`, '$(id)'],
+    [`${F} mail r1 plan "${pad} ${BT}id${BT}"`, `${BT}id${BT}`],
+    [`${F} mail r1 plan ${pad}<<EOF\nit's $(id)\nEOF`, '<<EOF'],
+    [`${F} mail r1 plan ${pad} 'open ${'b'.repeat(100)}`, "'open"],
+  ]
+  for (const [command, shown] of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toContain('shell substitution')
+    expect(questions.at(-1), command).toContain(shown)
+  }
+  expect(n.ran).toBe(0)
+})
+
+test('a short gated command shows in full in the question', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  await $.tool.call({ tool: 'Bash', command: GATED[0]!, description: 'x' })
+  expect(questions[0]).toContain(GATED[0]!)
+})
+
+test('the question window does not split a surrogate pair', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\uFFFD/
+  for (let k = 0; k < 2; k++) {
+    const command = `${F} mail r1 plan "${'a'.repeat(350)}${'😀'.repeat(30 + k)}${'a'.repeat(k)} $(id)"`
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1)).toContain('$(id)')
+    expect(questions.at(-1)).not.toMatch(lone)
+  }
+})
+
+test('the question window is surrogate-safe at the end edge and at index 0', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\uFFFD/
+  const rows = [0, 2].map(k => `${F} mail r1 plan "$(id)${'a'.repeat(k)}${'😀'.repeat(30)}"`)
+  rows.push(`\uDC00${F} mail r1 plan "$(id)"`)
+  for (const command of rows) {
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1)).toContain('$(id)')
+    const around = questions.at(-1)!.split('«')[1]!
+    expect(around).toContain('$(id)')
+    if (!command.startsWith('\uDC00')) expect(lone.test(around)).toBe(false)
+  }
+})
+
+test('the question counts the later hits that it does not show', SLOW, async ($, on) => {
+  const { questions } = harness(on, 'Deny')
+  const a = 'a'.repeat(350)
+  const rows = [
+    `${F} mail r1 plan "it costs $5 ${a} $(id)"`,
+    `${F} mail r1 plan "${a} it costs $5 ${'b'.repeat(60)} $(id)"`,
+    `${F} mail r1 plan x(note) "${a} $(id)"`,
+    `${F} status # ${a}\n${F} mail r1 plan "$(id)"`,
+    `${F} mail r1 plan "US$ ${a} $(id)"`,
+  ]
+  for (const command of rows) {
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1), command).toContain(
+      '2 more dollar signs, backticks or parentheses come after this text and are not shown.',
+    )
+  }
+  // the second hit is inside the 300-character head, so it is shown and not counted
+  for (const command of [
+    GATED[0]!,
+    `${F} mail r1 plan "${a} $(id)"`,
+    `${F} mail r1 plan "$5 ${'a'.repeat(100)} $(id)"`,
+  ]) {
+    await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(questions.at(-1), command).not.toContain('are not shown')
+  }
+})

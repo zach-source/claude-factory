@@ -475,3 +475,66 @@ test('decisions answer deletes the bd: and own: keys of that bead only, and keep
   expect(factory(['decisions', 'answer', 'api', 'api-1', 'go']).code).not.toBe(0)
   expect(readFileSync(decisionsFile(), 'utf8')).toBe(before)
 })
+
+// claude-factory-2z48: decisions propose reads untrusted text from files inside <FACTORY_HOME>/text/
+test('decisions propose --question-file stores the text as written and refuses a bad form with decisions.json unchanged', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
+  const txt = (name: string, body: string) => {
+    const p = join(home, 'text', name)
+    mkdirSync(join(home, 'text'), { recursive: true })
+    writeFileSync(p, body)
+    return p
+  }
+  const q = txt('q.txt', "Why $(id) and ' ?\n")
+  const o = txt('o.txt', 'pg: fast (recommended) | mysql: slow\n')
+  const c = txt('c.txt', "ctx $(id) '")
+  const ok = factory([
+    'decisions',
+    'propose',
+    'bd:api:api-1',
+    '--question-file',
+    q,
+    '--options-file',
+    o,
+    '--context-file',
+    c,
+  ])
+  expect(ok.code).toBe(0)
+  const out = JSON.parse(factory(['decisions']).out)
+  expect(out.proposals['bd:api:api-1']).toMatchObject({
+    question: "Why $(id) and ' ?",
+    options: ['pg: fast (recommended)', 'mysql: slow'],
+    context: "ctx $(id) '",
+  })
+  expect(factory(['decisions', 'propose', 'own:api-2', '--question-file', q]).code).toBe(0)
+  // an own: key never reads --options-file, so a path outside text/ does not matter
+  expect(
+    factory(['decisions', 'propose', 'own:api-3', '--question-file', q, '--options-file', '/nonexistent'])
+      .code,
+  ).toBe(0)
+
+  const file = join(home, 'decisions.json')
+  const before = readFileSync(file)
+  const outside = join(dir, 'outside.txt')
+  writeFileSync(outside, 'a | b')
+  const rows: Record<string, string[]> = {
+    'positional mixed': ['bd:api:api-1', 'q', '--question-file', q, '--options-file', o],
+    'positional options mixed': ['bd:api:api-1', '--question-file', q, 'a | b'],
+    'unknown flag': ['bd:api:api-1', '--question-file', q, '--options-file', o, '--x', 'y'],
+    repeated: ['bd:api:api-1', '--question-file', q, '--question-file', q, '--options-file', o],
+    'no question': ['bd:api:api-1', '--options-file', o],
+    'no options': ['bd:api:api-1', '--question-file', q],
+    'outside text/': ['bd:api:api-1', '--question-file', q, '--options-file', outside],
+    'one line': ['bd:api:api-1', '--question-file', txt('two.txt', 'a\nb'), '--options-file', o],
+    'one option': ['bd:api:api-1', '--question-file', q, '--options-file', txt('one.txt', 'a')],
+  }
+  for (const [name, a] of Object.entries(rows)) {
+    const r = factory(['decisions', 'propose', ...a])
+    expect([name, r.code]).toEqual([name, 1])
+    if (/^(no |unknown|repeated|positional options)/.test(name))
+      expect(r.err).toContain('usage: factory decisions propose')
+    expect(readFileSync(file).equals(before)).toBe(true)
+  }
+})

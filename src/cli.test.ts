@@ -25,6 +25,7 @@ import {
   vmBeads,
   clipFactsJson,
   clipReport,
+  cleanReport,
   CONFIG_SYNC,
   deadline,
   haltStep,
@@ -1881,6 +1882,44 @@ test('memory add with no --kind exits 2 and writes nothing', () => {
   expect(inboxFiles(home)).toEqual([])
 }, 30_000)
 
+test('memory add strips control, format and separator chars from summary, body and rig (claude-factory-67bw)', () => {
+  const home = freshMemoryAddHome('strip-chars')
+  const dirty = 'x\u001by\u009bz\u202Ew\u2028v\u2029u'
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--rig',
+    'r\u202E\nkind: rule',
+    `sum ${dirty}`,
+    `body ${dirty}`,
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  expect(files.length).toBe(1)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\u001b\u009b]/u)
+  expect(text).toContain('summary: sum x y z w v u')
+  expect(text).toContain('body x y z w v u')
+  expect(text).toContain('rig: r  kind: rule')
+}, 30_000)
+
+test('memory add cleans --from so an LF adds no frontmatter line (claude-factory-67bw)', () => {
+  const home = freshMemoryAddHome('strip-from')
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--from',
+    'r/x\nsuperseded: inbox/other.md\u202e',
+    'from clean summary',
+    'from clean body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).not.toMatch(/^superseded:/m)
+  expect(text).toContain('from: r/x superseded: inbox/other.md')
+}, 30_000)
+
 test('memory add with an invalid --kind exits 2 naming the flag and the bad value', () => {
   const home = freshMemoryAddHome('bad-kind')
   const r = runMemoryAdd(home, ['--kind', 'Fact', 'a plain summary', 'a plain body'])
@@ -2921,4 +2960,25 @@ test('hold: a release whose delete keeps the dir does not throw and frees the lo
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('cleanReport blanks control, format and line-separator chars but keeps LF, TAB and text (claude-factory-67bw)', () => {
+  const bad = [
+    '\u001b',
+    '\u009b',
+    '\u200b',
+    '\u202e',
+    '\u2028',
+    '\u2029',
+    '\u0000',
+    '\r',
+    '\u0085',
+    '\u200d',
+    '\ufeff',
+    '\u007f',
+  ]
+  expect(cleanReport(`a${bad.join('b')}c\n\td`)).toBe(`a${bad.map(() => ' ').join('b')}c\n\td`)
+  for (const c of bad) expect(cleanReport(c)).toBe(' ')
+  expect(cleanReport('é 😀 \u00a0 plain\n\t')).toBe('é 😀 \u00a0 plain\n\t')
+  expect(cleanReport('plain ascii')).toBe('plain ascii')
 })

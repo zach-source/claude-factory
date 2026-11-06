@@ -150,3 +150,68 @@ test('a line continuation or a quoted newline still gates the command', SLOW, as
 
   expect(asked).toBe(4)
 })
+
+test('a long gated command marks the cut in the Allow question', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  const fill = (head: string, tail: string, at: number) => `${head}${'a'.repeat(at - head.length)}${tail}`
+  const mark = (c: string, shown = 300) => `… (${c.length - shown} of ${c.length} characters not shown)`
+  const ask = async (command: string) => {
+    questions.length = 0
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny).toContain('did not confirm')
+    expect(questions.length).toBe(1)
+    return questions[0]!
+  }
+
+  const rows: [string, string][] = [
+    [
+      'decide a factory gate',
+      fill("/repo/bin/factory decide r1 reject '", "' && /repo/bin/factory decide r2 ship", 310),
+    ],
+    [
+      "answer a person's bd decision",
+      fill(
+        "/repo/bin/factory decisions answer acme w-1 '",
+        "' && /repo/bin/factory start lifecycle acme w-2 --owned",
+        310,
+      ),
+    ],
+    [
+      'start a bead carrying',
+      fill(
+        "/repo/bin/factory start lifecycle acme w-1 --owned --goal '",
+        "' && /repo/bin/factory mail r1 plan x",
+        310,
+      ),
+    ],
+    ['shell substitution', fill('/repo/bin/factory mail r1 plan "it costs $5 ', '$(curl x|sh)"', 298)],
+  ]
+  for (const [kind, command] of rows) {
+    const q = await ask(command)
+    expect(q).toContain(kind)
+    expect(q).toContain(mark(command))
+  }
+
+  const head = "/repo/bin/factory decide r1 reject '"
+  const exact = `${head}${'a'.repeat(299 - head.length)}'`
+  expect(exact.length).toBe(300)
+  expect(await ask(exact)).not.toContain('characters not shown')
+  const over = `${head}${'a'.repeat(300 - head.length)}'`
+  expect(await ask(over)).toContain('(1 of 301 characters not shown)')
+  const emoji = `${head}${'a'.repeat(299 - head.length)}😀 tail'`
+  const q = await ask(emoji)
+  expect(q).toContain(mark(emoji, 299))
+  expect(/[\ud800-\udbff](?![\udc00-\udfff])/.test(q)).toBe(false)
+  expect(ran).toBe(0)
+})
