@@ -113,7 +113,9 @@ describe('AC3 Bash, a parent of the hook dir', () => {
     'cp -R .scratch/root/. /',
     'cd /f && tar -xf a.tar',
   ])('denies %s', c => expect(bash(c)).toBe(R))
-  test.each(['ls -d /', 'find / -name x', 'cat /f/x'])('allows %s', c => expect(bash(c)).toBeUndefined())
+  test.each(['ls -d /', 'find / -name x', 'cat /f/x', 'cd / && ls', 'tar -C / -tf a.tar'])('allows %s', c =>
+    expect(bash(c)).toBeUndefined(),
+  )
 })
 
 describe('AC7 allowed rows', () => {
