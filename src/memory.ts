@@ -449,7 +449,12 @@ export function dropLinks(dir: string): { path: string; target: string; skipped?
         }
         if (process.cwd() === sub) scan(sub)
         else out.push({ path: rel, target: '', skipped: true })
-        process.chdir(here)
+        // back by '..', never by the path: a swapped parent would follow a link out of the store
+        process.chdir('..')
+        if (process.cwd() !== here) {
+          out.push({ path: rel, target: '', skipped: true })
+          return
+        }
       }
     }
   }

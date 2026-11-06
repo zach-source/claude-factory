@@ -249,3 +249,35 @@ test('dropLinks does not enter a directory that a second process swaps for a lin
     rmSync(root, { recursive: true, force: true })
   }
 }, 60000)
+
+test('dropLinks stops a level when a second process swaps its parent for a link during a deep scan, and removes no outside link', async () => {
+  for (let round = 0; round < 5; round++) {
+    const { root, dir } = linkStore()
+    const outside = join(root, 'outside')
+    mkdirSync(outside)
+    symlinkSync('/etc/hosts', join(outside, 'z_victim'))
+    mkdirSync(join(dir, 't', 'a_big'), { recursive: true })
+    for (let i = 0; i < 20000; i++) writeFileSync(join(dir, 't', 'a_big', 'f' + i), '')
+    symlinkSync('/etc/hosts', join(dir, 't', 'z_victim'))
+    const t = JSON.stringify(join(dir, 't'))
+    const swap = Bun.spawn([
+      'bun',
+      '-e',
+      "const fs=require('fs');await Bun.sleep(3);fs.renameSync(" +
+        t +
+        ',' +
+        t +
+        "+'2');fs.symlinkSync(" +
+        JSON.stringify(outside) +
+        ',' +
+        t +
+        ')',
+    ])
+    const before = process.cwd()
+    dropLinks(dir)
+    await swap.exited
+    expect(process.cwd()).toBe(before)
+    expect(lstatSync(join(outside, 'z_victim')).isSymbolicLink()).toBe(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 60000)
