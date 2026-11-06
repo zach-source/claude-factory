@@ -307,6 +307,8 @@ export function writeGroups(beads: WriteBead[], prs: WritePr[], cap = writeCap()
 const MASKS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
   /Authorization:\s*(?:Basic|Bearer)\s+\S+/gi,
+  /:\/\/[^\s/:@]+:[^\s/]+@/g, // URL password: SECRETS stops at the first @
+  /glpat-[A-Za-z0-9_.-]{20,}/g, // SECRETS leaves the tail after a dot
   TOKEN_SHAPE,
   ...SECRETS.map(r => new RegExp(r.source, r.flags.includes('g') ? r.flags : r.flags + 'g')),
 ]

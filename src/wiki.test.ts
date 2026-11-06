@@ -529,11 +529,18 @@ test.each<[string, string, string]>([
   ['AWS secret next to key id', `id ${akia} secret ${awsSecret}`, awsSecret],
   ['Bearer with tilde', 'Authorization: Bearer abc~def~ghi~jkl~mno~pqr~stu', 'def~ghi~jkl'],
   ['Basic after odd char', 'Authorization: Basic dXNlcjpw!cGFzc3dvcmQ=zzzzzz', 'cGFzc3dvcmQ'],
+  ['URL password with raw @', 'dsn postgres://app:p@ssw0rdTail@db.internal:5432/x', 'ssw0rdTail'],
+  ['glpat with dot tail', 'tok ' + ['glpat', 'abcdefghij0123456789xyz.01.tAiL12345'].join('-'), 'tAiL12345'],
 ])('AC6 mask %s', (_n, text, secret) => {
   const t = lead(text)
   expect(t).not.toContain(secret)
   expect(t).toContain('***')
   expect(scanPages([{ path: 'p.md', text: `---\nkind: topic\ntitle: T\n---\n${t}` }])).toEqual([])
+})
+
+test('AC6 mask leaves a URL with @ in the path', () => {
+  const s = 'see http://localhost:8080/a@b and ssh://git@github.com/acme/widget'
+  expect(lead(s)).toContain(s)
 })
 
 test('F2 data rule and one-line inputs', () => {
