@@ -4083,6 +4083,12 @@ const liveShipRuns = () =>
     }
   })
 
+/** A live ship run on the rig of `run`, other than `run`. Only when `run` counts as a ship run (claude-factory-9wch). */
+const otherLiveShip = (run: Run, id: string) =>
+  shipLike(run.ship, id)
+    ? liveShipRuns().find(s => s.run.id !== run.id && s.run.repo === run.repo)
+    : undefined
+
 /**
  * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
  * A ship run takes no room: it counts against FACTORY_MAX_RUNS and the rig's maxRuns never
@@ -9493,9 +9499,7 @@ export async function forkRun(
   const why = forkRefusal(where(value)[0], pending, src.id)
   if (why) throw new Error(why)
   // a ship fork beside another live ship run would give the rig two ship runs (claude-factory-9wch)
-  const other = shipLike(src.ship, `${factoryName}-`)
-    ? liveShipRuns().find(s => s.run.id !== src.id && s.run.repo === src.repo)
-    : undefined
+  const other = otherLiveShip(src, `${factoryName}-`)
   if (other)
     throw new Error(
       `${other.run.id} is a live ship run on ${src.repo}: a fork of ${src.id} would put a second ship run on the rig. Run factory abort ${other.run.id}, then fork it again.`,
@@ -11282,6 +11286,15 @@ if (import.meta.main && !outboxCmd)
           )
         const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
         if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
+        // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
+        const other =
+          ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
+            ? otherLiveShip(run, run.id)
+            : undefined
+        if (other)
+          fail(
+            `${other.run.id} is a live ship run on ${run.repo}: goto ${target} would revive ${run.id} as a second ship run on the rig. Run factory abort ${other.run.id}, then goto again.`,
+          )
         post(run.id, { type: 'GOTO', node: target })
         console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
         break

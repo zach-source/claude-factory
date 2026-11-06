@@ -540,6 +540,26 @@ test('fork of a ship run with a queued abort is allowed when no other ship run i
   expect(forked.code).toBe(0)
 })
 
+test('goto of an ended ship run is refused while another ship run is live on the rig (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const refused = run(['goto', a, 'work'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(b)
+  expect(refused.err).toContain(`factory abort ${b}`)
+
+  endRun(b)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(false, true)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
 const CLEAR =
   'update acme-1 --remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
 const startHandedOff = (
