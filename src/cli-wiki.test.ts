@@ -336,6 +336,24 @@ test('AC7 pushWiki refuses an origin outside the grammar, with no gh call and no
   expect(mainOf(b).exitCode).not.toBe(0)
 })
 
+test('AC6 and AC7 pushWiki refuses a PUBLIC, junk or failed visibility and pushes nothing', () => {
+  for (const [vis, line, cached] of [
+    ['PUBLIC', 'wiki: remote is public, push refused', true],
+    ['maybe', 'wiki: remote visibility unknown, push refused', false],
+    ['exit1', 'wiki: remote visibility unknown, push refused', false],
+  ] as const) {
+    setup(vis)
+    const { b, env } = bare()
+    expect(factory(['wiki', 'init'], env).code).toBe(0)
+    git('remote', 'add', 'origin', URL_)
+    expect(pushPass(env).exitCode).toBe(1)
+    expect(wikiLog()).toContain(line)
+    expect(ghCalls()).toBe(1)
+    expect(mainOf(b).exitCode).not.toBe(0)
+    expect(existsSync(join(home, 'wiki-state.json'))).toBe(cached)
+  }
+})
+
 test('AC7 pushWiki with no origin does nothing', () => {
   setup('PRIVATE')
   expect(factory(['wiki', 'init']).code).toBe(0)
