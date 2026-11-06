@@ -102,6 +102,19 @@ test('mail --text-file mails the file text as written; a flag inside a longer wo
   expect(existsSync(join(wt, 'pwned'))).toBe(false)
 })
 
+test('mail --text-file refuses a file in a .scratch/ that is a symlink to an outside folder (jho3.13)', () => {
+  const events = makeRun('r1s')
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const out = join(dir, 'outdir')
+  mkdirSync(out)
+  writeFileSync(join(out, 'x.txt'), 'secret')
+  symlinkSync(out, join(wt, '.scratch'))
+  const r = factory(['mail', 'r1s', 'manager', '--text-file', join(wt, '.scratch', 'x.txt')], {}, wt)
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('is outside')
+  expect(events()).toHaveLength(0)
+})
+
 test('mail --text-file refuses a bad form with exit 1 and posts nothing (AC1)', () => {
   const events = makeRun('r2')
   const bad = badFiles()

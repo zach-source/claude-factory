@@ -309,6 +309,26 @@ test('a .scratch/ that is a symlink to an outside folder is no root (jho3.12)', 
   expect(lines()).toHaveLength(0)
 }, 30000)
 
+test('a .scratch/ of a toplevel that GIT_WORK_TREE moves outside the cwd is no root (jho3.13)', () => {
+  setup()
+  const wt = join(dir, 'wt3')
+  mkdirSync(wt)
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const out = join(dir, 'outtree')
+  mkdirSync(join(out, '.scratch'), { recursive: true })
+  writeFileSync(join(out, '.scratch', 'token.txt'), 'secret')
+  const good = txt('ok3.txt', 'ok')
+  const r = factory(
+    [...FROM, '--title-file', join(out, '.scratch', 'token.txt'), '--description-file', good],
+    { GIT_DIR: join(wt, '.git'), GIT_WORK_TREE: out },
+    wt,
+  )
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('is outside')
+  expect(r.err).toContain('.scratch/ of the git worktree')
+  expect(lines()).toHaveLength(0)
+}, 30000)
+
 test('file-elsewhere refuses a bad grammar with usage and zero bd calls (AC2)', () => {
   setup()
   const f = txt('f.txt', 'one')

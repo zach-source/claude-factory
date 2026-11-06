@@ -705,8 +705,8 @@ function readTextFile(flag: string, path: string): string {
 
 /**
  * claude-factory-2z48: untrusted text (a bead, a Linear issue) reaches a verb by file, never in a shell argument.
- * The file must sit inside <FACTORY_HOME>/text/ or <git toplevel of cwd>/.scratch/ once symlinks resolve, so injected text cannot steer a flag to a
- * secret such as a token file. Returns the text without trailing whitespace.
+ * The file must sit inside <FACTORY_HOME>/text/, or inside the real .scratch/ folder (not a symlink) of the git toplevel, and only when the cwd
+ * is inside that toplevel, so injected text cannot steer a flag to a secret such as a token file. Returns the text without trailing whitespace.
  * ponytail: the verb does not delete the file, so text/ grows by one small file per filing. Upgrade: unlink after
  * success, or a gc pass.
  */
