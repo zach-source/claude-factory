@@ -252,6 +252,7 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport } from './ci'
 import { cut } from './cut'
+import { maskAssignments } from './worker-hook'
 
 const ROOT = resolve(import.meta.dir, '..')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
@@ -801,6 +802,7 @@ export function isDenyLine(line: string): boolean {
  * The denial in an outbox deny line, or null. The VM worker writes the line, so the laptop does not trust it.
  * The grammar is closed. The deny object has exactly these keys: at (a finite number), harness, reason
  * (an upper-case constant name) and command (a string of 200 chars or fewer). The laptop adds run and station.
+ * The laptop masks NAME=value in command again (claude-factory-ktrl): it does not trust the mask of the VM image.
  */
 export function outboxDenial(
   line: string,
@@ -817,7 +819,9 @@ export function outboxDenial(
     /^[A-Z][A-Z0-9_]{0,63}$/.test(d.reason) &&
     typeof d.command === 'string' &&
     d.command.length <= 200
-  return ok ? { at: d.at, harness: d.harness, reason: d.reason, command: d.command } : null
+  return ok
+    ? { at: d.at, harness: d.harness, reason: d.reason, command: cut(maskAssignments(d.command), 200) }
+    : null
 }
 
 /** where bd keeps a repo's store: its Dolt server and database (`bd dolt show --json`) */
