@@ -28,6 +28,7 @@ const DENY = [
   'echo x > /h/runs/r1/state.json',
   'cp .scratch/s /h/runs/r1/state.json',
   'echo x > /h/runs/r1/STATE.JSON',
+  'echo x > /h/runs/r1/st[a]te.json',
   // known false positives, the same as rigs.json today
   'jq . /h/runs/r1/inbox.jsonl',
   'cp /h/runs/r1/inbox.jsonl .scratch/',
