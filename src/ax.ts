@@ -393,6 +393,20 @@ function gateRule(gateUrl: string) {
     : { http: { hostnames: [u.hostname], ...ports } }
 }
 
+/** the factory server's egress rule (FACTORY_AX_WORKER_SERVER): https only, and never 8444, the person-CA listener */
+function serverRule(url: string) {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    throw new Error('FACTORY_AX_WORKER_SERVER is not a URL')
+  }
+  if (u.protocol !== 'https:') throw new Error('FACTORY_AX_WORKER_SERVER must be an https URL')
+  if (u.port === '8444')
+    throw new Error('FACTORY_AX_WORKER_SERVER must not use port 8444, the person-CA listener')
+  return gateRule(url)
+}
+
 /** a GitLab host's one rule: glab sends an access token as `PRIVATE-TOKEN` (checked against glab 1.99) and git
  * sends Basic auth; the vault's `GITLAB` and `GITLAB_BASIC` keys are what the gateway puts in their place */
 const gitlabRule = (host: string, uri?: (key: string) => string) => ({
@@ -466,6 +480,11 @@ const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
  * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
  * -- nix-provided go/npm/pip/uv included, since the strip is what enforces the gate's age check, not launch()'s
  * convenience env (below).
+ *
+ * With FACTORY_AX_WORKER_SERVER=<https://host[:port]> set (on the laptop; unset leaves this byte-identical to
+ * before, and workers fall back to the outbox), every task gets one https rule to the factory server. The rule has no
+ * vault effects: the worker CLI sends its own token. A value that is not an https URL, or that names port 8444 (the
+ * person-CA listener), throws.
  */
 export function egressPolicy(
   vault = process.env.FACTORY_AX_VAULT,
@@ -477,6 +496,7 @@ export function egressPolicy(
   reviewer = false,
   manager = false,
   githubRepo?: string,
+  server = process.env.FACTORY_AX_WORKER_SERVER,
 ) {
   if (vault && reviewer && !(safeName(githubOwner) && safeName(githubRepo)))
     throw new Error('the reviewer egress policy needs the rig GitHub owner and repo, both plain names')
@@ -538,6 +558,7 @@ export function egressPolicy(
       // GitHub's Actions log storage: `gh api .../logs` follows a 302 there. No key goes to these hosts.
       { https: { hostnames: ACTIONS_LOG_HOSTS } },
       ...(gate ? [gateRule(gate)] : []),
+      ...(server ? [serverRule(server)] : []),
       ...(gate ? stripRegistryHosts(extra) : extra).map(
         ({ hosts, key, header, prefix, port, http, pathPrefixes, headers }) =>
           headers?.length
