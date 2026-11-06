@@ -160,6 +160,28 @@ test('a missing ax binary fails the call and does not throw', () => {
   }
 })
 
+test('a bare ax name that PATH lacks is not "task not found" for read, remove or remoteManager', () => {
+  const saved = { ...process.env }
+  try {
+    process.env.FACTORY_AX = 'ax-no-such-binary-zq' // Bun's message holds "not found in $PATH"
+    expect(() => ax.read('f-a-1')).toThrow('ax did not run')
+    expect(ax.remove('f-a-1')).toContain('ax did not run')
+    delete process.env.FACTORY_IN_AX
+    process.env.FACTORY_AX_CONTEXT = 'c'
+    const warn: string[] = []
+    const prev = console.error
+    console.error = (m: string) => void warn.push(m)
+    try {
+      expect(ax.remoteManager()).toBeUndefined()
+    } finally {
+      console.error = prev
+    }
+    expect(warn.join()).toContain('manager lease not checked')
+  } finally {
+    process.env = saved
+  }
+})
+
 test('task names are RFC 1123 labels that keep the seq', () => {
   expect(ax.taskName('fx-12_Add.health', 3)).toBe('f-fx-12-add-health-3')
   const long = ax.taskName('r'.repeat(80), 12)

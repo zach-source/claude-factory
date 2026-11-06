@@ -288,9 +288,10 @@ function ax(args: string[], stdin?: string, timeout = 30_000) {
       ok: p.exitCode === 0,
       out: p.stdout.toString(),
       err: p.stderr.toString().trim(),
+      ran: true,
     }
   } catch (e) {
-    return { ok: false, out: '', err: `ax did not run: ${(e as Error).message}` } // a missing ax binary
+    return { ok: false, ran: false, out: '', err: `ax did not run: ${(e as Error).message}` } // a missing ax binary
   }
 }
 function must(args: string[], stdin?: string) {
@@ -663,7 +664,7 @@ export const launch = (l: Launch) => {
 export function read(task: string): { phase: string | null; failure?: string } {
   const r = ax(['get', 'task', task])
   if (r.ok) return { phase: phaseOf(r.out), failure: failureOf(r.out) }
-  if (/not ?found/i.test(r.err)) return { phase: null }
+  if (r.ran && /not ?found/i.test(r.err)) return { phase: null }
   throw new Error(`ax get task: ${r.err}`)
 }
 export const phase = (task: string) => read(task).phase
@@ -749,7 +750,7 @@ export function remove(task: string) {
   const fails: string[] = []
   for (const kind of ['task', 'workspace']) {
     const r = ax(['delete', kind, task])
-    if (!r.ok && !/not ?found/i.test(r.err))
+    if (!r.ok && !(r.ran && /not ?found/i.test(r.err)))
       fails.push(`delete ${kind}: ${(r.err || r.out.trim()).slice(0, 200)}`)
   }
   return fails.length ? fails.join('; ') : undefined
@@ -782,7 +783,7 @@ export function remoteManager(): string | undefined {
   const task = managerTask()
   const r = ax(['get', 'task', task], undefined, 5_000)
   if (r.ok) return managerRefusal(phaseOf(r.out), process.env, task)
-  if (!/not ?found/i.test(r.err))
+  if (!(r.ran && /not ?found/i.test(r.err)))
     console.error(`warning: AX unreachable, manager lease not checked: ${r.err}`)
   return undefined
 }
