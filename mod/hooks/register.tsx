@@ -93,6 +93,11 @@ const BRIEFER_LOG_CAP = 50
 const REVIEWER_TYPE = 'factory:reviewer'
 /** `factory skills|proposals install|reject`, with the path before `factory` and quotes or extra space between the words */
 const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
+// [SECURITY] claude-factory-ruq0: a bd metadata write flag removes a hold mark. Best-effort text match
+// with no anchor on bd; a split flag in quotes, a script or bd sql get past it (claude-factory-lmi6).
+// The `--metadata-field` read filter does not match: the lookahead refuses a word char or '-'.
+/** a bd metadata write flag */
+const META_WRITE = /--(?:set-|unset-)?metadata(?![\w-])/
 /** the bd verbs a subagent runs: reads and a comment. None has a label or metadata write flag. */
 const BD_READ = new Set([
   'show',
@@ -1625,6 +1630,10 @@ export const register: Register = (on, options) => {
       return {
         deny: 'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
       }
+    if (e.agentId && META_WRITE.test(joined))
+      return {
+        deny: 'a subagent never writes bead metadata: a hold such as discovered_from, pm_finding or owner_decisions lives there',
+      }
     // [SECURITY] a subagent runs bd only as a read or a comment: a bd label write queues a bead for dispatch with no check.
     if (e.agentId && bdWrite(joined))
       return {
@@ -1646,7 +1655,7 @@ export const register: Register = (on, options) => {
     const gated = gatedCommand(e.command)
     // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
     // (a line continuation or a quoted newline must not hide a run-acting command from either)
-    const normalized = e.command.replace(/\\\n/g, '')
+    const normalized = joined
 
     // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
     // gated command outright, for every subagent. The run-touched hold below, and the patrol-log
