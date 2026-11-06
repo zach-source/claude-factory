@@ -321,7 +321,44 @@ const line = (s: string) =>
     .replace(/[\s\x00-\x1f\x7f]+/g, ' ')
     .trim()
 
-const glossaryLink = (raw: string) => {
+/** FACTORY_WIKI_GROOM_CAP: a positive whole number, else 15. */
+export const groomCap = (env: Record<string, string | undefined> = process.env) => {
+  const v = env.FACTORY_WIKI_GROOM_CAP ?? ''
+  return /^[1-9]\d*$/.test(v) ? Number(v) : 15
+}
+
+export type GroomAction = {
+  op: 'merge' | 'rewrite' | 'stale' | 'supersede'
+  paths: string[]
+  reason: string
+}
+const SLUG = '[a-z0-9][a-z0-9._-]*'
+const P = `(?:solutions/\\d{4}-(?:0[1-9]|1[0-2])/${SLUG}|topics/${SLUG}|index|glossary)\\.md`
+const GROOM_LINE = new RegExp(`^(merge|rewrite|stale|supersede) (${P})(?: (${P}))? — (\\S.*)$`)
+
+/** Parses plan lines `<op> <path>[ <path2>] — <reason>`. It skips any other line. It keeps the first `cap` actions. */
+export function groomPlan(text: string, cap = groomCap()): GroomAction[] {
+  const out: GroomAction[] = []
+  for (const raw of text.split('\n')) {
+    const m = GROOM_LINE.exec(raw.trim())
+    if (!m) continue
+    const op = m[1] as GroomAction['op']
+    const paths = [m[2]!, m[3]].filter((x): x is string => !!x)
+    const two = op === 'merge' || op === 'supersede'
+    if (paths.length !== (two ? 2 : 1) || new Set(paths).size !== paths.length) continue
+    out.push({ op, paths, reason: line(m[4]!) })
+    if (out.length >= cap) break
+  }
+  return out
+}
+
+/** The changed paths that no action names. Only an exact string match counts as planned. */
+export function outsidePlan(changedPaths: string[], plan: GroomAction[]): string[] {
+  const planned = new Set(plan.flatMap(a => a.paths))
+  return changedPaths.filter(p => !planned.has(p))
+}
+
+const glossaryLink =(raw: string) => {
   const term = line(raw)
   return `- ${term}: ../../glossary.md#${term.toLowerCase().replace(/ /g, '-')}`
 }
