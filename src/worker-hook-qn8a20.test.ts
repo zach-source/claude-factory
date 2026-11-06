@@ -68,6 +68,24 @@ const AC4 = [
   'curl -o/h/rigs.json x',
   'curl -o.scratch/rigs.json x',
   'dd if=x seek=1 conv=/h/rigs.json',
+  'cp .scratch/rigs.json /h/',
+  'cp /w/acme/.scratch/rigs.json /h',
+  'mv .scratch/rigs.json /h/',
+  'cp -t /h .scratch/rigs.json',
+  'cp --target-directory=/h .scratch/worker-settings-acme.json',
+  'install -m 644 .scratch/rigs.json /h/',
+  'rsync .scratch/rigs.json /h/',
+  'ln -sf /w/acme/.scratch/rigs.json /h/',
+  'cd /h && cp /w/acme/.scratch/rigs.json .',
+  'tar -C /h -xf a.tar rigs.json',
+  'unzip -d /h a.zip rigs.json',
+  'cp .scratch/rigs.json ../x/',
+  'env -C /h tee rigs.json',
+  'env --chdir=/h tee rigs.json',
+  'tee /h/*',
+  'tee /h/*.*',
+  'echo [] > /h/*',
+  'cp x /h/*',
 ]
 const ALLOW = [
   'cat /h/rigs.json',
@@ -83,6 +101,8 @@ const ALLOW = [
   'echo [] > /w/acme/.scratch/rigs.json',
   'echo hi > notes.json',
   'cp -R /h .scratch/h',
+  'tee .scratch/*',
+  'cp .scratch/rigs.json .scratch/b.json',
 ]
 
 describe('qn8a.20 Bash guard', () => {

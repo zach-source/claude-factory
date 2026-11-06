@@ -3619,8 +3619,11 @@ const FACTORY_CONFIG_MAY_RE = /rigs|settings|[*?[{<>\\"']/i
 // no `=` and no leading `-`: a flag with a glued value (--output=/h/rigs.json) is no path
 const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:/][\w.@%+,:/-]*$/
 
-/** claude-factory-qn8a.20: true when a path word can name rigs.json or a worker-settings file. */
-function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 {
+/**
+ * claude-factory-qn8a.20: 1 when a path word names rigs.json or a worker-settings file, 2 when a
+ * glob with a letter can match one, 3 when a glob with no letter can match one, else 0.
+ */
+function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 | 3 {
   const c = foldNonAscii(normalizeConfigPath(word))
     .toLowerCase()
     .replace(/["'\\]/g, '')
@@ -3636,27 +3639,37 @@ function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 {
     })
   if (all.length > 64) return 2
   return Math.max(...all.map(s => namesFactoryConfigPlain(s.replace(/[\u0001\u0002]/g, ''), state))) as
-    0 | 1 | 2
+    | 0
+    | 1
+    | 2
+    | 3
 }
 
-// 1: the word names the file. 2: a glob with a literal letter can match it.
-function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 {
+// 1: the word names the file. 2: a glob with a literal letter can match it. 3: a glob with no letter can.
+function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
   if (c.includes('rigs.json') || c.includes('worker-settings')) return 1
   const last = c.split('/').pop() ?? c
   if (!/[*?[]/.test(last)) return 0
   // a class names its first member, so w[o]rker-settings-acme.json reads as the settings file
   const first = last.replace(/\[[!^]?([^\]])[^\]]*\]/g, '$1')
   if (/rigs\.json|worker-settings/.test(first)) return 1
-  return /[a-z]/.test(last) && globCanMatch(last, FACTORY_CONFIG_SAMPLES, state) ? 2 : 0
+  if (!globCanMatch(last, FACTORY_CONFIG_SAMPLES, state)) return 0
+  return /[a-z]/.test(last) ? 2 : 3
 }
 
 /**
- * claude-factory-qn8a.20: true when one segment writes the factory home rigs.json or a
- * worker-settings*.json file. A write word is not exempt unless it is a plain path inside `root`.
+ * claude-factory-qn8a.20: 'name' when one segment writes the factory home rigs.json or a
+ * worker-settings*.json file, 'glob' when a glob guess can match one. A write word is not exempt
+ * unless it is a plain path inside `root`. An exempt name still denies when another word of the
+ * segment can point outside `root` (an outside path, `..`, `.`, `~`, `$`), because a copy then
+ * moves the file out. A word `-C` or `--chdir` counts as a directory change.
+ * A glob with no letter (`*`) is a guess only when its directory part is not a plain path inside `root`.
  * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
  * flag value, and every word of a segment that does not skip its operands.
  * ponytail: these pass: a name built at run time (a variable, printf), a script file, a symlink
- * from an earlier call, and a program that picks the path. The sandbox is the barrier.
+ * from an earlier call, a program that picks the path, git config -f (qn8a.50), codex apply_patch
+ * (qn8a.22), the hook source and settings.local.json (qn8a.21), and a re-point of origin (qn8a.45).
+ * The sandbox is the barrier.
  * Upgrade path: resolve each word against the real FACTORY_HOME.
  */
 function factoryConfigWrite(
@@ -3670,12 +3683,25 @@ function factoryConfigWrite(
 ): 'name' | 'glob' | undefined {
   if (!FACTORY_CONFIG_MAY_RE.test(foldNonAscii(joinedWords(words)))) return undefined
   let found: 'glob' | undefined
-  const relativeOk = !moved && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
+  const chdir = words.some(w => /^(-C|--chdir)/.test(w.replace(/["']/g, '')))
+  const relativeOk = !moved && !chdir && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
   const exempt = (w: string): boolean => {
     const v = normalizeConfigPath(w.replace(/["']/g, ''))
     if (!root || !FACTORY_CONFIG_EXEMPT_RE.test(v) || v.split('/').includes('..')) return false
     return v.startsWith('/') ? v.startsWith(root + '/') : relativeOk
   }
+  const insideDir = (w: string): boolean => {
+    const v = normalizeConfigPath(w.replace(/["']/g, ''))
+    const dir = v.slice(0, v.lastIndexOf('/') + 1)
+    if (!root || !/^[\w.@%+,:/-]*$/.test(dir) || dir.split('/').includes('..')) return false
+    return dir.startsWith('/') ? dir.startsWith(root + '/') : relativeOk
+  }
+  const escapes = (w: string): boolean => {
+    const v = normalizeConfigPath(w.replace(/["']/g, '')).replace(/^-[^=]*=/, '')
+    if (/^[~$]|^\.\/?$/.test(v) || v.split('/').includes('..')) return true
+    return v.startsWith('/') && v !== root && !v.startsWith(root + '/')
+  }
+  let exemptSeen = false
   let pending = false
   let prevWriterFlag = false
   for (const word of words) {
@@ -3703,9 +3729,14 @@ function factoryConfigWrite(
       if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
     }
     const named = namesFactoryConfig(target, state)
-    if (named === 1 && !exempt(target)) return 'name'
+    if (named === 1) {
+      if (!exempt(target)) return 'name'
+      if (!redirect) exemptSeen = true
+    }
     if (named === 2 && !exempt(target)) found = 'glob'
+    if (named === 3 && !insideDir(target)) found = 'glob'
   }
+  if (exemptSeen && words.some(escapes)) return 'name'
   return found
 }
 
