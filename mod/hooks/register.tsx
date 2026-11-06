@@ -93,9 +93,22 @@ const BRIEFER_LOG_CAP = 50
 const REVIEWER_TYPE = 'factory:reviewer'
 /** `factory skills|proposals install|reject`, with the path before `factory` and quotes or extra space between the words */
 const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
-// [SECURITY] a bd label write can queue a bead for dispatch; best-effort text match (see the tool.call deny).
-const LABEL_ADD =
-  /--add-label|--set-labels|\bbd\b[\s\S]*(?:\btag['"]?\s|\blabel['"]?\s[\s\S]*?\b(?:add|propagate)\b|\b(?:create|new|q)['"]?\s[\s\S]*(?:--labels\b|\s['"]?-[A-Za-z]*l))/
+/**
+ * [SECURITY] true when the text writes a bd label (a label such as factory queues a bead for dispatch).
+ * Best-effort text match. It cuts at the first `bd` word and then takes linear steps: nested gaps in
+ * one regex backtrack cubically on a long command, and this runs in the hook for each subagent command.
+ */
+function addsBdLabel(text: string): boolean {
+  if (/--add-label|--set-labels/.test(text)) return true
+  const at = text.search(/\bbd\b/)
+  if (at < 0) return false
+  const tail = text.slice(at)
+  if (/\btag['"]?\s/.test(tail)) return true
+  const label = /\blabel['"]?\s/.exec(tail)
+  if (label && /\b(?:add|propagate)\b/.test(tail.slice(label.index + label[0].length))) return true
+  const make = /\b(?:create|new|q)['"]?(?=\s)/.exec(tail)
+  return !!make && /--labels?\b|\s['"]?-[A-Za-z]*l/.test(tail.slice(make.index + make[0].length))
+}
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
 /** review-log.jsonl keeps at most this many lines, oldest dropped first */
@@ -1603,7 +1616,7 @@ export const register: Register = (on, options) => {
       }
     // [SECURITY] no subagent adds a bd label: a label such as factory queues a bead for dispatch with no check.
     // Best-effort text match; the hook cannot read the label value, so it denies every add.
-    if (e.agentId && LABEL_ADD.test(joined))
+    if (e.agentId && addsBdLabel(joined))
       return {
         deny: 'a subagent never adds a bd label: queue or start a bead with factory queue or factory start, which check it',
       }
