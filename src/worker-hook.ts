@@ -9043,7 +9043,8 @@ function denyAtScan(
       // claude-factory-qn8a.10: segments() ends a word at whitespace. bash reads a ${ word on to its
       // matching close brace and splits it, so an unclosed ${ in a wrapper slot can hide the command.
       // segments() also drops quotes, so the raw text is read.
-      if (skipped.slice(k).some(w => w.includes('${')) && hasSplitBrace(command))
+      // A backslash-newline between the dollar and the brace joins them, so join it before the scan.
+      if (skipped.slice(k).some(w => w.includes('$')) && hasSplitBrace(command.replace(/\\\n/g, '')))
         late.reason ??= DYNAMIC_VERB_REASON
       for (const w of skipped.slice(k)) {
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
