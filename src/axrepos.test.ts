@@ -159,3 +159,41 @@ test('repos sync gives a rig with no beadsRemote a store from its git origin, an
     else process.env.FACTORY_BD = saved
   }
 })
+
+test('repos sync writes the Dolt placeholder only in the AX task, never in the server home', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-dolt-'))
+  const origin = join(root, 'origin')
+  mkdirSync(origin, { recursive: true })
+  const git = (...a: string[]) =>
+    Bun.spawnSync(['git', '-C', origin, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])
+  git('init', '-q')
+  mkdirSync(join(origin, '.beads'), { recursive: true })
+  writeFileSync(join(origin, '.beads', 'config.yaml'), 'issue-prefix: acme\n')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'init')
+  const bd = join(root, 'bd')
+  writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
+  const saved = process.env.FACTORY_BD
+  process.env.FACTORY_BD = bd
+  const rig = {
+    name: 'widget',
+    repo: '/x',
+    remote: origin,
+    beadsRemote: { url: 'https://dolt.acme.test/x', user: 'u' },
+  }
+  try {
+    for (const [mode, env, json] of [
+      ['ax', AX, { DOLT_REMOTE_USER: 'u', DOLT_REMOTE_PASSWORD: 'placeholder' }],
+      ['server', { FACTORY_SERVER_HOME: '1' }, { DOLT_REMOTE_USER: 'u' }],
+    ] as const) {
+      const home = join(root, `home-${mode}`)
+      const e = { ...env, FACTORY_HOME: home, FACTORY_REPOS: join(root, `repos-${mode}`) }
+      expect(syncRepos([rig], home, e)).toEqual([])
+      const dir = beadsDirOf(home, join(root, `repos-${mode}`, 'widget'))
+      expect(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8'))).toEqual(json)
+    }
+  } finally {
+    if (saved === undefined) delete process.env.FACTORY_BD
+    else process.env.FACTORY_BD = saved
+  }
+})

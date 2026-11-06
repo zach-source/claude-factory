@@ -1785,8 +1785,10 @@ export const resumeNote = (run: Run, node: string, c: Ctx) =>
   `check git status and git log first. When finished, report exactly once: ${reportCmd(run, c)}`
 
 /** where a station's workers run: the station's own runner, else the rig's */
+const stationRunnerName = (run: Run, def: Factory, node: string) =>
+  def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER
 export const runnerOfStation = (run: Run, def: Factory, node: string) => {
-  const name = def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER
+  const name = stationRunnerName(run, def, node)
   assertAxRunner(name, serverMode)
   return runners[name] ?? runners[DEFAULT_RUNNER]!
 }
@@ -3455,6 +3457,16 @@ export function isTrusted(repo: string, configDir = process.env.CLAUDE_CONFIG_DI
   }
 }
 
+/** in server mode, a station that resolves to a non-ax runner never starts: hold the run and mail the manager once (not an error row) */
+export function holdNonAxStation(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input) => void) {
+  const name = stationRunnerName(run, def, node)
+  if (!serverMode || name === 'ax') return false
+  const text = `station "${node}" of run ${run.id} needs the "${name}" runner: the server home runs AX workers only. Run it in the local home, or pin the station to ax.`
+  if (!(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === text))
+    send({ type: 'MAIL', from: 'factory', to: 'manager', text })
+  return true
+}
+
 function holdUnavailableAx(c: Ctx, send: (e: Input) => void) {
   const reason = ax.unavailable()
   if (!reason) return false
@@ -3482,6 +3494,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // only a harness herdr knows (claude, codex, pi) shows it an agent; a script or a fake worker never would
   const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
+    if (holdNonAxStation(run, def, c, node, send)) return 'needs the local home: station runner is not ax'
     if (runnerOfStation(run, def, node).name === 'ax' && holdUnavailableAx(c, send))
       return 'AX executor unavailable'
     const starter = runnerOfStation(run, def, node)
@@ -7158,7 +7171,7 @@ async function migrateToAx(args: string[]) {
  * The local run dirs go to split-<stamp>/. split.json records the move.
  * See docs/remote-runner.md, Split the home.
  */
-function splitHome(args: string[]) {
+async function splitHome(args: string[]) {
   const dry = args.includes('--dry-run')
   const [to] = args.filter(a => a !== '--dry-run')
   if (!to) fail('usage: factory home split <dir> [--dry-run]')
@@ -7183,6 +7196,18 @@ function splitHome(args: string[]) {
   })
   const p = splitPlan(rawRigs(), facts)
   if (p.error) fail(p.error)
+  // a live run at a station pinned to a non-ax runner would hold in the server home: name it and refuse
+  const pinned: string[] = []
+  for (const id of p.runs) {
+    const run = readJson<Run>(join(runsDir, id, 'run.json'))
+    const node = where(readJson<Saved>(join(runsDir, id, 'state.json')).snapshot.value)[0]!
+    const runner = (await loadPinned(run.factory)).nodes[node]?.runner
+    if (runner && runner !== 'ax') pinned.push(`${id} (station ${node}, runner ${runner})`)
+  }
+  if (pinned.length)
+    fail(
+      `these live runs wait at a station that needs a non-ax runner, and the server home runs AX workers only: ${pinned.join(', ')}. Let them pass the station or finish them, then run this again.`,
+    )
   const moved = migrate.migratedRigs(p.move, origin)
   if (moved.error) fail(moved.error)
   console.log(
@@ -7201,8 +7226,7 @@ function splitHome(args: string[]) {
       })
     if (existsSync(join(HOME, 'memory')))
       cpSync(join(HOME, 'memory'), join(target, 'memory'), { recursive: true })
-    writeFileSync(join(target, 'rigs.json.tmp'), JSON.stringify(moved.rigs, null, 2) + '\n')
-    renameSync(join(target, 'rigs.json.tmp'), join(target, 'rigs.json'))
+    writeJson(join(target, 'rigs.json'), moved.rigs)
     const at = Date.now()
     const file = join(HOME, 'split.json')
     const old: unknown[] = existsSync(file) ? readJson(file) : []
@@ -10934,7 +10958,7 @@ if (import.meta.main && !outboxCmd)
       case 'home':
         if (args[0] === 'split') {
           refuseWorker('home split', true)
-          splitHome(args.slice(1))
+          await splitHome(args.slice(1))
           break
         }
         console.log(HOME)

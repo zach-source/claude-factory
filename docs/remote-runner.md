@@ -477,7 +477,7 @@ The command holds `tick.lock` and writes `<dir>` first, `rigs.json` last. It cha
 
 The factory does not do the steps that start with "Owner".
 
-1. Owner: make the namespace, the PVC and the Secrets of `deploy/server.yaml`, and the gateway route for port 8444. Apply it: `envsubst '$SERVER_IMAGE $CLIENT_GATEWAY_NAMESPACE' < deploy/server.yaml | kubectl apply -f -`.
+1. Owner: make the namespace, the PVC and the Secrets of `deploy/server.yaml` (`factory-github`). Make the gateway route for port 8444. If a rig has a `beadsRemote`, make Secret `factory-dolt-remote` with key `password`. Apply it: `envsubst '$SERVER_IMAGE $CLIENT_GATEWAY_NAMESPACE' < deploy/server.yaml | kubectl apply -f -`.
 2. Owner: stop the laptop manager, `factory loop` and `factory tick`.
 3. Run `factory home split /tmp/server-home --dry-run`. Read the plan. If it names a run in a herdr pane, finish or abort that run, or let it reach a station boundary. Then run it again.
 4. Run `factory home split /tmp/server-home`.
@@ -488,7 +488,14 @@ The factory does not do the steps that start with "Owner".
 #### What the server checks
 
 - `factory server` stops with exit 1 and `server home holds non-AX rigs: <names>` if `rigs.json` holds a rig that is not `ax`. It binds no port and writes no lease. The same check runs before each tick, so a hand edit stops the tick and `/healthz` shows `tickOk: false`.
-- In the server, a station on a runner other than `ax` fails. No herdr pane starts.
+- In the server, a station that resolves to a runner other than `ax` never starts. The run holds at that station. The factory mails the manager once.
+- The factory files pin these stations to `herdr`:
+  - `lifecycle`: `baseline`, `rollback`, `incident`.
+  - `ship`: `queue`, `deploy`, `soak`, `rollback`.
+  - `sweeps`: `monitor`, `ci`, `flakes`, `drift`, `advisories`.
+- Limit: a rig in the server home cannot run these stations. Run them in the local home, or pin the station to `ax`.
+- `factory home split` refuses if a live run of a moved rig waits at such a station. It names the run and the station.
+- The server has no AX egress gateway. A rig with a `beadsRemote` uses the real Dolt password. The pod gets it from `DOLT_REMOTE_PASSWORD` (Secret `factory-dolt-remote`, key `password`). `repos sync` writes no password to `env.json` in the server home.
 - The pod sets `FACTORY_SERVER_HOME=1`. Then the server clones each rig under `FACTORY_REPOS` (`/var/lib/factory/repos`) once at start, as `factory repos sync` does. git asks `gh auth git-credential` for the GitHub credential, from `GH_TOKEN`. A rig added later needs `factory repos sync` in the pod, or a restart.
 
 #### The way back

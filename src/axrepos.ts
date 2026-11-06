@@ -111,7 +111,11 @@ export function syncRepos(rigs: RigLike[], home: string, env: Env = process.env)
       const dir = beadsDirOf(home, step.path)
       const origin = run(['git', 'remote', 'get-url', 'origin'], step.path).stdout.toString().trim()
       const extra = rig.beadsRemote
-        ? { DOLT_REMOTE_USER: rig.beadsRemote.user, DOLT_REMOTE_PASSWORD: 'placeholder' }
+        ? {
+            DOLT_REMOTE_USER: rig.beadsRemote.user,
+            // only the AX egress gateway swaps the placeholder; the server pod passes its own DOLT_REMOTE_PASSWORD from the env
+            ...(inAx(env) && { DOLT_REMOTE_PASSWORD: 'placeholder' }),
+          }
         : {}
       bootstrapBeads(dir, rig.beadsRemote?.url, httpsRemote(origin), { ...process.env, ...extra })
       writeFileSync(join(dir, 'env.json'), JSON.stringify(extra))

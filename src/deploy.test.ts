@@ -137,6 +137,9 @@ test('the pod is a server home: rig clones under the PVC, git asks gh for the cr
   expect(val('GIT_CONFIG_KEY_1')).toBe('credential.https://github.com.helper')
   expect(val('GIT_CONFIG_VALUE_1')).toBe('!gh auth git-credential')
   expect(c.env.some((e: Obj) => e.name === 'FACTORY_IN_AX')).toBe(false)
+  const doltEnv = c.env.find((e: Obj) => e.name === 'DOLT_REMOTE_PASSWORD')
+  expect(doltEnv.value).toBeUndefined()
+  expect(doltEnv.valueFrom.secretKeyRef.name).toBe('factory-dolt-remote')
   for (const e of c.env) for (const re of SECRETS) expect(re.test(String(e.value ?? ''))).toBe(false)
 })
 

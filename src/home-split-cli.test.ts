@@ -7,6 +7,7 @@ const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `home-split-cli-${process.pid}`)
 const home = join(dir, 'home')
 const server = join(dir, 'server')
+const LIFECYCLE = join(import.meta.dir, '..', 'factories', 'lifecycle.ts')
 
 const factory = (args: string[], extra: Record<string, string> = {}, timeout = 20000) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...rest } = process.env
@@ -28,7 +29,7 @@ function repo(name: string, origin = true) {
 const addRun = (id: string, repoPath: string, value: string, pane: string | null) => {
   const d = join(home, 'runs', id)
   mkdirSync(d, { recursive: true })
-  writeFileSync(join(d, 'run.json'), JSON.stringify({ id, repo: repoPath }))
+  writeFileSync(join(d, 'run.json'), JSON.stringify({ id, repo: repoPath, factory: LIFECYCLE }))
   writeFileSync(
     join(d, 'state.json'),
     JSON.stringify({ cursor: 0, snapshot: { value, context: { pane, log: [] } } }),
@@ -122,6 +123,12 @@ refuses(
   'tick',
 )
 refuses('a live AX rig run in a herdr pane', () => addRun('pane', axRepo, 'plan', 'w1-3'), {}, 'pane')
+refuses(
+  'a live AX rig run at a station pinned to herdr',
+  () => addRun('pinned', axRepo, 'baseline', 'ax://t2'),
+  {},
+  'pinned (station baseline, runner herdr)',
+)
 refuses('the target holds rigs.json', () => {
   mkdirSync(server)
   writeFileSync(join(server, 'rigs.json'), '[]')

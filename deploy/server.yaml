@@ -133,6 +133,10 @@ spec:
             - name: GH_TOKEN
               valueFrom:
                 secretKeyRef: { name: factory-github, key: token }
+            # bd dolt push and pull in the pod: no gateway swaps a placeholder, so the pod holds the real password
+            - name: DOLT_REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: factory-dolt-remote, key: password, optional: true }
             - name: LINEAR_API_KEY
               valueFrom:
                 secretKeyRef: { name: factory-linear, key: token, optional: true }

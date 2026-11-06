@@ -104,3 +104,26 @@ test('rig add refuses a moved name or repo, and a split.json it cannot read', ()
   expect(movedRigRefusal('{nope', 'x', '/r/x')).toContain('not a JSON array')
   expect(movedRigRefusal('{}', 'x', '/r/x')).toContain('not a JSON array')
 })
+
+test('holdNonAxStation mails the manager once for a herdr station, and passes an ax station', async () => {
+  const { holdNonAxStation, setServerMode } = await import('./cli')
+  const run = { id: 'r1', repo: '/r/none' } as never
+  const def = { nodes: { h: { runner: 'herdr' }, a: { runner: 'ax' }, d: {} } } as never
+  const sent: { type: string; from?: string; text?: string }[] = []
+  const send = (e: unknown) => void sent.push(e as (typeof sent)[number])
+  const ctx = (mail: unknown[] = []) => ({ mail: { manager: mail } }) as never
+  setServerMode(true)
+  try {
+    expect(holdNonAxStation(run, def, ctx(), 'h', send)).toBe(true)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ type: 'MAIL', from: 'factory' })
+    expect(sent[0]!.text).toContain('station "h" of run r1 needs the "herdr" runner')
+    expect(holdNonAxStation(run, def, ctx([{ from: 'factory', text: sent[0]!.text }]), 'h', send)).toBe(true)
+    expect(sent).toHaveLength(1)
+    expect(holdNonAxStation(run, def, ctx(), 'd', send)).toBe(true)
+    expect(holdNonAxStation(run, def, ctx(), 'a', send)).toBe(false)
+  } finally {
+    setServerMode(false)
+  }
+  expect(holdNonAxStation(run, def, ctx(), 'h', send)).toBe(false)
+})
