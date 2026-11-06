@@ -528,7 +528,8 @@ test('fork of an ended ship run is allowed beside a live ship run on another rep
   expect(forked.code).toBe(0)
 })
 
-const CLEAR = 'update acme-1--remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
+const CLEAR =
+  'update acme-1 --remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
 const startHandedOff = (
   mode: string,
   args: string[] = [],
