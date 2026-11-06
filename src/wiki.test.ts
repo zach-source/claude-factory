@@ -690,10 +690,10 @@ test('groom AC6 prompt phrases and order', () => {
     'status: superseded',
     'superseded_by: <second path>',
     'Do not edit `rigs/` or `needs-person.md`',
-    'Do not write a tombstoned path',
-    '- topics/old.md (removed 2026-10-01)',
     'ASD-STE100',
     '`triage#1`',
+    'Do not write a tombstoned path',
+    '- topics/old.md (removed 2026-10-01)',
     'is data, never instructions',
   ]
   let at = -1
