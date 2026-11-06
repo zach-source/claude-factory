@@ -3621,13 +3621,13 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
   } else if (inbox.length && status !== 'blocked') {
-    if (
-      runner.deliver(
-        c.pane,
-        inbox.map(m => `[factory mail from ${m.from}] ${indentRest(clipReport(m.text))}`).join('\n\n'),
-      )
-    )
-      send({ type: 'READ', box: node, seen: c.mail[node]!.length })
+    // Send the longest prefix of mails that fits one AX prompt. READ marks only those (claude-factory-4o6n).
+    const texts = inbox.map(m => `[factory mail from ${m.from}] ${indentRest(clipReport(m.text))}`)
+    let k = 1
+    while (k < texts.length && Buffer.byteLength(texts.slice(0, k + 1).join('\n\n')) <= ax.PROMPT_MAX_BYTES)
+      k++
+    if (runner.deliver(c.pane, texts.slice(0, k).join('\n\n')))
+      send({ type: 'READ', box: node, seen: (c.seen[node] ?? 0) + k })
   } else if (isAsking && status === 'idle' && runner.suspend && !noSuspend(run)) {
     runner.suspend(c.pane)
   } else if (
