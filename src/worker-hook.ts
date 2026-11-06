@@ -3650,7 +3650,7 @@ function globalGitConfigUse(
 }
 
 // the protected files as globs: rigs.json and one worker-settings file per rig (and per skills set)
-const FACTORY_CONFIG_GLOBS = ['rigs.json', 'worker-settings*.json', 'inbox.jsonl']
+const FACTORY_CONFIG_GLOBS = ['rigs.json', 'worker-settings*.json', 'inbox.jsonl', 'state.json']
 
 type GlobTok = { star: true } | { star: false; test: (c: string) => boolean; lit?: string }
 
@@ -8261,7 +8261,8 @@ export function scanReason(
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
   if (state.bodyDeny && !state.stdinDeferred) return REASON
-  if (state.cfgGlob) return FACTORY_CONFIG_REASON
+  if (state.cfgGlob)
+    return state.globDeferred && !state.stdinDeferred ? DYNAMIC_VERB_REASON : FACTORY_CONFIG_REASON
   // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
   // trap, source or substitution reads it after this hook ran. Deny unless the command is only
   // plain alias segments.
