@@ -87,7 +87,7 @@ describe('qn8a.20 Bash guard', () => {
     expect(reason('echo [] > rigs.json', ROOT, { cwd: '/h' } as HookGate)).toBe(FACTORY_CONFIG_REASON)
   })
   test('AC3: relative write with no root', () => {
-    expect(reason('echo [] > rigs.json', undefined)).toBe(FACTORY_CONFIG_REASON)
+    expect(denyReason('echo [] > rigs.json', undefined, [])).toBe(FACTORY_CONFIG_REASON)
   })
   test.each(ALLOW)('allows %p', c => {
     expect(reason(c)).toBeUndefined()
@@ -102,8 +102,9 @@ describe('qn8a.20 Bash guard', () => {
       headOf: bump,
       originHead: bump,
       gitAliases: bump,
-      shellFunctions: bump,
-      shellAliases: bump,
+      // the scan reads the function and alias tables once, before it reads any segment
+      shellFunctions: () => new Set<string>(),
+      shellAliases: () => new Map<string, string | null>(),
     } as unknown as HookGate
     expect(denyReason('echo [] > /h/rigs.json', ROOT, [], gate)).toBe(FACTORY_CONFIG_REASON)
     expect(calls).toBe(0)

@@ -3600,6 +3600,83 @@ function globalGitConfigUse(
   return use
 }
 
+const FACTORY_CONFIG_SAMPLES = ['rigs.json', 'worker-settings.json', 'worker-settings-x.json']
+const FACTORY_CONFIG_MAY_RE = /rigs|settings|[*?[{<>\\"']/i
+const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:=/-]+$/
+
+/** claude-factory-qn8a.20: true when a path word can name rigs.json or a worker-settings file. */
+function namesFactoryConfig(word: string, state?: ScanState): boolean {
+  let c = foldNonAscii(normalizeConfigPath(word))
+    .toLowerCase()
+    .replace(/["'\\]/g, '')
+  if (c.includes('rigs.json') || c.includes('worker-settings')) return true
+  for (let p = ''; p !== c;) {
+    p = c
+    c = c.replace(/\{[^{}]*\}/, '*')
+  }
+  const last = c.split('/').pop() ?? c
+  if (!/[*?[]/.test(last)) return false
+  // a class names its first member, so w[o]rker-settings-acme.json reads as the settings file
+  const first = last.replace(/\[[!^]?([^\]])[^\]]*\]/g, '$1')
+  return /rigs\.json|worker-settings/.test(first) || globCanMatch(last, FACTORY_CONFIG_SAMPLES, state)
+}
+
+/**
+ * claude-factory-qn8a.20: true when one segment writes the factory home rigs.json or a
+ * worker-settings*.json file. A write word is not exempt unless it is a plain path inside `root`.
+ * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
+ * flag value, and every word of a segment that does not skip its operands.
+ * ponytail: these pass: a name built at run time (a variable, printf), a script file, a symlink
+ * from an earlier call, and a program that picks the path. The sandbox is the barrier.
+ * Upgrade path: resolve each word against the real FACTORY_HOME.
+ */
+function factoryConfigWrite(
+  words: string[],
+  skip: OperandSkip,
+  isCd: boolean,
+  root: string | undefined,
+  cwd: string | undefined,
+  moved: boolean,
+  state?: ScanState,
+): boolean {
+  if (!FACTORY_CONFIG_MAY_RE.test(foldNonAscii(joinedWords(words)))) return false
+  const relativeOk = !moved && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
+  const exempt = (w: string): boolean => {
+    const v = normalizeConfigPath(w.replace(/["']/g, ''))
+    if (!root || !FACTORY_CONFIG_EXEMPT_RE.test(v) || v.split('/').includes('..')) return false
+    return v.startsWith('/') ? v.startsWith(root + '/') : relativeOk
+  }
+  let pending = false
+  let prevWriterFlag = false
+  for (const word of words) {
+    const afterWriterFlag = prevWriterFlag
+    prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)
+    const wasPending = pending
+    pending = false
+    if (!wasPending && !FACTORY_CONFIG_MAY_RE.test(foldNonAscii(word))) continue
+    let target = word
+    let redirect = wasPending
+    const m = word.match(REDIRECT_PREFIX_RE)
+    if (m && m[0].length === word.length) {
+      pending = true
+      continue
+    }
+    if (m) {
+      target = word.slice(m[0].length)
+      redirect = true
+    } else if (!wasPending && /^of=/i.test(word)) {
+      target = word.slice(3)
+      redirect = true
+    }
+    if (!redirect) {
+      if (skip === 'reader' || isCd) continue
+      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
+    }
+    if (namesFactoryConfig(target, state) && !exempt(target)) return true
+  }
+  return false
+}
+
 /** claude-factory-ty8y: true when a dequoted word of a segment is a git or git-<verb> word. */
 function hasGitWordIn(words: string[]): boolean {
   if (!/git/i.test(joinedWords(words))) return false
@@ -8927,6 +9004,18 @@ function denyAtScan(
         )
       : undefined
     if (configUse === 'mention') state.globalGitConfig = true
+    if (
+      factoryConfigWrite(
+        words,
+        operandSkip,
+        b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+        root,
+        g.cwd,
+        movedSoFar,
+        state,
+      )
+    )
+      return FACTORY_CONFIG_REASON
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
     // hide a kubectl, ko or helm word that follows it.
     //
@@ -9399,6 +9488,7 @@ export function fileWriteReason(
   path: unknown,
   cwd: string,
   env: { home: string; xdg?: string | undefined } = { home: homedir(), xdg: process.env.XDG_CONFIG_HOME },
+  root?: string,
 ): string | undefined {
   if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
     return FILE_WRITE_REASON
@@ -9418,7 +9508,17 @@ export function fileWriteReason(
       real = dirname(real)
     }
   }
-  return protectedParts(split(abs), xdg) || protectedParts(split(real), xdg) ? FILE_WRITE_REASON : undefined
+  if (protectedParts(split(abs), xdg) || protectedParts(split(real), xdg)) return FILE_WRITE_REASON
+  // claude-factory-qn8a.20: rigs.json and worker-settings*.json set the merge authority and the hook.
+  // Only a path inside the worktree root (lexical, and real) may carry one of these names.
+  let realRoot = root
+  try {
+    if (root) realRoot = realpathSync(root)
+  } catch {}
+  const inside = (p: string) =>
+    [root, realRoot].some(r => !!r && (p === r || p.startsWith(r.endsWith(sep) ? r : r + sep)))
+  const config = (p: string) => /^(rigs|worker-settings.*)\.json$/i.test(p.split(sep).pop() ?? '')
+  return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
 }
 
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
@@ -9491,6 +9591,8 @@ async function main() {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
       i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      undefined,
+      process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd(),
     )
     if (reason) {
       console.log(
