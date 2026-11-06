@@ -311,6 +311,12 @@ export const HEREDOC_REASON =
   'exact command. ' +
   SCRATCH_HINT
 
+// claude-factory-06th: bash 5.3 runs the text after `${ ` or `${|` as a command. This guard cannot read it.
+export const FUNSUB_REASON =
+  'The factory denies this command: it holds ${ followed by a blank or |. bash 5.3 runs the text ' +
+  'after it as a command, and this hook cannot read it. To write such text to a file, use the ' +
+  'Write tool. Do not retry this exact command.'
+
 // claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
 // guard denies every shell function definition.
 export const FUNCTION_DEF_REASON =
