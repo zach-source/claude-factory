@@ -577,7 +577,8 @@ export function replayable(
   if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
     if (argv.includes('--body-file')) return null
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
-    return ['memory', id, ...rest, '--from', `${run}/${side.node}`]
+    // the forced --from goes first: a bare trailing flag (--rig) cannot take it as its value (claude-factory-zw2n)
+    return ['memory', id, '--from', `${run}/${side.node}`, ...rest]
   }
   return null
 }
