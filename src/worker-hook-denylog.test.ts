@@ -211,6 +211,17 @@ describe('maskAssignments', () => {
     [': "${GH_TOKEN:=zqsecret}"', ': "${GH_TOKEN:=***'],
     ['echo "${GH_TOKEN:-zqsecret}"', 'echo "${GH_TOKEN:-***'],
     ['${X-zqsecret}', '${X-***'],
+    [': ${X:=zq secret}', ': ${X:=***'],
+    ['echo "${GH_TOKEN:-zq secret}"', 'echo "${GH_TOKEN:-***'],
+    ['${X=zq secret}', '${X=***'],
+    ['${X-zq secret}', '${X-***'],
+    ['${X:=zq;secret}', '${X:=***'],
+    ['${X:=zq|secret}', '${X:=***'],
+    ['${X:=zq)secret}', '${X:=***'],
+    ['${a[k]=zq secret}', '${a[***'],
+    ['${a[1]:=zqsecret}', '${a[***'],
+    ['${a[1]:-zqsecret}', '${a[***'],
+    ['${a[1]-zqsecret}', '${a[***'],
     ['ls foo-bar', 'ls foo-bar'],
     ['echo $(date) a-b', 'echo $(date) a-b'],
     ['cat a]b', 'cat a]b'],
@@ -255,6 +266,8 @@ describe('maskAssignments', () => {
       ' X=$('.repeat(1e5),
       ' X="$('.repeat(1e5),
       ' a[b['.repeat(1e5),
+      ' ${a['.repeat(1e5),
+      ' ${a:='.repeat(1e5),
     ]) {
       const t = performance.now()
       m(i)
