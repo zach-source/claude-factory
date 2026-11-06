@@ -49,6 +49,27 @@ import {
   XARGS_REASON,
 } from './worker-hook'
 
+// claude-factory-qn8a.9 instance index. This class bead replaced 17 one-off beads. Each line gives the test or the known gap.
+// - sibp (and qn8a.38): 'a payload that makes a guard throw prints one HOOK_ERROR_REASON deny'.
+// - abs: 'denyReason denies with SCAN_TIME_REASON when the clock passes the scan deadline'.
+// - w13q: 'denyReason bounds a find with 735 -exec $X slots ...'. Known gap: the scan is still quadratic in the slot
+//   count (7.4 s for 735 slots at load 31). The deadline bounds it at SCAN_TIME_MS. A root fix is not cheap.
+// - w2cf: the same bound test, and 'denies the w2cf stacked eval push literal'.
+// - c1jb: 'denyReason allows 7 harmless alias words in one segment, fast ...'.
+// - 0hkb: 'denyReason allows [ and [[ test forms ...'.
+// - jsoe: 'denyReason allows env -i with a reader and a bd argument ...'.
+// - yule: 'denyReason denies a glob command word inside a brace body'.
+// - eiut: 'denyReason denies env -S with a dollar sign after -u or -C'.
+// - 4aj: 'denyReason counts depth through sh -c --'.
+// - pfb: 'main() takes root from CLAUDE_PROJECT_DIR, not from a sub-directory input.cwd'.
+// - neb0: the SCAN_MS constant, with the rows that keep 500 ms listed as known gaps beside it.
+// - 3it: fixed in src/worker-hook.ts (shCFlagIndex comment), src/worker-hook.bench.ts and the 1by comment and test name here.
+// - mpiy: no change. The rows 'ssh $h uptime', 'fish $h' and 'ssh host $X' in the miqy allow block pass.
+// - l223: no change. The bc1u and gj9l rows pass at origin/main.
+// - iwz1: no change. The AC9 real-binary test sets FACTORY_HOOK_ALIAS_TIMEOUT_MS=6000 (claude-factory-zzxp.1, 6fa4db4f).
+// - iz1p: known gap. 'time -x rm' x1300 takes about 242 ms at load 31, inside its 1000 ms row. A per-call cache of
+//   the risky-target check in wrapperReadingsDeny is not needed now.
+
 const DENY = [
   'rm -rf foo',
   'rm -r foo',
@@ -439,12 +460,12 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
   expect(denyReason(LONG_COMMAND_8192)).toBeUndefined()
 })
 
-// claude-factory-1by: anyShellReason calls shCFlagIndex(words.slice(j)) for each sh/bash/zsh/dash
-// word. words.slice(j) costs O(n-j).
+// claude-factory-1by: before the fix, anyShellReason called shCFlagIndex(words.slice(j)) for each
+// sh/bash/zsh/dash word. words.slice(j) cost O(n-j).
 //
-// The scan it feeds also costs O(n-j). On a miss, j moves by only 1.
+// The scan it fed also cost O(n-j). On a miss, j moved by only 1.
 //
-// So a run of n such words with no `-c` cluster costs O(n^2).
+// So a run of n such words with no `-c` cluster cost O(n^2). The code now uses two forward pointers.
 //
 // Each command below is over 8192 characters. denyReason now denies each one with
 // LONG_COMMAND_REASON on every rig (claude-factory-dts). scanReason runs the same scan with no
@@ -539,7 +560,7 @@ test('denyReason still denies `sh -x -lc "rm -rf x"` (claude-factory-1by)', () =
 
 // claude-factory-dts: this command is also over 8192 characters, so scanReason (no length cap)
 // keeps the old allow verdict, and denyReason now denies it with LONG_COMMAND_REASON.
-test('scanReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
+test('scanReason still allows a 40000-word sh scan that ends with `-c ls`, a harmless script (claude-factory-1by)', () => {
   expect(scanReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
 })
 

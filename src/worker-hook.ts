@@ -7326,7 +7326,7 @@ function anyDynamicLiveApplyReason1(words: string[], personOnly: string[]): stri
  * A cluster counts only when it comes before the next `--` (`nc < nd`). That is why
  * `sh foo -- bash -c "..."` still finds the cluster after the `--`, and `sh -- ...` still finds
  * none before it. This is an exact match for the old `shCFlagIndex` return value, not an
- * approximation: see src/worker-hook.test.ts for the differential checks and for the two
+ * approximation. No test compares it with the old function. src/worker-hook.test.ts holds the two
  * regression shapes that a blind jump past a miss would break.
  */
 // claude-factory-dgf: `env` (GNU and BSD) reads each word after `env` as an option. It stops at
