@@ -9023,8 +9023,16 @@ function denyAtScan(
       for (const w of skipped.slice(k)) {
         // claude-factory-qn8a.10: segments() ends the word early. bash reads on to the matching
         // close brace and splits it, so an unclosed ${ in a wrapper slot can hide the command.
+        // A close brace in quotes or after a backslash does not close the expansion.
         let d = 0
-        for (const m of w.matchAll(/\$\{|\}/g)) d = m[0] === '}' ? Math.max(0, d - 1) : d + 1
+        for (let i = 0; i < w.length; i++) {
+          const c = w[i]!
+          if (c === '\\') i++
+          else if (d && (c === "'" || c === '"')) {
+            for (i++; i < w.length && w[i] !== c; i++) if (c === '"' && w[i] === '\\') i++
+          } else if (c === '$' && w[i + 1] === '{') (d++, i++)
+          else if (c === '}' && d) d--
+        }
         if (d) late.reason ??= DYNAMIC_VERB_REASON
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
           const n = m[1]!
