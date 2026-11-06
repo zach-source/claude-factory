@@ -42,7 +42,7 @@ export function parseNames(out: string): string[] {
 export function sweepNames(names: string[], runs: SweepRun[], manager: string): string[] {
   const picked = new Set<string>()
   for (const n of new Set(names)) {
-    if (n === manager || n === 'f-manager') continue
+    if (n === manager || n.startsWith('f-manager')) continue
     const m = /-(\d+)$/.exec(n)
     if (!m) continue
     const s = Number(m[1])

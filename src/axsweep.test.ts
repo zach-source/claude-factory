@@ -39,6 +39,12 @@ test('sweepNames keeps the manager task whatever its name', () => {
   expect(sweep([t(done, 10)], [live, done], t(done, 10))).toEqual([])
 })
 
+test('sweepNames keeps f-manager-<n> even when the manager env names another task', () => {
+  const m: SweepRun = { id: 'manager', seq: 4, pane: null, over: true }
+  expect(taskName('manager', 3)).toBe('f-manager-3')
+  expect(sweep(['f-manager-3'], [m], 'other')).toEqual([])
+})
+
 test('sweepNames keeps a name two runs can own', () => {
   const long = 'x'.repeat(70)
   const a = { ...done, id: `${long}a` }
