@@ -76,6 +76,7 @@ import {
   isOwned,
   OWNER,
   REJECTED,
+  isHoldLabel,
   LABEL,
   NAME,
   linearSourced,
@@ -6650,6 +6651,8 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
   if (!process.env.FACTORY_PATROL) return
   const no = (why: string): never => fail(`${x.id} ${why}: a patrol cannot start it: a person queues it`)
+  const hold = x.labels?.find(isHoldLabel)
+  if (hold) no(`carries the hold ${hold}`)
   const seen = new Set<string>()
   let cur: Bead = x
   for (;;) {
@@ -7583,17 +7586,20 @@ async function dispatch() {
         )
       }
       const eligible = startable.filter(x => {
-        const open = isOwned(x) || x.labels?.includes(OWNER) ? [] : openChildren(b, x.id)
+        const hold = x.labels?.find(isHoldLabel)
+        const open = isOwned(x) || x.labels?.includes(OWNER) || hold ? [] : openChildren(b, x.id)
         const why =
           isOwned(x) || x.labels?.includes(OWNER) || (open.length && open.every(isWaitingOnPerson))
             ? 'owner decisions pending'
-            : hygieneHeld(x)
-              ? 'hygiene proposed close (factory queue releases it)'
-              : open.length
-                ? 'open children'
-                : linearIds.has(x.id)
-                  ? 'Linear id unconfirmed'
-                  : ''
+            : hold
+              ? `held: ${hold} (factory queue releases it)`
+              : hygieneHeld(x)
+                ? 'hygiene proposed close (factory queue releases it)'
+                : open.length
+                  ? 'open children'
+                  : linearIds.has(x.id)
+                    ? 'Linear id unconfirmed'
+                    : ''
         if (why) skips.set(x.id, why)
         return !why
       })

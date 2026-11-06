@@ -261,3 +261,22 @@ test('factory queue under FACTORY_PATROL refuses discovered_from without the fac
   rows({ 'acme-1': { ...from, labels: ['factory'] } })
   expect(factory(['queue', 'a', 'acme-1'], patrol).code).toBe(0)
 })
+
+test('factory queue under FACTORY_PATROL refuses a hold label; a person releases it (9kou.4)', () => {
+  for (const hold of ['human', 'rejected', 'held:station']) {
+    setup([])
+    writeFileSync(
+      join(bin, 'bd'),
+      readFileSync(join(bin, 'bd'), 'utf8').replace(
+        /  show\) .*\n/,
+        `  show) case "$2" in acme-1) printf '%s' '[{"id":"acme-1","labels":["${hold}"]}]';; *) exit 1;; esac;;\n`,
+      ),
+    )
+    const r = factory(['queue', 'a', 'acme-1'], { FACTORY_PATROL: '1' })
+    expect(r.code).not.toBe(0)
+    expect(r.err + r.out).toContain('a patrol cannot start it: a person queues it')
+    expect(callLines().some(l => l.startsWith('update acme-1'))).toBe(false)
+    expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
+    expect(callLines().find(l => l.startsWith('update acme-1'))).toContain(`--remove-label ${hold}`)
+  }
+})
