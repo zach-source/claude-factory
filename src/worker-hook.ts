@@ -8607,6 +8607,13 @@ function flattenBraceExpansions(w: string, byDepth: boolean): string {
   }
   return out
 }
+// claude-factory-qn8a.10: true when a ${ is not followed by a simple closed body. A simple body holds no
+// whitespace, ; | &, quote, backslash, backtick, $, brace, paren or angle bracket. bash splits any other
+// span into words, and segments() cuts the word early and drops quotes. This rule reads no quotes, so no
+// quote form hides a span. It fails closed and only denies.
+function hasSplitBrace(text: string): boolean {
+  return /\$\{(?![^\s;|&'"`$(){}<>\\]*\})/.test(text)
+}
 function splitGluedExpansions(words: string[], byDepth = true): string[] | undefined {
   let out: string[] | undefined
   for (let i = 0; i < words.length; i++) {
@@ -9231,6 +9238,22 @@ function denyAtScan(
       const skipped = words.slice(0, words.length - cmd.length)
       let k = 0
       while (k < skipped.length && /^[A-Za-z_]\w*\+?=/.test(skipped[k]!)) k++
+      // claude-factory-qn8a.10: segments() ends a word at whitespace. bash reads a ${ word on to its
+      // matching close brace and splits it, so an unclosed ${ in a wrapper slot can hide the command.
+      // segments() also drops quotes, so the raw text is read.
+      // A backslash-newline between the dollar and the brace joins them, so join it before the scan.
+      // claude-factory-qn8a.10.6: realCommandInfo does not skip a redirect word, NAME+=value, an xargs
+      // flag value or a find -exec body, so also read: a wrapper word before a $ word in the segment.
+      const qWrap = words.findIndex(w => {
+        const bw = baseWord(w)
+        return LEAD_WRAPPERS.has(bw) || bw === 'find'
+      })
+      if (
+        (skipped.slice(k).some(w => w.includes('$')) ||
+          (qWrap >= 0 && words.slice(qWrap + 1).some(w => w.includes('$')))) &&
+        hasSplitBrace(command.replace(/\\\n/g, ''))
+      )
+        late.reason ??= DYNAMIC_VERB_REASON
       for (const w of skipped.slice(k)) {
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
           const n = m[1]!
