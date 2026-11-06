@@ -462,6 +462,9 @@ const LABEL_DENY_ROWS = [
   'bd -C /repo/acme update acme-1 --remove-label held:x',
   'bd update acme-1 \\\n--remove-label held:x',
   'bd label remove acme-1 held:x',
+  'bash -c "b\\\\\nd label add acme-1 factory"',
+  'bash -c "b\\\\\nd update acme-1 --unset-meta\\\\\ndata discovered_from"',
+  'bash <<EOF\nb\\\\\nd label add acme-1 queue\nEOF',
 ]
 
 const META_DENY_ROWS = [

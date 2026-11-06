@@ -1652,7 +1652,7 @@ export const register: Register = (on, options) => {
     // [SECURITY] no subagent installs or rejects a skill or proposal: the manager or the person does.
     // This is best-effort text matching on the joined command; src/cli.ts refuses the same verbs when
     // FACTORY_PATROL is set, which the prefix below adds for every subagent.
-    const joined = joinLines(e.command)
+    const joined = e.command.replace(/\\\n/g, '')
     if (e.agentId && INSTALL_VERB.test(joined))
       return {
         deny: 'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
@@ -1680,8 +1680,7 @@ export const register: Register = (on, options) => {
       (e.agentId ? 'export FACTORY_PATROL=1\n' : '') + (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '')
     const pinned = prefix ? { ...e, command: `${prefix}${e.command}` } : e
     const gated = gatedCommand(e.command)
-    // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
-    // (a line continuation or a quoted newline must not hide a run-acting command from either)
+    // joined drops every backslash-newline pair, even after an even run: these guards only deny, and a nested shell can read the pair as a continuation (gatedCommand uses joinLines)
     const normalized = joined
 
     // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
