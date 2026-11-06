@@ -279,6 +279,7 @@ describe('qn8a.21.12 glued short flag value', () => {
     'sort -o/f/acme-factory/src/cut.ts .scratch/s',
     'wget -O/f/acme-factory/src/cut.ts https://example.com/s',
     'sort -so.claude/settings.local.json .scratch/s',
+    'gh api -so.claude/settings.local.json x',
     'sort -ro/f/acme-factory/src/cut.ts .scratch/s',
   ])('denies %s', c => expect(bash(c)).toBe(R))
   test.each([
