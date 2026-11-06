@@ -528,6 +528,18 @@ test('fork of an ended ship run is allowed beside a live ship run on another rep
   expect(forked.code).toBe(0)
 })
 
+test('fork of a ship run with a queued abort is allowed when no other ship run is live (claude-factory-9wch)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, true)
+  expect(run(['abort', a]).code).toBe(0)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
 const CLEAR =
   'update acme-1 --remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
 const startHandedOff = (
