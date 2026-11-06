@@ -3666,9 +3666,8 @@ function classEnd(g: string, i: number): { j: number; odd: boolean } | undefined
   for (; k < g.length; k++) {
     if (g[k] === '[' && /[:=.]/.test(g[k + 1] ?? '')) {
       const e = g.indexOf(g[k + 1]! + ']', k + 2)
-      if (e < 0) return undefined
       odd = true
-      k = e + 1
+      if (e >= 0) k = e + 1
     } else if (g[k] === ']') return { j: k, odd }
   }
   return undefined

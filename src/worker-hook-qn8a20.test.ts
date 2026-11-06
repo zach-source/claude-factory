@@ -145,6 +145,13 @@ const AC13 = [
   'echo x > /h/[[:lower:]]igs.json',
   'tee /h/[[:alpha:]]orker-settings-acme.json',
   'tee /h/w[]o]rker-settings-acme.json',
+  'echo x > /h/[[:r]igs.json',
+  'echo x > /h/[[=r]igs.json',
+  'echo x > /h/[[.r]igs.json',
+  'echo x > /h/[r[:x]igs.json',
+  'tee /h/[[:w]orker-settings-acme.json',
+  'tee /h/w[[:o]rker-settings-acme.json',
+  'cp .scratch/a /h/[[:r]igs.json',
 ]
 const AC15: [string, boolean][] = [
   ['w?rker-settings-acme.json', true],
@@ -152,6 +159,10 @@ const AC15: [string, boolean][] = [
   ['[!]x]igs.json', true],
   ['[[:alpha:]]igs.json', true],
   ['w[]o]rker-settings-acme.json', true],
+  ['[[:r]igs.json', true],
+  ['[[=r]igs.json', true],
+  ['[r[:x]igs.json', true],
+  ['[[:w]orker-settings-acme.json', true],
   ['*-acme.json', true],
   ['*s-acme.json', true],
   ['w*-settings-acme.json', true],
@@ -171,6 +182,7 @@ const AC15: [string, boolean][] = [
 ]
 const ALLOW = [
   'echo x > .scratch/a.txt',
+  'echo x > /h/[[:alpha:]igs.json',
   'cp a /tmp/*.o',
   'tee /tmp/*.log',
   'tee /tmp/worker-setting?',
