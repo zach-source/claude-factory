@@ -3256,6 +3256,30 @@ describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
     expect(s.herdrCalls()).toBe('')
   }, 30_000)
 
+  test('a bad factory and a failing worktree remove still show "is not a valid factory"', () => {
+    const bad: Factory = {
+      name: 'bad',
+      start: 'a',
+      nodes: { a: { prompt: 'x', next: { ok: { to: 'done', ship: true } } } },
+    }
+    const s = setup('s1f', 'ax', bad)
+    const realGit = Bun.which('git')!
+    const shim = join(dir, 's1f', 'bin')
+    mkdirSync(shim)
+    writeFileSync(
+      join(shim, 'git'),
+      `#!/bin/sh\ncase "$*" in *"worktree remove"*) echo cleanup-boom >&2; exit 1;; esac\nexec ${realGit} "$@"\n`,
+    )
+    chmodSync(join(shim, 'git'), 0o755)
+    const out = factory(['start', s.fdefFile, s.repo, 'goal text'], {
+      ...s.env,
+      PATH: `${shim}:${process.env.PATH}`,
+    })
+    expect(out.code).not.toBe(0)
+    expect(out.err).toContain('is not a valid factory')
+    expect(out.err).not.toContain('cleanup-boom')
+  }, 30_000)
+
   test.each([['herdr'], [undefined]])(
     'a rig with runner %p still creates its worktree through herdr',
     runner => {

@@ -6555,9 +6555,12 @@ async function createRun(
     writeJson(pinned, def)
   } catch (err) {
     // fresh, nothing in it yet
-    if (isAx) git(repo, 'worktree', 'remove', '--force', worktree)
-    else herdr('worktree', 'remove', '--workspace', ws, '--force')
-    rmSafe(runDir(id), { recursive: true, force: true })
+    // a failed cleanup must not hide the factory error
+    try {
+      if (isAx) git(repo, 'worktree', 'remove', '--force', worktree)
+      else herdr('worktree', 'remove', '--workspace', ws, '--force')
+    } catch {}
+    rmQuiet(runDir(id), { recursive: true, force: true })
     throw new Error(
       `${relative(worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
     )
