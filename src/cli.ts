@@ -642,6 +642,15 @@ function textFileArg(flag: string, path: string): string {
   return readTextFile(flag, real).trimEnd()
 }
 
+/** claude-factory-p1j6: fail on a Unicode Cc character (C0, DEL, C1) in untrusted text. A multiline field (a description) may keep newline and tab. The error names the code point, never the raw character. */
+function refuseControlChar(field: string, text: string, multiline = false) {
+  const m = (multiline ? /[^\P{Cc}\n\t]/u : /\p{Cc}/u).exec(text)
+  if (m)
+    fail(
+      `${field} has the control character U+${m[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')} at index ${m.index}: remove it`,
+    )
+}
+
 const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort', 'fork', 'rm']
 
 /**
@@ -9386,9 +9395,10 @@ function fileElsewhere(args: string[]) {
     const file = flags.get(`${k}-file`)
     if (file === undefined) continue
     const text = textFileArg(`${k}-file`, file)
-    if (k === '--title' && /\n/.test(text)) fail(`--title-file ${file} has a newline: a title is one line`)
     flags.set(k, text)
   }
+  refuseControlChar('title', flags.get('--title')!)
+  refuseControlChar('description', flags.get('--description')!, true)
   const [srcName, srcId, ...extra] = flags.get('--from')!.split(':')
   if (!srcName || !srcId || extra.length || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(srcId)) fail(usage)
   const rigNamed = (n: string) =>
@@ -9959,9 +9969,11 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
   if (/\n/.test(question)) fail('question has a newline: it must be one line')
+  refuseControlChar('question', question)
   if (!question.trim()) fail('question is empty, or only whitespace')
   if (question.length > 160) fail(`question is ${question.length} characters, over the 160 limit`)
   if (context !== undefined && /\n/.test(context)) fail('context has a newline: it must be one sentence')
+  if (context !== undefined) refuseControlChar('context', context)
   if (context !== undefined && context.length > 200)
     fail(`context is ${context.length} characters, over the 200 limit`)
   const all = proposals()
@@ -9978,6 +9990,7 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
     return
   }
   if (/\n/.test(optionsLine)) fail('options have a newline: each option must be one line')
+  refuseControlChar('options', optionsLine)
   const rawOptions = optionsLine
     .split('|')
     .map(s => s.trim())
