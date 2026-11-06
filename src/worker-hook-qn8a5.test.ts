@@ -233,6 +233,7 @@ for (const c of [
   'gh pr view 1 > >(cat)',
   'factory report r1 13 approve x > >(cat)',
   'factory memory search x > >(cat)',
+  'factory (tick)',
 ])
   test(`5.8 allows ${JSON.stringify(c)}`, () => {
     expect(ask(c)).toBeUndefined()
