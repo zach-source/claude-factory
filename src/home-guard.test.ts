@@ -207,6 +207,8 @@ describe('homeReason', () => {
       [`factory mutate ${CLI}:1 a b -- bun test`, CLI],
       ['bash x.sh>o', 'x.sh'],
       ['bash<.scratch/x', '.scratch/x'],
+      ['bash .scr\\\natch/x', '.scratch/x'],
+      ['bash .scratch/x\\\n', '.scratch/x'],
     ]
     for (const [cmd, path] of cases) {
       const seen: string[] = []
@@ -214,6 +216,49 @@ describe('homeReason', () => {
       expect(seen).toContain(path)
     }
   })
+
+  // bash joins backslash-newline before it splits words; the guard tests the raw and the joined text
+  const onlyX = (p: string) => (p === '.scratch/x' || p === './x.sh' ? bad() : undefined)
+  test.each(['bash .scr\\\natch/x', 'bash .scratch/x\\\n', '.scr\\\natch/x', 'cat a; bash .scr\\\natch/x'])(
+    'denies a path word that a backslash-newline splits: %j',
+    cmd => expect(homeReason(cmd, onlyX, H)).toBe(HOME_REASON),
+  )
+
+  test.each([
+    'mv /Users/pa\\\nt /x',
+    'rm -rf $HO\\\nME',
+    'rm -rf ~\\\n',
+    'mv "${HO\\\nME}" /x',
+  ])('denies a home word that a backslash-newline splits: %j', cmd =>
+    expect(homeReason(cmd, undefined, H)).toBe(HOME_REASON),
+  )
+
+  test('denyReason denies a split home path', () => {
+    const h = homedir()
+    const cmd = 'mv ' + h.slice(0, -1) + '\\\n' + h.slice(-1) + ' /x'
+    expect(denyReason(cmd, '/nonexistent/wt')).toBe(HOME_REASON)
+  })
+
+  test('denies a script file text with a split home word', () => {
+    expect(homeReason('bash c.sh', () => 'mv /users/PA\\\nT /x\n', H)).toBe(HOME_REASON)
+  })
+
+  test.each(['cat x \\\\\n./x.sh'])('an even backslash run keeps the raw scan: %j', cmd =>
+    expect(homeReason(cmd, onlyX, H)).toBe(HOME_REASON),
+  )
+  test('an even backslash run keeps the raw home scan', () =>
+    expect(homeReason('rm -rf a \\\\\n~', undefined, H)).toBe(HOME_REASON))
+
+  test.each([
+    ['bash .scr\\\natch/ok', () => 'echo ok'],
+    ['rm -rf ~/x\\\n', undefined],
+    ['rm -rf ~\\\n/x', undefined],
+    ['echo a\\\nb', undefined],
+    ['bash .scr\\\\\natch/x', onlyX],
+  ] as [string, ((p: string) => string | undefined) | undefined][])(
+    'allows a backslash-newline form that is no home delete: %j',
+    (cmd, rd) => expect(homeReason(cmd, rd, H)).toBeUndefined(),
+  )
 
   test.each([ABS, `bun test ${CLI}:1`])('allows a path word to a benign file: %s', cmd =>
     expect(homeReason(cmd, () => 'echo ok', H)).toBeUndefined(),
