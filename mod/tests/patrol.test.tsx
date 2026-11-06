@@ -536,12 +536,17 @@ test(
       'bd;ls',
       '$B update acme-1 --add-label factory',
       'bd show acme-1 --add-la\\\nbel factory',
+      'BD tag acme-1 factory',
+      'Bd tag acme-1 factory',
+      'bD create -l factory x',
+      '/Users/x/.nix-profile/bin/BD tag acme-1 factory',
+      'bd show acme-1 && BD label add acme-1 factory',
     ]
     for (const command of denied) {
       const r = await call(command, 'patrol-1')
       expect(r.deny, command).toContain('runs bd only')
     }
-    expect((await call(denied[0]!, 'other-1')).deny).toContain('runs bd only')
+    expect((await call('bd tag acme-1 factory', 'other-1')).deny).toContain('runs bd only')
     expect(asked).toBe(0)
     expect(ran).toBe(0)
 
