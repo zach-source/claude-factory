@@ -376,8 +376,9 @@ for (const [name, env] of Object.entries(markers)) {
   test(`e10f unit ${name}`, () => {
     for (const v of ALLOWED) expect(call(v)).toBeUndefined()
     for (const v of DENIED) expect(call(v)).toContain(`a worker cannot run factory ${v} (`)
-    expect(call('rig', ['list'])).toBeUndefined()
-    for (const a of [['add'], ['rm', 'w'], ['--max', '3', 'add']]) expect(call('rig', a)).toBeDefined()
+    for (const a of [['list'], ['show', 'w']]) expect(call('rig', a)).toBeUndefined()
+    for (const a of [['add'], ['rm', 'w'], ['set', 'w'], ['--max', '3', 'add']])
+      expect(call('rig', a)).toBeDefined()
     expect(call('zz-new-verb')).toBeDefined()
     for (const v of [undefined, 'help', '--help', '-h']) expect(call(v)).toBeUndefined()
   })

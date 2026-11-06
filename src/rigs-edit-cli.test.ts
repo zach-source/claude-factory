@@ -214,7 +214,11 @@ test('a worker or a patrol cannot run rig set, but can run rig show', () => {
   expect(patrol.code).toBe(1)
   expect(patrol.err).toContain('a patrol cannot run factory rig set')
   expect(list()[0].maxRuns).toBe(2)
-  for (const env of [worker, { FACTORY_PATROL: '1' }]) expect(factory(['rig', 'show', 'x'], env).code).toBe(0)
+  for (const env of [worker, { FACTORY_PATROL: '1' }]) {
+    const show = factory(['rig', 'show', 'x'], env)
+    expect(show.err).toBe('')
+    expect(show.code).toBe(0)
+  }
   for (const sub of ['rm', 'add'])
     expect(factory(['rig', sub, 'x', repo('q')], worker).err).toContain(
       `a worker cannot run factory rig ${sub}`,

@@ -87,7 +87,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { editRigs } from './rigs-edit'
+import { applyRigChange, editRigs, redactRig } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -9340,6 +9340,35 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
   return warnings
 }
 
+/** Check `--param name=value` pairs against the factory's params. Return them merged over `base`, or `base`. */
+function checkParams(
+  def: Awaited<ReturnType<typeof loadFactory>>,
+  pairs: string[],
+  base?: Record<string, string>,
+) {
+  let out = base
+  for (const p of pairs) {
+    const [k, v] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
+    if (!p.includes('=') || !(k in (def.params ?? {})))
+      fail(
+        `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
+      )
+    if (k === 'base_branch' && v && !branchOk(v))
+      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
+    out = { ...out, [k]: v }
+  }
+  return out
+}
+
+/** Fail when a sweep name is not one of the sweeps factory's sweeps. */
+async function checkSweeps(wanted: string[], sweepsFactory: string | undefined, repo: string) {
+  const sweepsDef = await loadFactory(factorySource(sweepsFactory ?? 'sweeps', repo))
+  const names = sweepNames(sweepsDef)
+  const unknown = wanted.filter(s => !names.includes(s))
+  if (unknown.length)
+    fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
+}
+
 async function defineRig(
   name: string,
   path: string,
@@ -9415,23 +9444,9 @@ async function defineRig(
       fail(`--mcp ${mcp}: ${(err as Error).message}`)
     }
   }
-  for (const p of params ?? []) {
-    const [k, v] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
-    if (!p.includes('=') || !(k in (def.params ?? {})))
-      fail(
-        `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
-      )
-    if (k === 'base_branch' && v && !branchOk(v))
-      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
-    rig.params = { ...rig.params, [k]: v }
-  }
-  if (sweeps !== undefined) {
-    const sweepsDef = await loadFactory(factorySource(rig.sweepsFactory ?? 'sweeps', repo))
-    const names = sweepNames(sweepsDef)
-    const unknown = (rig.sweeps ?? []).filter(s => !names.includes(s))
-    if (unknown.length)
-      fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
-  }
+  const merged = checkParams(def, params ?? [], rig.params)
+  if (merged) rig.params = merged
+  if (sweeps !== undefined) await checkSweeps(rig.sweeps ?? [], rig.sweepsFactory, repo)
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
     if (bad.length)
@@ -9548,7 +9563,7 @@ const WORKER_VERBS = [
   'file-elsewhere',
 ]
 
-/** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
+/** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, `rig show`, or usage) */
 export function workerVerbRefusal(
   cmd: string | undefined,
   args: string[],
@@ -9557,7 +9572,7 @@ export function workerVerbRefusal(
   const marker = workerMarker(false, env)
   if (!marker || !cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || WORKER_VERBS.includes(cmd))
     return undefined
-  if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
+  if (cmd === 'rig' && ['list', 'show'].includes(args[0] ?? 'list')) return undefined
   return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
 }
 
@@ -11613,7 +11628,7 @@ if (import.meta.main && !outboxCmd)
         const mergeAuth = args.includes('--merge-authority')
         if (mergeAuth) args.splice(args.indexOf('--merge-authority'), 1)
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
-        if (sub !== 'list') refuseWorker(`rig ${sub}`, true) // triage reads the rig list; only the person changes rigs
+        if (sub !== 'list' && sub !== 'show') refuseWorker(`rig ${sub}`, true) // triage reads the rig list; only the person changes rigs
         if (sub === 'add') {
           if (!name || !repo)
             fail(
@@ -11658,6 +11673,71 @@ if (import.meta.main && !outboxCmd)
             return list.filter(r => r.name !== name)
           })
           console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
+        } else if (sub === 'show') {
+          if (!name) fail('usage: factory rig show <rig|repo>')
+          const at = repoOf(name!)
+          const found = rawRigs().find(r => mapRigs([r])[0]!.repo === at)
+          if (!found) fail(`${at} is not a rig`)
+          console.log(JSON.stringify(redactRig(found!), null, 2))
+        } else if (sub === 'set') {
+          const usage =
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]..."
+          const foreign = [
+            [slo, '--slo'],
+            [drift, '--drift'],
+            [linear, '--linear'],
+            [linearProjects, '--linear-projects'],
+            [linearLabels, '--linear-labels'],
+            [egress.length, '--egress'],
+            [personOnlyContext.length, '--person-only-context'],
+            [protectedBranch.length, '--protected-branch'],
+            [mergeAuth, '--merge-authority'],
+          ].find(([v]) => v !== undefined && v !== 0 && v !== false)
+          if (foreign) fail(`rig set does not change ${foreign[1]}: ${usage}`)
+          if (!name || args.length > 2) fail(usage)
+          const target = rigs().find(r => r.repo === repoOf(name!))
+          if (!target) fail(`${repoOf(name!)} is not a rig`)
+          const set: Record<string, unknown> = {}
+          const unset: string[] = []
+          if (goal !== undefined) {
+            if (!goal.trim()) fail('--goal needs text')
+            set.goal = goal
+          }
+          if (max !== undefined) {
+            if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
+            set.maxRuns = Number(max)
+          }
+          if (sweeps !== undefined) {
+            set.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
+            await checkSweeps(set.sweeps as string[], target!.sweepsFactory, target!.repo)
+          }
+          if (runner !== undefined) {
+            if (runner === DEFAULT_RUNNER) unset.push('runner')
+            else set.runner = runner
+          }
+          if (agent !== undefined) set.agent = agent
+          if (mcp !== undefined) {
+            set.mcp = expand(mcp)
+            try {
+              readMcp(set.mcp as string)
+            } catch (err) {
+              fail(`--mcp ${mcp}: ${(err as Error).message}`)
+            }
+          }
+          if (params.length) {
+            const def = await loadFactory(factorySource(target!.factory, target!.repo))
+            set.params = checkParams(def, params, target!.params)
+          }
+          if (!Object.keys(set).length && !unset.length) fail(usage)
+          edit(list =>
+            list.map(r => {
+              if (r.name !== target!.name) return r
+              const next = applyRigChange(r, set, unset) as Rig
+              for (const w of validateRig(next)) console.warn(w)
+              return next
+            }),
+          )
+          console.log(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
         } else if (sub === 'list') {
           const { busy, held } = await busyRigs()
           if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
