@@ -71,6 +71,7 @@ function fakeBd(prefix: string) {
     '    case "$m" in',
     `      by-id) f=${dir}/show-$2; [ -e "$f.timeout" ] && { echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1; }; if [ -e "$f" ]; then cat "$f"; else echo "Issue $2 not found" >&2; printf '%s' '{"error":"no issues found matching the provided IDs"}'; exit 1; fi;;`,
     '      found) printf \'%s\' \'[{"id":"acme-1","title":"t"}]\';;',
+    '      ship-branch) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"ship_branch":"factory/pr-1","ship_pr":"1"}}]\';;',
     '      owned) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_decisions":{}}}]\';;',
     '      handed-off) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"],"metadata":{"owner_question":"q","owner_since":"2026-11-01"}}]\';;',
     '      label-only) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"]}]\';;',
@@ -103,7 +104,7 @@ function fakeHerdr() {
   const script = [
     '#!/bin/sh',
     'case "$1 $2" in',
-    `  "worktree create") printf '%s' '{"result":{"workspace":{"workspace_id":"ws1"},"worktree":{"path":"${worktree}"}}}';;`,
+    `  "worktree create") echo "$*" >> ${join(dir, 'herdr.log')}; printf '%s' '{"result":{"workspace":{"workspace_id":"ws1"},"worktree":{"path":"${worktree}"}}}';;`,
     '  "worktree remove") exit 0;;',
     '  *) echo "herdr-stub: unexpected $*" >&2; exit 1;;',
     'esac',
@@ -264,6 +265,25 @@ test('a goal naming a bead bd finds still starts a run on it, as before', () => 
   const log = readFileSync(calls, 'utf8')
   expect(log).not.toContain('create ')
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
+})
+
+// claude-factory-3uy0: a bead with metadata ship_branch starts from origin/<ship_branch>, as dispatch does
+test('start of a bead with ship_branch bases the run on origin/<ship_branch>; without it, not (claude-factory-3uy0)', () => {
+  reset()
+  const r = repo()
+  Bun.spawnSync(['git', '-C', r, 'update-ref', 'refs/remotes/origin/factory/pr-1', 'HEAD'])
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'ship-branch')
+  expect(run(['start', factoryFixture(), r, 'acme-1']).code).toBe(0)
+  expect(readFileSync(join(dir, 'herdr.log'), 'utf8')).toMatch(/--base origin\/factory\/pr-1\b/)
+  reset()
+  const r2 = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'found')
+  expect(run(['start', factoryFixture(), r2, 'acme-1']).code).toBe(0)
+  expect(readFileSync(join(dir, 'herdr.log'), 'utf8')).not.toContain('origin/factory/pr-1')
 })
 
 // claude-factory-vad1: goalOf writes a run's goal as '<id>: <title>'. A start with that text, copied from a

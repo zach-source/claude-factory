@@ -6872,7 +6872,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
       !!named.labels?.includes(OWNER) ||
       named.metadata?.owner_question !== undefined ||
       named.metadata?.owner_since !== undefined
-    return { goal: goalOf(named), bead: named.id, handedOff }
+    return { goal: goalOf(named), bead: named.id, handedOff, shipBranch: shipBranchOf(named) }
   }
   return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra), handedOff: false }
 }
@@ -9440,7 +9440,16 @@ async function start(factory: string | undefined, repo: string | undefined, goal
       `only the runner starts a ship run, once for each rig with a queue: see factory ship ${rigOf(root)?.name ?? root}`,
     )
   const linked = beadFor(root, goal, { isOwnerOk })
-  const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
+  const { run, def } = await createTracked(
+    spec!,
+    preview.name,
+    root,
+    linked.goal,
+    linked.bead,
+    undefined,
+    undefined,
+    linked.shipBranch,
+  )
   // the run exists and holds the claim: end the hand-off now. A failure only warns, the run is live (claude-factory-h1wj)
   if (linked.handedOff && !beads(root, actorOf(run.id)).clearOwner(linked.bead!))
     console.error(
