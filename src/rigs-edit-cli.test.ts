@@ -86,7 +86,7 @@ test('an invalid rig file refuses rig add and rig rm, naming the file; the histo
     const r = factory(args)
     expect(r.code).not.toBe(0)
     expect(r.err).toContain(file())
-    expect(r.err).toContain('not valid JSON')
+    expect(r.err).toMatch(/not valid JSON \(.+\)/)
   }
   expect(text()).toBe('[{')
   expect(existsSync(`${file()}.lock`)).toBe(false)

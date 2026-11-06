@@ -41,6 +41,7 @@ test('invalid JSON refuses and names the file', () => {
     writeFileSync(file, text)
     expect(() => editRigs(file, r => r)).toThrow(file)
     expect(() => editRigs(file, r => r)).toThrow(msg)
+    if (text === '[{') expect(() => editRigs(file, r => r)).toThrow(/\(.+\)/)
     untouched(text)
   }
 })
@@ -94,6 +95,16 @@ test('a stale lock is broken', () => {
   editRigs(file, () => [rig('a')])
   expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual([rig('a')])
   expect(existsSync(`${file}.lock`)).toBe(false)
+})
+
+test('a stale lock that cannot be removed ends in a refusal, not a spin', () => {
+  mkdirSync(`${file}.lock`)
+  writeFileSync(join(`${file}.lock`, 'x'), '')
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(`${file}.lock`, old, old)
+  const t = Date.now()
+  expect(() => editRigs(file, () => [], { waitMs: 300 })).toThrow(`${file}.lock`)
+  expect(Date.now() - t).toBeGreaterThanOrEqual(300)
 })
 
 test('a fresh lock makes the edit wait, then refuse, and stays', () => {

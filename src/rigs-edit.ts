@@ -51,8 +51,9 @@ function lock(dir: string, waitMs: number, staleMs: number) {
         rmdirSync(dir)
         continue
       }
-    } catch {
-      continue // the holder released it between our mkdir and stat
+    } catch (e) {
+      // the holder released it between our mkdir and stat; any other error waits for the deadline
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue
     }
     if (Date.now() >= deadline) throw new Error(`${dir} is held by another rig edit; try again`)
     Bun.sleepSync(50)
