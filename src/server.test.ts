@@ -81,6 +81,34 @@ test('a tick longer than the lease keeps the lease, and stop waits for that tick
   expect(existsSync(leaseFile(home))).toBe(false)
 }, 30_000)
 
+test('stop keeps the lease renewed while it waits for a tick longer than the lease', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'server-drain-'))
+  dirs.push(home)
+  let done = false
+  const s = serve({
+    home,
+    port: 0,
+    everyMs: 50,
+    leaseMs: 100,
+    holder: 'a',
+    log: () => {},
+    tick: async () => {
+      await new Promise(r => setTimeout(r, 600))
+      done = true
+    },
+  })
+  await new Promise(r => setTimeout(r, 50))
+  const stopped = s.stop()
+  await new Promise(r => setTimeout(r, 300))
+  expect(done).toBe(false)
+  expect(claim(leaseFile(home), 'b', Date.now(), 100).held).toBe(false)
+  await stopped
+  expect(done).toBe(true)
+  expect(existsSync(leaseFile(home))).toBe(false)
+  await new Promise(r => setTimeout(r, 200))
+  expect(existsSync(leaseFile(home))).toBe(false)
+}, 30_000)
+
 // Process tests: real `factory server` children on one FACTORY_HOME.
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const kids: Subprocess[] = []

@@ -29,7 +29,7 @@ const other = (file: string): Lease | null => {
  * Take a lease that is missing or expired (until <= now). A corrupt file counts as live until its
  * mtime is older than ttlMs, so the check fails closed.
  * ponytail: two takers of one expired lease can both write. The last rename wins. The other taker
- * steps down at its next claim. Upgrade path: a Dolt `lease` row with compare-and-set (spec step S6).
+ * steps down at its next claim. A holder whose event loop blocks past ttlMs loses the lease, and its running tick still finishes and writes. Upgrade path: a Dolt `lease` row with compare-and-set (spec step S6).
  */
 export function claim(
   file: string,
@@ -144,7 +144,7 @@ export function serve(o: ServeOpts) {
     },
   })
   // A long tick keeps the lease. A blocked event loop does not run this timer, so leaseMs must outlast those stretches.
-  const renew = setInterval(() => held && !stopping && take(), Math.max(1, Math.floor(o.leaseMs / 3)))
+  const renew = setInterval(() => held && take(), Math.max(1, Math.floor(o.leaseMs / 3)))
   timer = setTimeout(next, 0)
   return {
     port: server.port,
@@ -152,9 +152,10 @@ export function serve(o: ServeOpts) {
     async stop() {
       stopping = true
       clearTimeout(timer)
-      clearInterval(renew)
       await running
+      clearInterval(renew)
       if (held) {
+        held = false
         release(file, holder)
         log('lease released')
       }
