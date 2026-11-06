@@ -455,6 +455,68 @@ test('a patrol subagent can list skills and proposals; the main chat can install
   expect(ran).toHaveLength(3)
 })
 
+const LABEL_DENY_ROWS = [
+  'bd update acme-1 --remove-label held:x',
+  'bd update acme-1 --remove-label=held:x',
+  'bd update acme-1 --set-labels factory',
+  'bd -C /repo/acme update acme-1 --remove-label held:x',
+  'bd update acme-1 \\\n--remove-label held:x',
+  'bd label remove acme-1 held:x',
+]
+
+const META_DENY_ROWS = [
+  'bd update acme-1 --unset-metadata discovered_from',
+  'bd update acme-1 --unset-metadata=pm_finding',
+  "bd update acme-1 --metadata '{}'",
+  'bd update acme-1 --metadata=@m.json',
+  'bd update acme-1 --set-metadata owner_decisions=',
+  "bd update acme-1 '--unset-metadata' discovered_from",
+  'bd -C /repo/acme update acme-1 --unset-metadata discovered_from',
+  'bd update acme-1 --unset-meta\\\ndata discovered_from',
+  'bd update acme-1 \\\n--set-metadata x=1',
+  'bd create \'x\' --metadata \'{"discovered_from":"acme-0"}\'',
+  'cd /repo/acme && bd update acme-1 --set-metadata=x=1',
+]
+
+test(
+  '[SECURITY] claude-factory-ruq0: a subagent never writes bead metadata; reads and the main chat run',
+  SLOW,
+  async ($, on) => {
+    const ran = bashMocks(on, [
+      { id: 'patrol-1', type: 'factory:patrol' },
+      { id: 'other-1', type: 'general-purpose' },
+    ])
+    for (const command of META_DENY_ROWS) {
+      const d = await $.tool.call({ tool: 'Bash', command, agentId: 'patrol-1' } as never)
+      expect(d.deny, command).toContain('never writes bead metadata')
+    }
+    const other = await $.tool.call({ tool: 'Bash', command: META_DENY_ROWS[0], agentId: 'other-1' } as never)
+    expect(other.deny).toContain('never writes bead metadata')
+    for (const command of LABEL_DENY_ROWS) {
+      const d = await $.tool.call({ tool: 'Bash', command, agentId: 'patrol-1' } as never)
+      expect(d.deny, command).toContain('runs bd only')
+    }
+    expect(ran).toEqual([])
+    const allowed = [
+      'bd list --metadata-field factory_create=t --json',
+      'bd show acme-1 --json',
+      'bd show acme-1 --long',
+      "bd comment acme-1 'see --metadata-field'",
+      'gh issue edit 1 --remove-label x',
+      '/repo/bin/factory queue acme acme-1',
+      'herdr workspace report-metadata ws',
+    ]
+    for (const command of allowed) {
+      const d = await $.tool.call({ tool: 'Bash', command, agentId: 'patrol-1' } as never)
+      expect(d.deny, command).toBeUndefined()
+    }
+    expect(ran).toHaveLength(allowed.length)
+    const main = await $.tool.call({ tool: 'Bash', command: META_DENY_ROWS[0] } as never)
+    expect(main.deny).toBeUndefined()
+    expect(ran).toHaveLength(allowed.length + 1)
+  },
+)
+
 test(
   "a task-notification naming a reviewer's own id is dropped, once its Bash call showed the id",
   { ...SLOW, options: { reviewer: true } },

@@ -5,7 +5,16 @@
 //
 // These tests drive the real CLI against on-disk fixtures, like src/watch.test.ts does.
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -350,4 +359,117 @@ test('metrics with no runs dir or no denials prints no denials section and exits
   expect(out.code).toBe(0)
   expect(out.out).not.toContain('denials by')
   expect(JSON.parse(factory(['metrics', '--json']).out).denials).toEqual({})
+})
+
+// claude-factory-vffe.3: a laptop codex station's usage comes from the rollouts in its private CODEX_HOME
+const CUUID = '019a3b2c-0000-7000-8000-0000000000aa'
+const rollout = (over: { model?: string; out?: unknown } = {}) =>
+  [
+    { type: 'session_meta', payload: { id: CUUID } },
+    { type: 'turn_context', payload: { model: over.model ?? 'gpt-6.1-sol' } },
+    {
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 51479,
+            cached_input_tokens: 38784,
+            output_tokens: over.out ?? 46,
+            total_tokens: 51525,
+          },
+        },
+      },
+    },
+  ]
+    .map(l => JSON.stringify(l))
+    .join('\n')
+const RNAME = `rollout-2026-11-05T00-00-00-${CUUID}.jsonl`
+const codexRows = (runDir: string) => {
+  const f = join(runDir, 'usage.jsonl')
+  return (existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n') : [])
+    .map(l => JSON.parse(l))
+    .filter(r => r.model.startsWith('gpt'))
+}
+function codexEnd(tail: string, put: (runDir: string, codex: string) => void) {
+  const w = workingRun(tail)
+  put(w.runDir, join(w.runDir, 'codex', 'implement'))
+  writeFileSync(
+    join(w.runDir, 'inbox.jsonl'),
+    JSON.stringify({ type: 'DONE', seq: w.seq, outcome: 'ready', summary: 'built' }) + '\n',
+  )
+  expect(factory(['tick'], w.env).code).toBe(0)
+  return { ...w, rows: codexRows(w.runDir) }
+}
+const putRollout = (codex: string, name = RNAME, text = rollout(), sub = 'sessions/2026/11/05') => {
+  mkdirSync(join(codex, sub), { recursive: true })
+  writeFileSync(join(codex, sub, name), text)
+  return join(codex, sub, name)
+}
+
+test('a laptop codex station end stores its rollout usage; --tokens shows the gpt row unpriced (vffe.3 AC1, AC2)', () => {
+  const { id, seq, rows, env } = codexEnd('c1', (_r, codex) => putRollout(codex))
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({
+    node: 'implement',
+    seq,
+    session: CUUID,
+    model: 'gpt-6.1-sol',
+    input: 51479 - 38784,
+    cacheRead: 38784,
+    output: 46,
+  })
+  rmSync(join(dir, 'wt-c1'), { recursive: true })
+  expect(factory(['rm', id], env).code).toBe(0)
+  const t = factory(['metrics', '--tokens'], env).out
+  expect(t).toMatch(/implement\s+gpt-6\.1-sol(\s+\S+){6}\s+\d+%\s+-\s/)
+  expect(t).toContain('rows of an unknown model not priced')
+})
+
+const none: [string, (runDir: string, codex: string) => void][] = [
+  [
+    'an older rollout',
+    (_r, c) => {
+      const old = new Date(Date.now() - 3_600_000)
+      utimesSync(putRollout(c), old, old)
+    },
+  ],
+  [
+    'a symlink',
+    (r, c) => {
+      writeFileSync(join(r, 'outside.txt'), rollout())
+      mkdirSync(join(c, 'sessions'), { recursive: true })
+      symlinkSync(join(r, 'outside.txt'), join(c, 'sessions', RNAME))
+    },
+  ],
+  ['a wrong name', (_r, c) => void putRollout(c, 'notes.jsonl')],
+  ['a prefixed name', (_r, c) => void putRollout(c, `x-${RNAME}`)],
+  ['a .bak name', (_r, c) => void putRollout(c, `${RNAME}.bak`)],
+  ['a rollout outside sessions/', (_r, c) => void putRollout(c, RNAME, rollout(), '.')],
+  ["another node's home", (r, _c) => void putRollout(join(r, 'codex', 'verify'))],
+  [
+    'a file over 64 MiB', // a valid rollout, a newline, then zeros: only the size check stops it
+    (_r, c) => truncateSync(putRollout(c, RNAME, rollout() + '\n'), 64 * 1024 * 1024 + 1),
+  ],
+  ['a too long model', (_r, c) => void putRollout(c, RNAME, rollout({ model: 'gpt-' + 'x'.repeat(61) }))],
+  ['a model with a space', (_r, c) => void putRollout(c, RNAME, rollout({ model: 'gpt bad model' }))],
+  ['a negative count', (_r, c) => void putRollout(c, RNAME, rollout({ out: -1 }))],
+  ['a fractional count', (_r, c) => void putRollout(c, RNAME, rollout({ out: 1.5 }))],
+  ['a string count', (_r, c) => void putRollout(c, RNAME, rollout({ out: '9' }))],
+  ['a huge count', (_r, c) => void putRollout(c, RNAME, rollout({ out: 2e12 }))],
+]
+test.each(none)('a laptop codex station end stores nothing for %s (vffe.3 AC3)', (_n, put) => {
+  expect(codexEnd('c2', put).rows).toHaveLength(0)
+})
+
+test('a laptop codex station end stores at most 20 rollouts (vffe.3 AC3)', () => {
+  const { rows } = codexEnd('c3', (_r, c) => {
+    for (let i = 0; i < 21; i++) {
+      const n = String(i).padStart(2, '0')
+      putRollout(c, `rollout-2026-11-05T00-00-${n}-${n}.jsonl`, rollout().replace(CUUID, `s${n}`))
+    }
+  })
+  expect(rows).toHaveLength(20)
+  expect(rows.filter(r => r.session === 's20')).toHaveLength(0)
+  expect(rows.filter(r => r.session === 's00')).toHaveLength(1)
 })

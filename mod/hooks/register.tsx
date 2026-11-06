@@ -93,6 +93,38 @@ const BRIEFER_LOG_CAP = 50
 const REVIEWER_TYPE = 'factory:reviewer'
 /** `factory skills|proposals install|reject`, with the path before `factory` and quotes or extra space between the words */
 const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
+// [SECURITY] claude-factory-ruq0: a bd metadata write flag removes a hold mark. Best-effort text match
+// with no anchor on bd; a split flag in quotes, a script or bd sql get past it (claude-factory-lmi6).
+// The `--metadata-field` read filter does not match: the lookahead refuses a word char or '-'.
+/** a bd metadata write flag */
+const META_WRITE = /--(?:set-|unset-)?metadata(?![\w-])/
+/** the bd verbs a subagent runs: reads and a comment. None has a label or metadata write flag. */
+const BD_READ = new Set([
+  'show',
+  'view',
+  'list',
+  'ready',
+  'search',
+  'children',
+  'comments',
+  'comment',
+  'undefer',
+])
+/**
+ * [SECURITY] true when the command runs bd with a verb that is not a read (claude-factory-0wv6).
+ * This is an allowlist. A list of label spellings never closes, because bd (cobra) has flag aliases,
+ * flags before the verb and verb aliases. The shell drops `\`, `'` and `"`, so this code drops them first.
+ * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
+ */
+function bdWrite(command: string): boolean {
+  const s = command.replace(/[\\'"]/g, '')
+  if (/--add-label|--set-labels/.test(s)) return true
+  for (const m of s.matchAll(/\bbd\b/gi)) {
+    const verb = /^\s*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!
+    if (!BD_READ.has(verb)) return true
+  }
+  return false
+}
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
 /** review-log.jsonl keeps at most this many lines, oldest dropped first */
@@ -1593,9 +1625,19 @@ export const register: Register = (on, options) => {
     // [SECURITY] no subagent installs or rejects a skill or proposal: the manager or the person does.
     // This is best-effort text matching on the joined command; src/cli.ts refuses the same verbs when
     // FACTORY_PATROL is set, which the prefix below adds for every subagent.
-    if (e.agentId && INSTALL_VERB.test(e.command.replace(/\\\n/g, '')))
+    const joined = e.command.replace(/\\\n/g, '')
+    if (e.agentId && INSTALL_VERB.test(joined))
       return {
         deny: 'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
+      }
+    if (e.agentId && META_WRITE.test(joined))
+      return {
+        deny: 'a subagent never writes bead metadata: a hold such as discovered_from, pm_finding or owner_decisions lives there',
+      }
+    // [SECURITY] a subagent runs bd only as a read or a comment: a bd label write queues a bead for dispatch with no check.
+    if (e.agentId && bdWrite(joined))
+      return {
+        deny: 'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first: queue or start a bead with factory queue or factory start, which check it',
       }
 
     // the model's shell cd's into rigs to read them: its factory commands still work this factory.
@@ -1613,7 +1655,7 @@ export const register: Register = (on, options) => {
     const gated = gatedCommand(e.command)
     // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
     // (a line continuation or a quoted newline must not hide a run-acting command from either)
-    const normalized = e.command.replace(/\\\n/g, '')
+    const normalized = joined
 
     // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
     // gated command outright, for every subagent. The run-touched hold below, and the patrol-log
