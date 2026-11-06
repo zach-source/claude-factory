@@ -87,6 +87,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { tokenReason } from './token-guard'
 import { denyReason, scanReason, shellSnapshotAliases } from './worker-hook'
 
 function shellRun(n: number): string {
@@ -142,8 +143,52 @@ function snapshotBench(): void {
   if (ms >= 50 || reason) process.exit(1)
 }
 
+// claude-factory-qn8a.19 AC8: tokenReason on an 8192-char command of `a/b ` pieces must take under 50 ms.
+// Run `bun run src/worker-hook.bench.ts token`. It prints one line and exits 1 over the limit.
+function tokenBench(): void {
+  const command = 'a/b '.repeat(2048)
+  const t0 = performance.now()
+  const reason = tokenReason(command, '/w', '/w')
+  const ms = performance.now() - t0
+  console.log(`token ${command.length} chars\t${ms.toFixed(1)} ms\treason=${reason ?? 'none'}`)
+  if (ms >= 50 || reason) process.exit(1)
+}
+
+// claude-factory-qn8a.19.5: 40 brace groups of two must take under 50 ms. Run `bun run src/worker-hook.bench.ts brace`.
+function braceBench(): void {
+  const command = 'cat ' + '{a,b}'.repeat(40) + ' ; cat ~/.codex/auth.json'
+  const t0 = performance.now()
+  const reason = tokenReason(command, '/w', '/w')
+  const ms = performance.now() - t0
+  console.log(`brace 40 groups\t${ms.toFixed(1)} ms\treason=${reason ? 'denied' : 'none'}`)
+  if (ms >= 50 || !reason) process.exit(1)
+}
+
+// claude-factory-qn8a.19.7: a glob with 40 stars must take under 50 ms. Run `bun run src/worker-hook.bench.ts glob`.
+function globBench(): void {
+  const command = 'cat ' + '*'.repeat(40) + 'qq ; cat ~/.codex/auth.json'
+  const t0 = performance.now()
+  const reason = tokenReason(command, '/w', '/w')
+  const ms = performance.now() - t0
+  console.log(`glob 40 stars\t${ms.toFixed(1)} ms\treason=${reason ? 'denied' : 'none'}`)
+  if (ms >= 50 || !reason) process.exit(1)
+}
+
+// claude-factory-qn8a.19.11: text over 8192 chars denies at once. Run `bun run src/worker-hook.bench.ts cap`.
+function capBench(): void {
+  const t0 = performance.now()
+  const reason = tokenReason('cat ' + 'x'.repeat(9000), '/w', '/w')
+  const ms = performance.now() - t0
+  console.log(`cap 9000 chars\t${ms.toFixed(1)} ms\treason=${reason ? 'denied' : 'none'}`)
+  if (ms >= 50 || !reason) process.exit(1)
+}
+
 async function main() {
+  if (process.argv[2] === 'cap') return capBench()
+  if (process.argv[2] === 'glob') return globBench()
+  if (process.argv[2] === 'brace') return braceBench()
   if (process.argv[2] === 'snapshot') return snapshotBench()
+  if (process.argv[2] === 'token') return tokenBench()
   const args = process.argv.slice(2)
   const shapes = new Set(['find', 'shell', 'dynamic', 'wrapper-lead', 'envs', 'evali'])
   const shape = shapes.has(args[0] ?? '') ? args[0]! : 'shell'

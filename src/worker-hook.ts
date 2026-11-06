@@ -71,6 +71,8 @@ import { appendFileSync, readdirSync, readFileSync, realpathSync, statSync } fro
 import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
 import { HOME_REASON, homeReason } from './home-guard'
+import { TOKEN_READ_REASON, tokenPathReason, tokenReason } from './token-guard'
+export { TOKEN_READ_REASON }
 import * as self from './worker-hook'
 import { cut } from './cut'
 
@@ -8201,7 +8203,10 @@ export function denyReason(
   const home = homeReason(command, gate?.readFile)
   if (home) return home
   const now = gate?.now ?? Date.now
-  return scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
+  const scan = scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
+  if (scan) return scan
+  // claude-factory-qn8a.19: a read of a harness token file or dir. It reads the raw text, not the parse.
+  return tokenReason(command, gate?.cwd ?? root ?? process.cwd(), root)
 }
 
 /**
@@ -10304,6 +10309,7 @@ function handle(input: unknown) {
       run_in_background?: boolean
       file_path?: unknown
       notebook_path?: unknown
+      path?: unknown
     }
   }
   const argh = process.argv.indexOf('--harness')
@@ -10327,6 +10333,22 @@ function handle(input: unknown) {
         }),
       )
       const p = i.tool_input?.file_path ?? i.tool_input?.notebook_path
+      logDenial(reason, `${i.tool_name} ${typeof p === 'string' ? p : ''}`, harness)
+    }
+    return
+  }
+  if (i?.tool_name === 'Read' || i?.tool_name === 'Grep') {
+    // claude-factory-qn8a.19: a Read or Grep of a harness token file or dir
+    const cwd = i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd()
+    const reason = tokenPathReason(
+      i.tool_name,
+      i.tool_input,
+      cwd,
+      process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd(),
+    )
+    if (reason) {
+      denyOut(reason)
+      const p = i.tool_name === 'Grep' ? i.tool_input?.path : i.tool_input?.file_path
       logDenial(reason, `${i.tool_name} ${typeof p === 'string' ? p : ''}`, harness)
     }
     return

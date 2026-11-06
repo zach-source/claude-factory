@@ -1,5 +1,5 @@
-import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { afterAll, expect, spyOn, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -37,6 +37,8 @@ import {
   QUOTED_ASSIGNMENT_REASON,
   GLOBAL_GIT_CONFIG_REASON,
   HOOK_ERROR_REASON,
+  reasonName,
+  TOKEN_READ_REASON,
   READY_REASON,
   REASON,
   SCAN_BUDGET_REASON,
@@ -11673,4 +11675,106 @@ test('denyReason alias memo hit puts back state.outer (claude-factory-qn8a.9.16)
   expect(denyReason('$D/t y; a0', '/acme/root', undefined, gate)).toBe(REASON)
   expect(denyReason('$D/t y; m; m', '/acme/root', undefined, gate)).toBeUndefined()
   expect(denyReason('ll m; ls; ll m', '/acme/root', undefined, gate)).toBeUndefined()
+}, 30_000)
+
+// claude-factory-qn8a.19: the token guard through denyReason and through the hook process
+const TG = mkdtempSync(join(tmpdir(), 'tokenhook-'))
+const TG_HOME = join(TG, 'home')
+const TG_ROOT = join(TG, 'root')
+const TG_CODEX = join(TG, 'runs', 'r1', 'codex', 'plan')
+for (const d of [
+  join(TG_HOME, '.codex'),
+  join(TG_HOME, '.claude'),
+  join(TG_HOME, 'repos', 'x'),
+  join(TG_ROOT, '.scratch'),
+  join(TG_ROOT, 'fixtures'),
+  join(TG_ROOT, 'src'),
+  TG_CODEX,
+])
+  mkdirSync(d, { recursive: true })
+for (const f of [
+  join(TG_HOME, '.codex', 'auth.json'),
+  join(TG_HOME, '.claude', '.credentials.json'),
+  join(TG_HOME, '.claude.json'),
+  join(TG_ROOT, 'fixtures', 'auth.json'),
+  join(TG_ROOT, 'src', 'cli.ts'),
+])
+  writeFileSync(f, 'x')
+symlinkSync(join(TG_HOME, '.codex', 'auth.json'), join(TG_CODEX, 'auth.json'))
+symlinkSync(join(TG_HOME, '.codex', 'auth.json'), join(TG_ROOT, '.scratch', 'x'))
+afterAll(() => rmSync(TG, { recursive: true, force: true }))
+
+const TG_DENY = [
+  'cat ~/.codex/auth.json',
+  'cat $CODEX_HOME/auth.json',
+  'head -c 100 /Users/acme/.codex/auth.json',
+  'tail ~/.claude/.credentials.json',
+  'jq . ~/.claude.json',
+  `bun -e "console.log(require('fs').readFileSync(process.env.HOME+'/.codex/auth.json','utf8'))"`,
+  `python3 -c "import os;open(os.path.join(os.environ['HOME'],'.codex','auth.json'))"`,
+  'cat .scratch/x',
+  'cat ~/.codex/auth.js\\\non',
+  'cat ~/.c*/a*',
+  'tar cf - ~/.codex',
+  'security dump-keychain',
+]
+const TG_ALLOW = [
+  'cat fixtures/auth.json',
+  'grep -n auth.json src/cli.ts',
+  "git commit -m 'fix auth.json read'",
+  'ls ~/.claude/plugins',
+  'cd $TMPDIR',
+  'bun test src/codex-worker.test.ts',
+]
+
+test.each(TG_DENY)('the token guard denies %s through denyReason', c => {
+  expect(denyReason(c, TG_ROOT, undefined, { cwd: TG_ROOT })).toBe(TOKEN_READ_REASON)
+})
+test.each(TG_ALLOW)('the token guard allows %s through denyReason', c => {
+  expect(denyReason(c, TG_ROOT, undefined, { cwd: TG_ROOT }) == null).toBe(true)
+})
+test('reasonName names TOKEN_READ_REASON', () =>
+  expect(reasonName(TOKEN_READ_REASON)).toBe('TOKEN_READ_REASON'))
+
+test('run as `bun src/worker-hook.ts`, a Read or Grep of a token path prints one TOKEN_READ_REASON deny (claude-factory-qn8a.19)', async () => {
+  const env = {
+    ...process.env,
+    HOME: TG_HOME,
+    CODEX_HOME: TG_CODEX,
+    CLAUDE_PROJECT_DIR: TG_ROOT,
+    CLAUDE_CONFIG_DIR: undefined,
+  }
+  const call = (tool_name: string, tool_input: unknown) =>
+    run(JSON.stringify({ tool_name, cwd: TG_ROOT, tool_input }), env, [], TG_ROOT)
+  const denied = {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: TOKEN_READ_REASON,
+    },
+  }
+  for (const [t, i] of [
+    ['Read', { file_path: join(TG_HOME, '.codex', 'auth.json') }],
+    ['Read', { file_path: join(TG_CODEX, 'auth.json') }],
+    ['Read', { file_path: join(TG_HOME, '.claude', '.credentials.json') }],
+    ['Read', { file_path: join(TG_HOME, '.claude.json') }],
+    ['Read', { file_path: join(TG_ROOT, '.scratch', 'x') }],
+    ['Read', { file_path: 7 }],
+    ['Grep', { path: join(TG_HOME, '.codex') }],
+    ['Grep', { path: TG_HOME }],
+    ['Grep', { path: '/' }],
+    ['Grep', { path: join(TG_HOME, '.claude') }],
+  ] as const) {
+    const r = await call(t, i)
+    expect([t, i, r.code, JSON.parse(r.out.trim() || 'null')]).toEqual([t, i, 0, denied])
+  }
+  for (const [t, i] of [
+    ['Read', { file_path: join(TG_ROOT, 'src', 'cli.ts') }],
+    ['Read', { file_path: 'a' }],
+    ['Read', { file_path: join(TG_ROOT, 'fixtures', 'auth.json') }],
+    ['Grep', {}],
+    ['Grep', { path: join(TG_ROOT, 'src') }],
+    ['Grep', { path: join(TG_HOME, 'repos', 'x') }],
+  ] as const)
+    expect([t, i, await call(t, i)]).toEqual([t, i, { out: '', code: 0 }])
 }, 30_000)
