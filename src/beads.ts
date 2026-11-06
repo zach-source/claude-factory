@@ -39,6 +39,8 @@ export type Bead = {
 export const LABEL = 'factory'
 /** a bead a station rejected: open, out of the queue until a person queues it again */
 export const REJECTED = 'rejected'
+/** A hold label: dispatch starts no bead that carries one; only `factory queue` removes it (claude-factory-9kou). */
+export const isHoldLabel = (l: string) => l === REJECTED || l === 'human' || l.startsWith('held:')
 /** a bead handed off to the rig's ship run: open, no `factory` label, so dispatch skips it */
 export const SHIP = 'ship'
 /** a bead a blocked run handed to its owner: open, no `factory` label, until `queue` puts it back */
@@ -434,6 +436,8 @@ export const beads = (repo: string, actor: string) => ({
         LABEL,
         '--remove-label',
         REJECTED,
+        '--remove-label',
+        'human',
         '--remove-label',
         STALE_LABEL,
         '--remove-label',

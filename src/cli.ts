@@ -76,6 +76,7 @@ import {
   isOwned,
   OWNER,
   REJECTED,
+  isHoldLabel,
   LABEL,
   NAME,
   linearSourced,
@@ -669,6 +670,15 @@ function textFileArg(flag: string, path: string): string {
   if (!real.startsWith(root + sep))
     return fail(`${flag} ${path} is outside ${dir}: write the text there first`)
   return readTextFile(flag, real).trimEnd()
+}
+
+/** claude-factory-p1j6: fail on a Unicode Cc character (C0, DEL, C1) in untrusted text. A multiline field (a description) may keep newline and tab. The error names the code point, never the raw character. */
+function refuseControlChar(field: string, text: string, multiline = false) {
+  const m = (multiline ? /[^\P{Cc}\n\t]/u : /\p{Cc}/u).exec(text)
+  if (m)
+    fail(
+      `${field} has the control character U+${m[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')} at index ${m.index}: remove it`,
+    )
 }
 
 const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort', 'fork', 'rm']
@@ -4116,17 +4126,26 @@ const trackOf = (id: string, saved?: Saved): Track => {
 export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
   repos.filter(r => !live.has(r) && queued(r) > 0)
 
-/** the live ship runs: the runner's own flag, or the id a ship run gets from its factory name */
+/** a ship run: the runner's own flag, or the id a ship run gets from its factory name */
+const shipLike = (ship: boolean | undefined, id: string) => !!ship || id.startsWith('ship-')
+
+/** the live ship runs */
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
       const { run, value, c } = current(id)
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0], c }] : []
+      return !ended && shipLike(run.ship, id) ? [{ run, node: where(value)[0], c }] : []
     } catch {
       return [] // removed mid-pass
     }
   })
+
+/** A live ship run on the rig of `run`, other than `run`. Only when `run` counts as a ship run (claude-factory-9wch). */
+const otherLiveShip = (run: Run, id: string) =>
+  shipLike(run.ship, id)
+    ? liveShipRuns().find(s => s.run.id !== run.id && s.run.repo === run.repo)
+    : undefined
 
 /**
  * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
@@ -4244,6 +4263,20 @@ const kickBeads = () =>
     env: { ...process.env, FACTORY_HOME: HOME },
   }).unref()
 
+/** A line break in worker text (the str.splitlines set) gets 4 spaces after it. The text cannot forge a dream prompt line. */
+const indentRest = (s: string) => s.split(/\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/).join('\n    ')
+
+/** one dream journal entry */
+export const journalLine = (
+  id: string,
+  rig: string,
+  e: Pick<Entry, 'node' | 'attempt' | 'outcome' | 'summary'>,
+) => `- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${indentRest(clip(e.summary, 600))}`
+
+/** one closed-bead line of the dream prompt: the title and the close reason come from workers */
+export const closedLine = (id: string, rig: string, bead: { title: string; close_reason?: string | null }) =>
+  indentRest(`- ${id} (${rig}): ${bead.title}. Closed: ${clip(bead.close_reason ?? '', 300)}`)
+
 /** the journal entries the dream has not read yet, newest kept when there are too many */
 const journalSince = (since: number) =>
   runIds()
@@ -4256,7 +4289,7 @@ const journalSince = (since: number) =>
           .filter(e => e.at > since)
           .map(e => ({
             at: e.at,
-            line: `- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${clip(e.summary, 600)}`,
+            line: journalLine(id, rig, e),
           }))
       } catch {
         return [] // removed mid-read
@@ -4343,9 +4376,7 @@ function closedBeads() {
       const ids = prefix ? new Set(text.match(new RegExp(`\\b${prefix}-[a-z0-9]+(?:\\.\\d+)*\\b`, 'g'))) : []
       return [...ids].flatMap(id => {
         const bead = b.show(id) // not a bead after all (a word with the prefix's shape): null
-        return bead?.status === 'closed'
-          ? [`- ${id} (${r.name}): ${bead.title}. Closed: ${clip(bead.close_reason ?? '', 300)}`]
-          : []
+        return bead?.status === 'closed' ? [closedLine(id, r.name, bead)] : []
       })
     })
 }
@@ -6689,6 +6720,8 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
   if (!process.env.FACTORY_PATROL) return
   const no = (why: string): never => fail(`${x.id} ${why}: a patrol cannot start it: a person queues it`)
+  const hold = x.labels?.find(isHoldLabel)
+  if (hold) no(`carries the hold ${hold}`)
   const seen = new Set<string>()
   let cur: Bead = x
   for (;;) {
@@ -7622,17 +7655,20 @@ async function dispatch() {
         )
       }
       const eligible = startable.filter(x => {
-        const open = isOwned(x) || x.labels?.includes(OWNER) ? [] : openChildren(b, x.id)
+        const hold = x.labels?.find(isHoldLabel)
+        const open = isOwned(x) || x.labels?.includes(OWNER) || hold ? [] : openChildren(b, x.id)
         const why =
           isOwned(x) || x.labels?.includes(OWNER) || (open.length && open.every(isWaitingOnPerson))
             ? 'owner decisions pending'
-            : hygieneHeld(x)
-              ? 'hygiene proposed close (factory queue releases it)'
-              : open.length
-                ? 'open children'
-                : linearIds.has(x.id)
-                  ? 'Linear id unconfirmed'
-                  : ''
+            : hold
+              ? `held: ${hold} (factory queue releases it)`
+              : hygieneHeld(x)
+                ? 'hygiene proposed close (factory queue releases it)'
+                : open.length
+                  ? 'open children'
+                  : linearIds.has(x.id)
+                    ? 'Linear id unconfirmed'
+                    : ''
         if (why) skips.set(x.id, why)
         return !why
       })
@@ -9434,9 +9470,10 @@ function fileElsewhere(args: string[]) {
     const file = flags.get(`${k}-file`)
     if (file === undefined) continue
     const text = textFileArg(`${k}-file`, file)
-    if (k === '--title' && /\n/.test(text)) fail(`--title-file ${file} has a newline: a title is one line`)
     flags.set(k, text)
   }
+  refuseControlChar('title', flags.get('--title')!)
+  refuseControlChar('description', flags.get('--description')!, true)
   const [srcName, srcId, ...extra] = flags.get('--from')!.split(':')
   if (!srcName || !srcId || extra.length || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(srcId)) fail(usage)
   const rigNamed = (n: string) =>
@@ -9537,6 +9574,12 @@ export async function forkRun(
     .map(l => JSON.parse(l) as Ev)
   const why = forkRefusal(where(value)[0], pending, src.id)
   if (why) throw new Error(why)
+  // a ship fork beside another live ship run would give the rig two ship runs (claude-factory-9wch)
+  const other = otherLiveShip(src, `${factoryName}-`)
+  if (other)
+    throw new Error(
+      `${other.run.id} is a live ship run on ${src.repo}: a fork of ${src.id} would put a second ship run on the rig. Run factory abort ${other.run.id}, then fork it again.`,
+    )
   const bead = src.bead
     ? beads(src.repo, 'factory').create(
         `fork of ${src.bead}${note ? `: ${clip(note, 80)}` : ''}`,
@@ -10007,9 +10050,11 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
   if (/^prompt:/.test(key)) fail('a blocked worker is looked at, never proposed options')
   if (!/^(iv|bd|own):/.test(key)) fail(`malformed decision key "${key}"`)
   if (/\n/.test(question)) fail('question has a newline: it must be one line')
+  refuseControlChar('question', question)
   if (!question.trim()) fail('question is empty, or only whitespace')
   if (question.length > 160) fail(`question is ${question.length} characters, over the 160 limit`)
   if (context !== undefined && /\n/.test(context)) fail('context has a newline: it must be one sentence')
+  if (context !== undefined) refuseControlChar('context', context)
   if (context !== undefined && context.length > 200)
     fail(`context is ${context.length} characters, over the 200 limit`)
   const all = proposals()
@@ -10026,6 +10071,7 @@ function decisionsPropose(key: string, question: string, optionsLine: string, co
     return
   }
   if (/\n/.test(optionsLine)) fail('options have a newline: each option must be one line')
+  refuseControlChar('options', optionsLine)
   const rawOptions = optionsLine
     .split('|')
     .map(s => s.trim())
@@ -11339,6 +11385,15 @@ if (import.meta.main && !outboxCmd)
           )
         const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
         if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
+        // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
+        const other =
+          ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
+            ? otherLiveShip(run, run.id)
+            : undefined
+        if (other)
+          fail(
+            `${other.run.id} is a live ship run on ${run.repo}: goto ${target} would revive ${run.id} as a second ship run on the rig. Run factory abort ${other.run.id}, then goto again.`,
+          )
         post(run.id, { type: 'GOTO', node: target })
         console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
         break

@@ -538,3 +538,68 @@ test('decisions propose --question-file stores the text as written and refuses a
     expect(readFileSync(file).equals(before)).toBe(true)
   }
 })
+
+test('decisions propose refuses a control character in the question, the context or an option, with decisions.json unchanged (claude-factory-p1j6)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
+  const txt = (name: string, body: string) => {
+    const p = join(home, 'text', name)
+    mkdirSync(join(home, 'text'), { recursive: true })
+    writeFileSync(p, body)
+    return p
+  }
+  const decisionsFile = join(home, 'decisions.json')
+  expect(factory(['decisions', 'propose', 'bd:api:api-0', 'good', 'a | b']).code).toBe(0)
+  const before = readFileSync(decisionsFile)
+  const refuse = (name: string, a: string[], code: string) => {
+    const r = factory(['decisions', 'propose', ...a])
+    expect([name, r.code]).toEqual([name, 1])
+    expect([name, r.err]).toEqual([name, expect.stringContaining(code)])
+    expect(/[^\P{Cc}\n]/u.test(r.err)).toBe(false)
+    expect(readFileSync(decisionsFile).equals(before)).toBe(true)
+  }
+  const bad: [string, string, string][] = [
+    ['ESC', 'x\x1b[2Jy', 'U+001B'],
+    ['CR', 'x\ry', 'U+000D'],
+    ['tab', 'x\ty', 'U+0009'],
+    ['DEL', 'x\x7fy', 'U+007F'],
+    ['C1', 'x\u009by', 'U+009B'],
+  ]
+  for (const key of ['bd:api:api-1', 'own:api-1']) {
+    for (const [name, v, code] of bad) {
+      refuse(`${key} question ${name}`, [key, v, 'a | b'], code)
+      refuse(`${key} context ${name}`, [key, 'q', 'a | b', '--context', v], code)
+    }
+    const o = ['--options-file', txt('o1', 'a | b')]
+    refuse(`${key} question-file ESC`, [key, '--question-file', txt('q1', 'x\x1b[2Jy'), ...o], 'U+001B')
+    refuse(`${key} question-file NUL`, [key, '--question-file', txt('q2', 'x\x00y'), ...o], 'U+0000')
+    refuse(
+      `${key} context-file NUL`,
+      [
+        key,
+        '--question-file',
+        txt('q3', 'q'),
+        '--options-file',
+        txt('o3', 'a | b'),
+        '--context-file',
+        txt('c3', 'x\x00y'),
+      ],
+      'U+0000',
+    )
+  }
+  refuse('options ESC', ['bd:api:api-1', 'q', 'a\x1b[2J: x | b: y'], 'U+001B')
+  refuse('options CR', ['bd:api:api-1', 'q', 'a: x\r | b: y'], 'U+000D')
+  refuse(
+    'options-file NUL',
+    ['bd:api:api-1', '--question-file', txt('q4', 'q'), '--options-file', txt('o4', 'a\x00 | b')],
+    'U+0000',
+  )
+  refuse(
+    'options-file ESC',
+    ['bd:api:api-1', '--question-file', txt('q5', 'q'), '--options-file', txt('o5', 'a\x1b | b')],
+    'U+001B',
+  )
+  // an own: key ignores its options, so they are not checked
+  expect(factory(['decisions', 'propose', 'own:api-2', 'q', 'a\x1b | b']).code).toBe(0)
+})
