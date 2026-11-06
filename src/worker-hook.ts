@@ -9605,11 +9605,11 @@ const KV_KEY = `(?:\\\\[^${KV_STOP}]|"(?:\\\\[^${KV_STOP}]|[^"\\\\${KV_STOP}])*"
 const KV_RE = new RegExp(
   `("[^${KV_STOP}"'\\\\=]*=)(?:\\\\[\\s\\S]|[^"\\\\])*"?${KV_VALUE}` +
     `|('[^${KV_STOP}"'\\\\=]*=)[^']*'?${KV_VALUE}` +
-    `|((?:^|[\\s;&|()\`])${KV_KEY}(?:=|\\\\=|"="|'='))${KV_VALUE}`,
+    `|((?:^|[\\s;&|()\`])${KV_KEY}(?:=|\\\\=))${KV_VALUE}`,
   'g',
 )
 
-/** claude-factory-1as9: mask the value of any KEY=value word. KEY may hold . - quotes and backslash pairs. The = may be \= or quoted. The value of a "KEY= or 'KEY= word runs to the end of the word. Masks more than needed, never less. */
+/** claude-factory-1as9: mask the value of any KEY=value word. KEY may hold . - quotes and backslash pairs. The = may be \= or follow a quote. The value of a "KEY= or 'KEY= word runs to the end of the word. Masks more than needed, never less. */
 export function maskKeyValues(command: string): string {
   return command.replace(KV_RE, (_m, a, b, c) => (a ?? b ?? c) + '***')
 }
