@@ -34,6 +34,8 @@ function run(gpgsign: string, program: string, identity = true) {
     FACTORY_HERDR: join(bin, 'herdr'),
     CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
     FACTORY_SELF_UPDATE: '0',
+    FACTORY_AX: join(bin, 'ax'),
+    FACTORY_AX_CONTEXT: '',
     GIT_CONFIG_COUNT: String(conf.length),
     ...(identity ? {} : { HOME: dir, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', EMAIL: '' }),
   }
