@@ -6,6 +6,7 @@ import {
   GLAB_API_REASON,
   GLAB_APPROVE_REASON,
   GLAB_DYNAMIC_REASON,
+  GLAB_VERB_REASON,
   MERGE_REASON,
   READY_REASON,
 } from './worker-hook'
@@ -104,10 +105,6 @@ const API_DENY = [
   'glab api graphql -f query=@merge.graphql',
   'glab api graphql --input merge.json',
   `glab api graphql -f query='mutation { mergeRequestSetAutoMerge(input:{}) { errors } }'`,
-  'glab -X PUT -i -- api projects/1/merge_requests/5/merge',
-  `glab -F query=@merge.graphql api graphql`,
-  'glab --input merge.json api graphql',
-  `glab --raw-field=query='mutation { mergeRequestAccept(input:{}) { errors } }' api graphql`,
   'glab api -X PUT projects/:id/merge_requests/5/:branch',
   'glab api -X PUT projects/1/:repo/5/merge',
   'glab api -X PUT projects/1/:repo/5 -f title=Foo',
@@ -124,11 +121,6 @@ const API_DENY = [
   `glab api graphql -f query='mutation { mergeRequestUpdate(input:{title:"x"}) { errors } }'`,
   'glab api graphql -f query=@draft.graphql',
   'glab api graphql --input draft.json',
-  'glab -X PUT -f title=Foo -i -- api projects/1/merge_requests/5',
-  'glab -X PUT -f title=Foo api projects/1/merge_requests/5',
-  'glab -XPUT -ftitle=Foo api projects/1/merge_requests/5',
-  'glab --method=PUT --raw-field=title=Foo api projects/1/merge_requests/5',
-  'glab -X PUT --input body.json api projects/1/merge_requests/5',
   'glab api -X PUT projects/1/merge_requests/5 -f -X=GET',
   'glab api -X PUT projects/1/merge_requests/5 -f title=Foo -f --method=GET',
   'glab api -X PUT projects/1/merge_requests/5 -F -X=GET',
@@ -139,7 +131,6 @@ const API_DENY = [
   'glab api -X PUT projects/1/merge_requests/5/./ -f title=Foo',
   'glab api -X PUT projects/1/merge_requests/5/x/.. -f title=Foo',
   'glab api -X PUT projects/1/merge_requests//5 -f title=Foo',
-  'glab -X PUT -i -- api projects/1/merge_requests/5',
   'glab api -X GET -X PUT projects/1/merge_requests/5',
   'glab api -X POST projects/1/merge_requests/5/notes -X PUT',
   'glab api -X POST projects/1/merge_requests/5/notes/../merge',
@@ -259,6 +250,102 @@ for (const g of GATES) {
   )
 }
 
+// claude-factory-qn8a.32.15: glab passes only as a command and sub word from a closed list, so these get GLAB_VERB_REASON
+const MOVED_VERB = [
+  'glab -X PUT -i -- api projects/1/merge_requests/5/merge',
+  'glab -F query=@merge.graphql api graphql',
+  'glab --input merge.json api graphql',
+  "glab --raw-field=query='mutation { mergeRequestAccept(input:{}) { errors } }' api graphql",
+  'glab -X PUT -f title=Foo -i -- api projects/1/merge_requests/5',
+  'glab -X PUT -f title=Foo api projects/1/merge_requests/5',
+  'glab -XPUT -ftitle=Foo api projects/1/merge_requests/5',
+  'glab --method=PUT --raw-field=title=Foo api projects/1/merge_requests/5',
+  'glab -X PUT --input body.json api projects/1/merge_requests/5',
+  'glab -X PUT -i -- api projects/1/merge_requests/5',
+  'glab mr -R a/b update 5 --ready',
+  'glab mr -r -- update 5',
+  'glab mr --ready -- update 5',
+  'glab mr -f -- update 5',
+  'glab -r -- mr update 5',
+  'glab -ry mr update 5',
+  'glab --ready=true mr update 5',
+  'glab --title=Foo mr update 5',
+  'glab -tFoo mr update 5',
+  'glab -t Foo mr update 5',
+  'glab -yf mr update 5',
+  'glab -R a/b mr update 5 --draft',
+]
+const VERB_DENY = [
+  'glab mcp serve',
+  'glab duo cli',
+  'glab -R g/r mcp serve',
+  'glab m 5',
+  'glab ci run',
+  'glab ci retry 7',
+  'glab ci view',
+  'glab ci cancel pipeline 1',
+  'glab release create v1',
+  'glab variable set K v',
+  'glab schedule run 1',
+  'glab stack sync',
+  'glab mr close 5',
+  'glab mr delete 5',
+  'glab repo delete g/r',
+  'glab config set host x',
+  'glab auth status --show-token',
+  'glab token create t',
+  'glab -R a/b mr update 5 --draft',
+  'glab mcp serve < .scratch/req.json',
+  'cat .scratch/req.json | glab mcp serve',
+  'glab',
+  'glab --version',
+  'glab mr -R a/b list',
+  'glab mr --help',
+  'glab mr',
+  'glab issue',
+  'glab repo',
+  'glab ci',
+  ...MOVED_VERB,
+]
+const VERB_ALLOW = [
+  'glab ci list',
+  'glab ci get',
+  'glab ci trace 7',
+  'glab ci status',
+  'glab issue list',
+  'glab issue view 1',
+  'glab issue note 1 -m x',
+  'glab repo view',
+  'glab version',
+  'glab mr diff 5',
+  'glab mr checkout 5',
+  'glab mr list > out.txt',
+  'glab mr view 5 --comments',
+]
+for (const g of GATES) {
+  const name = JSON.stringify(g)
+  test.each(VERB_DENY)(`denyReason denies %j with GLAB_VERB_REASON for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBe(GLAB_VERB_REASON)
+  })
+  test.each(VERB_ALLOW)(`denyReason allows %j for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBeUndefined()
+  })
+}
+
+test('run as `bun src/worker-hook.ts`, glab mcp serve is denied (claude-factory-qn8a.32.15)', async () => {
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'glab mcp serve' } })
+  const p = Bun.spawn(['bun', join(import.meta.dir, 'worker-hook.ts')], {
+    stdin: new Response(input),
+    stdout: 'pipe',
+    env: { ...process.env, FACTORY_FROM: 'implement' },
+  })
+  const out = await new Response(p.stdout).text()
+  expect(JSON.parse(out.trim()).hookSpecificOutput).toMatchObject({
+    permissionDecision: 'deny',
+    permissionDecisionReason: GLAB_VERB_REASON,
+  })
+}, 20_000)
+
 test('an unreadable glab graphql text still denies with GLAB_APPROVE_REASON', () => {
   expect(ask('glab api graphql -f query=@missing.graphql', {})).toBe(GLAB_APPROVE_REASON)
 })
@@ -292,7 +379,6 @@ const READY_DENY = [
   'glab mr update 5 --draft --ready',
   'glab mr update 5 --draft=false',
   'glab mr update 5 --wip=false',
-  'glab mr -R a/b update 5 --ready',
   'glab mr update 5 -t --draft',
   'glab mr update 5 --title --draft',
   'glab mr update 5 -t --wip',
@@ -307,17 +393,7 @@ const READY_DENY = [
   'glab mr update 5 -yl -- -r',
   'glab mr update 5 --ready \\\n',
   'bash -c "glab mr update 5 -r"',
-  'glab mr -r -- update 5',
-  'glab mr --ready -- update 5',
-  'glab mr -f -- update 5',
-  'glab -r -- mr update 5',
   'glab mr update 5 --draft -y -- --ready',
-  'glab -ry mr update 5',
-  'glab --ready=true mr update 5',
-  'glab --title=Foo mr update 5',
-  'glab -tFoo mr update 5',
-  'glab -t Foo mr update 5',
-  'glab -yf mr update 5',
   'glab mr update 5 --draft -t Foo',
   'glab mr update 5 -- --ready',
   'glab mr update 5 --draft --title=x',
@@ -327,7 +403,6 @@ const READY_ALLOW = [
   'glab mr update 5 --wip',
   'glab mr update 5 -l bug -a me',
   'glab mr update 5 --target-branch main',
-  'glab -R a/b mr update 5 --draft',
   'glab mr update 5 -yd x --draft',
 ]
 

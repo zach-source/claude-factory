@@ -5529,6 +5529,36 @@ export const GLAB_DYNAMIC_REASON =
   'or a leading ~) that this guard cannot read. Write the glab words plainly. For a text value, use ' +
   '--description="$X" or --message="$X", or single quotes. Do not retry this exact command.'
 
+// claude-factory-qn8a.32.15: glab has more write paths than a deny list holds, so only these forms pass
+const GLAB_COMMANDS = new Map<string, Set<string> | undefined>([
+  [
+    'mr',
+    new Set([
+      'create',
+      'list',
+      'view',
+      'diff',
+      'note',
+      'update',
+      'checkout',
+      'rebase',
+      'revoke',
+      'approvers',
+    ]),
+  ],
+  ['ci', new Set(['status', 'list', 'get', 'trace'])],
+  ['issue', new Set(['list', 'view', 'note'])],
+  ['repo', new Set(['view'])],
+  ['api', undefined],
+  ['version', undefined],
+])
+
+export const GLAB_VERB_REASON =
+  'The factory denies this command: glab is allowed in these forms only: mr (create, list, view, diff, ' +
+  'note, update, checkout, rebase, revoke, approvers), ci (status, list, get, trace), issue (list, view, ' +
+  'note), repo view, api and version. Write the command and the sub word first, then the flags ' +
+  '(glab mr list -R a/b, not glab -R a/b mr list). Do not retry this exact command.'
+
 export const GLAB_API_REASON =
   'The factory denies this command: glab api is allowed in 3 forms only. A read: one endpoint, GET, no ' +
   'field. A GraphQL read: glab api graphql -f query=<text>, with no mutation. A note write: POST to ' +
@@ -5684,14 +5714,6 @@ function glabReasonOn(
   checkApi: boolean,
   exempt: (w: string) => boolean,
 ): string | undefined {
-  const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
-  if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
-  const mi = tail.indexOf('mr')
-  if (mi >= 0) {
-    const rest = tail.slice(mi + 1)
-    const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
-    if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
-  }
   if (tail.includes('approve')) return GLAB_APPROVE_REASON
   const api = tail.indexOf('api')
   const args = api < 0 ? [] : [...tail.slice(0, api), ...tail.slice(api + 1)]
@@ -5701,6 +5723,8 @@ function glabReasonOn(
   if (tail.includes('merge') || tail.includes('accept') || tail.some(w => /^--auto-merge(=|$)/.test(w)))
     return MERGE_REASON
   if (tail.some(w => dynamicWord(w) && !exempt(w))) return GLAB_DYNAMIC_REASON
+  const subs = GLAB_COMMANDS.get(tail[0] ?? '')
+  if (!GLAB_COMMANDS.has(tail[0] ?? '') || (subs && !subs.has(tail[1] ?? ''))) return GLAB_VERB_REASON
   if (
     !mayReady(gate) &&
     tail.includes('update') &&
