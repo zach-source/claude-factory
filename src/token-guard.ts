@@ -195,6 +195,8 @@ function pieceDenied(
 
 /** the reason to deny the Bash text `command`, or undefined. `base` is the cwd of the call, `root` the worktree. */
 export function tokenReason(command: string, base: string, root?: string): string | undefined {
+  // ponytail: 8192 matches MAX_COMMAND_LENGTH in worker-hook.ts; no import, since worker-hook imports this file.
+  if (command.length > 8192) return TOKEN_READ_REASON
   const inside = insideOf(root)
   const seen = new Set<string>()
   const literal = new Set<string>()

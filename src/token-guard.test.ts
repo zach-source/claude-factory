@@ -157,6 +157,29 @@ describe('tokenReason', () => {
   test('a pattern with a marker in the text denies a relative file', () => {
     expect(deny('ls .codex; cat auth.js*')).toBe(TOKEN_READ_REASON)
   })
+  test('text over 8192 chars denies; 8192 chars with no token name allows', () => {
+    expect(deny('cat ' + 'x'.repeat(8188))).toBeUndefined()
+    expect(deny('cat ' + 'x'.repeat(8189))).toBe(TOKEN_READ_REASON)
+  })
+  const S = ' ; cat ~/.codex/auth.json'
+  const fill = (head: string, unit: string) => {
+    let c = head
+    while (c.length + unit.length + S.length <= 8192) c += unit
+    return c
+  }
+  test.each([
+    ['8 brace groups', 'cat ' + '{a,b}'.repeat(8) + ' ' + 'x'.repeat(8000)],
+    ['900 deep paths', Array.from({ length: 900 }, (_, i) => '/a/b/c/d/e/f/g/h/i/j/k' + i).join(' ')],
+    ['2000 a* components', fill('cat ', 'a*/')],
+    ['2000 $abc components', fill('cat ', '$abc/')],
+    ['4000 [a then ]', fill('cat ', '[a') + ']'],
+    ['8 brace pairs per component', fill('cat ', '{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}{o,p}/')],
+  ])('the worst 8 KB shape %s ends in a token read and denies in under 1000 ms', (_n, body) => {
+    const c = body.slice(0, 8192 - S.length) + S
+    const t0 = performance.now()
+    expect(deny(c)).toBe(TOKEN_READ_REASON)
+    expect(performance.now() - t0).toBeLessThan(1000)
+  })
   test('an 8192-char command stays fast', () => {
     const t = Date.now()
     expect(deny('a/b '.repeat(2048))).toBeUndefined()

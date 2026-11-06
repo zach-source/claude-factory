@@ -174,7 +174,17 @@ function globBench(): void {
   if (ms >= 50 || !reason) process.exit(1)
 }
 
+// claude-factory-qn8a.19.11: text over 8192 chars denies at once. Run `bun run src/worker-hook.bench.ts cap`.
+function capBench(): void {
+  const t0 = performance.now()
+  const reason = tokenReason('cat ' + 'x'.repeat(9000), '/w', '/w')
+  const ms = performance.now() - t0
+  console.log(`cap 9000 chars\t${ms.toFixed(1)} ms\treason=${reason ? 'denied' : 'none'}`)
+  if (ms >= 50 || !reason) process.exit(1)
+}
+
 async function main() {
+  if (process.argv[2] === 'cap') return capBench()
   if (process.argv[2] === 'glob') return globBench()
   if (process.argv[2] === 'brace') return braceBench()
   if (process.argv[2] === 'snapshot') return snapshotBench()
