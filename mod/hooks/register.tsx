@@ -106,8 +106,7 @@ function addsBdLabel(text: string): boolean {
   if (/\btag['"]?\s/.test(tail)) return true
   const label = /\blabel['"]?\s/.exec(tail)
   if (label && /\b(?:add|propagate)\b/.test(tail.slice(label.index + label[0].length))) return true
-  const make = /\b(?:create|new|q)['"]?(?=\s)/.exec(tail)
-  return !!make && /--labels?\b|\s['"]?-[A-Za-z]*l/.test(tail.slice(make.index + make[0].length))
+  return /\b(?:create|new|q)\b/.test(tail) && /--labels?\b|\s['"]?-[A-Za-z]*l/.test(tail)
 }
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
