@@ -1060,6 +1060,20 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 - **Leases**: the run heartbeats its claim every 2 minutes, so a `bd reclaim` reaper never
   takes live work. Without `.beads/`, runs keep task lists in their reports instead.
 
+### Install the guard hooks
+
+This repo is public. `hack/guard-private.sh` refuses a commit that carries a secret or a private
+name. The tracked `.beads-hooks/pre-commit` and `.beads-hooks/commit-msg` run it after the beads
+hooks. In a clean clone, run this one command to install both hooks:
+
+```sh
+git config core.hooksPath .beads-hooks
+```
+
+Put one extended regex on each line of `<git common dir>/info/private-patterns`. The guard matches
+them without case, against the added lines of the staged diff, the author and the commit message.
+The repo holds no pattern file. If the file is missing or empty, the guard checks nothing and says so.
+
 ## Plugins
 
 `plugins/` holds Claude Code plugins that come with the factory, listed in this repo's marketplace:

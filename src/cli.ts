@@ -141,6 +141,7 @@ import * as devenv from './devenv'
 import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
+import { needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import * as ax from './ax'
@@ -273,6 +274,8 @@ const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
+/** the env before the stored settings fill it: `factory up` gives it to a manager of another dir */
+const BOOT_ENV = { ...process.env }
 loadIntoEnv(join(HOME, 'settings.json')) // stored settings fill unset env vars; the environment wins
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
@@ -9731,6 +9734,20 @@ function fileElsewhere(args: string[]) {
   console.log(id)
 }
 
+/** make dir a new factory (an empty rigs.json) and print how to work it; fails when it is one already */
+function makeFactory(dir: string) {
+  if (existsSync(join(dir, 'rigs.json'))) fail(`${dir} is already a factory: factory rig add, there`)
+  mkdirSync(dir, { recursive: true })
+  writeJson(join(dir, 'rigs.json'), [])
+  console.log(
+    [
+      `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
+      `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
+      `and run its manager there: ${CLI} manager (fullscreen, so the console docks beside the chat; lean: no MCP servers, without herdr-fleet)`,
+    ].join('\n'),
+  )
+}
+
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
 function refuseWorker(verb: string, patrol = false) {
   const marker = workerMarker()
@@ -10565,6 +10582,8 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
+  up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
+                                     manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
   rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
@@ -11652,18 +11671,38 @@ if (import.meta.main && !outboxCmd)
         break
       case 'init': {
         if (!args[0]) fail('usage: factory init <dir>')
-        const dir = expand(args[0]!)
-        if (existsSync(join(dir, 'rigs.json'))) fail(`${dir} is already a factory: factory rig add, there`)
-        mkdirSync(dir, { recursive: true })
-        writeJson(join(dir, 'rigs.json'), [])
-        console.log(
-          [
-            `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
-            `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
-            `and run its manager there: ${CLI} manager (fullscreen, so the console docks beside the chat; lean: no MCP servers, without herdr-fleet)`,
-          ].join('\n'),
-        )
+        makeFactory(expand(args[0]!))
         break
+      }
+      case 'up': {
+        refuseWorker('up', true)
+        const { dir, rest } = upDir(args, BOOT_ENV, homedir())
+        const { errors, warnings } = upCheck(t => !!Bun.which(t), BOOT_ENV)
+        if (errors.length) fail(errors.join('\n'))
+        const modules = join(ROOT, 'node_modules')
+        if (
+          needsInstall(
+            existsSync(modules) ? statSync(modules).mtimeMs : undefined,
+            statSync(join(ROOT, 'bun.lock')).mtimeMs,
+          )
+        ) {
+          const code = await Bun.spawn(['bun', 'install', '--frozen-lockfile'], {
+            cwd: ROOT,
+            stdio: ['inherit', 'inherit', 'inherit'],
+          }).exited
+          if (code) fail(`bun install failed (exit ${code})`)
+          const now = new Date()
+          utimesSync(modules, now, now)
+        }
+        if (!existsSync(join(dir, 'rigs.json'))) makeFactory(dir)
+        for (const w of warnings) console.error(w)
+        // a child, not this process: HOME and the loaded settings are fixed at import from the caller's env and cwd
+        const child = Bun.spawn([CLI, 'manager', ...rest], {
+          cwd: dir,
+          env: { ...BOOT_ENV, FACTORY_HOME: dir },
+          stdio: ['inherit', 'inherit', 'inherit'],
+        })
+        process.exit(await child.exited)
       }
       case 'adopt': {
         const [repo, name = 'lifecycle'] = args
