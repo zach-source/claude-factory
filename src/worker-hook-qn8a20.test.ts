@@ -116,6 +116,15 @@ const AC4 = [
   'cp .scratch/rigs.json .scratch/$D',
   'cp .scratch/rigs.json x/${D}',
 ]
+const AC11 = [
+  'cp .scratch/rigs.json .scratch/b.json',
+  'tee .scratch/rigs.json',
+  'cp /h/rigs.json .scratch/',
+  'cp .scratch/r*.json /h/',
+  'mv .scratch/rigs.js? /h/',
+  'ln -s /h l && cp .scratch/rigs.json l/',
+  `env -C /h bash -c 'echo [] > rigs.json'`,
+]
 const ALLOW = [
   'cat /h/rigs.json',
   'grep mergeAuthority /h/rigs.json',
@@ -131,11 +140,10 @@ const ALLOW = [
   'echo hi > notes.json',
   'cp -R /h .scratch/h',
   'tee .scratch/*',
-  'cp .scratch/rigs.json .scratch/b.json',
 ]
 
 describe('qn8a.20 Bash guard', () => {
-  test.each([...AC1, ...AC2, ...AC3, ...AC4])('denies %p', c => {
+  test.each([...AC1, ...AC2, ...AC3, ...AC4, ...AC11])('denies %p', c => {
     expect(reason(c)).toBe(FACTORY_CONFIG_REASON)
   })
   test('AC3: relative write with gate.cwd outside root', () => {
