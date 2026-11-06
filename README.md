@@ -430,6 +430,22 @@ A round-4 review found 1 more disguised form. The hook now denies this too:
   this match outright. A bad encoding denies the command, the rule the branch-name check
   already used.
 
+The hook also denies a `gh api` write to a repository setting (claude-factory-qn8a.18):
+
+- A write is a call that is not a GET. It has `-X PUT`, `PATCH` or `DELETE`, or it has `-f`, `-F`
+  or `--input` data and no `-X`.
+- The path is `repos/<owner>/<repo>/...` or `repositories/<id>/...`. After the repository, only
+  these parts pass: `issues`, `pulls`, `git`, `contents`, `statuses`, `check-runs`,
+  `check-suites`, `commits`, `comments`, `releases`, `dispatches`, a workflow run `rerun`,
+  `rerun-failed-jobs` or `cancel`, a job `rerun`, and a workflow `dispatches`.
+- Every other path denies: the repository itself, `vulnerability-alerts`,
+  `automated-security-fixes`, `rulesets`, `branches/*/protection`, `hooks`, `collaborators`,
+  `actions/secrets`, `merge-upstream` and more.
+- A `.` or `..` segment denies. A `repos` word with no repository root denies.
+- A GraphQL call denies if it names `updateRepository`, a branch protection mutation or a ruleset
+  mutation.
+- A read, for example `gh api repos/<owner>/<repo>/dependabot/alerts`, stays allowed.
+
 Security's first review round found 5 more disguised forms. The hook now denies these too:
 
 - `git -c push.default=matching`, `git config push.default matching`, or any other
