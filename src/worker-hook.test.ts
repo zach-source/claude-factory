@@ -12039,6 +12039,9 @@ test('gh api repo setting writes: endpoint forms deny', () => {
     'gh api -X DELETE repos/acme/widget/actions/runs/1',
     'gh api -X DELETE https://ghe.example/repos/acme/widget',
     'gh api -X DELETE x/repos/acme',
+    'gh api -X DELETE x/repositories/123',
+    'gh api -X DELETE x/REPOS/acme',
+    'gh api -X PUT repos/acme/widget/issues/./vulnerability-alerts',
     "gh api graphql -f query='mutation { updateRepository(input:{}) { clientMutationId } }'",
   ]) {
     expect([cmd, repoDeny(cmd)]).toEqual([cmd, REPO_SETTING_REASON])
@@ -12088,6 +12091,11 @@ test('gh api repo setting writes: reads and work writes stay allowed', () => {
     'gh api -X POST repos/acme/widget/actions/workflows/ci.yml/dispatches -f ref=factory/x',
     'gh api -X POST repos/acme/widget/releases -f tag_name=v1',
     'gh api -X PATCH orgs/acme -f x=y',
+    'gh api -X POST https://api.github.com/repos/acme/widget/issues/1/comments -f body=x',
+    'gh api -X POST https://ghe.example/api/v3/repos/acme/widget/issues/1/comments -f body=x',
+    'gh api -X POST /repos/acme/widget/issues/1/comments -f body=x',
+    'gh api -X POST repositories/123/issues/1/comments -f body=x',
+    'gh api -X POST REPOS/acme/widget/issues/1/comments -f body=x',
     "gh api graphql -f query='query { viewer { login } }'",
   ]) {
     expect([cmd, repoDeny(cmd) === undefined]).toEqual([cmd, true])

@@ -5098,10 +5098,10 @@ function ghApiRepoSettingDenied(apiArgs: string[], gate: HookGate): boolean {
   if ((method || (hasData ? 'POST' : 'GET')) === 'GET') return false
   const decoded = decodeApiPath(normalizeEndpoint(endpoint))
   if (decoded === undefined) return true
-  const flat = decoded.replace(/\/+/g, '/')
-  if (flat.split('/').some(s => s === '.' || s === '..')) return true
-  const path = flat
-    .replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/[^/]+/, '')
+  // ponytail: a doubled slash is not collapsed, so such a path fails closed (no repository root matches).
+  if (decoded.split('/').some(s => s === '.' || s === '..')) return true
+  const path = decoded
+    .replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]+/, '')
     .replace(/^\/api\/v3(?=\/|$)/, '')
     .replace(/^\//, '')
   const root = /^(?:repos\/[^/]+\/[^/]+|repositories\/[^/]+)(?:\/(.*))?$/i.exec(path)
