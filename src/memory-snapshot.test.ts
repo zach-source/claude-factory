@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -161,3 +162,61 @@ test("snapshot search gives the laptop's top 5", async () => {
   }
   expect(statSync(join(x, '.index.json')).mtimeMs).toBe(before)
 }, 120_000)
+
+const CLI = join(import.meta.dir, '..', 'bin', 'factory')
+/** `factory memory search` as a VM worker runs it: a worker dir with memory.tgz, a fresh home, no outbox */
+function vmSearch(worker: string, home: string, q: string) {
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...rest } = process.env
+  const p = Bun.spawnSync([CLI, 'memory', 'search', '--rig', 'acme', q], {
+    env: { ...rest, FACTORY_WORKER_DIR: worker, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  return { code: p.exitCode, out: p.stdout.toString() }
+}
+/** the printed hits as `<score to 2 decimals> <path after the memory dir>` */
+const hits = (out: string) =>
+  out
+    .split('\n')
+    .filter(l => /^\d\.\d\d {2}/.test(l))
+    .map(l => l.replace(/^(\d\.\d\d) {2}\S*\/memory\/(\S+).*$/, '$1 $2'))
+
+test('VM search unpacks memory.tgz', async () => {
+  const dir = fixture()
+  await search(dir, 'warm the index', { rig: 'acme' })
+  const w = tmp('worker')
+  snapshot(dir, 'acme', join(w, 'memory.tgz'))
+  for (const q of ['database for tests', 'wait for green checks']) {
+    const home = tmp('home')
+    const vm = vmSearch(w, home, q)
+    expect(vm.code).toBe(0)
+    const want = (await search(dir, q, { rig: 'acme' })).map(f => `${f.score.toFixed(2)} ${f.note.path}`)
+    expect(want.length).toBeGreaterThan(0)
+    expect(hits(vm.out)).toEqual(want)
+    expect(existsSync(join(home, 'memory', 'ci', 'mine.md'))).toBe(true)
+  }
+}, 120_000)
+
+test('VM search keeps an existing memory dir', () => {
+  const dir = fixture()
+  const w = tmp('worker')
+  snapshot(dir, 'acme', join(w, 'memory.tgz'))
+  const home = tmp('home')
+  mkdirSync(join(home, 'memory'))
+  writeFileSync(join(home, 'memory', 'marker.txt'), 'mine')
+  vmSearch(w, home, 'database')
+  expect(readFileSync(join(home, 'memory', 'marker.txt'), 'utf8')).toBe('mine')
+  expect(existsSync(join(home, 'memory', 'ci'))).toBe(false)
+}, 60_000)
+
+test('a broken memory.tgz leaves no dir', () => {
+  const w = tmp('worker')
+  writeFileSync(join(w, 'memory.tgz'), 'not gzip at all')
+  const home = tmp('home')
+  const r = vmSearch(w, home, 'database')
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('nothing in')
+  expect(readdirSync(home).filter(n => n.startsWith('memory'))).toEqual([])
+  // no memory.tgz: today's output
+  expect(vmSearch(tmp('worker'), tmp('home'), 'database').out).toContain('nothing in')
+}, 60_000)

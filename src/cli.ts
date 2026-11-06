@@ -10578,6 +10578,19 @@ if (import.meta.main && !outboxCmd)
         ]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
+          // a VM has no store: the laptop put a snapshot (memory.tgz) in the worker dir at launch (vffe.4)
+          const snap = join(worker.own(), 'memory.tgz')
+          if (!existsSync(MEMORY) && existsSync(snap)) {
+            const tmp = `${MEMORY}.tmp-${process.pid}`
+            mkdirSync(tmp, { recursive: true })
+            const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
+            try {
+              if (r.exitCode !== 0) throw new Error('tar failed')
+              renameSync(tmp, MEMORY)
+            } catch {
+              rmSafe(tmp, { recursive: true, force: true }) // a cut file, or another search won the rename
+            }
+          }
           const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
