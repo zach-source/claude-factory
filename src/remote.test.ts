@@ -2318,6 +2318,124 @@ test('a big put spreads over ticks: 8 parts a tick, in order, then memory is rec
   rmSync(join(home, 'runs', 'r8'), { recursive: true })
 })
 
+// every exit path of the put loop (src/cli.ts, `put:` loop) as one state table
+const OLD = 6 * 60_000
+const putRows: {
+  name: string
+  put: string[]
+  parts: number // parts of memory.tgz
+  from: Record<string, unknown>
+  failAt?: number // memory.tgz part that fails
+  want: Record<string, unknown>
+  agent?: string
+  sent?: string[] // "name part" in order
+  done?: boolean
+}[] = [
+  {
+    name: 'a budget break, a part landed',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: { putFailedAt: 1, putError: 'old' },
+    want: { putPart: 8, put: ['memory.tgz'], putFailedAt: undefined, putError: undefined },
+    sent: [0, 1, 2, 3, 4, 5, 6, 7].map(i => `memory.tgz ${i}`),
+  },
+  {
+    name: 'b first failure',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: {},
+    failAt: 3,
+    want: { putPart: 3, putError: 'ENOSPC', putFailedAt: expect.any(Number) },
+    agent: 'pending',
+  },
+  {
+    name: 'c old failure, nothing landed',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: { putPart: 8, putFailedAt: Date.now() - OLD },
+    failAt: 8,
+    want: { putPart: 8 },
+    agent: 'failed',
+  },
+  {
+    name: 'd old failure, a part landed',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: { putPart: 8, putFailedAt: Date.now() - OLD },
+    failAt: 10,
+    want: { putPart: 10, putFailedAt: expect.any(Number) },
+    agent: 'pending',
+  },
+  {
+    name: 'e file done',
+    put: ['memory.tgz'],
+    parts: 2,
+    from: { putPart: 1, putFailedAt: 1, putError: 'old' },
+    want: {
+      put: [],
+      putPart: undefined,
+      putFailedAt: undefined,
+      putError: undefined,
+      memory: { bytes: 2 * 72_000, parts: 2, sentAt: expect.any(Number) },
+    },
+    done: true,
+  },
+  {
+    name: 'f brief and memory share a tick',
+    put: ['brief.md', 'memory.tgz'],
+    parts: 20,
+    from: {},
+    want: { putPart: 7, put: ['memory.tgz'] },
+    sent: ['brief.md 0', ...[0, 1, 2, 3, 4, 5, 6].map(i => `memory.tgz ${i}`)],
+  },
+]
+for (const row of putRows) {
+  test(`put loop exit path: ${row.name}`, () => {
+    const id = `rp${putRows.indexOf(row)}`
+    launched(id)
+    const side = join(home, 'runs', id, 't.json')
+    const read = () => JSON.parse(readFileSync(side, 'utf8'))
+    writeFileSync(side, JSON.stringify({ ...read(), put: row.put, ...row.from }))
+    const file = join(home, 'runs', id, 't.memory.tgz')
+    writeFileSync(file, 'x'.repeat(row.parts * 72_000))
+    writeFileSync(join(home, 'runs', id, 't.brief.md'), 'hello')
+    const failLine =
+      row.failAt === undefined ? '' : `*"worker put memory.tgz ${row.failAt} "*) echo 'ENOSPC' >&2; exit 1 ;;`
+    writeFileSync(
+      join(dir, 'ax'),
+      `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      ${failLine}
+      *"worker put"*) ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+    )
+    chmodSync(join(dir, 'ax'), 0o755)
+    writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+    rmSync(calls, { force: true })
+    const r = JSON.parse(factory(['tick']).out).runs.find((x: { id: string }) => x.id === id)
+    if (row.agent) expect(r.agent).toBe(row.agent)
+    const after = read()
+    for (const [k, v] of Object.entries(row.want)) {
+      if (v === undefined) expect(after[k]).toBeUndefined()
+      else expect(after[k]).toEqual(v)
+    }
+    if (row.sent) {
+      const sent = [...called().matchAll(/worker put (\S+) (\d+) /g)].map(m => `${m[1]} ${m[2]}`)
+      expect(sent).toEqual(row.sent)
+    }
+    if (row.done) expect(existsSync(file)).toBe(false)
+    rmSync(join(home, 'runs', id), { recursive: true })
+  })
+}
+
 test('memorySnapshotPut skips a snapshot over the cap, and a throw never blocks the launch', () => {
   const mem = join(dir, 'snapcap-mem')
   mkdirSync(join(mem, 'topic'), { recursive: true })
