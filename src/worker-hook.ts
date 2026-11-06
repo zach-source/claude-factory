@@ -4521,30 +4521,6 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
     if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, FLUX_MUTATING_VERBS)
     if (!mutating && strict && verb !== undefined) mutating = uncertain || !FLUX_READ_VERBS.has(verb)
     if (!mutating) return false
-    // `flux create|install ... --export` prints YAML and never reads the cluster. Only the last
-    // `--export` word before `--` counts, and only a bare or `=true` form.
-    if (verb === 'create' || verb === 'install') {
-      let exp: string | undefined
-      let before = ''
-      // claude-factory-qn8a.17.5: a dynamic word can expand to a value flag, `--` or `--export=false`.
-      let dyn = false
-      for (let i = 0; i < tail.length; i++) {
-        const w = tail[i]!
-        if (w === '--') break
-        if (dynamicWord(w)) dyn = true
-        if (w === '--export' || w.startsWith('--export=')) {
-          exp = w
-          before = tail[i - 1] ?? ''
-        }
-      }
-      // claude-factory-qn8a.17.6: on install, -v and --version take a value although the root flag is a bool.
-      // A value flag right before `--export` takes it as its value (pflag), so flux does not export.
-      const swallowed =
-        before.startsWith('-') &&
-        !before.includes('=') &&
-        (before === '-v' || before === '--version' || !FLUX_BOOL_FLAGS.has(before))
-      if (!dyn && !swallowed && (exp === '--export' || exp === '--export=true')) return false
-    }
     if (contextDenied(flagValue(cmd, new Set(['--context'])), personOnly)) return true
     const cluster = flagValue(cmd, new Set(['--cluster']))
     return cluster !== undefined && (unknownFlagValue(cluster) || personOnly.includes(cluster))
@@ -7574,7 +7550,8 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
 
 /**
  * Returns true when `liveApplyDenied` denies `cmd`, with `tool` substituted at its own position 0.
- * The `anyDynamicLiveApplyReason` function does not know which of `kubectl`, `ko` or `helm` a dynamic word resolves to at run time.
+ * The `anyDynamicLiveApplyReason` function cannot know what a dynamic word resolves to at run time.
+ * The word can be `kubectl`, `ko`, `helm` or `flux`.
  * This function checks all 4 tools. It fails closed when any one of them is denied (claude-factory-p43v.16).
  */
 function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
