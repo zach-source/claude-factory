@@ -73,11 +73,12 @@ describe('AC3 Bash, hook dir', () => {
     `echo x > ${H}/../acme-factory/src/cut.ts`,
     `tee {${H},/x}/src/cut.ts`,
     `tee ${H}/src/*.ts`,
-    'tee {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}',
     `tee '${H}/src/worker-hook.ts'`,
     `tee $D/acme-factory/src/x`,
     'tee $D/worker-hook.ts',
   ])('denies %s', c => expect(bash(c)).toBe(R))
+  test('denies a brace list over the cap (the qn8a.20 guard gives its own reason)', () =>
+    expect(bash('tee {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}')).toBeDefined())
   test('denies a git work tree in the hook dir (ty8y gives its own reason)', () =>
     expect(bash(`git --work-tree=${H} checkout x`)).toBeDefined())
   test('denies a backtick path (an earlier guard gives its own reason)', () =>
