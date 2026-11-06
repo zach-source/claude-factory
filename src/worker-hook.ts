@@ -5698,7 +5698,8 @@ function glabReasonOn(
   // a glob word such as `...approve?x=1` still names the approve path in its literal text
   if (args.some(w => !w.startsWith('-') && glabPathMatch(w, GLAB_APPROVE_PATH, /merge_requests/i.test(w))))
     return GLAB_APPROVE_REASON
-  if (tail.includes('merge') || tail.includes('accept')) return MERGE_REASON
+  if (tail.includes('merge') || tail.includes('accept') || tail.some(w => /^--auto-merge(=|$)/.test(w)))
+    return MERGE_REASON
   if (tail.some(w => dynamicWord(w) && !exempt(w))) return GLAB_DYNAMIC_REASON
   if (
     !mayReady(gate) &&

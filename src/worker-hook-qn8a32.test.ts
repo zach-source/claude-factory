@@ -35,6 +35,14 @@ const ask = (cmd: string, g: Record<string, unknown>) =>
   denyReason(cmd, undefined, undefined, { readFile: (p: string) => FILES[p], ...g })
 
 const MERGE_DENY = [
+  'glab mr create --auto-merge -t x -d y',
+  'glab mr create -t x -d y --auto-merge',
+  'glab mr create --auto-merge=true -t x -d y',
+  'glab mr create --fill --auto-merge',
+  'glab mr create --draft --auto-merge -t x -d y',
+  'glab mr create --auto-merge --push -t x -d y',
+  'glab --auto-merge mr create -t x -d y',
+  'glab mr --auto-merge create -t x -d y',
   'glab mr merge 5',
   'glab mr merge',
   'glab mr accept 5',
