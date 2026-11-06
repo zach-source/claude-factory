@@ -3032,6 +3032,47 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
     expect(g.stats().error).toBe(1)
   })
 
+  test('a mix of refused and failed floor sample lookups counts each refusal plus the floor failure', async () => {
+    let n = 0
+    let refused = 0
+    const { g } = goGate(
+      sumLookup(() => (n++ % 2 === 0 ? (refused++, found(`${EVIL}/x`)) : new Response('x', { status: 500 }))),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(refused).toBeGreaterThan(0)
+    expect(n).toBeGreaterThan(refused)
+    expect(g.stats().error).toBe(refused + 1)
+  })
+
+  test('too few index entries with every lookup answering counts the floor failure once', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.origin === 'https://idx.fake.test'
+          ? new Response(
+              goIndexBody(u.searchParams.get('since') ?? new Date(NOW).toISOString())
+                .split('\n')
+                .slice(0, 3)
+                .join('\n') + '\n',
+            )
+          : undefined) ??
+        (u.origin === 'https://sum.fake.test'
+          ? u.pathname === '/latest'
+            ? new Response(sumdbLatestBody(1_000_000))
+            : new Response('500000\n')
+          : undefined),
+      { sumdb: 'https://sum.fake.test', goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines).some(r => r.includes('only 3 of 3 sampled versions answered'))).toBe(true)
+    expect(g.stats().error).toBe(1)
+  })
+
   test('a sum.golang.org /latest 503 counts error once (not refused)', async () => {
     const { g } = goGate(
       u =>
