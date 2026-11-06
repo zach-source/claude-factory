@@ -1905,7 +1905,7 @@ test('a replayed memory add that ends with a bare --rig keeps its from (claude-f
   expect(r.code).toBe(0)
   const files = readdirSync(join(h, 'memory', 'inbox'))
   expect(files).toHaveLength(1)
-  const note = readFileSync(join(h, 'memory', 'inbox', files[0]), 'utf8')
+  const note = readFileSync(join(h, 'memory', 'inbox', files[0]!), 'utf8')
   expect(note).toMatch(/^from: r1\/plan$/m)
   expect(note).not.toContain('rig: --from')
   expect(note.split('---').slice(2).join('---')).not.toContain('r1/plan')
