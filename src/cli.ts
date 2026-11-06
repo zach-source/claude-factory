@@ -4067,13 +4067,16 @@ const trackOf = (id: string, saved?: Saved): Track => {
 export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
   repos.filter(r => !live.has(r) && queued(r) > 0)
 
-/** the live ship runs: the runner's own flag, or the id a ship run gets from its factory name */
+/** a ship run: the runner's own flag, or the id a ship run gets from its factory name */
+const shipLike = (ship: boolean | undefined, id: string) => !!ship || id.startsWith('ship-')
+
+/** the live ship runs */
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
       const { run, value, c } = current(id)
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0], c }] : []
+      return !ended && shipLike(run.ship, id) ? [{ run, node: where(value)[0], c }] : []
     } catch {
       return [] // removed mid-pass
     }
@@ -9488,6 +9491,14 @@ export async function forkRun(
     .map(l => JSON.parse(l) as Ev)
   const why = forkRefusal(where(value)[0], pending, src.id)
   if (why) throw new Error(why)
+  // a ship fork beside another live ship run would give the rig two ship runs (claude-factory-9wch)
+  const other = shipLike(src.ship, `${factoryName}-`)
+    ? liveShipRuns().find(s => s.run.id !== src.id && s.run.repo === src.repo)
+    : undefined
+  if (other)
+    throw new Error(
+      `${other.run.id} is a live ship run on ${src.repo}: a fork of ${src.id} would put a second ship run on the rig. Run factory abort ${other.run.id}, then fork it again.`,
+    )
   const bead = src.bead
     ? beads(src.repo, 'factory').create(
         `fork of ${src.bead}${note ? `: ${clip(note, 80)}` : ''}`,

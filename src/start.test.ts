@@ -112,8 +112,8 @@ function fakeHerdr() {
   chmodSync(join(bin, 'herdr'), 0o755)
 }
 
-function repo() {
-  const r = join(dir, 'repo')
+function repo(name = 'repo') {
+  const r = join(dir, name)
   mkdirSync(join(r, '.beads'), { recursive: true })
   Bun.spawnSync(['git', '-C', r, 'init', '-q'])
   Bun.spawnSync([
@@ -485,7 +485,7 @@ const endRun = (id: string) => {
 const setupForkRig = (aShip: boolean, bShip: boolean, bOtherRepo = false) => {
   reset()
   const r = repo()
-  const r2 = bOtherRepo ? repo() : r
+  const r2 = bOtherRepo ? repo('repo2') : r
   fakeBd('acme')
   fakeHerdr()
   const a = startRun(r, aShip)
@@ -528,8 +528,7 @@ test('fork of an ended ship run is allowed beside a live ship run on another rep
   expect(forked.code).toBe(0)
 })
 
-const CLEAR =
-  'update acme-1--remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
+const CLEAR = 'update acme-1--remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
 const startHandedOff = (
   mode: string,
   args: string[] = [],
