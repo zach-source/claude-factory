@@ -1382,6 +1382,15 @@ export const indentRest = (text: string) => {
   const [first, ...rest] = text.split(/\r\n|[\n\r\u0085\u2028\u2029]/)
   return [first, ...rest.map(l => `    ${l}`)].join('\n')
 }
+/**
+ * Use indentRest on each LF line, where one line is one commit or note. A CR, NEL, LS or PS in a line
+ * cannot start a forged line. A CRLF pair stays whole. A plain LF line keeps its text.
+ */
+const guardBreaks = (text: string) =>
+  text
+    .split(/(?<!\r)\n/)
+    .map(indentRest)
+    .join('\n')
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**
@@ -1519,12 +1528,12 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       ? [
           '',
           '## Commits already on the default branch that name this bead',
-          prior,
+          guardBreaks(prior),
           'Check whether they already do what the goal asks before planning anything new: some are only part of it.',
         ]
       : []),
     ...(committed
-      ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
+      ? ['', '## Already committed on this branch (build on it, do not redo it)', guardBreaks(committed)]
       : []),
     ...(inbox.length
       ? ['', '## Inbox', ...inbox.map(m => `- from ${m.from}: ${indentRest(clipReport(m.text))}`)]
@@ -1562,7 +1571,9 @@ function remembered(run: Run, node: string, notes = '') {
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} "<query>". It prints the closest notes in full.`,
-    ...(notes ? [`- The factory already searched for your goal and station. The closest notes:`, notes] : []),
+    ...(notes
+      ? [`- The factory already searched for your goal and station. The closest notes:`, guardBreaks(notes)]
+      : []),
     `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} "<one-line summary>" "<what, why, how you know>"${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
