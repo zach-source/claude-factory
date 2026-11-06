@@ -20,6 +20,7 @@ import {
   githubSlug,
   httpsRemote,
   isDenyLine,
+  memorySnapshotPut,
   outboxDenial,
   overwritten,
   progressSig,
@@ -2196,6 +2197,51 @@ test('an ax brief says AWS is read-only once, only when the rig env holds the br
   }
 }, 60_000)
 
+test('a big put spreads over ticks: 8 parts a tick, in order, then memory is recorded and the tgz removed', () => {
+  launched('r8')
+  const side = join(home, 'runs', 'r8', 't.json')
+  const read = () => JSON.parse(readFileSync(side, 'utf8'))
+  writeFileSync(side, JSON.stringify({ ...read(), put: ['memory.tgz'] }))
+  const file = join(home, 'runs', 'r8', 't.memory.tgz')
+  writeFileSync(file, Buffer.alloc(1_400_000, 7)) // 20 parts of 96,000 base64 bytes
+  const puts = () => [...called().matchAll(/worker put memory\.tgz (\d+) 20 /g)].map(m => Number(m[1]))
+  const tick = () => {
+    rmSync(calls, { force: true })
+    cluster('Running', { status: 'working', lines: [] })
+    return JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r8')
+  }
+  const row1 = tick()
+  expect(puts()).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+  expect(read().putPart).toBe(8)
+  expect(row1.agent).not.toBe('pending')
+  expect(row1.error).toBeNull()
+  tick()
+  expect(puts()).toEqual([8, 9, 10, 11, 12, 13, 14, 15])
+  expect(read().putPart).toBe(16)
+  tick()
+  expect(puts()).toEqual([16, 17, 18, 19])
+  expect(read()).toMatchObject({ put: [], memory: { bytes: 1_400_000, parts: 20 } })
+  expect(read().putPart).toBeUndefined()
+  expect(existsSync(file)).toBe(false)
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
+})
+
+test('memorySnapshotPut skips a snapshot over the cap, and a throw never blocks the launch', () => {
+  const mem = join(dir, 'snapcap-mem')
+  mkdirSync(join(mem, 'topic'), { recursive: true })
+  writeFileSync(join(mem, 'topic', 'n.md'), '---\nsummary: a note\n---\nbody\n')
+  const out = join(dir, 'snapcap.tgz')
+  expect(memorySnapshotPut(mem, 'x', out)).toEqual({ put: true })
+  expect(existsSync(out)).toBe(true)
+  const big = memorySnapshotPut(mem, 'x', out, 10)
+  expect(big.put).toBe(false)
+  expect(big.skipped).toContain('over the 10 byte cap')
+  expect(existsSync(out)).toBe(false)
+  expect(memorySnapshotPut(join(dir, 'no-such-memory'), 'x', out)).toEqual({ put: false })
+  expect(memorySnapshotPut(mem, 'x', join(dir, 'no-dir', 'x.tgz')).skipped).toBeTruthy()
+  rmSync(mem, { recursive: true })
+})
+
 test('an ax launch searches the laptop memory once and puts the top notes in the brief', () => {
   const sh = (cwd: string, ...a: string[]) => {
     const p = Bun.spawnSync(a, { cwd })
@@ -2253,6 +2299,11 @@ test('an ax launch searches the laptop memory once and puts the top notes in the
     const briefFile = readdirSync(runDir).find(f => f.endsWith('.brief.md'))!
     const brief = readFileSync(join(runDir, briefFile), 'utf8')
     const usage = join(memDir, '.usage.jsonl')
+    // the snapshot of the notes the rig can see goes after the brief (claude-factory-vffe.4)
+    const stem = briefFile.replace(/\.brief\.md$/, '')
+    const sideNow = JSON.parse(readFileSync(join(runDir, `${stem}.json`), 'utf8'))
+    expect(sideNow.put).toEqual(withNote ? ['brief.md', 'memory.tgz'] : ['brief.md'])
+    expect(existsSync(join(runDir, `${stem}.memory.tgz`))).toBe(withNote)
     if (withNote) {
       expect(brief).toContain('The factory already searched for your goal and station')
       expect(brief).toContain('bd init locks the shared Dolt server')
