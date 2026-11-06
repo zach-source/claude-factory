@@ -9,7 +9,7 @@ import { localLiveRuns, localRunsRefusal, migratedRigs, runFacts, selectTop, typ
  * `join` brings them back. The tombstone `home-split.json` stays in the local home while the rigs live elsewhere.
  */
 
-type RigRow = { name: string; repo: string; runner?: string; remote?: string }
+type RigRow = { name: string; repo: string; factory: string; runner?: string; remote?: string }
 export type Tombstone = { to: string; at: string; rigs: RigRow[]; runs: string[] }
 export type EditRigs = (fn: (list: RigRow[]) => RigRow[]) => void
 export type SplitPlan = { moveRigs: RigRow[]; keepRigs: RigRow[]; moveRuns: string[]; refusal?: string }

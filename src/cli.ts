@@ -163,6 +163,7 @@ import * as worker from './worker'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
+import * as homesplit from './homesplit'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
@@ -1485,6 +1486,8 @@ function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
   const run: Run = readJson(file)
+  // a run dir can move (home split). Its pinned factory.json lives in the new home. run.json still names the old path.
+  if (basename(run.factory) === 'factory.json') run.factory = join(runDir(id!), 'factory.json')
   // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
   return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
 }
@@ -6722,6 +6725,7 @@ async function createRun(
     onto,
   }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
 ) {
+  refuseMoved(undefined, repo)
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
   const startPoint = from?.run.branch ?? onto ?? base
@@ -6804,6 +6808,7 @@ async function createTracked(
   ship?: true,
   shipBranch?: string,
 ) {
+  refuseMoved(undefined, repo) // before the bead claim: a refused run must leave no claim
   const id = `${name}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`
   const b = beads(repo, actorOf(id))
   if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
@@ -7144,10 +7149,61 @@ async function migrateToAx(args: string[]) {
   console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
 }
 
+/** `factory home split|join <dir> [--dry-run]`: see docs/server-home.md */
+async function homeSplitCmd(args: string[]) {
+  const usage = 'usage: factory home [split|join <dir> [--dry-run]]'
+  const [sub, dir, ...rest] = args
+  const dry = rest.includes('--dry-run')
+  if (!['split', 'join'].includes(sub ?? '') || !dir || rest.some(a => a !== '--dry-run')) fail(usage)
+  refuseWorker(`home ${sub}`, true)
+  if (inAx()) fail(`factory home ${sub} runs on the laptop`)
+  if (process.env.FACTORY_SERVER)
+    fail(`factory home ${sub} works on the home's own disk: unset FACTORY_SERVER`)
+  const origin = (repo: string) => {
+    const r = Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin'], { stderr: 'ignore' })
+    return r.exitCode === 0 ? r.stdout.toString().trim() : undefined
+  }
+  const release = hold('tick.lock')
+  if (!release) fail('a tick holds tick.lock: try again')
+  try {
+    const to = resolve(dir!)
+    if (sub === 'split') {
+      const p = homesplit.splitPlan(HOME, to, origin)
+      console.log(
+        `rigs to move: ${p.moveRigs.map(r => r.name).join(', ') || 'none'}; stay: ${p.keepRigs.map(r => r.name).join(', ') || 'none'}; runs to move: ${p.moveRuns.length}${p.moveRuns.length ? ` (${p.moveRuns.join(', ')})` : ''}`,
+      )
+      if (p.refusal) fail(p.refusal)
+      if (dry) return console.log('dry run: nothing written')
+      homesplit.split(HOME, to, p, origin, edit)
+      console.log(`moved to ${to}: the server runs those rigs. Undo: factory home join ${dir}`)
+    } else {
+      const why = homesplit.joinRefusal(HOME, to)
+      if (why) fail(why)
+      if (dry) return console.log('dry run: join would pass; nothing written')
+      homesplit.join_(HOME, to, edit)
+      console.log(`joined ${to} back into this home`)
+    }
+  } finally {
+    release!()
+  }
+}
+
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
 const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
-const rigs = (): Rig[] => mapRigs(rawRigs())
+const rigs = (): Rig[] => {
+  const t = homesplit.tombstone(HOME)
+  return mapRigs(rawRigs().filter(r => !t?.rigs.some(x => x.name === r.name || x.repo === r.repo)))
+}
+/** A rig or repo that home-split.json names lives in the server home. Throw for it. An unreadable file throws too (fail closed). */
+function refuseMoved(name: string | undefined, repo: string | undefined) {
+  const t = homesplit.tombstone(HOME)
+  const m = t?.rigs.find(x => x.name === name || x.repo === repo)
+  if (t && m)
+    throw new Error(
+      `rig ${m.name} moved to the server home on ${t.at.slice(0, 10)}: use FACTORY_SERVER (or factory home join)`,
+    )
+}
 /** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
 function edit(fn: (list: Rig[]) => Rig[]) {
   try {
@@ -10841,7 +10897,8 @@ if (import.meta.main && !outboxCmd)
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
       case 'home':
-        console.log(HOME)
+        if (!args.length) console.log(HOME)
+        else await homeSplitCmd(args)
         break
       case 'repos': {
         if (args[0] !== 'sync') fail('usage: factory repos sync')
@@ -11731,6 +11788,7 @@ if (import.meta.main && !outboxCmd)
             fail(
               `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>']`,
             )
+          refuseMoved(name, resolve(repo!)) // before defineRig: it reads the repo's .beads
           const rig = await defineRig(name!, repo!, factory, {
             max,
             sweeps,
@@ -11753,6 +11811,7 @@ if (import.meta.main && !outboxCmd)
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
           edit(list => {
+            refuseMoved(rig.name, rig.repo)
             const taken = mapRigs(list).find(r => r.repo === rig.repo && r.name !== rig.name)
             if (taken)
               throw new Error(
