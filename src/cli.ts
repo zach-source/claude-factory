@@ -133,7 +133,7 @@ import {
   VM_PLUGINS,
   writeLaunch,
 } from './harness'
-import { hold as holdOf, shipLines, tokens, waiting } from './sidebar'
+import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -164,8 +164,10 @@ import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
+import * as server from './server'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
+import { startUi, withBeads } from './ui'
 import { DEFAULT_RUNNER, runnerOf, runners, type Job, type Runner, type WorkerInfo } from './runner'
 import { signingProbe } from './signing'
 import {
@@ -2180,6 +2182,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * release station run one strict `gh pr merge` form, for that repo only (-R required).
  * `harness` adds `--harness claude|codex`: the hook logs it with each denial (claude-factory-dsfg).
  * An older VM image's hook copy ignores argv it does not know.
+ * The claude entry has `onFailure: 'block'` (claude-factory-qn8a.36).
+ * Claude Code 2.1.295 or later then blocks the call if the hook times out, crashes or gives bad output.
+ * Codex has no such key (claude-factory-qn8a.75), and the VM image needs a newer Claude Code (claude-factory-6kzz).
  */
 const denyHook = (
   bun: string,
@@ -2205,6 +2210,7 @@ const denyHook = (
         ...(merge ? ['--merge-authority', sq(merge)] : []),
       ].join(' '),
       timeout: 10,
+      ...(harness === 'claude' ? { onFailure: 'block' } : {}),
     },
   ]
   return [
@@ -10475,6 +10481,16 @@ async function status(id: string | undefined) {
 }
 
 /** each rig's ship queue, the next PR first; a rig whose bd cannot be read is left out */
+/** the row of each started run, as `factory waiting` and `factory ui` read them */
+const runRows = () =>
+  Promise.all(
+    startedRunIds().map(async id => {
+      const { run, value, c } = current(id)
+      const def = await loadPinned(run.factory)
+      return row(run, def, value, c, agentOf(def, value, c))
+    }),
+  )
+
 function shipQueues() {
   const out: Record<string, Bead[]> = {}
   for (const rig of rigs()) {
@@ -10606,6 +10622,7 @@ const usage = `factory — herdr software factories on xstate
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
+  ui [--port 4792] [--no-sync]       a local web page (127.0.0.1) of every rig's beads and epic progress (docs/ui.md)
   pkg-gate serve [--port 8080]       an age-gating registry proxy for go/npm/pypi (PKG_GATE_MIN_DAYS,
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
@@ -10721,6 +10738,22 @@ if (import.meta.main && !outboxCmd)
           )
         break
       }
+      case 'ui': {
+        const portIdx = args.indexOf('--port')
+        const port = portIdx >= 0 ? Number(args[portIdx + 1]) : 4792
+        if (!Number.isInteger(port) || port < 0) fail(`--port "${args[portIdx + 1]}" is not a number`)
+        const found = withBeads(rigs())
+        if (!found.length) fail(`no rig with a .beads directory in ${rigsFile()}`)
+        const ui = startUi({
+          rigs: found,
+          port,
+          sync: !args.includes('--no-sync'),
+          cacheDir: join(HOME, 'ui-cache'),
+          runNeeds: async () => waitingItems(await runRows(), shipQueues()),
+        })
+        console.log(`factory ui on http://127.0.0.1:${ui.server.port} for ${found.length} rigs`)
+        break
+      }
       case 'pkg-gate': {
         const [sub] = args
         if (sub !== 'serve') fail('usage: factory pkg-gate serve [--port 8080]')
@@ -10775,6 +10808,11 @@ if (import.meta.main && !outboxCmd)
         break
       case 'broker':
         broker.main(args)
+        break
+      case 'server':
+        refuseWorker('server', true)
+        lease()
+        server.main(args, HOME, () => tick())
         break
       case 'manager':
         refuseWorker('manager', true)
@@ -11441,14 +11479,7 @@ if (import.meta.main && !outboxCmd)
         await digest()
         break
       case 'waiting': {
-        const rows = await Promise.all(
-          startedRunIds().map(async id => {
-            const { run, value, c } = current(id)
-            const def = await loadPinned(run.factory)
-            return row(run, def, value, c, agentOf(def, value, c))
-          }),
-        )
-        console.log(waiting(rows, Date.now(), shipQueues()))
+        console.log(waiting(await runRows(), Date.now(), shipQueues()))
         break
       }
       case 'report': {
