@@ -497,7 +497,12 @@ test('deploy and soak carry the same live-object finding rule: search, comment, 
     'Never lower a priority',
     'any bead with the ship label',
     'The comment and escalation steps do not apply to',
-    'run `bd show <id> --json`. If the read fails, if that bead has a held:* label, a rejected label, a human label or an owner label, or if its metadata has the key owner_decisions (any value), add no label',
+    'run `bd show <id> --json`. The output is an array.',
+    'If the read fails, if that bead has a held:* label, a rejected label, a human label or an owner label, or if its metadata has the key owner_decisions (any value), add no label',
+    'Read only the labels and metadata of its first element, the bead itself.',
+    'Ignore the labels and metadata of the dependencies and dependents that it embeds.',
+    'so a person runs `factory queue <rig> <id>`.',
+    'the step is `factory start <factory> <rig> <id> --owned` instead, because dispatch skips an owner_decisions bead.',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
   ])
     expect(want).toContain(t)
