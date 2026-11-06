@@ -416,6 +416,8 @@ test('claude-factory-0jr2.6: a comment-backslash form still names each gated kin
   const q1 = await ask('/repo/bin/factory decide r1 ship # note\\\necho x')
   expect(q1).toContain('decide a factory gate')
   expect(q1).toContain('hook cannot read')
+  const q3 = await ask('echo hi #x\\\nfactory start lifecycle acme w-2 --owned')
+  expect(q3).toContain('start a bead carrying')
   const long = `/repo/bin/factory decide r1 reject '${'a'.repeat(300)}' # x\\\n/repo/bin/factory start lifecycle acme w-2 --owned`
   const q2 = await ask(long)
   expect(q2).toContain('The text not shown holds: start a bead carrying')
