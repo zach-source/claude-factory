@@ -560,6 +560,25 @@ test('goto of an ended non-ship run is allowed beside a live ship run (claude-fa
   expect(ok.code).toBe(0)
 })
 
+test('goto of a live ship run is allowed beside another live ship run (claude-factory-9wch)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, true)
+  const b = startRun(r, true)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).not.toContain(b)
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of an ended ship run to done is not refused for a live ship run (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const res = run(['goto', a, 'done'])
+  expect(res.err).not.toContain(b)
+})
+
 const CLEAR =
   'update acme-1 --remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
 const startHandedOff = (
