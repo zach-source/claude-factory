@@ -228,6 +228,15 @@ describe('maskAssignments', () => {
     ['Y=${a[1]:-zq secret} ls', 'Y=***'],
     ['export Y=${X:-zq;secret}', 'export Y=***'],
     ['Y="${X:-"zq secret"}" ls', 'Y=***'],
+    ["X=$'zq\\' secret' ls", 'X=***'],
+    ["X=a$'zq\\' secret' ls", 'X=***'],
+    ['X="a"$\'zq\\\' secret\' ls', 'X=***'],
+    ["a[k]=$'zq\\' secret' ls", 'a[k]=***'],
+    ['X=$[1 + 2] ls', 'X=***'],
+    ['X=zq\rsecret ls', 'X=*** ls'],
+    ['X=zq\vsecret ls', 'X=*** ls'],
+    ['X=zq\fsecret ls', 'X=*** ls'],
+    ['X=zq secret ls', 'X=*** ls'],
     ['ls foo-bar', 'ls foo-bar'],
     ['echo $(date) a-b', 'echo $(date) a-b'],
     ['cat a]b', 'cat a]b'],
@@ -276,6 +285,8 @@ describe('maskAssignments', () => {
       ' ${a:='.repeat(1e5),
       ' Y=${X:-'.repeat(1e5),
       ' Y="${'.repeat(1e5),
+      " X=$'".repeat(1e5),
+      ' X=$['.repeat(1e5),
     ]) {
       const t = performance.now()
       m(i)
