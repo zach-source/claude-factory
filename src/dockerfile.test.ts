@@ -5,17 +5,59 @@ import { join } from 'node:path'
 // 8b0ebf2: src/sidebar.ts imported ../mod, the worker stage did not copy mod, and every AX worker failed to start
 const ROOT = join(import.meta.dir, '..')
 
-test('the worker image copies every top-level directory that src imports', () => {
-  const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
-  const worker = docker.slice(docker.indexOf(' AS worker'), docker.indexOf(' AS manager'))
-  const copied = new Set([...worker.matchAll(/^COPY (?!--)(\S+) /gm)].map(m => m[1]))
+// Bun drops a type-only import at runtime, so it needs no file in the image
+const srcImports = () => {
   const imported = new Set<string>()
   for (const f of readdirSync(join(ROOT, 'src'), { recursive: true }) as string[]) {
     if (!/\.tsx?$/.test(f) || /\.test\.tsx?$/.test(f)) continue
     const text = readFileSync(join(ROOT, 'src', f), 'utf8')
-    // Bun drops a type-only import at runtime, so it needs no file in the image
     for (const m of text.matchAll(/^import (?!type )[^'"]*from '\.\.\/([\w-]+)\//gm)) imported.add(m[1]!)
   }
+  return imported
+}
+
+test('the worker image copies every top-level directory that src imports', () => {
+  const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  const worker = docker.slice(docker.indexOf(' AS worker'), docker.indexOf(' AS manager'))
+  const copied = new Set([...worker.matchAll(/^COPY (?!--)(\S+) /gm)].map(m => m[1]))
+  const imported = srcImports()
+  expect([...imported].filter(d => !copied.has(d))).toEqual([])
+  expect(imported.has('mod')).toBe(true)
+})
+
+const serverFile = () => readFileSync(join(ROOT, 'Dockerfile.server'), 'utf8')
+const serverStage = () => serverFile().slice(serverFile().lastIndexOf('\nFROM oven/bun:'))
+
+test('the server image uses the Bun version that CI pins', () => {
+  const ci = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
+  const pins = [...new Set([...ci.matchAll(/bun-version:\s*['"]?([\d.]+)['"]?/g)].map(m => m[1]))]
+  expect(pins).toEqual(['1.3.13'])
+  expect(serverFile()).toMatch(new RegExp(`^FROM oven/bun:${pins[0]}-debian$`, 'm'))
+})
+
+test('the server image installs and smokes each tool', () => {
+  const stage = serverStage()
+  const smoke = [
+    'bun --version',
+    'claude --version',
+    'git --version',
+    'gh --version',
+    'bd version',
+    'dolt version',
+    'ax version',
+    'kubectl version --client',
+  ]
+  const line = stage.replace(/\\\n/g, ' ').match(/^RUN (bun --version .*)$/m)?.[1] ?? ''
+  expect(line.split('&&').map(c => c.trim().replace(/\s+/g, ' '))).toEqual(smoke)
+  for (const a of ['CLAUDE_CODE_VERSION', 'GH_VERSION', 'BD_VERSION', 'DOLT_VERSION', 'KUBECTL_VERSION'])
+    expect(stage).toMatch(new RegExp(`^ARG ${a}=\\S+$`, 'm'))
+  expect(serverFile()).toMatch(/^ARG AX_CLI_COMMIT=\S+$/m)
+  expect(serverFile()).not.toMatch(/:latest|releases\/latest/)
+})
+
+test('the server image copies every top-level directory that src imports', () => {
+  const copied = new Set([...serverStage().matchAll(/^COPY (?!--)(\S+) /gm)].map(m => m[1]))
+  const imported = srcImports()
   expect([...imported].filter(d => !copied.has(d))).toEqual([])
   expect(imported.has('mod')).toBe(true)
 })
