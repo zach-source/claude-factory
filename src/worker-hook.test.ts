@@ -11422,6 +11422,26 @@ test('denyReason allows [ and [[ test forms; a bracket glob command word stays d
   expect(ask('[x] -rf /')).toBe(DYNAMIC_VERB_REASON)
 })
 
+// claude-factory-qn8a.9.9: bash runs a quoted $(...) in the subscript of -v and of an arithmetic operand.
+test('denyReason denies [ and [[ forms with a quoted command substitution operand (claude-factory-qn8a.9.9)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  const rows = [
+    "[ -v 'a[$(git push origin main)]' ]",
+    "[ -v 'a[$(rm -rf /)]' ]",
+    '[ -v "a[\\$(git push origin main)]" ]',
+    "[[ 'a[$(git push origin main)]' -eq 0 ]]",
+    "[[ -v 'a[$(git push origin main)]' ]]",
+    "[[ x -eq 'a[$(git push origin main)]' ]]",
+    "[[ x -ne 'a[$(git push origin main)]' ]]",
+    "[[ x -lt 'a[$(git push origin main)]' ]]",
+    "[[ x -ge 'a[$(git push origin main)]' ]]",
+    "[ x -gt 'a[$(git push origin main)]' ]",
+    "[ -v 'a[`git push origin main`]' ]",
+  ]
+  for (const c of rows) expect(ask(c)).toBeDefined()
+  expect(ask('[ -n "$X" ]')).toBeUndefined()
+})
+
 // claude-factory-c1jb: 7 alias words in one segment made the rescan visit every order (n!): 2.5 s, then a false
 // SCAN_BUDGET_REASON deny. The memo of allowed rescans makes it linear.
 test('denyReason allows 7 harmless alias words in one segment, fast, and still denies a later gp push (claude-factory-c1jb)', () => {

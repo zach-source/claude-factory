@@ -2470,7 +2470,7 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
   for (let m = start; m < words.length; m++) {
     const mw = words[m]!
     if (mw.startsWith('-') && mw !== '-') continue
-    if (!dynamicCommandWord(mw)) continue
+    if (!dynamicCommandWord(mw, words, m)) continue
     if (firstSingle < 0) firstSingle = m
     let m2 = m + 1
     while (m2 < words.length && words[m2]!.startsWith('-') && words[m2] !== '-') m2++
@@ -2575,13 +2575,13 @@ function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | u
   // start index, so the smallest dynamic slot gives the result of all of them. No cap needed.
   for (let i = 0; i + 1 < words.length; i++) {
     if (!/^-(exec|execdir|ok|okdir)$/.test(words[i]!)) continue
-    if (!dynamicCommandWord(words[i + 1]!)) continue
+    if (!dynamicCommandWord(words[i + 1]!, words, i + 1)) continue
     anchors.push(i + 1)
     break
   }
   for (const a of anchors) {
     const head = words[a]!
-    if (!dynamicCommandWord(head)) continue
+    if (!dynamicCommandWord(head, words, a)) continue
     // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
     // definition. definesFunction denies it with its own reason.
     if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
@@ -2727,7 +2727,7 @@ function commandAnchors(words: string[]): number[] {
       // claude-factory-p43v.29: this chase reads a word as if it names the real command (the git
       // or gh binary, or a kubectl/ko/helm tool word). `dynamicCommandWord` reads `{}` as not
       // dynamic here; see the comment above that function.
-      const dyn = dynamicCommandWord(words[k]!)
+      const dyn = dynamicCommandWord(words[k]!, words, k)
       if (!dyn && !mayBeValue) break
       let k2 = k + 1
       while (k2 < words.length && words[k2]!.startsWith('-') && words[k2] !== '-') k2++
@@ -3241,9 +3241,10 @@ function shellStdinReason1(words: string[], state: ScanState): string | undefine
   const lead = leadingRedirects(words)
   const rest = lead ? words.slice(lead) : words
   for (const a of commandAnchors(rest)) {
-    if (dynamicCommandWord(rest[a]!) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
+    if (dynamicCommandWord(rest[a]!, rest, a) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
     // claude-factory-l43b.20: a dynamic anchor can be xargs, so a shell word after it denies.
-    if (dynamicCommandWord(rest[a]!) && rest.slice(a + 1).some(isShellWord)) return SHELL_STDIN_REASON
+    if (dynamicCommandWord(rest[a]!, rest, a) && rest.slice(a + 1).some(isShellWord))
+      return SHELL_STDIN_REASON
     // claude-factory-l43b.9: `source` and `.` run the file they read like a shell script.
     if (SOURCE_WORDS.has(baseWord(rest[a]!)) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
   }
@@ -3301,10 +3302,10 @@ function xargsRunsShell(words: string[]): boolean {
         j += 2
         continue
       }
-      if (j + 1 < words.length && dynamicCommandWord(words[j + 1]!)) cands.push(j + 1)
+      if (j + 1 < words.length && dynamicCommandWord(words[j + 1]!, words, j + 1)) cands.push(j + 1)
       j++
     }
-    if (j < words.length && dynamicCommandWord(words[j]!)) cands.push(j)
+    if (j < words.length && dynamicCommandWord(words[j]!, words, j)) cands.push(j)
     // claude-factory-l43b.16: xargs adds words from its stdin to the shell argv, so any shell
     // word after xargs denies.
     // A dynamic command word with a literal -c script is scanned by anyShellReason. A replace flag
@@ -5378,9 +5379,14 @@ const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9
 // the actual command. That command is the git or gh binary, or a kubectl, ko or helm tool word.
 // A `{}` word there is usually a wrapper's placeholder value, such as `xargs -I {}`, not a tool
 // name. This exemption lets `xargs -I {} cp {} dest` and `xargs -I {} delete {}` run.
-function dynamicCommandWord(w: string): boolean {
+// claude-factory-qn8a.9.9: bash runs a `$(...)` inside the subscript of `[ -v 'a[$(cmd)]' ]` and of an
+// arithmetic operand in `[[ ... -eq ... ]]`, even when quoted. So `[` and `[[` are exempt only when
+// the caller passes the segment words and no later word holds `(` or a backtick. Without them, deny.
+function dynamicCommandWord(w: string, words?: readonly string[], i?: number): boolean {
   // claude-factory-0hkb: the exact words `[` and `[[` are the test builtin. A word that only starts with `[` stays dynamic.
-  return w !== '{}' && w !== '[' && w !== '[[' && dynamicWord(w)
+  if ((w === '[' || w === '[[') && words && i !== undefined && !words.slice(i + 1).some(x => /[(`]/.test(x)))
+    return false
+  return w !== '{}' && dynamicWord(w)
 }
 
 // claude-factory-mn2y: external programs cannot change the parent shell's alias table. Never add
@@ -5427,8 +5433,7 @@ function segmentDynArg(words: string[]): boolean {
     words[first] === 'echo' ||
     words[first] === 'cd' ||
     // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
-    words[first] === '[' ||
-    words[first] === '[[' ||
+    ((words[first] === '[' || words[first] === '[[') && !words.slice(first + 1).some(x => /[(`]/.test(x))) ||
     words[first]!.startsWith('#')
   )
     return false
@@ -5452,7 +5457,7 @@ function segmentMayDefineAlias(words: string[]): boolean {
     return true
   }
   for (const a of anchors) {
-    if (!dynamicCommandWord(words[a]!)) continue
+    if (!dynamicCommandWord(words[a]!, words, a)) continue
     for (let i = a + 1; i < words.length; i++) {
       if (/^[^-=]+=/.test(words[i]!) || /[$`]/.test(words[i]!)) return true
     }
@@ -7118,7 +7123,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
     // binary). `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
-    if (cmd.length > 0 && dynamicCommandWord(cmd[0]!)) {
+    if (cmd.length > 0 && dynamicCommandWord(cmd[0]!, cmd, 0)) {
       let k = 1
       while (k < cmd.length) {
         const w = cmd[k]!
@@ -7254,7 +7259,11 @@ function anyDynamicLiveApplyReason1(words: string[], personOnly: string[]): stri
   // `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
   for (const a of commandAnchors(words)) {
     const cmd = words.slice(a)
-    if (cmd.length && dynamicCommandWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
+    if (
+      cmd.length &&
+      dynamicCommandWord(cmd[0]!, cmd, 0) &&
+      anyToolLiveApplyDenied(cmd.slice(1), personOnly)
+    ) {
       return DYNAMIC_VERB_REASON
     }
   }
@@ -8916,7 +8925,7 @@ function denyAtScan(
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
     for (const c of [cmd, realCommandInfo(dropRedirectWords(words)).cmd])
-      if (c.length && dynamicCommandWord(c[0]!) && dynamicDashedVerb(c[0]!))
+      if (c.length && dynamicCommandWord(c[0]!, c, 0) && dynamicDashedVerb(c[0]!))
         late.reason ??= DYNAMIC_VERB_REASON
     // k8iz: true when the miqy table read this pure $NAME head's value, so the late deny skips it.
     let headValueRead = false
