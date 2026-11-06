@@ -5373,6 +5373,15 @@ function dynamicWord(w: string): boolean {
 // denyAt strips `(...)`, so `${(@)_}` reads as `${_}` there.
 const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])/
 
+// claude-factory-qn8a.9.10: bash reads an operand of -v, -eq, -ne, -lt, -le, -gt or -ge as a subscript.
+// A value such as `a[$(cmd)]` from `$_` or from `read` then runs the command. The exemption holds
+// only if no word has `(` or a backtick. It also fails if a `$` word shares the test with one of
+// these operators. String tests (-n, -z, ==, =~) stay exempt.
+function testBuiltinSafe(args: readonly string[]): boolean {
+  if (args.some(x => /[(`]/.test(x))) return false
+  return !(args.some(x => /^(-v|-eq|-ne|-lt|-le|-gt|-ge)$/.test(x)) && args.some(x => x.includes('$')))
+}
+
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
 // `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
 // check in `anyDynamicCommandReason` and in `anyDynamicLiveApplyReason`. Each site reads a word as
@@ -5384,8 +5393,7 @@ const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9
 // the caller passes the segment words and no later word holds `(` or a backtick. Without them, deny.
 function dynamicCommandWord(w: string, words?: readonly string[], i?: number): boolean {
   // claude-factory-0hkb: the exact words `[` and `[[` are the test builtin. A word that only starts with `[` stays dynamic.
-  if ((w === '[' || w === '[[') && words && i !== undefined && !words.slice(i + 1).some(x => /[(`]/.test(x)))
-    return false
+  if ((w === '[' || w === '[[') && words && i !== undefined && testBuiltinSafe(words.slice(i + 1))) return false
   return w !== '{}' && dynamicWord(w)
 }
 
@@ -5433,7 +5441,7 @@ function segmentDynArg(words: string[]): boolean {
     words[first] === 'echo' ||
     words[first] === 'cd' ||
     // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
-    ((words[first] === '[' || words[first] === '[[') && !words.slice(first + 1).some(x => /[(`]/.test(x))) ||
+    ((words[first] === '[' || words[first] === '[[') && testBuiltinSafe(words.slice(first + 1))) ||
     words[first]!.startsWith('#')
   )
     return false

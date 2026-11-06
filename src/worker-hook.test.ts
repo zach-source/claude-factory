@@ -11442,6 +11442,29 @@ test('denyReason denies [ and [[ forms with a quoted command substitution operan
   expect(ask('[ -n "$X" ]')).toBeUndefined()
 })
 
+// claude-factory-qn8a.9.10: a dynamic operand ($_ or a read variable) carries a $(...) into -v or an arithmetic operator.
+test('denyReason denies [ and [[ with a dynamic operand of -v or an arithmetic operator (claude-factory-qn8a.9.10)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  const src = "echo 'a[$(git push origin main)]'; "
+  const rows = [
+    src + '[[ $_ -eq 0 ]]',
+    src + '[ -v "$_" ]',
+    src + '[[ -v $_ ]]',
+    src + '[[ 0 -lt $_ ]]',
+    src + '[ "$_" -ne 0 ]',
+    src + '[[ $_ -le 0 ]]',
+    src + '[[ $_ -gt 0 ]]',
+    src + '[ 0 -ge "$_" ]',
+    "echo 'a[$(git push origin main)]' | while read X; do [[ $X -eq 0 ]]; done",
+    "echo 'a[$(git push origin main)]' | ( read X; [[ $X -eq 0 ]] )",
+    "echo 'a[$(git push origin main)]' | while read X; do [ -v \"$X\" ]; done",
+    "ls 'a[$(git push origin main)]'; [[ $_ -eq 0 ]]",
+  ]
+  for (const c of rows) expect(ask(c)).toBeDefined()
+  for (const c of ['[ -n "$X" ]', '[[ -n $X ]]', '[[ $X == y ]]', '[ -z "$_" ]', '[ x -eq 0 ]', '[[ -v X ]]'])
+    expect(ask(c)).toBeUndefined()
+})
+
 // claude-factory-c1jb: 7 alias words in one segment made the rescan visit every order (n!): 2.5 s, then a false
 // SCAN_BUDGET_REASON deny. The memo of allowed rescans makes it linear.
 test('denyReason allows 7 harmless alias words in one segment, fast, and still denies a later gp push (claude-factory-c1jb)', () => {
