@@ -11716,17 +11716,14 @@ if (import.meta.main && !outboxCmd)
           if (name !== undefined && !/^[1-9][0-9]*$/.test(name))
             fail(`rig undo: "${name}" is not a snapshot number`)
           const n = Number(name ?? 1)
-          if (!snaps[n - 1]) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
-          const from = snaps[n - 1]!
+          const from = snaps[n - 1]
+          if (!from) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
           edit(() => {
-            let list: unknown
             try {
-              list = JSON.parse(readFileSync(from, 'utf8'))
+              return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
             } catch (e) {
               throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
             }
-            if (!Array.isArray(list)) throw new Error(`${from}: not a JSON array`)
-            return list as Rig[]
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
         } else fail(`unknown rig command "${sub}": add, rm, list, history or undo`)

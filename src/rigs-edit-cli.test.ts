@@ -140,6 +140,12 @@ test('rig history lists the newest 20, newest first', () => {
   expect(lines[19]!.startsWith('20  ')).toBe(true)
 })
 
+test('rig history caps the list at 20 even when the directory holds more', () => {
+  mkdirSync(hist(), { recursive: true })
+  for (let i = 0; i < 25; i++) writeFileSync(join(hist(), `2026010${i < 10 ? '0' : ''}${i}.json`), '[]')
+  expect(factory(['rig', 'history']).out.trim().split('\n')).toHaveLength(20)
+})
+
 test('rig history shows an unparsable snapshot and says so when there is none', () => {
   expect(factory(['rig', 'history'])).toMatchObject({ code: 0, out: 'no rig history\n' })
   mkdirSync(hist(), { recursive: true })
@@ -151,7 +157,8 @@ test('rig undo refuses a bad n or a bad snapshot and changes nothing', () => {
   twoEdits()
   const before = text()
   const n = snaps().length
-  for (const x of ['0', '-1', 'abc', '1.5', '21', '3']) expect(factory(['rig', 'undo', x]).code).not.toBe(0)
+  for (const x of ['0', '-1', 'abc', '1.5', '21', '3', '1e0', '0x1', '01'])
+    expect(factory(['rig', 'undo', x]).code).not.toBe(0)
   const two = '{"name":"x","repo":"/a","factory":"lifecycle"}'
   for (const body of ['[{', '{}', `[${two},${two}]`]) {
     const bad = join(hist(), '99990101T000000000Z.json')
