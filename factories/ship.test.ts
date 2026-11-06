@@ -272,6 +272,9 @@ test('queue step 2 and postmortem check for a hold before they add factory (clau
     'bd show <bead> --json',
     'rejected',
     'human',
+    'rejected, human or owner,',
+    'If the bead is held, do not add or remove a label.',
+    'If the bead is held, write the evidence in a bead comment',
     'owner',
     'held:',
     'owner_decisions',
@@ -283,6 +286,7 @@ test('queue step 2 and postmortem check for a hold before they add factory (clau
     expect(p).toContain(check)
     expect(p.indexOf(check)).toBeLessThan(p.indexOf('--add-label factory'))
   }
+  expect(pm).toContain('If the bead is not held, send the released bead back')
   for (const [name, node] of Object.entries(ship.nodes)) {
     const prompt = (node as { prompt: string }).prompt
     for (const m of prompt.matchAll(/bd update <bead>[^`]*--add-label factory/g)) {
@@ -476,7 +480,7 @@ test('deploy and soak carry the same live-object finding rule: search, comment, 
     'Never lower a priority',
     'any bead with the ship label',
     'The comment and escalation steps do not apply to',
-    'has a held:* label, a rejected label or an owner label, add no label',
+    'run `bd show <id> --json`. If the read fails, if that bead has a held:* label, a rejected label, a human label or an owner label, or if its metadata has the key owner_decisions (any value), add no label',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
   ])
     expect(want).toContain(t)
