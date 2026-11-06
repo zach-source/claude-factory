@@ -375,6 +375,8 @@ describe('qn8a.21.17 work bound', () => {
     'tee ' + '{'.repeat(8000) + '{1..64}',
     'curl -' + 'a'.repeat(1000) + '{1..64} https://example.com/s',
     Array.from({ length: 7 }, () => 'tee ' + '{'.repeat(900) + '{1..64}').join('; '),
+    'echo ' + "'{'{1..64} ".repeat(740) + '; git push origin HEAD:main',
+    'echo ' + '\\{{1..64} '.repeat(810) + '; git push origin HEAD:main',
   ])('answers fast and does not allow %#', cmd => {
     const t = Date.now()
     const r = bash(cmd)

@@ -1118,8 +1118,10 @@ function segments(
       const chars = [...word]
       for (const k of quotedBrace) if (k < chars.length) chars[k] = BRACE_SENTINEL[chars[k]!] ?? chars[k]!
       const hid = info.state.quotedBraces.get(word)
-      if (hid) hid.push(chars.join(''))
-      else info.state.quotedBraces.set(word, [chars.join('')])
+      const form = chars.join('')
+      if (hid) {
+        if (!hid.includes(form)) hid.push(form)
+      } else info.state.quotedBraces.set(word, [chars.join('')])
     }
     quotedBrace = []
     if (hasWord && nameRaw && word.includes('=') && info?.quotedNames) {
@@ -9998,13 +10000,22 @@ const BRACE_SENTINEL: Record<string, string> = { '{': '\u0001', '}': '\u0002', '
  * shell. `hidden` holds the word with those chars replaced by sentinels. The word is expanded both ways and the
  * sentinels go back in each result. undefined means over the cap or the work bound (deny).
  */
-function braceVariants(word: string, hidden: string[] = []): string[] | undefined {
+function braceVariants(word: string, hidden: string[] = [], state?: ScanState): string[] | undefined {
   if (!word.includes('{')) return [word]
   const out = [word]
   const back = ['{', '}', ',']
   for (const h of [word, ...hidden]) {
     const alts = expandBraces(h)
     if (!alts) return undefined
+    // the work budget and the deadline apply in every segment kind (qn8a.21.20)
+    if (
+      state &&
+      spendWork(
+        state,
+        alts.reduce((n, a) => n + a.length + 1, 0),
+      )
+    )
+      return undefined
     for (const a of alts) out.push(a.replace(/[\u0001-\u0003]/g, c => back[c.charCodeAt(0) - 1]!))
   }
   // a stray { or } the shell keeps as text: read the result without it too (ponytail: only adds deny readings)
@@ -10080,7 +10091,7 @@ function hookControlWrite(
     pending = false
     prevWriterFlag = false
     // claude-factory-qn8a.21.18: read the word and each brace expansion of it with the same flag rules
-    const variants = braceVariants(word, state?.quotedBraces.get(word))
+    const variants = braceVariants(word, state?.quotedBraces.get(word), state)
     for (const v of variants ?? [word]) {
       prevWriterFlag ||= skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(v)
       let candidate = v
