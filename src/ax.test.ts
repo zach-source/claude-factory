@@ -31,7 +31,7 @@ echo "\${AX_AUTH_TOKEN:+set}" >> ${dir}/auth
 case "$3 $4" in
   "apply -f") cat > ${dir}/applied; echo created ;;
   "get task") [ -f ${dir}/get ] && cat ${dir}/get || { echo 'getting task: rpc error: code = NotFound' >&2; exit 1; } ;;
-  "get tasks"|"get workspaces") [ -f ${dir}/list ] && cat ${dir}/list || { echo 'boom' >&2; exit 1; } ;;
+  "get tasks"|"get workspaces") [ -f ${dir}/listfail ] && { cat ${dir}/list; exit 1; }; [ -f ${dir}/list ] && cat ${dir}/list || { echo 'boom' >&2; exit 1; } ;;
   "delete task") if [ -f ${dir}/deltask ]; then cat ${dir}/deltask >&2; exit 1; fi ;;
   "delete workspace") if [ -f ${dir}/delws ]; then cat ${dir}/delws >&2; exit 1; fi ;;
   ssh*) cat ${dir}/ssh ;;
@@ -125,6 +125,10 @@ test('names lists the first column, and is null on a failure or a table with no 
   expect(ax.names('workspaces')).toEqual(['f-manager', 'f-a-1'])
   writeFileSync(join(dir, 'list'), 'No resources found\n')
   expect(ax.names('tasks')).toBeNull()
+  writeFileSync(join(dir, 'list'), 'NAME\nf-a-1\n')
+  writeFileSync(join(dir, 'listfail'), '')
+  expect(ax.names('tasks')).toBeNull() // a NAME table with exit 1 is a failure
+  rmSync(join(dir, 'listfail'))
   rmSync(join(dir, 'list'))
   expect(ax.names('tasks')).toBeNull() // exit 1
   writeFileSync(join(dir, 'list'), 'NAME\n')

@@ -69,3 +69,16 @@ test('parseNames reads the first token under a NAME header', () => {
   expect(parseNames('Error: f-a-1 unreachable\nf-b-2 x')).toEqual([])
   expect(parseNames('NAME\n')).toEqual([])
 })
+
+test('sweepNames keeps the previous attempt when the run pane is that task', () => {
+  const r = { ...live, pane: `ax://${t(live, 4)}` }
+  expect(sweep([t(live, 4)], [r])).toEqual([])
+})
+
+test('sweepNames keeps every name of a run whose state is not readable, alone and with a colliding id', () => {
+  const long = 'x'.repeat(70)
+  const a = { ...done, id: `${long}a` }
+  const unreadable: SweepRun = { id: `${long}b`, seq: -1, pane: null, over: false }
+  expect(sweep([taskName(a.id, 10)], [a, unreadable])).toEqual([])
+  expect(sweep([t(done, 10)], [unreadable])).toEqual([])
+})
