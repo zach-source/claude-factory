@@ -4050,3 +4050,34 @@ test('a tick never spawns an outbox line over 100 KiB: it marks it seen, logs it
   expect((called().match(/worker prompt/g) ?? []).length).toBe(promptsBefore)
   rmSync(join(home, 'runs', 'ramzl'), { recursive: true })
 }, 60_000)
+
+test('a delivery holds only the unread mails that fit the AX prompt cap, and marks only those read (claude-factory-4o6n)', () => {
+  const runDir = join(home, 'runs', 'r95c')
+  const seq = launched('r95c')
+  const actor = createActor(compile(def), {
+    snapshot: JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot,
+  }).start()
+  actor.send({ type: 'SPAWNED', seq, pane: 'ax://t', at: Date.now() - 10 * 60_000 })
+  writeFileSync(
+    join(runDir, 'state.json'),
+    JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+  )
+  cluster('Running', { status: 'idle', session: 's1', lines: [] })
+  factory(['tick'])
+  const mail = (from: string, text: string) =>
+    appendFileSync(
+      join(runDir, 'inbox.jsonl'),
+      JSON.stringify({ type: 'MAIL', from, to: 'a', text, at: Date.now() }) + '\n',
+    )
+  const seen = () => JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot.context.seen.a ?? 0
+  mail('a', 'BIGMAIL' + '\n'.repeat(16_000)) // 4 bytes per LF once indented: about 80,000 bytes
+  mail('manager', 'SECONDMAIL ' + 'y'.repeat(12_000))
+  factory(['tick'])
+  expect(prompted()).toContain('BIGMAIL')
+  expect(prompted()).not.toContain('SECONDMAIL')
+  expect(seen()).toBe(1)
+  factory(['tick'])
+  expect(prompted()).toContain('SECONDMAIL')
+  expect(seen()).toBe(2)
+  rmSync(runDir, { recursive: true })
+})
