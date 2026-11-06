@@ -2172,6 +2172,9 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * release station run one strict `gh pr merge` form, for that repo only (-R required).
  * `harness` adds `--harness claude|codex`: the hook logs it with each denial (claude-factory-dsfg).
  * An older VM image's hook copy ignores argv it does not know.
+ * The claude entry has `onFailure: 'block'` (claude-factory-qn8a.36).
+ * Claude Code 2.1.295 or later then blocks the call if the hook times out, crashes or gives bad output.
+ * Codex has no such key (claude-factory-qn8a.75), and the VM image needs a newer Claude Code (claude-factory-6kzz).
  */
 const denyHook = (
   bun: string,
@@ -2197,6 +2200,7 @@ const denyHook = (
         ...(merge ? ['--merge-authority', sq(merge)] : []),
       ].join(' '),
       timeout: 10,
+      ...(harness === 'claude' ? { onFailure: 'block' } : {}),
     },
   ]
   return [
