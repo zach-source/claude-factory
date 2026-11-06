@@ -187,8 +187,6 @@ describe('maskAssignments', () => {
     ['f() { ls; }', 'f() { ls; }'],
     ['ls -la /tmp', 'ls -la /tmp'],
     ['echo hello', 'echo hello'],
-    ['--token=zqsecret', '--token=zqsecret'],
-    ['git -c http.extraHeader=zqsecret', 'git -c http.extraHeader=zqsecret'],
     ['bash -c "GH_TOKEN=zqsecret gh pr list"', 'bash -c "GH_TOKEN=*** gh pr list"'],
     ["sh -c 'X=zqsecret ls'", "sh -c 'X=*** ls'"],
     ['eval "X=zqsecret ls"', 'eval "X=*** ls"'],
@@ -219,5 +217,68 @@ describe('maskAssignments', () => {
       m(i)
       expect(performance.now() - t).toBeLessThan(100)
     }
+  })
+})
+
+describe('maskKeyValues (claude-factory-1as9)', () => {
+  const mk = (hook as any).maskKeyValues as (s: string) => string
+  const m2 = (s: string) => mk((hook as any).maskAssignments(s))
+  const rows: [string, string][] = [
+    ['--token=zqsecret', '--token=***'],
+    ['git -c http.extraHeader=zqsecret push', 'git -c http.extraHeader=*** push'],
+    ['git -c http.extraHeader="Authorization: Bearer zqsecret" push', 'git -c http.extraHeader=*** push'],
+    ['docker run --env=GH_TOKEN=zqsecret img', 'docker run --env=*** img'],
+    ['curl https://x/?a=zqsecret', 'curl https://x/?a=***'],
+    ['git -c "http.extraHeader=zqsecret" push', 'git -c "http.extraHeader=*** push'],
+    ['git -c "http.extraHeader=Authorization: Bearer zqsecret" push', 'git -c "http.extraHeader=*** push'],
+    ["git -c 'http.extraHeader=Authorization: Bearer zqsecret' push", "git -c 'http.extraHeader=*** push"],
+    ['env "GH_TOKEN=zq secret" ls', 'env "GH_TOKEN=*** ls'],
+    ['bash -c "X=\\"zq secret\\" ls"', 'bash -c "X=***'],
+    ["bash -c \"sh -c 'X=zq secret'\"", "bash -c \"sh -c 'X=***\""],
+    ['X=zqsecret ls', 'X=*** ls'],
+    ['bash -c "GH_TOKEN=zqsecret gh pr list"', 'bash -c "GH_TOKEN=***'],
+    ["sh -c 'X=zqsecret ls'", "sh -c 'X=***"],
+    ['ls x==y', 'ls x=***'],
+  ]
+  test.each(rows)('%s', (i, o) => {
+    expect(m2(i)).toBe(o)
+    expect(m2(i)).not.toContain('zqsecret')
+  })
+  test.each(['ls -la /tmp', 'echo hello', 'f() { ls; }', 'git push origin HEAD:main', 'ls foo-bar'])(
+    '%s is unchanged',
+    i => expect(m2(i)).toBe(i),
+  )
+  // claude-factory-pwg3: a secret with no = before it in its word is out of scope.
+  test.each(['printf -v X zqsecret', 'curl -d \'{"token":"zqsecret"}\''])('%s stays (pwg3)', i =>
+    expect(m2(i)).toBe(i),
+  )
+  test('long rows are linear', () => {
+    for (const i of [
+      'a'.repeat(1e5),
+      ' a'.repeat(1e5),
+      '"a'.repeat(1e5),
+      "'a".repeat(1e5),
+      '"a='.repeat(4e4),
+      "'a=".repeat(4e4),
+      'a='.repeat(5e4),
+      ' -'.repeat(1e5),
+      ' --a=\\'.repeat(5e4),
+    ]) {
+      const t = performance.now()
+      mk(i)
+      expect(performance.now() - t).toBeLessThan(2000)
+    }
+  })
+  test.each([
+    ['git -c http.extraHeader="Authorization: Bearer zqsecret" ls-remote', 'http.extraHeader=***'],
+    ['docker run --env=GH_TOKEN=zqsecret img', '--env=***'],
+  ])('%s is masked end to end', (c, want) => {
+    const box = join(home, 'outbox.jsonl')
+    run(bash('f() { ls; }; ' + c), { FACTORY_OUTBOX: box, FACTORY_DENY_LOG: '1' })
+    expect(readFileSync(file(), 'utf8')).not.toContain('zqsecret')
+    expect(lines()[0].command).toContain(want)
+    const o = readFileSync(box, 'utf8')
+    expect(o).not.toContain('zqsecret')
+    expect(JSON.parse(o.trim()).deny.command).toContain(want)
   })
 })
