@@ -9600,7 +9600,11 @@ export function expandBraces(w: string, cap = 64): string[] | undefined {
         break
       } else if (c === ',' && depth === 1) cuts.push(i)
     }
-    if (close < 0) return [w]
+    if (close < 0) {
+      // bash skips an unmatched { and expands a later group
+      from = open + 1
+      continue
+    }
     const pre = w.slice(0, open)
     const post = w.slice(close + 1)
     const body = w.slice(open + 1, close)
@@ -9620,9 +9624,13 @@ export function expandBraces(w: string, cap = 64): string[] | undefined {
         const y = num ? Number(sq[2]) : sq[2]!.charCodeAt(0)
         const step = Math.abs(Number(sq[3] ?? 1)) || 1
         if (Math.abs(y - x) / step + 1 > cap) return undefined
+        // a zero-padded end pads every value to the longer end, as bash does; a negative padded end denies
+        const padded = num && (/^-?0\d/.test(sq[1]!) || /^-?0\d/.test(sq[2]!))
+        if (padded && (sq[1]!.startsWith('-') || sq[2]!.startsWith('-'))) return undefined
+        const width = padded ? Math.max(sq[1]!.length, sq[2]!.length) : 0
         alts = []
         for (let v = x; x <= y ? v <= y : v >= y; v += x <= y ? step : -step)
-          alts.push(num ? String(v) : String.fromCharCode(v))
+          alts.push(num ? String(v).padStart(width, '0') : String.fromCharCode(v))
       }
     }
     if (!alts) {
@@ -9661,7 +9669,8 @@ function hookControlWord(
   const alts = expandBraces(w)
   if (!alts) return true
   const base = foldLower(hookDir.split('/').filter(Boolean).pop() ?? '\0')
-  for (const x of alts) {
+  // the guard tests the literal word too, so a form that expandBraces reads wrongly still gets one look
+  for (const x of [...alts, w]) {
     // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
     if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
     if (/[$`]|^~[^/]/.test(x)) {
@@ -9706,12 +9715,14 @@ function hookControlWord(
   return false
 }
 
-// claude-factory-qn8a.21.12: the tails of a single-dash word after 1 to 7 flag letters (-so/f gives o/f and /f).
+// claude-factory-qn8a.21.12 .15: every tail of a single-dash word (-s4o/f gives 4o/f, o/f and /f).
 // A tail that is not a hook-control path allows, so a reader flag such as tail -n5 stays allowed.
+// A word over 1024 chars gives the tail `.claude`, which denies (fail closed, bounded scan).
 function gluedTails(x: string): string[] {
-  if (!/^-[A-Za-z]/.test(x)) return []
+  if (x.length < 2 || x[0] !== '-' || x[1] === '-') return []
+  if (x.length > 1024) return ['.claude']
   const out: string[] = []
-  for (let i = 2; i < x.length && i <= 8 && /[A-Za-z]/.test(x[i - 1]!); i++) out.push(x.slice(i))
+  for (let i = 2; i < x.length; i++) out.push(x.slice(i))
   return out
 }
 
