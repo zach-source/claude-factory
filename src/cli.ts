@@ -4206,6 +4206,18 @@ const kickBeads = () =>
     env: { ...process.env, FACTORY_HOME: HOME },
   }).unref()
 
+/** one dream journal entry. A line break in worker text (the str.splitlines set) starts a line with 4 spaces, so it cannot forge a journal line. */
+export const journalLine = (
+  id: string,
+  rig: string,
+  e: Pick<Entry, 'node' | 'attempt' | 'outcome' | 'summary'>,
+) => {
+  const [first, ...rest] = clip(e.summary, 600).split(/\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/)
+  return [`- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${first}`, ...rest.map(l => `    ${l}`)].join(
+    '\n',
+  )
+}
+
 /** the journal entries the dream has not read yet, newest kept when there are too many */
 const journalSince = (since: number) =>
   runIds()
@@ -4218,7 +4230,7 @@ const journalSince = (since: number) =>
           .filter(e => e.at > since)
           .map(e => ({
             at: e.at,
-            line: `- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${clip(e.summary, 600)}`,
+            line: journalLine(id, rig, e),
           }))
       } catch {
         return [] // removed mid-read
