@@ -10656,6 +10656,7 @@ const usage = `factory — herdr software factories on xstate
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
   say '<text...>'                    type text and Enter into the AX manager's pane
   home                               the factory these commands work: FACTORY_HOME, else found from here
+  home split|join <dir> [--dry-run]  move the AX rigs and their runs to a server home dir; join undoes it
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
   memory search [--rig r] '<query...>'  the closest notes in the factory's shared memory (semantic search)
