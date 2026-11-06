@@ -43,7 +43,14 @@ test('beadsRemote', () => {
   const r = { name: 'origin', url: 'https://beads-dolt.example:50051/db', user: 'acme' }
   ok({ beadsRemote: r })
   ok({ beadsRemote: undefined })
-  for (const o of [{ name: 'a b' }, { name: "x');--" }, { user: '' }, { user: 'a,b' }, { url: 'not a url' }, { url: '' }])
+  for (const o of [
+    { name: 'a b' },
+    { name: "x');--" },
+    { user: '' },
+    { user: 'a,b' },
+    { url: 'not a url' },
+    { url: '' },
+  ])
     bad({ beadsRemote: { ...r, ...o } }, 'beadsRemote')
 })
 
