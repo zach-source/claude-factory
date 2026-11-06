@@ -922,6 +922,16 @@ test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-facto
   expect(allow).toEqual({ out: '', code: 0 })
 }, 10_000)
 
+// claude-factory-pfb: CLAUDE_PROJECT_DIR outranks input.cwd as root. A cwd below the root must not shrink the root.
+test('with CLAUDE_PROJECT_DIR set, main() takes root from it, not from a sub-directory input.cwd (claude-factory-pfb)', async () => {
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: '/w' }
+  const ask = (command: string) =>
+    run(JSON.stringify({ tool_name: 'Bash', cwd: '/w/sub', tool_input: { command } }), env)
+  expect(await ask('rm -f /w/a.md')).toEqual({ out: '', code: 0 })
+  const deny = await ask('rm -f /tmp_x')
+  expect(JSON.parse(deny.out.trim()).hookSpecificOutput.permissionDecisionReason).toBe(REASON)
+}, 10_000)
+
 // claude-factory-zl5.1: a worker never merges a pull request. It never turns on auto-merge.
 // Only a person merges, by owner decision. ax-aw1 found two PRs merged before their review ran.
 const DENY_MERGE = [
@@ -11325,6 +11335,36 @@ test('denyReason allows env -i with a reader and a bd argument; every other bd f
     'env -i grep x env -i cat bd',
   ])
     expect(ask(c)).toBe(BEADS_ACTOR_REASON)
+})
+
+// claude-factory-yule: brace-body glob command words, after PR 151.
+test('denyReason denies a glob command word inside a brace body (claude-factory-yule)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  expect(ask('repeat 1 { /bin/r* -rf / }')).toBe(REASON)
+  expect(ask('repeat 1 {/bin/r* -rf / }')).toBe(DYNAMIC_VERB_REASON)
+  expect(ask('{ true } always { /bin/[r]m -rf / }')).toBe(REASON)
+})
+
+// claude-factory-eiut: env -S with a dollar sign in the split string, after an option with a value (PR 101 and PR 104).
+test('denyReason denies env -S with a dollar sign after -u or -C (claude-factory-eiut)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  expect(ask("env -u X -S 'git ${FOO} origin main'")).toBe(ENV_SPLIT_VAR_REASON)
+  expect(ask("env -C /tmp -S 'git ${FOO} origin main'")).toBe(ENV_SPLIT_VAR_REASON)
+})
+
+// claude-factory-4aj: the sh -c -- recursion site adds one to the depth, like the other three sites.
+test('denyReason counts depth through sh -c -- : 31 eval levels allow, 32 deny (claude-factory-4aj)', () => {
+  const ask = (n: number) =>
+    denyReason('sh -c -- "' + 'eval '.repeat(n) + 'ls"', '/acme/root', undefined, snapGate())
+  expect(ask(31)).toBeUndefined()
+  expect(ask(32)).toBe(DEEP_COMMAND_REASON)
+})
+
+// claude-factory-w2cf: a short command with stacked eval words and a push denies as a push.
+test('denyReason denies the w2cf stacked eval push literal with PUSH_REASON (claude-factory-w2cf)', () => {
+  expect(
+    denyReason('x eval x eval "x "eval ""git push origin main', '/acme/root', undefined, snapGate()),
+  ).toBe(PUSH_REASON)
 })
 
 // claude-factory-0hkb: a lone [ or [[ is the test builtin, not a glob command word.
