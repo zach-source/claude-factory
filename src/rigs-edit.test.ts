@@ -137,18 +137,18 @@ test('applyRigChange keeps key order and drops unset keys; redactRig hides secre
     repo: '/r/x',
     goal: `use ${tok}`,
     maxRuns: 2,
-    env: { FOO_TOKEN: 'plain', OK: 'fine' },
-    params: { base_branch: 'main', API_KEY: 'v' },
+    env: { FOO_TOKEN: 'plain', OK: 'fine', N_SECRET: 5 },
+    params: { base_branch: 'main', API_KEY: 'v', DB_PASSWORD: 7, AUTH_TOKEN: { a: 'b' } },
     beadsRemote: { name: 'o', user: 'u', url: 'https://u:pw@h/x' },
     egress: [{ hosts: ['h'], key: 'VAULT_KEY' }],
   })
-  expect(red).toEqual({
+  expect(red as unknown).toEqual({
     name: 'x',
     repo: '/r/x',
     goal: '<hidden>',
     maxRuns: 2,
-    env: { FOO_TOKEN: '<hidden>', OK: 'fine' },
-    params: { base_branch: 'main', API_KEY: '<hidden>' },
+    env: { FOO_TOKEN: '<hidden>', OK: 'fine', N_SECRET: '<hidden>' },
+    params: { base_branch: 'main', API_KEY: '<hidden>', DB_PASSWORD: '<hidden>', AUTH_TOKEN: '<hidden>' },
     beadsRemote: { name: 'o', user: 'u', url: '<hidden>' },
     egress: [{ hosts: ['h'], key: 'VAULT_KEY' }],
   })

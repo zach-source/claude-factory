@@ -10565,7 +10565,7 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -11911,7 +11911,7 @@ if (import.meta.main && !outboxCmd)
             }
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
-        } else fail(`unknown rig command "${sub}": add, rm, list, history or undo`)
+        } else fail(`unknown rig command "${sub}": add, set, show, rm, list, history or undo`)
         break
       }
       case 'rm': {

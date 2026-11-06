@@ -167,6 +167,8 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
   seed()
   const nonRig = realpathSync(repo('z'))
   const missing = join(dir, 'missing.json')
+  const okMcp = join(dir, 'ok-mcp.json')
+  writeFileSync(okMcp, '{"mcpServers":{}}')
   const rows: string[][] = [
     ['x', '--max', '0'],
     ['x', '--max', 'abc'],
@@ -174,7 +176,8 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
     ['x', '--sweeps', 'nope'],
     ['x', '--param', 'nope=1'],
     ['x', '--param', 'base_branch=a b'],
-    ['x', '--agent', ' '],
+    ['y', '--agent', ' '],
+    ['x', '--mcp', okMcp, '--max', '2'],
     ['x', '--mcp', missing],
     ['x', '--mcp', missing, '--max', '2'],
     ['x', '--runner', 'herdr'],
@@ -228,8 +231,8 @@ test('a worker or a patrol cannot run rig set, but can run rig show', () => {
 test('rig show prints every stored key as JSON and hides secrets', () => {
   const { x, rx } = seed({
     goal: `deploy with ${TOK}`,
-    env: { MY_TOKEN: 'plain', A: 'b' },
-    params: { base_branch: 'main', API_KEY: 'plain2' },
+    env: { MY_TOKEN: 'plain', A: 'b', NOTE: TOK },
+    params: { base_branch: 'main', API_KEY: 'plain2', note: TOK },
     beadsRemote: { name: 'o', user: 'u', url: 'https://u:pw@example.com/x' },
   })
   for (const arg of ['x', rx]) {
@@ -238,8 +241,8 @@ test('rig show prints every stored key as JSON and hides secrets', () => {
     const out = JSON.parse(r.out)
     expect(Object.keys(out)).toEqual(Object.keys(x))
     expect(out.goal).toBe('<hidden>')
-    expect(out.env).toEqual({ MY_TOKEN: '<hidden>', A: 'b' })
-    expect(out.params).toEqual({ base_branch: 'main', API_KEY: '<hidden>' })
+    expect(out.env).toEqual({ MY_TOKEN: '<hidden>', A: 'b', NOTE: '<hidden>' })
+    expect(out.params).toEqual({ base_branch: 'main', API_KEY: '<hidden>', note: '<hidden>' })
     expect(out.beadsRemote.url).toBe('<hidden>')
     expect(out.egress).toEqual((x as { egress: unknown }).egress)
     expect(r.out).toBe(JSON.stringify(out, null, 2) + '\n')

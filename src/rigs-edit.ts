@@ -154,10 +154,7 @@ export function redactRig<R extends object>(rig: R): R {
     if (Array.isArray(v)) return v.map(x => walk(x, false))
     if (v && typeof v === 'object')
       return Object.fromEntries(
-        Object.entries(v).map(([k, x]) => [
-          k,
-          keyed && SECRET_KEY.test(k) && typeof x === 'string' ? HIDDEN : walk(x, false),
-        ]),
+        Object.entries(v).map(([k, x]) => [k, keyed && SECRET_KEY.test(k) ? HIDDEN : walk(x, false)]),
       )
     return v
   }
