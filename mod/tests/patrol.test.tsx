@@ -499,28 +499,69 @@ test(
       '(bd -l factory --title x create)',
       'bd -l factory --title x create>out.txt',
       "bd -l factory --title x 'create'",
+      'bd update acme-1 --remove-label factory',
+      'bd label remove acme-1 held:x',
+      "bd q 'x' -p 3",
+      'bd new x -t task -p 3',
+      "bd create 'x' -t task -p 3 -d 'text'",
+      'bd label list acme-1',
+      'bd update acme-1 --status open',
+      "b''d tag acme-1 factory",
+      'b\\d tag acme-1 factory',
+      "bd 'cre'ate -l factory x",
+      'bd cr\\eate -l factory x',
+      'bd showx acme-1',
+      'bd show$(echo x) acme-1',
+      'bd $V acme-1',
+      'bd show acme-1; bd tag acme-1 factory',
+      'bd show acme-1 && bd tag acme-1 factory',
+      'bd show $(bd tag acme-1 factory)',
+      'bd show `bd tag acme-1 factory`',
+      '(bd tag acme-1 factory)',
+      'bd\ntag acme-1 factory',
+      'echo acme-1 | xargs bd',
+      'env bd tag acme-1 factory',
+      'command bd tag acme-1 factory',
+      '/usr/local/bin/bd tag acme-1 factory',
+      './bd tag acme-1 factory',
+      'bd --json update acme-1 --status open',
+      'bd -C /repo/acme show acme-1',
+      'bd update acme-1 --unset-metadata discovered_from',
+      "bd sql 'select 1'",
+      'bd import x.jsonl',
+      'bd batch < x',
+      'bd create -f x.md',
+      'bd create x --parent acme-1',
+      'bd',
+      'bd;ls',
+      '$B update acme-1 --add-label factory',
     ]
     for (const command of denied) {
       const r = await call(command, 'patrol-1')
-      expect(r.deny, command).toContain('never adds a bd label')
+      expect(r.deny, command).toContain('runs bd only')
     }
-    expect((await call(denied[0]!, 'other-1')).deny).toContain('never adds a bd label')
+    expect((await call(denied[0]!, 'other-1')).deny).toContain('runs bd only')
     expect(asked).toBe(0)
     expect(ran).toBe(0)
 
     const allowed = [
       "bd comment acme-1 'queued it for the person'",
-      'bd update acme-1 --remove-label factory',
-      'bd label remove acme-1 held:x',
       'bd ready --label factory --json',
       'bd list --label factory',
       'bd undefer acme-1',
       'bd show acme-1 --json',
-      "bd create 'x' -t task -p 3 -d 'text'",
-      "bd q 'x' -p 3",
-      'bd new x -t task -p 3',
-      'bd label list acme-1',
-      'bd show acme-1 --json',
+      'bd view acme-1',
+      "bd comments add acme-1 'x'",
+      'bd comments acme-1',
+      "bd search 'x' --label factory",
+      'bd children acme-1',
+      'bd show acme-1 && bd ready --json',
+      "bd 'show' acme-1",
+      'cd /repo/acme && bd ready',
+      'bd show acme-1|head',
+      'bd show acme-1>out.txt',
+      'ls .beads',
+      'git log --oneline -3',
       '/repo/bin/factory queue acme acme-1',
     ]
     for (const command of allowed) {
@@ -531,7 +572,7 @@ test(
     }
 
     // a long command must not stall the hook (cubic backtracking)
-    for (const unit of ['bd label ', 'bd create ']) {
+    for (const unit of ['bd show ', 'bd ']) {
       const t0 = Date.now()
       await call(unit.repeat(4000), 'patrol-1')
       expect(Date.now() - t0, unit).toBeLessThan(2000)
