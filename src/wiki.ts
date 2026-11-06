@@ -108,8 +108,10 @@ export function scanPages(pages: { path: string; text: string }[]): { path: stri
   const out: { path: string; reasons: string[] }[] = []
   for (const { path, text } of pages) {
     const reasons: string[] = []
-    if (secretFile(Buffer.from(text))) reasons.push('secret shape')
     const p = parse(text)
+    // YAML escapes decode in parse(), so scan the raw text and the decoded fields
+    const decoded = 'page' in p ? Object.values(p.page).flat().join('\n') : ''
+    if (secretFile(Buffer.from(text)) || secretFile(Buffer.from(decoded))) reasons.push('secret shape')
     if ('reasons' in p) reasons.push(...p.reasons)
     if (reasons.length) out.push({ path, reasons })
   }

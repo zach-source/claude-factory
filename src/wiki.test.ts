@@ -127,6 +127,26 @@ test.each(tokens)('AC7 secret shape %#', tok => {
   }
 })
 
+const ghp = 'ghp_' + 'a'.repeat(36)
+const A = 'a'.repeat(36)
+const escaped: [string, string, string][] = [
+  ['hex escape in title', 'title: "\\x67hp_' + A + '"\ntopics: [ci]', ghp],
+  ['unicode escape in title', 'title: "\\u0067hp_' + A + '"\ntopics: [ci]', ghp],
+  ['escaped line break in title', 'title: "ghp_aaaa\\\n  ' + 'a'.repeat(32) + '"\ntopics: [ci]', ghp],
+  [
+    'tab in title',
+    'title: "Authorization:\\tBearer ' + 'b'.repeat(24) + '"\ntopics: [ci]',
+    'Bearer ' + 'b'.repeat(24),
+  ],
+  ['list field', 'title: T\ntopics: ["\\x67hp_' + A + '"]', ghp],
+  ['superseded_by', 'title: T\ntopics: [ci]\nstatus: superseded\nsuperseded_by: "\\x67hp_' + A + '"', ghp],
+]
+test.each(escaped)('AC7 decoded %s', (_n, lines, tok) => {
+  const out = scanPages([{ path: 'p.md', text: '---\nkind: topic\n' + lines + '\n---\nbody\n' }])
+  expect(out.flatMap(o => o.reasons).filter(r => r === 'secret shape')).toHaveLength(1)
+  expect(JSON.stringify(out)).not.toContain(tok)
+})
+
 test('AC7 scanPages returns only failing pages in order', () => {
   const out = scanPages([
     { path: 'a', text: good.topic },
