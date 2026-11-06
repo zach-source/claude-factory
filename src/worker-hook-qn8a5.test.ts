@@ -10,7 +10,11 @@ import {
   REASON,
 } from './worker-hook.ts'
 
-const G = { headOf: () => 'factory/x', ghAliases: () => new Map<string, string>(), gitAliases: () => new Map<string, string>() }
+const G = {
+  headOf: () => 'factory/x',
+  ghAliases: () => new Map<string, string>(),
+  gitAliases: () => new Map<string, string>(),
+}
 const ask = (c: string, root = '/root/repo') => denyReason(c, root, ['x'], G)
 
 // T1: instances that already deny on origin/main. Each row pins the verdict.
@@ -81,7 +85,12 @@ for (const [id, c] of PINNED)
   })
 
 // ymvm: the zsh force-clobber redirect with a space. The home guard reads HOME.
-for (const c of ['echo x >! ~/.gitconfig', 'echo x >>! ~/.gitconfig', 'echo x >! ~/.gitc*', 'echo x >!~/.gitc*'])
+for (const c of [
+  'echo x >! ~/.gitconfig',
+  'echo x >>! ~/.gitconfig',
+  'echo x >! ~/.gitc*',
+  'echo x >!~/.gitc*',
+])
   test(`ymvm denies ${c}`, () => {
     const home = process.env.HOME
     process.env.HOME = '/Users/widget'

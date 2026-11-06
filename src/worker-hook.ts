@@ -8543,6 +8543,8 @@ function denyAtScan(
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
   // claude-factory-mozp: every decoded script (sh -c, eval, alias, substitution) passes here too.
   if (commentLineContinues(command)) return COMMENT_CONTINUATION_REASON
+  // claude-factory-06th: bash 5.3 `${ cmd; }` and `${| cmd; }` run cmd. Read the raw text, quotes included (fail closed).
+  if (/\$\{[\s|]/.test(command.replace(/\\\n/g, ''))) return FUNSUB_REASON
   // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
   const aliasTable = gate.shellAliases?.()
   if (gate.shellAliases && !aliasTable) return SHELL_ALIAS_READ_REASON

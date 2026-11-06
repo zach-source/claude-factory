@@ -15,7 +15,6 @@ const CONTROL = [
   'factory memory compact --rig --dry-run',
   'factory memory compact --from --dry-run',
   'factory memory compact --dry-run x',
-  'factory memory compact --dry-run 2>&1',
   'factory memory compact\\\n --dry-run x',
   'factory memory \\\ncompact',
   'sudo factory memory compact',
@@ -28,6 +27,8 @@ const DYNAMIC = ['factory memory "$X"', 'factory memory $(echo compact)', 'facto
 const ALLOW = [
   'factory memory compact --dry-run',
   'bin/factory memory compact --dry-run',
+  // claude-factory-qn8a.5: a redirect word is not argv. The CLI gets `memory compact --dry-run`.
+  'factory memory compact --dry-run 2>&1',
   'factory memory search compact',
   'factory memory search --rig claude-factory "memory compact"',
   'factory memory add --from r1/plan --kind fact "factory memory compact" "y"',
