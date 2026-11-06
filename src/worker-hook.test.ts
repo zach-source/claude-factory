@@ -12,6 +12,7 @@ import {
   dynamicHeadDenyForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
+  FACTORY_FROM_REASON,
   COMMENT_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
@@ -35,9 +36,12 @@ import {
   PUSH_REASON,
   QUOTED_ASSIGNMENT_REASON,
   GLOBAL_GIT_CONFIG_REASON,
+  HOOK_ERROR_REASON,
   READY_REASON,
   REASON,
   SCAN_BUDGET_REASON,
+  SCAN_TIME_MS,
+  SCAN_TIME_REASON,
   scanReason,
   SHELL_ALIAS_DEFINE_REASON,
   SHELL_ALIAS_READ_REASON,
@@ -46,6 +50,27 @@ import {
   shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
+
+// claude-factory-qn8a.9 instance index. This class bead replaced 17 one-off beads. Each line gives the test or the known gap.
+// - sibp (and qn8a.38): 'a payload that makes a guard throw prints one HOOK_ERROR_REASON deny'.
+// - abs: 'denyReason denies with SCAN_TIME_REASON when the clock passes the scan deadline'.
+// - w13q: 'denyReason bounds a find with 735 -exec $X slots ...'. Known gap: the scan is still quadratic in the slot
+//   count (7.4 s for 735 slots at load 31). The deadline bounds it at SCAN_TIME_MS. A root fix is not cheap.
+// - w2cf: the same bound test, and 'denies the w2cf stacked eval push literal'.
+// - c1jb: 'denyReason allows 7 harmless alias words in one segment, fast ...'.
+// - 0hkb: 'denyReason allows [ and [[ test forms ...'.
+// - jsoe: 'denyReason allows env -i with a reader and a bd argument ...'.
+// - yule: 'denyReason denies a glob command word inside a brace body'.
+// - eiut: 'denyReason denies env -S with a dollar sign after -u or -C'.
+// - 4aj: 'denyReason counts depth through sh -c --'.
+// - pfb: 'main() takes root from CLAUDE_PROJECT_DIR, not from a sub-directory input.cwd'.
+// - neb0: the SCAN_MS constant, with the rows that keep 500 ms listed as known gaps beside it.
+// - 3it: fixed in src/worker-hook.ts (shCFlagIndex comment), src/worker-hook.bench.ts and the 1by comment and test name here.
+// - mpiy: no change. The rows 'ssh $h uptime', 'fish $h' and 'ssh host $X' in the miqy allow block pass.
+// - l223: no change. The bc1u and gj9l rows pass at origin/main.
+// - iwz1: no change. The AC9 real-binary test sets FACTORY_HOOK_ALIAS_TIMEOUT_MS=6000 (claude-factory-zzxp.1, 6fa4db4f).
+// - iz1p: known gap. 'time -x rm' x1300 takes about 242 ms at load 31, inside its 1000 ms row. A per-call cache of
+//   the risky-target check in wrapperReadingsDeny is not needed now.
 
 const DENY = [
   'rm -rf foo',
@@ -437,12 +462,12 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
   expect(denyReason(LONG_COMMAND_8192)).toBeUndefined()
 })
 
-// claude-factory-1by: anyShellReason calls shCFlagIndex(words.slice(j)) for each sh/bash/zsh/dash
-// word. words.slice(j) costs O(n-j).
+// claude-factory-1by: before the fix, anyShellReason called shCFlagIndex(words.slice(j)) for each
+// sh/bash/zsh/dash word. words.slice(j) cost O(n-j).
 //
-// The scan it feeds also costs O(n-j). On a miss, j moves by only 1.
+// The scan it fed also cost O(n-j). On a miss, j moved by only 1.
 //
-// So a run of n such words with no `-c` cluster costs O(n^2).
+// So a run of n such words with no `-c` cluster cost O(n^2). The code now uses two forward pointers.
 //
 // Each command below is over 8192 characters. denyReason now denies each one with
 // LONG_COMMAND_REASON on every rig (claude-factory-dts). scanReason runs the same scan with no
@@ -471,13 +496,30 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const SCAN_N = 40000
 
-test('scanReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(scanReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+// claude-factory-neb0: three rows use SCAN_MS in place of 500 ms. Their pre-fix times are 13.6 s, 36.3 s and 9.5 s
+// (see above). The linear scan took 662 ms at load 31 and failed the 500 ms limit. The O(n^2) scan still fails 6000 ms.
+// These rows keep 500 ms, because their pre-fix time is below 6000 ms. They are known gaps:
+// - the sh -- row (875 ms);
+// - the 40000-word $S row (sft4): 3.6 s at a655c1d9^, load 70;
+// - the $SH row (sft4): 81 ms at a655c1d9^;
+// - the 24 stacked eval rows (25z.17): about 5 s.
+const SCAN_MS = 6000
 
-test('scanReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(scanReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)',
+  () => {
+    expect(scanReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+  },
+  SCAN_MS,
+)
+
+test(
+  'scanReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)',
+  () => {
+    expect(scanReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+  },
+  SCAN_MS,
+)
 
 test('scanReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
   expect(scanReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
@@ -489,9 +531,13 @@ test('scanReason denies a 40000-word dynamic-shell-word scan, fast (claude-facto
   )
 }, 500)
 
-test('scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)',
+  () => {
+    expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+  },
+  SCAN_MS,
+)
 
 // claude-factory-dts: one of the commands above, run through denyReason instead, denies with
 // LONG_COMMAND_REASON: it is over 8192 characters, and the cap applies before any scan.
@@ -516,7 +562,7 @@ test('denyReason still denies `sh -x -lc "rm -rf x"` (claude-factory-1by)', () =
 
 // claude-factory-dts: this command is also over 8192 characters, so scanReason (no length cap)
 // keeps the old allow verdict, and denyReason now denies it with LONG_COMMAND_REASON.
-test('scanReason still allows a 40000-word sh scan whose last word is a `-c` flag with no script (claude-factory-1by)', () => {
+test('scanReason still allows a 40000-word sh scan that ends with `-c ls`, a harmless script (claude-factory-1by)', () => {
   expect(scanReason('sh '.repeat(SCAN_N) + '-c ls')).toBeUndefined()
 })
 
@@ -878,6 +924,26 @@ test('run as `bun src/worker-hook.ts`, an allow command, a non-Bash tool or bad 
   expect(bad).toEqual({ out: '', code: 0 })
 }, 10_000)
 
+// claude-factory-sibp / claude-factory-qn8a.38: a throw in a guard must deny, not exit 1 (fail open).
+test('run as `bun src/worker-hook.ts`, a payload that makes a guard throw prints one HOOK_ERROR_REASON deny and exits 0 (claude-factory-sibp)', async () => {
+  const payloads = [
+    { tool_name: 'Bash', tool_input: { command: 123 } },
+    { tool_name: 'Bash', tool_input: { command: ['x'] } },
+    { tool_name: 'Write', cwd: { a: 1 }, tool_input: { file_path: 'a.md' } },
+  ]
+  for (const p of payloads) {
+    const { out, code } = await run(JSON.stringify(p))
+    expect(code).toBe(0)
+    expect(JSON.parse(out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: HOOK_ERROR_REASON,
+      },
+    })
+  }
+}, 10_000)
+
 test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-factory-99d.2', async () => {
   const env: Record<string, string | undefined> = { ...process.env }
   delete env.CLAUDE_PROJECT_DIR
@@ -898,6 +964,16 @@ test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-facto
     env,
   )
   expect(allow).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-pfb: CLAUDE_PROJECT_DIR outranks input.cwd as root. A cwd below the root must not shrink the root.
+test('with CLAUDE_PROJECT_DIR set, main() takes root from it, not from a sub-directory input.cwd (claude-factory-pfb)', async () => {
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: '/w' }
+  const ask = (command: string) =>
+    run(JSON.stringify({ tool_name: 'Bash', cwd: '/w/sub', tool_input: { command } }), env)
+  expect(await ask('rm -f /w/a.md')).toEqual({ out: '', code: 0 })
+  const deny = await ask('rm -f /tmp_x')
+  expect(JSON.parse(deny.out.trim()).hookSpecificOutput.permissionDecisionReason).toBe(REASON)
 }, 10_000)
 
 // claude-factory-zl5.1: a worker never merges a pull request. It never turns on auto-merge.
@@ -5815,6 +5891,8 @@ test('denyReason stops spawning headOf once the shared gate budget runs out, bef
     let headOfCalls = 0
     const seenTimeouts: (number | undefined)[] = []
     const gate: HookGate = {
+      // claude-factory-abs: the scan deadline reads its own fixed clock, so the fake spawn time here is not scan time
+      now: () => 0,
       headOf: (dir, timeoutMs) => {
         headOfCalls++
         seenTimeouts.push(timeoutMs)
@@ -11256,3 +11334,343 @@ test('factory mutate forms pass the hook; a push or merge tail stays denied', ()
   expect(ask(`factory mutate src/x.ts:12 a b -- git push origin HEAD:main`)).toBe(PUSH_REASON)
   expect(ask(`factory mutate src/x.ts:12 a b -- gh pr merge 3`)).toBeDefined()
 })
+
+// claude-factory-abs: a denyReason call that runs past SCAN_TIME_MS denies with SCAN_TIME_REASON, allow included.
+test('denyReason denies with SCAN_TIME_REASON when the clock passes the scan deadline; a fixed clock allows (claude-factory-abs)', () => {
+  const base = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+  let t = 0
+  const jumping: HookGate = { ...base, now: () => (t++ === 0 ? 1000 : 1000 + SCAN_TIME_MS + 1) }
+  expect(denyReason('echo a', '/acme/root', undefined, jumping)).toBe(SCAN_TIME_REASON)
+  expect(denyReason('echo a', '/acme/root', undefined, { ...base, now: () => 1000 })).toBeUndefined()
+  // a deny that the scan found first is not replaced by an allow, and exactly at the deadline is still in time
+  expect(denyReason('rm -rf foo', '/acme/root', undefined, { ...base, now: () => 1000 })).toBe(REASON)
+  t = 0
+  const edge: HookGate = { ...base, now: () => (t++ === 0 ? 1000 : 1000 + SCAN_TIME_MS) }
+  expect(denyReason('echo a', '/acme/root', undefined, edge)).toBeUndefined()
+})
+
+// claude-factory-w13q / claude-factory-w2cf: the find -exec $X shape was quadratic in its slot count (7.4 s for 735 slots
+// at load 31). The scan time budget bounds it: REASON or SCAN_TIME_REASON, never a hang past the hook timeout.
+test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slots (claude-factory-w13q)', () => {
+  const t0 = performance.now()
+  const a = denyReason('find . ' + '-exec $X a '.repeat(735) + "';'", '/acme/root')
+  expect(a === REASON || a === SCAN_TIME_REASON).toBe(true)
+  const b = denyReason('find . ' + '-exec $X {} + '.repeat(578), '/acme/root')
+  expect(b === undefined || b === SCAN_TIME_REASON).toBe(true)
+  expect(performance.now() - t0).toBeLessThan(2 * SCAN_TIME_MS + 2000)
+}, 30_000)
+
+// claude-factory-jsoe: env -i with a closed reader command word does not run a bd word that is only its argument.
+test('denyReason denies every bd word under env -i, a reader too; jsoe is a known gap (claude-factory-jsoe, qn8a.9.14)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of [
+    // known gap (jsoe): a false deny. A reader exemption was bypassed twice, so it stays removed.
+    'env -i grep -rn bd src',
+    'env -i cat bd',
+    'env -i printf bd',
+    'env -i wc -l bd',
+    // qn8a.9.14: xargs replaces the reader word at run time
+    'echo nice | xargs -I grep env -i grep bd comment x y',
+    'echo nice | xargs -Igrep env -i grep bd comment x y',
+    'echo nice | xargs -J grep env -i grep bd comment x y',
+    'echo nice | xargs -I grep env - grep bd comment x y',
+    "echo nice | xargs -I grep env -S '-i' grep bd comment x y",
+    "echo nice | xargs -I cat env -iS 'cat' bd comment x y",
+    'nice env -i grep bd c',
+    'X=1 env -i grep bd c',
+    'env -i bd list',
+    'env -i nice bd list',
+    'env -i rg --pre bd x',
+    'env -i xargs bd',
+    'env -i find . -exec bd \\;',
+    'env -i grep "$X" bd',
+    'env -i grep bd `x`',
+    'env -i grep bd (x)',
+    "env -i sh -c 'bd x'",
+    'env -i grep x bd; env -i bd list',
+    'bd list env -i grep x',
+    'env -i grep x env -i bd list',
+    'env -i grep x env -i nice bd',
+    'env -i grep x env -i cat bd',
+  ])
+    expect(ask(c)).toBe(BEADS_ACTOR_REASON)
+})
+
+// claude-factory-qn8a.9.13: the jsoe exemption is a closed grammar: env, one of -i - --ignore-environment, the reader word.
+test('denyReason keeps the env -i reader exemption closed (claude-factory-qn8a.9.13)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of [
+    'env - grep -rn bd src',
+    'env --ignore-environment grep -rn bd src',
+    "env -iS 'cat' bd comment x y",
+    'env -i -u $ZZZ grep bd comment x y',
+    'env -i -u ${ZZZ} grep bd comment x y',
+    'env -i -u ${ZZZ:+x} grep bd comment x y',
+    'env -i --unset $ZZZ grep bd comment x y',
+    'env -i --chdir $ZZZ grep bd comment x y',
+    'env -i --argv0 $ZZZ grep bd comment x y',
+    'env -i -P $ZZZ cat bd comment x y',
+    'env -i -a $ZZZ cat bd comment x y',
+    'env -i -u $@ grep bd comment x y',
+    'env -i -u $* grep bd comment x y',
+    'env -i -u "$@" grep bd comment x y',
+    'env -i -u {,} grep bd comment x y',
+    'env -{i,u} grep bd comment x y',
+    'env -i -{i,u} grep bd comment x y',
+    'env -{i,u,u} grep bd comment x y',
+    'env -i -u 2>&1 grep bd comment x y',
+    'env -i -u >f grep bd comment x y',
+    'env -i -u 2>f grep bd comment x y',
+    'env -i -u >&2 grep bd comment x y',
+    'env -i -u <f grep bd comment x y',
+    'env -i -u &>f grep bd comment x y',
+    'env -i -u >|f grep bd comment x y',
+    'env -i -u >>f grep bd comment x y',
+    'env -i -u <<<x grep bd comment x y',
+    'env -i -u 2>/dev/null grep bd comment x y',
+    'env -i --unset 2>&1 cat bd comment x y',
+    'env -i ./grep bd comment x y',
+    "env -i -S '-u' grep bd comment x y",
+  ])
+    expect(ask(c)).toBe(BEADS_ACTOR_REASON)
+  for (const c of [
+    'env -i -u $ZZZ grep HOME=/h /opt/bin/factory mail r1 manager x',
+    'env -i -{i,u} grep /opt/bin/factory mail r1 manager x',
+    'env -i -u $ZZZ cat factory report r1 18 approve x',
+    'echo nice | xargs -I grep env -i grep factory mail r1 manager x',
+  ])
+    expect(ask(c)).toBe(FACTORY_FROM_REASON)
+})
+
+// claude-factory-yule: brace-body glob command words, after PR 151.
+test('denyReason denies a glob command word inside a brace body (claude-factory-yule)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  expect(ask('repeat 1 { /bin/r* -rf / }')).toBe(REASON)
+  expect(ask('repeat 1 {/bin/r* -rf / }')).toBe(DYNAMIC_VERB_REASON)
+  expect(ask('{ true } always { /bin/[r]m -rf / }')).toBe(REASON)
+})
+
+// claude-factory-eiut: env -S with a dollar sign in the split string, after an option with a value (PR 101 and PR 104).
+test('denyReason denies env -S with a dollar sign after -u or -C (claude-factory-eiut)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  expect(ask("env -u X -S 'git ${FOO} origin main'")).toBe(ENV_SPLIT_VAR_REASON)
+  expect(ask("env -C /tmp -S 'git ${FOO} origin main'")).toBe(ENV_SPLIT_VAR_REASON)
+})
+
+// claude-factory-4aj: the sh -c -- recursion site adds one to the depth, like the other three sites.
+test('denyReason counts depth through sh -c -- : 31 eval levels allow, 32 deny (claude-factory-4aj)', () => {
+  const ask = (n: number) =>
+    denyReason('sh -c -- "' + 'eval '.repeat(n) + 'ls"', '/acme/root', undefined, snapGate())
+  expect(ask(31)).toBeUndefined()
+  expect(ask(32)).toBe(DEEP_COMMAND_REASON)
+})
+
+// claude-factory-w2cf: a short command with stacked eval words and a push denies as a push.
+test('denyReason denies the w2cf stacked eval push literal with PUSH_REASON (claude-factory-w2cf)', () => {
+  expect(
+    denyReason('x eval x eval "x "eval ""git push origin main', '/acme/root', undefined, snapGate()),
+  ).toBe(PUSH_REASON)
+})
+
+// claude-factory-0hkb: a lone [ or [[ is the test builtin, not a glob command word.
+test('denyReason allows [ and [[ test forms; a bracket glob command word stays denied (claude-factory-0hkb)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of ['[ -n x ]', '[[ -n $X ]]', '[ -n x ] && echo y', '[[ -n "$_" ]] && echo y'])
+    expect(ask(c)).toBeUndefined()
+  // Known gap (qn8a.9.12): the scan cannot tell "$X" from $X in `[`, so `[ -n "$X" ]` denies.
+  expect(ask('[ -n "$X" ]')).toBeDefined()
+  for (const c of ['[g]it status', '[[x]] push origin main']) expect(ask(c)).toBe(DYNAMIC_VERB_REASON)
+  expect(ask(': rm; [[ x ]] && $_ -rf /')).toBe(REASON)
+  expect(ask('[ x ] && $X push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(ask('[x] -rf /')).toBe(DYNAMIC_VERB_REASON)
+})
+
+// claude-factory-qn8a.9.9: bash runs a quoted $(...) in the subscript of -v and of an arithmetic operand.
+test('denyReason denies [ and [[ forms with a quoted command substitution operand (claude-factory-qn8a.9.9)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  const rows = [
+    "[ -v 'a[$(git push origin main)]' ]",
+    "[ -v 'a[$(rm -rf /)]' ]",
+    '[ -v "a[\\$(git push origin main)]" ]',
+    "[[ 'a[$(git push origin main)]' -eq 0 ]]",
+    "[[ -v 'a[$(git push origin main)]' ]]",
+    "[[ x -eq 'a[$(git push origin main)]' ]]",
+    "[[ x -ne 'a[$(git push origin main)]' ]]",
+    "[[ x -lt 'a[$(git push origin main)]' ]]",
+    "[[ x -ge 'a[$(git push origin main)]' ]]",
+    "[ x -gt 'a[$(git push origin main)]' ]",
+    "[ -v 'a[`git push origin main`]' ]",
+  ]
+  for (const c of rows) expect(ask(c)).toBeDefined()
+  expect(ask('[[ -n "$X" ]]')).toBeUndefined()
+})
+
+// claude-factory-qn8a.9.10: a dynamic operand ($_ or a read variable) carries a $(...) into -v or an arithmetic operator.
+test('denyReason denies [ and [[ with a dynamic operand of -v or an arithmetic operator (claude-factory-qn8a.9.10)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  const src = "echo 'a[$(git push origin main)]'; "
+  const rows = [
+    src + '[[ $_ -eq 0 ]]',
+    src + '[ -v "$_" ]',
+    src + '[[ -v $_ ]]',
+    src + '[[ 0 -lt $_ ]]',
+    src + '[ "$_" -ne 0 ]',
+    src + '[[ $_ -le 0 ]]',
+    src + '[[ $_ -gt 0 ]]',
+    src + '[ 0 -ge "$_" ]',
+    "echo 'a[$(git push origin main)]' | while read X; do [[ $X -eq 0 ]]; done",
+    "echo 'a[$(git push origin main)]' | ( read X; [[ $X -eq 0 ]] )",
+    'echo \'a[$(git push origin main)]\' | while read X; do [ -v "$X" ]; done',
+    "ls 'a[$(git push origin main)]'; [[ $_ -eq 0 ]]",
+  ]
+  for (const c of rows) expect(ask(c)).toBeDefined()
+  for (const c of ['[[ -n "$X" ]]', '[[ -n $X ]]', '[[ $X == y ]]', '[[ -z "$_" ]]'])
+    expect(ask(c)).toBeUndefined()
+  // literal-only forms hold no expansion, so they allow on origin/main too (qn8a.41 gap)
+  for (const c of ['[ x -eq 0 ]', '[[ -v X ]]']) expect(ask(c)).toBeUndefined()
+})
+
+test('denyReason denies [ and [[ with a bare subscript operand of -v or an arithmetic operator (claude-factory-qn8a.9.11)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  const src = "echo 'a[$(git push origin main)]'; "
+  for (const c of [
+    src + '[[ -v a[_] ]]',
+    src + '[ -v a[_] ]',
+    src + '[[ a[_] -eq 0 ]]',
+    'read i < f; [[ -v a[i] ]]',
+    'read i < f; [ -v a[i] ]',
+    'read i < f; [[ a[i] -eq 0 ]]',
+  ])
+    expect(ask(c)).toBeDefined()
+  expect(ask('[[ -n "$X" ]]')).toBeUndefined()
+  for (const c of ['[[ -v X ]]', '[ x -eq 0 ]']) expect(ask(c)).toBeUndefined()
+})
+
+// claude-factory-qn8a.9.12: the [ and [[ exemption is a closed grammar, not a deny-list.
+test('testBuiltinSafe closed grammar (claude-factory-qn8a.9.12)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of [
+    '[[ -n "$X" ]]',
+    '[[ -n $X ]]',
+    '[ -n x ] && echo y',
+    '[[ -n "$_" ]] && echo y',
+    '[[ $X == y ]]',
+    '[[ -z "$_" ]]',
+    '[ -f a.txt ]',
+    '[[ -d ${D} ]]',
+    '[[ "$X" = y ]]',
+    '[ x ]',
+    '[[ x ]] && echo y',
+    // the word scanner masks any quoted word to one space; a quoted word is inert in a string test
+  ])
+    expect(ask(c)).toBeUndefined()
+  for (const c of [
+    'read X < f; [[ -n $X && X -eq 0 ]]',
+    'read X < f; [ -n $X ]',
+    "echo 'x -o -v a[$(git push origin main)]'; [ -n $_ ]",
+    '[[ -n $X && x -eq 0 ]]',
+    '[[ -n $X || -v a[$X] ]]',
+    '[[ $X =~ y ]]',
+    '[ ! -n "$X" ]',
+    '[ -n "$X" -o -n "$Y" ]',
+    // known gap: the scan cannot tell "$X" from $X in `[`
+    '[ -n "$X" ]',
+    '[ "$X" = y ]',
+    '[ -n "$_" ] && echo y',
+    '[[ -n "${X:-a}" ]]',
+    '[[ "$X" == "$Y" ]]',
+    '[ -n "$X" ]]',
+    '[[ -n "$X" ]',
+    '[ -n "$X" ] ]',
+    '[ -n $X ]',
+    '[[ -n $X',
+    '[[ -v $X ]]',
+    '[[ $X -eq 0 ]]',
+    '[[ $X == y z ]]',
+  ])
+    expect(ask(c)).toBeDefined()
+})
+
+// claude-factory-c1jb: 7 alias words in one segment made the rescan visit every order (n!): 2.5 s, then a false
+// SCAN_BUDGET_REASON deny. The memo of allowed rescans makes it linear.
+test('denyReason allows 7 harmless alias words in one segment, fast, and still denies a later gp push (claude-factory-c1jb)', () => {
+  const table = new Map<string, string | null>([
+    ['ls', 'ls -G'],
+    ['l', 'ls -l'],
+    ['la', 'ls -la'],
+    ['ll', 'ls -l'],
+    ['lsa', 'ls -a'],
+    ['rm', 'rm -i'],
+    ['cp', 'cp -i'],
+    ['mv', 'mv -i'],
+    ['gp', 'git push'],
+  ])
+  const gate = snapGate(() => table)
+  const t0 = performance.now()
+  expect(denyReason('ls l la ll lsa rm cp mv', '/acme/root', undefined, gate)).toBeUndefined()
+  expect(performance.now() - t0).toBeLessThan(200)
+  expect(denyReason('ls l la ll lsa rm cp mv; gp origin main', '/acme/root', undefined, gate)).toBe(
+    SHELL_ALIAS_REASON,
+  )
+}, 30_000)
+
+test('denyReason alias memo key holds every scan state field (claude-factory-qn8a.9.15)', () => {
+  const table = new Map<string, string | null>([
+    ['e', 'GIT_CONFIG_GLOBAL=/x make'],
+    ['ee', 'export GIT_CONFIG_GLOBAL=/x'],
+    ['ll', 'ls -l'],
+    ['m', 'make'],
+  ])
+  const gate = snapGate(() => table)
+  const rows = [
+    'e; git status; e',
+    'e; git push; e',
+    'e; e; git status; e',
+    'ee; git push origin HEAD; ee',
+    'ee; git checkout main; ee',
+    "e; sh -c 'git status'; e",
+    'e x; git status; e x',
+    'e ll m; git status; e ll m',
+    'll m e; git checkout main; ll m e',
+  ]
+  for (const row of rows)
+    for (const sep of ['; ', ' && ', '\n'])
+      expect(denyReason(row.replaceAll('; ', sep), '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+  for (const ok of ['ll m; ls; ll m', 'll; ll'])
+    expect(denyReason(ok, '/acme/root', undefined, gate)).toBeUndefined()
+  const t2 = new Map<string, string | null>([
+    ['ll', 'ls -l'],
+    ['gp', 'git push'],
+  ])
+  expect(
+    denyReason(
+      'll ls; ll gp origin main',
+      '/acme/root',
+      undefined,
+      snapGate(() => t2),
+    ),
+  ).toBe(SHELL_ALIAS_REASON)
+}, 30_000)
+
+test('denyReason alias memo hit puts back state.outer (claude-factory-qn8a.9.16)', () => {
+  const table = new Map<string, string | null>([
+    ['a0', 'ls -r; true'],
+    ['a2', 'ls -r && nice'],
+    ['ll', 'ls -l'],
+    ['m', 'make'],
+  ])
+  const gate = snapGate(() => table)
+  const rows = [
+    '$D/t y; a0; a0',
+    '$D/t y; a0; a0; a0',
+    '$D/t y; a2 x; a2 x',
+    '$D/t y; ll; a0; a0',
+    'x$D/t a0; x$D/t a0',
+  ]
+  for (const row of rows)
+    for (const sep of ['; ', ' && ', '\n'])
+      expect(denyReason(row.replaceAll('; ', sep), '/acme/root', undefined, gate)).toBe(REASON)
+  expect(denyReason('$D/t y; a0', '/acme/root', undefined, gate)).toBe(REASON)
+  expect(denyReason('$D/t y; m; m', '/acme/root', undefined, gate)).toBeUndefined()
+  expect(denyReason('ll m; ls; ll m', '/acme/root', undefined, gate)).toBeUndefined()
+}, 30_000)

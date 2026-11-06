@@ -1,7 +1,7 @@
 /**
  * This script is a benchmark for claude-factory-1by and claude-factory-lbn.
  *
- * Shape "shell" (claude-factory-1by): The function `anyShellReason` (`src/worker-hook.ts:559-606`) examines a segment for the shell words sh, bash, zsh and dash.
+ * Shape "shell" (claude-factory-1by): The function `anyShellReason` (`src/worker-hook.ts`) examines a segment for the shell words sh, bash, zsh and dash.
  * Before the claude-factory-1by change, the function examined the remaining words of the segment again at each such word, with `shCFlagIndex(words.slice(j))`.
  * Then it moved forward by only one word.
  * As a result, the check took `O(n^2)` time, where n is the word count.
@@ -9,7 +9,7 @@
  * Each pointer reads the segment one time, so the total time is `O(n)`.
  *
  * Shape "find" (claude-factory-lbn, fixed 2026-10-17):
- * The `find` part of `denyAt` (`src/worker-hook.ts:658-677`) checks a segment for `-exec` and `-execdir` words.
+ * The `find` part of `denyAt` (`src/worker-hook.ts`) checks a segment for `-exec` and `-execdir` words.
  * Before the fix, the code made `rest` with `cmd.slice(i + 1)` at each such word. It then read `rest[0]`.
  * The slice itself took `O(n-i)` time.
  *
@@ -51,8 +51,8 @@
  * Read the ratio column, not the raw time.
  *
  * When n doubles, a ratio near 4 means `O(n^2)`.
- * A ratio near 2 means `O(n log n)`.
- * A ratio near 1 means `O(n)`.
+ * A ratio near 2 means `O(n)` (or `O(n log n)`).
+ * A ratio near 1 means `O(1)`.
  *
  * On this machine, the load average from `uptime` can be 2 to 4 times the core count.
  * The raw times change with this load, so each run is different.
