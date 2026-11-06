@@ -67,6 +67,7 @@ const AC4 = [
   'gh api x --output=/h/rigs.json',
   'curl -o/h/rigs.json x',
   'curl -o.scratch/rigs.json x',
+  'dd if=x seek=1 conv=/h/rigs.json',
 ]
 const ALLOW = [
   'cat /h/rigs.json',
