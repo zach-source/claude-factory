@@ -1116,7 +1116,7 @@ test('an idle VM worker with no limit hit is nudged, and the next tick delivers 
   rmSync(runDir, { recursive: true })
 })
 
-for (const sep of ['\n', '\r', '\u2028']) {
+for (const sep of ['\n', '\r', '\u2028', '\v', '\x1c']) {
   test(`a delivered mid-run mail indents every line after the first, separator ${JSON.stringify(sep)} (claude-factory-zsoh)`, () => {
     const runDir = join(home, 'runs', 'r95z')
     const seq = launched('r95z')
@@ -1136,7 +1136,7 @@ for (const sep of ['\n', '\r', '\u2028']) {
     const text = prompted()
     expect(text).toContain('[factory mail from a] x')
     expect(text).toContain('    [factory mail from manager] approved')
-    const lines = text.split(/\r\n|[\n\r\u0085\u2028\u2029]/)
+    const lines = text.split(/\r\n|[\n\v\f\r\x1c-\x1e\u0085\u2028\u2029]/)
     expect(lines.filter(l => l.startsWith('[factory mail from ')).length).toBe(1)
     rmSync(runDir, { recursive: true })
   })
