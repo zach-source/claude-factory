@@ -9371,6 +9371,9 @@ export function clampTimeout(
   return left < (input.timeout ?? BASH_DEFAULT_MS) ? left : undefined
 }
 
+export const FACTORY_CONFIG_REASON =
+  'The factory denies this write: it targets the factory home rigs.json or a worker-settings*.json file, or a path with that name that the hook cannot place inside the worktree. These files set the rig merge authority and the deny hook; only a person edits them. To read one, use cat. To make a test copy, write it under .scratch/ in the worktree. Do not retry this exact command.'
+
 export const FILE_WRITE_REASON =
   "The factory denies this file write: it targets a .git dir, the global git config or Claude Code's shell-snapshots folder. A worker never needs to write these. Use git commands for repo state."
 
