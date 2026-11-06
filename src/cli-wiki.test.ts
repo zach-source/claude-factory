@@ -365,3 +365,70 @@ test('AC7 a failed push is journaled with its exit code only', () => {
   expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(1)
   expect(wikiLog()).toMatch(/wiki: push failed \(exit \d+\)\n/)
 })
+
+test('AC4 a nested repo and a symlink to a valid page are refused by mode, and nothing is committed', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  Bun.spawnSync(['git', 'init', '-q', join(wiki(), 'sub.md')])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    join(wiki(), 'sub.md'),
+    '-c',
+    'user.name=p',
+    '-c',
+    'user.email=p@x.test',
+    'commit',
+    '-q',
+    '--allow-empty',
+    '-m',
+    'p',
+  ])
+  writeFileSync(join(wiki(), 'real.txt'), page('topic', 'Real'))
+  symlinkSync('real.txt', join(wiki(), 'link.md'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(commits()).toBe(base)
+  expect(git('ls-files').split('\n')).not.toContain('sub.md')
+  expect(git('ls-files').split('\n')).not.toContain('link.md')
+  expect(wikiLog().match(/bad file mode in /g)?.length).toBe(2)
+})
+
+test('AC3 author and committer config keys do not change the factory identity', () => {
+  setup()
+  const cfg = join(dir, 'gitconfig2')
+  writeFileSync(
+    cfg,
+    '[author]\n\tname = zq-person\n\temail = zq@person.test\n[committer]\n\tname = zq-person\n\temail = zq@person.test\n',
+  )
+  expect(factory(['wiki', 'init'], { GIT_CONFIG_GLOBAL: cfg }).code).toBe(0)
+  expect(git('log', '--format=%an <%ae>|%cn <%ce>')).toBe(
+    `factory <factory@${hostname()}>|factory <factory@${hostname()}>`,
+  )
+})
+
+test('AC2 init in a home that is a git repo makes the wiki its own repo and leaves the parent alone', () => {
+  setup('PRIVATE')
+  mkdirSync(home, { recursive: true })
+  Bun.spawnSync(['git', 'init', '-q', home])
+  writeFileSync(join(home, 'secret.txt'), 'zq\n')
+  mkdirSync(join(wiki(), '.git'), { recursive: true }) // an empty .git is not a repo
+  const { b, env } = bare()
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+  expect(realpathSync(git('rev-parse', '--show-toplevel'))).toBe(realpathSync(wiki()))
+  expect(Bun.spawnSync(['git', '-C', home, 'rev-parse', '--verify', '-q', 'HEAD']).exitCode).not.toBe(0)
+  expect(Bun.spawnSync(['git', '-C', home, 'config', '--get', 'remote.origin.url']).exitCode).toBe(1)
+  const pushed = Bun.spawnSync(['git', '-C', b, 'ls-tree', '-r', '--name-only', 'main']).stdout.toString()
+  expect(pushed).not.toContain('secret.txt')
+  expect(pushed).toContain('index.md')
+})
+
+test('AC6 a wiki-state.json that holds null does not stop a later pass', () => {
+  setup('PRIVATE')
+  const { b, env } = bare()
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+  writeFileSync(join(home, 'wiki-state.json'), 'null')
+  expect(pushPass(env).exitCode).toBe(0)
+  expect(mainOf(b).exitCode).toBe(0)
+  expect(state().visibility.value).toBe('PRIVATE')
+})

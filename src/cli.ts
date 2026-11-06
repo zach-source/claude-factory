@@ -4478,13 +4478,15 @@ function wikiLog(line: string) {
 }
 
 /** git in the wiki: no identity, repo or index from the caller's environment, and literal pathspecs */
-function wikiGit(dir: string, args: string[], network = false) {
+function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<string, string> = {}) {
   const env: Record<string, string | undefined> = {
     ...(network ? GIT_NETWORK_ENV : process.env),
     GIT_LITERAL_PATHSPECS: '1',
+    GIT_CEILING_DIRECTORIES: dirname(dir),
   }
   for (const k of Object.keys(env))
     if (/^GIT_(AUTHOR|COMMITTER)_/.test(k) || /^GIT_(DIR|WORK_TREE|INDEX_FILE)$/.test(k)) delete env[k]
+  Object.assign(env, extraEnv)
   const p = Bun.spawnSync(['git', '-C', dir, ...args], {
     env,
     stderr: 'pipe',
@@ -4504,15 +4506,20 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
       .split('\n')[0]!
       .replace(/\p{Cc}/gu, ' ')
       .slice(0, 200)
-  wikiGit(dir, ['add', '-A'])
-  const staged = wikiGit(dir, ['diff', '--cached', '--name-only', '-z', '--diff-filter=d'])
-    .out.toString()
-    .split('\0')
-    .filter(Boolean)
-  for (const path of staged) {
+  if (wikiGit(dir, ['add', '-A']).code !== 0) return (wikiLog('wiki: stage failed, nothing committed'), false)
+  const list = wikiGit(dir, ['diff', '--cached', '--raw', '--no-renames', '-z', '--diff-filter=d'])
+  if (list.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
+  // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
+  const fields = list.out.toString().split('\0')
+  const refused: string[] = []
+  for (let k = 0; k + 1 < fields.length; k += 2) {
+    const mode = fields[k]!.split(' ')[1]
+    const path = fields[k + 1]!
     let why: string | undefined
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..'))
       why = 'wiki: bad page path, page kept at last version'
+    else if (mode !== '100644' && mode !== '100755')
+      why = `wiki: bad file mode in ${path}, page kept at last version`
     else {
       const blob = wikiGit(dir, ['show', `:${path}`]).out
       const reasons =
@@ -4524,23 +4531,37 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     }
     if (!why) continue
     wikiLog(why)
+    refused.push(path)
     if (wikiGit(dir, ['cat-file', '-e', `HEAD:${path}`]).code === 0)
       wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path])
-    else wikiGit(dir, ['rm', '--cached', '-q', '--', path])
+    else wikiGit(dir, ['rm', '--cached', '-f', '-q', '--', path])
   }
-  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code === 0) return false
-  const c = wikiGit(dir, [
-    '-c',
-    'user.name=factory',
-    '-c',
-    `user.email=factory@${hostname()}`,
-    '-c',
-    'commit.gpgsign=false',
-    'commit',
-    '-q',
-    '-m',
-    `wiki ${clean(pass)}: ${clean(summary)}`,
-  ])
+  // a refused path that is still staged (an unstage that failed) must never reach a commit
+  if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
+    return (wikiLog('wiki: unstage failed, nothing committed'), false)
+  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return false
+  const c = wikiGit(
+    dir,
+    [
+      '-c',
+      'user.name=factory',
+      '-c',
+      `user.email=factory@${hostname()}`,
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-q',
+      '-m',
+      `wiki ${clean(pass)}: ${clean(summary)}`,
+    ],
+    false,
+    {
+      GIT_AUTHOR_NAME: 'factory',
+      GIT_AUTHOR_EMAIL: `factory@${hostname()}`,
+      GIT_COMMITTER_NAME: 'factory',
+      GIT_COMMITTER_EMAIL: `factory@${hostname()}`,
+    },
+  )
   if (c.code !== 0) wikiLog(`wiki: commit failed (exit ${c.code})`)
   return c.code === 0
 }
@@ -4553,6 +4574,7 @@ function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh 
   try {
     state = JSON.parse(readFileSync(file, 'utf8'))
   } catch {}
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) state = {}
   const c = state.visibility as { value?: string; checkedAt?: string; remote?: string } | undefined
   if (
     !fresh &&
@@ -11192,7 +11214,17 @@ if (import.meta.main && !outboxCmd)
         try {
           const dir = join(HOME, 'wiki')
           mkdirSync(dir, { recursive: true })
-          if (!existsSync(join(dir, '.git'))) wikiGit(dir, ['init', '-q', '-b', 'main'])
+          // the ceiling in wikiGit stops the search at the wiki dir, so a repo in a parent is never used
+          const isRepo = () => wikiGit(dir, ['rev-parse', '--git-dir']).code === 0
+          if (!isRepo()) {
+            wikiGit(dir, ['init', '-q'])
+            wikiGit(dir, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
+          }
+          if (!isRepo()) {
+            wikiLog('wiki: git init failed')
+            process.exitCode = 1
+            break
+          }
           for (const [name, text] of Object.entries(WIKI_SEEDS))
             if (!existsSync(join(dir, name))) writeFileSync(join(dir, name), text)
           commitWiki('init', 'seed index and glossary', dir)
