@@ -4460,7 +4460,7 @@ function plainUndo(words: string[]): boolean {
   const plain = (x: string) =>
     !x.startsWith('--undo=') && !dynamicWord(x) && /^[A-Za-z0-9_.\/:@%+,=-]+$/.test(x)
   for (let i = 0; i < words.length; i++) {
-    const w = words[i]
+    const w = words[i]!
     if (w === '--') break
     if (!plain(w)) return false
     if (w === '-R' || w === '--repo') {
