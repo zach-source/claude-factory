@@ -525,12 +525,41 @@ type TaskSide = {
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
   putFailedAt?: number
   putError?: string
+  /** the part of the first file in `put` that the next tick sends (a put sends at most PUT_TICK_PARTS parts a tick) */
+  putPart?: number
+  /** the memory snapshot the VM got (claude-factory-vffe.4), or why it got none */
+  memory?: { bytes: number; parts: number; sentAt: number }
+  memorySkipped?: string
   /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
   beadsRemote?: Rig['beadsRemote']
+}
+/**
+ * Write the memory snapshot file for a launch. `put` is true when the file must go to the VM.
+ * `skipped` says why not: the snapshot is over `max` bytes, or `memory.snapshot` threw.
+ * A failure here never blocks the launch.
+ */
+export function memorySnapshotPut(
+  mem: string,
+  rig: string | undefined,
+  out: string,
+  max = memory.MEMORY_SNAPSHOT_MAX,
+): { put: boolean; skipped?: string } {
+  try {
+    const snap = memory.snapshot(mem, rig, out)
+    if (!snap) return { put: false }
+    if (snap.bytes <= max) return { put: true }
+    rmSync(out, { force: true })
+    return { put: false, skipped: `${snap.bytes} bytes, over the ${max} byte cap` }
+  } catch (e) {
+    rmSync(out, { force: true })
+    return { put: false, skipped: cleanText(String(e), 300) }
+  }
 }
 const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
 /** how long a failing put is retried before the attempt fails: a VM still waking fails ssh for a tick or two */
 const PUT_GRACE_MS = 5 * 60_000
+/** ax ssh calls that a put sends in one tick: each can wait up to 30 s, and the tick waits on it */
+const PUT_TICK_PARTS = 8
 
 const hashLine = (line: string) => createHash('sha256').update(line).digest('hex')
 const seenFile = (run: Run, task: string) => join(runDir(run.id), `${task}.seen`)
@@ -1013,16 +1042,27 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
   // what is too big for the task's env goes over ssh, in parts, and serve waits for it
-  for (const name of side?.put ?? []) {
-    const b64 = readFileSync(join(runDir(run.id), `${task}.${name}`)).toString('base64')
+  // At most PUT_TICK_PARTS parts a tick (each is an ssh call): putPart is where the next tick goes on
+  let sent = 0
+  put: for (const name of side?.put ?? []) {
+    const file = join(runDir(run.id), `${task}.${name}`)
+    const b64 = readFileSync(file).toString('base64')
     const parts = Math.max(1, Math.ceil(b64.length / ax.PUT_PART))
-    for (let i = 0; i < parts; i++) {
+    for (let i = side!.putPart ?? 0; i < parts; i++) {
+      if (sent++ >= PUT_TICK_PARTS) {
+        writeJson(sideFile(run, task), { ...side, putPart: i })
+        break put
+      }
       const r = ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART))
-      if (r.ok) continue
+      if (r.ok) {
+        side!.putFailedAt = undefined // a part landed: the 5 min grace restarts at the next failure
+        side!.putError = undefined
+        continue
+      }
       // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
       const failedAt = side!.putFailedAt ?? Date.now()
       const err = cleanText(r.err.replace(/\s+/g, ' ').trim(), 300)
-      writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
+      writeJson(sideFile(run, task), { ...side, putPart: i, putFailedAt: failedAt, putError: err })
       if (Date.now() - failedAt < PUT_GRACE_MS)
         return { status: 'pending', agent: 'ax', pending: `${name} not yet copied to the VM` }
       return {
@@ -1032,9 +1072,15 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       }
     }
     side!.put = side!.put!.filter(n => n !== name)
+    side!.putPart = undefined
     side!.putFailedAt = undefined
     side!.putError = undefined
+    if (name === 'memory.tgz') {
+      side!.memory = { bytes: statSync(file).size, parts, sentAt: Date.now() }
+    }
     writeJson(sideFile(run, task), side)
+    // remove the file after the save: a stop between the two would leave side.put naming a missing file
+    if (name === 'memory.tgz') rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
   }
   // always ask for everything: which lines are already replayed lives here, keyed by content (see `loadSeen`
   // below), not as a line count the VM slices by -- a worker that edits outbox.jsonl (claude-factory-4x1)
@@ -2035,6 +2081,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
   // beadsRemote or else the repo's GitHub origin
   writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
+  // the VM cannot reach the laptop's memory: it gets a snapshot of the notes its rig can see (vffe.4)
+  const snap = memorySnapshotPut(MEMORY, rig?.name, join(runDir(run.id), `${name}.memory.tgz`))
   // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
   // the fleet may hold other VMs' writes since: take them first, or the push is refused
   if (hasRunBeads) (syncRigBeads(run, 'pull'), syncRigBeads(run, 'push'))
@@ -2100,7 +2148,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(reviewer && { reviewer }),
     ...(reviewer && { githubRepo }),
     policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer, false, githubRepo),
-    put: ['brief.md'],
+    put: ['brief.md', ...(snap.put ? ['memory.tgz'] : [])],
+    ...(snap.skipped && { memorySkipped: snap.skipped }),
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
   writeJson(sideFile(run, name), side)
@@ -3386,7 +3435,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       // ask once per visit; NUDGED records that it was asked
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
-        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
+        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${indentRest(m.text)}`),
         `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
@@ -10709,6 +10758,19 @@ if (import.meta.main && !outboxCmd)
         ]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
+          // a VM has no store: the laptop put a snapshot (memory.tgz) in the worker dir at launch (vffe.4)
+          const snap = join(worker.own(), 'memory.tgz')
+          if (!existsSync(MEMORY) && existsSync(snap)) {
+            const tmp = `${MEMORY}.tmp-${process.pid}`
+            mkdirSync(tmp, { recursive: true })
+            const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
+            try {
+              if (r.exitCode !== 0) throw new Error('tar failed')
+              renameSync(tmp, MEMORY)
+            } catch {
+              rmSafe(tmp, { recursive: true, force: true }) // a cut file, or another search won the rename
+            }
+          }
           const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
@@ -10815,7 +10877,14 @@ if (import.meta.main && !outboxCmd)
             }
           }
         } else if (sub === 'helped' && words.length) {
-          const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
+          // a VM search prints its own memory dir; the outbox replays that path here (vffe.4)
+          const vmDir = `${ax.OWN}/home/memory/`
+          const paths = words.map(w =>
+            memory.resolvePath(
+              MEMORY,
+              relative(MEMORY, resolve(MEMORY, w.startsWith(vmDir) ? w.slice(vmDir.length) : w)),
+            ),
+          )
           const bad = paths.filter(p => p.startsWith('..') || !memory.noteExists(MEMORY, p))
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
           const by = memory.helpedBy(from, process.env)
