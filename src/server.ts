@@ -68,3 +68,126 @@ export function release(file: string, holder: string) {
 }
 
 export const newHolder = () => `${hostname()}/${process.pid}/${randomBytes(4).toString('hex')}`
+
+export type ServeOpts = {
+  home: string
+  port: number
+  everyMs: number
+  leaseMs: number
+  tick: () => unknown
+  holder?: string
+  log?: (line: string) => void
+}
+
+/** Run the tick loop under the lease and answer GET /healthz. `stop()` finishes the tick that runs and releases the lease. */
+export function serve(o: ServeOpts) {
+  const file = leaseFile(o.home)
+  const holder = o.holder ?? newHolder()
+  const log = o.log ?? ((l: string) => console.log(l))
+  const h = {
+    lease: 'waiting',
+    holder: '',
+    until: 0,
+    ticks: 0,
+    tickOk: null as boolean | null,
+    tickAt: null as string | null,
+  }
+  let held = false
+  let stopping = false
+  let running: Promise<void> = Promise.resolve()
+  let seen = ''
+  const take = () => {
+    const c = claim(file, holder, Date.now(), o.leaseMs)
+    if (c.held && !held) log(`lease taken by ${holder}`)
+    if (!c.held && held) log(`lease lost to ${c.lease?.holder ?? 'unknown'}`)
+    if (!c.held && c.lease) {
+      const line = `lease held by ${c.lease.holder} until ${new Date(c.lease.until).toISOString()}`
+      if (line !== seen) log(line)
+      seen = line
+    }
+    held = c.held
+    h.lease = held ? 'held' : 'waiting'
+    h.holder = c.lease?.holder ?? ''
+    h.until = c.lease?.until ?? 0
+    return held
+  }
+  const step = async () => {
+    if (!take()) return
+    try {
+      await o.tick()
+      h.tickOk = true
+    } catch (e) {
+      h.tickOk = false
+      log(
+        `tick failed: ${String((e as Error)?.message ?? e)
+          .split('\n')[0]
+          .slice(0, 300)}`,
+      )
+    }
+    h.ticks++
+    h.tickAt = new Date().toISOString()
+  }
+  let timer: ReturnType<typeof setTimeout>
+  const next = () => {
+    if (stopping) return
+    running = step().finally(() => {
+      if (!stopping) timer = setTimeout(next, o.everyMs)
+    })
+  }
+  // A long tick keeps the lease. A blocked event loop does not run this timer, so leaseMs must outlast those stretches.
+  const renew = setInterval(() => held && !stopping && take(), Math.max(1, Math.floor(o.leaseMs / 3)))
+  const server = Bun.serve({
+    port: o.port,
+    fetch(req) {
+      const u = new URL(req.url)
+      if (req.method === 'GET' && u.pathname === '/healthz') return Response.json(h)
+      return new Response('not found\n', { status: 404 })
+    },
+  })
+  timer = setTimeout(next, 0)
+  return {
+    port: server.port,
+    holder,
+    async stop() {
+      stopping = true
+      clearTimeout(timer)
+      clearInterval(renew)
+      await running
+      if (held) {
+        release(file, holder)
+        log('lease released')
+      }
+      await server.stop(true)
+    },
+  }
+}
+
+const USAGE = 'usage: factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000]'
+
+/** Parse the flags of `factory server`. Throw the usage text on a bad value. */
+export function parseFlags(args: string[]) {
+  const v = { port: 8080, everyMs: 5000, leaseMs: 60000 }
+  const names: Record<string, keyof typeof v> = {
+    '--port': 'port',
+    '--every-ms': 'everyMs',
+    '--lease-ms': 'leaseMs',
+  }
+  for (let i = 0; i < args.length; i += 2) {
+    const k = names[args[i]]
+    const raw = args[i + 1]
+    if (!k || raw === undefined || !/^\d+$/.test(raw)) throw new Error(USAGE)
+    v[k] = Number(raw)
+  }
+  if (v.everyMs <= 0 || v.leaseMs < 2 * v.everyMs || v.port > 65535) throw new Error(USAGE)
+  return v
+}
+
+/** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000]`. The caller passes the tick, so there is no import cycle with cli.ts. */
+export function main(args: string[], home: string, tick: () => unknown) {
+  const f = parseFlags(args)
+  const s = serve({ home, ...f, tick })
+  console.log(`factory server on :${s.port} as ${s.holder}`)
+  const stop = () => void s.stop().then(() => process.exit(0))
+  process.once('SIGTERM', stop)
+  process.once('SIGINT', stop)
+}
