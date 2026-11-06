@@ -176,24 +176,104 @@ describe('deny log', () => {
 
 describe('maskAssignments', () => {
   const m = (hook as any).maskAssignments as (s: string) => string
+  // claude-factory-wkg4 plan 3: the first "=" or "${" starts the mask; all text after it goes to the end.
   test.each([
-    ['X=zqsecret ls', 'X=*** ls'],
-    ['A=1 B=zqsecret ls', 'A=*** B=*** ls'],
-    ["X='zq secret' ls", 'X=*** ls'],
-    ['X="zq secret" ls', 'X=*** ls'],
-    ['X=zq"sec ret" ls', 'X=*** ls'],
-    ['X=zq\\ secret ls', 'X=*** ls'],
+    ['X=zqsecret ls', 'X=***'],
+    ['A=1 B=zqsecret ls', 'A=***'],
+    ["X='zq secret' ls", 'X=***'],
+    ['X="zq secret" ls', 'X=***'],
+    ['X=zq"sec ret" ls', 'X=***'],
+    ['X=zq\\ secret ls', 'X=***'],
     ['X="zqsecret', 'X=***'],
     ['f() { ls; }', 'f() { ls; }'],
     ['ls -la /tmp', 'ls -la /tmp'],
     ['echo hello', 'echo hello'],
-    ['--token=zqsecret', '--token=zqsecret'],
-    ['git -c http.extraHeader=zqsecret', 'git -c http.extraHeader=zqsecret'],
-    ['bash -c "GH_TOKEN=zqsecret gh pr list"', 'bash -c "GH_TOKEN=*** gh pr list"'],
-    ["sh -c 'X=zqsecret ls'", "sh -c 'X=*** ls'"],
-    ['eval "X=zqsecret ls"', 'eval "X=*** ls"'],
-    ['env -S "X=zqsecret ls"', 'env -S "X=*** ls"'],
-    ['bash -c "sh -c \'X=zqsecret ls\'"', 'bash -c "sh -c \'X=*** ls\'"'],
+    ['--token=zqsecret', '--token=***'],
+    ['git -c http.extraHeader=zqsecret push', 'git -c http.extraHeader=***'],
+    ['docker run --env=GH_TOKEN=zqsecret img', 'docker run --env=***'],
+    ['bash -c "GH_TOKEN=zqsecret gh pr list"', 'bash -c "GH_TOKEN=***'],
+    ["sh -c 'X=zqsecret ls'", "sh -c 'X=***"],
+    ['eval "X=zqsecret ls"', 'eval "X=***'],
+    ['env -S "X=zqsecret ls"', 'env -S "X=***'],
+    ['bash -c "sh -c \'X=zqsecret ls\'"', 'bash -c "sh -c \'X=***'],
+    ['a[' + 'k'.repeat(65) + ']=zqsecret ls', 'a[' + 'k'.repeat(65) + ']=***'],
+    ['a[b[1]]=zqsecret ls', 'a[b[1]]=***'],
+    ['a[x y]=zqsecret ls', 'a[x y]=***'],
+    ['a["k"]+=zqsecret ls', 'a["k"]+=***'],
+    ['X=$(echo zqsecret) ls', 'X=***'],
+    ['X=a$(echo zq secret) ls', 'X=***'],
+    ['X=`echo zqsecret` ls', 'X=***'],
+    ['X="$(echo "zq secret")" ls', 'X=***'],
+    ['X=<(cat zqsecret) ls', 'X=***'],
+    ['declare -A m=([k]=zqsecret)', 'declare -A m=***'],
+    ['m=([k]=zqsecret [j]=v2)', 'm=***'],
+    ['m=(zq secret)', 'm=***'],
+    ['${X=zqsecret}', '${***'],
+    ['${X:=zqsecret}', '${***'],
+    [': "${GH_TOKEN:=zqsecret}"', ': "${***'],
+    ['echo "${GH_TOKEN:-zqsecret}"', 'echo "${***'],
+    ['${X-zqsecret}', '${***'],
+    [': ${X:=zq secret}', ': ${***'],
+    ['echo "${GH_TOKEN:-zq secret}"', 'echo "${***'],
+    ['${X=zq secret}', '${***'],
+    ['${X-zq secret}', '${***'],
+    ['${X:=zq;secret}', '${***'],
+    ['${X:=zq|secret}', '${***'],
+    ['${X:=zq)secret}', '${***'],
+    ['${a[k]=zq secret}', '${***'],
+    ['${a[1]:=zqsecret}', '${***'],
+    ['${a[1]:-zqsecret}', '${***'],
+    ['${a[1]-zqsecret}', '${***'],
+    ['Y=${X:-zq secret} ls', 'Y=***'],
+    ['Y=a${X:=zq secret} ls', 'Y=***'],
+    ['a[k]=${X:-zq secret} ls', 'a[k]=***'],
+    ['Y=${a[1]:-zq secret} ls', 'Y=***'],
+    ['export Y=${X:-zq;secret}', 'export Y=***'],
+    ['Y="${X:-"zq secret"}" ls', 'Y=***'],
+    ["X=$'zq\\' secret' ls", 'X=***'],
+    ["X=a$'zq\\' secret' ls", 'X=***'],
+    ["X=\"a\"$'zq\\' secret' ls", 'X=***'],
+    ["a[k]=$'zq\\' secret' ls", 'a[k]=***'],
+    ['X=$[1 + 2] ls', 'X=***'],
+    ['X=zq\rsecret ls', 'X=***'],
+    ['X=zq\vsecret ls', 'X=***'],
+    ['X=zq\fsecret ls', 'X=***'],
+    ['X=zq secret ls', 'X=***'],
+    ['cd /a && X=1 git push origin main', 'cd /a && X=***'],
+    ['X=a.b/c:d@e%f+g,h=i-j ls', 'X=***'],
+    ['X=v;ls', 'X=***'],
+    ['(X=v)', '(X=***'],
+    ['X= ls', 'X=***'],
+    ['ls x==y', 'ls x=***'],
+    ['echo ${HOME} X=v', 'echo ${***'],
+    [': ${X:-zq secret}', ': ${***'],
+    // round 4 (wkg4.7): an opener inside a quoted word
+    ['export "X=zq secret"', 'export "X=***'],
+    ['declare "m[k]=zq secret"', 'declare "m[k]=***'],
+    ['declare -A "a[k]=zq secret"', 'declare -A "a[k]=***'],
+    ["env 'X=zq secret' ls", "env 'X=***"],
+    ['local "X=zq secret"', 'local "X=***'],
+    ['readonly "X=zq;secret"', 'readonly "X=***'],
+    ['typeset "X=zq|secret"', 'typeset "X=***'],
+    ["export $'X=zq secret'", "export $'X=***"],
+    // plan 3: IFS, brace, escaped and quoted names
+    ['IFS=,; Y=1; export ${Y:+X=zq secret}', 'IFS=***'],
+    ['export ${Y:+X=zq secret}', 'export ${***'],
+    ['export `echo X=zq secret`', 'export `echo X=***'],
+    ['export {X=zq,Y=secret}', 'export {X=***'],
+    ['export X{,}=zqsecret', 'export X{,}=***'],
+    ['export \\X=zq secret', 'export \\X=***'],
+    ['export "X"=zqsecret', 'export "X"=***'],
+    ['export X\\=zqsecret', 'export X\\=***'],
+    // negatives
+    ['ls foo-bar', 'ls foo-bar'],
+    ['echo $(date) a-b', 'echo $(date) a-b'],
+    ['echo $HOME', 'echo $HOME'],
+    ['cat a]b', 'cat a]b'],
+    ['git push origin HEAD:main', 'git push origin HEAD:main'],
+    // out of scope (claude-factory-pwg3): a secret with no "=" and no "${" before it
+    ['printf -v X zqsecret', 'printf -v X zqsecret'],
+    ['curl -H "Authorization: Bearer zqsecret" x', 'curl -H "Authorization: Bearer zqsecret" x'],
   ])('%s', (i, o) => expect(m(i)).toBe(o))
   test.each([
     'export X=zqsecret',
@@ -203,21 +283,66 @@ describe('maskAssignments', () => {
     '(X=zqsecret ls)',
     'X+=zqsecret ls',
     'a[1]=zqsecret ls',
+    'a[' + 'k'.repeat(65) + ']=zqsecret ls',
+    'a[b[1]]=zqsecret ls',
+    'X=$(echo zqsecret) ls',
+    'X=`echo zqsecret` ls',
+    'm=([k]=zqsecret)',
+    '${X:=zqsecret}',
     'bash -c "GH_TOKEN=zqsecret gh pr list"',
     "sh -c 'X=zqsecret ls'",
     'eval "X=zqsecret ls"',
     'env -S "X=zqsecret ls"',
   ])('%s hides the value', i => expect(m(i)).not.toContain('zqsecret'))
+  test('each code unit after a value', () => {
+    const bad: string[] = []
+    for (let i = 0; i < 0x10000; i++) {
+      const c = String.fromCharCode(i)
+      if (m('X=zq' + c + 'secret ls') !== 'X=***') bad.push('A' + i)
+      if (m('a[k]=zq' + c + 'secret ls') !== 'a[k]=***') bad.push('B' + i)
+      if (m('bash -c "X=zq' + c + 'secret ls"') !== 'bash -c "X=***') bad.push('C' + i)
+      if (m(': ${X:-zq' + c + 'secret}') !== ': ${***') bad.push('D' + i)
+    }
+    expect(bad.slice(0, 10)).toEqual([])
+  })
   test('an unclosed subscript tail is linear', () => {
     const t = performance.now()
     m(' a['.repeat(1e5))
     expect(performance.now() - t).toBeLessThan(2000)
+    for (const i of [' $'.repeat(3e5), '='.repeat(9e5), ' a'.repeat(3e5)]) {
+      const t2 = performance.now()
+      m(i)
+      expect(performance.now() - t2).toBeLessThan(2000)
+    }
   })
   test('long rows are fast', () => {
     for (const i of ['X=' + '"'.repeat(1e5), 'a='.repeat(5e4), '"a='.repeat(4e4), "'a=".repeat(4e4)]) {
       const t = performance.now()
       m(i)
       expect(performance.now() - t).toBeLessThan(100)
+    }
+  })
+  test('long ]= and substitution rows stay linear', () => {
+    for (const i of [
+      ']='.repeat(1e5),
+      '"]='.repeat(1e5),
+      ' ${a:-'.repeat(1e5),
+      ' X=$('.repeat(1e5),
+      ' X="$('.repeat(1e5),
+      ' a[b['.repeat(1e5),
+      ' ${a['.repeat(1e5),
+      ' ${a:='.repeat(1e5),
+      ' Y=${X:-'.repeat(1e5),
+      ' Y="${'.repeat(1e5),
+      " X=$'".repeat(1e5),
+      ' X=$['.repeat(1e5),
+      ' X=' + 'a'.repeat(3e5),
+      ' X=a"'.repeat(1e5),
+      ' a=b=c'.repeat(1e5),
+    ]) {
+      const t = performance.now()
+      m(i)
+      expect(performance.now() - t).toBeLessThan(2000)
     }
   })
 })
