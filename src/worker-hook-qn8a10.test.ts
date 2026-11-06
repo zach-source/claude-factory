@@ -52,6 +52,7 @@ const denyRows = [
   'sudo -g DBX:-rootDBY+\\}} rm RB -rf /',
   'timeout -s DBX:-9DBY+\\}} rm RB -rf /',
   'env -u DBX:-ADBY+\\}} rm RB -rf /',
+  'sudo -u DBX:-root ls',
   'sudo -u DBX:-root rm RB',
   'sudo -u DBX:-root git RB push origin main',
 ]
