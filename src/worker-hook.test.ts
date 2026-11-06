@@ -11361,11 +11361,23 @@ test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slo
 }, 30_000)
 
 // claude-factory-jsoe: env -i with a closed reader command word does not run a bd word that is only its argument.
-test('denyReason allows env -i with a reader and a bd argument; every other bd form under env -i stays denied (claude-factory-jsoe)', () => {
+test('denyReason denies every bd word under env -i, a reader too; jsoe is a known gap (claude-factory-jsoe, qn8a.9.14)', () => {
   const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
-  for (const c of ['env -i grep -rn bd src', 'env -i cat bd', 'env -i printf bd', 'env -i wc -l bd'])
-    expect(ask(c)).toBeUndefined()
   for (const c of [
+    // known gap (jsoe): a false deny. A reader exemption was bypassed twice, so it stays removed.
+    'env -i grep -rn bd src',
+    'env -i cat bd',
+    'env -i printf bd',
+    'env -i wc -l bd',
+    // qn8a.9.14: xargs replaces the reader word at run time
+    'echo nice | xargs -I grep env -i grep bd comment x y',
+    'echo nice | xargs -Igrep env -i grep bd comment x y',
+    'echo nice | xargs -J grep env -i grep bd comment x y',
+    'echo nice | xargs -I grep env - grep bd comment x y',
+    "echo nice | xargs -I grep env -S '-i' grep bd comment x y",
+    "echo nice | xargs -I cat env -iS 'cat' bd comment x y",
+    'nice env -i grep bd c',
+    'X=1 env -i grep bd c',
     'env -i bd list',
     'env -i nice bd list',
     'env -i rg --pre bd x',
@@ -11387,9 +11399,10 @@ test('denyReason allows env -i with a reader and a bd argument; every other bd f
 // claude-factory-qn8a.9.13: the jsoe exemption is a closed grammar: env, one of -i - --ignore-environment, the reader word.
 test('denyReason keeps the env -i reader exemption closed (claude-factory-qn8a.9.13)', () => {
   const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
-  for (const c of ['env - grep -rn bd src', 'env --ignore-environment grep -rn bd src'])
-    expect(ask(c)).toBeUndefined()
   for (const c of [
+    'env - grep -rn bd src',
+    'env --ignore-environment grep -rn bd src',
+    "env -iS 'cat' bd comment x y",
     'env -i -u $ZZZ grep bd comment x y',
     'env -i -u ${ZZZ} grep bd comment x y',
     'env -i -u ${ZZZ:+x} grep bd comment x y',
@@ -11420,11 +11433,11 @@ test('denyReason keeps the env -i reader exemption closed (claude-factory-qn8a.9
     "env -i -S '-u' grep bd comment x y",
   ])
     expect(ask(c)).toBe(BEADS_ACTOR_REASON)
-  expect(ask("env -iS 'cat' bd comment x y")).toBeUndefined()
   for (const c of [
     'env -i -u $ZZZ grep HOME=/h /opt/bin/factory mail r1 manager x',
     'env -i -{i,u} grep /opt/bin/factory mail r1 manager x',
     'env -i -u $ZZZ cat factory report r1 18 approve x',
+    'echo nice | xargs -I grep env -i grep factory mail r1 manager x',
   ])
     expect(ask(c)).toBe(FACTORY_FROM_REASON)
 })

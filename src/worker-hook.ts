@@ -3037,9 +3037,6 @@ function envOptionScan(
   return { cmdStart: words.length, clearsAll }
 }
 
-// claude-factory-jsoe: readers that run no bd word they get as an argument. rg is out (--pre runs a command).
-const BD_READERS = new Set(['grep', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'wc', 'ls', 'echo', 'printf'])
-
 /**
  * This function returns true when a word in `words` sets, clears, or (re-)exports BEADS_ACTOR.
  *
@@ -3069,10 +3066,8 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
-  // claude-factory-jsoe: the index of each bd word, the count of clear-all env scans, and the reader start of the last one
+  // the index of each bd word
   const bdIdx: number[] = []
-  let clearScans = 0
-  let readerStart = -1
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (w.startsWith(g.name + '=')) return true
@@ -3093,21 +3088,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
       if (scan === true) return true
       if (scan.clearsAll) {
         envClearsAll = true
-        clearScans++
         const { cmdStart } = scan
-        // claude-factory-jsoe: a reader command word with no dollar, backtick or paren word after it runs no bd word.
-        // claude-factory-qn8a.9.13: this is a closed grammar. The reader word must follow one
-        // clear-all option. No word from env to the segment end can hold $, a backtick or a paren.
-        // The shell can add or remove a word, so cmdStart alone is not safe.
-        const reader =
-          cmdStart === i + 2 &&
-          ['-i', '-', '--ignore-environment'].includes(words[i + 1]!) &&
-          BD_READERS.has(words[cmdStart]!) &&
-          !words.slice(i).some(x => /[$`()]/.test(x))
-        if (reader) {
-          readerStart = cmdStart
-          continue
-        }
         // claude-factory-igj.8: scan every word from cmdStart to the end of this segment, not
         // only words[cmdStart]. A wrapper word (env, nice, nohup, sudo, and so on) can sit
         // between env's own options and the real sh/bash/zsh/dash or eval word.
@@ -3120,8 +3101,9 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   if (!envClearsAll) return false
   if (runsBd) return true
   if (bdIdx.length === 0) return false
-  // claude-factory-jsoe: one clear-all env, a reader command word, and every bd word after it
-  return !(clearScans === 1 && readerStart >= 0 && bdIdx.every(k => k > readerStart))
+  // ponytail: claude-factory-jsoe is a known gap. `env -i grep -rn bd src` denies. A reader exemption was
+  // bypassed twice (qn8a.9.13, qn8a.9.14), so a bd word under a clear-all env always denies.
+  return true
 }
 
 /**
