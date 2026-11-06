@@ -2161,7 +2161,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 }
 
 /**
- * Two PreToolUse entries that run `bun` on `file`: one for Bash, one for the file tools (claude-factory-g4du). It denies rm -r/-rf, a cd+rm chain, an rm with a
+ * Three PreToolUse entries that run `bun` on `file`: Bash, the file-write tools (claude-factory-g4du), and Read and Grep (claude-factory-qn8a.19). It denies rm -r/-rf, a cd+rm chain, an rm with a
  * $variable or glob target, and an rm outside the worktree root. It gives a reason.
  * `contexts` names kube contexts the rig reserves for a person alone (claude-factory-25z).
  * When the list is not empty, the hook's own argv carries it: `--person-only-contexts a,b`.
@@ -2188,6 +2188,9 @@ const denyHook = (
       type: 'command',
       command: [
         sq(bun),
+        // claude-factory-qn8a.21: bun reads bunfig.toml and the env file from the worktree; a preload there turns the hook off.
+        '--no-env-file',
+        '--config=/dev/null',
         sq(file),
         '--harness',
         harness,
@@ -2202,6 +2205,8 @@ const denyHook = (
   return [
     { matcher: 'Bash', hooks },
     { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks },
+    // claude-factory-qn8a.19: Read and Grep must not reach the harness token files
+    { matcher: 'Read|Grep', hooks },
   ]
 }
 

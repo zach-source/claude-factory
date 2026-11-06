@@ -376,6 +376,15 @@ A second PreToolUse entry runs the same hook for the Write, Edit, MultiEdit and 
 
 The hook checks the lexical path and the real path, in lower case. A write inside the worktree passes.
 
+A third entry runs the same hook for the Read and Grep tools (claude-factory-qn8a.19). It denies a path outside the
+worktree that names a harness token file or a token dir:
+- token files: `auth.json`, `.credentials.json`, `.claude.json`
+- token dirs: `~/.codex`, `~/.claude`, `$CODEX_HOME`, `$CLAUDE_CONFIG_DIR`
+- a Grep `path` that holds one of these dirs
+
+The Bash check (`src/token-guard.ts`) denies the same names in a command and the macOS keychain `security` reads.
+It does not see names that a command builds at run time (claude-factory-qn8a.72).
+
 The hook also denies an equivalent, disguised form of each command above:
 
 - a `gh api` call whose endpoint is `/graphql` or a full `https://.../graphql` URL, not only
