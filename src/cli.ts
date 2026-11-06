@@ -5499,6 +5499,21 @@ const kickGc = () => {
   }).unref()
 }
 
+/**
+ * `factory wiki refresh` at most every FACTORY_WIKI_REFRESH_MIN minutes (a positive number, default 30).
+ * It does nothing while $HOME/wiki/.git is missing or wiki.lock is held. It writes the stamp before the spawn,
+ * so a slow pass gets no second one. A halt does not stop it: the pages show a halted factory too.
+ */
+const kickWiki = () => {
+  if (!existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return
+  const min = Number(process.env.FACTORY_WIKI_REFRESH_MIN)
+  const stamp = join(HOME, 'wiki-refresh.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (age < (min > 0 ? min : 30) * 60_000) return
+  writeFileSync(stamp, '')
+  spawnChild(CLI, ['wiki', 'refresh'], { detached: true, stdio: 'ignore', env: kickEnv(process.env, HOME) }).unref()
+}
+
 // ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
 // Everything below reads real git, gh, bd and herdr state into facts. It then carries out the plan.
 
@@ -6099,6 +6114,7 @@ async function tick(isPatrol = false) {
       kickGc()
       kickGcWorktrees()
       kickSweeps()
+      kickWiki()
     }
   }
 }

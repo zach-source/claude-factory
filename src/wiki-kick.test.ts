@@ -1,0 +1,86 @@
+// `factory tick` starts `factory wiki refresh` (claude-factory-tx6c.5). kickWiki in src/cli.ts is the only
+// caller. It runs at most once in FACTORY_WIKI_REFRESH_MIN minutes (default 30), only when wiki/.git exists,
+// and also while the factory is halted. The tests follow src/gc-kick.test.ts.
+import { afterEach, expect, test } from 'bun:test'
+import { existsSync, mkdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const CLI = join(import.meta.dir, '..', 'bin', 'factory')
+const dir = join(realpathSync(tmpdir()), `wiki-kick-${process.pid}`)
+let n = 0
+let home = ''
+
+afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+const factory = (args: string[], env: Record<string, string> = {}) => {
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_NO_KICK, ...laptop } = process.env
+  const p = Bun.spawnSync([CLI, ...args], {
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', ...env },
+  })
+  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+}
+const stamp = () => join(home, 'wiki-refresh.stamp')
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** a new home with one rig; `repo` is a wiki repo with the seed pages when true */
+function setup(withWiki = true) {
+  home = join(dir, `home${++n}`)
+  mkdirSync(home, { recursive: true })
+  const repo = join(dir, `repo${n}`)
+  mkdirSync(repo, { recursive: true })
+  writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: 'acme', repo, factory: join(dir, 'f.ts') }]))
+  if (withWiki) expect(factory(['wiki', 'init'], { FACTORY_NO_KICK: '1' }).code).toBe(0)
+}
+async function waitFor(path: string, tries = 150) {
+  for (let i = 0; i < tries && !existsSync(path); i++) await sleep(100)
+}
+
+test('AC7 a tick with a wiki repo and no stamp writes the stamp and the rig page', async () => {
+  setup()
+  factory(['tick'])
+  await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
+  expect(existsSync(stamp())).toBe(true)
+  expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
+}, 30_000)
+
+test('AC7 a tick without wiki/.git makes no stamp and no wiki dir', async () => {
+  setup(false)
+  factory(['tick'])
+  await sleep(1500)
+  expect(existsSync(stamp())).toBe(false)
+  expect(existsSync(join(home, 'wiki'))).toBe(false)
+})
+
+test('AC7 a halted factory still gets the refresh', async () => {
+  setup()
+  writeFileSync(
+    join(home, 'halt.json'),
+    JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
+  )
+  factory(['tick'])
+  await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
+  expect(existsSync(stamp())).toBe(true)
+  expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
+}, 30_000)
+
+test('AC7 a fresh stamp starts no refresh', async () => {
+  setup()
+  writeFileSync(stamp(), '')
+  const t = statSync(stamp()).mtimeMs
+  factory(['tick'])
+  await sleep(1500)
+  expect(statSync(stamp()).mtimeMs).toBe(t)
+  expect(existsSync(join(home, 'wiki', 'rigs'))).toBe(false)
+})
+
+test('AC7 FACTORY_WIKI_REFRESH_MIN=1 and a stamp 2 min old: the tick refreshes', async () => {
+  setup()
+  writeFileSync(stamp(), '')
+  const old = new Date(Date.now() - 120_000)
+  utimesSync(stamp(), old, old)
+  factory(['tick'], { FACTORY_WIKI_REFRESH_MIN: '1' })
+  await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
+  expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
+  expect(statSync(stamp()).mtimeMs).toBeGreaterThan(old.getTime() + 60_000)
+}, 30_000)
