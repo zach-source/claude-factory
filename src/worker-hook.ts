@@ -163,7 +163,7 @@ export const APPROVE_REASON =
 // claude-factory-hoz8
 export const GLAB_APPROVE_REASON =
   'The factory denies this command: the factory has no GitLab reviewer identity, so only a person ' +
-  "approves a merge request. Post a note instead: glab mr note N -m '<text>'. This hook also denies a " +
+  'approves a merge request. Post a note instead: glab api --method POST projects/:id/merge_requests/<n>/notes -F body=@<path>. This hook also denies a ' +
   'glab approve call it cannot read. Do not retry this command.'
 
 // claude-factory-zl5.22

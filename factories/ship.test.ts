@@ -681,7 +681,7 @@ test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
       'ACn: not checked (',
       'ACs: none in plan',
       'ACn: waived (',
-      "--deps discovered-from:<bead> -d '<evidence>'",
+      '--deps discovered-from:<bead> --body-file <path>',
       'bd children <bead>',
       'no factory label',
       'When you report published (deploy) or healthy (soak), never leave the bead open with the ship label',
@@ -751,7 +751,7 @@ test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => 
   for (const t of [
     'bd list -l verify:live --status open',
     '-l verify:live --deps discovered-from:<bead>',
-    'the output to see, its trigger, the release version',
+    'the output to see, its trigger and the release version',
     'ACn: not checked (not fired yet: filed <id>)',
   ])
     expect(p, t).toContain(t)
@@ -763,7 +763,8 @@ test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => 
   expect(s).not.toContain('-l factory')
   expect(p.indexOf("bd create 'verify live")).toBeLessThan(p.indexOf('bd close <bead>'))
   expect(s).toContain("bd create 'verify live: <output> (<release version>)'")
-  expect(s).toContain("-d '<the output to see, its trigger, the release version>'")
+  expect(s).toContain('--body-file <path>')
+  expect(s).toContain('(the file holds the output to see, its trigger and the release version)')
   expect(s).not.toContain('"')
   expect(soakSentence('Put each value in single quotes')).toContain("write each ' in it as '\\''")
 })

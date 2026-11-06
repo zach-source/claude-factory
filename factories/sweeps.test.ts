@@ -122,7 +122,7 @@ test('maintain leaves advisories to the advisories sweep and keeps end-of-life r
 
 test('only the monitor prompt carries the Mimir query form, before the guard note', () => {
   const p = (id: string) => (sweeps.nodes as Record<string, { prompt: string }>)[id]!.prompt
-  expect(p('monitor')).toContain("--post-data='query=<PromQL>'")
+  expect(p('monitor')).toContain("--post-data='query=PROMQL'")
   expect(p('monitor').indexOf('X-Scope-OrgID')).toBeLessThan(
     p('monitor').indexOf('The factory labels what you file'),
   )

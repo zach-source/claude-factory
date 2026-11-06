@@ -102,8 +102,10 @@ test('every brief of lifecycle, ship, sweeps and release has no double-quoted pl
       const stripped = text.split('{"repo":"<owner>/<repo>"').join('')
       expect(stripped.includes('"<') ? node + ': has "<' : '').toBe('')
       for (const s of [
-        "'<summary for the next station>'",
-        "'<question>'",
+        'report r1 1 <outcome> --summary-file <path>',
+        'manager --text-file <path>',
+        '--body-file <path>',
+        'Use only plain words there.',
         "'<query>'",
         "'\\''",
         'single quotes',
@@ -122,7 +124,8 @@ test('every brief of lifecycle, ship, sweeps and release has no double-quoted pl
  */
 export function quotedSlots(text: string): string[] {
   const hits: string[] = []
-  const quoted = /(['"])([^'"\n]*<[^<>\n]+>[^'"\n]*)\1/g
+  // an apostrophe inside a word (run's) does not open a quote
+  const quoted = /(?<!\w)(['"])([^'"\n]*<[^<>\n]+>[^'"\n]*)\1(?!\w)/g
   for (const line of text.split('\n')) {
     for (const m of line.matchAll(quoted)) {
       const before = line.slice(0, m.index)

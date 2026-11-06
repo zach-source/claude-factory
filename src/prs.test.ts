@@ -1480,7 +1480,12 @@ test('parseGitlabLabeled gives labelPass the fields gh pr list does', () => {
 test('forgeNote tells a GitLab worker the glab equivalents, and a GitHub worker nothing', () => {
   const note = forgeNote('gitlab.example.com').join('\n')
   expect(note).toContain('GitLab at gitlab.example.com')
-  for (const gl of ['glab mr create', 'glab mr note', 'glab ci status', 'glab api'])
+  for (const gl of [
+    'glab mr create',
+    'merge_requests/<n>/notes -F body=@<path>',
+    'glab ci status',
+    'glab api',
+  ])
     expect(note).toContain(gl)
   expect(note).toContain('--target-branch')
   expect(note).toContain('only a person approves')
