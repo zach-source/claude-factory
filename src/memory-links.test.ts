@@ -144,7 +144,10 @@ test('tryRead gives null on a link or a missing file and rethrows other errors',
   symlinkSync(secret, link)
   expect(tryRead(link)).toBeNull()
   expect(tryRead(join(dir, 'inbox', 'missing.md'))).toBeNull()
-  expect(() => tryRead(join(dir, 'inbox'))).toThrow(/EISDIR/)
+  expect(tryRead(join(dir, 'inbox'))).toBeNull()
+  const locked = join(dir, 'inbox', 'locked.md')
+  writeFileSync(locked, 'x', { mode: 0 })
+  if (process.getuid?.() !== 0) expect(() => tryRead(locked)).toThrow(/EACCES/)
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -197,3 +200,52 @@ test('snapshot puts no text from a linked CORE.md, topic note, index or usage lo
   expect(existsSync(join(x, 'topic', 'ok.md'))).toBe(true)
   rmSync(root, { recursive: true, force: true })
 })
+
+test('snapshot skips a directory and a FIFO that stand in for a note, and does not hang', () => {
+  const { root, dir } = linkStore()
+  writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')
+  mkdirSync(join(dir, 'inbox', 'x.md'))
+  expect(Bun.spawnSync(['mkfifo', join(dir, 'inbox', 'y.md')]).exitCode).toBe(0)
+  expect(Bun.spawnSync(['mkfifo', join(dir, 'CORE.md')]).exitCode).toBe(0)
+  const out = join(root, 'snap.tgz')
+  expect(snapshot(dir, undefined, out)).not.toBeNull()
+  const x = join(root, 'x')
+  mkdirSync(x)
+  expect(Bun.spawnSync(['tar', '-xzf', out, '-C', x]).exitCode).toBe(0)
+  expect(existsSync(join(x, 'topic', 'ok.md'))).toBe(true)
+  expect(tryRead(join(dir, 'inbox', 'x.md'))).toBeNull()
+  expect(tryRead(join(dir, 'CORE.md'))).toBeNull()
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('dropLinks does not enter a directory that a second process swaps for a link, and removes no outside link', async () => {
+  for (let round = 0; round < 5; round++) {
+    const { root, dir } = linkStore()
+    const outside = join(root, 'outside')
+    mkdirSync(join(outside, 'deep'), { recursive: true })
+    symlinkSync('/etc/hosts', join(outside, 'victim'))
+    symlinkSync('/etc/hosts', join(outside, 'deep', 'victim2'))
+    mkdirSync(join(dir, 'big'))
+    for (let i = 0; i < 20000; i++) writeFileSync(join(dir, 'big', 'f' + i), '')
+    mkdirSync(join(dir, 'sub'))
+    const sub = JSON.stringify(join(dir, 'sub'))
+    const swap = Bun.spawn([
+      'bun',
+      '-e',
+      "const fs=require('fs');await Bun.sleep(3);fs.rmdirSync(" +
+        sub +
+        ');fs.symlinkSync(' +
+        JSON.stringify(outside) +
+        ',' +
+        sub +
+        ')',
+    ])
+    const before = process.cwd()
+    dropLinks(dir)
+    await swap.exited
+    expect(process.cwd()).toBe(before)
+    expect(lstatSync(join(outside, 'victim')).isSymbolicLink()).toBe(true)
+    expect(lstatSync(join(outside, 'deep', 'victim2')).isSymbolicLink()).toBe(true)
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 60000)

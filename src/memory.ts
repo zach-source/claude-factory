@@ -5,6 +5,7 @@ import {
   constants,
   cpSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -15,6 +16,7 @@ import {
   rmSync,
   statSync,
   readlinkSync,
+  realpathSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -371,17 +373,25 @@ export function parseLong(text: string): LongEntry[] {
   })
 }
 
-const { O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_NOFOLLOW } = constants
+const { O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_NOFOLLOW, O_NONBLOCK } = constants
 
 /** store I/O: a link at the last path part throws ELOOP, so a link that a live process plants is never read or written through (claude-factory-eqxi) */
-export const readStore = (f: string, encoding: 'utf8') =>
-  readFileSync(f, { encoding, flag: O_RDONLY | O_NOFOLLOW })
-/** readStore for a reader: null when the path is a link (ELOOP) or gone (ENOENT), so the reader skips it; other errors throw */
+export const readStore = (f: string, encoding: 'utf8') => {
+  const fd = openSync(f, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  try {
+    if (!fstatSync(fd).isFile())
+      throw Object.assign(new Error('not a regular file: ' + f), { code: 'ENOTREG' })
+    return readFileSync(fd, { encoding })
+  } finally {
+    closeSync(fd)
+  }
+}
+/** readStore for a reader: null when the path is a link (ELOOP), gone (ENOENT) or not a regular file (ENOTREG: a directory or a FIFO), so the reader skips it; other errors throw */
 export const tryRead = (f: string): string | null => {
   try {
     return readStore(f, 'utf8')
   } catch (e) {
-    if (['ELOOP', 'ENOENT'].includes((e as NodeJS.ErrnoException).code ?? '')) return null
+    if (['ELOOP', 'ENOENT', 'ENOTREG'].includes((e as NodeJS.ErrnoException).code ?? '')) return null
     throw e
   }
 }
@@ -405,19 +415,39 @@ const regular = (f: string) => {
   }
 }
 
-/** unlinks every symlink under dir (not the top-level .git) and returns what each pointed at; never follows one (claude-factory-eqxi) */
-export function dropLinks(dir: string): { path: string; target: string }[] {
-  const out: { path: string; target: string }[] = []
-  const walkDir = (d: string) => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      const f = join(d, e.name)
+/** unlinks every symlink under dir (not the top-level .git) and returns what each pointed at; never follows one (claude-factory-eqxi).
+ * It enters a directory with chdir and checks cwd. It reads and unlinks one name at a time. A directory that a live process swaps for a link is not entered: it comes back with skipped true */
+export function dropLinks(dir: string): { path: string; target: string; skipped?: true }[] {
+  const out: { path: string; target: string; skipped?: true }[] = []
+  if (!existsSync(dir)) return out
+  const start = process.cwd()
+  const base = realpathSync(dir)
+  const scan = (here: string) => {
+    for (const e of readdirSync('.', { withFileTypes: true })) {
+      const rel = relative(base, join(here, e.name))
       if (e.isSymbolicLink()) {
-        out.push({ path: relative(dir, f), target: readlinkSync(f) })
-        unlinkSync(f)
-      } else if (e.isDirectory() && !(d === dir && e.name === '.git')) walkDir(f)
+        out.push({ path: rel, target: readlinkSync(e.name) })
+        unlinkSync(e.name)
+      } else if (e.isDirectory() && !(here === base && e.name === '.git')) {
+        const sub = join(here, e.name)
+        try {
+          process.chdir(e.name)
+        } catch {
+          out.push({ path: rel, target: '', skipped: true })
+          continue
+        }
+        if (process.cwd() === sub) scan(sub)
+        else out.push({ path: rel, target: '', skipped: true })
+        process.chdir(here)
+      }
     }
   }
-  if (existsSync(dir)) walkDir(dir)
+  try {
+    process.chdir(base)
+    scan(base)
+  } finally {
+    process.chdir(start)
+  }
   return out
 }
 
