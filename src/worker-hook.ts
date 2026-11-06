@@ -543,6 +543,8 @@ interface ScanState {
   now: () => number
   /** claude-factory-abs: set when spendWork passed the deadline. scanReason then returns SCAN_TIME_REASON, allow included. */
   timedOut: boolean
+  /** claude-factory-c1jb: alias rescans that denyAt already allowed, by their inputs. A repeat of one is skipped. */
+  aliasSeen: Set<string>
 }
 
 // claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
@@ -7939,6 +7941,7 @@ export function scanReason(
     deadline,
     now: gate?.now ?? Date.now,
     timedOut: false,
+    aliasSeen: new Set(),
   }
   const deferred = () =>
     state.stdinDeferred
@@ -8101,11 +8104,25 @@ function shellAliasReason(
       if (quoted.includes(null)) return SHELL_ALIAS_REASON
       texts.push(quoted.join(' '))
     }
-    const reason = denyAt(texts.join(' ; '), root, personOnly, gate, depth, state, moved, ghMoved, [
-      ...stack,
-      name,
-    ])
+    // claude-factory-c1jb: n alias words in one segment reach the same rescan text in n! orders. denyAt reads the
+    // stack only as a set (includes, length), so one allowed rescan covers every order. The key holds every other input.
+    const text = texts.join(' ; ')
+    const o = state.outer
+    const key = [
+      moved,
+      ghMoved,
+      depth,
+      o.flags,
+      o.rmfind,
+      o.ifs,
+      state.aliasArgsOff,
+      [...stack, name].sort().join('\0'),
+      text,
+    ].join('\u0001')
+    if (state.aliasSeen.has(key)) continue
+    const reason = denyAt(text, root, personOnly, gate, depth, state, moved, ghMoved, [...stack, name])
     if (reason) return reason
+    state.aliasSeen.add(key)
   }
   return undefined
 }
