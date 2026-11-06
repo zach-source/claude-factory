@@ -381,7 +381,7 @@ const FLUX_DENY_LIVE = [
   'flux --context acme "" suspend ks apps',
   'flux --context acme -- suspend ks apps',
   'flux --context acme bootstrap github --owner o',
-  'flux --context acme create source git s --url u',
+  'flux --context acme create source oci s --url u',
   'flux --context acme install',
   'flux --context acme migrate',
   'flux --context acme plugin install operator',
@@ -396,11 +396,11 @@ const FLUX_DENY_LIVE = [
   'eval "flux --context acme resume ks apps"',
   '/usr/local/bin/flux --context acme suspend ks apps',
   'flux \\\n --context acme suspend ks apps',
-  'flux --context acme create source git s --export=false',
+  'flux --context acme create source oci s --export=false',
   'flux --context acme install --export --export=false',
   'flux --context acme bootstrap github --export',
-  'flux --context acme create source git s --export=1',
-  'flux --context acme create source git s --export=$X',
+  'flux --context acme create source oci s --export=1',
+  'flux --context acme create source oci s --export=$X',
   'nice -n 5 flux --context acme suspend ks apps',
   'timeout 30 flux --context acme suspend ks apps',
   'command flux --context acme suspend ks apps',
@@ -452,7 +452,7 @@ const FLUX_ALLOW_LIVE = [
   'flux',
   'flux --help',
   'flux --context kind-kind suspend ks apps',
-  'flux create source git s --url u --export',
+  'flux create source oci s --url u --export',
   'flux --context acme install --export',
   'flux --context acme create ks apps --source s --export=true',
   'grep -rn flux src/',
@@ -505,13 +505,15 @@ test.each([...FLUX_ALLOW_LIVE, ...FLUX_ALLOW_READ_VERB, ...FLUX_FLAG_ALLOW])(
   },
 )
 
-test.each([...FLUX_DENY_LIVE, ...FLUX_DENY_WRAPPED_VERB, ...FLUX_ALLOW_LIVE])(
-  'denyReason allows a flux command %j when personOnly is empty or absent',
-  cmd => {
-    expect(denyReason(cmd)).toBeUndefined()
-    expect(denyReason(cmd, undefined, [])).toBeUndefined()
-  },
-)
+// The CTX= row is out: another guard denies an assignment before an unknown command with a variable word.
+test.each([
+  ...FLUX_DENY_LIVE.filter(c => !c.startsWith('CTX=')),
+  ...FLUX_DENY_WRAPPED_VERB,
+  ...FLUX_ALLOW_LIVE,
+])('denyReason allows a flux command %j when personOnly is empty or absent', cmd => {
+  expect(denyReason(cmd)).toBeUndefined()
+  expect(denyReason(cmd, undefined, [])).toBeUndefined()
+})
 
 // A dynamic word before a flux verb names a hidden tool. A flux verb in the list fails closed.
 test.each(['$F --context acme suspend ks apps', '$F suspend ks apps'])(

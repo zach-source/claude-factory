@@ -83,7 +83,7 @@ export const REASON =
 // claude-factory-25z
 export const LIVE_REASON =
   'The factory denies this command: in this rig only a person changes the live kube contexts. ' +
-  'A kubectl, ko or helm command that mutates state there is refused, including one that names no ' +
+  'A kubectl, ko, helm or flux command that mutates state there is refused, including one that names no ' +
   '--context, or a --context or --cluster whose value is not a literal name (fail closed: the ' +
   'current context is unknown here). This guard matches context and cluster names only. ' +
   'Do not retry this command. Report blocked: "parked, waiting on: <the exact command>".'
@@ -4165,6 +4165,74 @@ const KO_MUTATING_VERBS = new Set(['apply', 'create', 'delete', 'run'])
 // claude-factory-25z.13: `del` and `un` are helm's own aliases for `uninstall`.
 const HELM_MUTATING_VERBS = new Set(['install', 'upgrade', 'uninstall', 'delete', 'del', 'un', 'rollback'])
 
+// claude-factory-qn8a.17: the flux CLI (v2.9.5). Names are exact: cobra has no prefix match.
+const FLUX_VALUE_FLAGS = new Set([
+  '--as',
+  '--as-group',
+  '--as-uid',
+  '--as-user-extra',
+  '--cache-dir',
+  '--certificate-authority',
+  '--client-certificate',
+  '--client-key',
+  '--cluster',
+  '--context',
+  '--kube-api-burst',
+  '--kube-api-qps',
+  '--kubeconfig',
+  '-n',
+  '--namespace',
+  '--server',
+  '--timeout',
+  '--tls-server-name',
+  '--token',
+  '--user',
+])
+const FLUX_BOOL_FLAGS = new Set([
+  '--disable-compression',
+  '--insecure-skip-tls-verify',
+  '--ns-follows-kube-context',
+  '--verbose',
+  '-h',
+  '--help',
+  '-v',
+  '--version',
+])
+const FLUX_READ_VERBS = new Set([
+  'build',
+  'check',
+  'completion',
+  'debug',
+  'diff',
+  'envsubst',
+  'events',
+  'export',
+  'get',
+  'help',
+  'list',
+  'logs',
+  'pull',
+  'stats',
+  'trace',
+  'tree',
+  'version',
+])
+const FLUX_MUTATING_VERBS = new Set([
+  'bootstrap',
+  'create',
+  'delete',
+  'install',
+  'migrate',
+  'plugin',
+  'push',
+  'reconcile',
+  'resume',
+  'suspend',
+  'tag',
+  'trigger',
+  'uninstall',
+])
+
 /**
  * This function finds each value of a flag in `names`, in word order. A flag can use the
  * `--flag value` form. It can also use the `--flag=value` form.
@@ -4348,23 +4416,24 @@ function contextDenied(ctx: string | undefined, personOnly: string[]): boolean {
 }
 
 /**
- * Check if `cmd` (a kubectl, ko or helm command) changes state at a context in `personOnly`.
+ * Check if `cmd` (a kubectl, ko, helm or flux command) changes state at a context in `personOnly`.
  * Return true for that case, and for a command with no named context (fail closed: this function
  * does not know the current context).
  * Also return true when an unknown flag makes the verb search uncertain, and a later word before
  * `--` names a mutating verb (claude-factory-25z.6). This hook does not know every global flag that
  * takes a value word. An unknown flag must not hide a mutating verb that follows it.
  */
-function liveApplyDenied(cmd: string[], personOnly: string[]): boolean {
+function liveApplyDenied(cmd: string[], personOnly: string[], strict = false): boolean {
   const scan = (skipBlank: boolean): boolean =>
-    liveApplyDeniedOn(cmd, personOnly, skipBlank) ||
-    scanWithoutRedirects(cmd, dropped => liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly, skipBlank)) ===
-      true
+    liveApplyDeniedOn(cmd, personOnly, skipBlank, strict) ||
+    scanWithoutRedirects(cmd, dropped =>
+      liveApplyDeniedOn([cmd[0]!, ...dropped], personOnly, skipBlank, strict),
+    ) === true
   // claude-factory-t1xo: the second pass skips a blank word at the verb and sub slots, like cobra.
   return scan(false) || (cmd.slice(1).some(isBlankWord) && scan(true))
 }
 
-function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = false): boolean {
+function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = false, strict = false): boolean {
   const b = baseWord(cmd[0]!)
   const tail = cmd.slice(1)
   if (b === 'kubectl') {
@@ -4441,6 +4510,30 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
     if (!mutating) return false
     const ctx = flagValue(cmd, new Set(['--kube-context']))
     return contextDenied(ctx, personOnly)
+  }
+  if (b === 'flux') {
+    const { index: vi, uncertain } = firstVerbIndex(tail, FLUX_VALUE_FLAGS, FLUX_BOOL_FLAGS, skipBlank)
+    const verb = vi >= 0 ? tail[vi]! : undefined
+    // ponytail: only the mutating-verb list covers these cases: an unknown verb or plugin name
+    // behind a wrapper that commandAnchors does not know ('caffeinate flux ... zzz'), a dynamic
+    // tool word ('$F zzz'), and a short-flag cluster ('-nns'). Upgrade: list more wrappers.
+    let mutating = verb !== undefined && (dynamicWord(verb) || FLUX_MUTATING_VERBS.has(verb))
+    if (!mutating && uncertain) mutating = hasMutatingWordBeforeDashDash(tail, FLUX_MUTATING_VERBS)
+    if (!mutating && strict && verb !== undefined) mutating = uncertain || !FLUX_READ_VERBS.has(verb)
+    if (!mutating) return false
+    // `flux create|install ... --export` prints YAML and never reads the cluster. Only the last
+    // `--export` word before `--` counts, and only a bare or `=true` form.
+    if (verb === 'create' || verb === 'install') {
+      let exp: string | undefined
+      for (const w of tail) {
+        if (w === '--') break
+        if (w === '--export' || w.startsWith('--export=')) exp = w
+      }
+      if (exp === '--export' || exp === '--export=true') return false
+    }
+    if (contextDenied(flagValue(cmd, new Set(['--context'])), personOnly)) return true
+    const cluster = flagValue(cmd, new Set(['--cluster']))
+    return cluster !== undefined && (unknownFlagValue(cluster) || personOnly.includes(cluster))
   }
   return false
 }
@@ -7442,7 +7535,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
 }
 
 /**
- * True when a word in `words` is a bare `kubectl`, `ko` or `helm` token. From that word on, the
+ * True when a word in `words` is a bare `kubectl`, `ko`, `helm` or `flux` token. From that word on, the
  * words must start a mutating command denied by `personOnly`.
  * claude-factory-25z.12: this hook does not know every wrapper by name (`eval`, `find -exec`,
  * `xargs`, `timeout` with flags, `watch`, `nix shell ... -c`, `direnv exec`). A wrapper it does not
@@ -7451,9 +7544,14 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
  * path, and an unrelated flag value.
  */
 function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
+  const anchors = commandAnchors(words)
   for (let j = 0; j < words.length; j++) {
     const bw = baseWord(words[j]!)
-    if ((bw === 'kubectl' || bw === 'ko' || bw === 'helm') && liveApplyDenied(words.slice(j), personOnly)) {
+    if (
+      (bw === 'kubectl' || bw === 'ko' || bw === 'helm' || bw === 'flux') &&
+      // flux fails closed on an unknown verb, but only where a command really starts.
+      liveApplyDenied(words.slice(j), personOnly, anchors.includes(j))
+    ) {
       return true
     }
   }
@@ -7463,10 +7561,10 @@ function anyLiveApplyWord(words: string[], personOnly: string[]): boolean {
 /**
  * Returns true when `liveApplyDenied` denies `cmd`, with `tool` substituted at its own position 0.
  * The `anyDynamicLiveApplyReason` function does not know which of `kubectl`, `ko` or `helm` a dynamic word resolves to at run time.
- * This function checks all 3 tools. It fails closed when any one of them is denied (claude-factory-p43v.16).
+ * This function checks all 4 tools. It fails closed when any one of them is denied (claude-factory-p43v.16).
  */
 function anyToolLiveApplyDenied(tail: string[], personOnly: string[]): boolean {
-  return ['kubectl', 'ko', 'helm'].some(tool => liveApplyDenied([tool, ...tail], personOnly))
+  return ['kubectl', 'ko', 'helm', 'flux'].some(tool => liveApplyDenied([tool, ...tail], personOnly))
 }
 
 /**
