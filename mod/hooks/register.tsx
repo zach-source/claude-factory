@@ -114,7 +114,7 @@ const BD_READ = new Set([
 function bdWrite(command: string): boolean {
   const s = command.replace(/[\\'"]/g, '')
   if (/--add-label|--set-labels/.test(s)) return true
-  for (const m of s.matchAll(/\bbd\b/g)) {
+  for (const m of s.matchAll(/\bbd\b/gi)) {
     const verb = /^\s*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!
     if (!BD_READ.has(verb)) return true
   }
