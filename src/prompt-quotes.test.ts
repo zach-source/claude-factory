@@ -223,6 +223,13 @@ test('forge note and the glab approve reason use the file form for a note text',
   }
 })
 
+test('a factory prompt writes a quoted placeholder as <word>, never as an all-caps word', () => {
+  for (const f of ['lifecycle', 'ship', 'sweeps', 'release']) {
+    const src = readFileSync(join(root, 'factories', f + '.ts'), 'utf8')
+    expect([f, /(?:='|\s')(?:[A-Za-z-]+: )?[A-Z_]{4,}(?:[ '/])/.exec(src)?.[0] ?? '']).toEqual([f, ''])
+  }
+})
+
 test('each gh pr create and gh pr review in a factory prompt names a body file', () => {
   let n = 0
   for (const f of ['lifecycle', 'ship', 'sweeps']) {
