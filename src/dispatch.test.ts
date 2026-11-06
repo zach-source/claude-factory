@@ -724,6 +724,28 @@ test('a stale-kind proposal, or a shipped one with no stale label, still starts 
   expect(runDirs()).toHaveLength(1)
 })
 
+// claude-factory-9kou: dispatch enforces the holds rejected, human and held:* in code
+test('a factory bead with a hold label: dispatch starts no run and records the skip reason (claude-factory-9kou)', () => {
+  for (const hold of ['rejected', 'human', 'held:cluster:widget', 'held:station']) {
+    precheckReset({ labels: ['factory', hold] })
+    expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+    expect(runDirs()).toHaveLength(0)
+    const rows = JSON.parse(readFileSync(join(phome, 'dispatch.json'), 'utf8')) as {
+      id: string
+      skip?: string
+    }[]
+    expect(rows.some(r => r.skip === `held: ${hold} (factory queue releases it)`)).toBe(true)
+  }
+})
+
+test('a label that only resembles a hold still starts (claude-factory-9kou)', () => {
+  for (const label of ['humane', 'held', 'rejected-by', 'xheld:y', 'Human']) {
+    precheckReset({ labels: ['factory', label] })
+    pfactory(['beads'], { GH_JSON: '[]' })
+    expect(runDirs()).toHaveLength(1)
+  }
+})
+
 test('FACTORY_PRECHECK=0 turns the whole check off: 0 gh calls, the run starts as before', () => {
   precheckReset()
   const out = pfactory(['beads'], {
