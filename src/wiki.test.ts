@@ -8,6 +8,7 @@ import {
   trivial,
   writeCap,
   writeGroups,
+  writePrompt,
   type PrFile,
   type WriteBead,
   type WritePr,
@@ -440,4 +441,67 @@ test.each<[string | undefined, number]>([
   ['2.5', 20],
 ])('AC4 writeCap %p', (v, want) => {
   expect(writeCap(v === undefined ? {} : { FACTORY_WIKI_WRITE_CAP: v })).toBe(want)
+})
+
+const ghpTok = 'ghp_' + 'a'.repeat(36)
+const lin = 'lin_api_' + 'z'.repeat(20)
+const ant = 'sk-ant-' + 'a'.repeat(30)
+const promptGroups = () => {
+  const b1 = { ...wb('a', 1, u(1)), title: `Fix ${ant}`, comments: [`key ${lin} here`, 'ghp_short stays'] }
+  const p1 = { ...wp(1), body: `Body with ${ghpTok} inside` }
+  return writeGroups([b1, wb('b', 2, u(2))], [p1, wp(2)], 20)
+}
+const tombs = [
+  { path: 'solutions/2026-09/old-page.md', at: '2026-10-01' },
+  { path: `solutions/2026-08/${ghpTok}.md`, at: '2026-10-02' },
+]
+const prompt = () => writePrompt(promptGroups(), tombs, ['station', 'ship lane'])
+
+test('AC5 prompt shape', () => {
+  const t = prompt()
+  expect(t).toContain('solutions/<yyyy-mm>/<slug>.md')
+  for (const k of [
+    'kind: solution',
+    'title:',
+    'rigs:',
+    'topics:',
+    'beads:',
+    'prs:',
+    'cause:',
+    'status: current',
+    'updated:',
+  ])
+    expect(t).toContain(k)
+  const at = SECTIONS.map(s => t.indexOf(`## ${s}\n`))
+  expect(at.every(i => i >= 0)).toBe(true)
+  expect(at).toEqual([...at].sort((a, b) => a - b))
+  expect(t).toContain('what would prove it')
+  expect(t).toContain('ASD-STE100')
+  expect(t).toContain('triage#1')
+  expect(t).toContain('quick#1 ready:')
+  expect(prompt()).toBe(t)
+})
+
+test('AC6 tokens are masked', () => {
+  const t = prompt()
+  for (const tok of [ghpTok, lin, ant]) expect(t).not.toContain(tok)
+  expect(t).toContain('***')
+  expect(t).toContain('ghp_short stays')
+  expect(t).toContain('Body 2')
+})
+
+test('AC7 tombstones', () => {
+  const t = prompt()
+  expect(t).toContain('solutions/2026-09/old-page.md')
+  expect(t).toContain('2026-10-01')
+  expect(t).toContain('-<YYYY-MM>.md')
+  expect(t).toContain('Do not write a tombstoned path')
+  expect(writePrompt([], [], [])).toContain('None.')
+})
+
+test('AC8 glossary link', () => {
+  const t = prompt()
+  expect(t).toContain('../../glossary.md#station')
+  expect(t).toContain('../../glossary.md#ship-lane')
+  expect(t).toContain('first use')
 })

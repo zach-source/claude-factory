@@ -1,4 +1,5 @@
-import { secretFile } from './homebackup'
+import { SECRETS, secretFile } from './homebackup'
+import { TOKEN_SHAPE } from './linear'
 import type { Bead } from './beads'
 import type { Row } from './cli'
 
@@ -299,4 +300,71 @@ export function writeGroups(beads: WriteBead[], prs: WritePr[], cap = writeCap()
     }))
     .sort((a, b) => byAge(a.beads[0]!, b.beads[0]!) || 0)
     .slice(0, cap)
+}
+
+const MASKS = [
+  TOKEN_SHAPE,
+  ...SECRETS.map(r => new RegExp(r.source, r.flags.includes('g') ? r.flags : r.flags + 'g')),
+]
+/** Replaces each token shape with `***`. */
+const mask = (s: string) => MASKS.reduce((t, r) => t.replace(r, '***'), s)
+
+const glossaryLink = (term: string) => `- ${term}: ../../glossary.md#${term.toLowerCase().replace(/ /g, '-')}`
+
+/** The write prompt. Each string of the input goes through mask() before it enters the text. */
+export function writePrompt(
+  groups: WriteGroup[],
+  tombstones: { path: string; at: string }[],
+  glossaryTerms: string[],
+): string {
+  const clean = (v: unknown) =>
+    JSON.parse(JSON.stringify(v), (_k, x) => (typeof x === 'string' ? mask(x) : x))
+  const tomb = tombstones.length
+    ? tombstones.map(t => `- ${mask(t.path)} (removed ${mask(t.at)})`).join('\n')
+    : 'None.'
+  const terms = glossaryTerms.length ? glossaryTerms.map(glossaryLink).join('\n') : 'None.'
+  return [
+    'Write one solution page for each input item below.',
+    'Put each page at `solutions/<yyyy-mm>/<slug>.md`. Use the month of the newest bead close.',
+    '',
+    '## Page shape',
+    '',
+    '```markdown',
+    '---',
+    'kind: solution',
+    'title: <short title>',
+    'rigs: [<rig>]',
+    'topics: [<topic>]',
+    'beads: [<bead id>]',
+    'prs: [<PR URL>]',
+    'cause: proven | hypothesis',
+    'status: current',
+    'updated: <UTC time, YYYY-MM-DDTHH:MM:SSZ>',
+    '---',
+    '',
+    '# <title>',
+    '',
+    ...SECTIONS.flatMap(s => [`## ${s}`, '']),
+    '```',
+    '',
+    'If `cause` is `hypothesis`, the Cause section must say what would prove it.',
+    '',
+    '## Text rules',
+    '',
+    '- Write in ASD-STE100. Write for a developer who did not work on the change.',
+    '- Do not write agent shorthand (`triage#1`, `quick#1 ready:`).',
+    '- Link the first use of a factory term on a page to the glossary. Use these links:',
+    terms,
+    '- Do not copy text that looks like a token, a key, a password or a private address.',
+    '',
+    '## Tombstones',
+    '',
+    'Do not write a tombstoned path. Write a new page on that topic only for a bead that closed after the date, at a path that ends `-<YYYY-MM>.md`.',
+    tomb,
+    '',
+    '## Input items (JSON)',
+    '',
+    JSON.stringify(clean(groups), null, 2),
+    '',
+  ].join('\n')
 }
