@@ -4844,7 +4844,35 @@ function normalizeEndpoint(endpoint: string): string {
 function isGraphqlEndpoint(endpoint: string): boolean {
   const path = normalizeEndpoint(endpoint)
   if (path === 'graphql' || path === '/graphql') return true
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/.*\/graphql$/.test(path)
+}
+
+/**
+ * True when `endpoint` is surely the GraphQL endpoint: the bare word, `/graphql`, or a URL whose
+ * path is exactly `/graphql` or `/api/graphql`. Only this narrow form lets a guard skip its REST
+ * check (claude-factory-qn8a.18.7). Any other URL that ends in `/graphql` (`//graphql`,
+ * `/api//graphql`, `/x/graphql`) is read as GraphQL and as REST: a host can route it to
+ * GraphQL (GitLab answers `//api/graphql` with a 308), and `.../contents/api/graphql` is a file path.
+ */
+function isNarrowGraphqlEndpoint(endpoint: string): boolean {
+  const path = normalizeEndpoint(endpoint)
+  if (path === 'graphql' || path === '/graphql') return true
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+(?:\/api)?\/graphql$/.test(path)
+}
+
+/**
+ * For a guard that reads a mutation list: true = deny, false = allow (narrow GraphQL endpoint),
+ * undefined = the guard must go on to its REST check.
+ */
+function graphqlVerdict(
+  endpoint: string,
+  apiArgs: string[],
+  gate: HookGate,
+  mutations: string[],
+): boolean | undefined {
+  if (!isGraphqlEndpoint(endpoint)) return undefined
+  if (hasGraphqlMutation(apiArgs, gate, mutations)) return true
+  return isNarrowGraphqlEndpoint(endpoint) ? false : undefined
 }
 
 /**
@@ -4869,7 +4897,8 @@ function ghApiMergeDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
-  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, MERGE_MUTATIONS)
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, MERGE_MUTATIONS)
+  if (gql !== undefined) return gql
   // claude-factory-zl5.25: gh drops a `#fragment` before it sends the request, so this guard
   // must read the normalized path, not the raw endpoint text.
   const path = normalizeEndpoint(endpoint)
@@ -4925,7 +4954,8 @@ function ghApiReviewDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
-  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, REVIEW_MUTATIONS)
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, REVIEW_MUTATIONS)
+  if (gql !== undefined) return gql
   const path = decodeApiPath(normalizeEndpoint(endpoint))
   if (path === undefined) return true
   const match = REVIEWS_PATH.exec(path)
@@ -5030,7 +5060,8 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
-  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, PUSH_MUTATIONS)
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, PUSH_MUTATIONS)
+  if (gql !== undefined) return gql
   // claude-factory-zl5.25: read the normalized path, which has no `#fragment` or `?query`, for every REST pattern below.
   // claude-factory-zl5.30: then decode the whole path once. Do this before any pattern reads it.
   // GitHub decodes a percent-encoded slash in the path. `heads%2Fmain` names the same path as `heads/main`.
@@ -5092,7 +5123,8 @@ function ghApiRepoSettingDenied(apiArgs: string[], gate: HookGate): boolean {
   const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
   const endpoint = ei >= 0 ? apiArgs[ei] : undefined
   if (!endpoint) return false
-  if (isGraphqlEndpoint(endpoint)) return hasGraphqlMutation(apiArgs, gate, REPO_SETTING_MUTATIONS)
+  const gql = graphqlVerdict(endpoint, apiArgs, gate, REPO_SETTING_MUTATIONS)
+  if (gql !== undefined) return gql
   const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
   const hasData = ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input'])) !== undefined
   if ((method || (hasData ? 'POST' : 'GET')) === 'GET') return false

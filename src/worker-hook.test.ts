@@ -12161,3 +12161,38 @@ test('gh api repo setting writes: check-suites/preferences is a setting', () => 
   expect(repoDeny('gh api -X POST repos/acme/widget/check-suites -f head_sha=x')).toBeUndefined()
   expect(repoDeny('gh api -X POST repos/acme/widget/check-suites/1/rerequest')).toBeUndefined()
 })
+
+// claude-factory-qn8a.18.7: a wide URL that ends in /graphql still gets the mutation checks
+test('gh api repo setting writes: a wide GraphQL URL keeps every mutation check', () => {
+  const gql = (url: string, m: string) =>
+    `gh api ${url} -f query='mutation { ${m}(input:{}) { clientMutationId } }'`
+  for (const url of [
+    'https://api.github.com//graphql',
+    'https://api.github.com/api//graphql',
+    'https://ghe.example/api/v3/graphql',
+    'https://api.github.com/x/graphql',
+    'https://ghe.example/root/api/graphql',
+  ]) {
+    expect([url, repoDeny(gql(url, 'mergePullRequest'))]).toEqual([url, MERGE_REASON])
+    expect([url, repoDeny(gql(url, 'createCommitOnBranch'))]).toEqual([url, PUSH_REASON])
+    expect([url, repoDeny(gql(url, 'addPullRequestReview'))]).toEqual([url, APPROVE_REASON])
+    expect([url, repoDeny(gql(url, 'markPullRequestReadyForReview'))]).toEqual([url, READY_REASON])
+    expect([url, repoDeny(gql(url, 'updateRepository'))]).toEqual([url, REPO_SETTING_REASON])
+  }
+  for (const url of [
+    'https://gitlab.com//api/graphql',
+    'https://gitlab.com/api//graphql',
+    'https://gitlab.example/gitlab/api/graphql',
+  ])
+    expect(
+      denyReason(
+        gql(url, 'approvalProjectRuleUpdate').replace('gh api', 'glab api'),
+        undefined,
+        undefined,
+        REPO_GATE,
+      ),
+    ).toBe(GLAB_APPROVE_REASON)
+  expect(
+    repoDeny('gh api -X PUT https://api.github.com/repos/acme/widget/contents/api/graphql -f branch=main'),
+  ).toBe(PUSH_REASON)
+})
