@@ -9151,6 +9151,7 @@ function denyAtScan(
         root ?? process.cwd(),
         g.hookDir ?? dirname(import.meta.dir),
         state,
+        COPY_INTO_COMMANDS.has(b),
       )
     )
       state.hookControl = true
@@ -9529,16 +9530,19 @@ export function clampTimeout(
 export const HOOK_CONTROL_REASON =
   'The factory denies this write: it targets the hook source or a .claude/settings.json or settings.local.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
 
+// a parent of the hook dir (also a bare /) is a hook-control path only for these commands and for cd:
+// find / and ls -d / and alias ~ must stay allowed
+const COPY_INTO_COMMANDS = new Set(['cp', 'mv', 'rsync', 'install', 'ln', 'tar', 'unzip'])
 const HOOK_MODULES = ['worker-hook.ts', 'home-guard.ts', 'cut.ts']
 const SETTINGS_NAMES = ['settings.json', 'settings.local.json']
 
 /**
  * claude-factory-qn8a.21: true when `abs` is a hook-control path. That is a `.claude` dir, a settings.json or
  * settings.local.json in one, or (outside `root`) the hook dir or a path under it.
- * ponytail: an ancestor of the hook dir passes, because `find / ...` and `ls -d /` must stay allowed.
+ * With `ancestor`, a parent of the hook dir counts too (Bash write words only; a reader operand is skipped before).
  * Case folds to lower. If root and the hook dir overlap, only the hook modules count.
  */
-function hookControlPath(abs: string, root: string, hookDir: string): boolean {
+function hookControlPath(abs: string, root: string, hookDir: string, ancestor = false): boolean {
   const a = abs.toLowerCase()
   const parts = a.split('/').filter(Boolean)
   const n = parts.length
@@ -9548,7 +9552,8 @@ function hookControlPath(abs: string, root: string, hookDir: string): boolean {
   const r = root.toLowerCase()
   const under = (p: string, d: string) => p === d || p.startsWith(d.endsWith('/') ? d : d + '/')
   if (under(h, r) || under(r, h)) return HOOK_MODULES.some(m => a === `${h}/src/${m}`)
-  return under(a, h)
+  // a Bash write word can name a parent of the hook dir (cp -R x /f/, tar -C /f); a Write tool path cannot
+  return under(a, h) || (ancestor && under(h, a))
 }
 
 // One-level-at-a-time `{a,b}` expansion, capped. undefined means over the cap.
@@ -9577,6 +9582,8 @@ function hookControlWord(
   root: string,
   hookDir: string,
   state?: ScanState,
+  copyInto = false,
+  isCd = false,
 ): boolean {
   const w = word.replace(/["'\\]/g, '')
   if (!w) return false
@@ -9620,7 +9627,7 @@ function hookControlWord(
         return true
       continue
     }
-    if (hookControlPath(abs, root, hookDir)) return true
+    if (hookControlPath(abs, root, hookDir, copyInto || (isCd && abs !== '/'))) return true
   }
   return false
 }
@@ -9641,12 +9648,16 @@ function hookControlWrite(
   root: string,
   hookDir: string,
   state?: ScanState,
+  copyInto = false,
 ): boolean {
   if (!hookControlPath(cwd, root, hookDir) && !HOOK_CONTROL_MAY_RE.test(foldNonAscii(joinedWords(words))))
     return false
   let pending = false
   let prevWriterFlag = false
-  const test = (x: string) => hookControlWord(x, cwd, root, hookDir, state)
+  // a bare / counts only as the last word (the target of cp, tar, unzip), not as an option value
+  const last = words[words.length - 1]
+  const test = (x: string) =>
+    (x !== '/' || x === last) && hookControlWord(x, cwd, root, hookDir, state, copyInto, isCd)
   for (const word of words) {
     const afterWriterFlag = prevWriterFlag
     prevWriterFlag = skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(word)

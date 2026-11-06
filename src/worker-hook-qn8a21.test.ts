@@ -101,6 +101,21 @@ describe('AC4 Bash, settings', () => {
     expect(bash('echo x > settings.json', `${ROOT}/.claude`)).toBe(R))
 })
 
+describe('AC3 Bash, a parent of the hook dir', () => {
+  test.each([
+    'cp -R .scratch/acme-factory /f/',
+    'cp -R .scratch/acme-factory /f',
+    'cp -R .scratch/f/. /f/',
+    'rsync -a .scratch/f/ /f/',
+    'tar -C /f -xf a.tar',
+    'unzip a.zip -d /f',
+    'mv .scratch/acme-factory /f/',
+    'cp -R .scratch/root/. /',
+    'cd /f && tar -xf a.tar',
+  ])('denies %s', c => expect(bash(c)).toBe(R))
+  test.each(['ls -d /', 'find / -name x', 'cat /f/x'])('allows %s', c => expect(bash(c)).toBeUndefined())
+})
+
 describe('AC7 allowed rows', () => {
   test.each([
     'echo x > .scratch/a.txt',
