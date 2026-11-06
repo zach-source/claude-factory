@@ -437,6 +437,8 @@ export const beads = (repo: string, actor: string) => ({
         '--remove-label',
         REJECTED,
         '--remove-label',
+        'human',
+        '--remove-label',
         STALE_LABEL,
         '--remove-label',
         OWNER,
