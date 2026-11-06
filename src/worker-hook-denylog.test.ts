@@ -222,7 +222,7 @@ describe('maskAssignments', () => {
 
 describe('maskKeyValues (claude-factory-1as9)', () => {
   const mk = (hook as any).maskKeyValues as (s: string) => string
-  const m2 = (s: string) => mk((hook as any).maskAssignments(s))
+  const m2 = (s: string) => (hook as any).maskAssignments(mk(s)) as string
   const rows: [string, string][] = [
     ['--token=zqsecret', '--token=***'],
     ['git -c http.extraHeader=zqsecret push', 'git -c http.extraHeader=*** push'],
@@ -262,7 +262,14 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
     'x a"=zqsecret"',
     'x =zqsecret',
     'x ab\\\n=zqsecret',
-  ])('%s hides the value (quote or backslash in the word)', i => expect(m2(i)).not.toContain('zqsecret'))
+    'x --token=a\u00a0zqsecret',
+    'x --token=a\u2028zqsecret',
+    'x --token=a\vzqsecret',
+    'x --token=a\fzqsecret',
+    'x --token=a\rzqsecret',
+    "x --t=$'a\\' zqsecret'",
+    "X=$'a\\' b'zqsecret ls",
+  ])('%s hides the value (word, quote or backslash)', i => expect(m2(i)).not.toContain('zqsecret'))
   test.each([
     ['--t=b\\ zqsecret', '--t=***'],
     ['--t="a zqsecret"', '--t=***'],
@@ -311,6 +318,8 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
       'a"'.repeat(1e5),
       " 'a'=".repeat(1e5),
       ' "\\'.repeat(1e5),
+      " '\\".repeat(1e5),
+      'a=\r'.repeat(1e5),
     ]) {
       const t = performance.now()
       mk(i)
