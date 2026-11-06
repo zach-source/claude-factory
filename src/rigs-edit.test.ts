@@ -15,6 +15,15 @@ beforeEach(() => {
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
+function parseMessage(text: string): string {
+  try {
+    JSON.parse(text)
+  } catch (e) {
+    return (e as Error).message
+  }
+  throw new Error('text parses')
+}
+
 /** nothing changed: same bytes (or no file), no snapshot, no lock */
 function untouched(before: string | undefined) {
   expect(existsSync(file) ? readFileSync(file, 'utf8') : undefined).toBe(before)
@@ -41,7 +50,7 @@ test('invalid JSON refuses and names the file', () => {
     writeFileSync(file, text)
     expect(() => editRigs(file, r => r)).toThrow(file)
     expect(() => editRigs(file, r => r)).toThrow(msg)
-    if (text === '[{') expect(() => editRigs(file, r => r)).toThrow(/\(.+\)/)
+    if (text === '[{') expect(() => editRigs(file, r => r)).toThrow(parseMessage(text))
     untouched(text)
   }
 })

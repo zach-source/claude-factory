@@ -9,6 +9,14 @@ const home = join(dir, 'home')
 const herdr = join(dir, 'herdr')
 const file = () => join(home, 'rigs.json')
 const text = () => readFileSync(file(), 'utf8')
+const jsonError = (s: string) => {
+  try {
+    JSON.parse(s)
+  } catch (e) {
+    return (e as Error).message
+  }
+  throw new Error('text parses')
+}
 const names = () => JSON.parse(text()).map((r: { name: string }) => r.name)
 
 beforeEach(() => {
@@ -86,7 +94,7 @@ test('an invalid rig file refuses rig add and rig rm, naming the file; the histo
     const r = factory(args)
     expect(r.code).not.toBe(0)
     expect(r.err).toContain(file())
-    expect(r.err).toMatch(/not valid JSON \(.+\)/)
+    expect(r.err).toContain(`not valid JSON (${jsonError('[{')})`)
   }
   expect(text()).toBe('[{')
   expect(existsSync(`${file()}.lock`)).toBe(false)
