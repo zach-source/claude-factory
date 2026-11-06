@@ -425,6 +425,36 @@ test('claude-factory-0jr2.6: a comment-backslash form still names each gated kin
   expect(ran).toBe(0)
 })
 
+test(
+  'claude-factory-0jr2.7: the cut is in the coordinates of the shown (joined) text',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    const questions: string[] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      const question = e.questions[0]!.question
+      questions.push(question)
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    const ask = async (command: string) => {
+      questions.length = 0
+      await $.tool.call({ tool: 'Bash', command, description: 'x' })
+      expect(questions.length).toBe(1)
+      return questions[0]!
+    }
+    const a = await ask(
+      `echo ${'x\\\n'.repeat(50)}${'a'.repeat(150)} && /repo/bin/factory decide r1 ship ${'a'.repeat(200)}`,
+    )
+    expect(a).toContain('decide a factory gate')
+    expect(a).not.toContain('The text not shown holds')
+    const b = await ask(`/repo/bin/factory dec\\\nide r1 ${'x\\\n'.repeat(120)} factory start acme w --owned`)
+    expect(b).not.toContain('The text not shown holds')
+    expect(b).not.toContain('characters not shown')
+    const c = await ask(`${'a'.repeat(280)} #${' '.repeat(10)}/repo/bin/factory decid\\\ne r1 ship`)
+    expect(c).toContain('decide a factory gate')
+  },
+)
+
 test('the deny text of a compound command holds the deny of each matched kind', SLOW, async ($, on) => {
   mock.clock(on)
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {

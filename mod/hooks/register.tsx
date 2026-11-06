@@ -1470,7 +1470,14 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
     unreadable
       ? [(t: string) => t.replace(/\\\n/g, '\n'), (t: string) => t.replace(/\\\n/g, '')]
       : [joinLines]
-  ).map(f => ({ text: f(rawCommand), cut: f(cutText(rawCommand, CUT)).length }))
+  ).map(f => {
+    const text = f(rawCommand)
+    // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
+    return {
+      text,
+      cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
+    }
+  })
   const kinds = GATED_KINDS.flatMap(k => {
     const per = reads.map(r => {
       const ends = [...r.text.matchAll(k.re)].map(m => m.index! + m[0].length)
