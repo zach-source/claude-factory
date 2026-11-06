@@ -11810,7 +11810,6 @@ if (import.meta.main && !outboxCmd)
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
           edit(list => {
-            refuseMoved(rig.name, rig.repo)
             const taken = mapRigs(list).find(r => r.repo === rig.repo && r.name !== rig.name)
             if (taken)
               throw new Error(

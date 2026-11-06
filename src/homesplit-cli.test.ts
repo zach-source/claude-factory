@@ -96,7 +96,7 @@ test('split moves the ax rig: the home hides it and the server home lists it', (
 })
 
 test('after split, start and rig add refuse the moved rig and a restored rigs.json still hides it', () => {
-  const { home, widget, to } = fixture()
+  const { home, widget, gadget, to } = fixture()
   const saved = readFileSync(join(home, 'rigs.json'), 'utf8')
   expect(cli(home, ['home', 'split', to]).code).toBe(0)
   const runsBefore = readdirSync(join(home, 'runs'))
@@ -109,7 +109,15 @@ test('after split, start and rig add refuse the moved rig and a restored rigs.js
   expect(a.err).toContain('moved to the server home')
   const b = cli(home, ['rig', 'add', 'other', widget])
   expect(b.err).toContain('moved to the server home')
+  const c = cli(home, ['rig', 'add', 'widget', gadget])
+  expect(c.err).toContain('moved to the server home')
   writeFileSync(join(home, 'rigs.json'), saved)
+  expect(rigNames(home)).toEqual(['gadget'])
+  // hidden by name alone and by repo alone
+  const rows = JSON.parse(saved)
+  writeFileSync(join(home, 'rigs.json'), JSON.stringify([rows[1], { ...rows[0], repo: gadget + '-x' }]))
+  expect(rigNames(home)).toEqual(['gadget'])
+  writeFileSync(join(home, 'rigs.json'), JSON.stringify([rows[1], { ...rows[0], name: 'renamed' }]))
   expect(rigNames(home)).toEqual(['gadget'])
 })
 
@@ -121,6 +129,9 @@ test('split refuses under FACTORY_SERVER and as a worker, and writes nothing', (
   expect(a.err).toContain('FACTORY_SERVER')
   const b = cli(home, ['home', 'split', to], { FACTORY_FROM: 'manager' })
   expect(b.code).not.toBe(0)
+  const ax = cli(home, ['home', 'split', to], { FACTORY_IN_AX: '1' })
+  expect(ax.code).not.toBe(0)
+  expect(ax.err).toContain('runs on the laptop')
   expect(listing(home)).toEqual(h)
   expect(listing(to)).toEqual(t)
 })
