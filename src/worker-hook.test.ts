@@ -11461,8 +11461,9 @@ test('denyReason denies [ and [[ with a dynamic operand of -v or an arithmetic o
     "ls 'a[$(git push origin main)]'; [[ $_ -eq 0 ]]",
   ]
   for (const c of rows) expect(ask(c)).toBeDefined()
-  for (const c of ['[ -n "$X" ]', '[[ -n $X ]]', '[[ $X == y ]]', '[ -z "$_" ]', '[ x -eq 0 ]', '[[ -v X ]]'])
-    expect(ask(c)).toBeUndefined()
+  for (const c of ['[ -n "$X" ]', '[[ -n $X ]]', '[[ $X == y ]]', '[ -z "$_" ]']) expect(ask(c)).toBeUndefined()
+  // qn8a.9.12: out of the closed grammar, so the head stays dynamic as on origin/main.
+  for (const c of ['[ x -eq 0 ]', '[[ -v X ]]']) expect(ask(c)).toBeDefined()
 })
 
 test('denyReason denies [ and [[ with a bare subscript operand of -v or an arithmetic operator (claude-factory-qn8a.9.11)', () => {
@@ -11477,7 +11478,48 @@ test('denyReason denies [ and [[ with a bare subscript operand of -v or an arith
     'read i < f; [[ a[i] -eq 0 ]]',
   ])
     expect(ask(c)).toBeDefined()
-  for (const c of ['[[ -v X ]]', '[ x -eq 0 ]', '[ -n "$X" ]']) expect(ask(c)).toBeUndefined()
+  expect(ask('[ -n "$X" ]')).toBeUndefined()
+  for (const c of ['[[ -v X ]]', '[ x -eq 0 ]']) expect(ask(c)).toBeDefined()
+})
+
+// claude-factory-qn8a.9.12: the [ and [[ exemption is a closed grammar, not a deny-list.
+test('testBuiltinSafe closed grammar (claude-factory-qn8a.9.12)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of [
+    '[ -n "$X" ]',
+    '[[ -n $X ]]',
+    '[ -n "$_" ] && echo y',
+    '[[ -n "$_" ]] && echo y',
+    '[[ $X == y ]]',
+    '[ -z "$_" ]',
+    '[ -f a.txt ]',
+    '[[ -d ${D} ]]',
+    '[ "$X" = y ]',
+    '[ "$X" != "$Y" ]',
+    '[ x ]',
+    '[[ x ]] && echo y',
+  ])
+    expect(ask(c)).toBeUndefined()
+  for (const c of [
+    'read X < f; [[ -n $X && X -eq 0 ]]',
+    'read X < f; [ -n $X ]',
+    "echo 'x -o -v a[$(git push origin main)]'; [ -n $_ ]",
+    '[[ -n $X && x -eq 0 ]]',
+    '[[ -n $X || -v a[$X] ]]',
+    '[ x -eq 0 ]',
+    '[[ -v X ]]',
+    '[[ $X =~ y ]]',
+    '[ ! -n "$X" ]',
+    '[ -n "$X" -o -n "$Y" ]',
+    '[ -n "${X:-a}" ]',
+    "[ -n '$X' ]",
+    '[ -n "$X" ]]',
+    '[[ -n "$X" ]',
+    '[ -n "$X" ] ]',
+    '[ -n $X ]',
+    '[ a = b = c ]',
+  ])
+    expect(ask(c)).toBeDefined()
 })
 
 // claude-factory-c1jb: 7 alias words in one segment made the rescan visit every order (n!): 2.5 s, then a false
