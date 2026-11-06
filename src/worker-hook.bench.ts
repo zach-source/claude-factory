@@ -164,7 +164,18 @@ function braceBench(): void {
   if (ms >= 50 || !reason) process.exit(1)
 }
 
+// claude-factory-qn8a.19.7: a glob with 40 stars must take under 50 ms. Run `bun run src/worker-hook.bench.ts glob`.
+function globBench(): void {
+  const command = 'cat ' + '*'.repeat(40) + 'qq ; cat ~/.codex/auth.json'
+  const t0 = performance.now()
+  const reason = tokenReason(command, '/w', '/w')
+  const ms = performance.now() - t0
+  console.log(`glob 40 stars\t${ms.toFixed(1)} ms\treason=${reason ? 'denied' : 'none'}`)
+  if (ms >= 50 || !reason) process.exit(1)
+}
+
 async function main() {
+  if (process.argv[2] === 'glob') return globBench()
   if (process.argv[2] === 'brace') return braceBench()
   if (process.argv[2] === 'snapshot') return snapshotBench()
   if (process.argv[2] === 'token') return tokenBench()

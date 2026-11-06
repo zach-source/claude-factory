@@ -33,6 +33,9 @@ const MARKER = /(?:^|[^\w.-])\.(?:codex|claude)(?![\w.-])|codex_home|claude_conf
 // a cd or pushd moves the shell, but pieces resolve against base: a relative token file name then counts as marked
 const CD = /(?:^|[\s;&|(])(?:cd|pushd)(?=[\s;&|)]|$)/
 
+// a -C or --chdir flag (env, git, tar) moves the command too. Case matters here: grep -c is no chdir.
+const CHDIR = /(?:^|\s)(?:-C|--chdir(?==|\s|$))/
+
 export interface TokenEnv {
   home: string
   codexHome?: string | undefined
@@ -99,30 +102,52 @@ function expand(s: string, left = { n: 256 }): string[] {
   return [s]
 }
 
-/** the glob `f` (folded) as a regex: * is any run, ? and [..] one char, $NAME and $ {..} any run, a stray { } ] ! \ any run */
-function globRe(f: string): RegExp {
-  let out = ''
+/**
+ * The glob `f` (folded) as a matcher: * is any run, ? and [..] one char, $NAME and $ {..} any run, a stray { } ] ! \ any run.
+ * A linear DP over the name, so a run of stars cannot backtrack. The first ] is found once.
+ */
+function globRe(f: string): { test(name: string): boolean } {
+  const toks: (string | null | true)[] = [] // string: a literal char, null: one char, true: any run
+  const close = f.indexOf(']', 2)
   for (let i = 0; i < f.length;) {
     const c = f[i] as string
     if (c === '$') {
       const m = /^\$(?:\{[^}]*\}?|\w+|[@*#?!$-])/.exec(f.slice(i))
-      out += '.*'
+      toks.push(true)
       i += m ? m[0].length : 1
-    } else if (c === '[' && f.indexOf(']', i + 2) > 0) {
-      out += '.'
-      i = f.indexOf(']', i + 2) + 1
+    } else if (c === '[' && close > i + 1) {
+      toks.push(null)
+      i = close + 1
     } else if (c === '?') {
-      out += '.'
+      toks.push(null)
       i++
     } else if ('*[{}]!\\'.includes(c)) {
-      out += '.*'
+      toks.push(true)
       i++
     } else {
-      out += c.replace(/[.+^()|]/g, '\\$&')
+      toks.push(c)
       i++
     }
   }
-  return new RegExp(`^${out}$`)
+  const t = toks.filter((x, i) => !(x === true && toks[i - 1] === true))
+  const need = t.filter(x => x !== true).length
+  return {
+    test(name: string) {
+      if (need > name.length) return false
+      let row = new Array<boolean>(name.length + 1).fill(false)
+      row[0] = true
+      for (const x of t) {
+        const next = new Array<boolean>(name.length + 1).fill(false)
+        if (x === true) {
+          let on = false
+          for (let j = 0; j <= name.length; j++) next[j] = on = on || !!row[j]
+        } else
+          for (let j = 1; j <= name.length; j++) next[j] = !!row[j - 1] && (x === null || x === name[j - 1])
+        row = next
+      }
+      return !!row[name.length]
+    },
+  }
 }
 
 /** can the last component `f` (folded) name a token file or a token dir? */
@@ -173,15 +198,14 @@ function pieceDenied(
 
 /** the reason to deny the Bash text `command`, or undefined. `base` is the cwd of the call, `root` the worktree. */
 export function tokenReason(command: string, base: string, root?: string): string | undefined {
-  // unshell drops each backslash-newline, so one pass reads what the joined text would
-  const texts = [command]
   const inside = insideOf(root)
   const seen = new Set<string>()
   const literal = new Set<string>()
-  for (const text of texts) {
-    const words = [...text.matchAll(WORD)].map(m => unshell(m[0]))
+  {
+    // unshell drops each backslash-newline, so one pass reads what the joined text would
+    const words = [...command.matchAll(WORD)].map(m => unshell(m[0]))
     const joined = fold(words.join(' '))
-    const marker = MARKER.test(joined) || CD.test(joined)
+    const marker = MARKER.test(joined) || CD.test(joined) || CHDIR.test(words.join(' '))
     for (const w of words) {
       if (KEYCHAIN.has(fold(w))) return TOKEN_READ_REASON
       for (const p of w

@@ -124,6 +124,23 @@ describe('tokenReason', () => {
     expect(r).toBe(TOKEN_READ_REASON)
     expect(performance.now() - t0).toBeLessThan(50)
   })
+  test.each([
+    ['40 stars + qq', '*'.repeat(40) + 'qq'],
+    ['40 bangs + qq', '!'.repeat(40) + 'qq'],
+    ['200-brace nest', '{'.repeat(200) + 'a' + '}'.repeat(200)],
+    ['5000 brackets + ab', '['.repeat(5000) + 'ab'],
+  ])('a glob of %s before a token path denies fast', (_n, glob) => {
+    const t0 = performance.now()
+    expect(deny(`cat ${glob} ; cat ~/.codex/auth.json`)).toBe(TOKEN_READ_REASON)
+    expect(performance.now() - t0).toBeLessThan(50)
+  })
+  test.each([
+    'env -C ~ cat .claude.json',
+    'env --chdir=/Users/acme cat .claude.json',
+    'git -C ~ diff --no-index .claude.json /dev/null',
+    'tar -C ~ -cf - .claude.json',
+  ])('a chdir flag marks a relative token file: %s', c => expect(deny(c)).toBe(TOKEN_READ_REASON))
+  test('git -C into the worktree still allows', () => expect(deny('git -C src log') == null).toBe(true))
   test.each(DENY)('denies %s', c => expect(deny(c)).toBe(TOKEN_READ_REASON))
   test.each(ALLOW)('allows %s', c => expect(deny(c) == null).toBe(true))
   test('a glued brace word is no wildcard, even where realpath of the root fails (Linux CI, EACCES on /root)', () => {

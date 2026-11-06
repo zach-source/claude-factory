@@ -90,7 +90,7 @@ function homeWord(protect: string[]): RegExp {
 // Bash joins backslash-newline before it splits words, so the guard tests the joined text too. The join
 // reads backslash pairs left to right: an escaped backslash stays, so an even run keeps its newline as a
 // separator and a later backslash-newline in the next word still joins. The raw text stays tested too.
-export const join = (s: string) => s.replace(/\\([\s\S])/g, (m, c) => (c === '\n' ? '' : m))
+const join =(s: string) => s.replace(/\\([\s\S])/g, (m, c) => (c === '\n' ? '' : m))
 const test1 = (text: string, word: RegExp) => {
   const f = fold(text)
   return (DELETE.test(text) || DELETE.test(f)) && (word.test(f) || API.test(text))
