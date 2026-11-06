@@ -120,7 +120,7 @@ export function serve(o: ServeOpts) {
       h.tickOk = false
       log(
         `tick failed: ${String((e as Error)?.message ?? e)
-          .split('\n')[0]
+          .split('\n')[0]!
           .slice(0, 300)}`,
       )
     }
@@ -173,7 +173,7 @@ export function parseFlags(args: string[]) {
     '--lease-ms': 'leaseMs',
   }
   for (let i = 0; i < args.length; i += 2) {
-    const k = names[args[i]]
+    const k = names[args[i] ?? '']
     const raw = args[i + 1]
     if (!k || raw === undefined || !/^\d+$/.test(raw)) throw new Error(USAGE)
     v[k] = Number(raw)

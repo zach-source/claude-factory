@@ -83,7 +83,7 @@ async function start(home: string) {
   const text = new TextDecoder().decode(first.value)
   const m = /on :(\d+) as (\S+)/.exec(text)
   if (!m) throw new Error(`no start line: ${text}`)
-  return { p, port: Number(m[1]), holder: m[2] }
+  return { p, port: Number(m[1]), holder: m[2]! }
 }
 const health = async (port: number) =>
   (await fetch(`http://127.0.0.1:${port}/healthz`)).json() as Promise<any>
@@ -101,7 +101,7 @@ test('two servers on one home: the second waits, the first ticks and holds the l
   const b = await start(home)
   const seen = new Set<string>()
   for (let i = 0; i < 16; i++) {
-    seen.add(holderOf(home))
+    seen.add(String(holderOf(home)))
     await sleep(100)
   }
   expect([...seen]).toEqual([a.holder])
