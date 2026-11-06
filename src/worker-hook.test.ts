@@ -11651,3 +11651,26 @@ test('denyReason alias memo key holds every scan state field (claude-factory-qn8
     ),
   ).toBe(SHELL_ALIAS_REASON)
 }, 30_000)
+
+test('denyReason alias memo hit puts back state.outer (claude-factory-qn8a.9.16)', () => {
+  const table = new Map<string, string | null>([
+    ['a0', 'ls -r; true'],
+    ['a2', 'ls -r && nice'],
+    ['ll', 'ls -l'],
+    ['m', 'make'],
+  ])
+  const gate = snapGate(() => table)
+  const rows = [
+    '$D/t y; a0; a0',
+    '$D/t y; a0; a0; a0',
+    '$D/t y; a2 x; a2 x',
+    '$D/t y; ll; a0; a0',
+    'x$D/t a0; x$D/t a0',
+  ]
+  for (const row of rows)
+    for (const sep of ['; ', ' && ', '\n'])
+      expect(denyReason(row.replaceAll('; ', sep), '/acme/root', undefined, gate)).toBe(REASON)
+  expect(denyReason('$D/t y; a0', '/acme/root', undefined, gate)).toBe(REASON)
+  expect(denyReason('$D/t y; m; m', '/acme/root', undefined, gate)).toBeUndefined()
+  expect(denyReason('ll m; ls; ll m', '/acme/root', undefined, gate)).toBeUndefined()
+}, 30_000)

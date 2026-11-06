@@ -549,8 +549,8 @@ interface ScanState {
   now: () => number
   /** claude-factory-abs: set when spendWork passed the deadline. scanReason then returns SCAN_TIME_REASON, allow included. */
   timedOut: boolean
-  /** claude-factory-c1jb: alias rescans that denyAt already allowed, by their inputs. A repeat of one is skipped. */
-  aliasSeen: Set<string>
+  /** claude-factory-c1jb: alias rescans that denyAt already allowed, by their inputs, with the state.outer that the rescan wrote. A repeat of one is skipped and puts that value back. */
+  aliasSeen: Map<string, OtherSegs>
 }
 
 // Each field here is a budget or the memo. Any other ScanState field goes into the alias memo key.
@@ -8022,7 +8022,7 @@ export function scanReason(
     deadline,
     now: gate?.now ?? Date.now,
     timedOut: false,
-    aliasSeen: new Set(),
+    aliasSeen: new Map(),
   }
   const deferred = () =>
     state.stdinDeferred
@@ -8203,10 +8203,14 @@ function shellAliasReason(
       )
       .join('\u0002')
     const key = [moved, ghMoved, depth, stateKey, [...stack, name].sort().join('\0'), text].join('\u0001')
-    if (state.aliasSeen.has(key)) continue
+    const seen = state.aliasSeen.get(key)
+    if (seen) {
+      state.outer = seen
+      continue
+    }
     const reason = denyAt(text, root, personOnly, gate, depth, state, moved, ghMoved, [...stack, name])
     if (reason) return reason
-    state.aliasSeen.add(key)
+    state.aliasSeen.set(key, state.outer)
   }
   return undefined
 }
