@@ -28,7 +28,13 @@ writeFileSync(join(root, 'src', 'cli.ts'), 'x')
 symlinkSync(join(home, '.codex', 'auth.json'), join(codexHome, 'auth.json'))
 symlinkSync(join(home, '.codex', 'auth.json'), join(root, '.scratch', 'x'))
 symlinkSync(join(home, '.codex'), join(root, '.scratch', 'c'))
-afterAll(() => rmSync(tmp, { recursive: true, force: true }))
+// rule 7 expands ~/ with the user's dir: point it at the fake dir so no row reads the real one
+const realHome = process.env.HOME
+process.env.HOME = home
+afterAll(() => {
+  process.env.HOME = realHome
+  rmSync(tmp, { recursive: true, force: true })
+})
 
 const deny = (c: string) => tokenReason(c, root, root)
 
@@ -49,6 +55,9 @@ const DENY = [
   'cat .scratch/c/auth.json',
   'cat .scratch/x',
   'cat ../auth.json',
+  'cat ~/other/auth.json',
+  'cat $X/auth.json',
+  'cat ~/.cl*.json',
   'cat .scratch/c/../auth.json',
   'cat ~/.CODEX/AUTH.JSON',
   "cat ~/.codex/'au'th.json",
