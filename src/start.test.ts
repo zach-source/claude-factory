@@ -467,8 +467,69 @@ test('fork of a ship run keeps run.ship (claude-factory-0qh0)', () => {
   expect(childRun.ship).toBe(true)
 })
 
+// claude-factory-9wch: a fork of an ended ship run must not put a second ship run on the rig.
+const startRun = (r: string, ship: boolean) => {
+  const seen = new Set(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : [])
+  expect(run(['start', factoryFixture(), r, 'a goal']).code).toBe(0)
+  const id = readdirSync(join(home, 'runs')).find(x => !seen.has(x))!
+  if (ship) {
+    const file = join(home, 'runs', id, 'run.json')
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ship: true }))
+  }
+  return id
+}
+const endRun = (id: string) => {
+  expect(run(['abort', id]).code).toBe(0)
+  expect(run(['tick']).code).toBe(0)
+}
+const setupForkRig = (aShip: boolean, bShip: boolean, bOtherRepo = false) => {
+  reset()
+  const r = repo()
+  const r2 = bOtherRepo ? repo() : r
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, aShip)
+  const b = startRun(r2, bShip)
+  endRun(a)
+  return { a, b }
+}
+
+test('fork of an ended ship run is refused while another ship run is live on the rig (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const before = readFileSync(calls, 'utf8')
+  const refused = run(['fork', a, 'work', 'again'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(b)
+  expect(refused.err).toContain(`factory abort ${b}`)
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(2)
+  expect(readFileSync(calls, 'utf8').slice(before.length)).not.toMatch(/^create|--claim/m)
+
+  endRun(b)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+  const child = readdirSync(join(home, 'runs')).find(x => x !== a && x !== b)!
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(a)
+  expect(childRun.ship).toBe(true)
+})
+
+test('fork of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(false, true)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
+test('fork of an ended ship run is allowed beside a live ship run on another repo (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(true, true, true)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
 const CLEAR =
-  'update acme-1 --remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
+  'update acme-1--remove-label owner --unset-metadata owner_question --unset-metadata owner_since'
 const startHandedOff = (
   mode: string,
   args: string[] = [],
