@@ -119,3 +119,10 @@ export const unsetSetting = (file: string, key: string) => {
   delete o[key]
   write(file, o)
 }
+
+/** Fills env from the stored settings. An env var that is already set wins. A missing file changes nothing. */
+export const loadIntoEnv = (file: string, env: Record<string, string | undefined> = process.env) => {
+  const stored = readSettings(file)
+  for (const { key, env: name } of SETTING_KEYS)
+    if (name !== undefined && env[name] === undefined && Object.hasOwn(stored, key)) env[name] = stored[key]
+}
