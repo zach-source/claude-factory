@@ -3654,14 +3654,39 @@ const FACTORY_CONFIG_GLOBS = ['rigs.json', 'worker-settings*.json']
 
 type GlobTok = { star: true } | { star: false; test: (c: string) => boolean; lit?: string }
 
+// End index of the bracket class that opens at g[i]. odd: bash reads it (a leading ], [:x:], [=x=], [.x.]) in a way a JS class cannot.
+function classEnd(g: string, i: number): { j: number; odd: boolean } | undefined {
+  let k = i + 1
+  if (g[k] === '!' || g[k] === '^') k++
+  let odd = false
+  if (g[k] === ']') {
+    odd = true
+    k++
+  }
+  for (; k < g.length; k++) {
+    if (g[k] === '[' && /[:=.]/.test(g[k + 1] ?? '')) {
+      const e = g.indexOf(g[k + 1]! + ']', k + 2)
+      if (e < 0) return undefined
+      odd = true
+      k = e + 1
+    } else if (g[k] === ']') return { j: k, odd }
+  }
+  return undefined
+}
+
 function globToks(g: string): GlobTok[] {
   const out: GlobTok[] = []
   for (let i = 0; i < g.length; i++) {
     const c = g[i]!
+    const cls = c === '[' ? classEnd(g, i) : undefined
     if (c === '*') out.push({ star: true })
     else if (c === '?') out.push({ star: false, test: () => true })
-    else if (c === '[' && g.indexOf(']', i + 2) > 0) {
-      const j = g.indexOf(']', i + 2)
+    else if (cls?.odd) {
+      // ponytail: an odd class reads as any one char (fail closed); an exact read would be tighter
+      out.push({ star: false, test: () => true })
+      i = cls.j
+    } else if (cls) {
+      const j = cls.j
       let re: RegExp
       try {
         re = new RegExp(
@@ -3746,7 +3771,15 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
   const last = c.split('/').pop() ?? c
   if (!/[*?[]/.test(last)) return 0
   // a class names its first member, so w[o]rker-settings-acme.json reads as the settings file
-  const first = last.replace(/\[[!^]?([^\]])[^\]]*\]/g, '$1')
+  let first = ''
+  for (let i = 0; i < last.length; i++) {
+    const cls = last[i] === '[' ? classEnd(last, i) : undefined
+    if (!cls) first += last[i]
+    else {
+      first += cls.odd ? '?' : last[i + 1] === '!' || last[i + 1] === '^' ? last[i + 2] : last[i + 1]
+      i = cls.j
+    }
+  }
   if (/rigs\.json|worker-settings/.test(first)) return 1
   if (!FACTORY_CONFIG_GLOBS.some(g => globsMeet(last, g, state))) return 0
   return /[a-z]/.test(last) ? 2 : 3
