@@ -194,7 +194,13 @@ test('AC8: a failed list deletes nothing and shows an error row; a failed delete
   const rows = JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))
   expect(rows[0].error).toContain('ax get tasks failed')
 
+  // the other way round: tasks list, workspaces fail
+  rmSync(join(dir, 'ws.txt'))
   writeFileSync(join(dir, 'tasks.txt'), table('NAME ATESPACE PHASE', [a, b]))
+  pass()
+  expect(deletes()).toEqual([])
+  expect(JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))[0].error).toContain('workspaces')
+  writeFileSync(join(dir, 'ws.txt'), table('NAME ATESPACE GIT-REPOS', [a, b]))
   writeFileSync(join(dir, 'denied.txt'), `${a}\n`)
   pass()
   expect(deletes()).toContain(`-a factory delete workspace ${b}`)
