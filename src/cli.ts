@@ -1012,9 +1012,10 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     side!.putError = undefined
     if (name === 'memory.tgz') {
       side!.memory = { bytes: statSync(file).size, parts, sentAt: Date.now() }
-      rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
     }
     writeJson(sideFile(run, task), side)
+    // remove the file after the save: a stop between the two would leave side.put naming a missing file
+    if (name === 'memory.tgz') rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
   }
   // always ask for everything: which lines are already replayed lives here, keyed by content (see `loadSeen`
   // below), not as a line count the VM slices by -- a worker that edits outbox.jsonl (claude-factory-4x1)
