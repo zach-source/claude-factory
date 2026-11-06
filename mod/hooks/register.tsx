@@ -112,7 +112,7 @@ const BD_READ = new Set([
  * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
  */
 function bdWrite(command: string): boolean {
-  const s = command.replace(/\\\n/g, '').replace(/[\\'"]/g, '')
+  const s = command.replace(/[\\'"]/g, '')
   if (/--add-label|--set-labels/.test(s)) return true
   for (const m of s.matchAll(/\bbd\b/g)) {
     const verb = /^\s*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!

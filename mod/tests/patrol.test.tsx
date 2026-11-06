@@ -535,6 +535,7 @@ test(
       'bd',
       'bd;ls',
       '$B update acme-1 --add-label factory',
+      'bd show acme-1 --add-la\\\nbel factory',
     ]
     for (const command of denied) {
       const r = await call(command, 'patrol-1')
