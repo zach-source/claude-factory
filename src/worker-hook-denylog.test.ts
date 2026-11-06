@@ -260,8 +260,30 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
     'x a"="zqsecret',
     "x a'='zqsecret",
     'x a"=zqsecret"',
+    'x =zqsecret',
+    'x ab\\\n=zqsecret',
   ])('%s hides the value (quote or backslash in the word)', i => expect(m2(i)).not.toContain('zqsecret'))
-  test.each(['ls -la /tmp', 'echo hello', 'f() { ls; }', 'git push origin HEAD:main', 'ls foo-bar'])(
+  test.each([
+    ['--t=b\\ zqsecret', '--t=***'],
+    ['--t="a zqsecret"', '--t=***'],
+    ["--t='a zqsecret'", '--t=***'],
+    ['--t="a zqsecret', '--t=***'],
+    ['--t="a\\" zqsecret"', '--t=***'],
+    ['x "a b"=zqsecret', 'x "a b"=***'],
+  ])('%s word parts', (i, o) => expect(m2(i)).toBe(o))
+  test.each(['x "a;b"=zqsecret', 'x a"b c"=zqsecret'])('%s hides the value (word parts)', i =>
+    expect(m2(i)).not.toContain('zqsecret'),
+  )
+  test.each([
+    'ls -la /tmp',
+    'echo hello',
+    'f() { ls; }',
+    'git push origin HEAD:main',
+    'ls foo-bar',
+    'git push origin main',
+    'a | b && c',
+    'x "y z"',
+  ])(
     '%s is unchanged',
     i => expect(m2(i)).toBe(i),
   )
@@ -289,6 +311,9 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
       '\\ '.repeat(2e4),
       ' "\\'.repeat(1e4),
       ' a\\'.repeat(1e4),
+      'a"'.repeat(1e5),
+      " 'a'=".repeat(1e5),
+      ' "\\'.repeat(1e5),
     ]) {
       const t = performance.now()
       mk(i)
