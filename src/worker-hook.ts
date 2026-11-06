@@ -3616,7 +3616,8 @@ function globalGitConfigUse(
 
 const FACTORY_CONFIG_SAMPLES = ['rigs.json', 'worker-settings.json', 'worker-settings-x.json']
 const FACTORY_CONFIG_MAY_RE = /rigs|settings|[*?[{<>\\"']/i
-const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:=/-]+$/
+// no `=` and no leading `-`: a flag with a glued value (--output=/h/rigs.json) is no path
+const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:/][\w.@%+,:/-]*$/
 
 /** claude-factory-qn8a.20: true when a path word can name rigs.json or a worker-settings file. */
 function namesFactoryConfig(word: string, state?: ScanState): 0 | 1 | 2 {
@@ -9571,8 +9572,7 @@ export function fileWriteReason(
   try {
     if (root) realRoot = realpathSync(root)
   } catch {}
-  const inside = (p: string) =>
-    [root, realRoot].some(r => !!r && (p === r || p.startsWith(r.endsWith(sep) ? r : r + sep)))
+  const inside = (p: string) => [root, realRoot].some(r => !!r && p.startsWith(r.endsWith(sep) ? r : r + sep))
   const config = (p: string) => /^(rigs|worker-settings.*)\.json$/i.test(p.split(sep).pop() ?? '')
   return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
 }

@@ -62,6 +62,11 @@ const AC4 = [
   'cp x /h/worker-settings-*',
   'cp x /h/w[o]rker-settings-acme.json',
   'echo [] > /h/ri{gs,x}.json',
+  'echo [] > /h/r{i..j}gs.json',
+  'echo [] > /h/{a,b,c,d,e,f,g,h}{a,b,c,d,e,f,g,h}{a,b}',
+  'gh api x --output=/h/rigs.json',
+  'curl -o/h/rigs.json x',
+  'curl -o.scratch/rigs.json x',
 ]
 const ALLOW = [
   'cat /h/rigs.json',
