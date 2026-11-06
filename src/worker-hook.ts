@@ -9488,6 +9488,8 @@ function denyAtScan(
       )
         late.reason ??= DYNAMIC_VERB_REASON
       for (const w of skipped.slice(k)) {
+        // claude-factory-qn8a.11: a glob in a skipped word can expand to several words and hide rm.
+        if (/[*?[]/.test(w)) late.reason ??= DYNAMIC_VERB_REASON
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
           const n = m[1]!
           if (IMPLICIT_VARS.has(n) || vars.has(n) || mentions(n) >= 2 || m[0].startsWith('${!') || dynWrite())
