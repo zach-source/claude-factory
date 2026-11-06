@@ -234,7 +234,7 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
     ["git -c 'http.extraHeader=Authorization: Bearer zqsecret' push", "git -c 'http.extraHeader=*** push"],
     ['env "GH_TOKEN=zq secret" ls', 'env "GH_TOKEN=*** ls'],
     ['bash -c "X=\\"zq secret\\" ls"', 'bash -c "X=***'],
-    ['bash -c "sh -c \'X=zq secret\'"', 'bash -c "sh -c \'X=***"'],
+    ['bash -c "sh -c \'X=zq secret\'"', 'bash -c "sh -c \'X=***'],
     ['X=zqsecret ls', 'X=*** ls'],
     ['bash -c "GH_TOKEN=zqsecret gh pr list"', 'bash -c "GH_TOKEN=***'],
     ["sh -c 'X=zqsecret ls'", "sh -c 'X=***"],
