@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FACTORY_CONFIG_REASON, denyReason, fileWriteReason, type HookGate } from './worker-hook'
+import { FACTORY_CONFIG_REASON, denyReason, fileWriteReason, globsMeet, type HookGate } from './worker-hook'
 
 const ROOT = '/w/acme'
 const reason = (c: string, root: string | undefined = ROOT, gate?: HookGate) => denyReason(c, root, [], gate)
@@ -125,7 +125,43 @@ const AC11 = [
   'ln -s /h l && cp .scratch/rigs.json l/',
   `env -C /h bash -c 'echo [] > rigs.json'`,
 ]
+const AC13 = [
+  'tee /h/w?rker-settings-acme.json',
+  'echo x > /h/*-acme.json',
+  'echo x > /h/*s-acme.json',
+  'echo x >/h/w*-settings-acme.json',
+  'tee /h/*-acme.json',
+  'cp .scratch/a /h/*s-acme.json',
+  'dd if=a of=/h/*s-acme.json',
+  'sed -i s/a/b/ /h/*-acme.json',
+  'echo x > /h/*-acme--skills.json',
+  'tee /h/*.json',
+  'tee /h/r[i]gs.jso?',
+]
+const AC15: [string, boolean][] = [
+  ['w?rker-settings-acme.json', true],
+  ['*-acme.json', true],
+  ['*s-acme.json', true],
+  ['w*-settings-acme.json', true],
+  ['*-acme--skills.json', true],
+  ['*', true],
+  ['*.*', true],
+  ['rigs.jso?', true],
+  ['r[i]gs.json', true],
+  ['[!r]igs.json', false],
+  ['*.o', false],
+  ['*.ts', false],
+  ['a.txt', false],
+  ['*.txt', false],
+  ['x?y', false],
+  ['*.json', true],
+  ['worker-setting?', false],
+]
 const ALLOW = [
+  'echo x > .scratch/a.txt',
+  'cp a /tmp/*.o',
+  'tee /tmp/*.log',
+  'tee /tmp/worker-setting?',
   'cat /h/rigs.json',
   'grep mergeAuthority /h/rigs.json',
   'head -5 /h/worker-settings-acme.json',
@@ -143,7 +179,7 @@ const ALLOW = [
 ]
 
 describe('qn8a.20 Bash guard', () => {
-  test.each([...AC1, ...AC2, ...AC3, ...AC4, ...AC11])('denies %p', c => {
+  test.each([...AC1, ...AC2, ...AC3, ...AC4, ...AC11, ...AC13])('denies %p', c => {
     expect(reason(c)).toBe(FACTORY_CONFIG_REASON)
   })
   test('AC3: relative write with gate.cwd outside root', () => {
@@ -156,6 +192,12 @@ describe('qn8a.20 Bash guard', () => {
   })
   test('AC3: relative write with no root', () => {
     expect(denyReason('echo [] > rigs.json', undefined, [])).toBe(FACTORY_CONFIG_REASON)
+  })
+  test.each(AC15)('AC15: globsMeet %p', (g, want) => {
+    expect(['rigs.json', 'worker-settings*.json'].some(p => globsMeet(g.toLowerCase(), p))).toBe(want)
+  })
+  test('AC15: a long star glob returns', () => {
+    expect(globsMeet('*a'.repeat(100), 'worker-settings*.json')).toBe(false)
   })
   test.each(ALLOW)('allows %p', c => {
     expect(reason(c)).toBeUndefined()
