@@ -9584,7 +9584,7 @@ function hookControlPath(abs: string, root: string, hookDir: string, ancestor = 
 
 // `{a,b}` and `{x..y}` expansion with nesting, capped. undefined means over the cap. A group with no comma
 // and no sequence stays literal, as in bash.
-function expandBraces(w: string, cap = 64): string[] | undefined {
+export function expandBraces(w: string, cap = 64): string[] | undefined {
   let from = 0
   for (;;) {
     const open = w.indexOf('{', from)

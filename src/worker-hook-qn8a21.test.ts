@@ -310,3 +310,48 @@ describe('qn8a.21.13 nested brace list and sequence', () => {
     'touch .scratch/f{1..3}.txt',
   ])('allows %s', c => expect(bash(c)).toBeUndefined())
 })
+
+describe('qn8a.21.14 unmatched brace and padded sequence', () => {
+  test.each([
+    'tee {/../.claude/settings.local.jso{n,}',
+    'tee x{/../.claude/settings.local.json{a,}',
+    'tee {/../.claude/settings.local.jso{n..n}',
+    'tee x{/../.claud{e..e}/settings.local.json',
+    'tee x{/../.claude/{settings.local.json,y}',
+  ])('denies %s', c => expect(bash(c)).toBe(R))
+  test.each(['echo x > /f/acme-{001..001}/src/cut.ts', 'echo x > /f/acme-{-01..1}/src/cut.ts'])(
+    'denies %s with a padded hook dir',
+    c => expect(hook.denyReason(c, ROOT, undefined, { cwd: ROOT, hookDir: '/f/acme-001' })).toBe(R),
+  )
+  test.each(['touch .scratch/f{01..03}.txt', 'mkdir -p .scratch/{a,b}', 'cp .scratch/a{,.bak}'])(
+    'allows %s',
+    c => expect(bash(c)).toBeUndefined(),
+  )
+  test('expandBraces unit rows', () => {
+    expect(hook.expandBraces('{a{b,c}')).toEqual(['{ab', '{ac'])
+    expect(hook.expandBraces('{001..003}')).toEqual(['001', '002', '003'])
+    expect(hook.expandBraces('{08..10}')).toEqual(['08', '09', '10'])
+    expect(hook.expandBraces('{-01..1}')).toBeUndefined()
+  })
+})
+
+describe('qn8a.21.15 glued flag value after any flag char', () => {
+  const u = 'https://example.com/s'
+  test.each([
+    `curl -4o.claude/settings.local.json ${u}`,
+    `curl -#o.claude/settings.local.json ${u}`,
+    `wget -4O.claude/settings.local.json ${u}`,
+    `curl -sSfLkvRo.claude/settings.local.json ${u}`,
+    `curl -4o/f/acme-factory/src/cut.ts ${u}`,
+    'curl -s4o.claude/settings.local.json file:///etc/hosts',
+    `curl -${'a'.repeat(1024)} ${u}`,
+  ])('denies %s', c => expect(bash(c)).toBe(R))
+  test.each([
+    'tail -n5 .claude/settings.json',
+    'ls -la',
+    'grep -rn x src',
+    'git log -n5',
+    'curl -sSfLo .scratch/a https://example.com/s',
+    `curl -${'a'.repeat(1022)} https://example.com/s`,
+  ])('allows %s', c => expect(bash(c)).toBeUndefined())
+})
