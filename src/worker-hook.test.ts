@@ -473,13 +473,30 @@ test('denyReason gives a normal verdict for a command at exactly 8192 characters
 // This test does not read or measure the time used. `test()`'s own time limit does that check.
 const SCAN_N = 40000
 
-test('scanReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(scanReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+// claude-factory-neb0: three rows use SCAN_MS in place of 500 ms. Their pre-fix times are 13.6 s, 36.3 s and 9.5 s
+// (see above). The linear scan took 662 ms at load 31 and failed the 500 ms limit. The O(n^2) scan still fails 6000 ms.
+// These rows keep 500 ms, because their pre-fix time is below 6000 ms. They are known gaps:
+// - the sh -- row (875 ms);
+// - the 40000-word $S row (sft4): 3.6 s at a655c1d9^, load 70;
+// - the $SH row (sft4): 81 ms at a655c1d9^;
+// - the 24 stacked eval rows (25z.17): about 5 s.
+const SCAN_MS = 6000
 
-test('scanReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(scanReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies a 40000-word sh scan, fast, no personOnly (claude-factory-1by)',
+  () => {
+    expect(scanReason('sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+  },
+  SCAN_MS,
+)
+
+test(
+  'scanReason denies a 40000-word bash -x scan, fast, no personOnly (claude-factory-1by)',
+  () => {
+    expect(scanReason('bash -x '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+  },
+  SCAN_MS,
+)
 
 test('scanReason denies a 40000-word sh -- scan, fast, no personOnly (claude-factory-1by)', () => {
   expect(scanReason('sh -- '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
@@ -491,9 +508,13 @@ test('scanReason denies a 40000-word dynamic-shell-word scan, fast (claude-facto
   )
 }, 500)
 
-test('scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)', () => {
-  expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
-}, 500)
+test(
+  'scanReason denies an eval-wrapped 40000-word sh scan, fast, no personOnly (claude-factory-1by)',
+  () => {
+    expect(scanReason('eval ' + 'sh '.repeat(SCAN_N) + '; rm -rf x')).toBe(REASON)
+  },
+  SCAN_MS,
+)
 
 // claude-factory-dts: one of the commands above, run through denyReason instead, denies with
 // LONG_COMMAND_REASON: it is over 8192 characters, and the cap applies before any scan.
