@@ -133,7 +133,9 @@ test('rig history lists the newest 20, newest first', () => {
   expect(r.code).toBe(0)
   const lines = r.out.trim().split('\n')
   expect(lines).toHaveLength(20)
-  const newest = snaps().at(-1)!.replace(/\.json$/, '')
+  const newest = snaps()
+    .at(-1)!
+    .replace(/\.json$/, '')
   expect(lines[0]).toBe(`1  ${newest}  1 rigs: x`)
   expect(lines[19]!.startsWith('20  ')).toBe(true)
 })
@@ -172,7 +174,13 @@ test('a worker cannot run rig undo or rig history', () => {
   const { B } = twoEdits()
   for (const sub of ['undo', 'history']) {
     const p = Bun.spawnSync([CLI, 'rig', sub], {
-      env: { ...process.env, FACTORY_HOME: home, FACTORY_RUN: 'r1', FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1' },
+      env: {
+        ...process.env,
+        FACTORY_HOME: home,
+        FACTORY_RUN: 'r1',
+        FACTORY_SELF_UPDATE: '0',
+        FACTORY_NO_KICK: '1',
+      },
     })
     expect(p.exitCode).not.toBe(0)
   }

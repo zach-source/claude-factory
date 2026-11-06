@@ -87,7 +87,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { editRigs } from './rigs-edit'
+import { editRigs, snapshots } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -10460,7 +10460,7 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -11698,7 +11698,38 @@ if (import.meta.main && !outboxCmd)
             }
           }
           console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
-        } else fail(`unknown rig command "${sub}": add, rm or list`)
+        } else if (sub === 'history') {
+          const snaps = snapshots(rigsFile())
+          if (!snaps.length) console.log('no rig history')
+          snaps.forEach((f, i) => {
+            const stem = basename(f, '.json')
+            let line = 'not valid JSON'
+            try {
+              const list = JSON.parse(readFileSync(f, 'utf8'))
+              if (!Array.isArray(list)) throw new Error('not an array')
+              line = `${list.length} rigs: ${list.map((r: { name?: string }) => r?.name).join(', ')}`
+            } catch {}
+            console.log(`${i + 1}  ${stem}  ${line}`)
+          })
+        } else if (sub === 'undo') {
+          const snaps = snapshots(rigsFile())
+          if (name !== undefined && !/^[1-9][0-9]*$/.test(name))
+            fail(`rig undo: "${name}" is not a snapshot number`)
+          const n = Number(name ?? 1)
+          if (!snaps[n - 1]) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
+          const from = snaps[n - 1]!
+          edit(() => {
+            let list: unknown
+            try {
+              list = JSON.parse(readFileSync(from, 'utf8'))
+            } catch (e) {
+              throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
+            }
+            if (!Array.isArray(list)) throw new Error(`${from}: not a JSON array`)
+            return list as Rig[]
+          })
+          console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
+        } else fail(`unknown rig command "${sub}": add, rm, list, history or undo`)
         break
       }
       case 'rm': {
