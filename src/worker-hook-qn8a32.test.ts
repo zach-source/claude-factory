@@ -108,6 +108,82 @@ test('run as `bun src/worker-hook.ts`, glab mr merge is denied (claude-factory-q
   })
 }, 20_000)
 
-void READY_REASON
-void READY_GATES
-void NOT_READY_GATES
+const READY_DENY = [
+  'glab mr update 5 --ready',
+  'glab mr update 5 -r',
+  'glab mr update -r',
+  'glab mr update 5 -ry',
+  'glab mr update 5 --ready=true',
+  'glab mr update 5 --ready=false',
+  'glab mr update 5 -t Foo',
+  'glab mr update 5 --title=Foo',
+  'glab mr update 5 -tFoo',
+  'glab mr update 5 --fill -y',
+  'glab mr update 5 -f',
+  'glab mr update 5 --draft --ready',
+  'glab mr update 5 --draft=false',
+  'glab mr update 5 --wip=false',
+  'glab mr -R a/b update 5 --ready',
+  'glab mr update 5 $F',
+  'glab mr update 5 --ready \\\n',
+  'bash -c "glab mr update 5 -r"',
+  'glab api -X PUT projects/1/merge_requests/5 -f title=Foo',
+  'glab api projects/1/merge_requests/5 -f title=Foo',
+  'glab api -X PUT projects/1/merge_requests/5 --input body.json',
+  'glab api -X PUT projects%2F1%2Fmerge_requests%2F5',
+  `glab api graphql -f query='mutation { mergeRequestSetDraft(input:{draft:false}) { errors } }'`,
+  `glab api graphql -f query='mutation { mergeRequestUpdate(input:{title:"x"}) { errors } }'`,
+  'glab api graphql -f query=@draft.graphql',
+  'glab api graphql --input draft.json',
+]
+const READY_ALLOW = [
+  'glab mr update 5 --draft',
+  'glab mr update 5 --wip',
+  'glab mr update 5 --draft -t Foo',
+  'glab mr update 5 -d "$DESC"',
+  'glab mr update 5 --description="$D"',
+  'glab mr update 5 -l bug -a me',
+  'glab mr update 5 -- --ready',
+  'glab mr update 5 --target-branch main',
+  'glab api projects/1/merge_requests/5',
+  'glab api -X GET projects/1/merge_requests/5',
+  'glab api -X POST projects/1/merge_requests -f title=Draft:x',
+  'glab api -X POST projects/1/merge_requests/5/notes -f body=x',
+  `glab api graphql -f query='query { project(fullPath:"a/b") { mergeRequest(iid:"5") { title } } }'`,
+]
+
+for (const g of NOT_READY_GATES) {
+  const name = JSON.stringify(g)
+  test(`denyReason denies a query string on the merge request path for gate ${name}`, () => {
+    expect(ask(`glab api -X PUT 'projects/1/merge_requests/5?title=Foo'`, g)).toBe(READY_REASON)
+  })
+  test.each(READY_DENY)(`denyReason denies %j with READY_REASON for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBe(READY_REASON)
+  })
+}
+for (const g of GATES) {
+  const name = JSON.stringify(g)
+  test.each(READY_ALLOW)(`denyReason allows %j for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBeUndefined()
+  })
+}
+for (const g of READY_GATES) {
+  const name = JSON.stringify(g)
+  test.each(READY_DENY)(`denyReason allows %j for the ready gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBeUndefined()
+  })
+}
+
+test('run as `bun src/worker-hook.ts`, glab mr update --ready is denied (claude-factory-qn8a.32)', async () => {
+  const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'glab mr update 5 --ready' } })
+  const p = Bun.spawn(['bun', join(import.meta.dir, 'worker-hook.ts')], {
+    stdin: new Response(input),
+    stdout: 'pipe',
+    env: { ...process.env, FACTORY_FROM: 'implement' },
+  })
+  const out = await new Response(p.stdout).text()
+  expect(JSON.parse(out.trim()).hookSpecificOutput).toMatchObject({
+    permissionDecision: 'deny',
+    permissionDecisionReason: READY_REASON,
+  })
+}, 20_000)

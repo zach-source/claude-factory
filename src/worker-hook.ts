@@ -5340,6 +5340,47 @@ function glabReason(words: string[], gate: HookGate): string | undefined {
   )
 }
 
+const GLAB_UPDATE_VALUE_FLAGS = new Set([
+  '-a',
+  '--assignee',
+  '-d',
+  '--description',
+  '-l',
+  '--label',
+  '-m',
+  '--milestone',
+  '-R',
+  '--repo',
+  '--reviewer',
+  '--target-branch',
+  '-u',
+  '--unlabel',
+])
+
+/**
+ * claude-factory-qn8a.32: true when a `glab mr update` call can mark a draft merge request ready.
+ * `words` are the words after `mr`. GitLab reads the draft state from the title prefix.
+ * So `--ready`, a new title (`--title`, `--fill`) and a short flag cluster with r, t or f can do it.
+ * Only a literal `--draft` or `--wip` with no ready flag keeps the draft state.
+ * A dynamic word that is not a flag value can hide any of these flags, so it counts too.
+ */
+function glabUpdateMayReady(words: string[]): boolean {
+  const flags: string[] = []
+  let dynamic = false
+  for (let i = 0; i < words.length && words[i] !== '--'; i++) {
+    const w = words[i]!
+    if (GLAB_UPDATE_VALUE_FLAGS.has(w)) i++
+    else if (w.startsWith('--') && w.includes('=') && !dynamicWord(w.split('=')[0]!)) flags.push(w)
+    else if (dynamicWord(w)) dynamic = true
+    else flags.push(w)
+  }
+  const cluster = (w: string, re: RegExp) => /^-[^-R]/.test(w) && re.test(w)
+  const readyFlag = (w: string) => /^--(ready|draft=|wip=)/.test(w) || cluster(w, /r/)
+  const titleFlag = (w: string) => /^--(title|fill)/.test(w) || cluster(w, /[tf]/)
+  if (dynamic || flags.some(readyFlag)) return true
+  return flags.some(titleFlag) && !flags.some(w => w === '--draft' || w === '--wip')
+}
+
 function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
   const { index: vi } = firstVerbIndex(tail, GH_SUB_VALUE_FLAGS)
   if (vi >= 0 && dynamicWord(tail[vi]!)) return DYNAMIC_VERB_REASON
@@ -5350,11 +5391,20 @@ function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
     if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
     if (hasMutatingWordBeforeDashDash(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
     if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'accept']))) return MERGE_REASON
+    if (
+      !mayReady(gate) &&
+      hasMutatingWordBeforeDashDash(rest, new Set(['update'])) &&
+      glabUpdateMayReady(rest)
+    ) {
+      return READY_REASON
+    }
   }
   if (!hasMutatingWordBeforeDashDash(tail, new Set(['api']))) return undefined
   const apiArgs = expandGhShortClusters(tail.slice(tail.indexOf('api') + 1))
   const methodRaw = flagValue(apiArgs, new Set(['-X', '--method']))
   if (methodRaw !== undefined && dynamicWord(methodRaw)) return DYNAMIC_VERB_REASON
+  const hasData =
+    ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
   // every word that is not a flag or a flag value could be the endpoint: check each one
   const endpoints: string[] = []
   for (let i = 0; i < apiArgs.length; i++) {
@@ -5366,16 +5416,22 @@ function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
     // a glob word such as `...approve?x=1` still names the approve path in its literal text
     if (glabPathMatch(endpoint, GLAB_APPROVE_PATH, true)) return GLAB_APPROVE_REASON
     if (glabPathMatch(endpoint, GLAB_MERGE_PATH)) return MERGE_REASON
+    const writes = (methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() !== 'GET'
+    if (writes && !mayReady(gate) && glabPathMatch(endpoint, GLAB_MR_PATH)) return READY_REASON
     if (dynamicWord(endpoint)) {
-      const hasData =
-        ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
-      if ((methodRaw ?? (hasData ? 'POST' : 'GET')).toUpperCase() !== 'GET') return DYNAMIC_VERB_REASON
+      if (writes) return DYNAMIC_VERB_REASON
     } else if (isGraphqlEndpoint(endpoint)) {
       const { texts, unresolved } = graphqlTexts(apiArgs, gate)
       if (unresolved) return GLAB_APPROVE_REASON
       if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
       if (texts.some(t => /\bmutation\b/.test(t) && /mergeRequestAccept|automerge/i.test(t)))
         return MERGE_REASON
+      if (
+        !mayReady(gate) &&
+        texts.some(t => /\bmutation\b/.test(t) && /mergeRequestSetDraft|mergeRequestUpdate/i.test(t))
+      ) {
+        return READY_REASON
+      }
     }
   }
   return undefined
