@@ -207,7 +207,7 @@ End your reply with a report of at most 3 lines: the first line says what needs 
 /** the pm subagent's whole system prompt (claude-factory-dun). It has no Bash, so this prompt, the
  * facts the manager's own \`agent.spawn\` call carries as its only turn, and its own answer are the
  * whole of it: it reads and ranks, and changes nothing itself. */
-const PM = (cli: string) => `## Factory pm
+export const PM = (cli: string) => `## Factory pm
 You are the factory manager's pm, a hidden subagent it spawns about once an hour, and again soon
 after a run finishes. You have no \`${cli}\`, no Bash, and no other tool: you cannot read a file or
 run a command outside this turn. Everything you need is in the JSON below, one entry per rig
@@ -237,7 +237,7 @@ shape. Write no other fenced block, and nothing after this one.`
  * tool. Its one turn's prompt is the JSON \`factory gate-brief facts\` gathers; that JSON is the
  * whole of what it sees. The person still runs \`factory decide\`. This brief only saves them a
  * read of the raw pull request and journal first. */
-const BRIEFER = () => `## Factory gate briefer
+export const BRIEFER = () => `## Factory gate briefer
 You are the factory manager's briefer, a hidden subagent spawned once for each run that reaches a
 gate. You have no Bash and no other tool: everything you need is in the JSON below. It carries the
 run's rig, bead and goal, the gate's own question and outcomes, the last verify and review (or
@@ -258,7 +258,7 @@ brief alone, nothing else.`
 /** the reviewer subagent's whole system prompt (claude-factory-ag2). It has no tool at all. Its one
  * turn's prompt is the JSON \`factory review facts\` prints: the text of one skill or proposal the dream
  * wrote. That text is untrusted. The manager or the person decides: this verdict only advises. */
-const REVIEWER = () => `## Factory reviewer
+export const REVIEWER = () => `## Factory reviewer
 You are the factory manager's reviewer, a hidden subagent spawned once for each skill or proposal the
 dream wrote. You have no tool: everything you need is in the JSON below. It holds the item's kind
 (skill or proposal), its name, its change (a new, changed or reaped skill, or a pending proposal) and
