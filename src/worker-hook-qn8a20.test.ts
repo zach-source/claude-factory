@@ -108,6 +108,13 @@ const AC4 = [
   'cd / && cp /w/acme/.scratch/rigs.json h/',
   'cd / && cp /w/acme/.scratch/rigs.json h',
   'cd / ; mv /w/acme/.scratch/rigs.json h/',
+  'cp .scratch/rigs.json {/h,/h}/',
+  'cp .scratch/rigs.json {.scratch/x,/h/}',
+  'cp -t{/h,/h} .scratch/rigs.json',
+  'cp --target-directory={/h,/h} .scratch/rigs.json',
+  'mv .scratch/rigs.json {/h,/h}/',
+  'cp .scratch/rigs.json .scratch/$D',
+  'cp .scratch/rigs.json x/${D}',
 ]
 const ALLOW = [
   'cat /h/rigs.json',

@@ -3700,7 +3700,7 @@ function factoryConfigWrite(
     // a glued short-flag value (-t/h, -vt/h, -t..) reads as its value; -x=/h and --opt=/h too
     return [v, v.replace(/^-[^=]*=/, ''), v.replace(/^-[A-Za-z0-9]+/, '')].some(
       c =>
-        /^[~$]|^\.\/?$/.test(c) ||
+        /^~|[${]|^\.\/?$/.test(c) ||
         c.split('/').includes('..') ||
         (c.startsWith('/') && c !== root && !c.startsWith(root + '/')),
     )
