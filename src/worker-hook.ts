@@ -9467,17 +9467,12 @@ export function reasonName(reason: string): string {
 const HARNESSES = ['claude', 'codex', 'pi']
 
 /**
- * claude-factory-uzes, -wkg4: replace the value of each NAME=value word with *** so the deny log keeps no secret.
- * A value starts after NAME= or NAME+=, or after `]=` or `]+=`. NAME= can follow the start, a space, `;&|()`, a backtick or a quote.
- * Text after `${NAME=`, `${NAME:=`, `${NAME-`, `${NAME:-` or `${NAME[` masks to the end of the text.
- * A value ends only if it has only [A-Za-z0-9_./:@%+,=-] characters. A space, tab, newline, `;&|)` or the end of the text must follow.
- * Any other value (a quote, backslash, `$`, `(`, a backtick, CR, non-ASCII ...) masks to the end of the text. It can hide more than needed, never less.
+ * claude-factory-uzes, -wkg4: the deny log keeps no secret. The first `=` or `${` and all text after it become ***.
+ * Why: bash word rules (quotes, IFS, braces, substitutions) are not regular, so no regex finds where a value ends.
+ * Out of scope (claude-factory-pwg3): a secret with no `=` and no `${` before it, as in `printf -v X v`.
  */
 export function maskAssignments(command: string): string {
-  return command.replace(
-    /(\$\{[A-Za-z_][A-Za-z0-9_]*(?:\[|:?[-=]))[\s\S]*|((?:^|[\s;&|()`"'])[A-Za-z_][A-Za-z0-9_]*\+?=|\]\+?=)(?:[A-Za-z0-9_.\/:@%+,=-]*(?=[ \t\n;&|)]|$)|[\s\S]*)/g,
-    (_m, a, b) => (a ?? b) + '***',
-  )
+  return command.replace(/(=|\$\{)[\s\S]*/, '$1***')
 }
 
 /**
