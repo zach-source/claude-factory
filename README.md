@@ -263,6 +263,8 @@ factory rig add docs ~/repos/docs rework --sweeps none
 factory rig add gitops ~/repos/gitops --sweeps drift --drift "flux get kustomizations -A; flux get helmreleases -A"
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig rm docs                                         # nothing new starts; its runs carry on
+factory rig history                                         # the newest 20 snapshots of rigs.json, newest first
+factory rig undo [n]                                        # restore snapshot n (default 1); `rig undo` again reverses it
 ```
 
 A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web

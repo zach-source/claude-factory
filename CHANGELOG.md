@@ -24,6 +24,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: the reconciler bounds the usage-limit data that a VM sends (claude-factory-5nca). It ignores a hit that is more than 5 minutes ahead of the laptop clock. It limits `kind` to seven_day, five_hour, usage and auth. It sets a reset time more than 8 days out to 0. The token swap command runs at most one time for each 5 minutes, for each runner and harness.
 - Fix: `factory report` strips control, format and line-separator characters from the report text, the `mail` text and the `memory add` summary, body, rig and `--from` (claude-factory-67bw). Each such character becomes a space. LF and TAB stay. This holds for the FAIL reason, the BLOCKED reason and the DONE and HANDOFF summary, also for a VM report that the laptop replays.
 - Fix: `factory fork` of an ended ship run is refused while another ship run is live on the same repo (claude-factory-9wch). The error names the live run and tells you to run `factory abort` on it first. Before, the fork gave the rig two ship runs that worked the same queue.
+- Added: `factory rig history` lists the newest 20 snapshots of `rigs.json`. `factory rig undo [n]` restores snapshot n (default 1, the newest) through the rig edit lock. The undo makes its own snapshot, so a second `rig undo` reverses it (claude-factory-wy9u.6). A worker cannot run either verb.
 
 ## 0.16.0 (2026-11-03)
 
