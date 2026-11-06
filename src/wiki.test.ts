@@ -1,5 +1,15 @@
 import { expect, test } from 'bun:test'
-import { format, parse, scanPages, SECTIONS, type Page } from './wiki'
+import {
+  format,
+  parse,
+  renderRigPage,
+  scanPages,
+  SECTIONS,
+  type Merged,
+  type Page,
+  type RigRow,
+} from './wiki'
+import type { Bead } from './beads'
 
 const sections = (skip: string[] = []) =>
   SECTIONS.filter(s => !skip.includes(s))
@@ -186,4 +196,145 @@ test('S2 eyJ alias page returns fast from scanPages', () => {
   const text = `---\nkind: topic\ntitle: &s ${k}\nrigs: [${refs}]\n---\nb\n`
   const out = scanPages([{ path: 'p.md', text }])
   expect(out[0]?.reasons).toContain('frontmatter: too long')
+})
+
+const NOW = Date.parse('2026-11-05T21:00:00Z')
+const H = 3600_000
+const D = 24 * H
+const ago = (ms: number) => NOW - ms
+const run = (id: string, o: Partial<RigRow> = {}): RigRow => ({
+  id,
+  node: 'review',
+  goal: `acme-${id}: Goal ${id}`,
+  bead: `acme-${id}`,
+  createdAt: ago(5 * H),
+  last: { node: 'triage', attempt: 1, outcome: 'build', summary: 'Did the work. More.', at: ago(H) },
+  ...o,
+})
+const bead = (id: string, o: Partial<Bead> = {}): Bead => ({ id, title: `Bead ${id}`, ...o })
+const merged = (n: number, o: Partial<Merged> = {}): Merged => ({
+  url: `https://github.com/acme/widget/pull/${n}`,
+  title: `Merged ${n}`,
+  mergedAt: ago(D),
+  ...o,
+})
+const page = (rows: RigRow[], waiting: string[] = [], q: Bead[] = [], m: Merged[] = []) =>
+  renderRigPage('acme', rows, new Set(waiting), q, m, NOW)
+const NAMES = ['Waits on a person', 'In progress', 'Queued', 'Shipped (last 7 days)', 'Stopped (last 7 days)']
+const section = (text: string, name: string) => {
+  const from = text.indexOf(`## ${name}\n`)
+  if (from < 0) return ''
+  const rest = text.slice(from + name.length + 4)
+  const end = rest.search(/\n## |\nLast update/)
+  return end < 0 ? rest : rest.slice(0, end)
+}
+const where = (text: string, needle: string) => NAMES.filter(n => section(text, n).includes(needle))
+const stopped = (id: string, age: number) =>
+  run(id, {
+    node: 'aborted',
+    last: { node: 'plan', attempt: 1, outcome: 'fail', summary: 'Stop.', at: ago(age) },
+  })
+
+test.each([
+  ['waiting live row', () => page([run('w')], ['w']), 'Goal w', 'Waits on a person'],
+  ['live row', () => page([run('l')]), 'Goal l', 'In progress'],
+  ['queued bead', () => page([], [], [bead('acme-q')]), 'Bead acme-q', 'Queued'],
+  ['merged PR', () => page([], [], [], [merged(1)]), 'Merged 1', 'Shipped (last 7 days)'],
+  ['aborted row', () => page([stopped('a', D)]), 'Goal a', 'Stopped (last 7 days)'],
+  ['done row', () => page([run('d', { node: 'done' })]), 'Goal d', undefined],
+] as const)('AC1 state: %s', (_n, make, needle, want) => {
+  expect(where(make(), needle)).toEqual(want ? [want] : [])
+})
+
+test('AC1 negative rows', () => {
+  expect(where(page([run('l')], [], [bead('acme-l')]), 'Bead acme-l')).toEqual([])
+  expect(where(page([run('l')], [], [bead('acme-l')]), 'Goal l')).toEqual(['In progress'])
+  expect(where(page([stopped('a', D)], ['a']), 'Goal a')).toEqual(['Stopped (last 7 days)'])
+  expect(where(page([run('l')], ['other']), 'Goal l')).toEqual(['In progress'])
+})
+
+test('AC2 prefix strip', () => {
+  const t = (summary: string) =>
+    page([run('s', { last: { node: 'x', attempt: 1, outcome: 'y', summary, at: NOW } })])
+  expect(t('review#2 approve: Looks good. More text.')).toContain('— Looks good. Step:')
+  expect(t('review#2 approve: Looks good. More text.')).not.toContain('review#2')
+  expect(t('Fix #12 now. Done.')).toContain('— Fix #12 now. Step:')
+  expect(page([run('s')])).toContain('**Goal s**')
+  expect(page([run('s', { goal: 'acme-s: Add widget' })])).toContain('**Add widget**')
+})
+
+test('AC3 waiting question', () => {
+  const sum = 'review#1 blocked: Checks done.\nQuestion: Merge PR 7? More.'
+  const r = run('w', { last: { node: 'review', attempt: 1, outcome: 'blocked', summary: sum, at: NOW } })
+  const w = section(page([r], ['w']), 'Waits on a person')
+  expect(w).toContain('— Merge PR 7.')
+  expect(w.trimEnd().endsWith(' · answers: owner')).toBe(true)
+  const g = run('g', { gate: { question: 'Ship it?', outcomes: [] } })
+  expect(section(page([g], ['g']), 'Waits on a person')).toContain('— Ship it.')
+})
+
+test('AC4 empty', () => {
+  const t = page([])
+  const at = NAMES.map(n => t.indexOf(`## ${n}\n\nNone.\n`))
+  expect(at.every(i => i >= 0)).toBe(true)
+  expect([...at].sort((a, b) => a - b)).toEqual(at)
+  expect(t.endsWith('\nLast update: 2026-11-05T21:00:00Z\n')).toBe(true)
+})
+
+test('AC5 7-day cut-off', () => {
+  const on = page([stopped('a', 7 * D)], [], [], [merged(1, { mergedAt: ago(7 * D) })])
+  expect(where(on, 'Goal a')).toEqual(['Stopped (last 7 days)'])
+  expect(where(on, 'Merged 1')).toEqual(['Shipped (last 7 days)'])
+  const off = page([stopped('a', 7 * D + 1)], [], [], [merged(1, { mergedAt: ago(7 * D + 1) })])
+  expect(section(off, 'Shipped (last 7 days)')).toContain('None.')
+  expect(section(off, 'Stopped (last 7 days)')).toContain('None.')
+})
+
+test('AC6 stable', () => {
+  const rows = [run('b', { createdAt: ago(2 * H) }), run('a'), stopped('c', D), stopped('d', 2 * D)]
+  const m = [merged(1), merged(2, { mergedAt: ago(2 * D) })]
+  const q = [bead('acme-q1'), bead('acme-q2')]
+  const one = page(rows, ['b'], q, m)
+  expect(page(rows, ['b'], q, m)).toBe(one)
+  expect(page([...rows].reverse(), ['b'], q, [...m].reverse())).toBe(one)
+})
+
+test('AC7 page check', () => {
+  const t = page([run('w'), run('l')], ['w'], [bead('acme-q')], [merged(1)])
+  expect(scanPages([{ path: 'rigs/acme.md', text: t }])).toEqual([])
+  const p = parse(t)
+  expect('page' in p && p.page.kind).toBe('rig')
+  expect('page' in p && p.page.rigs).toEqual(['acme'])
+  expect('page' in p && p.page.updated).toBe('2026-11-05T21:00:00Z')
+})
+
+test('AC8 links', () => {
+  const summary = 'See https://github.com/acme/widget/pull/123 now.'
+  const r = run('l', {
+    createdAt: ago(2 * H + 59 * 60_000),
+    last: { node: 'x', attempt: 1, outcome: 'y', summary, at: NOW },
+  })
+  const t = page(
+    [r, run('m', { createdAt: ago(30 * 60_000) })],
+    [],
+    [],
+    [merged(5, { solution: 'solutions/2026-11/x.md' })],
+  )
+  expect(t).toContain('[review](../glossary.md#review)')
+  expect(t).toContain('2 h.')
+  expect(t).toContain('30 min.')
+  expect(page([run('h', { createdAt: ago(90 * 60_000) })])).toContain('1 h.')
+  expect(t).toContain('[PR #123](https://github.com/acme/widget/pull/123)')
+  expect(t).toContain('[Solution](../solutions/2026-11/x.md)')
+})
+
+test('AC6 order: shipped newest first, in progress oldest first', () => {
+  const t = page(
+    [run('b', { createdAt: ago(2 * H) }), run('a')],
+    [],
+    [],
+    [merged(2, { mergedAt: ago(2 * D) }), merged(1)],
+  )
+  expect(t.indexOf('Merged 1')).toBeLessThan(t.indexOf('Merged 2'))
+  expect(t.indexOf('Goal a')).toBeLessThan(t.indexOf('Goal b'))
 })
