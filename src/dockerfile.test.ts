@@ -62,6 +62,13 @@ test('the server image copies every top-level directory that src imports', () =>
   expect(imported.has('mod')).toBe(true)
 })
 
+test('the server image fetches the embedding model as root, before USER bun', () => {
+  const stage = serverStage()
+  const fetch = stage.indexOf("RUN bun -e \"await (await import('./src/memory.ts')).fetchModel()\"")
+  expect(fetch).toBeGreaterThan(stage.indexOf('COPY src src'))
+  expect(fetch).toBeLessThan(stage.indexOf('USER bun'))
+})
+
 test('the worker image pins codex unified_exec off, since write_stdin skips the deny hook (claude-factory-fzm3)', () => {
   const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
   const worker = docker.slice(docker.indexOf(' AS worker'), docker.indexOf(' AS manager'))

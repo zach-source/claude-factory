@@ -43,6 +43,7 @@ COPY src src
 COPY factories factories
 COPY mod mod
 RUN ln -s /opt/factory/bin/factory /usr/local/bin/factory
+RUN bun -e "await (await import('./src/memory.ts')).fetchModel()"
 USER bun
 # claude-factory-akiq.1 adds the server verb; the build does not run it
 ENTRYPOINT ["/usr/local/bin/factory", "server"]
