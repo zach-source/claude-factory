@@ -5358,7 +5358,8 @@ const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9
 // A `{}` word there is usually a wrapper's placeholder value, such as `xargs -I {}`, not a tool
 // name. This exemption lets `xargs -I {} cp {} dest` and `xargs -I {} delete {}` run.
 function dynamicCommandWord(w: string): boolean {
-  return w !== '{}' && dynamicWord(w)
+  // claude-factory-0hkb: the exact words `[` and `[[` are the test builtin. A word that only starts with `[` stays dynamic.
+  return w !== '{}' && w !== '[' && w !== '[[' && dynamicWord(w)
 }
 
 // claude-factory-mn2y: external programs cannot change the parent shell's alias table. Never add
@@ -5404,6 +5405,9 @@ function segmentDynArg(words: string[]): boolean {
     externalProgram(words[first]!) ||
     words[first] === 'echo' ||
     words[first] === 'cd' ||
+    // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
+    words[first] === '[' ||
+    words[first] === '[[' ||
     words[first]!.startsWith('#')
   )
     return false

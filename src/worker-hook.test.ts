@@ -11303,6 +11303,15 @@ test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slo
   expect(performance.now() - t0).toBeLessThan(2 * SCAN_TIME_MS + 2000)
 }, 30_000)
 
+// claude-factory-0hkb: a lone [ or [[ is the test builtin, not a glob command word.
+test('denyReason allows [ and [[ test forms; a bracket glob command word stays denied (claude-factory-0hkb)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of ['[ -n "$X" ]', '[[ -n $X ]]', '[ -n "$_" ] && echo y']) expect(ask(c)).toBeUndefined()
+  expect(ask(': rm; [[ x ]] && $_ -rf /')).toBe(REASON)
+  expect(ask('[ x ] && $X push origin main')).toBe(DYNAMIC_VERB_REASON)
+  expect(ask('[x] -rf /')).toBe(DYNAMIC_VERB_REASON)
+})
+
 // claude-factory-c1jb: 7 alias words in one segment made the rescan visit every order (n!): 2.5 s, then a false
 // SCAN_BUDGET_REASON deny. The memo of allowed rescans makes it linear.
 test('denyReason allows 7 harmless alias words in one segment, fast, and still denies a later gp push (claude-factory-c1jb)', () => {
