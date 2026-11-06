@@ -6725,7 +6725,6 @@ async function createRun(
     onto,
   }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
 ) {
-  refuseMoved(undefined, repo)
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
   const startPoint = from?.run.branch ?? onto ?? base
