@@ -5541,7 +5541,7 @@ const GLAB_NOTE_PATH = new RegExp(
 )
 // a single-quoted static word, and a long flag with a double-quoted value: bash expands nothing that splits or vanishes
 const GLAB_SINGLE_WORD = /^[^'"$`\\*?[{}~]*'[^']*'$/
-const GLAB_QUOTED_VALUE = /^--([a-z][a-z0-9-]*)="[^"`\\]*"$/
+const GLAB_QUOTED_VALUE = /^--([a-z][a-z0-9-]*)="(?:[^"`\\$[]|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})*"$/
 const GLAB_NO_QUOTED_VALUE = new Set([
   'ready',
   'title',

@@ -208,6 +208,18 @@ const DYNAMIC_DENY = [
   'glab mr update 5 -t x -yd $D --draft',
   'glab mr update 5 -t x --reviewer $R --draft',
   `glab api 'projects/1' $X`,
+  'glab mr --message="${=X}" 5',
+  'glab mr --message="${(s: :)X}" 5',
+  'glab mr --message="${(f)X}" 5',
+  'glab mr --message="${a[@]}" 5',
+  'glab mr --message="$a[@]" 5',
+  'glab mr --message="$@" 5',
+  'glab mr --message="$*" 5',
+  'glab mr --message="${!X}" 5',
+  'glab mr --message="${#X}" 5',
+  'glab mr --description="${@}" 5',
+  'glab mr update 5 --description="$@"',
+  'glab mr update 5 --label="${a[@]}"',
 ]
 const DYNAMIC_ALLOW = [
   'glab mr note 5 --message="$MSG"',
