@@ -51,7 +51,9 @@ test('the history keeps 20', () => {
     if (existsSync(file)) texts.push(readFileSync(file, 'utf8'))
     editRigs(file, r => [...r, rig(`r${i}`)])
   }
-  const files = readdirSync(hist).filter(f => f.endsWith('.json')).sort()
+  const files = readdirSync(hist)
+    .filter(f => f.endsWith('.json'))
+    .sort()
   expect(files).toHaveLength(20)
   expect(readFileSync(join(hist, files[19]!), 'utf8')).toBe(texts[23]!)
   expect(readFileSync(join(hist, files[0]!), 'utf8')).toBe(texts[4]!)

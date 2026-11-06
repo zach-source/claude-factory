@@ -87,6 +87,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
+import { editRigs } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -7120,6 +7121,14 @@ async function migrateToAx(args: string[]) {
 const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
 const rigs = (): Rig[] => mapRigs(rawRigs())
+/** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
+function edit(fn: (list: Rig[]) => Rig[]) {
+  try {
+    editRigs(rigsFile(), fn)
+  } catch (e) {
+    fail((e as Error).message)
+  }
+}
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
 /** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
@@ -11617,28 +11626,23 @@ if (import.meta.main && !outboxCmd)
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
-          const taken = rigs().find(r => r.repo === rig.repo && r.name !== rig.name)
-          if (taken)
-            fail(
-              `${rig.repo} is already rig ${taken.name}: redefine it under that name, or rig rm ${taken.name} first`,
-            )
-          writeJson(rigsFile(), [...rawRigs().filter(r => r.name !== rig.name && r.repo !== rig.repo), rig])
+          edit(list => {
+            const taken = mapRigs(list).find(r => r.repo === rig.repo && r.name !== rig.name)
+            if (taken)
+              throw new Error(
+                `${rig.repo} is already rig ${taken.name}: redefine it under that name, or rig rm ${taken.name} first`,
+              )
+            return [...list.filter(r => r.name !== rig.name && r.repo !== rig.repo), rig]
+          })
           console.log(
             `rig ${rig.name}: ${rig.repo} runs ${factory}; its ready beads labeled factory start as runs${rig.maxRuns ? `, at most ${rig.maxRuns} busy` : ''}${rig.runner ? `, workers run by ${rig.runner}` : ''}`,
           )
         } else if (sub === 'rm') {
-          if (!rigs().some(r => r.name === name))
-            fail(
-              `no rig "${name}" (rigs: ${
-                rigs()
-                  .map(r => r.name)
-                  .join(', ') || 'none'
-              })`,
-            )
-          writeJson(
-            rigsFile(),
-            rawRigs().filter(r => r.name !== name),
-          )
+          edit(list => {
+            if (!list.some(r => r.name === name))
+              throw new Error(`no rig "${name}" (rigs: ${list.map(r => r.name).join(', ') || 'none'})`)
+            return list.filter(r => r.name !== name)
+          })
           console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
         } else if (sub === 'list') {
           const { busy, held } = await busyRigs()
