@@ -371,6 +371,8 @@ One pass deletes 10 names at most. `ax.log` in the factory home gets one `ax-swe
 
 ### Move the factory to AX
 
+To keep the herdr rigs on the laptop and run only the AX rigs in the server, see [server-home.md](server-home.md).
+
 This section moves a running laptop factory to the manager task. The task needs the rig repos, the beads stores and the factory home. Use this runbook.
 
 #### Repos and beads in the task
