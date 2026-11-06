@@ -86,7 +86,7 @@ function badFiles(): Record<string, string> {
 
 const TEXT = 'x\'; id; \' and $(id) and `id` and "q"\n'
 
-test('mail --text-file mails the file text as written; a flag in a later slot stays text (AC1)', () => {
+test('mail --text-file mails the file text as written; a flag inside a longer word stays text (AC1)', () => {
   const events = makeRun('r1')
   mkdirSync(join(wt, '.scratch'), { recursive: true })
   expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
@@ -97,8 +97,8 @@ test('mail --text-file mails the file text as written; a flag in a later slot st
   const w = factory(['mail', 'r1', 'manager', '--wake', '--text-file', f], {}, wt)
   expect(w.code).toBe(0)
   expect(events().at(-1)).toMatchObject({ text: TEXT.trimEnd(), wake: true })
-  expect(factory(['mail', 'r1', 'manager', 'hello', '--text-file', 'x']).code).toBe(0)
-  expect(events().at(-1).text).toBe('hello --text-file x')
+  expect(factory(['mail', 'r1', 'manager', 'use --text-file <path>']).code).toBe(0)
+  expect(events().at(-1).text).toBe('use --text-file <path>')
   expect(existsSync(join(wt, 'pwned'))).toBe(false)
 })
 
@@ -110,6 +110,8 @@ test('mail --text-file refuses a bad form with exit 1 and posts nothing (AC1)', 
     'no path': ['--text-file'],
     'extra word': ['--text-file', ok, 'extra'],
     'extra word after wake': ['--wake', '--text-file', ok, 'extra'],
+    'flag after a word': ['hello', '--text-file', 'x'],
+    'flag after a word and wake': ['--wake', 'hello', '--text-file', 'x'],
     ...Object.fromEntries(Object.entries(bad).map(([k, p]) => [k, ['--text-file', p]])),
   }
   for (const [name, rest] of Object.entries(forms)) {
