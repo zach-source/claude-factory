@@ -112,8 +112,8 @@ function fakeHerdr() {
   chmodSync(join(bin, 'herdr'), 0o755)
 }
 
-function repo() {
-  const r = join(dir, 'repo')
+function repo(name = 'repo') {
+  const r = join(dir, name)
   mkdirSync(join(r, '.beads'), { recursive: true })
   Bun.spawnSync(['git', '-C', r, 'init', '-q'])
   Bun.spawnSync([
@@ -465,6 +465,118 @@ test('fork of a ship run keeps run.ship (claude-factory-0qh0)', () => {
   const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
   expect(childRun.forkedFrom).toBe(id)
   expect(childRun.ship).toBe(true)
+})
+
+// claude-factory-9wch: a fork of an ended ship run must not put a second ship run on the rig.
+const startRun = (r: string, ship: boolean) => {
+  const seen = new Set(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : [])
+  expect(run(['start', factoryFixture(), r, 'a goal']).code).toBe(0)
+  const id = readdirSync(join(home, 'runs')).find(x => !seen.has(x))!
+  if (ship) {
+    const file = join(home, 'runs', id, 'run.json')
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ship: true }))
+  }
+  return id
+}
+const endRun = (id: string) => {
+  expect(run(['abort', id]).code).toBe(0)
+  expect(run(['tick']).code).toBe(0)
+}
+const setupForkRig = (aShip: boolean, bShip: boolean, bOtherRepo = false) => {
+  reset()
+  const r = repo()
+  const r2 = bOtherRepo ? repo('repo2') : r
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, aShip)
+  const b = startRun(r2, bShip)
+  endRun(a)
+  return { a, b }
+}
+
+test('fork of an ended ship run is refused while another ship run is live on the rig (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const before = readFileSync(calls, 'utf8')
+  const refused = run(['fork', a, 'work', 'again'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(b)
+  expect(refused.err).toContain(`factory abort ${b}`)
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(2)
+  expect(readFileSync(calls, 'utf8').slice(before.length)).not.toMatch(/^create|--claim/m)
+
+  endRun(b)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+  const child = readdirSync(join(home, 'runs')).find(x => x !== a && x !== b)!
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(a)
+  expect(childRun.ship).toBe(true)
+})
+
+test('fork of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(false, true)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
+test('fork of an ended ship run is allowed beside a live ship run on another repo (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(true, true, true)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
+test('fork of a ship run with a queued abort is allowed when no other ship run is live (claude-factory-9wch)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, true)
+  expect(run(['abort', a]).code).toBe(0)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
+test('goto of an ended ship run is refused while another ship run is live on the rig (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const refused = run(['goto', a, 'work'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(b)
+  expect(refused.err).toContain(`factory abort ${b}`)
+
+  endRun(b)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(false, true)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of a live ship run is allowed beside another live ship run (claude-factory-9wch)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, true)
+  const b = startRun(r, true)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).not.toContain(b)
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of an ended ship run to done is not refused for a live ship run (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const res = run(['goto', a, 'done'])
+  expect(res.err).not.toContain(b)
 })
 
 const CLEAR =
