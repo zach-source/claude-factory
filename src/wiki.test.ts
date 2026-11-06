@@ -326,3 +326,14 @@ test('AC8 links', () => {
   expect(t).toContain('[PR #123](https://github.com/acme/widget/pull/123)')
   expect(t).toContain('[Solution](../solutions/2026-11/x.md)')
 })
+
+test('AC6 order: shipped newest first, in progress oldest first', () => {
+  const t = page(
+    [run('b', { createdAt: ago(2 * H) }), run('a')],
+    [],
+    [],
+    [merged(2, { mergedAt: ago(2 * D) }), merged(1)],
+  )
+  expect(t.indexOf('Merged 1')).toBeLessThan(t.indexOf('Merged 2'))
+  expect(t.indexOf('Goal a')).toBeLessThan(t.indexOf('Goal b'))
+})
