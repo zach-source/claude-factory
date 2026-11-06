@@ -145,6 +145,17 @@ test('remove runs both deletes and returns the failure text, not a not-found', (
   expect(ax.remove('f-a-1')!.length).toBeLessThanOrEqual(220)
 })
 
+test('a missing ax binary fails the call and does not throw', () => {
+  const prev = process.env.FACTORY_AX
+  process.env.FACTORY_AX = join(dir, 'no-such-ax')
+  try {
+    expect(ax.names('tasks')).toBeNull()
+    expect(ax.remove('f-a-1')).toContain('ax did not run')
+  } finally {
+    process.env.FACTORY_AX = prev
+  }
+})
+
 test('task names are RFC 1123 labels that keep the seq', () => {
   expect(ax.taskName('fx-12_Add.health', 3)).toBe('f-fx-12-add-health-3')
   const long = ax.taskName('r'.repeat(80), 12)
