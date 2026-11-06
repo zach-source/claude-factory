@@ -5196,22 +5196,25 @@ const FACTORY_CONTROL_VERBS = new Set([
 function anyFactoryControlReason(words: string[]): string | undefined {
   for (let j = 0; j + 1 < words.length; j++) {
     if (baseWord(words[j]!) !== 'factory') continue
-    const next = words[j + 1]!
+    // claude-factory-rtbv: a redirect word before the verb or its sub is not the verb or sub.
+    const rest = dropRedirectWords(words.slice(j + 1))
+    const next = rest[0]
+    if (next === undefined) continue
     if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
     if (dynamicWord(next)) return DYNAMIC_VERB_REASON
-    if (next.toLowerCase() === 'rig' && j + 2 < words.length) {
-      const sub = words[j + 2]!
+    if (next.toLowerCase() === 'rig' && rest.length > 1) {
+      const sub = rest[1]!
       if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
       if (sub !== 'list') return FACTORY_CONTROL_REASON
     }
     // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.
     if (next.toLowerCase() === 'memory') {
-      const sub = words[j + 2]
+      const sub = rest[1]
       if (sub === undefined) return FACTORY_CONTROL_REASON
       if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
       if (['search', 'add', 'helped', 'eval'].includes(sub)) continue
-      const rest = words.slice(j + 3)
-      if (sub === 'compact' && rest.length > 0 && rest.every(w => w === '--dry-run')) continue
+      const tail = rest.slice(2)
+      if (sub === 'compact' && tail.length > 0 && tail.every(w => w === '--dry-run')) continue
       return FACTORY_CONTROL_REASON
     }
   }
