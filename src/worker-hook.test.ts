@@ -38,6 +38,8 @@ import {
   READY_REASON,
   REASON,
   SCAN_BUDGET_REASON,
+  SCAN_TIME_MS,
+  SCAN_TIME_REASON,
   scanReason,
   SHELL_ALIAS_DEFINE_REASON,
   SHELL_ALIAS_READ_REASON,
@@ -11275,3 +11277,28 @@ test('factory mutate forms pass the hook; a push or merge tail stays denied', ()
   expect(ask(`factory mutate src/x.ts:12 a b -- git push origin HEAD:main`)).toBe(PUSH_REASON)
   expect(ask(`factory mutate src/x.ts:12 a b -- gh pr merge 3`)).toBeDefined()
 })
+
+// claude-factory-abs: a denyReason call that runs past SCAN_TIME_MS denies with SCAN_TIME_REASON, allow included.
+test('denyReason denies with SCAN_TIME_REASON when the clock passes the scan deadline; a fixed clock allows (claude-factory-abs)', () => {
+  const base = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+  let t = 0
+  const jumping: HookGate = { ...base, now: () => (t++ === 0 ? 1000 : 1000 + SCAN_TIME_MS + 1) }
+  expect(denyReason('echo a', '/acme/root', undefined, jumping)).toBe(SCAN_TIME_REASON)
+  expect(denyReason('echo a', '/acme/root', undefined, { ...base, now: () => 1000 })).toBeUndefined()
+  // a deny that the scan found first is not replaced by an allow, and exactly at the deadline is still in time
+  expect(denyReason('rm -rf foo', '/acme/root', undefined, { ...base, now: () => 1000 })).toBe(REASON)
+  t = 0
+  const edge: HookGate = { ...base, now: () => (t++ === 0 ? 1000 : 1000 + SCAN_TIME_MS) }
+  expect(denyReason('echo a', '/acme/root', undefined, edge)).toBeUndefined()
+})
+
+// claude-factory-w13q / claude-factory-w2cf: the find -exec $X shape was quadratic in its slot count (7.4 s for 735 slots
+// at load 31). The scan time budget bounds it: REASON or SCAN_TIME_REASON, never a hang past the hook timeout.
+test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slots (claude-factory-w13q)', () => {
+  const t0 = performance.now()
+  const a = denyReason('find . ' + '-exec $X a '.repeat(735) + "';'", '/acme/root')
+  expect([REASON, SCAN_TIME_REASON]).toContain(a)
+  const b = denyReason('find . ' + '-exec $X {} + '.repeat(578), '/acme/root')
+  expect([undefined, SCAN_TIME_REASON]).toContain(b)
+  expect(performance.now() - t0).toBeLessThan(2 * SCAN_TIME_MS + 2000)
+}, 30_000)

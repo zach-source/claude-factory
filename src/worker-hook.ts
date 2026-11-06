@@ -379,6 +379,8 @@ export const DYNAMIC_VERB_REASON =
  * filesystem a unit test can fake out. `main()` wires the real ones; a test passes its own.
  */
 export interface HookGate {
+  /** claude-factory-abs: the clock denyReason reads for its scan deadline (SCAN_TIME_MS). A test fakes it. Default Date.now. */
+  now?: () => number
   /** the running station, from FACTORY_FROM. Only the release station may mark a pull request ready. */
   station?: string
   /** claude-factory-l3tl: the factory name, from FACTORY_DEF_NAME. With `mergeAuthority` and the
@@ -536,6 +538,11 @@ interface ScanState {
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
   // reads. Below zero, the scan stops and denies (fail closed).
   work: number
+  /** claude-factory-abs: the clock reading after which the scan denies with SCAN_TIME_REASON. Infinity: no deadline. */
+  deadline: number
+  now: () => number
+  /** claude-factory-abs: set when spendWork passed the deadline. scanReason then returns SCAN_TIME_REASON, allow included. */
+  timedOut: boolean
 }
 
 // claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
@@ -554,8 +561,22 @@ export const MAX_SCAN_WORK = 16_000_000
 /** Subtracts n from the work left. Returns true when the budget is spent. */
 function spendWork(state: ScanState, n: number): boolean {
   state.work -= n
+  // claude-factory-abs: every denyAt level and every alias rescan comes here, so each one checks the clock.
+  if (state.deadline !== Infinity && state.now() > state.deadline) {
+    state.timedOut = true
+    state.work = -1
+  }
   return state.work < 0
 }
+
+// claude-factory-abs: this reason is for a command whose scan runs past SCAN_TIME_MS (a slow shape or a loaded host).
+export const SCAN_TIME_REASON =
+  'The factory denies this command: the factory cannot check it in the time it has, because the ' +
+  'scan ran too long. Run a simpler command. Do not retry this exact command.'
+
+// claude-factory-abs: the time one denyReason call may scan, in ms from its start. The memoGate spawn budget is
+// GATE_BUDGET_MS (6000) and runs inside the scan. The rest of the 10 s PreToolUse timeout covers Bun start and stdin.
+export const SCAN_TIME_MS = 7000
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
 // limit. A command with many stacked eval words can make this guard's own scan too slow. The scan
@@ -7841,7 +7862,8 @@ export function denyReason(
   // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
   const home = homeReason(command, gate?.readFile)
   if (home) return home
-  return scanReason(command, root, personOnly, gate)
+  const now = gate?.now ?? Date.now
+  return scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
 }
 
 /**
@@ -7893,6 +7915,7 @@ export function scanReason(
   personOnly?: string[],
   gate?: HookGate,
   budget: number = MAX_SCAN_WORK,
+  deadline: number = Infinity,
 ): string | undefined {
   const state: ScanState = {
     branchChange: false,
@@ -7913,6 +7936,9 @@ export function scanReason(
     outer: NO_OTHER_SEGS,
     braceWords: new Set(),
     work: budget,
+    deadline,
+    now: gate?.now ?? Date.now,
+    timedOut: false,
   }
   const deferred = () =>
     state.stdinDeferred
@@ -7924,6 +7950,7 @@ export function scanReason(
           : undefined
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
+  if (state.timedOut) return SCAN_TIME_REASON
   if (reason) {
     if (!(state.ifsLate && state.stdinDeferred && reason === REASON)) return reason
     const aliasDef = state.aliasWrite && !plainAliasOnly(command)
