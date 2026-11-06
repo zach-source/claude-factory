@@ -456,6 +456,8 @@ const FLUX_ALLOW_LIVE = [
   'flux --context kind-kind suspend ks apps',
   'flux create source oci s --url u --export',
   'flux --context acme install --export',
+  'flux --context acme install --registry=r --export',
+  'flux --context acme install --verbose --export',
   'flux --context acme create ks apps --source s --export=true',
   'grep -rn flux src/',
   'git commit -m "flux suspend ks apps"',
