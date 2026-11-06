@@ -255,3 +255,48 @@ const trivialFile = ({ path, patch }: PrFile) => {
 
 /** True when the list has files and each file is docs, a test, .factory/, a lock file or a version-only package.json change. Any doubt gives false. */
 export const trivial = (files: PrFile[]) => files.length > 0 && files.every(trivialFile)
+
+export type WriteBead = {
+  id: string
+  title: string
+  closeReason: string
+  comments: string[]
+  closedAt: number
+  prs: string[]
+}
+export type WritePr = { url: string; title: string; body: string; files: PrFile[] }
+export type WriteGroup = { beads: WriteBead[]; prs: WritePr[] }
+
+/** FACTORY_WIKI_WRITE_CAP: a positive whole number, else 20. */
+export const writeCap = (env: Record<string, string | undefined> = process.env) => {
+  const v = env.FACTORY_WIKI_WRITE_CAP ?? ''
+  return /^[1-9]\d*$/.test(v) ? Number(v) : 20
+}
+
+/** Groups beads that share a PR (also through a chain). Drops trivial and unknown PRs. Keeps the `cap` groups with the oldest beads. */
+export function writeGroups(beads: WriteBead[], prs: WritePr[], cap = writeCap()): WriteGroup[] {
+  const real = new Map(prs.filter(p => !trivial(p.files)).map(p => [p.url, p]))
+  const groups: { beads: WriteBead[]; urls: Set<string> }[] = []
+  for (const bead of beads) {
+    const urls = new Set(bead.prs.filter(x => real.has(x)))
+    if (!urls.size) continue
+    const hit = groups.filter(g => [...urls].some(x => g.urls.has(x)))
+    const into = hit[0] ?? { beads: [], urls: new Set<string>() }
+    if (!hit.length) groups.push(into)
+    for (const g of hit.slice(1)) {
+      into.beads.push(...g.beads)
+      g.urls.forEach(x => into.urls.add(x))
+      groups.splice(groups.indexOf(g), 1)
+    }
+    into.beads.push(bead)
+    urls.forEach(x => into.urls.add(x))
+  }
+  const byAge = (a: WriteBead, b: WriteBead) => a.closedAt - b.closedAt || a.id.localeCompare(b.id)
+  return groups
+    .map(g => ({
+      beads: g.beads.sort(byAge),
+      prs: [...g.urls].sort().map(x => real.get(x)!),
+    }))
+    .sort((a, b) => byAge(a.beads[0]!, b.beads[0]!) || 0)
+    .slice(0, cap)
+}

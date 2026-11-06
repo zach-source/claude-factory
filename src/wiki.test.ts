@@ -6,7 +6,11 @@ import {
   scanPages,
   SECTIONS,
   trivial,
+  writeCap,
+  writeGroups,
   type PrFile,
+  type WriteBead,
+  type WritePr,
   type Merged,
   type Page,
   type RigRow,
@@ -371,4 +375,69 @@ test.each<[string, PrFile[], boolean]>([
   ['bun.lockb', f('bun.lockb'), false],
 ])('AC1 trivial: %s', (_n, files, want) => {
   expect(trivial(files)).toBe(want)
+})
+
+const wb = (id: string, closedAt: number, ...prs: string[]): WriteBead => ({
+  id,
+  title: `Title ${id}`,
+  closeReason: `Reason ${id}`,
+  comments: [],
+  closedAt,
+  prs,
+})
+const wp = (n: number, ...paths: string[]): WritePr => ({
+  url: `https://github.com/acme/widget/pull/${n}`,
+  title: `PR ${n}`,
+  body: `Body ${n}`,
+  files: f(...(paths.length ? paths : ['src/a.ts'])),
+})
+const u = (n: number) => `https://github.com/acme/widget/pull/${n}`
+const ids = (g: ReturnType<typeof writeGroups>) => g.map(x => x.beads.map(b => b.id))
+
+test('AC2 trivial and unknown PRs are dropped', () => {
+  expect(writeGroups([wb('a', 1, u(1))], [wp(1, 'README.md')], 20)).toEqual([])
+  expect(writeGroups([wb('a', 1, u(9))], [wp(1)], 20)).toEqual([])
+  const g = writeGroups([wb('a', 1, u(1), u(2))], [wp(1, 'README.md'), wp(2)], 20)
+  expect(g.length).toBe(1)
+  expect(g[0]!.prs.map(p => p.url)).toEqual([u(2)])
+})
+
+test('AC3 grouping', () => {
+  const prs = [wp(1), wp(2), wp(3)]
+  // chain A-1-B-2-C
+  const chain = writeGroups([wb('c', 3, u(2)), wb('a', 1, u(1)), wb('b', 2, u(1), u(2))], prs, 20)
+  expect(ids(chain)).toEqual([['a', 'b', 'c']])
+  expect(chain[0]!.prs.map(p => p.url)).toEqual([u(1), u(2)])
+  // one bead, two PRs
+  const pair = writeGroups([wb('3w8o', 1, u(2), u(1))], prs, 20)
+  expect(pair.length).toBe(1)
+  expect(pair[0]!.prs.map(p => p.url)).toEqual([u(1), u(2)])
+  // no shared PR
+  expect(writeGroups([wb('a', 1, u(1)), wb('b', 2, u(2))], prs, 20).length).toBe(2)
+  // closedAt, then id
+  expect(ids(writeGroups([wb('z', 1, u(1)), wb('b', 2, u(1)), wb('a', 2, u(1))], prs, 20))).toEqual([
+    ['z', 'a', 'b'],
+  ])
+})
+
+test('AC4 cap keeps the oldest', () => {
+  const prs = [wp(1), wp(2), wp(3)]
+  const beads = [wb('c', 30, u(3)), wb('b', 20, u(2)), wb('a', 10, u(1))]
+  expect(ids(writeGroups(beads, prs, 2))).toEqual([['a'], ['b']])
+  const many = Array.from({ length: 21 }, (_, i) => wb(`b${String(i).padStart(2, '0')}`, i, u(i + 1)))
+  const manyPrs = Array.from({ length: 21 }, (_, i) => wp(i + 1))
+  const out = writeGroups(many, manyPrs, writeCap({}))
+  expect(out.length).toBe(20)
+  expect(out[0]!.beads[0]!.id).toBe('b00')
+})
+
+test.each<[string | undefined, number]>([
+  [undefined, 20],
+  ['5', 5],
+  ['0', 20],
+  ['-1', 20],
+  ['abc', 20],
+  ['2.5', 20],
+])('AC4 writeCap %p', (v, want) => {
+  expect(writeCap(v === undefined ? {} : { FACTORY_WIKI_WRITE_CAP: v })).toBe(want)
 })
