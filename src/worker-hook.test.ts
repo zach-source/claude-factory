@@ -363,6 +363,19 @@ test.each([...DENY_LIVE, ...ALLOW_LIVE])(
 // An unknown verb fails closed at a command anchor. The rows are literal. A row built from a Set
 // cannot kill a mutation that removes a Set member.
 const FLUX_DENY_LIVE = [
+  'flux --context acme -h get suspend ks apps -h=false',
+  'flux --context acme --help get suspend ks apps --help=false',
+  'flux --context acme -h get resume ks apps -h=false',
+  'flux --context acme -h get uninstall --silent -h=false',
+  'flux --context acme -v version install -v v2.9.5',
+  'flux --context acme --version version install --version=v2.9.5',
+  'flux -h get suspend ks apps -h=false',
+  'caffeinate flux --context acme -h get suspend ks apps -h=false',
+  'bash -c "flux --context acme -h get suspend ks apps -h=false"',
+  'flux -h get ks',
+  'flux --help get ks',
+  'flux -v get ks',
+  'flux --version get ks',
   'flux --context acme suspend kustomization apps',
   'flux --context acme reconcile kustomization apps --with-source',
   'flux --context acme resume helmrelease -n ns x',
@@ -463,6 +476,10 @@ const FLUX_ALLOW_READ_VERB = [
 ]
 
 const FLUX_ALLOW_LIVE = [
+  'flux -h',
+  'flux -v',
+  'flux --version',
+  'flux --context acme get ks --help',
   'flux --context acme get kustomizations -A',
   'flux get kustomizations -A',
   'flux get helmreleases -A',
@@ -502,10 +519,6 @@ const FLUX_FLAG_ALLOW = [
   'flux --insecure-skip-tls-verify get ks',
   'flux --ns-follows-kube-context get ks',
   'flux --verbose get ks',
-  'flux -h get ks',
-  'flux --help get ks',
-  'flux -v get ks',
-  'flux --version get ks',
 ]
 
 test.each([...FLUX_DENY_LIVE, ...FLUX_DENY_WRAPPED_VERB])(
@@ -533,7 +546,11 @@ test.each([
 })
 
 // A dynamic word before a flux verb names a hidden tool. A flux verb in the list fails closed.
-test.each(['$F --context acme suspend ks apps', '$F suspend ks apps'])(
+test.each([
+  '$F --context acme suspend ks apps',
+  '$F suspend ks apps',
+  '$F --context acme -h get suspend ks apps -h=false',
+])(
   'denyReason denies a dynamic tool word before a flux verb %j',
   cmd => {
     expect(denyReason(cmd, undefined, ACME)).toBe(DYNAMIC_VERB_REASON)

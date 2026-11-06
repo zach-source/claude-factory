@@ -4193,10 +4193,6 @@ const FLUX_BOOL_FLAGS = new Set([
   '--insecure-skip-tls-verify',
   '--ns-follows-kube-context',
   '--verbose',
-  '-h',
-  '--help',
-  '-v',
-  '--version',
 ])
 const FLUX_READ_VERBS = new Set([
   'build',
