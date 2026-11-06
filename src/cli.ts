@@ -525,12 +525,41 @@ type TaskSide = {
   /** when a put has been failing over ax ssh since, and its ax stderr; a success clears both */
   putFailedAt?: number
   putError?: string
+  /** the part of the first file in `put` that the next tick sends (a put sends at most PUT_TICK_PARTS parts a tick) */
+  putPart?: number
+  /** the memory snapshot the VM got (claude-factory-vffe.4), or why it got none */
+  memory?: { bytes: number; parts: number; sentAt: number }
+  memorySkipped?: string
   /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
   beadsRemote?: Rig['beadsRemote']
+}
+/**
+ * Write the memory snapshot file for a launch. `put` is true when the file must go to the VM.
+ * `skipped` says why not: the snapshot is over `max` bytes, or `memory.snapshot` threw.
+ * A failure here never blocks the launch.
+ */
+export function memorySnapshotPut(
+  mem: string,
+  rig: string | undefined,
+  out: string,
+  max = memory.MEMORY_SNAPSHOT_MAX,
+): { put: boolean; skipped?: string } {
+  try {
+    const snap = memory.snapshot(mem, rig, out)
+    if (!snap) return { put: false }
+    if (snap.bytes <= max) return { put: true }
+    rmSync(out, { force: true })
+    return { put: false, skipped: `${snap.bytes} bytes, over the ${max} byte cap` }
+  } catch (e) {
+    rmSync(out, { force: true })
+    return { put: false, skipped: cleanText(String(e), 300) }
+  }
 }
 const sideFile = (run: Run, task: string) => join(runDir(run.id), `${task}.json`)
 /** how long a failing put is retried before the attempt fails: a VM still waking fails ssh for a tick or two */
 const PUT_GRACE_MS = 5 * 60_000
+/** ax ssh calls that a put sends in one tick: each can wait up to 30 s, and the tick waits on it */
+const PUT_TICK_PARTS = 8
 
 const hashLine = (line: string) => createHash('sha256').update(line).digest('hex')
 const seenFile = (run: Run, task: string) => join(runDir(run.id), `${task}.seen`)
@@ -569,11 +598,13 @@ export function replayable(
   run: string,
 ): string[] | null {
   const [cmd, id, seq] = argv
-  // a VM expands --summary-file before it queues; a line that still has it would read a laptop file
+  // a VM expands --summary-file, --text-file and --body-file before it queues; a line that still has it would read a laptop file
   if (cmd === 'report' && id === run && seq === String(side.seq))
     return argv[4] === '--summary-file' ? null : argv
-  if (cmd === 'mail' && id === run) return argv
+  if (cmd === 'mail' && id === run)
+    return argv[3] === '--text-file' || (argv[3] === '--wake' && argv[4] === '--text-file') ? null : argv
   if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
+    if (argv.includes('--body-file')) return null
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
     // the forced --from goes first: a bare trailing flag (--rig) cannot take it as its value (claude-factory-zw2n)
     return ['memory', id, '--from', `${run}/${side.node}`, ...rest]
@@ -584,10 +615,17 @@ export function replayable(
 /**
  * `report <run> <seq> <outcome> --summary-file <path>` -> [run, seq, outcome, <file text>]; any other args pass
  * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. A bad form
- * throws. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
+ * throws. A whole word `--summary-file` in a later slot also throws: it would post the flag as text and lose the
+ * report. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
  */
 export function summaryArgs(args: string[]): string[] {
-  if (args[3] !== '--summary-file') return args
+  if (args[3] !== '--summary-file') {
+    if (args.slice(3).includes('--summary-file'))
+      return fail(
+        'usage: factory report <run> <seq> <outcome> --summary-file <path> (the flag must follow the outcome)',
+      )
+    return args
+  }
   const path = args[4]
   if (!path || args.length !== 5)
     return fail(
@@ -595,6 +633,49 @@ export function summaryArgs(args: string[]): string[] {
     )
   const text = readTextFile('--summary-file', path)
   return [...args.slice(0, 3), text]
+}
+
+/** the flags of `memory add` that take a value */
+const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--supersedes']
+
+/**
+ * claude-factory-jho3: expand a file flag to the inline form. Three forms exist:
+ * report --summary-file (see summaryArgs);
+ * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot (a later whole word throws);
+ * memory add --body-file <path>, which replaces the body words.
+ * The path goes through textFileArg. Other args pass unchanged. A bad form throws.
+ * A VM expands before it queues, so the laptop never reads a path that a VM chose.
+ * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add. Upgrade: skip that check for the body-file value.
+ */
+export function fileArgs(cmd: string, args: string[]): string[] {
+  if (cmd === 'report') return summaryArgs(args)
+  if (cmd === 'mail') {
+    const at = args[2] === '--wake' ? 3 : 2
+    if (args[at] !== '--text-file') {
+      if (args.slice(at).includes('--text-file'))
+        return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (the flag must come first)')
+      return args
+    }
+    if (!args[at + 1] || args.length !== at + 2)
+      return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
+    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
+  }
+  if (cmd !== 'memory' || args[0] !== 'add' || !args.includes('--body-file')) return args
+  const i = args.indexOf('--body-file')
+  const path = args[i + 1]
+  // a second --body-file, or a flag as the value, stays in the positional words or fails to read: both refuse
+  if (!path) return fail('--body-file needs a path')
+  const rest = args.filter((_, j) => j !== i && j !== i + 1)
+  const words = rest
+    .slice(1)
+    .filter(
+      (w, j, a) =>
+        w !== '--anyway' &&
+        !MEMORY_ADD_VALUE_FLAGS.includes(a[j - 1]!) &&
+        !MEMORY_ADD_VALUE_FLAGS.includes(w),
+    )
+  if (words.length > 1) return fail('--body-file replaces the body words: give the summary and the file only')
+  return [...rest, textFileArg('--body-file', path)]
 }
 
 /** the stat/size/read core of --summary-file and the text-file flags; a bad file fails with the flag and path named */
@@ -624,8 +705,8 @@ function readTextFile(flag: string, path: string): string {
 
 /**
  * claude-factory-2z48: untrusted text (a bead, a Linear issue) reaches a verb by file, never in a shell argument.
- * The file must sit inside <FACTORY_HOME>/text/ once symlinks resolve, so injected text cannot steer a flag to a
- * secret such as a token file. Returns the text without trailing whitespace.
+ * The file must sit inside <FACTORY_HOME>/text/, or inside the real .scratch/ folder (not a symlink) of the git toplevel, and only when the cwd
+ * is inside that toplevel, so injected text cannot steer a flag to a secret such as a token file. Returns the text without trailing whitespace.
  * ponytail: the verb does not delete the file, so text/ grows by one small file per filing. Upgrade: unlink after
  * success, or a gc pass.
  */
@@ -638,9 +719,21 @@ function textFileArg(flag: string, path: string): string {
   } catch {
     return fail(`${flag} ${path} is not a readable file`)
   }
-  const root = realpathSync(dir)
-  if (!real.startsWith(root + sep))
-    return fail(`${flag} ${path} is outside ${dir}: write the text there first`)
+  const roots = [realpathSync(dir)]
+  // jho3: a Codex worker in workspace-write mode can write only in its cwd, so <git toplevel>/.scratch/ counts too
+  const top = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { stderr: 'ignore' })
+  if (top.exitCode === 0)
+    try {
+      // jho3.12: .scratch/ must be a real folder, not a symlink. The cwd must be inside the toplevel.
+      const t = realpathSync(top.stdout.toString().trim())
+      const s = realpathSync(join(t, '.scratch'))
+      const cwd = realpathSync(process.cwd())
+      if (s === join(t, '.scratch') && (cwd === t || cwd.startsWith(t + sep))) roots.push(s)
+    } catch {} // no .scratch/: only text/ counts
+  if (!roots.some(r => real.startsWith(r + sep)))
+    return fail(
+      `${flag} ${path} is outside ${dir} and the .scratch/ of the git worktree: write the text there first`,
+    )
   return readTextFile(flag, real).trimEnd()
 }
 
@@ -949,16 +1042,27 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     writeJson(sideFile(run, task), { ...side, policy: true })
   }
   // what is too big for the task's env goes over ssh, in parts, and serve waits for it
-  for (const name of side?.put ?? []) {
-    const b64 = readFileSync(join(runDir(run.id), `${task}.${name}`)).toString('base64')
+  // At most PUT_TICK_PARTS parts a tick (each is an ssh call): putPart is where the next tick goes on
+  let sent = 0
+  put: for (const name of side?.put ?? []) {
+    const file = join(runDir(run.id), `${task}.${name}`)
+    const b64 = readFileSync(file).toString('base64')
     const parts = Math.max(1, Math.ceil(b64.length / ax.PUT_PART))
-    for (let i = 0; i < parts; i++) {
+    for (let i = side!.putPart ?? 0; i < parts; i++) {
+      if (sent++ >= PUT_TICK_PARTS) {
+        writeJson(sideFile(run, task), { ...side, putPart: i })
+        break put
+      }
       const r = ax.put(task, name, i, parts, b64.slice(i * ax.PUT_PART, (i + 1) * ax.PUT_PART))
-      if (r.ok) continue
+      if (r.ok) {
+        side!.putFailedAt = undefined // a part landed: the 5 min grace restarts at the next failure
+        side!.putError = undefined
+        continue
+      }
       // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
       const failedAt = side!.putFailedAt ?? Date.now()
       const err = cleanText(r.err.replace(/\s+/g, ' ').trim(), 300)
-      writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
+      writeJson(sideFile(run, task), { ...side, putPart: i, putFailedAt: failedAt, putError: err })
       if (Date.now() - failedAt < PUT_GRACE_MS)
         return { status: 'pending', agent: 'ax', pending: `${name} not yet copied to the VM` }
       return {
@@ -968,9 +1072,15 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       }
     }
     side!.put = side!.put!.filter(n => n !== name)
+    side!.putPart = undefined
     side!.putFailedAt = undefined
     side!.putError = undefined
+    if (name === 'memory.tgz') {
+      side!.memory = { bytes: statSync(file).size, parts, sentAt: Date.now() }
+    }
     writeJson(sideFile(run, task), side)
+    // remove the file after the save: a stop between the two would leave side.put naming a missing file
+    if (name === 'memory.tgz') rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
   }
   // always ask for everything: which lines are already replayed lives here, keyed by content (see `loadSeen`
   // below), not as a line count the VM slices by -- a worker that edits outbox.jsonl (claude-factory-4x1)
@@ -1584,16 +1694,16 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Reporting (required)',
     'When you are finished, report exactly once and then stop:',
-    `    ${CLI} report ${run.id} ${c.seq} <outcome> '<summary for the next station>'`,
-    'A long summary: write it to a file, then end the command with `--summary-file <path>` in place of the quoted text.',
+    `    ${reportCmd(run, c)}`,
     'Outcomes:',
     ...Object.entries(n.next).map(([outcome, edge]) => `- ${outcome}: goes to ${edgeText(edge)}`),
     '- fail: you cannot do it; a fresh worker retries',
     `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it.${runnerOfStation(run, def, node).local ? '' : ' A blocked report that names a live read (kubectl, Mimir, Loki, Alertmanager, a live DB or pod) waits for mail or the person, with no timer re-check.'} When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
-    `Put each free-text value of a shell command in single quotes and write each ' in it as '\\'': bash expands $VAR, $(...) and backticks in double quotes.`,
-    `To ask the manager, run \`${CLI} mail ${run.id} manager '<question>'\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
+    `Free text goes by file, never in a shell argument: a quote in text from outside (a bead, a pull request, a CI job) closes the argument. Write each text (a report summary, a mail, a comment, a bead body, a close reason, a note body, a pull request body, a review body) with the Write tool to ${run.worktree}/.scratch/<new name>.md, one new name for each text, and pass that path in the file flag.`,
+    `Put each title and search word of a shell command in single quotes and write each ' in it as '\\'': bash expands $VAR, $(...) and backticks in double quotes. Use only plain words there.`,
+    `To ask the manager, run \`${CLI} mail ${run.id} manager --text-file <path>\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
     '',
     ...tracking(run, node),
   ].join('\n')
@@ -1618,7 +1728,7 @@ function remembered(run: Run, node: string, notes = '') {
     ...(notes
       ? [`- The factory already searched for your goal and station. The closest notes:`, guardBreaks(notes)]
       : []),
-    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} '<one-line summary>' '<what, why, how you know>'${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} '<one-line summary>' --body-file <path>${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
 }
@@ -1640,9 +1750,9 @@ function tracking(run: Run, node: string) {
     // factory or station. Its comments are those earlier runs' reports: read them first.
     `- Read ${b}'s comments first (bd show ${b}): they are earlier runs' reports on this bead.`,
     `- The plan's tasks: bd children ${b}; the unblocked ones: bd ready --parent ${b}`,
-    `- Add a task: bd create '<title>' --parent ${b} -t task|bug -p <0-4> -d '<what, and how to verify it>'; order two with bd dep <first> --blocks <second>`,
-    `- Work a task: bd update <id> -s in_progress, then bd close <id> --reason '<what changed, the commit>'`,
-    `- Separate work outside this run: look for it first (bd search '<words>'), then bd create '<title>' -t bug|task|feature -p <0-4> -d '<evidence>' --deps discovered-from:${b}`,
+    `- Add a task: bd create '<title>' --parent ${b} -t task|bug -p <0-4> --body-file <path> (the file holds what to do and how to verify it); order two with bd dep <first> --blocks <second>`,
+    `- Work a task: bd update <id> -s in_progress, then bd close <id> --reason-file <path> (the file holds what changed and the commit)`,
+    `- Separate work outside this run: look for it first (bd search '<words>'), then bd create '<title>' -t bug|task|feature -p <0-4> --body-file <path> --deps discovered-from:${b}`,
     `  - that starts on its own: add -l factory; for a person to prioritize: no factory label`,
     `  - to start at a station: add -l station:<name>`,
     `- Never close or defer ${b} itself: the factory does when the run ends.`,
@@ -1655,11 +1765,15 @@ function tracking(run: Run, node: string) {
   ]
 }
 
-const resumeNote = (run: Run, node: string, c: Ctx) =>
+/** the report command that a nudge shows: the summary goes by file, never in a shell argument (claude-factory-jho3) */
+export const reportCmd = (run: Run, c: Ctx, outcome = '<outcome>') =>
+  `${CLI} report ${run.id} ${c.seq} ${outcome} --summary-file <path>`
+
+export const resumeNote = (run: Run, node: string, c: Ctx) =>
   `[factory] Your pane closed and this session was resumed.` +
   cutOffNote(c.session ? cutOffCall(tailOf(run.worktree, c.session)) : undefined) +
   ` Carry on as the "${node}" station where you left off: ` +
-  `check git status and git log first. When finished, report exactly once: ${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'`
+  `check git status and git log first. When finished, report exactly once: ${reportCmd(run, c)}`
 
 /** where a station's workers run: the station's own runner, else the rig's */
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
@@ -1979,6 +2093,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   // ssh once the task runs (see taskInfo). The VM clones the rig's beads itself (FACTORY_BEADS), from its
   // beadsRemote or else the repo's GitHub origin
   writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
+  // the VM cannot reach the laptop's memory: it gets a snapshot of the notes its rig can see (vffe.4)
+  const snap = memorySnapshotPut(MEMORY, rig?.name, join(runDir(run.id), `${name}.memory.tgz`))
   // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
   // the fleet may hold other VMs' writes since: take them first, or the push is refused
   if (hasRunBeads) (syncRigBeads(run, 'pull'), syncRigBeads(run, 'push'))
@@ -2044,7 +2160,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(reviewer && { reviewer }),
     ...(reviewer && { githubRepo }),
     policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer, false, githubRepo),
-    put: ['brief.md'],
+    put: ['brief.md', ...(snap.put ? ['memory.tgz'] : [])],
+    ...(snap.skipped && { memorySkipped: snap.skipped }),
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
   writeJson(sideFile(run, name), side)
@@ -3330,7 +3447,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       // ask once per visit; NUDGED records that it was asked
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
-        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
+        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${indentRest(m.text)}`),
         `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
@@ -3571,8 +3688,8 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     return 'handed off'
   }
   if (k > maxK && !isHandoffAsked) {
-    const cmd = `${CLI} report ${run.id} ${c.seq} handoff '<what is done, what is left and how, what you learned that the code does not show>'`
-    const text = `[factory] This session's context is ${k}k tokens, ${HANDOFF_ASK} of ${maxK}k: every turn re-reads all of it. At the next safe point, commit your work in progress (a WIP commit is fine) and hand off to a fresh worker, then stop: ${cmd}`
+    const cmd = reportCmd(run, c, 'handoff')
+    const text = `[factory] This session's context is ${k}k tokens, ${HANDOFF_ASK} of ${maxK}k: every turn re-reads all of it. At the next safe point, commit your work in progress (a WIP commit is fine) and hand off to a fresh worker, then stop. The summary file holds what is done, what is left and how, and what you learned that the code does not show: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text })
   }
   // ponytail: a fingerprint of the tail's end, the branch head and (a non-local worker) its live stream's byte
@@ -3612,13 +3729,13 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     send({ type: 'MAIL', from: node, to: 'manager', text })
   } else if (stall === 'nudge') {
     const min = Math.round((now - seen.at) / 60_000)
-    const cmd = `${CLI} report ${run.id} ${c.seq} blocked '<why>'`
+    const cmd = reportCmd(run, c, 'blocked')
     runner.deliver(
       c.pane,
-      `[factory] Nothing in your session or branch has changed for ${min} min. If you are stuck, report what blocks you: ${cmd}. Otherwise carry on.`,
+      `[factory] Nothing in your session or branch has changed for ${min} min. If you are stuck, report what blocks you (the summary file says why): ${cmd}. Otherwise carry on.`,
     )
   } else if (due === 'warn') {
-    const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'`
+    const cmd = reportCmd(run, c)
     const text = `[factory] This station's ${timeoutMin} ${TIME_UP}. Commit what works now and report within ${Math.round(timeoutMin / 2)} minutes, saying what is left for the next attempt: ${cmd}`
     send({ type: 'MAIL', from: 'factory', to: node, text }) // delivered on the next tick, like any mail
   } else if (inbox.length && status !== 'blocked') {
@@ -3639,7 +3756,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   ) {
     if (c.nudges >= NUDGES) failOutage(egressReason ?? 'worker stopped without reporting')
     else {
-      const cmd = `${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'`
+      const cmd = reportCmd(run, c)
       runner.deliver(
         c.pane,
         `[factory] You have not reported. If you are finished run: ${cmd}. If you are still working or waiting on something, say in one line what, and carry on.`,
@@ -4095,26 +4212,21 @@ const trackOf = (id: string, saved?: Saved): Track => {
 export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
   repos.filter(r => !live.has(r) && queued(r) > 0)
 
-/** a ship run: the runner's own flag, or the id a ship run gets from its factory name */
-const shipLike = (ship: boolean | undefined, id: string) => !!ship || id.startsWith('ship-')
-
 /** the live ship runs */
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
       const { run, value, c } = current(id)
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && shipLike(run.ship, id) ? [{ run, node: where(value)[0], c }] : []
+      return !ended && run.ship ? [{ run, node: where(value)[0], c }] : []
     } catch {
       return [] // removed mid-pass
     }
   })
 
 /** A live ship run on the rig of `run`, other than `run`. Only when `run` counts as a ship run (claude-factory-9wch). */
-const otherLiveShip = (run: Run, id: string) =>
-  shipLike(run.ship, id)
-    ? liveShipRuns().find(s => s.run.id !== run.id && s.run.repo === run.repo)
-    : undefined
+const otherLiveShip = (run: Run) =>
+  run.ship ? liveShipRuns().find(s => s.run.id !== run.id && s.run.repo === run.repo) : undefined
 
 /**
  * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
@@ -6764,7 +6876,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
       !!named.labels?.includes(OWNER) ||
       named.metadata?.owner_question !== undefined ||
       named.metadata?.owner_since !== undefined
-    return { goal: goalOf(named), bead: named.id, handedOff }
+    return { goal: goalOf(named), bead: named.id, handedOff, shipBranch: shipBranchOf(named) }
   }
   return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra), handedOff: false }
 }
@@ -9332,7 +9444,16 @@ async function start(factory: string | undefined, repo: string | undefined, goal
       `only the runner starts a ship run, once for each rig with a queue: see factory ship ${rigOf(root)?.name ?? root}`,
     )
   const linked = beadFor(root, goal, { isOwnerOk })
-  const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
+  const { run, def } = await createTracked(
+    spec!,
+    preview.name,
+    root,
+    linked.goal,
+    linked.bead,
+    undefined,
+    undefined,
+    linked.shipBranch,
+  )
   // the run exists and holds the claim: end the hand-off now. A failure only warns, the run is live (claude-factory-h1wj)
   if (linked.handedOff && !beads(root, actorOf(run.id)).clearOwner(linked.bead!))
     console.error(
@@ -9412,7 +9533,7 @@ export function workerVerbRefusal(
 
 /**
  * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)`.
- * A -file flag (claude-factory-2z48) reads untrusted text from <FACTORY_HOME>/text/ (see textFileArg).
+ * A -file flag (claude-factory-2z48) reads untrusted text from <FACTORY_HOME>/text/ or the real .scratch/ of the git worktree (see textFileArg).
  * The label `factory` goes on only when the source bead reads back with its own id and no Linear
  * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
  */
@@ -9543,7 +9664,7 @@ export async function forkRun(
   const why = forkRefusal(where(value)[0], pending, src.id)
   if (why) throw new Error(why)
   // a ship fork beside another live ship run would give the rig two ship runs (claude-factory-9wch)
-  const other = otherLiveShip(src, `${factoryName}-`)
+  const other = otherLiveShip(src)
   if (other)
     throw new Error(
       `${other.run.id} is a live ship run on ${src.repo}: a fork of ${src.id} would put a second ship run on the rig. Run factory abort ${other.run.id}, then fork it again.`,
@@ -10270,7 +10391,7 @@ function shipQueues() {
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
-const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' '[body...]'`
+const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
 
 /**
  * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
@@ -10391,7 +10512,7 @@ const usage = `factory — herdr software factories on xstate
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
   decide <run> <outcome> '[note...]' the person: answer a gate station
-  mail <run> <node|manager> [--wake] '<text...>'  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
+  mail <run> <node|manager> [--wake] '<text...>'|--text-file path  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> '[text...]'             nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
@@ -10433,7 +10554,15 @@ const outboxCmd =
   (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && (args[0] === 'add' || args[0] === 'helped')))
 // `--help`/`-h` and malformed args never reach the outbox: before this, `report --help` queued a fake report
 // indistinguishable from a real one (claude-factory-4x1)
-const outboxOk = outboxCmd ? worker.outboxUsage(cmd!, args) : null
+let queuedArgs = args
+if (outboxCmd)
+  try {
+    queuedArgs = fileArgs(cmd!, args)
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(cmd === 'memory' ? 2 : 1)
+  }
+const outboxOk = outboxCmd ? worker.outboxUsage(cmd!, queuedArgs) : null
 if (outboxOk === 'help')
   console.log(
     worker.OUTBOX_USAGE[
@@ -10444,14 +10573,6 @@ else if (outboxOk) {
   console.error(outboxOk)
   process.exit(cmd === 'memory' && args[0] === 'add' ? 2 : 1)
 }
-let queuedArgs = args
-if (outboxCmd && outboxOk === null && cmd === 'report')
-  try {
-    queuedArgs = summaryArgs(args)
-  } catch (e) {
-    console.error((e as Error).message)
-    process.exit(1)
-  }
 const queued = outboxCmd && outboxOk === null
 const tooBig = queued ? worker.outboxTooBig([cmd!, ...queuedArgs]) : undefined
 if (tooBig) {
@@ -10623,6 +10744,15 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'memory': {
+        if (args[0] === 'add')
+          try {
+            args.splice(0, args.length, ...fileArgs('memory', args))
+          } catch (e) {
+            console.error(`factory memory add: ${(e as Error).message}`)
+            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+            process.exitCode = 2
+            break
+          }
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
         // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
@@ -10641,6 +10771,19 @@ if (import.meta.main && !outboxCmd)
         ]
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
+          // a VM has no store: the laptop put a snapshot (memory.tgz) in the worker dir at launch (vffe.4)
+          const snap = join(worker.own(), 'memory.tgz')
+          if (!existsSync(MEMORY) && existsSync(snap)) {
+            const tmp = `${MEMORY}.tmp-${process.pid}`
+            mkdirSync(tmp, { recursive: true })
+            const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
+            try {
+              if (r.exitCode !== 0) throw new Error('tar failed')
+              renameSync(tmp, MEMORY)
+            } catch {
+              rmSafe(tmp, { recursive: true, force: true }) // a cut file, or another search won the rename
+            }
+          }
           const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
@@ -10747,7 +10890,14 @@ if (import.meta.main && !outboxCmd)
             }
           }
         } else if (sub === 'helped' && words.length) {
-          const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
+          // a VM search prints its own memory dir; the outbox replays that path here (vffe.4)
+          const vmDir = `${ax.OWN}/home/memory/`
+          const paths = words.map(w =>
+            memory.resolvePath(
+              MEMORY,
+              relative(MEMORY, resolve(MEMORY, w.startsWith(vmDir) ? w.slice(vmDir.length) : w)),
+            ),
+          )
           const bad = paths.filter(p => p.startsWith('..') || !memory.noteExists(MEMORY, p))
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
           const by = memory.helpedBy(from, process.env)
@@ -11062,7 +11212,7 @@ if (import.meta.main && !outboxCmd)
           break
         }
         if (sub === 'propose' && rest[1]?.startsWith('--')) {
-          // claude-factory-2z48: the file form takes untrusted text from <FACTORY_HOME>/text/, never from the command
+          // claude-factory-2z48: the file form takes untrusted text from <FACTORY_HOME>/text/ or the real .scratch/ of the git worktree, never from the command
           const usage =
             'usage: factory decisions propose <key> --question-file <path> --options-file <path> [--context-file <path>]'
           const [key, ...pairs] = rest
@@ -11255,7 +11405,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
-        const [id, to, ...rest] = args
+        const [id, to, ...rest] = fileArgs('mail', args)
         const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
         const run = loadRun(id)
@@ -11297,7 +11447,7 @@ if (import.meta.main && !outboxCmd)
         const [node, sub] = where(value)
         if (sub !== 'working' || (await loadPinned(run.factory)).nodes[node]?.gate)
           fail(`${run.id} has no worker to poke: it is at ${node}${sub ? `/${sub}` : ''}`)
-        const nudge = `[factory] The manager is checking in. When you are finished run: ${CLI} report ${run.id} ${c.seq} <outcome> '<summary>'; if something blocks you, mail the manager what it is.`
+        const nudge = `[factory] The manager is checking in. When you are finished run: ${reportCmd(run, c)}; if something blocks you, mail the manager what it is.`
         post(run.id, { type: 'MAIL', from: managerSender(run), to: node, text: text.join(' ') || nudge })
         console.log(`poked ${node} of ${run.id}`)
         break
@@ -11336,7 +11486,7 @@ if (import.meta.main && !outboxCmd)
         // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
         const other =
           ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
-            ? otherLiveShip(run, run.id)
+            ? otherLiveShip(run)
             : undefined
         if (other)
           fail(
