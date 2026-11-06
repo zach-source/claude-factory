@@ -263,6 +263,11 @@ describe('homeReason', () => {
     expect(homeReason('bash c.sh', () => 'a=( \\\\\n~\\\n); mv "${a[2]}" /x\n', H)).toBe(HOME_REASON))
   test('an even backslash run keeps the raw home scan', () =>
     expect(homeReason('rm -rf a \\\\\n~', undefined, H)).toBe(HOME_REASON))
+  // on-purpose over-deny: the joined text is "rm -rf a~" and "cat x./x.sh", so only the raw text denies
+  test('the raw text alone denies a home word after a joined line', () =>
+    expect(homeReason('rm -rf a\\\n~', undefined, H)).toBe(HOME_REASON))
+  test('the raw text alone denies a path word after a joined line', () =>
+    expect(homeReason('cat x\\\n./x.sh', onlyX, H)).toBe(HOME_REASON))
 
   test.each([
     ['bash .scr\\\natch/ok', () => 'echo ok'],
