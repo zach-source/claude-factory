@@ -8508,6 +8508,8 @@ function denyAt(
         aliasStack,
       )
       if (r === REASON) return r
+      // claude-factory-qn8a.5.7: the re-read can hold `${` + blank; keep that deny (fail closed).
+      if (r === FUNSUB_REASON) return r
       // claude-factory-teku: `${(@)_}` reads as `${_}` here; a head `$_` stays denied.
       if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }

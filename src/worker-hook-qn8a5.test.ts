@@ -194,3 +194,24 @@ for (const c of ['echo ${X}', 'echo ${X:-y}', 'echo ${#X}', 'echo "${X}"', 'echo
   test(`F1 allows ${c}`, () => {
     expect(ask(c)).toBeUndefined()
   })
+
+// claude-factory-qn8a.5.7: the zsh flag-group re-read must not discard the funsub reason that hides a last-argument head deny.
+for (const c of [
+  "${(@)_}; echo '${() }'",
+  "echo '${() }'; ${(z)_}",
+  ": 'gh pr merge 1'; ${(z)_}; echo '${() }'",
+  ": 'gh pr merge 1'; ${(s: :)_}; echo '${() }'",
+  ": 'gh pr merge 1'; ${(@)=_}; echo '${() }'",
+  ": 'git push origin main'; ${(z)_}; echo '${() }'",
+  ": 'factory tick'; ${(z)_}; echo '${() }'",
+  ": 'gh pr merge 1'; ${(z)_}; echo \"${(L) x}\"",
+  ": 'gh pr merge 1'; ${(z)_}\necho '${() }'",
+])
+  test(`5.7 denies ${JSON.stringify(c)}`, () => {
+    expect(ask(c)).toBeDefined()
+  })
+// Known false deny (fail closed): the re-read puts a blank in the place of a glued $(...).
+for (const c of ['echo ${$(date)%x}', 'echo "${$(pwd):t}"', 'echo ${$(date)}'])
+  test(`5.7 known false deny ${JSON.stringify(c)}`, () => {
+    expect(ask(c)).toBe(FUNSUB_REASON)
+  })
