@@ -4537,8 +4537,12 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
           before = tail[i - 1] ?? ''
         }
       }
+      // claude-factory-qn8a.17.6: on install, -v and --version take a value although the root flag is a bool.
       // A value flag right before `--export` takes it as its value (pflag), so flux does not export.
-      const swallowed = before.startsWith('-') && !before.includes('=') && !FLUX_BOOL_FLAGS.has(before)
+      const swallowed =
+        before.startsWith('-') &&
+        !before.includes('=') &&
+        (before === '-v' || before === '--version' || !FLUX_BOOL_FLAGS.has(before))
       if (!dyn && !swallowed && (exp === '--export' || exp === '--export=true')) return false
     }
     if (contextDenied(flagValue(cmd, new Set(['--context'])), personOnly)) return true

@@ -400,6 +400,8 @@ const FLUX_DENY_LIVE = [
   'flux --context acme install --export --export=false',
   'flux --context acme bootstrap github --export',
   'flux --context acme install --registry --export',
+  'flux --context acme install -v --export -v v2.9.5',
+  'flux --context acme install --version --export --version=v2.9.5',
   'flux --context acme install --registry $X --export',
   'flux --context acme install $X --export',
   'flux --context acme install ${X} --export',
