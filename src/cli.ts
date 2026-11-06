@@ -3786,6 +3786,10 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
   try {
     if (runnerOf(pane).name !== 'herdr' || !startedAt) return
     const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
+    // a codex pane keeps its rollouts in its own CODEX_HOME (codexWorker): store them as the AX path does
+    try {
+      rows.push(...codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
+    } catch {} // a bad codex file must not drop the Claude rows
     if (rows.length) appendUsage(run.id, rows)
   } catch {}
 }
@@ -4215,6 +4219,20 @@ const kickBeads = () =>
     env: { ...process.env, FACTORY_HOME: HOME },
   }).unref()
 
+/** A line break in worker text (the str.splitlines set) gets 4 spaces after it. The text cannot forge a dream prompt line. */
+const indentRest = (s: string) => s.split(/\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/).join('\n    ')
+
+/** one dream journal entry */
+export const journalLine = (
+  id: string,
+  rig: string,
+  e: Pick<Entry, 'node' | 'attempt' | 'outcome' | 'summary'>,
+) => `- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${indentRest(clip(e.summary, 600))}`
+
+/** one closed-bead line of the dream prompt: the title and the close reason come from workers */
+export const closedLine = (id: string, rig: string, bead: { title: string; close_reason?: string | null }) =>
+  indentRest(`- ${id} (${rig}): ${bead.title}. Closed: ${clip(bead.close_reason ?? '', 300)}`)
+
 /** the journal entries the dream has not read yet, newest kept when there are too many */
 const journalSince = (since: number) =>
   runIds()
@@ -4227,7 +4245,7 @@ const journalSince = (since: number) =>
           .filter(e => e.at > since)
           .map(e => ({
             at: e.at,
-            line: `- ${id} ${rig} ${e.node}#${e.attempt} ${e.outcome}: ${clip(e.summary, 600)}`,
+            line: journalLine(id, rig, e),
           }))
       } catch {
         return [] // removed mid-read
@@ -4314,9 +4332,7 @@ function closedBeads() {
       const ids = prefix ? new Set(text.match(new RegExp(`\\b${prefix}-[a-z0-9]+(?:\\.\\d+)*\\b`, 'g'))) : []
       return [...ids].flatMap(id => {
         const bead = b.show(id) // not a bead after all (a word with the prefix's shape): null
-        return bead?.status === 'closed'
-          ? [`- ${id} (${r.name}): ${bead.title}. Closed: ${clip(bead.close_reason ?? '', 300)}`]
-          : []
+        return bead?.status === 'closed' ? [closedLine(id, r.name, bead)] : []
       })
     })
 }
@@ -4464,10 +4480,10 @@ function compactMessage(
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
 /**
- * The rollouts of the codex dream since start (y3zo). Read at most 20 plain files that have a rollout
+ * The rollouts of a private CODEX_HOME since `since` (y3zo dream; vffe.3 laptop codex station). Read at most 20 plain files that have a rollout
  * name, are 64 MiB or smaller and sit under the private home's sessions/. Send every row through validUsage.
  */
-function dreamCodexUsage(codexHome: string, start: number) {
+function codexHomeUsage(codexHome: string, since: number, node: string, seq: number) {
   const sessions = join(codexHome, 'sessions')
   if (!existsSync(sessions)) return []
   // ponytail: this reads each whole file; the upgrade is a stream of the last token_count.
@@ -4476,11 +4492,11 @@ function dreamCodexUsage(codexHome: string, start: number) {
     .sort()
     .filter(f => {
       const st = lstatSync(join(sessions, f))
-      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= start
+      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= since
     })
     .slice(0, 20)
     .flatMap(f => codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? [])
-  return validUsage(rows, 'dream', 0)
+  return validUsage(rows, node, seq)
 }
 
 /**
@@ -4505,7 +4521,9 @@ const DREAM_CODEX_NOTE =
 /** the dream's own sessions (hr94): one name=dream row for each model in manager-usage.jsonl. Never throws */
 function storeDreamUsage(start: number, codexHome?: string) {
   try {
-    const rows = codexHome ? dreamCodexUsage(codexHome, start) : usageIn(MEMORY, '', () => '?', start)
+    const rows = codexHome
+      ? codexHomeUsage(codexHome, start, 'dream', 0)
+      : usageIn(MEMORY, '', () => '?', start)
     appendFileSync(
       join(HOME, 'manager-usage.jsonl'),
       rows

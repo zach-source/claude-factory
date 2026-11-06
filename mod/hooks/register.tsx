@@ -98,9 +98,33 @@ const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:
 // The `--metadata-field` read filter does not match: the lookahead refuses a word char or '-'.
 /** a bd metadata write flag */
 const META_WRITE = /--(?:set-|unset-)?metadata(?![\w-])/
-/** a bd label removal (update --remove-label or --set-labels, label remove): a hold such as held:* is a label */
-const LABEL_REMOVE =
-  /\bbd\b[^\n;&|]*\bupdate\b[^\n;&|]*--(?:remove-label|set-labels)(?![\w-])|\bbd\b[^\n;&|]*\blabel\s+remove\b/
+/** the bd verbs a subagent runs: reads and a comment. None has a label or metadata write flag. */
+const BD_READ = new Set([
+  'show',
+  'view',
+  'list',
+  'ready',
+  'search',
+  'children',
+  'comments',
+  'comment',
+  'undefer',
+])
+/**
+ * [SECURITY] true when the command runs bd with a verb that is not a read (claude-factory-0wv6).
+ * This is an allowlist. A list of label spellings never closes, because bd (cobra) has flag aliases,
+ * flags before the verb and verb aliases. The shell drops `\`, `'` and `"`, so this code drops them first.
+ * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
+ */
+function bdWrite(command: string): boolean {
+  const s = command.replace(/[\\'"]/g, '')
+  if (/--add-label|--set-labels/.test(s)) return true
+  for (const m of s.matchAll(/\bbd\b/gi)) {
+    const verb = /^\s*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!
+    if (!BD_READ.has(verb)) return true
+  }
+  return false
+}
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
 /** review-log.jsonl keeps at most this many lines, oldest dropped first */
@@ -1610,8 +1634,11 @@ export const register: Register = (on, options) => {
       return {
         deny: 'a subagent never writes bead metadata: a hold such as discovered_from, pm_finding or owner_decisions lives there',
       }
-    if (e.agentId && LABEL_REMOVE.test(joined))
-      return { deny: 'a subagent never removes a bead label: a hold such as held:* or rejected is a label' }
+    // [SECURITY] a subagent runs bd only as a read or a comment: a bd label write queues a bead for dispatch with no check.
+    if (e.agentId && bdWrite(joined))
+      return {
+        deny: 'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first: queue or start a bead with factory queue or factory start, which check it',
+      }
 
     // the model's shell cd's into rigs to read them: its factory commands still work this factory.
     // claude-factory-72v.19: a subagent's prefix also carries FACTORY_PATROL=1. This is a second,

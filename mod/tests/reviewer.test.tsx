@@ -494,7 +494,7 @@ test(
     expect(other.deny).toContain('never writes bead metadata')
     for (const command of LABEL_DENY_ROWS) {
       const d = await $.tool.call({ tool: 'Bash', command, agentId: 'patrol-1' } as never)
-      expect(d.deny, command).toContain('never removes a bead label')
+      expect(d.deny, command).toContain('runs bd only')
     }
     expect(ran).toEqual([])
     const allowed = [
@@ -502,8 +502,6 @@ test(
       'bd show acme-1 --json',
       'bd show acme-1 --long',
       "bd comment acme-1 'see --metadata-field'",
-      'bd label add acme-1 x',
-      'bd update acme-1 --add-label x',
       'gh issue edit 1 --remove-label x',
       '/repo/bin/factory queue acme acme-1',
       'herdr workspace report-metadata ws',
