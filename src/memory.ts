@@ -1,17 +1,23 @@
 import { createHash } from 'node:crypto'
 import { cut } from './cut'
 import {
-  appendFileSync,
+  closeSync,
+  constants,
   cpSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
+  readlinkSync,
+  realpathSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
@@ -378,6 +384,89 @@ export function parseLong(text: string): LongEntry[] {
   })
 }
 
+const { O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_NOFOLLOW, O_NONBLOCK } = constants
+
+/** store I/O: a link at the last path part throws ELOOP, so a link that a live process plants is never read or written through (claude-factory-eqxi) */
+export const readStore = (f: string, encoding: 'utf8') => {
+  const fd = openSync(f, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  try {
+    if (!fstatSync(fd).isFile())
+      throw Object.assign(new Error('not a regular file: ' + f), { code: 'ENOTREG' })
+    return readFileSync(fd, { encoding })
+  } finally {
+    closeSync(fd)
+  }
+}
+/** readStore for a reader: null when the path is a link (ELOOP), gone (ENOENT) or not a regular file (ENOTREG: a directory or a FIFO), so the reader skips it; other errors throw */
+export const tryRead = (f: string): string | null => {
+  try {
+    return readStore(f, 'utf8')
+  } catch (e) {
+    if (['ELOOP', 'ENOENT', 'ENOTREG'].includes((e as NodeJS.ErrnoException).code ?? '')) return null
+    throw e
+  }
+}
+const put = (f: string, data: string, flags: number) => {
+  const fd = openSync(f, flags | O_WRONLY | O_CREAT | O_NOFOLLOW, 0o666)
+  try {
+    writeFileSync(fd, data)
+  } finally {
+    closeSync(fd)
+  }
+}
+export const writeStore = (f: string, data: string) => put(f, data, O_TRUNC)
+export const appendStore = (f: string, data: string) => put(f, data, O_APPEND)
+
+/** true for a regular file; a link, a FIFO or a missing path is false, so a reader never follows a link out of the store */
+const regular = (f: string) => {
+  try {
+    return lstatSync(f).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** unlinks every symlink under dir (not the top-level .git) and returns what each pointed at; never follows one (claude-factory-eqxi).
+ * It enters a directory with chdir and checks cwd. It reads and unlinks one name at a time. A directory that a live process swaps for a link is not entered: it comes back with skipped true */
+export function dropLinks(dir: string): { path: string; target: string; skipped?: true }[] {
+  const out: { path: string; target: string; skipped?: true }[] = []
+  if (!existsSync(dir)) return out
+  const start = process.cwd()
+  const base = realpathSync(dir)
+  const scan = (here: string) => {
+    for (const e of readdirSync('.', { withFileTypes: true })) {
+      const rel = relative(base, join(here, e.name))
+      if (e.isSymbolicLink()) {
+        out.push({ path: rel, target: readlinkSync(e.name) })
+        unlinkSync(e.name)
+      } else if (e.isDirectory() && !(here === base && e.name === '.git')) {
+        const sub = join(here, e.name)
+        try {
+          process.chdir(e.name)
+        } catch {
+          out.push({ path: rel, target: '', skipped: true })
+          continue
+        }
+        if (process.cwd() === sub) scan(sub)
+        else out.push({ path: rel, target: '', skipped: true })
+        // back by '..', never by the path: a swapped parent would follow a link out of the store
+        process.chdir('..')
+        if (process.cwd() !== here) {
+          out.push({ path: rel, target: '', skipped: true })
+          return
+        }
+      }
+    }
+  }
+  try {
+    process.chdir(base)
+    scan(base)
+  } finally {
+    process.chdir(start)
+  }
+  return out
+}
+
 /** every note, with its topic's README beside it: the dot folders (.git, the index, .archive) are not memory */
 export function walk(dir: string) {
   const notes: Note[] = []
@@ -385,9 +474,11 @@ export function walk(dir: string) {
   if (!existsSync(dir)) return { notes, topics }
   for (const topic of readdirSync(dir, { withFileTypes: true })) {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
-    for (const f of readdirSync(join(dir, topic.name))) {
-      if (!f.endsWith('.md')) continue
-      const text = readFileSync(join(dir, topic.name, f), 'utf8')
+    for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
+      const f = e.name
+      if (!e.isFile() || !f.endsWith('.md')) continue
+      const text = tryRead(join(dir, topic.name, f))
+      if (text === null) continue
       if (f === 'LONG.md') {
         for (const e of parseLong(text))
           notes.push({
@@ -464,7 +555,7 @@ const hashOf = (text: string) => createHash('sha1').update(text).digest('hex')
 /** the notes' vectors, embedding only what changed since the last search */
 async function vectors(dir: string, all: Note[], text = textOf, name = '.index.json') {
   const file = join(dir, name)
-  const old: Index = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { model: MODEL, vecs: {} }
+  const old: Index = existsSync(file) ? JSON.parse(readStore(file, 'utf8')) : { model: MODEL, vecs: {} }
   const prev = old.model === MODEL ? old.vecs : {}
   const stale = all.filter(n => prev[n.path]?.hash !== hashOf(text(n)))
   const fresh = await embed(stale.map(text))
@@ -475,7 +566,7 @@ async function vectors(dir: string, all: Note[], text = textOf, name = '.index.j
     }),
   )
   if (stale.length || Object.keys(prev).length !== all.length) {
-    writeFileSync(`${file}.tmp`, JSON.stringify({ model: MODEL, vecs }))
+    writeStore(`${file}.tmp`, JSON.stringify({ model: MODEL, vecs }))
     renameSync(`${file}.tmp`, file) // two searches at once: the last one's cache wins, both are right
   }
   return (n: Note) => vecs[n.path]!.vec
@@ -495,28 +586,27 @@ export const MEMORY_SNAPSHOT_MAX = 8 * 1024 * 1024
 export function snapshot(dir: string, rig: string | undefined, out: string): { bytes: number } | null {
   if (!existsSync(dir)) return null
   const keep = (r?: string) => !r || r === rig
-  const regular = (p: string) => lstatSync(p).isFile()
   const stage = mkdtempSync(`${out}.stage-`)
   try {
     const core = join(dir, 'CORE.md')
-    if (existsSync(core) && regular(core)) {
+    const coreText = tryRead(core)
+    if (coreText !== null) {
       let ok = true
-      const lines = readFileSync(core, 'utf8')
-        .split('\n')
-        .filter(line => {
-          const h = /^##\s+rig:\s*(\S+)/.exec(line)
-          if (h) ok = keep(h[1])
-          else if (/^##\s/.test(line)) ok = true
-          return ok
-        })
+      const lines = coreText.split('\n').filter(line => {
+        const h = /^##\s+rig:\s*(\S+)/.exec(line)
+        if (h) ok = keep(h[1])
+        else if (/^##\s/.test(line)) ok = true
+        return ok
+      })
       writeFileSync(join(stage, 'CORE.md'), lines.join('\n'))
     }
     for (const topic of readdirSync(dir, { withFileTypes: true })) {
       if (!topic.isDirectory() || topic.name.startsWith('.')) continue
       for (const f of readdirSync(join(dir, topic.name))) {
         const src = join(dir, topic.name, f)
-        if (!f.endsWith('.md') || !regular(src)) continue
-        const text = readFileSync(src, 'utf8')
+        if (!f.endsWith('.md')) continue
+        const text = tryRead(src)
+        if (text === null) continue
         let body: string | null = keep(parse(f, text).rig) ? text : null
         if (f === 'LONG.md') {
           // always re-format: text that no entry holds (a preamble, a file with no entry) must not travel
@@ -532,16 +622,18 @@ export function snapshot(dir: string, rig: string | undefined, out: string): { b
     const paths = new Set([...notes, ...topics.values(), ...coreNotes(stage)].map(n => n.path))
     if (!paths.size) return null
     const index = join(dir, '.index.json')
-    if (existsSync(index) && regular(index)) {
-      const idx: Index = JSON.parse(readFileSync(index, 'utf8'))
+    const indexText = tryRead(index)
+    if (indexText !== null) {
+      const idx: Index = JSON.parse(indexText)
       const vecs = Object.fromEntries(Object.entries(idx.vecs).filter(([p]) => paths.has(p)))
       writeFileSync(join(stage, '.index.json'), JSON.stringify({ model: idx.model, vecs }))
     }
     const usage = join(dir, '.usage.jsonl')
-    if (existsSync(usage) && regular(usage))
+    const usageText = tryRead(usage)
+    if (usageText !== null)
       writeFileSync(
         join(stage, '.usage.jsonl'),
-        readFileSync(usage, 'utf8')
+        usageText
           .split('\n')
           .filter(line => {
             try {
@@ -567,26 +659,24 @@ export function snapshot(dir: string, rig: string | undefined, out: string): { b
 /** each bullet in CORE.md, as its own fact note: path CORE.md#<8 hex of its sha1>, rig from its `## rig:` section */
 export function coreNotes(dir: string): Note[] {
   const file = join(dir, 'CORE.md')
-  if (!existsSync(file)) return []
+  if (!regular(file)) return []
   let rig: string | undefined
-  return readFileSync(file, 'utf8')
-    .split('\n')
-    .flatMap(line => {
-      const h = /^##\s+rig:\s*(\S+)/.exec(line)
-      if (h) {
-        rig = h[1]
-        return []
-      }
-      if (/^##\s/.test(line)) {
-        rig = undefined
-        return []
-      }
-      const m = /^-\s+(.*\S)\s*$/.exec(line)
-      if (!m || m[1]!.startsWith('(cut:')) return []
-      const summary = m[1]!
-      const id = createHash('sha1').update(summary).digest('hex').slice(0, 8)
-      return [{ path: `CORE.md#${id}`, summary, rig, body: summary, tier: 'fact' as const }]
-    })
+  return (tryRead(file) ?? '').split('\n').flatMap(line => {
+    const h = /^##\s+rig:\s*(\S+)/.exec(line)
+    if (h) {
+      rig = h[1]
+      return []
+    }
+    if (/^##\s/.test(line)) {
+      rig = undefined
+      return []
+    }
+    const m = /^-\s+(.*\S)\s*$/.exec(line)
+    if (!m || m[1]!.startsWith('(cut:')) return []
+    const summary = m[1]!
+    const id = createHash('sha1').update(summary).digest('hex').slice(0, 8)
+    return [{ path: `CORE.md#${id}`, summary, rig, body: summary, tier: 'fact' as const }]
+  })
 }
 
 export async function search(
@@ -597,9 +687,9 @@ export async function search(
   const { notes, topics } = walk(dir)
   // core=false drops only the bullets the brief prints; the ones coreFor cut stay searchable
   const printed = new Set(
-    core || !existsSync(join(dir, 'CORE.md'))
+    core || !regular(join(dir, 'CORE.md'))
       ? []
-      : coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig).split('\n'),
+      : coreFor(tryRead(join(dir, 'CORE.md')) ?? '', rig).split('\n'),
   )
   const all = [...notes, ...coreNotes(dir).filter(n => core || !printed.has(`- ${n.summary}`))]
   if (!all.length) return []
@@ -713,7 +803,7 @@ export async function evaluate(dir: string, cases: EvalCase[], limit = 5): Promi
 export const evalFile = (dir: string) => join(dir, '.eval.jsonl')
 export const readEvalCases = (dir: string): EvalCase[] =>
   existsSync(evalFile(dir))
-    ? readFileSync(evalFile(dir), 'utf8')
+    ? readStore(evalFile(dir), 'utf8')
         .split('\n')
         .filter(Boolean)
         .map(line => JSON.parse(line))
@@ -805,7 +895,7 @@ export function add(dir: string, note: Omit<Note, 'path'>) {
   const base = join(dir, 'inbox', slug(note.summary))
   let file = `${base}.md`
   for (let i = 2; existsSync(file); i++) file = `${base}-${i}.md`
-  writeFileSync(file, format(note))
+  writeStore(file, format(note))
   return file
 }
 
@@ -834,9 +924,7 @@ export function coreFor(text: string, rig?: string) {
 
 /** level 0 and level 1, for a brief: the core in full, then one line per topic */
 export function outline(dir: string, rig?: string) {
-  const core = existsSync(join(dir, 'CORE.md'))
-    ? coreFor(readFileSync(join(dir, 'CORE.md'), 'utf8'), rig)
-    : ''
+  const core = coreFor(tryRead(join(dir, 'CORE.md')) ?? '', rig)
   const { notes, topics } = walk(dir)
   const count = (t: string) => notes.filter(n => topicOf(n) === t).length
   const lines = [...new Set([...topics.keys(), ...notes.map(topicOf)])]
@@ -868,7 +956,7 @@ export const inboxCount = (dir: string) => walk(dir).notes.filter(n => topicOf(n
 /** all of it as one text, to find the beads it names */
 export const corpus = (dir: string) =>
   [
-    existsSync(join(dir, 'CORE.md')) ? readFileSync(join(dir, 'CORE.md'), 'utf8') : '',
+    tryRead(join(dir, 'CORE.md')) ?? '',
     ...[...walk(dir).topics.values(), ...walk(dir).notes].map(n => `${n.summary}\n${n.body}`),
   ].join('\n')
 
@@ -904,7 +992,7 @@ export const use = (
   by?: string,
 ) => {
   if (paths.length)
-    appendFileSync(
+    appendStore(
       usageFile(dir),
       paths.map(path => JSON.stringify({ path, [kind]: 1, at, ...(by ? { by } : {}) })).join('\n') + '\n',
     )
@@ -1035,7 +1123,7 @@ export const tally = (lines: string[], renamed: Record<string, string> = {}) => 
   return result
 }
 const usageFileLines = (dir: string) =>
-  existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
+  existsSync(usageFile(dir)) ? readStore(usageFile(dir), 'utf8').split('\n') : []
 export const usage = (dir: string, renamed?: Record<string, string>) => tally(usageFileLines(dir), renamed)
 /** each note's usage events, oldest line first, for activation() */
 export const usageEvents = (dir: string, renamed?: Record<string, string>) =>
@@ -1051,11 +1139,11 @@ export function noteExists(dir: string, path: string): boolean {
   const i = path.indexOf('#')
   if (i < 0) {
     const f = join(dir, path)
-    return path.endsWith('.md') && existsSync(f) && statSync(f).isFile()
+    return path.endsWith('.md') && regular(f)
   }
   const file = join(dir, path.slice(0, i))
-  if (!existsSync(file) || !statSync(file).isFile()) return false
-  return parseLong(readFileSync(file, 'utf8')).some(e => e.id === path.slice(i + 1))
+  if (!regular(file)) return false
+  return parseLong(tryRead(file) ?? '').some(e => e.id === path.slice(i + 1))
 }
 
 /**
@@ -1082,7 +1170,7 @@ export function noteExists(dir: string, path: string): boolean {
 export function supersede(dir: string, oldPath: string, newPath: string): { marked: boolean } {
   if (oldPath.includes('#')) return { marked: false }
   const file = join(dir, oldPath)
-  const text = readFileSync(file, 'utf8')
+  const text = readStore(file, 'utf8')
   const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
   const line = `superseded: ${newPath}`
   let out: string
@@ -1095,7 +1183,7 @@ export function supersede(dir: string, oldPath: string, newPath: string): { mark
   } else {
     out = `---\n${line}\n---\n${text}`
   }
-  writeFileSync(`${file}.tmp`, out)
+  writeStore(`${file}.tmp`, out)
   renameSync(`${file}.tmp`, file)
   return { marked: true }
 }
@@ -1103,7 +1191,7 @@ export function supersede(dir: string, oldPath: string, newPath: string): { mark
 const renamesFile = (dir: string) => join(dir, '.renames.jsonl')
 /** every rename a dream or a tiering pass has ever made, oldest first: old path -> its newest known path */
 function renameLog(dir: string): Record<string, string> {
-  const lines = existsSync(renamesFile(dir)) ? readFileSync(renamesFile(dir), 'utf8').split('\n') : []
+  const lines = existsSync(renamesFile(dir)) ? readStore(renamesFile(dir), 'utf8').split('\n') : []
   const map: Record<string, string> = {}
   for (const line of lines.filter(Boolean)) {
     const r: { old: string; new: string } = JSON.parse(line)
@@ -1129,7 +1217,7 @@ export function resolvePath(dir: string, path: string, extra: Record<string, str
 /** `okOf` (the dream's journal) sets each raw help's weight as it folds; see helpOk() */
 export function compact(dir: string, renamed: Record<string, string>, now = Date.now(), okOf?: OkOf) {
   if (Object.keys(renamed).length)
-    appendFileSync(
+    appendStore(
       renamesFile(dir),
       Object.entries(renamed)
         .map(([old, to]) => `${JSON.stringify({ old, new: to })}\n`)
@@ -1137,9 +1225,9 @@ export function compact(dir: string, renamed: Record<string, string>, now = Date
     )
   const log = renameLog(dir)
   const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k)]))
-  const lines = existsSync(usageFile(dir)) ? readFileSync(usageFile(dir), 'utf8').split('\n') : []
+  const lines = existsSync(usageFile(dir)) ? readStore(usageFile(dir), 'utf8').split('\n') : []
   const kept = [...tallyRaw(lines, resolved, okOf).values()].filter(t => noteExists(dir, t.path))
-  writeFileSync(
+  writeStore(
     `${usageFile(dir)}.tmp`,
     kept
       .map(
@@ -1546,7 +1634,7 @@ export function longAliasRenames(dir: string): Record<string, string> {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
     const file = join(dir, topic.name, 'LONG.md')
     if (!existsSync(file)) continue
-    for (const e of parseLong(readFileSync(file, 'utf8')))
+    for (const e of parseLong(readStore(file, 'utf8')))
       for (const alias of e.aliases ?? [])
         renamed[`${topic.name}/LONG.md#${alias}`] = `${topic.name}/LONG.md#${e.id}`
   }
@@ -1596,9 +1684,9 @@ function rewriteReadmeLink(dir: string, topic: string, shortPath: string, target
   const readmeFile = join(dir, topic, 'README.md')
   if (!existsSync(readmeFile)) return
   const base = shortPath.slice(shortPath.lastIndexOf('/') + 1)
-  const text = readFileSync(readmeFile, 'utf8')
+  const text = readStore(readmeFile, 'utf8')
   const updated = text.split(`(${base})`).join(`(${target})`)
-  if (updated !== text) writeFileSync(readmeFile, updated)
+  if (updated !== text) writeStore(readmeFile, updated)
 }
 
 /**
@@ -1641,7 +1729,7 @@ export function unsafeLongTopics(dir: string): { topic: string; reason: string }
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
     const file = join(dir, topic.name, 'LONG.md')
     if (!existsSync(file)) continue
-    const lost = longPreambleLoss(readFileSync(file, 'utf8'))
+    const lost = longPreambleLoss(readStore(file, 'utf8'))
     if (lost)
       out.push({
         topic: topic.name,
@@ -1780,10 +1868,7 @@ export function applyTiers(
         rig: line.rig,
         body: `Demoted from CORE.md: ${d.reason}.`,
       })
-      writeFileSync(
-        join(dir, 'CORE.md'),
-        withoutCoreLine(readFileSync(join(dir, 'CORE.md'), 'utf8'), line.summary),
-      )
+      writeStore(join(dir, 'CORE.md'), withoutCoreLine(readStore(join(dir, 'CORE.md'), 'utf8'), line.summary))
       renamed[d.path] = relative(dir, file)
       continue
     }
@@ -1802,7 +1887,7 @@ export function applyTiers(
         continue
       }
       const longFile = join(dir, topic, 'LONG.md')
-      const rawText = existsSync(longFile) ? readFileSync(longFile, 'utf8') : null
+      const rawText = existsSync(longFile) ? readStore(longFile, 'utf8') : null
       merged++
       removeOne(topic)
       if (opts.dryRun) continue
@@ -1830,7 +1915,7 @@ export function applyTiers(
         until: note.until,
         body: note.body,
       })
-      writeFileSync(longFile, formatLong(existing))
+      writeStore(longFile, formatLong(existing))
       rmSync(join(dir, note.path))
       renamed[note.path] = `${topic}/LONG.md#${id}`
       rewriteReadmeLink(dir, topic, note.path, `LONG.md#${id}`)
@@ -1844,8 +1929,8 @@ export function applyTiers(
       if (opts.dryRun) continue
       mkdirSync(join(dir, '.archive'), { recursive: true })
       const archiveFile = join(dir, '.archive', `${topic}.md`)
-      const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
-      writeFileSync(
+      const prefix = existsSync(archiveFile) ? readStore(archiveFile, 'utf8') : ''
+      writeStore(
         archiveFile,
         prefix +
           format({ summary: note.summary, rig: note.rig, from: note.from, at: note.at, body: note.body }),
@@ -1875,7 +1960,7 @@ export function applyTiers(
       continue
     }
     const longFile = join(dir, topic, 'LONG.md')
-    const entries = parseLong(readFileSync(longFile, 'utf8'))
+    const entries = parseLong(readStore(longFile, 'utf8'))
     const byPath = new Map(ds.map(d => [`${topic}/LONG.md#${(d as { path: string }).path.split('#')[1]}`, d]))
     const copies: LongEntry[] = []
     const kept: LongEntry[] = []
@@ -1903,8 +1988,8 @@ export function applyTiers(
     if (opts.dryRun || !copies.length) continue
     mkdirSync(join(dir, '.archive'), { recursive: true })
     const archiveFile = join(dir, '.archive', `${topic}.md`)
-    const prefix = existsSync(archiveFile) ? readFileSync(archiveFile, 'utf8') : ''
-    writeFileSync(
+    const prefix = existsSync(archiveFile) ? readStore(archiveFile, 'utf8') : ''
+    writeStore(
       archiveFile,
       prefix +
         copies
@@ -1913,7 +1998,7 @@ export function applyTiers(
           )
           .join(''),
     )
-    writeFileSync(longFile, formatLong(kept))
+    writeStore(longFile, formatLong(kept))
     for (const e of copies)
       if (byPath.get(`${topic}/LONG.md#${e.id}`)!.kind !== 'trim')
         rewriteReadmeLink(dir, topic, `${topic}/LONG.md#${e.id}`, `../.archive/${topic}.md`)
@@ -1953,7 +2038,7 @@ export const skillsDir = (dir: string) => join(managerDir(dir), '.claude', 'skil
 
 const skillText = (root: string, name: string) => {
   const file = join(root, name, 'SKILL.md')
-  return existsSync(file) ? readFileSync(file, 'utf8') : null
+  return existsSync(file) ? tryRead(file) : null
 }
 const skillNames = (root: string) =>
   existsSync(root)
@@ -1976,13 +2061,16 @@ export function pendingSkills(dir: string) {
   })
 }
 
+/** cpSync filter: a link in a skill folder is not copied (claude-factory-eqxi) */
+const notLink = (src: string) => !lstatSync(src).isSymbolicLink()
+
 /** the manager accepts a proposal: installed as the dream wrote it, or gone when the dream reaped it */
 export function installSkill(dir: string, name: string) {
   if (!isSkillName(name) || !pendingSkills(dir).some(p => p.name === name))
     throw new Error(`no proposed skill ${name}: factory skills lists them`)
   rmSafe(join(skillsDir(dir), name), { recursive: true, force: true })
   if (existsSync(join(skillSources(dir), name)))
-    cpSync(join(skillSources(dir), name), join(skillsDir(dir), name), { recursive: true })
+    cpSync(join(skillSources(dir), name), join(skillsDir(dir), name), { recursive: true, filter: notLink })
 }
 
 /** the manager refuses a proposal: what is installed stands, and the dream reads why in its inbox */
@@ -1991,7 +2079,7 @@ export function rejectSkill(dir: string, name: string, why: string) {
     throw new Error(`no proposed skill ${name}: factory skills lists them`)
   rmSafe(join(skillSources(dir), name), { recursive: true, force: true })
   if (existsSync(join(skillsDir(dir), name)))
-    cpSync(join(skillsDir(dir), name), join(skillSources(dir), name), { recursive: true })
+    cpSync(join(skillsDir(dir), name), join(skillSources(dir), name), { recursive: true, filter: notLink })
   return add(dir, {
     summary: `The manager rejected the proposed skill ${name}: ${why}`,
     from: 'manager',
@@ -2005,9 +2093,11 @@ export function skills(dir: string) {
   if (!existsSync(root)) return []
   return readdirSync(root, { withFileTypes: true })
     .filter(d => d.isDirectory() && existsSync(join(root, d.name, 'SKILL.md')))
-    .map(d => {
-      const text = readFileSync(join(root, d.name, 'SKILL.md'), 'utf8')
-      return { name: d.name, description: /^description:\s*(.*)$/m.exec(text)?.[1] ?? '' }
+    .flatMap(d => {
+      const text = tryRead(join(root, d.name, 'SKILL.md'))
+      return text === null
+        ? []
+        : [{ name: d.name, description: /^description:\s*(.*)$/m.exec(text)?.[1] ?? '' }]
     })
 }
 
@@ -2112,7 +2202,7 @@ export function proposals(dir: string) {
     .filter(f => f.endsWith('.md'))
     .sort()
     .map(f => {
-      const text = readFileSync(join(root, f), 'utf8')
+      const text = readStore(join(root, f), 'utf8')
       const field = (k: string) => new RegExp(`^${k}:\\s*(.*)$`, 'm').exec(text)?.[1]?.trim() ?? ''
       const body = text.replace(/^---\n[\s\S]*?\n---\n?/, '')
       return {
@@ -2155,16 +2245,16 @@ const pendingProposal = (dir: string, name: string) => {
 }
 /** sets frontmatter fields on a pending proposal; the caller checked it with pendingProposal() */
 const markProposal = (file: string, fields: Record<string, string>) =>
-  writeFileSync(
+  writeStore(
     file,
-    Object.entries(fields).reduce((t, [k, v]) => withFrontmatter(t, k, v), readFileSync(file, 'utf8')),
+    Object.entries(fields).reduce((t, [k, v]) => withFrontmatter(t, k, v), readStore(file, 'utf8')),
   )
 /** rung core: the change becomes a CORE.md line (FR-020). Any higher rung throws: a person installs it through a bead */
 export function installCoreProposal(dir: string, name: string) {
   const p = pendingProposal(dir, name)
   if (p.rung !== 'core') throw new Error(`${name} is rung ${p.rung}: it files a bead for a person`)
   const core = join(dir, 'CORE.md')
-  writeFileSync(core, withCoreLine(existsSync(core) ? readFileSync(core, 'utf8') : '', p.change))
+  writeStore(core, withCoreLine(existsSync(core) ? readStore(core, 'utf8') : '', p.change))
   markProposal(p.file, { status: 'installed' })
 }
 /** a rung above core: marks it installed with the bead a person works it from; never touches factory code */
@@ -2221,7 +2311,7 @@ export function reviewItems(dir: string): ReviewItem[] {
   const proposalItems = proposals(dir)
     .filter(p => p.status === 'pending')
     .map(p => {
-      const text = readFileSync(p.file, 'utf8')
+      const text = readStore(p.file, 'utf8')
       return {
         key: reviewKey('proposal', p.name, text),
         kind: 'proposal' as const,
