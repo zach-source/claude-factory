@@ -30,6 +30,9 @@ const storePath = (home: string) => join(home, 'worker-tokens.json')
 function needKey(key: Buffer) {
   if (key.length < 32) throw new Error('worker key must be at least 32 bytes')
 }
+function needNow(now: number) {
+  if (!Number.isSafeInteger(now)) throw new Error('now must be a safe integer')
+}
 const mac = (key: Buffer, part: string) => createHmac('sha256', key).update(`v1.${part}`).digest()
 const isName = (v: unknown): v is string => typeof v === 'string' && NAME.test(v)
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v)
@@ -64,6 +67,7 @@ function writeStore(home: string, rows: Record<string, Row>) {
 
 /** issue a token and store its row; rows that expired before `now` are dropped */
 export function sign(home: string, key: Buffer, claims: Claims, now: number): string {
+  needNow(now)
   needKey(key)
   if (!validClaims(claims) || claims.exp <= now) throw new Error('invalid token claims')
   const rows = readStore(home)
@@ -78,6 +82,7 @@ export function sign(home: string, key: Buffer, claims: Claims, now: number): st
 
 /** accept only a correctly signed, well-formed, live token whose store row matches; never throws on a bad token */
 export function check(home: string, key: Buffer, token: string, now: number): CheckResult {
+  needNow(now)
   needKey(key)
   const no = (reason: Exclude<CheckResult, { ok: true }>['reason']) => ({ ok: false as const, reason })
   const m = token.length <= MAX_TOKEN ? SHAPE.exec(token) : null
@@ -125,6 +130,7 @@ export function revoke(
   scope: { run: string; node?: string; seq?: number },
   now: number,
 ): number {
+  needNow(now)
   const rows = readStore(home)
   let n = 0
   for (const r of Object.values(rows)) {

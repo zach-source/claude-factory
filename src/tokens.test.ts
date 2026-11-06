@@ -155,6 +155,22 @@ test('AC7: the store holds no token or signature and has mode 0600', () => {
   expect(statSync(file).mode & 0o777).toBe(0o600)
 })
 
+test('S1: a now that is not a safe integer throws in sign, check and revoke', () => {
+  const h = home()
+  const t = sign(h, key, claims, NOW)
+  const file = join(h, 'worker-tokens.json')
+  const before = readFileSync(file, 'utf8')
+  for (const bad of [NaN, Infinity, -Infinity, 1.5]) {
+    expect(() => sign(h, key, claims, bad)).toThrow()
+    expect(() => check(h, key, t, bad)).toThrow()
+    expect(() => revoke(h, { run: claims.run }, bad)).toThrow()
+  }
+  expect(readFileSync(file, 'utf8')).toBe(before)
+  expect(reason(check(h, key, t, NOW))).toBe('ok')
+  expect(revoke(h, { run: claims.run }, NOW)).toBe(1)
+  expect(reason(check(h, key, t, NOW))).toBe('revoked')
+})
+
 test('sign drops rows that expired before it', () => {
   const h = home()
   sign(h, key, claims, NOW)
