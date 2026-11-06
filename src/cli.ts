@@ -6694,13 +6694,11 @@ async function createTracked(
   const b = beads(repo, actorOf(id))
   if (bead && !b.claim(bead)) fail(`${bead} is already claimed by another worker`)
   try {
-    return await createRun(spec, repo, goal, {
-      id,
-      bead,
-      from,
-      ship,
-      onto: shipBranch && reworkBase(repo, shipBranch),
-    })
+    const onto = shipBranch ? reworkBase(repo, shipBranch) : undefined
+    // the goal says the worktree starts from this branch: do not fall back to the default branch
+    if (shipBranch && !onto)
+      throw new Error(`origin has no branch ${shipBranch}: a rework run must start from it`)
+    return await createRun(spec, repo, goal, { id, bead, from, ship, onto })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
