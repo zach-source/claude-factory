@@ -9669,7 +9669,7 @@ function hookControlWord(
   const alts = expandBraces(w)
   if (!alts) return true
   const base = foldLower(hookDir.split('/').filter(Boolean).pop() ?? '\0')
-  for (const x of alts) {
+  for (const x of [w, ...alts]) {
     // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
     if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
     if (/[$`]|^~[^/]/.test(x)) {

@@ -327,6 +327,14 @@ describe('qn8a.21.14 unmatched brace and padded sequence', () => {
     'allows %s',
     c => expect(bash(c)).toBeUndefined(),
   )
+  test.each([
+    "tee '/f/{,}/../acme-factory/src/worker-hook.ts'",
+    "tee '/f/acme-factory/{,}/../src/worker-hook.ts'",
+    'tee "/f/acme-factory/{,}/../src/worker-hook.ts"',
+    'tee /f/acme-factory/\\{,\\}/../src/worker-hook.ts',
+    "echo x > '/f/acme-factory/{,}/../src/cut.ts'",
+    "cp a '/f/acme-factory/{,}/../src/cut.ts'",
+  ])('qn8a.21.16 denies the literal quoted brace %s', c => expect(bash(c)).toBe(R))
   test('expandBraces unit rows', () => {
     expect(hook.expandBraces('{a{b,c}')).toEqual(['{ab', '{ac'])
     expect(hook.expandBraces('{001..003}')).toEqual(['001', '002', '003'])
