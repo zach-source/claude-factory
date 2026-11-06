@@ -12119,3 +12119,45 @@ test('gh api repo setting writes: older reasons keep precedence', () => {
   // a bad percent-encoding is a push-guard deny first
   expect(repoDeny('gh api -X PUT repos/acme/widget/%ZZ')).toBe(PUSH_REASON)
 })
+
+// claude-factory-qn8a.18.4: the ready return must not skip the later GraphQL checks
+test('gh api repo setting writes: a ready mutation does not hide a second mutation', () => {
+  const q = (m: string) =>
+    `gh api graphql -f query='mutation { a: markPullRequestReadyForReview(input:{}) { clientMutationId } b: ${m}(input:{}) { clientMutationId } }'`
+  for (const station of ['security', 'release']) {
+    const gate: HookGate = { ...REPO_GATE, station }
+    expect(repoDeny(q('updateRepository'), gate)).toBe(REPO_SETTING_REASON)
+    expect(repoDeny(q('createCommitOnBranch'), gate)).toBe(PUSH_REASON)
+    expect(repoDeny(q('addPullRequestReview'), gate)).toBe(APPROVE_REASON)
+    const alone = `gh api graphql -f query='mutation { markPullRequestReadyForReview(input:{}) { clientMutationId } }'`
+    expect(repoDeny(alone, gate)).toBeUndefined()
+  }
+})
+
+// claude-factory-qn8a.18.5: a REST URL whose last segment is graphql is not the GraphQL endpoint
+test('gh api repo setting writes: a REST URL that ends in graphql is still REST', () => {
+  for (const cmd of [
+    'gh api -X DELETE https://api.github.com/repos/acme/graphql',
+    'gh api -X PUT https://api.github.com/repos/acme/widget/collaborators/graphql -f permission=admin',
+    'gh api -X PUT https://api.github.com/repos/acme/widget/actions/secrets/graphql',
+    'gh api -X PUT https://api.github.com/repos/acme/widget/actions/variables/graphql',
+    'gh api -X PUT https://api.github.com/repos/acme/widget/environments/graphql',
+  ])
+    expect([cmd, repoDeny(cmd)]).toEqual([cmd, REPO_SETTING_REASON])
+  expect(
+    repoDeny('gh api -X PUT https://api.github.com/repos/acme/widget/contents/graphql -f branch=main'),
+  ).toBe(PUSH_REASON)
+  for (const url of ['https://api.github.com/graphql', 'https://ghe.example/api/graphql'])
+    expect(
+      repoDeny(`gh api ${url} -f query='mutation { mergePullRequest(input:{}) { clientMutationId } }'`),
+    ).toBe(MERGE_REASON)
+})
+
+// claude-factory-qn8a.18.6
+test('gh api repo setting writes: check-suites/preferences is a setting', () => {
+  expect(repoDeny('gh api -X PATCH repos/acme/widget/check-suites/preferences --input p.json')).toBe(
+    REPO_SETTING_REASON,
+  )
+  expect(repoDeny('gh api -X POST repos/acme/widget/check-suites -f head_sha=x')).toBeUndefined()
+  expect(repoDeny('gh api -X POST repos/acme/widget/check-suites/1/rerequest')).toBeUndefined()
+})

@@ -4844,7 +4844,7 @@ function normalizeEndpoint(endpoint: string): string {
 function isGraphqlEndpoint(endpoint: string): boolean {
   const path = normalizeEndpoint(endpoint)
   if (path === 'graphql' || path === '/graphql') return true
-  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/.*\/graphql$/.test(path)
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+(?:\/api)?\/graphql$/.test(path)
 }
 
 /**
@@ -5073,7 +5073,7 @@ function ghApiPushDenied(apiArgs: string[], gate: HookGate): boolean {
 // claude-factory-qn8a.18: the repository sub-resources that a worker can write with `gh api`.
 // All other paths under a repository are settings.
 const REPO_WRITE_OK =
-  /^(?:(?:issues|pulls|git|contents|statuses|check-runs|check-suites|commits|comments|releases|dispatches)(?:\/|$)|actions\/runs\/[^/]+\/(?:rerun|rerun-failed-jobs|cancel)$|actions\/jobs\/[^/]+\/rerun$|actions\/workflows\/[^/]+\/dispatches$)/
+  /^(?!check-suites\/preferences(?:\/|$))(?:(?:issues|pulls|git|contents|statuses|check-runs|check-suites|commits|comments|releases|dispatches)(?:\/|$)|actions\/runs\/[^/]+\/(?:rerun|rerun-failed-jobs|cancel)$|actions\/jobs\/[^/]+\/rerun$|actions\/workflows\/[^/]+\/dispatches$)/
 
 /**
  * True when a `gh api` call writes to a repository setting (claude-factory-qn8a.18).
@@ -5402,7 +5402,7 @@ function ghReasonOn(
     // words. Every check below already reads these words, so this runs first.
     const apiArgs = expandGhShortClusters(tail.slice(vi + 1))
     if (ghApiMergeDenied(apiArgs, gate)) return MERGE_REASON
-    if (ghApiReadyDenied(apiArgs, gate)) return mayReady(gate) ? undefined : READY_REASON
+    if (ghApiReadyDenied(apiArgs, gate) && !mayReady(gate)) return READY_REASON
     if (ghApiPushDenied(apiArgs, gate)) return PUSH_REASON
     if (ghApiRepoSettingDenied(apiArgs, gate)) return REPO_SETTING_REASON
     if (!gate.reviewer && ghApiReviewDenied(apiArgs, gate)) return APPROVE_REASON
