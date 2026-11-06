@@ -662,6 +662,20 @@ test("a tick replays memory helped as the worker's station, and refuses a path o
   rmSync(memDir, { recursive: true })
 })
 
+test('helped accepts the VM memory path', () => {
+  const memDir = join(home, 'memory')
+  mkdirSync(join(memDir, 'topic'), { recursive: true })
+  writeFileSync(join(memDir, 'topic', 'n.md'), '---\nsummary: s\n---\nbody\n')
+  const vm = '/workspace/w/.factory-worker/home/memory'
+  const helped = (p: string) => factory(['memory', 'helped', '--from', 'r/s', p])
+  const ok = helped(`${vm}/topic/n.md`)
+  expect(ok.code).toBe(0)
+  expect(ok.out).toContain('noted: topic/n.md')
+  for (const bad of [`${vm}/../../etc/x.md`, `${vm}X/topic/n.md`, `${vm}/topic/missing.md`, '/etc/passwd'])
+    expect(helped(bad).code).not.toBe(0)
+  rmSync(memDir, { recursive: true })
+}, 60_000)
+
 test('memory search --from logs shown with the run and station; without it, no by', () => {
   const memDir = join(home, 'memory')
   mkdirSync(join(memDir, 'topic'), { recursive: true })

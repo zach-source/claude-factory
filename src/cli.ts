@@ -10741,7 +10741,14 @@ if (import.meta.main && !outboxCmd)
             }
           }
         } else if (sub === 'helped' && words.length) {
-          const paths = words.map(w => memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, w))))
+          // a VM search prints its own memory dir; the outbox replays that path here (vffe.4)
+          const vmDir = `${ax.OWN}/home/memory/`
+          const paths = words.map(w =>
+            memory.resolvePath(
+              MEMORY,
+              relative(MEMORY, resolve(MEMORY, w.startsWith(vmDir) ? w.slice(vmDir.length) : w)),
+            ),
+          )
           const bad = paths.filter(p => p.startsWith('..') || !memory.noteExists(MEMORY, p))
           if (bad.length) fail(`not a note in ${MEMORY}: ${bad.join(', ')}`)
           const by = memory.helpedBy(from, process.env)
