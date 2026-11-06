@@ -9486,7 +9486,7 @@ function logDenial(reason: string, command: string, harness: string | undefined)
     const at = Date.now()
     const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
     const name = reasonName(reason)
-    const cmd = cut(maskAssignments(command), 200)
+    const cmd = cut(maskKeyValues(maskAssignments(command)), 200)
     if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
       appendFileSync(
         process.env.FACTORY_OUTBOX,
@@ -9499,6 +9499,14 @@ function logDenial(reason: string, command: string, harness: string | undefined)
         { mode: 0o600 },
       )
   } catch {}
+}
+
+/** claude-factory-1as9: mask the value of any KEY=value word (KEY may hold . - or follow a quote); the value of a "KEY= or 'KEY= word runs to its close quote. Masks more than needed, never less. */
+export function maskKeyValues(command: string): string {
+  return command.replace(
+    /("[^\s"'\\=]+=)(?:\\[\s\S]|[^"\\])*"?|('[^\s"'\\=]+=)[^']*'?|((?:^|[\s;&|()`])[^\s"'\\;&|()`=]+=)(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s"'\\;&|()`])*/g,
+    (_m, a, b, c) => (a ?? b ?? c) + '***',
+  )
 }
 
 async function main() {
