@@ -34,6 +34,7 @@ import {
   MERGE_REASON,
   PUSH_DIR_REASON,
   PUSH_REASON,
+  REPO_SETTING_REASON,
   QUOTED_ASSIGNMENT_REASON,
   GLOBAL_GIT_CONFIG_REASON,
   HOOK_ERROR_REASON,
@@ -11980,3 +11981,134 @@ test('run as `bun src/worker-hook.ts`, a Read or Grep of a token path prints one
   ] as const)
     expect([t, i, await call(t, i)]).toEqual([t, i, { out: '', code: 0 }])
 }, 30_000)
+
+// claude-factory-qn8a.18: a gh api write to a repository setting is owner-only.
+const REPO_GATE: HookGate = { headOf: () => 'factory/x', originHead: () => 'main' }
+const repoDeny = (cmd: string, gate: HookGate = REPO_GATE) => denyReason(cmd, undefined, undefined, gate)
+
+test('gh api repo setting writes: evidence rows deny', () => {
+  for (const cmd of [
+    'gh api -X PUT repos/acme/widget/vulnerability-alerts',
+    'gh api --method PUT repos/acme/widget/automated-security-fixes',
+    'gh api -X PATCH repos/acme/widget -f has_issues=false',
+  ]) {
+    expect([cmd, repoDeny(cmd)]).toEqual([cmd, REPO_SETTING_REASON])
+  }
+})
+
+test('gh api repo setting writes: method forms deny', () => {
+  for (const cmd of [
+    'gh api -XPATCH repos/acme/widget -fhas_issues=false',
+    'gh api --method=PATCH repos/acme/widget -f x=y',
+    'gh api -iXDELETE repos/acme/widget',
+    'gh api -X patch repos/acme/widget -f x=y',
+    'gh api repos/acme/widget -f has_issues=false',
+    'gh api repos/acme/widget/rulesets --input r.json',
+    'gh api -X GET -X PUT repos/acme/widget/vulnerability-alerts',
+    'gh api -X PUT \\\nrepos/acme/widget/vulnerability-alerts',
+  ]) {
+    expect([cmd, repoDeny(cmd)]).toEqual([cmd, REPO_SETTING_REASON])
+  }
+})
+
+test('gh api repo setting writes: endpoint forms deny', () => {
+  for (const cmd of [
+    'gh api -X DELETE /repos/acme/widget',
+    'gh api -X DELETE https://api.github.com/repos/acme/widget',
+    'gh api -X PATCH https://ghe.example/api/v3/repos/acme/widget -f x=y',
+    'gh api -X DELETE repositories/123',
+    'gh api -X PUT repos/acme/widget/branches/main/protection --input p.json',
+    "gh api -X PUT 'repos/{owner}/{repo}/vulnerability-alerts'",
+    'gh api -X PUT repos/acme/widget/vulnerability-alerts?x=1#y',
+    'gh api -X PUT repos/acme/widget/vulnerability-alerts/',
+    'gh api -X PUT REPOS/acme/widget/vulnerability-alerts',
+    'gh api -X PUT repos//acme/widget//vulnerability-alerts',
+    'gh api -X PUT repos/acme/widget/issues/../vulnerability-alerts',
+    'gh api -X PUT repos/acme/widget/issues/%2e%2e/vulnerability-alerts',
+    'gh api -X PUT repos/acme/widget/%ZZ',
+    'gh api -X PUT repos%2Facme%2Fwidget%2Fvulnerability-alerts',
+    'gh api -X POST repos/acme/widget/merge-upstream -f branch=main',
+    'gh api -X PUT repos/acme/widget/collaborators/eve -f permission=admin',
+    'gh api -X POST repos/acme/widget/hooks --input h.json',
+    'gh api -X PUT repos/acme/widget/actions/secrets/X -f encrypted_value=zq',
+    'gh api -X PUT repos/acme/widget/actions/permissions/workflow -f x=y',
+    'gh api -X PATCH repos/acme/widget/code-scanning/alerts/1 -f state=dismissed',
+    'gh api -X PATCH repos/acme/widget/dependabot/alerts/1 -f state=dismissed',
+    'gh api -X PUT repos/acme/widget/dependabot/secrets/X -f x=y',
+    'gh api -X PUT repos/acme/widget/private-vulnerability-reporting',
+    'gh api -X PUT repos/acme/widget/secret-scanning/x',
+    'gh api -X DELETE repos/acme/widget/actions/runs/1',
+    'gh api -X DELETE https://ghe.example/repos/acme/widget',
+    'gh api -X DELETE x/repos/acme',
+    "gh api graphql -f query='mutation { updateRepository(input:{}) { clientMutationId } }'",
+    'gh api graphql -f query=@missing.gql',
+  ]) {
+    expect([cmd, repoDeny(cmd)]).toEqual([cmd, REPO_SETTING_REASON])
+  }
+})
+
+test('gh api repo setting writes: every GraphQL setting mutation denies', () => {
+  for (const m of [
+    'updateRepository',
+    'archiveRepository',
+    'unarchiveRepository',
+    'createBranchProtectionRule',
+    'updateBranchProtectionRule',
+    'deleteBranchProtectionRule',
+    'createRepositoryRuleset',
+    'updateRepositoryRuleset',
+    'deleteRepositoryRuleset',
+    'updateRepositoryWebCommitSignoffSetting',
+  ]) {
+    const cmd = `gh api graphql -f query='mutation { ${m}(input:{}) { clientMutationId } }'`
+    expect([m, repoDeny(cmd)]).toEqual([m, REPO_SETTING_REASON])
+  }
+})
+
+test('gh api repo setting writes: reads and work writes stay allowed', () => {
+  for (const cmd of [
+    'gh api repos/acme/widget/dependabot/alerts',
+    "gh api --paginate 'repos/acme/widget/dependabot/alerts?state=open'",
+    'gh api repos/acme/widget',
+    'gh api -X GET repos/acme/widget -f per_page=1',
+    "gh api repos/acme/widget/actions/jobs/1 --jq '.steps[]'",
+    'gh api -X POST repos/acme/widget/issues/9/comments -f body=x',
+    'gh api -X PATCH repos/acme/widget/pulls/9 -f state=closed',
+    'gh api -X POST repos/acme/widget/pulls/9/reviews -f event=COMMENT -f body=x',
+    'gh api -X POST repos/acme/widget/git/blobs -f content=x',
+    'gh api -X POST repos/acme/widget/contents/x.md -f message=m -f branch=factory/x',
+    'gh api -X POST repos/acme/widget/statuses/abc -f state=success',
+    'gh api -X POST repos/acme/widget/check-runs --input c.json',
+    'gh api -X POST repos/acme/widget/check-suites --input c.json',
+    'gh api -X POST repos/acme/widget/commits/abc/comments -f body=x',
+    'gh api -X PATCH repos/acme/widget/comments/1 -f body=x',
+    'gh api -X POST repos/acme/widget/dispatches -f event_type=x',
+    'gh api -X POST repos/acme/widget/actions/runs/1/rerun',
+    'gh api -X POST repos/acme/widget/actions/runs/1/rerun-failed-jobs',
+    'gh api -X POST repos/acme/widget/actions/runs/1/cancel',
+    'gh api -X POST repos/acme/widget/actions/jobs/1/rerun',
+    'gh api -X POST repos/acme/widget/actions/workflows/ci.yml/dispatches -f ref=factory/x',
+    'gh api -X POST repos/acme/widget/releases -f tag_name=v1',
+    'gh api -X PATCH orgs/acme -f x=y',
+    "gh api graphql -f query='query { viewer { login } }'",
+  ]) {
+    expect([cmd, repoDeny(cmd) === undefined]).toEqual([cmd, true])
+  }
+})
+
+test('gh api repo setting writes: a REST deny reads no file', () => {
+  const gate: HookGate = {
+    ...REPO_GATE,
+    readFile: () => {
+      throw new Error('read')
+    },
+  }
+  expect(repoDeny('gh api -X PUT repos/acme/widget/rulesets --input r.json', gate)).toBe(REPO_SETTING_REASON)
+})
+
+test('gh api repo setting writes: older reasons keep precedence', () => {
+  expect(repoDeny('gh api -X PUT repos/acme/widget/pulls/1/merge')).toBe(MERGE_REASON)
+  expect(repoDeny('gh api -X PATCH repos/acme/widget/git/refs/heads/main -f sha=x')).toBe(PUSH_REASON)
+  expect(repoDeny('gh api -X POST repos/acme/widget/pulls/1/reviews -f event=APPROVE')).toBe(APPROVE_REASON)
+  expect(repoDeny('gh api $E -X PUT')).toBe(DYNAMIC_VERB_REASON)
+})
