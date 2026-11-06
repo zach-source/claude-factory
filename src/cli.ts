@@ -4659,6 +4659,9 @@ function storeDreamUsage(start: number, codexHome?: string) {
   } catch {}
 }
 
+const removedLine = (r: { path: string; target: string; skipped?: true }[]) =>
+  `removed symlinks: ${r.map(l => (l.skipped ? l.path + ' (directory changed during the scan, not entered)' : l.path + ' -> ' + l.target)).join(', ')}\n`
+
 async function dream() {
   const release = hold('dream.lock')
   if (!release) return 'a dream is already running'
@@ -4670,7 +4673,10 @@ async function dream() {
     }
     // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
     // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
-    writeFileSync(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
+    const pre = memory.dropLinks(MEMORY)
+    memory.writeStore(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
+    const codexLinked = pre.some(l => l.path === '.codex') // a removed .codex link still refuses this dream
+    if (pre.length) appendFileSync(join(HOME, 'dream.log'), removedLine(pre))
     commitMemory('notes since the last dream')
     // the journal since the last dream that finished: a failed one leaves its entries to the next
     const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
@@ -4725,7 +4731,8 @@ async function dream() {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
         hasCodexDir = false
       }
-      if (hasCodexDir) return refuse('the memory holds .codex, which would add codex project config')
+      if (hasCodexDir || codexLinked)
+        return refuse('the memory holds .codex, which would add codex project config')
       codexHome = dreamCodexHome()
     }
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
@@ -4764,11 +4771,13 @@ async function dream() {
           ],
           { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
         )
+    const removed = memory.dropLinks(MEMORY)
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
     // dream.log keeps history: a log past 256 KB moves to dream.log.1 (one old file, replaced each time)
     const dreamLog = join(HOME, 'dream.log')
     if (existsSync(dreamLog) && statSync(dreamLog).size > 256 * 1024) renameSync(dreamLog, `${dreamLog}.1`)
     appendFileSync(dreamLog, `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
+    if (removed.length) appendFileSync(dreamLog, removedLine(removed))
     storeDreamUsage(start, codexHome)
     if (p.exitCode !== 0) return said
     // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
@@ -9882,7 +9891,7 @@ function reviewFacts(key: string | undefined) {
   const installedFile = join(memory.skillsDir(MEMORY), item!.name, 'SKILL.md')
   const installed =
     item!.kind === 'skill' && existsSync(installedFile)
-      ? clip(readFileSync(installedFile, 'utf8'), 16384)
+      ? clip(memory.tryRead(installedFile) ?? '', 16384)
       : undefined
   const { key: k, kind, name, change, text } = item!
   return {

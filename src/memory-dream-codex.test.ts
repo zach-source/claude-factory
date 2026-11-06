@@ -77,7 +77,7 @@ function fake(name: string, body: string[]) {
 }
 
 /** the fake codex: records argv, cwd, CODEX_HOME and stdin, then files x.md with a plain mv */
-function fakeCodex(opt: { boom?: boolean; extras?: boolean } = {}) {
+function fakeCodex(opt: { boom?: boolean; extras?: boolean; link?: boolean } = {}) {
   const roll = join(dir, 'rollout.jsonl')
   writeFileSync(roll, ROLLOUT + '\n')
   return fake('fake-codex.sh', [
@@ -93,6 +93,12 @@ function fakeCodex(opt: { boom?: boolean; extras?: boolean } = {}) {
       ? [
           `cp "${roll}" "$d/rollout-old-${U}.jsonl"; touch -t 202001010000 "$d/rollout-old-${U}.jsonl"`,
           `ln -s "${roll}" "$d/rollout-link-${U}.jsonl"; cp "${roll}" "$d/notes.jsonl"`,
+        ]
+      : []),
+    ...(opt.link
+      ? [
+          `ln -s "${dir}/secret" inbox/y.md; mkdir -p topic/sub`,
+          `ln -s "${dir}/secretdir" topic/linkdir; ln -s /nonexistent topic/sub/dangle.md`,
         ]
       : []),
     ...(opt.boom ? ['exit 3'] : []),
@@ -127,10 +133,14 @@ function seed() {
 
 // the codex dream child gets a minimal env, so FAKE_BOOM and FAKE_EXTRAS become script text
 const bothFakes = (env: Record<string, string> = {}) => {
-  const { FAKE_BOOM, FAKE_EXTRAS, ...rest } = env
+  const { FAKE_BOOM, FAKE_EXTRAS, FAKE_LINK, ...rest } = env
   return {
     FACTORY_CLAUDE: fakeClaude(),
-    FACTORY_CODEX: fakeCodex({ boom: FAKE_BOOM === '1', extras: FAKE_EXTRAS === '1' }),
+    FACTORY_CODEX: fakeCodex({
+      boom: FAKE_BOOM === '1',
+      extras: FAKE_EXTRAS === '1',
+      link: FAKE_LINK === '1',
+    }),
     ...rest,
   }
 }
@@ -325,6 +335,48 @@ test(
     expect(log).toContain('the dream exited 3: boom')
     expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
     expect(dreamRows()).toHaveLength(1)
+  },
+  SLOW,
+)
+
+for (const boom of ['', '1']) {
+  test(
+    `eqxi AC1/AC2: a link the codex dream makes is removed (exit ${boom ? 3 : 0}), logged, and never committed`,
+    () => {
+      seed()
+      const secret = join(dir, 'secret')
+      writeFileSync(secret, 'zqsecret-eqxi')
+      mkdirSync(join(dir, 'secretdir'))
+      writeFileSync(join(dir, 'secretdir', 'a.md'), 'zqsecret-eqxi')
+      run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', FAKE_LINK: '1', FAKE_BOOM: boom, FAKE_DIR: dir }))
+      for (const p of ['inbox/y.md', 'topic/linkdir', 'topic/sub/dangle.md'])
+        expect(() => lstatSync(join(memory, p))).toThrow()
+      expect(readFileSync(secret, 'utf8')).toBe('zqsecret-eqxi')
+      expect(readFileSync(join(dir, 'secretdir', 'a.md'), 'utf8')).toBe('zqsecret-eqxi')
+      expect(gitMemory('log', '-p', '--raw', '--format=')).not.toContain('120000')
+      expect(gitMemory('ls-files', '-s')).not.toContain('120000')
+      const log = readFileSync(join(home, 'dream.log'), 'utf8')
+      expect(log).toContain(`inbox/y.md -> ${secret}`)
+      expect(log).toContain('removed symlinks: ')
+      if (!boom) expect(existsSync(join(memory, 'topic', 'x.md'))).toBe(true)
+    },
+    SLOW,
+  )
+}
+
+test(
+  'eqxi AC1: a link already in the store goes before the first commit; no link means no log line',
+  () => {
+    seed()
+    const secret = join(dir, 'secret')
+    writeFileSync(secret, 'zqsecret-eqxi')
+    symlinkSync(secret, join(memory, 'inbox', 'pre.md'))
+    run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra' }))
+    expect(gitMemory('log', '-p', '--raw', '--format=')).not.toContain('120000')
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).toContain('inbox/pre.md')
+    seed()
+    run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra' }))
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).not.toContain('removed symlinks')
   },
   SLOW,
 )
