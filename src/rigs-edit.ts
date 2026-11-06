@@ -63,6 +63,18 @@ function lock(dir: string, waitMs: number, staleMs: number) {
 /** snapshot name that sorts by time */
 const stamp = () => new Date().toISOString().replace(/[-:.]/g, '')
 
+/** the snapshot files beside `file`, newest first, at most HISTORY_KEEP; a missing dir is [] */
+export function snapshots(file: string): string[] {
+  const hist = join(dirname(file), 'rigs-history')
+  if (!existsSync(hist)) return []
+  return readdirSync(hist)
+    .filter(f => f.endsWith('.json'))
+    .sort()
+    .reverse()
+    .slice(0, HISTORY_KEEP)
+    .map(f => join(hist, f))
+}
+
 /**
  * Change the rig list under a lock. A missing `file` is []. Steps: run `fn`, check its result, copy the
  * old file to `rigs-history/` (keep the newest 20), write a temp file, rename it over `file`.

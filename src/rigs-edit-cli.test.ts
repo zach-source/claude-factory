@@ -99,3 +99,97 @@ test('an invalid rig file refuses rig add and rig rm, naming the file; the histo
   expect(text()).toBe('[{')
   expect(existsSync(`${file()}.lock`)).toBe(false)
 })
+
+const hist = () => join(home, 'rigs-history')
+const snaps = () => (existsSync(hist()) ? readdirSync(hist()).sort() : [])
+function twoEdits() {
+  const a = repo('a')
+  factory(['rig', 'add', 'x', a])
+  const A = text()
+  factory(['rig', 'add', 'x', a, '--max', '2'])
+  return { a, A, B: text() }
+}
+
+test('rig undo restores the earlier file; a second undo reverses it', () => {
+  const { A, B } = twoEdits()
+  expect(factory(['rig', 'undo']).code).toBe(0)
+  expect(text()).toBe(A)
+  expect(factory(['rig', 'undo']).code).toBe(0)
+  expect(text()).toBe(B)
+})
+
+test('rig undo n restores the nth newest snapshot', () => {
+  const { a, A } = twoEdits()
+  factory(['rig', 'add', 'x', a, '--max', '3'])
+  expect(snaps()).toHaveLength(2)
+  expect(factory(['rig', 'undo', '2']).code).toBe(0)
+  expect(text()).toBe(A)
+})
+
+test('rig history lists the newest 20, newest first', () => {
+  const a = repo('a')
+  for (let i = 0; i < 22; i++) factory(['rig', 'add', 'x', a, '--max', String(i + 1)])
+  const r = factory(['rig', 'history'])
+  expect(r.code).toBe(0)
+  const lines = r.out.trim().split('\n')
+  expect(lines).toHaveLength(20)
+  const newest = snaps()
+    .at(-1)!
+    .replace(/\.json$/, '')
+  expect(lines[0]).toBe(`1  ${newest}  1 rigs: x`)
+  expect(lines[19]!.startsWith('20  ')).toBe(true)
+})
+
+test('rig history caps the list at 20 even when the directory holds more', () => {
+  mkdirSync(hist(), { recursive: true })
+  for (let i = 0; i < 25; i++) writeFileSync(join(hist(), `2026010${i < 10 ? '0' : ''}${i}.json`), '[]')
+  expect(factory(['rig', 'history']).out.trim().split('\n')).toHaveLength(20)
+})
+
+test('rig history shows an unparsable snapshot and says so when there is none', () => {
+  expect(factory(['rig', 'history'])).toMatchObject({ code: 0, out: 'no rig history\n' })
+  mkdirSync(hist(), { recursive: true })
+  writeFileSync(join(hist(), '20260101T000000000Z.json'), '[{')
+  expect(factory(['rig', 'history']).out).toBe('1  20260101T000000000Z  not valid JSON\n')
+})
+
+test('rig undo refuses a bad n or a bad snapshot and changes nothing', () => {
+  twoEdits()
+  const before = text()
+  const n = snaps().length
+  for (const x of ['0', '-1', 'abc', '1.5', '21', '3', '1e0', '0x1', '01'])
+    expect(factory(['rig', 'undo', x]).code).not.toBe(0)
+  const two = '{"name":"x","repo":"/a","factory":"lifecycle"}'
+  for (const body of ['[{', '{}', `[${two},${two}]`]) {
+    const bad = join(hist(), '99990101T000000000Z.json')
+    writeFileSync(bad, body)
+    expect(factory(['rig', 'undo']).code).not.toBe(0)
+    rmSync(bad)
+  }
+  expect(text()).toBe(before)
+  expect(snaps()).toHaveLength(n)
+  expect(existsSync(`${file()}.lock`)).toBe(false)
+})
+
+test('rig undo without history is refused', () => {
+  const r = factory(['rig', 'undo'])
+  expect(r.code).not.toBe(0)
+  expect(existsSync(file())).toBe(false)
+})
+
+test('a worker cannot run rig undo or rig history', () => {
+  const { B } = twoEdits()
+  for (const sub of ['undo', 'history']) {
+    const p = Bun.spawnSync([CLI, 'rig', sub], {
+      env: {
+        ...process.env,
+        FACTORY_HOME: home,
+        FACTORY_RUN: 'r1',
+        FACTORY_SELF_UPDATE: '0',
+        FACTORY_NO_KICK: '1',
+      },
+    })
+    expect(p.exitCode).not.toBe(0)
+  }
+  expect(text()).toBe(B)
+})
