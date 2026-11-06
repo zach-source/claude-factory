@@ -468,7 +468,8 @@ Limits:
     - The other rule is a `github.com` rule. It has one `Authorization` `Basic ` header from `GITHUB_REVIEWER_BASIC` and no other key.
     - The policy can have each rule once. The `github.com` rule needs the reviewer rule.
     - The broker binds no station or `<owner>/<repo>` to the actor. See claude-factory-mzoy and claude-factory-rfjn.
-  - The policy has the reviewer rule. Another object lists a github host in `hostnames` (`github.com`, `*.github.com`, `*.com`, `*`). That object has a key other than `hostnames` and `ports`. A task cannot push and approve. Hostnames that are not a list of strings in such an object also fail.
+  - The policy has the reviewer rule. Another object lists a github host in `hostnames` (`github.com`, `*.github.com`, `*.com`, `*`). That object has a key other than `hostnames` and `ports`. Hostnames that are not a list of strings in such an object also fail.
+  - The policy has the reviewer rule. Another rule has a `credentialUri` whose vault key starts with `GITHUB`, on any host. So a task cannot get an author GitHub key and approve. The limit: a GitHub token under a vault key name that does not start with `GITHUB` passes.
   - A key has a non-ASCII character.
   - The policy nests deeper than 32 levels.
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.

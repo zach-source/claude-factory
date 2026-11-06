@@ -519,6 +519,17 @@ test('a policy with the reviewer API rule gets no other key on a github host', a
       effects: { replaceHeaders: [] },
     }),
     'mixed host list': rulesOf(api, hostRule(['a.example.com', 'github.com'], 'BUILDBUDDY')),
+    'github host, no key, then key on relay': rulesOf(
+      api,
+      { hostnames: ['github.com'] },
+      hostRule(['relay.example.com'], 'GITHUB_BASIC'),
+    ),
+    'pair + GITHUB on relay': rulesOf(api, gitRule(), hostRule(['relay.example.com'], 'GITHUB')),
+    'api + GITHUB_ZS_BASIC on relay': rulesOf(api, hostRule(['relay.example.com'], 'GITHUB_ZS_BASIC')),
+    'hostnames as a string, with a key': rulesOf(api, {
+      hostnames: 'github.com',
+      effects: hostRule(['x'], 'BUILDBUDDY').effects,
+    }),
   }
   for (const [name, body] of Object.entries(refused)) {
     expect([name, typeof workerPolicyRefusal(body)]).toEqual([name, 'string'])
@@ -536,6 +547,10 @@ test('a policy with the reviewer API rule gets no other key on a github host', a
       ports: { numbers: [443] },
     }),
     'pair + keyed other host': rulesOf(api, gitRule(), hostRule(['a.example.com'], 'BUILDBUDDY')),
+    'no reviewer rule, GITHUB and GITHUB_BASIC': rulesOf(
+      hostRule(['github.com'], 'GITHUB'),
+      hostRule(['relay.example.com'], 'GITHUB_BASIC'),
+    ),
     'egressPolicy reviewer with extras': ax.egressPolicy(
       'v',
       [{ hosts: ['codeload.github.com'] }, { hosts: ['a.example.com'], key: 'BUILDBUDDY' }],
