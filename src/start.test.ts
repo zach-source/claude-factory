@@ -359,7 +359,7 @@ test('help prints free-text placeholders in quotes (claude-factory-nt33)', () =>
     "<rig|repo> '<goal...>'|bead",
     "'<summary...>'|--summary-file",
     "--goal '<text...>'",
-    "'<summary>' '[body...]'",
+    "'<summary>' ('[body...]' | --body-file <path>)",
   ])
     expect(text).toContain(p)
   expect(text).not.toMatch(
