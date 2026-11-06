@@ -22,6 +22,7 @@ minor release may change the factory format, the CLI or the run state.
 - Changed: the patrol prompt tells the manager to fix the memory note that taught the opposite when it mails a station a rule correction (claude-factory-61a). It runs `memory search`, then `memory add --supersedes <old note path> --kind rule`. A person must restart the manager tool after deploy.
 - Fix: the home guard no longer denies a read-only command that only names a script file (claude-factory-lqr3). Examples are `git diff src/cli.ts`, `grep -n x src/cli.ts` and `bd create -d "see src/home-guard.ts"`. A closed one-command grammar skips the script read. Every other form still reads the scripts and fails closed. The raw command-text check is unchanged.
 - Fix: the reconciler bounds the usage-limit data that a VM sends (claude-factory-5nca). It ignores a hit that is more than 5 minutes ahead of the laptop clock. It limits `kind` to seven_day, five_hour, usage and auth. It sets a reset time more than 8 days out to 0. The token swap command runs at most one time for each 5 minutes, for each runner and harness.
+- Fix: `factory report` strips control, format and line-separator characters from the report text, the `mail` text and the `memory add` summary, body, rig and `--from` (claude-factory-67bw). Each such character becomes a space. LF and TAB stay. This holds for the FAIL reason, the BLOCKED reason and the DONE and HANDOFF summary, also for a VM report that the laptop replays.
 
 ## 0.16.0 (2026-11-03)
 

@@ -672,7 +672,7 @@ test(
     expect(pm!.tools).toEqual([])
     // the patrol keeps its own tools: this guards the pm alone, not every agent
     const patrol = registered.find(r => r.name === 'patrol')
-    expect(patrol!.tools).toEqual(['Bash', 'Read', 'Grep', 'Glob'])
+    expect(patrol!.tools).toEqual(['Bash', 'Read', 'Grep', 'Glob', 'Write'])
   },
 )
 

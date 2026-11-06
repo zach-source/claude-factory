@@ -416,6 +416,18 @@ test('the reviewer keys appear only in one pair of reviewer rules', async () => 
       effects: { replaceHeaders: [{ ...gitHdr, credentialUri: U('GITHUB_REVIEWER') }] },
     }),
     'git two headers': gitWith({ effects: { replaceHeaders: [gitHdr, gitHdr] } }),
+    'api effects extra key': rulesOf(
+      reviewerRule({ effects: { replaceHeaders: api.effects.replaceHeaders, replace_headers: [] } }),
+    ),
+    'api header extra key': rulesOf(
+      reviewerRule({
+        effects: { replaceHeaders: [{ ...api.effects.replaceHeaders[0], credential_uri: 'x' }] },
+      }),
+    ),
+    'git effects extra key': gitWith({ effects: { replaceHeaders: [gitHdr], replace_headers: [] } }),
+    'git header extra key': gitWith({
+      effects: { replaceHeaders: [{ ...gitHdr, credential_uri: 'x' }] },
+    }),
     'api rule with extra key': { rules: [{ https: api, extra: 1 }] },
     'api rule nested in an array': { rules: [[{ https: api }]] },
   }

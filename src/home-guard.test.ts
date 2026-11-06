@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HOME_REASON, homeReason, protectedPath, rmQuiet, rmSafe } from './home-guard'
+import { FACTORY_BIN, HOME_REASON, homeReason, protectedPath, rmQuiet, rmSafe } from './home-guard'
 import { denyReason } from './worker-hook'
 
 const H = ['/Users/pat']
@@ -168,6 +168,79 @@ describe('homeReason', () => {
     expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
+  // a path word without a script extension, and a word before ':'
+  const ABS = '/abs/wt/.scratch/x'
+  test.each([
+    ABS,
+    `${ABS} --all`,
+    '.scratch/x',
+    'bash .scratch/x',
+    "'/wt/x' a",
+    '"/wt/x"',
+    'nohup /abs/x',
+    'cat a; .scratch/x',
+    `factory mutate ${CLI}:1 a b -- bun test`,
+    `bun test ${CLI}:12:3`,
+    'PATH=/a:/b/x.sh foo',
+    'bash x.sh>o',
+    'bash .scratch/x>o',
+    '.scratch/x>/dev/null',
+    'bash<.scratch/x',
+    'bash <.scratch/x',
+    'sh<x.sh',
+  ])('denies a path word that holds a home delete: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('reads the bare path, without the :line', () => {
+    const cases: [string, string][] = [
+      [ABS, ABS],
+      ['.scratch/x', '.scratch/x'],
+      ["'/wt/x' a", '/wt/x'],
+      [`bun test ${CLI}:12:3`, CLI],
+      ['PATH=/a:/b/x.sh foo', '/b/x.sh'],
+      ['bash .scratch/x', '.scratch/x'],
+      ['"/wt/x"', '/wt/x'],
+      ['nohup /abs/x', '/abs/x'],
+      ['cat a; .scratch/x', '.scratch/x'],
+      [`${ABS} --all`, ABS],
+      [`factory mutate ${CLI}:1 a b -- bun test`, CLI],
+      ['bash x.sh>o', 'x.sh'],
+      ['bash<.scratch/x', '.scratch/x'],
+    ]
+    for (const [cmd, path] of cases) {
+      const seen: string[] = []
+      homeReason(cmd, p => (seen.push(p), undefined), H)
+      expect(seen).toContain(path)
+    }
+  })
+
+  test.each([ABS, `bun test ${CLI}:1`])('allows a path word to a benign file: %s', cmd =>
+    expect(homeReason(cmd, () => 'echo ok', H)).toBeUndefined(),
+  )
+
+  test('a read-only command with a path or :line reads no file', () => {
+    let reads = 0
+    const count = () => (reads++, undefined)
+    homeReason(`git diff origin/main -- ${CLI}`, count, H)
+    homeReason(`grep -n x ${CLI}:1`, count, H)
+    expect(reads).toBe(0)
+  })
+
+  test.each(['curl https://example.com/a/b', 'git push origin main'])(
+    'a path word that does not read is no deny: %s',
+    cmd => expect(homeReason(cmd, () => undefined, H)).toBeUndefined(),
+  )
+
+  test('5000 path words return fast', () => {
+    const cmd = Array.from({ length: 5000 }, (_, i) => `.scratch/a${i}`).join(' ') + ' bash x'
+    let reads = 0
+    const t0 = performance.now()
+    homeReason(cmd, () => (reads++, undefined), H)
+    expect(performance.now() - t0).toBeLessThan(200)
+    expect(reads).toBeGreaterThanOrEqual(5000)
+  })
+
   test('a 100000-char reader pipeline returns fast', () => {
     const cmd = `grep -n "a\\|b" ${CLI} | `.repeat(5000) + 'head'
     const t0 = performance.now()
@@ -252,7 +325,7 @@ describe('homeReason', () => {
     `git fetch -q origin main && git diff origin/main -- ${CLI}`,
     `bunx prettier@3.9.9 --write ${CLI} ${WRK}`,
     `bunx prettier --check ${CLI} 2>&1 | tail -7`,
-    `/abs/bin/factory report run-1 2 ready "see ${CLI} and ${WRK}"`,
+    `${FACTORY_BIN} report run-1 2 ready "see ${CLI} and ${WRK}"`,
     `factory report run-1 2 ready --summary-file .scratch/s.md ${CLI}`,
     `factory memory add --from r/plan --kind fact --rig acme "x" "see ${CLI}"`,
     `factory mail run-1 manager 'see ${CLI}; $(no)'`,
@@ -304,6 +377,11 @@ describe('homeReason', () => {
     `factory check factories/x.ts`,
     `factory mutate ${CLI} 1 a b -- bun test`,
     `./factory report r 1 ready "x.ts"`,
+    `/abs/bin/factory report r 1 ready x`,
+    `/abs/wt/.scratch/factory report r 1 ready x.sh`,
+    `.scratch/factory report r 1 ready x`,
+    `'/wt/factory' report r 1 ready x`,
+    `'${FACTORY_BIN}' report r 1 ready x`,
     'factory report r 1 ready "`bash x.sh`"',
     'factory report r 1 ready "$(bash x.sh)"',
     `factory report r 1 ready --summary-file=x.sh`,

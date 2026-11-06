@@ -259,6 +259,44 @@ test('queue does not send a PR back when its red tests are held assertions', () 
   expect(Object.keys(ship.nodes.queue.next)).toEqual(['ready', 'again', 'empty'])
 })
 
+test('queue step 2 and postmortem check for a hold before they add factory (claude-factory-5nh2)', () => {
+  const two = ship.nodes.queue.prompt.split('\n2. ')[1]!
+  const pm = ship.nodes.postmortem.prompt
+  const start = two.indexOf('Hold check:')
+  expect(start).toBeGreaterThan(-1)
+  const endMark = '`factory queue <rig> <bead>`'
+  const end = two.indexOf(endMark, start)
+  expect(end).toBeGreaterThan(start)
+  const check = two.slice(start, end + endMark.length)
+  for (const t of [
+    'bd show <bead> --json',
+    'rejected',
+    'human',
+    'rejected, human or owner,',
+    'If the bead is held, do not add or remove a label.',
+    'If the bead is held, write the evidence in a bead comment',
+    'owner',
+    'held:',
+    'owner_decisions',
+    'factory queue <rig> <bead>',
+    'If the read fails, treat the bead as held',
+  ])
+    expect(check).toContain(t)
+  for (const p of [two, pm]) {
+    expect(p).toContain(check)
+    expect(p.indexOf(check)).toBeLessThan(p.indexOf('--add-label factory'))
+  }
+  expect(pm).toContain('If the bead is not held, send the released bead back')
+  for (const [name, node] of Object.entries(ship.nodes)) {
+    const prompt = (node as { prompt: string }).prompt
+    for (const m of prompt.matchAll(/bd update <bead>[^`]*--add-label factory/g)) {
+      const at = prompt.indexOf(check)
+      expect(at, `${name} adds factory without the hold check`).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(m.index!)
+    }
+  }
+})
+
 test('a run ships 30 PRs in a row without a stuck step budget', () => {
   const round = ['ready', 'ready', 'published']
   const outcomes = [...Array(30).keys()].flatMap(() => round)
@@ -442,7 +480,7 @@ test('deploy and soak carry the same live-object finding rule: search, comment, 
     'Never lower a priority',
     'any bead with the ship label',
     'The comment and escalation steps do not apply to',
-    'has a held:* label, a rejected label or an owner label, add no label',
+    'run `bd show <id> --json`. If the read fails, if that bead has a held:* label, a rejected label, a human label or an owner label, or if its metadata has the key owner_decisions (any value), add no label',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
   ])
     expect(want).toContain(t)
