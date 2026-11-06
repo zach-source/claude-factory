@@ -171,7 +171,6 @@ describe('deny log', () => {
     ['docker run --env=GH_TOKEN=zqsecret img', '--env=***'],
     ["X=$'a\\' b'zqsecret ls", 'X=***'],
   ])('%s is masked end to end', (c, want) => {
-    mkdirSync(join(home, 'runs', 'r1'), { recursive: true })
     const box = join(home, 'outbox.jsonl')
     run(bash('f() { ls; }; ' + c), { FACTORY_OUTBOX: box, FACTORY_DENY_LOG: '1' })
     expect(readFileSync(file(), 'utf8')).not.toContain('zqsecret')
@@ -270,6 +269,7 @@ describe('maskAssignments', () => {
     ['local "X=zq secret"', 'local "X=***'],
     ['readonly "X=zq;secret"', 'readonly "X=***'],
     ['typeset "X=zq|secret"', 'typeset "X=***'],
+    ['env "GH_TOKEN=zq secret" ls', 'env "GH_TOKEN=***'],
     ["export $'X=zq secret'", "export $'X=***"],
     // plan 3: IFS, brace, escaped and quoted names
     ['IFS=,; Y=1; export ${Y:+X=zq secret}', 'IFS=***'],
@@ -385,7 +385,6 @@ describe('maskAssignments hides a value after = in any word (claude-factory-1as9
     "X=$'a\\' b'zqsecret ls",
     'curl https://x/?a=zqsecret',
     "git -c 'http.extraHeader=Authorization: Bearer zqsecret' push",
-    'env "GH_TOKEN=zq secret" ls',
   ])('%s hides the value', i => expect(m(i)).not.toContain('zqsecret'))
   test('long rows are linear', () => {
     for (const i of [' "\\'.repeat(1e5), 'a=\r'.repeat(1e5), " 'a'=".repeat(1e5), ' \\'.repeat(1e5)]) {
