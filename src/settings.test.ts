@@ -44,14 +44,25 @@ describe('AC1: order', () => {
     })
   })
   test('AC1 default, and undefined without a default', () => {
-    expect(get(resolveSettings({}, {}), 'kubectl')).toEqual({ key: 'kubectl', value: 'kubectl', source: 'default' })
+    expect(get(resolveSettings({}, {}), 'kubectl')).toEqual({
+      key: 'kubectl',
+      value: 'kubectl',
+      source: 'default',
+    })
     expect(get(resolveSettings({}, {}), 'ax.atespace').value).toBe('factory')
     expect(get(resolveSettings({}, {}), 'ax.capabilities').value).toBe('SETUID,SETGID,CHOWN')
     expect(get(resolveSettings({}, {}), 'max-runs').value).toBe('16')
-    expect(get(resolveSettings({}, {}), 'ax.vault')).toEqual({ key: 'ax.vault', value: undefined, source: 'default' })
+    expect(get(resolveSettings({}, {}), 'ax.vault')).toEqual({
+      key: 'ax.vault',
+      value: undefined,
+      source: 'default',
+    })
   })
   test('AC1 an empty env value counts as set', () => {
-    const r = get(resolveSettings({ 'ax.capabilities': 'A' }, { FACTORY_AX_CAPABILITIES: '' }), 'ax.capabilities')
+    const r = get(
+      resolveSettings({ 'ax.capabilities': 'A' }, { FACTORY_AX_CAPABILITIES: '' }),
+      'ax.capabilities',
+    )
     expect(r.value).toBe('')
     expect(r.source).toBe('environment')
   })
@@ -63,7 +74,15 @@ describe('AC1: order', () => {
 })
 
 describe('AC2: unknown key refused', () => {
-  for (const k of ['nope', 'toString', '__proto__', 'constructor', 'AX_IMAGE', 'FACTORY_AX_IMAGE', 'devenv.builder']) {
+  for (const k of [
+    'nope',
+    'toString',
+    '__proto__',
+    'constructor',
+    'AX_IMAGE',
+    'FACTORY_AX_IMAGE',
+    'devenv.builder',
+  ]) {
     test(`AC2 ${k}`, () => {
       const { file } = fresh()
       expect(() => setSetting(file, k, 'v')).toThrow()
