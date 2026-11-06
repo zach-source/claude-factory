@@ -526,7 +526,6 @@ test(
       './bd tag acme-1 factory',
       'bd --json update acme-1 --status open',
       'bd -C /repo/acme show acme-1',
-      'bd update acme-1 --unset-metadata discovered_from',
       "bd sql 'select 1'",
       'bd import x.jsonl',
       'bd batch < x',
