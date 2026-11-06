@@ -3,7 +3,7 @@ import type { Subprocess } from 'bun'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { claim, leaseFile, release } from './server'
+import { claim, leaseFile, release, serve } from './server'
 
 const dirs: string[] = []
 const lease = () => {
@@ -57,6 +57,29 @@ test('release removes only its own lease and never throws', () => {
   expect(existsSync(f)).toBe(false)
   release(f, 'a')
 })
+
+test('a tick longer than the lease keeps the lease, and stop waits for that tick', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'server-loop-'))
+  dirs.push(home)
+  let done = false
+  const s = serve({
+    home,
+    port: 0,
+    everyMs: 50,
+    leaseMs: 300,
+    holder: 'a',
+    log: () => {},
+    tick: async () => {
+      await new Promise(r => setTimeout(r, 900))
+      done = true
+    },
+  })
+  await new Promise(r => setTimeout(r, 700))
+  expect(claim(leaseFile(home), 'b', Date.now(), 300).held).toBe(false)
+  await s.stop()
+  expect(done).toBe(true)
+  expect(existsSync(leaseFile(home))).toBe(false)
+}, 30_000)
 
 // Process tests: real `factory server` children on one FACTORY_HOME.
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -159,7 +182,7 @@ test('bad flags exit non-zero with the usage and make no lease file', () => {
     ['--port'],
   ]) {
     const home = newHome()
-    const p = Bun.spawnSync([CLI, 'server', ...args], { env: env(home) })
+    const p = Bun.spawnSync([CLI, 'server', ...args], { env: env(home), timeout: 5000 })
     expect(p.exitCode).not.toBe(0)
     expect(p.stderr.toString()).toContain('usage: factory server')
     expect(existsSync(leaseFile(home))).toBe(false)
