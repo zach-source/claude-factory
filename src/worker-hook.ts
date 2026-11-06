@@ -5310,15 +5310,17 @@ function ghAliasDenied(subArgs: string[]): string | undefined {
 
 // a glab REST path that approves a merge request; read on the decoded, lower-case path
 const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
+// claude-factory-qn8a.32: a glab REST path that merges (or queues a merge of) a merge request
+const GLAB_MERGE_PATH = /merge_requests\/.*\/merge(?!_ref)(?![a-z])|merge_trains\/merge_requests(?![a-z_])/i
+// a glab REST path of one merge request; a write to it can change the draft state
+const GLAB_MR_PATH = /merge_requests\/[^/]+$/i
 const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output', '-R', '--repo'])
 
-/** True when the decoded endpoint text names a merge request approve path, or cannot be decoded. */
-function glabApprovePath(endpoint: string): boolean {
+/** True when the raw or decoded endpoint text matches `re`. An endpoint that cannot be decoded gives `undecodable`. */
+function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boolean {
   const decoded = decodeApiPath(endpoint)
-  if (decoded === undefined) return true
-  return [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded].some(p =>
-    GLAB_APPROVE_PATH.test(p),
-  )
+  if (decoded === undefined) return undecodable
+  return [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded].some(p => re.test(p))
 }
 
 /**
@@ -5347,6 +5349,7 @@ function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
     const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
     if (si >= 0 && dynamicWord(rest[si]!)) return DYNAMIC_VERB_REASON
     if (hasMutatingWordBeforeDashDash(rest, new Set(['approve']))) return GLAB_APPROVE_REASON
+    if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'accept']))) return MERGE_REASON
   }
   if (!hasMutatingWordBeforeDashDash(tail, new Set(['api']))) return undefined
   const apiArgs = expandGhShortClusters(tail.slice(tail.indexOf('api') + 1))
@@ -5361,7 +5364,8 @@ function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
   }
   for (const endpoint of endpoints) {
     // a glob word such as `...approve?x=1` still names the approve path in its literal text
-    if (glabApprovePath(endpoint)) return GLAB_APPROVE_REASON
+    if (glabPathMatch(endpoint, GLAB_APPROVE_PATH, true)) return GLAB_APPROVE_REASON
+    if (glabPathMatch(endpoint, GLAB_MERGE_PATH)) return MERGE_REASON
     if (dynamicWord(endpoint)) {
       const hasData =
         ghApiFields(apiArgs).length > 0 || flagValue(apiArgs, new Set(['--input', '--form'])) !== undefined
@@ -5370,6 +5374,8 @@ function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
       const { texts, unresolved } = graphqlTexts(apiArgs, gate)
       if (unresolved) return GLAB_APPROVE_REASON
       if (texts.some(t => /\bmutation\b/.test(t) && /approv/i.test(t))) return GLAB_APPROVE_REASON
+      if (texts.some(t => /\bmutation\b/.test(t) && /mergeRequestAccept|automerge/i.test(t)))
+        return MERGE_REASON
     }
   }
   return undefined
