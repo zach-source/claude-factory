@@ -5376,10 +5376,10 @@ const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9
 // claude-factory-qn8a.9.10: bash reads an operand of -v, -eq, -ne, -lt, -le, -gt or -ge as a subscript.
 // A value such as `a[$(cmd)]` from `$_` or from `read` then runs the command. The exemption holds
 // only if no word has `(` or a backtick. It also fails if a `$` word shares the test with one of
-// these operators. String tests (-n, -z, ==, =~) stay exempt.
+// these operators. A `[` word (a subscript such as `a[_]`) fails it too (qn8a.9.11). String tests (-n, -z, ==, =~) stay exempt.
 function testBuiltinSafe(args: readonly string[]): boolean {
   if (args.some(x => /[(`]/.test(x))) return false
-  return !(args.some(x => /^(-v|-eq|-ne|-lt|-le|-gt|-ge)$/.test(x)) && args.some(x => x.includes('$')))
+  return !(args.some(x => /^(-v|-eq|-ne|-lt|-le|-gt|-ge)$/.test(x)) && args.some(x => /[$[]/.test(x)))
 }
 
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads

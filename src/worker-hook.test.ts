@@ -11465,6 +11465,21 @@ test('denyReason denies [ and [[ with a dynamic operand of -v or an arithmetic o
     expect(ask(c)).toBeUndefined()
 })
 
+test('denyReason denies [ and [[ with a bare subscript operand of -v or an arithmetic operator (claude-factory-qn8a.9.11)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  const src = "echo 'a[$(git push origin main)]'; "
+  for (const c of [
+    src + '[[ -v a[_] ]]',
+    src + '[ -v a[_] ]',
+    src + '[[ a[_] -eq 0 ]]',
+    'read i < f; [[ -v a[i] ]]',
+    'read i < f; [ -v a[i] ]',
+    'read i < f; [[ a[i] -eq 0 ]]',
+  ])
+    expect(ask(c)).toBeDefined()
+  for (const c of ['[[ -v X ]]', '[ x -eq 0 ]', '[ -n "$X" ]']) expect(ask(c)).toBeUndefined()
+})
+
 // claude-factory-c1jb: 7 alias words in one segment made the rescan visit every order (n!): 2.5 s, then a false
 // SCAN_BUDGET_REASON deny. The memo of allowed rescans makes it linear.
 test('denyReason allows 7 harmless alias words in one segment, fast, and still denies a later gp push (claude-factory-c1jb)', () => {
