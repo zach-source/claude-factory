@@ -1417,6 +1417,7 @@ function shownCommand(command: string): string {
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
   const command = joinLines(rawCommand)
   const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
+  let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
     let from = Math.max(0, at - 40)
@@ -1430,28 +1431,49 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
       more > 0
         ? ` ${more} more dollar signs, backticks or parentheses come after this text and are not shown.`
         : ''
-    return {
-      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${shownCommand(command)}. The first one is at character ${at}: «${around}».${unseen} Allow it?`,
+    substitution = {
+      phrase:
+        'run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read',
       deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
+      detail: `The first one is at character ${at}: «${around}».${unseen}`,
     }
   }
-  if (/\bfactory\s+decide\b/.test(command))
-    return {
-      question: `The manager model wants to decide a factory gate: ${shownCommand(command)}. Allow it?`,
-      deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
-    }
-  if (/\bfactory\s+decisions\s+answer\b/.test(command))
-    return {
-      question: `The manager model wants to answer a person's bd decision: ${shownCommand(command)}. Allow it?`,
-      deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
-    }
-  if (/\bfactory\s+start\b[\s\S]*--owned\b/.test(command))
-    return {
-      question: `The manager model wants to start a bead carrying its owner's decisions: ${shownCommand(command)}. Allow it?`,
-      deny: 'The person did not confirm starting this owner-only bead.',
-    }
-  return null
+  const cut = cutText(command, 300).length
+  const kinds = GATED_KINDS.flatMap(k => {
+    const ends = [...command.matchAll(k.re)].map(m => m.index! + m[0].length)
+    return ends.length ? [{ ...k, count: ends.length, hidden: ends.filter(end => end > cut).length }] : []
+  })
+  if (!substitution && !kinds.length) return null
+  const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
+  const named = [
+    ...(substitution ? [substitution.phrase] : []),
+    ...kinds.map(k => `${k.phrase}${times(k.count)}`),
+  ]
+  const hidden = kinds.filter(k => k.hidden > 0)
+  return {
+    question: `The manager model wants to ${named.join(' and ')}: ${shownCommand(command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
+    deny: [...(substitution ? [substitution.deny] : []), ...kinds.map(k => k.deny)].join(' '),
+  }
 }
+
+/** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
+const GATED_KINDS = [
+  {
+    re: /\bfactory\s+decide\b/g,
+    phrase: 'decide a factory gate',
+    deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
+  },
+  {
+    re: /\bfactory\s+decisions\s+answer\b/g,
+    phrase: "answer a person's bd decision",
+    deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
+  },
+  {
+    re: /\bfactory\s+start\b[\s\S]*?--owned\b/g,
+    phrase: "start a bead carrying its owner's decisions",
+    deny: 'The person did not confirm starting this owner-only bead.',
+  },
+]
 
 /** Every run id a Bash command names with a run-acting verb (`mail`, `poke`, `retry`, `goto`,
  * `fork`, `abort`, `rm`, `decide`), not only the first. A compound command (`a && b`, `a; b`)

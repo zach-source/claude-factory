@@ -216,6 +216,89 @@ test('a long gated command marks the cut in the Allow question', SLOW, async ($,
   expect(ran).toBe(0)
 })
 
+test('the question names every gated kind and the kinds in the text it cuts', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  let asked = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    asked += 1
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  const fill = (head: string, tail: string, at: number) => `${head}${'a'.repeat(at - head.length)}${tail}`
+  const ask = async (command: string) => {
+    questions.length = 0
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny).toContain('did not confirm')
+    expect(questions.length).toBe(1)
+    return questions[0]!
+  }
+  const HIDDEN = 'The text not shown holds'
+  const DECIDE_K = 'decide a factory gate'
+  const START_K = 'start a bead carrying its owner'
+
+  // AC3: an owner-only start after the cut
+  const a = await ask(
+    fill(
+      "/repo/bin/factory decide r1 reject '",
+      "' && /repo/bin/factory start lifecycle acme w-2 --owned",
+      310,
+    ),
+  )
+  expect(a).toContain(DECIDE_K)
+  expect(a).toContain(START_K)
+  expect(a).toContain('characters not shown')
+  expect(a).toMatch(new RegExp(`${HIDDEN}[^.]*start a bead`))
+  expect(a).not.toMatch(new RegExp(`${HIDDEN}[^.]*decide a factory gate`))
+
+  // AC3b: 2 gate decisions after the cut
+  const b = await ask(
+    fill(
+      "/repo/bin/factory decide r1 reject '",
+      "' && factory decide r2 ship && factory decide r3 ship",
+      310,
+    ),
+  )
+  expect(b).toMatch(new RegExp(`${HIDDEN}[^.]*decide a factory gate \\(2 times\\)`))
+
+  // AC4: --owned crosses the cut, factory start is in the head
+  const c = await ask(fill("/repo/bin/factory start lifecycle acme w-1 --goal '", "' --owned", 296))
+  expect(c).toMatch(new RegExp(`${HIDDEN}[^.]*start a bead`))
+
+  // AC5: 3 kinds in one short command, and substitution plus decide
+  const d = await ask(
+    '/repo/bin/factory decide r1 ship x && /repo/bin/factory decisions answer acme w-1 y && /repo/bin/factory start lifecycle acme w-2 --owned',
+  )
+  expect(d).toContain(DECIDE_K)
+  expect(d).toContain("answer a person's bd decision")
+  expect(d).toContain(START_K)
+  expect(d).not.toContain(HIDDEN)
+  expect(d).not.toContain('times')
+  const e = await ask('/repo/bin/factory mail r1 plan "$x" && /repo/bin/factory decide r1 ship')
+  expect(e).toContain('shell substitution')
+  expect(e).toContain(DECIDE_K)
+
+  // AC6: one kind, no count, no hidden sentence; a long command with its only match in the head
+  const f = await ask('/repo/bin/factory decide r1 ship x')
+  expect(f).not.toContain('times')
+  expect(f).not.toContain(HIDDEN)
+  const g = await ask(fill('/repo/bin/factory decide r1 reject ', ' tail', 310))
+  expect(g).toContain('characters not shown')
+  expect(g).not.toContain(HIDDEN)
+
+  // no question for a plain or single-quoted command
+  const before = asked
+  await $.tool.call({ tool: 'Bash', command: '/repo/bin/factory status', description: 'x' })
+  await $.tool.call({ tool: 'Bash', command: "/repo/bin/factory mail r1 plan '$5'", description: 'x' })
+  expect(asked).toBe(before)
+})
+
 test('an even run of backslashes before a newline does not join the lines', SLOW, async ($, on) => {
   mock.clock(on)
   const questions: string[] = []
