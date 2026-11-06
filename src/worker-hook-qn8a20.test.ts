@@ -102,6 +102,8 @@ const AC4 = [
   'env -iC/h tee rigs.json',
   'env -vC/h tee rigs.json',
   'env -i0C/h tee rigs.json',
+  'env -iCsub tee rigs.json',
+  'tar -xCsub -f a.tar rigs.json',
   'tar -xC/h -f a.tar rigs.json',
   'cd / && cp /w/acme/.scratch/rigs.json h/',
   'cd / && cp /w/acme/.scratch/rigs.json h',
