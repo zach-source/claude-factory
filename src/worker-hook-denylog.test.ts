@@ -253,6 +253,13 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
     'git -c "http.extraHeader=Authorization: Bearer "zqsecret push',
     'git -c http\\.extraHeader=zqsecret push',
     'env \\GH_TOKEN=zqsecret ls',
+    'export X\\=zqsecret',
+    'x a\\=zqsecret',
+    'git -c http.extraHeader\\=zqsecret push',
+    "x 'a'\\=zqsecret",
+    'x a"="zqsecret',
+    "x a'='zqsecret",
+    'x a"=zqsecret"',
   ])('%s hides the value (quote or backslash in the word)', i => expect(m2(i)).not.toContain('zqsecret'))
   test.each(['ls -la /tmp', 'echo hello', 'f() { ls; }', 'git push origin HEAD:main', 'ls foo-bar'])(
     '%s is unchanged',
@@ -278,6 +285,10 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
       ' \\a'.repeat(5e4),
       ' "a"='.repeat(4e4),
       " 'a'=".repeat(4e4),
+      ' \\'.repeat(2e4),
+      '\\ '.repeat(2e4),
+      ' "\\'.repeat(1e4),
+      ' a\\'.repeat(1e4),
     ]) {
       const t = performance.now()
       mk(i)
