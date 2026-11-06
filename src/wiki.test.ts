@@ -512,7 +512,8 @@ const pem = (body: string) =>
   ['-----END RSA', 'PRIVATE KEY-----'].join(' ')
 const akia = 'AKIA' + 'Z'.repeat(16)
 const awsSecret = 'wJalrXUtnFEMI' + 'K7MDENGbPxRfiCY' + 'EXAMPLEKEY'
-const lead = (s: string) => writePrompt([{ beads: [{ ...wb('a', 1, u(1)), comments: [s] }], prs: [] }], [], [])
+const lead = (s: string) =>
+  writePrompt([{ beads: [{ ...wb('a', 1, u(1)), comments: [s] }], prs: [] }], [], [])
 
 test.each<[string, string, string]>([
   [
