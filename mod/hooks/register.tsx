@@ -1392,6 +1392,11 @@ function substitutionIn(command: string): number {
   return state === 'plain' ? -1 : open
 }
 
+/** Drops each backslash-newline pair that the shell reads as a line continuation: one preceded by an odd
+ * number of backslashes. With an even number, the last backslash escapes itself and the newline ends the
+ * command. (Inside single quotes the shell keeps the pair; dropping it there only shortens an argument.) */
+const joinLines = (s: string) => s.replace(/(?<!\\)((?:\\\\)*)\\\n/g, '$1')
+
 /** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
  * person sees that a longer command may hold a second command. */
 function shownCommand(command: string): string {
@@ -1410,7 +1415,7 @@ function shownCommand(command: string): string {
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
-  const command = rawCommand.replace(/\\\n/g, '')
+  const command = joinLines(rawCommand)
   const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
@@ -1620,7 +1625,7 @@ export const register: Register = (on, options) => {
     // [SECURITY] no subagent installs or rejects a skill or proposal: the manager or the person does.
     // This is best-effort text matching on the joined command; src/cli.ts refuses the same verbs when
     // FACTORY_PATROL is set, which the prefix below adds for every subagent.
-    const joined = e.command.replace(/\\\n/g, '')
+    const joined = joinLines(e.command)
     if (e.agentId && INSTALL_VERB.test(joined))
       return {
         deny: 'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
@@ -1646,7 +1651,7 @@ export const register: Register = (on, options) => {
     const gated = gatedCommand(e.command)
     // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
     // (a line continuation or a quoted newline must not hide a run-acting command from either)
-    const normalized = e.command.replace(/\\\n/g, '')
+    const normalized = joinLines(e.command)
 
     // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
     // gated command outright, for every subagent. The run-touched hold below, and the patrol-log

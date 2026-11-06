@@ -215,3 +215,40 @@ test('a long gated command marks the cut in the Allow question', SLOW, async ($,
   expect(/[\ud800-\udbff](?![\udc00-\udfff])/.test(q)).toBe(false)
   expect(ran).toBe(0)
 })
+
+test('an even run of backslashes before a newline does not join the lines', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+
+  // 2 backslashes: the shell reads one escaped backslash, then a real newline: 2 commands
+  const two = '/repo/bin/factory decide r1 ship \\\\\n/repo/bin/factory decide r2 reject'
+  const r = await $.tool.call({ tool: 'Bash', command: two, description: 'x' })
+  expect(r.deny).toContain('did not confirm')
+  expect(ran).toBe(0)
+  expect(questions.length).toBe(1)
+  expect(questions[0]).toContain('ship \\\\\n/repo')
+  expect(questions[0]).not.toContain('ship \\/repo')
+
+  // 3 backslashes: an escaped backslash, then a line continuation: the pair joins
+  questions.length = 0
+  const three = '/repo/bin/factory decide r1 ship "x\\\\\\\ny"'
+  await $.tool.call({ tool: 'Bash', command: three, description: 'x' })
+  expect(questions.length).toBe(1)
+  expect(questions[0]).toContain('x\\\\y')
+  expect(questions[0]).not.toContain('x\\\\\ny')
+
+  // 2 backslashes mid-word: the shell runs `/repo/bin/fac\` and `tory`, neither is factory
+  questions.length = 0
+  await $.tool.call({ tool: 'Bash', command: '/repo/bin/fac\\\\\ntory decide r1 ship', description: 'x' })
+  expect(questions.length).toBe(0)
+})
