@@ -286,6 +286,21 @@ test('start of a bead with ship_branch bases the run on origin/<ship_branch>; wi
   expect(readFileSync(join(dir, 'herdr.log'), 'utf8')).not.toContain('origin/factory/pr-1')
 })
 
+// claude-factory-pgn1: a bead with ship_branch whose origin branch is gone must not start from the default branch
+test('start of a bead whose ship_branch is not on origin fails, names the branch and defers the bead (claude-factory-pgn1)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'ship-branch')
+  const out = run(['start', factoryFixture(), r, 'acme-1'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('factory/pr-1')
+  expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
+  expect(existsSync(join(dir, 'herdr.log'))).toBe(false)
+  expect(readFileSync(calls, 'utf8')).toMatch(/defer acme-1 --reason could not start a run: .*factory\/pr-1/)
+})
+
 // claude-factory-vad1: goalOf writes a run's goal as '<id>: <title>'. A start with that text, copied from a
 // run or from `factory status`, must work the named bead, not file a copy titled with the whole text.
 test("an '<id>: <title>' goal naming a bead bd finds starts a run on that bead and creates nothing (claude-factory-vad1)", () => {
