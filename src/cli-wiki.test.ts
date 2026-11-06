@@ -1,7 +1,17 @@
 // `factory wiki init`, commitWiki and pushWiki end to end (claude-factory-tx6c.2). Every test spawns bin/factory
 // with a new temp FACTORY_HOME and a fake `gh` first on PATH, so nothing reaches the live home or GitHub.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -143,6 +153,25 @@ test('AC4 a page that fails the scan goes back to its last version', () => {
   expect(log).not.toContain('ghp_')
 })
 
+test('AC4 a type change is scanned, and a token with a bad kind logs the secret line', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  writeFileSync(join(wiki(), 'link.md'), page('topic', 'Link'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  writeFileSync(join(wiki(), 'real.txt'), `${TOKEN}\n`)
+  unlinkSync(join(wiki(), 'link.md'))
+  symlinkSync('real.txt', join(wiki(), 'link.md'))
+  writeFileSync(join(wiki(), 'both.md'), `${page('nope', 'B')}${TOKEN}\n`)
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(commits()).toBe(base)
+  expect(git('ls-files').split('\n')).not.toContain('both.md')
+  expect(git('ls-tree', 'HEAD', 'link.md')).toContain('100644')
+  const log = wikiLog()
+  expect(log).toContain('in link.md, page kept at last version')
+  expect(log).toContain('wiki: secret shape in both.md, page kept at last version')
+})
+
 test('AC4 a bad path is refused with no path text', () => {
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
@@ -183,6 +212,10 @@ test('AC10 usage', () => {
     expect([a, r.code]).toEqual([a, 2])
     expect(r.err).toContain(USAGE)
   }
+  const pt = factory(['wiki', 'init'], { FACTORY_PATROL: '1' })
+  expect(pt.code).not.toBe(0)
+  expect(pt.err).toContain('a patrol cannot run factory wiki')
+  expect(existsSync(wiki())).toBe(false)
   const w = factory(['wiki', 'init'], { FACTORY_OUTBOX: join(dir, 'out'), FACTORY_FROM: 'x/y' })
   expect(w.code).not.toBe(0)
   expect(existsSync(wiki())).toBe(false)
@@ -280,11 +313,16 @@ test('AC6 and AC7 pushWiki reads the visibility once in 24 h and pushes only a c
   expect(pushPass(env).exitCode).toBe(0)
   expect(ghCalls()).toBe(2)
   expect(state().other).toBe(1)
+  // a check dated in the future reads again
+  s.visibility.checkedAt = new Date(Date.now() + 3600_000).toISOString()
+  writeFileSync(join(home, 'wiki-state.json'), JSON.stringify(s))
+  expect(pushPass(env).exitCode).toBe(0)
+  expect(ghCalls()).toBe(3)
   // a cache for another remote reads again
   s.visibility.remote = 'github.com/acme/other'
   writeFileSync(join(home, 'wiki-state.json'), JSON.stringify(s))
   pushPass(env)
-  expect(ghCalls()).toBe(3)
+  expect(ghCalls()).toBe(4)
 })
 
 test('AC7 pushWiki refuses an origin outside the grammar, with no gh call and no push', () => {

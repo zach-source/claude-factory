@@ -4504,7 +4504,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
       .replace(/\p{Cc}/gu, ' ')
       .slice(0, 200)
   wikiGit(dir, ['add', '-A'])
-  const staged = wikiGit(dir, ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'])
+  const staged = wikiGit(dir, ['diff', '--cached', '--name-only', '-z', '--diff-filter=d'])
     .out.toString()
     .split('\0')
     .filter(Boolean)
@@ -4518,7 +4518,8 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
         blob.length > WIKI_PAGE_MAX
           ? ['page too large']
           : (scanPages([{ path, text: blob.toString() }])[0]?.reasons ?? [])
-      if (reasons.length) why = `wiki: ${reasons.join('; ')} in ${path}, page kept at last version`
+      if (reasons.includes('secret shape')) why = `wiki: secret shape in ${path}, page kept at last version`
+      else if (reasons.length) why = `wiki: ${reasons.join('; ')} in ${path}, page kept at last version`
     }
     if (!why) continue
     wikiLog(why)
@@ -4556,6 +4557,7 @@ function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh 
     !fresh &&
     c?.remote === remote &&
     WIKI_VISIBLE.includes(c.value ?? '') &&
+    Date.now() - Date.parse(c.checkedAt ?? '') >= 0 &&
     Date.now() - Date.parse(c.checkedAt ?? '') < WIKI_CACHE_MS
   )
     return c.value
@@ -11148,6 +11150,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'wiki': {
+        refuseWorker('wiki', true)
         const i = args.indexOf('--remote')
         const remoteArg = i < 0 ? undefined : args[i + 1]
         const rest = i < 0 ? args : args.filter((_, j) => j !== i && j !== i + 1)

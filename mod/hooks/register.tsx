@@ -1529,7 +1529,7 @@ const GATED_KINDS = [
     deny: 'The person did not confirm starting this owner-only bead.',
   },
   {
-    re: /\bfactory\s+wiki\s+init\b/g,
+    re: /\bfactory\s+wiki\b[\s\S]*?\binit\b/g,
     phrase: 'create the factory wiki and set its remote',
     deny: 'The person did not confirm this wiki init. Ask them to run it.',
   },

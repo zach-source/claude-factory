@@ -481,6 +481,7 @@ test('factory wiki init asks the person; other wiki and memory commands do not',
 
   for (const command of [
     '/repo/bin/factory wiki init --remote x',
+    '/repo/bin/factory wiki --remote x init',
     'FACTORY_WIKI_REMOTE=x /repo/bin/factory wiki init',
     '/repo/bin/factory \\\nwiki \\\ninit',
   ]) {
