@@ -11613,3 +11613,29 @@ test('denyReason allows 7 harmless alias words in one segment, fast, and still d
     SHELL_ALIAS_REASON,
   )
 }, 30_000)
+
+test('denyReason alias memo key holds every scan state field (claude-factory-qn8a.9.15)', () => {
+  const table = new Map<string, string | null>([
+    ['e', 'GIT_CONFIG_GLOBAL=/x make'],
+    ['ee', 'export GIT_CONFIG_GLOBAL=/x'],
+    ['ll', 'ls -l'],
+    ['m', 'make'],
+  ])
+  const gate = snapGate(() => table)
+  const rows = [
+    'e; git status; e',
+    'e; git push; e',
+    'e; e; git status; e',
+    'ee; git push origin HEAD; ee',
+    'ee; git checkout main; ee',
+    "e; sh -c 'git status'; e",
+    'e x; git status; e x',
+    'e ll m; git status; e ll m',
+    'll m e; git checkout main; ll m e',
+  ]
+  for (const row of rows)
+    for (const sep of ['; ', ' && ', '\n'])
+      expect(denyReason(row.replaceAll('; ', sep), '/acme/root', undefined, gate)).toBe(PUSH_REASON)
+  for (const ok of ['ll m; ls; ll m', 'll; ll'])
+    expect(denyReason(ok, '/acme/root', undefined, gate)).toBeUndefined()
+}, 30_000)
