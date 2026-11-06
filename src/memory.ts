@@ -329,7 +329,17 @@ const decodeId = (line: string): LongMeta | null => {
 }
 
 const longEntryText = (e: LongEntry) =>
-  [`## ${e.summary.replace(/\n/g, ' ')}`, `<!-- id: ${encodeId(e)} -->`, '', e.body.trim(), ''].join('\n')
+  [
+    `## ${e.summary.replace(/\n/g, ' ')}`,
+    `<!-- id: ${encodeId(e)} -->`,
+    '',
+    e.body
+      .trim()
+      .split('\n')
+      .map(l => (decodeId(l) ? ` ${l}` : l))
+      .join('\n'),
+    '',
+  ].join('\n')
 
 /** a topic's LONG.md, serialized: frontmatter `tier: long`, then one `## summary` + id comment per entry */
 export const formatLong = (entries: LongEntry[]) => [LONG_HEADER, ...entries.map(longEntryText)].join('\n')
@@ -339,6 +349,7 @@ export const formatLong = (entries: LongEntry[]) => [LONG_HEADER, ...entries.map
  * An entry starts only at a `## ` line right before its id comment.
  * A merged note's body can hold its own `## ` markdown heading.
  * That line alone must never start a new entry (claude-factory-59r.9).
+ * The writer adds a leading space to a body line that is an id comment. Thus a body never adds an entry (claude-factory-mrks).
  */
 export function parseLong(text: string): LongEntry[] {
   const body = text.startsWith(LONG_HEADER)
