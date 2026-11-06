@@ -269,6 +269,8 @@ describe('homeReason', () => {
     ['bash .scratch/"x.sh"', '.scratch/x.sh'],
     ['bash .scratch/\\x', '.scratch/x'],
     ['bash .scr\\\natch/x', '.scratch/x'],
+    ['bash ".scr\\\natch/x"', '.scratch/x'],
+    ['bash ".scratch/a\\"b"', '.scratch/a"b'],
     [T + '/.scratch/x', '/Users/pat/.scratch/x'],
     ['PATH=/a:/b/x+y foo', '/b/x+y'],
     ...[
