@@ -66,6 +66,10 @@ const DENY = [
   'gh pr ready https://github.com/acme/widget/pull/5/files --undo',
   'gh pr ready 5 --undo -d',
   'gh pr ready 5 --undo 2>&1',
+  'gh -R acme/widget pr ready --undo 5',
+  'gh pr 5 ready --undo',
+  'gh pr ready 5',
+  'gh pr ready',
 ]
 const ALLOW = [
   'gh pr ready 5 --undo',
