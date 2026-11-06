@@ -3775,6 +3775,10 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
   try {
     if (runnerOf(pane).name !== 'herdr' || !startedAt) return
     const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
+    // a codex pane keeps its rollouts in its own CODEX_HOME (codexWorker): store them as the AX path does
+    try {
+      rows.push(...codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
+    } catch {} // a bad codex file must not drop the Claude rows
     if (rows.length) appendUsage(run.id, rows)
   } catch {}
 }
