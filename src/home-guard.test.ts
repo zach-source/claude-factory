@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HOME_REASON, homeReason, protectedPath, rmSafe } from './home-guard'
+import { FACTORY_BIN, HOME_REASON, homeReason, protectedPath, rmQuiet, rmSafe } from './home-guard'
 import { denyReason } from './worker-hook'
 
 const H = ['/Users/pat']
@@ -150,7 +150,6 @@ describe('homeReason', () => {
     `grep "a\\$(./x.sh)" ${CLI}`,
     `grep "a\\\\" ${CLI}`,
     `grep x ${CLI} | awk '{print}'`,
-    `git add ${CLI} && git commit -m x`,
     `sed -i 1d ${CLI}`,
     `sed -n 1p ${CLI} -i`,
     `sed -n '1p;w out' ${CLI}`,
@@ -168,6 +167,79 @@ describe('homeReason', () => {
   ])('denies a compound or sed form outside the grammar: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
+
+  // a path word without a script extension, and a word before ':'
+  const ABS = '/abs/wt/.scratch/x'
+  test.each([
+    ABS,
+    `${ABS} --all`,
+    '.scratch/x',
+    'bash .scratch/x',
+    "'/wt/x' a",
+    '"/wt/x"',
+    'nohup /abs/x',
+    'cat a; .scratch/x',
+    `factory mutate ${CLI}:1 a b -- bun test`,
+    `bun test ${CLI}:12:3`,
+    'PATH=/a:/b/x.sh foo',
+    'bash x.sh>o',
+    'bash .scratch/x>o',
+    '.scratch/x>/dev/null',
+    'bash<.scratch/x',
+    'bash <.scratch/x',
+    'sh<x.sh',
+  ])('denies a path word that holds a home delete: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('reads the bare path, without the :line', () => {
+    const cases: [string, string][] = [
+      [ABS, ABS],
+      ['.scratch/x', '.scratch/x'],
+      ["'/wt/x' a", '/wt/x'],
+      [`bun test ${CLI}:12:3`, CLI],
+      ['PATH=/a:/b/x.sh foo', '/b/x.sh'],
+      ['bash .scratch/x', '.scratch/x'],
+      ['"/wt/x"', '/wt/x'],
+      ['nohup /abs/x', '/abs/x'],
+      ['cat a; .scratch/x', '.scratch/x'],
+      [`${ABS} --all`, ABS],
+      [`factory mutate ${CLI}:1 a b -- bun test`, CLI],
+      ['bash x.sh>o', 'x.sh'],
+      ['bash<.scratch/x', '.scratch/x'],
+    ]
+    for (const [cmd, path] of cases) {
+      const seen: string[] = []
+      homeReason(cmd, p => (seen.push(p), undefined), H)
+      expect(seen).toContain(path)
+    }
+  })
+
+  test.each([ABS, `bun test ${CLI}:1`])('allows a path word to a benign file: %s', cmd =>
+    expect(homeReason(cmd, () => 'echo ok', H)).toBeUndefined(),
+  )
+
+  test('a read-only command with a path or :line reads no file', () => {
+    let reads = 0
+    const count = () => (reads++, undefined)
+    homeReason(`git diff origin/main -- ${CLI}`, count, H)
+    homeReason(`grep -n x ${CLI}:1`, count, H)
+    expect(reads).toBe(0)
+  })
+
+  test.each(['curl https://example.com/a/b', 'git push origin main'])(
+    'a path word that does not read is no deny: %s',
+    cmd => expect(homeReason(cmd, () => undefined, H)).toBeUndefined(),
+  )
+
+  test('5000 path words return fast', () => {
+    const cmd = Array.from({ length: 5000 }, (_, i) => `.scratch/a${i}`).join(' ') + ' bash x'
+    let reads = 0
+    const t0 = performance.now()
+    homeReason(cmd, () => (reads++, undefined), H)
+    expect(performance.now() - t0).toBeLessThan(200)
+    expect(reads).toBeGreaterThanOrEqual(5000)
+  })
 
   test('a 100000-char reader pipeline returns fast', () => {
     const cmd = `grep -n "a\\|b" ${CLI} | `.repeat(5000) + 'head'
@@ -240,6 +312,139 @@ describe('homeReason', () => {
     expect(homeReason('bd create -d "issue #12 see x.sh"', bad, H)).toBeUndefined()
   })
 
+  // verbs that never run a file they name: allowed with no script read
+  const NON_RUNNER_OK = [
+    `git add ${CLI} ${WRK}`,
+    `git -C /abs/wt add -- ${CLI}`,
+    `git --no-pager add ${CLI}`,
+    `git add ${CLI} && git commit -m x`,
+    `git commit -q -F .scratch/msg.txt ${CLI}`,
+    `git commit -am "fix ${CLI}"`,
+    `git checkout -- ${CLI}`,
+    `git restore --staged ${CLI}`,
+    `git fetch -q origin main && git diff origin/main -- ${CLI}`,
+    `bunx prettier@3.9.9 --write ${CLI} ${WRK}`,
+    `bunx prettier --check ${CLI} 2>&1 | tail -7`,
+    `${FACTORY_BIN} report run-1 2 ready "see ${CLI} and ${WRK}"`,
+    `factory report run-1 2 ready --summary-file .scratch/s.md ${CLI}`,
+    `factory memory add --from r/plan --kind fact --rig acme "x" "see ${CLI}"`,
+    `factory mail run-1 manager 'see ${CLI}; $(no)'`,
+    `mkdir -p .scratch && git add ${CLI}`,
+    `cd /abs/wt; bunx prettier@3.9.9 -w ${CLI}`,
+    // one row per set member, so removing a member turns a row red
+    ...['-A', '--all', '-u', '--update', '-N', '--intent-to-add', '-v', '-f'].map(f => `git add ${f} ${CLI}`),
+    ...['-a', '-q', '--quiet', '--amend', '--no-edit', '-s', '-v'].map(f => `git commit ${f} ${CLI}`),
+    `git commit -m x ${CLI}`,
+    `git commit -F x.txt ${CLI}`,
+    `git commit -- ${CLI}`,
+    ...['-q', '-b', '-B'].map(f => `git checkout ${f} ${CLI}`),
+    ...['--staged', '--worktree', '-S', '-W', '-q'].map(f => `git restore ${f} ${CLI}`),
+    `git restore -- ${CLI}`,
+    ...['-q', '--quiet', '--prune', '-p', '--all', '--tags', '--no-tags'].map(f => `git fetch ${f} ${CLI}`),
+    ...['--write', '-w', '--check', '-c', '-l', '--list-different'].map(f => `bunx prettier ${f} ${CLI}`),
+    ...['report', 'mail', 'memory add', 'memory search', 'memory helped'].map(s => `factory ${s} x ${CLI}`),
+    ...['--summary-file', '--from', '--kind', '--rig', '--until', '--supersedes'].map(
+      f => `factory memory add ${f} x ${CLI}`,
+    ),
+    ...['-p', '-v'].map(f => `mkdir ${f} d ${CLI}`),
+  ]
+
+  test.each(NON_RUNNER_OK)('allows a non-runner command that names a script: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBeUndefined(),
+  )
+
+  const NON_RUNNER_DENY = [
+    `bun test ${CLI}`,
+    `bun run ${CLI}`,
+    `bunx tsx ${CLI}`,
+    `bunx prettier --plugin ./x.js ${CLI}`,
+    `bunx prettier --config x.js ${CLI}`,
+    `bunx --bun prettier ${CLI}`,
+    `npx prettier --write ${CLI}`,
+    `cp x.sh .git/hooks/pre-commit && git commit -m x`,
+    `cp ${CLI} y.ts`,
+    `git fetch --upload-pack=./x.sh origin`,
+    `git fetch --upload-pack ./x.sh origin`,
+    `git fetch 'ext::sh x.sh'`,
+    `git -c core.hooksPath=. commit -m x ${CLI}`,
+    `git commit --template x.sh`,
+    `git commit -m x ${CLI} && bash x.sh`,
+    `git add ${CLI} | bash`,
+    `git push origin x.sh`,
+    `git rebase --exec ./x.sh`,
+    `git checkout -p ${CLI}`,
+    `git add ''-x ${CLI}`,
+    `factory check factories/x.ts`,
+    `factory mutate ${CLI} 1 a b -- bun test`,
+    `./factory report r 1 ready "x.ts"`,
+    `/abs/bin/factory report r 1 ready x`,
+    `/abs/wt/.scratch/factory report r 1 ready x.sh`,
+    `.scratch/factory report r 1 ready x`,
+    `'/wt/factory' report r 1 ready x`,
+    `'${FACTORY_BIN}' report r 1 ready x`,
+    'factory report r 1 ready "`bash x.sh`"',
+    'factory report r 1 ready "$(bash x.sh)"',
+    `factory report r 1 ready --summary-file=x.sh`,
+    `factory memory compact x.ts`,
+    `mkdir -m 700 x.sh`,
+    `GIT_DIR=x git add ${CLI}`,
+    `git commit -m"'" --template=x.sh`,
+    `factory report r 1 ready --summary-file"'" --x=x.sh`,
+    `bunx prettier3 ${CLI}`,
+    `git toString -x ${CLI}`,
+    `git __proto__ ${CLI}`,
+    `git constructor ${CLI}`,
+  ]
+
+  test.each(NON_RUNNER_DENY)('denies a non-runner verb outside its closed grammar: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('a non-runner command reads no file; any other command that names a script reads one', () => {
+    let reads = 0
+    const count = () => {
+      reads++
+      return undefined
+    }
+    for (const cmd of NON_RUNNER_OK) homeReason(cmd, count, H)
+    expect(reads).toBe(0)
+    for (const cmd of NON_RUNNER_DENY.filter(c => /\.(ts|sh|js)\b|\.\//.test(c))) {
+      reads = 0
+      homeReason(cmd, count, H)
+      expect(reads).toBeGreaterThan(0)
+    }
+  })
+
+  test('the command text check runs before the non-runner check', () => {
+    // the delete word is built at run time
+    const del = 'r' + 'm -rf'
+    expect(homeReason(`factory report r 1 ready "${del} ~"`, undefined, H)).toBe(HOME_REASON)
+    expect(homeReason(`git commit -m "${del} $HOME"`, undefined, H)).toBe(HOME_REASON)
+  })
+
+  test('the worker hook allows git checkout of the guard source', () => {
+    const read = (p: string) => {
+      try {
+        return readFileSync(join(import.meta.dir, '..', p), 'utf8')
+      } catch {
+        return undefined
+      }
+    }
+    expect(
+      denyReason('git checkout -- src/home-guard.ts', join(import.meta.dir, '..'), undefined, {
+        readFile: read,
+      }),
+    ).toBeUndefined()
+  })
+
+  test('a prototype key as the git sub does not throw and does not hide a later push', () => {
+    const root = join(import.meta.dir, '..')
+    const got = denyReason('git toString -x; git push --force origin main', root, undefined, {
+      readFile: () => undefined,
+    })
+    expect(got).toBeDefined()
+  })
+
   test('the worker hook gives HOME_REASON first', () => {
     expect(denyReason('find ~ -delete', '/Users/pat/wt')).toBe(HOME_REASON)
   })
@@ -281,6 +486,20 @@ describe('rmSafe', () => {
     expect(() => rmSafe(dir, opts, () => void n++)).toThrow(/still exists after 3 tries/)
     expect(() => rmSafe(dir, opts, () => {})).toThrow(dir)
     expect(n).toBe(3)
+    expect(existsSync(dir)).toBe(true)
+    rmSync(dir, opts)
+  })
+
+  test('rmQuiet swallows a kept dir, so a finally block keeps the try error', () => {
+    const dir = mk()
+    const f = () => {
+      try {
+        throw new Error('try error')
+      } finally {
+        rmQuiet(dir, opts, () => {})
+      }
+    }
+    expect(f).toThrow('try error')
     expect(existsSync(dir)).toBe(true)
     rmSync(dir, opts)
   })

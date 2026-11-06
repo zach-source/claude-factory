@@ -854,10 +854,10 @@ memory/
 ```
 
 - Workers search before they start and save what a later worker would otherwise relearn:
-  `factory memory search [--rig r] <query>` (local embeddings, bge-small, no service; a note
+  `factory memory search [--rig r] '<query>'` (local embeddings, bge-small, no service; a note
   ranks by its own match and its topic's, a long or fact note ranks slightly above a short one
   on a near-tie, and another rig's notes never show) and
-  `factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--supersedes <note path>] <summary> [body]`.
+  `factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--supersedes <note path>] '<summary>' '[body...]'`.
   The manager searches it before answering a worker and saves the person's decisions that later
   runs should follow.
 - Each new note must have a kind, or `memory add` exits 2 with its usage text:
@@ -966,6 +966,24 @@ is unchanged: the ship run gets the label.
 
 The rework run triages first: a PR that is no longer wanted (already on the base, superseded, or
 rejected in review) gets a comment and the `close` label, and the next pass closes it.
+
+## Orphan draft pull requests
+
+A run that ends (aborted or done) can leave a draft PR on its `factory/<run>` branch. Every 10 minutes the
+orphan pass looks at each rig's open drafts like this. It skips a PR when a live run owns it, a live run holds its
+bead, the ship queue holds it, its branch is not `factory/<run>`, or it comes from a fork. The bead of the run
+then decides:
+
+- **Bead closed or deferred**: the factory closes the PR with a comment. The comment names the run and the bead state.
+- **Bead open, PR not mergeable**: the factory adds the `conflict` label.
+- **Bead open, checks red or a review asks for changes**: the factory adds the `rework` label.
+- **Bead open, PR green and mergeable**: the factory forks the run at `review`, one time for each head commit.
+
+The [label pass](#pull-request-labels) then acts on the new label. A PR that has the label already is not labeled
+again, and a label is set one time for each head commit (`orphan-forks.json` holds the record). A PR whose
+review fork aborted counts as an orphan again. If it is green and mergeable, it gets no second fork.
+A pass makes at most 2 forks and, in a separate count, at most 2 closes or labels for each rig.
+A fork also needs room in the rig. A run with no bead only gets the review fork.
 
 ## Beads: planning and execution
 
@@ -1202,7 +1220,7 @@ rows = [
   there is work for it to do.
 - **Held mail**: a station marked `holdMail: true` (ship's `release`, `deploy` and `rollback`, and lifecycle's `triage`)
   that is parked on a pull or merge request starts no worker for plain mail. The mail waits in its
-  box. A change to the pull request, a mail sent with `factory mail <run> <box> --wake <text...>`,
+  box. A change to the pull request, a mail sent with `factory mail <run> <box> --wake '<text...>'`,
   or the park's 8-hour timer starts a worker, which then reads the held mail. The console's
   answers send `--wake`. Plain `factory mail` to a held station prints a `held for` line. A
   station parked with no linked pull request wakes on any mail, as before. The watch also wakes a

@@ -50,7 +50,8 @@ this table. Each phrase must appear in `lifecycle.rules`.
 - A new station-specific rule in `ship.ts` and `release.ts`: `ship.ts` must
   not import `lifecycle.ts`. The tests pin the `rules` text of `ship.ts` and
   `sweeps.ts` equal to the text of `lifecycle.ts`, so both hold a copy of this
-  bullet. `release.ts` has its own rules. Bead claude-factory-7qzc tracks it.
+  bullet. `release.ts` has its own rules.
+  It holds a copy of this bullet, and `ship.test.ts` pins the copy equal.
 
 ## Consequences
 

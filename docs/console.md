@@ -72,6 +72,8 @@ different station, or to read a run's recent history.
 
 ## Backlog (key 2)
 
+![The console's backlog tab](images/console-backlog.png)
+
 The Backlog tab lists each rig's beads. Its data comes from `factory backlog`: each rig's
 beads labeled `factory`, plus its unlabeled beads that are ready to start, and beads held back
 by an open bead (marked `⛔` with the blocker's id). Per rig that is three `bd` listings
@@ -103,6 +105,8 @@ Use Backlog to see what work is ready in each rig, and to queue or start a bead.
 
 ## Mail (key 3)
 
+![The console's mail tab](images/console-mail.png)
+
 The Mail tab lists messages between the manager and the workers. Its data comes from
 `board.mail`, the last 50 messages.
 
@@ -125,6 +129,8 @@ Use Mail to answer a worker's question without opening its run, and to see what 
 already answered.
 
 ## Rigs (key 4)
+
+![The console's rigs tab](images/console-rigs.png)
 
 The Rigs tab lists every rig. Its data comes from `board.rigs` (the factory's `rigs.json`)
 and the current runs.
@@ -162,6 +168,8 @@ Use Rigs to see how full each rig is and whether any of its runs need you.
 
 ## PRs (key 5)
 
+![The console's PRs tab](images/console-prs.png)
+
 The PRs tab lists pull requests. Its data comes from `factory prs`, the per-run PR record,
 refreshed at most once every 60 seconds. Until the first answer arrives, the tab shows
 "Asking GitHub…".
@@ -184,6 +192,8 @@ Use PRs to see every pull request a rig's runs have touched, and to jump to a ru
 needs a look.
 
 ## Interview (key 6)
+
+![The console's interview tab](images/console-interview.png)
 
 The Interview tab lists questions that only you can answer. Its data comes from runs that
 are at a gate, parked, stuck, or waiting on a pane prompt. It also comes from `factory decisions`:

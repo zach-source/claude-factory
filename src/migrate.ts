@@ -3,7 +3,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { MANAGER_CWD } from './ax'
 import { httpsRemote } from './axrepos'
-import { rmSafe } from './home-guard'
+import { rmQuiet } from './home-guard'
 import { where } from './machine'
 
 /**
@@ -232,6 +232,6 @@ export function pack(home: string, p: Plan, out: string) {
     if (r.exitCode !== 0) throw new Error(`tar: ${r.stderr.toString().trim().split('\n').at(-1)}`)
     return statSync(out).size
   } finally {
-    rmSafe(tmp, { recursive: true, force: true })
+    rmQuiet(tmp, { recursive: true, force: true })
   }
 }

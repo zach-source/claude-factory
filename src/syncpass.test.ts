@@ -29,6 +29,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
       FACTORY_HERDR: join(bin, 'herdr'),
       CLAUDE_CONFIG_DIR: claudeConfig,
       FACTORY_SELF_UPDATE: '0',
+      FACTORY_NO_KICK: '1',
       ...env,
     },
   })

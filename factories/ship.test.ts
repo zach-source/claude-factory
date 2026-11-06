@@ -4,6 +4,7 @@ import { compile, fill, validate, where, type Factory } from '../src/machine'
 import sweeps from './sweeps'
 import lifecycle from './lifecycle'
 import ship from './ship'
+import release from './release'
 import { brief } from '../src/cli'
 import { actorOf } from '../src/beads'
 
@@ -258,6 +259,61 @@ test('queue does not send a PR back when its red tests are held assertions', () 
   expect(Object.keys(ship.nodes.queue.next)).toEqual(['ready', 'again', 'empty'])
 })
 
+test('queue step 2 and postmortem check for a hold before they add factory (claude-factory-5nh2)', () => {
+  const two = ship.nodes.queue.prompt.split('\n2. ')[1]!
+  const pm = ship.nodes.postmortem.prompt
+  const extract = (p: string) => {
+    const start = p.indexOf('Hold check:')
+    expect(start).toBeGreaterThan(-1)
+    const endMark = '(lifecycle on most rigs).'
+    const end = p.indexOf(endMark, start)
+    expect(end).toBeGreaterThan(start)
+    return p.slice(start, end + endMark.length)
+  }
+  const check = extract(two)
+  const pmCheck = extract(pm)
+  expect(pmCheck).toBe(check.replaceAll('<station>', 'plan'))
+  for (const t of [
+    'bd show <bead> --json',
+    'rejected, human or owner,',
+    'when a label starts with held:',
+    'the key owner_decisions (any value)',
+    'when the read fails,',
+    'If the read fails, treat the bead as held.',
+    'If the bead is held, do not add or remove a label.',
+    'If no comment names the same hold reason, or the read fails, write the evidence in a bead comment.',
+    'Read only the labels and metadata of its first element, the bead itself.',
+    'Ignore the labels and metadata of the dependencies and dependents',
+    'in your report, so that a person queues it.',
+    'The steps are `bd update <bead> --remove-label ship`, then `factory queue <rig> <bead> <station>`.',
+    'factory start <factory>@<station> <rig> <bead> --owned',
+    'because dispatch skips an owner_decisions bead',
+  ])
+    expect(check).toContain(t)
+  expect(two).toContain('<station> is review when the pull request needs review')
+  expect(pmCheck).toContain('`factory queue <rig> <bead> plan`')
+  expect(pmCheck).toContain('factory start <factory>@plan <rig> <bead> --owned')
+  expect(pm).toContain('bd update <bead> --remove-label ship --add-label factory --add-label station:plan')
+  for (const p of [two, pm]) {
+    expect(p).not.toContain('`factory queue <rig> <bead>`')
+    expect(p).not.toContain('--station')
+  }
+  for (const [p, own] of [
+    [two, check],
+    [pm, pmCheck],
+  ] as const)
+    expect(p.indexOf(own)).toBeLessThan(p.indexOf('--add-label factory'))
+  expect(pm).toContain('If the bead is not held, send the released bead back')
+  for (const [name, node] of Object.entries(ship.nodes)) {
+    const prompt = (node as { prompt: string }).prompt
+    for (const m of prompt.matchAll(/bd update <bead>[^`]*--add-label factory/g)) {
+      const at = prompt.indexOf('Hold check:')
+      expect(at, `${name} adds factory without the hold check`).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(m.index!)
+    }
+  }
+})
+
 test('a run ships 30 PRs in a row without a stuck step budget', () => {
   const round = ['ready', 'ready', 'published']
   const outcomes = [...Array(30).keys()].flatMap(() => round)
@@ -433,15 +489,20 @@ test('deploy and soak carry the same live-object finding rule: search, comment, 
   expect(want.length).toBeGreaterThan(300)
   expect(liveText(prompt('deploy'))).toBe(want)
   for (const t of [
-    'bd search "<object name>" --status open',
-    'bd search "<symptom>" --status open',
+    "bd search '<object name>' --status open",
+    "bd search '<symptom>' --status open",
     'bd comment <id>',
     'bd update <id> -p <n>',
     'never above P1',
     'Never lower a priority',
     'any bead with the ship label',
     'The comment and escalation steps do not apply to',
-    'has a held:* label, a rejected label or an owner label, add no label',
+    'run `bd show <id> --json`. The output is an array.',
+    'If the read fails, if that bead has a held:* label, a rejected label, a human label or an owner label, or if its metadata has the key owner_decisions (any value), add no label',
+    'Read only the labels and metadata of its first element, the bead itself.',
+    'Ignore the labels and metadata of the dependencies and dependents that it embeds.',
+    'so a person runs `factory queue <rig> <id>`.',
+    'the step is `factory start <factory> <rig> <id> --owned` instead, because dispatch skips an owner_decisions bead.',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
   ])
     expect(want).toContain(t)
@@ -477,8 +538,8 @@ test('deploy and soak share a live-object dedupe core with no escalation (sjwe.2
   expect(want.length).toBeGreaterThan(300)
   expect(coreText(prompt('deploy'))).toBe(want)
   for (const t of [
-    'bd search "<object name>" --status open',
-    'bd search "<symptom>" --status open',
+    "bd search '<object name>' --status open",
+    "bd search '<symptom>' --status open",
     'with no --status',
     'bd comment <id>',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
@@ -580,8 +641,8 @@ test('deploy, soak, monitor and incident carry one live-object dedupe core (sjwe
   expect(coreOf(nodePrompt(sweeps, 'monitor'))).toBe(want)
   expect(coreOf(nodePrompt(lifecycle, 'incident'))).toBe(want)
   for (const t of [
-    'bd search "<object name>" --status open',
-    'bd search "<symptom>" --status open',
+    "bd search '<object name>' --status open",
+    "bd search '<symptom>' --status open",
     'with no --status',
     'bd comment <id>',
     '<context>/<namespace>/<kind>/<name>: <symptom>',
@@ -642,7 +703,7 @@ test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
       'ACn: not checked (',
       'ACs: none in plan',
       'ACn: waived (',
-      '--deps discovered-from:<bead> -d "<evidence>"',
+      "--deps discovered-from:<bead> -d '<evidence>'",
       'bd children <bead>',
       'no factory label',
       'When you report published (deploy) or healthy (soak), never leave the bead open with the ship label',
@@ -662,4 +723,112 @@ test('deploy and soak carry the AC ledger, and only they do (7s88)', () => {
     )
   }
   for (const id of ['queue', 'release', 'rollback', 'postmortem']) expect(prompt(id), id).not.toContain(met)
+})
+
+test('release.rules holds the runner-loss bullet of lifecycle.rules once', () => {
+  const line = lifecycle.rules!.split('\n').find(l => l.startsWith('- Runner loss in CI:'))
+  expect(line).toBeDefined()
+  expect(release.rules!.split('\n').filter(l => l === line).length).toBe(1)
+})
+
+const soakSentence = (needle: string) => {
+  const p = prompt('soak')
+  const i = p.indexOf(needle)
+  expect(i, needle).toBeGreaterThan(-1)
+  const start = p.lastIndexOf('. ', i) + 2
+  return p.slice(start, p.indexOf('. ', i) + 1)
+}
+
+test('3w8o AC1 soak has a deadline rule for unseen own output', () => {
+  const dl = soakSentence('fourth such soak')
+  for (const t of ['24 hours after deploy', 'whichever comes first']) expect(dl, t).toContain(t)
+  const cnt = soakSentence('Soak deadline: count')
+  for (const t of [
+    'did not see the output',
+    '(unsure and blocked reports in the journal)',
+    "read the deploy time from deploy's report",
+  ])
+    expect(cnt, t).toContain(t)
+  const ok = soakSentence('At the deadline, if the rollout')
+  for (const t of [
+    'rollout is complete (ready, no restarts)',
+    'logs are clean',
+    'nothing regressed',
+    'file one follow-up bead and report healthy',
+  ])
+    expect(ok, t).toContain(t)
+  expect(prompt('soak')).not.toMatch(
+    /(^|\. )[Aa]fter two unsure soaks in a row with the output still unseen, report blocked/,
+  )
+})
+
+test('3w8o AC1b past the deadline an unclean rollout reports blocked with a Question', () => {
+  const s = soakSentence('If the deadline has passed')
+  for (const t of ['not complete or the logs are not clean', 'report blocked', 'its trigger', '`Question:`'])
+    expect(s, t).toContain(t)
+})
+
+test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => {
+  const p = prompt('soak')
+  for (const t of [
+    'bd list -l verify:live --status open',
+    '-l verify:live --deps discovered-from:<bead>',
+    'the output to see, its trigger, the release version',
+    'ACn: not checked (not fired yet: filed <id>)',
+  ])
+    expect(p, t).toContain(t)
+  expect(soakSentence('First run'), 'reuse').toContain('use an open bead that names this release')
+  expect(soakSentence('Write `ACn'), 'id').toContain('and name the id in the close reason')
+  const s = soakSentence('-l verify:live --deps')
+  expect(s).toContain('no factory label')
+  expect(s).not.toContain('--add-label factory')
+  expect(s).not.toContain('-l factory')
+  expect(p.indexOf("bd create 'verify live")).toBeLessThan(p.indexOf('bd close <bead>'))
+  expect(s).toContain("bd create 'verify live: <output> (<release version>)'")
+  expect(s).toContain("-d '<the output to see, its trigger, the release version>'")
+  expect(s).not.toContain('"')
+  expect(soakSentence('Put each value in single quotes')).toContain("write each ' in it as '\\''")
+})
+
+test('3w8o AC3 must-see-live changes keep the block', () => {
+  const p = prompt('soak')
+  const cls = soakSentence('Must-see-live:')
+  for (const t of [
+    'the bead or the plan is security-sensitive',
+    'data or schema migration',
+    'plan marks an AC must-see-live',
+    'a bead comment starts `review#<n> security:`, `check#<n> security:` or `security#<n>`',
+  ])
+    expect(cls, t).toContain(t)
+  expect(soakSentence('If you cannot tell')).toBe('If you cannot tell, the change is must-see-live.')
+  const s = soakSentence('the deadline never applies')
+  for (const t of ['report blocked', '`Question:`', 'two unsure soaks in a row']) expect(s, t).toContain(t)
+  expect(p).toContain('at most twice in a row for a must-see-live change')
+})
+
+test('3w8o AC3b any other change reports unsure until the deadline, not blocked', () => {
+  const fired = soakSentence('If the change has not fired yet')
+  expect(fired).toContain('report unsure')
+  expect(fired).not.toContain('report healthy')
+  const s = soakSentence('For any other change, report')
+  expect(s).toContain('report unsure until the deadline')
+  expect(s).not.toContain('report blocked')
+  expect(prompt('soak')).toContain('for any other change, until the soak deadline)')
+})
+
+test('3w8o AC4 only soak carries the deadline rule', () => {
+  for (const id of ['deploy', 'queue', 'release', 'rollback', 'postmortem']) {
+    expect(prompt(id), id).not.toContain('verify:live')
+    expect(prompt(id), id).not.toContain('Soak deadline')
+  }
+  for (const [id, node] of Object.entries(lifecycle.nodes))
+    expect((node as { prompt?: string }).prompt ?? '', id).not.toContain('verify:live')
+  for (const [id, node] of Object.entries(release.nodes))
+    expect((node as { prompt?: string }).prompt ?? '', id).not.toContain('verify:live')
+})
+
+test('3w8o AC5 four unsure soaks then healthy need no machine change', () => {
+  // green on origin/main too: pins that the prompt rule needs no machine change
+  const { visited } = walk(ship, ['ready', 'ready', 'deployed', 'unsure', 'unsure', 'unsure', 'healthy'])
+  expect(visited.slice(3)).toEqual(['soak', 'soak', 'soak', 'soak', 'queue'])
 })

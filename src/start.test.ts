@@ -35,6 +35,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
     env: {
       ...laptop,
       FACTORY_HOME: home,
+      FACTORY_NO_KICK: '1',
       PATH: `${bin}:${laptop.PATH}`,
       FACTORY_HERDR: join(bin, 'herdr'),
       // no project is ever trusted here, so the first tick stops at "awaiting trust" instead of
@@ -68,6 +69,7 @@ function fakeBd(prefix: string) {
     '  show)',
     `    m=$(cat ${showMode} 2>/dev/null || echo found)`,
     '    case "$m" in',
+    `      by-id) f=${dir}/show-$2; [ -e "$f.timeout" ] && { echo "dial tcp 127.0.0.1:3308: i/o timeout" >&2; exit 1; }; if [ -e "$f" ]; then cat "$f"; else echo "Issue $2 not found" >&2; printf '%s' '{"error":"no issues found matching the provided IDs"}'; exit 1; fi;;`,
     '      found) printf \'%s\' \'[{"id":"acme-1","title":"t"}]\';;',
     '      owned) printf \'%s\' \'[{"id":"acme-1","title":"t","metadata":{"owner_decisions":{}}}]\';;',
     '      handed-off) printf \'%s\' \'[{"id":"acme-1","title":"t","labels":["owner"],"metadata":{"owner_question":"q","owner_since":"2026-11-01"}}]\';;',
@@ -110,8 +112,8 @@ function fakeHerdr() {
   chmodSync(join(bin, 'herdr'), 0o755)
 }
 
-function repo() {
-  const r = join(dir, 'repo')
+function repo(name = 'repo') {
+  const r = join(dir, name)
   mkdirSync(join(r, '.beads'), { recursive: true })
   Bun.spawnSync(['git', '-C', r, 'init', '-q'])
   Bun.spawnSync([
@@ -344,6 +346,27 @@ test('fork <run> constructor (an Object.prototype key) prints the usage line (cl
   expect(out.err).toContain('usage: factory fork')
 })
 
+test('help prints free-text placeholders in quotes (claude-factory-nt33)', () => {
+  reset()
+  const h = run(['help'])
+  const text = h.out + h.err
+  for (const p of [
+    "say '<text...>'",
+    "poke <run> '[text...]'",
+    "fork <run> <station> '[note...]'",
+    "memory search [--rig r] '<query...>'",
+    '(--title <t> | --title-file <path>) (--description <d> | --description-file <path>)',
+    "<rig|repo> '<goal...>'|bead",
+    "'<summary...>'|--summary-file",
+    "--goal '<text...>'",
+    "'<summary>' '[body...]'",
+  ])
+    expect(text).toContain(p)
+  expect(text).not.toMatch(
+    / <text\.\.\.>| \[text\.\.\.\]| \[note\.\.\.\]| <query\.\.\.>| <goal\.\.\.[>|]| <summary> \[body| <summary\.\.\.\||\[--goal text/,
+  )
+})
+
 // claude-factory-ytz.1: a FAIL event can exhaust a run's retries. The run then goes 'stuck'. A
 // person must run `factory retry` to free it. A stuck run must not fill FACTORY_MAX_RUNS, the
 // town cap. The person already holds the run, the same way as a wait or a gate. The control
@@ -391,7 +414,7 @@ test('`factory help` names the committed default FACTORY_MAX_RUNS as 16 (claude-
   reset()
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_MAX_RUNS, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'help'], {
-    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1' },
   })
   expect(p.stdout.toString()).toContain('FACTORY_MAX_RUNS (16)')
 })
@@ -420,7 +443,140 @@ test('fork of a live run is refused and makes nothing; after abort it works', ()
   const ids = readdirSync(join(home, 'runs'))
   expect(ids).toHaveLength(2)
   const child = ids.find(x => x !== id)!
-  expect(JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8')).forkedFrom).toBe(id)
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(id)
+  expect(childRun).not.toHaveProperty('ship')
+})
+
+test('fork of a ship run keeps run.ship (claude-factory-0qh0)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  expect(run(['start', factoryFixture(), r, 'a goal']).code).toBe(0)
+  const id = readdirSync(join(home, 'runs'))[0]!
+  const file = join(home, 'runs', id, 'run.json')
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ship: true }))
+  expect(run(['abort', id]).code).toBe(0)
+  const forked = run(['fork', id, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+  const child = readdirSync(join(home, 'runs')).find(x => x !== id)!
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(id)
+  expect(childRun.ship).toBe(true)
+})
+
+// claude-factory-9wch: a fork of an ended ship run must not put a second ship run on the rig.
+const startRun = (r: string, ship: boolean) => {
+  const seen = new Set(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : [])
+  expect(run(['start', factoryFixture(), r, 'a goal']).code).toBe(0)
+  const id = readdirSync(join(home, 'runs')).find(x => !seen.has(x))!
+  if (ship) {
+    const file = join(home, 'runs', id, 'run.json')
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ship: true }))
+  }
+  return id
+}
+const endRun = (id: string) => {
+  expect(run(['abort', id]).code).toBe(0)
+  expect(run(['tick']).code).toBe(0)
+}
+const setupForkRig = (aShip: boolean, bShip: boolean, bOtherRepo = false) => {
+  reset()
+  const r = repo()
+  const r2 = bOtherRepo ? repo('repo2') : r
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, aShip)
+  const b = startRun(r2, bShip)
+  endRun(a)
+  return { a, b }
+}
+
+test('fork of an ended ship run is refused while another ship run is live on the rig (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const before = readFileSync(calls, 'utf8')
+  const refused = run(['fork', a, 'work', 'again'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(b)
+  expect(refused.err).toContain(`factory abort ${b}`)
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(2)
+  expect(readFileSync(calls, 'utf8').slice(before.length)).not.toMatch(/^create|--claim/m)
+
+  endRun(b)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+  const child = readdirSync(join(home, 'runs')).find(x => x !== a && x !== b)!
+  const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
+  expect(childRun.forkedFrom).toBe(a)
+  expect(childRun.ship).toBe(true)
+})
+
+test('fork of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(false, true)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
+test('fork of an ended ship run is allowed beside a live ship run on another repo (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(true, true, true)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
+test('fork of a ship run with a queued abort is allowed when no other ship run is live (claude-factory-9wch)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, true)
+  expect(run(['abort', a]).code).toBe(0)
+  const forked = run(['fork', a, 'work', 'again'])
+  expect(forked.err).toBe('')
+  expect(forked.code).toBe(0)
+})
+
+test('goto of an ended ship run is refused while another ship run is live on the rig (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const refused = run(['goto', a, 'work'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(b)
+  expect(refused.err).toContain(`factory abort ${b}`)
+
+  endRun(b)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {
+  const { a } = setupForkRig(false, true)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of a live ship run is allowed beside another live ship run (claude-factory-9wch)', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const a = startRun(r, true)
+  const b = startRun(r, true)
+  const ok = run(['goto', a, 'work'])
+  expect(ok.err).not.toContain(b)
+  expect(ok.err).toBe('')
+  expect(ok.code).toBe(0)
+})
+
+test('goto of an ended ship run to done is not refused for a live ship run (claude-factory-9wch)', () => {
+  const { a, b } = setupForkRig(true, true)
+  const res = run(['goto', a, 'done'])
+  expect(res.err).not.toContain(b)
 })
 
 const CLEAR =
@@ -501,3 +657,80 @@ test('a bead that keeps only the owner label, only owner_question or only owner_
     expect(t.updates.filter(l => l.startsWith(CLEAR)).length).toBe(1)
   }
 })
+
+// claude-factory-7a7e: a patrol (FACTORY_PATROL) cannot start a bead from another rig, or a child of one,
+// until a person adds the factory label
+const PATROL_MSG = 'a patrol cannot start it: a person queues it'
+const showById = (rows: Record<string, unknown>, timeouts: string[] = []) => {
+  writeFileSync(showMode, 'by-id')
+  for (const [id, row] of Object.entries(rows))
+    writeFileSync(join(dir, `show-${id}`), JSON.stringify([{ id, title: 't', ...(row as object) }]))
+  for (const id of timeouts) writeFileSync(join(dir, `show-${id}.timeout`), '')
+}
+const patrolStart = (goal: string, env: Record<string, string> = { FACTORY_PATROL: '1' }) => {
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  return run(['start', factoryFixture(), r, goal], env)
+}
+const runCount = () => (existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0)
+const expectRefused = (out: { code: number | null; err: string }) => {
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain(PATROL_MSG)
+  expect(readFileSync(calls, 'utf8')).not.toContain('update')
+  expect(runCount()).toBe(0)
+}
+const fromElsewhere = { metadata: { discovered_from: 'other-9' } }
+
+test('a patrol cannot start a bead with discovered_from and no factory label (7a7e AC1)', () => {
+  reset()
+  showById({ 'acme-1': fromElsewhere })
+  expectRefused(patrolStart('acme-1'))
+})
+
+test('a patrol cannot start a child, or a grandchild, of a bead with discovered_from (7a7e AC2)', () => {
+  reset()
+  showById({ 'acme-1': fromElsewhere, 'acme-1.1': { parent: 'acme-1' } })
+  expectRefused(patrolStart('acme-1.1'))
+  reset()
+  showById({
+    'acme-1': fromElsewhere,
+    'acme-1.1': { parent: 'acme-1' },
+    'acme-1.1.1': { parent: 'acme-1.1' },
+  })
+  expectRefused(patrolStart('acme-1.1.1'))
+})
+
+test('a patrol start fails closed on an unreadable parent or a junk discovered_from (7a7e AC3)', () => {
+  reset()
+  showById({ 'acme-1.1': { parent: 'acme-1' } }, ['acme-1'])
+  expectRefused(patrolStart('acme-1.1'))
+  reset()
+  showById({ 'acme-1': { metadata: { discovered_from: 'a b' } } })
+  expectRefused(patrolStart('acme-1'))
+})
+
+test('a start that the guard allows still starts one run (7a7e AC4)', () => {
+  const ok = (rows: Record<string, unknown>, goal: string, env?: Record<string, string>) => {
+    reset()
+    showById(rows)
+    expect(patrolStart(goal, env).code).toBe(0)
+    expect(runCount()).toBe(1)
+  }
+  ok({ 'acme-1': fromElsewhere }, 'acme-1', {}) // a person
+  ok({ 'acme-1': { ...fromElsewhere, labels: ['factory'] } }, 'acme-1')
+  ok({ 'acme-1': { ...fromElsewhere, labels: ['factory'] }, 'acme-1.1': { parent: 'acme-1' } }, 'acme-1.1')
+  ok({ 'acme-1': { labels: ['found'] } }, 'acme-1')
+})
+
+test('a patrol cannot start a bead with a hold label; a person can (9kou.4)', () => {
+  for (const hold of ['human', 'rejected', 'held:station']) {
+    reset()
+    showById({ 'acme-1': { labels: ['factory', hold] } })
+    expectRefused(patrolStart('acme-1'))
+    reset()
+    showById({ 'acme-1': { labels: ['factory', hold] } })
+    expect(patrolStart('acme-1', {}).code).toBe(0)
+    expect(runCount()).toBe(1)
+  }
+}, 30000)

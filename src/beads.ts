@@ -39,6 +39,8 @@ export type Bead = {
 export const LABEL = 'factory'
 /** a bead a station rejected: open, out of the queue until a person queues it again */
 export const REJECTED = 'rejected'
+/** A hold label: dispatch starts no bead that carries one; only `factory queue` removes it (claude-factory-9kou). */
+export const isHoldLabel = (l: string) => l === REJECTED || l === 'human' || l.startsWith('held:')
 /** a bead handed off to the rig's ship run: open, no `factory` label, so dispatch skips it */
 export const SHIP = 'ship'
 /** a bead a blocked run handed to its owner: open, no `factory` label, until `queue` puts it back */
@@ -435,6 +437,8 @@ export const beads = (repo: string, actor: string) => ({
         '--remove-label',
         REJECTED,
         '--remove-label',
+        'human',
+        '--remove-label',
         STALE_LABEL,
         '--remove-label',
         OWNER,
@@ -709,6 +713,21 @@ export const beads = (repo: string, actor: string) => ({
     bd(repo, actor, 'reopen', id, '--reason', reason).isOk &&
     bd(repo, actor, 'update', id, '--add-label', SHIP).isOk &&
     bd(repo, actor, 'comment', id, reason).isOk,
+  /** sends a queued ship bead back to implement (the queue prompt's step 2). The update goes first: it takes
+   * the bead out of the queue, so a failed comment does not repeat every pass. */
+  rework: (id: string, reason: string) =>
+    bd(
+      repo,
+      actor,
+      'update',
+      id,
+      '--remove-label',
+      SHIP,
+      '--add-label',
+      LABEL,
+      '--add-label',
+      'station:implement',
+    ).isOk && bd(repo, actor, 'comment', id, reason).isOk,
   /** takes back a claim another actor abandoned: repairs calls it only for a run that is not live,
    * with an expired lease */
   releaseStale: (id: string, reason: string) =>

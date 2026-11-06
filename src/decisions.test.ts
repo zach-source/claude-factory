@@ -475,3 +475,131 @@ test('decisions answer deletes the bd: and own: keys of that bead only, and keep
   expect(factory(['decisions', 'answer', 'api', 'api-1', 'go']).code).not.toBe(0)
   expect(readFileSync(decisionsFile(), 'utf8')).toBe(before)
 })
+
+// claude-factory-2z48: decisions propose reads untrusted text from files inside <FACTORY_HOME>/text/
+test('decisions propose --question-file stores the text as written and refuses a bad form with decisions.json unchanged', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
+  const txt = (name: string, body: string) => {
+    const p = join(home, 'text', name)
+    mkdirSync(join(home, 'text'), { recursive: true })
+    writeFileSync(p, body)
+    return p
+  }
+  const q = txt('q.txt', "Why $(id) and ' ?\n")
+  const o = txt('o.txt', 'pg: fast (recommended) | mysql: slow\n')
+  const c = txt('c.txt', "ctx $(id) '")
+  const ok = factory([
+    'decisions',
+    'propose',
+    'bd:api:api-1',
+    '--question-file',
+    q,
+    '--options-file',
+    o,
+    '--context-file',
+    c,
+  ])
+  expect(ok.code).toBe(0)
+  const out = JSON.parse(factory(['decisions']).out)
+  expect(out.proposals['bd:api:api-1']).toMatchObject({
+    question: "Why $(id) and ' ?",
+    options: ['pg: fast (recommended)', 'mysql: slow'],
+    context: "ctx $(id) '",
+  })
+  expect(factory(['decisions', 'propose', 'own:api-2', '--question-file', q]).code).toBe(0)
+  // an own: key never reads --options-file, so a path outside text/ does not matter
+  expect(
+    factory(['decisions', 'propose', 'own:api-3', '--question-file', q, '--options-file', '/nonexistent'])
+      .code,
+  ).toBe(0)
+
+  const file = join(home, 'decisions.json')
+  const before = readFileSync(file)
+  const outside = join(dir, 'outside.txt')
+  writeFileSync(outside, 'a | b')
+  const rows: Record<string, string[]> = {
+    'positional mixed': ['bd:api:api-1', 'q', '--question-file', q, '--options-file', o],
+    'positional options mixed': ['bd:api:api-1', '--question-file', q, 'a | b'],
+    'unknown flag': ['bd:api:api-1', '--question-file', q, '--options-file', o, '--x', 'y'],
+    repeated: ['bd:api:api-1', '--question-file', q, '--question-file', q, '--options-file', o],
+    'no question': ['bd:api:api-1', '--options-file', o],
+    'no options': ['bd:api:api-1', '--question-file', q],
+    'outside text/': ['bd:api:api-1', '--question-file', q, '--options-file', outside],
+    'one line': ['bd:api:api-1', '--question-file', txt('two.txt', 'a\nb'), '--options-file', o],
+    'one option': ['bd:api:api-1', '--question-file', q, '--options-file', txt('one.txt', 'a')],
+  }
+  for (const [name, a] of Object.entries(rows)) {
+    const r = factory(['decisions', 'propose', ...a])
+    expect([name, r.code]).toEqual([name, 1])
+    if (/^(no |unknown|repeated|positional options)/.test(name))
+      expect(r.err).toContain('usage: factory decisions propose')
+    expect(readFileSync(file).equals(before)).toBe(true)
+  }
+})
+
+test('decisions propose refuses a control character in the question, the context or an option, with decisions.json unchanged (claude-factory-p1j6)', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd(JSON.stringify([{ id: 'api-1', title: 't' }]), '[]')
+  const txt = (name: string, body: string) => {
+    const p = join(home, 'text', name)
+    mkdirSync(join(home, 'text'), { recursive: true })
+    writeFileSync(p, body)
+    return p
+  }
+  const decisionsFile = join(home, 'decisions.json')
+  expect(factory(['decisions', 'propose', 'bd:api:api-0', 'good', 'a | b']).code).toBe(0)
+  const before = readFileSync(decisionsFile)
+  const refuse = (name: string, a: string[], code: string) => {
+    const r = factory(['decisions', 'propose', ...a])
+    expect([name, r.code]).toEqual([name, 1])
+    expect([name, r.err]).toEqual([name, expect.stringContaining(code)])
+    expect(/[^\P{Cc}\n]/u.test(r.err)).toBe(false)
+    expect(readFileSync(decisionsFile).equals(before)).toBe(true)
+  }
+  const bad: [string, string, string][] = [
+    ['ESC', 'x\x1b[2Jy', 'U+001B'],
+    ['CR', 'x\ry', 'U+000D'],
+    ['tab', 'x\ty', 'U+0009'],
+    ['DEL', 'x\x7fy', 'U+007F'],
+    ['C1', 'x\u009by', 'U+009B'],
+  ]
+  for (const key of ['bd:api:api-1', 'own:api-1']) {
+    for (const [name, v, code] of bad) {
+      refuse(`${key} question ${name}`, [key, v, 'a | b'], code)
+      refuse(`${key} context ${name}`, [key, 'q', 'a | b', '--context', v], code)
+    }
+    const o = ['--options-file', txt('o1', 'a | b')]
+    refuse(`${key} question-file ESC`, [key, '--question-file', txt('q1', 'x\x1b[2Jy'), ...o], 'U+001B')
+    refuse(`${key} question-file NUL`, [key, '--question-file', txt('q2', 'x\x00y'), ...o], 'U+0000')
+    refuse(
+      `${key} context-file NUL`,
+      [
+        key,
+        '--question-file',
+        txt('q3', 'q'),
+        '--options-file',
+        txt('o3', 'a | b'),
+        '--context-file',
+        txt('c3', 'x\x00y'),
+      ],
+      'U+0000',
+    )
+  }
+  refuse('options ESC', ['bd:api:api-1', 'q', 'a\x1b[2J: x | b: y'], 'U+001B')
+  refuse('options CR', ['bd:api:api-1', 'q', 'a: x\r | b: y'], 'U+000D')
+  refuse(
+    'options-file NUL',
+    ['bd:api:api-1', '--question-file', txt('q4', 'q'), '--options-file', txt('o4', 'a\x00 | b')],
+    'U+0000',
+  )
+  refuse(
+    'options-file ESC',
+    ['bd:api:api-1', '--question-file', txt('q5', 'q'), '--options-file', txt('o5', 'a\x1b | b')],
+    'U+001B',
+  )
+  // an own: key ignores its options, so they are not checked
+  expect(factory(['decisions', 'propose', 'own:api-2', 'q', 'a\x1b | b']).code).toBe(0)
+})

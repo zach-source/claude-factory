@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import * as ax from './ax'
 import { configFrom, handle, MAX_BODY, route, workerPolicyRefusal, type Run } from './broker'
 
 type Call = { argv: string[]; stdin?: string }
@@ -197,6 +198,15 @@ test('PUT refuses a worker policy that names a manager-only key or a github path
     'key CredentialURI': withHeader({ CredentialURI: U('AX_AUTH') }),
     'key credential_uri': withHeader({ credential_uri: 'https://x.example.com/ax' }),
     'key with U+017F': withPath(['a.example.com'], { pathPrefixeſ: ['/x/'] }),
+    'vault x%2FAX_AUTH%23': hdr('ate-secret://agent-vault/x%2FAX_AUTH%23/X'),
+    'vault v%2FGITHUB_%52EVIEWER': hdr('ate-secret://agent-vault/v%2FGITHUB_%52EVIEWER/X'),
+    'vault %76': hdr('ate-secret://agent-vault/%76/X'),
+    'vault ..': hdr('ate-secret://agent-vault/../X'),
+    'vault .': hdr('ate-secret://agent-vault/./X'),
+    'vault upper Factory': hdr('ate-secret://agent-vault/Factory/X'),
+    'vault underscore my_vault': hdr('ate-secret://agent-vault/my_vault/X'),
+    'vault non-ASCII': hdr('ate-secret://agent-vault/vı/X'),
+    'vault empty': hdr('ate-secret://agent-vault//X'),
     'lowercase value': hdr(U('ax_auth')),
     'query suffix': hdr(U('AX_AUTH') + '?x=1'),
     'trailing slash': hdr(U('AX_AUTH') + '/'),
@@ -235,6 +245,8 @@ test('PUT still creates a normal worker policy', async () => {
     current: JSON.parse(POLICY),
     'github owner key': hdr(U('GITHUB_ZS_BASIC')),
     gitlab: hdr(U('GITLAB')),
+    'vault factory': hdr('ate-secret://agent-vault/factory/GITHUB'),
+    'vault with hyphen and digit': hdr('ate-secret://agent-vault/my-vault-2/GITHUB'),
     'look-alike keys': { rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: keys } }] },
     'path on other host': withPath(['gitlab.example.com']),
     'path on look-alike host': withPath(['notgithub.com']),
@@ -343,6 +355,12 @@ test('the reviewer API rule is the one path rule a worker policy can have on a g
     'key GITHUB_ZS': withHdr({ credentialUri: U('GITHUB_ZS') }),
     'key REVIEWER_BASIC': withHdr({ credentialUri: U('GITHUB_REVIEWER_BASIC') }),
     'key lower case': withHdr({ credentialUri: U('github_reviewer') }),
+    'vault v%2FGITHUB_%52EVIEWER': withHdr({
+      credentialUri: 'ate-secret://agent-vault/v%2FGITHUB_%52EVIEWER/GITHUB_REVIEWER',
+    }),
+    'vault AX_AUTH': withHdr({ credentialUri: 'ate-secret://agent-vault/AX_AUTH/GITHUB_REVIEWER' }),
+    'vault ..': withHdr({ credentialUri: 'ate-secret://agent-vault/../GITHUB_REVIEWER' }),
+    'vault Factory': withHdr({ credentialUri: 'ate-secret://agent-vault/Factory/GITHUB_REVIEWER' }),
     'two headers': pol(
       reviewerRule({
         effects: {
@@ -371,4 +389,185 @@ test('the reviewer API rule is the one path rule a worker policy can have on a g
   }
   for (const h of ['chatgpt.com', 'a.example.com'])
     expect(workerPolicyRefusal(pol({ hostnames: [h], paths: ['/x'], pathPrefixes: ['/y/'] }))).toBeNull()
+})
+
+const gitRule = (over: Record<string, unknown> = {}) => ({
+  hostnames: ['github.com'],
+  effects: {
+    replaceHeaders: [
+      { header: 'Authorization', prefix: 'Basic ', credentialUri: U('GITHUB_REVIEWER_BASIC') },
+    ],
+  },
+  ...over,
+})
+const hostRule = (hostnames: string[], key: string) => ({
+  hostnames,
+  effects: { replaceHeaders: [{ header: 'Authorization', prefix: 'Bearer ', credentialUri: U(key) }] },
+})
+const rulesOf = (...rs: Record<string, unknown>[]) => ({ rules: rs.map(https => ({ https })) })
+
+test('the reviewer keys appear only in one pair of reviewer rules', async () => {
+  const api = reviewerRule()
+  const gitHdr = gitRule().effects.replaceHeaders[0]
+  const gitWith = (over: Record<string, unknown>) => rulesOf(api, gitRule(over))
+  const refused: Record<string, unknown> = {
+    'host-only api+uploads': rulesOf(hostRule(['api.github.com', 'uploads.github.com'], 'GITHUB_REVIEWER')),
+    'host-only api': rulesOf(hostRule(['api.github.com'], 'GITHUB_REVIEWER')),
+    'reviewer key on other host': rulesOf(hostRule(['a.example.com'], 'GITHUB_REVIEWER')),
+    'host-only basic, no api rule': rulesOf(gitRule()),
+    'basic key on other host': rulesOf(hostRule(['a.example.com'], 'GITHUB_REVIEWER_BASIC')),
+    'two api rules, two repos': rulesOf(api, reviewerRule({ pathPrefixes: ['/repos/acme/other/'] })),
+    'two api rules, same repo': rulesOf(api, api),
+    'two git rules': rulesOf(api, gitRule(), gitRule()),
+    'api plus third rule': rulesOf(api, hostRule(['a.example.com'], 'GITHUB_REVIEWER')),
+    'spelling GITHUBREVIEWER': rulesOf(api, hostRule(['a.example.com'], 'GITHUBREVIEWER')),
+    'spelling GITHUB__REVIEWER': rulesOf(api, hostRule(['a.example.com'], 'GITHUB__REVIEWER')),
+    'spelling in header field': rulesOf(api, { hostnames: ['a.example.com'], header: 'github_reviewer' }),
+    'token as object key': rulesOf(api, { hostnames: ['a.example.com'], GITHUB_REVIEWER: 1 }),
+    'git extra ports': gitWith({ ports: { numbers: [443] } }),
+    'git pathPrefixes': gitWith({ pathPrefixes: ['/acme/'] }),
+    'git extra host': gitWith({ hostnames: ['github.com', 'gist.github.com'] }),
+    'git prefix Bearer': gitWith({ effects: { replaceHeaders: [{ ...gitHdr, prefix: 'Bearer ' }] } }),
+    'git header X-Key': gitWith({ effects: { replaceHeaders: [{ ...gitHdr, header: 'X-Key' }] } }),
+    'git key GITHUB_REVIEWER': gitWith({
+      effects: { replaceHeaders: [{ ...gitHdr, credentialUri: U('GITHUB_REVIEWER') }] },
+    }),
+    'git two headers': gitWith({ effects: { replaceHeaders: [gitHdr, gitHdr] } }),
+    'git vault v%2FX': gitWith({
+      effects: {
+        replaceHeaders: [
+          { ...gitHdr, credentialUri: 'ate-secret://agent-vault/v%2FX/GITHUB_REVIEWER_BASIC' },
+        ],
+      },
+    }),
+    'git vault AX_AUTH': gitWith({
+      effects: {
+        replaceHeaders: [
+          { ...gitHdr, credentialUri: 'ate-secret://agent-vault/AX_AUTH/GITHUB_REVIEWER_BASIC' },
+        ],
+      },
+    }),
+    'git vault ..': gitWith({
+      effects: {
+        replaceHeaders: [{ ...gitHdr, credentialUri: 'ate-secret://agent-vault/../GITHUB_REVIEWER_BASIC' }],
+      },
+    }),
+    'api effects extra key': rulesOf(
+      reviewerRule({ effects: { replaceHeaders: api.effects.replaceHeaders, replace_headers: [] } }),
+    ),
+    'api header extra key': rulesOf(
+      reviewerRule({
+        effects: { replaceHeaders: [{ ...api.effects.replaceHeaders[0], credential_uri: 'x' }] },
+      }),
+    ),
+    'git effects extra key': gitWith({ effects: { replaceHeaders: [gitHdr], replace_headers: [] } }),
+    'git header extra key': gitWith({
+      effects: { replaceHeaders: [{ ...gitHdr, credential_uri: 'x' }] },
+    }),
+    'api rule with extra key': { rules: [{ https: api, extra: 1 }] },
+    'api rule nested in an array': { rules: [[{ https: api }]] },
+  }
+  for (const [name, body] of Object.entries(refused)) {
+    expect([name, typeof workerPolicyRefusal(body)]).toEqual([name, 'string'])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 400])
+    expect(calls).toEqual([])
+  }
+  const accepted: Record<string, unknown> = {
+    'api rule alone': rulesOf(api),
+    'api plus git rule': rulesOf(api, gitRule()),
+    'look-alike GITHUB_REVIEW': rulesOf(hostRule(['a.example.com'], 'GITHUB_REVIEW')),
+    'look-alike REVIEWER': rulesOf(hostRule(['a.example.com'], 'REVIEWER')),
+    'egressPolicy non-reviewer': ax.egressPolicy('v', [], undefined, undefined, 'acme'),
+  }
+  for (const o of ['acme', 'zach-source'])
+    accepted['egressPolicy ' + o] = ax.egressPolicy(
+      'v',
+      [],
+      undefined,
+      undefined,
+      o,
+      undefined,
+      true,
+      false,
+      'widget',
+    )
+  for (const [name, body] of Object.entries(accepted)) {
+    expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 200])
+    expect(calls.length).toBe(2)
+  }
+})
+
+test('a policy with the reviewer API rule gets no other key on a github host', async () => {
+  const api = reviewerRule()
+  const author = hostRule(['github.com'], 'GITHUB_BASIC')
+  const refused: Record<string, unknown> = {
+    'api + GITHUB_BASIC on github.com': rulesOf(api, author),
+    'api + GITHUB on api.github.com': rulesOf(api, hostRule(['api.github.com'], 'GITHUB')),
+    'pair + *.com': rulesOf(api, gitRule(), hostRule(['*.com'], 'GITHUB_ZS_BASIC')),
+    'api + *': rulesOf(api, hostRule(['*'], 'GITHUB')),
+    'api + *.github.com': rulesOf(api, hostRule(['*.github.com'], 'GITHUB')),
+    'case and trailing dot': rulesOf(api, hostRule(['GitHub.com.'], 'GITHUB_BASIC')),
+    'keyed rule before api': rulesOf(author, api),
+    'http wrapper': { rules: [{ https: api }, { http: author }] },
+    'extra key, no credential': rulesOf(api, {
+      hostnames: ['codeload.github.com'],
+      effects: { replaceHeaders: [] },
+    }),
+    'mixed host list': rulesOf(api, hostRule(['a.example.com', 'github.com'], 'BUILDBUDDY')),
+    'github host, no key, then key on relay': rulesOf(
+      api,
+      { hostnames: ['github.com'] },
+      hostRule(['relay.example.com'], 'GITHUB_BASIC'),
+    ),
+    'pair + GITHUB on relay': rulesOf(api, gitRule(), hostRule(['relay.example.com'], 'GITHUB')),
+    'api + GITHUB_ZS_BASIC on relay': rulesOf(api, hostRule(['relay.example.com'], 'GITHUB_ZS_BASIC')),
+    'hostnames as a string, with a key': rulesOf(api, {
+      hostnames: 'github.com',
+      effects: hostRule(['x'], 'BUILDBUDDY').effects,
+    }),
+  }
+  for (const [name, body] of Object.entries(refused)) {
+    expect([name, typeof workerPolicyRefusal(body)]).toEqual([name, 'string'])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 400])
+    expect(calls).toEqual([])
+  }
+  const accepted: Record<string, unknown> = {
+    'api alone': rulesOf(api),
+    pair: rulesOf(api, gitRule()),
+    'pair + codeload': rulesOf(api, gitRule(), { hostnames: ['codeload.github.com'] }),
+    'pair + codeload + ports': rulesOf(api, gitRule(), {
+      hostnames: ['codeload.github.com'],
+      ports: { numbers: [443] },
+    }),
+    'pair + keyed other host': rulesOf(api, gitRule(), hostRule(['a.example.com'], 'BUILDBUDDY')),
+    'no reviewer rule, GITHUB and GITHUB_BASIC': rulesOf(
+      hostRule(['github.com'], 'GITHUB'),
+      hostRule(['relay.example.com'], 'GITHUB_BASIC'),
+    ),
+    'egressPolicy reviewer with extras': ax.egressPolicy(
+      'v',
+      [{ hosts: ['codeload.github.com'] }, { hosts: ['a.example.com'], key: 'BUILDBUDDY' }],
+      undefined,
+      undefined,
+      'acme',
+      undefined,
+      true,
+      false,
+      'widget',
+    ),
+  }
+  for (const [name, body] of Object.entries(accepted)) {
+    expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 200])
+    expect(calls.length).toBe(2)
+  }
 })

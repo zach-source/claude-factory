@@ -33,6 +33,7 @@ const factory = (args: string[]) => {
     env: {
       ...laptop,
       FACTORY_HOME: home(),
+      FACTORY_NO_KICK: '1',
       PATH: `${bin()}:${laptop.PATH}`,
       FACTORY_HERDR: join(bin(), 'herdr'),
       CLAUDE_CONFIG_DIR: join(dir, 'claude-config'),
@@ -125,6 +126,9 @@ function fakeGh(src: string, sha: string) {
   script('gh', [
     'case "$*" in',
     `  *check-runs*) printf '%s' '{"check_runs":[{"status":"completed","conclusion":"success"}]}';;`,
+    `  "api -X"*) echo "$*" >> "${join(dir, 'writes.txt')}";;`,
+    `  *"pulls/7/reviews"*|*"issues/7/comments"*) printf '%s' '[]';;`,
+    `  "api repos/acme/widget/pulls/7") printf '%s' '{"state":"open","draft":true,"mergeable":true,"head":{"sha":"x"}}';;`,
     `  *"/status"*) printf '%s' '{"statuses":[]}';;`,
     `  "api "*"state=open"*) printf '%s' '${pulls}' | sed "s/SHA/$(cat "${join(dir, 'sha.txt')}")/";;`,
     '  *) exit 0;;',
@@ -206,6 +210,19 @@ test('a failed fork shows an error row with the URL, and a second pass forks not
   expect(read('orphans.json')).toHaveLength(1)
 })
 
+test('a failed orphan-forks.json write shows a record failed row, not the generic fork failed row', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  mkdirSync(join(home(), 'orphan-forks.json.tmp')) // the atomic write cannot open its temp file
+  pass()
+  expect(runIds()).toHaveLength(1)
+  const rows = read('orphans.json')
+  expect(rows).toHaveLength(1)
+  expect(rows[0].error).toContain(URL)
+  expect(rows[0].error).toContain('record failed')
+  expect(rows[0].error).not.toContain('fork failed or not recorded')
+})
+
 test('failed-fork rows match by exact URL: pull/37 and pull/378 each get a row', () => {
   const src = setup()
   const base = 'https://github.com/acme/widget/pull/'
@@ -285,6 +302,8 @@ function fakeGlab(src: string, sha: string, o: MrOpts = {}) {
     source_project_id: o.srcProject ?? 5,
     target_project_id: 5,
     head_pipeline: { sha: o.pipelineSha ?? sha, status: o.status ?? 'success' },
+    detailed_merge_status: 'draft_status',
+    has_conflicts: false,
   }
   script('glab', [
     `echo "$*" >> "${join(dir, 'glab.calls')}"`,
@@ -355,4 +374,23 @@ test('AC8: a rig with neither a GitHub nor a GitLab origin is skipped without an
   expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
   // glab auth status only tells the forge of a host; no API call may follow
   expect(readFileSync(join(dir, 'glab.calls'), 'utf8')).not.toContain('api')
+})
+
+test('e2xe: a closed bead closes the orphan draft with a comment; the PR gets no fork', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  script('bd', [
+    'case "$1" in',
+    "  config) printf '%s' 'acme';;",
+    `  show) printf '%s' '[{"id":"acme-1","title":"t","status":"closed"}]';;`,
+    "  ready|list|children) printf '%s' '[]';;",
+    '  *) exit 0;;',
+    'esac',
+  ])
+  pass()
+  expect(runIds()).toHaveLength(1)
+  const writes = readFileSync(join(dir, 'writes.txt'), 'utf8')
+  expect(writes).toContain('issues/7/comments')
+  expect(writes).toContain(src)
+  expect(writes).toContain('pulls/7 -f state=closed')
 })

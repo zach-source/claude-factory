@@ -5,13 +5,15 @@ import {
   constants,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
-  lstatSync,
+  statSync,
   readlinkSync,
   unlinkSync,
   writeSync,
@@ -523,6 +525,89 @@ async function vectors(dir: string, all: Note[], text = textOf, name = '.index.j
     renameSync(`${file}.tmp`, file) // two searches at once: the last one's cache wins, both are right
   }
   return (n: Note) => vecs[n.path]!.vec
+}
+
+/** The largest snapshot that an AX launch sends. One rig's notes are about 3 MiB today. */
+export const MEMORY_SNAPSHOT_MAX = 8 * 1024 * 1024
+
+/**
+ * Write a tgz of the notes that one rig can see. A VM cannot reach the store (claude-factory-vffe.4).
+ * Fail closed. A file goes in only if it is a real file, not a symlink. It must be CORE.md at the root,
+ * or a `*.md` file one level down in a top-level dir whose name has no dot.
+ * Its rig must be empty or equal to `rig`.
+ * The index and the usage log keep only the kept paths, so the VM embeds no note again.
+ * Return null when no note is kept: no file is written.
+ */
+export function snapshot(dir: string, rig: string | undefined, out: string): { bytes: number } | null {
+  if (!existsSync(dir)) return null
+  const keep = (r?: string) => !r || r === rig
+  const regular = (p: string) => lstatSync(p).isFile()
+  const stage = mkdtempSync(`${out}.stage-`)
+  try {
+    const core = join(dir, 'CORE.md')
+    if (existsSync(core) && regular(core)) {
+      let ok = true
+      const lines = readFileSync(core, 'utf8')
+        .split('\n')
+        .filter(line => {
+          const h = /^##\s+rig:\s*(\S+)/.exec(line)
+          if (h) ok = keep(h[1])
+          else if (/^##\s/.test(line)) ok = true
+          return ok
+        })
+      writeFileSync(join(stage, 'CORE.md'), lines.join('\n'))
+    }
+    for (const topic of readdirSync(dir, { withFileTypes: true })) {
+      if (!topic.isDirectory() || topic.name.startsWith('.')) continue
+      for (const f of readdirSync(join(dir, topic.name))) {
+        const src = join(dir, topic.name, f)
+        if (!f.endsWith('.md') || !regular(src)) continue
+        const text = readFileSync(src, 'utf8')
+        let body: string | null = keep(parse(f, text).rig) ? text : null
+        if (f === 'LONG.md') {
+          // always re-format: text that no entry holds (a preamble, a file with no entry) must not travel
+          const kept = parseLong(text).filter(e => keep(e.rig))
+          body = kept.length ? formatLong(kept) : null
+        }
+        if (body === null) continue
+        mkdirSync(join(stage, topic.name), { recursive: true })
+        writeFileSync(join(stage, topic.name, f), body)
+      }
+    }
+    const { notes, topics } = walk(stage)
+    const paths = new Set([...notes, ...topics.values(), ...coreNotes(stage)].map(n => n.path))
+    if (!paths.size) return null
+    const index = join(dir, '.index.json')
+    if (existsSync(index) && regular(index)) {
+      const idx: Index = JSON.parse(readFileSync(index, 'utf8'))
+      const vecs = Object.fromEntries(Object.entries(idx.vecs).filter(([p]) => paths.has(p)))
+      writeFileSync(join(stage, '.index.json'), JSON.stringify({ model: idx.model, vecs }))
+    }
+    const usage = join(dir, '.usage.jsonl')
+    if (existsSync(usage) && regular(usage))
+      writeFileSync(
+        join(stage, '.usage.jsonl'),
+        readFileSync(usage, 'utf8')
+          .split('\n')
+          .filter(line => {
+            try {
+              return paths.has(JSON.parse(line).path)
+            } catch {
+              return false
+            }
+          })
+          .join('\n') + '\n',
+      )
+    // COPYFILE_DISABLE: macOS tar adds an AppleDouble ._ file for each file with extended attributes
+    const r = Bun.spawnSync(['tar', '-czf', out, '-C', stage, '.'], {
+      env: { ...process.env, COPYFILE_DISABLE: '1' },
+      stderr: 'pipe',
+    })
+    if (r.exitCode !== 0) throw new Error(`tar: ${r.stderr.toString().trim().split('\n').at(-1)}`)
+    return { bytes: statSync(out).size }
+  } finally {
+    rmSafe(stage, { recursive: true, force: true })
+  }
 }
 
 /** each bullet in CORE.md, as its own fact note: path CORE.md#<8 hex of its sha1>, rig from its `## rig:` section */

@@ -1184,6 +1184,62 @@ test('claude-factory-35em AC4: a /latest below the anchor gives a finite floor a
   }
 }, 60_000)
 
+// claude-factory-qyuu: a history shorter than GO_FLOOR_WINDOW_MS (30 min) gives no ceiling, because a short
+// span multiplies noise by minDays/span.
+test('claude-factory-qyuu AC1: the retry 30 s after a failed cold start does not extrapolate a ceiling', async () => {
+  const f = ldbFixture()
+  try {
+    f.st.lookups = false
+    expect((await f.refresh()).decision).toBe('error')
+    f.st.now = NOW + 30_000
+    f.st.latest = 1_000_050
+    f.st.lookups = true
+    const line = await f.refresh()
+    expect(line).toMatchObject({ floor: 942_400, sampled: 942_400, capped: false })
+    expect(await f.healthzFloor()).toBe(942_400)
+    expect((await f.probe()).status).toBe(404)
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
+test.each([
+  ['exactly 30 min', 1_800_000, 942_700, true],
+  ['29 min 59 s', 1_799_000, 950_000, false],
+])(
+  'claude-factory-qyuu AC2: the ceiling starts at a %s span',
+  async (_n, dt, floor, capped) => {
+    const f = ldbFixture()
+    try {
+      f.st.lookups = false
+      expect((await f.refresh()).decision).toBe('error')
+      f.st.now = NOW + dt
+      f.st.latest = 1_000_300
+      f.st.minId = 950_000
+      f.st.lookups = true
+      expect(await f.refresh()).toMatchObject({ floor, capped })
+    } finally {
+      f.stop()
+    }
+  },
+  60_000,
+)
+
+test('claude-factory-qyuu.3: a floor present keeps the ceiling when the history span is under 30 min', async () => {
+  const f = ldbFixture()
+  try {
+    f.st.latestAt = NOW + 5_000 // slow fetches in refresh 1 push the anchor time past its start
+    expect((await f.refresh()).decision).toBeUndefined()
+    f.st.latestAt = 0
+    f.st.now = NOW + 30 * 60_000 + 1_000
+    f.st.latest = 1_000_310
+    f.st.minId = f.st.latest - 10
+    expect(await f.refresh()).toMatchObject({ floor: 940_657, capped: true })
+  } finally {
+    f.stop()
+  }
+}, 60_000)
+
 test('claude-factory-8ub.6: a floor refresh never trusts sample records logged only by its own lookup traffic', async () => {
   // 9 modules this fixture server's own /index answers with, regardless of `since`. Their sum.golang.org
   // records differ by phase (below), to prove the floor cannot be poisoned upward.
@@ -2893,6 +2949,7 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
       expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
     })
     expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org redirect refused')
+    expect(g.stats().error).toBe(1)
     expect(reasons(lines).filter(r => r.includes('timeout'))).toEqual([])
     expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
   })
@@ -2907,6 +2964,142 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
       await g(new Request(`http://gate/go${GO}.info`))
     })
     expect(reasons(lines)).toContain('sumdb floor refresh: index.golang.org 503')
+    expect(g.stats().error).toBe(1)
+  })
+
+  test('AC3: a second .info inside the backoff after an index refusal counts its own error', async () => {
+    const { g } = goGate(
+      u => infoOk(u) ?? (u.origin === 'https://idx.fake.test' ? found(`${EVIL}/x`) : undefined),
+      { goIndex: 'https://idx.fake.test' },
+    )
+    await captured(async () => {
+      await g(new Request(`http://gate/go${GO}.info`))
+      expect(g.stats().error).toBe(1)
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(g.stats().error).toBe(2)
+  })
+
+  test('AC3: a sum.golang.org /latest 302 off-origin in the floor refresh counts error once', async () => {
+    const { g, hits } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.origin === 'https://sum.fake.test' ? found(`${EVIL}/x`) : undefined) ??
+        (u.origin === 'https://idx.fake.test' ? new Response('') : undefined),
+      { sumdb: 'https://sum.fake.test', goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: sum.golang.org /latest unavailable')
+    expect(g.stats().error).toBe(1)
+    expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
+  })
+
+  // claude-factory-gpmw: each refused sample lookup counts once in upstreamFetch; the "too few samples"
+  // failure and the gate must not count them again when every missing sample was a refusal
+  const sumLookup = (lookup: () => Response) => (u: URL) =>
+    infoOk(u) ??
+    (u.origin === 'https://sum.fake.test'
+      ? u.pathname === '/latest'
+        ? new Response(sumdbLatestBody(1_000_000))
+        : lookup()
+      : undefined)
+
+  test('every floor sample lookup 302 off-origin counts one error per lookup, none extra', async () => {
+    const { g, hits } = goGate(
+      sumLookup(() => found(`${EVIL}/x`)),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    const lookups = hits.filter(h => h.startsWith('https://sum.fake.test/lookup/')).length
+    expect(lookups).toBeGreaterThan(0)
+    expect(reasons(lines).some(r => r.includes('sampled versions answered'))).toBe(true)
+    expect(g.stats().error).toBe(lookups)
+  })
+
+  test('every floor sample lookup 500 counts only the floor failure (no per-lookup error)', async () => {
+    const { g, hits } = goGate(
+      sumLookup(() => new Response('x', { status: 500 })),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(hits.some(h => h.startsWith('https://sum.fake.test/lookup/'))).toBe(true)
+    expect(g.stats().error).toBe(1)
+  })
+
+  test('a mix of refused and failed floor sample lookups counts each refusal plus the floor failure', async () => {
+    let n = 0
+    let refused = 0
+    const { g } = goGate(
+      sumLookup(() => (n++ % 2 === 0 ? (refused++, found(`${EVIL}/x`)) : new Response('x', { status: 500 }))),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(refused).toBeGreaterThan(0)
+    expect(n).toBeGreaterThan(refused)
+    expect(g.stats().error).toBe(refused + 1)
+  })
+
+  test('refused lookups beside a few answered ones count each refusal, no extra floor failure', async () => {
+    let n = 0
+    let refused = 0
+    const { g } = goGate(
+      sumLookup(() => (n++ < 2 ? new Response('500000\n') : (refused++, found(`${EVIL}/x`)))),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(refused).toBeGreaterThan(0)
+    expect(g.stats().error).toBe(refused)
+  })
+
+  test('too few index entries with every lookup answering counts the floor failure once', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.origin === 'https://idx.fake.test'
+          ? new Response(
+              goIndexBody(u.searchParams.get('since') ?? new Date(NOW).toISOString())
+                .split('\n')
+                .slice(0, 3)
+                .join('\n') + '\n',
+            )
+          : undefined) ??
+        (u.origin === 'https://sum.fake.test'
+          ? u.pathname === '/latest'
+            ? new Response(sumdbLatestBody(1_000_000))
+            : new Response('500000\n')
+          : undefined),
+      { sumdb: 'https://sum.fake.test', goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines).some(r => r.includes('only 3 of 3 sampled versions answered'))).toBe(true)
+    expect(g.stats().error).toBe(1)
+  })
+
+  test('a sum.golang.org /latest 503 counts error once (not refused)', async () => {
+    const { g } = goGate(
+      u =>
+        infoOk(u) ??
+        (u.origin === 'https://sum.fake.test' ? new Response('x', { status: 503 }) : undefined) ??
+        (u.origin === 'https://idx.fake.test' ? new Response('') : undefined),
+      { sumdb: 'https://sum.fake.test', goIndex: 'https://idx.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(reasons(lines)).toContain('sumdb floor refresh: sum.golang.org /latest unavailable')
+    expect(g.stats().error).toBe(1)
   })
 
   describe('AC4: every 3xx body is cancelled', () => {

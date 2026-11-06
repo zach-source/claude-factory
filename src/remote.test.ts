@@ -20,6 +20,7 @@ import {
   githubSlug,
   httpsRemote,
   isDenyLine,
+  memorySnapshotPut,
   outboxDenial,
   overwritten,
   progressSig,
@@ -63,6 +64,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     env: {
       ...laptop,
       FACTORY_HOME: home,
+      FACTORY_NO_KICK: '1',
       FACTORY_AX: join(dir, 'ax'),
       FACTORY_KUBECTL: readyController(),
       FACTORY_SELF_UPDATE: '0',
@@ -257,6 +259,9 @@ test('outboxUsage: --help/-h only in a positional slot, malformed args, else nul
   expect(worker.outboxUsage('report', ['r1', '3', '-bad', 'x'])).toContain('usage: factory report')
   expect(worker.outboxUsage('mail', ['r1'])).toContain('usage: factory mail')
   expect(worker.outboxUsage('memory', ['add'])).toContain('usage: factory memory add')
+  expect(worker.OUTBOX_USAGE.report).toContain("'<summary...>'")
+  expect(worker.OUTBOX_USAGE.mail).toContain("'<text...>'")
+  expect(worker.OUTBOX_USAGE.memory).toContain("'<summary>' '[body...]'")
   expect(worker.outboxUsage('mail', ['r1', 'manager', 'hi'])).toBeNull()
   expect(worker.outboxUsage('report', ['r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'])).toBeNull()
   expect(worker.outboxUsage('memory', ['add', '--kind', 'fact', 'a lesson'])).toBeNull()
@@ -657,6 +662,20 @@ test("a tick replays memory helped as the worker's station, and refuses a path o
   rmSync(memDir, { recursive: true })
 })
 
+test('helped accepts the VM memory path', () => {
+  const memDir = join(home, 'memory')
+  mkdirSync(join(memDir, 'topic'), { recursive: true })
+  writeFileSync(join(memDir, 'topic', 'n.md'), '---\nsummary: s\n---\nbody\n')
+  const vm = '/workspace/w/.factory-worker/home/memory'
+  const helped = (p: string) => factory(['memory', 'helped', '--from', 'r/s', p])
+  const ok = helped(`${vm}/topic/n.md`)
+  expect(ok.code).toBe(0)
+  expect(ok.out).toContain('noted: topic/n.md')
+  for (const bad of [`${vm}/../../etc/x.md`, `${vm}X/topic/n.md`, `${vm}/topic/missing.md`, '/etc/passwd'])
+    expect(helped(bad).code).not.toBe(0)
+  rmSync(memDir, { recursive: true })
+}, 60_000)
+
 test('memory search --from logs shown with the run and station; without it, no by', () => {
   const memDir = join(home, 'memory')
   mkdirSync(join(memDir, 'topic'), { recursive: true })
@@ -877,6 +896,119 @@ esac
   rmSync(join(home, 'runs', 'r7'), { recursive: true })
 })
 
+test('a part that lands clears the put failure, so a later failure gets a new 5 min grace', () => {
+  launched('r7d')
+  const side = join(home, 'runs', 'r7d', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(side, 'utf8')),
+      put: ['memory.tgz'],
+      putPart: 8,
+      putFailedAt: Date.now() - 6 * 60_000,
+      putError: 'old',
+    }),
+  )
+  writeFileSync(join(home, 'runs', 'r7d', 't.memory.tgz'), 'x'.repeat(20 * 72_000))
+  const fail = join(dir, 'putfail')
+  rmSync(fail, { force: true })
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) if [ -e ${fail} ]; then echo 'ssh down' >&2; exit 1; fi ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+  factory(['tick'])
+  const after = JSON.parse(readFileSync(side, 'utf8'))
+  expect(after.putPart).toBe(16)
+  expect(after.putFailedAt).toBeUndefined()
+  expect(after.putError).toBeUndefined()
+  writeFileSync(fail, '')
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7d')
+  expect(row.agent).toBe('pending')
+  rmSync(join(home, 'runs', 'r7d'), { recursive: true })
+})
+
+test('a part that always fails keeps putPart at that part, so the 5 min grace is not restarted each tick', () => {
+  launched('r7e')
+  const side = join(home, 'runs', 'r7e', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['memory.tgz'], putPart: 8 }),
+  )
+  writeFileSync(join(home, 'runs', 'r7e', 't.memory.tgz'), 'x'.repeat(20 * 72_000))
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put memory.tgz 10 "*) echo 'ENOSPC' >&2; exit 1 ;;
+      *"worker put"*) ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+  const row1 = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7e')
+  expect(row1.agent).toBe('pending')
+  const after = JSON.parse(readFileSync(side, 'utf8'))
+  expect(after.putPart).toBe(10)
+  writeFileSync(side, JSON.stringify({ ...after, putFailedAt: Date.now() - 6 * 60_000 }))
+  const row2 = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7e')
+  expect(row2.agent).toBe('failed')
+  rmSync(join(home, 'runs', 'r7e'), { recursive: true })
+})
+
+test('a put error with ESC and U+202E reaches the FAIL reason without them', () => {
+  launched('r7c')
+  const side = join(home, 'runs', 'r7c', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(side, 'utf8')),
+      put: ['brief.md'],
+      putFailedAt: Date.now() - 6 * 60_000,
+    }),
+  )
+  writeFileSync(join(home, 'runs', 'r7c', 't.brief.md'), 'hello')
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put"*) printf 'EACCES \\033[31mred\\342\\200\\256txt' >&2; exit 1 ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+  const row = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7c')
+  expect(row.error).toContain('EACCES  [31mred txt')
+  expect(row.error).not.toMatch(/[\u001b\u202e]/)
+  expect(JSON.parse(readFileSync(side, 'utf8')).putError).not.toMatch(/[\u001b\u202e]/)
+  rmSync(join(home, 'runs', 'r7c'), { recursive: true })
+})
+
 test('a task gone because serve exited fails the attempt with serve\'s log, not just "was closed"', () => {
   launched('r8')
   cluster('Running', {
@@ -890,6 +1022,16 @@ test('a task gone because serve exited fails the attempt with serve\'s log, not 
   expect(row.error).toContain('serve died: Error: the laptop never sent brief.md')
   expect(existsSync(join(home, 'runs', 'r8', 't.gone'))).toBe(true)
   rmSync(join(home, 'runs', 'r8'), { recursive: true })
+})
+
+test('a serve exit log with ESC and U+202E reaches the FAIL reason without them', () => {
+  launched('r8c')
+  cluster('Running', { status: 'exited', log: 'serve died: bad \u001b[31mred\u202etxt', lines: [] })
+  const out = factory(['tick'])
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'r8c')
+  expect(row.error).toContain('serve died: bad  [31mred txt')
+  expect(row.error).not.toMatch(/[\u001b\u202e]/)
+  rmSync(join(home, 'runs', 'r8c'), { recursive: true })
 })
 
 test("a task's egress policy is tried again each tick until its actor shows, without waiting in the tick", () => {
@@ -1371,6 +1513,23 @@ test('a committing AX worker IS called stalled when its tail, head and bytes all
   rmSync(join(home, 'runs', 'r14'), { recursive: true })
 })
 
+test('the stall mail Last line holds no ESC or U+202E from the VM tail (claude-factory-tzqf)', () => {
+  const seq = launched('r14c')
+  const tail = 'x\nlast \u001b[31mred\u202etxt'
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  writeFileSync(
+    join(home, 'runs', 'r14c', 'progress.json'),
+    JSON.stringify({ seq, sig: progressSig(tail, 'sha1', 100), at: Date.now() - 41 * 60_000, nudged: true }),
+  )
+  cluster('Running', { status: 'working', session: 's1', lines: [], tail, head: 'sha1', bytes: 100 })
+  factory(['tick'])
+  const mail = JSON.stringify(ctxOf('r14c').mail.manager)
+  expect(mail).toContain('Last line: last  [31mred txt')
+  expect(mail).not.toMatch(/[\u001b\u202e]|\\u001b|\\u202e/i)
+  rmSync(join(home, 'runs', 'r14c'), { recursive: true })
+})
+
 // claude-factory-9ff: reconcile()'s real FAIL/warn path must use timeoutOf()'s escalated deadline
 // (75 min after a timeout fail), not only the plain timeoutMin (45 min). Each case below runs one real
 // `factory tick` and reads its state.json back, like the stall tests above.
@@ -1731,16 +1890,24 @@ test('a replayed memory helped carries the run id in --from; other memory words 
   expect(replayable(['memory', 'helped', '--from', 'forged/x', 'p'], side, 'r1')).toEqual([
     'memory',
     'helped',
-    'p',
     '--from',
     'r1/plan',
+    'p',
   ])
   expect(replayable(['memory', 'helped', 'p', '--from'], side, 'r1')).toEqual([
     'memory',
     'helped',
-    'p',
     '--from',
     'r1/plan',
+    'p',
+  ])
+  expect(replayable(['memory', 'helped', 'p', '--rig'], side, 'r1')).toEqual([
+    'memory',
+    'helped',
+    '--from',
+    'r1/plan',
+    'p',
+    '--rig',
   ])
   for (const sub of ['search', 'compact', 'dream', 'confirmed'])
     expect(replayable(['memory', sub, 'x'], side, 'r1')).toBeNull()
@@ -1781,13 +1948,60 @@ test('a replayed memory add carries the run id in --from', () => {
   expect(replayable(argv, { node: 'plan', seq: 1 }, 'r1')).toEqual([
     'memory',
     'add',
+    '--from',
+    'r1/plan',
     '--kind',
     'fact',
     's',
     'b',
+  ])
+  expect(
+    replayable(['memory', 'add', '--kind', 'fact', 's', 'b', '--rig'], { node: 'plan', seq: 1 }, 'r1'),
+  ).toEqual(['memory', 'add', '--from', 'r1/plan', '--kind', 'fact', 's', 'b', '--rig'])
+})
+
+test('a replayed memory add or helped always starts with the forced --from (claude-factory-zw2n)', () => {
+  const side = { node: 'plan', seq: 1 }
+  const tails = [
+    ['x'],
+    ['--from', 'forged/x', 'x'],
+    ['x', '--from'],
+    ['--from', '--from', 'x'],
+    ['x', '--rig'],
+    ['--rig', '--from', 'x'],
+  ]
+  for (const verb of ['add', 'helped'])
+    for (const t of tails) {
+      const out = replayable(['memory', verb, ...t], side, 'r1')!
+      expect(out.slice(0, 4)).toEqual(['memory', verb, '--from', 'r1/plan'])
+      expect(out.filter(w => w === '--from')).toHaveLength(1)
+    }
+  expect(replayable(['memory', 'add', '--from=x', 's'], side, 'r1')).toEqual([
+    'memory',
+    'add',
     '--from',
     'r1/plan',
+    '--from=x',
+    's',
   ])
+})
+
+test('a replayed memory add that ends with a bare --rig keeps its from (claude-factory-zw2n)', () => {
+  const h = join(dir, 'zw2n-home')
+  mkdirSync(h, { recursive: true })
+  const argv = replayable(
+    ['memory', 'add', '--kind', 'fact', 'sum four', 'body four', '--rig'],
+    { node: 'plan', seq: 1 },
+    'r1',
+  )!
+  const r = factory(argv, { FACTORY_HOME: h, FACTORY_OUTBOX: '', FACTORY_FROM: 'plan', FACTORY_RUN: 'r1' })
+  expect(r.code).toBe(0)
+  const files = readdirSync(join(h, 'memory', 'inbox'))
+  expect(files).toHaveLength(1)
+  const note = readFileSync(join(h, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(note).toMatch(/^from: r1\/plan$/m)
+  expect(note).not.toContain('rig: --from')
+  expect(note.split('---').slice(2).join('---')).not.toContain('r1/plan')
 })
 
 test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them first", () => {
@@ -2130,6 +2344,169 @@ test('an ax brief says AWS is read-only once, only when the rig env holds the br
   }
 }, 60_000)
 
+test('a big put spreads over ticks: 8 parts a tick, in order, then memory is recorded and the tgz removed', () => {
+  launched('r8')
+  const side = join(home, 'runs', 'r8', 't.json')
+  const read = () => JSON.parse(readFileSync(side, 'utf8'))
+  writeFileSync(side, JSON.stringify({ ...read(), put: ['memory.tgz'] }))
+  const file = join(home, 'runs', 'r8', 't.memory.tgz')
+  writeFileSync(file, Buffer.alloc(1_400_000, 7)) // 20 parts of 96,000 base64 bytes
+  const puts = () => [...called().matchAll(/worker put memory\.tgz (\d+) 20 /g)].map(m => Number(m[1]))
+  const tick = () => {
+    rmSync(calls, { force: true })
+    cluster('Running', { status: 'working', lines: [] })
+    return JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r8')
+  }
+  const row1 = tick()
+  expect(puts()).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+  expect(read().putPart).toBe(8)
+  expect(row1.agent).not.toBe('pending')
+  expect(row1.error).toBeNull()
+  tick()
+  expect(puts()).toEqual([8, 9, 10, 11, 12, 13, 14, 15])
+  expect(read().putPart).toBe(16)
+  tick()
+  expect(puts()).toEqual([16, 17, 18, 19])
+  expect(read()).toMatchObject({ put: [], memory: { bytes: 1_400_000, parts: 20 } })
+  expect(read().putPart).toBeUndefined()
+  expect(existsSync(file)).toBe(false)
+  rmSync(join(home, 'runs', 'r8'), { recursive: true })
+})
+
+// every exit path of the put loop (src/cli.ts, `put:` loop) as one state table
+const OLD = 6 * 60_000
+const putRows: {
+  name: string
+  put: string[]
+  parts: number // parts of memory.tgz
+  from: Record<string, unknown>
+  failAt?: number // memory.tgz part that fails
+  want: Record<string, unknown>
+  agent?: string
+  sent?: string[] // "name part" in order
+  done?: boolean
+}[] = [
+  {
+    name: 'a budget break, a part landed',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: { putFailedAt: 1, putError: 'old' },
+    want: { putPart: 8, put: ['memory.tgz'], putFailedAt: undefined, putError: undefined },
+    sent: [0, 1, 2, 3, 4, 5, 6, 7].map(i => `memory.tgz ${i}`),
+  },
+  {
+    name: 'b first failure',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: {},
+    failAt: 3,
+    want: { putPart: 3, putError: 'ENOSPC', putFailedAt: expect.any(Number) },
+    agent: 'pending',
+  },
+  {
+    name: 'c old failure, nothing landed',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: { putPart: 8, putFailedAt: Date.now() - OLD },
+    failAt: 8,
+    want: { putPart: 8 },
+    agent: 'failed',
+  },
+  {
+    name: 'd old failure, a part landed',
+    put: ['memory.tgz'],
+    parts: 20,
+    from: { putPart: 8, putFailedAt: Date.now() - OLD },
+    failAt: 10,
+    want: { putPart: 10, putFailedAt: expect.any(Number) },
+    agent: 'pending',
+  },
+  {
+    name: 'e file done',
+    put: ['memory.tgz'],
+    parts: 2,
+    from: { putPart: 1, putFailedAt: 1, putError: 'old' },
+    want: {
+      put: [],
+      putPart: undefined,
+      putFailedAt: undefined,
+      putError: undefined,
+      memory: { bytes: 2 * 72_000, parts: 2, sentAt: expect.any(Number) },
+    },
+    done: true,
+  },
+  {
+    name: 'f brief and memory share a tick',
+    put: ['brief.md', 'memory.tgz'],
+    parts: 20,
+    from: {},
+    want: { putPart: 7, put: ['memory.tgz'] },
+    sent: ['brief.md 0', ...[0, 1, 2, 3, 4, 5, 6].map(i => `memory.tgz ${i}`)],
+  },
+]
+for (const row of putRows) {
+  test(`put loop exit path: ${row.name}`, () => {
+    const id = `rp${putRows.indexOf(row)}`
+    launched(id)
+    const side = join(home, 'runs', id, 't.json')
+    const read = () => JSON.parse(readFileSync(side, 'utf8'))
+    writeFileSync(side, JSON.stringify({ ...read(), put: row.put, ...row.from }))
+    const file = join(home, 'runs', id, 't.memory.tgz')
+    writeFileSync(file, 'x'.repeat(row.parts * 72_000))
+    writeFileSync(join(home, 'runs', id, 't.brief.md'), 'hello')
+    const failLine =
+      row.failAt === undefined ? '' : `*"worker put memory.tgz ${row.failAt} "*) echo 'ENOSPC' >&2; exit 1 ;;`
+    writeFileSync(
+      join(dir, 'ax'),
+      `#!/bin/sh
+echo "$*" >> ${calls}
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      ${failLine}
+      *"worker put"*) ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+    )
+    chmodSync(join(dir, 'ax'), 0o755)
+    writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+    rmSync(calls, { force: true })
+    const r = JSON.parse(factory(['tick']).out).runs.find((x: { id: string }) => x.id === id)
+    if (row.agent) expect(r.agent).toBe(row.agent)
+    const after = read()
+    for (const [k, v] of Object.entries(row.want)) {
+      if (v === undefined) expect(after[k]).toBeUndefined()
+      else expect(after[k]).toEqual(v)
+    }
+    if (row.sent) {
+      const sent = [...called().matchAll(/worker put (\S+) (\d+) /g)].map(m => `${m[1]} ${m[2]}`)
+      expect(sent).toEqual(row.sent)
+    }
+    if (row.done) expect(existsSync(file)).toBe(false)
+    rmSync(join(home, 'runs', id), { recursive: true })
+  })
+}
+
+test('memorySnapshotPut skips a snapshot over the cap, and a throw never blocks the launch', () => {
+  const mem = join(dir, 'snapcap-mem')
+  mkdirSync(join(mem, 'topic'), { recursive: true })
+  writeFileSync(join(mem, 'topic', 'n.md'), '---\nsummary: a note\n---\nbody\n')
+  const out = join(dir, 'snapcap.tgz')
+  expect(memorySnapshotPut(mem, 'x', out)).toEqual({ put: true })
+  expect(existsSync(out)).toBe(true)
+  const big = memorySnapshotPut(mem, 'x', out, 10)
+  expect(big.put).toBe(false)
+  expect(big.skipped).toContain('over the 10 byte cap')
+  expect(existsSync(out)).toBe(false)
+  expect(memorySnapshotPut(join(dir, 'no-such-memory'), 'x', out)).toEqual({ put: false })
+  expect(memorySnapshotPut(mem, 'x', join(dir, 'no-dir', 'x.tgz')).skipped).toBeTruthy()
+  rmSync(mem, { recursive: true })
+})
+
 test('an ax launch searches the laptop memory once and puts the top notes in the brief', () => {
   const sh = (cwd: string, ...a: string[]) => {
     const p = Bun.spawnSync(a, { cwd })
@@ -2187,6 +2564,11 @@ test('an ax launch searches the laptop memory once and puts the top notes in the
     const briefFile = readdirSync(runDir).find(f => f.endsWith('.brief.md'))!
     const brief = readFileSync(join(runDir, briefFile), 'utf8')
     const usage = join(memDir, '.usage.jsonl')
+    // the snapshot of the notes the rig can see goes after the brief (claude-factory-vffe.4)
+    const stem = briefFile.replace(/\.brief\.md$/, '')
+    const sideNow = JSON.parse(readFileSync(join(runDir, `${stem}.json`), 'utf8'))
+    expect(sideNow.put).toEqual(withNote ? ['brief.md', 'memory.tgz'] : ['brief.md'])
+    expect(existsSync(join(runDir, `${stem}.memory.tgz`))).toBe(withNote)
     if (withNote) {
       expect(brief).toContain('The factory already searched for your goal and station')
       expect(brief).toContain('bd init locks the shared Dolt server')
@@ -2993,6 +3375,19 @@ test('ActorResumeFailed writes the rig no-suspend marker and mails the manager o
   rmSync(join(home, 'runs', 'r34'), { recursive: true })
 })
 
+test('the no-suspend marker and mail hold no ESC or U+202E from the condition text (claude-factory-tzqf)', () => {
+  rmSync(markerOf('wt'), { force: true })
+  launched('r34c')
+  clusterConds('Failed', RESUME_FAILED.replace('exit status 128', 'bad \\u001b[31mred\\u202etxt'))
+  factory(['tick'])
+  const marker = readFileSync(markerOf('wt'), 'utf8')
+  const text = resumeMails('r34c')[0]!.text
+  expect(text).toContain('bad  [31mred txt')
+  for (const s of [marker, JSON.stringify(text)]) expect(s).not.toMatch(/[\u001b\u202e]|\\u001b|\\u202e/i)
+  rmSync(markerOf('wt'), { force: true })
+  rmSync(join(home, 'runs', 'r34c'), { recursive: true })
+})
+
 test('a halt that reads the Failed task first does not drop the one ActorResumeFailed mail', () => {
   rmSync(markerOf('wt'), { force: true })
   launched('r42')
@@ -3177,6 +3572,30 @@ describe('an AX-rig run with herdr failing (claude-factory-xbzd S1)', () => {
     expect(s.herdrCalls()).toBe('')
   }, 30_000)
 
+  test('a bad factory and a failing worktree remove still show "is not a valid factory"', () => {
+    const bad: Factory = {
+      name: 'bad',
+      start: 'a',
+      nodes: { a: { prompt: 'x', next: { ok: { to: 'done', ship: true } } } },
+    }
+    const s = setup('s1f', 'ax', bad)
+    const realGit = Bun.which('git')!
+    const shim = join(dir, 's1f', 'bin')
+    mkdirSync(shim)
+    writeFileSync(
+      join(shim, 'git'),
+      `#!/bin/sh\ncase "$*" in *"worktree remove"*) echo cleanup-boom >&2; exit 1;; esac\nexec ${realGit} "$@"\n`,
+    )
+    chmodSync(join(shim, 'git'), 0o755)
+    const out = factory(['start', s.fdefFile, s.repo, 'goal text'], {
+      ...s.env,
+      PATH: `${shim}:${process.env.PATH}`,
+    })
+    expect(out.code).not.toBe(0)
+    expect(out.err).toContain('is not a valid factory')
+    expect(out.err).not.toContain('cleanup-boom')
+  }, 30_000)
+
   test.each([['herdr'], [undefined]])(
     'a rig with runner %p still creates its worktree through herdr',
     runner => {
@@ -3291,6 +3710,41 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     finish('sk3')
   })
 
+  test('a skew hold strips ESC and U+202E from the outcome and the summary', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3c')
+    const line = JSON.stringify({
+      argv: ['report', 'sk3c', String(seq), 'rea\u001bdy', 'plan \u202etext'],
+      from: 'a',
+      at: 1,
+      bdSkew: SKEW_OUT,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+    factory(['tick'])
+    const last = ctxOfRun('sk3c').log.at(-1)
+    expect(last.summary).toContain('rea dy: plan  text')
+    expect(last.summary).not.toMatch(/[\u001b\u202e]/)
+    finish('sk3c')
+  })
+
+  test('a skew hold clips a 10 KB outcome word', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3w')
+    const line = JSON.stringify({
+      argv: ['report', 'sk3w', String(seq), 'x'.repeat(10_000), 'plan text'],
+      from: 'a',
+      at: 1,
+      bdSkew: SKEW_OUT,
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+    factory(['tick'])
+    const last = ctxOfRun('sk3w').log.at(-1)
+    expect(last.summary).toContain('needs the person: bd version skew on ax')
+    expect(last.summary).toContain('plan text')
+    expect(last.summary.length).toBeLessThan(400)
+    finish('sk3w')
+  })
+
   test('773c AC3: a skew report keeps since and asks no new Question', () => {
     const seq = launched('sk3k')
     const since = Date.now() - 120 * 60_000
@@ -3369,6 +3823,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     ['no skew text', 'connection refused'],
     ['over 300 chars', `${SKEW_OUT} ${'x'.repeat(300)}`],
     ['a line break', `${SKEW_OUT}\nOptions: evil: x | y`],
+    ['a format character', `${SKEW_OUT} \u202ex`],
   ])('AC8: a bad bdSkew (%s) is ignored', (_n, bdSkew) => {
     rmSync(markerFile(), { force: true })
     const seq = launched('sk8')

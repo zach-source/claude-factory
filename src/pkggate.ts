@@ -90,6 +90,8 @@ type Resolved = {
    * built from the same samples, so a decision never waits on a refresh -- the backoff only throttles the
    * refresh attempt itself (claude-factory-8ub.7) */
   goFloorNextRetryAt: number
+  /** the last floor refresh failed on a refused redirect that upstreamFetch already counted; the next decision that fails for it must not count it again */
+  goFloorRefusalCounted: boolean
 }
 
 const REGISTRY_CACHE_MS = 60_000
@@ -164,6 +166,7 @@ function resolve(cfg: GateConfig): Resolved {
     goFloorRefreshing: null,
     goFloorBackoffMs: 0,
     goFloorNextRetryAt: 0,
+    goFloorRefusalCounted: false,
   }
 }
 
@@ -480,9 +483,11 @@ function parseSumdbLatestSize(text: string): number | null {
   return Number.isSafeInteger(size) && size >= 0 ? size : null
 }
 
-async function goSumdbLatestSize(cfg: Resolved): Promise<{ ok: true; size: number } | { ok: false }> {
+async function goSumdbLatestSize(
+  cfg: Resolved,
+): Promise<{ ok: true; size: number } | { ok: false; refused?: true }> {
   const r = await fetchText(cfg, `${cfg.upstream.sumdb}/latest`)
-  if (!r.ok) return { ok: false }
+  if (!r.ok) return r.refused ? { ok: false, refused: true } : { ok: false }
   const size = parseSumdbLatestSize(r.text)
   return size === null ? { ok: false } : { ok: true, size }
 }
@@ -545,9 +550,10 @@ function noteGoFloorFailure(cfg: Resolved, reason: string) {
  * refresh read, with the wall time of the read. The anchor is its newest entry at or before now-minDays,
  * else its oldest. The ceiling is `latest - (latest - anchor.size) * minDays / (now - anchor.at)`. With
  * less than minDays of history, this extrapolates the observed rate. With more, it interpolates between
- * two real reads. An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
+ * two real reads. With a floor present, the ceiling applies at every span > 0. A cold start with less than 30 min of history (GO_FLOOR_WINDOW_MS) has no ceiling: a short span
+ * multiplies noise by minDays/span (claude-factory-qyuu). An attacker's own lookups only raise `latest`, so they lower the ceiling. The ceiling
  * does not compound across refreshes. The size delta is clamped at 0, so a smaller `/latest` than the
- * anchor never puts the ceiling above `latest`. With no elapsed time (a cold start) it is Infinity. A zero
+ * anchor never puts the ceiling above `latest`. With no floor and less than GO_FLOOR_WINDOW_MS elapsed (a cold start, or its retry) it is Infinity. A zero
  * span must never reach the division: a NaN floor would allow every version. The history must stay
  * strictly increasing in time. If the wall clock is not after the newest read (a clock step back during the
  * refresh), the refresh fails, keeps the floor and does not store the read (claude-factory-35em).
@@ -569,11 +575,13 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     cfg,
     `${cfg.upstream.goIndex}/index?since=${encodeURIComponent(new Date(sinceMs).toISOString())}&limit=2000`,
   )
-  if (!r.ok)
+  if (!r.ok) {
+    cfg.goFloorRefusalCounted = !!r.refused
     return noteGoFloorFailure(
       cfg,
       `index.golang.org ${r.refused ? 'redirect refused' : r.status || 'timeout'}`,
     )
+  }
   const entries = r.text
     .split('\n')
     .map(parseGoIndexLine)
@@ -589,24 +597,32 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     })
   const sample = pickEvenlySpaced(entries, GO_FLOOR_SAMPLE_LIMIT)
   const latestSize = await goSumdbLatestSize(cfg)
-  if (!latestSize.ok) return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
+  if (!latestSize.ok) {
+    cfg.goFloorRefusalCounted = !!latestSize.refused
+    return noteGoFloorFailure(cfg, 'sum.golang.org /latest unavailable')
+  }
   const wallNow = cfg.now()
-  // the history must stay strictly increasing in time: the anchor choice and the span > 0 guard rely on it
+  // the history must stay strictly increasing in time: the anchor choice and the span guard rely on it
   if (cfg.goSizes.length && wallNow <= cfg.goSizes.at(-1)!.at)
     return noteGoFloorFailure(cfg, 'wall clock is not after the last tree size read')
   cfg.goSizes.push({ at: wallNow, size: latestSize.size })
   const cutoff = wallNow - cfg.minDays * 24 * 3_600_000
   while (cfg.goSizes.length > 1 && cfg.goSizes[1]!.at <= cutoff) cfg.goSizes.shift()
   const ids: number[] = []
+  let refusals = 0
   await mapLimit(sample, GO_LIST_CONCURRENCY, async e => {
     const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
     if (looked.ok && looked.record < latestSize.size) ids.push(looked.record)
+    else if (!looked.ok && looked.refused) refusals++
   })
-  if (ids.length < GO_FLOOR_MIN_SAMPLES)
+  if (ids.length < GO_FLOOR_MIN_SAMPLES) {
+    // upstreamFetch counted each refusal once: when every missing sample was one, the gate must not count again
+    cfg.goFloorRefusalCounted = refusals > 0 && refusals === sample.length - ids.length
     return noteGoFloorFailure(
       cfg,
       `only ${ids.length} of ${sample.length} sampled versions answered within the tree size read before lookups, need ${GO_FLOOR_MIN_SAMPLES}`,
     )
+  }
   const sampled = Math.min(...ids)
   const prev = cfg.goFloor
   const bound = prev
@@ -614,14 +630,13 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
     : Infinity
   const anchor = cfg.goSizes[0]! // just pushed above, never empty
   const span = wallNow - anchor.at
-  // span > 0 keeps NaN out: a NaN floor would allow every version (goDecideVersion compares record > floor)
-  const ceiling =
-    span > 0
-      ? Math.floor(
-          latestSize.size -
-            (Math.max(0, latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span,
-        )
-      : Infinity
+  // the guard also keeps NaN out (span 0): a NaN floor would allow every version
+  // (goDecideVersion compares record > floor)
+  const ceiling = (prev ? span > 0 : span >= GO_FLOOR_WINDOW_MS)
+    ? Math.floor(
+        latestSize.size - (Math.max(0, latestSize.size - anchor.size) * cfg.minDays * 24 * 3_600_000) / span,
+      )
+    : Infinity
   const record = Math.min(sampled, bound, ceiling)
   const capped = record < sampled
   cfg.goFloor = { record, at: t0, latest: latestSize.size }
@@ -685,8 +700,16 @@ async function goSumdbGate(
   infoDecision: Decision,
 ): Promise<Decision> {
   const floor = await ensureGoFloor(cfg)
-  if (!floor)
-    return { decision: 'error', reason: 'sum.golang.org floor unavailable', ageH: infoDecision.ageH }
+  if (!floor) {
+    const counted = cfg.goFloorRefusalCounted
+    cfg.goFloorRefusalCounted = false
+    return {
+      decision: 'error',
+      reason: 'sum.golang.org floor unavailable',
+      ageH: infoDecision.ageH,
+      ...(counted && { counted: true as const }),
+    }
+  }
   let record = cacheEntry?.record
   if (record === undefined) {
     const looked = await goSumdbRecord(cfg, mod, version)

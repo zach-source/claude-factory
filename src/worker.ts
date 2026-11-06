@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -111,10 +112,10 @@ export function usageOfSession(run: string): Usage[] {
 /** the usage line for each outbox-replayable command, shown both for `--help`/`-h` (exit 0) and malformed
  * args (exit 1; exit 2 for memory add): see `outboxUsage` */
 export const OUTBOX_USAGE = {
-  report: 'usage: factory report <run> <seq> <outcome> <summary...|--summary-file path>',
-  mail: 'usage: factory mail <run> <node|manager> <text...>',
+  report: "usage: factory report <run> <seq> <outcome> '<summary...>'|--summary-file path",
+  mail: "usage: factory mail <run> <node|manager> '<text...>'",
   memory:
-    'usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] <summary> [body...]',
+    "usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] '<summary>' '[body...]'",
   helped: 'usage: factory memory helped --from run/station <note path...>',
 }
 
@@ -222,7 +223,9 @@ export function bootstrapBeads(
   // bd bootstraps an empty store, and exits 0, from an origin with no refs/dolt/data: refuse that
   if (!remote) {
     const ls = Bun.spawnSync(['git', 'ls-remote', origin, 'refs/dolt/data'], { env, stderr: 'pipe' })
-    if (ls.exitCode !== 0 || !ls.stdout.toString().trim())
+    if (ls.exitCode !== 0)
+      throw new Error(`beads in the VM: git ls-remote refs/dolt/data: ${lastError(ls.stderr.toString())}`)
+    if (!ls.stdout.toString().trim())
       throw new Error(`beads in the VM: ${origin} has no refs/dolt/data, set the rig's beadsRemote`)
   }
   mkdirSync(join(dir, '.beads'), { recursive: true })
@@ -248,14 +251,27 @@ export function bootstrapBeads(
  * the repo's GitHub origin (refs/dolt/data), in a directory of its own, since the repo's .beads config names
  * the laptop's server; the agent's bd finds it through BEADS_DIR. A resumed task keeps it
  */
-export function setupBeads() {
+export function setupBeads(retryMs = 10_000) {
   if (!process.env.FACTORY_BEADS) return
   const dir = join(own(), 'beads')
   const remote = process.env.FACTORY_BEADS_REMOTE
   // Dolt sends its user and password as an Authorization header, which the egress gateway replaces with the
   // vault's: the VM holds only this placeholder (DOLT_REMOTE_USER comes in the rig's env)
   if (remote) process.env.DOLT_REMOTE_PASSWORD ??= 'placeholder'
-  bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
+  try {
+    bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
+  } catch (e) {
+    const line = /bootstrap -y: (.*)$/.exec((e as Error).message)?.[1]
+    if (line === undefined) throw e
+    // a short git or gateway fault can fail a clone. Retry once from a clean dir: a failed clone can leave a half store
+    appendFileSync(
+      serveLog(),
+      `${new Date().toISOString()} beads: bd bootstrap -y failed, retry 1: ${line}\n`,
+    )
+    rmSafe(dir, { recursive: true, force: true })
+    Bun.sleepSync(retryMs)
+    bootstrapBeads(dir, remote, process.env.FACTORY_REPO!)
+  }
   Object.assign(process.env, { ...bdEnv(), BEADS_DIR: join(dir, '.beads') })
 }
 
@@ -268,7 +284,9 @@ export const SKEW_RE = /schema skew|table has unknown fields/i
 export const isSchemaSkew = (s: SyncResult) => !s.ok && s.step === 'pull' && SKEW_RE.test(s.error)
 
 /**
- * This returns the last line of stderr that is not empty. It comes from a bd command that does not succeed, and has a maximum of 300 chars.
+ * This returns the last line of stderr that is not empty and is not a Dolt `hint:` line. Dolt adds fixed hint lines
+ * (about GCM) to each failed git command, and they hide the real git error. If every line is a hint, it keeps the last one.
+ * It comes from a bd command that does not succeed, and has a maximum of 300 chars.
  * src/cli.ts uses this line in its refusal message.
  * Each http(s) or file URL becomes <url>.
  * A Dolt remote URL can contain its host.
@@ -280,6 +298,7 @@ function lastError(stderr: string): string {
       .split('\n')
       .map(l => l.trim())
       .filter(Boolean)
+      .filter((l, _, all) => !l.startsWith('hint:') || all.every(x => x.startsWith('hint:')))
       .at(-1) ?? ''
   return cut(line.replace(/\b(?:https?|file):\/\/\S+/g, '<url>'), 300)
 }
@@ -1150,22 +1169,27 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
   const branch = process.env.FACTORY_BRANCH ?? 'main'
   let err = ''
   for (let i = 0; i < tries; i++) {
+    // build in a sibling dir and rename last: a stop part way leaves no .git for the early return to trust
+    const tmp = repo() + '.tmp'
     rmSafe(repo(), { recursive: true, force: true })
-    const r = sh(['git', 'clone', '--branch', branch, remote, repo()])
+    rmSafe(tmp, { recursive: true, force: true })
+    const r = sh(['git', 'clone', '--branch', branch, remote, tmp])
     if (r.ok) {
-      excludeScratch(repo())
+      excludeScratch(tmp)
+      renameSync(tmp, repo())
       return ''
     }
     err = r.err
     // not transient: the laptop pushed the branch before the launch, so it is gone (a merge deleted it)
     if (err.includes(`Remote branch ${branch} not found in upstream origin`)) {
-      rmSafe(repo(), { recursive: true, force: true })
-      const c = sh(['git', 'clone', remote, repo()])
-      const b = c.ok ? sh(['git', '-C', repo(), 'checkout', '-q', '-b', branch]) : c
+      rmSafe(tmp, { recursive: true, force: true })
+      const c = sh(['git', 'clone', remote, tmp])
+      const b = c.ok ? sh(['git', '-C', tmp, 'checkout', '-q', '-b', branch]) : c
       if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
-      excludeScratch(repo())
+      excludeScratch(tmp)
       const note = `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
       writeFileSync(noteFile, note)
+      renameSync(tmp, repo())
       return note
     }
     await Bun.sleep(waitMs)
