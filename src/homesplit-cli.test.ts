@@ -207,6 +207,19 @@ test('a bad home-split.json makes start and rig add fail with its error', () => 
   expect(cli(home, ['rig', 'add', 'other', widget]).err).toContain('bad shape')
 })
 
+test('a refused start calls bd zero times', () => {
+  const { home, widget, to } = fixture()
+  expect(cli(home, ['home', 'split', to]).code).toBe(0)
+  mkdirSync(join(widget, '.beads'))
+  const bin = tmp()
+  const log = join(bin, 'calls')
+  writeFileSync(join(bin, 'bd'), `#!/bin/sh\necho "$@" >> ${log}\necho '[]'\n`, { mode: 0o755 })
+  const p = cli(home, ['start', 'lifecycle', widget, 'fix the thing'], { PATH: `${bin}:${process.env.PATH}` })
+  expect(p.code).not.toBe(0)
+  expect(p.err).toContain('moved to the server home')
+  expect(existsSync(log)).toBe(false)
+})
+
 test('rig add refuses a subdirectory or a symlink of a moved repo', () => {
   const { home, widget, to } = fixture()
   expect(cli(home, ['home', 'split', to]).code).toBe(0)
