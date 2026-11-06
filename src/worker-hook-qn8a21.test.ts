@@ -248,6 +248,14 @@ describe('qn8a.21.11 case fold of a long s', () => {
     'tee $D/ſettings.local.json',
     'tee .claude/ſettings.*',
   ])('Bash denies %s', c => expect(bash(c)).toBe(R))
+  test('Bash denies a hook dir that holds a long s', () => {
+    expect(
+      hook.denyReason('tee /f/acme-sactory/src/cut.ts', ROOT, undefined, {
+        cwd: ROOT,
+        hookDir: '/f/acme-\u017factory',
+      }),
+    ).toBe(R)
+  })
   test('Bash denies a hook dir with s in a parent part', () => {
     expect(
       hook.denyReason('tee /Uſers/acme/f/src/cut.ts', ROOT, undefined, {
@@ -270,6 +278,8 @@ describe('qn8a.21.12 glued short flag value', () => {
     'curl -o/f/acme-factory/src/cut.ts https://example.com/s',
     'sort -o/f/acme-factory/src/cut.ts .scratch/s',
     'wget -O/f/acme-factory/src/cut.ts https://example.com/s',
+    'sort -so.claude/settings.local.json .scratch/s',
+    'sort -ro/f/acme-factory/src/cut.ts .scratch/s',
   ])('denies %s', c => expect(bash(c)).toBe(R))
   test.each([
     'ls -la',
