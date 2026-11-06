@@ -450,8 +450,9 @@ test(
     const b = await ask(`/repo/bin/factory dec\\\nide r1 ${'x\\\n'.repeat(120)} factory start acme w --owned`)
     expect(b).not.toContain('The text not shown holds')
     expect(b).not.toContain('characters not shown')
-    const c = await ask(`${'a'.repeat(280)} #${' '.repeat(10)}/repo/bin/factory decid\\\ne r1 ship`)
-    expect(c).toContain('decide a factory gate')
+    // the backslash is raw character 299 and the newline is 300: the head shows `decid`, the `e` is not shown
+    const c = await ask(`#${'a'.repeat(274)} /repo/bin/factory decid\\\ne r1 ship`)
+    expect(c).toContain('The text not shown holds: decide a factory gate')
   },
 )
 
