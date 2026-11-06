@@ -92,9 +92,10 @@ const hits = (text: string, word: RegExp) => {
   return (DELETE.test(text) || DELETE.test(f)) && (word.test(f) || API.test(text))
 }
 
-// a word that names a script file: a script extension, or a ./ or / path
-const SCRIPT =
-  /(?:^|[\s'"=(`;&|])((?:\.{0,2}\/)?[\w./-]+\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)|\.{1,2}\/[\w./-]+)(?=$|[\s'";&|)`])/g
+// a run of path chars between a lead and a terminator char; ':' ends a path:line word
+const SCRIPT = /(?:^|[\s'"=(`;&|:])([\w./-]+)(?=$|[\s'";&|)`:])/g
+// a word names a file to read when it holds a / or ends in a script extension
+const isFile = (w: string) => w.includes('/') || /\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)$/.test(w)
 
 // the only command words of a read-only command: none of them runs a file it is given
 const READERS = new Set([
@@ -248,8 +249,12 @@ export function homeReason(
   const word = homeWord(protect)
   if (hits(command, word)) return HOME_REASON
   if (!readFile || readOnly(command)) return undefined
+  const seen = new Set<string>()
   for (const m of command.matchAll(SCRIPT)) {
-    const text = readFile(m[1]!)
+    const w = m[1]!
+    if (!isFile(w) || seen.has(w)) continue
+    seen.add(w)
+    const text = readFile(w)
     if (text !== undefined && hits(text, word)) return HOME_REASON
   }
   return undefined

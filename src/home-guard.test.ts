@@ -168,6 +168,63 @@ describe('homeReason', () => {
     expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
 
+  // a path word without a script extension, and a word before ':'
+  const ABS = '/abs/wt/.scratch/x'
+  test.each([
+    ABS,
+    `${ABS} --all`,
+    '.scratch/x',
+    'bash .scratch/x',
+    "'/wt/x' a",
+    '"/wt/x"',
+    'nohup /abs/x',
+    'cat a; .scratch/x',
+    `factory mutate ${CLI}:1 a b -- bun test`,
+    `bun test ${CLI}:12:3`,
+    'PATH=/a:/b/x.sh foo',
+  ])('denies a path word that holds a home delete: %s', cmd =>
+    expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
+  )
+
+  test('reads the bare path, without the :line', () => {
+    const cases: [string, string][] = [
+      [ABS, ABS],
+      ['.scratch/x', '.scratch/x'],
+      ["'/wt/x' a", '/wt/x'],
+      [`bun test ${CLI}:12:3`, CLI],
+      ['PATH=/a:/b/x.sh foo', '/b/x.sh'],
+    ]
+    for (const [cmd, path] of cases) {
+      const seen: string[] = []
+      homeReason(cmd, p => (seen.push(p), undefined), H)
+      expect(seen).toContain(path)
+    }
+  })
+
+  test.each([ABS, `bun test ${CLI}:1`])('allows a path word to a benign file: %s', cmd =>
+    expect(homeReason(cmd, () => 'echo ok', H)).toBeUndefined(),
+  )
+
+  test('a read-only command with a path or :line reads no file', () => {
+    let reads = 0
+    const count = () => (reads++, undefined)
+    homeReason(`git diff origin/main -- ${CLI}`, count, H)
+    homeReason(`grep -n x ${CLI}:1`, count, H)
+    expect(reads).toBe(0)
+  })
+
+  test.each(['curl https://example.com/a/b', 'git push origin main'])(
+    'a path word that does not read is no deny: %s',
+    cmd => expect(homeReason(cmd, () => undefined, H)).toBeUndefined(),
+  )
+
+  test('5000 path words return fast', () => {
+    const cmd = '.scratch/a '.repeat(5000) + 'bash x'
+    const t0 = performance.now()
+    homeReason(cmd, () => undefined, H)
+    expect(performance.now() - t0).toBeLessThan(200)
+  })
+
   test('a 100000-char reader pipeline returns fast', () => {
     const cmd = `grep -n "a\\|b" ${CLI} | `.repeat(5000) + 'head'
     const t0 = performance.now()
