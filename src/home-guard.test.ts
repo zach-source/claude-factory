@@ -182,6 +182,12 @@ describe('homeReason', () => {
     `factory mutate ${CLI}:1 a b -- bun test`,
     `bun test ${CLI}:12:3`,
     'PATH=/a:/b/x.sh foo',
+    'bash x.sh>o',
+    'bash .scratch/x>o',
+    '.scratch/x>/dev/null',
+    'bash<.scratch/x',
+    'bash <.scratch/x',
+    'sh<x.sh',
   ])('denies a path word that holds a home delete: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
@@ -193,6 +199,14 @@ describe('homeReason', () => {
       ["'/wt/x' a", '/wt/x'],
       [`bun test ${CLI}:12:3`, CLI],
       ['PATH=/a:/b/x.sh foo', '/b/x.sh'],
+      ['bash .scratch/x', '.scratch/x'],
+      ['"/wt/x"', '/wt/x'],
+      ['nohup /abs/x', '/abs/x'],
+      ['cat a; .scratch/x', '.scratch/x'],
+      [`${ABS} --all`, ABS],
+      [`factory mutate ${CLI}:1 a b -- bun test`, CLI],
+      ['bash x.sh>o', 'x.sh'],
+      ['bash<.scratch/x', '.scratch/x'],
     ]
     for (const [cmd, path] of cases) {
       const seen: string[] = []
@@ -219,10 +233,12 @@ describe('homeReason', () => {
   )
 
   test('5000 path words return fast', () => {
-    const cmd = '.scratch/a '.repeat(5000) + 'bash x'
+    const cmd = Array.from({ length: 5000 }, (_, i) => `.scratch/a${i}`).join(' ') + ' bash x'
+    let reads = 0
     const t0 = performance.now()
-    homeReason(cmd, () => undefined, H)
+    homeReason(cmd, () => (reads++, undefined), H)
     expect(performance.now() - t0).toBeLessThan(200)
+    expect(reads).toBeGreaterThanOrEqual(5000)
   })
 
   test('a 100000-char reader pipeline returns fast', () => {

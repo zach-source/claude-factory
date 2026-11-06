@@ -93,7 +93,7 @@ const hits = (text: string, word: RegExp) => {
 }
 
 // a run of path chars between a lead and a terminator char; ':' ends a path:line word
-const SCRIPT = /(?:^|[\s'"=(`;&|:])([\w./-]+)(?=$|[\s'";&|)`:])/g
+const SCRIPT = /(?:^|[\s'"=(`;&|:<>])([\w./-]+)(?=$|[\s'";&|)`:<>])/g
 // a word names a file to read when it holds a / or ends in a script extension
 const isFile = (w: string) => w.includes('/') || /\.(?:sh|bash|zsh|py|ts|js|mjs|cjs|rb|pl)$/.test(w)
 
