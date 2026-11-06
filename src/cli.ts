@@ -586,10 +586,17 @@ export function replayable(
 /**
  * `report <run> <seq> <outcome> --summary-file <path>` -> [run, seq, outcome, <file text>]; any other args pass
  * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. A bad form
- * throws. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
+ * throws. A whole word `--summary-file` in a later slot also throws: it would post the flag as text and lose the
+ * report. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
  */
 export function summaryArgs(args: string[]): string[] {
-  if (args[3] !== '--summary-file') return args
+  if (args[3] !== '--summary-file') {
+    if (args.slice(3).includes('--summary-file'))
+      return fail(
+        'usage: factory report <run> <seq> <outcome> --summary-file <path> (the flag must follow the outcome)',
+      )
+    return args
+  }
   const path = args[4]
   if (!path || args.length !== 5)
     return fail(
@@ -605,7 +612,7 @@ const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--super
 /**
  * claude-factory-jho3: expand a file flag to the inline form. Three forms exist:
  * report --summary-file (see summaryArgs);
- * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot;
+ * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot (a later whole word throws);
  * memory add --body-file <path>, which replaces the body words.
  * The path goes through textFileArg. Other args pass unchanged. A bad form throws.
  * A VM expands before it queues, so the laptop never reads a path that a VM chose.
@@ -615,7 +622,11 @@ export function fileArgs(cmd: string, args: string[]): string[] {
   if (cmd === 'report') return summaryArgs(args)
   if (cmd === 'mail') {
     const at = args[2] === '--wake' ? 3 : 2
-    if (args[at] !== '--text-file') return args
+    if (args[at] !== '--text-file') {
+      if (args.slice(at).includes('--text-file'))
+        return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (the flag must come first)')
+      return args
+    }
     if (!args[at + 1] || args.length !== at + 2)
       return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
     return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
