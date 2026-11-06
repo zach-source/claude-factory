@@ -4450,24 +4450,40 @@ function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boo
   return false
 }
 
+const UNDO_PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/[1-9][0-9]*$/
+
 /**
- * claude-factory-qn8a.23: true for the plain `gh pr ready --undo` form only. gh uses the last value
- * of a bool flag, so any `--undo=<value>` word, dynamic word or word with a shell or zsh glob character
- * (anything outside a plain literal) before a literal `--` can cancel it.
+ * claude-factory-qn8a.23: true only for the closed grammar `pr [-R|--repo <repo>] ready W...`.
+ * `tail` is the words after `gh`. W is `--undo` (exactly once), one PR selector (a number or a
+ * github.com pull URL) or one `-R|--repo <owner/repo>` (once in the tail). Any other word cancels
+ * the exemption, because gh uses the last value of a bool flag and pflag gives the word after `-R` to it.
  */
-function plainUndo(words: string[]): boolean {
+function undoForm(tail: string[]): boolean {
+  let i = 0
   let undo = false
-  const plain = (x: string) =>
-    !x.startsWith('--undo=') && !dynamicWord(x) && /^[A-Za-z0-9_.\/:@%+,=-]+$/.test(x)
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!
-    if (w === '--') break
-    if (!plain(w)) return false
-    if (w === '-R' || w === '--repo') {
-      // pflag gives the next word to -R: it can eat --undo or --, and gh ignores the value with a URL selector.
-      const v = words[++i]
-      if (v === undefined || !plain(v)) return false
-    } else if (w === '--undo') undo = true
+  let sel = false
+  let repo = false
+  const takeRepo = (): boolean => {
+    const v = tail[i + 1]
+    if (repo || v === undefined || !MERGE_REPO.test(v)) return false
+    repo = true
+    i += 2
+    return true
+  }
+  if (tail[i++] !== 'pr') return false
+  if ((tail[i] === '-R' || tail[i] === '--repo') && !takeRepo()) return false
+  if (tail[i++] !== 'ready') return false
+  while (i < tail.length) {
+    const w = tail[i]!
+    if (w === '--undo' && !undo) {
+      undo = true
+      i++
+    } else if ((MERGE_PR_NUMBER.test(w) || UNDO_PR_URL.test(w)) && !sel) {
+      sel = true
+      i++
+    } else if ((w === '-R' || w === '--repo') && takeRepo()) {
+      // consumed
+    } else return false
   }
   return undo
 }
@@ -5440,7 +5456,7 @@ function ghReasonOn(
   if (verb === 'pr' && sub === 'merge') return prMergeReason(tail, gate, aliasDepth, skipBlank)
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
   if (verb === 'pr' && sub === 'ready') {
-    if (plainUndo(tail)) return undefined
+    if (undoForm(tail)) return undefined
     return mayReady(gate) ? undefined : READY_REASON
   }
   if (
@@ -5487,7 +5503,6 @@ function ghReasonOn(
   if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
     if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return mergeDenyReason(gate)
     if (verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['ready']))) {
-      if (plainUndo(rest)) return undefined
       return mayReady(gate) ? undefined : READY_REASON
     }
     if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
