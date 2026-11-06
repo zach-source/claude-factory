@@ -95,7 +95,7 @@ const REVIEWER_TYPE = 'factory:reviewer'
 // [SECURITY] a bd label write can queue a bead for dispatch; best-effort text match (see the tool.call deny).
 const LABEL_ADD =
   /--add-label|--set-labels|\bbd\b[\s\S]*(?:\blabel['"]?\s+['"]?(?:add|propagate)\b|\bcreate\b[\s\S]*(?:--labels\b|\s['"]?-[A-Za-z]*l))/
-const INSTALL_VERB =/\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
+const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
 /** review-log.jsonl keeps at most this many lines, oldest dropped first */

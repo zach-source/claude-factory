@@ -423,73 +423,69 @@ test(
   },
 )
 
-test(
-  '[SECURITY] a subagent never adds a bd label; neighbours and the main chat run',
-  SLOW,
-  async ($, on) => {
-    const clock = mock.clock(on)
-    let asked = 0
-    let ran = 0
-    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-      on(event, () => ({ value: undefined }) as never)
-    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
-      asked += 1
-      return { result: { questions: e.questions, answers: {} } }
-    })
-    on('tool.call', { tool: 'Bash' }, () => {
-      ran += 1
-      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
-    })
-    const call = (command: string, agentId?: string) =>
-      $.tool.call({ tool: 'Bash', command, ...(agentId ? { agentId } : {}) } as never)
+test('[SECURITY] a subagent never adds a bd label; neighbours and the main chat run', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  let asked = 0
+  let ran = 0
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    asked += 1
+    return { result: { questions: e.questions, answers: {} } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  const call = (command: string, agentId?: string) =>
+    $.tool.call({ tool: 'Bash', command, ...(agentId ? { agentId } : {}) } as never)
 
-    const denied = [
-      'bd update acme-1 --add-label factory',
-      'bd update acme-1 --add-label=factory',
-      'bd update acme-1 --set-labels bug,factory',
-      'bd label add acme-1 factory',
-      'bd -C /repo/acme label add acme-1 factory',
-      'bd label propagate acme-1 factory',
-      "bd create 'x' -t task -l factory",
-      "bd create 'x' --labels factory",
-      'bd update acme-1 \\\n--add-label factory',
-      'bd update acme-1 --add-la\\\nbel factory',
-      'cd /repo/acme && bd update acme-1 --add-label held:x',
-    ]
-    for (const command of denied) {
-      const r = await call(command, 'patrol-1')
-      expect(r.deny, command).toContain('never adds a bd label')
-    }
-    expect((await call(denied[0]!, 'other-1')).deny).toContain('never adds a bd label')
-    expect(asked).toBe(0)
-    expect(ran).toBe(0)
+  const denied = [
+    'bd update acme-1 --add-label factory',
+    'bd update acme-1 --add-label=factory',
+    'bd update acme-1 --set-labels bug,factory',
+    'bd label add acme-1 factory',
+    'bd -C /repo/acme label add acme-1 factory',
+    'bd label propagate acme-1 factory',
+    "bd create 'x' -t task -l factory",
+    "bd create 'x' --labels factory",
+    'bd update acme-1 \\\n--add-label factory',
+    'bd update acme-1 --add-la\\\nbel factory',
+    'cd /repo/acme && bd update acme-1 --add-label held:x',
+  ]
+  for (const command of denied) {
+    const r = await call(command, 'patrol-1')
+    expect(r.deny, command).toContain('never adds a bd label')
+  }
+  expect((await call(denied[0]!, 'other-1')).deny).toContain('never adds a bd label')
+  expect(asked).toBe(0)
+  expect(ran).toBe(0)
 
-    const allowed = [
-      "bd comment acme-1 'queued it for the person'",
-      'bd update acme-1 --remove-label factory',
-      'bd label remove acme-1 held:x',
-      'bd ready --label factory --json',
-      'bd list --label factory',
-      'bd undefer acme-1',
-      'bd show acme-1 --json',
-      "bd create 'x' -t task -p 3 -d 'text'",
-      '/repo/bin/factory queue acme acme-1',
-    ]
-    for (const command of allowed) {
-      const before = ran
-      const r = await call(command, 'patrol-1')
-      expect(r.deny, command).toBeUndefined()
-      expect(ran, command).toBe(before + 1)
-    }
+  const allowed = [
+    "bd comment acme-1 'queued it for the person'",
+    'bd update acme-1 --remove-label factory',
+    'bd label remove acme-1 held:x',
+    'bd ready --label factory --json',
+    'bd list --label factory',
+    'bd undefer acme-1',
+    'bd show acme-1 --json',
+    "bd create 'x' -t task -p 3 -d 'text'",
+    '/repo/bin/factory queue acme acme-1',
+  ]
+  for (const command of allowed) {
+    const before = ran
+    const r = await call(command, 'patrol-1')
+    expect(r.deny, command).toBeUndefined()
+    expect(ran, command).toBe(before + 1)
+  }
 
-    const main = await call('bd update acme-1 --add-label factory')
-    expect(main.deny).toBeUndefined()
-    expect(asked).toBe(0)
-    expect(ran).toBe(allowed.length + 1)
-    await clock.settle()
-  },
-)
+  const main = await call('bd update acme-1 --add-label factory')
+  expect(main.deny).toBeUndefined()
+  expect(asked).toBe(0)
+  expect(ran).toBe(allowed.length + 1)
+  await clock.settle()
+})
 
 test(
   'a run the main chat touched is held out of the next patrol; its mail stays queued until the hold clears',
