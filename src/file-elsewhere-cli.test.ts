@@ -275,7 +275,10 @@ test('a -file flag also reads a file in .scratch/ of the git toplevel of the cwd
   const r = run(join(wt, '.scratch', 'ok.md'), join(wt, 'sub'))
   expect(r.code).toBe(0)
   expect(creates()[0]).toContain("x'; id; ' and $(id)")
+  mkdirSync(join(wt, '.scratch-x'))
+  writeFileSync(join(wt, '.scratch-x', 'a.md'), 'a')
   const bad: Record<string, string> = {
+    'sibling folder': join(wt, '.scratch-x', 'a.md'),
     dotdot: join(wt, '.scratch', '..', 'notes.md'),
     'symlink out': join(wt, '.scratch', 'link.txt'),
     'outside .scratch': join(wt, 'notes.md'),
