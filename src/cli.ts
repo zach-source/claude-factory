@@ -568,11 +568,13 @@ export function replayable(
   run: string,
 ): string[] | null {
   const [cmd, id, seq] = argv
-  // a VM expands --summary-file before it queues; a line that still has it would read a laptop file
+  // a VM expands --summary-file, --text-file and --body-file before it queues; a line that still has it would read a laptop file
   if (cmd === 'report' && id === run && seq === String(side.seq))
     return argv[4] === '--summary-file' ? null : argv
-  if (cmd === 'mail' && id === run) return argv
+  if (cmd === 'mail' && id === run)
+    return argv[3] === '--text-file' || (argv[3] === '--wake' && argv[4] === '--text-file') ? null : argv
   if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
+    if (argv.includes('--body-file')) return null
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
     return ['memory', id, ...rest, '--from', `${run}/${side.node}`]
   }
@@ -593,6 +595,45 @@ export function summaryArgs(args: string[]): string[] {
     )
   const text = readTextFile('--summary-file', path)
   return [...args.slice(0, 3), text]
+}
+
+/** the flags of `memory add` that take a value */
+const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--supersedes']
+
+/**
+ * claude-factory-jho3: expand a file flag to the inline form. Three forms exist:
+ * report --summary-file (see summaryArgs);
+ * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot;
+ * memory add --body-file <path>, which replaces the body words.
+ * The path goes through textFileArg. Other args pass unchanged. A bad form throws.
+ * A VM expands before it queues, so the laptop never reads a path that a VM chose.
+ * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add.
+ */
+export function fileArgs(cmd: string, args: string[]): string[] {
+  if (cmd === 'report') return summaryArgs(args)
+  if (cmd === 'mail') {
+    const at = args[2] === '--wake' ? 3 : 2
+    if (args[at] !== '--text-file') return args
+    if (!args[at + 1] || args.length !== at + 2)
+      return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
+    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
+  }
+  if (cmd !== 'memory' || args[0] !== 'add' || !args.includes('--body-file')) return args
+  const i = args.indexOf('--body-file')
+  const path = args[i + 1]
+  if (args.indexOf('--body-file', i + 1) >= 0) return fail('--body-file twice')
+  if (!path || path.startsWith('--')) return fail('--body-file needs a path')
+  const rest = args.filter((_, j) => j !== i && j !== i + 1)
+  const words = rest
+    .slice(1)
+    .filter(
+      (w, j, a) =>
+        w !== '--anyway' &&
+        !MEMORY_ADD_VALUE_FLAGS.includes(a[j - 1]!) &&
+        !MEMORY_ADD_VALUE_FLAGS.includes(w),
+    )
+  if (words.length > 1) return fail('--body-file replaces the body words: give the summary and the file only')
+  return [...rest, textFileArg('--body-file', path)]
 }
 
 /** the stat/size/read core of --summary-file and the text-file flags; a bad file fails with the flag and path named */
@@ -10216,7 +10257,7 @@ function shipQueues() {
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
-const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' '[body...]'`
+const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
 
 /**
  * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
@@ -10337,7 +10378,7 @@ const usage = `factory — herdr software factories on xstate
                                      PKG_GATE_ALLOWLIST_GO/_NPM/_PYPI colon-separated, one per ecosystem);
                                      GET /healthz for its counters
   decide <run> <outcome> '[note...]' the person: answer a gate station
-  mail <run> <node|manager> [--wake] '<text...>'  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
+  mail <run> <node|manager> [--wake] '<text...>'|--text-file path  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> '[text...]'             nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
@@ -10379,7 +10420,15 @@ const outboxCmd =
   (cmd === 'report' || cmd === 'mail' || (cmd === 'memory' && (args[0] === 'add' || args[0] === 'helped')))
 // `--help`/`-h` and malformed args never reach the outbox: before this, `report --help` queued a fake report
 // indistinguishable from a real one (claude-factory-4x1)
-const outboxOk = outboxCmd ? worker.outboxUsage(cmd!, args) : null
+let queuedArgs = args
+if (outboxCmd)
+  try {
+    queuedArgs = fileArgs(cmd!, args)
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(cmd === 'memory' ? 2 : 1)
+  }
+const outboxOk = outboxCmd ? worker.outboxUsage(cmd!, queuedArgs) : null
 if (outboxOk === 'help')
   console.log(
     worker.OUTBOX_USAGE[
@@ -10390,14 +10439,6 @@ else if (outboxOk) {
   console.error(outboxOk)
   process.exit(cmd === 'memory' && args[0] === 'add' ? 2 : 1)
 }
-let queuedArgs = args
-if (outboxCmd && outboxOk === null && cmd === 'report')
-  try {
-    queuedArgs = summaryArgs(args)
-  } catch (e) {
-    console.error((e as Error).message)
-    process.exit(1)
-  }
 const queued = outboxCmd && outboxOk === null
 const tooBig = queued ? worker.outboxTooBig([cmd!, ...queuedArgs]) : undefined
 if (tooBig) {
@@ -10569,6 +10610,15 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'memory': {
+        if (args[0] === 'add')
+          try {
+            args.splice(0, args.length, ...fileArgs('memory', args))
+          } catch (e) {
+            console.error(`factory memory add: ${(e as Error).message}`)
+            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
+            process.exitCode = 2
+            break
+          }
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
         // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
@@ -11201,7 +11251,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
-        const [id, to, ...rest] = args
+        const [id, to, ...rest] = fileArgs('mail', args)
         const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
         const run = loadRun(id)
