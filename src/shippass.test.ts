@@ -1,7 +1,16 @@
 // shipPass() starts one ship run for each rig whose ship queue holds a bead (claude-factory-rtuw).
 // It drives the real pass through `factory beads` with a fake bd and herdr, as dispatch.test.ts does.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { shipStarts } from './cli'
@@ -155,6 +164,20 @@ test('a live ship run holds no slot, but a work run still does', () => {
   writeFileSync(join(home, 'runs', id, 'run.json'), JSON.stringify({ ...rest, id, ship: undefined }))
   rmSync(join(home, 'runs', runs().find(r => r.id !== id)!.id), { recursive: true })
   expect(factory(['start', 'lifecycle', 'a', 'more work'], env).err).toContain('runs are busy')
+})
+
+test('a live run with a ship- id but no ship flag does not block the ship pass', () => {
+  setup([{ name: 'a', queued: true }])
+  factory(['beads'])
+  const { id, ...rest } = runs()[0]!
+  cpSync(join(home, 'runs', id), join(home, 'runs', 'ship-x-abc'), { recursive: true })
+  writeFileSync(
+    join(home, 'runs', 'ship-x-abc', 'run.json'),
+    JSON.stringify({ ...rest, id: 'ship-x-abc', ship: undefined }),
+  )
+  rmSync(join(home, 'runs', id), { recursive: true })
+  factory(['beads'])
+  expect(runs().filter(r => r.ship)).toHaveLength(1)
 })
 
 test('a run dir without run.json does not break factory start', () => {
