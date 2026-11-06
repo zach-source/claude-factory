@@ -447,7 +447,10 @@ const none: [string, (runDir: string, codex: string) => void][] = [
   ['a .bak name', (_r, c) => void putRollout(c, `${RNAME}.bak`)],
   ['a rollout outside sessions/', (_r, c) => void putRollout(c, RNAME, rollout(), '.')],
   ["another node's home", (r, _c) => void putRollout(join(r, 'codex', 'verify'))],
-  ['a file over 64 MiB', (_r, c) => truncateSync(putRollout(c), 64 * 1024 * 1024 + 1)],
+  [
+    'a file over 64 MiB', // a valid rollout, a newline, then zeros: only the size check stops it
+    (_r, c) => truncateSync(putRollout(c, RNAME, rollout() + '\n'), 64 * 1024 * 1024 + 1),
+  ],
   ['a bad model', (_r, c) => void putRollout(c, RNAME, rollout({ model: 'x'.repeat(65) }))],
   ['a negative count', (_r, c) => void putRollout(c, RNAME, rollout({ out: -1 }))],
   ['a fractional count', (_r, c) => void putRollout(c, RNAME, rollout({ out: 1.5 }))],
