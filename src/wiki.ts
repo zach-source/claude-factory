@@ -36,6 +36,8 @@ const KEYS = [
   'updated',
 ]
 const LISTS = ['rigs', 'beads', 'prs', 'topics']
+// An alias copies its scalar. A small block can thus decode to a huge page. Cap the block and refuse repeats.
+const MAX_FRONTMATTER = 4096
 const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/
 
 const str = (v: unknown): v is string => typeof v === 'string' && v !== ''
@@ -56,9 +58,11 @@ export function parse(text: string): { page: Page; body: string } | { reasons: s
   const lines = text.split('\n')
   const end = lines.indexOf('---', 1)
   if (lines[0] !== '---' || end < 0) return { reasons: ['no frontmatter'] }
+  const fm = lines.slice(1, end).join('\n')
+  if (fm.length > MAX_FRONTMATTER) return { reasons: ['frontmatter: too long'] }
   let y: unknown
   try {
-    y = Bun.YAML.parse(lines.slice(1, end).join('\n'))
+    y = Bun.YAML.parse(fm)
   } catch {
     return { reasons: ['no frontmatter'] }
   }
@@ -73,6 +77,7 @@ export function parse(text: string): { page: Page; body: string } | { reasons: s
   for (const f of LISTS) {
     const v = d[f]
     if (v !== undefined && !(Array.isArray(v) && v.every(str))) r.push(`${f}: not a string list`)
+    else if (Array.isArray(v) && new Set(v).size !== v.length) r.push(`${f}: repeated entry`)
   }
   const n = (f: string) => (Array.isArray(d[f]) ? d[f].length : 0)
   if ((kind === 'rig' || kind === 'solution') && n('rigs') < 1) r.push('rigs: missing')
