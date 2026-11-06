@@ -8,11 +8,12 @@ const dir = join(tmpdir(), `home-split-cli-${process.pid}`)
 const home = join(dir, 'home')
 const server = join(dir, 'server')
 
-const factory = (args: string[], extra: Record<string, string> = {}) => {
+const factory = (args: string[], extra: Record<string, string> = {}, timeout = 20000) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...rest } = process.env
   const laptop = Object.fromEntries(Object.entries(rest).filter(([k]) => !k.startsWith('HERDR_')))
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_NO_KICK: '1', FACTORY_SELF_UPDATE: '0', ...extra },
+    timeout,
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }

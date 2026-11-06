@@ -74,6 +74,21 @@ test('a server home refuses a non-AX rig at once and before each tick', () => {
   expect(ticks).toBe(1)
 })
 
+test('runnerOfStation in server mode throws for a herdr station and spawns nothing', async () => {
+  const { runnerOfStation, setServerMode } = await import('./cli')
+  const run = { repo: '/r/none' } as never
+  const def = { nodes: { h: { runner: 'herdr' }, a: { runner: 'ax' }, d: {} } } as never
+  setServerMode(true)
+  try {
+    expect(runnerOfStation(run, def, 'a').name).toBe('ax')
+    expect(() => runnerOfStation(run, def, 'h')).toThrow('ax runner only')
+    expect(() => runnerOfStation(run, def, 'd')).toThrow('ax runner only')
+  } finally {
+    setServerMode(false)
+  }
+  expect(runnerOfStation(run, def, 'h').name).toBe('herdr')
+})
+
 test('server mode runs the ax runner only', () => {
   expect(() => assertAxRunner('ax', true)).not.toThrow()
   expect(() => assertAxRunner('herdr', true)).toThrow('ax runner only')

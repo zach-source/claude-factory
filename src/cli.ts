@@ -1785,13 +1785,14 @@ export const resumeNote = (run: Run, node: string, c: Ctx) =>
   `check git status and git log first. When finished, report exactly once: ${reportCmd(run, c)}`
 
 /** where a station's workers run: the station's own runner, else the rig's */
-const runnerOfStation = (run: Run, def: Factory, node: string) => {
+export const runnerOfStation = (run: Run, def: Factory, node: string) => {
   const name = def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER
   assertAxRunner(name, serverMode)
   return runners[name] ?? runners[DEFAULT_RUNNER]!
 }
 /** true under `factory server`: the process starts AX workers only (src/splithome.ts) */
 let serverMode = false
+export const setServerMode = (on: boolean) => (serverMode = on)
 
 /**
  * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
