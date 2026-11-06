@@ -34,6 +34,7 @@ import {
   PUSH_REASON,
   QUOTED_ASSIGNMENT_REASON,
   GLOBAL_GIT_CONFIG_REASON,
+  HOOK_ERROR_REASON,
   READY_REASON,
   REASON,
   SCAN_BUDGET_REASON,
@@ -875,6 +876,26 @@ test('run as `bun src/worker-hook.ts`, an allow command, a non-Bash tool or bad 
   expect(other).toEqual({ out: '', code: 0 })
   const bad = await run('not json')
   expect(bad).toEqual({ out: '', code: 0 })
+}, 10_000)
+
+// claude-factory-sibp / claude-factory-qn8a.38: a throw in a guard must deny, not exit 1 (fail open).
+test('run as `bun src/worker-hook.ts`, a payload that makes a guard throw prints one HOOK_ERROR_REASON deny and exits 0 (claude-factory-sibp)', async () => {
+  const payloads = [
+    { tool_name: 'Bash', tool_input: { command: 123 } },
+    { tool_name: 'Bash', tool_input: { command: ['x'] } },
+    { tool_name: 'Write', cwd: { a: 1 }, tool_input: { file_path: 'a.md' } },
+  ]
+  for (const p of payloads) {
+    const { out, code } = await run(JSON.stringify(p))
+    expect(code).toBe(0)
+    expect(JSON.parse(out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: HOOK_ERROR_REASON,
+      },
+    })
+  }
 }, 10_000)
 
 test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-factory-99d.2', async () => {

@@ -9462,6 +9462,23 @@ function logDenial(reason: string, command: string, harness: string | undefined)
   } catch {}
 }
 
+/** claude-factory-sibp: main() prints this when a guard throws. It holds no exception text and no command text. */
+export const HOOK_ERROR_REASON =
+  'The factory denies this command: the factory hook failed while it checked the command. ' +
+  'Run a simpler command. Do not retry this exact command.'
+
+function denyOut(reason: string) {
+  console.log(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }),
+  )
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -9470,6 +9487,17 @@ async function main() {
   } catch {
     return
   }
+  // claude-factory-sibp: a throw in any guard denies. An uncaught throw exits 1, and Claude Code lets the command run.
+  try {
+    handle(input)
+  } catch {
+    denyOut(HOOK_ERROR_REASON)
+    const argh = process.argv.indexOf('--harness')
+    logDenial(HOOK_ERROR_REASON, '', argh >= 0 ? process.argv[argh + 1] : process.env.FACTORY_HARNESS)
+  }
+}
+
+function handle(input: unknown) {
   const i = input as {
     tool_name?: string
     cwd?: string
