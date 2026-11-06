@@ -1252,7 +1252,9 @@ function segments(
       // reading: it starts a new word with the `&`, so the words after the redirect stay with the command.
       let j = i + 1
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
-      if (cmd[j] === '!') {
+      let k = j + 1
+      while (cmd[k] === '\\' && cmd[k + 1] === '\n') k += 2
+      if (cmd[j] === '!' && cmd[k] !== '(') {
         // claude-factory-qn8a.5: zsh `&!` is one separator (disown). The `!` is not part of the next word.
         endSeg()
         i = j

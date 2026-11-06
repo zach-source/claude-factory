@@ -154,6 +154,23 @@ for (const [c, want] of [
   test(`F2 denies ${JSON.stringify(c)}`, () => {
     expect(ask(c)).toBe(want)
   })
+// S3 (qn8a.5.10): `&!(` is a bash/zsh extglob group at the command slot. Keep the origin/main reading.
+for (const c of [
+  'echo a &!(x)h pr merge 1',
+  'echo a &!(zzz) pr merge 1',
+  'echo a &!(x) -rf /',
+  'echo a &!(x|y)h pr merge 1',
+  'echo a &!(x)(y)h pr merge 1',
+  'echo a &!(!(x))h pr merge 1',
+  'echo a &\\\n!(x)h pr merge 1',
+  'echo a &!\\\n(x)h pr merge 1',
+  'echo a &!(x)\\\nh pr merge 1',
+  'shopt -s extglob\necho a &!(x)h pr merge 1',
+  'setopt kshglob\necho a &\\\n!(x)h pr merge 1',
+])
+  test(`S3 denies ${JSON.stringify(c)}`, () => {
+    expect(ask(c)).toBeDefined()
+  })
 for (const c of [
   'ls &',
   'echo a & ls',
