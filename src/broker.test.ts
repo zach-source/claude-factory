@@ -501,3 +501,58 @@ test('the reviewer keys appear only in one pair of reviewer rules', async () => 
     expect(calls.length).toBe(2)
   }
 })
+
+test('a policy with the reviewer API rule gets no other key on a github host', async () => {
+  const api = reviewerRule()
+  const author = hostRule(['github.com'], 'GITHUB_BASIC')
+  const refused: Record<string, unknown> = {
+    'api + GITHUB_BASIC on github.com': rulesOf(api, author),
+    'api + GITHUB on api.github.com': rulesOf(api, hostRule(['api.github.com'], 'GITHUB')),
+    'pair + *.com': rulesOf(api, gitRule(), hostRule(['*.com'], 'GITHUB_ZS_BASIC')),
+    'api + *': rulesOf(api, hostRule(['*'], 'GITHUB')),
+    'api + *.github.com': rulesOf(api, hostRule(['*.github.com'], 'GITHUB')),
+    'case and trailing dot': rulesOf(api, hostRule(['GitHub.com.'], 'GITHUB_BASIC')),
+    'keyed rule before api': rulesOf(author, api),
+    'http wrapper': { rules: [{ https: api }, { http: author }] },
+    'extra key, no credential': rulesOf(api, {
+      hostnames: ['codeload.github.com'],
+      effects: { replaceHeaders: [] },
+    }),
+    'mixed host list': rulesOf(api, hostRule(['a.example.com', 'github.com'], 'BUILDBUDDY')),
+  }
+  for (const [name, body] of Object.entries(refused)) {
+    expect([name, typeof workerPolicyRefusal(body)]).toEqual([name, 'string'])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 400])
+    expect(calls).toEqual([])
+  }
+  const accepted: Record<string, unknown> = {
+    'api alone': rulesOf(api),
+    pair: rulesOf(api, gitRule()),
+    'pair + codeload': rulesOf(api, gitRule(), { hostnames: ['codeload.github.com'] }),
+    'pair + codeload + ports': rulesOf(api, gitRule(), {
+      hostnames: ['codeload.github.com'],
+      ports: { numbers: [443] },
+    }),
+    'pair + keyed other host': rulesOf(api, gitRule(), hostRule(['a.example.com'], 'BUILDBUDDY')),
+    'egressPolicy reviewer with extras': ax.egressPolicy(
+      'v',
+      [{ hosts: ['codeload.github.com'] }, { hosts: ['a.example.com'], key: 'BUILDBUDDY' }],
+      undefined,
+      undefined,
+      'acme',
+      undefined,
+      true,
+      false,
+      'widget',
+    ),
+  }
+  for (const [name, body] of Object.entries(accepted)) {
+    expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
+    const { calls, c } = setup()
+    const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+    expect([name, res.status]).toEqual([name, 200])
+    expect(calls.length).toBe(2)
+  }
+})
