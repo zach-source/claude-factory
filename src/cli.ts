@@ -144,7 +144,7 @@ import * as selfupdate from './selfupdate'
 import { needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
-import { scanPages } from './wiki'
+import { renderRigPage, rigList, scanPages, type Merged, type RigRow } from './wiki'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
@@ -10700,6 +10700,65 @@ function shipQueues() {
   return out
 }
 
+const WIKI_RIG_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/
+
+/**
+ * One `factory wiki refresh` pass: write rigs/<rig>.md for each rig with a valid name and the rig list in
+ * index.md, from the run rows, the ship queues and the merged-PR cache (no gh call). A run that cannot be
+ * read is left out. With `dryRun` it only returns the changed paths. Else it commits, pushes and journals.
+ */
+async function wikiRefresh(dryRun: boolean): Promise<string[]> {
+  const dir = join(HOME, 'wiki')
+  const rows: RigRow[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value, c } = current(id)
+      const def = await loadPinned(run.factory)
+      rows.push({ ...row(run, def, value, c, agentOf(def, value, c)), createdAt: createdAt(id) })
+    } catch (err) {
+      console.error(`wiki refresh: run ${id} left out: ${(err as Error).message.split('\n')[0]}`)
+    }
+  }
+  const waitingIds = new Set(rows.filter(r => holdOf(r)).map(r => r.id))
+  const queues = shipQueues()
+  const merged = cachedMerges(readMerged())
+  const now = Date.now()
+  const files = new Map<string, string>()
+  const names: string[] = []
+  for (const rig of rigs()) {
+    if (!WIKI_RIG_NAME.test(rig.name) || names.includes(rig.name)) {
+      wikiLog('wiki: bad rig name, page skipped')
+      continue
+    }
+    names.push(rig.name)
+    const slug = rigRef(rig.repo)?.slug
+    const mine = rows.filter(r => r.rig === rig.name)
+    const shipped: Merged[] = merged
+      .filter(m => slug && githubSlugOf(m.url) === slug)
+      .map(m => ({
+        url: m.url,
+        mergedAt: m.mergedAt,
+        title: (rows.find(r => `factory/${r.id}` === m.head)?.goal ?? m.head).replace(/^[\w.-]+: /, ''),
+      }))
+    files.set(
+      `rigs/${rig.name}.md`,
+      renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now),
+    )
+  }
+  const read = (p: string) => (existsSync(join(dir, p)) ? readFileSync(join(dir, p), 'utf8') : '')
+  files.set('index.md', rigList(read('index.md'), names))
+  const changed = [...files.keys()].filter(p => files.get(p) !== read(p)).sort()
+  if (dryRun) return changed
+  for (const p of changed) {
+    mkdirSync(dirname(join(dir, p)), { recursive: true })
+    writeFileSync(join(dir, p), files.get(p)!)
+  }
+  commitWiki('refresh', `${names.length} rig pages, ${changed.length} changed`, dir)
+  pushWiki(dir) // also retries an earlier failed push
+  wikiLog(`wiki refresh: ${names.length} rig pages, ${changed.length} changed`)
+  return changed
+}
+
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
 const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
@@ -11340,6 +11399,30 @@ if (import.meta.main && !outboxCmd)
       }
       case 'wiki': {
         refuseWorker('wiki', true)
+        if (args[0] === 'refresh') {
+          const dry = args[1] === '--dry-run'
+          if (args.length > (dry ? 2 : 1)) {
+            console.error('usage: factory wiki refresh [--dry-run]')
+            process.exitCode = 2
+            break
+          }
+          const release = hold('wiki.lock')
+          if (!release) {
+            console.log('wiki: busy')
+            break
+          }
+          try {
+            if (!existsSync(join(HOME, 'wiki', '.git')))
+              console.log('wiki: not set up: run factory wiki init')
+            else {
+              const paths = await wikiRefresh(dry)
+              if (dry) console.log(paths.join('\n'))
+            }
+          } finally {
+            release()
+          }
+          break
+        }
         const i = args.indexOf('--remote')
         const remoteArg = i < 0 ? undefined : args[i + 1]
         const rest = i < 0 ? args : args.filter((_, j) => j !== i && j !== i + 1)
