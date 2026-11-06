@@ -3614,7 +3614,70 @@ function globalGitConfigUse(
   return use
 }
 
-const FACTORY_CONFIG_SAMPLES = ['rigs.json', 'worker-settings.json', 'worker-settings-x.json']
+// the protected files as globs: rigs.json and one worker-settings file per rig (and per skills set)
+const FACTORY_CONFIG_GLOBS = ['rigs.json', 'worker-settings*.json']
+
+type GlobTok = { star: true } | { star: false; test: (c: string) => boolean; lit?: string }
+
+function globToks(g: string): GlobTok[] {
+  const out: GlobTok[] = []
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i]!
+    if (c === '*') out.push({ star: true })
+    else if (c === '?') out.push({ star: false, test: () => true })
+    else if (c === '[' && g.indexOf(']', i + 2) > 0) {
+      const j = g.indexOf(']', i + 2)
+      let re: RegExp
+      try {
+        re = new RegExp(
+          '^[' +
+            g
+              .slice(i + 1, j)
+              .replace(/^!/, '^')
+              .replace(/\\/g, '\\\\') +
+            ']$',
+          'i',
+        )
+      } catch {
+        re = /^/
+      }
+      out.push({ star: false, test: x => re.test(x) })
+      i = j
+    } else out.push({ star: false, test: x => x === c, lit: c })
+  }
+  return out
+}
+
+/**
+ * claude-factory-qn8a.20: returns `true` when glob `a` and glob `b` can match one common string.
+ * The tokens are `*`, `?`, `[class]` and a literal. Two classes, or a class and `?`, count as a meet.
+ * The search visits each pair of token positions once, so the cost is O(|a|*|b|).
+ * With a `state`, the search spends scan work. An empty budget also fails closed.
+ */
+export function globsMeet(a: string, b: string, state?: ScanState): boolean {
+  const p = globToks(a)
+  const q = globToks(b)
+  if (state && spendWork(state, (p.length + 1) * (q.length + 1))) return true
+  const seen = new Set<number>()
+  const go = (i: number, j: number): boolean => {
+    const k = i * (q.length + 1) + j
+    if (seen.has(k)) return false
+    seen.add(k)
+    if (i === p.length && j === q.length) return true
+    const x = p[i]
+    const y = q[j]
+    if (x?.star && go(i + 1, j)) return true
+    if (y?.star && go(i, j + 1)) return true
+    if (!x || !y) return false
+    if (x.star && y.star) return go(i + 1, j + 1)
+    if (x.star) return go(i, j + 1)
+    if (y.star) return go(i + 1, j)
+    if (x.lit !== undefined) return y.test(x.lit) && go(i + 1, j + 1)
+    if (y.lit !== undefined) return x.test(y.lit) && go(i + 1, j + 1)
+    return go(i + 1, j + 1)
+  }
+  return go(0, 0)
+}
 const FACTORY_CONFIG_MAY_RE = /rigs|settings|[*?[{<>\\"']/i
 // no `=` and no leading `-`: a flag with a glued value (--output=/h/rigs.json) is no path
 const FACTORY_CONFIG_EXEMPT_RE = /^[\w.@%+,:/][\w.@%+,:/-]*$/
@@ -3650,7 +3713,7 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
   // a class names its first member, so w[o]rker-settings-acme.json reads as the settings file
   const first = last.replace(/\[[!^]?([^\]])[^\]]*\]/g, '$1')
   if (/rigs\.json|worker-settings/.test(first)) return 1
-  if (!globCanMatch(last, FACTORY_CONFIG_SAMPLES, state)) return 0
+  if (!FACTORY_CONFIG_GLOBS.some(g => globsMeet(last, g, state))) return 0
   return /[a-z]/.test(last) ? 2 : 3
 }
 
@@ -3664,7 +3727,8 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
  * flag value, and every word of a segment that does not skip its operands.
  * ponytail: these pass: a name built at run time (a variable, printf), a script file, a symlink
  * from an earlier call, a program that picks the path, git config -f (qn8a.50), codex apply_patch
- * (qn8a.22), the hook source and settings.local.json (qn8a.21), and a re-point of origin (qn8a.45).
+ * (qn8a.22), the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
+ * directory copy that names no file (qn8a.52), and a symlink made earlier in the same command (qn8a.54).
  * The sandbox is the barrier.
  * Upgrade path: resolve each word against the real FACTORY_HOME.
  */
