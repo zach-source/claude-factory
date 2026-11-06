@@ -194,6 +194,27 @@ describe('maskAssignments', () => {
     ['eval "X=zqsecret ls"', 'eval "X=*** ls"'],
     ['env -S "X=zqsecret ls"', 'env -S "X=*** ls"'],
     ['bash -c "sh -c \'X=zqsecret ls\'"', 'bash -c "sh -c \'X=*** ls\'"'],
+    ['a[' + 'k'.repeat(65) + ']=zqsecret ls', 'a[' + 'k'.repeat(65) + ']=*** ls'],
+    ['a[b[1]]=zqsecret ls', 'a[b[1]]=*** ls'],
+    ['a[x y]=zqsecret ls', 'a[x y]=*** ls'],
+    ['a["k"]+=zqsecret ls', 'a["k"]+=*** ls'],
+    ['X=$(echo zqsecret) ls', 'X=***'],
+    ['X=a$(echo zq secret) ls', 'X=***'],
+    ['X=`echo zqsecret` ls', 'X=***'],
+    ['X="$(echo "zq secret")" ls', 'X=***'],
+    ['X=<(cat zqsecret) ls', 'X=***'],
+    ['declare -A m=([k]=zqsecret)', 'declare -A m=***'],
+    ['m=([k]=zqsecret [j]=v2)', 'm=***'],
+    ['m=(zq secret)', 'm=***'],
+    ['${X=zqsecret}', '${X=***'],
+    ['${X:=zqsecret}', '${X:=***'],
+    [': "${GH_TOKEN:=zqsecret}"', ': "${GH_TOKEN:=***'],
+    ['echo "${GH_TOKEN:-zqsecret}"', 'echo "${GH_TOKEN:-***'],
+    ['${X-zqsecret}', '${X-***'],
+    ['ls foo-bar', 'ls foo-bar'],
+    ['echo $(date) a-b', 'echo $(date) a-b'],
+    ['cat a]b', 'cat a]b'],
+    ['ls x==y', 'ls x=***'],
   ])('%s', (i, o) => expect(m(i)).toBe(o))
   test.each([
     'export X=zqsecret',
@@ -203,6 +224,12 @@ describe('maskAssignments', () => {
     '(X=zqsecret ls)',
     'X+=zqsecret ls',
     'a[1]=zqsecret ls',
+    'a[' + 'k'.repeat(65) + ']=zqsecret ls',
+    'a[b[1]]=zqsecret ls',
+    'X=$(echo zqsecret) ls',
+    'X=`echo zqsecret` ls',
+    'm=([k]=zqsecret)',
+    '${X:=zqsecret}',
     'bash -c "GH_TOKEN=zqsecret gh pr list"',
     "sh -c 'X=zqsecret ls'",
     'eval "X=zqsecret ls"',
@@ -214,7 +241,18 @@ describe('maskAssignments', () => {
     expect(performance.now() - t).toBeLessThan(2000)
   })
   test('long rows are fast', () => {
-    for (const i of ['X=' + '"'.repeat(1e5), 'a='.repeat(5e4), '"a='.repeat(4e4), "'a=".repeat(4e4)]) {
+    for (const i of [
+      'X=' + '"'.repeat(1e5),
+      'a='.repeat(5e4),
+      '"a='.repeat(4e4),
+      "'a=".repeat(4e4),
+      ']='.repeat(1e5),
+      '"]='.repeat(1e5),
+      ' ${a:-'.repeat(1e5),
+      ' X=$('.repeat(1e5),
+      ' X="$('.repeat(1e5),
+      ' a[b['.repeat(1e5),
+    ]) {
       const t = performance.now()
       m(i)
       expect(performance.now() - t).toBeLessThan(100)
