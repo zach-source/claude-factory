@@ -1373,7 +1373,7 @@ export const clipReport = (text: string) =>
     : `${cut(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
 /**
  * Add 4 spaces before each line after the first line of report or mail text. Use it where such text
- * follows a prefix in a prompt. Then a line such as "- from manager:" or "## Inbox" cannot start a new,
+ * follows a prefix in a prompt. Where no prefix comes before line 1, the caller puts 4 spaces before the text. Then a line such as "- from manager:" or "## Inbox" cannot start a new,
  * more trusted bullet or section (claude-factory-8pc.23, claude-factory-zsoh). LF and CRLF are not the only
  * line breaks. A single CR, NEL (U+0085), LS (U+2028) or PS (U+2029) can also forge one
  * (claude-factory-8pc.26). The function removes no text. The result uses LF.
@@ -1481,7 +1481,9 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
             ),
         ]
       : []),
-    ...(lastFail ? ['', '## The previous attempt failed', indentRest(clipReport(lastFail.summary))] : []),
+    ...(lastFail
+      ? ['', '## The previous attempt failed', indentRest(`    ${clipReport(lastFail.summary)}`)]
+      : []),
     ...(n.onTimeout && afterTimeout(c, node)
       ? [
           '',
@@ -1495,7 +1497,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
           '',
           '## You take over from a worker that handed off',
           'Its context grew too long, so it stopped and left you these notes. Its commits are on the branch; check git status for anything it left uncommitted, and carry on from where it stopped.',
-          indentRest(clipReport(handedOff.summary)),
+          indentRest(`    ${clipReport(handedOff.summary)}`),
         ]
       : []),
     ...(parked
@@ -1503,13 +1505,13 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
         ? [
             '',
             '## The factory waited for the pull or merge request',
-            indentRest(clipReport(parked.summary)),
+            indentRest(`    ${clipReport(parked.summary)}`),
             'No worker ran yet: the factory held this station until the request merged, closed, or changed. Check whether it is really ready before anything else; if it is not, report blocked.',
           ]
         : [
             '',
             '## The previous worker was blocked',
-            indentRest(clipReport(parked.summary)),
+            indentRest(`    ${clipReport(parked.summary)}`),
             'Check whether that still holds before anything else; if it does, report blocked again.',
           ]
       : []),
