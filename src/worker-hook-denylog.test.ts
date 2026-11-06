@@ -283,10 +283,7 @@ describe('maskKeyValues (claude-factory-1as9)', () => {
     'git push origin main',
     'a | b && c',
     'x "y z"',
-  ])(
-    '%s is unchanged',
-    i => expect(m2(i)).toBe(i),
-  )
+  ])('%s is unchanged', i => expect(m2(i)).toBe(i))
   // claude-factory-pwg3: a secret with no = before it in its word is out of scope.
   test.each(['printf -v X zqsecret', 'curl -d \'{"token":"zqsecret"}\''])('%s stays (pwg3)', i =>
     expect(m2(i)).toBe(i),
