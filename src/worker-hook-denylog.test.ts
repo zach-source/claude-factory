@@ -230,7 +230,7 @@ describe('maskAssignments', () => {
     ['Y="${X:-"zq secret"}" ls', 'Y=***'],
     ["X=$'zq\\' secret' ls", 'X=***'],
     ["X=a$'zq\\' secret' ls", 'X=***'],
-    ['X="a"$\'zq\\\' secret\' ls', 'X=***'],
+    ["X=\"a\"$'zq\\' secret' ls", 'X=***'],
     ["a[k]=$'zq\\' secret' ls", 'a[k]=***'],
     ['X=$[1 + 2] ls', 'X=***'],
     ['X=zq\rsecret ls', 'X=*** ls'],
