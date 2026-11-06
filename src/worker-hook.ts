@@ -9583,7 +9583,7 @@ function logDenial(reason: string, command: string, harness: string | undefined)
     const at = Date.now()
     const h = harness && HARNESSES.includes(harness) ? harness : 'unknown'
     const name = reasonName(reason)
-    const cmd = cut(maskKeyValues(maskAssignments(command)), 200)
+    const cmd = cut(maskAssignments(maskKeyValues(command)), 200)
     if (process.env.FACTORY_OUTBOX && process.env.FACTORY_DENY_LOG === '1')
       appendFileSync(
         process.env.FACTORY_OUTBOX,
@@ -9599,11 +9599,11 @@ function logDenial(reason: string, command: string, harness: string | undefined)
 }
 
 // claude-factory-1as9: a shell word. Each part starts with a different char, so the scan is linear.
-const WORD_RE = /(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'[^']*'?|[^\s;&|()`"'\\])+/g
+const MASK_WORD_RE = /(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"?|'(?:\\[\s\S]|[^'\\])*'?|[^ \t\n;&|()`"'\\])+/g
 
-/** claude-factory-1as9: in each shell word that holds a literal =, replace all text after the first = with ***. Masks more than needed, never less. */
+/** claude-factory-1as9: split the text into shell words (a word ends only at space, tab, newline or ; & | ( ) backtick), and in each word that holds a literal =, replace all text after the first = with ***. Masks more than needed, never less. logDenial runs it before maskAssignments. */
 export function maskKeyValues(command: string): string {
-  return command.replace(WORD_RE, w => {
+  return command.replace(MASK_WORD_RE, w => {
     const i = w.indexOf('=')
     return i < 0 ? w : w.slice(0, i + 1) + '***'
   })
