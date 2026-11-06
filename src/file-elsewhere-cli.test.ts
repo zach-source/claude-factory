@@ -277,3 +277,52 @@ test('file-elsewhere refuses a bad grammar with usage and zero bd calls (AC2)', 
     expect(lines()).toHaveLength(0)
   }
 })
+
+test('file-elsewhere refuses a control character in a title or a description with zero bd calls (claude-factory-p1j6)', () => {
+  setup()
+  const bad: Record<string, string> = {
+    ESC: 'a\x1b[2Jb',
+    CR: 'a\rb',
+    DEL: 'a\x7fb',
+    C1: 'a\u009bb',
+  }
+  const check = (name: string, a: string[], code: string) => {
+    const r = factory(a)
+    expect([name, r.code]).toEqual([name, 1])
+    expect([name, lines().length]).toEqual([name, 0])
+    if (code) expect(r.err).toContain(code)
+    expect(/[^\P{Cc}\n]/u.test(r.err.trimEnd())).toBe(false)
+  }
+  const codes: Record<string, string> = { ESC: 'U+001B', CR: 'U+000D', DEL: 'U+007F', C1: 'U+009B' }
+  let n = 0
+  for (const [name, v] of Object.entries(bad)) {
+    check(`title ${name}`, [...FROM, '--title', v, '--description', 'd'], codes[name]!)
+    check(
+      `title-file ${name}`,
+      [...FROM, '--title-file', txt(`t${n++}`, v), '--description', 'd'],
+      codes[name]!,
+    )
+    check(`description ${name}`, [...FROM, '--title', 't', '--description', v], codes[name]!)
+    check(
+      `description-file ${name}`,
+      [...FROM, '--title', 't', '--description-file', txt(`d${n++}`, v)],
+      codes[name]!,
+    )
+  }
+  check('title tab', [...FROM, '--title', 'a\tb', '--description', 'd'], 'U+0009')
+  check('title newline', [...FROM, '--title', 'a\nb', '--description', 'd'], '')
+  check('title-file NUL', [...FROM, '--title-file', txt('tn', 'a\x00b'), '--description', 'd'], 'U+0000')
+  check(
+    'description-file NUL',
+    [...FROM, '--title', 't', '--description-file', txt('dn', 'a\x00b')],
+    'U+0000',
+  )
+
+  const text = 'line one\nline two\tend'
+  expect(factory([...FROM, '--title', 'Café widget ✓', '--description', text]).code).toBe(0)
+  expect(creates()).toHaveLength(1)
+  expect(creates()[0]).toContain('Café widget ✓')
+  expect(creates()[0]).toContain('line two\tend')
+  expect(factory([...FROM, '--title', 't', '--description-file', txt('ok', text)]).code).toBe(0)
+  expect(creates()).toHaveLength(2)
+})
