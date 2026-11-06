@@ -4,7 +4,7 @@ These checks prove each user story on a test cluster namespace. Do them in order
 
 ## Prerequisites
 
-- A namespace with the server Deployment and its PVC (see plan.md, step S2).
+- A namespace with the server Deployment and its PVC (see plan.md, step S2). To split the home, see [Split the home](../../docs/remote-runner.md#split-the-home-ax-rigs-to-the-server-s2).
 - A person certificate on the laptop: `factory cert person <name>` writes it to `~/.config/factory/person.{crt,key}`.
 - `FACTORY_SERVER=https://<gateway address>:8444` in the laptop shell.
 - A test rig on the AX runner with `maxRuns: 1` and a small repo.

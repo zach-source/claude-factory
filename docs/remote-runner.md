@@ -450,6 +450,57 @@ To turn it off, unset `FACTORY_AX_BACKUP_REMOTE` and run `factory manager --ax` 
 - Runs on `ax://` workers move with no change. Their workers keep running while the move happens.
 - The upload is `PUT_PART` bytes of base64 for each `ax ssh` call, because `ax ssh` has no stdin. A home of 100 MB sends in about 1500 calls. A part that fails is sent again 3 times. Then the command stops. Run it again, because a part sent twice does no harm.
 
+### Split the home: AX rigs to the server (S2)
+
+This section moves the AX rigs to a server home on the PVC of `factory server`. The herdr rigs stay in the local home. Each rig belongs to one home. The server runs the tick and the AX runner, and it polls the outbox of each AX task, as the laptop did. Plan: `specs/004-factory-server/plan.md`, step S2. Checks: `specs/004-factory-server/quickstart.md`, checks 4 to 7.
+
+#### What the split does
+
+`factory home split <dir>` runs on the laptop. A rig moves only when its `runner` is exactly `ax`. A rig with another runner, or none, stays.
+
+- `<dir>/rigs.json` holds the AX rigs, each with a `remote` (the https form of its origin). `repo` stays as written. The server maps it to a clone (see Repos and beads in the task).
+- `<dir>/runs/<id>` holds each live run of a moved rig. The `<task>.seen` files move with it, so the server does not replay a report twice. A finished run stays in the local home. `runs/*/transcripts` is not copied.
+- `<dir>/memory/` is a copy of the local memory. The two copies diverge after the split (claude-factory-4z8f).
+- The local home keeps the herdr rigs. `rigs-history/` gets a snapshot of the old `rigs.json`. The local run dirs of the moved runs go to `split-<stamp>/runs/`. Nothing is deleted.
+- `split.json` in the local home records each moved rig (`name`, `repo`, `at`, `to`). `factory rig add` refuses a name or a repo that `split.json` names.
+
+The command holds `tick.lock` and writes `<dir>` first, `rigs.json` last. It changes the local home only after that. A failure before then leaves the local home whole. `--dry-run` prints the plan and writes nothing. The command refuses and changes nothing in these cases:
+
+- A tick holds `tick.lock`.
+- A live run of a moved rig has a worker in a herdr pane.
+- `<dir>` holds `rigs.json` or `runs/`.
+- No rig has the runner `ax`.
+- A rig has no origin remote.
+- `FACTORY_IN_AX=1` or `FACTORY_SERVER_HOME=1` is set.
+
+#### Steps
+
+The factory does not do the steps that start with "Owner".
+
+1. Owner: make the namespace, the PVC and the Secrets of `deploy/server.yaml`, and the gateway route for port 8444. Apply it: `envsubst '$SERVER_IMAGE $CLIENT_GATEWAY_NAMESPACE' < deploy/server.yaml | kubectl apply -f -`.
+2. Owner: stop the laptop manager, `factory loop` and `factory tick`.
+3. Run `factory home split /tmp/server-home --dry-run`. Read the plan. If it names a run in a herdr pane, finish or abort that run, or let it reach a station boundary. Then run it again.
+4. Run `factory home split /tmp/server-home`.
+5. Owner: copy `/tmp/server-home` into the pod. Put `rigs.json` last, so a tick never sees a rig without its runs: `tar -C /tmp/server-home -cf - memory runs rigs.json | kubectl -n factory exec -i deploy/factory-server -- tar -C /var/lib/factory/home -xf -`. If the split moved no run, leave `runs` out of the list.
+6. Restart the laptop manager with `bin/factory-up`. It now has the herdr rigs only.
+7. Do checks 4 to 7 of the quickstart.
+
+#### What the server checks
+
+- `factory server` stops with exit 1 and `server home holds non-AX rigs: <names>` if `rigs.json` holds a rig that is not `ax`. It binds no port and writes no lease. The same check runs before each tick, so a hand edit stops the tick and `/healthz` shows `tickOk: false`.
+- In the server, a station on a runner other than `ax` fails. No herdr pane starts.
+- The pod sets `FACTORY_SERVER_HOME=1`. Then the server clones each rig under `FACTORY_REPOS` (`/var/lib/factory/repos`) once at start, as `factory repos sync` does. git asks `gh auth git-credential` for the GitHub credential, from `GH_TOKEN`. A rig added later needs `factory repos sync` in the pod, or a restart.
+
+#### The way back
+
+1. Owner: scale the server to 0: `kubectl -n factory scale deployment/factory-server --replicas=0`. Stop the laptop manager.
+2. Copy the home off the PVC backup, or off the live PVC if it is whole: `kubectl -n factory cp <pod>:/var/lib/factory/home /tmp/server-home-back`. Use a pod that mounts the PVC. The PVC backup is the owner's snapshot of the volume. The factory does not make it yet (claude-factory-a962).
+3. Put the live runs back: copy each `/tmp/server-home-back/runs/<id>` to the local `runs/<id>`. The local copy in `split-<stamp>/runs/` is older, so do not use it.
+4. Remove the moved rigs from `split.json`. Remove the file if it is empty. Then put the rigs back in the local `rigs.json`. Run `factory rig undo`, or run `factory rig add <name> <repo> --runner ax` for each rig. Check with `factory rig`.
+5. Run `bin/factory-up`. The laptop ticks every rig again.
+
+Copy the memory notes that the server wrote into the local `memory/` by hand. The two copies diverge (claude-factory-4z8f).
+
 ### Policy broker
 
 The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it.
