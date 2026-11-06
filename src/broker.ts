@@ -158,6 +158,9 @@ function reviewerGitRule(o: Record<string, unknown>): boolean {
   )
 }
 
+/** a hostname pattern that can match a github host: github.com, *.github.com, and the Substrate patterns * and *.com */
+const githubHost = (x: string) => /^(\*|\*\.com|(.*\.)?github\.com)$/.test(x.toLowerCase().replace(/\.$/, ''))
+
 /** a string that names a reviewer key in any spelling: case, underscores and other punctuation do not count */
 const namesReviewerKey = (s: string) =>
   s
@@ -215,11 +218,14 @@ export function workerPolicyRefusal(policy: unknown): string | null {
         const hosts = h === undefined ? null : o[h]
         if (!Array.isArray(hosts) || !hosts.length || hosts.some(x => typeof x !== 'string'))
           return 'has a path rule without a list of hostnames'
-        if (
-          hosts.some(x => /^(\*|\*\.com|(.*\.)?github\.com)$/.test(x.toLowerCase().replace(/\.$/, ''))) &&
-          !reviewerApiRule(o)
-        )
-          return 'has a path rule on a github host'
+        if (hosts.some(githubHost) && !reviewerApiRule(o)) return 'has a path rule on a github host'
+      }
+      if (apiRules && norm(k) === 'hostnames') {
+        const hosts = o[k]
+        if (!Array.isArray(hosts) || hosts.some(x => typeof x !== 'string'))
+          return 'has hostnames that are not a list of strings beside the reviewer rule'
+        if (hosts.some(githubHost) && keys.some(x => norm(x) !== 'hostnames' && norm(x) !== 'ports'))
+          return 'has a key on a github host beside the reviewer rule'
       }
     }
     for (const x of Array.isArray(v) ? v : Object.values(o)) {
