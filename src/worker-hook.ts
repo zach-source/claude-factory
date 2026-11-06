@@ -9559,6 +9559,9 @@ const CD_WORDS = new Set(['cd', 'pushd', 'popd', 'chdir'])
 const HOOK_MODULES = ['worker-hook.ts', 'home-guard.ts', 'cut.ts']
 const SETTINGS_NAMES = ['settings.json', 'settings.local.json']
 
+// claude-factory-qn8a.21.11: APFS folds case fully (U+017F long s opens as s), so fold the way foldNonAscii does.
+const foldLower = (s: string): string => s.toUpperCase().toLowerCase()
+
 /**
  * claude-factory-qn8a.21: true when `abs` is a hook-control path. That is a `.claude` dir, a settings.json or
  * settings.local.json in one, or (outside `root`) the hook dir or a path under it.
@@ -9566,31 +9569,75 @@ const SETTINGS_NAMES = ['settings.json', 'settings.local.json']
  * Case folds to lower. If root and the hook dir overlap, only the hook modules count.
  */
 function hookControlPath(abs: string, root: string, hookDir: string, ancestor = false): boolean {
-  const a = abs.toLowerCase()
+  const a = foldLower(abs)
   const parts = a.split('/').filter(Boolean)
   const n = parts.length
   if (parts[n - 1] === '.claude') return true
   if (n >= 2 && parts[n - 2] === '.claude' && SETTINGS_NAMES.includes(parts[n - 1]!)) return true
-  const h = hookDir.toLowerCase()
-  const r = root.toLowerCase()
+  const h = foldLower(hookDir)
+  const r = foldLower(root)
   const under = (p: string, d: string) => p === d || p.startsWith(d.endsWith('/') ? d : d + '/')
   if (under(h, r) || under(r, h)) return HOOK_MODULES.some(m => a === `${h}/src/${m}`)
   // a Bash write word can name a parent of the hook dir (cp -R x /f/, tar -C /f); a Write tool path cannot
   return under(a, h) || (ancestor && under(h, a))
 }
 
-// One-level-at-a-time `{a,b}` expansion, capped. undefined means over the cap.
+// `{a,b}` and `{x..y}` expansion with nesting, capped. undefined means over the cap. A group with no comma
+// and no sequence stays literal, as in bash.
 function expandBraces(w: string, cap = 64): string[] | undefined {
-  const m = w.match(/^([^{]*)\{([^{}]*,[^{}]*)\}([\s\S]*)$/)
-  if (!m) return [w]
-  const out: string[] = []
-  for (const alt of m[2]!.split(',')) {
-    const sub = expandBraces(m[1]! + alt + m[3]!, cap)
-    if (!sub) return undefined
-    out.push(...sub)
-    if (out.length > cap) return undefined
+  let from = 0
+  for (;;) {
+    const open = w.indexOf('{', from)
+    if (open < 0) return [w]
+    let depth = 0
+    let close = -1
+    const cuts: number[] = []
+    for (let i = open; i < w.length; i++) {
+      const c = w[i]
+      if (c === '{') depth++
+      else if (c === '}' && --depth === 0) {
+        close = i
+        break
+      } else if (c === ',' && depth === 1) cuts.push(i)
+    }
+    if (close < 0) return [w]
+    const pre = w.slice(0, open)
+    const post = w.slice(close + 1)
+    const body = w.slice(open + 1, close)
+    let alts: string[] | undefined
+    if (cuts.length) {
+      alts = []
+      let at = open + 1
+      for (const c of [...cuts, close]) {
+        alts.push(w.slice(at, c))
+        at = c + 1
+      }
+    } else {
+      const sq = body.match(/^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$/)
+      if (sq && /\d/.test(sq[1]!) === /\d/.test(sq[2]!)) {
+        const num = /\d/.test(sq[1]!)
+        const x = num ? Number(sq[1]) : sq[1]!.charCodeAt(0)
+        const y = num ? Number(sq[2]) : sq[2]!.charCodeAt(0)
+        const step = Math.abs(Number(sq[3] ?? 1)) || 1
+        if (Math.abs(y - x) / step + 1 > cap) return undefined
+        alts = []
+        for (let v = x; x <= y ? v <= y : v >= y; v += x <= y ? step : -step)
+          alts.push(num ? String(v) : String.fromCharCode(v))
+      }
+    }
+    if (!alts) {
+      from = close + 1
+      continue
+    }
+    const out: string[] = []
+    for (const alt of alts) {
+      const sub = expandBraces(pre + alt + post, cap)
+      if (!sub) return undefined
+      out.push(...sub)
+      if (out.length > cap) return undefined
+    }
+    return out
   }
-  return out
 }
 
 /**
@@ -9613,12 +9660,12 @@ function hookControlWord(
   if (!w) return false
   const alts = expandBraces(w)
   if (!alts) return true
-  const base = hookDir.split('/').filter(Boolean).pop()?.toLowerCase() ?? '\0'
+  const base = foldLower(hookDir.split('/').filter(Boolean).pop() ?? '\0')
   for (const x of alts) {
     // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
     if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
     if (/[$`]|^~[^/]/.test(x)) {
-      const ps = x.toLowerCase().split('/').filter(Boolean)
+      const ps = foldLower(x).split('/').filter(Boolean)
       const last = ps[ps.length - 1] ?? ''
       if (
         ps.includes(base) ||
@@ -9631,14 +9678,15 @@ function hookControlWord(
     }
     const abs = resolvePath(cwd, x === '~' || x.startsWith('~/') ? homedir() + x.slice(1) : x)
     if (/[*?[]/.test(x)) {
+      const fabs = foldNonAscii(abs)
       const samples = [
         hookDir,
         `${hookDir}/src`,
         `${hookDir}/package.json`,
         ...HOOK_MODULES.map(m => `${hookDir}/src/${m}`),
       ]
-      if (!abs.startsWith(root + '/') && globCanMatch(abs, samples, state)) return true
-      const ps = abs.split('/').filter(Boolean)
+      if (!abs.startsWith(root + '/') && globCanMatch(fabs, samples.map(foldNonAscii), state)) return true
+      const ps = fabs.split('/').filter(Boolean)
       const last = ps[ps.length - 1]
       const prev = ps[ps.length - 2]
       if (last?.startsWith('.') && globCanMatch(last, ['.claude'], state)) return true
@@ -9656,6 +9704,15 @@ function hookControlWord(
     if (hookControlPath(abs, root, hookDir, copyInto || isCd)) return true
   }
   return false
+}
+
+// claude-factory-qn8a.21.12: the tails of a single-dash word after 1 to 7 flag letters (-so/f gives o/f and /f).
+// A tail that is not a hook-control path allows, so a reader flag such as tail -n5 stays allowed.
+function gluedTails(x: string): string[] {
+  if (!/^-[A-Za-z]/.test(x)) return []
+  const out: string[] = []
+  for (let i = 2; i < x.length && i <= 8 && /[A-Za-z]/.test(x[i - 1]!); i++) out.push(x.slice(i))
+  return out
 }
 
 const HOOK_CONTROL_MAY_RE = /[\/$`~*?[{<>\\]|\.claude|settings|worker-hook|home-guard|cut\.ts|package/i
@@ -9704,7 +9761,11 @@ function hookControlWrite(
       (copyInto && (!prev.startsWith('-') || /^-[CtdDo]$|^--target-directory$/.test(prev)))) &&
     (hookControlWord(x, cwd, root, hookDir, state, copyInto, isCd) ||
       // a glued output value (7z -o/f, tar -C/f)
-      (copyInto && /^-[oCtD]./.test(x) && hookControlWord(x.slice(2), cwd, root, hookDir, state, true, isCd)))
+      (copyInto &&
+        /^-[oCtD]./.test(x) &&
+        hookControlWord(x.slice(2), cwd, root, hookDir, state, true, isCd)) ||
+      // a short flag with a glued value or a cluster (curl -so/f, wget -qO/f, make -C.claude): each tail is a value
+      gluedTails(x).some(t => hookControlWord(t, cwd, root, hookDir, state, false, false)))
   for (const [k, word] of words.entries()) {
     prev = words[k - 1] ?? ''
     const afterWriterFlag = prevWriterFlag
@@ -9731,7 +9792,8 @@ function hookControlWrite(
     }
     if (!redirect) {
       if (skip === 'reader') continue
-      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word)) continue
+      if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(word) && !gluedTails(word).length)
+        continue
     }
     if (test(candidate)) return true
     const eq = candidate.match(/^(?:--[\w-]+|[A-Za-z_]\w*)=([\s\S]+)$/)
@@ -9772,7 +9834,7 @@ export function fileWriteReason(
   if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
     return FILE_WRITE_REASON
   const abs = resolvePath(cwd, path === '~' || path.startsWith('~/') ? env.home + path.slice(1) : path)
-  const split = (x: string) => x.toLowerCase().split(sep).filter(Boolean)
+  const split = (x: string) => foldLower(x).split(sep).filter(Boolean)
   const xdg = env.xdg ? split(resolvePath(env.xdg)) : []
   let real = abs
   const rest: string[] = []

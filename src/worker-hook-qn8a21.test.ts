@@ -250,7 +250,10 @@ describe('qn8a.21.11 case fold of a long s', () => {
   ])('Bash denies %s', c => expect(bash(c)).toBe(R))
   test('Bash denies a hook dir with s in a parent part', () => {
     expect(
-      hook.denyReason('tee /Uſers/acme/f/src/cut.ts', ROOT, undefined, { cwd: ROOT, hookDir: '/Users/acme/f' }),
+      hook.denyReason('tee /Uſers/acme/f/src/cut.ts', ROOT, undefined, {
+        cwd: ROOT,
+        hookDir: '/Users/acme/f',
+      }),
     ).toBe(R)
   })
 })
@@ -268,10 +271,12 @@ describe('qn8a.21.12 glued short flag value', () => {
     'sort -o/f/acme-factory/src/cut.ts .scratch/s',
     'wget -O/f/acme-factory/src/cut.ts https://example.com/s',
   ])('denies %s', c => expect(bash(c)).toBe(R))
-  test.each(['ls -la', 'grep -rn x src', 'tail -n5 .claude/settings.json', 'sort -o.scratch/out.txt .scratch/in'])(
-    'allows %s',
-    c => expect(bash(c)).toBeUndefined(),
-  )
+  test.each([
+    'ls -la',
+    'grep -rn x src',
+    'tail -n5 .claude/settings.json',
+    'sort -o.scratch/out.txt .scratch/in',
+  ])('allows %s', c => expect(bash(c)).toBeUndefined())
 })
 
 describe('qn8a.21.13 nested brace list and sequence', () => {
@@ -288,8 +293,9 @@ describe('qn8a.21.13 nested brace list and sequence', () => {
     'echo x > /f/acme-factor{y..y}/src/cut.ts',
     'echo x > /f/acme-factor{y,{y,z}}/src/cut.ts',
   ])('denies %s', c => expect(bash(c)).toBe(R))
-  test.each(['for i in {1..5}; do echo x; done', 'mkdir -p .scratch/{a,{b,c}}', 'touch .scratch/f{1..3}.txt'])(
-    'allows %s',
-    c => expect(bash(c)).toBeUndefined(),
-  )
+  test.each([
+    'for i in {1..5}; do echo x; done',
+    'mkdir -p .scratch/{a,{b,c}}',
+    'touch .scratch/f{1..3}.txt',
+  ])('allows %s', c => expect(bash(c)).toBeUndefined())
 })
