@@ -3317,7 +3317,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       // ask once per visit; NUDGED records that it was asked
       const text = [
         `gate "${node}" awaits the person's decision: ${n.prompt.trim()}`,
-        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${m.text}`),
+        ...(c.mail[node] ?? []).map(m => `  from ${m.from}: ${indentRest(m.text)}`),
         `decide with: ${CLI} decide ${run.id} <${Object.keys(n.next).join('|')}> '<note for the next station>'`,
       ].join('\n')
       send({ type: 'MAIL', from: node, to: 'manager', text })
