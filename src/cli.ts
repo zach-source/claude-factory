@@ -144,7 +144,7 @@ import * as selfupdate from './selfupdate'
 import { needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
-import { scanPages } from './wiki'
+import { flagLine, humanLines, scanPages, tombstones, WIKI_PAGE_PATH } from './wiki'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
@@ -4467,7 +4467,7 @@ const commitMemory = (message: string) => {
 }
 
 const WIKI_PAGE_MAX = 65_536
-const WIKI_PAGE_PATH = /^[A-Za-z0-9_][A-Za-z0-9_./-]*\.md$/
+const WIKI_EMAIL = `factory@${hostname()}`
 const WIKI_VISIBLE = ['PUBLIC', 'PRIVATE', 'INTERNAL']
 const WIKI_CACHE_MS = 24 * 3600_000
 const WIKI_SEEDS: Record<string, string> = {
@@ -4516,6 +4516,86 @@ function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<
   return { code: p.exitCode, out: p.stdout }
 }
 
+function readWikiState(): Record<string, unknown> {
+  try {
+    const s = JSON.parse(readFileSync(join(HOME, 'wiki-state.json'), 'utf8'))
+    if (s !== null && typeof s === 'object' && !Array.isArray(s)) return s
+  } catch {}
+  return {}
+}
+
+function writeWikiState(state: Record<string, unknown>) {
+  mkdirSync(HOME, { recursive: true })
+  writeFileSync(join(HOME, 'wiki-state.json'), JSON.stringify(state))
+}
+
+/** Pages a person deleted and nobody added back, kept in wiki-state.json. A failed git log uses the stored list. */
+function wikiTombstones(dir: string) {
+  const stored = readWikiState().tombstones
+  const old = Array.isArray(stored) ? (stored as { path: string; at: string }[]) : []
+  if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return old
+  const log = wikiGit(dir, [
+    'log',
+    '--diff-filter=D',
+    '--no-renames',
+    '--name-only',
+    '--format=%x01%ae%x01%aI',
+    'HEAD',
+  ])
+  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'])
+  if (log.code !== 0 || tracked.code !== 0)
+    return (wikiLog('wiki: tombstone read failed, stored list used'), old)
+  const here = new Set(tracked.out.toString().split('\0'))
+  const list = tombstones(log.out.toString(), WIKI_EMAIL).filter(t => !here.has(t.path))
+  if (JSON.stringify(list) !== JSON.stringify(old)) writeWikiState({ ...readWikiState(), tombstones: list })
+  return list
+}
+
+/**
+ * `git blame --line-porcelain HEAD` of each tracked page outside rigs/, for keepPersonLines() after an agent pass.
+ * An empty Map when there is no commit yet. Undefined (and a journal line) when a blame fails: the pass must not run.
+ */
+export function wikiBlame(dir = join(HOME, 'wiki')) {
+  const blames = new Map<string, string>()
+  if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return blames
+  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'])
+  if (tracked.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+  for (const path of tracked.out.toString().split('\0')) {
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
+    const b = wikiGit(dir, ['blame', '--line-porcelain', 'HEAD', '--', path])
+    if (b.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+    blames.set(path, b.out.toString())
+  }
+  return blames
+}
+
+/**
+ * After an agent pass: put back each page where the pass changed or removed a person's line, and add a flag
+ * with the page, the line and `reason` to needs-person.md. The rest of the pass stays. False when a restore fails.
+ */
+export function keepPersonLines(before: Map<string, string>, reason: string, dir = join(HOME, 'wiki')) {
+  const flags: string[] = []
+  for (const [path, blame] of before) {
+    const file = join(dir, path)
+    let text = ''
+    try {
+      if (lstatSync(file).isFile()) text = readFileSync(file, 'utf8')
+    } catch {}
+    const hits = humanLines(blame, text, WIKI_EMAIL)
+    if (!hits.length) continue
+    if (wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path]).code !== 0)
+      return (wikiLog('wiki: restore failed, nothing committed'), false)
+    for (const h of hits) flags.push(flagLine(path, h.line, reason))
+    wikiLog(`wiki: person's line in ${path}, page kept, flagged`)
+  }
+  if (flags.length) {
+    const file = join(dir, 'needs-person.md')
+    if (!existsSync(file)) writeFileSync(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n')
+    appendFileSync(file, `${flags.join('\n')}\n`)
+  }
+  return true
+}
+
 /**
  * Stage the wiki, put every staged page that fails a check back at its last version, and commit the rest
  * as the factory identity. A page passes when its path, size (65,536 bytes) and scanPages() are clean.
@@ -4533,12 +4613,14 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
   const fields = list.out.toString().split('\0')
   const refused: string[] = []
+  const tombs = new Set(wikiTombstones(dir).map(t => t.path))
   for (let k = 0; k + 1 < fields.length; k += 2) {
-    const mode = fields[k]!.split(' ')[1]
+    const [, mode, , , status] = fields[k]!.split(' ')
     const path = fields[k + 1]!
     let why: string | undefined
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..'))
       why = 'wiki: bad page path, page kept at last version'
+    else if (status === 'A' && tombs.has(path)) why = `wiki: tombstoned path ${path}, page not made again`
     else if (mode !== '100644' && mode !== '100755')
       why = `wiki: bad file mode in ${path}, page kept at last version`
     else {
@@ -4567,7 +4649,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
       '-c',
       'user.name=factory',
       '-c',
-      `user.email=factory@${hostname()}`,
+      `user.email=${WIKI_EMAIL}`,
       '-c',
       'commit.gpgsign=false',
       'commit',
@@ -4578,9 +4660,9 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     false,
     {
       GIT_AUTHOR_NAME: 'factory',
-      GIT_AUTHOR_EMAIL: `factory@${hostname()}`,
+      GIT_AUTHOR_EMAIL: WIKI_EMAIL,
       GIT_COMMITTER_NAME: 'factory',
-      GIT_COMMITTER_EMAIL: `factory@${hostname()}`,
+      GIT_COMMITTER_EMAIL: WIKI_EMAIL,
     },
   )
   if (c.code !== 0) wikiLog(`wiki: commit failed (exit ${c.code})`)

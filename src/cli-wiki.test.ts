@@ -450,3 +450,126 @@ test('AC6 a wiki-state.json that holds null does not stop a later pass', () => {
   expect(mainOf(b).exitCode).toBe(0)
   expect(state().visibility.value).toBe('PRIVATE')
 })
+
+/** a person commit in the wiki */
+const person = (msg: string) => {
+  git('add', '-A')
+  git('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', msg)
+}
+/** a driver for the blame guard: `before` saves the blame, `after` runs keepPersonLines() then commitWiki() */
+function guardPass(mode: 'before' | 'after') {
+  const script = join(dir, 'guard.ts')
+  const saved = join(dir, 'blame.json')
+  writeFileSync(
+    script,
+    `import { commitWiki, keepPersonLines, wikiBlame } from '${join(import.meta.dir, 'cli')}'
+import { readFileSync, writeFileSync } from 'node:fs'
+const saved = '${saved}'
+if (process.argv[2] === 'before') {
+  const b = wikiBlame()
+  if (!b) process.exit(3)
+  writeFileSync(saved, JSON.stringify([...b]))
+} else {
+  const ok = keepPersonLines(new Map(JSON.parse(readFileSync(saved, 'utf8'))), 'the pass tidied it')
+  if (!ok) process.exit(4)
+  commitWiki('write', 'pass')
+}
+`,
+  )
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
+  return Bun.spawnSync(['bun', script, mode], {
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_NO_KICK: '1', FACTORY_SELF_UPDATE: '0' },
+    stderr: 'pipe',
+  })
+}
+const at = (path: string) => Bun.spawnSync(['git', '-C', wiki(), 'show', `HEAD:${path}`]).stdout.toString()
+
+test('AC4 a pass that changes a person line is put back and flagged; the rest of the pass is kept', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const mine = readFileSync(join(wiki(), 'glossary.md'), 'utf8').replace(
+    'one tracked task in bd',
+    'my own words',
+  )
+  writeFileSync(join(wiki(), 'glossary.md'), mine)
+  mkdirSync(join(wiki(), 'rigs'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), `${page('topic', 'Acme')}person line\n`)
+  person('mine')
+  expect(guardPass('before').exitCode).toBe(0)
+  writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), `${page('topic', 'Acme')}agent line\n`)
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
+  writeFileSync(join(wiki(), 'b.md'), page('topic', 'B'))
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('glossary.md')).toBe(mine)
+  expect(readFileSync(join(wiki(), 'glossary.md'), 'utf8')).toBe(mine)
+  expect(at('needs-person.md')).toContain('kind: "index"')
+  expect(at('needs-person.md')).toMatch(/- `glossary.md` line \d+: the pass tidied it\n/)
+  expect(at('needs-person.md')).not.toContain('index.md')
+  expect(wikiLog()).toContain("wiki: person's line in glossary.md, page kept, flagged")
+  expect(at('b.md')).toContain('title: "B"')
+  expect(at('index.md')).toContain('New index')
+  expect(at('rigs/acme.md')).toContain('agent line')
+})
+
+test('AC4 a pass that deletes a page with a person line gets it back; factory-only changes raise no flag', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const mine = readFileSync(join(wiki(), 'glossary.md'), 'utf8').replace(
+    'one tracked task in bd',
+    'my own words',
+  )
+  writeFileSync(join(wiki(), 'glossary.md'), mine)
+  person('mine')
+  expect(guardPass('before').exitCode).toBe(0)
+  rmSync(join(wiki(), 'glossary.md'))
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('glossary.md')).toBe(mine)
+  expect(at('needs-person.md')).toContain('`glossary.md`')
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(guardPass('before').exitCode).toBe(0)
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('index.md')).toContain('New index')
+  expect(existsSync(join(wiki(), 'needs-person.md'))).toBe(false)
+})
+
+test('AC5 a page that a person deleted is not made again; other paths and edits still commit', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+  mkdirSync(join(wiki(), 'rigs'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'a.md'), page('topic', 'A'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'f.md'), page('topic', 'F'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'back.md'), page('topic', 'Back'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), page('topic', 'Acme'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  git('rm', '-q', 'solutions/2026-11/a.md', 'solutions/2026-11/back.md', 'rigs/acme.md')
+  git('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', 'del')
+  git('rm', '-q', 'solutions/2026-11/f.md')
+  git('-c', 'user.name=factory', `-c`, `user.email=factory@${hostname()}`, 'commit', '-qm', 'factory del')
+  mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+  mkdirSync(join(wiki(), 'rigs'), { recursive: true })
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'back.md'), page('topic', 'Back'))
+  person('back')
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'a.md'), page('topic', 'A again'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'f.md'), page('topic', 'F again'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), page('topic', 'Acme again'))
+  writeFileSync(join(wiki(), 'b.md'), page('topic', 'B'))
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'Edited'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const files = git('ls-files').split('\n')
+  expect(files).not.toContain('solutions/2026-11/a.md')
+  expect(files).toEqual(
+    expect.arrayContaining(['b.md', 'solutions/2026-11/f.md', 'rigs/acme.md', 'solutions/2026-11/back.md']),
+  )
+  expect(at('index.md')).toContain('Edited')
+  expect(wikiLog()).toContain('wiki: tombstoned path solutions/2026-11/a.md, page not made again')
+  const t = state().tombstones
+  expect(t.map((x: { path: string }) => x.path)).toEqual(['solutions/2026-11/a.md'])
+  expect(Date.parse(t[0].at)).toBe(
+    Date.parse(git('log', '-1', '--format=%aI', '--diff-filter=D', '--', 'solutions/2026-11/a.md')),
+  )
+})
