@@ -5889,6 +5889,8 @@ test('denyReason stops spawning headOf once the shared gate budget runs out, bef
     let headOfCalls = 0
     const seenTimeouts: (number | undefined)[] = []
     const gate: HookGate = {
+      // claude-factory-abs: the scan deadline reads its own fixed clock, so the fake spawn time here is not scan time
+      now: () => 0,
       headOf: (dir, timeoutMs) => {
         headOfCalls++
         seenTimeouts.push(timeoutMs)
