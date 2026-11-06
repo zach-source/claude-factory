@@ -8568,6 +8568,8 @@ export function denyReason(
   gate?: HookGate,
 ): string | undefined {
   if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
+  // claude-factory-qn8a.30: the Bash tool adds a newline, so a last backslash joins the next line
+  if (command.endsWith('\\')) command += '\n'
   // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
   const home = homeReason(command, gate?.readFile)
   if (home) return home
