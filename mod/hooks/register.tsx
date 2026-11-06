@@ -1419,10 +1419,13 @@ function commentContinues(cmd: string): boolean {
   return false
 }
 
+/** The length of the command text that an Allow question shows. */
+const CUT = 300
+
 /** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
  * person sees that a longer command may hold a second command. */
 function shownCommand(command: string): string {
-  const head = cutText(command, 300)
+  const head = cutText(command, CUT)
   return head.length === command.length
     ? command
     : `${head}… (${command.length - head.length} of ${command.length} characters not shown)`
@@ -1432,17 +1435,14 @@ function shownCommand(command: string): string {
  * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
  * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
  * The shell still runs a backslash-newline line continuation and a quoted newline as one command, so this
- * normalizes the first away (bash joins a `\`-newline pair with NO character, even mid-word, so this drops
- * it rather than replacing it with a space) and matches across the second ([\s\S] instead of [^\n]) rather
+ * drops each pair that follows an odd run of backslashes (joinLines; bash joins with NO character, even
+ * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
-  if (commentContinues(rawCommand))
-    return {
-      question: `The manager model wants to run a form the hook cannot read: a comment line ends with a backslash, so the next line runs as a command: ${shownCommand(rawCommand)}. Allow it?`,
-      deny: 'The person did not confirm this form. Remove the backslash at the end of the comment line, or pass long text by file.',
-    }
-  const command = joinLines(rawCommand)
+  // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
+  const unreadable = commentContinues(rawCommand)
+  const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
   const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
   let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
@@ -1465,21 +1465,42 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
       detail: `The first one is at character ${at}: «${around}».${unseen}`,
     }
   }
-  const cut = cutText(command, 300).length
+  // an unreadable form is matched twice: the pair as the shell reads it (a newline) and the full join. Take the larger count.
+  const reads = (
+    unreadable
+      ? [(t: string) => t.replace(/\\\n/g, '\n'), (t: string) => t.replace(/\\\n/g, '')]
+      : [joinLines]
+  ).map(f => ({ text: f(rawCommand), cut: f(cutText(rawCommand, CUT)).length }))
   const kinds = GATED_KINDS.flatMap(k => {
-    const ends = [...command.matchAll(k.re)].map(m => m.index! + m[0].length)
-    return ends.length ? [{ ...k, count: ends.length, hidden: ends.filter(end => end > cut).length }] : []
+    const per = reads.map(r => {
+      const ends = [...r.text.matchAll(k.re)].map(m => m.index! + m[0].length)
+      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length }
+    })
+    const count = Math.max(...per.map(x => x.count))
+    return count ? [{ ...k, count, hidden: Math.max(...per.map(x => x.hidden)) }] : []
   })
-  if (!substitution && !kinds.length) return null
+  if (!unreadable && !substitution && !kinds.length) return null
   const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
   const named = [
     ...(substitution ? [substitution.phrase] : []),
     ...kinds.map(k => `${k.phrase}${times(k.count)}`),
   ]
   const hidden = kinds.filter(k => k.hidden > 0)
+  const who = unreadable
+    ? 'run a form the hook cannot read (a comment line ends with a backslash, so the next line runs as a command)'
+    : ''
+  const names = [...(who ? [who] : []), ...named]
   return {
-    question: `The manager model wants to ${named.join(' and ')}: ${shownCommand(command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
-    deny: [...(substitution ? [substitution.deny] : []), ...kinds.map(k => k.deny)].join(' '),
+    question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
+    deny: [
+      ...(unreadable
+        ? [
+            'The person did not confirm this form. Remove the backslash at the end of the comment line, or pass long text by file.',
+          ]
+        : []),
+      ...(substitution ? [substitution.deny] : []),
+      ...kinds.map(k => k.deny),
+    ].join(' '),
   }
 }
 

@@ -393,6 +393,36 @@ test(
   },
 )
 
+test('claude-factory-0jr2.6: a comment-backslash form still names each gated kind', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  const ask = async (command: string) => {
+    questions.length = 0
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny).toContain('did not confirm')
+    expect(questions.length).toBe(1)
+    return questions[0]!
+  }
+  const q1 = await ask('/repo/bin/factory decide r1 ship # note\\\necho x')
+  expect(q1).toContain('decide a factory gate')
+  expect(q1).toContain('hook cannot read')
+  const long = `/repo/bin/factory decide r1 reject '${'a'.repeat(300)}' # x\\\n/repo/bin/factory start lifecycle acme w-2 --owned`
+  const q2 = await ask(long)
+  expect(q2).toContain('The text not shown holds: start a bead carrying')
+  expect(q2).toContain('decide a factory gate')
+  expect(ran).toBe(0)
+})
+
 test('the deny text of a compound command holds the deny of each matched kind', SLOW, async ($, on) => {
   mock.clock(on)
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
