@@ -1,0 +1,191 @@
+# The factory server (Dockerfile.server). Set the image by digest and the client gateway namespace, then apply:
+#   SERVER_IMAGE=<registry>/factory-server@sha256:<digest> CLIENT_GATEWAY_NAMESPACE=<ns> envsubst '$SERVER_IMAGE $CLIENT_GATEWAY_NAMESPACE' < deploy/server.yaml | kubectl apply -f -
+# Owner step. Confirm the namespaces before apply.
+# Make each Secret by hand, outside this file. This file holds Secret names only, never values:
+#   kubectl -n factory create secret generic factory-github --from-literal=token=<github token>
+#   kubectl -n factory create secret generic factory-linear --from-literal=token=<linear key>          (optional)
+#   kubectl -n factory create secret generic factory-ax-auth --from-literal=token=<ax token>           (optional)
+#   kubectl -n factory create secret tls factory-server-tls --cert=<tls.crt> --key=<tls.key>
+#   kubectl -n factory create secret generic factory-person-ca --from-file=ca.crt=<person ca file>
+#   kubectl -n factory create secret generic factory-worker-key --from-file=key=<worker key file>
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-server
+  namespace: factory
+---
+# the egress gateway's CA
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factory-server
+rules:
+  - apiGroups: ['certificates.k8s.io']
+    resources: ['clustertrustbundles']
+    verbs: ['get']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: factory-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: factory-server
+subjects:
+  - kind: ServiceAccount
+    name: factory-server
+    namespace: factory
+---
+# get on the one Deployment ax-controller, nothing else
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-server
+  namespace: ax-system
+rules:
+  - apiGroups: ['apps']
+    resources: ['deployments']
+    resourceNames: ['ax-controller']
+    verbs: ['get']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-server
+  namespace: ax-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-server
+subjects:
+  - kind: ServiceAccount
+    name: factory-server
+    namespace: factory
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: factory-home
+  namespace: factory
+spec:
+  accessModes: ['ReadWriteOnce']
+  resources:
+    requests:
+      storage: 20Gi
+---
+# One writer only: Recreate stops the old pod before the new pod starts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-server
+  namespace: factory
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: factory-server
+  template:
+    metadata:
+      labels:
+        app: factory-server
+    spec:
+      serviceAccountName: factory-server
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: server
+          image: ${SERVER_IMAGE}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          args: ['--port', '8080']
+          env:
+            - name: FACTORY_HOME
+              value: /var/lib/factory/home
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: factory-github, key: token }
+            - name: LINEAR_API_KEY
+              valueFrom:
+                secretKeyRef: { name: factory-linear, key: token, optional: true }
+            - name: AX_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: factory-ax-auth, key: token, optional: true }
+          ports:
+            - containerPort: 8080
+            - containerPort: 8443
+            - containerPort: 8444
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          volumeMounts:
+            - { name: home, mountPath: /var/lib/factory }
+            - { name: tls, mountPath: /etc/factory/tls, readOnly: true }
+            - { name: person-ca, mountPath: /etc/factory/person-ca, readOnly: true }
+            - { name: worker-key, mountPath: /etc/factory/worker-key, readOnly: true }
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: factory-home
+        - name: tls
+          secret:
+            secretName: factory-server-tls
+        - name: person-ca
+          secret:
+            secretName: factory-person-ca
+        - name: worker-key
+          secret:
+            secretName: factory-worker-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: factory
+  namespace: factory
+spec:
+  selector:
+    app: factory-server
+  ports:
+    - { name: worker, port: 8443, targetPort: 8443 }
+    - { name: client, port: 8444, targetPort: 8444 }
+---
+# Port 8443 (workers) is open from the egress gateway's namespace. Port 8444 (clients) is open from the client gateway's namespace.
+# Confirm both namespaces before apply. Probes on 8080 come from the kubelet and need no rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: factory-server
+  namespace: factory
+spec:
+  podSelector:
+    matchLabels:
+      app: factory-server
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+      ports:
+        - protocol: TCP
+          port: 8443
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ${CLIENT_GATEWAY_NAMESPACE}
+      ports:
+        - protocol: TCP
+          port: 8444

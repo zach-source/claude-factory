@@ -2,6 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
+import { loadIntoEnv } from './settings'
 import {
   appendFileSync,
   chmodSync,
@@ -272,6 +273,7 @@ const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
+loadIntoEnv(join(HOME, 'settings.json')) // stored settings fill unset env vars; the environment wins
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below

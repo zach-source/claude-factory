@@ -2,7 +2,15 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HIDDEN, readSettings, resolveSettings, SETTING_KEYS, setSetting, unsetSetting } from './settings'
+import {
+  HIDDEN,
+  loadIntoEnv,
+  readSettings,
+  resolveSettings,
+  SETTING_KEYS,
+  setSetting,
+  unsetSetting,
+} from './settings'
 
 const dirs: string[] = []
 const fresh = () => {
@@ -15,6 +23,30 @@ afterEach(() => {
 })
 const get = (rows: ReturnType<typeof resolveSettings>, key: string) => rows.find(r => r.key === key)!
 const TOKEN = 'sk-ant-' + 'zq'.repeat(12)
+
+describe('loadIntoEnv', () => {
+  test('stored fills, environment wins, missing file is a no-op', () => {
+    const { file } = fresh()
+    const none: Record<string, string | undefined> = {}
+    loadIntoEnv(file, none)
+    expect(none).toEqual({})
+    setSetting(file, 'ax.vault', 'stored')
+    setSetting(file, 'ax.context', 'stored')
+    setSetting(file, 'image.registry', 'reg.example')
+    const env: Record<string, string | undefined> = { FACTORY_AX_CONTEXT: 'env' }
+    loadIntoEnv(file, env)
+    expect(env).toEqual({ FACTORY_AX_VAULT: 'stored', FACTORY_AX_CONTEXT: 'env' })
+  })
+  test('a bad or unknown-key file is ignored, not thrown', () => {
+    const { file } = fresh()
+    const env: Record<string, string | undefined> = {}
+    for (const bad of ['{not json', '{"ax.new-key":"x"}']) {
+      writeFileSync(file, bad)
+      expect(() => loadIntoEnv(file, env)).not.toThrow()
+    }
+    expect(env).toEqual({})
+  })
+})
 
 describe('AC1: order', () => {
   test('AC1 env only', () => {
