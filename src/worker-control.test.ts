@@ -359,6 +359,7 @@ const DENIED = [
   'goto',
   'abort',
   'init',
+  'up',
   'adopt',
   'rm',
   'gc',
@@ -400,6 +401,7 @@ const spawned: [string[], string][] = [
   [['skills'], 'skills'],
   [['proposals'], 'proposals'],
   [['init'], 'init'],
+  [['up', join(dir, 'up-new')], 'up'],
   [['adopt', join(dir, 'adopted')], 'adopt'],
   [['repos', 'sync'], 'repos'],
   [['broker', 'serve', '--port', '0'], 'broker'],
@@ -415,6 +417,7 @@ for (const [name, env] of Object.entries(markers)) {
       expect(p.stderr.toString()).toContain(`a worker cannot run factory ${verb} (`)
       untouched()
       expect(existsSync(join(dir, 'adopted', '.factory'))).toBe(false)
+      expect(existsSync(join(dir, 'up-new'))).toBe(false)
     })
   }
 }
