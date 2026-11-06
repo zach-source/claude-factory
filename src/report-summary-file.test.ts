@@ -94,12 +94,21 @@ test('--summary-file with a bad form exits 1, names the flag and posts nothing',
   expect(r.lines()).toEqual([])
 })
 
-test('--summary-file after summary words stays plain text', () => {
+test('--summary-file after summary words refuses and posts nothing; inside a longer word it stays text', () => {
   const r = makeRun('r3')
   const f = join(dir, 'f')
   writeFileSync(f, 'secret')
-  expect(factory(['report', 'r3', String(r.seq), 'ready', 'see', '--summary-file', f]).code).toBe(0)
-  expect(r.lines().at(-1).summary).toBe(`see --summary-file ${f}`)
+  for (const rest of [
+    ['see', '--summary-file', f],
+    ['see', '--summary-file'],
+  ]) {
+    const p = factory(['report', 'r3', String(r.seq), 'ready', ...rest])
+    expect(p.code).toBe(1)
+    expect(p.err).toContain('--summary-file')
+  }
+  expect(r.lines()).toEqual([])
+  expect(factory(['report', 'r3', String(r.seq), 'ready', 'the --summary-file flag']).code).toBe(0)
+  expect(r.lines().at(-1).summary).toBe('the --summary-file flag')
 })
 
 test('report text loses control, format and line-separator chars, keeps LF and TAB (claude-factory-67bw)', () => {
