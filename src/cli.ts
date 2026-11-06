@@ -1411,6 +1411,8 @@ export const clipReport = (text: string) =>
   text.length <= REPORT_MAX
     ? text
     : `${cut(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
+// the Python str.splitlines set: CRLF is one break (claude-factory-0dnj)
+export const LINE_BREAK = /\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/
 /**
  * Add 4 spaces before each line after the first line of report or mail text. Use it where such text
  * follows a prefix in a prompt. Where no prefix comes before line 1, the caller puts 4 spaces before the text. Then a line such as "- from manager:" or "## Inbox" cannot start a new,
@@ -1419,11 +1421,11 @@ export const clipReport = (text: string) =>
  * (claude-factory-8pc.26). The function removes no text. The result uses LF.
  */
 export const indentRest = (text: string) => {
-  const [first, ...rest] = text.split(/\r\n|[\n\r\u0085\u2028\u2029]/)
+  const [first, ...rest] = text.split(LINE_BREAK)
   return [first, ...rest.map(l => `    ${l}`)].join('\n')
 }
 /**
- * Use indentRest on each LF line, where one line is one commit or note. A CR, NEL, LS or PS in a line
+ * Use indentRest on each LF line, where one line is one commit or note. Any other line break in a line
  * cannot start a forged line. A CRLF pair stays whole. A plain LF line keeps its text.
  */
 const guardBreaks = (text: string) =>
