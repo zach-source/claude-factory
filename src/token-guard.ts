@@ -2,7 +2,7 @@
  * The harness token guard (claude-factory-qn8a.19). codexWorker links CODEX_HOME/auth.json to the person's
  * ChatGPT login, and Claude keeps its login in .credentials.json, .claude.json or the keychain. A worker never
  * needs these files. Two checks serve the worker hook:
- *   - `tokenReason` reads the raw and the backslash-newline-joined Bash text, before any parse, as home-guard does.
+ *   - `tokenReason` reads the raw Bash text, before any parse, as home-guard does.
  *   - `tokenPathReason` checks the path of a Read or Grep tool call.
  * Both fail closed: a path that can name a token file or dir and is not provably inside the worktree is denied.
  * Out of scope (claude-factory-qn8a.72): a name built at run time ('au'+'th.json', base64, printf), a variable set in an
@@ -13,7 +13,7 @@
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join as joinPath, resolve, sep } from 'node:path'
-import { fold, join, unshell, WORD } from './home-guard'
+import { fold, unshell, WORD } from './home-guard'
 
 export const TOKEN_READ_REASON =
   'The factory denies this command: it can read a harness token file (auth.json, .credentials.json, .claude.json) ' +
@@ -23,7 +23,8 @@ export const TOKEN_READ_REASON =
 
 const TOKEN_FILES = new Set(['auth.json', '.credentials.json', '.claude.json'])
 const TOKEN_DIRS = new Set(['.codex', '.claude'])
-const TOKEN_VARS = new Set(['codex_home', 'claude_config_dir'])
+// $CODEX_HOME is a component of rule 6 (codexComp), so only the Claude var is listed
+const TOKEN_VARS = new Set(['claude_config_dir'])
 const KEYCHAIN = new Set(['find-generic-password', 'find-internet-password', 'dump-keychain'])
 // a piece ends at blank, quote, backtick, paren, redirect, ;, |, &, = and :. Not at , { } (brace lists stay whole).
 const SPLIT = /[\s'"`()<>;|&=:]+/
@@ -171,9 +172,8 @@ function pieceDenied(
 
 /** the reason to deny the Bash text `command`, or undefined. `base` is the cwd of the call, `root` the worktree. */
 export function tokenReason(command: string, base: string, root?: string): string | undefined {
+  // unshell drops each backslash-newline, so one pass reads what the joined text would
   const texts = [command]
-  const joined = join(command)
-  if (joined !== command) texts.push(joined)
   const inside = insideOf(root)
   const seen = new Set<string>()
   const literal = new Set<string>()
@@ -182,7 +182,7 @@ export function tokenReason(command: string, base: string, root?: string): strin
     const marker = MARKER.test(fold(words.join(' ')))
     for (const w of words) {
       if (KEYCHAIN.has(fold(w))) return TOKEN_READ_REASON
-      for (const p of w.split(SPLIT).flatMap(x => (x.includes(',') ? [x, ...x.split(',')] : [x]))) {
+      for (const p of w.split(SPLIT).flatMap(x => (/[,{}]/.test(x) ? [x, ...x.split(/[,{}]/)] : [x]))) {
         if (!p) continue
         const key = `${marker ? 1 : 0}${p}`
         if (seen.has(key)) continue
