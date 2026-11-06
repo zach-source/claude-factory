@@ -1528,6 +1528,11 @@ const GATED_KINDS = [
     phrase: "start a bead carrying its owner's decisions",
     deny: 'The person did not confirm starting this owner-only bead.',
   },
+  {
+    re: /\bfactory\s+wiki\b[\s\S]*?\binit\b/g,
+    phrase: 'create the factory wiki and set its remote',
+    deny: 'The person did not confirm this wiki init. Ask them to run it.',
+  },
 ]
 
 /** Every run id a Bash command names with a run-acting verb (`mail`, `poke`, `retry`, `goto`,

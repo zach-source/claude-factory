@@ -28,7 +28,7 @@ import {
 } from 'node:fs'
 import { spawn as spawnChild } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { homedir, tmpdir } from 'node:os'
+import { homedir, hostname, tmpdir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
@@ -145,6 +145,7 @@ import * as selfupdate from './selfupdate'
 import { needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
+import { scanPages } from './wiki'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
@@ -162,6 +163,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import * as client from './client'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
@@ -4485,6 +4487,178 @@ function proposalMail(now: number) {
 const commitMemory = (message: string) => {
   git(MEMORY, 'add', '-A')
   if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
+}
+
+const WIKI_PAGE_MAX = 65_536
+const WIKI_PAGE_PATH = /^[A-Za-z0-9_][A-Za-z0-9_./-]*\.md$/
+const WIKI_VISIBLE = ['PUBLIC', 'PRIVATE', 'INTERNAL']
+const WIKI_CACHE_MS = 24 * 3600_000
+const WIKI_SEEDS: Record<string, string> = {
+  'index.md': `---\nkind: "index"\ntitle: "Factory wiki"\n---\nThe factory writes this wiki. Start from the pages below.\n`,
+  'glossary.md': `---\nkind: "glossary"\ntitle: "Glossary"\n---\n- station: one step of a factory run, such as plan or implement.\n- soak: the time a deployed change runs under watch before a run ends.\n- rig: a repository the factory works on.\n- ship lane: the path of a pull request from ready to merged.\n- bead: one tracked task in bd.\n- run: one trip of a goal through the stations of a factory.\n`,
+}
+
+/**
+ * The only remotes the wiki accepts: git@host:owner/repo, ssh://git@host/owner/repo and
+ * https://host/owner/repo, each with an optional .git. Anything else gives null: userinfo, ports,
+ * local paths, transport helpers, a leading dash or a control character.
+ */
+export function wikiRemote(url: string) {
+  if (url.length > 300 || /[\s\p{Cc}]/u.test(url)) return null
+  const m = /^(?:git@([^:/]+):|ssh:\/\/git@([^/]+)\/|https:\/\/([^/]+)\/)([^/]+)\/([^/]+)$/.exec(url)
+  if (!m) return null
+  const host = m[1] ?? m[2] ?? m[3]!
+  const [owner, repo] = [m[4]!, m[5]!.replace(/\.git$/, '')]
+  const word = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(host) || !host.includes('.')) return null
+  return word.test(owner) && word.test(repo) ? { host, owner, repo } : null
+}
+
+/** one line in $HOME/wiki.log and on stderr; a caller passes fixed text and validated paths only */
+function wikiLog(line: string) {
+  mkdirSync(HOME, { recursive: true })
+  appendFileSync(join(HOME, 'wiki.log'), `${new Date().toISOString()} ${line}\n`)
+  console.error(line)
+}
+
+/** git in the wiki: no identity, repo or index from the caller's environment, and literal pathspecs */
+function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<string, string> = {}) {
+  const env: Record<string, string | undefined> = {
+    ...(network ? GIT_NETWORK_ENV : process.env),
+    GIT_LITERAL_PATHSPECS: '1',
+    GIT_CEILING_DIRECTORIES: dirname(dir),
+  }
+  for (const k of Object.keys(env))
+    if (/^GIT_(AUTHOR|COMMITTER)_/.test(k) || /^GIT_(DIR|WORK_TREE|INDEX_FILE)$/.test(k)) delete env[k]
+  Object.assign(env, extraEnv)
+  const p = Bun.spawnSync(['git', '-C', dir, ...args], {
+    env,
+    stderr: 'pipe',
+    timeout: network ? GIT_NETWORK_TIMEOUT_MS : undefined,
+  })
+  return { code: p.exitCode, out: p.stdout }
+}
+
+/**
+ * Stage the wiki, put every staged page that fails a check back at its last version, and commit the rest
+ * as the factory identity. A page passes when its path, size (65,536 bytes) and scanPages() are clean.
+ * A journal line names the path and a fixed reason, never page text. True when it made a commit.
+ */
+export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki')) {
+  const clean = (s: string) =>
+    s
+      .split('\n')[0]!
+      .replace(/\p{Cc}/gu, ' ')
+      .slice(0, 200)
+  if (wikiGit(dir, ['add', '-A']).code !== 0) return (wikiLog('wiki: stage failed, nothing committed'), false)
+  const list = wikiGit(dir, ['diff', '--cached', '--raw', '--no-renames', '-z', '--diff-filter=d'])
+  if (list.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
+  // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
+  const fields = list.out.toString().split('\0')
+  const refused: string[] = []
+  for (let k = 0; k + 1 < fields.length; k += 2) {
+    const mode = fields[k]!.split(' ')[1]
+    const path = fields[k + 1]!
+    let why: string | undefined
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..'))
+      why = 'wiki: bad page path, page kept at last version'
+    else if (mode !== '100644' && mode !== '100755')
+      why = `wiki: bad file mode in ${path}, page kept at last version`
+    else {
+      const blob = wikiGit(dir, ['show', `:${path}`]).out
+      const reasons =
+        blob.length > WIKI_PAGE_MAX
+          ? ['page too large']
+          : (scanPages([{ path, text: blob.toString() }])[0]?.reasons ?? [])
+      if (reasons.includes('secret shape')) why = `wiki: secret shape in ${path}, page kept at last version`
+      else if (reasons.length) why = `wiki: ${reasons.join('; ')} in ${path}, page kept at last version`
+    }
+    if (!why) continue
+    wikiLog(why)
+    refused.push(path)
+    if (wikiGit(dir, ['cat-file', '-e', `HEAD:${path}`]).code === 0)
+      wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path])
+    else wikiGit(dir, ['rm', '--cached', '-f', '-q', '--', path])
+  }
+  // a refused path that is still staged (an unstage that failed) must never reach a commit
+  if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
+    return (wikiLog('wiki: unstage failed, nothing committed'), false)
+  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return false
+  const c = wikiGit(
+    dir,
+    [
+      '-c',
+      'user.name=factory',
+      '-c',
+      `user.email=factory@${hostname()}`,
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-q',
+      '-m',
+      `wiki ${clean(pass)}: ${clean(summary)}`,
+    ],
+    false,
+    {
+      GIT_AUTHOR_NAME: 'factory',
+      GIT_AUTHOR_EMAIL: `factory@${hostname()}`,
+      GIT_COMMITTER_NAME: 'factory',
+      GIT_COMMITTER_EMAIL: `factory@${hostname()}`,
+    },
+  )
+  if (c.code !== 0) wikiLog(`wiki: commit failed (exit ${c.code})`)
+  return c.code === 0
+}
+
+/** PUBLIC, PRIVATE or INTERNAL from `gh repo view`; read at most once in 24 h per remote unless `fresh`. Else undefined. */
+function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh = false) {
+  const remote = `${r.host}/${r.owner}/${r.repo}`
+  const file = join(HOME, 'wiki-state.json')
+  let state: Record<string, unknown> = {}
+  try {
+    state = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {}
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) state = {}
+  const c = state.visibility as { value?: string; checkedAt?: string; remote?: string } | undefined
+  if (
+    !fresh &&
+    c?.remote === remote &&
+    WIKI_VISIBLE.includes(c.value ?? '') &&
+    Date.now() - Date.parse(c.checkedAt ?? '') >= 0 &&
+    Date.now() - Date.parse(c.checkedAt ?? '') < WIKI_CACHE_MS
+  )
+    return c.value
+  const p = Bun.spawnSync(['gh', 'repo', 'view', remote, '--json', 'visibility', '--jq', '.visibility'], {
+    env: GIT_NETWORK_ENV,
+    stderr: 'pipe',
+    timeout: 30_000,
+  })
+  const value = p.exitCode === 0 ? p.stdout.toString().trim() : ''
+  if (!WIKI_VISIBLE.includes(value)) return undefined
+  mkdirSync(HOME, { recursive: true })
+  writeFileSync(
+    file,
+    JSON.stringify({ ...state, visibility: { value, checkedAt: new Date().toISOString(), remote } }),
+  )
+  return value
+}
+
+/**
+ * Push HEAD to main of origin only when origin passes wikiRemote() and its visibility is PRIVATE or INTERNAL.
+ * It pushes to the checked URL, never to the name `origin`, so a pushurl set by hand is not used. No origin:
+ * nothing to do. True when the push worked.
+ */
+export function pushWiki(dir = join(HOME, 'wiki')) {
+  const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
+  if (!url) return false
+  const r = wikiRemote(url)
+  if (!r) return (wikiLog('wiki: remote not allowed, push refused'), false)
+  const vis = wikiVisibility(r)
+  if (!vis) return (wikiLog('wiki: remote visibility unknown, push refused'), false)
+  if (vis === 'PUBLIC') return (wikiLog('wiki: remote is public, push refused'), false)
+  const p = wikiGit(dir, ['push', url, 'HEAD:main'], true)
+  if (p.code !== 0) wikiLog(`wiki: push failed (exit ${p.code})`)
+  return p.code === 0
 }
 
 /** beads the memory names that have closed since: what waited on them is stale */
@@ -10852,6 +11026,18 @@ if (queued) {
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
+// claude-factory-akiq.6: with FACTORY_SERVER set, a manager's CLI call goes to the server (src/client.ts); a worker keeps the local path
+if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
+  let sent: number | null
+  try {
+    sent = await client.main(cmd, cmd === 'mail' ? fileArgs('mail', args) : args, process.env)
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(1)
+  }
+  if (sent !== null) process.exit(sent)
+}
+
 if (import.meta.main && !outboxCmd)
   try {
     switch (cmd) {
@@ -11277,6 +11463,57 @@ if (import.meta.main && !outboxCmd)
           fail(
             `usage: factory memory search [--rig r] '<query...>' | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
           )
+        break
+      }
+      case 'wiki': {
+        refuseWorker('wiki', true)
+        const i = args.indexOf('--remote')
+        const remoteArg = i < 0 ? undefined : args[i + 1]
+        const rest = i < 0 ? args : args.filter((_, j) => j !== i && j !== i + 1)
+        const url = remoteArg ?? process.env.FACTORY_WIKI_REMOTE
+        const remote = url ? wikiRemote(url) : undefined
+        if (rest.length !== 1 || rest[0] !== 'init' || (i >= 0 && !remoteArg) || remote === null) {
+          console.error('usage: factory wiki init [--remote <url>]')
+          process.exitCode = 2
+          break
+        }
+        const release = hold('wiki.lock')
+        if (!release) {
+          console.log('wiki: busy')
+          break
+        }
+        try {
+          const dir = join(HOME, 'wiki')
+          mkdirSync(dir, { recursive: true })
+          // the ceiling in wikiGit stops the search at the wiki dir, so a repo in a parent is never used
+          const isRepo = () => wikiGit(dir, ['rev-parse', '--git-dir']).code === 0
+          if (!isRepo()) {
+            wikiGit(dir, ['init', '-q'])
+            wikiGit(dir, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
+          }
+          if (!isRepo()) {
+            wikiLog('wiki: git init failed')
+            process.exitCode = 1
+            break
+          }
+          for (const [name, text] of Object.entries(WIKI_SEEDS))
+            if (!existsSync(join(dir, name))) writeFileSync(join(dir, name), text)
+          commitWiki('init', 'seed index and glossary', dir)
+          if (remote && url) {
+            const vis = wikiVisibility(remote, true)
+            if (!vis) wikiLog('wiki: remote visibility unknown, push refused')
+            else if (vis === 'PUBLIC') wikiLog('wiki: remote is public, push refused')
+            if (vis !== 'PRIVATE' && vis !== 'INTERNAL') {
+              process.exitCode = 1
+              break
+            }
+            const has = wikiGit(dir, ['config', '--get', 'remote.origin.url']).code === 0
+            wikiGit(dir, ['remote', has ? 'set-url' : 'add', 'origin', url])
+            if (!pushWiki(dir)) process.exitCode = 1
+          }
+        } finally {
+          release()
+        }
         break
       }
       case 'dream':
