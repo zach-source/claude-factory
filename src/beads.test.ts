@@ -453,7 +453,7 @@ test('a rejected bead stays open, out of the queue, saying who rejected it, when
     expect(readFileSync(log, 'utf8')).not.toContain('close')
     expect(show).toBe('show fx-1 --json --actor factory/run-1')
     expect(queue).toBe(
-      'update fx-1 --add-label factory --remove-label rejected --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
+      'update fx-1 --add-label factory --remove-label rejected --remove-label human --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory/run-1',
     )
   } finally {
     process.env.PATH = path
@@ -485,7 +485,7 @@ test('queue removes a stale factory:*/station:* label before adding the station 
     expect(update).toContain('--remove-label factory:release')
     expect(update).toContain('--remove-label station:deploy')
     expect(update).toContain(
-      '--add-label factory --remove-label rejected --remove-label stale? --remove-label owner',
+      '--add-label factory --remove-label rejected --remove-label human --remove-label stale? --remove-label owner',
     )
     expect(update).toContain('--unset-metadata owner_question --unset-metadata owner_since')
     expect(update).toContain('--add-label station:implement')
@@ -519,6 +519,35 @@ test('queue removes every held:* label a filing-guard hold added (claude-factory
     expect(update).toContain('--remove-label held:station')
     expect(update).toContain('--add-label factory')
     expect(update).not.toContain('keep')
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('queue removes the human label: the person answered by queueing (claude-factory-9kou.2)', () => {
+  const bin = join(tmpdir(), `fake-bd-queue-human-${process.pid}`)
+  mkdirSync(bin, { recursive: true })
+  const log = join(bin, 'calls')
+  const script = [
+    '#!/bin/sh',
+    `echo "$*" >> ${log}`,
+    'case "$1" in',
+    `  show) printf '%s' '[{"id":"fx-1","title":"t","labels":["human"]}]';;`,
+    'esac',
+  ].join('\n')
+  writeFileSync(join(bin, 'bd'), script)
+  chmodSync(join(bin, 'bd'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = `${bin}:${path}`
+  try {
+    beads(tmpdir(), 'factory/run-1').queue('fx-1')
+    const updates = readFileSync(log, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(l => l.startsWith('update'))
+    expect(updates).toHaveLength(1)
+    expect(updates[0]).toContain('--add-label factory')
+    expect(updates[0]).toContain('--remove-label human')
   } finally {
     process.env.PATH = path
   }
