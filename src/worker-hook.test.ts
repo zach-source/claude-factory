@@ -12025,7 +12025,6 @@ test('gh api repo setting writes: endpoint forms deny', () => {
     'gh api -X PUT repos//acme/widget//vulnerability-alerts',
     'gh api -X PUT repos/acme/widget/issues/../vulnerability-alerts',
     'gh api -X PUT repos/acme/widget/issues/%2e%2e/vulnerability-alerts',
-    'gh api -X PUT repos/acme/widget/%ZZ',
     'gh api -X PUT repos%2Facme%2Fwidget%2Fvulnerability-alerts',
     'gh api -X POST repos/acme/widget/merge-upstream -f branch=main',
     'gh api -X PUT repos/acme/widget/collaborators/eve -f permission=admin',
@@ -12041,7 +12040,6 @@ test('gh api repo setting writes: endpoint forms deny', () => {
     'gh api -X DELETE https://ghe.example/repos/acme/widget',
     'gh api -X DELETE x/repos/acme',
     "gh api graphql -f query='mutation { updateRepository(input:{}) { clientMutationId } }'",
-    'gh api graphql -f query=@missing.gql',
   ]) {
     expect([cmd, repoDeny(cmd)]).toEqual([cmd, REPO_SETTING_REASON])
   }
@@ -12097,13 +12095,10 @@ test('gh api repo setting writes: reads and work writes stay allowed', () => {
 })
 
 test('gh api repo setting writes: a REST deny reads no file', () => {
-  const gate: HookGate = {
-    ...REPO_GATE,
-    readFile: () => {
-      throw new Error('read')
-    },
-  }
+  const read: string[] = []
+  const gate: HookGate = { ...REPO_GATE, readFile: p => (read.push(p), undefined) }
   expect(repoDeny('gh api -X PUT repos/acme/widget/rulesets --input r.json', gate)).toBe(REPO_SETTING_REASON)
+  expect(read).not.toContain('r.json')
 })
 
 test('gh api repo setting writes: older reasons keep precedence', () => {
@@ -12111,4 +12106,8 @@ test('gh api repo setting writes: older reasons keep precedence', () => {
   expect(repoDeny('gh api -X PATCH repos/acme/widget/git/refs/heads/main -f sha=x')).toBe(PUSH_REASON)
   expect(repoDeny('gh api -X POST repos/acme/widget/pulls/1/reviews -f event=APPROVE')).toBe(APPROVE_REASON)
   expect(repoDeny('gh api $E -X PUT')).toBe(DYNAMIC_VERB_REASON)
+  // an unreadable GraphQL query is a merge-guard deny first
+  expect(repoDeny('gh api graphql -f query=@missing.gql')).toBe(MERGE_REASON)
+  // a bad percent-encoding is a push-guard deny first
+  expect(repoDeny('gh api -X PUT repos/acme/widget/%ZZ')).toBe(PUSH_REASON)
 })
