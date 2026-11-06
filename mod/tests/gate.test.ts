@@ -392,3 +392,15 @@ test(
     expect(ran).toBe(1)
   },
 )
+
+test('the deny text of a compound command holds the deny of each matched kind', SLOW, async ($, on) => {
+  mock.clock(on)
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!.question
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+  const r = await $.tool.call({ tool: 'Bash', command: `${DECIDE} && ${START_OWNED}`, description: 'x' })
+  expect(r.deny).toContain('this gate decision')
+  expect(r.deny).toContain('starting this owner-only bead')
+})
