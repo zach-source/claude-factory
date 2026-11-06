@@ -4452,14 +4452,14 @@ function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boo
 
 /**
  * claude-factory-qn8a.23: true for the plain `gh pr ready --undo` form only. gh uses the last value
- * of a bool flag, so any `--undo=<value>` word, dynamic word or zsh glob word (`(`, `)`, `^`, `!`)
- * before a literal `--` can cancel it.
+ * of a bool flag, so any `--undo=<value>` word, dynamic word or word with a shell or zsh glob character
+ * (anything outside a plain literal) before a literal `--` can cancel it.
  */
 function plainUndo(words: string[]): boolean {
   let undo = false
   for (const w of words) {
     if (w === '--') break
-    if (w.startsWith('--undo=') || dynamicWord(w) || /[()^!]/.test(w)) return false
+    if (w.startsWith('--undo=') || dynamicWord(w) || !/^[A-Za-z0-9_.\/:@%+,=-]+$/.test(w)) return false
     if (w === '--undo') undo = true
   }
   return undo
