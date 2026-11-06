@@ -4518,10 +4518,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
         blob.length > WIKI_PAGE_MAX
           ? ['page too large']
           : (scanPages([{ path, text: blob.toString() }])[0]?.reasons ?? [])
-      if (reasons.length)
-        why = reasons.includes('secret shape')
-          ? `wiki: secret shape in ${path}, page kept at last version`
-          : `wiki: ${reasons.join('; ')} in ${path}, page kept at last version`
+      if (reasons.length) why = `wiki: ${reasons.join('; ')} in ${path}, page kept at last version`
     }
     if (!why) continue
     wikiLog(why)
