@@ -129,14 +129,13 @@ function globRe(f: string): { test(name: string): boolean } {
       i++
     }
   }
-  const t = toks.filter((x, i) => !(x === true && toks[i - 1] === true))
-  const need = t.filter(x => x !== true).length
+  const need = toks.filter(x => x !== true).length
   return {
     test(name: string) {
       if (need > name.length) return false
       let row = new Array<boolean>(name.length + 1).fill(false)
       row[0] = true
-      for (const x of t) {
+      for (const x of toks) {
         const next = new Array<boolean>(name.length + 1).fill(false)
         if (x === true) {
           let on = false
