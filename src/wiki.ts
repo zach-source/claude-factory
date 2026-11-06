@@ -1,4 +1,6 @@
 import { secretFile } from './homebackup'
+import type { Bead } from './beads'
+import type { Row } from './cli'
 
 export type Page = {
   kind: 'rig' | 'solution' | 'topic' | 'index' | 'glossary'
@@ -121,4 +123,107 @@ export function scanPages(pages: { path: string; text: string }[]): { path: stri
     if (reasons.length) out.push({ path, reasons })
   }
   return out
+}
+
+export type RigRow = Row & { createdAt: number }
+export type Merged = { url: string; title: string; mergedAt: number; solution?: string }
+
+const WEEK = 7 * 24 * 3600_000
+const live = (r: Row) => r.node !== 'done' && r.node !== 'aborted'
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+const strip = (s: string) => s.replace(/^[\w.-]+#\d+ [\w-]+:\s*/, '')
+const sentence = (s: string) => {
+  const t = s.replace(/\s+/g, ' ').trim()
+  const m = t.match(/^(.*?)[.!?](?=\s|$)/)
+  return (m?.[1] ?? t.replace(/[.!?]+$/, '')).trim()
+}
+const dot = (s: string) => (s ? ` — ${s}.` : '')
+const age = (ms: number) =>
+  ms < 3600_000 ? `${Math.floor(ms / 60_000)} min` : `${Math.floor(ms / 3600_000)} h`
+const PR = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)/g
+const prLink = (text: string) => {
+  const m = [...text.matchAll(PR)].pop()
+  return m ? `[PR #${m[1]}](${m[0]})` : ''
+}
+const title = (r: Row) => {
+  const g = (r.goal ?? '').split('\n')[0] ?? ''
+  return (r.bead && g.startsWith(`${r.bead}: `) ? g.slice(r.bead.length + 2) : g) || r.id
+}
+const step = (r: Row) => `[${r.node}](../glossary.md#${r.node})`
+const list = (items: string[]) => (items.length ? items.join('\n') : 'None.')
+const stamp = (ms: number) => new Date(ms).toISOString().replace('.000', '')
+
+/** The rig page from contracts/pages.md. Pure: the caller gives the clock and all data, so the same input gives the same text. */
+export function renderRigPage(
+  rig: string,
+  rows: RigRow[],
+  waiting: ReadonlySet<string>,
+  shipQueue: Bead[],
+  merged: Merged[],
+  now: number,
+): string {
+  const liveRows = rows.filter(live).sort((a, b) => a.createdAt - b.createdAt || cmp(a.id, b.id))
+  const sum = (r: Row) => strip(r.last?.summary ?? '')
+  const item = (r: RigRow, what: string) =>
+    `- **${title(r)}**${dot(what)} Step: ${step(r)}, ${age(now - r.createdAt)}.`
+  const ask = (r: Row) => {
+    const q = r.last?.summary.match(/^Question:[ \t]*(.*)$/m)?.[1]
+    return sentence(q || r.gate?.question || r.error || sum(r))
+  }
+  const ids = (r: Row, extra = '') =>
+    `  [${r.bead ?? r.id}]${prLink(r.last?.summary ?? '') && ` · ${prLink(r.last?.summary ?? '')}`}${extra}`
+  const waits = liveRows.filter(r => waiting.has(r.id))
+  const progress = liveRows.filter(r => !waiting.has(r.id))
+  const beads = new Set(liveRows.map(r => r.bead))
+  const stopped = rows
+    .filter(r => r.node === 'aborted' && r.last && now - r.last.at <= WEEK)
+    .sort((a, b) => b.last!.at - a.last!.at || cmp(a.id, b.id))
+  const shipped = merged
+    .filter(m => now - m.mergedAt <= WEEK)
+    .sort((a, b) => b.mergedAt - a.mergedAt || cmp(a.url, b.url))
+  const queued = (b: Bead) => {
+    const u = String(b.metadata?.ship_pr ?? '')
+    const link = u.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/) ? prLink(u) : ''
+    return `- **${b.title}** — waits in the ship queue.\n  [${b.id}]${link && ` · ${link}`}`
+  }
+  const body = [
+    '',
+    `# ${rig}`,
+    '',
+    '> The factory makes this page again every 30 min. Do not edit it: an edit does not stay.',
+    '',
+    '## Waits on a person',
+    '',
+    list(waits.map(r => `${item(r, ask(r))}\n${ids(r, ' · answers: owner')}`)),
+    '',
+    '## In progress',
+    '',
+    list(progress.map(r => `${item(r, sentence(sum(r)))}\n${ids(r)}`)),
+    '',
+    '## Queued',
+    '',
+    list(shipQueue.filter(b => !beads.has(b.id)).map(queued)),
+    '',
+    '## Shipped (last 7 days)',
+    '',
+    list(
+      shipped.map(
+        m =>
+          `- **${m.title}** — merged ${day(m.mergedAt)}.${m.solution ? ` [Solution](../${m.solution})` : ''}\n  ${prLink(m.url) || m.url}`,
+      ),
+    ),
+    '',
+    '## Stopped (last 7 days)',
+    '',
+    list(
+      stopped.map(
+        r => `- **${title(r)}**${dot(sentence(sum(r)))} Stopped ${day(r.last!.at)}.\n  [${r.bead ?? r.id}]`,
+      ),
+    ),
+    '',
+    `Last update: ${stamp(now)}`,
+    '',
+  ].join('\n')
+  return format({ kind: 'rig', title: `${rig} — factory work`, rigs: [rig], updated: stamp(now) }, body)
 }
