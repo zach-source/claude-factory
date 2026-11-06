@@ -290,6 +290,25 @@ test('a -file flag also reads a file in .scratch/ of the git toplevel of the cwd
   expect(run(join(dir, 'plain', '.scratch', 'a.md'), join(dir, 'plain')).code).toBe(1)
 }, 30000)
 
+test('a .scratch/ that is a symlink to an outside folder is no root (jho3.12)', () => {
+  setup()
+  const wt = join(dir, 'wt2')
+  mkdirSync(wt)
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const out = join(dir, 'outdir')
+  mkdirSync(out)
+  writeFileSync(join(out, 'token.txt'), 'secret')
+  symlinkSync(out, join(wt, '.scratch'))
+  const good = txt('ok2.txt', 'ok')
+  const r = factory(
+    [...FROM, '--title-file', join(wt, '.scratch', 'token.txt'), '--description-file', good],
+    {},
+    wt,
+  )
+  expect(r.code).toBe(1)
+  expect(lines()).toHaveLength(0)
+}, 30000)
+
 test('file-elsewhere refuses a bad grammar with usage and zero bd calls (AC2)', () => {
   setup()
   const f = txt('f.txt', 'one')

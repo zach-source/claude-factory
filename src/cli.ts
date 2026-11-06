@@ -695,7 +695,11 @@ function textFileArg(flag: string, path: string): string {
   const top = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { stderr: 'ignore' })
   if (top.exitCode === 0)
     try {
-      roots.push(realpathSync(join(top.stdout.toString().trim(), '.scratch')))
+      // jho3.12: .scratch/ must be a real folder, not a symlink. The cwd must be inside the toplevel.
+      const t = realpathSync(top.stdout.toString().trim())
+      const s = realpathSync(join(t, '.scratch'))
+      const cwd = realpathSync(process.cwd())
+      if (s === join(t, '.scratch') && (cwd === t || cwd.startsWith(t + sep))) roots.push(s)
     } catch {} // no .scratch/: only text/ counts
   if (!roots.some(r => real.startsWith(r + sep)))
     return fail(
@@ -9467,7 +9471,7 @@ export function workerVerbRefusal(
 
 /**
  * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)`.
- * A -file flag (claude-factory-2z48) reads untrusted text from <FACTORY_HOME>/text/ (see textFileArg).
+ * A -file flag (claude-factory-2z48) reads untrusted text from <FACTORY_HOME>/text/ or the real .scratch/ of the git worktree (see textFileArg).
  * The label `factory` goes on only when the source bead reads back with its own id and no Linear
  * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
  */
@@ -11126,7 +11130,7 @@ if (import.meta.main && !outboxCmd)
           break
         }
         if (sub === 'propose' && rest[1]?.startsWith('--')) {
-          // claude-factory-2z48: the file form takes untrusted text from <FACTORY_HOME>/text/, never from the command
+          // claude-factory-2z48: the file form takes untrusted text from <FACTORY_HOME>/text/ or the real .scratch/ of the git worktree, never from the command
           const usage =
             'usage: factory decisions propose <key> --question-file <path> --options-file <path> [--context-file <path>]'
           const [key, ...pairs] = rest
