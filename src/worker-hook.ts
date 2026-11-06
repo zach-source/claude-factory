@@ -385,6 +385,8 @@ export const DYNAMIC_VERB_REASON =
  * filesystem a unit test can fake out. `main()` wires the real ones; a test passes its own.
  */
 export interface HookGate {
+  /** claude-factory-abs: the clock denyReason reads for its scan deadline (SCAN_TIME_MS). A test fakes it. Default Date.now. */
+  now?: () => number
   /** the running station, from FACTORY_FROM. Only the release station may mark a pull request ready. */
   station?: string
   /** claude-factory-l3tl: the factory name, from FACTORY_DEF_NAME. With `mergeAuthority` and the
@@ -542,7 +544,17 @@ interface ScanState {
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
   // reads. Below zero, the scan stops and denies (fail closed).
   work: number
+  /** claude-factory-abs: the clock reading after which the scan denies with SCAN_TIME_REASON. Infinity: no deadline. */
+  deadline: number
+  now: () => number
+  /** claude-factory-abs: set when spendWork passed the deadline. scanReason then returns SCAN_TIME_REASON, allow included. */
+  timedOut: boolean
+  /** claude-factory-c1jb: alias rescans that denyAt already allowed, by their inputs, with the state.outer that the rescan wrote. A repeat of one is skipped and puts that value back. */
+  aliasSeen: Map<string, OtherSegs>
 }
+
+// Each field here is a budget or the memo. Any other ScanState field goes into the alias memo key.
+const MEMO_SKIP = new Set<string>(['work', 'deadline', 'now', 'timedOut', 'substFallbacks', 'aliasSeen'])
 
 // claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
 export const SCAN_BUDGET_REASON =
@@ -560,8 +572,22 @@ export const MAX_SCAN_WORK = 16_000_000
 /** Subtracts n from the work left. Returns true when the budget is spent. */
 function spendWork(state: ScanState, n: number): boolean {
   state.work -= n
+  // claude-factory-abs: every denyAt level and every alias rescan comes here, so each one checks the clock.
+  if (state.deadline !== Infinity && state.now() > state.deadline) {
+    state.timedOut = true
+    state.work = -1
+  }
   return state.work < 0
 }
+
+// claude-factory-abs: this reason is for a command whose scan runs past SCAN_TIME_MS (a slow shape or a loaded host).
+export const SCAN_TIME_REASON =
+  'The factory denies this command: the factory cannot check it in the time it has, because the ' +
+  'scan ran too long. Run a simpler command. Do not retry this exact command.'
+
+// claude-factory-abs: the time one denyReason call may scan, in ms from its start. The memoGate spawn budget is
+// GATE_BUDGET_MS (6000) and runs inside the scan. The rest of the 10 s PreToolUse timeout covers Bun start and stdin.
+export const SCAN_TIME_MS = 7000
 
 // claude-factory-epz: anyShellReason recurses once for each stacked eval or sh -c word, with no
 // limit. A command with many stacked eval words can make this guard's own scan too slow. The scan
@@ -2461,7 +2487,7 @@ function scanForFirstDynamicPair(words: string[], start: number, anchors: number
   for (let m = start; m < words.length; m++) {
     const mw = words[m]!
     if (mw.startsWith('-') && mw !== '-') continue
-    if (!dynamicCommandWord(mw)) continue
+    if (!dynamicCommandWord(mw, words, m)) continue
     if (firstSingle < 0) firstSingle = m
     let m2 = m + 1
     while (m2 < words.length && words[m2]!.startsWith('-') && words[m2] !== '-') m2++
@@ -2566,13 +2592,13 @@ function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | u
   // start index, so the smallest dynamic slot gives the result of all of them. No cap needed.
   for (let i = 0; i + 1 < words.length; i++) {
     if (!/^-(exec|execdir|ok|okdir)$/.test(words[i]!)) continue
-    if (!dynamicCommandWord(words[i + 1]!)) continue
+    if (!dynamicCommandWord(words[i + 1]!, words, i + 1)) continue
     anchors.push(i + 1)
     break
   }
   for (const a of anchors) {
     const head = words[a]!
-    if (!dynamicCommandWord(head)) continue
+    if (!dynamicCommandWord(head, words, a)) continue
     // A `{` or `}` word is a group marker, and realCommand strips it. A `name()` word is a function
     // definition. definesFunction denies it with its own reason.
     if (head === '{' || head === '}' || /^[^$`]*\(\)$/.test(head)) continue
@@ -2718,7 +2744,7 @@ function commandAnchors(words: string[]): number[] {
       // claude-factory-p43v.29: this chase reads a word as if it names the real command (the git
       // or gh binary, or a kubectl/ko/helm tool word). `dynamicCommandWord` reads `{}` as not
       // dynamic here; see the comment above that function.
-      const dyn = dynamicCommandWord(words[k]!)
+      const dyn = dynamicCommandWord(words[k]!, words, k)
       if (!dyn && !mayBeValue) break
       let k2 = k + 1
       while (k2 < words.length && words[k2]!.startsWith('-') && words[k2] !== '-') k2++
@@ -3043,11 +3069,13 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
+  // the index of each bd word
+  const bdIdx: number[] = []
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (w.startsWith(g.name + '=')) return true
     const b = baseWord(w)
-    if (b === g.cmd) runsBd = true
+    if (b === g.cmd) bdIdx.push(i)
     // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
     // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
     if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
@@ -3073,7 +3101,12 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
       }
     }
   }
-  return envClearsAll && runsBd
+  if (!envClearsAll) return false
+  if (runsBd) return true
+  if (bdIdx.length === 0) return false
+  // ponytail: claude-factory-jsoe is a known gap. `env -i grep -rn bd src` denies. A reader exemption was
+  // bypassed twice (qn8a.9.13, qn8a.9.14), so a bd word under a clear-all env always denies.
+  return true
 }
 
 /**
@@ -3211,9 +3244,10 @@ function shellStdinReason1(words: string[], state: ScanState): string | undefine
   const lead = leadingRedirects(words)
   const rest = lead ? words.slice(lead) : words
   for (const a of commandAnchors(rest)) {
-    if (dynamicCommandWord(rest[a]!) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
+    if (dynamicCommandWord(rest[a]!, rest, a) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
     // claude-factory-l43b.20: a dynamic anchor can be xargs, so a shell word after it denies.
-    if (dynamicCommandWord(rest[a]!) && rest.slice(a + 1).some(isShellWord)) return SHELL_STDIN_REASON
+    if (dynamicCommandWord(rest[a]!, rest, a) && rest.slice(a + 1).some(isShellWord))
+      return SHELL_STDIN_REASON
     // claude-factory-l43b.9: `source` and `.` run the file they read like a shell script.
     if (SOURCE_WORDS.has(baseWord(rest[a]!)) && shellReadsStdin(rest, a)) return SHELL_STDIN_REASON
   }
@@ -3271,10 +3305,10 @@ function xargsRunsShell(words: string[]): boolean {
         j += 2
         continue
       }
-      if (j + 1 < words.length && dynamicCommandWord(words[j + 1]!)) cands.push(j + 1)
+      if (j + 1 < words.length && dynamicCommandWord(words[j + 1]!, words, j + 1)) cands.push(j + 1)
       j++
     }
-    if (j < words.length && dynamicCommandWord(words[j]!)) cands.push(j)
+    if (j < words.length && dynamicCommandWord(words[j]!, words, j)) cands.push(j)
     // claude-factory-l43b.16: xargs adds words from its stdin to the shell argv, so any shell
     // word after xargs denies.
     // A dynamic command word with a literal -c script is scanned by anyShellReason. A replace flag
@@ -5539,13 +5573,41 @@ function dynamicWord(w: string): boolean {
 // denyAt strips `(...)`, so `${(@)_}` reads as `${_}` there.
 const LAST_ARG_HEAD = /\$[^A-Za-z0-9_{}\s]*(?:_|\{[^A-Za-z0-9_}]*_)(?![A-Za-z0-9_])/
 
+// claude-factory-qn8a.9.12: the exemption for `[` and `[[` is a closed grammar.
+// Bash reads the operand of -v, -eq, -ne, -lt, -le, -gt and -ge as arithmetic.
+// A value such as `a[$(cmd)]` then runs a command.
+// Only string tests pass: `W`, `U W` and `W B W`, then the closer as the last word.
+// W is a plain literal. In `[[` it can also be a $NAME or ${NAME} word, because `[[` does not split words.
+// The scan reads each word in two views. One view masks a quoted word to one space.
+// The other view removes the quotes, so "$X" and $X look the same in `[`. `[` takes no expansion.
+// Every other form returns false, so the head stays dynamic.
+const TEST_UNARY = new Set(['-n', '-z', '-e', '-f', '-d', '-s', '-r', '-w', '-x', '-L', '-h'])
+const TEST_BINARY = new Set(['=', '==', '!='])
+const TEST_LITERAL = /^[A-Za-z0-9_.\/:@%+,-]+$/
+const TEST_EXPANSION = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/
+function testBuiltinSafe(head: string, args: readonly string[]): boolean {
+  const closer = head === '[[' ? ']]' : ']'
+  if (args[args.length - 1] !== closer) return false
+  const ops = args.slice(0, -1)
+  const ok = (w: string) => TEST_LITERAL.test(w) || w === ' ' || (head === '[[' && TEST_EXPANSION.test(w))
+  if (ops.length === 1) return ok(ops[0]!)
+  if (ops.length === 2) return TEST_UNARY.has(ops[0]!) && ok(ops[1]!)
+  return ops.length === 3 && TEST_BINARY.has(ops[1]!) && ok(ops[0]!) && ok(ops[2]!)
+}
+
 // claude-factory-p43v.29: read the comment above `dynamicWord` first, because this function reads
 // `{}` as not dynamic. Three sites use it, not `dynamicWord`: `commandAnchors`, and the `cmd[0]`
 // check in `anyDynamicCommandReason` and in `anyDynamicLiveApplyReason`. Each site reads a word as
 // the actual command. That command is the git or gh binary, or a kubectl, ko or helm tool word.
 // A `{}` word there is usually a wrapper's placeholder value, such as `xargs -I {}`, not a tool
 // name. This exemption lets `xargs -I {} cp {} dest` and `xargs -I {} delete {}` run.
-function dynamicCommandWord(w: string): boolean {
+// claude-factory-qn8a.9.9: bash runs a `$(...)` inside the subscript of `[ -v 'a[$(cmd)]' ]` and of an
+// arithmetic operand in `[[ ... -eq ... ]]`, even when quoted. So `[` and `[[` are exempt only when
+// the caller passes the segment words and no later word holds `(` or a backtick. Without them, deny.
+function dynamicCommandWord(w: string, words?: readonly string[], i?: number): boolean {
+  // claude-factory-0hkb: the exact words `[` and `[[` are the test builtin. A word that only starts with `[` stays dynamic.
+  if ((w === '[' || w === '[[') && words && i !== undefined && testBuiltinSafe(w, words.slice(i + 1)))
+    return false
   return w !== '{}' && dynamicWord(w)
 }
 
@@ -5592,6 +5654,9 @@ function segmentDynArg(words: string[]): boolean {
     externalProgram(words[first]!) ||
     words[first] === 'echo' ||
     words[first] === 'cd' ||
+    // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
+    ((words[first] === '[' || words[first] === '[[') &&
+      testBuiltinSafe(words[first]!, words.slice(first + 1))) ||
     words[first]!.startsWith('#')
   )
     return false
@@ -5615,7 +5680,7 @@ function segmentMayDefineAlias(words: string[]): boolean {
     return true
   }
   for (const a of anchors) {
-    if (!dynamicCommandWord(words[a]!)) continue
+    if (!dynamicCommandWord(words[a]!, words, a)) continue
     for (let i = a + 1; i < words.length; i++) {
       if (/^[^-=]+=/.test(words[i]!) || /[$`]/.test(words[i]!)) return true
     }
@@ -7281,7 +7346,7 @@ function anyDynamicCommandReason1(words: string[], braceWords?: Set<string>): st
     if (cmd.length === 1 && (cmd[0] === '$' || cmd[0]!.endsWith('`'))) return DYNAMIC_VERB_REASON
     // claude-factory-p43v.29: this reads `cmd[0]` as if it names the real command (the git or gh
     // binary). `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
-    if (cmd.length > 0 && dynamicCommandWord(cmd[0]!)) {
+    if (cmd.length > 0 && dynamicCommandWord(cmd[0]!, cmd, 0)) {
       let k = 1
       while (k < cmd.length) {
         const w = cmd[k]!
@@ -7417,7 +7482,11 @@ function anyDynamicLiveApplyReason1(words: string[], personOnly: string[]): stri
   // `dynamicCommandWord` reads `{}` as not dynamic here; see the comment above it.
   for (const a of commandAnchors(words)) {
     const cmd = words.slice(a)
-    if (cmd.length && dynamicCommandWord(cmd[0]!) && anyToolLiveApplyDenied(cmd.slice(1), personOnly)) {
+    if (
+      cmd.length &&
+      dynamicCommandWord(cmd[0]!, cmd, 0) &&
+      anyToolLiveApplyDenied(cmd.slice(1), personOnly)
+    ) {
       return DYNAMIC_VERB_REASON
     }
   }
@@ -7489,7 +7558,7 @@ function anyDynamicLiveApplyReason1(words: string[], personOnly: string[]): stri
  * A cluster counts only when it comes before the next `--` (`nc < nd`). That is why
  * `sh foo -- bash -c "..."` still finds the cluster after the `--`, and `sh -- ...` still finds
  * none before it. This is an exact match for the old `shCFlagIndex` return value, not an
- * approximation: see src/worker-hook.test.ts for the differential checks and for the two
+ * approximation. No test compares it with the old function. src/worker-hook.test.ts holds the two
  * regression shapes that a blind jump past a miss would break.
  */
 // claude-factory-dgf: `env` (GNU and BSD) reads each word after `env` as an option. It stops at
@@ -8052,7 +8121,8 @@ export function denyReason(
   // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
   const home = homeReason(command, gate?.readFile)
   if (home) return home
-  return scanReason(command, root, personOnly, gate)
+  const now = gate?.now ?? Date.now
+  return scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
 }
 
 /**
@@ -8104,6 +8174,7 @@ export function scanReason(
   personOnly?: string[],
   gate?: HookGate,
   budget: number = MAX_SCAN_WORK,
+  deadline: number = Infinity,
 ): string | undefined {
   const state: ScanState = {
     branchChange: false,
@@ -8124,6 +8195,10 @@ export function scanReason(
     outer: NO_OTHER_SEGS,
     braceWords: new Set(),
     work: budget,
+    deadline,
+    now: gate?.now ?? Date.now,
+    timedOut: false,
+    aliasSeen: new Map(),
   }
   const deferred = () =>
     state.stdinDeferred
@@ -8135,6 +8210,7 @@ export function scanReason(
           : undefined
   const g = memoGate(gate ?? {})
   const reason = denyAt(command, root, personOnly, g, 0, state, false, false)
+  if (state.timedOut) return SCAN_TIME_REASON
   if (reason) {
     if (!(state.ifsLate && state.stdinDeferred && reason === REASON)) return reason
     const aliasDef = state.aliasWrite && !plainAliasOnly(command)
@@ -8285,11 +8361,32 @@ function shellAliasReason(
       if (quoted.includes(null)) return SHELL_ALIAS_REASON
       texts.push(quoted.join(' '))
     }
-    const reason = denyAt(texts.join(' ; '), root, personOnly, gate, depth, state, moved, ghMoved, [
-      ...stack,
-      name,
-    ])
+    // claude-factory-c1jb: n alias words in one segment reach the same rescan text in n! orders. denyAt reads the
+    // stack only as a set (includes, length), so one allowed rescan covers every order. The key holds every scan
+    // state field except MEMO_SKIP.
+    const text = texts.join(' ; ')
+    const stateKey = Object.entries(state)
+      .filter(([k]) => !MEMO_SKIP.has(k))
+      .map(
+        ([k, v]) =>
+          k +
+          '=' +
+          (v instanceof Set
+            ? [...v].sort().join('\0')
+            : typeof v === 'object'
+              ? JSON.stringify(v)
+              : String(v)),
+      )
+      .join('\u0002')
+    const key = [moved, ghMoved, depth, stateKey, [...stack, name].sort().join('\0'), text].join('\u0001')
+    const seen = state.aliasSeen.get(key)
+    if (seen) {
+      state.outer = seen
+      continue
+    }
+    const reason = denyAt(text, root, personOnly, gate, depth, state, moved, ghMoved, [...stack, name])
     if (reason) return reason
+    state.aliasSeen.set(key, state.outer)
   }
   return undefined
 }
@@ -9062,7 +9159,7 @@ function denyAtScan(
     if (info.dynamicRepeatCount) return DYNAMIC_VERB_REASON
     const cmd = info.cmd
     for (const c of [cmd, realCommandInfo(dropRedirectWords(words)).cmd])
-      if (c.length && dynamicCommandWord(c[0]!) && dynamicDashedVerb(c[0]!))
+      if (c.length && dynamicCommandWord(c[0]!, c, 0) && dynamicDashedVerb(c[0]!))
         late.reason ??= DYNAMIC_VERB_REASON
     // k8iz: true when the miqy table read this pure $NAME head's value, so the late deny skips it.
     let headValueRead = false
@@ -9702,6 +9799,23 @@ function logDenial(reason: string, command: string, harness: string | undefined)
   } catch {}
 }
 
+/** claude-factory-sibp: main() prints this when a guard throws. It holds no exception text and no command text. */
+export const HOOK_ERROR_REASON =
+  'The factory denies this command: the factory hook failed while it checked the command. ' +
+  'Run a simpler command. Do not retry this exact command.'
+
+function denyOut(reason: string) {
+  console.log(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }),
+  )
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -9710,6 +9824,17 @@ async function main() {
   } catch {
     return
   }
+  // claude-factory-sibp: a throw in any guard denies. An uncaught throw exits 1, and Claude Code lets the command run.
+  try {
+    handle(input)
+  } catch {
+    denyOut(HOOK_ERROR_REASON)
+    const argh = process.argv.indexOf('--harness')
+    logDenial(HOOK_ERROR_REASON, '', argh >= 0 ? process.argv[argh + 1] : process.env.FACTORY_HARNESS)
+  }
+}
+
+function handle(input: unknown) {
   const i = input as {
     tool_name?: string
     cwd?: string
