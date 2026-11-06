@@ -97,7 +97,11 @@ async function body(req: Request) {
 
 /** only the manager task can use these vault keys: they give full AX control or write access to the backup repo */
 const MANAGER_ONLY_KEYS = /(^|[^A-Za-z0-9_])(AX_AUTH|GITHUB_BASIC_MANAGER)([^A-Za-z0-9_]|$)/i
-const CREDENTIAL_URI = /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/[A-Z][A-Z0-9_]*$/
+/** a vault name is a-z, 0-9 and hyphen, as agent-vault makes it: no percent escape, dot or upper case */
+const vaultUri = (key: string) => new RegExp('^ate-secret://agent-vault/[a-z0-9-]+/' + key + '$')
+const CREDENTIAL_URI = vaultUri('[A-Z][A-Z0-9_]*')
+const REVIEWER_URI = vaultUri('GITHUB_REVIEWER')
+const REVIEWER_BASIC_URI = vaultUri('GITHUB_REVIEWER_BASIC')
 
 const same = (a: unknown, b: unknown[]) => JSON.stringify(a) === JSON.stringify(b)
 const safeSegment = (x: string) => /^[A-Za-z0-9_.-]+$/.test(x) && x !== '.' && x !== '..'
@@ -129,7 +133,7 @@ function reviewerApiRule(o: Record<string, unknown>): boolean {
     h.header === 'Authorization' &&
     h.prefix === 'Bearer ' &&
     typeof h.credentialUri === 'string' &&
-    /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/GITHUB_REVIEWER$/.test(h.credentialUri)
+    REVIEWER_URI.test(h.credentialUri)
   )
 }
 
@@ -150,7 +154,7 @@ function reviewerGitRule(o: Record<string, unknown>): boolean {
     h.header === 'Authorization' &&
     h.prefix === 'Basic ' &&
     typeof h.credentialUri === 'string' &&
-    /^ate-secret:\/\/agent-vault\/[^/?#\s]+\/GITHUB_REVIEWER_BASIC$/.test(h.credentialUri)
+    REVIEWER_BASIC_URI.test(h.credentialUri)
   )
 }
 
@@ -205,7 +209,7 @@ export function workerPolicyRefusal(policy: unknown): string | null {
       const bad = walk(k, depth + 1)
       if (bad) return bad
       if (norm(k) === 'credentialuri' && !(typeof o[k] === 'string' && CREDENTIAL_URI.test(o[k] as string)))
-        return 'has a credentialUri that is not an ate-secret://agent-vault/<vault>/<KEY> string'
+        return 'has a credentialUri that is not an ate-secret://agent-vault/<vault>/<KEY> string (vault: a-z, 0-9, -)'
       if (norm(k) === 'pathprefixes' || norm(k) === 'paths') {
         const h = keys.find(x => norm(x) === 'hostnames')
         const hosts = h === undefined ? null : o[h]
