@@ -1397,10 +1397,35 @@ function substitutionIn(command: string): number {
   return state === 'plain' ? -1 : open
 }
 
+/** Drops each backslash-newline pair that the shell reads as a line continuation: one preceded by an odd
+ * number of backslashes. With an even number, the last backslash escapes itself and the newline ends the
+ * command. (Inside single quotes the shell keeps the pair; dropping it there only shortens an argument.) */
+const joinLines = (s: string) => s.replace(/(?<!\\)((?:\\\\)*)\\\n/g, '$1')
+
+/** claude-factory-0jr2.4: true if a comment line ends with a backslash and more text follows.
+ * The shell keeps that pair. The comment ends at the newline, and the next line runs as a command.
+ * The join would glue the two lines. A `#` after a space in quotes also counts: this is an extra question, which is safe.
+ * The rule is the same as commentLineContinues in src/worker-hook.ts. */
+function commentContinues(cmd: string): boolean {
+  let k = cmd.indexOf('#')
+  while (k !== -1) {
+    if (k === 0 || /[\s;&|()<>`]/.test(cmd[k - 1]!)) {
+      const e = cmd.indexOf('\n', k)
+      if (e === -1) return false
+      if (cmd[e - 1] === '\\' && /\S/.test(cmd.slice(e + 1))) return true
+      k = cmd.indexOf('#', e)
+    } else k = cmd.indexOf('#', k + 1)
+  }
+  return false
+}
+
+/** The length of the command text that an Allow question shows. */
+const CUT = 300
+
 /** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
  * person sees that a longer command may hold a second command. */
 function shownCommand(command: string): string {
-  const head = cutText(command, 300)
+  const head = cutText(command, CUT)
   return head.length === command.length
     ? command
     : `${head}… (${command.length - head.length} of ${command.length} characters not shown)`
@@ -1410,13 +1435,16 @@ function shownCommand(command: string): string {
  * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
  * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
  * The shell still runs a backslash-newline line continuation and a quoted newline as one command, so this
- * normalizes the first away (bash joins a `\`-newline pair with NO character, even mid-word, so this drops
- * it rather than replacing it with a space) and matches across the second ([\s\S] instead of [^\n]) rather
+ * drops each pair that follows an odd run of backslashes (joinLines; bash joins with NO character, even
+ * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
-  const command = rawCommand.replace(/\\\n/g, '')
+  // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
+  const unreadable = commentContinues(rawCommand)
+  const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
   const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
+  let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
     let from = Math.max(0, at - 40)
@@ -1430,28 +1458,77 @@ function gatedCommand(rawCommand: string): { question: string; deny: string } | 
       more > 0
         ? ` ${more} more dollar signs, backticks or parentheses come after this text and are not shown.`
         : ''
-    return {
-      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${shownCommand(command)}. The first one is at character ${at}: «${around}».${unseen} Allow it?`,
+    substitution = {
+      phrase:
+        'run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read',
       deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
+      detail: `The first one is at character ${at}: «${around}».${unseen}`,
     }
   }
-  if (/\bfactory\s+decide\b/.test(command))
+  // an unreadable form is matched twice: the pair as the shell reads it (a newline) and the full join. Take the larger count.
+  const reads = (
+    unreadable
+      ? [(t: string) => t.replace(/\\\n/g, '\n'), (t: string) => t.replace(/\\\n/g, '')]
+      : [joinLines]
+  ).map(f => {
+    const text = f(rawCommand)
+    // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
     return {
-      question: `The manager model wants to decide a factory gate: ${shownCommand(command)}. Allow it?`,
-      deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
+      text,
+      cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
     }
-  if (/\bfactory\s+decisions\s+answer\b/.test(command))
-    return {
-      question: `The manager model wants to answer a person's bd decision: ${shownCommand(command)}. Allow it?`,
-      deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
-    }
-  if (/\bfactory\s+start\b[\s\S]*--owned\b/.test(command))
-    return {
-      question: `The manager model wants to start a bead carrying its owner's decisions: ${shownCommand(command)}. Allow it?`,
-      deny: 'The person did not confirm starting this owner-only bead.',
-    }
-  return null
+  })
+  const kinds = GATED_KINDS.flatMap(k => {
+    const per = reads.map(r => {
+      const ends = [...r.text.matchAll(k.re)].map(m => m.index! + m[0].length)
+      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length }
+    })
+    const count = Math.max(...per.map(x => x.count))
+    return count ? [{ ...k, count, hidden: Math.max(...per.map(x => x.hidden)) }] : []
+  })
+  if (!unreadable && !substitution && !kinds.length) return null
+  const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
+  const named = [
+    ...(substitution ? [substitution.phrase] : []),
+    ...kinds.map(k => `${k.phrase}${times(k.count)}`),
+  ]
+  const hidden = kinds.filter(k => k.hidden > 0)
+  const who = unreadable
+    ? 'run a form the hook cannot read (a comment line ends with a backslash, so the next line runs as a command)'
+    : ''
+  const names = [...(who ? [who] : []), ...named]
+  return {
+    question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
+    deny: [
+      ...(unreadable
+        ? [
+            'The person did not confirm this form. Remove the backslash at the end of the comment line, or pass long text by file.',
+          ]
+        : []),
+      ...(substitution ? [substitution.deny] : []),
+      ...kinds.map(k => k.deny),
+    ].join(' '),
+  }
 }
+
+/** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
+const GATED_KINDS = [
+  {
+    re: /\bfactory\s+decide\b/g,
+    phrase: 'decide a factory gate',
+    deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
+  },
+  {
+    re: /\bfactory\s+decisions\s+answer\b/g,
+    phrase: "answer a person's bd decision",
+    deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
+  },
+  {
+    re: /\bfactory\s+start\b[\s\S]*?--owned\b/g,
+    phrase: "start a bead carrying its owner's decisions",
+    deny: 'The person did not confirm starting this owner-only bead.',
+  },
+]
 
 /** Every run id a Bash command names with a run-acting verb (`mail`, `poke`, `retry`, `goto`,
  * `fork`, `abort`, `rm`, `decide`), not only the first. A compound command (`a && b`, `a; b`)
@@ -1653,8 +1730,7 @@ export const register: Register = (on, options) => {
       (e.agentId ? 'export FACTORY_PATROL=1\n' : '') + (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '')
     const pinned = prefix ? { ...e, command: `${prefix}${e.command}` } : e
     const gated = gatedCommand(e.command)
-    // gatedCommand's own normalize, repeated here so TOUCH_RE and PATROL_VERB see the same text
-    // (a line continuation or a quoted newline must not hide a run-acting command from either)
+    // joined drops every backslash-newline pair, even after an even run: these guards only deny, and a nested shell can read the pair as a continuation (gatedCommand uses joinLines)
     const normalized = joined
 
     // [SECURITY] a subagent gets no dialog, since nobody is there to answer one. This denies a
