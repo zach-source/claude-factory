@@ -9533,6 +9533,7 @@ export const HOOK_CONTROL_REASON =
 
 // a parent of the hook dir (also a bare /) is a hook-control path in a segment with one of these words and in cd:
 // find / and ls -d / and alias ~ must stay allowed
+// Best effort (claude-factory-qn8a.65): a new parent-of-hook-dir form is not a defect here. The sandbox is the real barrier.
 const COPY_INTO_COMMANDS = new Set([
   'cp',
   'mv',
@@ -9597,6 +9598,7 @@ function expandBraces(w: string, cap = 64): string[] | undefined {
  * A word with an expansion (`$`, a backtick, ~user) denies when a part of it names the hook dir, a hook module,
  * `.claude` or a settings file. A glob denies when it can match one (a `*` never matches a leading dot).
  * Out of scope (ponytail): a path built at run time, a symlink made in the same command.
+ * A write into a parent of the hook dir is best effort only (claude-factory-qn8a.65).
  */
 function hookControlWord(
   word: string,
