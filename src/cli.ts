@@ -163,6 +163,7 @@ import * as managerhost from './managerhost'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
+import * as server from './server'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -10739,6 +10740,11 @@ if (import.meta.main && !outboxCmd)
         break
       case 'broker':
         broker.main(args)
+        break
+      case 'server':
+        refuseWorker('server', true)
+        lease()
+        server.main(args, HOME, () => tick())
         break
       case 'manager':
         refuseWorker('manager', true)
