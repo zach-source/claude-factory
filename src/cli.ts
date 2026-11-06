@@ -622,7 +622,7 @@ function readTextFile(flag: string, path: string): string {
 
 /**
  * claude-factory-2z48: untrusted text (a bead, a Linear issue) reaches a verb by file, never in a shell argument.
- * The file must sit inside <FACTORY_HOME>/text/ once symlinks resolve, so injected text cannot steer a flag to a
+ * The file must sit inside <FACTORY_HOME>/text/ or <git toplevel of cwd>/.scratch/ once symlinks resolve, so injected text cannot steer a flag to a
  * secret such as a token file. Returns the text without trailing whitespace.
  * ponytail: the verb does not delete the file, so text/ grows by one small file per filing. Upgrade: unlink after
  * success, or a gc pass.
@@ -636,9 +636,17 @@ function textFileArg(flag: string, path: string): string {
   } catch {
     return fail(`${flag} ${path} is not a readable file`)
   }
-  const root = realpathSync(dir)
-  if (!real.startsWith(root + sep))
-    return fail(`${flag} ${path} is outside ${dir}: write the text there first`)
+  const roots = [realpathSync(dir)]
+  // jho3: a Codex worker in workspace-write mode can write only in its cwd, so <git toplevel>/.scratch/ counts too
+  const top = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { stderr: 'ignore' })
+  if (top.exitCode === 0)
+    try {
+      roots.push(realpathSync(join(top.stdout.toString().trim(), '.scratch')))
+    } catch {} // no .scratch/: only text/ counts
+  if (!roots.some(r => real.startsWith(r + sep)))
+    return fail(
+      `${flag} ${path} is outside ${dir} and the .scratch/ of the git worktree: write the text there first`,
+    )
   return readTextFile(flag, real).trimEnd()
 }
 
