@@ -102,6 +102,34 @@ test('--summary-file after summary words stays plain text', () => {
   expect(r.lines().at(-1).summary).toBe(`see --summary-file ${f}`)
 })
 
+test('report text loses control, format and line-separator chars, keeps LF and TAB (claude-factory-67bw)', () => {
+  const dirty = 'a\u001b[2Jb\u009bc\u202ed\u2028e\u2029\ng\th'
+  const clean = 'a [2Jb c d e \ng\th'
+  for (const [outcome, key] of [
+    ['ready', 'summary'],
+    ['blocked', 'reason'],
+    ['fail', 'reason'],
+    ['handoff', 'summary'],
+  ] as const) {
+    const r = makeRun(`c-${outcome}`)
+    expect(factory(['report', `c-${outcome}`, String(r.seq), outcome, dirty]).code).toBe(0)
+    expect(r.lines().at(-1)[key]).toBe(clean)
+    const f = join(dir, `f-${outcome}`)
+    writeFileSync(f, dirty)
+    const r2 = makeRun(`d-${outcome}`)
+    expect(factory(['report', `d-${outcome}`, String(r2.seq), outcome, '--summary-file', f]).code).toBe(0)
+    expect(r2.lines().at(-1)[key]).toBe(clean)
+  }
+})
+
+test('mail text loses control, format and line-separator chars, keeps LF and TAB (claude-factory-67bw)', () => {
+  const r = makeRun('m1')
+  const dirty = 'a\u001b[2Jb\u009bc\u202Ed\u2028e\u2029\ng\th'
+  expect(factory(['mail', 'm1', 'manager', dirty]).code).toBe(0)
+  const mail = r.lines().find(l => l.type === 'MAIL')
+  expect(mail.text).toBe('a [2Jb c d e \ng\th')
+})
+
 test('--summary-file over 100 KiB exits 1, names the flag and posts nothing (claude-factory-amzl)', () => {
   const r = makeRun('r4')
   const f = join(dir, 'big')

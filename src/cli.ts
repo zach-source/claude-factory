@@ -1366,6 +1366,8 @@ export const clip = (text: string, max: number) => {
 /** VM free text for a FAIL reason or a mail: control, format and line-separator characters become spaces, then clip */
 export const cleanText = (text: string, max: number) =>
   clip(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '), max)
+/** report text: like cleanText but LF and TAB stay, and no clip */
+export const cleanReport = (text: string) => text.replace(/[^\P{Cc}\t\n]|[\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
@@ -10565,7 +10567,8 @@ if (import.meta.main && !outboxCmd)
         if (noCore) args.splice(args.indexOf('--no-core'), 1)
         const [rig, from, kind, until, supersedesArg] = [
           opt('--rig'),
-          opt('--from'),
+          // claude-factory-67bw: --from lands in frontmatter, so an LF would add a line
+          opt('--from')?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '),
           opt('--kind'),
           opt('--until'),
           opt('--supersedes'),
@@ -10605,7 +10608,15 @@ if (import.meta.main && !outboxCmd)
           }
           const isAnyway = words.includes('--anyway')
           const [summary, ...body] = words.filter(w => w !== '--anyway')
-          const note = { summary: summary!, body: body.join(' '), rig, kind, until }
+          // claude-factory-67bw: a replayed worker add reaches the store, so strip as report does.
+          // A rig with LF would add a frontmatter line, so it loses LF and TAB too.
+          const note = {
+            summary: cleanReport(summary!),
+            body: cleanReport(body.join(' ')),
+            rig: rig && cleanReport(rig).replace(/[\n\t]/g, ' '),
+            kind,
+            until,
+          }
           // gate() first, so a refusal costs no embedding and logs no helped/confirmed event; --anyway
           // skips memory.same()'s dedupe below, never this gate (claude-factory-3u1.1.1)
           const refusal = memory.gate(note)
@@ -11136,7 +11147,7 @@ if (import.meta.main && !outboxCmd)
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-        const text = summaryArgs(args).slice(3).join(' ')
+        const text = cleanReport(summaryArgs(args).slice(3).join(' '))
         post(
           run.id,
           outcome === 'fail'
@@ -11195,7 +11206,7 @@ if (import.meta.main && !outboxCmd)
           type: 'MAIL',
           from: workerFrom ?? managerSender(run),
           to: to!,
-          text: text.join(' '),
+          text: cleanReport(text.join(' ')),
           ...(wake && { wake: true as const }),
         })
         console.log(`mailed ${to}`)
