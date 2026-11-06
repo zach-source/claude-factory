@@ -997,7 +997,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       // a VM still waking fails ssh too: this stays pending until the failure is PUT_GRACE_MS old
       const failedAt = side!.putFailedAt ?? Date.now()
       const err = cleanText(r.err.replace(/\s+/g, ' ').trim(), 300)
-      writeJson(sideFile(run, task), { ...side, putFailedAt: failedAt, putError: err })
+      writeJson(sideFile(run, task), { ...side, putPart: i, putFailedAt: failedAt, putError: err })
       if (Date.now() - failedAt < PUT_GRACE_MS)
         return { status: 'pending', agent: 'ax', pending: `${name} not yet copied to the VM` }
       return {

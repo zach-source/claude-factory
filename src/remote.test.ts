@@ -939,6 +939,41 @@ esac
   rmSync(join(home, 'runs', 'r7d'), { recursive: true })
 })
 
+test('a part that always fails keeps putPart at that part, so the 5 min grace is not restarted each tick', () => {
+  launched('r7e')
+  const side = join(home, 'runs', 'r7e', 't.json')
+  writeFileSync(
+    side,
+    JSON.stringify({ ...JSON.parse(readFileSync(side, 'utf8')), put: ['memory.tgz'], putPart: 8 }),
+  )
+  writeFileSync(join(home, 'runs', 'r7e', 't.memory.tgz'), 'x'.repeat(20 * 72_000))
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: Running\\n' ;;
+  ssh*)
+    case "$*" in
+      *"worker put memory.tgz 10 "*) echo 'ENOSPC' >&2; exit 1 ;;
+      *"worker put"*) ;;
+      *) cat ${dir}/ssh ;;
+    esac
+    ;;
+esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  writeFileSync(join(dir, 'ssh'), JSON.stringify({ status: 'working', lines: [] }))
+  const row1 = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7e')
+  expect(row1.agent).toBe('pending')
+  const after = JSON.parse(readFileSync(side, 'utf8'))
+  expect(after.putPart).toBe(10)
+  writeFileSync(side, JSON.stringify({ ...after, putFailedAt: Date.now() - 6 * 60_000 }))
+  const row2 = JSON.parse(factory(['tick']).out).runs.find((r: { id: string }) => r.id === 'r7e')
+  expect(row2.agent).toBe('failed')
+  rmSync(join(home, 'runs', 'r7e'), { recursive: true })
+})
+
 test('a put error with ESC and U+202E reaches the FAIL reason without them', () => {
   launched('r7c')
   const side = join(home, 'runs', 'r7c', 't.json')
