@@ -335,7 +335,9 @@ test('a VM codex home runs the image deny hook, sets the limit and trusts the VM
   expect(hook[1].matcher).toBe('Write|Edit|MultiEdit|NotebookEdit')
   expect(hook[1].hooks).toEqual(hook[0].hooks)
   const cmd: string = hook[0].hooks[0].command
-  expect(cmd).toContain("'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts'")
+  expect(cmd).toContain(
+    "'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts'",
+  )
   expect(cmd).toContain('--harness codex')
   expect(cmd).toContain("--person-only-contexts 'acme'")
   expect(cmd).toContain("--protected-branches 'release'")
