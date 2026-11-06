@@ -3475,6 +3475,13 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (runnerOfStation(run, def, node).name === 'ax' && holdUnavailableAx(c, send))
       return 'AX executor unavailable'
     const starter = runnerOfStation(run, def, node)
+    // a server home has no herdr: hold the station and tell the manager once (from:'factory', never from:node)
+    if (process.env.FACTORY_SERVER_MODE === '1' && starter.local) {
+      const text = `station ${node} needs a local runner (herdr), and this is a server home: the run holds. See claude-factory-dhq7 and docs/server-home.md.`
+      if (!(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === text))
+        send({ type: 'MAIL', from: 'factory', to: 'manager', text })
+      return 'needs a local runner'
+    }
     if (!starter.local && bdSkewHeld(run, starter.name, now))
       return `needs the person: bd version skew on ${starter.name}`
     // a Claude in an untrusted repo sits at its trust dialog until the station times out, every attempt

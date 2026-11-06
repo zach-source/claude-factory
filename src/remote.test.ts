@@ -2710,6 +2710,60 @@ test('unavailable AX prevents a fresh launch before git, Beads sync or AX apply'
   rmSync(join(home, 'runs', id), { recursive: true })
 })
 
+describe('server mode (FACTORY_SERVER_MODE=1) holds a station with a local runner', () => {
+  const HOLD = 'needs a local runner'
+  const setup = (id: string, runner?: string) => {
+    launched(id)
+    const path = join(home, 'runs', id, 'state.json')
+    const saved = JSON.parse(readFileSync(path, 'utf8'))
+    saved.snapshot.context.pane = null
+    writeFileSync(path, JSON.stringify(saved))
+    writeFileSync(
+      join(home, 'runs', id, 'factory.ts'),
+      `export default ${JSON.stringify({ ...def, nodes: { a: { ...def.nodes.a, ...(runner && { runner }) } } })}`,
+    )
+    return path
+  }
+  const agent = (out: string, id: string) =>
+    JSON.parse(out).runs.find((r: { id: string }) => r.id === id).agent as string
+  const mails = (path: string) =>
+    (JSON.parse(readFileSync(path, 'utf8')).snapshot.context.mail.manager ?? []).filter(
+      (m: { text: string }) => m.text.includes(HOLD),
+    )
+  for (const runner of ['herdr', undefined]) {
+    test(`runner ${runner ?? '(absent)'}: no launch, one factory mail after two ticks`, () => {
+      const id = `srv-hold-${runner ?? 'absent'}`
+      const path = setup(id, runner)
+      const env = { FACTORY_SERVER_MODE: '1' }
+      expect(agent(factory(['tick'], env).out, id)).toBe(HOLD)
+      expect(agent(factory(['tick'], env).out, id)).toBe(HOLD)
+      expect(called()).not.toContain('apply')
+      const m = mails(path)
+      expect(m).toHaveLength(1)
+      expect(m[0].from).toBe('factory')
+      rmSync(join(home, 'runs', id), { recursive: true })
+    })
+  }
+  for (const mode of [undefined, '0', 'true', ' 1']) {
+    test(`FACTORY_SERVER_MODE=${mode ?? '(unset)'}: no hold`, () => {
+      const id = `srv-off-${mode ?? 'unset'}`.replace(/\W/g, '_')
+      const path = setup(id, 'herdr')
+      const out = factory(['tick'], mode === undefined ? {} : { FACTORY_SERVER_MODE: mode }).out
+      expect(agent(out, id)).not.toBe(HOLD)
+      expect(mails(path)).toHaveLength(0)
+      rmSync(join(home, 'runs', id), { recursive: true })
+    })
+  }
+  test('an ax station is not held in server mode', () => {
+    const id = 'srv-ax'
+    const path = setup(id, 'ax')
+    const out = factory(['tick'], { FACTORY_SERVER_MODE: '1' }).out
+    expect(agent(out, id)).not.toBe(HOLD)
+    expect(mails(path)).toHaveLength(0)
+    rmSync(join(home, 'runs', id), { recursive: true })
+  })
+})
+
 // A deadline on a worker that never started must name the cause, not say "no report".
 describe('an AX worker that never started', () => {
   const ctxOf = (id: string) =>
