@@ -35,6 +35,18 @@ const DENY = [
   'gh pr --zz ready --undo --undo#=false 1',
   'gh pr ready 5 --undo --und<->o=false',
   'gh pr ready 5 --undo -~x-undo=false',
+  // -R and --repo eat the next word; with a URL selector gh ignores the value (claude-factory-qn8a.23.5)
+  'gh pr ready https://github.com/acme/widget/pull/5 -R --undo',
+  'gh pr ready https://github.com/acme/widget/pull/5 --repo --undo',
+  'gh pr ready -R --undo https://github.com/acme/widget/pull/5',
+  'gh pr -R --undo ready https://github.com/acme/widget/pull/5',
+  'gh -R --undo pr ready https://github.com/acme/widget/pull/5',
+  'gh pr ready https://github.com/acme/widget/pull/5 --undo -R -- --undo=false',
+  'gh pr ready https://github.com/acme/widget/pull/5 --undo --repo -- --undo=false',
+  'gh pr ready --undo -R -- --undo=false https://github.com/acme/widget/pull/5',
+  'gh pr --zz ready https://github.com/acme/widget/pull/5 -R --undo',
+  'gh pr --zz ready https://github.com/acme/widget/pull/5 --undo -R -- --undo=false',
+  'gh pr ready https://github.com/acme/widget/pull/5 --undo -R',
 ]
 const ALLOW = [
   'gh pr ready 5 --undo',

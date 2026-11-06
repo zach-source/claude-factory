@@ -4457,10 +4457,17 @@ function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boo
  */
 function plainUndo(words: string[]): boolean {
   let undo = false
-  for (const w of words) {
+  const plain = (x: string) =>
+    !x.startsWith('--undo=') && !dynamicWord(x) && /^[A-Za-z0-9_.\/:@%+,=-]+$/.test(x)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
     if (w === '--') break
-    if (w.startsWith('--undo=') || dynamicWord(w) || !/^[A-Za-z0-9_.\/:@%+,=-]+$/.test(w)) return false
-    if (w === '--undo') undo = true
+    if (!plain(w)) return false
+    if (w === '-R' || w === '--repo') {
+      // pflag gives the next word to -R: it can eat --undo or --, and gh ignores the value with a URL selector.
+      const v = words[++i]
+      if (v === undefined || v === '--' || v === '--undo' || !plain(v)) return false
+    } else if (w === '--undo') undo = true
   }
   return undo
 }
