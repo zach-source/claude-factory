@@ -4526,9 +4526,12 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
     if (verb === 'create' || verb === 'install') {
       let exp: string | undefined
       let before = ''
+      // claude-factory-qn8a.17.5: a dynamic word can expand to a value flag, `--` or `--export=false`.
+      let dyn = false
       for (let i = 0; i < tail.length; i++) {
         const w = tail[i]!
         if (w === '--') break
+        if (dynamicWord(w)) dyn = true
         if (w === '--export' || w.startsWith('--export=')) {
           exp = w
           before = tail[i - 1] ?? ''
@@ -4536,7 +4539,7 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
       }
       // A value flag right before `--export` takes it as its value (pflag), so flux does not export.
       const swallowed = before.startsWith('-') && !before.includes('=') && !FLUX_BOOL_FLAGS.has(before)
-      if (!swallowed && (exp === '--export' || exp === '--export=true')) return false
+      if (!dyn && !swallowed && (exp === '--export' || exp === '--export=true')) return false
     }
     if (contextDenied(flagValue(cmd, new Set(['--context'])), personOnly)) return true
     const cluster = flagValue(cmd, new Set(['--cluster']))
