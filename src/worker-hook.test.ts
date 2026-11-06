@@ -11297,7 +11297,7 @@ test('denyReason denies with SCAN_TIME_REASON when the clock passes the scan dea
 test('denyReason bounds a find with 735 -exec $X slots and 578 -exec $X {} + slots (claude-factory-w13q)', () => {
   const t0 = performance.now()
   const a = denyReason('find . ' + '-exec $X a '.repeat(735) + "';'", '/acme/root')
-  expect([REASON, SCAN_TIME_REASON]).toContain(a)
+  expect(a === REASON || a === SCAN_TIME_REASON).toBe(true)
   const b = denyReason('find . ' + '-exec $X {} + '.repeat(578), '/acme/root')
   expect(b === undefined || b === SCAN_TIME_REASON).toBe(true)
   expect(performance.now() - t0).toBeLessThan(2 * SCAN_TIME_MS + 2000)
