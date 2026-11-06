@@ -1198,6 +1198,16 @@ test('setupBeads retries a failed bd bootstrap one time and logs it', () => {
   expect(r.log).toContain('beads: bd bootstrap -y failed, retry 1: fatal: boom 502')
 })
 
+test('setupBeads removes a half store a failed bootstrap left, so the retry runs bd again', () => {
+  const r = bootstrapWith(
+    'half',
+    count =>
+      `[ "$(wc -l < ${count})" -ge 2 ] && { mkdir -p .beads/embeddeddolt; exit 0; }\nmkdir -p .beads/embeddeddolt\necho 'fatal: boom 502' >&2\nexit 1\n`,
+  )
+  expect(r.msg).toBe('')
+  expect(r.calls).toBe(2)
+})
+
 test('setupBeads throws the real line when the retry fails too', () => {
   const r = bootstrapWith('retry2', () => `echo 'fatal: boom 502' >&2\nexit 1\n`)
   expect(r.msg).toContain('fatal: boom 502')

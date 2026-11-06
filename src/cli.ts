@@ -592,27 +592,55 @@ export function summaryArgs(args: string[]): string[] {
     return fail(
       'usage: factory report <run> <seq> <outcome> --summary-file <path> (one path, nothing after it)',
     )
-  let text: string
+  const text = readTextFile('--summary-file', path)
+  return [...args.slice(0, 3), text]
+}
+
+/** the stat/size/read core of --summary-file and the text-file flags; a bad file fails with the flag and path named */
+function readTextFile(flag: string, path: string): string {
   let size: number
   try {
     const st = statSync(path)
-    if (!st.isFile()) return fail(`--summary-file ${path} is not a readable file`)
+    if (!st.isFile()) return fail(`${flag} ${path} is not a readable file`)
     size = st.size
   } catch {
-    return fail(`--summary-file ${path} is not a readable file`)
+    return fail(`${flag} ${path} is not a readable file`)
   }
   // outside the try: fail() throws, and the catch would call this a missing file
   if (size > worker.OUTBOX_MAX_BYTES)
     return fail(
-      `--summary-file ${path} is ${size} bytes; the cap is ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB): shorten it`,
+      `${flag} ${path} is ${size} bytes; the cap is ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB): shorten it`,
     )
+  let text: string
   try {
     text = readFileSync(path, 'utf8')
   } catch {
-    return fail(`--summary-file ${path} is not a readable file`)
+    return fail(`${flag} ${path} is not a readable file`)
   }
-  if (!text.trim()) return fail(`--summary-file ${path} is empty`)
-  return [...args.slice(0, 3), text]
+  if (!text.trim()) return fail(`${flag} ${path} is empty`)
+  return text
+}
+
+/**
+ * claude-factory-2z48: untrusted text (a bead, a Linear issue) reaches a verb by file, never in a shell argument.
+ * The file must sit inside <FACTORY_HOME>/text/ once symlinks resolve, so injected text cannot steer a flag to a
+ * secret such as a token file. Returns the text without trailing whitespace.
+ * ponytail: the verb does not delete the file, so text/ grows by one small file per filing. Upgrade: unlink after
+ * success, or a gc pass.
+ */
+function textFileArg(flag: string, path: string): string {
+  const dir = join(HOME, 'text')
+  mkdirSync(dir, { recursive: true })
+  let real: string
+  try {
+    real = realpathSync(path)
+  } catch {
+    return fail(`${flag} ${path} is not a readable file`)
+  }
+  const root = realpathSync(dir)
+  if (!real.startsWith(root + sep))
+    return fail(`${flag} ${path} is outside ${dir}: write the text there first`)
+  return readTextFile(flag, real).trimEnd()
 }
 
 const RUN_SCOPED = ['report', 'decide', 'mail', 'poke', 'retry', 'goto', 'abort', 'fork', 'rm']
@@ -1339,6 +1367,8 @@ export const clip = (text: string, max: number) => {
 /** VM free text for a FAIL reason or a mail: control, format and line-separator characters become spaces, then clip */
 export const cleanText = (text: string, max: number) =>
   clip(text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '), max)
+/** report text: like cleanText but LF and TAB stay, and no clip */
+export const cleanReport = (text: string) => text.replace(/[^\P{Cc}\t\n]|[\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
 
 /** the least gap, on the laptop's clock, between two egress mails for one run and node */
 const EGRESS_REPAGE_MS = 30 * 60_000
@@ -9329,21 +9359,35 @@ export function workerVerbRefusal(
 }
 
 /**
- * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> --title '<text>' --description '<text>'`.
+ * claude-factory-mrfa: `factory file-elsewhere <target rig> --from <source rig>:<source id> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)`.
+ * A -file flag (claude-factory-2z48) reads untrusted text from <FACTORY_HOME>/text/ (see textFileArg).
  * The label `factory` goes on only when the source bead reads back with its own id and no Linear
  * `external_ref`. Any other read refuses the filing. A worker may file only from its own run's bead.
  */
 function fileElsewhere(args: string[]) {
   const usage =
-    "usage: factory file-elsewhere <target rig> --from <source rig>:<source id> --title '<text>' --description '<text>'"
+    'usage: factory file-elsewhere <target rig> --from <source rig>:<source id> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)'
   const [target, ...rest] = args
   const flags = new Map<string, string>()
   if (!target || target.startsWith('--') || rest.length !== 6) fail(usage)
+  const pairs = new Set<string>()
   for (let i = 0; i < rest.length; i += 2) {
     const k = rest[i]!
     const v = rest[i + 1]
-    if (!['--from', '--title', '--description'].includes(k) || !v || flags.has(k)) fail(usage)
+    if (!['--from', '--title', '--title-file', '--description', '--description-file'].includes(k) || !v)
+      fail(usage)
+    // --title and --title-file are one pair: the same pair twice (or both forms) fails
+    const pair = k.replace(/-file$/, '')
+    if (pairs.has(pair)) fail(usage)
+    pairs.add(pair)
     flags.set(k, v!)
+  }
+  for (const k of ['--title', '--description']) {
+    const file = flags.get(`${k}-file`)
+    if (file === undefined) continue
+    const text = textFileArg(`${k}-file`, file)
+    if (k === '--title' && /\n/.test(text)) fail(`--title-file ${file} has a newline: a title is one line`)
+    flags.set(k, text)
   }
   const [srcName, srcId, ...extra] = flags.get('--from')!.split(':')
   if (!srcName || !srcId || extra.length || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(srcId)) fail(usage)
@@ -10215,10 +10259,10 @@ const usage = `factory — herdr software factories on xstate
                                      the next 20-minute window
   adopt <rig|repo> [template]        copy a factory into <repo>/.factory/ for the repo to own and improve
   queue <rig|repo> <bead> [station]  hand a bead to the factory (labels it factory)
-  file-elsewhere <rig> --from <rig>:<bead> --title '<text>' --description '<text>'  file a bead in another rig; labels it factory unless the source is Linear
+  file-elsewhere <rig> --from <rig>:<bead> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
-  decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>']   JSON of every rig's open
+  decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>' | propose <key> --question-file <p> --options-file <p> [--context-file <p>]]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
   plan [facts | set <file> | show]   the pm's plan: facts gathers each rig's ready work and findings for the
@@ -10527,7 +10571,8 @@ if (import.meta.main && !outboxCmd)
         if (noCore) args.splice(args.indexOf('--no-core'), 1)
         const [rig, from, kind, until, supersedesArg] = [
           opt('--rig'),
-          opt('--from'),
+          // claude-factory-67bw: --from lands in frontmatter, so an LF would add a line
+          opt('--from')?.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' '),
           opt('--kind'),
           opt('--until'),
           opt('--supersedes'),
@@ -10567,7 +10612,15 @@ if (import.meta.main && !outboxCmd)
           }
           const isAnyway = words.includes('--anyway')
           const [summary, ...body] = words.filter(w => w !== '--anyway')
-          const note = { summary: summary!, body: body.join(' '), rig, kind, until }
+          // claude-factory-67bw: a replayed worker add reaches the store, so strip as report does.
+          // A rig with LF would add a frontmatter line, so it loses LF and TAB too.
+          const note = {
+            summary: cleanReport(summary!),
+            body: cleanReport(body.join(' ')),
+            rig: rig && cleanReport(rig).replace(/[\n\t]/g, ' '),
+            kind,
+            until,
+          }
           // gate() first, so a refusal costs no embedding and logs no helped/confirmed event; --anyway
           // skips memory.same()'s dedupe below, never this gate (claude-factory-3u1.1.1)
           const refusal = memory.gate(note)
@@ -10946,6 +10999,31 @@ if (import.meta.main && !outboxCmd)
           decisionsAnswer(rigName!, id!, text.join(' '))
           break
         }
+        if (sub === 'propose' && rest[1]?.startsWith('--')) {
+          // claude-factory-2z48: the file form takes untrusted text from <FACTORY_HOME>/text/, never from the command
+          const usage =
+            'usage: factory decisions propose <key> --question-file <path> --options-file <path> [--context-file <path>]'
+          const [key, ...pairs] = rest
+          const files = new Map<string, string>()
+          for (let i = 0; i < pairs.length; i += 2) {
+            const k = pairs[i]!
+            const v = pairs[i + 1]
+            if (!['--question-file', '--options-file', '--context-file'].includes(k) || !v || files.has(k))
+              fail(usage)
+            files.set(k, v!)
+          }
+          const isOwn = /^own:/.test(key!)
+          if (!files.has('--question-file') || (!isOwn && !files.has('--options-file'))) fail(usage)
+          const read = (k: string) => (files.has(k) ? textFileArg(k, files.get(k)!) : undefined)
+          // an own: key ignores --options-file, as the positional form does: do not read it
+          decisionsPropose(
+            key!,
+            read('--question-file')!,
+            isOwn ? '' : read('--options-file')!,
+            read('--context-file'),
+          )
+          break
+        }
         if (sub === 'propose') {
           const [key, question, optionsLine, ...extra] = rest
           if (!key || !question || !optionsLine)
@@ -11073,7 +11151,7 @@ if (import.meta.main && !outboxCmd)
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
-        const text = summaryArgs(args).slice(3).join(' ')
+        const text = cleanReport(summaryArgs(args).slice(3).join(' '))
         post(
           run.id,
           outcome === 'fail'
@@ -11132,7 +11210,7 @@ if (import.meta.main && !outboxCmd)
           type: 'MAIL',
           from: workerFrom ?? managerSender(run),
           to: to!,
-          text: text.join(' '),
+          text: cleanReport(text.join(' ')),
           ...(wake && { wake: true as const }),
         })
         console.log(`mailed ${to}`)
