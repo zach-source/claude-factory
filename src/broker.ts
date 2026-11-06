@@ -158,6 +158,9 @@ function reviewerGitRule(o: Record<string, unknown>): boolean {
   )
 }
 
+/** a hostname pattern that can match a github host: github.com, *.github.com, and the Substrate patterns * and *.com */
+const githubHost = (x: string) => /^(\*|\*\.com|(.*\.)?github\.com)$/.test(x.toLowerCase().replace(/\.$/, ''))
+
 /** a string that names a reviewer key in any spelling: case, underscores and other punctuation do not count */
 const namesReviewerKey = (s: string) =>
   s
@@ -172,6 +175,8 @@ const namesReviewerKey = (s: string) =>
  * vault key or have a pathPrefixes or paths rule (except reviewerApiRule) on a hostname pattern that can match a github host (github.com,
  * *.github.com, and the Substrate patterns * and *.com). Those belong to the manager policy. Substrate ignores key
  * case and underscores, and it folds some non-ASCII letters. So a key with a non-ASCII character fails closed.
+ * With a reviewer API rule, no other rule can have a GitHub author key (a vault key that starts with GITHUB)
+ * or an extra key on a github host. One policy cannot hold the two keys.
  */
 export function workerPolicyRefusal(policy: unknown): string | null {
   const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
@@ -210,16 +215,21 @@ export function workerPolicyRefusal(policy: unknown): string | null {
       if (bad) return bad
       if (norm(k) === 'credentialuri' && !(typeof o[k] === 'string' && CREDENTIAL_URI.test(o[k] as string)))
         return 'has a credentialUri that is not an ate-secret://agent-vault/<vault>/<KEY> string (vault: a-z, 0-9, -)'
+      if (apiRules && norm(k) === 'credentialuri' && /\/GITHUB[A-Z0-9_]*$/.test(o[k] as string))
+        return 'has a GitHub vault key beside the reviewer rule'
       if (norm(k) === 'pathprefixes' || norm(k) === 'paths') {
         const h = keys.find(x => norm(x) === 'hostnames')
         const hosts = h === undefined ? null : o[h]
         if (!Array.isArray(hosts) || !hosts.length || hosts.some(x => typeof x !== 'string'))
           return 'has a path rule without a list of hostnames'
-        if (
-          hosts.some(x => /^(\*|\*\.com|(.*\.)?github\.com)$/.test(x.toLowerCase().replace(/\.$/, ''))) &&
-          !reviewerApiRule(o)
-        )
-          return 'has a path rule on a github host'
+        if (hosts.some(githubHost) && !reviewerApiRule(o)) return 'has a path rule on a github host'
+      }
+      if (apiRules && norm(k) === 'hostnames') {
+        const hosts = o[k]
+        if (!Array.isArray(hosts) || hosts.some(x => typeof x !== 'string'))
+          return 'has hostnames that are not a list of strings beside the reviewer rule'
+        if (hosts.some(githubHost) && keys.some(x => norm(x) !== 'hostnames' && norm(x) !== 'ports'))
+          return 'has a key on a github host beside the reviewer rule'
       }
     }
     for (const x of Array.isArray(v) ? v : Object.values(o)) {

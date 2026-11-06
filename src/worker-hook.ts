@@ -311,6 +311,12 @@ export const HEREDOC_REASON =
   'exact command. ' +
   SCRATCH_HINT
 
+// claude-factory-06th: bash 5.3 runs the text after `${ ` or `${|` as a command. This guard cannot read it.
+export const FUNSUB_REASON =
+  'The factory denies this command: it holds ${ followed by a blank or |. bash 5.3 runs the text ' +
+  'after it as a command, and this hook cannot read it. To write such text to a file, use the ' +
+  'Write tool. Do not retry this exact command.'
+
 // claude-factory-4i60: a function name can hide a git, gh, sh, eval, kubectl or rm word, so the
 // guard denies every shell function definition.
 export const FUNCTION_DEF_REASON =
@@ -1246,6 +1252,14 @@ function segments(
       // reading: it starts a new word with the `&`, so the words after the redirect stay with the command.
       let j = i + 1
       while (cmd[j] === '\\' && cmd[j + 1] === '\n') j += 2
+      let k = j + 1
+      while (cmd[k] === '\\' && cmd[k + 1] === '\n') k += 2
+      if (cmd[j] === '!' && cmd[k] !== '(') {
+        // claude-factory-qn8a.5: zsh `&!` is one separator (disown). The `!` is not part of the next word.
+        endSeg()
+        i = j
+        continue
+      }
       if (cmd[j] === '>') {
         sawAmpGt = true
         if (ampJoin) {
@@ -5190,24 +5204,45 @@ const FACTORY_CONTROL_VERBS = new Set([
 function anyFactoryControlReason(words: string[]): string | undefined {
   for (let j = 0; j + 1 < words.length; j++) {
     if (baseWord(words[j]!) !== 'factory') continue
-    const next = words[j + 1]!
-    if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
-    if (dynamicWord(next)) return DYNAMIC_VERB_REASON
-    if (next.toLowerCase() === 'rig' && j + 2 < words.length) {
-      const sub = words[j + 2]!
-      if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
-      if (sub !== 'list') return FACTORY_CONTROL_REASON
-    }
-    // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.
-    if (next.toLowerCase() === 'memory') {
-      const sub = words[j + 2]
-      if (sub === undefined) return FACTORY_CONTROL_REASON
-      if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
-      if (['search', 'add', 'helped', 'eval'].includes(sub)) continue
-      const rest = words.slice(j + 3)
-      if (sub === 'compact' && rest.length > 0 && rest.every(w => w === '--dry-run')) continue
+    // claude-factory-rtbv.3: segments() removes quotes, so a quoted `'>'` looks like a redirect word.
+    // Read the words as given and with redirect words dropped; deny if either reading denies.
+    const given = words.slice(j + 1)
+    const dropped = dropRedirectWords(given)
+    const reason = factoryVerbReason(given) ?? factoryVerbReason(dropped)
+    if (reason) return reason
+    // claude-factory-qn8a.5.8: segments() ends the segment at a `(`, so `factory > >(cat) tick` leaves
+    // `factory > > (` and the verb is in the next segment. If only redirect words come before that `(`,
+    // the verb is unreadable: deny. ponytail: factory only; gh, git, kubectl, helm and rm have the
+    // same gap (claude-factory-qn8a.40, known gaps in worker-hook-qn8a5.test.ts).
+    if (
+      given[given.length - 1] === '(' &&
+      given.length > 1 &&
+      dropRedirectWords(given.slice(0, -1)).length === 0
+    )
       return FACTORY_CONTROL_REASON
-    }
+  }
+  return undefined
+}
+
+function factoryVerbReason(rest: string[]): string | undefined {
+  const next = rest[0]
+  if (next === undefined) return undefined
+  if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
+  if (dynamicWord(next)) return DYNAMIC_VERB_REASON
+  if (next.toLowerCase() === 'rig' && rest.length > 1) {
+    const sub = rest[1]!
+    if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+    if (sub !== 'list') return FACTORY_CONTROL_REASON
+  }
+  // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.
+  if (next.toLowerCase() === 'memory') {
+    const sub = rest[1]
+    if (sub === undefined) return FACTORY_CONTROL_REASON
+    if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+    if (['search', 'add', 'helped', 'eval'].includes(sub)) return undefined
+    const tail = rest.slice(2)
+    if (sub === 'compact' && tail.length > 0 && tail.every(w => w === '--dry-run')) return undefined
+    return FACTORY_CONTROL_REASON
   }
   return undefined
 }
@@ -8486,6 +8521,8 @@ function denyAt(
         aliasStack,
       )
       if (r === REASON) return r
+      // claude-factory-qn8a.5.7: the re-read can hold `${` + blank; keep that deny (fail closed).
+      if (r === FUNSUB_REASON) return r
       // claude-factory-teku: `${(@)_}` reads as `${_}` here; a head `$_` stays denied.
       if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
     }
@@ -8528,6 +8565,8 @@ function denyAtScan(
   if (spendWork(state, command.length)) return SCAN_BUDGET_REASON
   // claude-factory-mozp: every decoded script (sh -c, eval, alias, substitution) passes here too.
   if (commentLineContinues(command)) return COMMENT_CONTINUATION_REASON
+  // claude-factory-06th: bash 5.3 `${ cmd; }` and `${| cmd; }` run cmd. Read the raw text, quotes included (fail closed).
+  if (/\$\{[\s|]/.test(command.replace(/\\\n/g, ''))) return FUNSUB_REASON
   // claude-factory-1zr5: a table the hook cannot read denies every command (fail closed).
   const aliasTable = gate.shellAliases?.()
   if (gate.shellAliases && !aliasTable) return SHELL_ALIAS_READ_REASON
