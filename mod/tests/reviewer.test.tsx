@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import { onStepFiles, stepStub } from './step-stub'
 
 // claude-factory-ag2: a hidden `factory:reviewer` subagent recommends install or reject for each pending
 // dream skill and .proposals/ item. Same setup as briefer.test.tsx.
@@ -76,6 +77,8 @@ function reviewerMocks(
   })
   on('fs.read', ($, e) => {
     const path = (e as { path: string }).path
+    const stub = stepStub(path)
+    if (stub !== undefined) return { value: stub } as never
     if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
     return { value: files.get(path)! } as never
   })
@@ -201,6 +204,7 @@ test(
 test('the reviewer is registered with no tool at all', SLOW, async ($, on) => {
   mock.clock(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+  onStepFiles(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   on('ui.status', () => ({ value: undefined }) as never)
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
