@@ -215,3 +215,255 @@ test('a long gated command marks the cut in the Allow question', SLOW, async ($,
   expect(/[\ud800-\udbff](?![\udc00-\udfff])/.test(q)).toBe(false)
   expect(ran).toBe(0)
 })
+
+test('the question names every gated kind and the kinds in the text it cuts', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  let asked = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    asked += 1
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  const fill = (head: string, tail: string, at: number) => `${head}${'a'.repeat(at - head.length)}${tail}`
+  const ask = async (command: string) => {
+    questions.length = 0
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny).toContain('did not confirm')
+    expect(questions.length).toBe(1)
+    return questions[0]!
+  }
+  const HIDDEN = 'The text not shown holds'
+  const DECIDE_K = 'decide a factory gate'
+  const START_K = 'start a bead carrying its owner'
+
+  // AC3: an owner-only start after the cut
+  const a = await ask(
+    fill(
+      "/repo/bin/factory decide r1 reject '",
+      "' && /repo/bin/factory start lifecycle acme w-2 --owned",
+      310,
+    ),
+  )
+  expect(a).toContain(DECIDE_K)
+  expect(a).toContain(START_K)
+  expect(a).toContain('characters not shown')
+  expect(a).toMatch(new RegExp(`${HIDDEN}[^.]*start a bead`))
+  expect(a).not.toMatch(new RegExp(`${HIDDEN}[^.]*decide a factory gate`))
+
+  // AC3b: 2 gate decisions after the cut
+  const b = await ask(
+    fill(
+      "/repo/bin/factory decide r1 reject '",
+      "' && factory decide r2 ship && factory decide r3 ship",
+      310,
+    ),
+  )
+  expect(b).toMatch(new RegExp(`${HIDDEN}[^.]*decide a factory gate \\(2 times\\)`))
+
+  // AC4: --owned crosses the cut, factory start is in the head
+  const c = await ask(fill("/repo/bin/factory start lifecycle acme w-1 --goal '", "' --owned", 296))
+  expect(c).toMatch(new RegExp(`${HIDDEN}[^.]*start a bead`))
+
+  // AC5: 3 kinds in one short command, and substitution plus decide
+  const d = await ask(
+    '/repo/bin/factory decide r1 ship x && /repo/bin/factory decisions answer acme w-1 y && /repo/bin/factory start lifecycle acme w-2 --owned',
+  )
+  expect(d).toContain(DECIDE_K)
+  expect(d).toContain("answer a person's bd decision")
+  expect(d).toContain(START_K)
+  expect(d).not.toContain(HIDDEN)
+  expect(d).not.toContain('times')
+  const e = await ask('/repo/bin/factory mail r1 plan "$x" && /repo/bin/factory decide r1 ship')
+  expect(e).toContain('shell substitution')
+  expect(e).toContain(DECIDE_K)
+
+  // AC6: one kind, no count, no hidden sentence; a long command with its only match in the head
+  const f = await ask('/repo/bin/factory decide r1 ship x')
+  expect(f).not.toContain('times')
+  expect(f).not.toContain(HIDDEN)
+  const g = await ask(fill('/repo/bin/factory decide r1 reject ', ' tail', 310))
+  expect(g).toContain('characters not shown')
+  expect(g).not.toContain(HIDDEN)
+
+  // the cut edge: a match that ends at character 300 is shown, one that ends at 301 is not
+  const edge = (end: number) => `${'a'.repeat(end - 'factory decide'.length - 1)} factory decide x`
+  expect(await ask(edge(300))).not.toContain(HIDDEN)
+  expect(await ask(edge(301))).toContain(HIDDEN)
+
+  // no question for a plain or single-quoted command
+  const before = asked
+  await $.tool.call({ tool: 'Bash', command: '/repo/bin/factory status', description: 'x' })
+  await $.tool.call({ tool: 'Bash', command: "/repo/bin/factory mail r1 plan '$5'", description: 'x' })
+  expect(asked).toBe(before)
+})
+
+test('an even run of backslashes before a newline does not join the lines', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+
+  // 2 backslashes: the shell reads one escaped backslash, then a real newline: 2 commands
+  const two = '/repo/bin/factory decide r1 ship \\\\\n/repo/bin/factory decide r2 reject'
+  const r = await $.tool.call({ tool: 'Bash', command: two, description: 'x' })
+  expect(r.deny).toContain('did not confirm')
+  expect(ran).toBe(0)
+  expect(questions.length).toBe(1)
+  expect(questions[0]).toContain('ship \\\\\n/repo')
+  expect(questions[0]).not.toContain('ship \\/repo')
+
+  // 3 backslashes: an escaped backslash, then a line continuation: the pair joins
+  questions.length = 0
+  const three = '/repo/bin/factory decide r1 ship "x\\\\\\\ny"'
+  await $.tool.call({ tool: 'Bash', command: three, description: 'x' })
+  expect(questions.length).toBe(1)
+  expect(questions[0]).toContain('x\\\\y')
+  expect(questions[0]).not.toContain('x\\\\\ny')
+
+  // 2 backslashes mid-word: the shell runs `/repo/bin/fac\` and `tory`, neither is factory
+  questions.length = 0
+  await $.tool.call({ tool: 'Bash', command: '/repo/bin/fac\\\\\ntory decide r1 ship', description: 'x' })
+  expect(questions.length).toBe(0)
+})
+
+test(
+  'claude-factory-0jr2.4: a backslash at the end of a comment line asks, as the shell runs the next line',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    const questions: string[] = []
+    let ran = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      const question = e.questions[0]!.question
+      questions.push(question)
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+    const C = 'echo hi #x\\\n'
+    for (const rest of [
+      'factory decide r1 ship',
+      'factory decisions answer acme w-1 yes',
+      'factory start lifecycle acme w-2 --owned',
+      'fac\\\ntory decide r1 ship',
+    ]) {
+      questions.length = 0
+      const r = await $.tool.call({ tool: 'Bash', command: C + rest, description: 'x' })
+      expect(r.deny, rest).toContain('did not confirm')
+      expect(questions.length, rest).toBe(1)
+    }
+    expect(ran).toBe(0)
+    questions.length = 0
+    await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory status #x\\\n/repo/bin/factory decide r1 ship',
+      description: 'x',
+    })
+    expect(questions.length).toBe(1)
+    expect(questions[0]).not.toContain('#x/repo')
+    expect(questions[0]).toContain('#x\\\n/repo')
+    questions.length = 0
+    await $.tool.call({
+      tool: 'Bash',
+      command: "echo ' #' ; /repo/bin/fac\\\ntory decide r1 ship",
+      description: 'x',
+    })
+    expect(questions.length).toBe(1)
+    questions.length = 0
+    await $.tool.call({ tool: 'Bash', command: 'ls -la # note', description: 'x' })
+    expect(questions.length).toBe(0)
+    expect(ran).toBe(1)
+  },
+)
+
+test('claude-factory-0jr2.6: a comment-backslash form still names each gated kind', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  const ask = async (command: string) => {
+    questions.length = 0
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny).toContain('did not confirm')
+    expect(questions.length).toBe(1)
+    return questions[0]!
+  }
+  const q1 = await ask('/repo/bin/factory decide r1 ship # note\\\necho x')
+  expect(q1).toContain('decide a factory gate')
+  expect(q1).toContain('hook cannot read')
+  const q3 = await ask('echo hi #x\\\nfactory start lifecycle acme w-2 --owned')
+  expect(q3).toContain('start a bead carrying')
+  const long = `/repo/bin/factory decide r1 reject '${'a'.repeat(300)}' # x\\\n/repo/bin/factory start lifecycle acme w-2 --owned`
+  const q2 = await ask(long)
+  expect(q2).toContain('The text not shown holds: start a bead carrying')
+  expect(q2).toContain('decide a factory gate')
+  expect(ran).toBe(0)
+})
+
+test(
+  'claude-factory-0jr2.7: the cut is in the coordinates of the shown (joined) text',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    const questions: string[] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      const question = e.questions[0]!.question
+      questions.push(question)
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    const ask = async (command: string) => {
+      questions.length = 0
+      await $.tool.call({ tool: 'Bash', command, description: 'x' })
+      expect(questions.length).toBe(1)
+      return questions[0]!
+    }
+    const a = await ask(
+      `echo ${'x\\\n'.repeat(50)}${'a'.repeat(150)} && /repo/bin/factory decide r1 ship ${'a'.repeat(200)}`,
+    )
+    expect(a).toContain('decide a factory gate')
+    expect(a).not.toContain('The text not shown holds')
+    const b = await ask(`/repo/bin/factory dec\\\nide r1 ${'x\\\n'.repeat(120)} factory start acme w --owned`)
+    expect(b).not.toContain('The text not shown holds')
+    expect(b).not.toContain('characters not shown')
+    // the backslash is raw character 299 and the newline is 300: the head shows `decid`, the `e` is not shown
+    const c = await ask(`#${'a'.repeat(274)} /repo/bin/factory decid\\\ne r1 ship`)
+    expect(c).toContain('The text not shown holds: decide a factory gate')
+  },
+)
+
+test('the deny text of a compound command holds the deny of each matched kind', SLOW, async ($, on) => {
+  mock.clock(on)
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const question = e.questions[0]!.question
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+  const r = await $.tool.call({ tool: 'Bash', command: `${DECIDE} && ${START_OWNED}`, description: 'x' })
+  expect(r.deny).toContain('this gate decision')
+  expect(r.deny).toContain('starting this owner-only bead')
+})
