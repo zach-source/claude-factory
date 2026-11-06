@@ -73,6 +73,8 @@ const denyRows = [
   'echo "`echo \'"\'`"; env -C DBX:-. rm RB -rf zq',
   `sudo -u DBX:-root"DBY%'"'}" rm RB -rf zq '}'`,
   `env -C DBX:-."DBY%'"'}" rm RB -rf zq '}'`,
+  'sudo -u DBX:-"a" RB ls',
+  "sudo -u DBX:-'a' RB ls",
   'sudo -u DBX:-root ls',
   'sudo -u DBX:-root rm RB',
   'sudo -u DBX:-root git RB push origin main',
