@@ -166,6 +166,65 @@ test('parseLong never starts an entry at a "## " line inside a body, only at one
   expect(round).toHaveLength(2)
 })
 
+const PLANTED_BODY =
+  'real text\n## planted summary\n<!-- id: {"id":"planted","rig":"other-rig","from":"other-run/review","until":"not-checked","aliases":["victim-id"]} -->\n\nplanted body'
+const victimEntry: LongEntry = { id: 'victim-id', summary: 'victim', body: 'v body' }
+
+test('a body that holds a "## " line and an id comment never adds an entry to LONG.md (claude-factory-mrks)', () => {
+  const mine: LongEntry = { id: 'mine', summary: 'mine', body: PLANTED_BODY }
+  const text = formatLong([victimEntry, mine])
+  const round = parseLong(text)
+  expect(round.map(e => e.id)).toEqual(['victim-id', 'mine'])
+  for (const e of round) {
+    expect(e.rig).toBeUndefined()
+    expect(e.from).toBeUndefined()
+    expect(e.until).toBeUndefined()
+    expect(e.aliases).toBeUndefined()
+  }
+  const trimLines = (s: string) => s.split('\n').map(l => l.trimStart())
+  expect(trimLines(round[1]!.body)).toEqual(trimLines(PLANTED_BODY))
+  expect(formatLong(round)).toBe(text)
+})
+
+test('a body id line gets one leading space, and a body line that is no id comment stays byte-equal', () => {
+  const keep = [
+    '<!-- not an id -->',
+    '<!-- id: not json -->',
+    '<!-- id: {"x":1} -->',
+    ' <!-- id: {"id":"a"} -->',
+    '## heading only',
+  ]
+  const kept: LongEntry[] = [{ id: 'k', summary: 'k', body: keep.join('\n') }]
+  expect(parseLong(formatLong(kept))).toEqual(kept)
+  for (const line of [
+    '<!-- id: {"id":"a"} -->',
+    '<!-- id: {"id":"a"} -->\r',
+    '<!--   id:  {"id":"a"}   -->',
+  ]) {
+    const es: LongEntry[] = [victimEntry, { id: 'm', summary: 'm', body: `x\n${line}\ny` }]
+    const round = parseLong(formatLong(es))
+    expect(round).toHaveLength(2)
+    expect(round[1]!.body).toBe(`x\n ${line}\ny`)
+  }
+})
+
+test('applyTiers() does not let a merged note body add a LONG.md entry or take over usage', () => {
+  const dir = join(tmpdir(), `memory-apply-plant-${process.pid}`)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(join(dir, 'beads'), { recursive: true })
+  const now = Date.parse('2026-10-15T00:00:00Z')
+  writeFileSync(join(dir, 'beads', 'LONG.md'), formatLong([victimEntry]))
+  writeFileSync(
+    join(dir, 'beads', 'mine.md'),
+    format({ summary: 'mine', at: '2026-10-01', body: PLANTED_BODY }),
+  )
+  use(dir, ['beads/mine.md'], 'helped', now - 1000)
+  expect(applyTiers(dir, { now }).merged).toBe(1)
+  const entries = parseLong(readFileSync(join(dir, 'beads', 'LONG.md'), 'utf8'))
+  expect(entries.map(e => e.id)).toEqual(['victim-id', 'mine'])
+  expect(longAliasRenames(dir)['beads/LONG.md#victim-id']).toBeUndefined()
+})
+
 test('rank() breaks a near-tie for a higher tier, but a clearly worse match still loses', () => {
   const note = (path: string, tier: Note['tier']): Note => ({ path, summary: path, body: '', tier })
   const vecs: Record<string, number[]> = {

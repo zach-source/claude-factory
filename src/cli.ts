@@ -4132,26 +4132,21 @@ const trackOf = (id: string, saved?: Saved): Track => {
 export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
   repos.filter(r => !live.has(r) && queued(r) > 0)
 
-/** a ship run: the runner's own flag, or the id a ship run gets from its factory name */
-const shipLike = (ship: boolean | undefined, id: string) => !!ship || id.startsWith('ship-')
-
 /** the live ship runs */
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
       const { run, value, c } = current(id)
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && shipLike(run.ship, id) ? [{ run, node: where(value)[0], c }] : []
+      return !ended && run.ship ? [{ run, node: where(value)[0], c }] : []
     } catch {
       return [] // removed mid-pass
     }
   })
 
 /** A live ship run on the rig of `run`, other than `run`. Only when `run` counts as a ship run (claude-factory-9wch). */
-const otherLiveShip = (run: Run, id: string) =>
-  shipLike(run.ship, id)
-    ? liveShipRuns().find(s => s.run.id !== run.id && s.run.repo === run.repo)
-    : undefined
+const otherLiveShip = (run: Run) =>
+  run.ship ? liveShipRuns().find(s => s.run.id !== run.id && s.run.repo === run.repo) : undefined
 
 /**
  * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
@@ -6813,7 +6808,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
       !!named.labels?.includes(OWNER) ||
       named.metadata?.owner_question !== undefined ||
       named.metadata?.owner_since !== undefined
-    return { goal: goalOf(named), bead: named.id, handedOff }
+    return { goal: goalOf(named), bead: named.id, handedOff, shipBranch: shipBranchOf(named) }
   }
   return { goal, bead: b.create(clip(goal.split('\n')[0]!, 100), goal, ...extra), handedOff: false }
 }
@@ -9381,7 +9376,16 @@ async function start(factory: string | undefined, repo: string | undefined, goal
       `only the runner starts a ship run, once for each rig with a queue: see factory ship ${rigOf(root)?.name ?? root}`,
     )
   const linked = beadFor(root, goal, { isOwnerOk })
-  const { run, def } = await createTracked(spec!, preview.name, root, linked.goal, linked.bead)
+  const { run, def } = await createTracked(
+    spec!,
+    preview.name,
+    root,
+    linked.goal,
+    linked.bead,
+    undefined,
+    undefined,
+    linked.shipBranch,
+  )
   // the run exists and holds the claim: end the hand-off now. A failure only warns, the run is live (claude-factory-h1wj)
   if (linked.handedOff && !beads(root, actorOf(run.id)).clearOwner(linked.bead!))
     console.error(
@@ -9592,7 +9596,7 @@ export async function forkRun(
   const why = forkRefusal(where(value)[0], pending, src.id)
   if (why) throw new Error(why)
   // a ship fork beside another live ship run would give the rig two ship runs (claude-factory-9wch)
-  const other = otherLiveShip(src, `${factoryName}-`)
+  const other = otherLiveShip(src)
   if (other)
     throw new Error(
       `${other.run.id} is a live ship run on ${src.repo}: a fork of ${src.id} would put a second ship run on the rig. Run factory abort ${other.run.id}, then fork it again.`,
@@ -11405,7 +11409,7 @@ if (import.meta.main && !outboxCmd)
         // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
         const other =
           ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
-            ? otherLiveShip(run, run.id)
+            ? otherLiveShip(run)
             : undefined
         if (other)
           fail(
