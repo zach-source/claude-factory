@@ -5202,27 +5202,34 @@ const FACTORY_CONTROL_VERBS = new Set([
 function anyFactoryControlReason(words: string[]): string | undefined {
   for (let j = 0; j + 1 < words.length; j++) {
     if (baseWord(words[j]!) !== 'factory') continue
-    // claude-factory-rtbv: a redirect word before the verb or its sub is not the verb or sub.
-    const rest = dropRedirectWords(words.slice(j + 1))
-    const next = rest[0]
-    if (next === undefined) continue
-    if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
-    if (dynamicWord(next)) return DYNAMIC_VERB_REASON
-    if (next.toLowerCase() === 'rig' && rest.length > 1) {
-      const sub = rest[1]!
-      if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
-      if (sub !== 'list') return FACTORY_CONTROL_REASON
-    }
-    // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.
-    if (next.toLowerCase() === 'memory') {
-      const sub = rest[1]
-      if (sub === undefined) return FACTORY_CONTROL_REASON
-      if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
-      if (['search', 'add', 'helped', 'eval'].includes(sub)) continue
-      const tail = rest.slice(2)
-      if (sub === 'compact' && tail.length > 0 && tail.every(w => w === '--dry-run')) continue
-      return FACTORY_CONTROL_REASON
-    }
+    // claude-factory-rtbv.3: segments() removes quotes, so a quoted `'>'` looks like a redirect word.
+    // Read the words as given and with redirect words dropped; deny if either reading denies.
+    const given = words.slice(j + 1)
+    const reason = factoryVerbReason(given) ?? factoryVerbReason(dropRedirectWords(given))
+    if (reason) return reason
+  }
+  return undefined
+}
+
+function factoryVerbReason(rest: string[]): string | undefined {
+  const next = rest[0]
+  if (next === undefined) return undefined
+  if (FACTORY_CONTROL_VERBS.has(next.toLowerCase())) return FACTORY_CONTROL_REASON
+  if (dynamicWord(next)) return DYNAMIC_VERB_REASON
+  if (next.toLowerCase() === 'rig' && rest.length > 1) {
+    const sub = rest[1]!
+    if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+    if (sub !== 'list') return FACTORY_CONTROL_REASON
+  }
+  // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.
+  if (next.toLowerCase() === 'memory') {
+    const sub = rest[1]
+    if (sub === undefined) return FACTORY_CONTROL_REASON
+    if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+    if (['search', 'add', 'helped', 'eval'].includes(sub)) return undefined
+    const tail = rest.slice(2)
+    if (sub === 'compact' && tail.length > 0 && tail.every(w => w === '--dry-run')) return undefined
+    return FACTORY_CONTROL_REASON
   }
   return undefined
 }
