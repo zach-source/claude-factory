@@ -116,6 +116,7 @@ test('AC2: each exclude rule is needed', () => {
     '/home/herdr.log': 'home/herdr.log',
     '/home/backup.json': 'home/backup.json',
     '/home/manager-host.log': 'home/manager-host.log',
+    '/home/ui-cache/': 'home/ui-cache/rig.json',
     'worktrees/': 'home/runs/r1/worktrees/acme/f.txt',
   }
   for (const [rule, file] of Object.entries(probes)) {
