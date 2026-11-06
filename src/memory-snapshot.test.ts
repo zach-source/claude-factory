@@ -207,6 +207,11 @@ test('VM search keeps an existing memory dir', () => {
   vmSearch(w, home, 'database')
   expect(readFileSync(join(home, 'memory', 'marker.txt'), 'utf8')).toBe('mine')
   expect(existsSync(join(home, 'memory', 'ci'))).toBe(false)
+  // an empty memory dir (a rename onto it would succeed) stays empty too
+  const empty = tmp('home')
+  mkdirSync(join(empty, 'memory'))
+  vmSearch(w, empty, 'database')
+  expect(readdirSync(join(empty, 'memory'))).toEqual([])
 }, 60_000)
 
 test('a broken memory.tgz leaves no dir', () => {
