@@ -163,7 +163,7 @@ import * as worker from './worker'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
-import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import { bdEnv, clonesRepos, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
@@ -844,7 +844,7 @@ export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?:
   // ponytail: in the AX task bd holds an embedded store and no Dolt server, so there is no SQL path to the remote's user:
   // plain `bd dolt push|pull` runs with DOLT_REMOTE_USER from env.json (axrepos). A pull conflict stops with bd's own
   // error, where the laptop's pullResolving keeps the VM's row; the manager reports it and a person resolves it
-  if (!r || inAx()) return ['bd', 'dolt', way]
+  if (!r || clonesRepos()) return ['bd', 'dolt', way]
   if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
   const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
@@ -899,7 +899,7 @@ function syncRigBeads(
   r = rigOf(run.repo)?.beadsRemote,
 ) {
   const show =
-    r && !inAx()
+    r && !clonesRepos()
       ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeout: syncTimeoutMs() })
       : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
@@ -923,7 +923,9 @@ async function syncRigBeadsBounded(
 ) {
   const timeoutMs = syncTimeoutMs()
   const show =
-    r && !inAx() ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
+    r && !clonesRepos()
+      ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs })
+      : null
   if (show?.timedOut)
     return { code: null, out: '', err: timedOutText(`beads ${way}`, timeoutMs), timedOut: true }
   const conn = show?.code === 0 ? (JSON.parse(show.out) as DoltConn) : undefined
@@ -1486,7 +1488,7 @@ function loadRun(id: string | undefined): Run {
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
   const run: Run = readJson(file)
   // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
-  return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
+  return clonesRepos() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
 }
 /** complete lines only: a writer may be mid-append */
 const inboxLines = (id: string) => {
@@ -7087,7 +7089,10 @@ function linearMail(now: number): (Mail & { run: string })[] {
 }
 /** `factory repos sync`: clone or fetch each rig's repo in the AX task and bootstrap its beads store; the problems, one per line */
 const reposSync = (): string[] => {
-  if (!inAx()) fail('factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1)')
+  if (!clonesRepos())
+    fail(
+      'factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1) or the server home (FACTORY_SERVER_HOME=1)',
+    )
   return syncRepos(rawRigs(), HOME)
 }
 
@@ -10818,6 +10823,14 @@ if (import.meta.main && !outboxCmd)
       case 'server':
         refuseWorker('server', true)
         lease()
+        if (clonesRepos()) {
+          // ponytail: one pass at start; a rig added later needs `factory repos sync` or a pod restart
+          try {
+            for (const p of reposSync()) console.error(`repos sync: ${p}`)
+          } catch (e) {
+            console.error(`repos sync failed: ${(e as Error).message}`)
+          }
+        }
         server.main(args, HOME, () => tick())
         break
       case 'manager':

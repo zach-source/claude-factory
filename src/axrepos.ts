@@ -12,6 +12,9 @@ type RigLike = { name: string; repo: string; remote?: string; beadsRemote?: { ur
 
 export const inAx = (env: Env = process.env) => env.FACTORY_IN_AX === '1'
 
+/** this process works rig clones under FACTORY_REPOS: in the AX manager task, or in the server home (S2) */
+export const clonesRepos = (env: Env = process.env) => inAx(env) || env.FACTORY_SERVER_HOME === '1'
+
 /** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
 export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
 
@@ -22,11 +25,11 @@ export const axRepoPath = (name: string, env: Env = process.env) => join(reposRo
 
 /** the rigs as this process uses them: in the task, `repo` is the clone; on the laptop, as written */
 export const mapRigs = <R extends RigLike>(rigs: R[], env: Env = process.env) =>
-  inAx(env) ? rigs.map(r => ({ ...r, repo: axRepoPath(r.name, env) })) : rigs
+  clonesRepos(env) ? rigs.map(r => ({ ...r, repo: axRepoPath(r.name, env) })) : rigs
 
 /** a run's repo as written (a laptop path), to the clone of the rig that has that repo; an unknown path stays */
 export function mapRunRepo(rigs: RigLike[], repo: string, env: Env = process.env) {
-  const rig = inAx(env) ? rigs.find(r => r.repo === repo) : undefined
+  const rig = clonesRepos(env) ? rigs.find(r => r.repo === repo) : undefined
   return rig ? axRepoPath(rig.name, env) : repo
 }
 
@@ -40,7 +43,7 @@ export const beadsDirOf = (home: string, repo: string) => join(home, 'beads', ba
  */
 export function bdEnv(repo: string, env: Env = process.env) {
   const home = env.FACTORY_HOME
-  if (!inAx(env) || !home) return env
+  if (!clonesRepos(env) || !home) return env
   const dir = beadsDirOf(home, repo)
   if (!existsSync(join(dir, '.beads'))) return env
   let extra: Record<string, string> = {}

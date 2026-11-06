@@ -6,7 +6,9 @@ import {
   axRepoPath,
   bdEnv,
   beadsDirOf,
+  clonesRepos,
   httpsRemote,
+  inAx,
   mapRigs,
   mapRunRepo,
   planRepoSync,
@@ -33,6 +35,23 @@ test('in the task each rig repo is a clone under FACTORY_REPOS, default /workspa
 test('a run written with a laptop repo path maps to its rig clone; an unknown path stays', () => {
   expect(mapRunRepo(rigs, '/home/u/repos/beta', AX)).toBe('/workspace/w/repos/beta')
   expect(mapRunRepo(rigs, '/elsewhere', AX)).toBe('/elsewhere')
+})
+
+test('clonesRepos is true for FACTORY_IN_AX=1 or FACTORY_SERVER_HOME=1, false for unset or 0', () => {
+  expect(clonesRepos({ FACTORY_IN_AX: '1' })).toBe(true)
+  expect(clonesRepos({ FACTORY_SERVER_HOME: '1' })).toBe(true)
+  expect(clonesRepos({})).toBe(false)
+  expect(clonesRepos({ FACTORY_IN_AX: '0', FACTORY_SERVER_HOME: '0' })).toBe(false)
+})
+
+test('in a server home the rigs map to clones, but inAx stays false', () => {
+  const env = { FACTORY_SERVER_HOME: '1', FACTORY_REPOS: '/var/lib/factory/repos' }
+  expect(inAx(env)).toBe(false)
+  expect(mapRigs(rigs, env).map(r => r.repo)).toEqual([
+    '/var/lib/factory/repos/alpha',
+    '/var/lib/factory/repos/beta',
+  ])
+  expect(mapRunRepo(rigs, '/home/u/repos/beta', env)).toBe('/var/lib/factory/repos/beta')
 })
 
 test('ssh and git@ GitHub URLs become https; https stays', () => {

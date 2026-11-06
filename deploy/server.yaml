@@ -114,6 +114,22 @@ spec:
           env:
             - name: FACTORY_HOME
               value: /var/lib/factory/home
+            # the server home works rig clones on the PVC (src/axrepos.ts clonesRepos); FACTORY_IN_AX stays unset
+            - name: FACTORY_SERVER_HOME
+              value: '1'
+            - name: FACTORY_REPOS
+              value: /var/lib/factory/repos
+            # git asks gh for the GitHub credential: GH_TOKEN stays in the env, never in a file or a URL
+            - name: GIT_CONFIG_COUNT
+              value: '2'
+            - name: GIT_CONFIG_KEY_0
+              value: credential.https://github.com.helper
+            - name: GIT_CONFIG_VALUE_0
+              value: ''
+            - name: GIT_CONFIG_KEY_1
+              value: credential.https://github.com.helper
+            - name: GIT_CONFIG_VALUE_1
+              value: '!gh auth git-credential'
             - name: GH_TOKEN
               valueFrom:
                 secretKeyRef: { name: factory-github, key: token }
