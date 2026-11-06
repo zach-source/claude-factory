@@ -3659,7 +3659,6 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
  * worker-settings*.json file, 'glob' when a glob guess can match one. Only a redirect or `of=`
  * target is exempt, and only as a plain path inside `root`. Any other write word that names the
  * file denies, because the hook cannot tell the source of a cp or mv from its destination.
- * A word `-C` or `--chdir` counts as a directory change for a relative redirect target.
  * A glob with no letter (`*`) is a guess only when its directory part is not a plain path inside `root`.
  * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
  * flag value, and every word of a segment that does not skip its operands.
@@ -3680,8 +3679,7 @@ function factoryConfigWrite(
 ): 'name' | 'glob' | undefined {
   if (!FACTORY_CONFIG_MAY_RE.test(foldNonAscii(joinedWords(words)))) return undefined
   let found: 'glob' | undefined
-  const chdir = words.some(w => /^(-[A-Za-z0-9]*C|--chdir)/.test(w.replace(/["']/g, '')))
-  const relativeOk = !moved && !chdir && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
+  const relativeOk = !moved && (!cwd || (!!root && (cwd === root || cwd.startsWith(root + '/'))))
   const exempt = (w: string): boolean => {
     const v = normalizeConfigPath(w.replace(/["']/g, ''))
     if (!root || !FACTORY_CONFIG_EXEMPT_RE.test(v) || v.split('/').includes('..')) return false
@@ -3722,7 +3720,7 @@ function factoryConfigWrite(
     const named = namesFactoryConfig(target, state)
     // an operand of cp, mv or ln can be a source or a destination: only a redirect or of= target is exempt
     if (named === 1 && !(redirect && exempt(target))) return 'name'
-    if (named === 2 && !(redirect && exempt(target))) found = 'glob'
+    if (named === 2) found = 'glob'
     if (named === 3 && !insideDir(target)) found = 'glob'
   }
   return found
