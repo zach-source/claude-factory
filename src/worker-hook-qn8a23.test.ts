@@ -47,6 +47,8 @@ const DENY = [
   'gh pr --zz ready https://github.com/acme/widget/pull/5 -R --undo',
   'gh pr --zz ready https://github.com/acme/widget/pull/5 --undo -R -- --undo=false',
   'gh pr ready https://github.com/acme/widget/pull/5 --undo -R',
+  'gh pr ready https://github.com/acme/widget/pull/5 --undo -R $X',
+  'gh pr ready https://github.com/acme/widget/pull/5 --undo --repo (-)-undo=false',
 ]
 const ALLOW = [
   'gh pr ready 5 --undo',

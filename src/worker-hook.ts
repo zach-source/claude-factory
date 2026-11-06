@@ -4466,7 +4466,7 @@ function plainUndo(words: string[]): boolean {
     if (w === '-R' || w === '--repo') {
       // pflag gives the next word to -R: it can eat --undo or --, and gh ignores the value with a URL selector.
       const v = words[++i]
-      if (v === undefined || v === '--' || v === '--undo' || !plain(v)) return false
+      if (v === undefined || !plain(v)) return false
     } else if (w === '--undo') undo = true
   }
   return undo
