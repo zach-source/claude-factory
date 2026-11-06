@@ -32,9 +32,19 @@ describe('loadIntoEnv', () => {
     expect(none).toEqual({})
     setSetting(file, 'ax.vault', 'stored')
     setSetting(file, 'ax.context', 'stored')
+    setSetting(file, 'image.registry', 'reg.example')
     const env: Record<string, string | undefined> = { FACTORY_AX_CONTEXT: 'env' }
     loadIntoEnv(file, env)
     expect(env).toEqual({ FACTORY_AX_VAULT: 'stored', FACTORY_AX_CONTEXT: 'env' })
+  })
+  test('a bad or unknown-key file is ignored, not thrown', () => {
+    const { file } = fresh()
+    const env: Record<string, string | undefined> = {}
+    for (const bad of ['{not json', '{"ax.new-key":"x"}']) {
+      writeFileSync(file, bad)
+      expect(() => loadIntoEnv(file, env)).not.toThrow()
+    }
+    expect(env).toEqual({})
   })
 })
 
