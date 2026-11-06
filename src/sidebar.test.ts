@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { Row } from './cli'
-import { hold, shipLines, tokens, waiting } from './sidebar'
+import { hold, shipLines, tokens, waiting, waitingItems } from './sidebar'
 
 const blocked = { node: 'deploy', attempt: 1, outcome: 'blocked', summary: 'PR #7', at: 1 }
 const rows: Row[] = [
@@ -107,4 +107,47 @@ test('shipLines shows the ship run, the count and the next PR first', () => {
     '    then https://x/pull/2 (a-2)',
   ])
   expect(shipLines([])).toEqual([])
+})
+
+test('waitingItems: the same runs as waiting, as data for the ui', () => {
+  const held: Row[] = [
+    { ...rows[1]!, rig: 'r1', since: 50 }, // a gate
+    {
+      ...rows[2]!,
+      rig: 'r1',
+      bead: 'b-1',
+      last: { ...blocked, summary: 'merge https://github.com/o/r/pull/7 then reply' },
+    }, // parked
+    { ...rows[3]!, since: 70 }, // stuck, no rig
+    rows[0]!, // moves on its own: not listed
+    rows[5]!, // done: not listed
+  ]
+  const items = waitingItems(held, {
+    r1: [{ id: 'q-1', title: 't', metadata: { ship_pr: '#9', ship_at: '2026-01-01T00:00:00Z' } }],
+    r2: [],
+  })
+  expect(items.map(i => [i.kind, i.rig, i.id, i.hold ?? ''])).toEqual([
+    ['run', 'r1', 'b', 'needs you'],
+    ['run', 'r1', 'c', 'parked'],
+    ['run', '(no rig)', 'd', 'stuck'],
+    ['ship', 'r1', 'q-1', ''],
+  ])
+  expect(items[0]).toMatchObject({
+    title: 'ship?',
+    since: 50,
+    station: 'approve',
+    answer: 'factory decide b <ship> [note]',
+  })
+  expect(items[1]).toMatchObject({
+    since: 1,
+    bead: 'b-1',
+    prs: ['https://github.com/o/r/pull/7'],
+    answer: "factory mail c deploy '<what changed>'",
+  })
+  expect(items[2]?.answer).toBe('factory retry d')
+  expect(items[3]).toMatchObject({
+    title: 'next to merge: #9, 1 queued',
+    since: Date.parse('2026-01-01T00:00:00Z'),
+  })
+  expect(waitingItems([], {})).toEqual([])
 })

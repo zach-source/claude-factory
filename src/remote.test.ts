@@ -1803,6 +1803,7 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
               command:
                 "'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts' --harness claude",
               timeout: 10,
+              onFailure: 'block',
             },
           ],
         })),
