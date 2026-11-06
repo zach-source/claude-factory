@@ -1335,28 +1335,34 @@ async function jump($: EngineInterface, pane: string) {
   if (r?.exitCode !== 0) $.ui.toast(`factory: could not focus ${pane}`)
 }
 
-/** true when a command holds an unescaped `$` or backtick outside single quotes (one rule for `$(`, `${`,
+/** the index of the first place where a command holds an unescaped `$` or backtick outside single quotes (one rule for `$(`, `${`,
  * `$'`, `$[`, `$x` and any later `$` form), or an unquoted `(` (`<(`, `>(`, zsh `=(` and glob-qualifier code),
- * or a form this one-pass scan cannot read: a here-document, a word-start `#` comment, an unclosed quote.
+ * or a form this one-pass scan cannot read: a here-document, a word-start `#` comment, an unclosed quote
+ * (the index of the quote that opened it). -1 when there is none.
  * Each of those can hide a `'` that makes a naive scan think later text is quoted, so they fail closed. */
-function substitutionIn(command: string): boolean {
+function substitutionIn(command: string): number {
   // no pre-join of backslash-newline: the scan pairs each backslash with the next char, so `\\` + newline stays literal
   let state: 'plain' | 'single' | 'double' = 'plain'
+  let open = -1
   for (let i = 0; i < command.length; i++) {
     const c = command[i]!
     const two = command.slice(i, i + 2)
     if (state === 'single') {
       if (c === "'") state = 'plain'
     } else if (c === '\\') i++
-    else if (c === '$' || c === '`') return true
+    else if (c === '$' || c === '`') return i
     else if (state === 'double') {
       if (c === '"') state = 'plain'
-    } else if (c === "'") state = 'single'
-    else if (c === '"') state = 'double'
-    else if (c === '(' || two === '<<') return true
-    else if (c === '#' && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) return true
+    } else if (c === "'") {
+      state = 'single'
+      open = i
+    } else if (c === '"') {
+      state = 'double'
+      open = i
+    } else if (c === '(' || two === '<<') return i
+    else if (c === '#' && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) return i
   }
-  return state !== 'plain'
+  return state === 'plain' ? -1 : open
 }
 
 /** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
@@ -1378,11 +1384,25 @@ function shownCommand(command: string): string {
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
   const command = rawCommand.replace(/\\\n/g, '')
-  if (/\bfactory\b/.test(command) && substitutionIn(rawCommand))
+  const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
+  if (at >= 0) {
+    // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
+    let from = Math.max(0, at - 40)
+    if (from > 0 && /[\uDC00-\uDFFF]/.test(rawCommand[from] ?? '')) from--
+    let to = at + 40
+    if (to < rawCommand.length && /[\uD800-\uDBFF]/.test(rawCommand[to - 1] ?? '')) to--
+    const around = `${from > 0 ? '…' : ''}${rawCommand.slice(from, to)}${to < rawCommand.length ? '…' : ''}`
+    // a harmless first hit must not hide a later one: count the candidates after the head and the window (no quote state, so it over-counts)
+    const more = (rawCommand.slice(Math.max(to, 300)).match(/[$`(]/g) ?? []).length
+    const unseen =
+      more > 0
+        ? ` ${more} more dollar signs, backticks or parentheses come after this text and are not shown.`
+        : ''
     return {
-      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${shownCommand(command)}. Allow it?`,
+      question: `The manager model wants to run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read: ${shownCommand(command)}. The first one is at character ${at}: «${around}».${unseen} Allow it?`,
       deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
     }
+  }
   if (/\bfactory\s+decide\b/.test(command))
     return {
       question: `The manager model wants to decide a factory gate: ${shownCommand(command)}. Allow it?`,
