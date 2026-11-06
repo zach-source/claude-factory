@@ -416,6 +416,8 @@ export interface HookGate {
    * It does not know where the command runs.
    * So it denies nothing on that fact alone. */
   cwd?: string
+  /** claude-factory-qn8a.21: the dir that holds the running hook's src/ (default: the parent of this file's dir). */
+  hookDir?: string
   /** the short branch name `git -C <dir> symbolic-ref --short HEAD` reports, or undefined on any
    * error. `timeoutMs` bounds the git spawn (claude-factory-dts.4). */
   headOf?: (dir?: string, timeoutMs?: number) => string | undefined
@@ -531,6 +533,8 @@ interface ScanState {
   /** claude-factory-3frd: set when a word after a sh -c cluster holds a dollar or backtick. scanReason returns SH_DYNAMIC_SCRIPT_REASON last. */
   dynamicScript: boolean
   globalGitConfig: boolean
+  /** claude-factory-qn8a.21: a segment can write a hook-control path. scanReason denies it after any more specific reason. */
+  hookControl: boolean
   gitWord: boolean
   /** claude-factory-mn2y: set when any segment, at any depth, may define a shell alias. */
   aliasWrite: boolean
@@ -542,6 +546,8 @@ interface ScanState {
   substFallbacks: number
   /** claude-factory-4iod.11: dequoted words that began with an unquoted `{`. Only these can open a zsh brace group. */
   braceWords: Set<string>
+  /** claude-factory-qn8a.21.19: dequoted word -> its forms with each quoted or escaped { } , replaced by a sentinel char. */
+  quotedBraces: Map<string, string[]>
   // claude-factory-cbai: the scan work left, in characters read. A scan step subtracts what it
   // reads. Below zero, the scan stops and denies (fail closed).
   work: number
@@ -555,7 +561,15 @@ interface ScanState {
 }
 
 // Each field here is a budget or the memo. Any other ScanState field goes into the alias memo key.
-const MEMO_SKIP = new Set<string>(['work', 'deadline', 'now', 'timedOut', 'substFallbacks', 'aliasSeen'])
+const MEMO_SKIP = new Set<string>([
+  'work',
+  'deadline',
+  'now',
+  'timedOut',
+  'substFallbacks',
+  'aliasSeen',
+  'quotedBraces',
+])
 
 // claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
 export const SCAN_BUDGET_REASON =
@@ -1094,7 +1108,23 @@ function segments(
   let wordBrace = false
   let nameRaw = false
   let sawEq = false
+  // claude-factory-qn8a.21.19: indexes of a quoted or escaped { } or , in the word. The shell keeps them as text.
+  let quotedBrace: number[] = []
+  const qb = (c: string) => {
+    if (c === '{' || c === '}' || c === ',') quotedBrace.push(word.length)
+  }
   const endWord = () => {
+    if (hasWord && quotedBrace.length && info?.state) {
+      // UTF-16 units, the unit that qb() counts (a code-point array shifts after an astral char)
+      const chars = word.split('')
+      for (const k of quotedBrace) if (k < chars.length) chars[k] = BRACE_SENTINEL[chars[k]!] ?? chars[k]!
+      const hid = info.state.quotedBraces.get(word)
+      const form = chars.join('')
+      if (hid) {
+        if (!hid.includes(form)) hid.push(form)
+      } else info.state.quotedBraces.set(word, [chars.join('')])
+    }
+    quotedBrace = []
     if (hasWord && nameRaw && word.includes('=') && info?.quotedNames) {
       const m = info.quotedNames.get(cur)
       if (m) m.push(cur.length)
@@ -1133,7 +1163,10 @@ function segments(
     redirPrev = false
     if (quote === "'") {
       if (c === "'") quote = null
-      else word += c
+      else {
+        qb(c)
+        word += c
+      }
       hasWord = true
       continue
     }
@@ -1160,8 +1193,13 @@ function segments(
       // a backslash-newline is a POSIX line continuation even inside double quotes: the shell
       // removes both characters and joins the surrounding text, it does not keep a literal newline.
       else if (c === '\\' && cmd[i + 1] === '\n') i++
-      else if (c === '\\' && '"\\$`'.includes(cmd[i + 1] ?? '')) word += cmd[++i]
-      else word += c
+      else if (c === '\\' && '"\\$`'.includes(cmd[i + 1] ?? '')) {
+        qb(cmd[i + 1]!)
+        word += cmd[++i]
+      } else {
+        qb(c)
+        word += c
+      }
       hasWord = true
       continue
     }
@@ -1184,6 +1222,7 @@ function segments(
         continue
       }
       if (!sawEq) nameRaw = true
+      qb(cmd[i + 1]!)
       word += cmd[++i]
       hasWord = true
       continue
@@ -8228,6 +8267,7 @@ export function scanReason(
     cfgGlob: false,
     dynamicScript: false,
     globalGitConfig: false,
+    hookControl: false,
     gitWord: false,
     aliasWrite: false,
     aliasArgsOff: false,
@@ -8235,6 +8275,7 @@ export function scanReason(
     substFallbacks: 0,
     outer: NO_OTHER_SEGS,
     braceWords: new Set(),
+    quotedBraces: new Map(),
     work: budget,
     deadline,
     now: gate?.now ?? Date.now,
@@ -8261,8 +8302,10 @@ export function scanReason(
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
   if (state.bodyDeny && !state.stdinDeferred) return REASON
-  if (state.cfgGlob)
-    return state.globDeferred && !state.stdinDeferred ? DYNAMIC_VERB_REASON : FACTORY_CONFIG_REASON
+  if (state.cfgGlob && !state.stdinDeferred)
+    return state.globDeferred ? DYNAMIC_VERB_REASON : FACTORY_CONFIG_REASON
+  if (state.hookControl) return state.stdinDeferred ? SHELL_STDIN_REASON : HOOK_CONTROL_REASON
+  if (state.cfgGlob) return FACTORY_CONFIG_REASON
   // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
   // trap, source or substitution reads it after this hook ran. Deny unless the command is only
   // plain alias segments.
@@ -9390,6 +9433,21 @@ function denyAtScan(
     const stdinShell = shellStdinReason(words, state)
     if (stdinShell || xargsRunsShell(words)) state.stdinDeferred = true
     if (
+      !state.hookControl &&
+      hookControlWrite(
+        words,
+        operandSkip,
+        b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
+        g.cwd ?? root ?? process.cwd(),
+        root ?? process.cwd(),
+        g.hookDir ?? dirname(import.meta.dir),
+        state,
+        words.some(w => COPY_INTO_COMMANDS.has(baseWord(w))) ||
+          (b === 'git' && words.some(w => GIT_OPERAND_WRITER_RE.test(w))),
+      )
+    )
+      state.hookControl = true
+    if (
       configUse === 'write' ||
       (mayTouch && (gitWorkTreeOutside(words, root, movedSoFar) || gitCoreWorktreeOutside(words, root)))
     )
@@ -9761,6 +9819,326 @@ export function clampTimeout(
   return left < (input.timeout ?? BASH_DEFAULT_MS) ? left : undefined
 }
 
+export const HOOK_CONTROL_REASON =
+  'The factory denies this write: it targets the hook source or a .claude/settings.json or settings.local.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
+
+// a parent of the hook dir (also a bare /) is a hook-control path in a segment with one of these words and in cd:
+// find / and ls -d / and alias ~ must stay allowed
+// Best effort (claude-factory-qn8a.65): a new parent-of-hook-dir form is not a defect here. The sandbox is the real barrier.
+const COPY_INTO_COMMANDS = new Set([
+  'cp',
+  'mv',
+  'rsync',
+  'install',
+  'ln',
+  'tar',
+  'unzip',
+  'ditto',
+  'bsdtar',
+  'gtar',
+  'pax',
+  'cpio',
+  '7z',
+  '7za',
+  '7zr',
+  'gcp',
+  'gmv',
+  'ginstall',
+  'patch',
+])
+const CD_WORDS = new Set(['cd', 'pushd', 'popd', 'chdir'])
+const HOOK_MODULES = ['worker-hook.ts', 'home-guard.ts', 'cut.ts']
+const SETTINGS_NAMES = ['settings.json', 'settings.local.json']
+
+// claude-factory-qn8a.21.11: APFS folds case fully (U+017F long s opens as s), so fold the way foldNonAscii does.
+const foldLower = (s: string): string => s.toUpperCase().toLowerCase()
+
+/**
+ * claude-factory-qn8a.21: true when `abs` is a hook-control path. That is a `.claude` dir, a settings.json or
+ * settings.local.json in one, or (outside `root`) the hook dir or a path under it.
+ * With `ancestor`, a parent of the hook dir counts too (Bash write words only; a reader operand is skipped before).
+ * Case folds to lower. If root and the hook dir overlap, only the hook modules count.
+ */
+function hookControlPath(abs: string, root: string, hookDir: string, ancestor = false): boolean {
+  const a = foldLower(abs)
+  const parts = a.split('/').filter(Boolean)
+  const n = parts.length
+  if (parts[n - 1] === '.claude') return true
+  if (n >= 2 && parts[n - 2] === '.claude' && SETTINGS_NAMES.includes(parts[n - 1]!)) return true
+  const h = foldLower(hookDir)
+  const r = foldLower(root)
+  const under = (p: string, d: string) => p === d || p.startsWith(d.endsWith('/') ? d : d + '/')
+  if (under(h, r) || under(r, h)) return HOOK_MODULES.some(m => a === `${h}/src/${m}`)
+  // a Bash write word can name a parent of the hook dir (cp -R x /f/, tar -C /f); a Write tool path cannot
+  return under(a, h) || (ancestor && under(h, a))
+}
+
+// `{a,b}` and `{x..y}` expansion with nesting, capped. undefined means over the cap. A group with no comma
+// and no sequence stays literal, as in bash.
+// claude-factory-qn8a.21.17: `budget.n` counts the characters read; at zero the result is undefined (deny), so
+// the hook stays inside its 10 s timeout.
+export function expandBraces(w: string, cap = 64, budget = { n: 200_000 }): string[] | undefined {
+  let from = 0
+  for (;;) {
+    const open = w.indexOf('{', from)
+    if (open < 0) return [w]
+    let depth = 0
+    let close = -1
+    const cuts: number[] = []
+    if ((budget.n -= w.length - open) < 0) return undefined
+    for (let i = open; i < w.length; i++) {
+      const c = w[i]
+      if (c === '{') depth++
+      else if (c === '}' && --depth === 0) {
+        close = i
+        break
+      } else if (c === ',' && depth === 1) cuts.push(i)
+    }
+    if (close < 0) {
+      // bash skips an unmatched { and expands a later group
+      from = open + 1
+      continue
+    }
+    const pre = w.slice(0, open)
+    const post = w.slice(close + 1)
+    const body = w.slice(open + 1, close)
+    let alts: string[] | undefined
+    if (cuts.length) {
+      alts = []
+      let at = open + 1
+      for (const c of [...cuts, close]) {
+        alts.push(w.slice(at, c))
+        at = c + 1
+      }
+    } else {
+      const sq = body.match(/^([-+]?\d+|[A-Za-z])\.\.([-+]?\d+|[A-Za-z])(?:\.\.([-+]?\d+))?$/)
+      if (sq && /\d/.test(sq[1]!) === /\d/.test(sq[2]!)) {
+        const num = /\d/.test(sq[1]!)
+        const x = num ? Number(sq[1]) : sq[1]!.charCodeAt(0)
+        const y = num ? Number(sq[2]) : sq[2]!.charCodeAt(0)
+        const step = Math.abs(Number(sq[3] ?? 1)) || 1
+        if (Math.abs(y - x) / step + 1 > cap) return undefined
+        // a zero-padded end pads every value to the longer end, as bash does; a negative padded end denies
+        const padded = num && (/^-?0\d/.test(sq[1]!) || /^-?0\d/.test(sq[2]!))
+        if (padded && (sq[1]!.startsWith('-') || sq[2]!.startsWith('-'))) return undefined
+        const width = padded ? Math.max(sq[1]!.length, sq[2]!.length) : 0
+        alts = []
+        for (let v = x; x <= y ? v <= y : v >= y; v += x <= y ? step : -step)
+          alts.push(num ? String(v).padStart(width, '0') : String.fromCharCode(v))
+      }
+    }
+    if (!alts) {
+      from = close + 1
+      continue
+    }
+    const out: string[] = []
+    for (const alt of alts) {
+      const sub = expandBraces(pre + alt + post, cap, budget)
+      if (!sub) return undefined
+      out.push(...sub)
+      if (out.length > cap) return undefined
+    }
+    return out
+  }
+}
+
+/**
+ * claude-factory-qn8a.21: true when one word, read as a write target, can name a hook-control path.
+ * A word with an expansion (`$`, a backtick, ~user) denies when a part of it names the hook dir, a hook module,
+ * `.claude` or a settings file. A glob denies when it can match one (a `*` never matches a leading dot).
+ * Out of scope (ponytail): a path built at run time, a symlink made in the same command.
+ * A write into a parent of the hook dir is best effort only (claude-factory-qn8a.65).
+ */
+function hookControlWord(
+  word: string,
+  cwd: string,
+  root: string,
+  hookDir: string,
+  state?: ScanState,
+  copyInto = false,
+  isCd = false,
+): boolean {
+  const x = word.replace(/["'\\]/g, '')
+  if (!x) return false
+  // the caller expanded the braces (braceVariants); a charge per word keeps the scan inside the work budget
+  if (state && spendWork(state, x.length + 1)) return true
+  const base = foldLower(hookDir.split('/').filter(Boolean).pop() ?? '\0')
+  // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
+  if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
+  if (/[$`]|^~[^/]/.test(x)) {
+    const ps = foldLower(x).split('/').filter(Boolean)
+    const last = ps[ps.length - 1] ?? ''
+    return (
+      ps.includes(base) ||
+      ps.includes('.claude') ||
+      HOOK_MODULES.includes(last) ||
+      SETTINGS_NAMES.includes(last)
+    )
+  }
+  const abs = resolvePath(cwd, x === '~' || x.startsWith('~/') ? homedir() + x.slice(1) : x)
+  if (/[*?[]/.test(x)) {
+    const fabs = foldNonAscii(abs)
+    const samples = [
+      hookDir,
+      `${hookDir}/src`,
+      `${hookDir}/package.json`,
+      ...HOOK_MODULES.map(m => `${hookDir}/src/${m}`),
+    ]
+    if (!abs.startsWith(root + '/') && globCanMatch(fabs, samples.map(foldNonAscii), state)) return true
+    const ps = fabs.split('/').filter(Boolean)
+    const last = ps[ps.length - 1]
+    const prev = ps[ps.length - 2]
+    if (last?.startsWith('.') && globCanMatch(last, ['.claude'], state)) return true
+    return !!(
+      prev?.startsWith('.') &&
+      globCanMatch(
+        `${prev}/${last}`,
+        SETTINGS_NAMES.map(s => `.claude/${s}`),
+        state,
+      )
+    )
+  }
+  return hookControlPath(abs, root, hookDir, copyInto || isCd)
+}
+
+const BRACE_SENTINEL: Record<string, string> = { '{': '\u0001', '}': '\u0002', ',': '\u0003' }
+
+/**
+ * claude-factory-qn8a.21.17 .18 .19: the word, then each brace expansion of it, so the caller reads every result
+ * with the flag rules. The tokenizer removed the quotes, so a quoted or escaped brace or comma may be text for the
+ * shell. `hidden` holds the word with those chars replaced by sentinels. The word is expanded both ways and the
+ * sentinels go back in each result. undefined means over the cap or the work bound (deny).
+ */
+function braceVariants(word: string, hidden: string[] = [], state?: ScanState): string[] | undefined {
+  if (!word.includes('{')) return [word]
+  const out = [word]
+  const back = ['{', '}', ',']
+  for (const h of [word, ...hidden]) {
+    const alts = expandBraces(h)
+    if (!alts) return undefined
+    // the work budget and the deadline apply in every segment kind (qn8a.21.20)
+    if (
+      state &&
+      spendWork(
+        state,
+        alts.reduce((n, a) => n + a.length + 1, 0),
+      )
+    )
+      return undefined
+    for (const a of alts) out.push(a.replace(/[\u0001-\u0003]/g, c => back[c.charCodeAt(0) - 1]!))
+  }
+  // a stray { or } the shell keeps as text: read the result without it too (ponytail: only adds deny readings)
+  return out.flatMap(v => (/[{}]/.test(v) ? [v, v.replace(/[{}]/g, '')] : [v]))
+}
+
+// claude-factory-qn8a.21.12 .15: every tail of a single-dash word (-s4o/f gives 4o/f, o/f and /f).
+// A tail that is not a hook-control path allows, so a reader flag such as tail -n5 stays allowed.
+// A word over 1024 chars gives the tail `.claude`, which denies (fail closed, bounded scan).
+function gluedTails(x: string): string[] {
+  if (x.length < 2 || x[0] !== '-' || x[1] === '-') return []
+  if (x.length > 1024) return ['.claude']
+  const out: string[] = []
+  for (let i = 2; i < x.length; i++) out.push(x.slice(i))
+  return out
+}
+
+const OVERCAP_WRITE_MARK_RE =
+  /-[oOD]|--(?:output|dir|reporter-outfile)|of=|\.claude|settings|worker-hook|home-guard|cut\.ts|package|\//i
+const HOOK_CONTROL_MAY_RE = /[\/$`~*?[{<>\\]|\.claude|settings|worker-hook|home-guard|cut\.ts|package/i
+
+/**
+ * claude-factory-qn8a.21: true when a segment can write a hook-control path. It uses the model of
+ * `globalGitConfigUse`: a redirect target, an `of=` value, an output-flag value, or an operand of a command
+ * that is not a reader. A git or text-operand segment skips its operands. A cd, pushd or popd into a hook-control
+ * dir or any `.claude` dir denies. The value of an `--opt=value` word is tested too.
+ */
+function hookControlWrite(
+  words: string[],
+  skip: OperandSkip,
+  isCd: boolean,
+  cwd: string,
+  root: string,
+  hookDir: string,
+  state?: ScanState,
+  copyInto = false,
+): boolean {
+  if (isCd) {
+    // cd with no operand, cd -, or a .. that leaves root: the guard does not track the cwd across segments
+    const ops = words.filter(w => !CD_WORDS.has(baseWord(w)) && !/^-./.test(w))
+    if (!ops.length || ops.includes('-')) return true
+    if (
+      ops.some(w => {
+        if (!/(^|\/)\.\.(\/|$)/.test(w)) return false
+        const r = resolvePath(cwd, w.replace(/["'\\]/g, ''))
+        return r !== root && !r.startsWith(root + '/')
+      })
+    )
+      return true
+  }
+  if (!hookControlPath(cwd, root, hookDir) && !HOOK_CONTROL_MAY_RE.test(foldNonAscii(joinedWords(words))))
+    return false
+  let pending = false
+  let prevWriterFlag = false
+  // a bare / counts as the last word, as a cd word, or in a copy word after a dir flag or a plain operand
+  // (tar -C /, cp -t /, rsync x / -v); sudo -R / stays allowed
+  const last = words[words.length - 1]
+  let prev = ''
+  const test = (x: string) =>
+    (x !== '/' ||
+      x === last ||
+      isCd ||
+      (copyInto && (!prev.startsWith('-') || /^-[CtdDo]$|^--target-directory$/.test(prev)))) &&
+    (hookControlWord(x, cwd, root, hookDir, state, copyInto, isCd) ||
+      // a glued output value (7z -o/f, tar -C/f)
+      (copyInto &&
+        /^-[oCtD]./.test(x) &&
+        hookControlWord(x.slice(2), cwd, root, hookDir, state, true, isCd)) ||
+      // a short flag with a glued value or a cluster (curl -so/f, wget -qO/f, make -C.claude): each tail is a value
+      gluedTails(x).some(t => hookControlWord(t, cwd, root, hookDir, state, false, false)))
+  for (const [k, word] of words.entries()) {
+    prev = words[k - 1] ?? ''
+    const afterWriterFlag = prevWriterFlag
+    const wasPending = pending
+    pending = false
+    prevWriterFlag = false
+    // claude-factory-qn8a.21.18: read the word and each brace expansion of it with the same flag rules
+    const variants = braceVariants(word, state?.quotedBraces.get(word), state)
+    for (const v of variants ?? [word]) {
+      prevWriterFlag ||= skip === 'operands' && OUTPUT_FLAG_EXACT_RE.test(v)
+      let candidate = v
+      let redirect = wasPending
+      const m = v.match(REDIRECT_PREFIX_RE)
+      if (m && m[0].length === v.length) {
+        pending = true
+        continue
+      }
+      if (m) {
+        candidate = v.slice(m[0].length)
+        redirect = true
+      } else if (!wasPending && /^of=/i.test(v)) {
+        candidate = v.slice(3)
+        redirect = true
+      }
+      if (isCd && !redirect) {
+        if (!variants || test(v) || /(^|\/)\.claude(\/|$)/i.test(v.replace(/["'\\]/g, ''))) return true
+        continue
+      }
+      if (!redirect) {
+        // claude-factory-qn8a.21.22: an over-cap list with a write marker must not take the operand skip
+        if (!variants && skip === 'operands' && OVERCAP_WRITE_MARK_RE.test(word)) return true
+        if (skip === 'reader') continue
+        if (skip === 'operands' && !afterWriterFlag && !OUTPUT_FLAG_RE.test(v) && !gluedTails(v).length)
+          continue
+      }
+      // an over-cap list denies where the word would be read as a write target
+      if (!variants || test(candidate)) return true
+      const eq = candidate.match(/^(?:--[\w-]+|[A-Za-z_]\w*)=([\s\S]+)$/)
+      if (eq && test(eq[1]!)) return true
+    }
+  }
+  return false
+}
+
 export const FACTORY_CONFIG_REASON =
   'The factory denies this write: it targets the factory home rigs.json, a worker-settings*.json file or a run inbox.jsonl or state.json, or a path with that name that the hook cannot place inside the worktree. The first two set the rig merge authority and the deny hook; only a person edits them. A write to inbox.jsonl or state.json forges manager mail. To read one, use cat. To make a test copy, redirect into .scratch/ in the worktree: cat /h/rigs.json > .scratch/rigs.json. Do not retry this exact command.'
 
@@ -9783,18 +10161,20 @@ function protectedParts(parts: string[], xdg: string[]): boolean {
  * It fails closed on a missing, empty, NUL or ~user path. It checks the lexical path and the real path
  * (the nearest existing ancestor through realpath), in lower case, so a symlink or a case change does not pass.
  * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config,
- * codex apply_patch (claude-factory-qn8a.22), and the hook source and settings (claude-factory-qn8a.21).
+ * codex apply_patch (claude-factory-qn8a.22). The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
+ * (claude-factory-qn8a.21); rigs.json and worker-settings*.json are claude-factory-qn8a.20.
  */
 export function fileWriteReason(
   path: unknown,
   cwd: string,
   env: { home: string; xdg?: string | undefined } = { home: homedir(), xdg: process.env.XDG_CONFIG_HOME },
-  root?: string,
+  root: string = process.env.CLAUDE_PROJECT_DIR || cwd,
+  hookDir: string = dirname(import.meta.dir),
 ): string | undefined {
   if (typeof path !== 'string' || !path || path.includes('\0') || /^~[^/]/.test(path))
     return FILE_WRITE_REASON
   const abs = resolvePath(cwd, path === '~' || path.startsWith('~/') ? env.home + path.slice(1) : path)
-  const split = (x: string) => foldNonAscii(x).toLowerCase().split(sep).filter(Boolean)
+  const split = (x: string) => foldLower(foldNonAscii(x)).split(sep).filter(Boolean)
   const xdg = env.xdg ? split(resolvePath(env.xdg)) : []
   let real = abs
   const rest: string[] = []
@@ -9809,6 +10189,16 @@ export function fileWriteReason(
       real = dirname(real)
     }
   }
+  let realHook = hookDir
+  try {
+    realHook = realpathSync(hookDir)
+  } catch {}
+  if (
+    hookControlPath(abs, root, hookDir) ||
+    hookControlPath(real, root, hookDir) ||
+    hookControlPath(real, root, realHook)
+  )
+    return HOOK_CONTROL_REASON
   if (protectedParts(split(abs), xdg) || protectedParts(split(real), xdg)) return FILE_WRITE_REASON
   // claude-factory-qn8a.20: rigs.json and worker-settings*.json set the merge authority and the hook.
   // Only a path inside the worktree root (lexical, and real) may carry one of these names.

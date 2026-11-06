@@ -75,8 +75,8 @@ test('AC3: the shell-snapshots folder is denied', () => {
   deny(join(cfg, 'shell-snapshots/snapshot-zsh-1.sh'))
   deny('~/.claude/shell-snapshots/x.sh')
   allow(join(root, '.scratch/snapshot.sh'))
-  // out of scope here: ~/.claude/settings.json (claude-factory-qn8a.21)
-  allow('~/.claude/settings.json')
+  // claude-factory-qn8a.21 closed this gap: it answers with HOOK_CONTROL_REASON
+  expect(fileWriteReason('~/.claude/settings.json', '/nowhere', env())).toBeDefined()
 })
 
 test('AC4: a symlink into a protected folder is denied, a new dir is allowed', () => {

@@ -1800,7 +1800,8 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
           hooks: [
             {
               type: 'command',
-              command: "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude",
+              command:
+                "'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts' --harness claude",
               timeout: 10,
             },
           ],
@@ -1838,7 +1839,7 @@ test("vmClaudeFlags carries a rig's personOnlyContexts on the deny hook's own ar
   const flags = vmClaudeFlags({ maxContextK: 150 }, ['acme'])
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --person-only-contexts 'acme'",
+    "'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts' --harness claude --person-only-contexts 'acme'",
   )
   expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // no list: today's command, unchanged
@@ -1850,14 +1851,14 @@ test("vmClaudeFlags carries a rig's protectedBranches on the deny hook's own arg
   const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, ['acme-deploy'])
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --protected-branches 'acme-deploy'",
+    "'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts' --harness claude --protected-branches 'acme-deploy'",
   )
   expect(settings.hooks.PreToolUse[1].hooks[0].command).toBe(settings.hooks.PreToolUse[0].hooks[0].command)
   // both lists together: person-only-contexts first, then protected-branches
   const both = vmClaudeFlags({ maxContextK: 150 }, ['ctx'], ['acme-deploy'])
   const bothSettings = JSON.parse(both[both.indexOf('--settings') + 1]!)
   expect(bothSettings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --person-only-contexts 'ctx' --protected-branches 'acme-deploy'",
+    "'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts' --harness claude --person-only-contexts 'ctx' --protected-branches 'acme-deploy'",
   )
   // no list: today's command, unchanged
   expect(vmClaudeFlags({ maxContextK: 150 })).toEqual(vmClaudeFlags({ maxContextK: 150 }, [], []))
@@ -2864,7 +2865,7 @@ test("vmClaudeFlags and vmCodexHome carry --merge-authority on the hook's argv o
   const flags = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, 'acme/widget')
   const settings = JSON.parse(flags[flags.indexOf('--settings') + 1]!)
   expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-    "'/usr/local/bin/bun' '/opt/factory/src/worker-hook.ts' --harness claude --merge-authority 'acme/widget'",
+    "'/usr/local/bin/bun' --no-env-file --config=/dev/null '/opt/factory/src/worker-hook.ts' --harness claude --merge-authority 'acme/widget'",
   )
   const off = vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined)
   expect(off).toEqual(vmClaudeFlags({ maxContextK: 150 }))

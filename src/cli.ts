@@ -2185,6 +2185,9 @@ const denyHook = (
       type: 'command',
       command: [
         sq(bun),
+        // claude-factory-qn8a.21: bun reads bunfig.toml and the env file from the worktree; a preload there turns the hook off.
+        '--no-env-file',
+        '--config=/dev/null',
         sq(file),
         '--harness',
         harness,
