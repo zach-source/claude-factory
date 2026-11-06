@@ -854,10 +854,10 @@ memory/
 ```
 
 - Workers search before they start and save what a later worker would otherwise relearn:
-  `factory memory search [--rig r] <query>` (local embeddings, bge-small, no service; a note
+  `factory memory search [--rig r] '<query>'` (local embeddings, bge-small, no service; a note
   ranks by its own match and its topic's, a long or fact note ranks slightly above a short one
   on a near-tie, and another rig's notes never show) and
-  `factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--supersedes <note path>] <summary> [body]`.
+  `factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--supersedes <note path>] '<summary>' '[body...]'`.
   The manager searches it before answering a worker and saves the person's decisions that later
   runs should follow.
 - Each new note must have a kind, or `memory add` exits 2 with its usage text:
@@ -1220,7 +1220,7 @@ rows = [
   there is work for it to do.
 - **Held mail**: a station marked `holdMail: true` (ship's `release`, `deploy` and `rollback`, and lifecycle's `triage`)
   that is parked on a pull or merge request starts no worker for plain mail. The mail waits in its
-  box. A change to the pull request, a mail sent with `factory mail <run> <box> --wake <text...>`,
+  box. A change to the pull request, a mail sent with `factory mail <run> <box> --wake '<text...>'`,
   or the park's 8-hour timer starts a worker, which then reads the held mail. The console's
   answers send `--wake`. Plain `factory mail` to a held station prints a `held for` line. A
   station parked with no linked pull request wakes on any mail, as before. The watch also wakes a
