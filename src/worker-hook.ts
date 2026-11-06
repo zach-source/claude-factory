@@ -3082,10 +3082,14 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
         clearScans++
         const { cmdStart } = scan
         // claude-factory-jsoe: a reader command word with no dollar, backtick or paren word after it runs no bd word.
+        // claude-factory-qn8a.9.13: this is a closed grammar. The reader word must follow one
+        // clear-all option. No word from env to the segment end can hold $, a backtick or a paren.
+        // The shell can add or remove a word, so cmdStart alone is not safe.
         const reader =
-          cmdStart < words.length &&
-          BD_READERS.has(baseWord(words[cmdStart]!)) &&
-          !words.slice(cmdStart).some(x => /[$`()]/.test(x))
+          cmdStart === i + 2 &&
+          ['-i', '-', '--ignore-environment'].includes(words[i + 1]!) &&
+          BD_READERS.has(words[cmdStart]!) &&
+          !words.slice(i).some(x => /[$`()]/.test(x))
         if (reader) {
           readerStart = cmdStart
           continue

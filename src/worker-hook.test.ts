@@ -12,6 +12,7 @@ import {
   dynamicHeadDenyForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
+  FACTORY_FROM_REASON,
   COMMENT_REASON,
   DEEP_COMMAND_REASON,
   denyReason,
@@ -11379,6 +11380,51 @@ test('denyReason allows env -i with a reader and a bd argument; every other bd f
     'env -i grep x env -i cat bd',
   ])
     expect(ask(c)).toBe(BEADS_ACTOR_REASON)
+})
+
+// claude-factory-qn8a.9.13: the jsoe exemption is a closed grammar: env, one of -i - --ignore-environment, the reader word.
+test('denyReason keeps the env -i reader exemption closed (claude-factory-qn8a.9.13)', () => {
+  const ask = (c: string) => denyReason(c, '/acme/root', undefined, snapGate())
+  for (const c of ['env - grep -rn bd src', 'env --ignore-environment grep -rn bd src'])
+    expect(ask(c)).toBeUndefined()
+  for (const c of [
+    'env -i -u $ZZZ grep bd comment x y',
+    'env -i -u ${ZZZ} grep bd comment x y',
+    'env -i -u ${ZZZ:+x} grep bd comment x y',
+    'env -i --unset $ZZZ grep bd comment x y',
+    'env -i --chdir $ZZZ grep bd comment x y',
+    'env -i --argv0 $ZZZ grep bd comment x y',
+    'env -i -P $ZZZ cat bd comment x y',
+    'env -i -a $ZZZ cat bd comment x y',
+    'env -i -u $@ grep bd comment x y',
+    'env -i -u $* grep bd comment x y',
+    'env -i -u "$@" grep bd comment x y',
+    'env -i -u {,} grep bd comment x y',
+    'env -{i,u} grep bd comment x y',
+    'env -i -{i,u} grep bd comment x y',
+    'env -{i,u,u} grep bd comment x y',
+    'env -i -u 2>&1 grep bd comment x y',
+    'env -i -u >f grep bd comment x y',
+    'env -i -u 2>f grep bd comment x y',
+    'env -i -u >&2 grep bd comment x y',
+    'env -i -u <f grep bd comment x y',
+    'env -i -u &>f grep bd comment x y',
+    'env -i -u >|f grep bd comment x y',
+    'env -i -u >>f grep bd comment x y',
+    'env -i -u <<<x grep bd comment x y',
+    'env -i -u 2>/dev/null grep bd comment x y',
+    'env -i --unset 2>&1 cat bd comment x y',
+    'env -i ./grep bd comment x y',
+    "env -i -S '-u' grep bd comment x y",
+  ])
+    expect(ask(c)).toBe(BEADS_ACTOR_REASON)
+  expect(ask("env -iS 'cat' bd comment x y")).toBeUndefined()
+  for (const c of [
+    'env -i -u $ZZZ grep HOME=/h /opt/bin/factory mail r1 manager x',
+    'env -i -{i,u} grep /opt/bin/factory mail r1 manager x',
+    'env -i -u $ZZZ cat factory report r1 18 approve x',
+  ])
+    expect(ask(c)).toBe(FACTORY_FROM_REASON)
 })
 
 // claude-factory-yule: brace-body glob command words, after PR 151.
