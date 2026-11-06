@@ -215,3 +215,37 @@ for (const c of ['echo ${$(date)%x}', 'echo "${$(pwd):t}"', 'echo ${$(date)}'])
   test(`5.7 known false deny ${JSON.stringify(c)}`, () => {
     expect(ask(c)).toBe(FUNSUB_REASON)
   })
+
+// claude-factory-qn8a.5.8: a redirect target with a `(` between factory and its verb hides the verb.
+for (const c of [
+  'factory > >(cat) tick',
+  'factory < <(echo x) say hi',
+  'factory 2> >(cat) rig add w x',
+  'factory > >(cat) memory compact',
+])
+  test(`5.8 denies ${JSON.stringify(c)}`, () => {
+    expect(ask(c)).toBeDefined()
+  })
+for (const c of [
+  'diff <(sort a) <(sort b)',
+  'cat < <(echo x)',
+  'echo x > >(cat)',
+  'gh pr view 1 > >(cat)',
+  'factory report r1 13 approve x > >(cat)',
+  'factory memory search x > >(cat)',
+])
+  test(`5.8 allows ${JSON.stringify(c)}`, () => {
+    expect(ask(c)).toBeUndefined()
+  })
+// Known gaps (claude-factory-qn8a.40): the same hidden verb for gh, git, kubectl, helm and rm is not read.
+for (const c of [
+  'gh > >(cat) pr merge 1',
+  'gh pr > >(cat) merge 1',
+  'git > >(cat) push origin main',
+  'kubectl > >(cat) delete pod x',
+  'helm > >(cat) upgrade x y',
+  'rm > >(cat) -rf ./nx',
+])
+  test(`known gap qn8a.40 allows ${JSON.stringify(c)}`, () => {
+    expect(ask(c)).toBeUndefined()
+  })

@@ -5205,8 +5205,19 @@ function anyFactoryControlReason(words: string[]): string | undefined {
     // claude-factory-rtbv.3: segments() removes quotes, so a quoted `'>'` looks like a redirect word.
     // Read the words as given and with redirect words dropped; deny if either reading denies.
     const given = words.slice(j + 1)
-    const reason = factoryVerbReason(given) ?? factoryVerbReason(dropRedirectWords(given))
+    const dropped = dropRedirectWords(given)
+    const reason = factoryVerbReason(given) ?? factoryVerbReason(dropped)
     if (reason) return reason
+    // claude-factory-qn8a.5.8: segments() ends the segment at a `(`, so `factory > >(cat) tick` leaves
+    // `factory > > (` and the verb is in the next segment. If only redirect words come before that `(`,
+    // the verb is unreadable: deny. ponytail: factory only; gh, git, kubectl, helm and rm have the
+    // same gap (claude-factory-qn8a.40, known gaps in worker-hook-qn8a5.test.ts).
+    if (
+      given[given.length - 1] === '(' &&
+      given.length > 1 &&
+      dropRedirectWords(given.slice(0, -1)).length === 0
+    )
+      return FACTORY_CONTROL_REASON
   }
   return undefined
 }
