@@ -179,10 +179,10 @@ describe('maskAssignments', () => {
   test.each([
     ['X=zqsecret ls', 'X=*** ls'],
     ['A=1 B=zqsecret ls', 'A=*** B=*** ls'],
-    ["X='zq secret' ls", 'X=*** ls'],
-    ['X="zq secret" ls', 'X=*** ls'],
-    ['X=zq"sec ret" ls', 'X=*** ls'],
-    ['X=zq\\ secret ls', 'X=*** ls'],
+    ["X='zq secret' ls", 'X=***'],
+    ['X="zq secret" ls', 'X=***'],
+    ['X=zq"sec ret" ls', 'X=***'],
+    ['X=zq\\ secret ls', 'X=***'],
     ['X="zqsecret', 'X=***'],
     ['f() { ls; }', 'f() { ls; }'],
     ['ls -la /tmp', 'ls -la /tmp'],
@@ -233,10 +233,15 @@ describe('maskAssignments', () => {
     ["X=\"a\"$'zq\\' secret' ls", 'X=***'],
     ["a[k]=$'zq\\' secret' ls", 'a[k]=***'],
     ['X=$[1 + 2] ls', 'X=***'],
-    ['X=zq\rsecret ls', 'X=*** ls'],
-    ['X=zq\vsecret ls', 'X=*** ls'],
-    ['X=zq\fsecret ls', 'X=*** ls'],
-    ['X=zq secret ls', 'X=*** ls'],
+    ['X=zq\rsecret ls', 'X=***'],
+    ['X=zq\vsecret ls', 'X=***'],
+    ['X=zq\fsecret ls', 'X=***'],
+    ['X=zq\u00a0secret ls', 'X=***'],
+    ['cd /a && X=1 git push origin main', 'cd /a && X=*** git push origin main'],
+    ['X=a.b/c:d@e%f+g,h=i-j ls', 'X=*** ls'],
+    ['X=v;ls', 'X=***;ls'],
+    ['(X=v)', '(X=***)'],
+    ['X= ls', 'X=*** ls'],
     ['ls foo-bar', 'ls foo-bar'],
     ['echo $(date) a-b', 'echo $(date) a-b'],
     ['cat a]b', 'cat a]b'],
@@ -261,6 +266,28 @@ describe('maskAssignments', () => {
     'eval "X=zqsecret ls"',
     'env -S "X=zqsecret ls"',
   ])('%s hides the value', i => expect(m(i)).not.toContain('zqsecret'))
+  const SAFE = /[A-Za-z0-9_./:@%+,=-]/
+  const TERM = ' \t\n;&|)'
+  test('each code unit after a value', () => {
+    const bad: string[] = []
+    const mk = (pre: string, post: string, c: string) => {
+      const out = m(pre + 'zq' + c + 'secret ls' + post)
+      const exp = SAFE.test(c)
+        ? pre + '*** ls' + post
+        : TERM.includes(c)
+          ? pre + '***' + c + 'secret ls' + post
+          : pre + '***'
+      if (out !== exp) bad.push(JSON.stringify([c.charCodeAt(0), pre, out]))
+    }
+    for (let i = 0; i < 0x10000; i++) {
+      const c = String.fromCharCode(i)
+      mk('X=', '', c)
+      mk('a[k]=', '', c)
+      mk('bash -c "X=', '"', c)
+      if (m(': ${X:-zq' + c + 'secret}') !== ': ${X:-***') bad.push('A' + i)
+    }
+    expect(bad.slice(0, 10)).toEqual([])
+  })
   test('an unclosed subscript tail is linear', () => {
     const t = performance.now()
     m(' a['.repeat(1e5))
@@ -287,6 +314,9 @@ describe('maskAssignments', () => {
       ' Y="${'.repeat(1e5),
       " X=$'".repeat(1e5),
       ' X=$['.repeat(1e5),
+      ' X=' + 'a'.repeat(3e5),
+      ' X=a"'.repeat(1e5),
+      ' a=b=c'.repeat(1e5),
     ]) {
       const t = performance.now()
       m(i)
