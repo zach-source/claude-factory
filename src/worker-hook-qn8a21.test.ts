@@ -145,6 +145,7 @@ describe('AC3 Bash, a parent of the hook dir', () => {
     'cd / && tar -xf a.tar',
     'pushd / && tar -xf a.tar',
     'popd && tar -xf a.tar',
+    'pushd / -n && tar -xf a.tar',
   ])('denies %s', c => expect(bash(c)).toBe(R))
   test.each(['ls -d /', 'find / -name x', 'cat /f/x', 'cd .scratch && ls', 'cd src', 'cp -R x .scratch/y'])(
     'allows %s',
