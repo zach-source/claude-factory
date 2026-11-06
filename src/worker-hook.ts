@@ -8396,6 +8396,26 @@ function flattenBraceExpansions(w: string, byDepth: boolean): string {
   }
   return out
 }
+// claude-factory-qn8a.10: true when an unquoted ${...} span holds unquoted whitespace, ; | or &, or has no
+// close brace. bash splits such a span into words. segments() cuts the word at the first break and drops
+// quotes, so this reads the raw text. A close brace in quotes or after a backslash does not close a
+// span. A stray close brace at depth 0 is ignored. Quoted text outside a span is skipped.
+function hasSplitBrace(text: string): boolean {
+  let d = 0
+  let split = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!
+    if (c === '\\') i++
+    else if (c === "'" || c === '"') {
+      for (i++; i < text.length && text[i] !== c; i++) if (c === '"' && text[i] === '\\') i++
+    } else if (c === '$' && text[i + 1] === '{') (d++, i++)
+    else if (c === '}' && d) {
+      if (--d === 0 && split) return true
+      if (d === 0) split = false
+    } else if (d && /[\s;|&]/.test(c)) split = true
+  }
+  return d > 0
+}
 function splitGluedExpansions(words: string[], byDepth = true): string[] | undefined {
   let out: string[] | undefined
   for (let i = 0; i < words.length; i++) {
@@ -9020,20 +9040,12 @@ function denyAtScan(
       const skipped = words.slice(0, words.length - cmd.length)
       let k = 0
       while (k < skipped.length && /^[A-Za-z_]\w*\+?=/.test(skipped[k]!)) k++
+      // claude-factory-qn8a.10: segments() ends a word at whitespace. bash reads a ${ word on to its
+      // matching close brace and splits it, so an unclosed ${ in a wrapper slot can hide the command.
+      // segments() also drops quotes, so the raw text is read.
+      if (skipped.slice(k).some(w => w.includes('${')) && hasSplitBrace(command))
+        late.reason ??= DYNAMIC_VERB_REASON
       for (const w of skipped.slice(k)) {
-        // claude-factory-qn8a.10: segments() ends the word early. bash reads on to the matching
-        // close brace and splits it, so an unclosed ${ in a wrapper slot can hide the command.
-        // A close brace in quotes or after a backslash does not close the expansion.
-        let d = 0
-        for (let i = 0; i < w.length; i++) {
-          const c = w[i]!
-          if (c === '\\') i++
-          else if (d && (c === "'" || c === '"')) {
-            for (i++; i < w.length && w[i] !== c; i++) if (c === '"' && w[i] === '\\') i++
-          } else if (c === '$' && w[i + 1] === '{') (d++, i++)
-          else if (c === '}' && d) d--
-        }
-        if (d) late.reason ??= DYNAMIC_VERB_REASON
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
           const n = m[1]!
           if (IMPLICIT_VARS.has(n) || vars.has(n) || mentions(n) >= 2 || m[0].startsWith('${!') || dynWrite())
