@@ -527,6 +527,7 @@ interface ScanState {
   globDeferred: boolean
   /** claude-factory-4iod: set when a brace body reads as a risky rm. denyReason returns REASON after the older reasons. */
   bodyDeny: boolean
+  cfgGlob: boolean
   /** claude-factory-3frd: set when a word after a sh -c cluster holds a dollar or backtick. scanReason returns SH_DYNAMIC_SCRIPT_REASON last. */
   dynamicScript: boolean
   globalGitConfig: boolean
@@ -8185,6 +8186,7 @@ export function scanReason(
     ifsLate: false,
     globDeferred: false,
     bodyDeny: false,
+    cfgGlob: false,
     dynamicScript: false,
     globalGitConfig: false,
     gitWord: false,
@@ -8220,6 +8222,7 @@ export function scanReason(
   // headPush check, because an alias call sets no headPush.
   if (state.globalGitConfig && (state.gitWord || commandHasGitWord(command))) return GLOBAL_GIT_CONFIG_REASON
   if (state.bodyDeny && !state.stdinDeferred) return REASON
+  if (state.cfgGlob) return FACTORY_CONFIG_REASON
   // claude-factory-mn2y: an alias the command defines is not in gate.shellAliases. A later eval,
   // trap, source or substitution reads it after this hook ran. Deny unless the command is only
   // plain alias segments.
@@ -9250,7 +9253,7 @@ function denyAtScan(
     )
     if (cfgWrite === 'name') return FACTORY_CONFIG_REASON
     // a glob is a guess: a later real reason wins over it
-    if (cfgWrite === 'glob') late.reason ??= FACTORY_CONFIG_REASON
+    if (cfgWrite === 'glob') state.cfgGlob = true
     // claude-factory-25z.12: this scans every word, not only cmd[0]. An unknown wrapper must not
     // hide a kubectl, ko or helm word that follows it.
     //
