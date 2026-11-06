@@ -1,0 +1,329 @@
+// `factory wiki init`, commitWiki and pushWiki end to end (claude-factory-tx6c.2). Every test spawns bin/factory
+// with a new temp FACTORY_HOME and a fake `gh` first on PATH, so nothing reaches the live home or GitHub.
+import { afterEach, expect, test } from 'bun:test'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { hostname, tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const CLI = join(import.meta.dir, '..', 'bin', 'factory')
+const dir = join(realpathSync(tmpdir()), `wiki-${process.pid}`)
+let n = 0
+let home = ''
+const bin = join(dir, 'bin')
+const calls = join(dir, 'gh-calls')
+const TOKEN = `ghp_${'zq'.repeat(18)}`
+
+afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+/** a new home and a fake gh: `visibility` is its answer, or `exit1` to fail, or junk text */
+function setup(visibility = 'PRIVATE') {
+  home = join(dir, `home${++n}`)
+  mkdirSync(bin, { recursive: true })
+  const body = visibility === 'exit1' ? 'exit 1' : `printf '%s\\n' '${visibility}'`
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$*" >> '${calls}'\n${body}\n`)
+  chmodSync(join(bin, 'gh'), 0o755)
+  rmSync(calls, { force: true })
+}
+const ghCalls = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').length : 0)
+
+const factory = (args: string[], env: Record<string, string> = {}) => {
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_WIKI_REMOTE, ...laptop } = process.env
+  const p = Bun.spawnSync([CLI, ...args], {
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_SELF_UPDATE: '0',
+      FACTORY_NO_KICK: '1',
+      ...env,
+    },
+    timeout: 30_000,
+  })
+  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+}
+const wiki = () => join(home, 'wiki')
+const git = (...args: string[]) => {
+  const p = Bun.spawnSync(['git', '-C', wiki(), ...args])
+  if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${p.stderr.toString()}`)
+  return p.stdout.toString().trim()
+}
+const commits = () => Number(git('rev-list', '--count', 'HEAD'))
+const wikiLog = () => (existsSync(join(home, 'wiki.log')) ? readFileSync(join(home, 'wiki.log'), 'utf8') : '')
+const page = (kind: string, title: string) =>
+  `---\nkind: ${kind}\ntitle: ${JSON.stringify(title)}\n---\nbody\n`
+
+const USAGE = 'usage: factory wiki init [--remote <url>]'
+
+test('AC1 a remote outside the grammar exits 2, makes no repo and calls no gh', () => {
+  for (const url of [
+    'https://u:zq@github.com/acme/w',
+    '/srv/wiki.git',
+    'file:///srv/w',
+    'ext::sh -c x',
+    '-uhttps://x',
+    'https://github.com/acme/w/extra',
+    'git@github.com:acme/../w',
+    'https://github.com/acme/w\nx',
+    'http://github.com/acme/w',
+  ]) {
+    setup()
+    const r = factory(['wiki', 'init', '--remote', url])
+    expect([url, r.code]).toEqual([url, 2])
+    expect(r.err).toContain(USAGE)
+    expect(existsSync(wiki())).toBe(false)
+    expect(ghCalls()).toBe(0)
+  }
+  setup()
+  const r = factory(['wiki', 'init'], { FACTORY_WIKI_REMOTE: 'https://u:zq@github.com/acme/w' })
+  expect(r.code).toBe(2)
+  expect(existsSync(wiki())).toBe(false)
+})
+
+test('AC2 init without a remote seeds the repo and makes one commit', () => {
+  setup()
+  const r = factory(['wiki', 'init'])
+  expect(r.code).toBe(0)
+  expect(existsSync(join(wiki(), '.git'))).toBe(true)
+  expect(commits()).toBe(1)
+  expect(git('log', '-1', '--format=%s')).toBe('wiki init: seed index and glossary')
+  expect(readFileSync(join(wiki(), 'index.md'), 'utf8')).toContain('kind: "index"')
+  const glossary = readFileSync(join(wiki(), 'glossary.md'), 'utf8')
+  expect(glossary).toContain('kind: "glossary"')
+  for (const t of ['station', 'soak', 'rig', 'ship lane', 'bead', 'run']) expect(glossary).toContain(t)
+  expect(Bun.spawnSync(['git', '-C', wiki(), 'config', '--get', 'remote.origin.url']).exitCode).toBe(1)
+  expect(ghCalls()).toBe(0)
+  // a second init changes nothing, and keeps a page a person committed
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'mine'))
+  git('add', '-A')
+  Bun.spawnSync(['git', '-C', wiki(), '-c', 'user.name=p', '-c', 'user.email=p@x.test', 'commit', '-qm', 'p'])
+  const before = commits()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(commits()).toBe(before)
+  expect(readFileSync(join(wiki(), 'index.md'), 'utf8')).toContain('mine')
+})
+
+test('AC3 commits carry the factory identity whatever the environment says', () => {
+  setup()
+  const cfg = join(dir, 'gitconfig')
+  writeFileSync(cfg, '[commit]\n\tgpgsign = true\n')
+  const env = {
+    GIT_CONFIG_GLOBAL: cfg,
+    GIT_AUTHOR_NAME: 'zq-person',
+    GIT_COMMITTER_EMAIL: 'zq@person.test',
+  }
+  expect(factory(['wiki', 'init'], env).code).toBe(0)
+  expect(git('log', '--format=%an <%ae>|%cn <%ce>')).toBe(
+    `factory <factory@${hostname()}>|factory <factory@${hostname()}>`,
+  )
+})
+
+test('AC4 a page that fails the scan goes back to its last version', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  mkdirSync(join(wiki(), 'solutions'))
+  writeFileSync(join(wiki(), 'index.md'), `${page('index', 'Index')}${TOKEN}\n`)
+  writeFileSync(join(wiki(), 'solutions', 'x.md'), `${page('topic', 'X')}${TOKEN}\n`)
+  writeFileSync(join(wiki(), 'bad-kind.md'), page('nope', 'Y'))
+  writeFileSync(join(wiki(), 'big.md'), `${page('topic', 'Big')}${'a'.repeat(70_000)}\n`)
+  writeFileSync(join(wiki(), 'good.md'), page('topic', 'Good'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(commits()).toBe(base + 1)
+  expect(git('show', 'HEAD:index.md')).not.toContain('ghp_')
+  expect(readFileSync(join(wiki(), 'index.md'), 'utf8')).not.toContain('ghp_')
+  const files = git('ls-files').split('\n')
+  expect(files).toContain('good.md')
+  for (const f of ['solutions/x.md', 'bad-kind.md', 'big.md']) expect(files).not.toContain(f)
+  expect(existsSync(join(wiki(), 'solutions', 'x.md'))).toBe(true)
+  const log = wikiLog()
+  expect(log).toContain('wiki: secret shape in index.md, page kept at last version')
+  expect(log).toContain('wiki: secret shape in solutions/x.md, page kept at last version')
+  expect(log).toContain('wiki: kind: invalid in bad-kind.md, page kept at last version')
+  expect(log).toContain('in big.md, page kept at last version')
+  expect(log).not.toContain('ghp_')
+})
+
+test('AC4 a bad path is refused with no path text', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  writeFileSync(join(wiki(), '.hidden.md'), page('topic', 'H'))
+  writeFileSync(join(wiki(), 'a\nb.md'), page('topic', 'N'))
+  writeFileSync(join(wiki(), 'note.txt'), 'x')
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(commits()).toBe(base)
+  expect(wikiLog().match(/wiki: bad page path, page kept at last version/g)?.length).toBe(3)
+  expect(wikiLog()).not.toContain('hidden')
+})
+
+test('AC9 a held wiki.lock prints busy, exits 0 and makes nothing', () => {
+  setup()
+  mkdirSync(join(home, 'wiki.lock'), { recursive: true })
+  writeFileSync(join(home, 'wiki.lock', 'pid'), String(process.pid))
+  const r = factory(['wiki', 'init'])
+  expect(r.code).toBe(0)
+  expect(r.out + r.err).toContain('wiki: busy')
+  expect(existsSync(wiki())).toBe(false)
+  expect(ghCalls()).toBe(0)
+})
+
+test('AC9 the lock is released after a refusal', () => {
+  setup('PUBLIC')
+  const url = 'https://github.com/acme/widget-wiki.git'
+  expect(factory(['wiki', 'init', '--remote', url]).code).toBe(1)
+  const r = factory(['wiki', 'init', '--remote', url])
+  expect(r.code).toBe(1)
+  expect(r.out + r.err).not.toContain('wiki: busy')
+})
+
+test('AC10 usage', () => {
+  setup()
+  for (const a of [['wiki'], ['wiki', 'nope'], ['wiki', 'init', 'extra']]) {
+    const r = factory(a)
+    expect([a, r.code]).toEqual([a, 2])
+    expect(r.err).toContain(USAGE)
+  }
+  const w = factory(['wiki', 'init'], { FACTORY_OUTBOX: join(dir, 'out'), FACTORY_FROM: 'x/y' })
+  expect(w.code).not.toBe(0)
+  expect(existsSync(wiki())).toBe(false)
+})
+
+const URL_ = 'https://github.com/acme/widget-wiki.git'
+/** a bare repo that answers for URL_, through a global git config (insteadOf), as src/gc-worktrees-cli.test.ts does */
+function bare() {
+  const b = join(dir, `bare${n}.git`)
+  Bun.spawnSync(['git', 'init', '-q', '--bare', '-b', 'main', b])
+  const cfg = join(dir, `cfg${n}`)
+  writeFileSync(cfg, `[url "${b}"]\n\tinsteadOf = ${URL_}\n`)
+  return { b, env: { GIT_CONFIG_GLOBAL: cfg } }
+}
+const mainOf = (b: string) => Bun.spawnSync(['git', '-C', b, 'rev-parse', '--verify', '-q', 'main'])
+const state = () => JSON.parse(readFileSync(join(home, 'wiki-state.json'), 'utf8'))
+const noOrigin = () =>
+  Bun.spawnSync(['git', '-C', wiki(), 'config', '--get', 'remote.origin.url']).exitCode === 1
+
+test('AC8 PRIVATE and INTERNAL remotes: origin is set and main is pushed', () => {
+  for (const vis of ['PRIVATE', 'INTERNAL']) {
+    setup(vis)
+    const { b, env } = bare()
+    expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+    expect(mainOf(b).stdout.toString().trim()).toBe(git('rev-parse', 'HEAD'))
+    expect(git('config', '--get', 'remote.origin.url')).toBe(URL_)
+    expect(ghCalls()).toBe(1)
+    expect(state().visibility.value).toBe(vis)
+    // the env remote does the same, and init reads the visibility again
+    expect(factory(['wiki', 'init'], { ...env, FACTORY_WIKI_REMOTE: URL_ }).code).toBe(0)
+    expect(ghCalls()).toBe(2)
+  }
+})
+
+test('AC8 a PUBLIC remote exits 1, sets no origin and pushes nothing', () => {
+  setup('PUBLIC')
+  const { b, env } = bare()
+  const r = factory(['wiki', 'init', '--remote', URL_], env)
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('wiki: remote is public, push refused')
+  expect(wikiLog()).toContain('wiki: remote is public, push refused')
+  expect(noOrigin()).toBe(true)
+  expect(mainOf(b).exitCode).not.toBe(0)
+  expect(commits()).toBe(1)
+})
+
+test('AC6 an unknown visibility refuses, caches nothing and exits 1', () => {
+  for (const vis of ['exit1', 'maybe']) {
+    setup(vis)
+    const { b, env } = bare()
+    expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(1)
+    expect(wikiLog()).toContain('wiki: remote visibility unknown, push refused')
+    expect(existsSync(join(home, 'wiki-state.json'))).toBe(false)
+    expect(noOrigin()).toBe(true)
+    expect(mainOf(b).exitCode).not.toBe(0)
+  }
+})
+
+/** a driver for the exported pushWiki(), run on the temp home in a child process */
+function pushPass(env: Record<string, string>) {
+  const script = join(dir, 'push.ts')
+  writeFileSync(
+    script,
+    `import { pushWiki } from '${join(import.meta.dir, 'cli')}'\nprocess.exit(pushWiki() ? 0 : 1)\n`,
+  )
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
+  return Bun.spawnSync(['bun', script, 'noop'], {
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      PATH: `${bin}:${laptop.PATH}`,
+      FACTORY_NO_KICK: '1',
+      FACTORY_SELF_UPDATE: '0',
+      ...env,
+    },
+    stderr: 'pipe',
+  })
+}
+
+test('AC6 and AC7 pushWiki reads the visibility once in 24 h and pushes only a checked URL', () => {
+  setup('PRIVATE')
+  const { b, env } = bare()
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+  expect(ghCalls()).toBe(1)
+  writeFileSync(join(wiki(), 'next.md'), page('topic', 'Next'))
+  expect(factory(['wiki', 'init'], env).code).toBe(0) // commits next.md, no remote arg: no push
+  expect(pushPass(env).exitCode).toBe(0)
+  expect(ghCalls()).toBe(1) // the cache answered
+  expect(mainOf(b).stdout.toString().trim()).toBe(git('rev-parse', 'HEAD'))
+  // an old check reads again
+  const s = state()
+  s.visibility.checkedAt = new Date(Date.now() - 25 * 3600_000).toISOString()
+  s.other = 1
+  writeFileSync(join(home, 'wiki-state.json'), JSON.stringify(s))
+  expect(pushPass(env).exitCode).toBe(0)
+  expect(ghCalls()).toBe(2)
+  expect(state().other).toBe(1)
+  // a cache for another remote reads again
+  s.visibility.remote = 'github.com/acme/other'
+  writeFileSync(join(home, 'wiki-state.json'), JSON.stringify(s))
+  pushPass(env)
+  expect(ghCalls()).toBe(3)
+})
+
+test('AC7 pushWiki refuses an origin outside the grammar, with no gh call and no push', () => {
+  setup('PRIVATE')
+  const { b, env } = bare()
+  expect(factory(['wiki', 'init'], env).code).toBe(0)
+  git('remote', 'add', 'origin', b)
+  expect(pushPass(env).exitCode).toBe(1)
+  expect(wikiLog()).toContain('wiki: remote not allowed, push refused')
+  expect(ghCalls()).toBe(0)
+  expect(mainOf(b).exitCode).not.toBe(0)
+})
+
+test('AC7 pushWiki with no origin does nothing', () => {
+  setup('PRIVATE')
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(pushPass({}).exitCode).toBe(1)
+  expect(ghCalls()).toBe(0)
+})
+
+test('AC7 pushWiki ignores a pushurl set by hand', () => {
+  setup('PRIVATE')
+  const { b, env } = bare()
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+  const evil = join(dir, 'evil.git')
+  Bun.spawnSync(['git', 'init', '-q', '--bare', '-b', 'main', evil])
+  git('config', 'remote.origin.pushurl', evil)
+  writeFileSync(join(wiki(), 'more.md'), page('topic', 'More'))
+  expect(factory(['wiki', 'init'], env).code).toBe(0)
+  expect(pushPass(env).exitCode).toBe(0)
+  expect(mainOf(b).stdout.toString().trim()).toBe(git('rev-parse', 'HEAD'))
+  expect(mainOf(evil).exitCode).not.toBe(0)
+})
+
+test('AC7 a failed push is journaled with its exit code only', () => {
+  setup('PRIVATE')
+  const { b, env } = bare()
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+  rmSync(b, { recursive: true, force: true })
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(1)
+  expect(wikiLog()).toMatch(/wiki: push failed \(exit \d+\)\n/)
+})
