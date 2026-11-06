@@ -3047,6 +3047,20 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
     expect(g.stats().error).toBe(refused + 1)
   })
 
+  test('refused lookups beside a few answered ones count each refusal, no extra floor failure', async () => {
+    let n = 0
+    let refused = 0
+    const { g } = goGate(
+      sumLookup(() => (n++ < 2 ? new Response('500000\n') : (refused++, found(`${EVIL}/x`)))),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(refused).toBeGreaterThan(0)
+    expect(g.stats().error).toBe(refused)
+  })
+
   test('too few index entries with every lookup answering counts the floor failure once', async () => {
     const { g } = goGate(
       u =>
