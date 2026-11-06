@@ -101,9 +101,9 @@ export function serve(o: ServeOpts) {
     if (c.held && !held) log(`lease taken by ${holder}`)
     if (!c.held && held) log(`lease lost to ${c.lease?.holder ?? 'unknown'}`)
     if (!c.held && c.lease) {
-      const line = `lease held by ${c.lease.holder} until ${new Date(c.lease.until).toISOString()}`
-      if (line !== seen) log(line)
-      seen = line
+      if (c.lease.holder !== seen)
+        log(`lease held by ${c.lease.holder} until ${new Date(c.lease.until).toISOString()}`)
+      seen = c.lease.holder
     }
     held = c.held
     h.lease = held ? 'held' : 'waiting'
@@ -134,8 +134,7 @@ export function serve(o: ServeOpts) {
       if (!stopping) timer = setTimeout(next, o.everyMs)
     })
   }
-  // A long tick keeps the lease. A blocked event loop does not run this timer, so leaseMs must outlast those stretches.
-  const renew = setInterval(() => held && !stopping && take(), Math.max(1, Math.floor(o.leaseMs / 3)))
+  // Bun.serve first: if the port is busy it throws before any timer keeps the process alive.
   const server = Bun.serve({
     port: o.port,
     fetch(req) {
@@ -144,6 +143,8 @@ export function serve(o: ServeOpts) {
       return new Response('not found\n', { status: 404 })
     },
   })
+  // A long tick keeps the lease. A blocked event loop does not run this timer, so leaseMs must outlast those stretches.
+  const renew = setInterval(() => held && !stopping && take(), Math.max(1, Math.floor(o.leaseMs / 3)))
   timer = setTimeout(next, 0)
   return {
     port: server.port,

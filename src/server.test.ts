@@ -172,6 +172,68 @@ test('healthz answers GET only; other methods and paths give 404', async () => {
   expect((await fetch(`http://127.0.0.1:${a.port}/nope`)).status).toBe(404)
 }, 30_000)
 
+test('a second server on a busy port exits non-zero and makes no lease file', async () => {
+  const a = await start(newHome())
+  const home = newHome()
+  const p = Bun.spawn([CLI, 'server', '--port', String(a.port), '--every-ms', '100', '--lease-ms', '1000'], {
+    env: env(home),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  kids.push(p)
+  const code = await Promise.race([p.exited, sleep(10_000).then(() => 'alive')])
+  expect(code).not.toBe('alive')
+  expect(code).not.toBe(0)
+  expect(existsSync(leaseFile(home))).toBe(false)
+}, 30_000)
+
+test('a waiting server logs "lease held by" once per holder, not at each renewal', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'server-log-'))
+  dirs.push(home)
+  claim(leaseFile(home), 'other', Date.now(), 60_000)
+  const lines: string[] = []
+  const s = serve({
+    home,
+    port: 0,
+    everyMs: 20,
+    leaseMs: 60,
+    holder: 'me',
+    log: l => lines.push(l),
+    tick: () => {},
+  })
+  await sleep(300)
+  // the other holder renews: the until value changes, the holder does not
+  claim(leaseFile(home), 'other', Date.now(), 61_000)
+  await sleep(300)
+  await s.stop()
+  expect(lines.filter(l => l.startsWith('lease held by other'))).toHaveLength(1)
+}, 30_000)
+
+test('a tick that throws is logged and the loop keeps ticking', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'server-fail-'))
+  dirs.push(home)
+  const lines: string[] = []
+  let n = 0
+  const s = serve({
+    home,
+    port: 0,
+    everyMs: 20,
+    leaseMs: 200,
+    holder: 'me',
+    log: l => lines.push(l),
+    tick: () => {
+      n++
+      throw new Error('boom\nsecond line')
+    },
+  })
+  await sleep(400)
+  const h = (await fetch(`http://127.0.0.1:${s.port}/healthz`).then(r => r.json())) as any
+  await s.stop()
+  expect(n).toBeGreaterThanOrEqual(3)
+  expect(lines.filter(l => l === 'tick failed: boom').length).toBeGreaterThanOrEqual(3)
+  expect(h.tickOk).toBe(false)
+}, 30_000)
+
 test('bad flags exit non-zero with the usage and make no lease file', () => {
   for (const args of [
     ['--port', 'x'],
