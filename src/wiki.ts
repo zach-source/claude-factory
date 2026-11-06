@@ -227,3 +227,31 @@ export function renderRigPage(
   ].join('\n')
   return format({ kind: 'rig', title: `${rig} — factory work`, rigs: [rig], updated: stamp(now) }, body)
 }
+
+/** One file of a PR. `patch` is the unified diff text from `gh api repos/<o>/<r>/pulls/<n>/files`. */
+export type PrFile = { path: string; patch?: string }
+
+const VERSION_LINE = /^[+-]\s*"version":\s*"[^"]*",?\s*$/
+
+const versionOnly = (patch: string) => {
+  const lines = patch.split('\n').filter(l => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l))
+  return lines.length > 0 && lines.every(l => VERSION_LINE.test(l))
+}
+
+const trivialFile = ({ path, patch }: PrFile) => {
+  const parts = path.split('/')
+  if (path.startsWith('/') || parts.includes('..')) return false
+  const base = parts[parts.length - 1]!
+  return (
+    path.endsWith('.md') ||
+    path.startsWith('docs/') ||
+    base.includes('.test.') ||
+    parts.some(p => p === 'test' || p === 'tests') ||
+    path.startsWith('.factory/') ||
+    path.endsWith('.lock') ||
+    (base === 'package.json' && patch !== undefined && versionOnly(patch))
+  )
+}
+
+/** True when the list has files and each file is docs, a test, .factory/, a lock file or a version-only package.json change. Any doubt gives false. */
+export const trivial = (files: PrFile[]) => files.length > 0 && files.every(trivialFile)

@@ -5,6 +5,8 @@ import {
   renderRigPage,
   scanPages,
   SECTIONS,
+  trivial,
+  type PrFile,
   type Merged,
   type Page,
   type RigRow,
@@ -337,4 +339,36 @@ test('AC6 order: shipped newest first, in progress oldest first', () => {
   )
   expect(t.indexOf('Merged 1')).toBeLessThan(t.indexOf('Merged 2'))
   expect(t.indexOf('Goal a')).toBeLessThan(t.indexOf('Goal b'))
+})
+
+const f = (...paths: string[]): PrFile[] => paths.map(path => ({ path }))
+const bump = (extra = ''): PrFile => ({
+  path: 'package.json',
+  patch: `--- a/package.json\n+++ b/package.json\n@@ -1,3 +1,3 @@\n-  "version": "1.2.0",\n+  "version": "1.3.0",\n${extra}`,
+})
+test.each<[string, PrFile[], boolean]>([
+  ['docs-only', f('README.md', 'docs/x.txt', 'CHANGELOG.md'), true],
+  ['test-only', f('src/wiki.test.ts', 'test/a.ts', 'pkg/tests/b.go'), true],
+  ['.factory-only', f('.factory/lifecycle.ts'), true],
+  ['lock', f('bun.lock'), true],
+  ['version bump', [bump()], true],
+  ['mix of trivial classes', f('README.md', 'bun.lock', 'src/a.test.ts'), true],
+  ['empty', [], false],
+  ['source', f('src/wiki.ts'), false],
+  ['mixed with source', f('README.md', 'src/wiki.ts'), false],
+  ['package.json no patch', f('package.json'), false],
+  ['package.json dependency change', [bump('-  "left-pad": "1.0.0",\n+  "left-pad": "1.0.1",\n')], false],
+  [
+    'package.json context only',
+    [{ path: 'package.json', patch: '@@ -1 +1 @@\n   "version": "1.2.0",' }],
+    false,
+  ],
+  ['testdata', f('testdata/x.go'), false],
+  ['contest', f('src/contest.ts'), false],
+  ['factories', f('factories/lifecycle.ts'), false],
+  ['dot-dot', f('docs/../src/cli.ts'), false],
+  ['absolute docs', f('/docs/a.md'), false],
+  ['bun.lockb', f('bun.lockb'), false],
+])('AC1 trivial: %s', (_n, files, want) => {
+  expect(trivial(files)).toBe(want)
 })
