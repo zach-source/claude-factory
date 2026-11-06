@@ -78,6 +78,12 @@ const denyRows = [
   'sudo -u DBX:-root ls',
   'sudo -u DBX:-root rm RB',
   'sudo -u DBX:-root git RB push origin main',
+  'sudo -u DBX:-root\trm RB -rf zq',
+  'sudo -u DBX:-root\nrm RB -rf zq',
+  'command sudo -u DBX:-root rm RB -rf zq',
+  'true && sudo -u DBX:-root rm RB -rf zq',
+  '(sudo -u DBX:-root rm RB -rf zq)',
+  'sudo -u DBX:-root RB DBY:-x rm RB -rf zq',
 ]
 
 test.each(denyRows)('denies %j', row => {
@@ -96,6 +102,7 @@ test.each([
   'echo DBX:-a b RB',
   'ls DBX:-a b RB',
   'sudo ls DBX:-a b RB',
+  'sudo -u "$"{X:-root rm} -rf zq',
 ])('allows %j', row => {
   expect(run(row)).toBeUndefined()
 })
