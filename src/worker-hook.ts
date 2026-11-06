@@ -9031,7 +9031,17 @@ function denyAtScan(
       // matching close brace and splits it, so an unclosed ${ in a wrapper slot can hide the command.
       // segments() also drops quotes, so the raw text is read.
       // A backslash-newline between the dollar and the brace joins them, so join it before the scan.
-      if (skipped.slice(k).some(w => w.includes('$')) && hasSplitBrace(command.replace(/\\\n/g, '')))
+      // claude-factory-qn8a.10.6: realCommandInfo does not skip a redirect word, NAME+=value, an xargs
+      // flag value or a find -exec body, so also read: a wrapper word before a $ word in the segment.
+      const qWrap = words.findIndex(w => {
+        const bw = baseWord(w)
+        return LEAD_WRAPPERS.has(bw) || bw === 'find'
+      })
+      if (
+        (skipped.slice(k).some(w => w.includes('$')) ||
+          (qWrap >= 0 && words.slice(qWrap + 1).some(w => w.includes('$')))) &&
+        hasSplitBrace(command.replace(/\\\n/g, ''))
+      )
         late.reason ??= DYNAMIC_VERB_REASON
       for (const w of skipped.slice(k)) {
         for (const m of w.matchAll(/\$\{?[!=~^]*(?:\([^)]*\))?([A-Za-z_]\w*)/g)) {
