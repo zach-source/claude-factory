@@ -5393,7 +5393,8 @@ function testBuiltinSafe(args: readonly string[]): boolean {
 // the caller passes the segment words and no later word holds `(` or a backtick. Without them, deny.
 function dynamicCommandWord(w: string, words?: readonly string[], i?: number): boolean {
   // claude-factory-0hkb: the exact words `[` and `[[` are the test builtin. A word that only starts with `[` stays dynamic.
-  if ((w === '[' || w === '[[') && words && i !== undefined && testBuiltinSafe(words.slice(i + 1))) return false
+  if ((w === '[' || w === '[[') && words && i !== undefined && testBuiltinSafe(words.slice(i + 1)))
+    return false
   return w !== '{}' && dynamicWord(w)
 }
 

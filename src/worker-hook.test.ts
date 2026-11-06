@@ -11457,7 +11457,7 @@ test('denyReason denies [ and [[ with a dynamic operand of -v or an arithmetic o
     src + '[ 0 -ge "$_" ]',
     "echo 'a[$(git push origin main)]' | while read X; do [[ $X -eq 0 ]]; done",
     "echo 'a[$(git push origin main)]' | ( read X; [[ $X -eq 0 ]] )",
-    "echo 'a[$(git push origin main)]' | while read X; do [ -v \"$X\" ]; done",
+    'echo \'a[$(git push origin main)]\' | while read X; do [ -v "$X" ]; done',
     "ls 'a[$(git push origin main)]'; [[ $_ -eq 0 ]]",
   ]
   for (const c of rows) expect(ask(c)).toBeDefined()
