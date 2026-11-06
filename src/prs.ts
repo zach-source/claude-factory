@@ -693,7 +693,7 @@ export const forgeNote = (gitlabHost?: string): string[] =>
         '',
         '## Forge',
         `This repo's forge is GitLab at ${gitlabHost}. Where your instructions say \`gh pr <x>\` or "pull request", use \`glab\` on merge requests (\`gh\` does not work here):`,
-        '- gh pr create --base <b> -> glab mr create --target-branch <b>',
+        '- gh pr create --base <b> --body-file <path> -> glab api --method POST projects/:id/merge_requests -F source_branch=<branch> -F target_branch=<b> -F title=<title> -F description=@<path> (a draft title starts with Draft: )',
         '- gh pr view <n> --comments -> glab mr view <n> --comments',
         '- gh pr comment -> glab api --method POST projects/:id/merge_requests/<n>/notes -F body=@<path> (write the text to a file first)',
         '- gh pr review --comment or --approve -> glab api --method POST projects/:id/merge_requests/<n>/notes -F body=@<path> (the factory denies glab mr approve: only a person approves a merge request)',

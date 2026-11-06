@@ -240,6 +240,13 @@ test('each gh pr create and gh pr review in a factory prompt names a body file',
     }
   }
   expect(n).toBeGreaterThanOrEqual(8)
+  expect(readFileSync(join(root, 'factories', 'ship.ts'), 'utf8')).toContain(
+    'gh pr edit <n> -R <repo> --body-file <path>',
+  )
+  const mr = forgeNote('gitlab.example.com').find(
+    l => l.includes('glab mr create') || l.includes('merge_requests -F'),
+  )
+  expect(mr).toContain('description=@<path>')
   const text = brief(run, lifecycle as Factory, 'implement', { ...c, log: [] } as never, [])
   expect(text).toContain('a pull request body, a review body')
 })
