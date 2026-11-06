@@ -11638,4 +11638,16 @@ test('denyReason alias memo key holds every scan state field (claude-factory-qn8
       expect(denyReason(row.replaceAll('; ', sep), '/acme/root', undefined, gate)).toBe(PUSH_REASON)
   for (const ok of ['ll m; ls; ll m', 'll; ll'])
     expect(denyReason(ok, '/acme/root', undefined, gate)).toBeUndefined()
+  const t2 = new Map<string, string | null>([
+    ['ll', 'ls -l'],
+    ['gp', 'git push'],
+  ])
+  expect(
+    denyReason(
+      'll ls; ll gp origin main',
+      '/acme/root',
+      undefined,
+      snapGate(() => t2),
+    ),
+  ).toBe(SHELL_ALIAS_REASON)
 }, 30_000)
