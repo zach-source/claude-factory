@@ -4078,17 +4078,26 @@ const trackOf = (id: string, saved?: Saved): Track => {
 export const shipStarts = (repos: string[], queued: (repo: string) => number, live: ReadonlySet<string>) =>
   repos.filter(r => !live.has(r) && queued(r) > 0)
 
-/** the live ship runs: the runner's own flag, or the id a ship run gets from its factory name */
+/** a ship run: the runner's own flag, or the id a ship run gets from its factory name */
+const shipLike = (ship: boolean | undefined, id: string) => !!ship || id.startsWith('ship-')
+
+/** the live ship runs */
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
       const { run, value, c } = current(id)
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && (run.ship || id.startsWith('ship-')) ? [{ run, node: where(value)[0], c }] : []
+      return !ended && shipLike(run.ship, id) ? [{ run, node: where(value)[0], c }] : []
     } catch {
       return [] // removed mid-pass
     }
   })
+
+/** A live ship run on the rig of `run`, other than `run`. Only when `run` counts as a ship run (claude-factory-9wch). */
+const otherLiveShip = (run: Run, id: string) =>
+  shipLike(run.ship, id)
+    ? liveShipRuns().find(s => s.run.id !== run.id && s.run.repo === run.repo)
+    : undefined
 
 /**
  * Starts one ship run for each rig whose ship queue holds a bead and which has no live ship run.
@@ -9505,6 +9514,12 @@ export async function forkRun(
     .map(l => JSON.parse(l) as Ev)
   const why = forkRefusal(where(value)[0], pending, src.id)
   if (why) throw new Error(why)
+  // a ship fork beside another live ship run would give the rig two ship runs (claude-factory-9wch)
+  const other = otherLiveShip(src, `${factoryName}-`)
+  if (other)
+    throw new Error(
+      `${other.run.id} is a live ship run on ${src.repo}: a fork of ${src.id} would put a second ship run on the rig. Run factory abort ${other.run.id}, then fork it again.`,
+    )
   const bead = src.bead
     ? beads(src.repo, 'factory').create(
         `fork of ${src.bead}${note ? `: ${clip(note, 80)}` : ''}`,
@@ -11290,6 +11305,15 @@ if (import.meta.main && !outboxCmd)
           )
         const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
         if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
+        // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
+        const other =
+          ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
+            ? otherLiveShip(run, run.id)
+            : undefined
+        if (other)
+          fail(
+            `${other.run.id} is a live ship run on ${run.repo}: goto ${target} would revive ${run.id} as a second ship run on the rig. Run factory abort ${other.run.id}, then goto again.`,
+          )
         post(run.id, { type: 'GOTO', node: target })
         console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
         break
