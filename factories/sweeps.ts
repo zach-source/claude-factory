@@ -37,7 +37,7 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production. Nobody pushes the default branch directly; a rollback that reverts code opens a pull request for a person to merge instead. Nobody force-pushes.
 - Production is read-only for every station but deploy and rollback.
 - Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step. The bead's description records no author, so it never counts as approval; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: \`parked, waiting on: <the owner step and the exact command>\`. Reads, and watching a pipeline the person's merge started, stay allowed.
-- implement and quick open a pull request only as a draft (\`gh pr create --draft\`) and never run \`gh pr ready\` (except \`gh pr ready <n> --undo\`). Before implement or quick pushes to a pull request that is not a draft, it converts the pull request back to a draft. Only an approving station (review, security and check, on approve) or ship release marks it ready. Why: the owner merges a ready green pull request within minutes, before verify and review.
+- implement and quick open a pull request only as a draft (\`gh pr create --draft --body-file <path>\`) and never run \`gh pr ready\` (except \`gh pr ready <n> --undo\`). Before implement or quick pushes to a pull request that is not a draft, it converts the pull request back to a draft. Only an approving station (review, security and check, on approve) or ship release marks it ready. Why: the owner merges a ready green pull request within minutes, before verify and review.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
 - On a retry or a resumed worker, first find out what earlier attempts already did (journal, git log, pull request, deploy state) and never repeat an external action that already happened.
 - Your report summary is the next station's whole briefing: concrete and complete, numbers over adjectives, links over descriptions.
@@ -55,7 +55,7 @@ const liveDedupe =
 /** the Mimir query form the worker hook allows; ship.ts keeps its own copy (a test keeps them equal) */
 const mimirRead =
   `Mimir reads: if this rig's metrics are in Mimir behind a mimir-gateway pod, query it with ` +
-  `\`kubectl -n monitoring exec <mimir-gateway pod> -c gateway -- wget -q -O- --header='X-Scope-OrgID: TENANT' --post-data='query=PROMQL' 'http://localhost:8080/prometheus/api/v1/query'\`, ` +
+  `\`kubectl -n monitoring exec <mimir-gateway pod> -c gateway -- wget -q -O- --header='X-Scope-OrgID: <tenant>' --post-data='query=<promql>' 'http://localhost:8080/prometheus/api/v1/query'\`, ` +
   `one query per Bash call. Use a concrete metric name: no '?query=' URL and no \`{...}\` selector, because the worker hook denies both. ` +
   `Factory memory names the tenant. Without the X-Scope-OrgID header, every result reads empty, which looks the same as no data.`
 
@@ -153,7 +153,7 @@ Report filed with what you filed and what you skipped on purpose.`,
       everyMin: 10080,
       timeoutMin: 45,
       prompt: `One pass of the advisories sweep: dependency and base-image CVEs. You only collect. A command does the dedupe and the filing.
-1. Dependabot: \`gh api --paginate 'repos/OWNER/REPO/dependabot/alerts?state=open'\`. If it answers 403 or 404, set dependabot to "off". A person must enable the alerts; you never do.
+1. Dependabot: \`gh api --paginate 'repos/<owner>/<repo>/dependabot/alerts?state=open'\`. If it answers 403 or 404, set dependabot to "off". A person must enable the alerts; you never do.
 2. Also run the audit tool of each lockfile: \`bun audit --json\`, \`npm audit --json\`, \`govulncheck -json\`, \`pip-audit -f json\`. On a GitOps rig, scan the image refs with trivy or grype if installed; if not, write "image scan skipped" in your report.
 3. Read the installed version of each package from the lockfile. Use null when you cannot find it, and null for a missing fix.
 4. Write .scratch/advisories.json: {"repo":"<owner>/<repo>","dependabot":"ok"|"off","advisories":[{"id":"GHSA-...|CVE-...","aliases":[],"severity":"critical|high|medium|low","package":"","ecosystem":"","installed":"1.2.3"|null,"fixed":"1.2.4"|null,"source":"dependabot|bun-audit|...","manifest":"bun.lock"}]}. Copy no free text (summary, description) into it: the command refuses a bad field and files nothing.

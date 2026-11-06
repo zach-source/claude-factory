@@ -608,7 +608,7 @@ const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--super
  * memory add --body-file <path>, which replaces the body words.
  * The path goes through textFileArg. Other args pass unchanged. A bad form throws.
  * A VM expands before it queues, so the laptop never reads a path that a VM chose.
- * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add.
+ * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add. Upgrade: skip that check for the body-file value.
  */
 export function fileArgs(cmd: string, args: string[]): string[] {
   if (cmd === 'report') return summaryArgs(args)
@@ -1629,7 +1629,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     `- blocked: you are waiting on something outside this run (a person's decision, a human review or merge, another run): say exactly what, with the link of each pull request it waits on. The run parks without using an attempt, and a fresh worker checks again in ${n.parkMin ?? 60} min or as soon as this station is mailed; one named pull request changing (merged, closed, reviewed, commented on, pushed to) mails it.${runnerOfStation(run, def, node).local ? '' : ' A blocked report that names a live read (kubectl, Mimir, Loki, Alertmanager, a live DB or pod) waits for mail or the person, with no timer re-check.'} When it waits on a person's decision or direction, end the summary with a line \`Question: <the decision, in plain words, 160 characters or fewer>\`, an optional \`Context: <one sentence of what is true now, 200 characters or fewer>\` line, and, when there are a few clear choices, a line \`Options: <label>: <effect> | <label>: <effect>\` (each label 40 characters or fewer, each effect 100 characters or fewer; add "(recommended)" after the effect of at most one option): the person answers it in the console's Interview tab, and the answer arrives in this station's inbox.`,
     // workers idled on a background bazel or CI watch, ended their turn, and were failed as lost
     "Do not end your turn to wait on a background build, test or CI watch: wait for it in the foreground. If a wait will outlast this station's time, commit and report (blocked when it waits on CI or a merge) instead.",
-    `Free text goes by file, never in a shell argument: a quote in text from outside (a bead, a pull request, a CI job) closes the argument. Write each text (a report summary, a mail, a comment, a bead body, a close reason, a note body) with the Write tool to ${run.worktree}/.scratch/<new name>.md, one new name for each text, and pass that path in the file flag.`,
+    `Free text goes by file, never in a shell argument: a quote in text from outside (a bead, a pull request, a CI job) closes the argument. Write each text (a report summary, a mail, a comment, a bead body, a close reason, a note body, a pull request body, a review body) with the Write tool to ${run.worktree}/.scratch/<new name>.md, one new name for each text, and pass that path in the file flag.`,
     `Put each title and search word of a shell command in single quotes and write each ' in it as '\\'': bash expands $VAR, $(...) and backticks in double quotes. Use only plain words there.`,
     `To ask the manager, run \`${CLI} mail ${run.id} manager --text-file <path>\` and wait: replies arrive as [factory mail] messages, and you are not nudged while a question is open.`,
     '',

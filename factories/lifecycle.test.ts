@@ -403,7 +403,7 @@ test('small AC4/AC5/AC6: check marks an approved PR ready and promises a diff su
   const check = lifecycle.nodes.check!
   for (const needle of [
     'draft',
-    'gh pr review --comment',
+    'gh pr review <n> --comment --body-file <path>',
     'security-sensitive',
     'git diff --stat origin/{base_branch}...HEAD',
     '60 files',
@@ -797,7 +797,7 @@ test('claude-factory-0gww.4: review, security and check approve or request chang
       'gh pr view <n> --json author,headRefOid',
       'the author is the reviewer identity',
       'headRefOid is not the commit you reviewed',
-      'gh pr review --comment',
+      'gh pr review <n> --comment --body-file <path>',
     ])
       expect(prompt).toContain(needle)
   }

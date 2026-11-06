@@ -122,6 +122,13 @@ test('every brief of lifecycle, ship, sweeps and release has no double-quoted pl
  * An allowed slot holds a short label. All other free text goes by file.
  * A command that is not known is a defect. A double quote is always a defect.
  */
+const fixedSlots: [before: RegExp, quoted: string][] = [
+  [/--header=$/, "'X-Scope-OrgID: <tenant>'"],
+  [/--post-data=$/, "'query=<promql>'"],
+  [/gh pr list [^']*--search $/, "'<failing name> in:title,body'"],
+  [/gh api --paginate $/, "'repos/<owner>/<repo>/dependabot/alerts?state=open'"],
+]
+
 export function quotedSlots(text: string): string[] {
   const hits: string[] = []
   // an apostrophe inside a word (run's) does not open a quote
@@ -140,6 +147,8 @@ export function quotedSlots(text: string): string[] {
       const first = last !== undefined && !/['"]/.test(before.slice(last.index! + last[0].length))
       const slot = ['bd search', 'bd create', 'memory search', 'memory add'].includes(cmd ?? '')
       if (m[1] === "'" && first && slot) continue
+      // a name or an id in a read-only query, not free text
+      if (m[1] === "'" && fixedSlots.some(([pre, q]) => pre.test(before) && q === m[0])) continue
       hits.push(m[0])
     }
   }
@@ -158,6 +167,10 @@ test('quotedSlots flags a quoted placeholder outside the allowed slots', () => {
     "gh pr comment 5 --body '<text>'",
     "factory file-elsewhere x --from a:b --title '<t>' --description-file <p>",
     "foo '<x>'",
+    "gh pr create --title '<failing name> in:title,body'",
+    "x --post-data='<promql>'",
+    "gh pr list --state open --search '<failing name> in:body'",
+    "gh api --paginate '<owner>/<repo>'",
     'bd comment <id> "<e>"',
     'bd search "<words>"',
   ])
@@ -172,6 +185,9 @@ test('quotedSlots passes the allowed slots and a file form', () => {
     "factory memory search '<query>'",
     'bd comment <id> --file <path>',
     "bd search 'CI runner loss: <workflow> / <job>' --status open",
+    "wget --header='X-Scope-OrgID: <tenant>' --post-data='query=<promql>' 'http://h'",
+    "gh pr list --state open --search '<failing name> in:title,body'",
+    "gh api --paginate 'repos/<owner>/<repo>/dependabot/alerts?state=open'",
   ])
     expect([t, quotedSlots(t)]).toEqual([t, []])
 })
@@ -205,4 +221,18 @@ test('forge note and the glab approve reason use the file form for a note text',
     expect(t).toContain('glab api --method POST projects/:id/merge_requests/<n>/notes -F body=@<path>')
     expect(t).not.toContain('"<')
   }
+})
+
+test('each gh pr create and gh pr review in a factory prompt names a body file', () => {
+  let n = 0
+  for (const f of ['lifecycle', 'ship', 'sweeps']) {
+    const src = readFileSync(join(root, 'factories', f + '.ts'), 'utf8')
+    for (const m of src.matchAll(/gh pr (?:create|review) [^\n]{0,60}/g)) {
+      n++
+      expect([f, m[0].includes('--body-file <path>') ? '' : m[0]]).toEqual([f, ''])
+    }
+  }
+  expect(n).toBeGreaterThanOrEqual(8)
+  const text = brief(run, lifecycle as Factory, 'implement', { ...c, log: [] } as never, [])
+  expect(text).toContain('a pull request body, a review body')
 })
