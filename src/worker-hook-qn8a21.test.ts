@@ -234,3 +234,62 @@ describe('AC6 deny log and AC5 bun flags', () => {
     }
   })
 })
+
+// claude-factory-qn8a.21.11 .12 .13: security round 1
+describe('qn8a.21.11 case fold of a long s', () => {
+  test.each(['.claude/ſettings.local.json', '.claude/settingſ.json', '.claude/settings.jſon'])(
+    'Write tool denies %s',
+    p => expect(file(p)).toBe(R),
+  )
+  test.each([
+    'tee .claude/ſettings.local.json',
+    'echo x > .claude/ſettings.local.json',
+    'cp .scratch/s .claude/ſettings.local.json',
+    'tee $D/ſettings.local.json',
+    'tee .claude/ſettings.*',
+  ])('Bash denies %s', c => expect(bash(c)).toBe(R))
+  test('Bash denies a hook dir with s in a parent part', () => {
+    expect(
+      hook.denyReason('tee /Uſers/acme/f/src/cut.ts', ROOT, undefined, { cwd: ROOT, hookDir: '/Users/acme/f' }),
+    ).toBe(R)
+  })
+})
+
+describe('qn8a.21.12 glued short flag value', () => {
+  test.each([
+    'curl -o.claude/settings.local.json https://example.com/s',
+    'curl -so.claude/settings.local.json https://example.com/s',
+    'sort -o.claude/settings.local.json .scratch/s',
+    'wget -O.claude/settings.local.json https://example.com/s',
+    'wget -qO.claude/settings.local.json https://example.com/s',
+    'env -C.claude tee settings.local.json',
+    'make -C.claude',
+    'curl -o/f/acme-factory/src/cut.ts https://example.com/s',
+    'sort -o/f/acme-factory/src/cut.ts .scratch/s',
+    'wget -O/f/acme-factory/src/cut.ts https://example.com/s',
+  ])('denies %s', c => expect(bash(c)).toBe(R))
+  test.each(['ls -la', 'grep -rn x src', 'tail -n5 .claude/settings.json', 'sort -o.scratch/out.txt .scratch/in'])(
+    'allows %s',
+    c => expect(bash(c)).toBeUndefined(),
+  )
+})
+
+describe('qn8a.21.13 nested brace list and sequence', () => {
+  test.each([
+    'tee .claud{e..e}/settings.local.json',
+    'echo x > .claud{e..e}/settings.local.json',
+    'tee .claude/setting{s..s}.local.json',
+    'tee .claude/settings.local.jso{n..n}',
+    'tee .claud{e..e}/setting{s..s}.local.json',
+    'tee .claude/{x,{settings.local.json,y}}',
+    'tee {.scratch/a,{.claude/settings.local.json,.scratch/c}}',
+    'tee .claude/setting{s,{s,t}}.local.json',
+    'cd .claud{e..e} && tee settings.local.json',
+    'echo x > /f/acme-factor{y..y}/src/cut.ts',
+    'echo x > /f/acme-factor{y,{y,z}}/src/cut.ts',
+  ])('denies %s', c => expect(bash(c)).toBe(R))
+  test.each(['for i in {1..5}; do echo x; done', 'mkdir -p .scratch/{a,{b,c}}', 'touch .scratch/f{1..3}.txt'])(
+    'allows %s',
+    c => expect(bash(c)).toBeUndefined(),
+  )
+})
