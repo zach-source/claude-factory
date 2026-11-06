@@ -5320,7 +5320,10 @@ const GLAB_API_VALUE_FLAGS = new Set([...GH_API_VALUE_FLAGS, '--form', '--output
 function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boolean {
   const decoded = decodeApiPath(endpoint)
   if (decoded === undefined) return undecodable
-  return [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded].some(p => re.test(p))
+  const views = [normalizeEndpoint(endpoint), normalizeEndpoint(decoded), decoded]
+  // resolve dot segments and repeated slashes, then drop a trailing slash
+  const resolved = views.map(p => posix.normalize(p).replace(/(.)\/+$/, '$1'))
+  return [...views, ...resolved].some(p => re.test(p))
 }
 
 /**
@@ -5371,10 +5374,12 @@ function glabUpdateMayReady(words: string[]): boolean {
   let ready = false
   let title = false
   let keepsDraft = false
+  let valueMayVanish = false // a dynamic value word can expand to nothing, then the flag takes the next word
   for (let i = 0; i < words.length && words[i] !== '--'; i++) {
     const w = words[i]!
     if (GLAB_UPDATE_VALUE_FLAGS.has(w)) {
       if (w === '-t' || w === '--title') title = true
+      if (dynamicWord(words[i + 1] ?? '')) valueMayVanish = true
       i++ // pflag takes the next word as the value, also a dash word and `--`
     } else if (w.startsWith('--')) {
       const name = w.split('=')[0]!
@@ -5390,13 +5395,16 @@ function glabUpdateMayReady(words: string[]): boolean {
         else if (c === 'f') title = true
         else if ('adlmRtu'.includes(c)) {
           if (c === 't') title = true
-          if (j === w.length - 1) i++
+          if (j === w.length - 1) {
+            if (dynamicWord(words[i + 1] ?? '')) valueMayVanish = true
+            i++
+          }
           break
         }
       }
     }
   }
-  return dynamic || ready || (title && !keepsDraft)
+  return dynamic || ready || (title && (!keepsDraft || valueMayVanish))
 }
 
 function glabReasonOn(tail: string[], gate: HookGate): string | undefined {
