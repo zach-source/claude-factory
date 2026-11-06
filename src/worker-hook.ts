@@ -4525,11 +4525,18 @@ function liveApplyDeniedOn(cmd: string[], personOnly: string[], skipBlank = fals
     // `--export` word before `--` counts, and only a bare or `=true` form.
     if (verb === 'create' || verb === 'install') {
       let exp: string | undefined
-      for (const w of tail) {
+      let before = ''
+      for (let i = 0; i < tail.length; i++) {
+        const w = tail[i]!
         if (w === '--') break
-        if (w === '--export' || w.startsWith('--export=')) exp = w
+        if (w === '--export' || w.startsWith('--export=')) {
+          exp = w
+          before = tail[i - 1] ?? ''
+        }
       }
-      if (exp === '--export' || exp === '--export=true') return false
+      // A value flag right before `--export` takes it as its value (pflag), so flux does not export.
+      const swallowed = before.startsWith('-') && !before.includes('=') && !FLUX_BOOL_FLAGS.has(before)
+      if (!swallowed && (exp === '--export' || exp === '--export=true')) return false
     }
     if (contextDenied(flagValue(cmd, new Set(['--context'])), personOnly)) return true
     const cluster = flagValue(cmd, new Set(['--cluster']))

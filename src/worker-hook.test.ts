@@ -399,6 +399,8 @@ const FLUX_DENY_LIVE = [
   'flux --context acme create source oci s --export=false',
   'flux --context acme install --export --export=false',
   'flux --context acme bootstrap github --export',
+  'flux --context acme install --registry --export',
+  'flux --context acme create ks apps --source s --path --export',
   'flux --context acme create source oci s --export=1',
   'flux --context acme create source oci s --export=$X',
   'nice -n 5 flux --context acme suspend ks apps',
