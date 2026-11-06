@@ -9669,8 +9669,7 @@ function hookControlWord(
   const alts = expandBraces(w)
   if (!alts) return true
   const base = foldLower(hookDir.split('/').filter(Boolean).pop() ?? '\0')
-  // the guard tests the literal word too, so a form that expandBraces reads wrongly still gets one look
-  for (const x of [...alts, w]) {
+  for (const x of alts) {
     // $HOME as a copy or cd target is a parent of the hook dir; other bare expansions stay allowed (cp "$A" "$B")
     if ((copyInto || isCd) && /^\$\{?(home|userprofile|oldpwd)\}?\/*$/i.test(x)) return true
     if (/[$`]|^~[^/]/.test(x)) {

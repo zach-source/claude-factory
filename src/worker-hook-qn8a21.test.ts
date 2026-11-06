@@ -354,4 +354,7 @@ describe('qn8a.21.15 glued flag value after any flag char', () => {
     'curl -sSfLo .scratch/a https://example.com/s',
     `curl -${'a'.repeat(1022)} https://example.com/s`,
   ])('allows %s', c => expect(bash(c)).toBeUndefined())
+  test('denies a one-char tail that is the cwd', () => {
+    expect(bash('curl -so. https://example.com/s', `${ROOT}/.claude`)).toBe(R)
+  })
 })
