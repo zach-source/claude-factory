@@ -11322,6 +11322,7 @@ test('denyReason allows env -i with a reader and a bd argument; every other bd f
     'bd list env -i grep x',
     'env -i grep x env -i bd list',
     'env -i grep x env -i nice bd',
+    'env -i grep x env -i cat bd',
   ])
     expect(ask(c)).toBe(BEADS_ACTOR_REASON)
 })
