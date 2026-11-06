@@ -7,6 +7,7 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  cpSync,
   existsSync,
   fsyncSync,
   lstatSync,
@@ -163,6 +164,7 @@ import * as worker from './worker'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
+import { splitPlan } from './splithome'
 import { bdEnv, clonesRepos, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
@@ -7142,6 +7144,74 @@ async function migrateToAx(args: string[]) {
   console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
 }
 
+/**
+ * `factory home split <dir> [--dry-run]` (claude-factory-akiq.5).
+ * It moves the AX rigs, their live runs and a copy of memory/ to a server home at <dir>.
+ * This home keeps the herdr rigs.
+ * Order: check all, write <dir> (rigs.json last), then change this home. A crash leaves this home whole.
+ * The local run dirs go to split-<stamp>/. split.json records the move.
+ * See docs/remote-runner.md, Split the home.
+ */
+function splitHome(args: string[]) {
+  const dry = args.includes('--dry-run')
+  const [to] = args.filter(a => a !== '--dry-run')
+  if (!to) fail('usage: factory home split <dir> [--dry-run]')
+  if (clonesRepos()) fail('factory home split runs on the laptop, not in the AX task or the server home')
+  const target = resolve(to!)
+  if (existsSync(join(target, 'rigs.json')) || existsSync(join(target, 'runs')))
+    fail(`${target} already holds rigs.json or runs/: split into an empty directory`)
+  const origin = (repo: string) => {
+    const r = Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin'], { stderr: 'ignore' })
+    return r.exitCode === 0 ? r.stdout.toString().trim() : undefined
+  }
+  const runsDir = join(HOME, 'runs')
+  const facts = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap(id => {
+    const state = join(runsDir, id, 'state.json')
+    if (!existsSync(state)) return []
+    return [
+      {
+        ...migrate.runFacts(id, readFileSync(state, 'utf8'), statSync(state).mtimeMs),
+        repo: readJson<Run>(join(runsDir, id, 'run.json')).repo,
+      },
+    ]
+  })
+  const p = splitPlan(rawRigs(), facts)
+  if (p.error) fail(p.error)
+  const moved = migrate.migratedRigs(p.move, origin)
+  if (moved.error) fail(moved.error)
+  console.log(
+    `moves rigs ${p.move.map(r => r.name).join(', ')}, ${p.runs.length} live runs and memory/ to ${target}; keeps rigs ${p.stay.map(r => r.name).join(', ') || 'none'}`,
+  )
+  if (dry) return console.log('dry run: nothing written')
+  const unlock = hold('tick.lock')
+  if (!unlock)
+    return fail('a tick holds tick.lock in this home: stop the manager and the runner, then run this again')
+  try {
+    mkdirSync(target, { recursive: true })
+    for (const id of p.runs)
+      cpSync(join(runsDir, id), join(target, 'runs', id), {
+        recursive: true,
+        filter: s => basename(s) !== 'transcripts',
+      })
+    if (existsSync(join(HOME, 'memory')))
+      cpSync(join(HOME, 'memory'), join(target, 'memory'), { recursive: true })
+    writeFileSync(join(target, 'rigs.json.tmp'), JSON.stringify(moved.rigs, null, 2) + '\n')
+    renameSync(join(target, 'rigs.json.tmp'), join(target, 'rigs.json'))
+    const at = Date.now()
+    const file = join(HOME, 'split.json')
+    const old: unknown[] = existsSync(file) ? readJson(file) : []
+    writeJson(file, [...old, ...p.move.map(r => ({ name: r.name, repo: r.repo, at, to: target }))])
+    const archive = join(HOME, `split-${new Date(at).toISOString().replace(/[-:.]/g, '')}`, 'runs')
+    mkdirSync(archive, { recursive: true })
+    for (const id of p.runs) renameSync(join(runsDir, id), join(archive, id))
+    const gone = new Set(p.move.map(r => r.name))
+    edit(list => list.filter(r => !gone.has(r.name)))
+    console.log(`moved. local runs are in ${archive}; rigs.json before the split is in rigs-history/`)
+  } finally {
+    unlock()
+  }
+}
+
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
 const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
@@ -10847,6 +10917,11 @@ if (import.meta.main && !outboxCmd)
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
       case 'home':
+        if (args[0] === 'split') {
+          refuseWorker('home split', true)
+          splitHome(args.slice(1))
+          break
+        }
         console.log(HOME)
         break
       case 'repos': {
