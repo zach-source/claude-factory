@@ -1239,7 +1239,13 @@ const axRunner: Runner = {
     ax.prompt(task, text.replaceAll(CLI, 'factory'))
     return true
   },
-  close: address => ax.remove(ax.taskOf(address)),
+  close(address) {
+    const task = ax.taskOf(address)
+    const failed = ax.remove(task)
+    // the axSweep pass retries a delete that failed here
+    if (failed)
+      appendFileSync(join(HOME, 'ax.log'), `${new Date().toISOString()} remove ${task} failed: ${failed}\n`)
+  },
   // waiting on the manager costs nothing: the VM is snapshotted until the answer wakes it
   suspend: address => ax.suspend(ax.taskOf(address)),
   phase: address => ax.phase(ax.taskOf(address))?.toLowerCase() ?? null,

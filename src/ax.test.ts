@@ -31,6 +31,9 @@ echo "\${AX_AUTH_TOKEN:+set}" >> ${dir}/auth
 case "$3 $4" in
   "apply -f") cat > ${dir}/applied; echo created ;;
   "get task") [ -f ${dir}/get ] && cat ${dir}/get || { echo 'getting task: rpc error: code = NotFound' >&2; exit 1; } ;;
+  "get tasks"|"get workspaces") [ -f ${dir}/list ] && cat ${dir}/list || { echo 'boom' >&2; exit 1; } ;;
+  "delete task") if [ -f ${dir}/deltask ]; then cat ${dir}/deltask >&2; exit 1; fi ;;
+  "delete workspace") if [ -f ${dir}/delws ]; then cat ${dir}/delws >&2; exit 1; fi ;;
   ssh*) cat ${dir}/ssh ;;
 esac
 `,
@@ -56,7 +59,20 @@ chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => {
-  for (const f of ['calls.log', 'get', 'ssh', 'applied', 'policy', 'actor', 'controller', 'bctl', 'auth'])
+  for (const f of [
+    'calls.log',
+    'get',
+    'ssh',
+    'applied',
+    'policy',
+    'actor',
+    'controller',
+    'bctl',
+    'auth',
+    'list',
+    'deltask',
+    'delws',
+  ])
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
@@ -97,6 +113,36 @@ test('controller readiness requires current observed generation and available re
     if (previous === undefined) delete process.env.FACTORY_AX_CONTEXT
     else process.env.FACTORY_AX_CONTEXT = previous
   }
+})
+
+test('names lists the first column, and is null on a failure or a table with no header', () => {
+  writeFileSync(
+    join(dir, 'list'),
+    'NAME ATESPACE PHASE\nf-manager factory Suspended\nf-a-1 factory Running\n',
+  )
+  expect(ax.names('tasks')).toEqual(['f-manager', 'f-a-1'])
+  expect(logged().at(-1)).toContain('get tasks')
+  expect(ax.names('workspaces')).toEqual(['f-manager', 'f-a-1'])
+  writeFileSync(join(dir, 'list'), 'No resources found\n')
+  expect(ax.names('tasks')).toBeNull()
+  rmSync(join(dir, 'list'))
+  expect(ax.names('tasks')).toBeNull() // exit 1
+  writeFileSync(join(dir, 'list'), 'NAME\n')
+  expect(ax.names('tasks')).toEqual([]) // an empty cluster is a list, not a failure
+})
+
+test('remove runs both deletes and returns the failure text, not a not-found', () => {
+  expect(ax.remove('f-a-1')).toBeUndefined()
+  expect(logged().filter(l => l.includes('delete '))).toHaveLength(2)
+  writeFileSync(join(dir, 'deltask'), 'rpc error: code = NotFound')
+  writeFileSync(join(dir, 'delws'), 'rpc error: code = NotFound')
+  expect(ax.remove('f-a-1')).toBeUndefined()
+  writeFileSync(join(dir, 'deltask'), 'forbidden')
+  rmSync(join(dir, 'delws'))
+  expect(ax.remove('f-a-1')).toContain('forbidden')
+  expect(logged().at(-1)).toContain('delete workspace f-a-1') // the second delete ran anyway
+  writeFileSync(join(dir, 'deltask'), 'x'.repeat(500))
+  expect(ax.remove('f-a-1')!.length).toBeLessThanOrEqual(220)
 })
 
 test('task names are RFC 1123 labels that keep the seq', () => {
