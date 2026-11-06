@@ -9548,7 +9548,7 @@ function hookControlPath(abs: string, root: string, hookDir: string): boolean {
   const r = root.toLowerCase()
   const under = (p: string, d: string) => p === d || p.startsWith(d.endsWith('/') ? d : d + '/')
   if (under(h, r) || under(r, h)) return HOOK_MODULES.some(m => a === `${h}/src/${m}`)
-  return !under(a, r) && under(a, h)
+  return under(a, h)
 }
 
 // One-level-at-a-time `{a,b}` expansion, capped. undefined means over the cap.
@@ -9667,7 +9667,6 @@ function hookControlWrite(
       redirect = true
     }
     if (isCd && !redirect) {
-      if (word.startsWith('-')) continue
       if (test(word) || /(^|\/)\.claude(\/|$)/i.test(word.replace(/["'\\]/g, ''))) return true
       continue
     }
