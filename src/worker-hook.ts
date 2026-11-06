@@ -9531,7 +9531,7 @@ export function clampTimeout(
 export const HOOK_CONTROL_REASON =
   'The factory denies this write: it targets the hook source or a .claude/settings.json or settings.local.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
 
-// a parent of the hook dir (also a bare /) is a hook-control path only for these commands and for cd:
+// a parent of the hook dir (also a bare /) is a hook-control path in a segment with one of these words and in cd:
 // find / and ls -d / and alias ~ must stay allowed
 const COPY_INTO_COMMANDS = new Set([
   'cp',
