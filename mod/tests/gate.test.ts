@@ -467,3 +467,29 @@ test('the deny text of a compound command holds the deny of each matched kind', 
   expect(r.deny).toContain('this gate decision')
   expect(r.deny).toContain('starting this owner-only bead')
 })
+
+test('factory wiki init asks the person; other wiki and memory commands do not', SLOW, async ($, on) => {
+  mock.clock(on)
+  let asked = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    asked += 1
+    const question = e.questions[0]!.question
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+  const run = (command: string) => $.tool.call({ tool: 'Bash', command, description: 'wiki' })
+
+  for (const command of [
+    '/repo/bin/factory wiki init --remote x',
+    'FACTORY_WIKI_REMOTE=x /repo/bin/factory wiki init',
+    '/repo/bin/factory \\\nwiki \\\ninit',
+  ]) {
+    const before = asked
+    expect((await run(command)).deny).toContain('did not confirm')
+    expect(asked).toBe(before + 1)
+  }
+  const before = asked
+  await run('/repo/bin/factory wiki status')
+  await run('/repo/bin/factory memory compact')
+  expect(asked).toBe(before)
+})
