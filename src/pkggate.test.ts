@@ -2996,6 +2996,42 @@ describe('claude-factory-brvt: refused redirect accounting', () => {
     expect(hits.some(h => h.startsWith(EVIL))).toBe(false)
   })
 
+  // claude-factory-gpmw: each refused sample lookup counts once in upstreamFetch; the "too few samples"
+  // failure and the gate must not count them again when every missing sample was a refusal
+  const sumLookup = (lookup: () => Response) => (u: URL) =>
+    infoOk(u) ??
+    (u.origin === 'https://sum.fake.test'
+      ? u.pathname === '/latest'
+        ? new Response(sumdbLatestBody(1_000_000))
+        : lookup()
+      : undefined)
+
+  test('every floor sample lookup 302 off-origin counts one error per lookup, none extra', async () => {
+    const { g, hits } = goGate(
+      sumLookup(() => found(`${EVIL}/x`)),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    const lines = await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    const lookups = hits.filter(h => h.startsWith('https://sum.fake.test/lookup/')).length
+    expect(lookups).toBeGreaterThan(0)
+    expect(reasons(lines).some(r => r.includes('sampled versions answered'))).toBe(true)
+    expect(g.stats().error).toBe(lookups)
+  })
+
+  test('every floor sample lookup 500 counts only the floor failure (no per-lookup error)', async () => {
+    const { g, hits } = goGate(
+      sumLookup(() => new Response('x', { status: 500 })),
+      { sumdb: 'https://sum.fake.test' },
+    )
+    await captured(async () => {
+      expect((await g(new Request(`http://gate/go${GO}.info`))).status).toBe(502)
+    })
+    expect(hits.some(h => h.startsWith('https://sum.fake.test/lookup/'))).toBe(true)
+    expect(g.stats().error).toBe(1)
+  })
+
   test('a sum.golang.org /latest 503 counts error once (not refused)', async () => {
     const { g } = goGate(
       u =>

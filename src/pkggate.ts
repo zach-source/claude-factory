@@ -609,15 +609,20 @@ async function refreshGoFloor(cfg: Resolved): Promise<void> {
   const cutoff = wallNow - cfg.minDays * 24 * 3_600_000
   while (cfg.goSizes.length > 1 && cfg.goSizes[1]!.at <= cutoff) cfg.goSizes.shift()
   const ids: number[] = []
+  let refusals = 0
   await mapLimit(sample, GO_LIST_CONCURRENCY, async e => {
     const looked = await goSumdbRecord(cfg, goModuleEscape(e.Path), goModuleEscape(e.Version))
     if (looked.ok && looked.record < latestSize.size) ids.push(looked.record)
+    else if (!looked.ok && looked.refused) refusals++
   })
-  if (ids.length < GO_FLOOR_MIN_SAMPLES)
+  if (ids.length < GO_FLOOR_MIN_SAMPLES) {
+    // upstreamFetch counted each refusal once: when every missing sample was one, the gate must not count again
+    cfg.goFloorRefusalCounted = refusals > 0 && refusals === sample.length - ids.length
     return noteGoFloorFailure(
       cfg,
       `only ${ids.length} of ${sample.length} sampled versions answered within the tree size read before lookups, need ${GO_FLOOR_MIN_SAMPLES}`,
     )
+  }
   const sampled = Math.min(...ids)
   const prev = cfg.goFloor
   const bound = prev
