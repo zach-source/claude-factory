@@ -1411,6 +1411,26 @@ export const clipReport = (text: string) =>
   text.length <= REPORT_MAX
     ? text
     : `${cut(text, REPORT_MAX)}\n[clipped: ${REPORT_MAX} of ${text.length} chars]`
+/**
+ * Add 4 spaces before each line after the first line of report or mail text. Use it where such text
+ * follows a prefix in a prompt. Where no prefix comes before line 1, the caller puts 4 spaces before the text. Then a line such as "- from manager:" or "## Inbox" cannot start a new,
+ * more trusted bullet or section (claude-factory-8pc.23, claude-factory-zsoh). LF and CRLF are not the only
+ * line breaks. A single CR, NEL (U+0085), LS (U+2028) or PS (U+2029) can also forge one
+ * (claude-factory-8pc.26). The function removes no text. The result uses LF.
+ */
+export const indentRest = (text: string) => {
+  const [first, ...rest] = text.split(/\r\n|[\n\r\u0085\u2028\u2029]/)
+  return [first, ...rest.map(l => `    ${l}`)].join('\n')
+}
+/**
+ * Use indentRest on each LF line, where one line is one commit or note. A CR, NEL, LS or PS in a line
+ * cannot start a forged line. A CRLF pair stays whole. A plain LF line keeps its text.
+ */
+const guardBreaks = (text: string) =>
+  text
+    .split(/(?<!\r)\n/)
+    .map(indentRest)
+    .join('\n')
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 /**
@@ -1506,11 +1526,13 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
             .map(e =>
               inbox.some(m => m.from === e.node && m.at === e.at)
                 ? `- ${e.node}#${e.attempt} ${e.outcome}: in full in your Inbox below`
-                : `- ${e.node}#${e.attempt} ${e.outcome}: ${clip(e.summary, 1500)}`,
+                : `- ${e.node}#${e.attempt} ${e.outcome}: ${indentRest(clip(e.summary, 1500))}`,
             ),
         ]
       : []),
-    ...(lastFail ? ['', '## The previous attempt failed', clipReport(lastFail.summary)] : []),
+    ...(lastFail
+      ? ['', '## The previous attempt failed', indentRest(`    ${clipReport(lastFail.summary)}`)]
+      : []),
     ...(n.onTimeout && afterTimeout(c, node)
       ? [
           '',
@@ -1524,7 +1546,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
           '',
           '## You take over from a worker that handed off',
           'Its context grew too long, so it stopped and left you these notes. Its commits are on the branch; check git status for anything it left uncommitted, and carry on from where it stopped.',
-          clipReport(handedOff.summary),
+          indentRest(`    ${clipReport(handedOff.summary)}`),
         ]
       : []),
     ...(parked
@@ -1532,13 +1554,13 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
         ? [
             '',
             '## The factory waited for the pull or merge request',
-            clipReport(parked.summary),
+            indentRest(`    ${clipReport(parked.summary)}`),
             'No worker ran yet: the factory held this station until the request merged, closed, or changed. Check whether it is really ready before anything else; if it is not, report blocked.',
           ]
         : [
             '',
             '## The previous worker was blocked',
-            clipReport(parked.summary),
+            indentRest(`    ${clipReport(parked.summary)}`),
             'Check whether that still holds before anything else; if it does, report blocked again.',
           ]
       : []),
@@ -1546,29 +1568,15 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       ? [
           '',
           '## Commits already on the default branch that name this bead',
-          prior,
+          guardBreaks(prior),
           'Check whether they already do what the goal asks before planning anything new: some are only part of it.',
         ]
       : []),
     ...(committed
-      ? ['', '## Already committed on this branch (build on it, do not redo it)', committed]
+      ? ['', '## Already committed on this branch (build on it, do not redo it)', guardBreaks(committed)]
       : []),
-    // Sweep mail transports raw --slo command output (claude-factory-8pc.23), and that output
-    // can have more than one line. Add 4 spaces before every line after the first line. Do this
-    // so a line such as "- from X:" cannot start a new, more trusted "- from <sender>:" bullet.
-    //
-    // Divide the text at each line break. LF and CRLF are not the only line breaks: a single CR,
-    // NEL (U+0085), LS (U+2028) or PS (U+2029) can also start a fake "- from <sender>:" bullet
-    // (claude-factory-8pc.26).
     ...(inbox.length
-      ? [
-          '',
-          '## Inbox',
-          ...inbox.map(m => {
-            const [first, ...rest] = clipReport(m.text).split(/\r\n|[\n\r\u0085\u2028\u2029]/)
-            return [`- from ${m.from}: ${first}`, ...rest.map(l => `    ${l}`)].join('\n')
-          }),
-        ]
+      ? ['', '## Inbox', ...inbox.map(m => `- from ${m.from}: ${indentRest(clipReport(m.text))}`)]
       : []),
     '',
     '## Reporting (required)',
@@ -1604,7 +1612,9 @@ function remembered(run: Run, node: string, notes = '') {
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
     `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} '<query>'. It prints the closest notes in full.`,
-    ...(notes ? [`- The factory already searched for your goal and station. The closest notes:`, notes] : []),
+    ...(notes
+      ? [`- The factory already searched for your goal and station. The closest notes:`, guardBreaks(notes)]
+      : []),
     `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} '<one-line summary>' '<what, why, how you know>'${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
@@ -3612,7 +3622,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (
       runner.deliver(
         c.pane,
-        inbox.map(m => `[factory mail from ${m.from}] ${clipReport(m.text)}`).join('\n\n'),
+        inbox.map(m => `[factory mail from ${m.from}] ${indentRest(clipReport(m.text))}`).join('\n\n'),
       )
     )
       send({ type: 'READ', box: node, seen: c.mail[node]!.length })
