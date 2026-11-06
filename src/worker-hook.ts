@@ -553,6 +553,9 @@ interface ScanState {
   aliasSeen: Set<string>
 }
 
+// Each field here is a budget or the memo. Any other ScanState field goes into the alias memo key.
+const MEMO_SKIP = new Set<string>(['work', 'deadline', 'now', 'timedOut', 'substFallbacks', 'aliasSeen'])
+
 // claude-factory-cbai: this reason is for a command whose scan reads more than the work budget.
 export const SCAN_BUDGET_REASON =
   'The factory denies this command: the factory cannot check it in the time it has, because the ' +
@@ -8183,20 +8186,23 @@ function shellAliasReason(
       texts.push(quoted.join(' '))
     }
     // claude-factory-c1jb: n alias words in one segment reach the same rescan text in n! orders. denyAt reads the
-    // stack only as a set (includes, length), so one allowed rescan covers every order. The key holds every other input.
+    // stack only as a set (includes, length), so one allowed rescan covers every order. The key holds every scan
+    // state field except MEMO_SKIP.
     const text = texts.join(' ; ')
-    const o = state.outer
-    const key = [
-      moved,
-      ghMoved,
-      depth,
-      o.flags,
-      o.rmfind,
-      o.ifs,
-      state.aliasArgsOff,
-      [...stack, name].sort().join('\0'),
-      text,
-    ].join('\u0001')
+    const stateKey = Object.entries(state)
+      .filter(([k]) => !MEMO_SKIP.has(k))
+      .map(
+        ([k, v]) =>
+          k +
+          '=' +
+          (v instanceof Set
+            ? [...v].sort().join('\0')
+            : typeof v === 'object'
+              ? JSON.stringify(v)
+              : String(v)),
+      )
+      .join('\u0002')
+    const key = [moved, ghMoved, depth, stateKey, [...stack, name].sort().join('\0'), text].join('\u0001')
     if (state.aliasSeen.has(key)) continue
     const reason = denyAt(text, root, personOnly, gate, depth, state, moved, ghMoved, [...stack, name])
     if (reason) return reason
