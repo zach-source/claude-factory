@@ -143,3 +143,28 @@ refuses(
 )
 refuses('FACTORY_IN_AX=1', () => {}, { FACTORY_IN_AX: '1' })
 refuses('FACTORY_SERVER_HOME=1', () => {}, { FACTORY_SERVER_HOME: '1' })
+
+test('factory server with a non-AX rig exits 1 and writes no lease', () => {
+  const r = factory(['server', '--port', '0', '--every-ms', '100', '--lease-ms', '1000'])
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('server home holds non-AX rigs: hrig')
+  expect(existsSync(join(home, 'server-lease.json'))).toBe(false)
+})
+
+test('rig add refuses a moved rig by name or by repo, and passes another rig', () => {
+  expect(factory(['home', 'split', server]).code).toBe(0)
+  const other = repo('other')
+  const a = factory(['rig', 'add', 'arig', other])
+  expect(a.code).toBe(1)
+  expect(a.err).toContain('moved to the server home')
+  const b = factory(['rig', 'add', 'renamed', axRepo])
+  expect(b.code).toBe(1)
+  expect(b.err).toContain('moved to the server home')
+  const c = factory(['rig', 'add', 'other', other])
+  expect(c.err).not.toContain('moved')
+  expect(c.code).toBe(0)
+  writeFileSync(join(home, 'split.json'), '{nope')
+  const d = factory(['rig', 'add', 'third', repo('third')])
+  expect(d.code).toBe(1)
+  expect(d.err).toContain('split.json')
+})

@@ -164,7 +164,7 @@ import * as worker from './worker'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as migrate from './migrate'
-import { splitPlan } from './splithome'
+import { assertAxRunner, assertServerRigs, guardedTick, movedRigRefusal, splitPlan } from './splithome'
 import { bdEnv, clonesRepos, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
@@ -1785,8 +1785,13 @@ export const resumeNote = (run: Run, node: string, c: Ctx) =>
   `check git status and git log first. When finished, report exactly once: ${reportCmd(run, c)}`
 
 /** where a station's workers run: the station's own runner, else the rig's */
-const runnerOfStation = (run: Run, def: Factory, node: string) =>
-  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+const runnerOfStation = (run: Run, def: Factory, node: string) => {
+  const name = def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER
+  assertAxRunner(name, serverMode)
+  return runners[name] ?? runners[DEFAULT_RUNNER]!
+}
+/** true under `factory server`: the process starts AX workers only (src/splithome.ts) */
+let serverMode = false
 
 /**
  * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
@@ -10893,6 +10898,8 @@ if (import.meta.main && !outboxCmd)
       case 'server':
         refuseWorker('server', true)
         lease()
+        assertServerRigs(rawRigs())
+        serverMode = true
         if (clonesRepos()) {
           // ponytail: one pass at start; a rig added later needs `factory repos sync` or a pod restart
           try {
@@ -10901,7 +10908,14 @@ if (import.meta.main && !outboxCmd)
             console.error(`repos sync failed: ${(e as Error).message}`)
           }
         }
-        server.main(args, HOME, () => tick())
+        server.main(
+          args,
+          HOME,
+          guardedTick(
+            () => tick(),
+            () => rawRigs(),
+          ),
+        )
         break
       case 'manager':
         refuseWorker('manager', true)
@@ -11830,6 +11844,20 @@ if (import.meta.main && !outboxCmd)
             linearProjects,
             linearLabels,
           })
+          const splitFile = join(HOME, 'split.json')
+          const moved = movedRigRefusal(
+            existsSync(splitFile) ? readFileSync(splitFile, 'utf8') : undefined,
+            rig.name,
+            rig.repo,
+            p => {
+              try {
+                return realpathSync(expand(p))
+              } catch {
+                return p
+              }
+            },
+          )
+          if (moved) fail(moved)
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
