@@ -32,12 +32,13 @@ const repo = (parent = tmpdir(), name = 'pgs-test-'): string => {
   Bun.spawnSync(['git', 'init', '-q', d])
   return d
 }
+const HOME = mkdtempSync(join(tmpdir(), 'pgs-home-'))
 const clean = (extra: Record<string, string> = {}) => {
   const env: Record<string, string | undefined> = {
     ...process.env,
     FACTORY_SELF_UPDATE: '0',
     FACTORY_NO_KICK: '1',
-    FACTORY_HOME: mkdtempSync(join(tmpdir(), 'pgs-home-')),
+    FACTORY_HOME: HOME,
     ...extra,
   }
   delete env.FACTORY_OUTBOX
@@ -60,6 +61,7 @@ afterAll(() => {
     Bun.spawnSync(['bun', CLI, 'pg-scratch', 'stop'], { cwd: d, env: clean() })
     rmSync(d, { recursive: true, force: true })
   }
+  rmSync(HOME, { recursive: true, force: true })
 })
 
 dbTest('start prints one URL line, psql answers, stop removes everything (AC1, AC2, AC3, AC4)', () => {
