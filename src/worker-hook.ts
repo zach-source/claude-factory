@@ -4450,6 +4450,44 @@ function hasMutatingWordBeforeDashDash(words: string[], verbs: Set<string>): boo
   return false
 }
 
+const UNDO_PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/[1-9][0-9]*$/
+
+/**
+ * claude-factory-qn8a.23: true only for the closed grammar `pr [-R|--repo <repo>] ready W...`.
+ * `tail` is the words after `gh`. W is `--undo` (exactly once), one PR selector (a number or a
+ * github.com pull URL) or one `-R|--repo <owner/repo>` (once in the tail). Any other word cancels
+ * the exemption, because gh uses the last value of a bool flag and pflag gives the word after `-R` to it.
+ */
+function undoForm(tail: string[]): boolean {
+  let i = 0
+  let undo = false
+  let sel = false
+  let repo = false
+  const takeRepo = (): boolean => {
+    const v = tail[i + 1]
+    if (repo || v === undefined || !MERGE_REPO.test(v)) return false
+    repo = true
+    i += 2
+    return true
+  }
+  if (tail[i++] !== 'pr') return false
+  if ((tail[i] === '-R' || tail[i] === '--repo') && !takeRepo()) return false
+  if (tail[i++] !== 'ready') return false
+  while (i < tail.length) {
+    const w = tail[i]!
+    if (w === '--undo' && !undo) {
+      undo = true
+      i++
+    } else if ((MERGE_PR_NUMBER.test(w) || UNDO_PR_URL.test(w)) && !sel) {
+      sel = true
+      i++
+    } else if ((w === '-R' || w === '--repo') && takeRepo()) {
+      // consumed
+    } else return false
+  }
+  return undo
+}
+
 /**
  * True when `ctx` names a context this hook must deny: it is missing, it is an unresolved shell
  * expansion (claude-factory-25z.9), or it is in `personOnly`.
@@ -5418,7 +5456,7 @@ function ghReasonOn(
   if (verb === 'pr' && sub === 'merge') return prMergeReason(tail, gate, aliasDepth, skipBlank)
   if (verb === 'repo' && sub === 'sync') return MERGE_REASON
   if (verb === 'pr' && sub === 'ready') {
-    if (hasMutatingWordBeforeDashDash(tail, new Set(['--undo']))) return undefined
+    if (undoForm(tail)) return undefined
     return mayReady(gate) ? undefined : READY_REASON
   }
   if (
@@ -5465,7 +5503,6 @@ function ghReasonOn(
   if ((verb === 'pr' || verb === 'repo') && subScan.uncertain) {
     if (hasMutatingWordBeforeDashDash(rest, new Set(['merge', 'sync']))) return mergeDenyReason(gate)
     if (verb === 'pr' && hasMutatingWordBeforeDashDash(rest, new Set(['ready']))) {
-      if (hasMutatingWordBeforeDashDash(rest, new Set(['--undo']))) return undefined
       return mayReady(gate) ? undefined : READY_REASON
     }
     if (hasMutatingWordBeforeDashDash(rest, new Set(['checkout']))) state.branchChange = true
