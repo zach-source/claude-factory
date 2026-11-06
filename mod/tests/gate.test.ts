@@ -340,3 +340,55 @@ test('an even run of backslashes before a newline does not join the lines', SLOW
   await $.tool.call({ tool: 'Bash', command: '/repo/bin/fac\\\\\ntory decide r1 ship', description: 'x' })
   expect(questions.length).toBe(0)
 })
+
+test(
+  'claude-factory-0jr2.4: a backslash at the end of a comment line asks, as the shell runs the next line',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    const questions: string[] = []
+    let ran = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      const question = e.questions[0]!.question
+      questions.push(question)
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran += 1
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+    const C = 'echo hi #x\\\n'
+    for (const rest of [
+      'factory decide r1 ship',
+      'factory decisions answer acme w-1 yes',
+      'factory start lifecycle acme w-2 --owned',
+      'fac\\\ntory decide r1 ship',
+    ]) {
+      questions.length = 0
+      const r = await $.tool.call({ tool: 'Bash', command: C + rest, description: 'x' })
+      expect(r.deny, rest).toContain('did not confirm')
+      expect(questions.length, rest).toBe(1)
+    }
+    expect(ran).toBe(0)
+    questions.length = 0
+    await $.tool.call({
+      tool: 'Bash',
+      command: '/repo/bin/factory status #x\\\n/repo/bin/factory decide r1 ship',
+      description: 'x',
+    })
+    expect(questions.length).toBe(1)
+    expect(questions[0]).not.toContain('#x/repo')
+    expect(questions[0]).toContain('#x\\\n/repo')
+    questions.length = 0
+    await $.tool.call({
+      tool: 'Bash',
+      command: "echo ' #' ; /repo/bin/fac\\\ntory decide r1 ship",
+      description: 'x',
+    })
+    expect(questions.length).toBe(1)
+    questions.length = 0
+    await $.tool.call({ tool: 'Bash', command: 'ls -la # note', description: 'x' })
+    expect(questions.length).toBe(0)
+    expect(ran).toBe(1)
+  },
+)

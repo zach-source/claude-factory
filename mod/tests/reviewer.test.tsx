@@ -467,6 +467,14 @@ const LABEL_DENY_ROWS = [
   'bash <<EOF\nb\\\\\nd label add acme-1 queue\nEOF',
 ]
 
+// claude-factory-0jr2.4: a backslash at the end of a comment line: the shell runs the next line as a command
+const COMMENT_CONTINUES_ROWS = [
+  'echo hi #x\\\nbd label add acme-1 queue',
+  'echo hi #x\\\nbd update acme-1 --status open',
+  'echo hi #x\\\nfactory skills install x',
+  'echo hi #x\\\nfactory abort r1',
+]
+
 const META_DENY_ROWS = [
   'bd update acme-1 --unset-metadata discovered_from',
   'bd update acme-1 --unset-metadata=pm_finding',
@@ -498,6 +506,10 @@ test(
     for (const command of LABEL_DENY_ROWS) {
       const d = await $.tool.call({ tool: 'Bash', command, agentId: 'patrol-1' } as never)
       expect(d.deny, command).toContain('runs bd only')
+    }
+    for (const command of COMMENT_CONTINUES_ROWS) {
+      const d = await $.tool.call({ tool: 'Bash', command, agentId: 'patrol-1' } as never)
+      expect(d.deny, command).toContain('did not confirm')
     }
     expect(ran).toEqual([])
     const allowed = [

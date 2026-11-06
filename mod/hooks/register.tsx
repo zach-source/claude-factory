@@ -1402,6 +1402,23 @@ function substitutionIn(command: string): number {
  * command. (Inside single quotes the shell keeps the pair; dropping it there only shortens an argument.) */
 const joinLines = (s: string) => s.replace(/(?<!\\)((?:\\\\)*)\\\n/g, '$1')
 
+/** claude-factory-0jr2.4: true if a comment line ends with a backslash and more text follows.
+ * The shell keeps that pair. The comment ends at the newline, and the next line runs as a command.
+ * The join would glue the two lines. A `#` after a space in quotes also counts: this is an extra question, which is safe.
+ * The rule is the same as commentLineContinues in src/worker-hook.ts. */
+function commentContinues(cmd: string): boolean {
+  let k = cmd.indexOf('#')
+  while (k !== -1) {
+    if (k === 0 || /[\s;&|()<>`]/.test(cmd[k - 1]!)) {
+      const e = cmd.indexOf('\n', k)
+      if (e === -1) return false
+      if (cmd[e - 1] === '\\' && /\S/.test(cmd.slice(e + 1))) return true
+      k = cmd.indexOf('#', e)
+    } else k = cmd.indexOf('#', k + 1)
+  }
+  return false
+}
+
 /** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
  * person sees that a longer command may hold a second command. */
 function shownCommand(command: string): string {
@@ -1420,6 +1437,11 @@ function shownCommand(command: string): string {
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
 function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
+  if (commentContinues(rawCommand))
+    return {
+      question: `The manager model wants to run a form the hook cannot read: a comment line ends with a backslash, so the next line runs as a command: ${shownCommand(rawCommand)}. Allow it?`,
+      deny: 'The person did not confirm this form. Remove the backslash at the end of the comment line, or pass long text by file.',
+    }
   const command = joinLines(rawCommand)
   const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
   let substitution: { phrase: string; deny: string; detail: string } | undefined
