@@ -2,6 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
+import { loadIntoEnv } from './settings'
 import {
   appendFileSync,
   chmodSync,
@@ -87,7 +88,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { editRigs } from './rigs-edit'
+import { editRigs, snapshots } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -272,6 +273,7 @@ const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
+loadIntoEnv(join(HOME, 'settings.json')) // stored settings fill unset env vars; the environment wins
 const MAX_BUSY = Number(process.env.FACTORY_MAX_RUNS ?? 16)
 const DISPATCH_MS = 30_000 // how often the rigs' ready beads are looked at
 const LABELS_MS = 2 * 60_000 // how often the rigs' pull requests are checked for the labels below
@@ -10477,7 +10479,7 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name>]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -11742,7 +11744,35 @@ if (import.meta.main && !outboxCmd)
             }
           }
           console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
-        } else fail(`unknown rig command "${sub}": add, rm or list`)
+        } else if (sub === 'history') {
+          const snaps = snapshots(rigsFile())
+          if (!snaps.length) console.log('no rig history')
+          snaps.forEach((f, i) => {
+            const stem = basename(f, '.json')
+            let line = 'not valid JSON'
+            try {
+              const list = JSON.parse(readFileSync(f, 'utf8'))
+              if (!Array.isArray(list)) throw new Error('not an array')
+              line = `${list.length} rigs: ${list.map((r: { name?: string }) => r?.name).join(', ')}`
+            } catch {}
+            console.log(`${i + 1}  ${stem}  ${line}`)
+          })
+        } else if (sub === 'undo') {
+          const snaps = snapshots(rigsFile())
+          if (name !== undefined && !/^[1-9][0-9]*$/.test(name))
+            fail(`rig undo: "${name}" is not a snapshot number`)
+          const n = Number(name ?? 1)
+          const from = snaps[n - 1]!
+          if (!snaps[n - 1]) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
+          edit(() => {
+            try {
+              return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
+            } catch (e) {
+              throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
+            }
+          })
+          console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
+        } else fail(`unknown rig command "${sub}": add, rm, list, history or undo`)
         break
       }
       case 'rm': {
