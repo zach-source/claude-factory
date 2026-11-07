@@ -20,6 +20,8 @@ import {
   trustedEgress,
   trustedEgressPaged,
   reworkOwned,
+  reworkEnded,
+  reworkPr,
   reworkStart,
   brief,
   vmBeads,
@@ -490,12 +492,58 @@ test('a labeled PR belongs to the live run whose branch it is or whose reports l
   const url = 'https://github.com/o/r/pull/21'
   const log = (summary: string) => [{ node: 'review', attempt: 1, outcome: 'changes', summary, at: 1 }]
   const live = [
-    { id: 'a', log: log('PR https://github.com/o/r/pull/212 needs work') }, // #212 is not #21
-    { id: 'b', log: log(`PR ${url} has 3 findings`) },
+    { id: 'a', goal: '', log: log('PR https://github.com/o/r/pull/212 needs work') }, // #212 is not #21
+    { id: 'b', goal: '', log: log(`PR ${url} has 3 findings`) },
   ]
   expect(prOwner({ url, headRefName: 'fix/x' }, live)).toBe('b')
   expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'factory/a' }, live)).toBe('a')
   expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'fix/x' }, live)).toBeUndefined()
+})
+
+test('a held rework run owns its PR by the URL at the head of its goal (czy5)', () => {
+  const pr = labelPr('rework') as never as { url: string; headRefName: string }
+  const outage = [{ node: 'implement', attempt: 1, outcome: 'outage', summary: 'usage limit', at: 1 }]
+  const goal = reworkStart(labelPr('rework'), 'lifecycle').goal
+  const held = { id: 'r', log: outage, goal }
+  expect(prOwner(pr, [held])).toBe('r') // its branch is the PR's own, not factory/r
+  const other = (url: string) => ({ ...held, goal: goal.replace(pr.url, url) })
+  expect(prOwner(pr, [other('https://github.com/acme/widget/pull/70')])).toBeUndefined() // #70 is not #7
+  expect(prOwner(pr, [other('https://github.com/acme/other/pull/7')])).toBeUndefined() // another repo
+  const bead = { id: 'b', log: outage, goal: `Fix the bug that ${pr.url} shows` }
+  expect(prOwner(pr, [bead])).toBeUndefined() // a URL in the body of a bead goal
+  const mr = {
+    number: 7,
+    url: 'https://gitlab.com/acme/widget/-/merge_requests/7',
+    headRefName: 'f',
+    baseRefName: 'main',
+    labels: [{ name: 'rework' }],
+  } as never
+  expect(prOwner(mr, [{ id: 'g', log: outage, goal: reworkStart(mr, 'lifecycle').goal }])).toBe('g')
+})
+
+test('reworkEnded picks the rework runs whose PR is merged or closed, and reads no other PR (czy5)', () => {
+  const goal = reworkStart(labelPr('rework'), 'lifecycle').goal
+  const url = 'https://github.com/acme/widget/pull/7'
+  const live = [
+    { id: 'r', goal },
+    { id: 'b', goal: `Fix the bug that ${url} shows` },
+  ]
+  const asked: string[] = []
+  const stateOf = (state?: string) => (u: string) => (asked.push(u), state)
+  expect(reworkEnded(live, stateOf('MERGED'))).toEqual([{ id: 'r', url, state: 'MERGED' }])
+  expect(asked).toEqual([url]) // the bead run has no rework head: no read
+  expect(reworkEnded(live, stateOf('CLOSED'))).toEqual([{ id: 'r', url, state: 'CLOSED' }])
+  expect(reworkEnded(live, stateOf('OPEN'))).toEqual([])
+  expect(reworkEnded(live, stateOf(undefined))).toEqual([]) // a failed read aborts nothing
+})
+
+test('reworkPr reads back the URL of every rework goal form (czy5)', () => {
+  for (const names of [['conflict'], ['rework'], ['conflict', 'rework']]) {
+    const pr = labelPr(...names)
+    expect(reworkPr(reworkGoal(pr))).toBe('https://github.com/acme/widget/pull/7')
+    expect(reworkPr(reworkStart(pr, 'lifecycle').goal)).toBe('https://github.com/acme/widget/pull/7')
+  }
+  expect(reworkPr('Fix the bug')).toBeUndefined()
 })
 
 test('a queued PR belongs to the ship queue: its branch or its link names the bead', () => {
@@ -1222,6 +1270,58 @@ test('the brief names the station skills: asd-ste100 tells a worker to write in 
   const text = readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8')
   expect(text).not.toContain('asd-ste100')
   expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
+})
+
+// claude-factory-9vc6: the plan station gets a goldfish review of its spec by two read-only EGM reviewer agents
+test('the brief of a station with egm gives the goldfish review line, and one without egm does not', () => {
+  const def = (skills: string[]) => ({
+    name: 'f',
+    start: 'implement',
+    skills,
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  })
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-9vc6-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-9vc6-test',
+    branch: 'b',
+  }
+  const withEgm = brief(run, def(['egm']), 'implement', c, [])
+  for (const s of [
+    '- egm: ',
+    'subagent_type egm:egm-implementation-readiness',
+    'egm:egm-codebase-details',
+    'run_in_background false',
+    'Goldfish review: not run: <reason>',
+    'Do not use the Skill tool for EGM skills',
+    'stop after round 2',
+  ])
+    expect(withEgm).toContain(s)
+  for (const skills of [['asd-ste100'], []]) {
+    const text = brief(run, def(skills), 'implement', c, [])
+    expect(text).not.toContain('egm:egm-')
+    expect(text).not.toContain('Goldfish review')
+  }
 })
 
 test('the brief tells a worker on a VM that a live-read block waits for mail; a laptop worker does not read it', () => {

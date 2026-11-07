@@ -27,6 +27,12 @@ FROM golang:1.27-bookworm AS plugins
 ARG MARKETPLACE_COMMIT=1afc7119d8b17d3ea456d0d3a364913666df18c5
 RUN git clone https://github.com/zach-source/claude-marketplace /m && git -C /m checkout ${MARKETPLACE_COMMIT}
 
+# egm: Google's Elephant-Goldfish Model plugin (Apache-2.0), for the plan station's goldfish review. Pinned to the
+# commit of tag v0.1.1. Its reviewer agents are read-only
+FROM golang:1.27-bookworm AS egm
+ARG EGM_COMMIT=dea7761de06ce5b51c177ebb9bba0469f24af5a4
+RUN git clone https://github.com/google/elephant-goldfish-model /egm && git -C /egm checkout ${EGM_COMMIT}
+
 FROM oven/bun:1.3.13-debian AS bun
 
 FROM node:22-bookworm-slim AS worker
@@ -99,6 +105,7 @@ COPY --from=runner /ax-task-runner /usr/local/bin/ax-task-runner
 COPY --from=plugins /m/claude/plugins/asd-ste100 /opt/plugins/asd-ste100
 # code-review: the review station's two-axis review (Standards and Spec), from mattpocock/skills
 COPY --from=plugins /m/claude/plugins/code-review /opt/plugins/code-review
+COPY --from=egm /egm/distributions/claude /opt/plugins/egm
 
 # the factory CLI: `factory worker serve`, and report, mail and memory add, which queue in the outbox
 WORKDIR /opt/factory
