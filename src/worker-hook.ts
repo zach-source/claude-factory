@@ -5569,7 +5569,75 @@ const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
 export const GLAB_DYNAMIC_REASON =
   'The factory denies this command: a glab word holds a shell expansion ($, a backtick, a glob, a brace ' +
   'or a leading ~) that this guard cannot read. Write the glab words plainly. For a text value, use ' +
-  '--description="$X" or --message="$X", or single quotes. Do not retry this exact command.'
+  'single quotes, or run glab api --method POST projects/:id/merge_requests/<n>/notes -F body=@<path> as ' +
+  'the whole command. Do not retry this exact command.'
+
+// claude-factory-qn8a.33
+export const GLAB_QUICK_ACTION_REASON =
+  'The factory denies this command: GitLab runs a text line that starts with a slash command (/approve, ' +
+  '/merge, /ready) as a quick action, so it can approve or merge with no approve word. Put the word in ' +
+  'backticks or later in the line. Do not retry this exact command.'
+
+export const GLAB_TEXT_REASON =
+  'The factory denies this command: glab sends note or description text that this hook cannot read (a ' +
+  'shell expansion, an editor, stdin, --fill, --template, --recover, or a file in a command that is not ' +
+  'the glab call alone). Write the text in single quotes, or run glab api --method POST ' +
+  'projects/:id/merge_requests/<n>/notes -F body=@<path> as the whole command. Do not retry this exact command.'
+
+/**
+ * claude-factory-qn8a.33: true when a line of `text` is a GitLab quick action line. The first token of
+ * the line (after zero-width characters and spaces) starts with `/` and a letter, and holds no second `/`.
+ * The rule is a shape, not a list of names, because GitLab adds quick actions (/submit_review).
+ */
+function quickActionLine(text: string): boolean {
+  return text.split(/\r\n|[\n\r]/).some(l => /^\/[A-Za-z][^\s/]*(\s|$)/.test(l.replace(/^[\s​-‍⁠﻿]+/, '')))
+}
+
+/**
+ * claude-factory-qn8a.33: the text values of the flag with short letter `letter` and long name `long`.
+ * A short cluster that holds the letter gives the rest of the word after it (also without a leading `=`),
+ * or the next word when the rest is empty. This can read extra text, and that only adds a deny.
+ */
+function glabFlagValues(tail: string[], letter: string, long: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === `--${long}`) {
+      if (i + 1 < tail.length) out.push(tail[++i]!)
+    } else if (w.startsWith(`--${long}=`)) out.push(w.slice(long.length + 3))
+    else if (/^-[^-]/.test(w) && w.includes(letter)) {
+      const rest = w.slice(w.indexOf(letter) + 1)
+      if (rest) out.push(rest, rest.replace(/^=/, ''))
+      else if (i + 1 < tail.length) out.push(tail[++i]!)
+    }
+  }
+  return out
+}
+
+/**
+ * claude-factory-qn8a.33: denies note or description text of `glab mr note|create|update` that holds a
+ * quick action line, or that this hook cannot read (a shell expansion, an editor, --fill, --template).
+ * `single` is true for a single-quoted raw word, where bash expands nothing.
+ */
+function glabTextReason(tail: string[], single: (w: string) => boolean): string | undefined {
+  if (tail[0] !== 'mr') return undefined
+  const sub = tail[1]
+  if (sub !== 'note' && sub !== 'create' && sub !== 'update') return undefined
+  const args = tail.slice(2)
+  const values =
+    sub === 'note' ? glabFlagValues(args, 'm', 'message') : glabFlagValues(args, 'd', 'description')
+  if (sub !== 'note') {
+    if (args.some(w => /^--(fill|fill-commit-body|recover|template)(=|$)/.test(w) || /^-[^-]*f/.test(w)))
+      return GLAB_TEXT_REASON
+  } else if (
+    values.length === 0 &&
+    !['list', 'delete', 'reopen', 'resolve'].includes(args[0] ?? '') &&
+    !args.some(w => w === '-h' || w === '--help')
+  )
+    return GLAB_TEXT_REASON
+  if (values.some(v => v === '-' || (/[$`]/.test(v) && !single(v)))) return GLAB_TEXT_REASON
+  return values.some(quickActionLine) ? GLAB_QUICK_ACTION_REASON : undefined
+}
 
 // claude-factory-qn8a.32.15: glab has more write paths than a deny list holds, so only these forms pass
 const GLAB_COMMANDS = new Map<string, Set<string> | undefined>([
@@ -5637,8 +5705,9 @@ const GLAB_NO_QUOTED_VALUE = new Set([
  * `segments()` drops quotes, so this reads the raw text. A word is in `ok` when its raw form is a
  * single-quoted static word or `--name="..."`. It is in `bad` when any other raw word has the same text.
  */
-function glabRawWords(command: string): (w: string) => boolean {
+function glabRawWords(command: string): { ok: (w: string) => boolean; single: (w: string) => boolean } {
   const ok = new Set<string>()
+  const single = new Set<string>()
   const bad = new Set<string>()
   const s = command.replace(/\\\n/g, '')
   let w = ''
@@ -5646,8 +5715,10 @@ function glabRawWords(command: string): (w: string) => boolean {
   const end = () => {
     if (!w) return
     const m = GLAB_QUOTED_VALUE.exec(w)
-    if (GLAB_SINGLE_WORD.test(w)) ok.add(w.replace(/'/g, ''))
-    else if (m && !GLAB_NO_QUOTED_VALUE.has(m[1]!)) ok.add(w.replace(/"/g, ''))
+    if (GLAB_SINGLE_WORD.test(w)) {
+      ok.add(w.replace(/'/g, ''))
+      single.add(w.replace(/'/g, ''))
+    } else if (m && !GLAB_NO_QUOTED_VALUE.has(m[1]!)) ok.add(w.replace(/"/g, ''))
     else bad.add(w.replace(/['"]/g, ''))
     w = ''
   }
@@ -5665,7 +5736,7 @@ function glabRawWords(command: string): (w: string) => boolean {
     else w += c
   }
   end()
-  return x => ok.has(x) && !bad.has(x)
+  return { ok: x => ok.has(x) && !bad.has(x), single: x => single.has(x) && !bad.has(x) }
 }
 
 const GLAB_API_PLAIN = new Set(['-i', '--include', '--paginate', '--silent'])
@@ -5743,19 +5814,18 @@ function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boole
 function glabReason(words: string[], gate: HookGate, command: string): string | undefined {
   const tail = words.slice(1)
   const dropped = dropRedirectWords(tail)
-  const exempt = glabRawWords(command)
+  const raw = glabRawWords(command)
   const same = dropped.length === tail.length
-  return (
-    glabReasonOn(tail, gate, same, exempt) ?? (same ? undefined : glabReasonOn(dropped, gate, true, exempt))
-  )
+  return glabReasonOn(tail, gate, same, raw) ?? (same ? undefined : glabReasonOn(dropped, gate, true, raw))
 }
 
 function glabReasonOn(
   tail: string[],
   gate: HookGate,
   checkApi: boolean,
-  exempt: (w: string) => boolean,
+  raw: { ok: (w: string) => boolean; single: (w: string) => boolean },
 ): string | undefined {
+  const exempt = raw.ok
   if (tail.includes('approve')) return GLAB_APPROVE_REASON
   const api = tail.indexOf('api')
   const args = api < 0 ? [] : [...tail.slice(0, api), ...tail.slice(api + 1)]
@@ -5774,6 +5844,8 @@ function glabReasonOn(
   ) {
     return READY_REASON
   }
+  const text = glabTextReason(tail, raw.single)
+  if (text) return text
   if (api < 0 || !checkApi || glabApiAllowed(args)) return undefined
   if (/approv/i.test(args.join(' '))) return GLAB_APPROVE_REASON
   if (args.some(isGraphqlEndpoint)) {
