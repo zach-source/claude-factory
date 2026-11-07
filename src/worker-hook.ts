@@ -8664,7 +8664,7 @@ export function denyReason(
  */
 function rawActorFlag(command: string): boolean {
   const flat = command.replace(/\\\n/g, '').replace(/['"\\]/g, '')
-  return /(?<![\w.-])bd(?![\w.-])/.test(flat) && /(?<![\w-])--act(?:or?)?(?![\w-])/.test(flat)
+  return /(?<![\w.-])bd(?![\w.-])/i.test(flat) && /(?<![\w-])--act(?:or?)?(?![\w-])/.test(flat)
 }
 
 /**
