@@ -186,3 +186,63 @@ test('rig undo refuses a snapshot that holds a moved rig, and leaves rigs.json a
   expect(u.err).toContain('moved to the server home')
   expect(readFileSync(join(home, 'rigs.json'), 'utf8')).toBe(before)
 })
+
+/** the fixture runs are not full states: a tick needs none of them */
+const noRuns = () => {
+  rmSync(join(home, 'runs'), { recursive: true, force: true })
+  mkdirSync(join(home, 'runs'))
+}
+
+/** split, then put the moved rig back into the local rig list by hand */
+const splitThenReadd = (name = 'arig', path = axRepo) => {
+  noRuns()
+  expect(factory(['home', 'split', server]).code).toBe(0)
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([
+      { name: 'hrig', repo: herdrRepo, factory: 'lifecycle' },
+      { name, repo: path, factory: 'lifecycle', runner: 'ax' },
+    ]),
+  )
+}
+
+test('a hand-edited rig list that holds a moved rig stops tick and names the rig', () => {
+  splitThenReadd()
+  const runs = readdirSync(join(home, 'runs')).sort()
+  const t = factory(['tick'])
+  expect(t.code).not.toBe(0)
+  expect(t.err).toContain('arig')
+  expect(t.err).toContain('moved to the server home')
+  expect(readdirSync(join(home, 'runs')).sort()).toEqual(runs)
+})
+
+test('factory rig refuses the same state, and rig rm clears it', () => {
+  splitThenReadd()
+  const l = factory(['rig'])
+  expect(l.code).toBe(1)
+  expect(l.err).toContain('arig')
+  expect(factory(['rig', 'rm', 'arig']).code).toBe(0)
+  expect(factory(['tick']).code).toBe(0)
+})
+
+test('without split.json an ax rig in the local home is not refused', () => {
+  noRuns()
+  expect(factory(['tick']).code).toBe(0)
+})
+
+test('a split.json that is not an array stops tick', () => {
+  noRuns()
+  writeFileSync(join(home, 'split.json'), '{}')
+  const t = factory(['tick'])
+  expect(t.err).toContain('split.json')
+  expect(factory(['tick']).code).not.toBe(0)
+})
+
+test('a moved repo under a new name through a symlink is refused', () => {
+  const link = join(dir, 'arig-link')
+  Bun.spawnSync(['ln', '-s', axRepo, link])
+  splitThenReadd('renamed', link)
+  const t = factory(['tick'])
+  expect(t.code).not.toBe(0)
+  expect(t.err).toContain('moved to the server home')
+})

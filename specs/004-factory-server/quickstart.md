@@ -74,7 +74,7 @@ Expected: the `lease` row names one pod for that whole minute. The second pod lo
 
 ## 7. Local mode (US6, FR-016, FR-018)
 
-Unset `FACTORY_SERVER` and start the laptop manager with `bin/up` on a local home that has one herdr rig and one AX rig.
+Unset `FACTORY_SERVER` and start the laptop manager with `bin/factory-up` on a local home that has one herdr rig and one AX rig.
 
 Expected:
 

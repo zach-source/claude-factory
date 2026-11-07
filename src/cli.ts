@@ -7433,7 +7433,33 @@ async function splitHome(args: string[]) {
 }
 
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
-const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+const rawRigs = (): Rig[] => {
+  if (!existsSync(rigsFile())) return []
+  const list = readJson(rigsFile()) as Rig[]
+  // fail closed: a rig that moved to a server home must not run in this home too (split.json)
+  if (existsSync(join(HOME, 'split.json')))
+    for (const r of Array.isArray(list) ? list : []) {
+      const moved = movedOf(String(r?.name), String(r?.repo))
+      if (moved) throw new Error(`${moved}; or run: factory rig rm ${r?.name}`)
+    }
+  return list
+}
+/** split.json names the moved rigs. rawRigs, rig add and rig undo must not bring them back. */
+const movedOf = (name: string, repo: string) => {
+  const splitFile = join(HOME, 'split.json')
+  return movedRigRefusal(
+    existsSync(splitFile) ? readFileSync(splitFile, 'utf8') : undefined,
+    name,
+    repo,
+    p => {
+      try {
+        return realpathSync(expand(p))
+      } catch {
+        return p
+      }
+    },
+  )
+}
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
 const rigs = (): Rig[] => mapRigs(rawRigs())
 /** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
@@ -12104,22 +12130,6 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'rig': {
-        // split.json names the moved rigs. rig add and rig undo must not bring them back.
-        const movedOf = (name: string, repo: string) => {
-          const splitFile = join(HOME, 'split.json')
-          return movedRigRefusal(
-            existsSync(splitFile) ? readFileSync(splitFile, 'utf8') : undefined,
-            name,
-            repo,
-            p => {
-              try {
-                return realpathSync(expand(p))
-              } catch {
-                return p
-              }
-            },
-          )
-        }
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
         // the goal is the rest of the line, so `/factory rig add ... --goal finish it` needs no quotes
