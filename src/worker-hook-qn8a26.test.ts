@@ -27,6 +27,16 @@ const DENY = [
   'bd comment acme-1 x "--actor" y',
   "bd comment acme-1 x '--actor=y'",
   'bd comment acme-1 x --act\\\nor y',
+  'bd comment acme-1 x --act{or,} y',
+  'bd comment acme-1 x --{actor,} y',
+  'bd comment acme-1 x --act* y',
+  'bd comment acme-1 x --act?r y',
+  'bd comment acme-1 x --$(echo actor) y',
+  'bd comment acme-1 x --a$X y',
+  'bd comment acme-1 x --$F y',
+  'bd comment acme-1 x --`echo actor` y',
+  'bd comment acme-1 x --[a]ctor y',
+  'bd create w -d "--actor"',
 ]
 
 const ALLOW = [
@@ -38,6 +48,8 @@ const ALLOW = [
   'bd create w --body-file .scratch/b.md',
   'bd list --all',
   'bd list --ac',
+  'bd list --status=$S',
+  'bd comment acme-1 --file "$F"',
   'git log --actor x',
   'grep -n -- --actor src/worker-hook.ts',
   'bd show acme-1; git log --actor x',

@@ -2891,14 +2891,17 @@ function valueNamesBeadsActor(v: string | undefined, g: EnvGuard): boolean {
 }
 
 // claude-factory-qn8a.26: true when a word after the bd word is a long flag that abbreviates
-// g.flag (pflag accepts a unique prefix). The name needs 3 or more characters. Quoting does not
-// change argv, so a quoted or post-`--` word also counts (fail closed).
+// g.flag. bd 1.3.2 refuses a prefix, but a later version can accept it (fail closed). The name
+// needs 3 or more characters. Quoting does not change argv, so a quoted or post-`--` word also
+// counts. A flag name that holds an expansion ($, backtick, brace, glob) can become the flag, so
+// it counts too. The scan starts after the first bd word.
 function hasFlagPrefix(words: string[], from: number, g: EnvGuard): boolean {
   if (!g.flag) return false
   for (let i = from + 1; i < words.length; i++) {
     const w = words[i]!
     if (!w.startsWith('--')) continue
     const name = w.slice(2).split('=')[0]!
+    if (/[$`{*?[]/.test(name)) return true
     if (name.length >= 3 && g.flag.startsWith(name)) return true
   }
   return false
