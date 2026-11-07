@@ -9249,6 +9249,8 @@ function denyAt(
   aliasStack: readonly string[] = [],
   outerVars?: VarTable,
 ): string | undefined {
+  // claude-factory-qn8a.30: zsh drops a last backslash of an eval, -c or trap script. Read it as a join.
+  if (depth > 0 && command.endsWith('\\')) command += '\n'
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
   // claude-factory-pwy0: the lexer splits a word at the `(` of a zsh flag group, `${(L)x:-rm}`.
