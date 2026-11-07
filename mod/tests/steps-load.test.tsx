@@ -91,8 +91,9 @@ test(
     on('process.run', ($, e) => {
       if (e.argv.includes('tick')) {
         n += 1
+        // the tick gives a mail one time only: the later patrol must still carry it
         const out = JSON.stringify({
-          manager: [{ run: 'r1', from: 'implement', text: 'blocked: which DB?', at: n }],
+          manager: n === 1 ? [{ run: 'r1', from: 'implement', text: 'blocked: which DB?', at: n }] : [],
           rigs: [],
           runs: [{ id: 'r1', rig: 'api', node: 'implement', sub: 'waiting', goal: 'g' }],
         })
@@ -124,5 +125,6 @@ test(
     await clock.advance(11 * 60_000)
     expect(submits.length).toBeGreaterThanOrEqual(1)
     expect(submits[0]!.text).toStartWith(stubPrompt('patrol', CLI))
+    expect(submits[0]!.text).toContain('blocked: which DB?')
   },
 )

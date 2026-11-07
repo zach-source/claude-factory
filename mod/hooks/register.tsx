@@ -720,7 +720,14 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
     toolNames = undefined
   }
   const fallback = async (error: string) => {
-    // an old manager with no Agent tool in --tools: the same commit and fallback the old code did
+    // an old manager with no Agent tool in --tools: the same commit and fallback the old code did.
+    // Read the patrol step first: if it does not load, commit nothing, so the mail is not lost.
+    const text = await patrolPrompt($)
+    if (text === undefined) {
+      rt.isPatrolling = false
+      rt.retryAt = now + PATROL_RETRY_MS
+      return
+    }
     if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
     rt.unsent = due.kept
     for (const key of due.keys) rt.seen.add(key)
@@ -744,13 +751,8 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
         $.ui.status(`factory: failed to write the patrol log: ${line(String(err), 160)}`)
       }
     }
-    // claude-factory-72v.13: manual() no longer carries the patrol's own loop rules (PATROL does).
+    // claude-factory-72v.13: manual() no longer carries the patrol's own loop rules (the patrol step has them).
     // The fallback must carry them itself, or the main chat gets due.text with no rules to work it.
-    const text = await patrolPrompt($)
-    if (text === undefined) {
-      rt.isPatrolling = false
-      return
-    }
     void $.prompt
       .submit({ text: `${text}\n\n${due.text}` })
       .catch(() => {})
