@@ -29,6 +29,21 @@ const WRITERS = [
   'strftime',
   'sysread',
   'getln',
+  'wait',
+  'compgen',
+  'zformat',
+  'zregexparse',
+  'sysopen',
+  'zsystem',
+  'syserror',
+  'pcre_match',
+  'zgetattr',
+  'zlistattr',
+  'zpty',
+  'zselect',
+  'ztie',
+  'compadd',
+  'zcurses',
 ]
 const DENY = (n: string, c: string) => [
   `printf -v ${n} x; ${c}`,
@@ -49,6 +64,15 @@ const DENY = (n: string, c: string) => [
   `select ${n} in Manager; do ${c}; done`,
   `foreach ${n} (Manager) ${c}; end`,
   `for ${n} (Manager) ${c}`,
+  `exec {${n}}>/dev/null; ${c}`,
+  `: {${n}}>/dev/null; ${c}`,
+  `cat {${n}}<f; ${c}`,
+  `exec 3>f {${n}}>f; ${c}`,
+  `(( ${n} = 5 )); ${c}`,
+  `(( x, ${n} = 5 )); ${c}`,
+  `echo $(( ${n} = 5 )); ${c}`,
+  `echo $(( x, ${n} = 5 )); ${c}`,
+  `echo \${a[${n}=5]}; ${c}`,
   ...WRITERS.map(w => `${w} ${n}; ${c}`),
 ]
 const ALLOW = (n: string, c: string) => [
@@ -65,6 +89,9 @@ const ALLOW = (n: string, c: string) => [
   `git commit -m "fix for ${n}"`,
   `for f in a ${n}; do echo; done`,
   `for f (a) grep -n ${n} x`,
+  `echo {${n}} > f`,
+  `(( x + 1 )); grep -n ${n} f`,
+  `echo \${a[$${n}]}`,
 ]
 
 for (const g of GUARDS) {
