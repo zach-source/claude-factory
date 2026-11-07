@@ -32,6 +32,7 @@ const GATED = [
   F + ' mail r1 plan $x',
   F + ' mail r1 plan "$[x]"',
   F + ' mail r1 plan $[x]',
+  'cd /w/acme-factory && /w/claude-factory/bin/factory mail r1 plan "$(id)"',
 ]
 
 const UNREADABLE = [
@@ -55,6 +56,8 @@ const PLAIN = [
   `${F} mail r1 plan "a <(b)"`,
   F + " mail r1 plan '$x'",
   F + ' mail r1 plan "a \\$(id)"',
+  // a path that holds the word is not the factory CLI
+  "S=/tmp/x-acme-factory/scratchpad\ncat > $S/b.md <<'EOF'\nit costs $(id)\nEOF",
 ]
 
 function harness(on: any, answer: string) {

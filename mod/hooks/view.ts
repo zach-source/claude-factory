@@ -1260,7 +1260,8 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
-  const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
+  // `factory` as a command word (`factory`, `bin/factory`), not a part of a path such as `acme-factory/x`
+  const at = /(?<![\w.-])factory(?![\w./-])/.test(command) ? substitutionIn(rawCommand) : -1
   let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
