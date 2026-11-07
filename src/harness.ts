@@ -29,6 +29,7 @@ export const claudeCommand = () => process.env.FACTORY_CLAUDE?.trim() || 'claude
 export const VM_PLUGINS: Record<string, string> = {
   'asd-ste100': '/opt/plugins/asd-ste100',
   'code-review': '/opt/plugins/code-review',
+  egm: '/opt/plugins/egm',
 }
 
 /** the skill dirs (<plugin>/skills/<name>) of these plugin dirs; a plugin with no skills adds none */
