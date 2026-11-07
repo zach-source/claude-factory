@@ -5710,7 +5710,7 @@ function glabTextReason(tail: string[], single: (w: string) => boolean): string 
   )
     return GLAB_TEXT_REASON
   // glab reads a blank value from stdin
-  if (values.some(v => v.trim() === '' || v === '-' || (/[$`]/.test(v) && !single(v))))
+  if (values.some(v => v.replace(/[\s\u0085]/g, '') === '' || v === '-' || (/[$`]/.test(v) && !single(v))))
     return GLAB_TEXT_REASON
   return values.some(quickActionLine) ? GLAB_QUICK_ACTION_REASON : undefined
 }

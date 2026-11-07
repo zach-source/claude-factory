@@ -107,6 +107,12 @@ const TEXT_DENY = [
   "glab mr create --draft -t x -d ''",
   "glab mr update 5 -d ' '",
   "glab mr update 5 --description=''",
+  "echo /approve | glab mr note 5 -m '\u0085'",
+  "glab mr note 5 -m '\u0085'",
+  "glab mr note 5 --message='\u0085'",
+  "glab mr note 5 -m ' \u0085 '",
+  "glab mr create --draft -t x -d '\u0085'",
+  "glab mr update 5 -d '\u0085'",
 ]
 const READY_ONLY_ALLOW = ['glab mr update 5 -yd x --draft', 'glab mr update 5 -t Foo -yd --draft']
 const READY_TEXT_DENY = [
