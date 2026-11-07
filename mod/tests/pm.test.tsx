@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import { onStepFiles, stepStub } from './step-stub'
 
 // The kit's default timeout is 5000ms. Each test's first `$` call starts the plugin. Under
 // high shared-host load, that first call can take longer than 5000ms (claude-factory-abm).
@@ -110,6 +111,8 @@ function pmMocks(
   })
   on('fs.read', ($, e) => {
     const path = (e as { path: string }).path
+    const stub = stepStub(path)
+    if (stub !== undefined) return { value: stub } as never
     if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
     return { value: files.get(path)! } as never
   })
@@ -653,6 +656,7 @@ test(
     // nothing beneath the plugin under test answers session.start by default: this test's own
     // hook stands in for the engine's own, the same as a real session reaching this plugin's
     on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+    onStepFiles(on)
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     on('ui.status', () => ({ value: undefined }) as never)
     on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
