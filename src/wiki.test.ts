@@ -5,6 +5,7 @@ import {
   groomPlan,
   groomPrompt,
   outsidePlan,
+  pageMatches,
   parse,
   renderRigPage,
   rigList,
@@ -717,6 +718,20 @@ test('groom AC7 prompt masks and keeps one line', () => {
   expect(t).not.toContain(tok)
   expect(t).toContain('***')
   expect(t).not.toMatch(/^## Evil/m)
+})
+
+test('pageMatches: exact bead, /pull/<n> suffix, title word', () => {
+  const p = {
+    kind: 'solution',
+    title: 'Fix the Lock',
+    beads: ['acme-1'],
+    prs: ['https://github.com/a/b/pull/591'],
+  } as const
+  const hit = (q: string) => pageMatches(p as never, q)
+  expect(['acme-1', '591', 'https://github.com/a/b/pull/591', 'lock', 'LOCK'].map(hit)).toEqual(
+    Array(5).fill(true),
+  )
+  expect(['acme', 'acme-1.1', '59', '0591', '#591', ''].map(hit)).toEqual(Array(6).fill(false))
 })
 
 test('rigList: add, replace, keep other sections, stable, clean scan', () => {
