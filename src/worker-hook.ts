@@ -5592,7 +5592,7 @@ export const GLAB_TEXT_REASON =
 function quickActionLine(text: string): boolean {
   return text
     .split(/\r\n|[\n\r]/)
-    .some(l => /^\/[A-Za-z][^\s/]*(\s|$)/.test(l.replace(/^[\s\u200b-\u200d\u2060\ufeff]+/, '')))
+    .some(l => /^\/[A-Za-z][^\s/]*(\s|$)/.test(l.replace(/^[\s\u200b-\u200d\u2060]+/, '')))
 }
 
 /**
@@ -5855,7 +5855,6 @@ function glabFieldsReason(
   gate: HookGate,
 ): string | undefined {
   for (const { flag, value } of fields) {
-    if (/[$`]/.test(value) && !raw.single(value)) return GLAB_TEXT_REASON
     const eq = value.indexOf('=')
     const text = eq < 0 ? value : value.slice(eq + 1)
     let body = text
