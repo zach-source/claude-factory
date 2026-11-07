@@ -7,6 +7,7 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  cpSync,
   existsSync,
   fsyncSync,
   lstatSync,
@@ -182,7 +183,8 @@ import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as leases from './lease'
 import * as migrate from './migrate'
-import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import { assertAxRunner, assertServerRigs, guardedTick, movedRigRefusal, splitPlan } from './splithome'
+import { bdEnv, clonesRepos, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
 import { personCerts } from './server-api'
@@ -899,7 +901,7 @@ export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?:
   // ponytail: in the AX task bd holds an embedded store and no Dolt server, so there is no SQL path to the remote's user:
   // plain `bd dolt push|pull` runs with DOLT_REMOTE_USER from env.json (axrepos). A pull conflict stops with bd's own
   // error, where the laptop's pullResolving keeps the VM's row; the manager reports it and a person resolves it
-  if (!r || inAx()) return ['bd', 'dolt', way]
+  if (!r || clonesRepos()) return ['bd', 'dolt', way]
   if (![r.name, r.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
   const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
@@ -954,7 +956,7 @@ function syncRigBeads(
   r = rigOf(run.repo)?.beadsRemote,
 ) {
   const show =
-    r && !inAx()
+    r && !clonesRepos()
       ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeout: syncTimeoutMs() })
       : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
@@ -978,7 +980,9 @@ async function syncRigBeadsBounded(
 ) {
   const timeoutMs = syncTimeoutMs()
   const show =
-    r && !inAx() ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
+    r && !clonesRepos()
+      ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs })
+      : null
   if (show?.timedOut)
     return { code: null, out: '', err: timedOutText(`beads ${way}`, timeoutMs), timedOut: true }
   const conn = show?.code === 0 ? (JSON.parse(show.out) as DoltConn) : undefined
@@ -1541,7 +1545,7 @@ function loadRun(id: string | undefined): Run {
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
   const run: Run = readJson(file)
   // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
-  return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
+  return clonesRepos() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
 }
 /** complete lines only: a writer may be mid-append */
 const inboxLines = (id: string) => {
@@ -1837,8 +1841,16 @@ export const resumeNote = (run: Run, node: string, c: Ctx) =>
   `check git status and git log first. When finished, report exactly once: ${reportCmd(run, c)}`
 
 /** where a station's workers run: the station's own runner, else the rig's */
-const runnerOfStation = (run: Run, def: Factory, node: string) =>
-  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+const stationRunnerName = (run: Run, def: Factory, node: string) =>
+  def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER
+export const runnerOfStation = (run: Run, def: Factory, node: string) => {
+  const name = stationRunnerName(run, def, node)
+  assertAxRunner(name, serverMode)
+  return runners[name] ?? runners[DEFAULT_RUNNER]!
+}
+/** true under `factory server`: the process starts AX workers only (src/splithome.ts) */
+let serverMode = false
+export const setServerMode = (on: boolean) => (serverMode = on)
 
 /**
  * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
@@ -2455,8 +2467,8 @@ export const pickAgent = (
     splitPick(runId, split.share, params[split.share])
   return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
 }
-const agentOfNode = (run: Run, def: Factory, node: string) =>
-  pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
+export const agentOfNode = (run: Run, def: Factory, node: string) =>
+  pickAgent(run.id, def, node, rigOf(run.repo), stationRunnerName(run, def, node))
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 /** the context of the last turn in a Claude transcript's tail, in tokens; 0 when it has none */
 export function lastContext(tail: string) {
@@ -3501,6 +3513,16 @@ export function isTrusted(repo: string, configDir = process.env.CLAUDE_CONFIG_DI
   }
 }
 
+/** in server mode, a station that resolves to a non-ax runner never starts: hold the run and mail the manager once (not an error row) */
+export function holdNonAxStation(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input) => void) {
+  const name = stationRunnerName(run, def, node)
+  if (!serverMode || name === 'ax') return false
+  const text = `station "${node}" of run ${run.id} needs the "${name}" runner: the server home runs AX workers only. Run it in the local home, or pin the station to ax.`
+  if (!(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === text))
+    send({ type: 'MAIL', from: 'factory', to: 'manager', text })
+  return true
+}
+
 function holdUnavailableAx(c: Ctx, send: (e: Input) => void) {
   const reason = ax.unavailable()
   if (!reason) return false
@@ -3528,6 +3550,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   // only a harness herdr knows (claude, codex, pi) shows it an agent; a script or a fake worker never would
   const isClaude = harnessOf(agentOfNode(run, def, node)) !== null
   if (!c.pane) {
+    if (holdNonAxStation(run, def, c, node, send)) return 'needs the local home: station runner is not ax'
     if (runnerOfStation(run, def, node).name === 'ax' && holdUnavailableAx(c, send))
       return 'AX executor unavailable'
     const starter = runnerOfStation(run, def, node)
@@ -7556,7 +7579,10 @@ function linearMail(now: number): (Mail & { run: string })[] {
 }
 /** `factory repos sync`: clone or fetch each rig's repo in the AX task and bootstrap its beads store; the problems, one per line */
 const reposSync = (): string[] => {
-  if (!inAx()) fail('factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1)')
+  if (!clonesRepos())
+    fail(
+      'factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1) or the server home (FACTORY_SERVER_HOME=1)',
+    )
   return syncRepos(rawRigs(), HOME)
 }
 
@@ -7606,8 +7632,119 @@ async function migrateToAx(args: string[]) {
   console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
 }
 
+/**
+ * `factory home split <dir> [--dry-run]` (claude-factory-akiq.5).
+ * It moves the AX rigs, their live runs and a copy of memory/ to a server home at <dir>.
+ * This home keeps the herdr rigs.
+ * Order: check all, write <dir> (rigs.json last), then change this home. A crash leaves this home whole.
+ * The local run dirs go to split-<stamp>/. split.json records the move.
+ * See docs/remote-runner.md, Split the home.
+ */
+async function splitHome(args: string[]) {
+  const dry = args.includes('--dry-run')
+  const [to] = args.filter(a => a !== '--dry-run')
+  if (!to) fail('usage: factory home split <dir> [--dry-run]')
+  if (clonesRepos()) fail('factory home split runs on the laptop, not in the AX task or the server home')
+  const target = resolve(to!)
+  if (existsSync(join(target, 'rigs.json')) || existsSync(join(target, 'runs')))
+    fail(`${target} already holds rigs.json or runs/: split into an empty directory`)
+  const origin = (repo: string) => {
+    const r = Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin'], { stderr: 'ignore' })
+    return r.exitCode === 0 ? r.stdout.toString().trim() : undefined
+  }
+  const runsDir = join(HOME, 'runs')
+  const facts = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap(id => {
+    const state = join(runsDir, id, 'state.json')
+    if (!existsSync(state)) return []
+    return [
+      {
+        ...migrate.runFacts(id, readFileSync(state, 'utf8'), statSync(state).mtimeMs),
+        repo: readJson<Run>(join(runsDir, id, 'run.json')).repo,
+      },
+    ]
+  })
+  const p = splitPlan(rawRigs(), facts)
+  if (p.error) fail(p.error)
+  // a live run at a station pinned to a non-ax runner would hold in the server home: name it and refuse
+  const pinned: string[] = []
+  for (const id of p.runs) {
+    const run = readJson<Run>(join(runsDir, id, 'run.json'))
+    const node = where(readJson<Saved>(join(runsDir, id, 'state.json')).snapshot.value)[0]!
+    const runner = (await loadPinned(run.factory)).nodes[node]?.runner
+    if (runner && runner !== 'ax') pinned.push(`${id} (station ${node}, runner ${runner})`)
+  }
+  if (pinned.length)
+    fail(
+      `these live runs wait at a station that needs a non-ax runner, and the server home runs AX workers only: ${pinned.join(', ')}. Let them pass the station or finish them, then run this again.`,
+    )
+  const moved = migrate.migratedRigs(p.move, origin)
+  if (moved.error) fail(moved.error)
+  console.log(
+    `moves rigs ${p.move.map(r => r.name).join(', ')}, ${p.runs.length} live runs and memory/ to ${target}; keeps rigs ${p.stay.map(r => r.name).join(', ') || 'none'}`,
+  )
+  if (dry) return console.log('dry run: nothing written')
+  const unlock = hold('tick.lock')
+  if (!unlock)
+    return fail('a tick holds tick.lock in this home: stop the manager and the runner, then run this again')
+  try {
+    mkdirSync(target, { recursive: true })
+    for (const id of p.runs)
+      cpSync(join(runsDir, id), join(target, 'runs', id), {
+        recursive: true,
+        filter: s => basename(s) !== 'transcripts',
+      })
+    if (existsSync(join(HOME, 'memory')))
+      cpSync(join(HOME, 'memory'), join(target, 'memory'), { recursive: true })
+    writeJson(join(target, 'rigs.json'), moved.rigs)
+    const at = Date.now()
+    const file = join(HOME, 'split.json')
+    const old: unknown[] = existsSync(file) ? readJson(file) : []
+    writeJson(file, [...old, ...p.move.map(r => ({ name: r.name, repo: r.repo, at, to: target }))])
+    const archive = join(HOME, `split-${new Date(at).toISOString().replace(/[-:.]/g, '')}`, 'runs')
+    mkdirSync(archive, { recursive: true })
+    for (const id of p.runs) renameSync(join(runsDir, id), join(archive, id))
+    const gone = new Set(p.move.map(r => r.name))
+    edit(list => list.filter(r => !gone.has(r.name)))
+    console.log(`moved. local runs are in ${archive}; rigs.json before the split is in rigs-history/`)
+  } finally {
+    unlock()
+  }
+}
+
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
-const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+const rawRigs = (): Rig[] => {
+  if (!existsSync(rigsFile())) return []
+  const list = readJson(rigsFile()) as Rig[]
+  // fail closed: a rig that moved to a server home must not run in this home too (split.json)
+  if (existsSync(join(HOME, 'split.json'))) {
+    let shape: unknown
+    try {
+      shape = JSON.parse(readFileSync(join(HOME, 'split.json'), 'utf8'))
+    } catch {}
+    if (!Array.isArray(shape)) throw new Error('split.json is not a JSON array: fix or remove it')
+    for (const r of Array.isArray(list) ? list : []) {
+      const moved = movedOf(String(r?.name), String(r?.repo))
+      if (moved) throw new Error(`${moved}; or run: factory rig rm ${r?.name}`)
+    }
+  }
+  return list
+}
+/** split.json names the moved rigs. rawRigs, rig add and rig undo must not bring them back. */
+const movedOf = (name: string, repo: string) => {
+  const splitFile = join(HOME, 'split.json')
+  return movedRigRefusal(
+    existsSync(splitFile) ? readFileSync(splitFile, 'utf8') : undefined,
+    name,
+    repo,
+    p => {
+      try {
+        return realpathSync(expand(p))
+      } catch {
+        return p
+      }
+    },
+  )
+}
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
 const rigs = (): Rig[] => mapRigs(rawRigs())
 /** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
@@ -11567,7 +11704,24 @@ if (import.meta.main && !outboxCmd)
       case 'server':
         refuseWorker('server', true)
         lease()
-        server.main(args, HOME, () => tick())
+        assertServerRigs(rawRigs())
+        serverMode = true
+        if (clonesRepos()) {
+          // ponytail: one pass at start; a rig added later needs `factory repos sync` or a pod restart
+          try {
+            for (const p of reposSync()) console.error(`repos sync: ${p}`)
+          } catch (e) {
+            console.error(`repos sync failed: ${(e as Error).message}`)
+          }
+        }
+        server.main(
+          args,
+          HOME,
+          guardedTick(
+            () => tick(),
+            () => rawRigs(),
+          ),
+        )
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -11596,6 +11750,11 @@ if (import.meta.main && !outboxCmd)
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
       case 'home':
+        if (args[0] === 'split') {
+          refuseWorker('home split', true)
+          await splitHome(args.slice(1))
+          break
+        }
         console.log(HOME)
         break
       case 'repos': {
@@ -12620,6 +12779,8 @@ if (import.meta.main && !outboxCmd)
             linearProjects,
             linearLabels,
           })
+          const moved = movedOf(rig.name, rig.repo)
+          if (moved) fail(moved)
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
           // name for a rigged repo would silently drop the first
@@ -12881,11 +13042,17 @@ if (import.meta.main && !outboxCmd)
           const from = snaps[n - 1]!
           if (!snaps[n - 1]) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
           edit(() => {
+            let list: Rig[]
             try {
-              return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
+              list = JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
             } catch (e) {
               throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
             }
+            for (const r of Array.isArray(list) ? list : []) {
+              const moved = movedOf(String(r?.name), String(r?.repo))
+              if (moved) throw new Error(`rig undo refused: ${moved}`)
+            }
+            return list
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
         } else

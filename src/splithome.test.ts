@@ -1,0 +1,141 @@
+import { expect, test } from 'bun:test'
+import {
+  assertAxRunner,
+  assertServerRigs,
+  guardedTick,
+  movedRigRefusal,
+  splitPlan,
+  type SplitRun,
+} from './splithome'
+
+const rig = (name: string, runner?: string) => ({ name, repo: `/r/${name}`, runner })
+const run = (id: string, repo: string, live: boolean, pane: string | null): SplitRun => ({
+  id,
+  repo,
+  live,
+  pane,
+  finishedAt: 0,
+})
+
+test('only the exact runner "ax" moves', () => {
+  const rigs = [rig('a', 'ax'), rig('h'), rig('b', 'herdr'), rig('c', 'AX'), rig('d', 'ax '), rig('e', '')]
+  const p = splitPlan(rigs, [])
+  expect(p.error).toBeUndefined()
+  expect(p.move.map(r => r.name)).toEqual(['a'])
+  expect(p.stay.map(r => r.name)).toEqual(['h', 'b', 'c', 'd', 'e'])
+})
+
+test('live runs of a moved rig move; finished runs and herdr-rig runs stay', () => {
+  const p = splitPlan(
+    [rig('a', 'ax'), rig('h')],
+    [
+      run('live', '/r/a', true, 'ax://t1'),
+      run('nopane', '/r/a', true, null),
+      run('done', '/r/a', false, 'ax://t1'),
+      run('herdr', '/r/h', true, 'w1-2'),
+    ],
+  )
+  expect(p.error).toBeUndefined()
+  expect(p.runs).toEqual(['live', 'nopane'])
+})
+
+test('a live run of a moved rig in a herdr pane refuses the whole split and names the run', () => {
+  const p = splitPlan([rig('a', 'ax')], [run('r1', '/r/a', true, 'w1-2')])
+  expect(p.error).toContain('r1')
+  expect(p.move).toEqual([])
+  expect(p.runs).toEqual([])
+})
+
+test('no AX rig refuses', () => {
+  expect(splitPlan([rig('h')], []).error).toContain('nothing to move')
+})
+
+test('two rows with one name or one repo refuse', () => {
+  expect(splitPlan([rig('a', 'ax'), rig('a')], []).error).toContain('name a')
+  expect(splitPlan([rig('a', 'ax'), { ...rig('b'), repo: '/r/a' }], []).error).toContain('repo /r/a')
+})
+
+test('a server home refuses a non-AX rig at once and before each tick', () => {
+  expect(() => assertServerRigs([rig('a', 'ax')])).not.toThrow()
+  expect(() => assertServerRigs([])).not.toThrow()
+  expect(() => assertServerRigs([rig('a', 'ax'), rig('h'), rig('b', 'herdr')])).toThrow(
+    'server home holds non-AX rigs: h, b',
+  )
+  let ticks = 0
+  let rigs = [rig('a', 'ax')]
+  const tick = guardedTick(
+    () => ticks++,
+    () => rigs,
+  )
+  tick()
+  expect(ticks).toBe(1)
+  rigs = [rig('a', 'ax'), rig('h')]
+  expect(tick).toThrow('server home holds non-AX rigs: h')
+  expect(ticks).toBe(1)
+})
+
+test('runnerOfStation in server mode throws for a herdr station and spawns nothing', async () => {
+  const { runnerOfStation, setServerMode } = await import('./cli')
+  const run = { repo: '/r/none' } as never
+  const def = { nodes: { h: { runner: 'herdr' }, a: { runner: 'ax' }, d: {} } } as never
+  setServerMode(true)
+  try {
+    expect(runnerOfStation(run, def, 'a').name).toBe('ax')
+    expect(() => runnerOfStation(run, def, 'h')).toThrow('ax runner only')
+    expect(() => runnerOfStation(run, def, 'd')).toThrow('ax runner only')
+  } finally {
+    setServerMode(false)
+  }
+  expect(runnerOfStation(run, def, 'h').name).toBe('herdr')
+})
+
+test('server mode runs the ax runner only', () => {
+  expect(() => assertAxRunner('ax', true)).not.toThrow()
+  expect(() => assertAxRunner('herdr', true)).toThrow('ax runner only')
+  expect(() => assertAxRunner('herdr', false)).not.toThrow()
+})
+
+test('rig add refuses a moved name or repo, and a split.json it cannot read', () => {
+  const split = JSON.stringify([{ name: 'a', repo: '/r/a', at: 1, to: '/srv' }])
+  expect(movedRigRefusal(split, 'a', '/r/other')).toContain('moved')
+  expect(movedRigRefusal(split, 'other', '/r/a')).toContain('moved')
+  expect(movedRigRefusal(split, 'other', '/r/other')).toBeUndefined()
+  expect(movedRigRefusal(undefined, 'a', '/r/a')).toBeUndefined()
+  expect(movedRigRefusal('{nope', 'x', '/r/x')).toContain('not a JSON array')
+  expect(movedRigRefusal('{}', 'x', '/r/x')).toContain('not a JSON array')
+})
+
+test('agentOfNode in server mode does not throw for a herdr station, so reconcile reaches the hold', async () => {
+  const { agentOfNode, setServerMode } = await import('./cli')
+  const run = { id: 'r1', repo: '/r/none' } as never
+  const def = { agent: 'claude', nodes: { h: { runner: 'herdr' } } } as never
+  setServerMode(true)
+  try {
+    expect(() => agentOfNode(run, def, 'h')).not.toThrow()
+  } finally {
+    setServerMode(false)
+  }
+})
+
+test('holdNonAxStation mails the manager once for a herdr station, and passes an ax station', async () => {
+  const { holdNonAxStation, setServerMode } = await import('./cli')
+  const run = { id: 'r1', repo: '/r/none' } as never
+  const def = { nodes: { h: { runner: 'herdr' }, a: { runner: 'ax' }, d: {} } } as never
+  const sent: { type: string; from?: string; text?: string }[] = []
+  const send = (e: unknown) => void sent.push(e as (typeof sent)[number])
+  const ctx = (mail: unknown[] = []) => ({ mail: { manager: mail } }) as never
+  setServerMode(true)
+  try {
+    expect(holdNonAxStation(run, def, ctx(), 'h', send)).toBe(true)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ type: 'MAIL', from: 'factory' })
+    expect(sent[0]!.text).toContain('station "h" of run r1 needs the "herdr" runner')
+    expect(holdNonAxStation(run, def, ctx([{ from: 'factory', text: sent[0]!.text }]), 'h', send)).toBe(true)
+    expect(sent).toHaveLength(1)
+    expect(holdNonAxStation(run, def, ctx(), 'd', send)).toBe(true)
+    expect(holdNonAxStation(run, def, ctx(), 'a', send)).toBe(false)
+  } finally {
+    setServerMode(false)
+  }
+  expect(holdNonAxStation(run, def, ctx(), 'h', send)).toBe(false)
+})

@@ -6,7 +6,9 @@ import {
   axRepoPath,
   bdEnv,
   beadsDirOf,
+  clonesRepos,
   httpsRemote,
+  inAx,
   mapRigs,
   mapRunRepo,
   planRepoSync,
@@ -33,6 +35,23 @@ test('in the task each rig repo is a clone under FACTORY_REPOS, default /workspa
 test('a run written with a laptop repo path maps to its rig clone; an unknown path stays', () => {
   expect(mapRunRepo(rigs, '/home/u/repos/beta', AX)).toBe('/workspace/w/repos/beta')
   expect(mapRunRepo(rigs, '/elsewhere', AX)).toBe('/elsewhere')
+})
+
+test('clonesRepos is true for FACTORY_IN_AX=1 or FACTORY_SERVER_HOME=1, false for unset or 0', () => {
+  expect(clonesRepos({ FACTORY_IN_AX: '1' })).toBe(true)
+  expect(clonesRepos({ FACTORY_SERVER_HOME: '1' })).toBe(true)
+  expect(clonesRepos({})).toBe(false)
+  expect(clonesRepos({ FACTORY_IN_AX: '0', FACTORY_SERVER_HOME: '0' })).toBe(false)
+})
+
+test('in a server home the rigs map to clones, but inAx stays false', () => {
+  const env = { FACTORY_SERVER_HOME: '1', FACTORY_REPOS: '/var/lib/factory/repos' }
+  expect(inAx(env)).toBe(false)
+  expect(mapRigs(rigs, env).map(r => r.repo)).toEqual([
+    '/var/lib/factory/repos/alpha',
+    '/var/lib/factory/repos/beta',
+  ])
+  expect(mapRunRepo(rigs, '/home/u/repos/beta', env)).toBe('/var/lib/factory/repos/beta')
 })
 
 test('ssh and git@ GitHub URLs become https; https stays', () => {
@@ -135,6 +154,44 @@ test('repos sync gives a rig with no beadsRemote a store from its git origin, an
     expect(readFileSync(join(dir, '.beads', 'config.yaml'), 'utf8')).toBe(`sync.remote: "git+${origin}"\n`)
     expect(readFileSync(join(dir, 'env.json'), 'utf8')).toBe('{}')
     expect(bdEnv(clone, env).BEADS_DIR).toBe(join(dir, '.beads'))
+  } finally {
+    if (saved === undefined) delete process.env.FACTORY_BD
+    else process.env.FACTORY_BD = saved
+  }
+})
+
+test('repos sync writes the Dolt placeholder only in the AX task, never in the server home', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-dolt-'))
+  const origin = join(root, 'origin')
+  mkdirSync(origin, { recursive: true })
+  const git = (...a: string[]) =>
+    Bun.spawnSync(['git', '-C', origin, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])
+  git('init', '-q')
+  mkdirSync(join(origin, '.beads'), { recursive: true })
+  writeFileSync(join(origin, '.beads', 'config.yaml'), 'issue-prefix: acme\n')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'init')
+  const bd = join(root, 'bd')
+  writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
+  const saved = process.env.FACTORY_BD
+  process.env.FACTORY_BD = bd
+  const rig = {
+    name: 'widget',
+    repo: '/x',
+    remote: origin,
+    beadsRemote: { url: 'https://dolt.acme.test/x', user: 'u' },
+  }
+  try {
+    for (const [mode, env, json] of [
+      ['ax', AX, { DOLT_REMOTE_USER: 'u', DOLT_REMOTE_PASSWORD: 'placeholder' }],
+      ['server', { FACTORY_SERVER_HOME: '1' }, { DOLT_REMOTE_USER: 'u' }],
+    ] as const) {
+      const home = join(root, `home-${mode}`)
+      const e = { ...env, FACTORY_HOME: home, FACTORY_REPOS: join(root, `repos-${mode}`) }
+      expect(syncRepos([rig], home, e)).toEqual([])
+      const dir = beadsDirOf(home, join(root, `repos-${mode}`, 'widget'))
+      expect(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8'))).toEqual(json)
+    }
   } finally {
     if (saved === undefined) delete process.env.FACTORY_BD
     else process.env.FACTORY_BD = saved

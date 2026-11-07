@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { SECRETS } from './secrets'
 import { parseFlags } from './server'
 
 // deploy/server.yaml is applied by the owner. These tests read it as data: no cluster is needed.
@@ -25,7 +26,9 @@ const secretProblems = (docs: Obj[]): string[] => {
     const spec = d.spec.template.spec
     for (const c of spec.containers)
       for (const e of c.env ?? []) {
-        if (!/TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL/i.test(e.name)) continue
+        // GIT_CONFIG_KEY_n names a git config key, not a secret; the SECRETS shapes check its value
+        if (!/TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL/i.test(e.name) || /^GIT_CONFIG_KEY_\d+$/.test(e.name))
+          continue
         const ref = e.valueFrom?.secretKeyRef
         if (
           e.value !== undefined ||
@@ -122,6 +125,23 @@ test('the Deployment runs one non-root writer with the home volume', () => {
   expect(pod.volumes.some((v: Obj) => v.persistentVolumeClaim?.claimName === 'factory-home')).toBe(true)
   expect(c.volumeMounts.some((m: Obj) => m.mountPath === '/var/lib/factory')).toBe(true)
   expect(c.env.find((e: Obj) => e.name === 'FACTORY_HOME').value).toBe('/var/lib/factory/home')
+})
+
+test('the pod is a server home: rig clones under the PVC, git asks gh for the credential, no token in a value', () => {
+  const c = find(load(), 'Deployment').spec.template.spec.containers[0]
+  const val = (n: string) => c.env.find((e: Obj) => e.name === n)?.value
+  expect(val('FACTORY_SERVER_HOME')).toBe('1')
+  expect(val('FACTORY_REPOS')).toBe('/var/lib/factory/repos')
+  expect(val('GIT_CONFIG_COUNT')).toBe('2')
+  expect(val('GIT_CONFIG_KEY_0')).toBe('credential.https://github.com.helper')
+  expect(val('GIT_CONFIG_VALUE_0')).toBe('')
+  expect(val('GIT_CONFIG_KEY_1')).toBe('credential.https://github.com.helper')
+  expect(val('GIT_CONFIG_VALUE_1')).toBe('!gh auth git-credential')
+  expect(c.env.some((e: Obj) => e.name === 'FACTORY_IN_AX')).toBe(false)
+  const doltEnv = c.env.find((e: Obj) => e.name === 'DOLT_REMOTE_PASSWORD')
+  expect(doltEnv.value).toBeUndefined()
+  expect(doltEnv.valueFrom.secretKeyRef.name).toBe('factory-dolt-remote')
+  for (const e of c.env) for (const re of SECRETS) expect(re.test(String(e.value ?? ''))).toBe(false)
 })
 
 test('the container args start the client API on 8444 from the mounted TLS and person CA files', () => {
