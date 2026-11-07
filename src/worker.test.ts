@@ -18,18 +18,25 @@ import {
 
 // claude-factory-qda.4: the laptop names a station's skills in FACTORY_SKILLS; unset is an older laptop
 test('imagePlugins picks the image plugin dirs by FACTORY_SKILLS', () => {
-  expect(imagePlugins('')).toEqual([])
-  expect(imagePlugins(undefined)).toEqual([
-    '/opt/plugins/asd-ste100',
-    '/opt/plugins/code-review',
-    '/opt/plugins/egm',
-  ])
-  expect(imagePlugins('asd-ste100,egm')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
-  expect(imagePlugins('asd-ste100')).toEqual(['/opt/plugins/asd-ste100'])
-  expect(imagePlugins('asd-ste100,code-review')).toEqual([
-    '/opt/plugins/asd-ste100',
-    '/opt/plugins/code-review',
-  ])
+  const saved = { ...process.env }
+  delete process.env.FACTORY_SKILLS
+  delete process.env.FACTORY_HARNESS
+  try {
+    expect(imagePlugins('')).toEqual([])
+    expect(imagePlugins(undefined)).toEqual([
+      '/opt/plugins/asd-ste100',
+      '/opt/plugins/code-review',
+      '/opt/plugins/egm',
+    ])
+    expect(imagePlugins('asd-ste100,egm')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
+    expect(imagePlugins('asd-ste100')).toEqual(['/opt/plugins/asd-ste100'])
+    expect(imagePlugins('asd-ste100,code-review')).toEqual([
+      '/opt/plugins/asd-ste100',
+      '/opt/plugins/code-review',
+    ])
+  } finally {
+    process.env = saved
+  }
 })
 
 test('imagePlugins excludes egm for codex and pi', () => {
