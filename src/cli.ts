@@ -10908,7 +10908,9 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
     mkdirSync(dirname(join(dir, p)), { recursive: true })
     writeFileSync(join(dir, p), files.get(p)!)
   }
-  commitWiki('refresh', `${names.length} rig pages, ${changed.length} changed`, dir)
+  // stage only the pages written here: an empty list would stage the whole tree, and a person's edit with it
+  if (changed.length)
+    commitWiki('refresh', `${names.length} rig pages, ${changed.length} changed`, dir, changed)
   pushWiki(dir) // also retries an earlier failed push
   wikiLog(`wiki refresh: ${names.length} rig pages, ${changed.length} changed`)
   return changed
