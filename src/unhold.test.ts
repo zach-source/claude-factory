@@ -83,11 +83,13 @@ test('AC1/AC4: a mark wakes the held stations of its runner only', () => {
   const codex = held('ax', 'Codex usage limit (seven_day) until 2026-11-08T01:00:00Z')
   const fresh = held('ax', LIMIT, Date.now() + 60_000) // a limit hit after the swap
   mark('unhold-ax.json', { before: Date.now() + 1000, from: 0, woke: 0 })
-  expect(factory(['tick']).code).toBe(0)
+  const tick = factory(['tick'])
+  expect(tick.code).toBe(0)
   expect(wakesOf(a)).toHaveLength(1)
   expect(wakesOf(a)[0]).toContain('"from":"factory"')
   for (const r of [h, egress, codex, fresh]) expect(wakesOf(r)).toHaveLength(0)
   expect(existsSync(join(home, 'unhold-ax.json'))).toBe(false) // no candidate left
+  expect(tick.out).toContain('Woke 1 stations')
 })
 
 test('AC1: before from, nothing wakes', () => {
@@ -213,6 +215,7 @@ test('AC3: factory unhold ax --codex writes the Codex mark', () => {
 })
 
 test('AC6: factory unhold refuses a worker, a patrol, a local runner, and bad arguments', () => {
+  mkdirSync(home, { recursive: true })
   const bad: [string[], Record<string, string>][] = [
     [['unhold', 'ax'], { FACTORY_RUN: 'ship-x' }],
     [['unhold', 'ax'], { FACTORY_PATROL: '1' }],
@@ -229,5 +232,12 @@ test('AC6: factory unhold refuses a worker, a patrol, a local runner, and bad ar
     })
     expect(p.exitCode).toBe(1)
   }
+  expect(existsSync(join(home, 'unhold-ax.json'))).toBe(false)
+})
+
+test('AC5: a mark with no held station is deleted and sends no mail', () => {
+  mark('unhold-ax.json', { before: Date.now() + 1000, from: 0, woke: 0 })
+  const tick = factory(['tick'])
+  expect(tick.out).not.toContain('Woke')
   expect(existsSync(join(home, 'unhold-ax.json'))).toBe(false)
 })
