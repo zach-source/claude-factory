@@ -2857,12 +2857,14 @@ function commandAnchors(words: string[]): number[] {
 // claude-factory-8pc.18 fixed the same gap for the sweep:<station> label.
 export const BEADS_ACTOR_REASON =
   'The factory denies this command: do not set, clear, export, or re-export BEADS_ACTOR. ' +
+  'Do not pass the bd --actor flag either: it sets the same author. ' +
+  'Put text that names the flag in a file (--file, --body-file). ' +
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
 // claude-factory-ab8n: one guard per variable a worker must not change. cmd is the command word
 // that reads the variable: bd reads BEADS_ACTOR, and factory reads FACTORY_FROM (the mail sender).
-type EnvGuard = { name: string; cmd: string; reason: string }
+type EnvGuard = { name: string; cmd: string; reason: string; flag?: string }
 export const FACTORY_FROM_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_FROM. ' +
   'The factory reads the mail sender from this variable, and the owner-only rule trusts mail from the ' +
@@ -2872,7 +2874,12 @@ export const FACTORY_RUN_REASON =
   'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
   'Do not retry this command.'
 const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmd: 'factory', reason: FACTORY_RUN_REASON }
-const BEADS_ACTOR_GUARD: EnvGuard = { name: 'BEADS_ACTOR', cmd: 'bd', reason: BEADS_ACTOR_REASON }
+const BEADS_ACTOR_GUARD: EnvGuard = {
+  name: 'BEADS_ACTOR',
+  cmd: 'bd',
+  reason: BEADS_ACTOR_REASON,
+  flag: 'actor',
+}
 const FACTORY_FROM_GUARD: EnvGuard = { name: 'FACTORY_FROM', cmd: 'factory', reason: FACTORY_FROM_REASON }
 
 const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
@@ -2882,6 +2889,70 @@ const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
 // This match is defensive and fails closed. See BEADS_ACTOR_REASON above.
 function valueNamesBeadsActor(v: string | undefined, g: EnvGuard): boolean {
   return v !== undefined && v.includes(g.name)
+}
+
+// claude-factory-qn8a.26: true when a word that does not start with `--` can expand to the flag.
+// Remove the expansion parts. If the rest starts with `-` and its name is empty or abbreviates
+// the flag, deny. If the word held a glob character and the rest abbreviates the flag, deny.
+function expandedFlag(w: string, flag: string): boolean {
+  if (!/[{}*?[\]`$]/.test(w)) return false
+  const rest = w
+    .replace(/`[^`]*`/g, '')
+    .replace(/\$\([^)]*\)/g, '')
+    .replace(/\$\{[^}]*\}/g, '')
+    .replace(/\$[A-Za-z_0-9@*#?!$-]?/g, '')
+    .replace(/[{},*?[\]]/g, '')
+  const name = rest.replace(/^-+/, '').split('=')[0]!
+  if (rest.startsWith('-')) return name === '' || flag.startsWith(name) || name.startsWith(flag.slice(0, 3))
+  return /[*?[]/.test(w) && name.length > 0 && flag.startsWith(name)
+}
+
+// claude-factory-qn8a.26: true when a word without a leading `--` can expand to the flag.
+// A span ($( ), ${ }, backtick) can print any text, so it becomes a marker.
+// Text after the first `=` is a value. A word with whitespace is not a flag.
+// Deny a dash run that a marker or `$` follows.
+// Else deny when the end of the last bare $NAME plus the text after it is part of `--flag`.
+// The name can end at any letter, because dequote removes the quote boundary.
+// Accepted false positive: `bd show $repo`.
+function dynamicFlag(w: string, flag: string): boolean {
+  if (!/[$`]/.test(w)) return false
+  const s = w
+    .replace(/`[^`]*`/g, '\0')
+    .replace(/\$\([^)]*\)\)?/g, '\0')
+    .replace(/\$\{[^}]*\}/g, '\0')
+    .split('=')[0]!
+  if (/\s/.test(s)) return false
+  if (/^-+[\0$]/.test(s)) return true
+  const m = /(?:\0|\$([A-Za-z_0-9]*))([^\0$]*)$/.exec(s)
+  if (!m) return false
+  const name = m[1] ?? ''
+  for (let i = 0; i <= name.length; i++) {
+    const t = name.slice(i) + m[2]!
+    if (t !== '' && ('--' + flag).includes(t)) return true
+  }
+  return false
+}
+
+// claude-factory-qn8a.26: true when a word after the bd word is a long flag that abbreviates
+// g.flag. bd 1.3.2 refuses a prefix, but a later version can accept it (fail closed). The name
+// needs 3 or more characters. Quoting does not change argv, so a quoted or post-`--` word also
+// counts. A flag name that holds an expansion ($, backtick, brace, glob) can become the flag, so
+// it counts too. The scan starts after the first bd word.
+// ponytail: this reads dequoted words. A word that has no literal `--` start and expands to the
+// flag (a whole-word variable, `| xargs bd`) is not covered. The upgrade path (a raw-quote rule)
+// is claude-factory-qn8a.97.
+function hasFlagPrefix(words: string[], from: number, g: EnvGuard): boolean {
+  if (!g.flag) return false
+  for (let i = from + 1; i < words.length; i++) {
+    const w = words[i]!
+    if (!w.startsWith('--')) {
+      if (expandedFlag(w, g.flag) || dynamicFlag(w, g.flag)) return true
+      continue
+    }
+    const name = w.slice(2).split('=')[0]!
+    if (/[$`{*?[]/.test(name)) return true
+  }
+  return false
 }
 
 // claude-factory-sft4: true for a word that is, or can expand at run time to, sh, bash, zsh or
@@ -3155,6 +3226,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
       }
     }
   }
+  if (bdIdx.length > 0 && hasFlagPrefix(words, bdIdx[0]!, g)) return true
   if (!envClearsAll) return false
   if (runsBd) return true
   if (bdIdx.length === 0) return false
@@ -8562,6 +8634,8 @@ function memoGate(gate: HookGate): HookGate {
  * rig's protected branches, and small reads of the live repo a test can fake out. These checks
  * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
  *
+ * claude-factory-qn8a.30: a last backslash gets one added newline first, as the Bash tool adds one.
+ *
  * claude-factory-dts: this checks `command.length` once, before any scan, on every rig. Past
  * MAX_COMMAND_LENGTH it gives `LONG_COMMAND_REASON` outright. At or under that length, it calls
  * `scanReason`, which runs the real scan with no length cap of its own.
@@ -8573,14 +8647,28 @@ export function denyReason(
   gate?: HookGate,
 ): string | undefined {
   if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
-  // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
+  // claude-factory-qn8a.30: the Bash tool adds a newline, so a last backslash joins the next line
+  if (command.endsWith('\\')) command += '\n'
+  // the home guard reads the text first (with the added newline): no parse bypass can reach a delete of $HOME
   const home = homeReason(command, gate?.readFile)
   if (home) return home
+  if (rawActorFlag(command)) return BEADS_ACTOR_REASON
   const now = gate?.now ?? Date.now
   const scan = scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
   if (scan) return scan
   // claude-factory-qn8a.19: a read of a harness token file or dir. It reads the raw text, not the parse.
   return tokenReason(command, gate?.cwd ?? root ?? process.cwd(), root)
+}
+
+/**
+ * claude-factory-qn8a.26: true when the raw text has a bd token and a flag token (--act, --acto
+ * or --actor). The check ignores segment edges, quotes and backslashes. A substitution, a heredoc
+ * or an `sh -c` text cannot hide the flag. Text that only names the flag is also denied (fail
+ * closed). A dynamic word (variable, brace, glob, xargs) is not covered: claude-factory-qn8a.97.
+ */
+function rawActorFlag(command: string): boolean {
+  const flat = command.replace(/\\\n/g, '').replace(/['"\\]/g, '')
+  return /(?<![\w.-])bd(?![\w.-])/i.test(flat) && /(?<![\w-])--act(?:or?)?(?![\w-])/.test(flat)
 }
 
 /**
@@ -9247,6 +9335,8 @@ function denyAt(
   aliasStack: readonly string[] = [],
   outerVars?: VarTable,
 ): string | undefined {
+  // claude-factory-qn8a.30: zsh drops a last backslash of an eval, -c or trap script. Read it as a join.
+  if (depth > 0 && command.endsWith('\\')) command += '\n'
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
   // claude-factory-pwy0: the lexer splits a word at the `(` of a zsh flag group, `${(L)x:-rm}`.
