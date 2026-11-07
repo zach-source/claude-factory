@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { VM_PLUGINS } from './harness'
 
 // 8b0ebf2: src/sidebar.ts imported ../mod, the worker stage did not copy mod, and every AX worker failed to start
 const ROOT = join(import.meta.dir, '..')
@@ -23,6 +24,14 @@ test('the worker image copies every top-level directory that src imports', () =>
   const imported = srcImports()
   expect([...imported].filter(d => !copied.has(d))).toEqual([])
   expect(imported.has('mod')).toBe(true)
+})
+
+test('each plugin dir of VM_PLUGINS has a COPY line in the worker stage, and EGM is pinned to a commit', () => {
+  const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  const worker = docker.slice(docker.indexOf(' AS worker'), docker.indexOf(' AS manager'))
+  for (const dir of Object.values(VM_PLUGINS))
+    expect(worker).toMatch(new RegExp(`^COPY --from=\\w+ \\S+ ${dir}$`, 'm'))
+  expect(docker).toMatch(/^ARG EGM_COMMIT=[0-9a-f]{40}$/m)
 })
 
 const serverFile = () => readFileSync(join(ROOT, 'Dockerfile.server'), 'utf8')

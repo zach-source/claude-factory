@@ -13,6 +13,7 @@ import {
 
 // claude-factory-qn8a.32: glab merge and glab ready are gated like their gh twins.
 const FILES: Record<string, string> = {
+  'f.md': 'looks good',
   'ph.graphql': 'mutation { :branch(input:{}) { errors } }',
   'merge.graphql': 'mutation { mergeRequestAccept(input:{}) { errors } }',
   'merge.json': JSON.stringify({ query: 'mutation { mergeRequestAccept(input:{}) { errors } }' }),
@@ -220,13 +221,7 @@ const DYNAMIC_DENY = [
   'glab mr update 5 --description="$@"',
   'glab mr update 5 --label="${a[@]}"',
 ]
-const DYNAMIC_ALLOW = [
-  'glab mr note 5 --message="$MSG"',
-  'glab mr update 5 --description="$D"',
-  'glab mr update 5 --draft --description="$D"',
-  `glab mr view 'a b'`,
-  `glab mr note 5 -m 'a $b'`,
-]
+const DYNAMIC_ALLOW = [`glab mr view 'a b'`, `glab mr note 5 -m 'a $b'`]
 
 for (const g of GATES) {
   const name = JSON.stringify(g)
@@ -418,11 +413,20 @@ for (const g of GATES) {
     expect(ask(cmd, g)).toBeUndefined()
   })
 }
+// claude-factory-qn8a.33: --fill and -f read text the hook cannot see, so a ready gate now gives GLAB_TEXT_REASON (see worker-hook-qn8a33.test.ts)
+const READY_TEXT_MOVED = [
+  'glab mr update 5 --fill -y',
+  'glab mr update 5 -f',
+  'glab mr update 5 --fill -ya --draft',
+]
 for (const g of READY_GATES) {
   const name = JSON.stringify(g)
-  test.each(READY_DENY)(`denyReason allows %j for the ready gate ${name}`, cmd => {
-    expect(ask(cmd, g)).toBeUndefined()
-  })
+  test.each(READY_DENY.filter(c => !READY_TEXT_MOVED.includes(c)))(
+    `denyReason allows %j for the ready gate ${name}`,
+    cmd => {
+      expect(ask(cmd, g)).toBeUndefined()
+    },
+  )
 }
 
 test('run as `bun src/worker-hook.ts`, glab mr update --ready is denied (claude-factory-qn8a.32)', async () => {

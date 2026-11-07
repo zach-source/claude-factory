@@ -991,12 +991,18 @@ test('claude-factory-ye1v AC4: the house rule allows only the --undo form and re
 })
 
 // claude-factory-qda: asd-ste100 goes to the stations that write text people read, and to no other
-test('lifecycle gives asd-ste100 to its text stations only, and code-review to review', () => {
+test('lifecycle gives asd-ste100 to its text stations only, code-review to review and egm to plan', () => {
   const text = ['plan', 'implement', 'review', 'security', 'quick', 'check', 'rollback', 'incident']
   for (const [id, node] of Object.entries(lifecycle.nodes))
     expect([id, workerSkills(lifecycle, node as { skills?: string[] })]).toEqual([
       id,
-      id === 'review' ? ['asd-ste100', 'code-review'] : text.includes(id) ? ['asd-ste100'] : [],
+      id === 'review'
+        ? ['asd-ste100', 'code-review']
+        : id === 'plan'
+          ? ['asd-ste100', 'egm']
+          : text.includes(id)
+            ? ['asd-ste100']
+            : [],
     ])
 })
 

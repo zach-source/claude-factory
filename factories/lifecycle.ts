@@ -151,7 +151,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 
     // ── shaping: what to build, measured or pinned first ─────────────────────
     plan: {
-      skills: ['asd-ste100'],
+      skills: ['asd-ste100', 'egm'],
       agent: OPUS,
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
