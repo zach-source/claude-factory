@@ -2858,6 +2858,7 @@ function commandAnchors(words: string[]): number[] {
 export const BEADS_ACTOR_REASON =
   'The factory denies this command: do not set, clear, export, or re-export BEADS_ACTOR. ' +
   'Do not pass the bd --actor flag either: it sets the same author. ' +
+  'Put text that names the flag in a file (--file, --body-file). ' +
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
@@ -2950,7 +2951,6 @@ function hasFlagPrefix(words: string[], from: number, g: EnvGuard): boolean {
     }
     const name = w.slice(2).split('=')[0]!
     if (/[$`{*?[]/.test(name)) return true
-    if (name.length >= 3 && g.flag.startsWith(name)) return true
   }
   return false
 }
@@ -8648,11 +8648,23 @@ export function denyReason(
   // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
   const home = homeReason(command, gate?.readFile)
   if (home) return home
+  if (rawActorFlag(command)) return BEADS_ACTOR_REASON
   const now = gate?.now ?? Date.now
   const scan = scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
   if (scan) return scan
   // claude-factory-qn8a.19: a read of a harness token file or dir. It reads the raw text, not the parse.
   return tokenReason(command, gate?.cwd ?? root ?? process.cwd(), root)
+}
+
+/**
+ * claude-factory-qn8a.26: true when the raw text has a bd token and a flag token (--act, --acto
+ * or --actor). The check ignores segment edges, quotes and backslashes. A substitution, a heredoc
+ * or an `sh -c` text cannot hide the flag. Text that only names the flag is also denied (fail
+ * closed). A dynamic word (variable, brace, glob, xargs) is not covered: claude-factory-qn8a.97.
+ */
+function rawActorFlag(command: string): boolean {
+  const flat = command.replace(/\\\n/g, '').replace(/['"\\]/g, '')
+  return /(?<![\w.-])bd(?![\w.-])/.test(flat) && /(?<![\w-])--act(?:or?)?(?![\w-])/.test(flat)
 }
 
 /**
