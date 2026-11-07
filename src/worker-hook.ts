@@ -3178,15 +3178,16 @@ const MENTION_KEYWORDS = new Set([
   '{',
   '}',
 ])
-// External tools and echo cannot write a shell variable.
-const MENTION_LITERAL_OK = new Set(['grep', 'egrep', 'fgrep', 'rg', 'git', 'echo', 'bd', 'factory'])
+// Commands that run no shell string from their arguments. `git` is ok only for `commit` and `log`.
+const MENTION_LITERAL_OK = new Set(['grep', 'egrep', 'fgrep', 'rg', 'echo', 'bd', 'factory'])
 
 /**
  * claude-factory-qn8a.25: returns true when the segment mentions the guarded name outside a read-only command.
  * A mention is the name with no [A-Za-z0-9_] after it. It has no left boundary, so `-vNAME` and `MY_NAME` count.
  * `$NAME` and `${NAME}` are reads, not mentions.
  * The command word comes after the leading keywords, one `env` and the `X=y` words.
- * It must be in MENTION_LITERAL_OK, and the mention word must not hold any of $ ` ( ) { } [ ] = < >.
+ * It must be in MENTION_LITERAL_OK, or be `git` with `commit` or `log` as the next word
+ * (other git commands and global options can run a shell string). The mention word must not hold any of $ ` ( ) { } [ ] = < >.
  * Every other form denies.
  * ponytail: a name built at run time (`printf -v "$v"`) is not found. The sandbox is the barrier. No upgrade path in a text guard.
  */
@@ -3207,7 +3208,10 @@ function mentionsGuardedName(words: string[], name: string): boolean {
       while (k < words.length && MENTION_KEYWORDS.has(words[k]!)) k++
       if (words[k] === 'env') k++
       while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!)) k++
-      ok = k < words.length && MENTION_LITERAL_OK.has(baseWord(words[k]!))
+      const cmd = k < words.length ? baseWord(words[k]!) : ''
+      ok =
+        MENTION_LITERAL_OK.has(cmd) ||
+        (cmd === 'git' && (words[k + 1] === 'commit' || words[k + 1] === 'log'))
     }
     if (!ok) return true
   }
