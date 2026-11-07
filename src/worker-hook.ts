@@ -2906,6 +2906,32 @@ function expandedFlag(w: string, flag: string): boolean {
   return /[*?[]/.test(w) && name.length > 0 && flag.startsWith(name)
 }
 
+// claude-factory-qn8a.26: true when a word without a leading `--` can expand to the flag.
+// A span ($( ), ${ }, backtick) can print any text, so it becomes a marker.
+// Text after the first `=` is a value. A word with whitespace is not a flag.
+// Deny a dash run that a marker or `$` follows.
+// Else deny when the end of the last bare $NAME plus the text after it is part of `--flag`.
+// The name can end at any letter, because dequote removes the quote boundary.
+// Accepted false positive: `bd show $repo`.
+function dynamicFlag(w: string, flag: string): boolean {
+  if (!/[$`]/.test(w)) return false
+  const s = w
+    .replace(/`[^`]*`/g, '\0')
+    .replace(/\$\([^)]*\)\)?/g, '\0')
+    .replace(/\$\{[^}]*\}/g, '\0')
+    .split('=')[0]!
+  if (/\s/.test(s)) return false
+  if (/^-+[\0$]/.test(s)) return true
+  const m = /(?:\0|\$([A-Za-z_0-9]*))([^\0$]*)$/.exec(s)
+  if (!m) return false
+  const name = m[1] ?? ''
+  for (let i = 0; i <= name.length; i++) {
+    const t = name.slice(i) + m[2]!
+    if (t !== '' && ('--' + flag).includes(t)) return true
+  }
+  return false
+}
+
 // claude-factory-qn8a.26: true when a word after the bd word is a long flag that abbreviates
 // g.flag. bd 1.3.2 refuses a prefix, but a later version can accept it (fail closed). The name
 // needs 3 or more characters. Quoting does not change argv, so a quoted or post-`--` word also
@@ -2916,7 +2942,7 @@ function hasFlagPrefix(words: string[], from: number, g: EnvGuard): boolean {
   for (let i = from + 1; i < words.length; i++) {
     const w = words[i]!
     if (!w.startsWith('--')) {
-      if (expandedFlag(w, g.flag)) return true
+      if (expandedFlag(w, g.flag) || dynamicFlag(w, g.flag)) return true
       continue
     }
     const name = w.slice(2).split('=')[0]!
