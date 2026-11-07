@@ -10,6 +10,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -186,6 +187,123 @@ test('AC7 find takes no wiki.lock', () => {
 test('AC9 a worker cannot run find', () => {
   base()
   const r = factory(['wiki', 'find', 'x'], { FACTORY_RUN: 'r1' })
+  expect(r.code).not.toBe(0)
+  expect(r.err).toContain('a worker cannot run factory wiki')
+})
+
+// ---- factory wiki status (claude-factory-tx6c.10.2) ----
+const bdCalls = join(dir, 'bd-calls')
+const bdFail = join(dir, 'bd-fail')
+/** a fake bd: it logs its arguments, fails when bdFail exists, else prints the given JSON */
+function fakeBd(json: string) {
+  writeFileSync(
+    join(bin, 'bd'),
+    `#!/bin/sh\necho "$*" >> '${bdCalls}'\nif [ -e '${bdFail}' ]; then echo boom >&2; exit 1; fi\nprintf '%s' '${json}'\n`,
+  )
+  chmodSync(join(bin, 'bd'), 0o755)
+  rmSync(bdCalls, { force: true })
+  rmSync(bdFail, { force: true })
+}
+const bdLog = () => (existsSync(bdCalls) ? readFileSync(bdCalls, 'utf8').trim().split('\n') : [])
+const status = (env: Record<string, string> = {}) => {
+  const r = factory(['wiki', 'status'], env)
+  return { ...r, json: r.out ? JSON.parse(r.out) : null }
+}
+const stamp = (name: string, iso: string) => {
+  writeFileSync(join(home, name), '')
+  utimesSync(join(home, name), new Date(iso), new Date(iso))
+}
+const KEYS = ['lastRefresh', 'lastWrite', 'lastGroom', 'groomPr', 'pending', 'flags', 'visibility']
+const repoDir = () => join(dir, 'widget-repo')
+const rigs = () => {
+  mkdirSync(join(repoDir(), '.beads'), { recursive: true })
+  writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: 'widget', repo: repoDir() }]))
+}
+
+test('AC6 status with an empty home: all null, flags empty', () => {
+  setup(null)
+  const r = status()
+  expect(r.code).toBe(0)
+  expect(Object.keys(r.json)).toEqual(KEYS)
+  expect(r.json).toEqual({
+    lastRefresh: null,
+    lastWrite: null,
+    lastGroom: null,
+    groomPr: null,
+    pending: [],
+    flags: [],
+    visibility: null,
+  })
+})
+
+test('AC6 status with a full fixture; AC8 read-only', () => {
+  base()
+  fakeBd('[{"id":"acme-1"},{"id":"acme-2"},{"id":"acme-3"}]')
+  rigs()
+  stamp('wiki-refresh.stamp', '2026-11-05T10:00:00.000Z')
+  stamp('wiki-write.stamp', '2026-11-05T11:00:00.000Z')
+  stamp('wiki-groom.stamp', '2026-11-05T12:00:00.000Z')
+  const state = JSON.stringify({
+    written: { 'acme-3': 'x' },
+    groomPr: { url: 'https://github.com/acme/wiki/pull/2' },
+    visibility: { value: 'PRIVATE', checkedAt: '2026-11-05T00:00:00Z', remote: 'github.com/acme/wiki' },
+  })
+  writeFileSync(join(home, 'wiki-state.json'), state)
+  put('needs-person.md', '# Needs a person\n- `a.md` line 3: bad\tx\n- `b.md` line 4: worse\nnot a flag\n')
+  const r = status()
+  expect(r.code).toBe(0)
+  expect(Object.keys(r.json)).toEqual(KEYS)
+  expect(r.json).toEqual({
+    lastRefresh: '2026-11-05T10:00:00.000Z',
+    lastWrite: '2026-11-05T11:00:00.000Z',
+    lastGroom: '2026-11-05T12:00:00.000Z',
+    groomPr: { url: 'https://github.com/acme/wiki/pull/2' },
+    pending: [{ rig: 'widget', id: 'acme-2' }],
+    flags: ['- `a.md` line 3: bad x', '- `b.md` line 4: worse'],
+    visibility: 'PRIVATE',
+  })
+  expect(ghCalls()).toBe(0)
+  expect(readFileSync(join(home, 'wiki-state.json'), 'utf8')).toBe(state)
+  expect(bdLog().length).toBe(1)
+  for (const l of bdLog()) expect(l.startsWith('list --status closed --closed-after ')).toBe(true)
+})
+
+test('AC6 a wiki-state.json of null, an array or junk gives nulls', () => {
+  setup(null)
+  for (const text of ['null', '[]', '{{junk', '{"groomPr":{"url":3},"visibility":{"value":"WEIRD"}}']) {
+    writeFileSync(join(home, 'wiki-state.json'), text)
+    const r = status()
+    expect([text, r.code, r.json.groomPr, r.json.visibility]).toEqual([text, 0, null, null])
+  }
+})
+
+test('AC8 a failed bd leaves the rig out and exits 0; a symlinked needs-person.md gives no flags', () => {
+  base()
+  fakeBd('[]')
+  rigs()
+  writeFileSync(bdFail, '')
+  const outside = join(dir, 'secret.md')
+  writeFileSync(outside, '- leaked\n')
+  symlinkSync(outside, join(home, 'wiki', 'needs-person.md'))
+  const r = status()
+  expect([r.code, r.json.pending, r.json.flags]).toEqual([0, [], []])
+  expect(r.err).toContain('wiki status: rig widget bead list failed')
+})
+
+test('AC7 status takes no wiki.lock', () => {
+  base()
+  mkdirSync(join(home, 'wiki.lock'), { recursive: true })
+  const pid = join(home, 'wiki.lock', 'pid')
+  writeFileSync(pid, String(process.pid))
+  const r = status()
+  expect(r.code).toBe(0)
+  expect(r.out).not.toContain('busy')
+  expect(readFileSync(pid, 'utf8')).toBe(String(process.pid))
+})
+
+test('AC9 a worker cannot run status', () => {
+  base()
+  const r = factory(['wiki', 'status'], { FACTORY_RUN: 'r1' })
   expect(r.code).not.toBe(0)
   expect(r.err).toContain('a worker cannot run factory wiki')
 })
