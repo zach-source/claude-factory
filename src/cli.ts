@@ -4532,7 +4532,10 @@ function writeWikiState(state: Record<string, unknown>) {
 /** Pages a person deleted and nobody added back, kept in wiki-state.json. A failed git log uses the stored list. */
 function wikiTombstones(dir: string) {
   const stored = readWikiState().tombstones
-  const old = Array.isArray(stored) ? (stored as { path: string; at: string }[]) : []
+  const old = (Array.isArray(stored) ? stored : []).filter(
+    (t): t is { path: string; at: string } =>
+      t !== null && typeof t === 'object' && typeof t.path === 'string' && typeof t.at === 'string',
+  )
   if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return old
   const log = wikiGit(dir, [
     'log',
@@ -4590,7 +4593,13 @@ export function keepPersonLines(before: Map<string, string>, reason: string, dir
   }
   if (flags.length) {
     const file = join(dir, 'needs-person.md')
-    if (!existsSync(file)) writeFileSync(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n')
+    let regular: boolean | undefined
+    try {
+      regular = lstatSync(file).isFile()
+    } catch {}
+    if (regular === false)
+      return (wikiLog('wiki: needs-person.md is not a regular file, nothing committed'), false)
+    if (regular === undefined) writeFileSync(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n')
     appendFileSync(file, `${flags.join('\n')}\n`)
   }
   return true
@@ -4685,12 +4694,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
 /** PUBLIC, PRIVATE or INTERNAL from `gh repo view`; read at most once in 24 h per remote unless `fresh`. Else undefined. */
 function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh = false) {
   const remote = `${r.host}/${r.owner}/${r.repo}`
-  const file = join(HOME, 'wiki-state.json')
-  let state: Record<string, unknown> = {}
-  try {
-    state = JSON.parse(readFileSync(file, 'utf8'))
-  } catch {}
-  if (state === null || typeof state !== 'object' || Array.isArray(state)) state = {}
+  const state = readWikiState()
   const c = state.visibility as { value?: string; checkedAt?: string; remote?: string } | undefined
   if (
     !fresh &&
@@ -4707,11 +4711,7 @@ function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh 
   })
   const value = p.exitCode === 0 ? p.stdout.toString().trim() : ''
   if (!WIKI_VISIBLE.includes(value)) return undefined
-  mkdirSync(HOME, { recursive: true })
-  writeFileSync(
-    file,
-    JSON.stringify({ ...state, visibility: { value, checkedAt: new Date().toISOString(), remote } }),
-  )
+  writeWikiState({ ...state, visibility: { value, checkedAt: new Date().toISOString(), remote } })
   return value
 }
 

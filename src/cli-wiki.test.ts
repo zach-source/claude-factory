@@ -539,6 +539,35 @@ test('AC4 a pass that deletes a page with a person line gets it back; factory-on
   expect(existsSync(join(wiki(), 'needs-person.md'))).toBe(false)
 })
 
+test.each(['existing', 'dangling'])(
+  'AC4 a needs-person.md that is a symlink (%s target) is not written through',
+  kind => {
+    setup()
+    expect(factory(['wiki', 'init']).code).toBe(0)
+    const mine = readFileSync(join(wiki(), 'glossary.md'), 'utf8').replace(
+      'one tracked task in bd',
+      'my own words',
+    )
+    writeFileSync(join(wiki(), 'glossary.md'), mine)
+    person('mine')
+    expect(guardPass('before').exitCode).toBe(0)
+    const outside = join(dir, 'outside.txt')
+    if (kind === 'existing') writeFileSync(outside, 'keep\n')
+    symlinkSync(outside, join(wiki(), 'needs-person.md'))
+    writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
+    expect(guardPass('after').exitCode).toBe(4)
+    expect(existsSync(outside) ? readFileSync(outside, 'utf8') : '').toBe(kind === 'existing' ? 'keep\n' : '')
+    expect(wikiLog()).toContain('wiki: needs-person.md is not a regular file, nothing committed')
+  },
+)
+
+test('AC5 a bad stored tombstone list does not crash a new wiki', () => {
+  setup()
+  mkdirSync(home, { recursive: true })
+  writeFileSync(join(home, 'wiki-state.json'), JSON.stringify({ tombstones: [null, { path: 1 }, 'x'] }))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+})
+
 test('AC5 a page that a person deleted is not made again; other paths and edits still commit', () => {
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
