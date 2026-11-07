@@ -1801,7 +1801,7 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     // claude-factory-cr6: the same deny-rm-rf PreToolUse hook a laptop worker gets, run from the VM image
     hooks: {
       PreToolUse: [
-        ...['Bash', 'Write|Edit|MultiEdit|NotebookEdit', 'Read|Grep'].map(matcher => ({
+        ...['Bash', 'Write|Edit|MultiEdit|NotebookEdit|apply_patch', 'Read|Grep'].map(matcher => ({
           matcher,
           hooks: [
             {
