@@ -176,3 +176,13 @@ test('rig add refuses a moved rig by name or by repo, and passes another rig', (
   expect(d.code).toBe(1)
   expect(d.err).toContain('split.json')
 })
+
+test('rig undo refuses a snapshot that holds a moved rig, and leaves rigs.json as it is', () => {
+  expect(factory(['home', 'split', server]).code).toBe(0)
+  const before = readFileSync(join(home, 'rigs.json'), 'utf8')
+  const u = factory(['rig', 'undo'])
+  expect(u.code).toBe(1)
+  expect(u.err).toContain('arig')
+  expect(u.err).toContain('moved to the server home')
+  expect(readFileSync(join(home, 'rigs.json'), 'utf8')).toBe(before)
+})

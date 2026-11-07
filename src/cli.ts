@@ -12091,7 +12091,23 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'rig': {
-        const opt = (flag: string) =>
+        // split.json names the moved rigs. rig add and rig undo must not bring them back.
+        const movedOf = (name: string, repo: string) => {
+          const splitFile = join(HOME, 'split.json')
+          return movedRigRefusal(
+            existsSync(splitFile) ? readFileSync(splitFile, 'utf8') : undefined,
+            name,
+            repo,
+            p => {
+              try {
+                return realpathSync(expand(p))
+              } catch {
+                return p
+              }
+            },
+          )
+        }
+        const opt =(flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
         // the goal is the rest of the line, so `/factory rig add ... --goal finish it` needs no quotes
         const goal = args.includes('--goal')
@@ -12145,19 +12161,7 @@ if (import.meta.main && !outboxCmd)
             linearProjects,
             linearLabels,
           })
-          const splitFile = join(HOME, 'split.json')
-          const moved = movedRigRefusal(
-            existsSync(splitFile) ? readFileSync(splitFile, 'utf8') : undefined,
-            rig.name,
-            rig.repo,
-            p => {
-              try {
-                return realpathSync(expand(p))
-              } catch {
-                return p
-              }
-            },
-          )
+          const moved = movedOf(rig.name, rig.repo)
           if (moved) fail(moved)
           mkdirSync(HOME, { recursive: true })
           // one rig per repo (runs find their rig by repo): redefining a rig replaces it, but a second
@@ -12241,11 +12245,17 @@ if (import.meta.main && !outboxCmd)
           const from = snaps[n - 1]!
           if (!snaps[n - 1]) fail(`rig undo: no snapshot ${n} (${snaps.length} in rig history)`)
           edit(() => {
+            let list: Rig[]
             try {
-              return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
+              list = JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
             } catch (e) {
               throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
             }
+            for (const r of Array.isArray(list) ? list : []) {
+              const moved = movedOf(String(r?.name), String(r?.repo))
+              if (moved) throw new Error(`rig undo refused: ${moved}`)
+            }
+            return list
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
         } else fail(`unknown rig command "${sub}": add, rm, list, history or undo`)

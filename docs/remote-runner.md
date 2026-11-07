@@ -465,7 +465,7 @@ This section moves the AX rigs to a server home on the PVC of `factory server`. 
 - `<dir>/runs/<id>` holds each live run of a moved rig. The `<task>.seen` files move with it, so the server does not replay a report twice. A finished run stays in the local home. `runs/*/transcripts` is not copied.
 - `<dir>/memory/` is a copy of the local memory. The two copies diverge after the split (claude-factory-4z8f).
 - The local home keeps the herdr rigs. `rigs-history/` gets a snapshot of the old `rigs.json`. The local run dirs of the moved runs go to `split-<stamp>/runs/`. Nothing is deleted.
-- `split.json` in the local home records each moved rig (`name`, `repo`, `at`, `to`). `factory rig add` refuses a name or a repo that `split.json` names.
+- `split.json` in the local home records each moved rig (`name`, `repo`, `at`, `to`). `factory rig add` refuses a name or a repo that `split.json` names. `factory rig undo` refuses a snapshot that holds such a rig, so it cannot put a moved rig back in two homes.
 
 The command holds `tick.lock` and writes `<dir>` first, `rigs.json` last. It changes the local home only after that. A failure before then leaves the local home whole. `--dry-run` prints the plan and writes nothing. The command refuses and changes nothing in these cases:
 
