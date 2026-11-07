@@ -41,7 +41,7 @@ ARG CODEX_VERSION=0.160.1
 ARG PI_VERSION=0.80.2
 ARG GH_VERSION=2.98.0
 ARG GLAB_VERSION=1.99.0
-ARG BD_VERSION=1.3.0
+ARG BD_VERSION=1.3.2
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 \
   && rm -rf /var/lib/apt/lists/*
