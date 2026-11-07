@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { parseFlags } from './server'
 
 // deploy/server.yaml is applied by the owner. These tests read it as data: no cluster is needed.
 type Obj = Record<string, any>
@@ -121,6 +122,21 @@ test('the Deployment runs one non-root writer with the home volume', () => {
   expect(pod.volumes.some((v: Obj) => v.persistentVolumeClaim?.claimName === 'factory-home')).toBe(true)
   expect(c.volumeMounts.some((m: Obj) => m.mountPath === '/var/lib/factory')).toBe(true)
   expect(c.env.find((e: Obj) => e.name === 'FACTORY_HOME').value).toBe('/var/lib/factory/home')
+})
+
+test('the container args start the client API on 8444 from the mounted TLS and person CA files', () => {
+  const c = find(load(), 'Deployment').spec.template.spec.containers[0]
+  const f = parseFlags(c.args)
+  expect(f.port).toBe(8080)
+  expect(f.client).toEqual({
+    port: 8444,
+    cert: '/etc/factory/tls/tls.crt',
+    key: '/etc/factory/tls/tls.key',
+    ca: '/etc/factory/person-ca/ca.crt',
+  })
+  const mounts = c.volumeMounts.map((m: Obj) => m.mountPath)
+  expect(mounts).toContain('/etc/factory/tls')
+  expect(mounts).toContain('/etc/factory/person-ca')
 })
 
 test('the Service exposes only the worker and client ports', () => {

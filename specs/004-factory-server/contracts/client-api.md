@@ -69,3 +69,26 @@ Set `FACTORY_SERVER` to an origin to send CLI forms to this API. Without it, the
 | `decisions answer <rig> <bead> <text...>`             | `POST /v1/decisions/<rig>/<bead>/answer {text}`               |
 
 `help`, `check`, `mutate`, `ci`, `pg-scratch` and `devenv` run locally. Every other command, and every other form of the commands above, exits 1 with `factory <cmd> has no server mode`. `rig add` and `rig rm` wait for claude-factory-tsam.
+
+## Server rules (`src/server-api.ts`)
+
+The server checks the client certificate before it reads a request. It does not use `Bun.serve` for this port. In Bun 1.3.13, `Bun.serve` with `rejectUnauthorized` was not safe. It ran the handler for a certificate from another CA in 4 to 8 percent of the tries. The listener uses `node:tls`. It accepts a certificate that the person CA signed and that has `CN=person`. Each connection carries one request, then closes.
+
+- Start the listener with `--client-port`, `--tls-cert`, `--tls-key` and `--person-ca`. Give all four or none.
+- A request with an `Authorization` header gets 403. This holds for any value and any route. A worker token never opens this port.
+- The server serves only the routes in the tables above, except `GET /v1/events` (claude-factory-bb05) and `PUT` and `DELETE /v1/rigs/<name>` (claude-factory-tsam). Those give 404.
+- `GET /v1/board` gives the result of the last tick of the server. It gives 503 before the first tick. It runs no CLI command.
+- A decision answer goes to `POST /v1/decisions/<rig>/<bead>/answer`. A decision can only be made on this port. The health port (8080) gives 404 for `decide`.
+- Status codes:
+  - 400: bad form (path, query, body, key or content type).
+  - 403: an `Authorization` header, or a mail `cwd` inside the run worktree.
+  - 404: unknown route.
+  - 409: another request already used the key.
+  - 422: the CLI refused. The body holds the first 500 characters of stderr.
+  - 503: no tick yet, or a corrupt store.
+  - 504: the CLI ran for more than 60 s.
+- A body is at most 128 KiB. A free-text field has 1 to 65536 characters and no U+0000. A `start` goal must not hold the word `--owned`.
+- Each POST needs `Idempotency-Key` and `content-type: application/json`. The server keeps each answer for 24 h in `<home>/client-idempotency.json` (mode 0600). The same key and the same request give the stored answer, also after a restart. The same key with another request gives 409. If the file is corrupt, the server gives 503 and runs nothing. The server runs one action at a time.
+- Each POST that passes the form check adds one line to `<home>/client-actions.jsonl`. The line has the time, client address, method, path, key and status. A `decide` line also has the outcome. The line holds no free text.
+- Each action runs `cli.ts` as a child process with the server home. The child env has no `FACTORY_SERVER`, `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME`, `FACTORY_PATROL`, `FACTORY_OUTBOX` or `BEADS_ACTOR`. Mail text goes through a file in `<home>/text/`. The server removes the file after the call.
+- `factory cert person <dir> <server-name>` makes the person CA, the person certificate and the server certificate in a new folder.
