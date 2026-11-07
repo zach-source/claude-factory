@@ -7,7 +7,7 @@ const fake = (state: Record<string, { node: string; outcome?: string; bead?: str
     const s = state[id]
     if (!s) throw new Error('no such run')
     return {
-      run: { id, bead: s.bead, repo: '/r' },
+      run: { id, bead: s.bead, repo: '/r', goal: `goal of ${id}` },
       value: s.node,
       c: { log: s.outcome ? [{ outcome: 'x' }, { outcome: s.outcome }] : [] },
     }
@@ -27,4 +27,5 @@ test('decided is set only for a run whose last outcome is decision', () => {
   expect([...runs.keys()]).toEqual(['a', 'b', 'c', 'd', 'e'])
   expect([...decided]).toEqual(['a', 'c'])
   expect(live.map(r => r.id)).toEqual(['a', 'b', 'd', 'e'])
+  expect(live.map(r => r.goal)).toEqual(['goal of a', 'goal of b', 'goal of d', 'goal of e'])
 })
