@@ -236,6 +236,8 @@ import {
   githubSlugOf,
   githubWatchView,
   parseGithubView,
+  parseGitlabView,
+  prRef,
   gitlabWatchNotes,
   mrsIn,
   onHost,
@@ -8924,6 +8926,21 @@ export const prOwner = (
       r.log.some(e => [...prsIn(e.summary), ...mrsIn(e.summary)].includes(pr.url)),
   )?.id
 
+/**
+ * the rework runs whose PR is merged or closed. `stateOf` reads a PR only for a run with a rework goal.
+ * A state that is not MERGED or CLOSED, or a failed read (undefined), ends no run.
+ */
+export function reworkEnded(
+  live: { id: string; goal: string }[],
+  stateOf: (url: string) => string | undefined,
+) {
+  return live.flatMap(r => {
+    const url = reworkPr(r.goal)
+    const state = url ? stateOf(url) : undefined
+    return url && (state === 'MERGED' || state === 'CLOSED') ? [{ id: r.id, url, state }] : []
+  })
+}
+
 /** the queued bead whose PR this is: ship owns it, so no rework run may start on it (claude-factory-rtuw) */
 export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
   queue.find(b => b.metadata?.ship_branch === pr.headRefName || (!!pr.url && b.metadata?.ship_pr === pr.url))
@@ -9151,7 +9168,14 @@ async function labelPass() {
   const live = startedRunIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
-    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log, c: r.c, goal: r.run.goal }))
+    .map(r => ({
+      id: r.id,
+      node: where(r.value)[0],
+      log: r.c.log,
+      c: r.c,
+      goal: r.run.goal,
+      repo: r.run.repo,
+    }))
   for (const rig of rigs()) {
     const cli = (bin: string, args: string[]) => {
       const p = Bun.spawnSync([bin, ...args], { cwd: rig.repo, timeout: 60_000 })
@@ -9180,6 +9204,18 @@ async function labelPass() {
               )
               return found.filter((pr, i) => found.findIndex(o => o.url === pr.url) === i)
             },
+            state: (url: string) => {
+              const iid = prRef(url)?.number
+              if (!iid) return undefined
+              const project = encodeURIComponent(`${origin.owner}/${origin.repo}`)
+              const out = cli('glab', [
+                'api',
+                '--hostname',
+                origin.host,
+                `projects/${project}/merge_requests/${iid}`,
+              ])
+              return parseGitlabView(out)?.state
+            },
             comment: (pr: LabeledPr, body: string) =>
               cli('glab', ['mr', 'note', String(pr.number), '-m', body]),
             unlabel: (pr: LabeledPr, labels: string[]) =>
@@ -9202,6 +9238,10 @@ async function labelPass() {
                 if (!rows) throw new Error('gh api pulls failed')
                 return (githubRows(rows) as LabeledPr[]).filter(pr => labelAction(pr) !== undefined)
               },
+              state: (url: string) => {
+                const path = githubPullPath(url)
+                return path ? parseGithubView(gh('api', path))?.state : undefined
+              },
               comment: (pr: LabeledPr, body: string) => gh(...githubCommentArgv(slug(), pr.number, body)),
               unlabel: (pr: LabeledPr, labels: string[]) => {
                 for (const label of labels) gh(...githubUnlabelArgv(slug(), pr.number, label))
@@ -9213,6 +9253,21 @@ async function labelPass() {
             }
           })()
     try {
+      // a rework run for a merged or closed PR has no work left. End it. The list below shows open PRs only.
+      const ended = reworkEnded(
+        live.filter(r => r.repo === rig.repo),
+        url => {
+          try {
+            return forge.state(url)
+          } catch {
+            return undefined // a failed read must not end a run
+          }
+        },
+      )
+      for (const e of ended) {
+        post(e.id, { type: 'ABORT' })
+        console.log(`${new Date().toISOString()} rework ${e.url} was ${e.state}: abort run ${e.id}`)
+      }
       const labeled = await forge.list()
       const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
         ? beads(rig.repo, 'factory').shipQueue()
