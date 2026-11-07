@@ -319,6 +319,7 @@ const ALLOWED = [
   'rig',
 ]
 const DENIED = [
+  'unhold',
   'pkg-gate',
   'ui',
   'start',

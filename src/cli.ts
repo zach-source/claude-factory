@@ -2742,6 +2742,7 @@ export function runTokenSwap(
   }
   const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
   writeJson(file, { at: hit.at, until, ran: now } satisfies TokenSwapState)
+  if (ok) writeUnhold(runnerName, codex, now, now + TOKEN_SWAP_WAIT_MS, home)
   return until
 }
 
@@ -2765,6 +2766,123 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
     until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
     ran: now,
   } satisfies TokenSwapState)
+}
+
+type UnholdMark = { before: number; from: number; woke: number }
+const unholdFile = (runner: string, codex: boolean, home = HOME) =>
+  join(home, `unhold-${runner}${codex ? '-codex' : ''}.json`)
+
+/**
+ * This function reads an unhold mark: `before` is the time of the swap (only older holds wake), `from` is the
+ * first time a wake may happen, `woke` is the count woken so far. A mark that is not a well-formed object, or
+ * that has a before or from too far ahead, is deleted and counts as no mark.
+ */
+export function trustedUnhold(file: string, now: number): UnholdMark | undefined {
+  if (!existsSync(file)) return undefined
+  let m: unknown
+  try {
+    m = readJson<unknown>(file)
+  } catch {
+    m = undefined
+  }
+  const { before, from, woke } = (typeof m === 'object' && m !== null ? m : {}) as Record<string, unknown>
+  const num = (v: unknown): v is number => Number.isFinite(v)
+  if (
+    num(before) &&
+    num(from) &&
+    num(woke) &&
+    before <= now + LIMIT_SKEW_MS &&
+    from <= now + LIMIT_RESET_MAX_MS
+  )
+    return { before, from, woke }
+  rmSync(file, { force: true })
+  return undefined
+}
+
+/** This function writes the mark of a runner and harness. A rewrite keeps the old woke count. */
+export function writeUnhold(runner: string, codex: boolean, before: number, from: number, home = HOME) {
+  const woke = trustedUnhold(unholdFile(runner, codex, home), before)?.woke ?? 0
+  writeJson(unholdFile(runner, codex, home), { before, from, woke } satisfies UnholdMark)
+}
+
+/**
+ * This function picks the held stations to wake, the oldest hold first. Each pick takes one slot:
+ * room() applies the town cap `max` and the rig's maxRuns. It adds each pick to `busy`, so a caller can share
+ * one list over many calls.
+ */
+export function pickUnholds<T extends { rig: Pick<Rig, 'name' | 'maxRuns'> | undefined; at: number }>(
+  cands: T[],
+  busy: (string | undefined)[],
+  held: (string | undefined)[],
+  max = MAX_BUSY,
+): T[] {
+  const used = busy
+  const out: T[] = []
+  for (const c of [...cands].sort((a, b) => a.at - b.at)) {
+    if (room(c.rig, used, max, held) <= 0) continue
+    used.push(c.rig?.name)
+    out.push(c)
+  }
+  return out
+}
+
+/**
+ * This function runs once in each tick. For each unhold mark it wakes the stations held by a usage limit of the
+ * mark's runner and harness, as far as the free slots allow. It ends the mark when no such station is left, and then
+ * returns one manager mail. A station wakes only when it waits after an 'outage' hold with a limit or login reason
+ * of the right harness, that hold is older than the swap, and its runner is the mark's runner.
+ */
+export async function unholdPass(now: number): Promise<(Mail & { run: string })[]> {
+  const mails: (Mail & { run: string })[] = []
+  if (halted()) return mails
+  let slots: Awaited<ReturnType<typeof busyRigs>> | undefined
+  for (const runner of Object.values(runners).filter(r => !r.local)) {
+    for (const codex of [false, true]) {
+      const file = unholdFile(runner.name, codex)
+      const m = trustedUnhold(file, now)
+      if (!m || now < m.from) continue
+      const reason = codex
+        ? /^Codex (usage limit|login refused) \(/
+        : /^Claude (usage limit|login refused) \(/
+      const cands: { id: string; node: string; rig: Rig | undefined; at: number }[] = []
+      for (const id of runIds()) {
+        try {
+          const { run, value, c } = current(id)
+          const [node, sub] = where(value)
+          const last = c.log.at(-1)
+          if (sub !== 'waiting' || last?.node !== node || last.outcome !== 'outage') continue
+          if (last.at > m.before || !reason.test(last.summary)) continue
+          if (runnerOfStation(run, await loadPinned(run.factory), node).name !== runner.name) continue
+          cands.push({ id, node, rig: rigOf(run.repo), at: last.at })
+        } catch {
+          continue // a run dir before its state.json, or a def that does not load
+        }
+      }
+      slots ??= await busyRigs()
+      const picked = pickUnholds(cands, slots.busy, slots.held)
+      for (const p of picked)
+        post(p.id, {
+          type: 'MAIL',
+          from: 'factory',
+          to: p.node,
+          wake: true,
+          text: `[factory] The ${runner.name} ${codex ? 'Codex' : 'Claude'} token was swapped: the usage-limit hold ends.`,
+        })
+      const woke = m.woke + picked.length
+      if (picked.length < cands.length) writeJson(file, { ...m, woke } satisfies UnholdMark)
+      else {
+        rmSync(file, { force: true })
+        if (woke)
+          mails.push({
+            run: 'factory',
+            from: 'factory',
+            text: `Woke ${woke} stations held by the ${codex ? 'Codex' : 'Claude'} usage limit on ${runner.name} after the token swap.`,
+            at: now,
+          })
+      }
+    }
+  }
+  return mails
 }
 
 /** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5 */
@@ -6333,6 +6451,12 @@ async function tick(isPatrol = false) {
       reviewed: reviewedItems(),
     }
     const halt = halted()
+    try {
+      out.manager.push(...(await unholdPass(now)))
+    } catch (e) {
+      // the marks stay, so the next tick tries again; the run loop must go on
+      console.error(`unhold: ${e instanceof Error ? e.message : String(e)}`)
+    }
     for (const id of runIds()) {
       try {
         const { row, manager } = await tickRun(loadRun(id), now, halted())
@@ -11339,6 +11463,7 @@ const usage = `factory — herdr software factories on xstate
   mail <run> <node|manager> [--wake] '<text...>'|--text-file path  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> '[text...]'             nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
+  unhold <runner> [--codex]          after a token swap by hand: wake the stations that runner's usage limit holds, as far as slots are free
   fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
@@ -12457,6 +12582,18 @@ if (import.meta.main && !outboxCmd)
         const unavailable = runner.name === 'ax' ? ax.unavailable() : undefined
         if (unavailable) fail(unavailable)
         post(run.id, { type: 'RETRY' })
+        break
+      }
+      case 'unhold': {
+        refuseWorker('unhold', true)
+        const codex = args[1] === '--codex'
+        const r = args[0] ? runners[args[0]] : undefined
+        if (!r || r.local !== false || args.length > (codex ? 2 : 1))
+          fail('usage: factory unhold <runner> [--codex]; the runner is a remote one, such as ax')
+        writeUnhold(r!.name, codex, Date.now(), Date.now())
+        console.log(
+          `marked: the next tick wakes the ${r!.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
+        )
         break
       }
       case 'goto': {
