@@ -11,10 +11,19 @@ import {
   harnessOf,
   LAUNCH_LINE,
   readMcp,
+  skillsFor,
   writeLaunch,
 } from './harness'
 
 const mcp = { file: '/f/mcp.json', servers: { fx: { command: 'fx-mcp', args: ['--x'] } } }
+
+test('skillsFor keeps egm only for Claude or an unknown harness', () => {
+  const skills = ['asd-ste100', 'code-review', 'egm']
+  for (const h of ['codex', 'pi'] as const)
+    expect(skillsFor(h, skills)).toEqual(['asd-ste100', 'code-review'])
+  for (const h of ['claude', null] as const) expect(skillsFor(h, skills)).toEqual(skills)
+  expect(skillsFor('codex', [])).toEqual([])
+})
 
 test('a worker command names its harness by its executable', () => {
   expect(harnessOf('claude-smart --new --model x')).toBe('claude')

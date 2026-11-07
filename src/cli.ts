@@ -128,6 +128,7 @@ import {
   cutOffCall,
   cutOffNote,
   harnessOf,
+  skillsFor,
   piFlags,
   readMcp,
   sq,
@@ -1639,7 +1640,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       personOnlyContexts(rigOf(run.repo)),
       !!mergeAuthority(rigOf(run.repo)),
     ),
-    ...skillLines(workerSkills(def, n, rigOf(run.repo))),
+    ...skillLines(skillsFor(harnessOf(agentOfNode(run, def, node)), workerSkills(def, n, rigOf(run.repo)))),
     '',
     ...remembered(run, node, notes),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
@@ -2162,7 +2163,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       FACTORY_RUN: run.id,
       FACTORY_DENY_LOG: '1',
       FACTORY_DEF_NAME: def.name,
-      FACTORY_SKILLS: skills.join(','),
+      FACTORY_SKILLS: skillsFor(harness, skills).join(','),
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
       ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
@@ -3178,7 +3179,7 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const h = harnessOf(agent)
-  const skills = workerSkills(def, def.nodes[node]!, rig)
+  const skills = skillsFor(h, workerSkills(def, def.nodes[node]!, rig))
   const otel = otelFor(run, node, c, agent, process.env.FACTORY_OTLP_ENDPOINT)
   warnSkillsForHarness(h, skills, node, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'))
   const setup =
