@@ -3118,7 +3118,24 @@ const VAR_WRITERS = new Set([
   'strftime',
   'sysread',
   'getln',
+  'wait',
+  'compgen',
+  'zformat',
+  'zregexparse',
+  'sysopen',
+  'zsystem',
+  'syserror',
+  'pcre_match',
+  'zgetattr',
+  'zlistattr',
+  'zpty',
+  'zselect',
+  'ztie',
+  'compadd',
+  'zcurses',
 ])
+
+const ARITH_OP = /^(\*\*|<<|>>|\|\||&&|[-+*/%&^|])?=(?!=)/
 
 /** True when `w` holds `name` and the text before it is not `$` or `${`. A `$NAME` read is not a write. */
 function namesVar(w: string, name: string): boolean {
@@ -3168,9 +3185,24 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
     // the segment holds the name, deny. A `$NAME` or `${NAME}` read does not count.
     // This check reads no option grammar. So `+x`, `-v`, `-vNAME`, `--` and a second operand
     // cannot hide the name.
-    // ponytail: a name that the shell builds at run time (`printf -v "$v"`) is not found. The sandbox covers it.
+    // ponytail: a name that the shell builds at run time (`printf -v "$v"`) is not found. The sandbox covers it. Upgrade path: none in a text guard.
     if (writerSeen && namesVar(w, g.name)) return true
-    // A loop writes only the words before `in` or `(`. Later words are values, so `for f in a; do grep NAME` passes.
+    // An fd redirect `{NAME}>` or `{NAME}<` stores an fd number in NAME.
+    const fd = w.indexOf('{' + g.name + '}')
+    if (fd !== -1 && (w[fd + g.name.length + 2] === '<' || w[fd + g.name.length + 2] === '>')) return true
+    // Arithmetic `(( NAME = 5 ))` reaches this scan as the words `NAME`, `=`, `5` (the parens are gone),
+    // so a name word followed by an assignment operator denies. `x,NAME=5` and `NAME++` deny too.
+    if (
+      namesVar(w, g.name) &&
+      (ARITH_OP.test(words[i + 1] ?? '') || w.includes(',' + g.name) || /(\+\+|--)$/.test(w))
+    )
+      return true
+    // A subscript `[...]` can assign NAME (`${a[NAME=5]}`).
+    for (let k = w.indexOf('['); k !== -1; k = w.indexOf('[', k + 1)) {
+      const close = w.indexOf(']', k)
+      if (namesVar(w.slice(k, close === -1 ? undefined : close), g.name)) return true
+    }
+    // A loop writes only the words before `in`. Later words are values, so `for f in a; do grep NAME` passes.
     if (loopVars) {
       if (w === 'in') loopVars = false
       else if (namesVar(w, g.name)) return true
