@@ -3165,64 +3165,51 @@ function envOptionScan(
   return { cmdStart: words.length, clearsAll }
 }
 
-/** Builtins that can write a shell variable. touchesBeadsActor reads every later word after one. */
-const VAR_WRITERS = new Set([
-  'export',
-  'declare',
-  'typeset',
-  'readonly',
-  'local',
-  'unset',
-  'printf',
-  'print',
-  'read',
-  'mapfile',
-  'readarray',
-  'getopts',
-  'vared',
-  'integer',
-  'float',
-  'private',
-  'zparseopts',
-  'zstyle',
-  'zstat',
-  'strftime',
-  'sysread',
-  'getln',
-  'wait',
-  'compgen',
-  'zformat',
-  'zregexparse',
-  'sysopen',
-  'zsystem',
-  'syserror',
-  'pcre_match',
-  'zgetattr',
-  'zlistattr',
-  'zpty',
-  'zselect',
-  'ztie',
-  'compadd',
-  'zcurses',
-  'let',
+const MENTION_KEYWORDS = new Set([
+  'do',
+  'then',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+  '!',
+  'time',
+  '{',
+  '}',
 ])
+// External tools and echo cannot write a shell variable.
+const MENTION_LITERAL_OK = new Set(['grep', 'egrep', 'fgrep', 'rg', 'git', 'echo', 'bd', 'factory'])
 
-const ARITH_OP = /^(\*\*|<<|>>|\|\||&&|[-+*/%&^|])?=(?!=)/
-
-/** True when `w` holds `name` and the text before it is not `$` or `${`. A `$NAME` read is not a write. */
-function namesVar(w: string, name: string): boolean {
-  for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
-    if (w[i - 1] !== '$' && !(w[i - 1] === '{' && w[i - 2] === '$')) return true
-  }
-  return false
-}
-
-/** True when `w` holds `name` (not a `$` read) and an assignment operator or `++`/`--` follows it in the same word. */
-function namesVarAssigned(w: string, name: string): boolean {
-  for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
-    if (w[i - 1] === '$' || (w[i - 1] === '{' && w[i - 2] === '$')) continue
-    const rest = w.slice(i + name.length).trimStart()
-    if (ARITH_OP.test(rest) || /^(\+\+|--)/.test(rest)) return true
+/**
+ * claude-factory-qn8a.25: returns true when the segment mentions the guarded name outside a read-only command.
+ * A mention is the name with no [A-Za-z0-9_] after it. It has no left boundary, so `-vNAME` and `MY_NAME` count.
+ * `$NAME` and `${NAME}` are reads, not mentions.
+ * The command word comes after the leading keywords, one `env` and the `X=y` words.
+ * It must be in MENTION_LITERAL_OK, and the mention word must not hold any of $ ` ( ) { } [ ] = < >.
+ * Every other form denies.
+ * ponytail: a name built at run time (`printf -v "$v"`) is not found. The sandbox is the barrier. No upgrade path in a text guard.
+ */
+function mentionsGuardedName(words: string[], name: string): boolean {
+  let ok: boolean | undefined
+  for (const w of words) {
+    let mention = false
+    for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
+      if (/[A-Za-z0-9_]/.test(w[i + name.length] ?? '')) continue
+      if (w[i - 1] === '$' || (w[i - 1] === '{' && w[i - 2] === '$' && w[i + name.length] === '}')) continue
+      mention = true
+      break
+    }
+    if (!mention) continue
+    if (/[$`(){}[\]=<>]/.test(w)) return true
+    if (ok === undefined) {
+      let k = 0
+      while (k < words.length && MENTION_KEYWORDS.has(words[k]!)) k++
+      if (words[k] === 'env') k++
+      while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!)) k++
+      ok = k < words.length && MENTION_LITERAL_OK.has(baseWord(words[k]!))
+    }
+    if (!ok) return true
   }
   return false
 }
@@ -3253,48 +3240,15 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   let chars = 0
   for (const w of words) chars += w.length + 1
   if (spendWork(state, chars)) return true
+  if (mentionsGuardedName(words, g.name)) return true
   const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
-  let writerSeen = false
-  let loopVars = false
   // the index of each bd word
   const bdIdx: number[] = []
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (w.startsWith(g.name + '=') || w.startsWith(g.name + '+=')) return true
-    // claude-factory-qn8a.25: a builtin in VAR_WRITERS can write a variable. If a later word in
-    // the segment holds the name, deny. A `$NAME` or `${NAME}` read does not count.
-    // This check reads no option grammar. So `+x`, `-v`, `-vNAME`, `--` and a second operand
-    // cannot hide the name.
-    // ponytail: a name that the shell builds at run time (`printf -v "$v"`) is not found. The sandbox covers it. Upgrade path: none in a text guard.
-    if (writerSeen && namesVar(w, g.name)) return true
-    // An fd redirect `{NAME}>` or `{NAME}<` stores an fd number in NAME.
-    const fd = w.indexOf('{' + g.name + '}')
-    if (fd !== -1 && (w[fd + g.name.length + 2] === '<' || w[fd + g.name.length + 2] === '>')) return true
-    // Arithmetic `(( NAME = 5 ))` reaches this scan as the words `NAME`, `=`, `5` (the parens are gone),
-    // so a name word followed by an assignment operator denies. `x,NAME=5` and `NAME++` deny too.
-    if (
-      namesVar(w, g.name) &&
-      (ARITH_OP.test(words[i + 1] ?? '') ||
-        namesVarAssigned(w, g.name) ||
-        w.includes(',' + g.name) ||
-        /^(\+\+|--)|(\+\+|--)$/.test(w))
-    )
-      return true
-    // A subscript `[...]` can assign NAME (`${a[NAME=5]}`).
-    for (let k = w.indexOf('['); k !== -1; k = w.indexOf('[', k + 1)) {
-      const close = w.indexOf(']', k)
-      if (namesVar(w.slice(k, close === -1 ? undefined : close), g.name)) return true
-    }
-    // A loop writes only the words before `in`. Later words are values, so `for f in a; do grep NAME` passes.
-    if (loopVars) {
-      if (w === 'in') loopVars = false
-      else if (namesVar(w, g.name)) return true
-    }
     const b = baseWord(w)
-    if (b === 'for' || b === 'select' || b === 'foreach') loopVars = true
-    if (VAR_WRITERS.has(b)) writerSeen = true
     if (b === g.cmd) bdIdx.push(i)
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
@@ -9718,13 +9672,6 @@ function denyAtScan(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
-    // The splitter cuts `NAME &= 5` and `NAME |= 5` at the operator. A segment that starts with `=`
-    // after a segment that ends with a guarded name is an arithmetic assignment to that name.
-    const prevLast = segs[segIdx - 1]?.at(-1)
-    if (prevLast && ARITH_OP.test(words[0] ?? '')) {
-      for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD])
-        if (namesVar(prevLast, g.name)) return g.reason
-    }
     if (!state.aliasWrite && segmentMayDefineAlias(words)) state.aliasWrite = true
     if (!state.dynArg && segmentDynArg(words)) state.dynArg = true
     if (aliasTable) {
