@@ -3028,7 +3028,7 @@ function segmentRunsBdCommand(
   let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
-    if (g.cmds.has(bw.toLowerCase())) return true
+    if (g.cmds.has(bw)) return true
     if (shellSlotWord(words[k]!)) {
       // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
@@ -3278,7 +3278,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     const b = baseWord(w)
-    if (g.cmds.has(b.toLowerCase())) bdIdx.push(i)
+    if (g.cmds.has(b)) bdIdx.push(i)
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {

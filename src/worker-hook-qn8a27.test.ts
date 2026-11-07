@@ -17,6 +17,7 @@ const DENY = [
   `env -i BUN ${T}`,
   'env -i node dist/cli.js tick',
   'env -i nodejs dist/cli.js tick',
+  'env -i factory mail r1 implement x',
   'env -i bunx x',
   'env -i npx x',
   'env -i npm x',
