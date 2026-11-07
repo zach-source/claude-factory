@@ -91,6 +91,12 @@ test("a rig's beads sync through its shared Dolt remote as its user, else throug
   expect(pull).toContain("CALL DOLT_CONFLICTS_RESOLVE('--theirs', '.')")
   expect(pull).toEndWith('COMMIT')
   expect(() => rigBeadsSync(r, 'push')).toThrow('no Dolt server')
+  // launch and rig beads-remote set share one name and user check
+  for (const bad of [
+    { ...r, name: 'a b' },
+    { ...r, user: "u'x" },
+  ])
+    expect(() => rigBeadsSync(bad, 'push', conn)).toThrow('name and user are')
 })
 
 test('git remotes become https remotes the VM clones', () => {
