@@ -33,9 +33,16 @@ test('imagePlugins picks the image plugin dirs by FACTORY_SKILLS', () => {
 })
 
 test('imagePlugins excludes egm for codex and pi', () => {
-  expect(imagePlugins(undefined, 'codex')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/code-review'])
-  expect(imagePlugins('asd-ste100,egm', 'pi')).toEqual(['/opt/plugins/asd-ste100'])
-  expect(imagePlugins('asd-ste100,egm', 'claude')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
+  const was = process.env.FACTORY_SKILLS
+  delete process.env.FACTORY_SKILLS
+  try {
+    expect(imagePlugins(undefined, 'codex')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/code-review'])
+    expect(imagePlugins('asd-ste100,egm', 'pi')).toEqual(['/opt/plugins/asd-ste100'])
+    expect(imagePlugins('asd-ste100,egm', 'claude')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
+  } finally {
+    if (was === undefined) delete process.env.FACTORY_SKILLS
+    else process.env.FACTORY_SKILLS = was
+  }
 })
 
 function sh(cmd: string[], cwd: string) {

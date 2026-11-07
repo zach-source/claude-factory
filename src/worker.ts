@@ -27,6 +27,7 @@ import {
   cutOffCall,
   cutOffNote,
   piFlags,
+  skillsFor,
   VM_PLUGINS,
 } from './harness'
 import { rmSafe } from './home-guard'
@@ -1077,15 +1078,12 @@ export function trustCA() {
 
 /**
  * The image's plugin dirs for this worker. FACTORY_SKILLS is the laptop's list of the station's skills:
- * an empty list gives none, and an unset one (an older laptop) gives all of them.
+ * An empty list gives none. An unset list gives all skills that the harness supports.
  */
-export const imagePlugins = (skills = process.env.FACTORY_SKILLS) =>
-  skills === undefined
-    ? Object.values(VM_PLUGINS)
-    : skills
-        .split(',')
-        .filter(Boolean)
-        .flatMap(s => VM_PLUGINS[s] ?? [])
+export const imagePlugins = (skills = process.env.FACTORY_SKILLS, h = harness()) =>
+  skillsFor(h, skills === undefined ? Object.keys(VM_PLUGINS) : skills.split(',').filter(Boolean)).flatMap(
+    s => VM_PLUGINS[s] ?? [],
+  )
 
 /**
  * A codex worker's CODEX_HOME, written at serve start and before each turn. It holds the files the laptop sent (cli.ts vmCodexHome)

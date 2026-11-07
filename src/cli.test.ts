@@ -1261,7 +1261,13 @@ test('the brief of a station with egm gives the goldfish review line, and one wi
   const withEgm = brief(run, def(['egm']), 'implement', c, [])
   for (const agent of ['codex', 'pi']) {
     const d = def(['asd-ste100', 'egm'])
-    const text = brief(run, { ...d, nodes: { implement: { ...d.nodes.implement, agent } } }, 'implement', c, [])
+    const text = brief(
+      run,
+      { ...d, nodes: { implement: { ...d.nodes.implement, agent } } },
+      'implement',
+      c,
+      [],
+    )
     expect(text).toContain('- asd-ste100: ')
     for (const s of ['- egm: ', 'egm:egm-', 'Goldfish review']) expect(text).not.toContain(s)
   }

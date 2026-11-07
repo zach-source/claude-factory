@@ -2677,7 +2677,7 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', '../config.toml': 'x = 1\n' }),
   })
   try {
-    worker.codexHome(home)
+    worker.codexHome(home, 30_000, [])
     expect(worker.imagePlugins()).toEqual(['/opt/plugins/asd-ste100'])
     delete process.env.FACTORY_SKILLS
     expect(worker.imagePlugins()).not.toContain('/opt/plugins/egm')
