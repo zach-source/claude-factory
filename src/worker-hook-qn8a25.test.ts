@@ -115,6 +115,9 @@ const DENY = (n: string, c: string) => [
   `echo a>${n}; ${c}`,
   `echo a{${n}; ${c}`,
   `echo a}${n}; ${c}`,
+  `echo a[${n}; ${c}`,
+  `echo a]${n}; ${c}`,
+  `echo a\`${n}; ${c}`,
   ...WRITERS.map(w => `${w} ${n}; ${c}`),
 ]
 const ALLOW = (n: string, c: string) => [
