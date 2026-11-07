@@ -22,6 +22,7 @@ import {
 } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { rmSafe } from './home-guard'
+import { stepPrompt } from './steps'
 import type { PrState } from './prs'
 
 // A factory's shared memory: what its workers learned, tiered so a brief stays short and a search finds
@@ -2389,29 +2390,15 @@ export const dreamPrompt = (
     relearned: [],
     proposals: [],
   },
-) => `You are the factory's dream: you groom its shared memory in ${dir} while no worker needs you. Workers read CORE.md in every brief, see one line per topic, and find notes by semantic search over each note's summary and body, ranked with its topic's README. Groom it so that retrieval finds the right note and the most important comes first.
-
-The structure, three tiers:
-- CORE.md: the fact-and-behavior tier. The lessons nearly every run needs, most important first, verified; link nothing, say it. Its top holds for every rig; a \`## rig: <name>\` section holds what nearly every run in that rig needs, and only that rig's workers read it. Every worker re-reads it on every turn, so each part (the top, each rig section) stays under ${CORE_BUDGET} bytes, one short line per lesson (at most 200 characters: the rule, not its story; the story goes in a note). Briefs cut a part at that budget, so what is past it is lost to them: move detail into topic notes, which search finds.
-- <topic>/README.md: frontmatter \`summary:\` one line saying what the topic covers (briefs show it), then the topic's notes listed most important first, one line each.
-- <topic>/LONG.md: the long tier. One merged lesson per \`## summary\` heading, followed by a comment \`<!-- id: {"id":"...", ...} -->\`. A tiering pass (\`factory memory compact\`, which runs after you finish) merges an aging, used short note in here on its own. Never change an entry's \`id\`: usage counts and renames follow it. You can still edit an entry's body, or merge two entries into one by hand (see point 7): when you do, never delete the kept id, and never remove an alias already on it.
-- <topic>/<note>.md: the short tier. One learning each, frontmatter summary (one line a search can match), rig (only when it holds for one repo), from, at; then the body: what, why, how it was verified. Topics are short kebab-case names (beads, herdr, ci, fabriek-deploy); keep them few, 3 to ${topicCap} notes each.
-- inbox/: new notes from workers. Empty it every pass.
-A lesson that holds only while some bead is open (an owner's hold, a pending decision, a known outage) names that bead ("until fab-8aq4 closes") and never goes in CORE.md: when the bead closes, it is retired.
-A note about one bead's own status (already fixed on main, a duplicate of another, still live at HEAD) is not memory: it belongs in that bead's comments. Drop it, unless it teaches something about how to tell (how to check that a bead is already done, say).
-
-This pass:
-1. File every inbox note under a topic (git mv, or write a new file and git rm the old one). One that says what an existing note says: merge it into that note and git rm it. When its topic is already over the cap (see "Topics over the short-note cap" below), merge it into an existing note or that topic's LONG.md entry instead of adding a new short note.
-2. Merge duplicates anywhere; when two notes disagree, keep what the newer evidence shows and say so. Remove what is wrong, stale, or so specific to one run that no other would use it. Retire or rewrite whatever waits on a bead in "Closed beads" below. A note never shown in a search for 30 days and never helping is a candidate to drop, unless it is newer than that.
-3. Read the run journal below for lessons no note holds yet: a station that failed for a reason the next worker could have avoided, a fix that worked, a review finding that recurs, a person's decision later runs should follow. Write each as a note. Skip the routine.
-4. Rewrite each touched topic's README and CORE.md so their order is by importance: what helped workers most (Usage below) first, then what holds most broadly. A note that keeps helping belongs higher, its lesson in CORE.md when it holds for every rig.
-5. Manager skills, proposed in ${skillSources(dir)} (the manager reviews each new, changed or reaped one and installs it or not; a rejection comes back to you as an inbox note): the manager is the Claude session that runs the factory for the person; Manager activity below is what it was asked and what it ran. Where it did the same multi-step work three or more times (the same sequence of commands to triage a stuck station, answer one kind of worker question, check a rig, start work), write it a skill so it need not work it out again: <name>/SKILL.md, a kebab-case name, frontmatter \`name:\` and \`description:\` (one line saying when to use it: the manager picks skills by it), then the steps with the exact commands, what to look for and what to decide. Fold what the activity shows into an existing skill rather than writing a near copy. Reap (git rm -r) a skill that no longer fits how the factory works, or that the manager has not used in 30 days and is older than that (Skill uses below). Write no skill for one-off work.
-6. Promotion candidates below: each is a LONG.md entry that several runs have found helpful several times. Write it as one short line (under 200 characters) in CORE.md: the top when every rig needs it, else that entry's rig's \`## rig:\` section. The LONG.md entry stays as that line's detail.
-7. Possible duplicates below: each pair of LONG.md entries scores as saying nearly the same thing. Merge the two into one entry: keep the older id, add the removed entry's id to the kept entry's \`"aliases"\` list in its id line's JSON (so its usage count carries over; start the list if it has none), then delete the removed entry's heading, id line and body.
-8. Unsafe LONG.md files below: each holds text before its first \`## summary\` + id comment that a tiering pass cannot place in any entry, so it cannot merge a new note into that topic until you fix it. Rewrite the file by hand: either give that text its own \`## summary\` heading and an id comment, or delete it when it says nothing worth keeping.
-9. Topics over the short-note cap below: merge or drop notes in each one until it holds ${topicCap} or fewer. The tiering pass after you finish merges each topic's oldest notes once they are 7 days old or more, used or not, but it never drops one; where a note is under 7 days old, you decide what to merge or drop now.
-10. Proposals, one rung up the learning ladder: note, then a CORE.md line (rung \`core\`), then a line in a station's or the worker's instructions (\`instruction\`), then a skill or checklist (\`skill\`), then a mechanical check (\`check\`). For each failure class below (one station failing one way in 3 or more runs) and each re-learned lesson (an inbox note that repeats a CORE.md line, so the line did not change behavior), write at most 3 new proposals in all, the strongest first, as ${proposalsDir(dir)}/<name>.md: a kebab-case name, frontmatter \`rung:\` (core, instruction, skill or check: one rung above where the lesson lives now), \`target:\` (CORE.md, station:<name>, worker-system or a skill name), \`status: pending\`, \`evidence:\` (a JSON list of run ids and note paths), \`created:\` (today, YYYY-MM-DD); then the body: the exact line or change to install, and why. Skip one that an existing proposal below already covers, or that an inbox note says was rejected and why. Never edit factory code: a person installs the higher rungs.
-Work only in ${dir} (Read, Write, Edit, mkdir, git mv, git rm, git rm -r a reaped skill); the factory commits what you leave. Finish with one paragraph saying what you changed.
+) =>
+  stepPrompt('dream', {
+    dir,
+    coreBudget: String(CORE_BUDGET),
+    topicCap: String(topicCap),
+    skillSources: skillSources(dir),
+    proposalsDir: proposalsDir(dir),
+  }) +
+  `
 
 ## Manager skills (name: uses, last used: description)
 ${manager.skills.join('\n') || '(none yet)'}
