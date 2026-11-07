@@ -3194,7 +3194,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
     // so a name word followed by an assignment operator denies. `x,NAME=5` and `NAME++` deny too.
     if (
       namesVar(w, g.name) &&
-      (ARITH_OP.test(words[i + 1] ?? '') || w.includes(',' + g.name) || /(\+\+|--)$/.test(w))
+      (ARITH_OP.test(words[i + 1] ?? '') || w.includes(',' + g.name) || /^(\+\+|--)|(\+\+|--)$/.test(w))
     )
       return true
     // A subscript `[...]` can assign NAME (`${a[NAME=5]}`).
