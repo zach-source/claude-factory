@@ -319,11 +319,14 @@ const ALLOWED = [
   'rig',
 ]
 const DENIED = [
+  'unhold',
   'pkg-gate',
   'ui',
   'start',
   'fork',
   'tick',
+  'lease',
+  'herdr',
   'beads',
   'watch',
   'sync',
@@ -349,6 +352,10 @@ const DENIED = [
   'prs',
   'decisions',
   'plan',
+  'patrol',
+  'patrol-guard',
+  'pm',
+  'brief',
   'review',
   'gate-brief',
   'queue',
@@ -367,6 +374,7 @@ const DENIED = [
   'gc',
   'sweep',
   'wiki',
+  'settings',
 ]
 const switchCases = () => {
   const src = readFileSync(join(import.meta.dir, 'cli.ts'), 'utf8')

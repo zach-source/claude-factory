@@ -3,12 +3,16 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  devenvRows,
   HIDDEN,
   loadIntoEnv,
+  readDevenv,
   readSettings,
   resolveSettings,
   SETTING_KEYS,
+  setDevenv,
   setSetting,
+  unsetDevenv,
   unsetSetting,
 } from './settings'
 
@@ -113,7 +117,9 @@ describe('AC2: unknown key refused', () => {
     'constructor',
     'AX_IMAGE',
     'FACTORY_AX_IMAGE',
-    'devenv.builder',
+    'devenv.foo',
+    'devenv.',
+    'DEVENV.builder',
   ]) {
     test(`AC2 ${k}`, () => {
       const { file } = fresh()
@@ -238,5 +244,87 @@ describe('AC7: pure resolve', () => {
     expect(SETTING_KEYS.length).toBe(16)
     expect(stored).toEqual({ kubectl: 'k' })
     expect(env).toEqual({ FACTORY_MAX_RUNS: '3' })
+  })
+})
+
+describe('devenv.json store', () => {
+  const dfile = () => join(fresh().d, 'devenv.json')
+  test('AC1 set keeps other fields, writes 0600 pretty JSON, leaves no tmp file', () => {
+    const f = dfile()
+    writeFileSync(f, '{"push":"p","extra":1}', { mode: 0o644 })
+    setDevenv(f, 'devenv.builder', 'acme-builder')
+    expect(readFileSync(f, 'utf8')).toBe(
+      JSON.stringify({ push: 'p', extra: 1, builder: 'acme-builder' }, null, 2) + '\n',
+    )
+    expect(statSync(f).mode & 0o777).toBe(0o600)
+    expect(readdirSync(join(f, '..'))).toEqual(['devenv.json'])
+    expect(SETTING_KEYS.length).toBe(16)
+  })
+  test('AC2 unset removes one field; absent field or file writes nothing', () => {
+    const f = dfile()
+    unsetDevenv(f, 'devenv.token')
+    expect(existsSync(f)).toBe(false)
+    writeFileSync(f, '{"token":"t","push":"p"}')
+    unsetDevenv(f, 'devenv.token')
+    expect(JSON.parse(readFileSync(f, 'utf8'))).toEqual({ push: 'p' })
+    const before = readFileSync(f)
+    unsetDevenv(f, 'devenv.builder')
+    expect(readFileSync(f).equals(before)).toBe(true)
+  })
+  test.each(['', 'a\nb', 'a\x00b', 'a\x1bb', 'ghp_' + 'z'.repeat(36), TOKEN])(
+    'AC4 refuses %j and keeps the file',
+    v => {
+      const f = dfile()
+      expect(() => setDevenv(f, 'devenv.token', v)).toThrow()
+      expect(existsSync(f)).toBe(false)
+    },
+  )
+  test.each(['devenv.foo', 'devenv.', 'devenv', 'devenv.__proto__', 'devenv.toString', 'DEVENV.builder'])(
+    'AC4 key %j is refused',
+    k => {
+      const f = dfile()
+      expect(() => setDevenv(f, k, 'v')).toThrow()
+      expect(() => unsetDevenv(f, k)).toThrow()
+      expect(existsSync(f)).toBe(false)
+    },
+  )
+  test.each(['{bad', '[]', 'null', '"s"'])('AC5 defect file %j throws and stays', text => {
+    const f = dfile()
+    writeFileSync(f, text)
+    expect(() => setDevenv(f, 'devenv.push', 'x')).toThrow(f)
+    expect(() => unsetDevenv(f, 'devenv.push')).toThrow(f)
+    expect(() => readDevenv(f)).toThrow(f)
+    expect(readFileSync(f, 'utf8')).toBe(text)
+  })
+  test('AC6 rows', () => {
+    expect(devenvRows({})).toEqual([
+      'devenv.builder  (unset)  default',
+      'devenv.token  (unset)  default',
+      'devenv.push  (unset)  default',
+    ])
+    expect(devenvRows({ builder: 'b', token: TOKEN, push: 'a\nb' })).toEqual([
+      'devenv.builder  b  stored',
+      `devenv.token  ${HIDDEN}  stored`,
+      'devenv.push  a\\u{A}b  stored',
+    ])
+    expect(devenvRows({ builder: 1 })[0]).toBe('devenv.builder  (unset)  default')
+  })
+})
+
+describe('AC8 ax.env', () => {
+  test('stored ax.env fills FACTORY_AX_ENV; env wins', () => {
+    const { file } = fresh()
+    setSetting(file, 'ax.env', '/home/u/ax-env.json')
+    const env: Record<string, string | undefined> = {}
+    loadIntoEnv(file, env)
+    expect(env.FACTORY_AX_ENV).toBe('/home/u/ax-env.json')
+    const set: Record<string, string | undefined> = { FACTORY_AX_ENV: '/x' }
+    loadIntoEnv(file, set)
+    expect(set.FACTORY_AX_ENV).toBe('/x')
+  })
+  test.each(['rel/ax-env.json', '~/ax-env.json', ''])('refuses %j', v => {
+    const { file } = fresh()
+    expect(() => setSetting(file, 'ax.env', v)).toThrow()
+    expect(existsSync(file)).toBe(false)
   })
 })

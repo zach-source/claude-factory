@@ -8,3 +8,4 @@ mod/.claude-plugin/plugin.json
 *.md
 specs/
 deploy/
+herdr/mods/*/*.d.ts

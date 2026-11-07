@@ -2,7 +2,18 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
-import { loadIntoEnv } from './settings'
+import {
+  devenvRows,
+  isDevenvKey,
+  loadIntoEnv,
+  readDevenv,
+  readSettings,
+  setDevenv,
+  setSetting,
+  settingsRows,
+  unsetDevenv,
+  unsetSetting,
+} from './settings'
 import {
   appendFileSync,
   chmodSync,
@@ -136,6 +147,8 @@ import {
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
+import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
+import { INSTALL_VERB, META_WRITE, bdWrite, gatedCommand } from '../mod/hooks/view'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -179,6 +192,8 @@ import * as worker from './worker'
 import * as client from './client'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
+import * as leases from './lease'
+import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
@@ -461,6 +476,39 @@ async function launchAxManager(args: string[]) {
 const lease = () => {
   const m = ax.remoteManager()
   if (m) fail(m)
+}
+/**
+ * takes or renews the local manager lease (claude-factory-s01d.2). It returns the lease of the
+ * other holder when that holder keeps it. A busy lock refuses, unless this holder has a live lease.
+ */
+function localLease(want = leases.asker(process.env, process.ppid)): leases.Lease | undefined {
+  const release = hold('lease.lock')
+  if (!release) {
+    // a take of the same holder (a tick beside a patrol) holds the lock: a live lease of this holder is still ours
+    const cur = leases.readLease(HOME)
+    if (cur && cur.holder === want.holder && !leases.isStale(cur, Date.now())) return undefined
+    return cur ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
+  }
+  try {
+    const d = leases.take(HOME, want)
+    return d.ok ? undefined : d.lease
+  } finally {
+    release()
+  }
+}
+/** the board with no tick: what a manager without the lease shows. It changes no run. */
+async function readOnlyBoard(holder: leases.Lease) {
+  const runs: Row[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value, c } = current(id)
+      const def = await loadPinned(run.factory)
+      runs.push(row(run, def, value, c, agentOf(def, value, c)))
+    } catch (err) {
+      runs.push({ id, error: (err as Error).message })
+    }
+  }
+  return { readOnly: leases.leaseLine(holder, Date.now()), lease: holder, runs, manager: [], rigs: rigs() }
 }
 const fail = (msg: string): never => {
   throw new Error(msg)
@@ -2712,6 +2760,7 @@ export function runTokenSwap(
   }
   const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
   writeJson(file, { at: hit.at, until, ran: now } satisfies TokenSwapState)
+  if (ok) writeUnhold(runnerName, codex, now, now + TOKEN_SWAP_WAIT_MS, home)
   return until
 }
 
@@ -2735,6 +2784,123 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
     until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
     ran: now,
   } satisfies TokenSwapState)
+}
+
+type UnholdMark = { before: number; from: number; woke: number }
+const unholdFile = (runner: string, codex: boolean, home = HOME) =>
+  join(home, `unhold-${runner}${codex ? '-codex' : ''}.json`)
+
+/**
+ * This function reads an unhold mark: `before` is the time of the swap (only older holds wake), `from` is the
+ * first time a wake may happen, `woke` is the count woken so far. A mark that is not a well-formed object, or
+ * that has a before or from too far ahead, is deleted and counts as no mark.
+ */
+export function trustedUnhold(file: string, now: number): UnholdMark | undefined {
+  if (!existsSync(file)) return undefined
+  let m: unknown
+  try {
+    m = readJson<unknown>(file)
+  } catch {
+    m = undefined
+  }
+  const { before, from, woke } = (typeof m === 'object' && m !== null ? m : {}) as Record<string, unknown>
+  const num = (v: unknown): v is number => Number.isFinite(v)
+  if (
+    num(before) &&
+    num(from) &&
+    num(woke) &&
+    before <= now + LIMIT_SKEW_MS &&
+    from <= now + LIMIT_RESET_MAX_MS
+  )
+    return { before, from, woke }
+  rmSync(file, { force: true })
+  return undefined
+}
+
+/** This function writes the mark of a runner and harness. A rewrite keeps the old woke count. */
+export function writeUnhold(runner: string, codex: boolean, before: number, from: number, home = HOME) {
+  const woke = trustedUnhold(unholdFile(runner, codex, home), before)?.woke ?? 0
+  writeJson(unholdFile(runner, codex, home), { before, from, woke } satisfies UnholdMark)
+}
+
+/**
+ * This function picks the held stations to wake, the oldest hold first. Each pick takes one slot:
+ * room() applies the town cap `max` and the rig's maxRuns. It adds each pick to `busy`, so a caller can share
+ * one list over many calls.
+ */
+export function pickUnholds<T extends { rig: Pick<Rig, 'name' | 'maxRuns'> | undefined; at: number }>(
+  cands: T[],
+  busy: (string | undefined)[],
+  held: (string | undefined)[],
+  max = MAX_BUSY,
+): T[] {
+  const used = busy
+  const out: T[] = []
+  for (const c of [...cands].sort((a, b) => a.at - b.at)) {
+    if (room(c.rig, used, max, held) <= 0) continue
+    used.push(c.rig?.name)
+    out.push(c)
+  }
+  return out
+}
+
+/**
+ * This function runs once in each tick. For each unhold mark it wakes the stations held by a usage limit of the
+ * mark's runner and harness, as far as the free slots allow. It ends the mark when no such station is left, and then
+ * returns one manager mail. A station wakes only when it waits after an 'outage' hold with a limit or login reason
+ * of the right harness, that hold is older than the swap, and its runner is the mark's runner.
+ */
+export async function unholdPass(now: number): Promise<(Mail & { run: string })[]> {
+  const mails: (Mail & { run: string })[] = []
+  if (halted()) return mails
+  let slots: Awaited<ReturnType<typeof busyRigs>> | undefined
+  for (const runner of Object.values(runners).filter(r => !r.local)) {
+    for (const codex of [false, true]) {
+      const file = unholdFile(runner.name, codex)
+      const m = trustedUnhold(file, now)
+      if (!m || now < m.from) continue
+      const reason = codex
+        ? /^Codex (usage limit|login refused) \(/
+        : /^Claude (usage limit|login refused) \(/
+      const cands: { id: string; node: string; rig: Rig | undefined; at: number }[] = []
+      for (const id of runIds()) {
+        try {
+          const { run, value, c } = current(id)
+          const [node, sub] = where(value)
+          const last = c.log.at(-1)
+          if (sub !== 'waiting' || last?.node !== node || last.outcome !== 'outage') continue
+          if (last.at > m.before || !reason.test(last.summary)) continue
+          if (runnerOfStation(run, await loadPinned(run.factory), node).name !== runner.name) continue
+          cands.push({ id, node, rig: rigOf(run.repo), at: last.at })
+        } catch {
+          continue // a run dir before its state.json, or a def that does not load
+        }
+      }
+      slots ??= await busyRigs()
+      const picked = pickUnholds(cands, slots.busy, slots.held)
+      for (const p of picked)
+        post(p.id, {
+          type: 'MAIL',
+          from: 'factory',
+          to: p.node,
+          wake: true,
+          text: `[factory] The ${runner.name} ${codex ? 'Codex' : 'Claude'} token was swapped: the usage-limit hold ends.`,
+        })
+      const woke = m.woke + picked.length
+      if (picked.length < cands.length) writeJson(file, { ...m, woke } satisfies UnholdMark)
+      else {
+        rmSync(file, { force: true })
+        if (woke)
+          mails.push({
+            run: 'factory',
+            from: 'factory',
+            text: `Woke ${woke} stations held by the ${codex ? 'Codex' : 'Claude'} usage limit on ${runner.name} after the token swap.`,
+            at: now,
+          })
+      }
+    }
+  }
+  return mails
 }
 
 /** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5 */
@@ -5300,6 +5466,9 @@ function devenvPass(names: string[], force = false) {
     writeFileSync(join(HOME, 'devenv.stamp'), '') // the kick's clock: a pass started, whatever it finds
     if (!existsSync(devenvConfig())) return [`no ${devenvConfig()}: see docs/remote-runner.md`]
     const cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    const miss = devenv.configMissing(cfg)
+    if (miss.length)
+      return [`${devenvConfig()} lacks ${miss.join(', ')}: run factory settings set devenv.<field> <value>`]
     const image =
       process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the image the devenv is built in')
     const chosen = rigs().filter(r =>
@@ -6303,6 +6472,12 @@ async function tick(isPatrol = false) {
       reviewed: reviewedItems(),
     }
     const halt = halted()
+    try {
+      out.manager.push(...(await unholdPass(now)))
+    } catch (e) {
+      // the marks stay, so the next tick tries again; the run loop must go on
+      console.error(`unhold: ${e instanceof Error ? e.message : String(e)}`)
+    }
     for (const id of runIds()) {
       try {
         const { row, manager } = await tickRun(loadRun(id), now, halted())
@@ -7121,8 +7296,19 @@ async function linearPass(names: string[] = [], force = false) {
 /** ticks forever, so runs advance and the rigs dispatch with no console open. Each tick's own
  * kickSweeps starts a due sweep pass; this loop no longer calls sweep() itself. */
 async function loop(intervalMs: number) {
+  let said = ''
   for (;;) {
-    await tick()
+    const other = localLease({
+      holder: `loop:${process.pid}`,
+      kind: 'loop',
+      pid: process.pid,
+      at: Date.now(),
+    })
+    const line = other ? leases.leaseLine(other, Date.now()) : ''
+    // a loop without the lease waits and says so once, until the holder changes
+    if (line && line.split(' ')[0] !== said) console.error(`factory loop: no tick: ${line}`)
+    said = line.split(' ')[0] ?? ''
+    if (!other) await tick()
     await Bun.sleep(intervalMs)
   }
 }
@@ -8673,10 +8859,69 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
   return out
 }
 
-async function planFactsCmd() {
+async function planFactsText() {
   const facts = await gatherPlanFacts()
   writeJson(planFactsFile(), facts)
-  console.log(clipFactsJson(facts))
+  return clipFactsJson(facts)
+}
+
+async function planFactsCmd() {
+  console.log(await planFactsText())
+}
+
+/** `factory patrol|pm|brief|review --once`: one step of the manager, headless (src/once.ts) */
+async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[]) {
+  const codexAt = args.indexOf('--codex')
+  const codex = codexAt >= 0 ? args[codexAt + 1] : undefined
+  if (codexAt >= 0 && !(codex && CODEX_MODEL.test(codex))) fail('--codex needs a model name')
+  if (verb === 'patrol' && codexAt >= 0)
+    fail('the patrol cannot run on codex: codex has no PreToolUse hook, so the Bash guard cannot apply')
+  const release = hold(`${verb}.lock`)
+  if (!release) return `a ${verb} is already running`
+  try {
+    const io: Io = {
+      home: HOME,
+      cli: CLI,
+      factories: join(ROOT, 'factories') + '/',
+      settings: withoutFleet(),
+      planFacts: planFactsText,
+      gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
+      reviewFacts: key => JSON.stringify(reviewFacts(key)),
+    }
+    if (verb === 'patrol') return patrolOnce(io)
+    return verb === 'pm'
+      ? await pmOnce(io, codex)
+      : verb === 'brief'
+        ? await briefOnce(io, codex)
+        : await reviewOnce(io, codex)
+  } finally {
+    release()
+  }
+}
+
+/** `factory patrol-guard`: the patrol's Claude Code PreToolUse hook for Bash. It reads the hook JSON on stdin. */
+async function patrolGuard() {
+  let command: unknown
+  try {
+    command = JSON.parse(await Bun.stdin.text())?.tool_input?.command
+  } catch {}
+  const deny = (why: string) => {
+    console.error(why)
+    process.exitCode = 2 // Claude Code reads exit 2 as a deny and shows stderr to the model
+  }
+  if (typeof command !== 'string') return deny('the hook input has no Bash command')
+  const joined = command.replace(/\\\n/g, '')
+  const gated = gatedCommand(command)
+  if (gated) return deny(`${gated.deny} A patrol never decides this: leave it for the person.`)
+  if (INSTALL_VERB.test(joined))
+    return deny(
+      'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
+    )
+  if (META_WRITE.test(joined)) return deny('a subagent never writes bead metadata')
+  if (bdWrite(joined))
+    return deny(
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first',
+    )
 }
 
 /**
@@ -11145,6 +11390,7 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
+  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
@@ -11224,6 +11470,11 @@ const usage = `factory — herdr software factories on xstate
                                      tick starts one, at most once a minute)
   cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
+                                     (tick --keep-mail saves the tick and the manager's mail for patrol --once)
+  herdr install [--app-home <dir>]   copy the Herdr app manager mod and its layout into the app folder
+  lease [status|release]             who holds the local manager lease (only its holder ticks); release it
+  patrol --once                      one headless manager patrol: answers the kept mail and works the board
+  pm --once | brief --once | review --once [--codex <model>]   one headless pm, gate-brief or skill/proposal review
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
@@ -11235,6 +11486,7 @@ const usage = `factory — herdr software factories on xstate
   mail <run> <node|manager> [--wake] '<text...>'|--text-file path  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> '[text...]'             nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
+  unhold <runner> [--codex]          after a token swap by hand: wake the stations that runner's usage limit holds, as far as slots are free
   fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
@@ -11406,11 +11658,45 @@ if (import.meta.main && !outboxCmd)
         if (args.length < 3) refuseWorker('fork') // a fork with a note is refused by managerSender
         await fork(args[0], args[1], args.slice(2).join(' '))
         break
-      case 'tick':
+      case 'tick': {
         refuseWorker('tick', true)
         lease()
-        console.log(JSON.stringify(await tick(true)))
+        const other = localLease()
+        if (other) {
+          console.log(JSON.stringify(await readOnlyBoard(other)))
+          break
+        }
+        const out = await tick(true)
+        if (args.includes('--keep-mail')) keepTick(HOME, out) // for patrol --once
+        console.log(JSON.stringify(out))
         break
+      }
+      case 'patrol':
+      case 'pm':
+      case 'brief': {
+        refuseWorker(cmd, true)
+        if (!args.includes('--once'))
+          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model>]'}`)
+        lease()
+        // only the lease holder patrols (claude-factory-s01d.2)
+        const other = localLease()
+        if (other) fail(`no ${cmd}: ${leases.leaseLine(other, Date.now())}`)
+        console.log(await onceCmd(cmd, args))
+        break
+      }
+      case 'patrol-guard':
+        await patrolGuard()
+        break
+      case 'lease': {
+        refuseWorker('lease', true)
+        if (args[0] === 'release' && args.length === 1) {
+          leases.release(HOME)
+          console.log('released the manager lease')
+        } else if (!args.length || (args[0] === 'status' && args.length === 1))
+          console.log(leases.leaseLine(leases.readLease(HOME), Date.now()))
+        else fail('usage: factory lease [status|release]')
+        break
+      }
       case 'beads':
         refuseWorker('beads')
         await beadsPass()
@@ -11457,6 +11743,20 @@ if (import.meta.main && !outboxCmd)
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
+      case 'herdr': {
+        refuseWorker('herdr', true)
+        const at = args.indexOf('--app-home')
+        if (args[0] !== 'install' || args.length !== (at > 0 ? 3 : 1) || (at > 0 && !args[at + 1]))
+          fail('usage: factory herdr install [--app-home <dir>]')
+        const repo = resolve(import.meta.dir, '..')
+        const app = at > 0 ? resolve(args[at + 1]!) : herdrApp.appHomeOf(process.env)
+        const out = herdrApp.install(repo, app, join(repo, 'bin', 'factory'), HOME)
+        console.log(
+          `installed the factory mod in ${out.mod} and the layout in ${out.layout}, for the home ${HOME}`,
+        )
+        console.log("in the Herdr app, run layout.switch {name: 'factory'} to show it")
+        break
+      }
       case 'home':
         console.log(HOME)
         break
@@ -12137,7 +12437,13 @@ if (import.meta.main && !outboxCmd)
       }
       case 'review': {
         const [sub, a1, a2] = args
-        if (sub === 'facts') console.log(JSON.stringify(reviewFacts(a1)))
+        if (args.includes('--once')) {
+          refuseWorker('review', true)
+          lease()
+          const other = localLease()
+          if (other) fail(`no review: ${leases.leaseLine(other, Date.now())}`)
+          console.log(await onceCmd('review', args))
+        } else if (sub === 'facts') console.log(JSON.stringify(reviewFacts(a1)))
         else if (sub === 'set') reviewSet(a1, a2)
         else fail('review facts <key> | set <key> <file>')
         break
@@ -12315,6 +12621,18 @@ if (import.meta.main && !outboxCmd)
         post(run.id, { type: 'RETRY' })
         break
       }
+      case 'unhold': {
+        refuseWorker('unhold', true)
+        const codex = args[1] === '--codex'
+        const r = args[0] ? runners[args[0]] : undefined
+        if (!r || r.local !== false || args.length > (codex ? 2 : 1))
+          fail('usage: factory unhold <runner> [--codex]; the runner is a remote one, such as ax')
+        writeUnhold(r!.name, codex, Date.now(), Date.now())
+        console.log(
+          `marked: the next tick wakes the ${r!.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
+        )
+        break
+      }
       case 'goto': {
         refuseWorker('goto')
         const run = loadRun(args[0])
@@ -12419,6 +12737,29 @@ if (import.meta.main && !outboxCmd)
         if (trapped.length) fail(`${def.name}: no way to done from ${trapped.join(', ')}`)
         console.log(`${def.name}: valid, ${Object.keys(def.nodes).length} stations from ${def.start}`)
         if (unreachable.length) console.log(`only reached by @station or goto: ${unreachable.join(', ')}`)
+        break
+      }
+      case 'settings': {
+        const file = join(HOME, 'settings.json')
+        const dfile = devenvConfig()
+        const [sub = 'list', key, value] = args
+        const usage = 'usage: factory settings [list] | set <key> <value> | unset <key>'
+        if (sub === 'list' && args.length <= 1) {
+          // BOOT_ENV: process.env already holds the stored values that loadIntoEnv filled in
+          console.log(
+            [...settingsRows(readSettings(file), BOOT_ENV), ...devenvRows(readDevenv(dfile))].join('\n'),
+          )
+        } else if (sub === 'set' && args.length === 3) {
+          refuseWorker('settings set')
+          if (isDevenvKey(key!)) setDevenv(dfile, key!, value!)
+          else setSetting(file, key!, value!)
+          console.log(`set ${key}`)
+        } else if (sub === 'unset' && args.length === 2) {
+          refuseWorker('settings unset')
+          if (isDevenvKey(key!)) unsetDevenv(dfile, key!)
+          else unsetSetting(file, key!)
+          console.log(`unset ${key}`)
+        } else fail(usage)
         break
       }
       case 'rig': {

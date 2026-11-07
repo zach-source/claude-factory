@@ -12,3 +12,6 @@ mod/tsconfig.json
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+# herdr-app check writes these into the mod folder
+herdr/mods/*/*.d.ts
+herdr/mods/*/jsconfig.json

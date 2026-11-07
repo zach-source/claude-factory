@@ -54,13 +54,22 @@ import {
   quickAnswer,
   statusText,
   cutText,
+  gatedCommand,
+  PATROL_MS,
+  PATROL_VERB,
+  PATROL_LOG_CAP,
+  PATROL_LOG_RECENT,
+  PM_LOG_CAP,
+  BRIEFER_LOG_CAP,
+  REVIEWER_LOG_CAP,
+  bdWrite,
+  INSTALL_VERB,
+  META_WRITE,
   type Interview,
 } from './view'
 
 const PANE = 'factory'
 const TICK_MS = 5000
-// ponytail: a heartbeat costs one manager turn per interval while workers run; make it a setting if that hurts
-const PATROL_MS = 10 * 60_000
 /** a patrol subagent that never answers (a dead model turn, a wedged tool) stops blocking new ones */
 const PATROL_WATCHDOG_MS = 15 * 60_000
 /** a denied spawn waits this long before the next attempt, instead of asking again every tick */
@@ -69,67 +78,21 @@ const PATROL_TYPE = 'factory:patrol'
 /** a run the main chat touched stays out of a patrol for this long: the person and a patrol
  * must not act on the same run at once */
 const PATROL_HOLD_MS = 5 * 60_000
-/** matches a patrol's own Bash command that acts on a run: recorded for the patrol log */
-const PATROL_VERB = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|queue|start)\b/
 /** Matches a main-chat Bash command that acts on one run. The 2nd capture group holds the run id.
  * `touchedTargets` below uses `matchAll` with this pattern to find every match in a compound
  * command (`&&`, `;`), not only the first (claude-factory-72v.20). `matchAll` needs the `g` flag
  * set here. `String.prototype.matchAll` clones the pattern on each call, so reuse of this one
  * `RegExp` object across calls is safe. */
 const TOUCH_RE = /\bfactory\s+(mail|poke|retry|goto|fork|abort|rm|decide)\s+(\S+)/g
-/** patrol-log.jsonl keeps at most this many lines, oldest dropped first */
-const PATROL_LOG_CAP = 50
-/** how many of the newest log entries a fresh patrol's own prompt carries, and `/factory patrols` prints */
-const PATROL_LOG_RECENT = 10
 const PM_TYPE = 'factory:pm'
 /** a pm turn that never answers (a dead model turn) stops blocking the next one. This mirrors the patrol's own watchdog. */
 const PM_WATCHDOG_MS = 15 * 60_000
-/** pm-log.jsonl keeps at most this many lines, oldest dropped first */
-const PM_LOG_CAP = 50
 const BRIEFER_TYPE = 'factory:briefer'
 /** a briefer turn that never answers (a dead model turn) stops blocking the next one. This mirrors the patrol's own watchdog. */
 const BRIEFER_WATCHDOG_MS = 10 * 60_000
-/** brief-log.jsonl keeps at most this many lines, oldest dropped first */
-const BRIEFER_LOG_CAP = 50
 const REVIEWER_TYPE = 'factory:reviewer'
-/** `factory skills|proposals install|reject`, with the path before `factory` and quotes or extra space between the words */
-const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+['"]?(?:install|reject)\b/
-// [SECURITY] claude-factory-ruq0: a bd metadata write flag removes a hold mark. Best-effort text match
-// with no anchor on bd; a split flag in quotes, a script or bd sql get past it (claude-factory-lmi6).
-// The `--metadata-field` read filter does not match: the lookahead refuses a word char or '-'.
-/** a bd metadata write flag */
-const META_WRITE = /--(?:set-|unset-)?metadata(?![\w-])/
-/** the bd verbs a subagent runs: reads and a comment. None has a label or metadata write flag. */
-const BD_READ = new Set([
-  'show',
-  'view',
-  'list',
-  'ready',
-  'search',
-  'children',
-  'comments',
-  'comment',
-  'undefer',
-])
-/**
- * [SECURITY] true when the command runs bd with a verb that is not a read (claude-factory-0wv6).
- * This is an allowlist. A list of label spellings never closes, because bd (cobra) has flag aliases,
- * flags before the verb and verb aliases. The shell drops `\`, `'` and `"`, so this code drops them first.
- * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
- */
-function bdWrite(command: string): boolean {
-  const s = command.replace(/[\\'"]/g, '')
-  if (/--add-label|--set-labels/.test(s)) return true
-  for (const m of s.matchAll(/\bbd\b/gi)) {
-    const verb = /^\s*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!
-    if (!BD_READ.has(verb)) return true
-  }
-  return false
-}
 /** a reviewer turn that never answers stops blocking the next one. This mirrors the briefer's own watchdog. */
 const REVIEWER_WATCHDOG_MS = 10 * 60_000
-/** review-log.jsonl keeps at most this many lines, oldest dropped first */
-const REVIEWER_LOG_CAP = 50
 /** verbs act()'s own args[0] uses for the same run-acting commands, for the console's buttons */
 const TOUCH_VERBS = new Set(['mail', 'poke', 'retry', 'goto', 'fork', 'abort', 'rm', 'decide'])
 const board = atom({ plugin: 'factory', key: 'board' } as const, { runs: [], mail: [] } as FactoryBoard)
@@ -340,8 +303,15 @@ async function tick($: EngineInterface) {
       reviews?: FactoryReviewItem[]
       reviewed?: FactoryReviewRow[]
       halt?: 'stopping' | 'paused'
+      readOnly?: string
     }
     if (res.busy) return
+    // claude-factory-s01d.2: another manager holds the lease. Show its board, and do not patrol or spawn.
+    if (res.readOnly) {
+      await update($, board, b => ({ ...b, runs: res.runs, staleSince: undefined }))
+      $.ui.status(`factory: read-only: ${line(res.readOnly, 160)}`)
+      return
+    }
     // what waits on the manager, for the patrol prompt: the reviewed items first, then those with no verdict yet
     rt.reviewRows = [...(res.reviewed ?? []), ...(res.reviews ?? [])]
     await update($, board, b => ({
@@ -1286,174 +1256,6 @@ async function jump($: EngineInterface, pane: string) {
   const r = await $.process.run(['herdr', 'agent', 'focus', pane]).catch(() => undefined)
   if (r?.exitCode !== 0) $.ui.toast(`factory: could not focus ${pane}`)
 }
-
-/** the index of the first place where a command holds an unescaped `$` or backtick outside single quotes (one rule for `$(`, `${`,
- * `$'`, `$[`, `$x` and any later `$` form), or an unquoted `(` (`<(`, `>(`, zsh `=(` and glob-qualifier code),
- * or a form this one-pass scan cannot read: a here-document, a word-start `#` comment, an unclosed quote
- * (the index of the quote that opened it). -1 when there is none.
- * Each of those can hide a `'` that makes a naive scan think later text is quoted, so they fail closed. */
-function substitutionIn(command: string): number {
-  // no pre-join of backslash-newline: the scan pairs each backslash with the next char, so `\\` + newline stays literal
-  let state: 'plain' | 'single' | 'double' = 'plain'
-  let open = -1
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i]!
-    const two = command.slice(i, i + 2)
-    if (state === 'single') {
-      if (c === "'") state = 'plain'
-    } else if (c === '\\') i++
-    else if (c === '$' || c === '`') return i
-    else if (state === 'double') {
-      if (c === '"') state = 'plain'
-    } else if (c === "'") {
-      state = 'single'
-      open = i
-    } else if (c === '"') {
-      state = 'double'
-      open = i
-    } else if (c === '(' || two === '<<') return i
-    else if (c === '#' && (i === 0 || /[\s;&|()]/.test(command[i - 1]!))) return i
-  }
-  return state === 'plain' ? -1 : open
-}
-
-/** Drops each backslash-newline pair that the shell reads as a line continuation: one preceded by an odd
- * number of backslashes. With an even number, the last backslash escapes itself and the newline ends the
- * command. (Inside single quotes the shell keeps the pair; dropping it there only shortens an argument.) */
-const joinLines = (s: string) => s.replace(/(?<!\\)((?:\\\\)*)\\\n/g, '$1')
-
-/** claude-factory-0jr2.4: true if a comment line ends with a backslash and more text follows.
- * The shell keeps that pair. The comment ends at the newline, and the next line runs as a command.
- * The join would glue the two lines. A `#` after a space in quotes also counts: this is an extra question, which is safe.
- * The rule is the same as commentLineContinues in src/worker-hook.ts. */
-function commentContinues(cmd: string): boolean {
-  let k = cmd.indexOf('#')
-  while (k !== -1) {
-    if (k === 0 || /[\s;&|()<>`]/.test(cmd[k - 1]!)) {
-      const e = cmd.indexOf('\n', k)
-      if (e === -1) return false
-      if (cmd[e - 1] === '\\' && /\S/.test(cmd.slice(e + 1))) return true
-      k = cmd.indexOf('#', e)
-    } else k = cmd.indexOf('#', k + 1)
-  }
-  return false
-}
-
-/** The length of the command text that an Allow question shows. */
-const CUT = 300
-
-/** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
- * person sees that a longer command may hold a second command. */
-function shownCommand(command: string): string {
-  const head = cutText(command, CUT)
-  return head.length === command.length
-    ? command
-    : `${head}… (${command.length - head.length} of ${command.length} characters not shown)`
-}
-
-/** which Bash commands the manager model may not run without the person's explicit Allow: a gate decision,
- * answering a person's bd decision, and starting a bead that carries its owner's decisions. Each is the
- * person's call, not the model's, even though FACTORY_FROM (which refuses these for a worker) is unset here.
- * The shell still runs a backslash-newline line continuation and a quoted newline as one command, so this
- * drops each pair that follows an odd run of backslashes (joinLines; bash joins with NO character, even
- * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
- * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
- * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
-function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
-  // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
-  const unreadable = commentContinues(rawCommand)
-  const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
-  const at = /\bfactory\b/.test(command) ? substitutionIn(rawCommand) : -1
-  let substitution: { phrase: string; deny: string; detail: string } | undefined
-  if (at >= 0) {
-    // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
-    let from = Math.max(0, at - 40)
-    if (from > 0 && /[\uDC00-\uDFFF]/.test(rawCommand[from] ?? '')) from--
-    let to = at + 40
-    if (to < rawCommand.length && /[\uD800-\uDBFF]/.test(rawCommand[to - 1] ?? '')) to--
-    const around = `${from > 0 ? '…' : ''}${rawCommand.slice(from, to)}${to < rawCommand.length ? '…' : ''}`
-    // a harmless first hit must not hide a later one: count the candidates after the head and the window (no quote state, so it over-counts)
-    const more = (rawCommand.slice(Math.max(to, 300)).match(/[$`(]/g) ?? []).length
-    const unseen =
-      more > 0
-        ? ` ${more} more dollar signs, backticks or parentheses come after this text and are not shown.`
-        : ''
-    substitution = {
-      phrase:
-        'run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read',
-      deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
-      detail: `The first one is at character ${at}: «${around}».${unseen}`,
-    }
-  }
-  // an unreadable form is matched twice: the pair as the shell reads it (a newline) and the full join. Take the larger count.
-  const reads = (
-    unreadable
-      ? [(t: string) => t.replace(/\\\n/g, '\n'), (t: string) => t.replace(/\\\n/g, '')]
-      : [joinLines]
-  ).map(f => {
-    const text = f(rawCommand)
-    // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
-    return {
-      text,
-      cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
-    }
-  })
-  const kinds = GATED_KINDS.flatMap(k => {
-    const per = reads.map(r => {
-      const ends = [...r.text.matchAll(k.re)].map(m => m.index! + m[0].length)
-      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length }
-    })
-    const count = Math.max(...per.map(x => x.count))
-    return count ? [{ ...k, count, hidden: Math.max(...per.map(x => x.hidden)) }] : []
-  })
-  if (!unreadable && !substitution && !kinds.length) return null
-  const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
-  const named = [
-    ...(substitution ? [substitution.phrase] : []),
-    ...kinds.map(k => `${k.phrase}${times(k.count)}`),
-  ]
-  const hidden = kinds.filter(k => k.hidden > 0)
-  const who = unreadable
-    ? 'run a form the hook cannot read (a comment line ends with a backslash, so the next line runs as a command)'
-    : ''
-  const names = [...(who ? [who] : []), ...named]
-  return {
-    question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
-    deny: [
-      ...(unreadable
-        ? [
-            'The person did not confirm this form. Remove the backslash at the end of the comment line, or pass long text by file.',
-          ]
-        : []),
-      ...(substitution ? [substitution.deny] : []),
-      ...kinds.map(k => k.deny),
-    ].join(' '),
-  }
-}
-
-/** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
-const GATED_KINDS = [
-  {
-    re: /\bfactory\s+decide\b/g,
-    phrase: 'decide a factory gate',
-    deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
-  },
-  {
-    re: /\bfactory\s+decisions\s+answer\b/g,
-    phrase: "answer a person's bd decision",
-    deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
-  },
-  {
-    re: /\bfactory\s+start\b[\s\S]*?--owned\b/g,
-    phrase: "start a bead carrying its owner's decisions",
-    deny: 'The person did not confirm starting this owner-only bead.',
-  },
-  {
-    re: /\bfactory\s+wiki\b[\s\S]*?\binit\b/g,
-    phrase: 'create the factory wiki and set its remote',
-    deny: 'The person did not confirm this wiki init. Ask them to run it.',
-  },
-]
 
 /** Every run id a Bash command names with a run-acting verb (`mail`, `poke`, `retry`, `goto`,
  * `fork`, `abort`, `rm`, `decide`), not only the first. A compound command (`a && b`, `a; b`)
