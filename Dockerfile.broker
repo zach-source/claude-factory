@@ -11,7 +11,7 @@ RUN git clone ${SUBSTRATE_REPO} /substrate && git -C /substrate checkout ${SUBST
 WORKDIR /substrate
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /kubectl-ate ./cmd/kubectl-ate
 
-FROM oven/bun:1.3.13-debian
+FROM oven/bun:1.4.4-debian
 ARG KUBECTL_VERSION=v1.36.3
 # POST /token/best runs bin/claude-token, which needs bash, jq and the op CLI. Pass the op release and the
 # SHA-256 of its linux amd64 zip from the op release page; the build fails when they do not match

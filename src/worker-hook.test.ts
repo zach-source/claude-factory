@@ -1081,7 +1081,7 @@ async function run(
     stdin: new Response(stdin),
     stdout: 'pipe',
     stderr: 'pipe',
-    env,
+    env: { ...process.env, CLAUDE_PROJECT_DIR: undefined, ...env },
     cwd,
   })
   const out = await new Response(p.stdout).text()
@@ -1979,34 +1979,44 @@ test('denyReason reads an undefined push dir when neither gate.cwd nor root is s
 // calls. claude-factory-zl5.13: a fake root with no real git repo cannot resolve origin/HEAD at
 // all, so it denies every branch-targeting push there, not only main and master.
 test('run as `bun src/worker-hook.ts`, with no origin/HEAD to read, main and other branches both deny (claude-factory-zl5.13)', async () => {
-  const denyInput = JSON.stringify({
-    tool_name: 'Bash',
-    cwd: '/w',
-    tool_input: { command: 'git push origin main' },
-  })
-  const denied = await run(denyInput)
-  expect(denied.code).toBe(0)
-  expect(JSON.parse(denied.out.trim())).toEqual({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: PUSH_REASON,
-    },
-  })
-  const otherInput = JSON.stringify({
-    tool_name: 'Bash',
-    cwd: '/w',
-    tool_input: { command: 'git push origin factory/x' },
-  })
-  const deniedOther = await run(otherInput)
-  expect(deniedOther.code).toBe(0)
-  expect(JSON.parse(deniedOther.out.trim())).toEqual({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: PUSH_REASON,
-    },
-  })
+  const dir = mkdtempSync(join(tmpdir(), 'wh-parent-root-'))
+  Bun.spawnSync(['git', 'init', '-q', '-b', 'main', dir])
+  Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+  const project = process.env.CLAUDE_PROJECT_DIR
+  process.env.CLAUDE_PROJECT_DIR = dir
+  try {
+    const denyInput = JSON.stringify({
+      tool_name: 'Bash',
+      cwd: '/w',
+      tool_input: { command: 'git push origin main' },
+    })
+    const denied = await run(denyInput)
+    expect(denied.code).toBe(0)
+    expect(JSON.parse(denied.out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: PUSH_REASON,
+      },
+    })
+    const otherInput = JSON.stringify({
+      tool_name: 'Bash',
+      cwd: '/w',
+      tool_input: { command: 'git push origin factory/x' },
+    })
+    const deniedOther = await run(otherInput)
+    expect(deniedOther.code).toBe(0)
+    expect(JSON.parse(deniedOther.out.trim())).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: PUSH_REASON,
+      },
+    })
+  } finally {
+    if (project === undefined) delete process.env.CLAUDE_PROJECT_DIR
+    else process.env.CLAUDE_PROJECT_DIR = project
+  }
 }, 10_000)
 
 // claude-factory-zl5.13: this test needs origin/HEAD to resolve, so it uses a real scratch repo

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cliRunner, personEnv } from './server-api'
@@ -52,7 +52,9 @@ describe('cliRunner', () => {
   test('a timeout kills the process and reports timedOut', async () => {
     env()
     const home = tmp()
-    const r = await cliRunner(home, undefined, 50)(['status'])
+    const cli = join(home, 'slow.ts')
+    writeFileSync(cli, 'await Bun.sleep(30_000)\n')
+    const r = await cliRunner(home, cli, 50)(['status'])
     expect(r.timedOut).toBe(true)
   })
 })

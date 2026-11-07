@@ -19,5 +19,6 @@ Known gaps on 2026-10-27 (after claude-factory-fxu, claude-factory-qo6i, claude-
 
 - The `asd-ste100` hooks (the session brief and the score check) run only for Claude workers. Codex and pi workers get its skill and the STE rule in its brief, but not its hooks.
 - A VM worker gets the image's plugins for its station's skills. A laptop worker gets a plugin only when the person has it on. A skill name must be in the image (`VM_PLUGINS`), so a skill is on every backend or refused.
+- The `egm` review runs only for Claude workers. Codex and pi workers get no egm skill or review instruction (claude-factory-yt5d).
 
-**Version**: 1.0.2 | **Ratified**: 2026-10-26 | **Last Amended**: 2026-10-27
+**Version**: 1.0.3 | **Ratified**: 2026-10-26 | **Last Amended**: 2026-11-07

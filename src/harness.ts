@@ -32,6 +32,11 @@ export const VM_PLUGINS: Record<string, string> = {
   egm: '/opt/plugins/egm',
 }
 
+const CLAUDE_ONLY_SKILLS = ['egm']
+// The egm reviewers use Claude plugin agent types. Use com.openai when guarded codex supports subagents.
+export const skillsFor = (h: Harness | null, skills: string[]) =>
+  h === 'codex' || h === 'pi' ? skills.filter(s => !CLAUDE_ONLY_SKILLS.includes(s)) : skills
+
 /** the skill dirs (<plugin>/skills/<name>) of these plugin dirs; a plugin with no skills adds none */
 export const skillDirs = (plugins: string[]) =>
   plugins.flatMap(p => {
