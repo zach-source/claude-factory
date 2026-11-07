@@ -1,4 +1,5 @@
-import { afterAll, expect, setDefaultTimeout, test } from 'bun:test'
+import { afterAll, expect, setDefaultTimeout, spyOn, test } from 'bun:test'
+import * as fs from 'node:fs'
 import {
   chmodSync,
   existsSync,
@@ -220,6 +221,17 @@ const alive = (pid: number) => {
 test('the dead-process check rejects a live process', async () => {
   expect(alive(process.pid)).toBe(true)
   expect(await dead(process.pid)).toBe(false)
+})
+
+test('the dead-process check keeps a live process when stat fails', () => {
+  const read = spyOn(fs, 'readFileSync').mockImplementationOnce(() => {
+    throw new Error('stat unavailable')
+  })
+  try {
+    expect(alive(process.pid)).toBe(true)
+  } finally {
+    read.mockRestore()
+  }
 })
 
 // A zombie has exited, even when the VM init does not reap it. Poll for process exit.
