@@ -3094,6 +3094,40 @@ function envOptionScan(
   return { cmdStart: words.length, clearsAll }
 }
 
+/** Builtins that can write a shell variable. touchesBeadsActor reads every later word after one. */
+const VAR_WRITERS = new Set([
+  'export',
+  'declare',
+  'typeset',
+  'readonly',
+  'local',
+  'unset',
+  'printf',
+  'print',
+  'read',
+  'mapfile',
+  'readarray',
+  'getopts',
+  'vared',
+  'integer',
+  'float',
+  'private',
+  'zparseopts',
+  'zstyle',
+  'zstat',
+  'strftime',
+  'sysread',
+  'getln',
+])
+
+/** True when `w` holds `name` and the text before it is not `$` or `${`. A `$NAME` read is not a write. */
+function namesVar(w: string, name: string): boolean {
+  for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
+    if (w[i - 1] !== '$' && !(w[i - 1] === '{' && w[i - 2] === '$')) return true
+  }
+  return false
+}
+
 /**
  * This function returns true when a word in `words` sets, clears, or (re-)exports BEADS_ACTOR.
  *
@@ -3123,21 +3157,21 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
+  let writerSeen = false
   // the index of each bd word
   const bdIdx: number[] = []
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (w.startsWith(g.name + '=')) return true
+    if (w.startsWith(g.name + '=') || w.startsWith(g.name + '+=')) return true
+    // claude-factory-qn8a.25: a builtin in VAR_WRITERS can write a variable. If a later word in
+    // the segment holds the name, deny. A `$NAME` or `${NAME}` read does not count.
+    // This check reads no option grammar. So `+x`, `-v`, `-vNAME`, `--` and a second operand
+    // cannot hide the name.
+    // ponytail: a name that the shell builds at run time (`printf -v "$v"`) is not found. The sandbox covers it.
+    if (writerSeen && namesVar(w, g.name)) return true
     const b = baseWord(w)
+    if (VAR_WRITERS.has(b)) writerSeen = true
     if (b === g.cmd) bdIdx.push(i)
-    // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
-    // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
-    if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
-      let j = i + 1
-      while (words[j]?.startsWith('-') && words[j] !== '--') j++
-      if (words[j] !== undefined && (words[j] === g.name || words[j]!.startsWith(g.name + '='))) return true
-    }
-    if (b === 'unset' && words.slice(i + 1).includes(g.name)) return true
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {

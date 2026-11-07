@@ -45,7 +45,7 @@ const DENY = (n: string, c: string) => [
   `export -- ${n}; ${c}`,
   `declare -n r=${n}; ${c}`,
   `${n}+=x ${c}`,
-  ...WRITERS.map((w) => `${w} ${n}; ${c}`),
+  ...WRITERS.map(w => `${w} ${n}; ${c}`),
 ]
 const ALLOW = (n: string, c: string) => [
   `printf %s "$${n}"`,
