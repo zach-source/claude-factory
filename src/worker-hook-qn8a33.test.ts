@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   denyReason,
   GITLAB_PUSH_OPTION_REASON,
@@ -145,6 +148,8 @@ for (const g of GATES) {
 // glab api form W: the field text of a note or merge request create call
 FILES['n.md'] = 'ok\n/approve\n'
 FILES['ok.md'] = 'looks good'
+FILES['~/n.md'] = 'looks good'
+FILES['-'] = 'looks good'
 const NOTE = 'projects/1/merge_requests/5/notes'
 const API_QA_DENY = [
   `glab api -X POST ${NOTE} -f body=/merge`,
@@ -198,6 +203,34 @@ for (const g of GATES) {
     expect(seen.filter(p => p === 'ok.md' || p === '-')).toEqual([])
   })
 }
+
+// claude-factory-qn8a.33: the real hook reads an @file against the payload cwd
+async function runHook(cwd: string, command: string) {
+  const p = Bun.spawn(['bun', join(import.meta.dir, 'worker-hook.ts')], {
+    stdin: new Response(JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command } })),
+    stdout: 'pipe',
+    env: { ...process.env, FACTORY_FROM: 'review' },
+  })
+  const out = (await new Response(p.stdout).text()).trim()
+  return out ? JSON.parse(out).hookSpecificOutput : undefined
+}
+test('the real hook reads a note @file in the payload cwd', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'qn8a33-'))
+  try {
+    writeFileSync(join(dir, 'n.md'), '/approve\n')
+    writeFileSync(join(dir, 'ok.md'), 'looks good')
+    writeFileSync(join(dir, 'big.md'), 'x'.repeat(65537))
+    const call = (f: string) => `glab api --method POST projects/:id/merge_requests/5/notes -F body=@${f}`
+    expect(await runHook(dir, call('n.md'))).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: GLAB_QUICK_ACTION_REASON,
+    })
+    expect(await runHook(dir, call('big.md'))).toMatchObject({ permissionDecisionReason: GLAB_TEXT_REASON })
+    expect(await runHook(dir, call('ok.md'))).toBeUndefined()
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
+}, 30_000)
 
 // git push options: a merge_request push option can merge an MR or run a quick action
 const PUSH_GATES = [{ headOf: () => 'factory/x' }, { headOf: () => 'factory/x', originHead: () => 'main' }]

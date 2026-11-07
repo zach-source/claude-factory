@@ -5590,7 +5590,9 @@ export const GLAB_TEXT_REASON =
  * The rule is a shape, not a list of names, because GitLab adds quick actions (/submit_review).
  */
 function quickActionLine(text: string): boolean {
-  return text.split(/\r\n|[\n\r]/).some(l => /^\/[A-Za-z][^\s/]*(\s|$)/.test(l.replace(/^[\s​-‍⁠﻿]+/, '')))
+  return text
+    .split(/\r\n|[\n\r]/)
+    .some(l => /^\/[A-Za-z][^\s/]*(\s|$)/.test(l.replace(/^[\s\u200b-\u200d\u2060\ufeff]+/, '')))
 }
 
 /**
