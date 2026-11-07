@@ -261,3 +261,14 @@ test('AC10 a run with a broken state.json is left out, the pass goes on', () => 
   expect(read('rigs/acme.md')).toContain('Fix the live thing')
   expect(read('rigs/widget.md')).not.toContain('widget thing')
 })
+
+test('refresh pushes to origin when one is set', () => {
+  setup()
+  seedAll()
+  const log = join(dir, 'gh-calls')
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$*" >> '${log}'\nprintf '%s\\n' PRIVATE\n`)
+  factory(['wiki', 'init'])
+  git('remote', 'add', 'origin', 'https://github.com/acme/wiki-none.git')
+  expect(factory(['wiki', 'refresh']).code).toBe(0)
+  expect(readFileSync(log, 'utf8')).toContain('repo view github.com/acme/wiki-none')
+})

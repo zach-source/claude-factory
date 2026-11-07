@@ -84,3 +84,21 @@ test('AC7 FACTORY_WIKI_REFRESH_MIN=1 and a stamp 2 min old: the tick refreshes',
   expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
   expect(statSync(stamp()).mtimeMs).toBeGreaterThan(old.getTime() + 60_000)
 }, 30_000)
+
+test('AC7 a held wiki.lock starts no refresh', async () => {
+  setup()
+  mkdirSync(join(home, 'wiki.lock'), { recursive: true })
+  writeFileSync(join(home, 'wiki.lock', 'pid'), String(process.pid))
+  factory(['tick'])
+  await sleep(1500)
+  expect(existsSync(stamp())).toBe(false)
+})
+
+test('AC7 a negative FACTORY_WIKI_REFRESH_MIN falls back to 30 min', async () => {
+  setup()
+  writeFileSync(stamp(), '')
+  const t = statSync(stamp()).mtimeMs
+  factory(['tick'], { FACTORY_WIKI_REFRESH_MIN: '-5' })
+  await sleep(1500)
+  expect(statSync(stamp()).mtimeMs).toBe(t)
+})
