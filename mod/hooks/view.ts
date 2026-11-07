@@ -1132,3 +1132,18 @@ export function interviewAnswer(
   const parts = [chosen && `The person chose: ${chosen}.`, said && `The person says: ${said}`].filter(Boolean)
   return parts.length ? `Answering "${line(iv.question, 200)}": ${parts.join(' ')}` : null
 }
+
+/** The same as fillStep in src/steps.ts: the mod and the CLI ship apart, and steps.test.ts keeps both equal.
+ * It replaces each `{{name}}` with its value in one pass. It throws for a placeholder with no value
+ * and for a var that the text does not use. */
+export function fillStep(text: string, vars: Record<string, string>): string {
+  const used = new Set<string>()
+  const out = text.replace(/\{\{(\w+)\}\}/g, (_, k: string) => {
+    if (!Object.hasOwn(vars, k)) throw new Error(`step prompt has no value for {{${k}}}`)
+    used.add(k)
+    return vars[k]!
+  })
+  const extra = Object.keys(vars).filter(k => !used.has(k))
+  if (extra.length) throw new Error(`step prompt does not use ${extra.map(k => `{{${k}}}`).join(', ')}`)
+  return out
+}
