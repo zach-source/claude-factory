@@ -182,6 +182,7 @@ import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
+import { personCerts } from './server-api'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -11153,6 +11154,7 @@ const usage = `factory — herdr software factories on xstate
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   watch                              one pass of the pull request watch that wakes a parked station (each
                                      tick starts one, at most once a minute)
+  cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
@@ -11361,6 +11363,19 @@ if (import.meta.main && !outboxCmd)
         lease()
         server.main(args, HOME, () => tick())
         break
+      case 'cert': {
+        refuseWorker('cert', true)
+        const [what, dir, name, ...more] = args
+        if (what !== 'person' || !dir || !name || more.length)
+          fail('usage: factory cert person <dir> <server-name>')
+        try {
+          const out = personCerts(resolve(dir!), name!)
+          console.log(out)
+        } catch (e) {
+          fail((e as Error).message)
+        }
+        break
+      }
       case 'manager':
         refuseWorker('manager', true)
         if (args[0] === 'host') {
