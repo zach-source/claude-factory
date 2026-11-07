@@ -269,6 +269,17 @@ factory rig history                                         # the newest 20 snap
 factory rig undo [n]                                        # restore snapshot n (default 1); `rig undo` again reverses it
 ```
 
+`factory settings` keeps the machine settings in `settings.json` of the factory home. A stored value
+fills an environment variable that is not set, so the environment wins.
+
+```sh
+factory settings                          # each key, its value and its source: default, stored or environment
+factory settings set ax.vault acme-vault  # store one value; a secret-class value is refused
+factory settings unset ax.vault           # remove a stored value
+```
+
+A row reads `environment (overrides stored)` when an environment value differs from the stored one. A worker cannot run `set` or `unset`.
+
 A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web
 fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
