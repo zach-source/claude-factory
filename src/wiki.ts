@@ -230,6 +230,16 @@ export function renderRigPage(
   return format({ kind: 'rig', title: `${rig} — factory work`, rigs: [rig], updated: stamp(now) }, body)
 }
 
+/** Make the `## Rigs` section of index.md hold one sorted link per rig. Add it at the end if missing. Other text stays. */
+export function rigList(indexText: string, names: string[]): string {
+  const section = `## Rigs\n\n${list([...names].sort(cmp).map(n => `- [${n}](rigs/${n}.md)`))}\n`
+  const start = indexText.search(/^## Rigs[ \t]*$/m)
+  if (start < 0) return `${indexText.replace(/\n*$/, '\n')}\n${section}`
+  const rest = indexText.slice(start + 1).search(/^## /m)
+  const tail = rest < 0 ? '' : `\n${indexText.slice(start + 1 + rest)}`
+  return indexText.slice(0, start) + section + tail
+}
+
 /** One file of a PR. `patch` is the unified diff text from `gh api repos/<o>/<r>/pulls/<n>/files`. */
 export type PrFile = { path: string; patch?: string }
 

@@ -144,7 +144,17 @@ import * as selfupdate from './selfupdate'
 import { needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
-import { flagLine, humanLines, scanPages, tombstones, WIKI_PAGE_PATH } from './wiki'
+import {
+  flagLine,
+  humanLines,
+  renderRigPage,
+  rigList,
+  scanPages,
+  tombstones,
+  WIKI_PAGE_PATH,
+  type Merged,
+  type RigRow,
+} from './wiki'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
@@ -5607,6 +5617,25 @@ const kickGc = () => {
   }).unref()
 }
 
+/**
+ * `factory wiki refresh` at most every FACTORY_WIKI_REFRESH_MIN minutes (a positive number, default 30).
+ * It does nothing while $HOME/wiki/.git is missing or wiki.lock is held. It writes the stamp before the spawn,
+ * so a slow pass gets no second one. A halt does not stop it: the pages show a halted factory too.
+ */
+const kickWiki = () => {
+  if (!existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return
+  const min = Number(process.env.FACTORY_WIKI_REFRESH_MIN)
+  const stamp = join(HOME, 'wiki-refresh.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (age < (min > 0 ? min : 30) * 60_000) return
+  writeFileSync(stamp, '')
+  spawnChild(CLI, ['wiki', 'refresh'], {
+    detached: true,
+    stdio: 'ignore',
+    env: kickEnv(process.env, HOME),
+  }).unref()
+}
+
 // ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
 // Everything below reads real git, gh, bd and herdr state into facts. It then carries out the plan.
 
@@ -6207,6 +6236,7 @@ async function tick(isPatrol = false) {
       kickGc()
       kickGcWorktrees()
       kickSweeps()
+      kickWiki()
     }
   }
 }
@@ -10808,6 +10838,84 @@ function shipQueues() {
   return out
 }
 
+const WIKI_RIG_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/
+
+/**
+ * One `factory wiki refresh` pass: write rigs/<rig>.md for each rig with a valid name and the rig list in
+ * index.md, from the run rows, the ship queues and the merged-PR cache (no gh call). A run that cannot be
+ * read is left out. With `dryRun` it only returns the changed paths. Else it commits, pushes and journals.
+ */
+async function wikiRefresh(dryRun: boolean): Promise<string[]> {
+  const dir = join(HOME, 'wiki')
+  const rows: RigRow[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value, c } = current(id)
+      const def = await loadPinned(run.factory)
+      rows.push({ ...row(run, def, value, c, agentOf(def, value, c)), createdAt: createdAt(id) })
+    } catch (err) {
+      console.error(`wiki refresh: run ${id} left out: ${(err as Error).message.split('\n')[0]}`)
+    }
+  }
+  const waitingIds = new Set(rows.filter(r => holdOf(r)).map(r => r.id))
+  const queues = shipQueues()
+  const merged = cachedMerges(readMerged())
+  const now = Date.now()
+  const files = new Map<string, string>()
+  const names: string[] = []
+  for (const rig of rigs()) {
+    if (!WIKI_RIG_NAME.test(rig.name) || names.includes(rig.name)) {
+      wikiLog('wiki: bad rig name, page skipped')
+      continue
+    }
+    names.push(rig.name)
+    const slug = rigRef(rig.repo)?.slug
+    const mine = rows.filter(r => r.rig === rig.name)
+    const shipped: Merged[] = merged
+      .filter(m => slug && githubSlugOf(m.url) === slug)
+      .map(m => ({
+        url: m.url,
+        mergedAt: m.mergedAt,
+        title: (rows.find(r => `factory/${r.id}` === m.head)?.goal ?? m.head).replace(/^[\w.-]+: /, ''),
+      }))
+    files.set(
+      `rigs/${rig.name}.md`,
+      renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now),
+    )
+  }
+  // an agent pass owns this worktree: a link or a non-regular file at a target would take a write outside it
+  const kind = (p: string) => {
+    try {
+      const st = lstatSync(join(dir, p))
+      return st.isFile() && st.nlink === 1 ? 'file' : st.isDirectory() ? 'dir' : 'bad'
+    } catch {
+      return 'none'
+    }
+  }
+  const read = (p: string) => (kind(p) === 'file' ? readFileSync(join(dir, p), 'utf8') : '')
+  files.set('index.md', rigList(read('index.md'), names))
+  const rigsKind = kind('rigs')
+  for (const p of [...files.keys()]) {
+    const okDir = p.startsWith('rigs/') ? ['none', 'dir'].includes(rigsKind) : true
+    if (!okDir || !['none', 'file'].includes(kind(p))) {
+      files.delete(p)
+      wikiLog('wiki: refused a link or a file that is not regular, page skipped')
+    }
+  }
+  const changed = [...files.keys()].filter(p => files.get(p) !== read(p)).sort()
+  if (dryRun) return changed
+  for (const p of changed) {
+    mkdirSync(dirname(join(dir, p)), { recursive: true })
+    writeFileSync(join(dir, p), files.get(p)!)
+  }
+  // stage only the pages written here: an empty list would stage the whole tree, and a person's edit with it
+  if (changed.length)
+    commitWiki('refresh', `${names.length} rig pages, ${changed.length} changed`, dir, changed)
+  pushWiki(dir) // also retries an earlier failed push
+  wikiLog(`wiki refresh: ${names.length} rig pages, ${changed.length} changed`)
+  return changed
+}
+
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
 const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
@@ -11448,6 +11556,30 @@ if (import.meta.main && !outboxCmd)
       }
       case 'wiki': {
         refuseWorker('wiki', true)
+        if (args[0] === 'refresh') {
+          const dry = args[1] === '--dry-run'
+          if (args.length > (dry ? 2 : 1)) {
+            console.error('usage: factory wiki refresh [--dry-run]')
+            process.exitCode = 2
+            break
+          }
+          const release = hold('wiki.lock')
+          if (!release) {
+            console.log('wiki: busy')
+            break
+          }
+          try {
+            if (!existsSync(join(HOME, 'wiki', '.git')))
+              console.log('wiki: not set up: run factory wiki init')
+            else {
+              const paths = await wikiRefresh(dry)
+              if (dry) console.log(paths.join('\n'))
+            }
+          } finally {
+            release()
+          }
+          break
+        }
         const i = args.indexOf('--remote')
         const remoteArg = i < 0 ? undefined : args[i + 1]
         const rest = i < 0 ? args : args.filter((_, j) => j !== i && j !== i + 1)
