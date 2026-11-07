@@ -44,11 +44,10 @@ test('AC6: a last backslash in an eval, -c or trap script does not hide the last
   ])
     expect(verdict(row)).toBe(PUSH_REASON)
   expect(verdict(`trap 'git push origin main${BS}' EXIT`)).toBeDefined()
-  for (const row of [`eval 'gp${BS}'`, `zsh -c 'gp${BS}'`])
-    expect(verdict(row)).toBe(SHELL_ALIAS_REASON)
+  for (const row of [`eval 'gp${BS}'`, `zsh -c 'gp${BS}'`]) expect(verdict(row)).toBe(SHELL_ALIAS_REASON)
   expect(verdict(`eval 'echo a${BS}'`)).toBeUndefined()
 })
 
-test('AC4:backslash-newline control denies', () => {
+test('AC4: backslash-newline control denies', () => {
   expect(verdict('git push origin main' + BS + '\n')).toBe(PUSH_REASON)
 })

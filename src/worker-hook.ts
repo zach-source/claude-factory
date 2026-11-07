@@ -8562,6 +8562,8 @@ function memoGate(gate: HookGate): HookGate {
  * rig's protected branches, and small reads of the live repo a test can fake out. These checks
  * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
  *
+ * claude-factory-qn8a.30: a last backslash gets one added newline first, as the Bash tool adds one.
+ *
  * claude-factory-dts: this checks `command.length` once, before any scan, on every rig. Past
  * MAX_COMMAND_LENGTH it gives `LONG_COMMAND_REASON` outright. At or under that length, it calls
  * `scanReason`, which runs the real scan with no length cap of its own.
@@ -8575,7 +8577,7 @@ export function denyReason(
   if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
   // claude-factory-qn8a.30: the Bash tool adds a newline, so a last backslash joins the next line
   if (command.endsWith('\\')) command += '\n'
-  // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
+  // the home guard reads the text first (with the added newline): no parse bypass can reach a delete of $HOME
   const home = homeReason(command, gate?.readFile)
   if (home) return home
   const now = gate?.now ?? Date.now
