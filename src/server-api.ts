@@ -1,5 +1,5 @@
 // Client API of `factory server` on port 8444 (claude-factory-akiq.7). Contract: specs/004-factory-server/contracts/client-api.md.
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   appendFileSync,
   chmodSync,
@@ -102,6 +102,65 @@ export type ClientOpts = {
   /** the last tick result, null before the first tick */
   board: () => unknown
   log?: (line: string) => void
+}
+
+const WORKER_ENV = [
+  'FACTORY_SERVER',
+  'FACTORY_FROM',
+  'FACTORY_RUN',
+  'FACTORY_DEF_NAME',
+  'FACTORY_PATROL',
+  'FACTORY_OUTBOX',
+  'BEADS_ACTOR',
+]
+
+/** the env of a CLI call for the person: no worker marker, no server mode, and the server home */
+export function personEnv(env: Record<string, string | undefined>, home: string) {
+  const e = { ...env }
+  for (const n of WORKER_ENV) delete e[n]
+  return { ...e, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' } as Record<string, string>
+}
+
+/**
+ * The real runner: one `bun cli.ts <argv>` process for each call, with cwd = home. It has no shell.
+ * Mail text goes through <home>/text/<uuid>.md and --text-file. The file is gone when the call ends.
+ * ponytail: one bun process per call (about 0.3 s). Upgrade path: export the command functions from cli.ts and call them in process.
+ */
+export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), timeoutMs = 60_000): Runner {
+  return async (argv, text) => {
+    let file: string | undefined
+    try {
+      if (text !== undefined) {
+        mkdirSync(join(home, 'text'), { recursive: true })
+        file = join(home, 'text', `${randomUUID()}.md`)
+        writeFileSync(file, text, { mode: 0o600 })
+      }
+      const proc = Bun.spawn([process.execPath, cli, ...argv, ...(file ? ['--text-file', file] : [])], {
+        cwd: home,
+        env: personEnv(process.env, home),
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      let timedOut = false as boolean
+      const timer = setTimeout(() => {
+        timedOut = true
+        proc.kill()
+      }, timeoutMs)
+      try {
+        const [out, err, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ])
+        return { code, out, err, ...(timedOut ? { timedOut } : {}) }
+      } finally {
+        clearTimeout(timer)
+      }
+    } finally {
+      if (file) rmSync(file, { force: true })
+    }
+  }
 }
 
 const SEG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
