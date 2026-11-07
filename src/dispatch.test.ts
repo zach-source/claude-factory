@@ -12,6 +12,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
+import { reworkStart } from './cli'
 import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -469,6 +470,7 @@ console.log(JSON.stringify(rows))
       restScript +
       '"; exit 0;;',
     '  "api "*"state=closed"*) bun "' + restScript + '" list; exit 0;;',
+    '  "api repos/"*"/pulls/"[0-9]*) printf \'%s\' "$GH_PULL"; exit 0;;',
     '  "api -X DELETE "*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi; exit 0;;',
     '  "api "*"state=open"*) bun "' + restOpen + '"; exit 0;;',
     'esac',
@@ -1843,6 +1845,51 @@ test('a conflict label that cannot come off mails its run once, not every pass',
   expect(readFileSync(ghCallsLog, 'utf8')).toContain(
     'api -X DELETE repos/acme/widget/issues/7/labels/conflict',
   )
+})
+
+/** a bead run with the goal that reworkStart gives for PR 7, plus that PR as a labeled open pull */
+function heldReworkRun() {
+  fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory'] }])
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  const id = runDirs()[0]!
+  const pr = {
+    number: 7,
+    url: 'https://github.com/acme/widget/pull/7',
+    headRefName: 'someone/branch',
+    baseRefName: 'main',
+    isCrossRepository: false,
+    labels: [{ name: 'rework' }],
+  }
+  const file = join(phome, 'runs', id, 'run.json')
+  const run = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+  writeFileSync(file, JSON.stringify({ ...run, goal: reworkStart(pr as never, 'lifecycle').goal }))
+  return { id, pr }
+}
+const inboxOf = (id: string) => {
+  const f = join(phome, 'runs', id, 'inbox.jsonl')
+  return existsSync(f) ? readFileSync(f, 'utf8') : ''
+}
+const labelPassAgain = (env: Record<string, string>) => {
+  rmSync(join(phome, 'labels.stamp'), { force: true })
+  return pfactory(['beads'], { GH_JSON: '[]', ...env })
+}
+
+test('a held rework run owns its PR: a rework label mails it and starts no second run (czy5)', () => {
+  const { id, pr } = heldReworkRun()
+  const before = runDirs().length
+  for (let i = 0; i < 2; i++) labelPassAgain({ GH_LABELED: JSON.stringify([pr]) })
+  expect(runDirs()).toHaveLength(before)
+  expect(inboxOf(id)).toContain('was labeled rework')
+})
+
+test('a live rework run is aborted when its PR is merged, not when it is open (czy5)', () => {
+  const { id } = heldReworkRun()
+  const pull = (state: string, merged_at: string | null) =>
+    JSON.stringify({ number: 7, html_url: 'https://github.com/acme/widget/pull/7', state, merged_at })
+  labelPassAgain({ GH_LABELED: '[]', GH_PULL: pull('open', null) })
+  expect(inboxOf(id)).not.toContain('ABORT')
+  labelPassAgain({ GH_LABELED: '[]', GH_PULL: pull('closed', '2026-11-06T10:00:00Z') })
+  expect(inboxOf(id)).toContain('"type":"ABORT"')
 })
 
 test('station:<name> with no factory:<name> label keeps the rig factory (A4 control)', () => {

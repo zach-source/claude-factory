@@ -20,6 +20,7 @@ import {
   trustedEgress,
   trustedEgressPaged,
   reworkOwned,
+  reworkEnded,
   reworkPr,
   reworkStart,
   brief,
@@ -518,6 +519,22 @@ test('a held rework run owns its PR by the URL at the head of its goal (czy5)', 
     labels: [{ name: 'rework' }],
   } as never
   expect(prOwner(mr, [{ id: 'g', log: outage, goal: reworkStart(mr, 'lifecycle').goal }])).toBe('g')
+})
+
+test('reworkEnded picks the rework runs whose PR is merged or closed, and reads no other PR (czy5)', () => {
+  const goal = reworkStart(labelPr('rework'), 'lifecycle').goal
+  const url = 'https://github.com/acme/widget/pull/7'
+  const live = [
+    { id: 'r', goal },
+    { id: 'b', goal: `Fix the bug that ${url} shows` },
+  ]
+  const asked: string[] = []
+  const stateOf = (state?: string) => (u: string) => (asked.push(u), state)
+  expect(reworkEnded(live, stateOf('MERGED'))).toEqual([{ id: 'r', url, state: 'MERGED' }])
+  expect(asked).toEqual([url]) // the bead run has no rework head: no read
+  expect(reworkEnded(live, stateOf('CLOSED'))).toEqual([{ id: 'r', url, state: 'CLOSED' }])
+  expect(reworkEnded(live, stateOf('OPEN'))).toEqual([])
+  expect(reworkEnded(live, stateOf(undefined))).toEqual([]) // a failed read aborts nothing
 })
 
 test('reworkPr reads back the URL of every rework goal form (czy5)', () => {
