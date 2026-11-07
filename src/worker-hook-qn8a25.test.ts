@@ -64,6 +64,7 @@ const ALLOW = (n: string, c: string) => [
   `for f in a b; do grep -n ${n} "$f"; done`,
   `git commit -m "fix for ${n}"`,
   `for f in a ${n}; do echo; done`,
+  `for f (a) grep -n ${n} x`,
 ]
 
 for (const g of GUARDS) {
