@@ -116,3 +116,60 @@ for (const g of READY_GATES) {
     expect(ask(cmd, g)).toBe(GLAB_TEXT_REASON)
   })
 }
+
+// glab api form W: the field text of a note or merge request create call
+FILES['n.md'] = 'ok\n/approve\n'
+FILES['ok.md'] = 'looks good'
+const NOTE = 'projects/1/merge_requests/5/notes'
+const API_QA_DENY = [
+  `glab api -X POST ${NOTE} -f body=/merge`,
+  `glab api -X POST ${NOTE} --raw-field body=/approve`,
+  `glab api -X POST ${NOTE} -F body=/ready`,
+  `glab api -X POST ${NOTE} --field=body=/approve`,
+  `glab api -X POST ${NOTE} -F body=@n.md`,
+  'glab api -X POST projects/1/merge_requests -f title=x -f description=/merge',
+]
+const API_TEXT_DENY = [
+  `glab api -X POST ${NOTE} -F body=@-`,
+  `glab api -X POST ${NOTE} -F body=@missing.md`,
+  `glab api -X POST ${NOTE} -F body=@~/n.md`,
+  `printf x > ok.md; glab api -X POST ${NOTE} -F body=@ok.md`,
+  `glab api -X POST ${NOTE} -F body=@ok.md && echo done`,
+  `bash -c 'glab api -X POST ${NOTE} -F body=@ok.md'`,
+]
+const API_ALLOW = [
+  'glab api --method POST projects/:id/merge_requests/5/notes -F body=@ok.md',
+  `glab api --method POST ${NOTE} -F body=@ok.md > out.json`,
+  `glab api -X POST ${NOTE} -f body=@n.md`,
+  `glab api -X POST ${NOTE} -f body=x`,
+  `glab api -X POST ${NOTE} -f body='see /Users/a'`,
+]
+for (const g of GATES) {
+  const name = JSON.stringify(g)
+  test.each(API_QA_DENY)(`denies %j with GLAB_QUICK_ACTION_REASON for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBe(GLAB_QUICK_ACTION_REASON)
+  })
+  test.each(API_TEXT_DENY)(`denies %j with GLAB_TEXT_REASON for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBe(GLAB_TEXT_REASON)
+  })
+  test.each(API_ALLOW)(`allows %j for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBeUndefined()
+  })
+  test.each([
+    `glab api -X POST ${NOTE} -F body=@-`,
+    `printf x > ok.md; glab api -X POST ${NOTE} -F body=@ok.md`,
+    `glab api -X POST ${NOTE} -F body=@ok.md && echo done`,
+    `bash -c 'glab api -X POST ${NOTE} -F body=@ok.md'`,
+  ])(`reads no file for %j at gate ${name}`, cmd => {
+    // the endpoint operand is read by an older guard; this guard must read no @file path
+    const seen: string[] = []
+    denyReason(cmd, undefined, undefined, {
+      readFile: (p: string) => {
+        seen.push(p)
+        return 'x'
+      },
+      ...g,
+    })
+    expect(seen.filter(p => p === 'ok.md' || p === '-')).toEqual([])
+  })
+}

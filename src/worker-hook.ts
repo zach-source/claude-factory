@@ -5748,7 +5748,7 @@ const GLAB_API_FIELD = new Set(['-f', '-F', '--field', '--raw-field'])
  * mutation. W posts fields to a merge request note, unapprove or create path.
  * It reads every word and skips no flag value, so a flag cannot hide a word.
  */
-function glabApiAllowed(args: string[]): boolean {
+function glabApiAllowed(args: string[], fieldsOut?: { flag: string; value: string }[]): boolean {
   const methods: (string | undefined)[] = []
   const pos: string[] = []
   const fields: { flag: string; value: string }[] = []
@@ -5774,6 +5774,7 @@ function glabApiAllowed(args: string[]): boolean {
     } else if (w.startsWith('-')) return false
     else pos.push(w)
   }
+  fieldsOut?.push(...fields)
   const method = methods[0]
   if (pos.length !== 1 || methods.length > 1 || (methods.length === 1 && method === undefined)) return false
   if (fields.length === 0 && (method === undefined || method === 'GET')) return true
@@ -5811,20 +5812,58 @@ function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boole
  * Like `ghReason`, it scans the words as given and again without redirect words. Only the second scan
  * checks `glab api` against its 3 closed forms.
  */
-function glabReason(words: string[], gate: HookGate, command: string): string | undefined {
+function glabReason(words: string[], gate: HookGate, command: string, depth: number): string | undefined {
   const tail = words.slice(1)
   const dropped = dropRedirectWords(tail)
-  const raw = glabRawWords(command)
+  const raw = { ...glabRawWords(command), whole: depth === 0 && glabWholeCommand(command) }
   const same = dropped.length === tail.length
-  return glabReasonOn(tail, gate, same, raw) ?? (same ? undefined : glabReasonOn(dropped, gate, true, raw))
+  return glabReasonOn(tail, same, raw, gate) ?? (same ? undefined : glabReasonOn(dropped, true, raw, gate))
 }
 
-function glabReasonOn(
-  tail: string[],
+type GlabRaw = {
+  ok: (w: string) => boolean
+  single: (w: string) => boolean
+  whole: boolean
+}
+
+/**
+ * claude-factory-qn8a.33: true when the glab call is the whole command. The raw text starts with `glab`
+ * and holds no list, pipe, subshell, expansion or newline outside single quotes. A redirect is allowed.
+ * Only then does the hook read an `@file` field: in any other command an earlier part can write the file
+ * after the hook reads it. A script that a wrapper (bash -c) runs is never the whole command (`depth` > 0).
+ */
+function glabWholeCommand(command: string): boolean {
+  const s = command.replace(/\\\n/g, '').trim()
+  return /^glab\s/.test(s) && !/[;&|\n\r()`$]/.test(s.replace(/'[^']*'/g, "''"))
+}
+
+/**
+ * claude-factory-qn8a.33: denies a `glab api` note or merge request write when a field holds a quick action
+ * line or text this hook cannot read. `-f` and `--raw-field` send the value as written. `-F` and `--field`
+ * read the file after `@`; the hook reads it only when the glab call is the whole command.
+ */
+function glabFieldsReason(
+  fields: { flag: string; value: string }[],
+  raw: GlabRaw,
   gate: HookGate,
-  checkApi: boolean,
-  raw: { ok: (w: string) => boolean; single: (w: string) => boolean },
 ): string | undefined {
+  for (const { flag, value } of fields) {
+    if (/[$`]/.test(value) && !raw.single(value)) return GLAB_TEXT_REASON
+    const eq = value.indexOf('=')
+    const text = eq < 0 ? value : value.slice(eq + 1)
+    let body = text
+    if (text.startsWith('@') && (flag === '-F' || flag === '--field')) {
+      if (text === '@-' || text.startsWith('@~') || !raw.whole) return GLAB_TEXT_REASON
+      const file = gate.readFile?.(text.slice(1))
+      if (file === undefined) return GLAB_TEXT_REASON
+      body = file
+    }
+    if (quickActionLine(body)) return GLAB_QUICK_ACTION_REASON
+  }
+  return undefined
+}
+
+function glabReasonOn(tail: string[], checkApi: boolean, raw: GlabRaw, gate: HookGate): string | undefined {
   const exempt = raw.ok
   if (tail.includes('approve')) return GLAB_APPROVE_REASON
   const api = tail.indexOf('api')
@@ -5846,7 +5885,10 @@ function glabReasonOn(
   }
   const text = glabTextReason(tail, raw.single)
   if (text) return text
-  if (api < 0 || !checkApi || glabApiAllowed(args)) return undefined
+  if (api < 0 || !checkApi) return undefined
+  const fields: { flag: string; value: string }[] = []
+  if (glabApiAllowed(args, fields))
+    return args.includes('graphql') ? undefined : glabFieldsReason(fields, raw, gate)
   if (/approv/i.test(args.join(' '))) return GLAB_APPROVE_REASON
   if (args.some(isGraphqlEndpoint)) {
     const { texts, unresolved } = graphqlTexts(expandGhShortClusters(args), gate)
@@ -5874,6 +5916,7 @@ function anyGhReason(
   state: ScanState,
   movedBefore: boolean,
   command: string,
+  depth: number,
 ): string | undefined {
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
@@ -5886,7 +5929,7 @@ function anyGhReason(
       if (r) return r
     }
     if (baseWord(words[j]!) === 'glab') {
-      const r = glabReason(words.slice(j), gate, command)
+      const r = glabReason(words.slice(j), gate, command, depth)
       if (r) return r
     }
   }
@@ -9826,7 +9869,7 @@ function denyAtScan(
     }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.
-    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar, command)
+    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar, command, depth)
     if (ghFound) return ghFound
     const controlFound = anyFactoryControlReason(words)
     if (controlFound) return controlFound
