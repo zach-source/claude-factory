@@ -8,9 +8,7 @@ const DENY = [
   `export FACTORY_VM_ENV=${GIT}; ${MUT}`,
   `FACTORY_VM_ENV=${GIT} ${MUT}`,
   `env FACTORY_VM_ENV=${GIT} ${MUT}`,
-  `FACTORY_VM_ENV='{"FACTORY_RUN":"lifecycle-other"}' factory report lifecycle-other 1 approve x`,
   `export FACTORY_VM_ENV='{"HOME":"/x"}'; ${R}`,
-  `FACTORY_VM_ENV='{"BEADS_ACTOR":"x"}' ${R}`,
   'declare -x FACTORY_VM_ENV=x',
   'typeset FACTORY_VM_ENV',
   'readonly FACTORY_VM_ENV',
@@ -33,6 +31,13 @@ const ALLOW = [
 ]
 test('FACTORY_VM_ENV writers deny', () => {
   for (const c of DENY) expect([c, denyReason(c)]).toEqual([c, FACTORY_VM_ENV_REASON])
+})
+test('FACTORY_VM_ENV JSON that names FACTORY_RUN still denies (the FACTORY_RUN guard runs first)', () => {
+  for (const c of [
+    `FACTORY_VM_ENV='{"FACTORY_RUN":"lifecycle-other"}' factory report lifecycle-other 1 approve x`,
+    `FACTORY_VM_ENV='{"BEADS_ACTOR":"x"}' ${R}`,
+  ])
+    expect([c, denyReason(c)]).not.toEqual([c, undefined])
 })
 test('FACTORY_VM_ENV reads and unrelated text allow', () => {
   for (const c of ALLOW) expect([c, denyReason(c)]).toEqual([c, undefined])

@@ -9922,7 +9922,7 @@ function denyAtScan(
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
-    for (const g of [FACTORY_VM_ENV_GUARD, BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD]) {
+    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD, FACTORY_VM_ENV_GUARD]) {
       if (touchesBeadsActor(words, state, g)) return state.work < 0 ? SCAN_BUDGET_REASON : g.reason
     }
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
