@@ -2937,6 +2937,9 @@ function dynamicFlag(w: string, flag: string): boolean {
 // needs 3 or more characters. Quoting does not change argv, so a quoted or post-`--` word also
 // counts. A flag name that holds an expansion ($, backtick, brace, glob) can become the flag, so
 // it counts too. The scan starts after the first bd word.
+// ponytail: this reads dequoted words. A word that has no literal `--` start and expands to the
+// flag (a whole-word variable, `| xargs bd`) is not covered. The upgrade path (a raw-quote rule)
+// is claude-factory-qn8a.97.
 function hasFlagPrefix(words: string[], from: number, g: EnvGuard): boolean {
   if (!g.flag) return false
   for (let i = from + 1; i < words.length; i++) {
