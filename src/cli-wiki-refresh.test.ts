@@ -310,11 +310,14 @@ test('refresh writes nothing through a hard link in the wiki worktree', () => {
   expect(wikiLog()).toContain('wiki: refused a link or a file that is not regular, page skipped')
 })
 
+// a page that passes the commit scan, so only the staging list keeps it out of the refresh commit
+const NOTE = '---\nkind: "topic"\ntitle: "Notes"\n---\nA person wrote this.\n'
+
 test('refresh leaves a dirty page of a person out of its commit', () => {
   setup()
   seedAll()
   factory(['wiki', 'init'])
-  writeFileSync(join(wiki(), 'notes.md'), '# Notes\n\nA person wrote this.\n')
+  writeFileSync(join(wiki(), 'notes.md'), NOTE)
   expect(factory(['wiki', 'refresh']).code).toBe(0)
   expect(git('show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual([
     'index.md',
@@ -330,7 +333,7 @@ test('refresh with no change makes no commit and leaves a dirty page alone', () 
   factory(['wiki', 'init'])
   factory(['wiki', 'refresh'])
   const head = git('rev-parse', 'HEAD')
-  writeFileSync(join(wiki(), 'notes.md'), '# Notes\n\nA person wrote this.\n')
+  writeFileSync(join(wiki(), 'notes.md'), NOTE)
   expect(factory(['wiki', 'refresh']).code).toBe(0)
   expect(git('rev-parse', 'HEAD')).toBe(head)
   expect(git('status', '--short')).toBe('?? notes.md')
