@@ -15,7 +15,10 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs'
+import { STATUS_CODES } from 'node:http'
+import type { Socket } from 'node:net'
 import { join, resolve, sep } from 'node:path'
+import { createServer as createTlsServer } from 'node:tls'
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/
@@ -447,5 +450,125 @@ export function clientHandler(o: ClientOpts) {
     const next = chain.then(work, work)
     chain = next.catch(() => {})
     return next.catch(e => refuse(500, `internal error: ${String((e as Error)?.message ?? e).slice(0, 200)}`))
+  }
+}
+
+const HEAD_MAX = 16 * 1024
+const BODY_MAX = 256 * 1024
+const TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
+const HEADER = /^([A-Za-z0-9!#$%&'*+.^_`|~-]+):[ \t]*([^\r\n\0]*?)[ \t]*$/
+
+/**
+ * Read one HTTP/1.1 request from an authorized socket and write one answer, then close.
+ * The grammar is closed: no chunked body, no pipelining, no keep-alive, and a duplicate of a header that the handler reads is an error.
+ */
+function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise<Response>) {
+  const reply = (status: number, body: string, type = 'application/json', extra = '') => {
+    sock.end(
+      `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? 'Status'}\r\ncontent-type: ${type}\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n${extra}\r\n${body}`,
+    )
+  }
+  const bad = (status: number, why: string) => reply(status, `${JSON.stringify({ refused: why })}\n`)
+  sock.setTimeout(30_000, () => sock.destroy())
+  sock.on('error', () => sock.destroy())
+  let buf = Buffer.alloc(0)
+  let head: { method: string; target: string; headers: Headers; length: number; end: number } | undefined
+  let done = false
+  const finish = async () => {
+    done = true
+    try {
+      const body = buf.subarray(head!.end, head!.end + head!.length)
+      const ip = sock.remoteAddress ?? ''
+      const req = new Request(`https://client.invalid${head!.target}`, {
+        method: head!.method,
+        headers: head!.headers,
+        ...(head!.method !== 'GET' && head!.method !== 'HEAD' && { body }),
+      })
+      const res = await handle(req, ip)
+      const out = Buffer.from(await res.arrayBuffer())
+      sock.write(
+        `HTTP/1.1 ${res.status} ${STATUS_CODES[res.status] ?? 'Status'}\r\ncontent-type: ${res.headers.get('content-type') ?? 'text/plain'}\r\ncontent-length: ${out.length}\r\nconnection: close\r\n\r\n`,
+      )
+      sock.end(out)
+    } catch {
+      if (!sock.destroyed) bad(500, 'internal error')
+    }
+  }
+  sock.on('data', (chunk: Buffer) => {
+    if (done) return
+    buf = Buffer.concat([buf, chunk])
+    if (!head) {
+      const at = buf.indexOf('\r\n\r\n')
+      if (at < 0) return buf.length > HEAD_MAX ? bad(431, 'request head too large') : undefined
+      if (at > HEAD_MAX) return bad(431, 'request head too large')
+      const [line, ...rest] = buf.subarray(0, at).toString('latin1').split('\r\n')
+      const m = /^([A-Z]{1,16}) (\/\S{0,4000}) HTTP\/1\.1$/.exec(line ?? '')
+      if (!m) return bad(400, 'bad request line')
+      const headers = new Headers()
+      const seen = new Set<string>()
+      for (const l of rest) {
+        const h = HEADER.exec(l)
+        if (!h || !TOKEN.test(h[1]!)) return bad(400, 'bad header')
+        const name = h[1]!.toLowerCase()
+        // a repeated header could mean two things to two parsers
+        if (seen.has(name) && name !== 'accept') return bad(400, 'repeated header')
+        seen.add(name)
+        headers.append(name, h[2]!)
+      }
+      if (seen.has('transfer-encoding') || seen.has('expect') || seen.has('upgrade'))
+        return bad(400, 'chunked bodies, Expect and Upgrade are not served')
+      const cl = headers.get('content-length')
+      if (cl !== null && !/^\d{1,9}$/.test(cl)) return bad(400, 'bad content-length')
+      const length = cl === null ? 0 : Number(cl)
+      if (length > BODY_MAX) return bad(400, 'body too large')
+      head = { method: m[1]!, target: m[2]!, headers, length, end: at + 4 }
+    }
+    if (buf.length >= head.end + head.length) void finish()
+  })
+}
+
+/**
+ * The mTLS listener of the client API. It checks the client certificate itself with node:tls, before it reads a byte of the request.
+ * Bun.serve with rejectUnauthorized did not gate the handler in Bun 1.3.13: it ran for a certificate from another CA
+ * in 4 to 8 percent of the tries that sent the request at once (claude-factory-akiq.7).
+ * An authorized client must have a certificate that the person CA signed, with CN=person.
+ * ponytail: one request for each connection and no keep-alive. Upgrade path: Bun.serve, when its client-certificate check gates the handler.
+ */
+export function clientListener(o: {
+  port: number
+  cert: string
+  key: string
+  ca: string
+  handle: (req: Request, ip: string) => Promise<Response>
+}) {
+  const open = new Set<Socket>()
+  const srv = createTlsServer(
+    {
+      cert: o.cert,
+      key: o.key,
+      ca: [o.ca],
+      requestCert: true,
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1.2',
+    },
+    sock => {
+      const peer = sock.authorized ? sock.getPeerCertificate() : undefined
+      if (!peer || peer.subject?.CN !== 'person') return sock.destroy()
+      open.add(sock)
+      sock.on('close', () => open.delete(sock))
+      serveSocket(sock, o.handle)
+    },
+  )
+  srv.on('tlsClientError', () => {})
+  srv.on('error', () => {})
+  srv.listen(o.port)
+  const addr = srv.address()
+  if (!addr || typeof addr === 'string') throw new Error(`cannot listen on client port ${o.port}`)
+  return {
+    port: addr.port,
+    stop() {
+      for (const s of open) s.destroy()
+      srv.close()
+    },
   }
 }
