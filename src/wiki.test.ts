@@ -7,6 +7,7 @@ import {
   outsidePlan,
   parse,
   renderRigPage,
+  rigList,
   scanPages,
   SECTIONS,
   trivial,
@@ -716,4 +717,17 @@ test('groom AC7 prompt masks and keeps one line', () => {
   expect(t).not.toContain(tok)
   expect(t).toContain('***')
   expect(t).not.toMatch(/^## Evil/m)
+})
+
+test('rigList: add, replace, keep other sections, stable, clean scan', () => {
+  const idx = '---\nkind: "index"\ntitle: "Factory wiki"\n---\nIntro.\n'
+  const one = rigList(idx, ['widget', 'acme'])
+  expect(one).toBe(`${idx}\n## Rigs\n\n- [acme](rigs/acme.md)\n- [widget](rigs/widget.md)\n`)
+  expect(rigList(one, ['widget', 'acme'])).toBe(one)
+  const withTopics = one + '\n## Topics\n\n- [t](topics/t.md)\n'
+  const two = rigList(withTopics, ['acme'])
+  expect(two).toContain('## Rigs\n\n- [acme](rigs/acme.md)\n\n## Topics\n\n- [t](topics/t.md)\n')
+  expect(two).not.toContain('widget')
+  expect(rigList(idx, [])).toBe(`${idx}\n## Rigs\n\nNone.\n`)
+  expect(scanPages([{ path: 'index.md', text: one }])).toEqual([])
 })
