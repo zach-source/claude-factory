@@ -1817,11 +1817,13 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
   )
   expect(flags.indexOf('--append-system-prompt')).toBeGreaterThan(flags.indexOf('--system-prompt-file'))
   // claude-factory-fxu: the image's plugins, as a laptop worker gets the person's (constitution I)
-  expect(flags.slice(-4)).toEqual([
+  expect(flags.slice(-6)).toEqual([
     '--plugin-dir',
     '/opt/plugins/asd-ste100',
     '--plugin-dir',
     '/opt/plugins/code-review',
+    '--plugin-dir',
+    '/opt/plugins/egm',
   ])
 })
 
@@ -1830,6 +1832,10 @@ test('vmClaudeFlags passes a plugin dir for each skill of the station, and none 
   expect(
     vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined, ['asd-ste100']).slice(-2),
   ).toEqual(['--plugin-dir', '/opt/plugins/asd-ste100'])
+  expect(vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined, ['egm']).slice(-2)).toEqual([
+    '--plugin-dir',
+    '/opt/plugins/egm',
+  ])
   expect(vmClaudeFlags({ maxContextK: 150 }, undefined, undefined, undefined, [])).not.toContain(
     '--plugin-dir',
   )

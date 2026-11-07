@@ -1224,6 +1224,58 @@ test('the brief names the station skills: asd-ste100 tells a worker to write in 
   expect(text.length).toBeLessThan(5200) // claude-factory-ay4w: the hook-form list
 })
 
+// claude-factory-9vc6: the plan station gets a goldfish review of its spec by two read-only EGM reviewer agents
+test('the brief of a station with egm gives the goldfish review line, and one without egm does not', () => {
+  const def = (skills: string[]) => ({
+    name: 'f',
+    start: 'implement',
+    skills,
+    nodes: { implement: { prompt: 'do the thing', next: { ready: 'verify' } } },
+  })
+  const c = {
+    seq: 1,
+    attempt: 1,
+    pane: null,
+    session: null,
+    resumes: 0,
+    startedAt: Date.now(),
+    nudgedAt: 0,
+    nudges: 0,
+    retryAt: 0,
+    budget: 10,
+    wakeAt: 0,
+    error: null,
+    mail: {},
+    seen: {},
+    log: [],
+  }
+  const run = {
+    id: 'r1',
+    factory: 'f',
+    repo: '/nonexistent/repo-9vc6-test',
+    goal: 'test goal',
+    ws: 'ws',
+    worktree: '/nonexistent/worktree-9vc6-test',
+    branch: 'b',
+  }
+  const withEgm = brief(run, def(['egm']), 'implement', c, [])
+  for (const s of [
+    '- egm: ',
+    'subagent_type egm:egm-implementation-readiness',
+    'egm:egm-codebase-details',
+    'run_in_background false',
+    'Goldfish review: not run: <reason>',
+    'Do not use the Skill tool for EGM skills',
+    'stop after round 2',
+  ])
+    expect(withEgm).toContain(s)
+  for (const skills of [['asd-ste100'], []]) {
+    const text = brief(run, def(skills), 'implement', c, [])
+    expect(text).not.toContain('egm:egm-')
+    expect(text).not.toContain('Goldfish review')
+  }
+})
+
 test('the brief tells a worker on a VM that a live-read block waits for mail; a laptop worker does not read it', () => {
   const def = (runner: string) =>
     ({
