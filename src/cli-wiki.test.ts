@@ -2,11 +2,13 @@
 // with a new temp FACTORY_HOME and a fake `gh` first on PATH, so nothing reaches the live home or GitHub.
 import { afterEach, expect, test } from 'bun:test'
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -14,6 +16,7 @@ import {
 } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { scanPages } from './wiki'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(realpathSync(tmpdir()), `wiki-${process.pid}`)
@@ -572,4 +575,100 @@ test('AC5 a page that a person deleted is not made again; other paths and edits 
   expect(Date.parse(t[0].at)).toBe(
     Date.parse(git('log', '-1', '--format=%aI', '--diff-filter=D', '--', 'solutions/2026-11/a.md')),
   )
+})
+||||||| be7e44b7
+test('AC1 --remote wins over FACTORY_WIKI_REMOTE', () => {
+  setup('PRIVATE')
+  const { env } = bare()
+  const other = 'https://github.com/acme/other-wiki.git'
+  expect(factory(['wiki', 'init', '--remote', URL_], { ...env, FACTORY_WIKI_REMOTE: other }).code).toBe(0)
+  expect(git('config', '--get', 'remote.origin.url')).toBe(URL_)
+})
+
+test('AC2 scanPages finds nothing in the seed pages', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  for (const f of ['index.md', 'glossary.md'])
+    expect(scanPages([{ path: f, text: readFileSync(join(wiki(), f), 'utf8') }])).toEqual([])
+})
+
+test('AC6 the gh argv names the repo and asks for visibility', () => {
+  setup('PRIVATE')
+  const { env } = bare()
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+  expect(readFileSync(calls, 'utf8').trim()).toBe(
+    'repo view github.com/acme/widget-wiki --json visibility --jq .visibility',
+  )
+})
+
+test('AC4 a staged delete of a page commits the delete', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  writeFileSync(join(wiki(), 'gone.md'), page('topic', 'Gone'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  unlinkSync(join(wiki(), 'gone.md'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(commits()).toBe(base + 1)
+  expect(git('ls-files').split('\n')).not.toContain('gone.md')
+})
+
+test('AC4 a refused rename does not commit the delete of the old path', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  writeFileSync(join(wiki(), 'old.md'), `${page('topic', 'Old')}${'line of text\n'.repeat(40)}`)
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  renameSync(join(wiki(), 'old.md'), join(wiki(), 'new.md'))
+  appendFileSync(join(wiki(), 'new.md'), `${TOKEN}\n`)
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(commits()).toBe(base)
+  expect(git('ls-files').split('\n')).toContain('old.md')
+  expect(git('ls-files').split('\n')).not.toContain('new.md')
+  expect(existsSync(join(wiki(), 'old.md'))).toBe(true)
+})
+
+/** run the exported commitWiki() in a child on the temp home; `shim` puts a git wrapper first on PATH */
+function commitPass(summary: string, shim = '') {
+  const script = join(dir, 'commit.ts')
+  writeFileSync(
+    script,
+    `import { commitWiki } from '${join(import.meta.dir, 'cli')}'\nprocess.exit(commitWiki('p', ${JSON.stringify(summary)}) ? 0 : 1)\n`,
+  )
+  const sbin = join(dir, 'shim')
+  mkdirSync(sbin, { recursive: true })
+  if (shim) {
+    const real = Bun.which('git')
+    writeFileSync(join(sbin, 'git'), `#!/bin/sh\n${shim}\nexec '${real}' "$@"\n`)
+    chmodSync(join(sbin, 'git'), 0o755)
+  }
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
+  return Bun.spawnSync(['bun', script, 'noop'], {
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      PATH: `${sbin}:${bin}:${laptop.PATH}`,
+      FACTORY_NO_KICK: '1',
+      FACTORY_SELF_UPDATE: '0',
+    },
+    stderr: 'pipe',
+  })
+}
+
+test('AC3 a long summary is cut in the commit message', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  writeFileSync(join(wiki(), 'a.md'), page('topic', 'A'))
+  expect(commitPass(`${'s'.repeat(500)}\nsecond line`).exitCode).toBe(0)
+  expect(git('log', '-1', '--format=%s')).toBe(`wiki p: ${'s'.repeat(200)}`)
+})
+
+test('commitWiki makes no commit when diff --cached --quiet fails with exit 128', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  writeFileSync(join(wiki(), 'a.md'), page('topic', 'A'))
+  const r = commitPass('x', 'case "$*" in *"diff --cached --quiet") exit 128;; esac')
+  expect(r.exitCode).toBe(1)
+  expect(commits()).toBe(base)
 })

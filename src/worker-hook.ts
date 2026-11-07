@@ -1567,6 +1567,11 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
   const cmd = cmdIn.some(w => /[<>]/.test(w)) ? dropRedirectWords(cmdIn) : cmdIn
   if (!findHasDelete(cmd)) return false
   if (findDeletePathDeny(cmd, root)) return true
+  // qn8a.12: xargs in an exec slot fills a nested find's start path with stdin text. One forward scan: exec, xargs, find.
+  const e = cmd.findIndex(w => FIND_EXEC_WORDS.has(w))
+  const x = e < 0 ? -1 : cmd.findIndex((w, i) => i > e && baseWord(w) === 'xargs')
+  const f = x < 0 ? -1 : cmd.findIndex((w, i) => i > x && baseWord(w) === 'find')
+  if (f >= 0 && findHasDelete(cmd.slice(f))) return true
   // easj.15: a find inside an exec slot of this find runs with its own start paths.
   // easj.19: no recursion. This loop visits every exec word, so a nested find needs only the path test.
   for (let k = 1; k < cmd.length - 1; k++) {
