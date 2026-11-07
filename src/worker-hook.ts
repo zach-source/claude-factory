@@ -8562,6 +8562,8 @@ function memoGate(gate: HookGate): HookGate {
  * rig's protected branches, and small reads of the live repo a test can fake out. These checks
  * always run, with the defaults the `HookGate` fields describe when `gate` or a field is unset.
  *
+ * claude-factory-qn8a.30: a last backslash gets one added newline first, as the Bash tool adds one.
+ *
  * claude-factory-dts: this checks `command.length` once, before any scan, on every rig. Past
  * MAX_COMMAND_LENGTH it gives `LONG_COMMAND_REASON` outright. At or under that length, it calls
  * `scanReason`, which runs the real scan with no length cap of its own.
@@ -8573,7 +8575,9 @@ export function denyReason(
   gate?: HookGate,
 ): string | undefined {
   if (command.length > MAX_COMMAND_LENGTH) return LONG_COMMAND_REASON
-  // the home guard reads the raw text first: no parse bypass can reach a delete of $HOME
+  // claude-factory-qn8a.30: the Bash tool adds a newline, so a last backslash joins the next line
+  if (command.endsWith('\\')) command += '\n'
+  // the home guard reads the text first (with the added newline): no parse bypass can reach a delete of $HOME
   const home = homeReason(command, gate?.readFile)
   if (home) return home
   const now = gate?.now ?? Date.now
@@ -9247,6 +9251,8 @@ function denyAt(
   aliasStack: readonly string[] = [],
   outerVars?: VarTable,
 ): string | undefined {
+  // claude-factory-qn8a.30: zsh drops a last backslash of an eval, -c or trap script. Read it as a join.
+  if (depth > 0 && command.endsWith('\\')) command += '\n'
   // claude-factory-wmsr: the here-document and comment reasons come last. A scan reason that names
   // a real command wins over them.
   // claude-factory-pwy0: the lexer splits a word at the `(` of a zsh flag group, `${(L)x:-rm}`.
