@@ -2857,12 +2857,13 @@ function commandAnchors(words: string[]): number[] {
 // claude-factory-8pc.18 fixed the same gap for the sweep:<station> label.
 export const BEADS_ACTOR_REASON =
   'The factory denies this command: do not set, clear, export, or re-export BEADS_ACTOR. ' +
+  'Do not pass the bd --actor flag either: it sets the same author. ' +
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
 // claude-factory-ab8n: one guard per variable a worker must not change. cmd is the command word
 // that reads the variable: bd reads BEADS_ACTOR, and factory reads FACTORY_FROM (the mail sender).
-type EnvGuard = { name: string; cmd: string; reason: string }
+type EnvGuard = { name: string; cmd: string; reason: string; flag?: string }
 export const FACTORY_FROM_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_FROM. ' +
   'The factory reads the mail sender from this variable, and the owner-only rule trusts mail from the ' +
@@ -2872,7 +2873,7 @@ export const FACTORY_RUN_REASON =
   'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
   'Do not retry this command.'
 const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmd: 'factory', reason: FACTORY_RUN_REASON }
-const BEADS_ACTOR_GUARD: EnvGuard = { name: 'BEADS_ACTOR', cmd: 'bd', reason: BEADS_ACTOR_REASON }
+const BEADS_ACTOR_GUARD: EnvGuard = { name: 'BEADS_ACTOR', cmd: 'bd', reason: BEADS_ACTOR_REASON, flag: 'actor' }
 const FACTORY_FROM_GUARD: EnvGuard = { name: 'FACTORY_FROM', cmd: 'factory', reason: FACTORY_FROM_REASON }
 
 const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
@@ -2882,6 +2883,20 @@ const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
 // This match is defensive and fails closed. See BEADS_ACTOR_REASON above.
 function valueNamesBeadsActor(v: string | undefined, g: EnvGuard): boolean {
   return v !== undefined && v.includes(g.name)
+}
+
+// claude-factory-qn8a.26: true when a word after the bd word is a long flag that abbreviates
+// g.flag (pflag accepts a unique prefix). The name needs 3 or more characters. Quoting does not
+// change argv, so a quoted or post-`--` word also counts (fail closed).
+function hasFlagPrefix(words: string[], from: number, g: EnvGuard): boolean {
+  if (!g.flag) return false
+  for (let i = from + 1; i < words.length; i++) {
+    const w = words[i]!
+    if (!w.startsWith('--')) continue
+    const name = w.slice(2).split('=')[0]!
+    if (name.length >= 3 && g.flag.startsWith(name)) return true
+  }
+  return false
 }
 
 // claude-factory-sft4: true for a word that is, or can expand at run time to, sh, bash, zsh or
@@ -3155,6 +3170,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
       }
     }
   }
+  if (bdIdx.length > 0 && hasFlagPrefix(words, bdIdx[0]!, g)) return true
   if (!envClearsAll) return false
   if (runsBd) return true
   if (bdIdx.length === 0) return false
