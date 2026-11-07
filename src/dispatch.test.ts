@@ -1888,6 +1888,13 @@ test('a live rework run is aborted when its PR is merged, not when it is open (c
     JSON.stringify({ number: 7, html_url: 'https://github.com/acme/widget/pull/7', state, merged_at })
   labelPassAgain({ GH_LABELED: '[]', GH_PULL: pull('open', null) })
   expect(inboxOf(id)).not.toContain('ABORT')
+  const file = join(phome, 'runs', id, 'run.json')
+  const run = readFileSync(file, 'utf8')
+  const elsewhere = JSON.parse(run) as Record<string, unknown>
+  writeFileSync(file, JSON.stringify({ ...elsewhere, repo: '/other/rig' })) // a run of another rig is not this rig's to end
+  labelPassAgain({ GH_LABELED: '[]', GH_PULL: pull('closed', '2026-11-06T10:00:00Z') })
+  expect(inboxOf(id)).not.toContain('ABORT')
+  writeFileSync(file, run)
   labelPassAgain({ GH_LABELED: '[]', GH_PULL: pull('closed', '2026-11-06T10:00:00Z') })
   expect(inboxOf(id)).toContain('"type":"ABORT"')
 })
