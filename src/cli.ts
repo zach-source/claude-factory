@@ -12107,7 +12107,7 @@ if (import.meta.main && !outboxCmd)
             },
           )
         }
-        const opt =(flag: string) =>
+        const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
         // the goal is the rest of the line, so `/factory rig add ... --goal finish it` needs no quotes
         const goal = args.includes('--goal')
