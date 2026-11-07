@@ -117,6 +117,25 @@ for (const g of READY_GATES) {
   })
 }
 
+// raw backstop: a quote that holds a newline or a carriage return
+const RAW_DENY = [
+  "glab mr note 5 -m 'ok\n/approve'",
+  "glab mr note 5 -m 'ok\n  /merge'",
+  'glab mr note 5 -m "ok\r/approve"',
+  'glab mr view 5\n/approve',
+  "glab mr note 5 -m 'ok\\\n' ; echo x\n/ready",
+]
+const RAW_ALLOW = ["glab mr note 5 -m 'ok\nsee /Users/a'", 'glab mr view 5\n/usr/bin/true']
+for (const g of GATES) {
+  const name = JSON.stringify(g)
+  test.each(RAW_DENY)(`raw backstop denies %j for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBe(GLAB_QUICK_ACTION_REASON)
+  })
+  test.each(RAW_ALLOW)(`raw backstop allows %j for gate ${name}`, cmd => {
+    expect(ask(cmd, g)).toBeUndefined()
+  })
+}
+
 // glab api form W: the field text of a note or merge request create call
 FILES['n.md'] = 'ok\n/approve\n'
 FILES['ok.md'] = 'looks good'

@@ -5817,7 +5817,12 @@ function glabReason(words: string[], gate: HookGate, command: string, depth: num
   const dropped = dropRedirectWords(tail)
   const raw = { ...glabRawWords(command), whole: depth === 0 && glabWholeCommand(command) }
   const same = dropped.length === tail.length
-  return glabReasonOn(tail, same, raw, gate) ?? (same ? undefined : glabReasonOn(dropped, true, raw, gate))
+  return (
+    glabReasonOn(tail, same, raw, gate) ??
+    (same ? undefined : glabReasonOn(dropped, true, raw, gate)) ??
+    // claude-factory-qn8a.33: backstop. A quote can hold a newline, whatever the parse does with it.
+    (quickActionLine(command.replace(/\\\n/g, '')) ? GLAB_QUICK_ACTION_REASON : undefined)
+  )
 }
 
 type GlabRaw = {
