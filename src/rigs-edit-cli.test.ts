@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as ax from './ax'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(tmpdir(), `rigs-edit-cli-${process.pid}`)
@@ -343,4 +344,200 @@ test('a worker cannot run rig undo or rig history', () => {
     expect(p.exitCode).not.toBe(0)
   }
   expect(text()).toBe(B)
+})
+
+/** run each row and expect exit 1, a message, and rigs.json and its history unchanged */
+function refused(rows: string[][], extra: Record<string, string> = {}) {
+  const before = text()
+  const h = histCount()
+  for (const row of rows) {
+    const r = factory(['rig', ...row], extra)
+    expect(r.code, row.join(' ')).toBe(1)
+    expect(r.err, row.join(' ')).not.toBe('')
+    expect(r.out + r.err, row.join(' ')).not.toContain('zqsecret')
+    expect(text(), row.join(' ')).toBe(before)
+    expect(histCount(), row.join(' ')).toBe(h)
+  }
+}
+
+test('rig env set then unset round-trips', () => {
+  const { x, y, rx } = seed()
+  const before = text()
+  for (const arg of ['x', rx]) {
+    const r = factory(['rig', 'env', 'set', arg, 'NEW=v=zqsecret'])
+    expect(r.code).toBe(0)
+    expect(r.out).toBe('rig x: set env NEW\n')
+    expect(r.out + r.err).not.toContain('zqsecret')
+    expect(text()).toBe(JSON.stringify([{ ...x, env: { A: 'b', NEW: 'v=zqsecret' } }, y], null, 2))
+    expect(factory(['rig', 'env', 'unset', arg, 'NEW']).out).toBe('rig x: unset env NEW\n')
+    expect(text()).toBe(before)
+  }
+  factory(['rig', 'env', 'set', 'x', 'A=c'])
+  expect(list()[0].env).toEqual({ A: 'c' })
+  factory(['rig', 'env', 'set', 'x', 'E='])
+  expect(list()[0].env).toEqual({ A: 'c', E: '' })
+  factory(['rig', 'env', 'set', 'y', 'K=v'])
+  expect(list()[1].env).toEqual({ K: 'v' })
+  factory(['rig', 'env', 'unset', 'y', 'K'])
+  expect(list()[1]).toEqual(y)
+  expect('env' in list()[1]).toBe(false)
+})
+
+test('rig env refuses a bad pair or key, an unset key and an unknown rig; the file stays', () => {
+  seed()
+  refused([
+    ['env', 'set', 'x', 'NOEQ'],
+    ['env', 'set', 'x', '1A=b'],
+    ['env', 'set', 'x', 'A-B=zqsecret'],
+    ['env', 'set', 'x', '=zqsecret'],
+    ['env', 'set', 'x', ' A=zqsecret'],
+    ['env', 'set', 'x'],
+    ['env', 'set', 'nope', 'A=b'],
+    ['env', 'unset', 'x', 'MISSING'],
+    ['env', 'unset', 'y', 'A'],
+    ['env', 'unset', 'x'],
+  ])
+})
+
+test('rig egress add then rm returns the list', () => {
+  const { x, y } = seed()
+  const before = text()
+  const spec = 'a.example.com,b.example.com=OPENAI:Authorization:Bearer '
+  const r = factory(['rig', 'egress', 'add', 'x', spec, '--port', '8443'])
+  expect(r.code).toBe(0)
+  const rules = list()[0].egress
+  expect(rules).toHaveLength(2)
+  expect(rules[1]).toEqual({ ...ax.parseEgress(spec), port: 8443 })
+  expect(factory(['rig', 'egress', 'rm', 'x', 'b.example.com,a.example.com']).code).toBe(0)
+  expect(text()).toBe(before)
+  const three = [
+    { hosts: ['a.example.com'] },
+    { hosts: ['b.example.com'], port: 1 },
+    { hosts: ['c.example.com'] },
+  ]
+  writeFileSync(file(), JSON.stringify([{ ...x, egress: three }, y], null, 2))
+  factory(['rig', 'egress', 'add', 'x', 'd.example.com'])
+  expect(factory(['rig', 'egress', 'rm', 'x', 'B.example.com']).code).toBe(0)
+  expect(list()[0].egress).toEqual([three[0], three[2], { hosts: ['d.example.com'] }])
+  // a rig with no egress: add then rm leaves no key
+  const { egress: _, ...bare } = x
+  writeFileSync(file(), JSON.stringify([bare, y], null, 2))
+  const b = text()
+  factory(['rig', 'egress', 'add', 'x', 'h.example.com'])
+  expect(list()[0].egress).toHaveLength(1)
+  factory(['rig', 'egress', 'rm', 'x', 'h.example.com'])
+  expect(text()).toBe(b)
+})
+
+test('rig egress add on a local runner is refused', () => {
+  seed()
+  const before = text()
+  const r = factory(['rig', 'egress', 'add', 'y', 'h.example.com'])
+  expect(r.code).toBe(1)
+  expect(r.err).toContain('runner with an egress policy')
+  expect(text()).toBe(before)
+})
+
+test('rig egress refuses a bad host, key, port, duplicate, no match or a two-rule match', () => {
+  const { x, y } = seed()
+  refused([
+    ['egress', 'add', 'x', 'bad_host'],
+    ['egress', 'add', 'x', 'h.example.com=lower'],
+    ['egress', 'add', 'x', 'h.example.com=K:bad header'],
+    ['egress', 'add', 'x', 'h.example.com', '--port', '0'],
+    ['egress', 'add', 'x', 'h.example.com', '--port', '65536'],
+    ['egress', 'add', 'x', 'h.example.com', '--port', 'x'],
+    ['egress', 'add', 'x', 'example.com'],
+    ['egress', 'add', 'x', 'EXAMPLE.com=K'],
+    ['egress', 'add', 'x'],
+    ['egress', 'rm', 'x', 'nothere.example.com'],
+    ['egress', 'rm', 'x', 'example.com=K'],
+    ['egress', 'rm', 'x'],
+    ['egress', 'rm', 'y', 'example.com'],
+  ])
+  expect(factory(['rig', 'egress', 'add', 'x', 'example.com,c.example.com']).code).toBe(0)
+  const twice = [{ hosts: ['a.example.com'] }, { hosts: ['a.example.com'], port: 9 }]
+  writeFileSync(file(), JSON.stringify([{ ...x, egress: twice }, y], null, 2))
+  refused([['egress', 'rm', 'x', 'a.example.com']])
+  expect(factory(['rig', 'egress', 'rm', 'x', 'a.example.com']).err).toContain('2 egress rules')
+})
+
+test('rig beads-remote set and clear', () => {
+  const { x, y } = seed()
+  const before = text()
+  const set = ['--name', 'origin2', '--url', 'https://dolt.example.com/db/zqsecret', '--user', 'bot']
+  const r = factory(['rig', 'beads-remote', 'set', 'y', ...set])
+  expect(r.code).toBe(0)
+  expect(r.out).toBe('rig y: set beadsRemote origin2\n')
+  expect(r.out + r.err).not.toContain('zqsecret')
+  expect(Object.keys(list()[1].beadsRemote)).toEqual(['name', 'url', 'user'])
+  expect(factory(['rig', 'beads-remote', 'clear', 'y']).code).toBe(0)
+  expect(text()).toBe(before)
+  expect(factory(['rig', 'beads-remote', 'set', 'x', ...set]).code).toBe(0)
+  const next = { ...x, beadsRemote: { name: 'origin2', url: set[3], user: 'bot' } }
+  expect(text()).toBe(JSON.stringify([next, y], null, 2))
+})
+
+test('rig beads-remote refuses a bad name, user or url, a missing flag and a clear of nothing', () => {
+  seed()
+  const ok = ['--name', 'o', '--url', 'https://e.example.com', '--user', 'u']
+  const with_ = (flag: string, v: string) => ok.map((a, i) => (ok[i - 1] === flag ? v : a))
+  refused([
+    ['beads-remote', 'set', 'y', ...with_('--name', 'a b')],
+    ['beads-remote', 'set', 'y', ...with_('--name', "a'b")],
+    ['beads-remote', 'set', 'y', ...with_('--user', 'u;x')],
+    ['beads-remote', 'set', 'y', ...with_('--user', '')],
+    ['beads-remote', 'set', 'y', ...with_('--url', 'not a url zqsecret')],
+    ['beads-remote', 'set', 'y', ...ok.slice(2)],
+    ['beads-remote', 'set', 'y', ...ok.slice(0, 2), ...ok.slice(4)],
+    ['beads-remote', 'set', 'y', ...ok.slice(0, 4)],
+    ['beads-remote', 'clear', 'y'],
+    ['beads-remote', 'set', 'nope', ...ok],
+  ])
+})
+
+test('a worker or a patrol cannot run rig env, egress or beads-remote', () => {
+  seed()
+  const cmds = [
+    ['env', 'set', 'x', 'A=c'],
+    ['env', 'unset', 'x', 'A'],
+    ['egress', 'add', 'x', 'h.example.com'],
+    ['egress', 'rm', 'x', 'example.com'],
+    ['beads-remote', 'set', 'x', '--name', 'o', '--url', 'https://e.example.com', '--user', 'u'],
+    ['beads-remote', 'clear', 'x'],
+  ]
+  for (const who of [{ FACTORY_RUN: 'r1', FACTORY_FROM: 'r1/implement' }, { FACTORY_PATROL: '1' }]) {
+    refused(cmds, who)
+    for (const c of cmds) expect(factory(['rig', ...c], who).err).toContain(`cannot run factory rig ${c[0]}`)
+  }
+})
+
+test('rig env, egress and beads-remote take only their own words and flags', () => {
+  seed()
+  const ok = ['--name', 'o', '--url', 'https://e.example.com', '--user', 'u']
+  refused([
+    ['env', 'put', 'x', 'A=b'],
+    ['env', 'set', 'x', 'A=b', 'extra'],
+    ['env', 'set', 'x', 'A=b', '--max', '2'],
+    ['env', 'set', 'x', 'A=b', '--goal', 'g'],
+    ['env', 'set', 'x', 'A=b', '--egress', 'h.example.com'],
+    ['env', 'set', 'x', 'A=b', '--runner', 'herdr'],
+    ['env', 'set', 'x', 'A=b', '--port', '1'],
+    ['env', 'set', 'x', 'A=b', '--name', 'o'],
+    ['env', 'unset', 'x', 'A', '--merge-authority'],
+    ['egress', 'push', 'x', 'h.example.com'],
+    ['egress', 'add', 'x', 'h.example.com', 'extra'],
+    ['egress', 'add', 'x', 'h.example.com', '--param', 'a=b'],
+    ['egress', 'rm', 'x', 'example.com', '--port', '1'],
+    ['egress', 'add', 'x', 'h.example.com', '--user', 'u'],
+    ['beads-remote', 'push', 'x', ...ok],
+    ['beads-remote', 'set', 'x', ...ok, 'extra'],
+    ['beads-remote', 'set', 'x', ...ok, '--max', '2'],
+    ['beads-remote', 'set', 'x', ...ok, '--port', '1'],
+    ['beads-remote', 'clear', 'x', 'extra'],
+    ['beads-remote', 'clear', 'x', '--name', 'o'],
+    ['beads-remote'],
+  ])
+  expect(factory(['rig', 'env', 'set', 'x']).err).toContain('usage: factory rig env set')
+  expect(factory(['rig', 'bogus']).err).toContain('env, egress, beads-remote')
 })

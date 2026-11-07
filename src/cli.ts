@@ -849,6 +849,9 @@ export function outboxDenial(
 /** where bd keeps a repo's store: its Dolt server and database (`bd dolt show --json`) */
 type DoltConn = { host: string; port: number; database: string; user: string; tls: boolean }
 
+/** a beadsRemote name or user goes into SQL: the launch and `rig beads-remote set` check it with this one regex */
+export const BEADS_WORD = /^[\w.-]+$/
+const BEADS_WORD_MSG = 'beadsRemote name and user are [A-Za-z0-9_.-]'
 /**
  * the command that moves a rig's beads to or from where its VMs share them: its beadsRemote, else the repo's
  * GitHub origin. A push or pull runs inside the laptop's Dolt server, which holds the remote's password, and
@@ -860,7 +863,7 @@ export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?:
   // plain `bd dolt push|pull` runs with DOLT_REMOTE_USER from env.json (axrepos). A pull conflict stops with bd's own
   // error, where the laptop's pullResolving keeps the VM's row; the manager reports it and a person resolves it
   if (!r || inAx()) return ['bd', 'dolt', way]
-  if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
+  if (![r.name, r.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
   const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
   return [
@@ -9728,9 +9731,8 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
     fail('drift needs --drift "<read-only command>": add it, or drop drift from --sweeps')
   const b = rig.beadsRemote
   if (b) {
-    if (![b.name, b.user].every(s => /^[\w.-]+$/.test(s)))
-      fail('beadsRemote name and user are [A-Za-z0-9_.-]')
-    if (!URL.canParse(b.url)) fail(`beadsRemote url is not a URL (not "${b.url}")`)
+    if (![b.name, b.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
+    if (!URL.canParse(b.url)) fail('beadsRemote url is not a URL')
   }
   return warnings
 }
@@ -10974,7 +10976,7 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -12359,6 +12361,120 @@ if (import.meta.main && !outboxCmd)
             }),
           )
           console.log(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
+        } else if (sub === 'env' || sub === 'egress' || sub === 'beads-remote') {
+          const usages: Record<string, string> = {
+            'env set': 'factory rig env set <rig|repo> KEY=VALUE',
+            'env unset': 'factory rig env unset <rig|repo> KEY',
+            'egress add': 'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n]',
+            'egress rm': 'factory rig egress rm <rig|repo> host[,host]...',
+            'beads-remote set': 'factory rig beads-remote set <rig|repo> --name n --url u --user user',
+            'beads-remote clear': 'factory rig beads-remote clear <rig|repo>',
+          }
+          const [port, bName, bUrl, bUser] = [opt('--port'), opt('--name'), opt('--url'), opt('--user')]
+          const [verb, at, arg, ...extra] = args.slice(1)
+          const key = `${sub} ${verb}`
+          const usage =
+            usages[key] ??
+            Object.keys(usages)
+              .filter(k => k.startsWith(`${sub} `))
+              .map(k => usages[k])
+              .join(' | ')
+          const old = [
+            max,
+            sweeps,
+            slo,
+            drift,
+            runner,
+            agent,
+            mcp,
+            linear,
+            linearProjects,
+            linearLabels,
+            goal,
+          ]
+          const stray =
+            old.some(v => v !== undefined) ||
+            [params, egress, personOnlyContext, protectedBranch].some(l => l.length) ||
+            mergeAuth ||
+            (port !== undefined && key !== 'egress add') ||
+            ([bName, bUrl, bUser].some(v => v !== undefined) && key !== 'beads-remote set')
+          const noArg = sub === 'beads-remote'
+          if (!usages[key] || stray || !at || extra.length || (noArg ? arg !== undefined : !arg))
+            fail(`usage: ${usage}`)
+          const target = rigs().find(r => r.repo === repoOf(at!))
+          if (!target) fail(`${repoOf(at!)} is not a rig`)
+          const change = (fn: (r: Rig) => Partial<Rig>, said: string) => {
+            edit(list =>
+              list.map(r => {
+                if (r.name !== target!.name) return r
+                const next = fn(r) as Rig
+                for (const w of validateRig(next)) console.warn(w)
+                return next
+              }),
+            )
+            console.log(`rig ${target!.name}: ${said}`)
+          }
+          // an emptied env or egress goes away, so a set then an unset leaves the file as it was
+          const without = (r: Rig, k: 'env' | 'egress' | 'beadsRemote', v: unknown) =>
+            applyRigChange(r, v ? { [k]: v } : {}, v ? [] : [k]) as Rig
+          const hostSet = (hosts: string[]) =>
+            hosts
+              .map(h => h.toLowerCase())
+              .sort()
+              .join(',')
+          if (key === 'env set') {
+            const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(arg!)
+            if (!m) fail(`env KEY is [A-Za-z_][A-Za-z0-9_]* and the pair is KEY=VALUE: usage: ${usage}`)
+            change(r => without(r, 'env', { ...r.env, [m![1]!]: m![2]! }), `set env ${m![1]}`)
+          } else if (key === 'env unset') {
+            change(r => {
+              if (!Object.hasOwn(r.env ?? {}, arg!)) throw new Error(`env ${arg} is not set`)
+              const { [arg!]: _, ...rest } = r.env!
+              return without(r, 'env', Object.keys(rest).length ? rest : undefined)
+            }, `unset env ${arg}`)
+          } else if (key === 'egress add') {
+            let rule: Egress
+            try {
+              rule = ax.parseEgress(arg!)
+            } catch (e) {
+              fail((e as Error).message)
+            }
+            if (port !== undefined) {
+              if (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535)
+                fail(`--port is a number from 1 to 65535 (not "${port}")`)
+              rule!.port = Number(port)
+            }
+            change(
+              r => {
+                if (r.egress?.some(e => hostSet(e.hosts) === hostSet(rule.hosts)))
+                  throw new Error(`egress for ${rule.hosts.join(',')} is set: rig egress rm it first`)
+                return without(r, 'egress', [...(r.egress ?? []), rule])
+              },
+              `added egress ${rule!.hosts.join(',')}`,
+            )
+          } else if (key === 'egress rm') {
+            const want = hostSet(arg!.split(','))
+            change(r => {
+              const hit = (r.egress ?? []).filter(e => hostSet(e.hosts) === want)
+              if (hit.length !== 1)
+                throw new Error(`${hit.length} egress rules for those hosts: rm needs exactly 1`)
+              const rest = r.egress!.filter(e => e !== hit[0])
+              return without(r, 'egress', rest.length ? rest : undefined)
+            }, `removed egress ${arg}`)
+          } else if (key === 'beads-remote set') {
+            if (bName === undefined || bUrl === undefined || bUser === undefined) fail(`usage: ${usage}`)
+            if (!BEADS_WORD.test(bName!) || !BEADS_WORD.test(bUser!)) fail(BEADS_WORD_MSG)
+            if (!URL.canParse(bUrl!)) fail('--url is not a URL')
+            change(
+              r => without(r, 'beadsRemote', { name: bName, url: bUrl, user: bUser }),
+              `set beadsRemote ${bName}`,
+            )
+          } else {
+            change(r => {
+              if (!r.beadsRemote) throw new Error('no beadsRemote is set')
+              return without(r, 'beadsRemote', undefined)
+            }, 'cleared beadsRemote')
+          }
         } else if (sub === 'list') {
           const { busy, held } = await busyRigs()
           if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
@@ -12427,7 +12543,10 @@ if (import.meta.main && !outboxCmd)
             }
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
-        } else fail(`unknown rig command "${sub}": add, set, show, rm, list, history or undo`)
+        } else
+          fail(
+            `unknown rig command "${sub}": add, set, env, egress, beads-remote, show, rm, list, history or undo`,
+          )
         break
       }
       case 'rm': {
