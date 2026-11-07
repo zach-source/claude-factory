@@ -105,6 +105,16 @@ export function parse(text: string): { page: Page; body: string } | { reasons: s
   return r.length ? { reasons: r } : { page: d as Page, body }
 }
 
+/**
+ * `factory wiki find` rule. A bead id matches an exact `beads` entry. A PR number matches a `prs` entry that ends
+ * with `/pull/<n>`, and a full URL matches exactly. Any other word matches the title, with no case check.
+ */
+export const pageMatches = (page: Page, q: string) =>
+  q !== '' &&
+  ((page.beads ?? []).includes(q) ||
+    (page.prs ?? []).some(p => p === q || (/^\d+$/.test(q) && p.endsWith(`/pull/${q}`))) ||
+    page.title.toLowerCase().includes(q.toLowerCase()))
+
 /** JSON is YAML: each value is one quoted line, so no title text can add a frontmatter line */
 export function format(page: Page, body: string): string {
   const p = page as Record<string, unknown>

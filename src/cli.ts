@@ -144,7 +144,8 @@ import * as selfupdate from './selfupdate'
 import { needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
-import { scanPages } from './wiki'
+import { pageMatches, parse as parseWikiPage, scanPages } from './wiki'
+import type { Page } from './wiki'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
@@ -4661,6 +4662,53 @@ export function pushWiki(dir = join(HOME, 'wiki')) {
   const p = wikiGit(dir, ['push', url, 'HEAD:main'], true)
   if (p.code !== 0) wikiLog(`wiki: push failed (exit ${p.code})`)
   return p.code === 0
+}
+
+/**
+ * The pages that `wiki find` and `wiki status` can read, sorted by path. A page must meet all of these rules:
+ * HEAD has it with mode 100644 or 100755, its path passes the path rule, it is a regular file with one link and
+ * at most 65,536 bytes, and parse() accepts it. An agent pass controls the worktree.
+ * A symlink or a hard link must not send an outside file to stdout.
+ */
+function wikiPages(dir: string) {
+  const ls = wikiGit(dir, ['ls-tree', '-r', '-z', 'HEAD'])
+  if (ls.code !== 0) return []
+  const out: { path: string; page: Page }[] = []
+  for (const e of ls.out.toString().split('\0')) {
+    const tab = e.indexOf('\t')
+    const path = e.slice(tab + 1)
+    const mode = e.slice(0, e.indexOf(' '))
+    if (tab < 0 || (mode !== '100644' && mode !== '100755')) continue
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..')) continue
+    try {
+      const st = lstatSync(join(dir, path))
+      if (!st.isFile() || st.nlink !== 1 || st.size > WIKI_PAGE_MAX) continue
+      const p = parseWikiPage(readFileSync(join(dir, path), 'utf8'))
+      if ('page' in p) out.push({ path, page: p.page })
+    } catch {}
+  }
+  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+}
+
+/** prints `path<TAB>title<TAB>host URL` for each matching page; the exit code is 1 when none match */
+function wikiFind(q: string) {
+  const dir = join(HOME, 'wiki')
+  if (!existsSync(join(dir, '.git'))) {
+    console.error('wiki: not set up: run factory wiki init')
+    return 1
+  }
+  const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
+  const r = url ? wikiRemote(url) : null
+  const hits = wikiPages(dir).filter(({ page }) => pageMatches(page, q))
+  for (const { path, page } of hits)
+    console.log(
+      [
+        path,
+        page.title.replace(/\p{Cc}/gu, ' '),
+        r ? `https://${r.host}/${r.owner}/${r.repo}/blob/main/${path}` : '',
+      ].join('\t'),
+    )
+  return hits.length ? 0 : 1
 }
 
 /** beads the memory names that have closed since: what waited on them is stale */
@@ -11365,6 +11413,14 @@ if (import.meta.main && !outboxCmd)
       }
       case 'wiki': {
         refuseWorker('wiki', true)
+        // read-only verbs: no wiki.lock
+        if (args[0] === 'find') {
+          if (args.length !== 2) {
+            console.error('usage: factory wiki find <bead|pr|word>')
+            process.exitCode = 2
+          } else process.exitCode = wikiFind(args[1]!)
+          break
+        }
         const i = args.indexOf('--remote')
         const remoteArg = i < 0 ? undefined : args[i + 1]
         const rest = i < 0 ? args : args.filter((_, j) => j !== i && j !== i + 1)

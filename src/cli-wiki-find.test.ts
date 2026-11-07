@@ -59,7 +59,11 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 
 const SECTIONS = ['Problem', 'Cause', 'Change', 'Options rejected', 'Verification', 'Still open', 'Links']
 /** a valid solution page; `title` is raw YAML text */
-const solution = (title: string, beads = '["acme-3w8o"]', prs = '["https://github.com/acme/widget/pull/591"]') =>
+const solution = (
+  title: string,
+  beads = '["acme-3w8o"]',
+  prs = '["https://github.com/acme/widget/pull/591"]',
+) =>
   `---\nkind: "solution"\ntitle: ${title}\nrigs: ["widget"]\ntopics: ["locks"]\nbeads: ${beads}\nprs: ${prs}\ncause: "proven"\n---\n` +
   SECTIONS.map(s => `## ${s}\n\nneedle text\n`).join('\n')
 const put = (path: string, text: string) => {
@@ -109,10 +113,12 @@ test('AC3 find by word: title only, any case, sorted by path', () => {
   for (const q of ['widget', 'WIDGET']) {
     const r = factory(['wiki', 'find', q])
     expect(r.code).toBe(0)
-    expect(r.out.split('\n').filter(Boolean).map(l => l.split('\t')[0])).toEqual([
-      'solutions/2026-10/queue.md',
-      LOCK,
-    ])
+    expect(
+      r.out
+        .split('\n')
+        .filter(Boolean)
+        .map(l => l.split('\t')[0]),
+    ).toEqual(['solutions/2026-10/queue.md', LOCK])
   }
   const body = factory(['wiki', 'find', 'needle'])
   expect([body.code, body.out]).toEqual([1, ''])
@@ -122,7 +128,10 @@ test('AC4 errors: no match, no wiki, usage; init usage stays', () => {
   base()
   const none = factory(['wiki', 'find', 'nomatch'])
   expect([none.code, none.out]).toEqual([1, ''])
-  for (const args of [['wiki', 'find'], ['wiki', 'find', 'a', 'b']]) {
+  for (const args of [
+    ['wiki', 'find'],
+    ['wiki', 'find', 'a', 'b'],
+  ]) {
     const r = factory(args)
     expect([r.code, r.err]).toEqual([2, `${USAGE}\n`])
   }
@@ -136,23 +145,18 @@ test('AC5 find reads only safe pages', () => {
   setup()
   put(LOCK, solution('"Fix the widget lock"'))
   put('solutions/2026-11/bad.md', 'no frontmatter acme-3w8o\n')
+  put('solutions/2026-11/link.md', 'x')
+  linkSync(join(wiki(), LOCK), join(wiki(), 'solutions/2026-11/hard.md'))
   commit()
-  put('solutions/2026-11/untracked.md', solution('"Untracked widget"'))
   const outside = join(dir, 'outside.md')
   writeFileSync(outside, solution('"Outside widget"'))
-  put('solutions/2026-11/link.md', 'x')
-  commit()
   rmSync(join(wiki(), 'solutions/2026-11/link.md'))
   symlinkSync(outside, join(wiki(), 'solutions/2026-11/link.md'))
-  linkSync(join(wiki(), LOCK), join(wiki(), 'solutions/2026-11/hard.md'))
-  git('add', '-f', 'solutions/2026-11/hard.md')
-  commit()
-  // lock.md now has nlink 2 (hard.md): both are refused
+  put('solutions/2026-11/untracked.md', solution('"Untracked widget"'))
+  // lock.md and hard.md share one inode: find refuses both
   let r = factory(['wiki', 'find', 'widget'])
   expect([r.code, r.out]).toEqual([1, ''])
   rmSync(join(wiki(), 'solutions/2026-11/hard.md'))
-  git('rm', '-q', '--cached', 'solutions/2026-11/hard.md')
-  commit()
   r = factory(['wiki', 'find', 'widget'])
   expect([r.code, r.out]).toEqual([0, LINE])
   expect(ghCalls()).toBe(0)
