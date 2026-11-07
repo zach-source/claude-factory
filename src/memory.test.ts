@@ -759,6 +759,9 @@ test("the manager's activity: what it was asked and ran since, and every skill's
     ran(7, 'Bash', { command: 'factory status r-1' }),
     ran(8, 'Skill', { skill: 'triage-stuck' }),
     'not json',
+    // a record with no timestamp whose message holds "type":"user" (api-request-blob) once threw Invalid Date
+    JSON.stringify({ type: 'api-request-blob', message: { content: '{"type":"user"}' } }),
+    JSON.stringify({ type: 'user', message: { content: 'no time' } }),
   ]
   const { activity, used } = managerActivity(lines, Date.parse(at(3)))
   expect(activity).toEqual([
