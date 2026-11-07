@@ -10954,7 +10954,7 @@ const RUST_TRIM = new RegExp(`^[${RUST_WS}]+|[${RUST_WS}]+$`, 'g')
  * claude-factory-qn8a.22: the paths that a codex apply_patch input adds, deletes, updates or moves to, or
  * undefined when the input is not the closed grammar (the fail-closed case). Pure: it calls no fs function.
  * Only tool_input.command is read, and it must be the only key. Each line that starts with *** (after the
- * Rust trim) must be a known header; any other *** line, a ~ path or a patch with no file header is undefined.
+ * Rust trim) must be a known header; any other *** line, a ~ path or a patch with no Add, Delete or Update header is undefined.
  */
 export function applyPatchPaths(input: unknown): string[] | undefined {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
@@ -10963,15 +10963,17 @@ export function applyPatchPaths(input: unknown): string[] | undefined {
   if (keys.length !== 1 || typeof command !== 'string') return undefined
   if (command.includes('\0')) return undefined
   const paths: string[] = []
+  let files = 0
   for (const raw of command.split('\n')) {
     const line = raw.replace(RUST_TRIM, '')
     if (!line.startsWith('***')) continue
     if (line === '*** Begin Patch' || line === '*** End Patch' || line === '*** End of File') continue
     const m = /^\*\*\* (Add File|Delete File|Update File|Move to): (.+)$/.exec(line)
     if (!m || m[2]!.startsWith('~')) return undefined
+    if (m[1] !== 'Move to') files++
     paths.push(m[2]!)
   }
-  return paths.length ? paths : undefined
+  return files ? paths : undefined
 }
 
 /** claude-factory-qn8a.22: the reason to deny a codex apply_patch input, or undefined. Same arguments as fileWriteReason. */

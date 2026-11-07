@@ -99,6 +99,8 @@ test('AC2: a malformed input denies with APPLY_PATCH_REASON before any path chec
   )
   for (const c of [
     wrap('+x'),
+    wrap('*** Move to: src/a.ts'),
+    wrap('*** Move to: .git/config'),
     wrap('*** Environment ID: e1', '*** Add File: a'),
     wrap('*** add file: a'),
     wrap('***Add File: a'),
