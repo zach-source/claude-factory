@@ -181,6 +181,7 @@ import * as client from './client'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as leases from './lease'
+import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
@@ -466,11 +467,16 @@ const lease = () => {
 }
 /**
  * takes or renews the local manager lease (claude-factory-s01d.2). It returns the lease of the
- * other holder when that holder keeps it. A busy lock counts as a refusal: the next tick tries again.
+ * other holder when that holder keeps it. A busy lock refuses, unless this holder has a live lease.
  */
 function localLease(want = leases.asker(process.env, process.ppid)): leases.Lease | undefined {
   const release = hold('lease.lock')
-  if (!release) return leases.readLease(HOME) ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
+  if (!release) {
+    // a take of the same holder (a tick beside a patrol) holds the lock: a live lease of this holder is still ours
+    const cur = leases.readLease(HOME)
+    if (cur && cur.holder === want.holder && !leases.isStale(cur, Date.now())) return undefined
+    return cur ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
+  }
   try {
     const d = leases.take(HOME, want)
     return d.ok ? undefined : d.lease
@@ -11449,6 +11455,7 @@ const usage = `factory — herdr software factories on xstate
   cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
                                      (tick --keep-mail saves the tick and the manager's mail for patrol --once)
+  herdr install [--app-home <dir>]   copy the Herdr app manager mod and its layout into the app folder
   lease [status|release]             who holds the local manager lease (only its holder ticks); release it
   patrol --once                      one headless manager patrol: answers the kept mail and works the board
   pm --once | brief --once | review --once [--codex <model>]   one headless pm, gate-brief or skill/proposal review
@@ -11720,6 +11727,20 @@ if (import.meta.main && !outboxCmd)
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
+      case 'herdr': {
+        refuseWorker('herdr', true)
+        const at = args.indexOf('--app-home')
+        if (args[0] !== 'install' || args.length !== (at > 0 ? 3 : 1) || (at > 0 && !args[at + 1]))
+          fail('usage: factory herdr install [--app-home <dir>]')
+        const repo = resolve(import.meta.dir, '..')
+        const app = at > 0 ? resolve(args[at + 1]!) : herdrApp.appHomeOf(process.env)
+        const out = herdrApp.install(repo, app, join(repo, 'bin', 'factory'), HOME)
+        console.log(
+          `installed the factory mod in ${out.mod} and the layout in ${out.layout}, for the home ${HOME}`,
+        )
+        console.log("in the Herdr app, run layout.switch {name: 'factory'} to show it")
+        break
+      }
       case 'home':
         console.log(HOME)
         break
