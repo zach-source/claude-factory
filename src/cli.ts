@@ -12371,9 +12371,9 @@ if (import.meta.main && !outboxCmd)
         const r = args[0] ? runners[args[0]] : undefined
         if (!r || r.local !== false || args.length > (codex ? 2 : 1))
           fail('usage: factory unhold <runner> [--codex]; the runner is a remote one, such as ax')
-        writeUnhold(r.name, codex, Date.now(), Date.now())
+        writeUnhold(r!.name, codex, Date.now(), Date.now())
         console.log(
-          `marked: the next tick wakes the ${r.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
+          `marked: the next tick wakes the ${r!.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
         )
         break
       }
