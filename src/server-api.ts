@@ -462,20 +462,22 @@ const HEADER = /^([A-Za-z0-9!#$%&'*+.^_`|~-]+):[ \t]*([^\r\n\0]*?)[ \t]*$/
  * Read one HTTP/1.1 request from an authorized socket and write one answer, then close.
  * The grammar is closed: no chunked body, no pipelining, no keep-alive, and a duplicate of a header that the handler reads is an error.
  */
-function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise<Response>) {
+function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise<Response>, idleMs: number) {
   const reply = (status: number, body: string, type = 'application/json', extra = '') => {
     sock.end(
       `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? 'Status'}\r\ncontent-type: ${type}\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n${extra}\r\n${body}`,
     )
   }
   const bad = (status: number, why: string) => reply(status, `${JSON.stringify({ refused: why })}\n`)
-  sock.setTimeout(30_000, () => sock.destroy())
+  // the idle limit covers the read of the request only: a CLI call can run to its own 60 s limit and answer 504
+  sock.setTimeout(idleMs, () => sock.destroy())
   sock.on('error', () => sock.destroy())
   let buf = Buffer.alloc(0)
   let head: { method: string; target: string; headers: Headers; length: number; end: number } | undefined
   let done = false
   const finish = async () => {
     done = true
+    sock.setTimeout(0)
     try {
       const body = buf.subarray(head!.end, head!.end + head!.length)
       const ip = sock.remoteAddress ?? ''
@@ -540,6 +542,7 @@ export function clientListener(o: {
   key: string
   ca: string
   handle: (req: Request, ip: string) => Promise<Response>
+  idleMs?: number
 }) {
   const open = new Set<Socket>()
   const srv = createTlsServer(
@@ -555,7 +558,7 @@ export function clientListener(o: {
       if (!sock.authorized) return sock.destroy()
       open.add(sock)
       sock.on('close', () => open.delete(sock))
-      serveSocket(sock, o.handle)
+      serveSocket(sock, o.handle, o.idleMs ?? 30_000)
     },
   )
   srv.on('tlsClientError', () => {})

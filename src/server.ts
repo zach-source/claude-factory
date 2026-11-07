@@ -85,6 +85,8 @@ export type ServeOpts = {
     key: string
     ca: string
     handle: (req: Request, ip: string) => Promise<Response>
+    /** idle limit while the request is read, in ms; default 30000 */
+    idleMs?: number
   }
 }
 

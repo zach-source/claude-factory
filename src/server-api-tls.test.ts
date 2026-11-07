@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { main as clientMain } from './client'
 import { parseFlags, serve } from './server'
+import { sign } from './tokens'
 import { clientHandler, personCerts, type RunResult } from './server-api'
 
 const dirs: string[] = []
@@ -35,10 +36,11 @@ const laptop = (who: string, pin: string) => {
   return home
 }
 
-const start = (tick: () => unknown = () => ({ runs: ['r1'] })) => {
+const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, delayMs = 0) => {
   const calls: string[][] = []
   const run = async (argv: string[]): Promise<RunResult> => {
     calls.push(argv)
+    if (delayMs) await Bun.sleep(delayMs)
     return { code: 0, out: '{"ok":1}\n', err: '', ...({} as object) }
   }
   const home = tmp()
@@ -57,6 +59,7 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] })) => {
       key: read(A, 'server.key'),
       ca: read(A, 'ca.crt'),
       handle,
+      idleMs,
     },
   })
   stops.push(() => s.stop())
@@ -132,6 +135,22 @@ describe('mTLS on the client port', () => {
   test('a worker token with a person cert gets 403 and no call', async () => {
     const t = start()
     expect(await raw(t.s.clientPort!, pair(A), 'Authorization: Bearer v1.a.b\r\n')).toBe('403')
+    expect(t.calls.length).toBe(0)
+  })
+  test('a slow handler outlives the idle limit and still answers', async () => {
+    const t = start(undefined, 200, 800)
+    expect(await raw(t.s.clientPort!, pair(A))).toBe('200')
+  })
+  test('a real signed worker token with a person cert gets 403 and no call', async () => {
+    const t = start()
+    const now = Date.now()
+    const token = sign(
+      tmp(),
+      Buffer.alloc(32, 7),
+      { task: 't', run: 'r', node: 'n', seq: 1, exp: now + 3600_000 },
+      now,
+    )
+    expect(await raw(t.s.clientPort!, pair(A), `Authorization: Bearer ${token}\r\n`)).toBe('403')
     expect(t.calls.length).toBe(0)
   })
   test('tick answers the last tick result and runs nothing', async () => {
