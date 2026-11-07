@@ -226,11 +226,10 @@ test('AC6: factory unhold refuses a worker, a patrol, a local runner, and bad ar
     [['unhold', 'ax', '--codex', '--codex'], {}],
   ]
   for (const [args, env] of bad) {
-    // factory() strips these from the parent env; add them back after
-    const p = Bun.spawnSync([CLI, ...args], {
-      env: { ...process.env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1', ...env },
-    })
-    expect(p.exitCode).toBe(1)
+    // factory() strips the worker env of this shell; each row adds back only its own
+    const p = factory(args, env)
+    expect(p.code).toBe(1)
+    expect(p.err).not.toBe('')
   }
   expect(existsSync(join(home, 'unhold-ax.json'))).toBe(false)
 })
@@ -240,4 +239,25 @@ test('AC5: a mark with no held station is deleted and sends no mail', () => {
   const tick = factory(['tick'])
   expect(tick.out).not.toContain('Woke')
   expect(existsSync(join(home, 'unhold-ax.json'))).toBe(false)
+})
+
+const CODEX = 'Codex usage limit (seven_day) until 2026-11-08T01:00:00Z'
+test('AC2: one Claude mark and one Codex mark share one cap in a tick', () => {
+  const rs = [held('ax'), held('ax'), held('ax', CODEX), held('ax', CODEX)]
+  mark('unhold-ax.json', { before: Date.now() + 1000, from: 0, woke: 0 })
+  mark('unhold-ax-codex.json', { before: Date.now() + 1000, from: 0, woke: 0 })
+  factory(['tick'], { FACTORY_MAX_RUNS: '2' })
+  expect(rs.filter(r => wakesOf(r).length)).toHaveLength(2)
+})
+
+test('a run that does not load does not stop the tick or the mark', () => {
+  const bad = held('nope')
+  const a = held('ax')
+  mark('unhold-ax.json', { before: Date.now() + 1000, from: 0, woke: 0 })
+  const tick = factory(['tick'])
+  expect(tick.code).toBe(0)
+  expect(existsSync(join(home, 'unhold-ax.json'))).toBe(true)
+  expect(tick.err).toContain('unhold:')
+  expect(wakesOf(bad)).toHaveLength(0)
+  expect(wakesOf(a)).toHaveLength(0)
 })

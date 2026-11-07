@@ -2770,7 +2770,8 @@ export function writeUnhold(runner: string, codex: boolean, before: number, from
 
 /**
  * This function picks the held stations to wake, the oldest hold first. Each pick takes one slot:
- * room() applies the town cap `max` and the rig's maxRuns.
+ * room() applies the town cap `max` and the rig's maxRuns. It adds each pick to `busy`, so a caller can share
+ * one list over many calls.
  */
 export function pickUnholds<T extends { rig: Pick<Rig, 'name' | 'maxRuns'> | undefined; at: number }>(
   cands: T[],
@@ -2778,7 +2779,7 @@ export function pickUnholds<T extends { rig: Pick<Rig, 'name' | 'maxRuns'> | und
   held: (string | undefined)[],
   max = MAX_BUSY,
 ): T[] {
-  const used = [...busy]
+  const used = busy
   const out: T[] = []
   for (const c of [...cands].sort((a, b) => a.at - b.at)) {
     if (room(c.rig, used, max, held) <= 0) continue
@@ -2797,6 +2798,7 @@ export function pickUnholds<T extends { rig: Pick<Rig, 'name' | 'maxRuns'> | und
 export async function unholdPass(now: number): Promise<(Mail & { run: string })[]> {
   const mails: (Mail & { run: string })[] = []
   if (halted()) return mails
+  let slots: Awaited<ReturnType<typeof busyRigs>> | undefined
   for (const runner of Object.values(runners).filter(r => !r.local)) {
     for (const codex of [false, true]) {
       const file = unholdFile(runner.name, codex)
@@ -2819,8 +2821,8 @@ export async function unholdPass(now: number): Promise<(Mail & { run: string })[
           continue // a run dir before its state.json, or a def that does not load
         }
       }
-      const { busy, held } = await busyRigs()
-      const picked = pickUnholds(cands, busy, held)
+      slots ??= await busyRigs()
+      const picked = pickUnholds(cands, slots.busy, slots.held)
       for (const p of picked)
         post(p.id, {
           type: 'MAIL',
@@ -6412,7 +6414,12 @@ async function tick(isPatrol = false) {
       reviewed: reviewedItems(),
     }
     const halt = halted()
-    out.manager.push(...(await unholdPass(now)))
+    try {
+      out.manager.push(...(await unholdPass(now)))
+    } catch (e) {
+      // the marks stay, so the next tick tries again; the run loop must go on
+      console.error(`unhold: ${e instanceof Error ? e.message : String(e)}`)
+    }
     for (const id of runIds()) {
       try {
         const { row, manager } = await tickRun(loadRun(id), now, halted())
