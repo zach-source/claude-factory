@@ -2890,6 +2890,22 @@ function valueNamesBeadsActor(v: string | undefined, g: EnvGuard): boolean {
   return v !== undefined && v.includes(g.name)
 }
 
+// claude-factory-qn8a.26: true when a word that does not start with `--` can expand to the flag.
+// Remove the expansion parts. If the rest starts with `-` and its name is empty or abbreviates
+// the flag, deny. If the word held a glob character and the rest abbreviates the flag, deny.
+function expandedFlag(w: string, flag: string): boolean {
+  if (!/[{}*?[\]`$]/.test(w)) return false
+  const rest = w
+    .replace(/`[^`]*`/g, '')
+    .replace(/\$\([^)]*\)/g, '')
+    .replace(/\$\{[^}]*\}/g, '')
+    .replace(/\$[A-Za-z_0-9@*#?!$-]?/g, '')
+    .replace(/[{},*?[\]]/g, '')
+  const name = rest.replace(/^-+/, '').split('=')[0]!
+  if (rest.startsWith('-')) return name === '' || flag.startsWith(name) || name.startsWith(flag.slice(0, 3))
+  return /[*?[]/.test(w) && name.length > 0 && flag.startsWith(name)
+}
+
 // claude-factory-qn8a.26: true when a word after the bd word is a long flag that abbreviates
 // g.flag. bd 1.3.2 refuses a prefix, but a later version can accept it (fail closed). The name
 // needs 3 or more characters. Quoting does not change argv, so a quoted or post-`--` word also
@@ -2899,7 +2915,10 @@ function hasFlagPrefix(words: string[], from: number, g: EnvGuard): boolean {
   if (!g.flag) return false
   for (let i = from + 1; i < words.length; i++) {
     const w = words[i]!
-    if (!w.startsWith('--')) continue
+    if (!w.startsWith('--')) {
+      if (expandedFlag(w, g.flag)) return true
+      continue
+    }
     const name = w.slice(2).split('=')[0]!
     if (/[$`{*?[]/.test(name)) return true
     if (name.length >= 3 && g.flag.startsWith(name)) return true
