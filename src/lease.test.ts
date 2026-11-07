@@ -83,3 +83,11 @@ test('two managers on one home: the second gets a read-only board and does not t
   expect(existsSync(leaseFile(home))).toBe(false)
   expect(factory(['lease', 'status']).out).toContain('nobody holds the manager lease')
 })
+
+test('a --once step without the lease is refused and makes no model call', () => {
+  mkdirSync(home, { recursive: true })
+  take(home, { holder: 'herdr:one', kind: 'herdr', at: Date.now() })
+  const r = factory(['patrol', '--once'], { FACTORY_LEASE_HOLDER: 'pane:p9', FACTORY_CLAUDE: '/nonexistent' })
+  expect(r.code).not.toBe(0)
+  expect(r.err).toContain('no patrol: herdr:one (herdr) holds the manager lease')
+})
