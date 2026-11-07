@@ -324,6 +324,7 @@ const DENIED = [
   'start',
   'fork',
   'tick',
+  'lease',
   'beads',
   'watch',
   'sync',
