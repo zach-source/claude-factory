@@ -45,6 +45,10 @@ const DENY = (n: string, c: string) => [
   `export -- ${n}; ${c}`,
   `declare -n r=${n}; ${c}`,
   `${n}+=x ${c}`,
+  `for ${n} in Manager; do ${c}; done`,
+  `select ${n} in Manager; do ${c}; done`,
+  `foreach ${n} (Manager) ${c}; end`,
+  `for ${n} (Manager) ${c}`,
   ...WRITERS.map(w => `${w} ${n}; ${c}`),
 ]
 const ALLOW = (n: string, c: string) => [
@@ -57,6 +61,9 @@ const ALLOW = (n: string, c: string) => [
   `grep -rn ${n} src`,
   `git commit -m "fix ${n} guard"`,
   'find . -print',
+  `for f in a b; do grep -n ${n} "$f"; done`,
+  `git commit -m "fix for ${n}"`,
+  `for f in a ${n}; do echo; done`,
 ]
 
 for (const g of GUARDS) {
