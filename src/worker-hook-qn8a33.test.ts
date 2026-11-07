@@ -36,6 +36,9 @@ const DENIED_LINES = [
   '/approve.',
   '/tmp',
   '​/approve',
+  '‌/approve',
+  '‍/approve',
+  '⁠/approve',
   '﻿/merge',
 ]
 const ALLOWED_LINES = [
@@ -166,6 +169,7 @@ const API_TEXT_DENY = [
   `printf x > ok.md; glab api -X POST ${NOTE} -F body=@ok.md`,
   `glab api -X POST ${NOTE} -F body=@ok.md && echo done`,
   `bash -c 'glab api -X POST ${NOTE} -F body=@ok.md'`,
+  `env glab api -X POST ${NOTE} -F body=@ok.md`,
 ]
 const API_ALLOW = [
   'glab api --method POST projects/:id/merge_requests/5/notes -F body=@ok.md',
@@ -173,6 +177,7 @@ const API_ALLOW = [
   `glab api -X POST ${NOTE} -f body=@n.md`,
   `glab api -X POST ${NOTE} -f body=x`,
   `glab api -X POST ${NOTE} -f body='see /Users/a'`,
+  `glab api -X POST ${NOTE} -f body='a $b'`,
 ]
 for (const g of GATES) {
   const name = JSON.stringify(g)
@@ -254,6 +259,9 @@ const PUSH_ALLOW = [
   'git push -o merge_request.title=x origin HEAD',
   "git push -o 'merge_request.description=fix bug' origin HEAD",
   'git push -o merge_request.draft origin HEAD',
+  'git push -o merge_request.target_project=a/b -o merge_request.label=x -o merge_request.unlabel=y origin HEAD',
+  'git push -o merge_request.remove_source_branch -o merge_request.milestone=v1 origin HEAD',
+  'git push -o merge_request.assign=me -o merge_request.unassign=you origin HEAD',
 ]
 const CONFIG_DENY = [
   'git config push.pushOption merge_request.auto_merge',
