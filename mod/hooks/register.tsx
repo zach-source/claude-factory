@@ -340,8 +340,15 @@ async function tick($: EngineInterface) {
       reviews?: FactoryReviewItem[]
       reviewed?: FactoryReviewRow[]
       halt?: 'stopping' | 'paused'
+      readOnly?: string
     }
     if (res.busy) return
+    // claude-factory-s01d.2: another manager holds the lease. Show its board, and do not patrol or spawn.
+    if (res.readOnly) {
+      await update($, board, b => ({ ...b, runs: res.runs, staleSince: undefined }))
+      $.ui.status(`factory: read-only: ${line(res.readOnly, 160)}`)
+      return
+    }
     // what waits on the manager, for the patrol prompt: the reviewed items first, then those with no verdict yet
     rt.reviewRows = [...(res.reviewed ?? []), ...(res.reviews ?? [])]
     await update($, board, b => ({

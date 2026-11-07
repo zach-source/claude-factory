@@ -178,6 +178,7 @@ import * as worker from './worker'
 import * as client from './client'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
+import * as leases from './lease'
 import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
@@ -460,6 +461,34 @@ async function launchAxManager(args: string[]) {
 const lease = () => {
   const m = ax.remoteManager()
   if (m) fail(m)
+}
+/**
+ * takes or renews the local manager lease (claude-factory-s01d.2). It returns the lease of the
+ * other holder when that holder keeps it. A busy lock counts as a refusal: the next tick tries again.
+ */
+function localLease(want = leases.asker(process.env, process.ppid)): leases.Lease | undefined {
+  const release = hold('lease.lock')
+  if (!release) return leases.readLease(HOME) ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
+  try {
+    const d = leases.take(HOME, want)
+    return d.ok ? undefined : d.lease
+  } finally {
+    release()
+  }
+}
+/** the board with no tick: what a manager without the lease shows. It changes no run. */
+async function readOnlyBoard(holder: leases.Lease) {
+  const runs: Row[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value, c } = current(id)
+      const def = await loadPinned(run.factory)
+      runs.push(row(run, def, value, c, agentOf(def, value, c)))
+    } catch (err) {
+      runs.push({ id, error: (err as Error).message })
+    }
+  }
+  return { readOnly: leases.leaseLine(holder, Date.now()), lease: holder, runs, manager: [], rigs: rigs() }
 }
 const fail = (msg: string): never => {
   throw new Error(msg)
@@ -7120,8 +7149,19 @@ async function linearPass(names: string[] = [], force = false) {
 /** ticks forever, so runs advance and the rigs dispatch with no console open. Each tick's own
  * kickSweeps starts a due sweep pass; this loop no longer calls sweep() itself. */
 async function loop(intervalMs: number) {
+  let said = ''
   for (;;) {
-    await tick()
+    const other = localLease({
+      holder: `loop:${process.pid}`,
+      kind: 'loop',
+      pid: process.pid,
+      at: Date.now(),
+    })
+    const line = other ? leases.leaseLine(other, Date.now()) : ''
+    // a loop without the lease waits and says so once, until the holder changes
+    if (line && line.split(' ')[0] !== said) console.error(`factory loop: no tick: ${line}`)
+    said = line.split(' ')[0] ?? ''
+    if (!other) await tick()
     await Bun.sleep(intervalMs)
   }
 }
@@ -11223,6 +11263,7 @@ const usage = `factory — herdr software factories on xstate
                                      tick starts one, at most once a minute)
   cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
+  lease [status|release]             who holds the local manager lease (only its holder ticks); release it
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
@@ -11405,11 +11446,23 @@ if (import.meta.main && !outboxCmd)
         if (args.length < 3) refuseWorker('fork') // a fork with a note is refused by managerSender
         await fork(args[0], args[1], args.slice(2).join(' '))
         break
-      case 'tick':
+      case 'tick': {
         refuseWorker('tick', true)
         lease()
-        console.log(JSON.stringify(await tick(true)))
+        const other = localLease()
+        console.log(JSON.stringify(other ? await readOnlyBoard(other) : await tick(true)))
         break
+      }
+      case 'lease': {
+        refuseWorker('lease', true)
+        if (args[0] === 'release' && args.length === 1) {
+          leases.release(HOME)
+          console.log('released the manager lease')
+        } else if (!args.length || (args[0] === 'status' && args.length === 1))
+          console.log(leases.leaseLine(leases.readLease(HOME), Date.now()))
+        else fail('usage: factory lease [status|release]')
+        break
+      }
       case 'beads':
         refuseWorker('beads')
         await beadsPass()
