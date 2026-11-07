@@ -8907,11 +8907,20 @@ const asksOf = (pr: LabeledPr) =>
     .join(' and ')}`
 export const reworkGoal = (pr: LabeledPr) =>
   `Pull request #${pr.number} (${pr.url}) is stuck, ${asksOf(pr)}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
-/** the live run a pull request belongs to: its branch is the run's, or the run's reports link it */
-export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: string; log: Entry[] }[]) =>
+/** the PR URL at the head of a rework goal (reworkGoal), or undefined for any other goal */
+export const reworkPr = (goal: string) => /^Pull request #\d+ \(([^\s()]+)\) is stuck,/.exec(goal)?.[1]
+/**
+ * the live run that owns a pull request. The PR is on the run's branch, or a report of the run links it,
+ * or the run is a rework run for it. A rework run uses the PR's own branch, so only its goal names the PR.
+ */
+export const prOwner = (
+  pr: Pick<LabeledPr, 'url' | 'headRefName'>,
+  live: { id: string; log: Entry[]; goal: string }[],
+) =>
   live.find(
     r =>
       pr.headRefName === `factory/${r.id}` ||
+      reworkPr(r.goal) === pr.url ||
       r.log.some(e => [...prsIn(e.summary), ...mrsIn(e.summary)].includes(pr.url)),
   )?.id
 
@@ -9142,7 +9151,7 @@ async function labelPass() {
   const live = startedRunIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
-    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log, c: r.c }))
+    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log, c: r.c, goal: r.run.goal }))
   for (const rig of rigs()) {
     const cli = (bin: string, args: string[]) => {
       const p = Bun.spawnSync([bin, ...args], { cwd: rig.repo, timeout: 60_000 })
@@ -9334,7 +9343,7 @@ function axSweep() {
 /** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
 export function orphanRuns(ids: string[], read: typeof current = current) {
   const runs = new Map<string, Run>()
-  const live: { id: string; log: Entry[]; bead?: string }[] = []
+  const live: { id: string; log: Entry[]; goal: string; bead?: string }[] = []
   const decided = new Set<string>()
   for (const id of ids) {
     try {
@@ -9342,7 +9351,7 @@ export function orphanRuns(ids: string[], read: typeof current = current) {
       const [node] = where(value)
       runs.set(id, run)
       if (c.log.at(-1)?.outcome === 'decision') decided.add(id)
-      if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
+      if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, goal: run.goal, bead: run.bead })
     } catch {
       // the run has no readable state yet
     }
