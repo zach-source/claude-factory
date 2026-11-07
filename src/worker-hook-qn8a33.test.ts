@@ -1,5 +1,11 @@
 import { expect, test } from 'bun:test'
-import { denyReason, GLAB_QUICK_ACTION_REASON, GLAB_TEXT_REASON } from './worker-hook'
+import {
+  denyReason,
+  GITLAB_PUSH_OPTION_REASON,
+  GLAB_QUICK_ACTION_REASON,
+  GLAB_TEXT_REASON,
+  PUSH_REASON,
+} from './worker-hook'
 
 // claude-factory-qn8a.33: GitLab runs a /approve or /merge line in a note or description as a quick action.
 const FILES: Record<string, string> = {}
@@ -190,5 +196,51 @@ for (const g of GATES) {
       ...g,
     })
     expect(seen.filter(p => p === 'ok.md' || p === '-')).toEqual([])
+  })
+}
+
+// git push options: a merge_request push option can merge an MR or run a quick action
+const PUSH_GATES = [{ headOf: () => 'factory/x' }, { headOf: () => 'factory/x', originHead: () => 'main' }]
+const PUSH_DENY = [
+  'git push -o merge_request.description=/approve origin HEAD',
+  'git push -o merge_request.merge_when_pipeline_succeeds origin HEAD',
+  'git push -o merge_request.auto_merge origin HEAD',
+  'git push -o MERGE_REQUEST.AUTO_MERGE origin HEAD',
+  'git push -o mr.auto_merge origin HEAD',
+  'git push --push-option=merge_request.auto_merge origin HEAD',
+  'git push --push-option merge_request.squash origin HEAD',
+  'git push --push-o=merge_request.auto_merge origin HEAD',
+  'git push --pu=merge_request.auto_merge origin HEAD',
+  'git send-pack --push-option=merge_request.auto_merge origin HEAD',
+  'git push -o merge_request.create -o merge_request.merge_when_pipeline_succeeds origin HEAD',
+]
+const PUSH_ALLOW = [
+  'git push origin HEAD',
+  'git push -o ci.skip origin HEAD',
+  'git push -o merge_request.create -o merge_request.target=main origin HEAD',
+  'git push -o merge_request.title=x origin HEAD',
+  "git push -o 'merge_request.description=fix bug' origin HEAD",
+  'git push -o merge_request.draft origin HEAD',
+]
+const CONFIG_DENY = [
+  'git config push.pushOption merge_request.auto_merge',
+  'git config --add push.pushoption ci.skip',
+  'git -c push.pushOption=ci.skip push origin HEAD',
+  'git --config-env push.pushOption=X push origin HEAD',
+  'git --config-env=push.pushOption=X push origin HEAD',
+]
+for (const g of PUSH_GATES) {
+  const gitAsk = (c: string) => denyReason(c, undefined, undefined, g)
+  test.each(PUSH_DENY)('denies push option %j with GITLAB_PUSH_OPTION_REASON', cmd => {
+    expect(gitAsk(cmd)).toBe(GITLAB_PUSH_OPTION_REASON)
+  })
+  test.each(PUSH_ALLOW)('allows push option %j', cmd => {
+    expect(gitAsk(cmd)).toBeUndefined()
+  })
+  test.each(CONFIG_DENY)('denies %j with PUSH_REASON', cmd => {
+    expect(gitAsk(cmd)).toBe(PUSH_REASON)
+  })
+  test('allows git config --get push.pushOption', () => {
+    expect(gitAsk('git config --get push.pushOption')).toBeUndefined()
   })
 }

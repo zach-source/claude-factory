@@ -6376,6 +6376,56 @@ function refspecTarget(
  * Real git uses whichever of the 2 flags comes last on the command line (claude-factory-ctae.10).
  * This guard's own rule only adds denies, so the guard stays fail closed.
  */
+// claude-factory-qn8a.33
+export const GITLAB_PUSH_OPTION_REASON =
+  'The factory denies this command: a GitLab merge_request push option other than create, target, ' +
+  'target_project, title, draft, label, unlabel, remove_source_branch, milestone, assign or unassign can ' +
+  'merge or approve, and a description with a slash command line runs it. Do not retry this exact command.'
+
+const GITLAB_PUSH_OPTION_KEYS = new Set([
+  'create',
+  'target',
+  'target_project',
+  'title',
+  'draft',
+  'label',
+  'unlabel',
+  'remove_source_branch',
+  'milestone',
+  'assign',
+  'unassign',
+])
+
+/**
+ * claude-factory-qn8a.33: true when a push option of `git push` or `git send-pack` can merge a GitLab merge
+ * request or run a quick action. The option is `-o V`, `--push-option V` or `--push-option=V`, also as a
+ * unique prefix of the long name. A `merge_request.` or `mr.` key passes only from a closed list.
+ * The `description` key passes when its value has no quick action line.
+ */
+function pushOptionDenied(pushTail: string[]): boolean {
+  for (let i = 0; i < pushTail.length; i++) {
+    const w = pushTail[i]!
+    if (w === '--') break
+    let value: string | undefined
+    if (w === '-o' || w === '--push-option') value = pushTail[++i]
+    else if (
+      w.startsWith('--') &&
+      w.includes('=') &&
+      matchesLongFlagPrefix(w.slice(0, w.indexOf('=')), '--push-option')
+    )
+      value = w.slice(w.indexOf('=') + 1)
+    else continue
+    const eq = value?.indexOf('=') ?? -1
+    const key = (eq < 0 ? (value ?? '') : value!.slice(0, eq)).toLowerCase()
+    const m = /^(?:merge_request|mr)\.(.*)$/.exec(key)
+    if (!m) continue
+    if (m[1] === 'description') {
+      if (quickActionLine(value!.slice(eq + 1))) return true
+    } else if (!GITLAB_PUSH_OPTION_KEYS.has(m[1]!)) return true
+  }
+  return false
+}
+
 function pushOperands(tail: string[]): {
   operands: string[]
   broad: boolean
@@ -6513,6 +6563,11 @@ function isAliasName(name: string): boolean {
   return /^alias\.[^.=]+$/i.test(name)
 }
 
+// claude-factory-qn8a.33: `push.pushOption` adds a push option to every later push. The hook cannot read it then.
+function isPushOptionName(name: string): boolean {
+  return name.toLowerCase() === 'push.pushoption'
+}
+
 // claude-factory-zl5.28: the `push.default` config key. Its value picks the remote branch a bare
 // `git push` reaches, with no refspec of its own on that later command line.
 function isPushDefaultName(name: string): boolean {
@@ -6555,7 +6610,7 @@ function isUpstreamPushDefaultValue(value: string): boolean {
 function isPushConfigWrite(name: string, value: string | undefined): boolean {
   if (isRemotePushName(name) || isRemoteMirrorName(name) || isIncludeName(name)) return true
   if (value === undefined) return false
-  if (isAliasName(name)) return true
+  if (isAliasName(name) || isPushOptionName(name)) return true
   return isPushDefaultName(name) && isUpstreamPushDefaultValue(value)
 }
 
@@ -6618,6 +6673,7 @@ function isDeniedConfigEnvName(name: string): boolean {
     isRemoteMirrorName(name) ||
     isAliasName(name) ||
     isPushDefaultName(name) ||
+    isPushOptionName(name) ||
     isIncludeName(name)
   )
 }
@@ -7666,6 +7722,7 @@ function gitReasonOn(
   const dirUnsafe = dir === GIT_CHDIR_UNSAFE || uncertainChdirUnsafe
   const currentBranch = effectiveMoved || dirUnsafe ? undefined : gate.headOf?.(dir)
   const reason = effectiveMoved || dirUnsafe ? PUSH_DIR_REASON : PUSH_REASON
+  if (pushOptionDenied(pushTail)) return GITLAB_PUSH_OPTION_REASON
   if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? reason : undefined
   return gitPushDenied(pushTail, currentBranch, gate) ? reason : undefined
 }
