@@ -1,10 +1,11 @@
 import { expect, test } from 'bun:test'
-import { BEADS_ACTOR_REASON, denyReason, FACTORY_FROM_REASON, FACTORY_RUN_REASON } from './worker-hook.ts'
+import { BEADS_ACTOR_REASON, denyReason, FACTORY_FROM_REASON, FACTORY_RUN_REASON, FACTORY_VM_ENV_REASON } from './worker-hook.ts'
 
 const GUARDS = [
   { name: 'BEADS_ACTOR', cmd: 'bd create x', reason: BEADS_ACTOR_REASON },
   { name: 'FACTORY_FROM', cmd: 'factory mail r1 implement x', reason: FACTORY_FROM_REASON },
   { name: 'FACTORY_RUN', cmd: 'factory report run-b 3 approve x', reason: FACTORY_RUN_REASON },
+  { name: 'FACTORY_VM_ENV', cmd: 'factory report r1 2 ready x', reason: FACTORY_VM_ENV_REASON },
 ]
 const WRITERS = [
   'export',
