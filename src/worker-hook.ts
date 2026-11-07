@@ -2862,12 +2862,12 @@ export const BEADS_ACTOR_REASON =
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
-// claude-factory-ab8n: one guard per variable a worker must not change. cmd is the command word
-// that reads the variable: bd reads BEADS_ACTOR, and factory reads FACTORY_FROM (the mail sender).
+// claude-factory-ab8n: one guard per variable a worker must not change. cmds holds the command words
+// that read the variable: bd reads BEADS_ACTOR; FACTORY_FROM and FACTORY_RUN are read by the words in FACTORY_CLI_WORDS.
 type EnvGuard = { name: string; cmds: ReadonlySet<string>; reason: string; flag?: string }
 // claude-factory-qn8a.27: the CLI is TypeScript, so only the factory launcher or a JS runtime starts it.
 // ponytail: a script file under a cleared env (env -i bash x.sh), another interpreter (python3, perl)
-// and a runtime copied to another name pass. The sandbox is the barrier. Upgrade: none planned.
+// and a runtime copied to another name pass. The sandbox is the barrier. Upgrade: none planned, because the hook is a best-effort guard. Each runtime word also over-denies a harmless env -i run.
 const FACTORY_CLI_WORDS: ReadonlySet<string> = new Set([
   'factory',
   'bun',

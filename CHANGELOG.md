@@ -25,6 +25,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `factory report` strips control, format and line-separator characters from the report text, the `mail` text and the `memory add` summary, body, rig and `--from` (claude-factory-67bw). Each such character becomes a space. LF and TAB stay. This holds for the FAIL reason, the BLOCKED reason and the DONE and HANDOFF summary, also for a VM report that the laptop replays.
 - Fix: `factory fork` of an ended ship run is refused while another ship run is live on the same repo (claude-factory-9wch). The error names the live run and tells you to run `factory abort` on it first. Before, the fork gave the rig two ship runs that worked the same queue.
 - Added: `factory rig history` lists the newest 20 snapshots of `rigs.json`. `factory rig undo [n]` restores snapshot n (default 1, the newest) through the rig edit lock. The undo makes its own snapshot, so a second `rig undo` reverses it (claude-factory-wy9u.6). A worker cannot run either verb.
+- Fix: `env -i` before `bun src/cli.ts` no longer clears FACTORY_FROM and FACTORY_RUN without a hook denial (claude-factory-qn8a.27). The worker hook now reads a JS runtime word (bun, node, npx and others) as a start of the factory CLI.
 
 ## 0.16.0 (2026-11-03)
 
