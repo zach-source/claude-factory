@@ -3165,6 +3165,59 @@ function envOptionScan(
   return { cmdStart: words.length, clearsAll }
 }
 
+const MENTION_KEYWORDS = new Set([
+  'do',
+  'then',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+  '!',
+  'time',
+  '{',
+  '}',
+])
+// Commands that run no shell string from their arguments. `git` is ok only for `commit` and `log`.
+const MENTION_LITERAL_OK = new Set(['grep', 'egrep', 'fgrep', 'rg', 'echo', 'bd', 'factory'])
+
+/**
+ * claude-factory-qn8a.25: returns true when the segment mentions the guarded name outside a read-only command.
+ * A mention is the name with no [A-Za-z0-9_] after it. It has no left boundary, so `-vNAME` and `MY_NAME` count.
+ * `$NAME` and `${NAME}` are reads, not mentions.
+ * The command word comes after the leading keywords, one `env` and the `X=y` words.
+ * It must be in MENTION_LITERAL_OK, or be `git` with `commit` or `log` as the next word
+ * (other git commands and global options can run a shell string). The mention word must not hold any of $ ` ( ) { } [ ] = < >.
+ * Every other form denies.
+ * ponytail: a name built at run time (`printf -v "$v"`) is not found. The sandbox is the barrier. No upgrade path in a text guard.
+ */
+function mentionsGuardedName(words: string[], name: string): boolean {
+  let ok: boolean | undefined
+  for (const w of words) {
+    let mention = false
+    for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
+      if (/[A-Za-z0-9_]/.test(w[i + name.length] ?? '')) continue
+      if (w[i - 1] === '$' || (w[i - 1] === '{' && w[i - 2] === '$' && w[i + name.length] === '}')) continue
+      mention = true
+      break
+    }
+    if (!mention) continue
+    if (/[$`(){}[\]=<>]/.test(w)) return true
+    if (ok === undefined) {
+      let k = 0
+      while (k < words.length && MENTION_KEYWORDS.has(words[k]!)) k++
+      if (words[k] === 'env') k++
+      while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!)) k++
+      const cmd = k < words.length ? baseWord(words[k]!) : ''
+      ok =
+        MENTION_LITERAL_OK.has(cmd) ||
+        (cmd === 'git' && (words[k + 1] === 'commit' || words[k + 1] === 'log'))
+    }
+    if (!ok) return true
+  }
+  return false
+}
+
 /**
  * This function returns true when a word in `words` sets, clears, or (re-)exports BEADS_ACTOR.
  *
@@ -3191,6 +3244,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   let chars = 0
   for (const w of words) chars += w.length + 1
   if (spendWork(state, chars)) return true
+  if (mentionsGuardedName(words, g.name)) return true
   const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
@@ -3198,17 +3252,8 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   const bdIdx: number[] = []
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (w.startsWith(g.name + '=')) return true
     const b = baseWord(w)
     if (b === g.cmd) bdIdx.push(i)
-    // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
-    // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
-    if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
-      let j = i + 1
-      while (words[j]?.startsWith('-') && words[j] !== '--') j++
-      if (words[j] !== undefined && (words[j] === g.name || words[j]!.startsWith(g.name + '='))) return true
-    }
-    if (b === 'unset' && words.slice(i + 1).includes(g.name)) return true
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {
@@ -5641,7 +5686,79 @@ const GLAB_APPROVE_PATH = /merge_requests\/.*\/approve(?![a-z])/i
 export const GLAB_DYNAMIC_REASON =
   'The factory denies this command: a glab word holds a shell expansion ($, a backtick, a glob, a brace ' +
   'or a leading ~) that this guard cannot read. Write the glab words plainly. For a text value, use ' +
-  '--description="$X" or --message="$X", or single quotes. Do not retry this exact command.'
+  'single quotes, or run glab api --method POST projects/:id/merge_requests/<n>/notes -F body=@<path> as ' +
+  'the whole command. Do not retry this exact command.'
+
+// claude-factory-qn8a.33
+export const GLAB_QUICK_ACTION_REASON =
+  'The factory denies this command: GitLab runs a text line that starts with a slash command (/approve, ' +
+  '/merge, /ready) as a quick action, so it can approve or merge with no approve word. Write the word ' +
+  'later in the line, or start the line with other text. Do not retry this exact command.'
+
+export const GLAB_TEXT_REASON =
+  'The factory denies this command: glab sends note or description text that this hook cannot read (a ' +
+  'shell expansion, an editor, stdin, --fill, --template, --recover, or a file in a command that is not ' +
+  'the glab call alone), or a blank value (glab reads it from stdin). Write the text in single quotes, or run glab api --method POST ' +
+  'projects/:id/merge_requests/<n>/notes -F body=@<path> as the whole command. Do not retry this exact command.'
+
+/**
+ * claude-factory-qn8a.33: true when a line of `text` is a GitLab quick action line. The first token of
+ * the line (after zero-width characters and spaces) starts with `/` and a letter, and holds no second `/`.
+ * The rule is a shape, not a list of names, because GitLab adds quick actions (/submit_review).
+ */
+function quickActionLine(text: string): boolean {
+  return text
+    .split(/\r\n|[\n\r]/)
+    .some(l => /^\/[A-Za-z][^\s/]*(\s|$)/.test(l.replace(/^[\s\u200b-\u200d\u2060]+/, '')))
+}
+
+/**
+ * claude-factory-qn8a.33: the text values of the flag with short letter `letter` and long name `long`.
+ * A short cluster that holds the letter gives the rest of the word after it (also without a leading `=`),
+ * or the next word when the rest is empty. This can read extra text, and that only adds a deny.
+ */
+function glabFlagValues(tail: string[], letter: string, long: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < tail.length; i++) {
+    const w = tail[i]!
+    if (w === `--${long}`) {
+      if (i + 1 < tail.length) out.push(tail[++i]!)
+    } else if (w.startsWith(`--${long}=`)) out.push(w.slice(long.length + 3))
+    else if (/^-[^-]/.test(w) && w.includes(letter)) {
+      const rest = w.slice(w.indexOf(letter) + 1)
+      if (rest) out.push(rest, rest.replace(/^=/, ''))
+      else if (i + 1 < tail.length) out.push(tail[++i]!)
+    }
+  }
+  return out
+}
+
+/**
+ * claude-factory-qn8a.33: denies note or description text of `glab mr note|create|update` that holds a
+ * quick action line, or that this hook cannot read (a shell expansion, an editor, --fill, --template).
+ * `single` is true for a single-quoted raw word, where bash expands nothing.
+ */
+function glabTextReason(tail: string[], single: (w: string) => boolean): string | undefined {
+  if (tail[0] !== 'mr') return undefined
+  const sub = tail[1]
+  if (sub !== 'note' && sub !== 'create' && sub !== 'update') return undefined
+  const args = tail.slice(2)
+  const values =
+    sub === 'note' ? glabFlagValues(args, 'm', 'message') : glabFlagValues(args, 'd', 'description')
+  if (sub !== 'note') {
+    if (args.some(w => /^--(fill|fill-commit-body|recover|template)(=|$)/.test(w) || /^-[^-]*f/.test(w)))
+      return GLAB_TEXT_REASON
+  } else if (
+    values.length === 0 &&
+    !['list', 'delete', 'reopen', 'resolve'].includes(args[0] ?? '') &&
+    !args.some(w => w === '-h' || w === '--help')
+  )
+    return GLAB_TEXT_REASON
+  // glab reads a blank value from stdin
+  if (values.some(v => v.replace(/[\s\u0085]/g, '') === '' || v === '-' || (/[$`]/.test(v) && !single(v))))
+    return GLAB_TEXT_REASON
+  return values.some(quickActionLine) ? GLAB_QUICK_ACTION_REASON : undefined
+}
 
 // claude-factory-qn8a.32.15: glab has more write paths than a deny list holds, so only these forms pass
 const GLAB_COMMANDS = new Map<string, Set<string> | undefined>([
@@ -5706,11 +5823,13 @@ const GLAB_NO_QUOTED_VALUE = new Set([
 
 /**
  * The words that the raw command text makes safe for rule 1, as the hook sees them without quotes.
- * `segments()` drops quotes, so this reads the raw text. A word is in `ok` when its raw form is a
- * single-quoted static word or `--name="..."`. It is in `bad` when any other raw word has the same text.
+ * `segments()` drops quotes, so this reads the raw text. `ok(w)` is true when every raw word with the
+ * text `w` is a single-quoted static word or `--name="..."`. `single(w)` is true when every such raw word
+ * is a single-quoted static word, where bash expands nothing.
  */
-function glabRawWords(command: string): (w: string) => boolean {
+function glabRawWords(command: string): { ok: (w: string) => boolean; single: (w: string) => boolean } {
   const ok = new Set<string>()
+  const single = new Set<string>()
   const bad = new Set<string>()
   const s = command.replace(/\\\n/g, '')
   let w = ''
@@ -5718,8 +5837,10 @@ function glabRawWords(command: string): (w: string) => boolean {
   const end = () => {
     if (!w) return
     const m = GLAB_QUOTED_VALUE.exec(w)
-    if (GLAB_SINGLE_WORD.test(w)) ok.add(w.replace(/'/g, ''))
-    else if (m && !GLAB_NO_QUOTED_VALUE.has(m[1]!)) ok.add(w.replace(/"/g, ''))
+    if (GLAB_SINGLE_WORD.test(w)) {
+      ok.add(w.replace(/'/g, ''))
+      single.add(w.replace(/'/g, ''))
+    } else if (m && !GLAB_NO_QUOTED_VALUE.has(m[1]!)) ok.add(w.replace(/"/g, ''))
     else bad.add(w.replace(/['"]/g, ''))
     w = ''
   }
@@ -5737,7 +5858,7 @@ function glabRawWords(command: string): (w: string) => boolean {
     else w += c
   }
   end()
-  return x => ok.has(x) && !bad.has(x)
+  return { ok: x => ok.has(x) && !bad.has(x), single: x => single.has(x) && !bad.has(x) }
 }
 
 const GLAB_API_PLAIN = new Set(['-i', '--include', '--paginate', '--silent'])
@@ -5749,7 +5870,7 @@ const GLAB_API_FIELD = new Set(['-f', '-F', '--field', '--raw-field'])
  * mutation. W posts fields to a merge request note, unapprove or create path.
  * It reads every word and skips no flag value, so a flag cannot hide a word.
  */
-function glabApiAllowed(args: string[]): boolean {
+function glabApiAllowed(args: string[], fieldsOut?: { flag: string; value: string }[]): boolean {
   const methods: (string | undefined)[] = []
   const pos: string[] = []
   const fields: { flag: string; value: string }[] = []
@@ -5775,6 +5896,7 @@ function glabApiAllowed(args: string[]): boolean {
     } else if (w.startsWith('-')) return false
     else pos.push(w)
   }
+  fieldsOut?.push(...fields)
   const method = methods[0]
   if (pos.length !== 1 || methods.length > 1 || (methods.length === 1 && method === undefined)) return false
   if (fields.length === 0 && (method === undefined || method === 'GET')) return true
@@ -5811,23 +5933,74 @@ function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boole
  * skips no flag value, so a flag cannot hide a word (rounds 1 to 3 of qn8a.32 each found a new parser gap).
  * Like `ghReason`, it scans the words as given and again without redirect words. Only the second scan
  * checks `glab api` against its 3 closed forms.
+ * claude-factory-qn8a.33: each call spends the length of `command` from the scan work, because the raw
+ * words and the line backstop read the whole command for each glab word. A spent budget gives
+ * SCAN_BUDGET_REASON. `depth` is 0 only for the command that the person typed, not for a wrapper script.
  */
-function glabReason(words: string[], gate: HookGate, command: string): string | undefined {
+function glabReason(
+  words: string[],
+  gate: HookGate,
+  command: string,
+  depth: number,
+  state: ScanState,
+): string | undefined {
+  if (spendWork(state, command.length + 1)) return SCAN_BUDGET_REASON
   const tail = words.slice(1)
   const dropped = dropRedirectWords(tail)
-  const exempt = glabRawWords(command)
+  const raw = { ...glabRawWords(command), whole: depth === 0 && glabWholeCommand(command) }
   const same = dropped.length === tail.length
   return (
-    glabReasonOn(tail, gate, same, exempt) ?? (same ? undefined : glabReasonOn(dropped, gate, true, exempt))
+    glabReasonOn(tail, same, raw, gate) ??
+    (same ? undefined : glabReasonOn(dropped, true, raw, gate)) ??
+    // claude-factory-qn8a.33: backstop. A quote can hold a newline, whatever the parse does with it.
+    (quickActionLine(command.replace(/\\\n/g, '')) ? GLAB_QUICK_ACTION_REASON : undefined)
   )
 }
 
-function glabReasonOn(
-  tail: string[],
+type GlabRaw = {
+  ok: (w: string) => boolean
+  single: (w: string) => boolean
+  whole: boolean
+}
+
+/**
+ * claude-factory-qn8a.33: true when the glab call is the whole command. The raw text starts with `glab`
+ * and holds no list, pipe, subshell, expansion or newline outside single quotes. A redirect is allowed.
+ * Only then does the hook read an `@file` field: in any other command an earlier part can write the file
+ * after the hook reads it. A script that a wrapper (bash -c) runs is never the whole command (`depth` > 0).
+ */
+function glabWholeCommand(command: string): boolean {
+  const s = command.replace(/\\\n/g, '').trim()
+  return /^glab\s/.test(s) && !/[;&|\n\r()`$]/.test(s.replace(/'[^']*'/g, "''"))
+}
+
+/**
+ * claude-factory-qn8a.33: denies a `glab api` note or merge request write when a field holds a quick action
+ * line or text this hook cannot read. `-f` and `--raw-field` send the value as written. `-F` and `--field`
+ * read the file after `@`; the hook reads it only when the glab call is the whole command.
+ */
+function glabFieldsReason(
+  fields: { flag: string; value: string }[],
+  raw: GlabRaw,
   gate: HookGate,
-  checkApi: boolean,
-  exempt: (w: string) => boolean,
 ): string | undefined {
+  for (const { flag, value } of fields) {
+    const eq = value.indexOf('=')
+    const text = eq < 0 ? value : value.slice(eq + 1)
+    let body = text
+    if (text.startsWith('@') && (flag === '-F' || flag === '--field')) {
+      if (text === '@-' || text.startsWith('@~') || !raw.whole) return GLAB_TEXT_REASON
+      const file = gate.readFile?.(text.slice(1))
+      if (file === undefined) return GLAB_TEXT_REASON
+      body = file
+    }
+    if (quickActionLine(body)) return GLAB_QUICK_ACTION_REASON
+  }
+  return undefined
+}
+
+function glabReasonOn(tail: string[], checkApi: boolean, raw: GlabRaw, gate: HookGate): string | undefined {
+  const exempt = raw.ok
   if (tail.includes('approve')) return GLAB_APPROVE_REASON
   const api = tail.indexOf('api')
   const args = api < 0 ? [] : [...tail.slice(0, api), ...tail.slice(api + 1)]
@@ -5846,7 +6019,12 @@ function glabReasonOn(
   ) {
     return READY_REASON
   }
-  if (api < 0 || !checkApi || glabApiAllowed(args)) return undefined
+  const text = glabTextReason(tail, raw.single)
+  if (text) return text
+  if (api < 0 || !checkApi) return undefined
+  const fields: { flag: string; value: string }[] = []
+  if (glabApiAllowed(args, fields))
+    return args.includes('graphql') ? undefined : glabFieldsReason(fields, raw, gate)
   if (/approv/i.test(args.join(' '))) return GLAB_APPROVE_REASON
   if (args.some(isGraphqlEndpoint)) {
     const { texts, unresolved } = graphqlTexts(expandGhShortClusters(args), gate)
@@ -5874,6 +6052,7 @@ function anyGhReason(
   state: ScanState,
   movedBefore: boolean,
   command: string,
+  depth: number,
 ): string | undefined {
   let moved = movedBefore
   for (let j = 0; j < words.length; j++) {
@@ -5886,7 +6065,7 @@ function anyGhReason(
       if (r) return r
     }
     if (baseWord(words[j]!) === 'glab') {
-      const r = glabReason(words.slice(j), gate, command)
+      const r = glabReason(words.slice(j), gate, command, depth, state)
       if (r) return r
     }
   }
@@ -6297,6 +6476,62 @@ function refspecTarget(
   return { target: stripRefsHeads(dst === '' ? s.slice(0, ci) : dst), unsafe: false }
 }
 
+// claude-factory-qn8a.33
+export const GITLAB_PUSH_OPTION_REASON =
+  'The factory denies this command: a GitLab merge_request push option other than create, target, ' +
+  'target_project, title, draft, label, unlabel, remove_source_branch, milestone, assign or unassign can ' +
+  'merge or approve, and a description with a slash command line runs it. Do not retry this exact command.'
+
+const GITLAB_PUSH_OPTION_KEYS = new Set([
+  'create',
+  'target',
+  'target_project',
+  'title',
+  'draft',
+  'label',
+  'unlabel',
+  'remove_source_branch',
+  'milestone',
+  'assign',
+  'unassign',
+])
+
+/**
+ * claude-factory-qn8a.33: true when a push option of `git push` or `git send-pack` can merge a GitLab merge
+ * request or run a quick action. The option is `-o V`, `--push-option V` or `--push-option=V`, also as a
+ * unique prefix of the long name. A short word that holds `o` (`-oV`, `-uoV`) gives the rest of the word,
+ * or the next word. This can read extra text, and that only adds a deny.
+ * GitLab removes white space from the key and does not anchor the `merge_request.` or `mr.` name, so the
+ * hook does the same. That key passes only from a closed list.
+ * The `description` key passes when its value has no quick action line.
+ */
+function pushOptionDenied(pushTail: string[]): boolean {
+  for (let i = 0; i < pushTail.length; i++) {
+    const w = pushTail[i]!
+    if (w === '--') break
+    let value: string | undefined
+    if (w === '--push-option') value = pushTail[++i]
+    else if (/^-[^-]/.test(w) && w.includes('o')) {
+      const rest = w.slice(w.indexOf('o') + 1)
+      value = rest || pushTail[++i]
+    } else if (
+      w.startsWith('--') &&
+      w.includes('=') &&
+      matchesLongFlagPrefix(w.slice(0, w.indexOf('=')), '--push-option')
+    )
+      value = w.slice(w.indexOf('=') + 1)
+    else continue
+    const eq = value?.indexOf('=') ?? -1
+    const key = (eq < 0 ? (value ?? '') : value!.slice(0, eq)).toLowerCase().replace(/\s+/g, '')
+    const m = /(?:merge_request|mr)\.(.*)$/.exec(key)
+    if (!m) continue
+    if (m[1] === 'description') {
+      if (quickActionLine(value!.slice(eq + 1))) return true
+    } else if (!GITLAB_PUSH_OPTION_KEYS.has(m[1]!)) return true
+  }
+  return false
+}
+
 /**
  * `tail` holds the arguments of a `git push` call after the `push` word.
  * `operands` holds every non-flag word, in order.
@@ -6465,6 +6700,11 @@ function isAliasName(name: string): boolean {
   return /^alias\.[^.=]+$/i.test(name)
 }
 
+// claude-factory-qn8a.33: `push.pushOption` adds a push option to every later push. The hook cannot read it then.
+function isPushOptionName(name: string): boolean {
+  return name.toLowerCase() === 'push.pushoption'
+}
+
 // claude-factory-zl5.28: the `push.default` config key. Its value picks the remote branch a bare
 // `git push` reaches, with no refspec of its own on that later command line.
 function isPushDefaultName(name: string): boolean {
@@ -6507,7 +6747,7 @@ function isUpstreamPushDefaultValue(value: string): boolean {
 function isPushConfigWrite(name: string, value: string | undefined): boolean {
   if (isRemotePushName(name) || isRemoteMirrorName(name) || isIncludeName(name)) return true
   if (value === undefined) return false
-  if (isAliasName(name)) return true
+  if (isAliasName(name) || isPushOptionName(name)) return true
   return isPushDefaultName(name) && isUpstreamPushDefaultValue(value)
 }
 
@@ -6570,6 +6810,7 @@ function isDeniedConfigEnvName(name: string): boolean {
     isRemoteMirrorName(name) ||
     isAliasName(name) ||
     isPushDefaultName(name) ||
+    isPushOptionName(name) ||
     isIncludeName(name)
   )
 }
@@ -7618,6 +7859,7 @@ function gitReasonOn(
   const dirUnsafe = dir === GIT_CHDIR_UNSAFE || uncertainChdirUnsafe
   const currentBranch = effectiveMoved || dirUnsafe ? undefined : gate.headOf?.(dir)
   const reason = effectiveMoved || dirUnsafe ? PUSH_DIR_REASON : PUSH_REASON
+  if (pushOptionDenied(pushTail)) return GITLAB_PUSH_OPTION_REASON
   if (isSendPack) return sendPackDenied(pushTail, currentBranch, gate) ? reason : undefined
   return gitPushDenied(pushTail, currentBranch, gate) ? reason : undefined
 }
@@ -9844,7 +10086,7 @@ function denyAtScan(
     }
     // claude-factory-zl5: the same any-position scan, for a gh word a wrapper (sudo, env, watch,
     // timeout) can push past position 0.
-    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar, command)
+    const ghFound = anyGhReason(words, g, state, ghConfigMovedSoFar, command, depth)
     if (ghFound) return ghFound
     const controlFound = anyFactoryControlReason(words)
     if (controlFound) return controlFound
