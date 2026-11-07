@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
+import { clientHandler, clientListener, cliRunner } from './server-api'
 
 export type Lease = { holder: string; until: number }
 
@@ -77,10 +78,24 @@ export type ServeOpts = {
   tick: () => unknown
   holder?: string
   log?: (line: string) => void
+  /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address */
+  client?: {
+    port: number
+    cert: string
+    key: string
+    ca: string
+    handle: (req: Request, ip: string) => Promise<Response>
+    /** idle limit while the request is read, in ms; default 30000 */
+    idleMs?: number
+  }
 }
 
-/** Run the tick loop under the lease and answer GET /healthz. `stop()` finishes the tick that runs and releases the lease. */
+/**
+ * Run the tick loop under the lease and answer GET /healthz. `stop()` finishes the tick that runs and releases the lease.
+ * With `client`, also serve the client API over mTLS. The `board` function gives the last tick result, null before the first tick.
+ */
 export function serve(o: ServeOpts) {
+  let last: unknown = null
   const file = leaseFile(o.home)
   const holder = o.holder ?? newHolder()
   const log = o.log ?? ((l: string) => console.log(l))
@@ -114,7 +129,9 @@ export function serve(o: ServeOpts) {
   const step = async () => {
     if (!take()) return
     try {
-      await o.tick()
+      const r = await o.tick()
+      // a tick that found the lock busy has no rows: keep the last full result
+      if (!(r as { busy?: boolean } | undefined)?.busy) last = r ?? null
       h.tickOk = true
     } catch (e) {
       h.tickOk = false
@@ -143,11 +160,23 @@ export function serve(o: ServeOpts) {
       return new Response('not found\n', { status: 404 })
     },
   })
+  // Not Bun.serve: its rejectUnauthorized did not gate the handler (see clientListener).
+  let client: ReturnType<typeof clientListener> | undefined
+  if (o.client) {
+    try {
+      client = clientListener(o.client)
+    } catch (e) {
+      void server.stop(true)
+      throw e
+    }
+  }
   // A long tick keeps the lease. A blocked event loop does not run this timer, so leaseMs must outlast those stretches.
   const renew = setInterval(() => held && take(), Math.max(1, Math.floor(o.leaseMs / 3)))
   timer = setTimeout(next, 0)
   return {
     port: server.port,
+    clientPort: client?.port,
+    board: () => last,
     holder,
     async stop() {
       stopping = true
@@ -160,36 +189,74 @@ export function serve(o: ServeOpts) {
         log('lease released')
       }
       await server.stop(true)
+      client?.stop()
     },
   }
 }
 
-const USAGE = 'usage: factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000]'
+const USAGE =
+  'usage: factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port 8444 --tls-cert <path> --tls-key <path> --person-ca <path>]'
+const NUMS = {
+  '--port': 'port',
+  '--every-ms': 'everyMs',
+  '--lease-ms': 'leaseMs',
+  '--client-port': 'clientPort',
+} as const
+const PATHS = { '--tls-cert': 'cert', '--tls-key': 'key', '--person-ca': 'ca' } as const
 
-/** Parse the flags of `factory server`. Throw the usage text on a bad value. */
+/** Parse the flags of `factory server`. The four client flags come all together or not at all. Throw the usage text on a bad value. */
 export function parseFlags(args: string[]) {
-  const v = { port: 8080, everyMs: 5000, leaseMs: 60000 }
-  const names: Record<string, keyof typeof v> = {
-    '--port': 'port',
-    '--every-ms': 'everyMs',
-    '--lease-ms': 'leaseMs',
-  }
+  const v = { port: 8080, everyMs: 5000, leaseMs: 60000, clientPort: undefined as number | undefined }
+  const files: Partial<Record<(typeof PATHS)[keyof typeof PATHS], string>> = {}
+  const seen = new Set<string>()
   for (let i = 0; i < args.length; i += 2) {
-    const k = names[args[i] ?? '']
+    const flag = args[i] ?? ''
     const raw = args[i + 1]
-    if (!k || raw === undefined || !/^\d+$/.test(raw)) throw new Error(USAGE)
-    v[k] = Number(raw)
+    if (raw === undefined || seen.has(flag)) throw new Error(USAGE)
+    seen.add(flag)
+    if (flag in NUMS) {
+      if (!/^\d+$/.test(raw)) throw new Error(USAGE)
+      v[NUMS[flag as keyof typeof NUMS]] = Number(raw)
+    } else if (flag in PATHS) {
+      if (!raw || raw.startsWith('--')) throw new Error(USAGE)
+      files[PATHS[flag as keyof typeof PATHS]] = raw
+    } else throw new Error(USAGE)
   }
   if (v.everyMs <= 0 || v.leaseMs < 2 * v.everyMs || v.port > 65535) throw new Error(USAGE)
-  return v
+  const { clientPort, ...base } = v
+  const given = [clientPort !== undefined, !!files.cert, !!files.key, !!files.ca].filter(Boolean).length
+  if (given !== 0 && given !== 4) throw new Error(USAGE)
+  if (clientPort === undefined) return { ...base, client: undefined }
+  if (clientPort > 65535 || clientPort === v.port) throw new Error(USAGE)
+  return { ...base, client: { port: clientPort, ...(files as Record<'cert' | 'key' | 'ca', string>) } }
 }
 
-/** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000]`. The caller passes the tick, so there is no import cycle with cli.ts. */
+/** read a file the server needs; a missing file throws its path, never its text */
+function need(path: string): string {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    throw new Error(`cannot read ${path}`)
+  }
+}
+
+/** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port ... --tls-cert ... --tls-key ... --person-ca ...]`. The caller passes the tick, so there is no import cycle with cli.ts. */
 export function main(args: string[], home: string, tick: () => unknown) {
   const f = parseFlags(args)
-  const s = serve({ home, ...f, tick })
-  console.log(`factory server on :${s.port} as ${s.holder}`)
-  const stop = () => void s.stop().then(() => process.exit(0))
+  let s: ReturnType<typeof serve> | undefined
+  const log = (l: string) => console.log(l)
+  const client = f.client && {
+    port: f.client.port,
+    cert: need(f.client.cert),
+    key: need(f.client.key),
+    ca: need(f.client.ca),
+    handle: clientHandler({ home, run: cliRunner(home), board: () => s?.board() ?? null, log }),
+  }
+  s = serve({ home, port: f.port, everyMs: f.everyMs, leaseMs: f.leaseMs, tick, client })
+  console.log(
+    `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''} as ${s.holder}`,
+  )
+  const stop = () => void s!.stop().then(() => process.exit(0))
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
 }
