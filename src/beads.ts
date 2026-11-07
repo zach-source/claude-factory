@@ -383,6 +383,14 @@ export const beads = (repo: string, actor: string) => ({
     const out = must(bd(repo, actor, 'list', '--all', '--brief', '--json', '-n', '0'), 'list')
     return out === 'null' ? [] : JSON.parse(out)
   },
+  /** beads closed on or after `date` (YYYY-MM-DD), without the free text; bd prints null when none */
+  closedSince: (date: string): Bead[] => {
+    const out = must(
+      bd(repo, actor, 'list', '--status', 'closed', '--closed-after', date, '--brief', '--json', '-n', '0'),
+      'list',
+    )
+    return out === 'null' ? [] : JSON.parse(out)
+  },
   /** beads flagged for a human decision (`bd human`): bd prints null, not [], when none are */
   human: (): Bead[] => {
     const out = must(bd(repo, actor, 'human', 'list', '--json'), 'human list')
