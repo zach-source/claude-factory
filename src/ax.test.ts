@@ -2673,10 +2673,14 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     FACTORY_WORKER_REPO: repo,
     FACTORY_HARNESS: 'codex',
     FACTORY_CODEX: fake,
+    FACTORY_SKILLS: 'asd-ste100,egm',
     FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', '../config.toml': 'x = 1\n' }),
   })
   try {
     worker.codexHome(home)
+    expect(worker.imagePlugins()).toEqual(['/opt/plugins/asd-ste100'])
+    delete process.env.FACTORY_SKILLS
+    expect(worker.imagePlugins()).not.toContain('/opt/plugins/egm')
     expect(readdirSync(home).sort()).toEqual(['AGENTS.md', 'config.toml', 'hooks.json'])
     expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
     expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(

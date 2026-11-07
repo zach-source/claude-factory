@@ -32,6 +32,12 @@ test('imagePlugins picks the image plugin dirs by FACTORY_SKILLS', () => {
   ])
 })
 
+test('imagePlugins excludes egm for codex and pi', () => {
+  expect(imagePlugins(undefined, 'codex')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/code-review'])
+  expect(imagePlugins('asd-ste100,egm', 'pi')).toEqual(['/opt/plugins/asd-ste100'])
+  expect(imagePlugins('asd-ste100,egm', 'claude')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
+})
+
 function sh(cmd: string[], cwd: string) {
   const p = Bun.spawnSync(cmd, { cwd })
   if (p.exitCode !== 0) throw new Error(`${cmd.join(' ')}: ${p.stderr.toString()}`)
