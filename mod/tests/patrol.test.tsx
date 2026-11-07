@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import { patrolKey } from '../hooks/register'
+import { onStepFiles, stepStub, stubPrompt } from './step-stub'
 
 // raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
 // this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
@@ -32,6 +33,11 @@ function agentListMock(on: On, patrolIds: readonly string[]) {
  * read it is cleared right after, as the real `factory tick` would not resend delivered mail. */
 function baseMocks(on: On, manager: () => readonly unknown[], clear: () => void) {
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  on('fs.read', ($, e) => {
+    const stub = stepStub((e as { path: string }).path)
+    if (stub === undefined) throw new Error(`ENOENT: no such file, open '${(e as { path: string }).path}'`)
+    return { value: stub } as never
+  })
   for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
   on('process.run', ($, e) => {
     if (e.argv.includes('tick')) {
@@ -67,6 +73,8 @@ function homeMocks(
   })
   on('fs.read', ($, e) => {
     const path = (e as { path: string }).path
+    const stub = stepStub(path)
+    if (stub !== undefined) return { value: stub } as never
     if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
     return { value: files.get(path)! } as never
   })
@@ -227,28 +235,9 @@ test(
     expect(submits).toHaveLength(1)
     expect(submits[0]!.text).toContain('[factory] patrol')
     expect(submits[0]!.text).toContain('which DB?')
-    // claude-factory-72v.13: manual() no longer carries the patrol's own loop rules (PATROL does),
-    // so the fallback must carry them itself, or the main chat gets due.text with no rules to work it
-    expect(submits[0]!.text).toContain('## Factory patrol')
-    expect(submits[0]!.text).toContain("You are the factory manager's patrol")
-    // claude-factory-502: the prompt names the release factory and says what to do with a "File in:" line
-    expect(submits[0]!.text).toContain('start release <rig>')
-    expect(submits[0]!.text).not.toContain('lifecycle covers build, release')
-    expect(submits[0]!.text).toContain('"File in: <rig>: <title> | <description>"')
-    expect(submits[0]!.text).toContain('`bd undefer` the source bead')
-    // claude-factory-5ufp: check the rig, carry the origin, no factory label for a Linear-sourced source
-    for (const s of [
-      'factory rig list',
-      'discovered_from',
-      'file-elsewhere',
-      'Never run `bd create` in another rig',
-      'discoveredFrom',
-      'no `factory` label',
-      'never queue or start it',
-    ])
-      expect(submits[0]!.text).toContain(s)
-    // claude-factory-61a: a rule correction also fixes the memory note that taught the opposite
-    expect(submits[0]!.text).toContain('memory add --supersedes <old note path> --kind rule')
+    // claude-factory-72v.13: the fallback carries the patrol's own loop rules (its step file), or the main
+    // chat gets due.text with no rules to work it. The text of those rules is tested in src/steps.test.ts.
+    expect(submits[0]!.text).toStartWith(stubPrompt('patrol', '/repo/mod/../bin/factory'))
     expect(JSON.stringify(status)).toContain('fell back to the main chat')
   },
 )
@@ -1532,6 +1521,8 @@ test(
     })
     on('fs.read', ($, e) => {
       const path = (e as { path: string }).path
+      const stub = stepStub(path)
+      if (stub !== undefined) return { value: stub } as never
       if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
       return { value: files.get(path)! } as never
     })
@@ -1648,6 +1639,7 @@ test(
   async ($, on) => {
     mock.clock(on)
     on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+    onStepFiles(on)
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     on('ui.status', () => ({ value: undefined }) as never)
     on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
@@ -1661,11 +1653,9 @@ test(
     await $.session.start({ cwd: '/repo', surface: null, isInteractive: false } as never)
 
     const patrol = registered.find(r => r.name === 'patrol')
+    // the rule text moved to src/steps/patrol.md: src/steps.test.ts checks its words
     expect(patrol).toBeDefined()
-    expect(patrol!.prompt).toContain('already re-planned once')
-    expect(patrol!.prompt).toMatch(/[Nn]ever goto it to implement/)
-    expect(patrol!.prompt).toMatch(/reported <outcome> again on/)
-    expect(patrol!.prompt).toContain('Never goto implement with no new direction')
+    expect(patrol!.prompt).toBe(stubPrompt('patrol', '/repo/mod/../bin/factory'))
   },
 )
 
@@ -1871,6 +1861,8 @@ function fallbackRig(
   })
   on('fs.read', ($, e) => {
     const path = (e as { path: string }).path
+    const stub = stepStub(path)
+    if (stub !== undefined) return { value: stub } as never
     if (!files.has(path)) throw new Error(`ENOENT: no such file, open '${path}'`)
     return { value: files.get(path)! } as never
   })
@@ -1929,7 +1921,7 @@ test(
 
     expect(spawns).toBe(0)
     expect(submits.length).toBeGreaterThanOrEqual(3)
-    for (const s of submits) expect(s.text).toContain('## Factory patrol')
+    for (const s of submits) expect(s.text).toStartWith(stubPrompt('patrol', '/repo/mod/../bin/factory'))
     const log = fallbackLines(files)
     expect(log).toHaveLength(1)
     expect(log[0]).toMatchObject({
@@ -2025,6 +2017,7 @@ test(
   async ($, on) => {
     mock.clock(on)
     on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+    onStepFiles(on)
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     on('ui.status', () => ({ value: undefined }) as never)
     on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
