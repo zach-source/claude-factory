@@ -119,6 +119,25 @@ const DENY = (n: string, c: string) => [
   `echo a]${n}; ${c}`,
   `echo a\`${n}; ${c}`,
   ...WRITERS.map(w => `${w} ${n}; ${c}`),
+  `git rebase -x 'printf -v ${n} x; ${c}' HEAD~1`,
+  `git rebase --exec 'printf -v ${n} x; ${c}' HEAD~1`,
+  `git difftool -y -x 'printf -v ${n} x; ${c}'`,
+  `git difftool -y --extcmd 'printf -v ${n} x; ${c}'`,
+  `git fetch --upload-pack 'printf -v ${n} x; git-upload-pack' .`,
+  `git ls-remote --upload-pack 'printf -v ${n} x; git-upload-pack' .`,
+  `git clone -u 'printf -v ${n} x; git-upload-pack' . y`,
+  `git grep -O'printf -v ${n} x; ${c}' a`,
+  `git rebase -x 'export -n ${n}; ${c}' HEAD~1`,
+  `git rebase -x 'unset ${n}; ${c}' HEAD~1`,
+  `git rebase -x 'env -u ${n} ${c}' HEAD~1`,
+  `git difftool -y -x 'env -u ${n} ${c}'`,
+  `git fetch --upload-pack 'env -u ${n} git-upload-pack' .`,
+  `git grep -O'env -u ${n} x' a`,
+  `git -c alias.z='!env -u ${n} ${c}' z`,
+  `git -C . commit -m 'fix ${n}'`,
+  `git --no-pager log -S ${n}`,
+  `git grep -n ${n}`,
+  `git show ${n}`,
 ]
 const ALLOW = (n: string, c: string) => [
   `printf %s "$${n}"`,
@@ -150,6 +169,10 @@ const ALLOW = (n: string, c: string) => [
   `if true; then grep ${n} f; fi`,
   `env LC_ALL=C grep ${n} f`,
   `LC_ALL=C grep ${n} f`,
+  `grep -n '${n}|OTHER' src`,
+  `rg -n '${n}|OTHER' src`,
+  `bd comment x 'notes on ${n}; and more'`,
+  `git commit -m 'fix for ${n}; and more'`,
 ]
 
 for (const g of GUARDS) {
