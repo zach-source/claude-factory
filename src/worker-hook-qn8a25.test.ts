@@ -44,6 +44,7 @@ const WRITERS = [
   'ztie',
   'compadd',
   'zcurses',
+  'let',
 ]
 const DENY = (n: string, c: string) => [
   `printf -v ${n} x; ${c}`,
@@ -76,6 +77,21 @@ const DENY = (n: string, c: string) => [
   `echo $(( ${n} = 5 )); ${c}`,
   `echo $(( x, ${n} = 5 )); ${c}`,
   `echo \${a[${n}=5]}; ${c}`,
+  `(( ${n}-=5 )); ${c}`,
+  `(( ${n}/=5 )); ${c}`,
+  `(( ${n}%=5 )); ${c}`,
+  `(( ${n}^=5 )); ${c}`,
+  `(( ${n}&=5 )); ${c}`,
+  `(( ${n} |= 5 )); ${c}`,
+  `echo $((${n}-=5)); ${c}`,
+  `(( 1, ${n}-=5 )); ${c}`,
+  `let ${n}*=5; ${c}`,
+  `let 'x ${n} = 5'; ${c}`,
+  `let x ${n}-=1; ${c}`,
+  `: \${x:${n}=1}; ${c}`,
+  `: \${x:0:${n}=2}; ${c}`,
+  `: \${x:${n}-=1}; ${c}`,
+  `[[ 1 -eq ${n}-=1 ]]; ${c}`,
   ...WRITERS.map(w => `${w} ${n}; ${c}`),
 ]
 const ALLOW = (n: string, c: string) => [
@@ -93,6 +109,7 @@ const ALLOW = (n: string, c: string) => [
   `for f in a ${n}; do echo; done`,
   `for f (a) grep -n ${n} x`,
   `echo {${n}} > f`,
+  `echo ${n}-x`,
   `(( x + 1 )); grep -n ${n} f`,
   `echo \${a[$${n}]}`,
 ]

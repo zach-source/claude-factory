@@ -3133,6 +3133,7 @@ const VAR_WRITERS = new Set([
   'ztie',
   'compadd',
   'zcurses',
+  'let',
 ])
 
 const ARITH_OP = /^(\*\*|<<|>>|\|\||&&|[-+*/%&^|])?=(?!=)/
@@ -3141,6 +3142,16 @@ const ARITH_OP = /^(\*\*|<<|>>|\|\||&&|[-+*/%&^|])?=(?!=)/
 function namesVar(w: string, name: string): boolean {
   for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
     if (w[i - 1] !== '$' && !(w[i - 1] === '{' && w[i - 2] === '$')) return true
+  }
+  return false
+}
+
+/** True when `w` holds `name` (not a `$` read) and an assignment operator or `++`/`--` follows it in the same word. */
+function namesVarAssigned(w: string, name: string): boolean {
+  for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
+    if (w[i - 1] === '$' || (w[i - 1] === '{' && w[i - 2] === '$')) continue
+    const rest = w.slice(i + name.length).trimStart()
+    if (ARITH_OP.test(rest) || /^(\+\+|--)/.test(rest)) return true
   }
   return false
 }
@@ -3194,7 +3205,10 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
     // so a name word followed by an assignment operator denies. `x,NAME=5` and `NAME++` deny too.
     if (
       namesVar(w, g.name) &&
-      (ARITH_OP.test(words[i + 1] ?? '') || w.includes(',' + g.name) || /^(\+\+|--)|(\+\+|--)$/.test(w))
+      (ARITH_OP.test(words[i + 1] ?? '') ||
+        namesVarAssigned(w, g.name) ||
+        w.includes(',' + g.name) ||
+        /^(\+\+|--)|(\+\+|--)$/.test(w))
     )
       return true
     // A subscript `[...]` can assign NAME (`${a[NAME=5]}`).
@@ -9614,6 +9628,13 @@ function denyAtScan(
     const subReason = scanSubs(segIdx)
     if (subReason) return subReason
     const words = segs[segIdx]!
+    // The splitter cuts `NAME &= 5` and `NAME |= 5` at the operator. A segment that starts with `=`
+    // after a segment that ends with a guarded name is an arithmetic assignment to that name.
+    const prevLast = segs[segIdx - 1]?.at(-1)
+    if (prevLast && ARITH_OP.test(words[0] ?? '')) {
+      for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD])
+        if (namesVar(prevLast, g.name)) return g.reason
+    }
     if (!state.aliasWrite && segmentMayDefineAlias(words)) state.aliasWrite = true
     if (!state.dynArg && segmentDynArg(words)) state.dynArg = true
     if (aliasTable) {
