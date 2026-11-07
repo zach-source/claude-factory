@@ -2,7 +2,18 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
-import { loadIntoEnv, readSettings, setSetting, settingsRows, unsetSetting } from './settings'
+import {
+  devenvRows,
+  isDevenvKey,
+  loadIntoEnv,
+  readDevenv,
+  readSettings,
+  setDevenv,
+  setSetting,
+  settingsRows,
+  unsetDevenv,
+  unsetSetting,
+} from './settings'
 import {
   appendFileSync,
   chmodSync,
@@ -5454,6 +5465,9 @@ function devenvPass(names: string[], force = false) {
     writeFileSync(join(HOME, 'devenv.stamp'), '') // the kick's clock: a pass started, whatever it finds
     if (!existsSync(devenvConfig())) return [`no ${devenvConfig()}: see docs/remote-runner.md`]
     const cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    const miss = devenv.configMissing(cfg)
+    if (miss.length)
+      return [`${devenvConfig()} lacks ${miss.join(', ')}: run factory settings set devenv.<field> <value>`]
     const image =
       process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the image the devenv is built in')
     const chosen = rigs().filter(r =>
@@ -12726,18 +12740,23 @@ if (import.meta.main && !outboxCmd)
       }
       case 'settings': {
         const file = join(HOME, 'settings.json')
+        const dfile = devenvConfig()
         const [sub = 'list', key, value] = args
         const usage = 'usage: factory settings [list] | set <key> <value> | unset <key>'
         if (sub === 'list' && args.length <= 1) {
           // BOOT_ENV: process.env already holds the stored values that loadIntoEnv filled in
-          console.log(settingsRows(readSettings(file), BOOT_ENV).join('\n'))
+          console.log(
+            [...settingsRows(readSettings(file), BOOT_ENV), ...devenvRows(readDevenv(dfile))].join('\n'),
+          )
         } else if (sub === 'set' && args.length === 3) {
           refuseWorker('settings set')
-          setSetting(file, key!, value!)
+          if (isDevenvKey(key!)) setDevenv(dfile, key!, value!)
+          else setSetting(file, key!, value!)
           console.log(`set ${key}`)
         } else if (sub === 'unset' && args.length === 2) {
           refuseWorker('settings unset')
-          unsetSetting(file, key!)
+          if (isDevenvKey(key!)) unsetDevenv(dfile, key!)
+          else unsetSetting(file, key!)
           console.log(`unset ${key}`)
         } else fail(usage)
         break

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { cacheKey, DOCKERFILE, isDue, remoteDevenv } from './devenv'
+import { cacheKey, configMissing, DOCKERFILE, isDue, remoteDevenv } from './devenv'
 
 const git = (cwd: string, ...a: string[]) => Bun.spawnSync(['git', '-C', cwd, ...a], { stderr: 'pipe' })
 
@@ -39,4 +39,12 @@ test("a rig's devenv is rebuilt when its devenv files or the worker image change
 
 test('the devenv builds at the path the VM clones to, since its derivations depend on it', () => {
   expect(DOCKERFILE).toContain('mkdir -p /workspace/w/repo && cd /workspace/w/repo')
+})
+
+test('configMissing names the fields that are absent, empty or not a string', () => {
+  expect(configMissing({})).toEqual(['builder', 'token', 'push'])
+  expect(configMissing({ builder: 'b' })).toEqual(['token', 'push'])
+  expect(configMissing({ builder: '', token: 't', push: 'p' })).toEqual(['builder'])
+  expect(configMissing({ builder: 1, token: 't', push: 'p' })).toEqual(['builder'])
+  expect(configMissing({ builder: 'b', token: 't', push: 'p' })).toEqual([])
 })

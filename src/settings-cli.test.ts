@@ -107,17 +107,52 @@ describe('a worker', () => {
       for (const args of [
         ['settings', 'set', 'ax.vault', 'x'],
         ['settings', 'unset', 'ax.vault'],
+        ['settings', 'set', 'devenv.builder', 'x'],
+        ['settings', 'unset', 'devenv.builder'],
       ]) {
         const r = run(args, env)
         expect(r.code).toBe(1)
         expect(r.err).toContain('a worker cannot run factory settings')
       }
       expect(existsSync(file)).toBe(false)
+      expect(existsSync(join(file, '..', 'devenv.json'))).toBe(false)
     },
   )
   test('the file keeps its form after a set', () => {
     const { run, file } = setup()
     run(['settings', 'set', 'max-runs', '4'])
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ 'max-runs': '4' })
+  })
+})
+
+describe('settings devenv.*', () => {
+  const PUSH = `nix shell nixpkgs#attic-client -c sh -euc 'attic login c <cache-server> "$(cat /run/secrets/cache)" >/dev/null && attic push c:<cache> $ROOTS'`
+  const TOK = 'op read op://<vault>/cache/credential'
+  test('set writes devenv.json, list shows rows, unset removes one', () => {
+    const { run, file } = setup()
+    const df = join(file, '..', 'devenv.json')
+    for (const [k, v] of [
+      ['builder', 'acme-builder'],
+      ['token', TOK],
+      ['push', PUSH],
+    ] as const)
+      expect(run(['settings', 'set', `devenv.${k}`, v]).out).toContain(`set devenv.${k}`)
+    expect(JSON.parse(readFileSync(df, 'utf8'))).toEqual({ builder: 'acme-builder', token: TOK, push: PUSH })
+    expect(existsSync(file)).toBe(false)
+    expect(run(['settings', 'list']).out).toContain('devenv.builder  acme-builder  stored')
+    expect(run(['settings', 'unset', 'devenv.builder']).code).toBe(0)
+    expect(JSON.parse(readFileSync(df, 'utf8'))).toEqual({ token: TOK, push: PUSH })
+    expect(run(['settings', 'list']).out).toContain('devenv.builder  (unset)  default')
+  })
+  test.each([
+    ['devenv.foo', 'x'],
+    ['devenv.token', TOKEN],
+    ['devenv.token', ''],
+  ])('%s %j is refused and writes nothing', (k, v) => {
+    const { run, file } = setup()
+    const r = run(['settings', 'set', k, v])
+    expect(r.code).toBe(1)
+    expect(r.out + r.err).not.toContain(TOKEN)
+    expect(existsSync(join(file, '..', 'devenv.json'))).toBe(false)
   })
 })
