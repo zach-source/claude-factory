@@ -147,6 +147,8 @@ import * as memory from './memory'
 import {
   flagLine,
   humanLines,
+  pageMatches,
+  parse as parseWikiPage,
   renderRigPage,
   rigList,
   scanPages,
@@ -155,6 +157,7 @@ import {
   type Merged,
   type RigRow,
 } from './wiki'
+import type { Page } from './wiki'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
@@ -4754,6 +4757,108 @@ export function pushWiki(dir = join(HOME, 'wiki')) {
   const p = wikiGit(dir, ['push', url, 'HEAD:main'], true)
   if (p.code !== 0) wikiLog(`wiki: push failed (exit ${p.code})`)
   return p.code === 0
+}
+
+/**
+ * The pages that `wiki find` and `wiki status` can read, sorted by path. A page must meet all of these rules:
+ * HEAD has it with mode 100644 or 100755, its path passes the path rule, it is a regular file with one link and
+ * at most 65,536 bytes, and parse() accepts it. An agent pass controls the worktree.
+ * A symlink or a hard link must not send an outside file to stdout.
+ */
+function wikiPages(dir: string) {
+  const ls = wikiGit(dir, ['ls-tree', '-r', '-z', 'HEAD'])
+  if (ls.code !== 0) return []
+  const out: { path: string; page: Page }[] = []
+  for (const e of ls.out.toString().split('\0')) {
+    const tab = e.indexOf('\t')
+    const path = e.slice(tab + 1)
+    const mode = e.slice(0, e.indexOf(' '))
+    if (tab < 0 || (mode !== '100644' && mode !== '100755')) continue
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..')) continue
+    try {
+      const st = lstatSync(join(dir, path))
+      if (!st.isFile() || st.nlink !== 1 || st.size > WIKI_PAGE_MAX) continue
+      const p = parseWikiPage(readFileSync(join(dir, path), 'utf8'))
+      if ('page' in p) out.push({ path, page: p.page })
+    } catch {}
+  }
+  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+}
+
+/** prints `path<TAB>title<TAB>host URL` for each matching page; the exit code is 1 when none match */
+function wikiFind(q: string) {
+  const dir = join(HOME, 'wiki')
+  if (!existsSync(join(dir, '.git'))) {
+    console.error('wiki: not set up: run factory wiki init')
+    return 1
+  }
+  const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
+  const r = url ? wikiRemote(url) : null
+  const hits = wikiPages(dir).filter(({ page }) => pageMatches(page, q))
+  for (const { path, page } of hits)
+    console.log(
+      [
+        path,
+        page.title.replace(/\p{Cc}/gu, ' '),
+        r ? `https://${r.host}/${r.owner}/${r.repo}/blob/main/${path}` : '',
+      ].join('\t'),
+    )
+  return hits.length ? 0 : 1
+}
+
+/**
+ * The JSON for `factory wiki status`. It only reads: no gh, no lock, no write. A missing or bad file gives null
+ * or an empty list. `pending` lists the beads closed in the last 7 days that no page and no `written` key names.
+ */
+function wikiStatus() {
+  const dir = join(HOME, 'wiki')
+  const mtime = (name: string) => {
+    try {
+      return statSync(join(HOME, name)).mtime.toISOString()
+    } catch {
+      return null
+    }
+  }
+  let state: Record<string, any> = {}
+  try {
+    state = JSON.parse(readFileSync(join(HOME, 'wiki-state.json'), 'utf8'))
+  } catch {}
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) state = {}
+  const done = new Set<string>()
+  if (state.written && typeof state.written === 'object')
+    for (const k of Object.keys(state.written)) done.add(k)
+  for (const { page } of wikiPages(dir)) for (const b of page.beads ?? []) done.add(b)
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)
+  const pending: { rig: string; id: string }[] = []
+  for (const r of rigs().filter(r => hasBeads(r.repo))) {
+    try {
+      for (const b of beads(r.repo, 'factory/wiki').closedSince(since))
+        if (!done.has(b.id)) pending.push({ rig: r.name, id: b.id })
+    } catch {
+      console.error(`wiki status: rig ${r.name} bead list failed`)
+    }
+  }
+  pending.sort((a, b) => (a.rig + a.id < b.rig + b.id ? -1 : 1))
+  let flags: string[] = []
+  try {
+    const f = join(dir, 'needs-person.md')
+    const st = lstatSync(f)
+    if (st.isFile() && st.nlink === 1 && st.size <= WIKI_PAGE_MAX)
+      flags = readFileSync(f, 'utf8')
+        .split('\n')
+        .filter(l => l.startsWith('- '))
+        .map(l => l.replace(/\p{Cc}/gu, ' '))
+  } catch {}
+  const v = state.visibility?.value
+  return {
+    lastRefresh: mtime('wiki-refresh.stamp'),
+    lastWrite: mtime('wiki-write.stamp'),
+    lastGroom: mtime('wiki-groom.stamp'),
+    groomPr: typeof state.groomPr?.url === 'string' ? state.groomPr : null,
+    pending,
+    flags,
+    visibility: WIKI_VISIBLE.includes(v) ? v : null,
+  }
 }
 
 /** beads the memory names that have closed since: what waited on them is stale */
@@ -11571,6 +11676,21 @@ if (import.meta.main && !outboxCmd)
       }
       case 'wiki': {
         refuseWorker('wiki', true)
+        // read-only verbs: no wiki.lock
+        if (args[0] === 'find') {
+          if (args.length !== 2) {
+            console.error('usage: factory wiki find <bead|pr|word>')
+            process.exitCode = 2
+          } else process.exitCode = wikiFind(args[1]!)
+          break
+        }
+        if (args[0] === 'status') {
+          if (args.length !== 1) {
+            console.error('usage: factory wiki status')
+            process.exitCode = 2
+          } else console.log(JSON.stringify(wikiStatus()))
+          break
+        }
         if (args[0] === 'refresh') {
           const dry = args[1] === '--dry-run'
           if (args.length > (dry ? 2 : 1)) {
