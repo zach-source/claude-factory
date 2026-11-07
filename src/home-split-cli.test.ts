@@ -234,8 +234,18 @@ test('a split.json that is not an array stops tick', () => {
   noRuns()
   writeFileSync(join(home, 'split.json'), '{}')
   const t = factory(['tick'])
+  expect(t.code).not.toBe(0)
   expect(t.err).toContain('split.json')
-  expect(factory(['tick']).code).not.toBe(0)
+  expect(t.err).not.toContain('rig rm')
+})
+
+test('a split.json that is not an array stops tick when rigs.json is empty', () => {
+  noRuns()
+  writeFileSync(join(home, 'rigs.json'), '[]')
+  writeFileSync(join(home, 'split.json'), '{}')
+  const t = factory(['tick'])
+  expect(t.code).not.toBe(0)
+  expect(t.err).toContain('split.json')
 })
 
 test('a moved repo under a new name through a symlink is refused', () => {

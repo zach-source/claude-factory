@@ -7437,11 +7437,17 @@ const rawRigs = (): Rig[] => {
   if (!existsSync(rigsFile())) return []
   const list = readJson(rigsFile()) as Rig[]
   // fail closed: a rig that moved to a server home must not run in this home too (split.json)
-  if (existsSync(join(HOME, 'split.json')))
+  if (existsSync(join(HOME, 'split.json'))) {
+    let shape: unknown
+    try {
+      shape = JSON.parse(readFileSync(join(HOME, 'split.json'), 'utf8'))
+    } catch {}
+    if (!Array.isArray(shape)) throw new Error('split.json is not a JSON array: fix or remove it')
     for (const r of Array.isArray(list) ? list : []) {
       const moved = movedOf(String(r?.name), String(r?.repo))
       if (moved) throw new Error(`${moved}; or run: factory rig rm ${r?.name}`)
     }
+  }
   return list
 }
 /** split.json names the moved rigs. rawRigs, rig add and rig undo must not bring them back. */
