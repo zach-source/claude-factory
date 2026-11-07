@@ -531,7 +531,7 @@ function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise
  * The mTLS listener of the client API. It checks the client certificate itself with node:tls, before it reads a byte of the request.
  * Bun.serve with rejectUnauthorized did not gate the handler in Bun 1.3.13: it ran for a certificate from another CA
  * in 4 to 8 percent of the tries that sent the request at once (claude-factory-akiq.7).
- * An authorized client must have a certificate that the person CA signed, with CN=person.
+ * An authorized client has a certificate that the person CA signed for client use. The server certificate has serverAuth only, so Node refuses it.
  * ponytail: one request for each connection and no keep-alive. Upgrade path: Bun.serve, when its client-certificate check gates the handler.
  */
 export function clientListener(o: {
@@ -552,8 +552,7 @@ export function clientListener(o: {
       minVersion: 'TLSv1.2',
     },
     sock => {
-      const peer = sock.authorized ? sock.getPeerCertificate() : undefined
-      if (!peer || peer.subject?.CN !== 'person') return sock.destroy()
+      if (!sock.authorized) return sock.destroy()
       open.add(sock)
       sock.on('close', () => open.delete(sock))
       serveSocket(sock, o.handle)

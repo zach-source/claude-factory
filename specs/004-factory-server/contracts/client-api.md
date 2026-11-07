@@ -72,7 +72,7 @@ Set `FACTORY_SERVER` to an origin to send CLI forms to this API. Without it, the
 
 ## Server rules (`src/server-api.ts`)
 
-The server checks the client certificate before it reads a request. It does not use `Bun.serve` for this port. In Bun 1.3.13, `Bun.serve` with `rejectUnauthorized` was not safe. It ran the handler for a certificate from another CA in 4 to 8 percent of the tries. The listener uses `node:tls`. It accepts a certificate that the person CA signed and that has `CN=person`. Each connection carries one request, then closes.
+The server checks the client certificate before it reads a request. It does not use `Bun.serve` for this port. In Bun 1.3.13, `Bun.serve` with `rejectUnauthorized` was not safe. It ran the handler for a certificate from another CA in 4 to 8 percent of the tries. The listener uses `node:tls`. It accepts only a client certificate that the person CA signed. Each connection carries one request, then closes.
 
 - Start the listener with `--client-port`, `--tls-cert`, `--tls-key` and `--person-ca`. Give all four or none.
 - A request with an `Authorization` header gets 403. This holds for any value and any route. A worker token never opens this port.

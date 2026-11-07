@@ -185,17 +185,14 @@ describe('request grammar of the client listener', () => {
     return ((await new Response(p.stdout).text()).match(/^HTTP\/1\.1 (\d+)/) ?? [])[1] ?? 'none'
   }
   const rows: [string, string, string][] = [
-    [
-      'chunked body',
-      'POST /v1/halt HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n',
-      '400',
-    ],
+    ['chunked body', 'GET /v1/prs HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n', '400'],
     ['Expect header', 'GET /v1/prs HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n\r\n', '400'],
     [
       'repeated content-length',
       'POST /v1/halt HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}',
       '400',
     ],
+    ['repeated header', 'GET /v1/prs HTTP/1.1\r\nX-A: 1\r\nX-A: 1\r\n\r\n', '400'],
     ['bad content-length', 'POST /v1/halt HTTP/1.1\r\nContent-Length: -1\r\n\r\n', '400'],
     ['body over 256 KiB', 'POST /v1/halt HTTP/1.1\r\nContent-Length: 300000\r\n\r\n', '400'],
     ['HTTP/1.0', 'GET /v1/prs HTTP/1.0\r\n\r\n', '400'],
