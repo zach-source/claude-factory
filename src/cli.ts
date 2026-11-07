@@ -2,7 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
-import { loadIntoEnv } from './settings'
+import { loadIntoEnv, readSettings, setSetting, settingsRows, unsetSetting } from './settings'
 import {
   appendFileSync,
   chmodSync,
@@ -11375,6 +11375,7 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
+  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
@@ -12721,6 +12722,24 @@ if (import.meta.main && !outboxCmd)
         if (trapped.length) fail(`${def.name}: no way to done from ${trapped.join(', ')}`)
         console.log(`${def.name}: valid, ${Object.keys(def.nodes).length} stations from ${def.start}`)
         if (unreachable.length) console.log(`only reached by @station or goto: ${unreachable.join(', ')}`)
+        break
+      }
+      case 'settings': {
+        const file = join(HOME, 'settings.json')
+        const [sub = 'list', key, value] = args
+        const usage = 'usage: factory settings [list] | set <key> <value> | unset <key>'
+        if (sub === 'list' && args.length <= 1) {
+          // BOOT_ENV: process.env already holds the stored values that loadIntoEnv filled in
+          console.log(settingsRows(readSettings(file), BOOT_ENV).join('\n'))
+        } else if (sub === 'set' && args.length === 3) {
+          refuseWorker('settings set')
+          setSetting(file, key!, value!)
+          console.log(`set ${key}`)
+        } else if (sub === 'unset' && args.length === 2) {
+          refuseWorker('settings unset')
+          unsetSetting(file, key!)
+          console.log(`unset ${key}`)
+        } else fail(usage)
         break
       }
       case 'rig': {
