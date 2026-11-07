@@ -506,7 +506,11 @@ test('a worker or a patrol cannot run rig env, egress or beads-remote', () => {
     ['beads-remote', 'set', 'x', '--name', 'o', '--url', 'https://e.example.com', '--user', 'u'],
     ['beads-remote', 'clear', 'x'],
   ]
-  for (const who of [{ FACTORY_RUN: 'r1', FACTORY_FROM: 'r1/implement' }, { FACTORY_PATROL: '1' }]) {
+  const whos: Record<string, string>[] = [
+    { FACTORY_RUN: 'r1', FACTORY_FROM: 'r1/implement' },
+    { FACTORY_PATROL: '1' },
+  ]
+  for (const who of whos) {
     refused(cmds, who)
     for (const c of cmds) expect(factory(['rig', ...c], who).err).toContain(`cannot run factory rig ${c[0]}`)
   }
