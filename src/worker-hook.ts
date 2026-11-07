@@ -3172,7 +3172,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
     if (writerSeen && namesVar(w, g.name)) return true
     // A loop writes only the words before `in` or `(`. Later words are values, so `for f in a; do grep NAME` passes.
     if (loopVars) {
-      if (w === 'in' || w.startsWith('(')) loopVars = false
+      if (w === 'in') loopVars = false
       else if (namesVar(w, g.name)) return true
     }
     const b = baseWord(w)
