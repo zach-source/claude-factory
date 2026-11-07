@@ -4595,7 +4595,8 @@ export function keepPersonLines(before: Map<string, string>, reason: string, dir
     const file = join(dir, 'needs-person.md')
     let regular: boolean | undefined
     try {
-      regular = lstatSync(file).isFile()
+      const st = lstatSync(file)
+      regular = st.isFile() && st.nlink === 1
     } catch {}
     if (regular === false)
       return (wikiLog('wiki: needs-person.md is not a regular file, nothing committed'), false)

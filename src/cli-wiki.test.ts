@@ -11,6 +11,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  linkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -539,8 +540,8 @@ test('AC4 a pass that deletes a page with a person line gets it back; factory-on
   expect(existsSync(join(wiki(), 'needs-person.md'))).toBe(false)
 })
 
-test.each(['existing', 'dangling'])(
-  'AC4 a needs-person.md that is a symlink (%s target) is not written through',
+test.each(['existing', 'dangling', 'hardlink'])(
+  'AC4 a needs-person.md that is a symlink or hard link (%s target) is not written through',
   kind => {
     setup()
     expect(factory(['wiki', 'init']).code).toBe(0)
@@ -552,11 +553,12 @@ test.each(['existing', 'dangling'])(
     person('mine')
     expect(guardPass('before').exitCode).toBe(0)
     const outside = join(dir, 'outside.txt')
-    if (kind === 'existing') writeFileSync(outside, 'keep\n')
-    symlinkSync(outside, join(wiki(), 'needs-person.md'))
+    if (kind !== 'dangling') writeFileSync(outside, 'keep\n')
+    if (kind === 'hardlink') linkSync(outside, join(wiki(), 'needs-person.md'))
+    else symlinkSync(outside, join(wiki(), 'needs-person.md'))
     writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
     expect(guardPass('after').exitCode).toBe(4)
-    expect(existsSync(outside) ? readFileSync(outside, 'utf8') : '').toBe(kind === 'existing' ? 'keep\n' : '')
+    expect(existsSync(outside) ? readFileSync(outside, 'utf8') : '').toBe(kind === 'dangling' ? '' : 'keep\n')
     expect(wikiLog()).toContain('wiki: needs-person.md is not a regular file, nothing committed')
   },
 )
