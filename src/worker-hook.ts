@@ -3165,6 +3165,59 @@ function envOptionScan(
   return { cmdStart: words.length, clearsAll }
 }
 
+const MENTION_KEYWORDS = new Set([
+  'do',
+  'then',
+  'else',
+  'elif',
+  'if',
+  'while',
+  'until',
+  '!',
+  'time',
+  '{',
+  '}',
+])
+// Commands that run no shell string from their arguments. `git` is ok only for `commit` and `log`.
+const MENTION_LITERAL_OK = new Set(['grep', 'egrep', 'fgrep', 'rg', 'echo', 'bd', 'factory'])
+
+/**
+ * claude-factory-qn8a.25: returns true when the segment mentions the guarded name outside a read-only command.
+ * A mention is the name with no [A-Za-z0-9_] after it. It has no left boundary, so `-vNAME` and `MY_NAME` count.
+ * `$NAME` and `${NAME}` are reads, not mentions.
+ * The command word comes after the leading keywords, one `env` and the `X=y` words.
+ * It must be in MENTION_LITERAL_OK, or be `git` with `commit` or `log` as the next word
+ * (other git commands and global options can run a shell string). The mention word must not hold any of $ ` ( ) { } [ ] = < >.
+ * Every other form denies.
+ * ponytail: a name built at run time (`printf -v "$v"`) is not found. The sandbox is the barrier. No upgrade path in a text guard.
+ */
+function mentionsGuardedName(words: string[], name: string): boolean {
+  let ok: boolean | undefined
+  for (const w of words) {
+    let mention = false
+    for (let i = w.indexOf(name); i !== -1; i = w.indexOf(name, i + 1)) {
+      if (/[A-Za-z0-9_]/.test(w[i + name.length] ?? '')) continue
+      if (w[i - 1] === '$' || (w[i - 1] === '{' && w[i - 2] === '$' && w[i + name.length] === '}')) continue
+      mention = true
+      break
+    }
+    if (!mention) continue
+    if (/[$`(){}[\]=<>]/.test(w)) return true
+    if (ok === undefined) {
+      let k = 0
+      while (k < words.length && MENTION_KEYWORDS.has(words[k]!)) k++
+      if (words[k] === 'env') k++
+      while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k]!)) k++
+      const cmd = k < words.length ? baseWord(words[k]!) : ''
+      ok =
+        MENTION_LITERAL_OK.has(cmd) ||
+        (cmd === 'git' && (words[k + 1] === 'commit' || words[k + 1] === 'log'))
+    }
+    if (!ok) return true
+  }
+  return false
+}
+
 /**
  * This function returns true when a word in `words` sets, clears, or (re-)exports BEADS_ACTOR.
  *
@@ -3191,6 +3244,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   let chars = 0
   for (const w of words) chars += w.length + 1
   if (spendWork(state, chars)) return true
+  if (mentionsGuardedName(words, g.name)) return true
   const spanScanned = { done: false }
   let envClearsAll = false
   let runsBd = false
@@ -3198,17 +3252,8 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   const bdIdx: number[] = []
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (w.startsWith(g.name + '=')) return true
     const b = baseWord(w)
     if (b === g.cmd) bdIdx.push(i)
-    // claude-factory-8pc.27: an option word (-n, -x, and so on) can come between the verb and
-    // the name, as in `export -n BEADS_ACTOR`. Step past each option word first.
-    if (b === 'export' || b === 'declare' || b === 'typeset' || b === 'readonly') {
-      let j = i + 1
-      while (words[j]?.startsWith('-') && words[j] !== '--') j++
-      if (words[j] !== undefined && (words[j] === g.name || words[j]!.startsWith(g.name + '='))) return true
-    }
-    if (b === 'unset' && words.slice(i + 1).includes(g.name)) return true
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {
