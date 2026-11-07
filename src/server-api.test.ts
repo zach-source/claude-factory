@@ -41,7 +41,7 @@ describe('personCerts', () => {
     const dir = join(tmp(), 'certs')
     personCerts(dir, '10.0.0.5')
     expect(x509(join(dir, 'server.crt'))).toContain('IP Address:10.0.0.5')
-    expect(x509(join(dir, 'person.crt'))).toContain('CN=person')
+    expect(x509(join(dir, 'person.crt'))).toMatch(/CN\s*=\s*person/)
     expect(x509(join(dir, 'person.crt'))).toContain('TLS Web Client Authentication')
     const d2 = join(tmp(), 'c2')
     personCerts(d2, 'factory.lan')
