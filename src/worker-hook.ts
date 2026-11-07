@@ -5647,13 +5647,13 @@ export const GLAB_DYNAMIC_REASON =
 // claude-factory-qn8a.33
 export const GLAB_QUICK_ACTION_REASON =
   'The factory denies this command: GitLab runs a text line that starts with a slash command (/approve, ' +
-  '/merge, /ready) as a quick action, so it can approve or merge with no approve word. Put the word in ' +
-  'backticks or later in the line. Do not retry this exact command.'
+  '/merge, /ready) as a quick action, so it can approve or merge with no approve word. Write the word ' +
+  'later in the line, or start the line with other text. Do not retry this exact command.'
 
 export const GLAB_TEXT_REASON =
   'The factory denies this command: glab sends note or description text that this hook cannot read (a ' +
   'shell expansion, an editor, stdin, --fill, --template, --recover, or a file in a command that is not ' +
-  'the glab call alone). Write the text in single quotes, or run glab api --method POST ' +
+  'the glab call alone), or a blank value (glab reads it from stdin). Write the text in single quotes, or run glab api --method POST ' +
   'projects/:id/merge_requests/<n>/notes -F body=@<path> as the whole command. Do not retry this exact command.'
 
 /**
@@ -5709,7 +5709,9 @@ function glabTextReason(tail: string[], single: (w: string) => boolean): string 
     !args.some(w => w === '-h' || w === '--help')
   )
     return GLAB_TEXT_REASON
-  if (values.some(v => v === '-' || (/[$`]/.test(v) && !single(v)))) return GLAB_TEXT_REASON
+  // glab reads a blank value from stdin
+  if (values.some(v => v.trim() === '' || v === '-' || (/[$`]/.test(v) && !single(v))))
+    return GLAB_TEXT_REASON
   return values.some(quickActionLine) ? GLAB_QUICK_ACTION_REASON : undefined
 }
 
@@ -5776,8 +5778,9 @@ const GLAB_NO_QUOTED_VALUE = new Set([
 
 /**
  * The words that the raw command text makes safe for rule 1, as the hook sees them without quotes.
- * `segments()` drops quotes, so this reads the raw text. A word is in `ok` when its raw form is a
- * single-quoted static word or `--name="..."`. It is in `bad` when any other raw word has the same text.
+ * `segments()` drops quotes, so this reads the raw text. `ok(w)` is true when every raw word with the
+ * text `w` is a single-quoted static word or `--name="..."`. `single(w)` is true when every such raw word
+ * is a single-quoted static word, where bash expands nothing.
  */
 function glabRawWords(command: string): { ok: (w: string) => boolean; single: (w: string) => boolean } {
   const ok = new Set<string>()
@@ -5885,8 +5888,18 @@ function glabPathMatch(endpoint: string, re: RegExp, undecodable = false): boole
  * skips no flag value, so a flag cannot hide a word (rounds 1 to 3 of qn8a.32 each found a new parser gap).
  * Like `ghReason`, it scans the words as given and again without redirect words. Only the second scan
  * checks `glab api` against its 3 closed forms.
+ * claude-factory-qn8a.33: each call spends the length of `command` from the scan work, because the raw
+ * words and the line backstop read the whole command for each glab word. A spent budget gives
+ * SCAN_BUDGET_REASON. `depth` is 0 only for the command that the person typed, not for a wrapper script.
  */
-function glabReason(words: string[], gate: HookGate, command: string, depth: number): string | undefined {
+function glabReason(
+  words: string[],
+  gate: HookGate,
+  command: string,
+  depth: number,
+  state: ScanState,
+): string | undefined {
+  if (spendWork(state, command.length + 1)) return SCAN_BUDGET_REASON
   const tail = words.slice(1)
   const dropped = dropRedirectWords(tail)
   const raw = { ...glabRawWords(command), whole: depth === 0 && glabWholeCommand(command) }
@@ -6007,7 +6020,7 @@ function anyGhReason(
       if (r) return r
     }
     if (baseWord(words[j]!) === 'glab') {
-      const r = glabReason(words.slice(j), gate, command, depth)
+      const r = glabReason(words.slice(j), gate, command, depth, state)
       if (r) return r
     }
   }
@@ -6418,6 +6431,62 @@ function refspecTarget(
   return { target: stripRefsHeads(dst === '' ? s.slice(0, ci) : dst), unsafe: false }
 }
 
+// claude-factory-qn8a.33
+export const GITLAB_PUSH_OPTION_REASON =
+  'The factory denies this command: a GitLab merge_request push option other than create, target, ' +
+  'target_project, title, draft, label, unlabel, remove_source_branch, milestone, assign or unassign can ' +
+  'merge or approve, and a description with a slash command line runs it. Do not retry this exact command.'
+
+const GITLAB_PUSH_OPTION_KEYS = new Set([
+  'create',
+  'target',
+  'target_project',
+  'title',
+  'draft',
+  'label',
+  'unlabel',
+  'remove_source_branch',
+  'milestone',
+  'assign',
+  'unassign',
+])
+
+/**
+ * claude-factory-qn8a.33: true when a push option of `git push` or `git send-pack` can merge a GitLab merge
+ * request or run a quick action. The option is `-o V`, `--push-option V` or `--push-option=V`, also as a
+ * unique prefix of the long name. A short word that holds `o` (`-oV`, `-uoV`) gives the rest of the word,
+ * or the next word. This can read extra text, and that only adds a deny.
+ * GitLab removes white space from the key and does not anchor the `merge_request.` or `mr.` name, so the
+ * hook does the same. That key passes only from a closed list.
+ * The `description` key passes when its value has no quick action line.
+ */
+function pushOptionDenied(pushTail: string[]): boolean {
+  for (let i = 0; i < pushTail.length; i++) {
+    const w = pushTail[i]!
+    if (w === '--') break
+    let value: string | undefined
+    if (w === '--push-option') value = pushTail[++i]
+    else if (/^-[^-]/.test(w) && w.includes('o')) {
+      const rest = w.slice(w.indexOf('o') + 1)
+      value = rest || pushTail[++i]
+    } else if (
+      w.startsWith('--') &&
+      w.includes('=') &&
+      matchesLongFlagPrefix(w.slice(0, w.indexOf('=')), '--push-option')
+    )
+      value = w.slice(w.indexOf('=') + 1)
+    else continue
+    const eq = value?.indexOf('=') ?? -1
+    const key = (eq < 0 ? (value ?? '') : value!.slice(0, eq)).toLowerCase().replace(/\s+/g, '')
+    const m = /(?:merge_request|mr)\.(.*)$/.exec(key)
+    if (!m) continue
+    if (m[1] === 'description') {
+      if (quickActionLine(value!.slice(eq + 1))) return true
+    } else if (!GITLAB_PUSH_OPTION_KEYS.has(m[1]!)) return true
+  }
+  return false
+}
+
 /**
  * `tail` holds the arguments of a `git push` call after the `push` word.
  * `operands` holds every non-flag word, in order.
@@ -6449,56 +6518,6 @@ function refspecTarget(
  * Real git uses whichever of the 2 flags comes last on the command line (claude-factory-ctae.10).
  * This guard's own rule only adds denies, so the guard stays fail closed.
  */
-// claude-factory-qn8a.33
-export const GITLAB_PUSH_OPTION_REASON =
-  'The factory denies this command: a GitLab merge_request push option other than create, target, ' +
-  'target_project, title, draft, label, unlabel, remove_source_branch, milestone, assign or unassign can ' +
-  'merge or approve, and a description with a slash command line runs it. Do not retry this exact command.'
-
-const GITLAB_PUSH_OPTION_KEYS = new Set([
-  'create',
-  'target',
-  'target_project',
-  'title',
-  'draft',
-  'label',
-  'unlabel',
-  'remove_source_branch',
-  'milestone',
-  'assign',
-  'unassign',
-])
-
-/**
- * claude-factory-qn8a.33: true when a push option of `git push` or `git send-pack` can merge a GitLab merge
- * request or run a quick action. The option is `-o V`, `--push-option V` or `--push-option=V`, also as a
- * unique prefix of the long name. A `merge_request.` or `mr.` key passes only from a closed list.
- * The `description` key passes when its value has no quick action line.
- */
-function pushOptionDenied(pushTail: string[]): boolean {
-  for (let i = 0; i < pushTail.length; i++) {
-    const w = pushTail[i]!
-    if (w === '--') break
-    let value: string | undefined
-    if (w === '-o' || w === '--push-option') value = pushTail[++i]
-    else if (
-      w.startsWith('--') &&
-      w.includes('=') &&
-      matchesLongFlagPrefix(w.slice(0, w.indexOf('=')), '--push-option')
-    )
-      value = w.slice(w.indexOf('=') + 1)
-    else continue
-    const eq = value?.indexOf('=') ?? -1
-    const key = (eq < 0 ? (value ?? '') : value!.slice(0, eq)).toLowerCase()
-    const m = /^(?:merge_request|mr)\.(.*)$/.exec(key)
-    if (!m) continue
-    if (m[1] === 'description') {
-      if (quickActionLine(value!.slice(eq + 1))) return true
-    } else if (!GITLAB_PUSH_OPTION_KEYS.has(m[1]!)) return true
-  }
-  return false
-}
-
 function pushOperands(tail: string[]): {
   operands: string[]
   broad: boolean

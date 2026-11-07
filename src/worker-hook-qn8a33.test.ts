@@ -8,6 +8,8 @@ import {
   GLAB_QUICK_ACTION_REASON,
   GLAB_TEXT_REASON,
   PUSH_REASON,
+  SCAN_BUDGET_REASON,
+  scanReason,
 } from './worker-hook'
 
 // claude-factory-qn8a.33: GitLab runs a /approve or /merge line in a note or description as a quick action.
@@ -98,6 +100,13 @@ const TEXT_DENY = [
   'glab mr update 5 --draft --description="$D"',
   'glab mr note 5',
   'glab mr note create 5',
+  "glab mr note 5 -m ''",
+  "glab mr note 5 -m ' '",
+  "glab mr note 5 --message=''",
+  "echo /approve | glab mr note update 9 5 -m ''",
+  "glab mr create --draft -t x -d ''",
+  "glab mr update 5 -d ' '",
+  "glab mr update 5 --description=''",
 ]
 const READY_ONLY_ALLOW = ['glab mr update 5 -yd x --draft', 'glab mr update 5 -t Foo -yd --draft']
 const READY_TEXT_DENY = [
@@ -251,6 +260,15 @@ const PUSH_DENY = [
   'git push --pu=merge_request.auto_merge origin HEAD',
   'git send-pack --push-option=merge_request.auto_merge origin HEAD',
   'git push -o merge_request.create -o merge_request.merge_when_pipeline_succeeds origin HEAD',
+  'git push -omerge_request.auto_merge=true origin HEAD',
+  'git push -uomerge_request.auto_merge=true origin HEAD',
+  'git push -qomerge_request.merge_when_pipeline_succeeds=1 origin HEAD',
+  "git push -o ' merge_request.auto_merge' origin HEAD",
+  "git push -o 'merge_request .auto_merge' origin HEAD",
+  "git push -o 'mr .merge_when_pipeline_succeeds' origin HEAD",
+  "git push -o ' merge_request.description=/approve' origin HEAD",
+  'git push -o .merge_request.auto_merge origin HEAD',
+  'git push -o ..mr.auto_merge origin HEAD',
 ]
 const PUSH_ALLOW = [
   'git push origin HEAD',
@@ -270,7 +288,7 @@ const CONFIG_DENY = [
   'git --config-env push.pushOption=X push origin HEAD',
   'git --config-env=push.pushOption=X push origin HEAD',
 ]
-for (const g of PUSH_GATES) {
+for (const g of [...PUSH_GATES, ...GATES.map(x => ({ ...x, headOf: () => 'factory/x' }))]) {
   const gitAsk = (c: string) => denyReason(c, undefined, undefined, g)
   test.each(PUSH_DENY)('denies push option %j with GITLAB_PUSH_OPTION_REASON', cmd => {
     expect(gitAsk(cmd)).toBe(GITLAB_PUSH_OPTION_REASON)
@@ -285,3 +303,10 @@ for (const g of PUSH_GATES) {
     expect(gitAsk('git config --get push.pushOption')).toBeUndefined()
   })
 }
+
+// qn8a.33.8: each glab word spends the scan work, so a long command with many of them fails closed
+test('denies a command with many glab words with SCAN_BUDGET_REASON', () => {
+  const cmd = 'glab version; '.repeat(20)
+  expect(scanReason(cmd, undefined, undefined, {})).toBeUndefined()
+  expect(scanReason(cmd, undefined, undefined, {}, 5000)).toBe(SCAN_BUDGET_REASON)
+})
