@@ -4,6 +4,7 @@ import { afterEach, expect, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -287,6 +288,25 @@ test('refresh writes nothing through a link in the wiki worktree', () => {
   expect(factory(['wiki', 'refresh']).code).toBe(0)
   expect(readFileSync(join(out, 'precious.txt'), 'utf8')).toBe('precious\n')
   expect(readdirSync(out)).toEqual(['precious.txt'])
+  expect(wikiLog()).toContain('wiki: refused a link or a file that is not regular, page skipped')
+})
+
+test('refresh writes nothing through a hard link in the wiki worktree', () => {
+  setup()
+  seedAll()
+  factory(['wiki', 'init'])
+  const out = join(dir, `outside${n}`)
+  mkdirSync(out, { recursive: true })
+  writeFileSync(join(out, 'precious.txt'), 'precious\n')
+  writeFileSync(join(out, 'other.json'), '{}\n')
+  rmSync(join(wiki(), 'index.md'))
+  linkSync(join(out, 'precious.txt'), join(wiki(), 'index.md'))
+  mkdirSync(join(wiki(), 'rigs'), { recursive: true })
+  rmSync(join(wiki(), 'rigs', 'acme.md'), { force: true })
+  linkSync(join(out, 'other.json'), join(wiki(), 'rigs', 'acme.md'))
+  expect(factory(['wiki', 'refresh']).code).toBe(0)
+  expect(readFileSync(join(out, 'precious.txt'), 'utf8')).toBe('precious\n')
+  expect(readFileSync(join(out, 'other.json'), 'utf8')).toBe('{}\n')
   expect(wikiLog()).toContain('wiki: refused a link or a file that is not regular, page skipped')
 })
 

@@ -10782,7 +10782,7 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
   const kind = (p: string) => {
     try {
       const st = lstatSync(join(dir, p))
-      return st.isFile() ? 'file' : st.isDirectory() ? 'dir' : 'bad'
+      return st.isFile() && st.nlink === 1 ? 'file' : st.isDirectory() ? 'dir' : 'bad'
     } catch {
       return 'none'
     }
