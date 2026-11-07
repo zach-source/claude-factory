@@ -2873,7 +2873,12 @@ export const FACTORY_RUN_REASON =
   'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
   'Do not retry this command.'
 const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmd: 'factory', reason: FACTORY_RUN_REASON }
-const BEADS_ACTOR_GUARD: EnvGuard = { name: 'BEADS_ACTOR', cmd: 'bd', reason: BEADS_ACTOR_REASON, flag: 'actor' }
+const BEADS_ACTOR_GUARD: EnvGuard = {
+  name: 'BEADS_ACTOR',
+  cmd: 'bd',
+  reason: BEADS_ACTOR_REASON,
+  flag: 'actor',
+}
 const FACTORY_FROM_GUARD: EnvGuard = { name: 'FACTORY_FROM', cmd: 'factory', reason: FACTORY_FROM_REASON }
 
 const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
