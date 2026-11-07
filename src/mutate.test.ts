@@ -207,12 +207,22 @@ test('bare mutate prints usage on stderr and exits 2', () => {
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0)
-    return true
   } catch {
     return false
   }
+  if (process.platform === 'linux') {
+    try {
+      return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop()!.split(' ')[0] !== 'Z'
+    } catch {}
+  }
+  return true
 }
-// A killed process stays visible as a zombie until init reaps it, so poll for a moment.
+test('the dead-process check rejects a live process', async () => {
+  expect(alive(process.pid)).toBe(true)
+  expect(await dead(process.pid)).toBe(false)
+})
+
+// A zombie has exited, even when the VM init does not reap it. Poll for process exit.
 const dead = async (pid: number) => {
   for (let i = 0; i < 50; i++) {
     if (!alive(pid)) return true
