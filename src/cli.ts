@@ -4535,6 +4535,14 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
   const fields = list.out.toString().split('\0')
   const refused: string[] = []
+  // a refused rename target puts its source back too, or the commit would delete the old page
+  // ponytail: git pairs a rename only above 50% similarity; a rewrite below that still commits the old path's delete
+  const moved = new Map<string, string>()
+  const ren = wikiGit(dir, ['diff', '--cached', '--raw', '-M', '-z', '--diff-filter=R'])
+  if (ren.code === 0) {
+    const f = ren.out.toString().split('\0')
+    for (let k = 0; k + 2 < f.length; k += 3) moved.set(f[k + 2]!, f[k + 1]!)
+  }
   for (let k = 0; k + 1 < fields.length; k += 2) {
     const mode = fields[k]!.split(' ')[1]
     const path = fields[k + 1]!
@@ -4558,6 +4566,11 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     if (wikiGit(dir, ['cat-file', '-e', `HEAD:${path}`]).code === 0)
       wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path])
     else wikiGit(dir, ['rm', '--cached', '-f', '-q', '--', path])
+    const old = moved.get(path)
+    if (old !== undefined) {
+      refused.push(old)
+      wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', old])
+    }
   }
   // a refused path that is still staged (an unstage that failed) must never reach a commit
   if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
