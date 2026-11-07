@@ -576,7 +576,7 @@ test('AC5 a page that a person deleted is not made again; other paths and edits 
     Date.parse(git('log', '-1', '--format=%aI', '--diff-filter=D', '--', 'solutions/2026-11/a.md')),
   )
 })
-||||||| be7e44b7
+
 test('AC1 --remote wins over FACTORY_WIKI_REMOTE', () => {
   setup('PRIVATE')
   const { env } = bare()
