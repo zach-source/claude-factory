@@ -63,12 +63,16 @@ const escape = (v: string) =>
  * One line per setting, in table order: `key  value  source`. An environment value that differs from the stored one reads
  * `environment (overrides stored)`; the stored value never prints. Pass the env from before `loadIntoEnv`, or every stored key looks overridden.
  */
-export const settingsRows = (stored: Record<string, string>, env: Record<string, string | undefined>): string[] =>
+export const settingsRows = (
+  stored: Record<string, string>,
+  env: Record<string, string | undefined>,
+): string[] =>
   resolveSettings(stored, env).map(({ key, value, source }) => {
     const has = Object.hasOwn(stored, key)
     const envValue = env[BY_KEY.get(key)!.env ?? '']
     let label: string = source
-    if (source === 'environment' && has) label = envValue === stored[key] ? 'stored' : 'environment (overrides stored)'
+    if (source === 'environment' && has)
+      label = envValue === stored[key] ? 'stored' : 'environment (overrides stored)'
     return `${key}  ${value === undefined ? '(unset)' : escape(value)}  ${label}`
   })
 

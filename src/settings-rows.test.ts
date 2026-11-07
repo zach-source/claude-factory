@@ -28,7 +28,9 @@ describe('settingsRows', () => {
   })
   test('environment without a stored key, and equal to the stored value', () => {
     expect(row(settingsRows({}, { FACTORY_AX_VAULT: 'v' }), 'ax.vault')).toBe('ax.vault  v  environment')
-    expect(row(settingsRows({ 'ax.vault': 'v' }, { FACTORY_AX_VAULT: 'v' }), 'ax.vault')).toBe('ax.vault  v  stored')
+    expect(row(settingsRows({ 'ax.vault': 'v' }, { FACTORY_AX_VAULT: 'v' }), 'ax.vault')).toBe(
+      'ax.vault  v  stored',
+    )
   })
   test('a secret value prints hidden', () => {
     const rows = settingsRows({ 'ax.vault': 'acme-vault' }, { FACTORY_AX_VAULT: TOKEN })
