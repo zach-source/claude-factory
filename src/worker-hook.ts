@@ -10045,7 +10045,7 @@ function denyAtScan(
     }
     const b = baseWord(cmd[0]!)
     // claude-factory-qn8a.22: the worker has the apply_patch tool, which the hook checks; codex applies a shell one unseen
-    if (/^apply_?patch$/.test(b.toLowerCase())) return APPLY_PATCH_SHELL_REASON
+    if (/^apply_?patch$/.test(b)) return APPLY_PATCH_SHELL_REASON
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
@@ -10960,8 +10960,8 @@ export function applyPatchPaths(input: unknown): string[] | undefined {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
   const keys = Object.keys(input)
   const command = (input as { command?: unknown }).command
-  if (keys.length !== 1 || keys[0] !== 'command' || typeof command !== 'string') return undefined
-  if (!command || command.includes('\0')) return undefined
+  if (keys.length !== 1 || typeof command !== 'string') return undefined
+  if (command.includes('\0')) return undefined
   const paths: string[] = []
   for (const raw of command.split('\n')) {
     const line = raw.replace(RUST_TRIM, '')

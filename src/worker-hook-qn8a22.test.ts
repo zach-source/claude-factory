@@ -55,7 +55,8 @@ test('AC1: a protected header path is denied with the reason of fileWriteReason'
   expect(reason(wrap('*** Add File: src/a.ts', '+x', '*** Add File: .git/config', '+x'))).toBe(
     FILE_WRITE_REASON,
   )
-  for (const pre of ['\t', '\u0085']) expect(reason(pre + add('.git/config'))).toBe(FILE_WRITE_REASON)
+  for (const pre of ['\t', '\u0085'])
+    expect(reason(wrap(pre + '*** Add File: .git/config'))).toBe(FILE_WRITE_REASON)
   expect(reason(add('.git/config').replace(/\n/g, '\r\n'))).toBe(FILE_WRITE_REASON)
   expect(reason(add('.claude/settings.local.json'))).toBe(HOOK_CONTROL_REASON)
   expect(reason(add(join(base, 'elsewhere/rigs.json')))).toBe(FACTORY_CONFIG_REASON)
@@ -82,7 +83,16 @@ test('AC1: a safe patch is allowed', () => {
 })
 
 test('AC2: a malformed input denies with APPLY_PATCH_REASON before any path check', () => {
-  for (const ti of [undefined, 'x', [], {}, { command: 5 }, { command: '' }, { command: 'a\0b' }])
+  for (const ti of [
+    undefined,
+    'x',
+    [],
+    {},
+    { command: 5 },
+    { command: '' },
+    { command: 'a\0b' },
+    { command: add('src/a.ts') + '\0' },
+  ])
     expect(applyPatchReason(ti, root, env(), root)).toBe(APPLY_PATCH_REASON)
   expect(applyPatchReason({ command: add('src/a.ts'), path: 'x' }, root, env(), root)).toBe(
     APPLY_PATCH_REASON,
