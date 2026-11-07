@@ -76,6 +76,7 @@ const DENY = [
   "b''d comment acme-1 x --actor y",
   'cat <<EOF | sh\nbd comment acme-1 x --actor y\nEOF',
   'bd comment acme-1 x (--actor) y',
+  'bd comment acme-1 x `echo hi` --act\\\nor y',
   "bd create w -d 'mention --actor here'",
   'bd create w -d "the --actor flag sets the author"',
   'bd comment acme-1 "use --actor=x to forge"',
