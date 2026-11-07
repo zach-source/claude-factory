@@ -10938,6 +10938,57 @@ export function fileWriteReason(
   return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
 }
 
+export const APPLY_PATCH_REASON =
+  'The factory denies this apply_patch: the hook cannot read it. The hook reads only the lines that start with *** and needs each one to be *** Begin Patch, *** End Patch, *** End of File, or *** Add File:, *** Delete File:, *** Update File: or *** Move to: and a path that does not start with ~. If a content line starts with ***, edit that line with a script in .scratch/. Do not retry this exact patch.'
+
+export const APPLY_PATCH_SHELL_REASON =
+  'The factory denies this command: it runs apply_patch in the shell. Use your apply_patch tool. The hook checks each path of that tool. Do not retry this exact command.'
+
+// The Rust char::is_whitespace set: codex trims patch lines with it. JS trim() differs at U+0085 and U+FEFF.
+const RUST_WS = '\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const RUST_TRIM = new RegExp(`^[${RUST_WS}]+|[${RUST_WS}]+$`, 'g')
+
+/**
+ * claude-factory-qn8a.22: the paths that a codex apply_patch input adds, deletes, updates or moves to, or
+ * undefined when the input is not the closed grammar (the fail-closed case). Pure: it calls no fs function.
+ * Only tool_input.command is read, and it must be the only key. Each line that starts with *** (after the
+ * Rust trim) must be a known header; any other *** line, a ~ path or a patch with no file header is undefined.
+ */
+export function applyPatchPaths(input: unknown): string[] | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
+  const keys = Object.keys(input)
+  const command = (input as { command?: unknown }).command
+  if (keys.length !== 1 || keys[0] !== 'command' || typeof command !== 'string') return undefined
+  if (!command || command.includes('\0')) return undefined
+  const paths: string[] = []
+  for (const raw of command.split('\n')) {
+    const line = raw.replace(RUST_TRIM, '')
+    if (!line.startsWith('***')) continue
+    if (line === '*** Begin Patch' || line === '*** End Patch' || line === '*** End of File') continue
+    const m = /^\*\*\* (Add File|Delete File|Update File|Move to): (.+)$/.exec(line)
+    if (!m || m[2]!.startsWith('~')) return undefined
+    paths.push(m[2]!)
+  }
+  return paths.length ? paths : undefined
+}
+
+/** claude-factory-qn8a.22: the reason to deny a codex apply_patch input, or undefined. Same arguments as fileWriteReason. */
+export function applyPatchReason(
+  input: unknown,
+  cwd: string,
+  env?: { home: string; xdg?: string | undefined },
+  root?: string,
+  hookDir?: string,
+): string | undefined {
+  const paths = applyPatchPaths(input)
+  if (!paths) return APPLY_PATCH_REASON
+  for (const p of paths) {
+    const r = fileWriteReason(p, cwd, env, root, hookDir)
+    if (r) return r
+  }
+  return undefined
+}
+
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
 export function reasonName(reason: string): string {
   for (const [k, v] of Object.entries({ ...self, HOME_REASON }))
@@ -11034,6 +11085,20 @@ function handle(input: unknown) {
   const argh = process.argv.indexOf('--harness')
   // claude-factory-ay4w: a hook config with no --harness falls back to the launch env (an AX VM sets FACTORY_HARNESS)
   const harness = argh >= 0 ? process.argv[argh + 1] : process.env.FACTORY_HARNESS
+  if (i?.tool_name === 'apply_patch') {
+    // claude-factory-qn8a.22: a codex apply_patch carries its paths in the patch text
+    const reason = applyPatchReason(
+      i.tool_input,
+      i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      undefined,
+      process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd(),
+    )
+    if (reason) {
+      denyOut(reason)
+      logDenial(reason, `apply_patch ${applyPatchPaths(i.tool_input)?.join(' ') ?? ''}`, harness)
+    }
+    return
+  }
   if (i?.tool_name && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(i.tool_name)) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
