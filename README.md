@@ -1201,6 +1201,107 @@ nodes:
 `factory check <file>` validates one. A run pins its factory resolved, so a base changed later
 reaches only new runs.
 
+## Run the manager from the Herdr app
+
+The Herdr desktop app can run the factory with no Claude manager session. The factory mod for the
+app is in `herdr/mods/factory`, and its layout is `herdr/layouts/factory.json`.
+
+The mod is a second local UI beside the Claude mod (`mod/`). Use one of them at a time on a factory
+home.
+
+### Install the mod
+
+Run this command with `FACTORY_HOME` set to the factory home that the mod must work:
+
+```sh
+FACTORY_HOME=<factory home> factory herdr install [--app-home <dir>]
+```
+
+The command does these steps:
+
+- It copies the mod into `<app home>/mods/factory`.
+- It copies the layout into `<app home>/layouts/factory.json`.
+- It writes `config.json` beside the mod, with this CLI (`bin/factory`) and the factory home.
+
+The app home is `--app-home`, else `$HERDR_APP_HOME`, else `~/.config/herdr-app`. To update the
+mod, run the command again. The app reloads it.
+
+To show the mod, switch to the factory layout:
+
+```sh
+herdr-app do layout.switch '{"name":"factory"}'
+```
+
+The mod has `"place": "none"`, so it shows only where a layout puts it. It does not dock into your
+main layout.
+
+### What the mod does
+
+- The panel ticks the factory each 5 s with `factory tick --keep-mail`.
+- The panel runs the manager steps headless, on their own timers:
+
+  | Command | Each |
+  | --- | --- |
+  | `factory patrol --once` | 60 s |
+  | `factory brief --once` | 2 min |
+  | `factory review --once` | 5 min |
+  | `factory decisions` | 5 min |
+  | `factory pm --once` | 1 h |
+
+  A step with no work prints `nothing due` and makes no model call.
+- Each command runs detached, because the app stops an `exec` call after 30 s. The output goes to
+  `<factory home>/herdr/<name>.out`, `.err` and `.done`.
+- The board shows the live runs by rig and by state: gates, stuck, working and waiting. Click a run
+  to read its worker screen (`herdr pane read`).
+- `Interview (n)` opens a dialog with the gates and the bd decisions. Each answer is a button. A
+  gate button runs `factory decide <run> <outcome>`. A decision button runs
+  `factory decisions answer <rig> <bead> <option>`. The mod command `factory.interview` also opens
+  the dialog, so you can bind it to a key in `keys.json`.
+- Toasts tell you of a blocked worker, of manager mail and of each patrol report.
+- A copy of the mod with props `{ "band": true }` draws a status band of one line. The factory
+  layout puts one above the status bar.
+
+### The headless steps
+
+`factory patrol|pm|brief|review --once` runs one manager step with `claude -p`. The Herdr mod uses
+them, and you can also run them by hand.
+
+- `factory tick --keep-mail` saves the tick in `<home>/manager-tick.json`. It also keeps the
+  manager mail in `<home>/patrol-state.json` for the next patrol.
+- The steps write the same logs as the Claude mod: `patrol-log.jsonl`, `pm-log.jsonl`,
+  `brief-log.jsonl`, `review-log.jsonl` and `manager-usage.jsonl`.
+- Each patrol Bash call goes through the `factory patrol-guard` PreToolUse hook. The hook refuses
+  the same commands that the Claude mod refuses for a patrol.
+- `--codex <model>` runs pm, brief or review on codex in its read-only sandbox. The patrol refuses
+  codex, because codex has no hook for the Bash guard.
+
+### The manager lease
+
+Only one manager ticks and patrols a factory home at a time. The Claude mod, the Herdr mod and
+`factory loop` take the local lease `<home>/manager.lease` before a tick or a step.
+
+- The holder renews the lease on each tick.
+- A lease is stale after 60 s with no renewal, or when its recorded pid is dead. The next manager
+  then takes it.
+- A manager without the lease shows the board only. It starts no patrol, pm, briefer or reviewer.
+  Its status line names the holder.
+- `FACTORY_LEASE_HOLDER` and `FACTORY_LEASE_KIND` name a holder. With no name, the holder is the
+  herdr pane (`pane:$HERDR_PANE_ID`), else the parent process.
+
+```sh
+factory lease status    # who holds the lease, and when it was renewed
+factory lease release   # drop the lease, for example after a crash
+```
+
+### How it differs from the Claude mod
+
+- The Herdr mod has no chat. To start, fork or steer runs, use the CLI or the Claude mod.
+- The workers stay in the herdr TUI and in AX. The Herdr mod shows no live worker pane. It shows
+  the last lines of a worker screen only.
+- The Herdr mod has no confirm step after a gate button. The click is the decision.
+- The Claude mod runs the manager steps as hidden subagents. The Herdr mod runs them through the
+  `--once` commands.
+
 ## herdr sidebar
 
 Every tick reports a `$factory` token: on each run's workspace, its station and what holds it
