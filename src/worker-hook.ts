@@ -3158,6 +3158,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   let envClearsAll = false
   let runsBd = false
   let writerSeen = false
+  let loopVars = false
   // the index of each bd word
   const bdIdx: number[] = []
   for (let i = 0; i < words.length; i++) {
@@ -3169,7 +3170,13 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
     // cannot hide the name.
     // ponytail: a name that the shell builds at run time (`printf -v "$v"`) is not found. The sandbox covers it.
     if (writerSeen && namesVar(w, g.name)) return true
+    // A loop writes only the words before `in` or `(`. Later words are values, so `for f in a; do grep NAME` passes.
+    if (loopVars) {
+      if (w === 'in' || w.startsWith('(')) loopVars = false
+      else if (namesVar(w, g.name)) return true
+    }
     const b = baseWord(w)
+    if (b === 'for' || b === 'select' || b === 'foreach') loopVars = true
     if (VAR_WRITERS.has(b)) writerSeen = true
     if (b === g.cmd) bdIdx.push(i)
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
