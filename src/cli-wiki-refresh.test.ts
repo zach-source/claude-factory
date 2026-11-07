@@ -1,7 +1,17 @@
 // `factory wiki refresh` end to end (claude-factory-tx6c.5). Every test spawns bin/factory with a new temp
 // FACTORY_HOME and a fake `gh` first on PATH, so nothing reaches the live home or GitHub.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -262,13 +272,35 @@ test('AC10 a run with a broken state.json is left out, the pass goes on', () => 
   expect(read('rigs/widget.md')).not.toContain('widget thing')
 })
 
-test('refresh pushes to origin when one is set', () => {
+test('refresh writes nothing through a link in the wiki worktree', () => {
   setup()
   seedAll()
-  const log = join(dir, 'gh-calls')
-  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$*" >> '${log}'\nprintf '%s\\n' PRIVATE\n`)
   factory(['wiki', 'init'])
-  git('remote', 'add', 'origin', 'https://github.com/acme/wiki-none.git')
+  const out = join(dir, `outside${n}`)
+  mkdirSync(out, { recursive: true })
+  writeFileSync(join(out, 'precious.txt'), 'precious\n')
+  rmSync(join(wiki(), 'index.md'))
+  symlinkSync(join(out, 'precious.txt'), join(wiki(), 'index.md'))
+  rmSync(join(wiki(), 'rigs'), { recursive: true, force: true })
+  symlinkSync(out, join(wiki(), 'rigs'))
+  expect(factory(['wiki', 'refresh', '--dry-run']).out).not.toContain('rigs/')
   expect(factory(['wiki', 'refresh']).code).toBe(0)
-  expect(readFileSync(log, 'utf8')).toContain('repo view github.com/acme/wiki-none')
+  expect(readFileSync(join(out, 'precious.txt'), 'utf8')).toBe('precious\n')
+  expect(readdirSync(out)).toEqual(['precious.txt'])
+  expect(wikiLog()).toContain('wiki: refused a link or a file that is not regular, page skipped')
+})
+
+test('refresh pushes main to origin when one is set', () => {
+  setup()
+  seedAll()
+  const b = join(dir, `bare${n}.git`)
+  Bun.spawnSync(['git', 'init', '-q', '--bare', '-b', 'main', b])
+  const url = 'https://github.com/acme/wiki-none.git'
+  const cfg = join(dir, `cfg${n}`)
+  writeFileSync(cfg, `[url "${b}"]\n\tinsteadOf = ${url}\n`)
+  const env = { GIT_CONFIG_GLOBAL: cfg }
+  expect(factory(['wiki', 'init', '--remote', url], env).code).toBe(0)
+  expect(factory(['wiki', 'refresh'], env).code).toBe(0)
+  const head = git('rev-parse', 'HEAD')
+  expect(Bun.spawnSync(['git', '-C', b, 'rev-parse', 'main']).stdout.toString().trim()).toBe(head)
 })

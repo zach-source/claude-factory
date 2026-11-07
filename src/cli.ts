@@ -10765,8 +10765,25 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
       renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now),
     )
   }
-  const read = (p: string) => (existsSync(join(dir, p)) ? readFileSync(join(dir, p), 'utf8') : '')
+  // an agent pass owns this worktree: a link or a non-regular file at a target would take a write outside it
+  const kind = (p: string) => {
+    try {
+      const st = lstatSync(join(dir, p))
+      return st.isFile() ? 'file' : st.isDirectory() ? 'dir' : 'bad'
+    } catch {
+      return 'none'
+    }
+  }
+  const read = (p: string) => (kind(p) === 'file' ? readFileSync(join(dir, p), 'utf8') : '')
   files.set('index.md', rigList(read('index.md'), names))
+  const rigsKind = kind('rigs')
+  for (const p of [...files.keys()]) {
+    const okDir = p.startsWith('rigs/') ? ['none', 'dir'].includes(rigsKind) : true
+    if (!okDir || !['none', 'file'].includes(kind(p))) {
+      files.delete(p)
+      wikiLog('wiki: refused a link or a file that is not regular, page skipped')
+    }
+  }
   const changed = [...files.keys()].filter(p => files.get(p) !== read(p)).sort()
   if (dryRun) return changed
   for (const p of changed) {
