@@ -109,6 +109,11 @@ const DENY = (n: string, c: string) => [
   `git log -S x {${n}}>f; ${c}`,
   `for f in a ${n}; do echo; done; ${c}`,
   `echo {${n}} > f; ${c}`,
+  `echo $x${n}; ${c}`,
+  `echo "(${n}"; ${c}`,
+  `echo a<${n}; ${c}`,
+  `echo a>${n}; ${c}`,
+  `echo a{${n}; ${c}`,
   ...WRITERS.map(w => `${w} ${n}; ${c}`),
 ]
 const ALLOW = (n: string, c: string) => [
@@ -136,6 +141,11 @@ const ALLOW = (n: string, c: string) => [
   `echo MY_${n}`,
   `echo \${${n}}`,
   `grep ${n}_LOG f`,
+  `egrep ${n} f`,
+  `fgrep ${n} f`,
+  `if true; then grep ${n} f; fi`,
+  `env LC_ALL=C grep ${n} f`,
+  `LC_ALL=C grep ${n} f`,
 ]
 
 for (const g of GUARDS) {
