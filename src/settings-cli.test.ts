@@ -88,6 +88,7 @@ describe('settings set and unset errors', () => {
     [['settings', 'set', 'ax.vault']],
     [['settings', 'set', 'ax.vault', 'a', 'b']],
     [['settings', 'unset']],
+    [['settings', 'unset', 'ax.vault', 'extra']],
     [['settings', 'list', 'extra']],
   ])('%j exits 1 and changes no file', args => {
     const { run, file } = setup()
