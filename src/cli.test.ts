@@ -20,6 +20,7 @@ import {
   trustedEgress,
   trustedEgressPaged,
   reworkOwned,
+  reworkPr,
   reworkStart,
   brief,
   vmBeads,
@@ -490,12 +491,42 @@ test('a labeled PR belongs to the live run whose branch it is or whose reports l
   const url = 'https://github.com/o/r/pull/21'
   const log = (summary: string) => [{ node: 'review', attempt: 1, outcome: 'changes', summary, at: 1 }]
   const live = [
-    { id: 'a', log: log('PR https://github.com/o/r/pull/212 needs work') }, // #212 is not #21
-    { id: 'b', log: log(`PR ${url} has 3 findings`) },
+    { id: 'a', goal: '', log: log('PR https://github.com/o/r/pull/212 needs work') }, // #212 is not #21
+    { id: 'b', goal: '', log: log(`PR ${url} has 3 findings`) },
   ]
   expect(prOwner({ url, headRefName: 'fix/x' }, live)).toBe('b')
   expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'factory/a' }, live)).toBe('a')
   expect(prOwner({ url: 'https://github.com/o/r/pull/9', headRefName: 'fix/x' }, live)).toBeUndefined()
+})
+
+test('a held rework run owns its PR by the URL at the head of its goal (czy5)', () => {
+  const pr = labelPr('rework') as never as { url: string; headRefName: string }
+  const outage = [{ node: 'implement', attempt: 1, outcome: 'outage', summary: 'usage limit', at: 1 }]
+  const goal = reworkStart(labelPr('rework'), 'lifecycle').goal
+  const held = { id: 'r', log: outage, goal }
+  expect(prOwner(pr, [held])).toBe('r') // its branch is the PR's own, not factory/r
+  const other = (url: string) => ({ ...held, goal: goal.replace(pr.url, url) })
+  expect(prOwner(pr, [other('https://github.com/acme/widget/pull/70')])).toBeUndefined() // #70 is not #7
+  expect(prOwner(pr, [other('https://github.com/acme/other/pull/7')])).toBeUndefined() // another repo
+  const bead = { id: 'b', log: outage, goal: `Fix the bug that ${pr.url} shows` }
+  expect(prOwner(pr, [bead])).toBeUndefined() // a URL in the body of a bead goal
+  const mr = {
+    number: 7,
+    url: 'https://gitlab.com/acme/widget/-/merge_requests/7',
+    headRefName: 'f',
+    baseRefName: 'main',
+    labels: [{ name: 'rework' }],
+  } as never
+  expect(prOwner(mr, [{ id: 'g', log: outage, goal: reworkStart(mr, 'lifecycle').goal }])).toBe('g')
+})
+
+test('reworkPr reads back the URL of every rework goal form (czy5)', () => {
+  for (const names of [['conflict'], ['rework'], ['conflict', 'rework']]) {
+    const pr = labelPr(...names)
+    expect(reworkPr(reworkGoal(pr))).toBe('https://github.com/acme/widget/pull/7')
+    expect(reworkPr(reworkStart(pr, 'lifecycle').goal)).toBe('https://github.com/acme/widget/pull/7')
+  }
+  expect(reworkPr('Fix the bug')).toBeUndefined()
 })
 
 test('a queued PR belongs to the ship queue: its branch or its link names the bead', () => {
