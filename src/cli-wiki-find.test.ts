@@ -238,6 +238,8 @@ test('AC6 status with an empty home: all null, flags empty', () => {
 
 test('AC6 status with a full fixture; AC8 read-only', () => {
   base()
+  put('solutions/2026-11/one.md', solution('"One"', '["acme-1"]', '[]'))
+  commit()
   fakeBd('[{"id":"acme-1"},{"id":"acme-2"},{"id":"acme-3"}]')
   rigs()
   stamp('wiki-refresh.stamp', '2026-11-05T10:00:00.000Z')

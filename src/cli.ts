@@ -4711,6 +4711,61 @@ function wikiFind(q: string) {
   return hits.length ? 0 : 1
 }
 
+/**
+ * The JSON for `factory wiki status`. It only reads: no gh, no lock, no write. A missing or bad file gives null
+ * or an empty list. `pending` lists the beads closed in the last 7 days that no page and no `written` key names.
+ */
+function wikiStatus() {
+  const dir = join(HOME, 'wiki')
+  const mtime = (name: string) => {
+    try {
+      return statSync(join(HOME, name)).mtime.toISOString()
+    } catch {
+      return null
+    }
+  }
+  let state: Record<string, any> = {}
+  try {
+    state = JSON.parse(readFileSync(join(HOME, 'wiki-state.json'), 'utf8'))
+  } catch {}
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) state = {}
+  const done = new Set<string>()
+  if (state.written && typeof state.written === 'object')
+    for (const k of Object.keys(state.written)) done.add(k)
+  for (const { page } of wikiPages(dir)) for (const b of page.beads ?? []) done.add(b)
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)
+  const pending: { rig: string; id: string }[] = []
+  for (const r of rigs().filter(r => hasBeads(r.repo))) {
+    try {
+      for (const b of beads(r.repo, 'factory/wiki').closedSince(since))
+        if (!done.has(b.id)) pending.push({ rig: r.name, id: b.id })
+    } catch {
+      console.error(`wiki status: rig ${r.name} bead list failed`)
+    }
+  }
+  pending.sort((a, b) => (a.rig + a.id < b.rig + b.id ? -1 : 1))
+  let flags: string[] = []
+  try {
+    const f = join(dir, 'needs-person.md')
+    const st = lstatSync(f)
+    if (st.isFile() && st.nlink === 1 && st.size <= WIKI_PAGE_MAX)
+      flags = readFileSync(f, 'utf8')
+        .split('\n')
+        .filter(l => l.startsWith('- '))
+        .map(l => l.replace(/\p{Cc}/gu, ' '))
+  } catch {}
+  const v = state.visibility?.value
+  return {
+    lastRefresh: mtime('wiki-refresh.stamp'),
+    lastWrite: mtime('wiki-write.stamp'),
+    lastGroom: mtime('wiki-groom.stamp'),
+    groomPr: typeof state.groomPr?.url === 'string' ? state.groomPr : null,
+    pending,
+    flags,
+    visibility: WIKI_VISIBLE.includes(v) ? v : null,
+  }
+}
+
 /** beads the memory names that have closed since: what waited on them is stale */
 function closedBeads() {
   const text = memory.corpus(MEMORY)
@@ -11419,6 +11474,13 @@ if (import.meta.main && !outboxCmd)
             console.error('usage: factory wiki find <bead|pr|word>')
             process.exitCode = 2
           } else process.exitCode = wikiFind(args[1]!)
+          break
+        }
+        if (args[0] === 'status') {
+          if (args.length !== 1) {
+            console.error('usage: factory wiki status')
+            process.exitCode = 2
+          } else console.log(JSON.stringify(wikiStatus()))
           break
         }
         const i = args.indexOf('--remote')
