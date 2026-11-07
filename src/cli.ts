@@ -237,6 +237,8 @@ import {
   githubSlugOf,
   githubWatchView,
   parseGithubView,
+  parseGitlabView,
+  prRef,
   gitlabWatchNotes,
   mrsIn,
   onHost,
@@ -853,6 +855,9 @@ export function outboxDenial(
 /** where bd keeps a repo's store: its Dolt server and database (`bd dolt show --json`) */
 type DoltConn = { host: string; port: number; database: string; user: string; tls: boolean }
 
+/** a beadsRemote name or user goes into SQL: the launch and `rig beads-remote set` check it with this one regex */
+export const BEADS_WORD = /^[\w.-]+$/
+const BEADS_WORD_MSG = 'beadsRemote name and user are [A-Za-z0-9_.-]'
 /**
  * the command that moves a rig's beads to or from where its VMs share them: its beadsRemote, else the repo's
  * GitHub origin. A push or pull runs inside the laptop's Dolt server, which holds the remote's password, and
@@ -864,7 +869,7 @@ export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?:
   // plain `bd dolt push|pull` runs with DOLT_REMOTE_USER from env.json (axrepos). A pull conflict stops with bd's own
   // error, where the laptop's pullResolving keeps the VM's row; the manager reports it and a person resolves it
   if (!r || inAx()) return ['bd', 'dolt', way]
-  if (![r.name, r.user].every(s => /^[\w.-]+$/.test(s))) fail(`beadsRemote name and user are [A-Za-z0-9_.-]`)
+  if (![r.name, r.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
   const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
   return [
@@ -1603,6 +1608,7 @@ const SKILL_USE: Record<string, string> = {
     'Write every text a person reads in ASD-STE100: PR titles and bodies, commit messages, bead comments, reports, docs, code comments. Use short sentences, active voice and approved words. Before you write a PR body, a doc or a long report, load the asd-ste100 skill.',
   'code-review':
     'Load the code-review skill and run its two axes before you write the review. Do not ask a person: the fixed point is the base branch that your task diffs against, the spec is the plan and the acceptance criteria of the bead, and the standards are the files the skill finds. Put its Standards and Spec findings into your review. A baseline smell is a judgement call: it never blocks alone, so list it as a suggestion unless a documented repo standard makes it a violation.',
+  egm: 'Before you report, get a goldfish review of your spec: fresh reviewers that see only the spec and the source it names. Write the spec to .scratch/plan.md in the worktree. Do not use the Skill tool for EGM skills (it refuses them), and do not ask a person. In one message, make two Agent calls with run_in_background false: subagent_type egm:egm-implementation-readiness and subagent_type egm:egm-codebase-details. Give each only this prompt: Mode: REVIEW. TargetFile: <absolute path of .scratch/plan.md>, full file. Standard: implementation-readiness-standard. GoldfishContext: <absolute paths of the files the spec names>. Wait for both results. Fix each Blocker and Major finding in the spec, or write in one line why it is wrong. Run a second round only if round 1 found a Blocker, and stop after round 2. Put this line in your summary: Goldfish review: <rounds> round(s), <n> Blocker, <n> Major, <n> fixed, <n> contested, then each open finding on one line. If an egm agent type does not exist, or a reviewer fails two times, report without the review and write Goldfish review: not run: <reason>. Never fail or block the run for it.',
 }
 const skillLines = (skills: string[]) =>
   skills.length
@@ -9032,13 +9038,37 @@ const asksOf = (pr: LabeledPr) =>
     .join(' and ')}`
 export const reworkGoal = (pr: LabeledPr) =>
   `Pull request #${pr.number} (${pr.url}) is stuck, ${asksOf(pr)}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
-/** the live run a pull request belongs to: its branch is the run's, or the run's reports link it */
-export const prOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, live: { id: string; log: Entry[] }[]) =>
+/** the PR URL at the head of a rework goal (reworkGoal), or undefined for any other goal */
+export const reworkPr = (goal: string) => /^Pull request #\d+ \(([^\s()]+)\) is stuck,/.exec(goal)?.[1]
+/**
+ * the live run that owns a pull request. The PR is on the run's branch, or a report of the run links it,
+ * or the run is a rework run for it. A rework run uses the PR's own branch, so only its goal names the PR.
+ */
+export const prOwner = (
+  pr: Pick<LabeledPr, 'url' | 'headRefName'>,
+  live: { id: string; log: Entry[]; goal: string }[],
+) =>
   live.find(
     r =>
       pr.headRefName === `factory/${r.id}` ||
+      reworkPr(r.goal) === pr.url ||
       r.log.some(e => [...prsIn(e.summary), ...mrsIn(e.summary)].includes(pr.url)),
   )?.id
+
+/**
+ * the rework runs whose PR is merged or closed. `stateOf` reads a PR only for a run with a rework goal.
+ * A state that is not MERGED or CLOSED, or a failed read (undefined), ends no run.
+ */
+export function reworkEnded(
+  live: { id: string; goal: string }[],
+  stateOf: (url: string) => string | undefined,
+) {
+  return live.flatMap(r => {
+    const url = reworkPr(r.goal)
+    const state = url ? stateOf(url) : undefined
+    return url && (state === 'MERGED' || state === 'CLOSED') ? [{ id: r.id, url, state }] : []
+  })
+}
 
 /** the queued bead whose PR this is: ship owns it, so no rework run may start on it (claude-factory-rtuw) */
 export const queuedOwner = (pr: Pick<LabeledPr, 'url' | 'headRefName'>, queue: Bead[]) =>
@@ -9267,7 +9297,14 @@ async function labelPass() {
   const live = startedRunIds()
     .map(id => ({ id, ...current(id) }))
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
-    .map(r => ({ id: r.id, node: where(r.value)[0], log: r.c.log, c: r.c }))
+    .map(r => ({
+      id: r.id,
+      node: where(r.value)[0],
+      log: r.c.log,
+      c: r.c,
+      goal: r.run.goal,
+      repo: r.run.repo,
+    }))
   for (const rig of rigs()) {
     const cli = (bin: string, args: string[]) => {
       const p = Bun.spawnSync([bin, ...args], { cwd: rig.repo, timeout: 60_000 })
@@ -9296,6 +9333,18 @@ async function labelPass() {
               )
               return found.filter((pr, i) => found.findIndex(o => o.url === pr.url) === i)
             },
+            state: (url: string) => {
+              const iid = prRef(url)?.number
+              if (!iid) return undefined
+              const project = encodeURIComponent(`${origin.owner}/${origin.repo}`)
+              const out = cli('glab', [
+                'api',
+                '--hostname',
+                origin.host,
+                `projects/${project}/merge_requests/${iid}`,
+              ])
+              return parseGitlabView(out)?.state
+            },
             comment: (pr: LabeledPr, body: string) =>
               cli('glab', ['mr', 'note', String(pr.number), '-m', body]),
             unlabel: (pr: LabeledPr, labels: string[]) =>
@@ -9318,6 +9367,10 @@ async function labelPass() {
                 if (!rows) throw new Error('gh api pulls failed')
                 return (githubRows(rows) as LabeledPr[]).filter(pr => labelAction(pr) !== undefined)
               },
+              state: (url: string) => {
+                const path = githubPullPath(url)
+                return path ? parseGithubView(gh('api', path))?.state : undefined
+              },
               comment: (pr: LabeledPr, body: string) => gh(...githubCommentArgv(slug(), pr.number, body)),
               unlabel: (pr: LabeledPr, labels: string[]) => {
                 for (const label of labels) gh(...githubUnlabelArgv(slug(), pr.number, label))
@@ -9329,6 +9382,21 @@ async function labelPass() {
             }
           })()
     try {
+      // a rework run for a merged or closed PR has no work left. End it. The list below shows open PRs only.
+      const ended = reworkEnded(
+        live.filter(r => r.repo === rig.repo),
+        url => {
+          try {
+            return forge.state(url)
+          } catch {
+            return undefined // a failed read must not end a run
+          }
+        },
+      )
+      for (const e of ended) {
+        post(e.id, { type: 'ABORT' })
+        console.log(`${new Date().toISOString()} rework ${e.url} was ${e.state}: abort run ${e.id}`)
+      }
       const labeled = await forge.list()
       const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
         ? beads(rig.repo, 'factory').shipQueue()
@@ -9459,7 +9527,7 @@ function axSweep() {
 /** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
 export function orphanRuns(ids: string[], read: typeof current = current) {
   const runs = new Map<string, Run>()
-  const live: { id: string; log: Entry[]; bead?: string }[] = []
+  const live: { id: string; log: Entry[]; goal: string; bead?: string }[] = []
   const decided = new Set<string>()
   for (const id of ids) {
     try {
@@ -9467,7 +9535,7 @@ export function orphanRuns(ids: string[], read: typeof current = current) {
       const [node] = where(value)
       runs.set(id, run)
       if (c.log.at(-1)?.outcome === 'decision') decided.add(id)
-      if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, bead: run.bead })
+      if (!['done', 'aborted'].includes(node)) live.push({ id, log: c.log, goal: run.goal, bead: run.bead })
     } catch {
       // the run has no readable state yet
     }
@@ -9958,9 +10026,8 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
     fail('drift needs --drift "<read-only command>": add it, or drop drift from --sweeps')
   const b = rig.beadsRemote
   if (b) {
-    if (![b.name, b.user].every(s => /^[\w.-]+$/.test(s)))
-      fail('beadsRemote name and user are [A-Za-z0-9_.-]')
-    if (!URL.canParse(b.url)) fail(`beadsRemote url is not a URL (not "${b.url}")`)
+    if (![b.name, b.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
+    if (!URL.canParse(b.url)) fail('beadsRemote url is not a URL')
   }
   return warnings
 }
@@ -11204,7 +11271,7 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -12631,6 +12698,120 @@ if (import.meta.main && !outboxCmd)
             }),
           )
           console.log(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
+        } else if (sub === 'env' || sub === 'egress' || sub === 'beads-remote') {
+          const usages: Record<string, string> = {
+            'env set': 'factory rig env set <rig|repo> KEY=VALUE',
+            'env unset': 'factory rig env unset <rig|repo> KEY',
+            'egress add': 'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n]',
+            'egress rm': 'factory rig egress rm <rig|repo> host[,host]...',
+            'beads-remote set': 'factory rig beads-remote set <rig|repo> --name n --url u --user user',
+            'beads-remote clear': 'factory rig beads-remote clear <rig|repo>',
+          }
+          const [port, bName, bUrl, bUser] = [opt('--port'), opt('--name'), opt('--url'), opt('--user')]
+          const [verb, at, arg, ...extra] = args.slice(1)
+          const key = `${sub} ${verb}`
+          const usage =
+            usages[key] ??
+            Object.keys(usages)
+              .filter(k => k.startsWith(`${sub} `))
+              .map(k => usages[k])
+              .join(' | ')
+          const old = [
+            max,
+            sweeps,
+            slo,
+            drift,
+            runner,
+            agent,
+            mcp,
+            linear,
+            linearProjects,
+            linearLabels,
+            goal,
+          ]
+          const stray =
+            old.some(v => v !== undefined) ||
+            [params, egress, personOnlyContext, protectedBranch].some(l => l.length) ||
+            mergeAuth ||
+            (port !== undefined && key !== 'egress add') ||
+            ([bName, bUrl, bUser].some(v => v !== undefined) && key !== 'beads-remote set')
+          const noArg = sub === 'beads-remote'
+          if (!usages[key] || stray || !at || extra.length || (noArg ? arg !== undefined : !arg))
+            fail(`usage: ${usage}`)
+          const target = rigs().find(r => r.repo === repoOf(at!))
+          if (!target) fail(`${repoOf(at!)} is not a rig`)
+          const change = (fn: (r: Rig) => Partial<Rig>, said: string) => {
+            edit(list =>
+              list.map(r => {
+                if (r.name !== target!.name) return r
+                const next = fn(r) as Rig
+                for (const w of validateRig(next)) console.warn(w)
+                return next
+              }),
+            )
+            console.log(`rig ${target!.name}: ${said}`)
+          }
+          // an emptied env or egress goes away, so a set then an unset leaves the file as it was
+          const without = (r: Rig, k: 'env' | 'egress' | 'beadsRemote', v: unknown) =>
+            applyRigChange(r, v ? { [k]: v } : {}, v ? [] : [k]) as Rig
+          const hostSet = (hosts: string[]) =>
+            hosts
+              .map(h => h.toLowerCase())
+              .sort()
+              .join(',')
+          if (key === 'env set') {
+            const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(arg!)
+            if (!m) fail(`env KEY is [A-Za-z_][A-Za-z0-9_]* and the pair is KEY=VALUE: usage: ${usage}`)
+            change(r => without(r, 'env', { ...r.env, [m![1]!]: m![2]! }), `set env ${m![1]}`)
+          } else if (key === 'env unset') {
+            change(r => {
+              if (!Object.hasOwn(r.env ?? {}, arg!)) throw new Error(`env ${arg} is not set`)
+              const { [arg!]: _, ...rest } = r.env!
+              return without(r, 'env', Object.keys(rest).length ? rest : undefined)
+            }, `unset env ${arg}`)
+          } else if (key === 'egress add') {
+            let rule: Egress
+            try {
+              rule = ax.parseEgress(arg!)
+            } catch (e) {
+              fail((e as Error).message)
+            }
+            if (port !== undefined) {
+              if (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535)
+                fail(`--port is a number from 1 to 65535 (not "${port}")`)
+              rule!.port = Number(port)
+            }
+            change(
+              r => {
+                if (r.egress?.some(e => hostSet(e.hosts) === hostSet(rule.hosts)))
+                  throw new Error(`egress for ${rule.hosts.join(',')} is set: rig egress rm it first`)
+                return without(r, 'egress', [...(r.egress ?? []), rule])
+              },
+              `added egress ${rule!.hosts.join(',')}`,
+            )
+          } else if (key === 'egress rm') {
+            const want = hostSet(arg!.split(','))
+            change(r => {
+              const hit = (r.egress ?? []).filter(e => hostSet(e.hosts) === want)
+              if (hit.length !== 1)
+                throw new Error(`${hit.length} egress rules for those hosts: rm needs exactly 1`)
+              const rest = r.egress!.filter(e => e !== hit[0])
+              return without(r, 'egress', rest.length ? rest : undefined)
+            }, `removed egress ${arg}`)
+          } else if (key === 'beads-remote set') {
+            if (bName === undefined || bUrl === undefined || bUser === undefined) fail(`usage: ${usage}`)
+            if (!BEADS_WORD.test(bName!) || !BEADS_WORD.test(bUser!)) fail(BEADS_WORD_MSG)
+            if (!URL.canParse(bUrl!)) fail('--url is not a URL')
+            change(
+              r => without(r, 'beadsRemote', { name: bName, url: bUrl, user: bUser }),
+              `set beadsRemote ${bName}`,
+            )
+          } else {
+            change(r => {
+              if (!r.beadsRemote) throw new Error('no beadsRemote is set')
+              return without(r, 'beadsRemote', undefined)
+            }, 'cleared beadsRemote')
+          }
         } else if (sub === 'list') {
           const { busy, held } = await busyRigs()
           if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
@@ -12699,7 +12880,10 @@ if (import.meta.main && !outboxCmd)
             }
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
-        } else fail(`unknown rig command "${sub}": add, set, show, rm, list, history or undo`)
+        } else
+          fail(
+            `unknown rig command "${sub}": add, set, env, egress, beads-remote, show, rm, list, history or undo`,
+          )
         break
       }
       case 'rm': {
