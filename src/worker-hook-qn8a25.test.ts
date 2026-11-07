@@ -1,5 +1,11 @@
 import { expect, test } from 'bun:test'
-import { BEADS_ACTOR_REASON, denyReason, FACTORY_FROM_REASON, FACTORY_RUN_REASON, FACTORY_VM_ENV_REASON } from './worker-hook.ts'
+import {
+  BEADS_ACTOR_REASON,
+  denyReason,
+  FACTORY_FROM_REASON,
+  FACTORY_RUN_REASON,
+  FACTORY_VM_ENV_REASON,
+} from './worker-hook.ts'
 
 const GUARDS = [
   { name: 'BEADS_ACTOR', cmd: 'bd create x', reason: BEADS_ACTOR_REASON },
