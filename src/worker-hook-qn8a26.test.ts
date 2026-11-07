@@ -61,12 +61,28 @@ const DENY = [
   'bd comment acme-1 x "$(echo --)"actor',
   'bd comment acme-1 x ${D}actor',
   'bd comment acme-1 x $D"actor"',
-]
-
-const ALLOW = [
+  'bd comment acme-1 x `echo hi` --actor y',
+  'bd comment `echo acme-1` --actor=y x',
+  'bd `true` comment a --actor y',
+  'bd comment acme-1 x $(echo hi) --actor y',
+  'bd comment acme-1 --file `ls` --actor y',
+  'bd comment acme-1 x $((1)) --actor y',
+  'bd comment acme-1 x <(echo hi) --actor y',
+  'bd comment a x >(cat) --actor y',
+  'bd comment acme-1 x `true`--actor y',
+  "bd comment acme-1 x --a'c'tor y",
+  'bd comment acme-1 x -\\-actor y',
+  'b\\d comment acme-1 x --actor y',
+  "b''d comment acme-1 x --actor y",
+  'cat <<EOF | sh\nbd comment acme-1 x --actor y\nEOF',
+  'bd comment acme-1 x (--actor) y',
   "bd create w -d 'mention --actor here'",
   'bd create w -d "the --actor flag sets the author"',
   'bd comment acme-1 "use --actor=x to forge"',
+  'bd show acme-1; git log --actor x',
+]
+
+const ALLOW = [
   'bd show acme-1',
   'bd comment acme-1 --file .scratch/c.md',
   'bd create w --body-file .scratch/b.md',
@@ -86,8 +102,11 @@ const ALLOW = [
   'bd create w -d "$HOME/a"',
   'bd create w -d "$X error"',
   'git log --actor x',
+  'bd comment $(cat id) --file .scratch/c.md',
+  'bd list --active',
+  "grep -rn 'bd.*--actor' src",
+  'bd show acme-1 --actor-x',
   'grep -n -- --actor src/worker-hook.ts',
-  'bd show acme-1; git log --actor x',
 ]
 
 describe('qn8a.26 bd --actor', () => {
