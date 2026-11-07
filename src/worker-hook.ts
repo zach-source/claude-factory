@@ -1,5 +1,5 @@
 /**
- * A second entry of this hook (matcher Write|Edit|MultiEdit|NotebookEdit) runs `fileWriteReason`
+ * A second entry of this hook (matcher Write|Edit|MultiEdit|NotebookEdit|apply_patch) runs `fileWriteReason` (or `applyPatchReason` for a codex apply_patch)
  * on the tool's file path (claude-factory-g4du). The Bash text rules below do not see those tools.
  *
  * This PreToolUse hook for Bash denies `rm -r` and `rm -rf` in all spellings or wrappers.
@@ -3981,8 +3981,8 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
  * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
  * flag value, and every word of a segment that does not skip its operands.
  * ponytail: these pass: a name built at run time (a variable, printf), a script file, a symlink
- * from an earlier call, a program that picks the path, git config -f (qn8a.50), codex apply_patch
- * (qn8a.22), the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
+ * from an earlier call, a program that picks the path, git config -f (qn8a.50),
+ * the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
  * directory copy that names no file (qn8a.52), and a symlink made earlier in the same command (qn8a.54).
  * The sandbox is the barrier.
  * Upgrade path: resolve each word against the real FACTORY_HOME.
@@ -10886,8 +10886,8 @@ function protectedParts(parts: string[], xdg: string[]): boolean {
  * claude-factory-g4du: the reason to deny a Write, Edit, MultiEdit or NotebookEdit of `path`, or undefined.
  * It fails closed on a missing, empty, NUL or ~user path. It checks the lexical path and the real path
  * (the nearest existing ancestor through realpath), in lower case, so a symlink or a case change does not pass.
- * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config,
- * codex apply_patch (claude-factory-qn8a.22). The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
+ * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config.
+ * The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
  * (claude-factory-qn8a.21); rigs.json and worker-settings*.json are claude-factory-qn8a.20.
  */
 export function fileWriteReason(

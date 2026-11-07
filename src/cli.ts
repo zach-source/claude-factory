@@ -2279,7 +2279,7 @@ const denyHook = (
   ]
   return [
     { matcher: 'Bash', hooks },
-    { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks },
+    { matcher: 'Write|Edit|MultiEdit|NotebookEdit|apply_patch', hooks },
     // claude-factory-qn8a.19: Read and Grep must not reach the harness token files
     { matcher: 'Read|Grep', hooks },
   ]
