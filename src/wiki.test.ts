@@ -5,8 +5,10 @@ import {
   groomPlan,
   groomPrompt,
   outsidePlan,
+  pageMatches,
   parse,
   renderRigPage,
+  rigList,
   scanPages,
   SECTIONS,
   trivial,
@@ -716,4 +718,31 @@ test('groom AC7 prompt masks and keeps one line', () => {
   expect(t).not.toContain(tok)
   expect(t).toContain('***')
   expect(t).not.toMatch(/^## Evil/m)
+})
+
+test('pageMatches: exact bead, /pull/<n> suffix, title word', () => {
+  const p = {
+    kind: 'solution',
+    title: 'Fix the Lock',
+    beads: ['acme-1'],
+    prs: ['https://github.com/a/b/pull/591'],
+  } as const
+  const hit = (q: string) => pageMatches(p as never, q)
+  expect(['acme-1', '591', 'https://github.com/a/b/pull/591', 'lock', 'LOCK'].map(hit)).toEqual(
+    Array(5).fill(true),
+  )
+  expect(['acme', 'acme-1.1', '59', '0591', '#591', ''].map(hit)).toEqual(Array(6).fill(false))
+})
+
+test('rigList: add, replace, keep other sections, stable, clean scan', () => {
+  const idx = '---\nkind: "index"\ntitle: "Factory wiki"\n---\nIntro.\n'
+  const one = rigList(idx, ['widget', 'acme'])
+  expect(one).toBe(`${idx}\n## Rigs\n\n- [acme](rigs/acme.md)\n- [widget](rigs/widget.md)\n`)
+  expect(rigList(one, ['widget', 'acme'])).toBe(one)
+  const withTopics = one + '\n## Topics\n\n- [t](topics/t.md)\n'
+  const two = rigList(withTopics, ['acme'])
+  expect(two).toContain('## Rigs\n\n- [acme](rigs/acme.md)\n\n## Topics\n\n- [t](topics/t.md)\n')
+  expect(two).not.toContain('widget')
+  expect(rigList(idx, [])).toBe(`${idx}\n## Rigs\n\nNone.\n`)
+  expect(scanPages([{ path: 'index.md', text: one }])).toEqual([])
 })

@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { patrol } from '../hooks/view'
+import { onStepFiles, stubPrompt } from './step-stub'
 
 // claude-factory-ag2.6: the reviewer's verdict reaches the patrol prompt and the manager's manual.
 const SLOW = { timeoutMs: 30_000 }
@@ -76,6 +77,7 @@ test('a review section rides on mail too, with each pending item once', () => {
 test('the patrol prompt rule and the manager manual name the reviewer verdict', SLOW, async ($, on) => {
   mock.clock(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }) as never)
+  onStepFiles(on)
   on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
   on('ui.status', () => ({ value: undefined }) as never)
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
@@ -86,9 +88,7 @@ test('the patrol prompt rule and the manager manual name the reviewer verdict', 
     return { value: { agent: `factory:${(e as unknown as { name: string }).name}` } } as never
   })
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: false } as never)
+  // the rule text is in src/steps/patrol.md: src/steps.test.ts checks its words
   const rule = registered.find(r => r.name === 'patrol')!.prompt!
-  expect(rule).toContain('Proposals to review')
-  expect(rule).toContain('reviewer')
-  expect(rule).toContain('install or reject')
-  expect(rule).toContain('never run')
+  expect(rule).toBe(stubPrompt('patrol', '/repo/mod/../bin/factory'))
 })

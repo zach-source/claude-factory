@@ -90,7 +90,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { editRigs, snapshots } from './rigs-edit'
+import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -145,7 +145,20 @@ import * as selfupdate from './selfupdate'
 import { needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
-import { scanPages } from './wiki'
+import {
+  flagLine,
+  humanLines,
+  pageMatches,
+  parse as parseWikiPage,
+  renderRigPage,
+  rigList,
+  scanPages,
+  tombstones,
+  WIKI_PAGE_PATH,
+  type Merged,
+  type RigRow,
+} from './wiki'
+import type { Page } from './wiki'
 import * as ax from './ax'
 import type { Egress } from './ax'
 import {
@@ -171,6 +184,7 @@ import { assertAxRunner, assertServerRigs, guardedTick, movedRigRefusal, splitPl
 import { bdEnv, clonesRepos, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
+import { personCerts } from './server-api'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -4490,7 +4504,7 @@ const commitMemory = (message: string) => {
 }
 
 const WIKI_PAGE_MAX = 65_536
-const WIKI_PAGE_PATH = /^[A-Za-z0-9_][A-Za-z0-9_./-]*\.md$/
+const WIKI_EMAIL = `factory@${hostname()}`
 const WIKI_VISIBLE = ['PUBLIC', 'PRIVATE', 'INTERNAL']
 const WIKI_CACHE_MS = 24 * 3600_000
 const WIKI_SEEDS: Record<string, string> = {
@@ -4539,23 +4553,116 @@ function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<
   return { code: p.exitCode, out: p.stdout }
 }
 
+function readWikiState(): Record<string, unknown> {
+  try {
+    const s = JSON.parse(readFileSync(join(HOME, 'wiki-state.json'), 'utf8'))
+    if (s !== null && typeof s === 'object' && !Array.isArray(s)) return s
+  } catch {}
+  return {}
+}
+
+function writeWikiState(state: Record<string, unknown>) {
+  mkdirSync(HOME, { recursive: true })
+  writeFileSync(join(HOME, 'wiki-state.json'), JSON.stringify(state))
+}
+
+/** Pages a person deleted and nobody added back, kept in wiki-state.json. A failed git log uses the stored list. */
+function wikiTombstones(dir: string) {
+  const stored = readWikiState().tombstones
+  const old = (Array.isArray(stored) ? stored : []).filter(
+    (t): t is { path: string; at: string } =>
+      t !== null && typeof t === 'object' && typeof t.path === 'string' && typeof t.at === 'string',
+  )
+  if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return old
+  const log = wikiGit(dir, [
+    'log',
+    '--diff-filter=D',
+    '--no-renames',
+    '--name-only',
+    '--format=%x01%ae%x01%aI',
+    'HEAD',
+  ])
+  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'])
+  if (log.code !== 0 || tracked.code !== 0)
+    return (wikiLog('wiki: tombstone read failed, stored list used'), old)
+  const here = new Set(tracked.out.toString().split('\0'))
+  const list = tombstones(log.out.toString(), WIKI_EMAIL).filter(t => !here.has(t.path))
+  if (JSON.stringify(list) !== JSON.stringify(old)) writeWikiState({ ...readWikiState(), tombstones: list })
+  return list
+}
+
+/**
+ * `git blame --line-porcelain HEAD` of each tracked page outside rigs/, for keepPersonLines() after an agent pass.
+ * An empty Map when there is no commit yet. Undefined (and a journal line) when a blame fails: the pass must not run.
+ */
+export function wikiBlame(dir = join(HOME, 'wiki')) {
+  const blames = new Map<string, string>()
+  if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return blames
+  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'])
+  if (tracked.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+  for (const path of tracked.out.toString().split('\0')) {
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
+    const b = wikiGit(dir, ['blame', '--line-porcelain', 'HEAD', '--', path])
+    if (b.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+    blames.set(path, b.out.toString())
+  }
+  return blames
+}
+
+/**
+ * After an agent pass: put back each page where the pass changed or removed a person's line, and add a flag
+ * with the page, the line and `reason` to needs-person.md. The rest of the pass stays. False when a restore fails.
+ */
+export function keepPersonLines(before: Map<string, string>, reason: string, dir = join(HOME, 'wiki')) {
+  const flags: string[] = []
+  for (const [path, blame] of before) {
+    const file = join(dir, path)
+    let text = ''
+    try {
+      if (lstatSync(file).isFile()) text = readFileSync(file, 'utf8')
+    } catch {}
+    const hits = humanLines(blame, text, WIKI_EMAIL)
+    if (!hits.length) continue
+    if (wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path]).code !== 0)
+      return (wikiLog('wiki: restore failed, nothing committed'), false)
+    for (const h of hits) flags.push(flagLine(path, h.line, reason))
+    wikiLog(`wiki: person's line in ${path}, page kept, flagged`)
+  }
+  if (flags.length) {
+    const file = join(dir, 'needs-person.md')
+    let regular: boolean | undefined
+    try {
+      const st = lstatSync(file)
+      regular = st.isFile() && st.nlink === 1
+    } catch {}
+    if (regular === false)
+      return (wikiLog('wiki: needs-person.md is not a regular file, nothing committed'), false)
+    if (regular === undefined) writeFileSync(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n')
+    appendFileSync(file, `${flags.join('\n')}\n`)
+  }
+  return true
+}
+
 /**
  * Stage the wiki, put every staged page that fails a check back at its last version, and commit the rest
  * as the factory identity. A page passes when its path, size (65,536 bytes) and scanPages() are clean.
- * A journal line names the path and a fixed reason, never page text. True when it made a commit.
+ * A journal line names the path and a fixed reason, never page text. `paths` limits the staging to those pages
+ * (none: the whole tree). True when it made a commit, null when nothing was staged, false on a failure.
  */
-export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki')) {
+export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki'), paths?: string[]) {
   const clean = (s: string) =>
     s
       .split('\n')[0]!
       .replace(/\p{Cc}/gu, ' ')
       .slice(0, 200)
-  if (wikiGit(dir, ['add', '-A']).code !== 0) return (wikiLog('wiki: stage failed, nothing committed'), false)
+  if (wikiGit(dir, ['add', '-A', '--', ...(paths ?? [])]).code !== 0)
+    return (wikiLog('wiki: stage failed, nothing committed'), false)
   const list = wikiGit(dir, ['diff', '--cached', '--raw', '--no-renames', '-z', '--diff-filter=d'])
   if (list.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
   // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
   const fields = list.out.toString().split('\0')
   const refused: string[] = []
+  const tombs = new Set(wikiTombstones(dir).map(t => t.path))
   // a refused rename target puts its source back too, or the commit would delete the old page
   // ponytail: git pairs a rename only above 50% similarity; a rewrite below that still commits the old path's delete
   const moved = new Map<string, string>()
@@ -4565,11 +4672,12 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     for (let k = 0; k + 2 < f.length; k += 3) moved.set(f[k + 2]!, f[k + 1]!)
   }
   for (let k = 0; k + 1 < fields.length; k += 2) {
-    const mode = fields[k]!.split(' ')[1]
+    const [, mode, , , status] = fields[k]!.split(' ')
     const path = fields[k + 1]!
     let why: string | undefined
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..'))
       why = 'wiki: bad page path, page kept at last version'
+    else if (status === 'A' && tombs.has(path)) why = `wiki: tombstoned path ${path}, page not made again`
     else if (mode !== '100644' && mode !== '100755')
       why = `wiki: bad file mode in ${path}, page kept at last version`
     else {
@@ -4596,14 +4704,14 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   // a refused path that is still staged (an unstage that failed) must never reach a commit
   if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
     return (wikiLog('wiki: unstage failed, nothing committed'), false)
-  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return false
+  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return null
   const c = wikiGit(
     dir,
     [
       '-c',
       'user.name=factory',
       '-c',
-      `user.email=factory@${hostname()}`,
+      `user.email=${WIKI_EMAIL}`,
       '-c',
       'commit.gpgsign=false',
       'commit',
@@ -4614,9 +4722,9 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     false,
     {
       GIT_AUTHOR_NAME: 'factory',
-      GIT_AUTHOR_EMAIL: `factory@${hostname()}`,
+      GIT_AUTHOR_EMAIL: WIKI_EMAIL,
       GIT_COMMITTER_NAME: 'factory',
-      GIT_COMMITTER_EMAIL: `factory@${hostname()}`,
+      GIT_COMMITTER_EMAIL: WIKI_EMAIL,
     },
   )
   if (c.code !== 0) wikiLog(`wiki: commit failed (exit ${c.code})`)
@@ -4626,12 +4734,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
 /** PUBLIC, PRIVATE or INTERNAL from `gh repo view`; read at most once in 24 h per remote unless `fresh`. Else undefined. */
 function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh = false) {
   const remote = `${r.host}/${r.owner}/${r.repo}`
-  const file = join(HOME, 'wiki-state.json')
-  let state: Record<string, unknown> = {}
-  try {
-    state = JSON.parse(readFileSync(file, 'utf8'))
-  } catch {}
-  if (state === null || typeof state !== 'object' || Array.isArray(state)) state = {}
+  const state = readWikiState()
   const c = state.visibility as { value?: string; checkedAt?: string; remote?: string } | undefined
   if (
     !fresh &&
@@ -4648,12 +4751,20 @@ function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh 
   })
   const value = p.exitCode === 0 ? p.stdout.toString().trim() : ''
   if (!WIKI_VISIBLE.includes(value)) return undefined
-  mkdirSync(HOME, { recursive: true })
-  writeFileSync(
-    file,
-    JSON.stringify({ ...state, visibility: { value, checkedAt: new Date().toISOString(), remote } }),
-  )
+  writeWikiState({ ...state, visibility: { value, checkedAt: new Date().toISOString(), remote } })
   return value
+}
+
+/** True only when the remote is PRIVATE or INTERNAL; every other answer logs one fixed line and refuses. */
+function wikiAllowed(r: { host: string; owner: string; repo: string }, fresh = false) {
+  const vis = wikiVisibility(r, fresh)
+  if (vis === 'PRIVATE' || vis === 'INTERNAL') return true
+  wikiLog(
+    vis === 'PUBLIC'
+      ? 'wiki: remote is public, push refused'
+      : 'wiki: remote visibility unknown, push refused',
+  )
+  return false
 }
 
 /**
@@ -4666,12 +4777,112 @@ export function pushWiki(dir = join(HOME, 'wiki')) {
   if (!url) return false
   const r = wikiRemote(url)
   if (!r) return (wikiLog('wiki: remote not allowed, push refused'), false)
-  const vis = wikiVisibility(r)
-  if (!vis) return (wikiLog('wiki: remote visibility unknown, push refused'), false)
-  if (vis === 'PUBLIC') return (wikiLog('wiki: remote is public, push refused'), false)
+  if (!wikiAllowed(r)) return false
   const p = wikiGit(dir, ['push', url, 'HEAD:main'], true)
   if (p.code !== 0) wikiLog(`wiki: push failed (exit ${p.code})`)
   return p.code === 0
+}
+
+/**
+ * The pages that `wiki find` and `wiki status` can read, sorted by path. A page must meet all of these rules:
+ * HEAD has it with mode 100644 or 100755, its path passes the path rule, it is a regular file with one link and
+ * at most 65,536 bytes, and parse() accepts it. An agent pass controls the worktree.
+ * A symlink or a hard link must not send an outside file to stdout.
+ */
+function wikiPages(dir: string) {
+  const ls = wikiGit(dir, ['ls-tree', '-r', '-z', 'HEAD'])
+  if (ls.code !== 0) return []
+  const out: { path: string; page: Page }[] = []
+  for (const e of ls.out.toString().split('\0')) {
+    const tab = e.indexOf('\t')
+    const path = e.slice(tab + 1)
+    const mode = e.slice(0, e.indexOf(' '))
+    if (tab < 0 || (mode !== '100644' && mode !== '100755')) continue
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..')) continue
+    try {
+      const st = lstatSync(join(dir, path))
+      if (!st.isFile() || st.nlink !== 1 || st.size > WIKI_PAGE_MAX) continue
+      const p = parseWikiPage(readFileSync(join(dir, path), 'utf8'))
+      if ('page' in p) out.push({ path, page: p.page })
+    } catch {}
+  }
+  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+}
+
+/** prints `path<TAB>title<TAB>host URL` for each matching page; the exit code is 1 when none match */
+function wikiFind(q: string) {
+  const dir = join(HOME, 'wiki')
+  if (!existsSync(join(dir, '.git'))) {
+    console.error('wiki: not set up: run factory wiki init')
+    return 1
+  }
+  const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
+  const r = url ? wikiRemote(url) : null
+  const hits = wikiPages(dir).filter(({ page }) => pageMatches(page, q))
+  for (const { path, page } of hits)
+    console.log(
+      [
+        path,
+        page.title.replace(/\p{Cc}/gu, ' '),
+        r ? `https://${r.host}/${r.owner}/${r.repo}/blob/main/${path}` : '',
+      ].join('\t'),
+    )
+  return hits.length ? 0 : 1
+}
+
+/**
+ * The JSON for `factory wiki status`. It only reads: no gh, no lock, no write. A missing or bad file gives null
+ * or an empty list. `pending` lists the beads closed in the last 7 days that no page and no `written` key names.
+ */
+function wikiStatus() {
+  const dir = join(HOME, 'wiki')
+  const mtime = (name: string) => {
+    try {
+      return statSync(join(HOME, name)).mtime.toISOString()
+    } catch {
+      return null
+    }
+  }
+  let state: Record<string, any> = {}
+  try {
+    state = JSON.parse(readFileSync(join(HOME, 'wiki-state.json'), 'utf8'))
+  } catch {}
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) state = {}
+  const done = new Set<string>()
+  if (state.written && typeof state.written === 'object')
+    for (const k of Object.keys(state.written)) done.add(k)
+  for (const { page } of wikiPages(dir)) for (const b of page.beads ?? []) done.add(b)
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)
+  const pending: { rig: string; id: string }[] = []
+  for (const r of rigs().filter(r => hasBeads(r.repo))) {
+    try {
+      for (const b of beads(r.repo, 'factory/wiki').closedSince(since))
+        if (!done.has(b.id)) pending.push({ rig: r.name, id: b.id })
+    } catch {
+      console.error(`wiki status: rig ${r.name} bead list failed`)
+    }
+  }
+  pending.sort((a, b) => (a.rig + a.id < b.rig + b.id ? -1 : 1))
+  let flags: string[] = []
+  try {
+    const f = join(dir, 'needs-person.md')
+    const st = lstatSync(f)
+    if (st.isFile() && st.nlink === 1 && st.size <= WIKI_PAGE_MAX)
+      flags = readFileSync(f, 'utf8')
+        .split('\n')
+        .filter(l => l.startsWith('- '))
+        .map(l => l.replace(/\p{Cc}/gu, ' '))
+  } catch {}
+  const v = state.visibility?.value
+  return {
+    lastRefresh: mtime('wiki-refresh.stamp'),
+    lastWrite: mtime('wiki-write.stamp'),
+    lastGroom: mtime('wiki-groom.stamp'),
+    groomPr: typeof state.groomPr?.url === 'string' ? state.groomPr : null,
+    pending,
+    flags,
+    visibility: WIKI_VISIBLE.includes(v) ? v : null,
+  }
 }
 
 /** beads the memory names that have closed since: what waited on them is stale */
@@ -5535,6 +5746,25 @@ const kickGc = () => {
   }).unref()
 }
 
+/**
+ * `factory wiki refresh` at most every FACTORY_WIKI_REFRESH_MIN minutes (a positive number, default 30).
+ * It does nothing while $HOME/wiki/.git is missing or wiki.lock is held. It writes the stamp before the spawn,
+ * so a slow pass gets no second one. A halt does not stop it: the pages show a halted factory too.
+ */
+const kickWiki = () => {
+  if (!existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return
+  const min = Number(process.env.FACTORY_WIKI_REFRESH_MIN)
+  const stamp = join(HOME, 'wiki-refresh.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (age < (min > 0 ? min : 30) * 60_000) return
+  writeFileSync(stamp, '')
+  spawnChild(CLI, ['wiki', 'refresh'], {
+    detached: true,
+    stdio: 'ignore',
+    env: kickEnv(process.env, HOME),
+  }).unref()
+}
+
 // ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
 // Everything below reads real git, gh, bd and herdr state into facts. It then carries out the plan.
 
@@ -6135,6 +6365,7 @@ async function tick(isPatrol = false) {
       kickGc()
       kickGcWorktrees()
       kickSweeps()
+      kickWiki()
     }
   }
 }
@@ -9747,6 +9978,35 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
   return warnings
 }
 
+/** Check `--param name=value` pairs against the factory's params. Return them merged over `base`, or `base`. */
+function checkParams(
+  def: Awaited<ReturnType<typeof loadFactory>>,
+  pairs: string[],
+  base?: Record<string, string>,
+) {
+  let out = base
+  for (const p of pairs) {
+    const [k, v] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
+    if (!p.includes('=') || !(k in (def.params ?? {})))
+      fail(
+        `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
+      )
+    if (k === 'base_branch' && v && !branchOk(v))
+      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
+    out = { ...out, [k]: v }
+  }
+  return out
+}
+
+/** Fail when a sweep name is not one of the sweeps factory's sweeps. */
+async function checkSweeps(wanted: string[], sweepsFactory: string | undefined, repo: string) {
+  const sweepsDef = await loadFactory(factorySource(sweepsFactory ?? 'sweeps', repo))
+  const names = sweepNames(sweepsDef)
+  const unknown = wanted.filter(s => !names.includes(s))
+  if (unknown.length)
+    fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
+}
+
 async function defineRig(
   name: string,
   path: string,
@@ -9822,23 +10082,9 @@ async function defineRig(
       fail(`--mcp ${mcp}: ${(err as Error).message}`)
     }
   }
-  for (const p of params ?? []) {
-    const [k, v] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
-    if (!p.includes('=') || !(k in (def.params ?? {})))
-      fail(
-        `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
-      )
-    if (k === 'base_branch' && v && !branchOk(v))
-      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
-    rig.params = { ...rig.params, [k]: v }
-  }
-  if (sweeps !== undefined) {
-    const sweepsDef = await loadFactory(factorySource(rig.sweepsFactory ?? 'sweeps', repo))
-    const names = sweepNames(sweepsDef)
-    const unknown = (rig.sweeps ?? []).filter(s => !names.includes(s))
-    if (unknown.length)
-      fail(`no sweep ${unknown.join(', ')} in ${sweepsDef.name}: ${names.join(', ') || 'none'}`)
-  }
+  const merged = checkParams(def, params ?? [], rig.params)
+  if (merged) rig.params = merged
+  if (sweeps !== undefined) await checkSweeps(rig.sweeps ?? [], rig.sweepsFactory, repo)
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
     if (bad.length)
@@ -9955,7 +10201,7 @@ const WORKER_VERBS = [
   'file-elsewhere',
 ]
 
-/** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, or usage) */
+/** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, `rig show`, or usage) */
 export function workerVerbRefusal(
   cmd: string | undefined,
   args: string[],
@@ -9964,7 +10210,7 @@ export function workerVerbRefusal(
   const marker = workerMarker(false, env)
   if (!marker || !cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || WORKER_VERBS.includes(cmd))
     return undefined
-  if (cmd === 'rig' && (args[0] ?? 'list') === 'list') return undefined
+  if (cmd === 'rig' && ['list', 'show'].includes(args[0] ?? 'list')) return undefined
   return `a worker cannot run factory ${cmd === 'rig' ? `rig ${args[0]}` : cmd} (${marker}): mail the manager instead`
 }
 
@@ -10850,6 +11096,84 @@ function shipQueues() {
   return out
 }
 
+const WIKI_RIG_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/
+
+/**
+ * One `factory wiki refresh` pass: write rigs/<rig>.md for each rig with a valid name and the rig list in
+ * index.md, from the run rows, the ship queues and the merged-PR cache (no gh call). A run that cannot be
+ * read is left out. With `dryRun` it only returns the changed paths. Else it commits, pushes and journals.
+ */
+async function wikiRefresh(dryRun: boolean): Promise<string[]> {
+  const dir = join(HOME, 'wiki')
+  const rows: RigRow[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value, c } = current(id)
+      const def = await loadPinned(run.factory)
+      rows.push({ ...row(run, def, value, c, agentOf(def, value, c)), createdAt: createdAt(id) })
+    } catch (err) {
+      console.error(`wiki refresh: run ${id} left out: ${(err as Error).message.split('\n')[0]}`)
+    }
+  }
+  const waitingIds = new Set(rows.filter(r => holdOf(r)).map(r => r.id))
+  const queues = shipQueues()
+  const merged = cachedMerges(readMerged())
+  const now = Date.now()
+  const files = new Map<string, string>()
+  const names: string[] = []
+  for (const rig of rigs()) {
+    if (!WIKI_RIG_NAME.test(rig.name) || names.includes(rig.name)) {
+      wikiLog('wiki: bad rig name, page skipped')
+      continue
+    }
+    names.push(rig.name)
+    const slug = rigRef(rig.repo)?.slug
+    const mine = rows.filter(r => r.rig === rig.name)
+    const shipped: Merged[] = merged
+      .filter(m => slug && githubSlugOf(m.url) === slug)
+      .map(m => ({
+        url: m.url,
+        mergedAt: m.mergedAt,
+        title: (rows.find(r => `factory/${r.id}` === m.head)?.goal ?? m.head).replace(/^[\w.-]+: /, ''),
+      }))
+    files.set(
+      `rigs/${rig.name}.md`,
+      renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now),
+    )
+  }
+  // an agent pass owns this worktree: a link or a non-regular file at a target would take a write outside it
+  const kind = (p: string) => {
+    try {
+      const st = lstatSync(join(dir, p))
+      return st.isFile() && st.nlink === 1 ? 'file' : st.isDirectory() ? 'dir' : 'bad'
+    } catch {
+      return 'none'
+    }
+  }
+  const read = (p: string) => (kind(p) === 'file' ? readFileSync(join(dir, p), 'utf8') : '')
+  files.set('index.md', rigList(read('index.md'), names))
+  const rigsKind = kind('rigs')
+  for (const p of [...files.keys()]) {
+    const okDir = p.startsWith('rigs/') ? ['none', 'dir'].includes(rigsKind) : true
+    if (!okDir || !['none', 'file'].includes(kind(p))) {
+      files.delete(p)
+      wikiLog('wiki: refused a link or a file that is not regular, page skipped')
+    }
+  }
+  const changed = [...files.keys()].filter(p => files.get(p) !== read(p)).sort()
+  if (dryRun) return changed
+  for (const p of changed) {
+    mkdirSync(dirname(join(dir, p)), { recursive: true })
+    writeFileSync(join(dir, p), files.get(p)!)
+  }
+  // stage only the pages written here: an empty list would stage the whole tree, and a person's edit with it
+  if (changed.length)
+    commitWiki('refresh', `${names.length} rig pages, ${changed.length} changed`, dir, changed)
+  pushWiki(dir) // also retries an earlier failed push
+  wikiLog(`wiki refresh: ${names.length} rig pages, ${changed.length} changed`)
+  return changed
+}
+
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
 const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
@@ -10893,7 +11217,7 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex or pi), --mcp gives its workers
@@ -10967,6 +11291,7 @@ const usage = `factory — herdr software factories on xstate
   beads                              one pass of the runs' bead bookkeeping and the rigs' dispatch (each tick starts one)
   watch                              one pass of the pull request watch that wakes a parked station (each
                                      tick starts one, at most once a minute)
+  cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
@@ -11192,6 +11517,19 @@ if (import.meta.main && !outboxCmd)
           ),
         )
         break
+      case 'cert': {
+        refuseWorker('cert', true)
+        const [what, dir, name, ...more] = args
+        if (what !== 'person' || !dir || !name || more.length)
+          fail('usage: factory cert person <dir> <server-name>')
+        try {
+          const out = personCerts(resolve(dir!), name!)
+          console.log(out)
+        } catch (e) {
+          fail((e as Error).message)
+        }
+        break
+      }
       case 'manager':
         refuseWorker('manager', true)
         if (args[0] === 'host') {
@@ -11512,6 +11850,45 @@ if (import.meta.main && !outboxCmd)
       }
       case 'wiki': {
         refuseWorker('wiki', true)
+        // read-only verbs: no wiki.lock
+        if (args[0] === 'find') {
+          if (args.length !== 2) {
+            console.error('usage: factory wiki find <bead|pr|word>')
+            process.exitCode = 2
+          } else process.exitCode = wikiFind(args[1]!)
+          break
+        }
+        if (args[0] === 'status') {
+          if (args.length !== 1) {
+            console.error('usage: factory wiki status')
+            process.exitCode = 2
+          } else console.log(JSON.stringify(wikiStatus()))
+          break
+        }
+        if (args[0] === 'refresh') {
+          const dry = args[1] === '--dry-run'
+          if (args.length > (dry ? 2 : 1)) {
+            console.error('usage: factory wiki refresh [--dry-run]')
+            process.exitCode = 2
+            break
+          }
+          const release = hold('wiki.lock')
+          if (!release) {
+            console.log('wiki: busy')
+            break
+          }
+          try {
+            if (!existsSync(join(HOME, 'wiki', '.git')))
+              console.log('wiki: not set up: run factory wiki init')
+            else {
+              const paths = await wikiRefresh(dry)
+              if (dry) console.log(paths.join('\n'))
+            }
+          } finally {
+            release()
+          }
+          break
+        }
         const i = args.indexOf('--remote')
         const remoteArg = i < 0 ? undefined : args[i + 1]
         const rest = i < 0 ? args : args.filter((_, j) => j !== i && j !== i + 1)
@@ -11543,12 +11920,12 @@ if (import.meta.main && !outboxCmd)
           }
           for (const [name, text] of Object.entries(WIKI_SEEDS))
             if (!existsSync(join(dir, name))) writeFileSync(join(dir, name), text)
-          commitWiki('init', 'seed index and glossary', dir)
+          if (commitWiki('init', 'seed index and glossary', dir, Object.keys(WIKI_SEEDS)) === false) {
+            process.exitCode = 1
+            break
+          }
           if (remote && url) {
-            const vis = wikiVisibility(remote, true)
-            if (!vis) wikiLog('wiki: remote visibility unknown, push refused')
-            else if (vis === 'PUBLIC') wikiLog('wiki: remote is public, push refused')
-            if (vis !== 'PRIVATE' && vis !== 'INTERNAL') {
+            if (!wikiAllowed(remote, true)) {
               process.exitCode = 1
               break
             }
@@ -12166,7 +12543,7 @@ if (import.meta.main && !outboxCmd)
         const mergeAuth = args.includes('--merge-authority')
         if (mergeAuth) args.splice(args.indexOf('--merge-authority'), 1)
         const [sub = 'list', name, repo, factory = 'lifecycle'] = args
-        if (sub !== 'list') refuseWorker(`rig ${sub}`, true) // triage reads the rig list; only the person changes rigs
+        if (sub !== 'list' && sub !== 'show') refuseWorker(`rig ${sub}`, true) // triage reads the rig list; only the person changes rigs
         if (sub === 'add') {
           if (!name || !repo)
             fail(
@@ -12213,6 +12590,71 @@ if (import.meta.main && !outboxCmd)
             return list.filter(r => r.name !== name)
           })
           console.log(`removed rig ${name}: nothing new starts there; its runs carry on`)
+        } else if (sub === 'show') {
+          if (!name) fail('usage: factory rig show <rig|repo>')
+          const at = repoOf(name!)
+          const found = rawRigs().find(r => mapRigs([r])[0]!.repo === at)
+          if (!found) fail(`${at} is not a rig`)
+          console.log(JSON.stringify(redactRig(found!), null, 2))
+        } else if (sub === 'set') {
+          const usage =
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]..."
+          const foreign = [
+            [slo, '--slo'],
+            [drift, '--drift'],
+            [linear, '--linear'],
+            [linearProjects, '--linear-projects'],
+            [linearLabels, '--linear-labels'],
+            [egress.length, '--egress'],
+            [personOnlyContext.length, '--person-only-context'],
+            [protectedBranch.length, '--protected-branch'],
+            [mergeAuth, '--merge-authority'],
+          ].find(([v]) => v !== undefined && v !== 0 && v !== false)
+          if (foreign) fail(`rig set does not change ${foreign[1]}: ${usage}`)
+          if (!name || args.length > 2) fail(usage)
+          const target = rigs().find(r => r.repo === repoOf(name!))
+          if (!target) fail(`${repoOf(name!)} is not a rig`)
+          const set: Record<string, unknown> = {}
+          const unset: string[] = []
+          if (goal !== undefined) {
+            if (!goal.trim()) fail('--goal needs text')
+            set.goal = goal
+          }
+          if (max !== undefined) {
+            if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
+            set.maxRuns = Number(max)
+          }
+          if (sweeps !== undefined) {
+            set.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
+            await checkSweeps(set.sweeps as string[], target!.sweepsFactory, target!.repo)
+          }
+          if (runner !== undefined) {
+            if (runner === DEFAULT_RUNNER) unset.push('runner')
+            else set.runner = runner
+          }
+          if (agent !== undefined) set.agent = agent
+          if (mcp !== undefined) {
+            set.mcp = expand(mcp)
+            try {
+              readMcp(set.mcp as string)
+            } catch (err) {
+              fail(`--mcp ${mcp}: ${(err as Error).message}`)
+            }
+          }
+          if (params.length) {
+            const def = await loadFactory(factorySource(target!.factory, target!.repo))
+            set.params = checkParams(def, params, target!.params)
+          }
+          if (!Object.keys(set).length && !unset.length) fail(usage)
+          edit(list =>
+            list.map(r => {
+              if (r.name !== target!.name) return r
+              const next = applyRigChange(r, set, unset) as Rig
+              for (const w of validateRig(next)) console.warn(w)
+              return next
+            }),
+          )
+          console.log(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
         } else if (sub === 'list') {
           const { busy, held } = await busyRigs()
           if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
@@ -12287,7 +12729,7 @@ if (import.meta.main && !outboxCmd)
             return list
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)
-        } else fail(`unknown rig command "${sub}": add, rm, list, history or undo`)
+        } else fail(`unknown rig command "${sub}": add, set, show, rm, list, history or undo`)
         break
       }
       case 'rm': {

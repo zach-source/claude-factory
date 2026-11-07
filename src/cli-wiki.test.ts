@@ -11,6 +11,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  linkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -140,6 +141,7 @@ test('AC4 a page that fails the scan goes back to its last version', () => {
   writeFileSync(join(wiki(), 'bad-kind.md'), page('nope', 'Y'))
   writeFileSync(join(wiki(), 'big.md'), `${page('topic', 'Big')}${'a'.repeat(70_000)}\n`)
   writeFileSync(join(wiki(), 'good.md'), page('topic', 'Good'))
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   expect(commits()).toBe(base + 1)
   expect(git('show', 'HEAD:index.md')).not.toContain('ghp_')
@@ -160,12 +162,14 @@ test('AC4 a type change is scanned, and a token with a bad kind logs the secret 
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
   writeFileSync(join(wiki(), 'link.md'), page('topic', 'Link'))
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   const base = commits()
   writeFileSync(join(wiki(), 'real.txt'), `${TOKEN}\n`)
   unlinkSync(join(wiki(), 'link.md'))
   symlinkSync('real.txt', join(wiki(), 'link.md'))
   writeFileSync(join(wiki(), 'both.md'), `${page('nope', 'B')}${TOKEN}\n`)
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   expect(commits()).toBe(base)
   expect(git('ls-files').split('\n')).not.toContain('both.md')
@@ -182,6 +186,7 @@ test('AC4 a bad path is refused with no path text', () => {
   writeFileSync(join(wiki(), '.hidden.md'), page('topic', 'H'))
   writeFileSync(join(wiki(), 'a\nb.md'), page('topic', 'N'))
   writeFileSync(join(wiki(), 'note.txt'), 'x')
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   expect(commits()).toBe(base)
   expect(wikiLog().match(/wiki: bad page path, page kept at last version/g)?.length).toBe(3)
@@ -408,6 +413,7 @@ test('AC4 a nested repo and a symlink to a valid page are refused by mode, and n
   ])
   writeFileSync(join(wiki(), 'real.txt'), page('topic', 'Real'))
   symlinkSync('real.txt', join(wiki(), 'link.md'))
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   expect(commits()).toBe(base)
   expect(git('ls-files').split('\n')).not.toContain('sub.md')
@@ -454,6 +460,194 @@ test('AC6 a wiki-state.json that holds null does not stop a later pass', () => {
   expect(state().visibility.value).toBe('PRIVATE')
 })
 
+/** a person commit in the wiki */
+const person = (msg: string) => {
+  git('add', '-A')
+  git('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', msg)
+}
+/** a driver for the blame guard: `before` saves the blame, `after` runs keepPersonLines() then commitWiki() */
+function guardPass(mode: 'before' | 'after') {
+  const script = join(dir, 'guard.ts')
+  const saved = join(dir, 'blame.json')
+  writeFileSync(
+    script,
+    `import { commitWiki, keepPersonLines, wikiBlame } from '${join(import.meta.dir, 'cli')}'
+import { readFileSync, writeFileSync } from 'node:fs'
+const saved = '${saved}'
+if (process.argv[2] === 'before') {
+  const b = wikiBlame()
+  if (!b) process.exit(3)
+  writeFileSync(saved, JSON.stringify([...b]))
+} else {
+  const ok = keepPersonLines(new Map(JSON.parse(readFileSync(saved, 'utf8'))), 'the pass tidied it')
+  if (!ok) process.exit(4)
+  commitWiki('write', 'pass')
+}
+`,
+  )
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
+  return Bun.spawnSync(['bun', script, mode], {
+    env: { ...laptop, FACTORY_HOME: home, FACTORY_NO_KICK: '1', FACTORY_SELF_UPDATE: '0' },
+    stderr: 'pipe',
+  })
+}
+const at = (path: string) => Bun.spawnSync(['git', '-C', wiki(), 'show', `HEAD:${path}`]).stdout.toString()
+
+test('AC4 a pass that changes a person line is put back and flagged; the rest of the pass is kept', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const mine = readFileSync(join(wiki(), 'glossary.md'), 'utf8').replace(
+    'one tracked task in bd',
+    'my own words',
+  )
+  writeFileSync(join(wiki(), 'glossary.md'), mine)
+  mkdirSync(join(wiki(), 'rigs'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), `${page('topic', 'Acme')}person line\n`)
+  person('mine')
+  expect(guardPass('before').exitCode).toBe(0)
+  writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), `${page('topic', 'Acme')}agent line\n`)
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
+  writeFileSync(join(wiki(), 'b.md'), page('topic', 'B'))
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('glossary.md')).toBe(mine)
+  expect(readFileSync(join(wiki(), 'glossary.md'), 'utf8')).toBe(mine)
+  expect(at('needs-person.md')).toContain('kind: "index"')
+  expect(at('needs-person.md')).toMatch(/- `glossary.md` line \d+: the pass tidied it\n/)
+  expect(at('needs-person.md')).not.toContain('index.md')
+  expect(wikiLog()).toContain("wiki: person's line in glossary.md, page kept, flagged")
+  expect(at('b.md')).toContain('title: "B"')
+  expect(at('index.md')).toContain('New index')
+  expect(at('rigs/acme.md')).toContain('agent line')
+})
+
+test('AC4 a pass that deletes a page with a person line gets it back; factory-only changes raise no flag', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const mine = readFileSync(join(wiki(), 'glossary.md'), 'utf8').replace(
+    'one tracked task in bd',
+    'my own words',
+  )
+  writeFileSync(join(wiki(), 'glossary.md'), mine)
+  person('mine')
+  expect(guardPass('before').exitCode).toBe(0)
+  rmSync(join(wiki(), 'glossary.md'))
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('glossary.md')).toBe(mine)
+  expect(at('needs-person.md')).toContain('`glossary.md`')
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(guardPass('before').exitCode).toBe(0)
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('index.md')).toContain('New index')
+  expect(existsSync(join(wiki(), 'needs-person.md'))).toBe(false)
+})
+
+test.each(['existing', 'dangling', 'hardlink'])(
+  'AC4 a needs-person.md that is a symlink or hard link (%s target) is not written through',
+  kind => {
+    setup()
+    expect(factory(['wiki', 'init']).code).toBe(0)
+    const mine = readFileSync(join(wiki(), 'glossary.md'), 'utf8').replace(
+      'one tracked task in bd',
+      'my own words',
+    )
+    writeFileSync(join(wiki(), 'glossary.md'), mine)
+    person('mine')
+    expect(guardPass('before').exitCode).toBe(0)
+    const outside = join(dir, 'outside.txt')
+    if (kind !== 'dangling') writeFileSync(outside, 'keep\n')
+    if (kind === 'hardlink') linkSync(outside, join(wiki(), 'needs-person.md'))
+    else symlinkSync(outside, join(wiki(), 'needs-person.md'))
+    writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
+    expect(guardPass('after').exitCode).toBe(4)
+    expect(existsSync(outside) ? readFileSync(outside, 'utf8') : '').toBe(kind === 'dangling' ? '' : 'keep\n')
+    expect(wikiLog()).toContain('wiki: needs-person.md is not a regular file, nothing committed')
+  },
+)
+
+test('AC5 a bad stored tombstone list does not crash a new wiki', () => {
+  setup()
+  mkdirSync(home, { recursive: true })
+  writeFileSync(join(home, 'wiki-state.json'), JSON.stringify({ tombstones: [null, { path: 1 }, 'x'] }))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+})
+
+test('AC5 a page that a person deleted is not made again; other paths and edits still commit', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+  mkdirSync(join(wiki(), 'rigs'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'a.md'), page('topic', 'A'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'f.md'), page('topic', 'F'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'back.md'), page('topic', 'Back'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), page('topic', 'Acme'))
+  expect(commitPass('pages').exitCode).toBe(0)
+  git('rm', '-q', 'solutions/2026-11/a.md', 'solutions/2026-11/back.md', 'rigs/acme.md')
+  git('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', 'del')
+  git('rm', '-q', 'solutions/2026-11/f.md')
+  git('-c', 'user.name=factory', `-c`, `user.email=factory@${hostname()}`, 'commit', '-qm', 'factory del')
+  mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+  mkdirSync(join(wiki(), 'rigs'), { recursive: true })
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'back.md'), page('topic', 'Back'))
+  person('back')
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'a.md'), page('topic', 'A again'))
+  writeFileSync(join(wiki(), 'solutions', '2026-11', 'f.md'), page('topic', 'F again'))
+  writeFileSync(join(wiki(), 'rigs', 'acme.md'), page('topic', 'Acme again'))
+  writeFileSync(join(wiki(), 'b.md'), page('topic', 'B'))
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'Edited'))
+  expect(commitPass('again').exitCode).toBe(0)
+  const files = git('ls-files').split('\n')
+  expect(files).not.toContain('solutions/2026-11/a.md')
+  expect(files).toEqual(
+    expect.arrayContaining(['b.md', 'solutions/2026-11/f.md', 'rigs/acme.md', 'solutions/2026-11/back.md']),
+  )
+  expect(at('index.md')).toContain('Edited')
+  expect(wikiLog()).toContain('wiki: tombstoned path solutions/2026-11/a.md, page not made again')
+  const t = state().tombstones
+  expect(t.map((x: { path: string }) => x.path)).toEqual(['solutions/2026-11/a.md'])
+  expect(Date.parse(t[0].at)).toBe(
+    Date.parse(git('log', '-1', '--format=%aI', '--diff-filter=D', '--', 'solutions/2026-11/a.md')),
+  )
+})
+
+test('5ezo a failed seed commit exits 1, sets no origin and calls no gh', () => {
+  for (const args of [[], ['--remote', URL_]]) {
+    setup()
+    mkdirSync(wiki(), { recursive: true })
+    Bun.spawnSync(['git', '-C', wiki(), 'init', '-q', '-b', 'main'])
+    const objects = join(wiki(), '.git', 'objects')
+    chmodSync(objects, 0o555)
+    try {
+      const r = factory(['wiki', 'init', ...args])
+      expect([args.length, r.code]).toEqual([args.length, 1])
+      expect(wikiLog()).toMatch(/wiki: (stage|commit) failed/)
+      expect(ghCalls()).toBe(0)
+      expect(noOrigin()).toBe(true)
+    } finally {
+      chmodSync(objects, 0o755)
+    }
+  }
+})
+
+test('5ezo init commits only the seed pages, not a person edit to a third page', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  writeFileSync(join(wiki(), 'notes.md'), page('note', 'n'))
+  git('add', '-A')
+  Bun.spawnSync(['git', '-C', wiki(), '-c', 'user.name=p', '-c', 'user.email=p@x.test', 'commit', '-qm', 'p'])
+  writeFileSync(join(wiki(), 'notes.md'), page('note', 'edited'))
+  writeFileSync(join(wiki(), 'new.md'), page('note', 'new'))
+  writeFileSync(join(wiki(), 'glossary.md'), page('glossary', 'edited'))
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(git('show', '--name-only', '--format=', 'HEAD')).toBe('glossary.md')
+  const st = git('status', '--porcelain')
+  expect(st).toContain('notes.md')
+  expect(st).toContain('new.md')
+})
+
 test('AC1 --remote wins over FACTORY_WIKI_REMOTE', () => {
   setup('PRIVATE')
   const { env } = bare()
@@ -482,9 +676,11 @@ test('AC4 a staged delete of a page commits the delete', () => {
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
   writeFileSync(join(wiki(), 'gone.md'), page('topic', 'Gone'))
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   const base = commits()
   unlinkSync(join(wiki(), 'gone.md'))
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   expect(commits()).toBe(base + 1)
   expect(git('ls-files').split('\n')).not.toContain('gone.md')
@@ -494,10 +690,12 @@ test('AC4 a refused rename does not commit the delete of the old path', () => {
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
   writeFileSync(join(wiki(), 'old.md'), `${page('topic', 'Old')}${'line of text\n'.repeat(40)}`)
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   const base = commits()
   renameSync(join(wiki(), 'old.md'), join(wiki(), 'new.md'))
   appendFileSync(join(wiki(), 'new.md'), `${TOKEN}\n`)
+  git('add', '-A')
   expect(factory(['wiki', 'init']).code).toBe(0)
   expect(commits()).toBe(base)
   expect(git('ls-files').split('\n')).toContain('old.md')

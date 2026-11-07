@@ -5,6 +5,7 @@
 #   kubectl -n factory create secret generic factory-github --from-literal=token=<github token>
 #   kubectl -n factory create secret generic factory-linear --from-literal=token=<linear key>          (optional)
 #   kubectl -n factory create secret generic factory-ax-auth --from-literal=token=<ax token>           (optional)
+#   factory cert person <dir> <server-name> makes the files for the next two Secrets. Keep ca.key offline.
 #   kubectl -n factory create secret tls factory-server-tls --cert=<tls.crt> --key=<tls.key>
 #   kubectl -n factory create secret generic factory-person-ca --from-file=ca.crt=<person ca file>
 #   kubectl -n factory create secret generic factory-worker-key --from-file=key=<worker key file>
@@ -110,7 +111,17 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
-          args: ['--port', '8080']
+          args:
+            - '--port'
+            - '8080'
+            - '--client-port'
+            - '8444'
+            - '--tls-cert'
+            - /etc/factory/tls/tls.crt
+            - '--tls-key'
+            - /etc/factory/tls/tls.key
+            - '--person-ca'
+            - /etc/factory/person-ca/ca.crt
           env:
             - name: FACTORY_HOME
               value: /var/lib/factory/home
