@@ -136,6 +136,8 @@ import {
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
+import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
+import { INSTALL_VERB, META_WRITE, bdWrite, gatedCommand } from '../mod/hooks/view'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -8849,10 +8851,69 @@ async function gatherPlanFacts(): Promise<Record<string, RigFacts>> {
   return out
 }
 
-async function planFactsCmd() {
+async function planFactsText() {
   const facts = await gatherPlanFacts()
   writeJson(planFactsFile(), facts)
-  console.log(clipFactsJson(facts))
+  return clipFactsJson(facts)
+}
+
+async function planFactsCmd() {
+  console.log(await planFactsText())
+}
+
+/** `factory patrol|pm|brief|review --once`: one step of the manager, headless (src/once.ts) */
+async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[]) {
+  const codexAt = args.indexOf('--codex')
+  const codex = codexAt >= 0 ? args[codexAt + 1] : undefined
+  if (codexAt >= 0 && !(codex && CODEX_MODEL.test(codex))) fail('--codex needs a model name')
+  if (verb === 'patrol' && codexAt >= 0)
+    fail('the patrol cannot run on codex: codex has no PreToolUse hook, so the Bash guard cannot apply')
+  const release = hold(`${verb}.lock`)
+  if (!release) return `a ${verb} is already running`
+  try {
+    const io: Io = {
+      home: HOME,
+      cli: CLI,
+      factories: join(ROOT, 'factories') + '/',
+      settings: withoutFleet(),
+      planFacts: planFactsText,
+      gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
+      reviewFacts: key => JSON.stringify(reviewFacts(key)),
+    }
+    if (verb === 'patrol') return patrolOnce(io)
+    return verb === 'pm'
+      ? await pmOnce(io, codex)
+      : verb === 'brief'
+        ? await briefOnce(io, codex)
+        : await reviewOnce(io, codex)
+  } finally {
+    release()
+  }
+}
+
+/** `factory patrol-guard`: the patrol's Claude Code PreToolUse hook for Bash. It reads the hook JSON on stdin. */
+async function patrolGuard() {
+  let command: unknown
+  try {
+    command = JSON.parse(await Bun.stdin.text())?.tool_input?.command
+  } catch {}
+  const deny = (why: string) => {
+    console.error(why)
+    process.exitCode = 2 // Claude Code reads exit 2 as a deny and shows stderr to the model
+  }
+  if (typeof command !== 'string') return deny('the hook input has no Bash command')
+  const joined = command.replace(/\\\n/g, '')
+  const gated = gatedCommand(command)
+  if (gated) return deny(`${gated.deny} A patrol never decides this: leave it for the person.`)
+  if (INSTALL_VERB.test(joined))
+    return deny(
+      'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
+    )
+  if (META_WRITE.test(joined)) return deny('a subagent never writes bead metadata')
+  if (bdWrite(joined))
+    return deny(
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first',
+    )
 }
 
 /**
@@ -11400,7 +11461,10 @@ const usage = `factory — herdr software factories on xstate
                                      tick starts one, at most once a minute)
   cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
+                                     (tick --keep-mail saves the tick and the manager's mail for patrol --once)
   lease [status|release]             who holds the local manager lease (only its holder ticks); release it
+  patrol --once                      one headless manager patrol: answers the kept mail and works the board
+  pm --once | brief --once | review --once [--codex <model>]   one headless pm, gate-brief or skill/proposal review
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
@@ -11587,9 +11651,31 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('tick', true)
         lease()
         const other = localLease()
-        console.log(JSON.stringify(other ? await readOnlyBoard(other) : await tick(true)))
+        if (other) {
+          console.log(JSON.stringify(await readOnlyBoard(other)))
+          break
+        }
+        const out = await tick(true)
+        if (args.includes('--keep-mail')) keepTick(HOME, out) // for patrol --once
+        console.log(JSON.stringify(out))
         break
       }
+      case 'patrol':
+      case 'pm':
+      case 'brief': {
+        refuseWorker(cmd, true)
+        if (!args.includes('--once'))
+          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model>]'}`)
+        lease()
+        // only the lease holder patrols (claude-factory-s01d.2)
+        const other = localLease()
+        if (other) fail(`no ${cmd}: ${leases.leaseLine(other, Date.now())}`)
+        console.log(await onceCmd(cmd, args))
+        break
+      }
+      case 'patrol-guard':
+        await patrolGuard()
+        break
       case 'lease': {
         refuseWorker('lease', true)
         if (args[0] === 'release' && args.length === 1) {
@@ -12348,7 +12434,13 @@ if (import.meta.main && !outboxCmd)
       }
       case 'review': {
         const [sub, a1, a2] = args
-        if (sub === 'facts') console.log(JSON.stringify(reviewFacts(a1)))
+        if (args.includes('--once')) {
+          refuseWorker('review', true)
+          lease()
+          const other = localLease()
+          if (other) fail(`no review: ${leases.leaseLine(other, Date.now())}`)
+          console.log(await onceCmd('review', args))
+        } else if (sub === 'facts') console.log(JSON.stringify(reviewFacts(a1)))
         else if (sub === 'set') reviewSet(a1, a2)
         else fail('review facts <key> | set <key> <file>')
         break
