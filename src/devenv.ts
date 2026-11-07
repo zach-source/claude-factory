@@ -15,6 +15,10 @@ import { rmQuiet } from './home-guard'
  */
 export type DevenvConfig = { builder: string; token: string; push: string }
 
+/** the fields of devenv.json that are absent, not a string or empty */
+export const configMissing = (cfg: Record<string, unknown>) =>
+  (['builder', 'token', 'push'] as const).filter(f => typeof cfg[f] !== 'string' || cfg[f] === '')
+
 export type Stamp = { key: string; ok: boolean; at: number; rev: string }
 
 /** what a devenv's derivations depend on that a rig's repo changes: its devenv files, as git blobs */
