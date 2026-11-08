@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ciReport } from './ci'
+import { ciReport, failedChecks } from './ci'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -176,6 +176,35 @@ test('log lines lose ANSI, control characters and CR, and are cut to 400 chars',
   expect(r.text).not.toMatch(/[\x07\x1b\r\u0080-\u009f\u202E]/)
   expect(r.text).not.toContain('x'.repeat(401))
   expect(r.text).toContain('x'.repeat(400))
+})
+
+test('failedChecks', () => {
+  const run = (o: object) => JSON.stringify({ check_runs: [o] })
+  const one = (o: object) => failedChecks(run({ name: 'n', status: 'completed', conclusion: 'failure', ...o }))
+  for (const c of ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', null])
+    expect(one({ conclusion: c })?.length).toBe(1)
+  for (const c of ['success', 'neutral', 'skipped']) expect(one({ conclusion: c })).toEqual([])
+  expect(one({ status: 'in_progress', conclusion: null })).toEqual([])
+  expect(one({ status: 'queued', conclusion: null })).toEqual([])
+  const many = JSON.stringify({
+    check_runs: Array.from({ length: 12 }, (_, i) => ({ name: `c${i}`, status: 'completed', conclusion: 'failure' })),
+  })
+  expect(failedChecks(many)?.length).toBe(12)
+  for (const bad of ['nope', 'null', '5', '{}', '{"check_runs":5}']) expect(failedChecks(bad)).toBeUndefined()
+  expect(one({ name: '\x1b[31mred\x1b[0m' })?.[0]?.name).toBe('red')
+  expect(one({ name: 'a\x01b' })?.[0]?.name).toBe('ab')
+  expect(one({ name: 'a\u0085b' })?.[0]?.name).toBe('ab')
+  expect(one({ name: 'a‮b' })?.[0]?.name).toBe('ab')
+  expect(one({ name: 'x'.repeat(150) })?.[0]?.name.length).toBeLessThanOrEqual(100)
+  expect(one({ name: '' })?.[0]?.name).toBe('(no name)')
+  const JOB = 'https://github.com/acme/widget/actions/runs/1/job/11'
+  const gha = { slug: 'github-actions' }
+  expect(one({ app: gha, id: 11, html_url: JOB })?.[0]?.url).toBe(JOB)
+  expect(one({ app: gha, id: 11, details_url: JOB })?.[0]?.url).toBe('')
+  expect(one({ app: gha, details_url: JOB, html_url: 'https://x/y' })?.[0]?.url).toBe(JOB)
+  expect(one({ details_url: JOB })?.[0]?.url).toBe(JOB)
+  for (const u of ['http://x', 'https://a b', 'https://a b', 'https://a(b)', 'https://a<b', `https://${'a'.repeat(301)}`])
+    expect(one({ details_url: u })?.[0]?.url).toBe('')
 })
 
 test('the CLI exits 0 green, 1 failed, 2 pending, 3 on a gh error', () => {
