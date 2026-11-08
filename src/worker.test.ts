@@ -14,6 +14,7 @@ import {
   startServices,
   imagePlugins,
   trustNote,
+  writePrivatePatterns,
 } from './worker'
 
 // claude-factory-qda.4: the laptop names a station's skills in FACTORY_SKILLS; unset is an older laptop
@@ -853,5 +854,26 @@ describe('excludeScratch', () => {
     writeFileSync(join(wt, '.scratch', 'a', 'b'), 'scratch')
     expect(sh(['git', 'status', '--porcelain'], wt)).toBe('')
     expect(Bun.spawnSync(['git', 'check-ignore', '.scratch/a/b'], { cwd: wt }).exitCode).toBe(0)
+  })
+})
+
+// claude-factory-jluz.1: serve writes the laptop's private patterns into the clone's git dir
+describe('writePrivatePatterns', () => {
+  let dir: string
+  afterEach(() => {
+    delete process.env.FACTORY_PRIVATE_PATTERNS
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('writes the env text to info/private-patterns, and does nothing when the env is unset', () => {
+    dir = mkdtempSync(join(tmpdir(), 'privpat-'))
+    Bun.spawnSync(['git', 'init', '-q', dir])
+    const file = join(dir, '.git', 'info', 'private-patterns')
+    writePrivatePatterns(dir)
+    expect(existsSync(file)).toBe(false)
+    process.env.FACTORY_PRIVATE_PATTERNS = 'secretcorp\n'
+    writePrivatePatterns(dir)
+    expect(readFileSync(file, 'utf8')).toBe('secretcorp\n')
+    writePrivatePatterns(join(dir, 'not-a-repo')) // outside a git repo: no throw
   })
 })

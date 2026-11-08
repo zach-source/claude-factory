@@ -465,6 +465,10 @@ export interface HookGate {
   /** claude-factory-usqc: the function names in the same snapshots (see `shellSnapshotFunctions`). Unset
    * or undefined means the hook cannot prove an argument word safe, so it scans every word for an alias. */
   shellFunctions?: () => Set<string> | undefined
+  /** claude-factory-jluz.1: the 1-based lines of `text` that match the repo's private patterns
+   * (`<git common dir>/info/private-patterns`). Undefined: the repo has no such file, nothing to check.
+   * `[0]`: the check itself failed. Unset: no check. */
+  privateHits?: (text: string) => number[] | undefined
 }
 
 /**
@@ -8877,6 +8881,90 @@ function memoGate(gate: HookGate): HookGate {
   return memo
 }
 
+// claude-factory-jluz.1: the repo is public. A worker must not publish a private name in a PR or issue text.
+export const privateTextReason = (command: string, gate?: HookGate): string | undefined => {
+  if (!gate?.privateHits) return undefined
+  const files = new Set<string>()
+  let publishes = false
+  for (const words of segments(command)) {
+    const f = ghPublishFiles(words)
+    if (f) publishes = true
+    for (const x of f ?? []) files.add(x)
+  }
+  if (!publishes) return undefined
+  const found: string[] = []
+  const lines = gate.privateHits(command)
+  if (lines === undefined) return undefined
+  if (lines.length) found.push(`the command text (${lineList(lines)})`)
+  for (const f of files) {
+    const text = gate.readFile?.(f)
+    if (text === undefined)
+      return `${PRIVATE_TEXT_PREFIX}the body file ${f} cannot be read, so it cannot be checked. Write the body to a plain file first, then name that file.`
+    const hits = gate.privateHits(text) ?? []
+    if (hits.length) found.push(`${f} (${lineList(hits)})`)
+  }
+  return found.length
+    ? `${PRIVATE_TEXT_PREFIX}the text would publish private names. Matches: ${found.join('; ')}. Use placeholders such as acme in the title and body. Do not retry this exact command.`
+    : undefined
+}
+const PRIVATE_TEXT_PREFIX = 'The factory denies this command: '
+const lineList = (n: number[]) => (n[0] === 0 ? 'the check failed' : `line ${n.join(', ')}`)
+
+/** The body files of a `gh` call that publishes text to GitHub, or undefined for any other call. */
+function ghPublishFiles(words: string[]): string[] | undefined {
+  const cmd = realCommand(words)
+  if (baseWord(cmd[0] ?? '') !== 'gh') return undefined
+  const tail = cmd.slice(1)
+  const { index: vi } = firstVerbIndex(tail, GH_VALUE_FLAGS)
+  const verb = vi >= 0 ? tail[vi] : undefined
+  const rest = vi >= 0 ? tail.slice(vi + 1) : []
+  if (verb === 'pr' || verb === 'issue') {
+    const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+    const sub = si >= 0 ? rest[si] : undefined
+    const subs = verb === 'pr' ? ['create', 'edit', 'comment', 'review'] : ['create', 'edit', 'comment']
+    if (sub === undefined || !subs.includes(sub)) return undefined
+    return flagValuesInOrder(rest.slice(si + 1), new Set(['-F', '--body-file']))
+  }
+  if (verb !== 'api') return undefined
+  const apiArgs = expandGhShortClusters(rest)
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint || !/(^|\/)(pulls|issues)(\/|$)/.test(decodeApiPath(normalizeEndpoint(endpoint)) ?? endpoint))
+    return undefined
+  const fields = ghApiFields(apiArgs)
+  const input = flagValue(apiArgs, new Set(['--input']))
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  if ((method || (fields.length > 0 || input !== undefined ? 'POST' : 'GET')) === 'GET') return undefined
+  const files = fields.filter(f => f.value.startsWith('@')).map(f => f.value.slice(1))
+  return input === undefined ? files : [...files, input]
+}
+
+/** claude-factory-jluz.1: for `gate.privateHits`. grep runs the patterns, so the match is the one the commit guard makes. */
+export function privateHitLines(text: string, cwd: string): number[] | undefined {
+  try {
+    const g = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', '--git-common-dir'], { timeout: 5000 })
+    if (g.exitCode !== 0) return undefined
+    const file = resolvePath(cwd, g.stdout.toString().trim(), 'info', 'private-patterns')
+    const pats = readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(l => l.trim() && !l.startsWith('#'))
+    if (!pats.length) return undefined
+    const p = Bun.spawnSync(['grep', '-n', '-i', '-E', ...pats.flatMap(x => ['-e', x])], {
+      stdin: Buffer.from(text),
+      timeout: 5000,
+    })
+    if (p.exitCode === 1) return []
+    if (p.exitCode !== 0) return [0]
+    return p.stdout
+      .toString()
+      .split('\n')
+      .filter(Boolean)
+      .map(l => Number.parseInt(l, 10))
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : [0]
+  }
+}
+
 /**
  * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
  * `root` is the worktree root. An rm operand outside it is risky too (see riskyTarget).
@@ -8910,7 +8998,7 @@ export function denyReason(
   const scan = scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
   if (scan) return scan
   // claude-factory-qn8a.19: a read of a harness token file or dir. It reads the raw text, not the parse.
-  return tokenReason(command, gate?.cwd ?? root ?? process.cwd(), root)
+  return tokenReason(command, gate?.cwd ?? root ?? process.cwd(), root) ?? privateTextReason(command, gate)
 }
 
 /**
@@ -11189,6 +11277,7 @@ function handle(input: unknown) {
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
     // read this field; `gitReason` falls back to `root` itself at its own call site.
     cwd: i.cwd,
+    privateHits: text => privateHitLines(text, i.cwd || root),
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
   if (!reason) {

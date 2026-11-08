@@ -1369,6 +1369,13 @@ const MEMORY_GIT_IDENTITY_FALLBACK = {
   GIT_COMMITTER_NAME: 'factory',
   GIT_COMMITTER_EMAIL: 'factory@localhost',
 }
+/** the rig repo's info/private-patterns text for the VM (the guard hooks read it there), or undefined when the repo has none */
+export function privatePatterns(repo: string) {
+  const p = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const file = join(p.stdout.toString().trim(), 'info', 'private-patterns')
+  return p.exitCode === 0 && existsSync(file) ? readFileSync(file, 'utf8') || undefined : undefined
+}
+
 function git(cwd: string, ...args: string[]) {
   const probe = Bun.spawnSync(['git', '-C', cwd, 'var', 'GIT_AUTHOR_IDENT'], { env: process.env })
   const env = probe.exitCode === 0 ? process.env : { ...process.env, ...MEMORY_GIT_IDENTITY_FALLBACK }
@@ -2201,6 +2208,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
           )
         : undefined,
     codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
+    privatePatterns: rig && privatePatterns(rig.repo),
     gitlabHost,
     sandboxClass: rig?.sandboxClass,
     env: {
