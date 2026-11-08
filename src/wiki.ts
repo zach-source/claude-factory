@@ -285,9 +285,12 @@ export type WriteBead = {
   comments: string[]
   closedAt: number
   prs: string[]
+  rig?: string
+  closedIso?: string
+  reports?: string[]
 }
 export type WritePr = { url: string; title: string; body: string; files: PrFile[] }
-export type WriteGroup = { beads: WriteBead[]; prs: WritePr[] }
+export type WriteGroup = { beads: WriteBead[]; prs: WritePr[]; existingPage?: string }
 
 /** FACTORY_WIKI_WRITE_CAP: a positive whole number, else 20. */
 export const writeCap = (env: Record<string, string | undefined> = process.env) => {
@@ -333,7 +336,7 @@ const MASKS = [
   ...SECRETS.map(r => new RegExp(r.source, r.flags.includes('g') ? r.flags : r.flags + 'g')),
 ]
 /** Replaces each token shape with `***`. A string with an AWS key id becomes `***`: its secret key has no shape. */
-const mask = (s: string) =>
+export const mask = (s: string) =>
   /AKIA[0-9A-Z]{16}/.test(s) ? '***' : MASKS.reduce((t, r) => t.replace(r, '***'), s)
 /** mask() for one line of rules text: each run of whitespace or control characters becomes one space. */
 const line = (s: string) =>

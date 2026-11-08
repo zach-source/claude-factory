@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const dir = join(realpathSync(tmpdir()), `wiki-write-${process.pid}`)
-const SLOW = { timeout: 60_000 }
+const slow = (name: string, fn: () => void) => test(name, fn, 60_000)
 let n = 0
 let home = ''
 let data = ''
@@ -170,7 +170,7 @@ function one() {
   stage('solutions/2026-11/fix-acme-1.md', page('acme-1', PR5))
 }
 
-test('write AC1 arguments and dry run', SLOW, () => {
+slow('write AC1 arguments and dry run', () => {
   one()
   for (const a of [
     ['--bogus'],
@@ -197,7 +197,7 @@ test('write AC1 arguments and dry run', SLOW, () => {
   expect(git('rev-list', '--count', 'HEAD')).toBe('1')
 })
 
-test('write AC1 a held lock says busy and a missing wiki is not made', SLOW, () => {
+slow('write AC1 a held lock says busy and a missing wiki is not made', () => {
   one()
   mkdirSync(join(home, 'wiki.lock'))
   writeFileSync(join(home, 'wiki.lock', 'pid'), String(process.pid))
@@ -208,7 +208,7 @@ test('write AC1 a held lock says busy and a missing wiki is not made', SLOW, () 
   expect(existsSync(wiki())).toBe(false)
 })
 
-test('write AC3 AC4 AC7 a run commits a 7 section page, records it and does not write it twice', SLOW, () => {
+slow('write AC3 AC4 AC7 a run commits a 7 section page, records it and does not write it twice', () => {
   one()
   const r = factory(['wiki', 'write'])
   expect(r.code).toBe(0)
@@ -233,7 +233,7 @@ test('write AC3 AC4 AC7 a run commits a 7 section page, records it and does not 
   expect(Object.keys(state().written ?? {})).toEqual(['acme-1'])
 })
 
-test('write AC4 AC5 a failing page stays out of the commit and its bead stays eligible', SLOW, () => {
+slow('write AC4 AC5 a failing page stays out of the commit and its bead stays eligible', () => {
   setup()
   seed([
     closed('acme-1', { metadata: { ship_pr: PR5 } }),
@@ -259,27 +259,23 @@ test('write AC4 AC5 a failing page stays out of the commit and its bead stays el
   expect(typeof state().lastWriteAt).toBe('string')
 })
 
-test(
-  'write AC2 a code PR and a docs-only release PR keep both links; an all-docs bead is skipped',
-  SLOW,
-  () => {
-    setup()
-    seed(
-      [closed('acme-3', { metadata: { ship_pr: PR5 } }), closed('acme-4')],
-      [pr(7, 'acme-3 release notes', ['CHANGELOG.md']), pr(8, 'acme-4: docs', ['docs/a.md'])],
-    )
-    pr(5, 'acme-3: fix it', ['src/a.ts'])
-    stage('solutions/2026-11/fix-acme-3.md', page('acme-3', PR5))
-    const dry = factory(['wiki', 'write', '--dry-run'])
-    expect(dry.out).toContain('acme-3')
-    expect(dry.out).not.toContain('acme-4')
-    factory(['wiki', 'write'])
-    expect(prompt()).toContain(PR5)
-    expect(prompt()).toContain('https://github.com/acme/widget/pull/7')
-  },
-)
+slow('write AC2 a code PR and a docs release PR keep both links; docs only is skipped', () => {
+  setup()
+  seed(
+    [closed('acme-3', { metadata: { ship_pr: PR5 } }), closed('acme-4')],
+    [pr(7, 'acme-3 release notes', ['CHANGELOG.md']), pr(8, 'acme-4: docs', ['docs/a.md'])],
+  )
+  pr(5, 'acme-3: fix it', ['src/a.ts'])
+  stage('solutions/2026-11/fix-acme-3.md', page('acme-3', PR5))
+  const dry = factory(['wiki', 'write', '--dry-run'])
+  expect(dry.out).toContain('acme-3')
+  expect(dry.out).not.toContain('acme-4')
+  factory(['wiki', 'write'])
+  expect(prompt()).toContain(PR5)
+  expect(prompt()).toContain('https://github.com/acme/widget/pull/7')
+})
 
-test('write AC2 an unmerged PR in ship_pr and a foreign URL make no group', SLOW, () => {
+slow('write AC2 an unmerged PR in ship_pr and a foreign URL make no group', () => {
   setup()
   seed([
     closed('acme-1', { metadata: { ship_pr: PR5 } }),
@@ -292,7 +288,7 @@ test('write AC2 an unmerged PR in ship_pr and a foreign URL make no group', SLOW
   expect(readFileSync(join(data, 'gh-calls'), 'utf8')).not.toContain('evil')
 })
 
-test('write AC3 a failing agent keeps the stamp and commits and records nothing', SLOW, () => {
+slow('write AC3 a failing agent keeps the stamp and commits and records nothing', () => {
   one()
   writeFileSync(join(data, 'agent-exit'), '')
   const r = factory(['wiki', 'write'])
@@ -304,14 +300,14 @@ test('write AC3 a failing agent keeps the stamp and commits and records nothing'
   expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
 })
 
-test('write AC3 a bad codex model name makes no agent call', SLOW, () => {
+slow('write AC3 a bad codex model name makes no agent call', () => {
   one()
   const r = factory(['wiki', 'write'], { FACTORY_DREAM_CODEX: '-bad model' })
   expect(r.out + r.err).toContain('FACTORY_DREAM_CODEX is not a model name')
   expect(runs()).toBe(0)
 })
 
-test('write AC5 21 groups with cap 20: 20 are written and the timestamp stays back', SLOW, () => {
+slow('write AC5 21 groups with cap 20: 20 are written and the timestamp stays back', () => {
   setup()
   const beads = Array.from({ length: 21 }, (_, i) =>
     closed(`acme-${i + 1}`, { metadata: { ship_pr: `https://github.com/acme/widget/pull/${i + 10}` } }),
@@ -336,7 +332,7 @@ test('write AC5 21 groups with cap 20: 20 are written and the timestamp stays ba
   expect(typeof state().lastWriteAt).toBe('string')
 })
 
-test('write AC5 --bead selects one old bead and leaves lastWriteAt alone', SLOW, () => {
+slow('write AC5 --bead selects one old bead and leaves lastWriteAt alone', () => {
   one()
   writeFileSync(
     join(home, 'wiki-state.json'),
@@ -349,7 +345,7 @@ test('write AC5 --bead selects one old bead and leaves lastWriteAt alone', SLOW,
   expect(Object.keys(state().written)).toEqual(['acme-1'])
 })
 
-test('write AC7 the log holds no source secret', SLOW, () => {
+slow('write AC7 the log holds no source secret', () => {
   setup()
   const secret = 'ghp_' + 'a'.repeat(36)
   seed([closed('acme-1', { metadata: { ship_pr: PR5 }, close_reason: `token ${secret}` })])
