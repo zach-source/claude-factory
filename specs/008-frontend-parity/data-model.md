@@ -8,7 +8,7 @@ One feature of the factory or the manager. It is code in `src/core/ops/`. The ca
 | --- | --- | --- |
 | `name` | string | Unique. Dot form: `<group>.<verb>`, for example `runs.abort`, `board.show`. It must not change after a release. |
 | `summary` | string | One line of help text. Each front end shows it. |
-| `inputs` | list of Field | Each field has a name and a kind. Kinds come from `server-api.ts` today: string, id, int, bool, enum, text. A field has a required or optional setting and help text. |
+| `inputs` | list of Field | Each field has a name and a kind. Kinds come from `src/core/catalog.ts`: id, text, note, path, flag, enum. A field has a required or optional setting and help text. |
 | `output` | enum | `table`, `text`, `json` or `stream`. The generic view uses it to show the result. |
 | `rights` | enum | `read` (any client), `owner` (the person), `manager` (the manager's own steps). A worker never calls a catalog operation. |
 | `mutates` | bool | True when the operation changes state. A changing operation needs an idempotency key and the current revision (spec 006 command envelope). |
