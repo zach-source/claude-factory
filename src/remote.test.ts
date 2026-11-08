@@ -1,5 +1,5 @@
 // The runner with an AX worker, end to end through bin/factory: a fake `ax` stands in for the cluster.
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
@@ -42,6 +42,7 @@ const defaultHerdr = join(dir, 'default-herdr')
 mkdirSync(dir, { recursive: true })
 writeFileSync(defaultHerdr, '#!/bin/sh\nexit 1\n')
 chmodSync(defaultHerdr, 0o755)
+afterEach(() => rmSync(join(home, 'runs'), { recursive: true, force: true }))
 afterAll(() => {
   // the host's real herdr must list no workspace under this run's own tmp dir. It ignores other sessions' workspaces
   const bin = Bun.which('herdr')
@@ -386,6 +387,18 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+
+test('a run fixture can remain until its test ends', () => {
+  launched('cleanup-check')
+  expect(existsSync(join(home, 'runs', 'cleanup-check'))).toBe(true)
+})
+
+test('a later test does not poll a prior run fixture', () => {
+  cluster('Running', { status: 'idle', lines: [] })
+  expect(factory(['tick']).code).toBe(0)
+  expect(called()).not.toContain('get task')
+})
+
 function readyController() {
   const path = join(dir, 'ready-controller')
   writeFileSync(
