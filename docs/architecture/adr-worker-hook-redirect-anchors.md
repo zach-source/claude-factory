@@ -76,6 +76,12 @@ Run `bun test --timeout 30000 src/worker-hook.test.ts -t qn8a.14`.
 Record the failures before the fix, then the pass after the fix.
 Denial means a nonempty reason; allowance means `undefined`.
 
+Amendment: the rows with a quoted script word after `$X` cannot deny from this
+change. The quoted-script rule is claude-factory-ibas (PR 235, closed unmerged;
+the bead is deferred). Until ibas lands, the test for those rows asserts parity:
+the verdict with the redirect equals the verdict without it. Unquoted rows must deny.
+The control `2>&1 $X "rm -rf /"` in AC2 follows the same rule.
+
 ```text
 >/dev/null $X "rm -rf /"
 > /dev/null $X "rm -rf /"
