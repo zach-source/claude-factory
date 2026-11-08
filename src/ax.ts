@@ -104,6 +104,8 @@ export type Launch = {
   claudeFlags?: string[]
   /** a codex worker's CODEX_HOME files by name (cli.ts vmCodexHome); serve writes them before the first turn */
   codexHome?: Record<string, string>
+  /** the rig repo's info/private-patterns text (cli.ts privatePatterns); the VM has no such file, so serve writes it into the clone */
+  privatePatterns?: string
   /** a codex worker logs in with an API key (placeholder env keys) or with ChatGPT (auth.json, no key in the env) */
   codexAuth?: 'apikey' | 'chatgpt'
   env: Record<string, string>
@@ -128,6 +130,7 @@ const FLAT_KEYS = new Set([
   'FACTORY_PROVIDER',
   'FACTORY_CLAUDE_FLAGS',
   'FACTORY_CODEX_HOME_FILES',
+  'FACTORY_PRIVATE_PATTERNS',
 ])
 
 /**
@@ -173,6 +176,7 @@ export function manifest(l: Launch) {
           ...(l.provider && { FACTORY_PROVIDER: l.provider }),
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
           ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
+          ...(l.privatePatterns && { FACTORY_PRIVATE_PATTERNS: l.privatePatterns }),
         }),
       }),
       workspaces: [{ name: l.name, path: WS }],

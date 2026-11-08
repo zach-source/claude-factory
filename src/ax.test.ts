@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
 import * as broker from './broker'
-import { vmCodexHome } from './cli'
+import { privatePatterns, vmCodexHome } from './cli'
 import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
 
@@ -3253,4 +3253,30 @@ test('a bad server URL fails closed: http, junk and the person-CA port 8444 thro
   expect(serverRules(polWith('https://factory.factory.svc.cluster.local', ''))).toEqual([
     { https: { hostnames: ['factory.factory.svc.cluster.local'] } },
   ])
+})
+
+// claude-factory-jluz.1: the VM has no info/private-patterns; the laptop sends the rig repo's file
+test('private patterns ride flat in the task env, and a rig repo file is read from its git dir', () => {
+  const env = (m: string) =>
+    Object.fromEntries(
+      JSON.parse(m.split('\n---\n')[1]!).spec.env.map((e: { name: string; value: string }) => [
+        e.name,
+        e.value,
+      ]),
+    )
+  const l = { name: 'p', repo: 'r', branch: 'b', image: 'i', env: {} }
+  expect(env(ax.manifest({ ...l, privatePatterns: 'secretcorp\n' })).FACTORY_PRIVATE_PATTERNS).toBe(
+    'secretcorp\n',
+  )
+  expect(env(ax.manifest(l)).FACTORY_PRIVATE_PATTERNS).toBeUndefined()
+  const repo = mkdtempSync(join(tmpdir(), 'jluz1-'))
+  try {
+    Bun.spawnSync(['git', 'init', '-q', repo])
+    expect(privatePatterns(repo)).toBeUndefined()
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'info', 'private-patterns'), 'secretcorp\n')
+    expect(privatePatterns(repo)).toBe('secretcorp\n')
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
 })

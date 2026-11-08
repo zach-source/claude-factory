@@ -1061,6 +1061,21 @@ export function excludeScratch(dir: string) {
   writeFileSync(file, `${text}${text && !text.endsWith('\n') ? '\n' : ''}.scratch/\n`)
 }
 
+/**
+ * The VM has no info/private-patterns of its own, so the commit guard and the PR text check would do nothing.
+ * The laptop sends the rig repo's file in FACTORY_PRIVATE_PATTERNS (cli.ts privatePatterns); this writes it into the
+ * clone's git dir. It never logs the text. Outside a git repo, or with the env unset, it does nothing.
+ */
+export function writePrivatePatterns(dir: string) {
+  const text = process.env.FACTORY_PRIVATE_PATTERNS
+  if (!text) return
+  const p = Bun.spawnSync(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (p.exitCode !== 0) return
+  const infoDir = join(p.stdout.toString().trim(), 'info')
+  mkdirSync(infoDir, { recursive: true })
+  writeFileSync(join(infoDir, 'private-patterns'), text)
+}
+
 /** trust the egress gateway's CA (FACTORY_CA): write it and point every TLS client at it */
 export function trustCA() {
   if (!process.env.FACTORY_CA) return
@@ -1174,6 +1189,7 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
     const r = sh(['git', 'clone', '--branch', branch, remote, tmp])
     if (r.ok) {
       excludeScratch(tmp)
+      writePrivatePatterns(tmp)
       renameSync(tmp, repo())
       return ''
     }
@@ -1185,6 +1201,7 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
       const b = c.ok ? sh(['git', '-C', tmp, 'checkout', '-q', '-b', branch]) : c
       if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
       excludeScratch(tmp)
+      writePrivatePatterns(tmp)
       const note = `\n\n[factory] your run branch ${branch} is missing on origin (often because its pull request merged and GitHub deleted the branch). serve cloned origin's default branch and made a local ${branch} from it. Before you change or push anything, check the pull request: gh pr list --head ${branch} --state all. A push makes the branch again.`
       writeFileSync(noteFile, note)
       renameSync(tmp, repo())

@@ -1085,6 +1085,11 @@ Put one extended regex on each line of `<git common dir>/info/private-patterns`.
 them without case, against the added lines of the staged diff, the author and the commit message.
 The repo holds no pattern file. If the file is missing or empty, the guard checks nothing and says so.
 
+To check a PR or issue text before you post it, pipe the text in: `hack/guard-private.sh text < body.md`.
+It prints the matching lines and exits 1. The worker hook runs the same check on `gh pr`, `gh issue` and
+`gh api` calls that publish text. It reads the command and the body file. A worker on an AX VM gets a copy
+of the rig repo's pattern file at the clone, so the commit guard and this hook work there too.
+
 ## Plugins
 
 `plugins/` holds Claude Code plugins that come with the factory, listed in this repo's marketplace:
