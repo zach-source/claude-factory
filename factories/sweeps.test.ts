@@ -32,7 +32,8 @@ test('sweeps carries the same house rules and params as lifecycle', () => {
   // the codex and cursor params belong to lifecycle's split stations, base_branch to its git stations: sweeps has none
   const claudeOnly = Object.fromEntries(
     Object.entries(lifecycle.params as Record<string, string>).filter(
-      ([k]) => !k.startsWith('codex') && !k.startsWith('cursor') && k !== 'base_branch',
+      ([k]) =>
+        !k.startsWith('codex') && !k.startsWith('cursor') && !k.startsWith('grok') && k !== 'base_branch',
     ),
   )
   expect(sweeps.params as object).toEqual(claudeOnly)

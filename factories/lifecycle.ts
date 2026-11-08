@@ -117,6 +117,17 @@ export default {
     cursor_review_share: '0', // share of runs whose review uses cursor; 0 turns it off
     cursor_security_model: 'grok-4.7-low', // cursor at security
     cursor_security_share: '0', // share of runs whose security uses cursor; 0 turns it off
+    grok: 'grok --permission-mode bypassPermissions --trust', // the grok launcher (the deny hook stays on); no station splits to it yet
+    grok_plan_model: 'grok-4.7', // grok at plan
+    grok_plan_share: '0', // share of runs whose plan uses grok; 0 turns it off
+    grok_implement_model: 'grok-4.7', // grok at implement
+    grok_implement_share: '0', // share of runs whose implement uses grok; 0 turns it off
+    grok_verify_model: 'grok-4.7', // grok at verify
+    grok_verify_share: '0', // share of runs whose verify uses grok; 0 turns it off
+    grok_review_model: 'grok-4.7', // grok at review
+    grok_review_share: '0', // share of runs whose review uses grok; 0 turns it off
+    grok_security_model: 'grok-4.7', // grok at security
+    grok_security_share: '0', // share of runs whose security uses grok; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,

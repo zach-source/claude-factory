@@ -102,6 +102,13 @@ test('the worker image pins cursor-agent to a version and links it, so the CLI c
   )
 })
 
+test('the worker image pins grok to a version and turns its updater off', () => {
+  const worker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  expect(worker).toMatch(/^ARG GROK_VERSION=\d+\.\d+\.\d+$/m)
+  expect(worker).toContain('@xai-official/grok@${GROK_VERSION}')
+  expect(worker).toContain('ENV GROK_DISABLE_AUTOUPDATER=1')
+})
+
 // 823x: nix-shell -p read the base image's channel (go1.23) while the pin held go 1.26
 const workerStage = () => {
   const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')

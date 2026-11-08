@@ -2259,6 +2259,29 @@ test('a cursor task has a placeholder API key, its hooks in the env and no codex
   }
 })
 
+test('a grok task has a placeholder API key, its hooks in the env and no codex or claude key', () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    ax.launch({
+      ...{ name: 't6', repo: 'r', branch: 'b', image: 'i', brief: 'x', harness: 'grok' },
+      grokHooks: '{"hooks":{}}',
+      env: {},
+    })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env: Record<string, string> = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.FACTORY_HARNESS).toBe('grok')
+    expect(env.FACTORY_GROK_HOOKS).toBe('{"hooks":{}}')
+    expect(env.XAI_API_KEY).toBe('placeholder')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
 test("a station's model reads codex's -m too, and pi's provider", () => {
   expect(ax.modelOf('codex --dangerously-bypass-approvals-and-sandbox -m o3')).toBe('o3')
   expect(ax.modelOf('pi --provider anthropic --model claude-x')).toBe('claude-x')

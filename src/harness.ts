@@ -5,7 +5,7 @@ import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeF
 import { basename, join } from 'node:path'
 import { cut } from './cut'
 
-export type Harness = 'claude' | 'codex' | 'pi' | 'cursor'
+export type Harness = 'claude' | 'codex' | 'pi' | 'cursor' | 'grok'
 
 /** a server as Claude's --mcp-config writes it: a command to run, or a url to reach */
 export type McpServer = {
@@ -35,7 +35,7 @@ export const VM_PLUGINS: Record<string, string> = {
 const CLAUDE_ONLY_SKILLS = ['egm']
 // The egm reviewers use Claude plugin agent types. Use com.openai when guarded codex supports subagents.
 export const skillsFor = (h: Harness | null, skills: string[]) =>
-  h === 'cursor'
+  h === 'cursor' || h === 'grok'
     ? []
     : h === 'codex' || h === 'pi'
       ? skills.filter(s => !CLAUDE_ONLY_SKILLS.includes(s))
@@ -113,11 +113,13 @@ export const piFlags = (rules: string, plugins: string[]) => [
 export function harnessOf(agent: string): Harness | null {
   const exe = exeOf(agent)
   if (/^claude/.test(exe) || exe === exeOf(claudeCommand())) return 'claude' // claude, claude-smart, FACTORY_CLAUDE's
-  return exe === 'codex' || exe === 'pi' ? exe : exe === 'cursor-agent' ? 'cursor' : null
+  return exe === 'codex' || exe === 'pi' || exe === 'grok' ? exe : exe === 'cursor-agent' ? 'cursor' : null
 }
 
 // cursor-agent's hidden flag: without it the CLI replaces its own binary in the background (the image pins a version)
 export const CURSOR_FLAGS = ['--disable-auto-update']
+// grok's update switch (the image also sets GROK_DISABLE_AUTOUPDATER=1): the image pins the CLI version
+export const GROK_FLAGS = ['--no-auto-update']
 
 // The guard must turn off these codex features. Each one lets a command run without the PreToolUse hook (claude-factory-x0b9).
 export const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
@@ -221,7 +223,7 @@ export const codexMcp = (servers: Record<string, McpServer>) =>
 /**
  * the shell line that starts a worker on the prompt file, or resumes its session with the prompt as
  * the next turn. `extra` is flags put after the agent's own (Claude's --settings, codex's guard flags, pi's rules and skills).
- * `rules` is a file cursor's first prompt starts with.
+ * `rules` is a file: cursor's first prompt starts with it, grok appends it to the system prompt.
  * `env` is a VAR=value prefix (FACTORY_DEADLINE; CODEX_HOME; the commit identity).
  */
 export function command(
@@ -259,6 +261,12 @@ export function command(
       // no system prompt flag: the worker rules lead the first prompt (a resumed session has them already)
       const first = o.rules && !session ? `"$(cat ${sq(o.rules)} ${sq(prompt)})"` : text
       return `${env}${agent}${o.extra ?? ''}${session ? ` --resume ${sq(session)}` : ''} ${first}`
+    }
+    case 'grok': {
+      // like cursor: its MCP servers would load unguarded
+      if (mcp) throw new Error(`a grok worker cannot load ${mcp.file}: use claude or codex`)
+      const rules = o.rules ? ` --rules "$(cat ${sq(o.rules)})"` : ''
+      return `${env}${agent}${o.extra ?? ''}${rules}${session ? ` -r ${sq(session)}` : ''} ${text}`
     }
     default:
       return `${agent} ${text}`

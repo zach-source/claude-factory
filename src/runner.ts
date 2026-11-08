@@ -15,7 +15,7 @@ export type WorkerInfo = {
   bytes?: number
   /** an ongoing egress-gateway outage the worker is retrying a turn through: see worker.ts egressFailure */
   egress?: { since: number; tries: number; last: string }
-  /** a codex or cursor worker's turn that ended on a usage limit or a refused login (kind auth): see worker.ts codexLimit, cursorLimit */
+  /** a codex, cursor or grok worker's turn that ended on a usage limit or a refused login (kind auth): see worker.ts codexLimit, cursorLimit, grokLimit */
   limit?: { at: number; kind: string; resetsAt: number }
   /** set once a runner gives up retrying something itself (a put stuck over ax ssh): the reconciler fails the attempt with this reason instead of retrying silently */
   failed?: string
