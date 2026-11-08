@@ -650,7 +650,18 @@ test('AC1 a garbage .git/HEAD fails the restore and never touches a repo in a pa
   expect(Bun.spawnSync(['git', '-C', home, 'init', '-q']).exitCode).toBe(0)
   writeFileSync(join(home, 'f'), 'x')
   Bun.spawnSync(['git', '-C', home, 'add', '-A'])
-  Bun.spawnSync(['git', '-C', home, '-c', 'user.name=p', '-c', 'user.email=p@acme.example', 'commit', '-qm', 'x'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    home,
+    '-c',
+    'user.name=p',
+    '-c',
+    'user.email=p@acme.example',
+    'commit',
+    '-qm',
+    'x',
+  ])
   const homeHead = () => Bun.spawnSync(['git', '-C', home, 'rev-parse', 'HEAD']).stdout.toString()
   const before = homeHead()
   expect(factory(['wiki', 'init']).code).toBe(0)
