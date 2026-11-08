@@ -125,6 +125,10 @@ describe('input checks', () => {
     expect(r.status).toBe(200)
     expect(r.headers.get('content-type')).toBe('application/json')
   })
+  test('a board value that does not start with a brace is still JSON', async () => {
+    const r = await get(setup(() => 'idle').h, '/v1/board')
+    expect(r.headers.get('content-type')).toBe('application/json')
+  })
   test('the board gives 503 before the first tick', async () => {
     expect((await get(setup().h, '/v1/board')).status).toBe(503)
   })
