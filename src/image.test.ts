@@ -149,7 +149,7 @@ describe('buildImage', () => {
   describe('bad registry or builder makes no run call', () => {
     const rows: [string, Record<string, string>, string][] = []
     for (const key of ['image.registry', 'image.builder']) {
-      const ok = { 'image.registry': 'r', 'image.builder': 'b' }
+      const ok: Record<string, string> = { 'image.registry': 'r', 'image.builder': 'b' }
       const { [key]: _drop, ...missing } = ok
       rows.push(
         [`${key} missing`, missing, key],
