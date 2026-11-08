@@ -1338,7 +1338,7 @@ Object.assign(runners, { herdr: herdrRunner, ax: axRunner })
  */
 function priorWork(run: Run) {
   if (!run.bead || !run.base) return ''
-  // commits name a bead by its short id too, with or without a prefix: infra-blocks-4t9a, ib-4t9a, (4t9a)
+  // commits name a bead by its short id too, with or without a prefix: acme-blocks-4t9a, ab-4t9a, (4t9a)
   const short = run.bead.slice(run.bead.lastIndexOf('-') + 1).replaceAll('.', '\\.')
   const grep = `--grep=(^|[^a-z0-9.])([a-z]+-)*${short}([^a-z0-9.]|$)`
   // not git(): a missing base must not stop the worker's launch
@@ -1698,6 +1698,15 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Your task',
     fill(n.prompt.trim(), prm),
+    ...(rig?.pushRules?.length
+      ? [
+          '',
+          '## Before each push',
+          ...rig.pushRules.map((r, i) =>
+            fill(`${i + 1}. ${r}`, { base_branch: baseBranchOf(def, rig, run.repo) }),
+          ),
+        ]
+      : []),
     // the journal is the run's memory: every station's report, so a plan or a baseline reaches every later station
     ...(c.log.length
       ? [
@@ -7562,6 +7571,8 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
+  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; edit rigs.json by hand */
+  pushRules?: string[]
   /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
   skills?: string[]
   /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). Edit rigs.json by hand. */
@@ -10146,6 +10157,11 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
     fail('monitor needs --slo "<read-only command>": add it, or drop monitor from --sweeps')
   if (rig.sweeps?.includes('drift') && !rig.drift)
     fail('drift needs --drift "<read-only command>": add it, or drop drift from --sweeps')
+  if (
+    rig.pushRules !== undefined &&
+    !(Array.isArray(rig.pushRules) && rig.pushRules.every(r => typeof r === 'string' && r.trim()))
+  )
+    fail('pushRules is a list of non-empty strings')
   const b = rig.beadsRemote
   if (b) {
     if (![b.name, b.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
