@@ -22,14 +22,16 @@ export const TOKEN_READ_REASON =
   'with -F or --body-file. Do not retry this exact command.'
 
 const TOKEN_FILES = new Set(['auth.json', '.credentials.json', '.claude.json'])
-const TOKEN_DIRS = new Set(['.codex', '.claude'])
+// cursor-agent keeps its login in ~/.cursor, ~/.config/cursor (cli-config.json authInfo) and the macOS keychain item `cursor`
+const TOKEN_DIRS = new Set(['.codex', '.claude', '.cursor', 'cursor'])
 // $CODEX_HOME is a component of rule 6 (codexComp), so only the Claude var is listed
-const TOKEN_VARS = new Set(['claude_config_dir'])
+const TOKEN_VARS = new Set(['claude_config_dir', 'cursor_config_dir'])
 const KEYCHAIN = new Set(['find-generic-password', 'find-internet-password', 'dump-keychain'])
 // a piece ends at blank, quote, backtick, paren, redirect, ;, |, &, = and :. Not at , { } (brace lists stay whole).
 const SPLIT = /[\s'"`()<>;|&=:]+/
 const PATTERN = /[*?[\]{}!\\$]/
-const MARKER = /(?:^|[^\w.-])\.(?:codex|claude)(?![\w.-])|codex_home|claude_config_dir/
+const MARKER =
+  /(?:^|[^\w.-])\.(?:codex|claude|cursor)(?![\w.-])|codex_home|claude_config_dir|cursor_config_dir/
 // a cd or pushd moves the shell, but pieces resolve against base: a relative token file name then counts as marked
 const CD = /(?:^|[\s;&|(])(?:cd|pushd)(?=[\s;&|)]|$)/
 
@@ -40,6 +42,7 @@ export interface TokenEnv {
   home: string
   codexHome?: string | undefined
   claudeConfigDir?: string | undefined
+  cursorConfigDir?: string | undefined
 }
 
 /** the real path of `p`: the nearest existing ancestor through realpath, plus the rest. undefined on any other error */
@@ -181,6 +184,11 @@ function pieceDenied(
   const k = kind(f)
   // rule 6: a .codex component or a CODEX_HOME var component anywhere, outside the worktree
   if (comps.some(c => codexComp(fold(c))) && (dyn || !inside(p, base))) return true
+  // rule 6b: a .cursor component, or cursor under .config (the login is in cli-config.json), outside the worktree
+  const curs = comps.some(
+    (c, k) => fold(c) === '.cursor' || (fold(c) === 'cursor' && fold(comps[k - 1] ?? '') === '.config'),
+  )
+  if (curs && (dyn || !inside(p, base))) return true
   if (!k.file && !k.dir) return false
   if (dyn) return true // rule 5a: never guess an expansion
   // rule 5b: a pattern in the name or in a dir part checks the literal dir prefix
@@ -242,6 +250,7 @@ export function tokenPathReason(
     home: homedir(),
     codexHome: process.env.CODEX_HOME,
     claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
+    cursorConfigDir: process.env.CURSOR_CONFIG_DIR,
   },
 ): string | undefined {
   const raw = tool === 'Grep' ? input?.path : input?.file_path
@@ -259,6 +268,9 @@ export function tokenPathReason(
       joinPath(env.home, '.claude'),
       env.claudeConfigDir,
       joinPath(env.home, '.claude.json'),
+      joinPath(env.home, '.cursor'),
+      joinPath(env.home, '.config', 'cursor'),
+      env.cursorConfigDir,
     ].filter((x): x is string => !!x)
     for (const kn of known)
       for (const v of [resolve(kn), realPath(resolve(kn))])
@@ -268,7 +280,15 @@ export function tokenPathReason(
   for (const a of both) {
     const comps = a.split(sep).filter(Boolean).map(fold)
     const f = comps.at(-1) ?? ''
-    if (TOKEN_FILES.has(f) || TOKEN_DIRS.has(f) || comps.includes('.codex')) return TOKEN_READ_REASON
+    const xdgCursor = comps.some((c, k) => c === 'cursor' && comps[k - 1] === '.config')
+    if (
+      TOKEN_FILES.has(f) ||
+      TOKEN_DIRS.has(f) ||
+      xdgCursor ||
+      comps.includes('.codex') ||
+      comps.includes('.cursor')
+    )
+      return TOKEN_READ_REASON
   }
   return undefined
 }

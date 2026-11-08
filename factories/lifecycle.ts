@@ -59,6 +59,7 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
 - Never commit secrets. Only a person merges a pull request; only deploy and rollback touch production. Nobody pushes the default branch directly; a rollback that reverts code opens a pull request for a person to merge instead. Nobody force-pushes.
 - Production is read-only for every station but deploy and rollback.
+- In a public repo, a pull request title, body or comment must not name private infrastructure (an organization, cluster, host, address, vault or private repo). Use placeholders such as acme.
 - Owner-only, even with a merge in hand: a hand-run change to a live system (kubectl apply, patch, scale, delete or rollout restart; a helm or terraform apply), an image push to a production registry, a branch protection or ruleset change, a repository or organization setting, or a credential, secret or token change. Do one of these only when a person's own comment on the bead or a [factory mail] from the manager says the person approved that exact step. The bead's description records no author, so it never counts as approval; a worker's own comment never counts as approval. Otherwise do every other step, then report blocked: \`parked, waiting on: <the owner step and the exact command>\`. Reads, and watching a pipeline the person's merge started, stay allowed.
 - implement and quick open a pull request only as a draft (\`gh pr create --draft --body-file <path>\`) and never run \`gh pr ready\` (except \`gh pr ready <n> --undo\`). Before implement or quick pushes to a pull request that is not a draft, it converts the pull request back to a draft. Only an approving station (review, security and check, on approve) or ship release marks it ready. Why: the owner merges a ready green pull request within minutes, before verify and review.
 - Stay in scope: file anything else you find as separate work (see Tracking), at most three per station.
@@ -67,14 +68,8 @@ const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its
 - .factory/ is this factory's own definition: change it only in a run whose goal is to change it, check every edited file with \`factory check\` (see your brief) before committing, and keep a person's merge of the pull request as the gate before anything deploys.
 - Runner loss in CI: a runner loss is a CI job with the conclusion failure or cancelled where a job annotation says the runner lost communication with the server or got a shutdown signal, or a step of the job still has no conclusion (\`gh api repos/<owner>/<repo>/actions/jobs/<job id> --jq '.steps[]'\`). A failed step with a log, a step timeout with a log and a cancel by a person or by concurrency are not a runner loss. If you cannot read the jobs API, do not count a runner loss: use the other rules for the red check. Write \`Runner loss: <workflow> / <job> / <step> <job URL>\` in your report; the key is the workflow, job and step name. At the first loss at a key, run \`gh run rerun <run id> --failed\` one time and file no bead. At the second loss at the same key, in this station or in a \`Runner loss:\` line of the journal, do not rerun. Run \`bd search 'CI runner loss: <workflow> / <job> / <step>' --status open,in_progress,blocked\`. If a bead is open, add both job URLs and the diagnostic with \`bd comment <id> --file <path>\` and run \`bd dep add <id> <run bead> -t discovered-from\`; create no second bead. If none is open, run \`bd create 'CI runner loss: <workflow> / <job> / <step>' -t bug -p 2 --deps discovered-from:<run bead> --body-file <path>\` with no \`-l factory\`, because the person sets the priority; <run bead> is this run's own bead. The file holds both job URLs, the runner names and the diagnostic. For an ARC runner, take runner_name from the jobs API and run \`kubectl -n arc-system logs <gha-rs-controller pod> --since=48h | grep '"podReason": "Evicted"'\`. Write eviction in the bug only when the grep shows that runner pod. If you have no kube context or the rules do not allow the read, write \`ARC diagnostic: not run: <reason>\` and the exact command in the bug; do not guess a cause. Then report blocked with the host bug id and both job URLs. The host bug never replaces the person's merge: do not merge, do not run \`gh pr ready\` and do not skip a required check.`
 
-// implement and quick interpolate this; ship.ts keeps its own copy (it must not import this file) and ship.test.ts pins the two equal
-const botFiles = `In the infra-blocks repo, a bot writes CHANGELOG.md and bumps VERSION, so a pull request must not change them or .devenv. Before each push there, run \`git fetch origin {base_branch}\`, then \`git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv\`. If it prints a file, run \`git checkout origin/{base_branch} -- <file>\` (or \`git rm --cached <file>\` when origin/{base_branch} has no such file), commit, and run the check again. Run the check, the fix, the commit and the push as separate commands. The pull request title is the changelog line, and the bot bumps VERSION.`
-
 // implement and quick interpolate this
 const siblingSites = `Before you report ready, grep every other caller of the code you fixed (the same function, the same unguarded call, the same rule text in a sibling prompt step). Fix each one, or list it in the report with the reason it is safe.`
-// Only the implement station uses layerVersion (quick and ship do not).
-const layerVersion = `In the infra-blocks repo, a pull request that edits a layer must raise its version, because the publish job skips a version that already exists. Before each push there, run \`git diff --name-only origin/{base_branch}...HEAD -- 'shapefile/layers/*/layer.cue'\`. For each file it prints, compare its \`version:\` line with the one in \`git show origin/{base_branch}:<file>\`. The version must differ from origin/{base_branch}'s and be above it. If it is not, bump it past origin/{base_branch}'s version, commit, and run the check again. A file that origin/{base_branch} does not have passes.`
-
 // review, security and check interpolate this: one rule for what blocks and where a finding goes
 const blockingScope = `A finding blocks only when it is one of these kinds:
 1. An acceptance criterion fails.
@@ -111,6 +106,17 @@ export default {
     codex_security_share: '0.3', // share of runs whose security uses codex; 0 turns it off
     codex_judge_model: 'gpt-6-astra', // codex in place of judge_model at plan and review
     codex_judge_share: '0', // share of runs whose plan and review use codex; off until a rig sets it
+    cursor: 'cursor-agent --force --trust', // the cursor launcher (the deny hook stays on); no station splits to it yet
+    cursor_plan_model: 'grok-4.7-low', // cursor at plan
+    cursor_plan_share: '0', // share of runs whose plan uses cursor; 0 turns it off
+    cursor_implement_model: 'grok-4.7-low', // cursor at implement
+    cursor_implement_share: '0', // share of runs whose implement uses cursor; 0 turns it off
+    cursor_verify_model: 'grok-4.7-low', // cursor at verify
+    cursor_verify_share: '0', // share of runs whose verify uses cursor; 0 turns it off
+    cursor_review_model: 'grok-4.7-low', // cursor at review
+    cursor_review_share: '0', // share of runs whose review uses cursor; 0 turns it off
+    cursor_security_model: 'grok-4.7-low', // cursor at security
+    cursor_security_share: '0', // share of runs whose security uses cursor; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,
@@ -198,8 +204,6 @@ Before you report ready, run this self-check at the final HEAD, after your last 
 4. After your last code change, read again each doc, comment, docstring and pull request line that the diff touches or that names a changed symbol (grep for it). Check each claim against the code, and run each command you documented exactly as written. Keep each doc block directly above its function.
 5. After a send-back, read the whole delta since the last reviewed head (\`git diff <reviewed sha>..HEAD\`) for defects that your fixes added. Grep for the siblings of each finding.
 6. Add no changelog entry and no version bump: the repo's release step writes the changelog at release time.
-7. ${botFiles}
-8. ${layerVersion}
 Close every task of this run (see Tracking). Push the branch and open it as a draft pull request (gh pr create --draft --base {base_branch} --body-file <path>) if this run has none yet. Your ready report must hold a block that starts 'Self-check:'. The block has the AC table, the gate commands with their pass and fail counts, and the list of mutations. Say in the summary that you pushed, and give the pull request link.
 Partial progress: when this pass ends with tasks of this run still open, push what is done and report partial, not fail. Name the pull request link, each closed task and each open task in the summary. The next implement pass starts from the open tasks. After three partial reports, the fourth re-plans the run.
 Earlier draft pull request: when the bead's comments name a draft pull request that an earlier run opened for this bead, continue on that branch, push to it and open no new pull request.
@@ -275,7 +279,6 @@ Fix every finding check sends back and say how, closing each task check filed, w
 Ship rework: when the bead's metadata names a ship_pr and a ship_branch (the ship run sent this pull request back), work on that branch, push with \`git push origin HEAD:<ship_branch>\` and open no new pull request.
 ${pushGuard}
 Push the branch and open it as a draft pull request (gh pr create --draft --base {base_branch} --body-file <path>) if this run has none yet.
-${botFiles}
 ${notBlocked('ready')}
 If the work proves bigger than small (more files, a security-sensitive surface, a new dependency, a design choice), report full with why, and plan takes it.`,
       next: { ready: 'check', full: 'plan', abandon: 'done' },

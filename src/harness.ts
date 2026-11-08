@@ -5,7 +5,7 @@ import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeF
 import { basename, join } from 'node:path'
 import { cut } from './cut'
 
-export type Harness = 'claude' | 'codex' | 'pi'
+export type Harness = 'claude' | 'codex' | 'pi' | 'cursor'
 
 /** a server as Claude's --mcp-config writes it: a command to run, or a url to reach */
 export type McpServer = {
@@ -35,7 +35,11 @@ export const VM_PLUGINS: Record<string, string> = {
 const CLAUDE_ONLY_SKILLS = ['egm']
 // The egm reviewers use Claude plugin agent types. Use com.openai when guarded codex supports subagents.
 export const skillsFor = (h: Harness | null, skills: string[]) =>
-  h === 'codex' || h === 'pi' ? skills.filter(s => !CLAUDE_ONLY_SKILLS.includes(s)) : skills
+  h === 'cursor'
+    ? []
+    : h === 'codex' || h === 'pi'
+      ? skills.filter(s => !CLAUDE_ONLY_SKILLS.includes(s))
+      : skills
 
 /** the skill dirs (<plugin>/skills/<name>) of these plugin dirs; a plugin with no skills adds none */
 export const skillDirs = (plugins: string[]) =>
@@ -109,8 +113,11 @@ export const piFlags = (rules: string, plugins: string[]) => [
 export function harnessOf(agent: string): Harness | null {
   const exe = exeOf(agent)
   if (/^claude/.test(exe) || exe === exeOf(claudeCommand())) return 'claude' // claude, claude-smart, FACTORY_CLAUDE's
-  return exe === 'codex' || exe === 'pi' ? exe : null
+  return exe === 'codex' || exe === 'pi' ? exe : exe === 'cursor-agent' ? 'cursor' : null
 }
+
+// cursor-agent's hidden flag: without it the CLI replaces its own binary in the background (the image pins a version)
+export const CURSOR_FLAGS = ['--disable-auto-update']
 
 // The guard must turn off these codex features. Each one lets a command run without the PreToolUse hook (claude-factory-x0b9).
 export const CODEX_UNGUARDED = ['unified_exec', 'shell_snapshot', 'multi_agent', 'code_mode']
@@ -214,12 +221,13 @@ export const codexMcp = (servers: Record<string, McpServer>) =>
 /**
  * the shell line that starts a worker on the prompt file, or resumes its session with the prompt as
  * the next turn. `extra` is flags put after the agent's own (Claude's --settings, codex's guard flags, pi's rules and skills).
+ * `rules` is a file cursor's first prompt starts with.
  * `env` is a VAR=value prefix (FACTORY_DEADLINE; CODEX_HOME; the commit identity).
  */
 export function command(
   agent: string,
   prompt: string,
-  o: { session?: string; mcp?: Mcp; extra?: string; env?: Record<string, string> } = {},
+  o: { session?: string; mcp?: Mcp; extra?: string; env?: Record<string, string>; rules?: string } = {},
 ) {
   const text = `"$(cat ${sq(prompt)})"`
   const { session, mcp } = o
@@ -244,6 +252,13 @@ export function command(
       if (mcp)
         throw new Error(`pi has no MCP client, so a pi worker cannot load ${mcp.file}: use claude or codex`)
       return `${env}${agent}${o.extra ?? ''}${session ? ` --session ${sq(session)}` : ''} ${text}`
+    }
+    case 'cursor': {
+      // Cursor's MCP servers come from mcp.json files, which a worker would load unguarded: refuse, as pi does
+      if (mcp) throw new Error(`a cursor worker cannot load ${mcp.file}: use claude or codex`)
+      // no system prompt flag: the worker rules lead the first prompt (a resumed session has them already)
+      const first = o.rules && !session ? `"$(cat ${sq(o.rules)} ${sq(prompt)})"` : text
+      return `${env}${agent}${o.extra ?? ''}${session ? ` --resume ${sq(session)}` : ''} ${first}`
     }
     default:
       return `${agent} ${text}`

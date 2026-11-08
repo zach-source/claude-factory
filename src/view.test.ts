@@ -27,7 +27,7 @@ import {
   withProposals,
   type Interview,
 } from '../mod/hooks/view'
-import { gs2_deploy, gs2_triage, lpv, u2id } from '../mod/tests/parked-fixtures'
+import { gs2_deploy, gs2_triage, longQuestion, lpv } from '../mod/tests/parked-fixtures'
 
 test('track folds loops and marks where the run is', () => {
   expect(track(['triage', 'plan', 'implement', 'verify', 'implement'], 'verify')).toEqual([
@@ -923,7 +923,7 @@ test('a collapsed interview item built from a recorded parked summary stays shor
     { run: 'lpv', node: 'triage', bead: 'claude-factory-lpv', summary: lpv },
     { run: 'gs2t', node: 'triage', bead: 'ama-gs2', summary: gs2_triage },
     { run: 'gs2d', node: 'deploy', bead: 'ama-gs2', summary: gs2_deploy },
-    { run: 'u2id', node: 'deploy', bead: 'infra-blocks-u2id', summary: u2id },
+    { run: 'longq', node: 'deploy', bead: 'acme-blocks-a1b2', summary: longQuestion },
   ]
   const runs = fixtures.map(f => ({
     id: f.run,

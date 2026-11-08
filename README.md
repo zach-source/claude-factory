@@ -688,7 +688,7 @@ pi has no MCP client, so its pane says that the file was not loaded.
 
 `--runner` says where a rig's workers run: `herdr` panes on this machine (the default), or `ax`, an
 AX microVM on a cluster ([docs/remote-runner.md](docs/remote-runner.md)). A VM runs the rig's agent
-(claude, codex or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
+(claude, codex, cursor or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
 reach more hosts, with agent-vault's credential `KEY` injected for them. Runners are an interface
 (`src/runner.ts`): a new one is a module and a registry entry.
 
@@ -997,10 +997,11 @@ A PR belongs to a live run when its branch is the run's (`factory/<run>`) or the
   normal verify and review. With no live run, the factory starts a run of the rig's factory at implement on
   the PR's own branch. That run pushes to the PR branch and opens no new PR. A PR with both labels takes
   this path.
+- **`fix-tests`**: for a PR whose build jobs or tests fail. The route is the same as for `rework`. The goal and the mail name the failed check runs of the PR head (at most 10) and their log links. The worker makes only the checks pass: it changes no behavior that the tests do not check, and it does not disable, skip or weaken a test. After 5 runs for one PR (`REQUEUE_MAX`), the factory starts no more runs. The board shows the PR and its failed checks. Fix it by hand, then remove the label. On GitLab, the factory does not read the failed jobs, so the worker reads them.
 
-A `conflict` or `rework` PR that belongs to a live run goes to that run instead, so two workers never
+A `conflict`, `rework` or `fix-tests` PR that belongs to a live run goes to that run instead, so two workers never
 push to one branch. For `conflict`, the current station is mailed what the label asks (a parked one wakes).
-For `rework`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
+For `rework` and `fix-tests`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
 run's factory has no implement station, the current station gets the mail. A PR that is queued with ship
 is unchanged: the ship run gets the label.
 
@@ -1084,6 +1085,11 @@ git config core.hooksPath .beads-hooks
 Put one extended regex on each line of `<git common dir>/info/private-patterns`. The guard matches
 them without case, against the added lines of the staged diff, the author and the commit message.
 The repo holds no pattern file. If the file is missing or empty, the guard checks nothing and says so.
+
+To check a PR or issue text before you post it, pipe the text in: `hack/guard-private.sh text < body.md`.
+It prints the matching lines and exits 1. The worker hook runs the same check on `gh pr`, `gh issue` and
+`gh api` calls that publish text. It reads the command and the body file. A worker on an AX VM gets a copy
+of the rig repo's pattern file at the clone, so the commit guard and this hook work there too.
 
 ## Plugins
 

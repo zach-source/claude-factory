@@ -505,6 +505,38 @@ export function codexUsageOf(lines: string[], file: string): Omit<Usage, 'node' 
   }
 }
 
+/**
+ * a cursor worker's spend, one row for each session, from its stream-json lines. Each `result` event holds one turn's
+ * usage, so the turns add up. `outputTokens` includes the reasoning ones. The function skips bad lines.
+ */
+export function cursorUsageOf(lines: string[]): Usage[] {
+  const rows = new Map<string, Usage>()
+  let model = 'cursor'
+  for (const line of lines) {
+    let e: Record<string, any>
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (e?.type === 'system' && e.subtype === 'init' && typeof e.model === 'string') model = e.model
+    if (e?.type !== 'result' || !e.usage || typeof e.session_id !== 'string') continue
+    const n = (k: string) => Number(e.usage[k]) || 0
+    const r = rows.get(e.session_id) ?? {
+      ...{ node: '?', seq: 0, session: e.session_id, model },
+      ...{ input: 0, cacheWrite: 0, cacheRead: 0, output: 0, turns: 0, peak: 0 },
+    }
+    r.input += n('inputTokens')
+    r.cacheWrite += n('cacheWriteTokens')
+    r.cacheRead += n('cacheReadTokens')
+    r.output += n('outputTokens')
+    r.turns++
+    r.peak = Math.max(r.peak, n('inputTokens') + n('cacheReadTokens') + n('cacheWriteTokens'))
+    rows.set(e.session_id, r)
+  }
+  return [...rows.values()]
+}
+
 /** a Usage row's tokens, all types */
 export const tokensOf = (u: Usage) => u.input + u.cacheWrite + u.cacheRead + u.output
 

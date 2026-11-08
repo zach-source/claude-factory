@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: `cursor-agent` is a third worker harness, `cursor` (claude-factory-00i5). A pane runs it with the deny hook in `<worktree>/.cursor/hooks.json`, hidden from git. A VM runs it headless (`-p --output-format stream-json`, prompt on stdin, `--resume <session>`) with the hook in `~/.cursor/hooks.json`, only with `FACTORY_AX_CURSOR=1` and an image that has the pinned CLI. `worker-hook.ts --harness cursor` reads Cursor's tool names and answers in Cursor's shape. The VM key is a placeholder; the egress rule injects the vault key `CURSOR_API_KEY` on `api2.cursor.sh/auth/` only. A pool limit holds the station, and each turn's `result.usage` goes into the run's usage rows. A cursor worker has no MCP servers and no plugin skills. Lifecycle params `cursor` and `cursor_<station>_share` (default 0) wait for the split.
+- Changed: a rig can set `pushRules` in `rigs.json`: rules a worker follows before each push, one paragraph each, with `{base_branch}` filled. The brief shows them as "Before each push" in every station (claude-factory-jluz.2). The two pre-push checks of one rig left the shared `lifecycle` and `ship` prompts, since they named that rig's repo. A person adds them to that rig's `pushRules` by hand.
 - New: a factory manager mod for the Herdr desktop app, in `herdr/mods/factory` with the layout `herdr/layouts/factory.json` (claude-factory-s01d.3). `factory herdr install [--app-home <dir>]` copies them into the app folder. It writes `config.json` with this CLI and this factory home. The panel ticks each 5 s and runs the `--once` steps on their own timers. It shows the board by rig and state, the worker screen of a run, and an Interview dialog for gates and decisions. It also shows toasts and a status band. Without the manager lease, the panel shows the board only.
 - Fix: a busy `lease.lock` no longer refuses the holder of a live lease. A patrol that starts beside a tick of the same holder now runs.
 - New: `factory patrol --once`, `pm --once`, `brief --once` and `review --once` run one manager step headless with `claude -p` (claude-factory-s01d.1). A UI with no subagent API, such as the Herdr app mod, uses them. `factory tick --keep-mail` saves the tick in `manager-tick.json` and keeps the manager mail in `patrol-state.json` for the patrol. The steps write the same logs as the Claude mod, and `manager-usage.jsonl`. The patrol Bash calls go through a `factory patrol-guard` PreToolUse hook, with the same guards as the Claude mod. Only the lease holder runs a step. `--codex <model>` runs pm, brief or review on codex in its read-only sandbox. The patrol refuses codex, because codex has no hook for the guard.
@@ -29,6 +31,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: `factory report` strips control, format and line-separator characters from the report text, the `mail` text and the `memory add` summary, body, rig and `--from` (claude-factory-67bw). Each such character becomes a space. LF and TAB stay. This holds for the FAIL reason, the BLOCKED reason and the DONE and HANDOFF summary, also for a VM report that the laptop replays.
 - Fix: `factory fork` of an ended ship run is refused while another ship run is live on the same repo (claude-factory-9wch). The error names the live run and tells you to run `factory abort` on it first. Before, the fork gave the rig two ship runs that worked the same queue.
 - Added: `factory rig history` lists the newest 20 snapshots of `rigs.json`. `factory rig undo [n]` restores snapshot n (default 1, the newest) through the rig edit lock. The undo makes its own snapshot, so a second `rig undo` reverses it (claude-factory-wy9u.6). A worker cannot run either verb.
+- Fix: `env -i` before `bun src/cli.ts` no longer clears FACTORY_FROM and FACTORY_RUN without a hook denial (claude-factory-qn8a.27). The worker hook now reads a JS runtime word (bun, node, npx and others) as a start of the factory CLI.
 
 ## 0.16.0 (2026-11-03)
 
@@ -52,7 +55,7 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: a codex worker on AX now keeps its PATH and its CA file (claude-factory-wpnx). The VM `config.toml` sets `allow_login_shell = false`. Before this fix, codex used a login shell (`bash -lc`) for each command. That shell read `/etc/profile` and reset the PATH and the CA values. Thus the worker did not find `nix`, `go` or `rg`, and `factory memory search` got a TLS error.
 - Fix: `factory memory search` works in an AX worker (claude-factory-2yvv). The worker image now holds the embedding model `Xenova/bge-small-en-v1.5`. Before, the search downloaded the model on first use, and the VM got a TLS error. Rebuild the worker image to get this fix.
 - Docs: `docs/beads.md` describes the filing guard (caps 6, 3 and 24 hours), the `clusterRuns` rig setting (default 2), the `file-churn` finding and how to release a held bead with `factory queue` (claude-factory-nwlh.6).
-- Changed: four stations now add a pre-push check for the infra-blocks repo (claude-factory-kwb8). They are `implement` and `quick` in `lifecycle`, and `queue` and `release` in `ship`. A worker runs `git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv`. If it prints a file, the worker reverts that file. A bot writes those files in that repo.
+- Changed: four stations now add a pre-push check for one rig's repo (claude-factory-kwb8). They are `implement` and `quick` in `lifecycle`, and `queue` and `release` in `ship`. A worker runs `git diff --name-only origin/main...HEAD -- CHANGELOG.md '*VERSION' .devenv`. If it prints a file, the worker reverts that file. A bot writes those files in that repo.
 - Changed: the lifecycle plan station keeps tests and the change that turns them green in one pull request, or orders the beads. It does not plan a pull request with red required checks by design (claude-factory-9hzj).
 - Changed: `src/worker-system.md` has a new Bash rule (claude-factory-kwnt). Before a loop, a shell function, a `VAR=value` prefix, a variable command word or a `cd` chain, a worker writes the steps to `.scratch/<name>.sh` and runs that file. The worker hook denies those forms inline.
 - Fix: the home guard folds case, so forms that APFS treats as equal now deny (claude-factory-99jt). Examples are `/users/acme` and a long-s form of `/Users`. The guard also reads an upper-case delete word (`MV`, `RM`).
@@ -1603,7 +1606,7 @@ minor release may change the factory format, the CLI or the run state.
 
 - Lean workers: a Claude worker runs on its own settings (the user's hooks and environment only),
   a short worker system prompt and the tools workers use, with MCP tools deferred behind ToolSearch,
-  auto memory off and the global CLAUDE.md excluded. Before any work, an infra-blocks worker's
+  auto memory off and the global CLAUDE.md excluded. Before any work, an acme-blocks worker's
   context dropped from ~98k tokens to ~26k, and every turn carries the difference.
   `FACTORY_LEAN=0` turns it off.
 - Handoff: past `maxContextK` (200k) a Claude worker is asked to commit and report `handoff` with
@@ -1618,7 +1621,7 @@ minor release may change the factory format, the CLI or the run state.
   the 8-hour backstop: nothing will change those PRs.
 - A station parked on pull requests (its blocked report links them) is watched with `gh` and mailed
   awake when one is merged, closed or updated, instead of a fresh worker re-checking on a timer;
-  the timer backstops it at 8 hours. Deploy re-checks were most of infra-blocks' worker launches.
+  the timer backstops it at 8 hours. Deploy re-checks were most of acme-blocks' worker launches.
 - A run on a repo Claude does not trust starts no worker (it would stall at the trust dialog until
   its timeout, every attempt); the manager is paged once, and `rig add` warns.
 - Stations take `rounds`: past that many reports of one outcome in a run, the next is held for the
