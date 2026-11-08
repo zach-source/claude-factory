@@ -180,14 +180,19 @@ test('log lines lose ANSI, control characters and CR, and are cut to 400 chars',
 
 test('failedChecks', () => {
   const run = (o: object) => JSON.stringify({ check_runs: [o] })
-  const one = (o: object) => failedChecks(run({ name: 'n', status: 'completed', conclusion: 'failure', ...o }))
+  const one = (o: object) =>
+    failedChecks(run({ name: 'n', status: 'completed', conclusion: 'failure', ...o }))
   for (const c of ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', null])
     expect(one({ conclusion: c })?.length).toBe(1)
   for (const c of ['success', 'neutral', 'skipped']) expect(one({ conclusion: c })).toEqual([])
   expect(one({ status: 'in_progress', conclusion: null })).toEqual([])
   expect(one({ status: 'queued', conclusion: null })).toEqual([])
   const many = JSON.stringify({
-    check_runs: Array.from({ length: 12 }, (_, i) => ({ name: `c${i}`, status: 'completed', conclusion: 'failure' })),
+    check_runs: Array.from({ length: 12 }, (_, i) => ({
+      name: `c${i}`,
+      status: 'completed',
+      conclusion: 'failure',
+    })),
   })
   expect(failedChecks(many)?.length).toBe(12)
   for (const bad of ['nope', 'null', '5', '{}', '{"check_runs":5}']) expect(failedChecks(bad)).toBeUndefined()
@@ -203,7 +208,14 @@ test('failedChecks', () => {
   expect(one({ app: gha, id: 11, details_url: JOB })?.[0]?.url).toBe('')
   expect(one({ app: gha, details_url: JOB, html_url: 'https://x/y' })?.[0]?.url).toBe(JOB)
   expect(one({ details_url: JOB })?.[0]?.url).toBe(JOB)
-  for (const u of ['http://x', 'https://a b', 'https://a b', 'https://a(b)', 'https://a<b', `https://${'a'.repeat(301)}`])
+  for (const u of [
+    'http://x',
+    'https://a b',
+    'https://a b',
+    'https://a(b)',
+    'https://a<b',
+    `https://${'a'.repeat(301)}`,
+  ])
     expect(one({ details_url: u })?.[0]?.url).toBe('')
 })
 

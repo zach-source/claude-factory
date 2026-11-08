@@ -320,7 +320,8 @@ const ORPHANS_MS = 10 * 60_000 // how often the rigs' open factory drafts are sw
 const CLOSE_LABEL = 'close'
 const CONFLICT_LABEL = 'conflict'
 const REWORK_LABEL = 'rework'
-const REWORK_LABELS = [CONFLICT_LABEL, REWORK_LABEL]
+const FIX_TESTS_LABEL = 'fix-tests'
+const REWORK_LABELS = [CONFLICT_LABEL, REWORK_LABEL, FIX_TESTS_LABEL]
 const WATCH_MS = 60_000 // how often the pull requests parked stations wait on are looked at
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
@@ -354,7 +355,7 @@ const DREAM_SOON_MS = 2 * 3600_000
 const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 /** a bead requeued this many times gets deferred instead: a factory that always requeues never loops forever */
-const REQUEUE_MAX = 5
+export const REQUEUE_MAX = 5
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const STALL_MS = 20 * 60_000 // a working worker whose tail and branch head stand still this long is nudged, then failed
 const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min), then fails
@@ -9142,6 +9143,9 @@ export type LabeledPr = {
   baseRefName: string
   isCrossRepository: boolean
   labels: { name: string }[]
+  headRefOid?: string
+  /** the failed check runs at headRefOid; undefined when the pass did not read them */
+  failed?: { name: string; url: string }[]
 }
 const reworkLabels = (pr: LabeledPr) => REWORK_LABELS.filter(name => pr.labels.some(l => l.name === name))
 /** what a person's label on a pull request asks: close it (and its run), or a rework run for its conflicts or changes */
@@ -9150,18 +9154,66 @@ export function labelAction(pr: LabeledPr) {
   if (!reworkLabels(pr).length) return undefined
   return pr.isCrossRepository ? 'fork' : 'rework' // a fork's branch is not ours to push
 }
+export const FIX_TESTS_ASK =
+  'make its failing build jobs and tests pass; change no behavior that the tests do not check, and do not disable, skip or weaken a test'
+const SHOWN = 10 // failed checks named in a goal or a board row
+/** the failed checks of a fix-tests PR, as the parenthesis after FIX_TESTS_ASK */
+function failedText(pr: LabeledPr) {
+  const sha = pr.headRefOid?.slice(0, 7)
+  if (!pr.failed)
+    return `(the factory did not read its checks: read the failed jobs of its head commit; on GitHub, factory ci ${pr.number} shows the logs)`
+  if (!pr.failed.length)
+    return `(no check run had failed at ${sha} when the label was read; the factory does not read commit statuses: run gh pr checks ${pr.number})`
+  const shown = pr.failed.slice(0, SHOWN).map(c => (c.url ? `${c.name} ${c.url}` : c.name))
+  const more = pr.failed.length > SHOWN ? [`+${pr.failed.length - SHOWN} more`] : []
+  return `(failed checks at ${sha}: ${[...shown, ...more, `run factory ci ${pr.number} for the logs`].join('; ')})`
+}
 const asksOf = (pr: LabeledPr) =>
   `labeled ${reworkLabels(pr).join(' and ')}: ${reworkLabels(pr)
     .map(name =>
       name === CONFLICT_LABEL
         ? 'resolve its merge conflicts'
-        : 'make the changes its reviews and checks ask for',
+        : name === FIX_TESTS_LABEL
+          ? `${FIX_TESTS_ASK} ${failedText(pr)}`
+          : 'make the changes its reviews and checks ask for',
     )
     .join(' and ')}`
 export const reworkGoal = (pr: LabeledPr) =>
   `Pull request #${pr.number} (${pr.url}) is stuck, ${asksOf(pr)}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
 /** the PR URL at the head of a rework goal (reworkGoal), or undefined for any other goal */
 export const reworkPr = (goal: string) => /^Pull request #\d+ \(([^\s()]+)\) is stuck,/.exec(goal)?.[1]
+/** how many earlier runs, live or over, were started for this PR with the fix-tests ask */
+export const fixTestsTries = (url: string, goals: string[]) =>
+  goals.filter(g => reworkPr(g) === url && g.includes(FIX_TESTS_ASK)).length
+/** the board row for a fix-tests PR that has used up REQUEUE_MAX runs */
+export function cappedRow(pr: LabeledPr, tries: number) {
+  const names = pr.failed?.slice(0, SHOWN).map(c => c.name) ?? []
+  if (pr.failed && pr.failed.length > SHOWN) names.push(`+${pr.failed.length - SHOWN} more`)
+  const what = !pr.failed
+    ? 'failed checks not read'
+    : !pr.failed.length
+      ? `no failed check run at ${pr.headRefOid?.slice(0, 7)}`
+      : `failed: ${names.join(', ')}`
+  return `${pr.url} is labeled fix-tests, but ${tries} runs did not make its checks pass (${what}): fix it by hand, then remove the label`
+}
+/**
+ * where a labeled PR goes, in order: close, fork error, the ship run of a queued PR, the live run that owns it,
+ * the board row of a fix-tests PR with REQUEUE_MAX earlier runs, a new run when the rig has room, else wait.
+ * Only fix-tests is capped: its label comes back after each run, so a new run per label could loop.
+ */
+export function labelRoute(
+  pr: LabeledPr,
+  ctx: { queued: boolean; owner: boolean; room: number; tries: number },
+) {
+  const action = labelAction(pr)
+  if (action === undefined) return undefined
+  if (action === 'close') return 'close' as const
+  if (action === 'fork') return 'fork' as const
+  if (ctx.queued) return 'ship' as const
+  if (ctx.owner) return 'owner' as const
+  if (pr.labels.some(l => l.name === FIX_TESTS_LABEL) && ctx.tries >= REQUEUE_MAX) return 'capped' as const
+  return ctx.room > 0 ? ('start' as const) : ('wait' as const)
+}
 /**
  * the live run that owns a pull request. The PR is on the run's branch, or a report of the run links it,
  * or the run is a rework run for it. A rework run uses the PR's own branch, so only its goal names the PR.
@@ -9210,7 +9262,8 @@ export const labelMail = (
 })
 
 /** a `rework` label asks for changes, so the work goes through implement; a bare `conflict` label only needs a rebase */
-const wantsChanges = (pr: LabeledPr) => reworkLabels(pr).includes(REWORK_LABEL)
+const wantsChanges = (pr: LabeledPr) =>
+  reworkLabels(pr).includes(REWORK_LABEL) || reworkLabels(pr).includes(FIX_TESTS_LABEL)
 
 /** the run to start for a rework-labeled PR no run owns: implement on the PR's own branch, or the one-station rework.yaml */
 export function reworkStart(pr: LabeledPr, factory: string) {

@@ -140,7 +140,9 @@ export function failedChecks(out: string): { name: string; url: string }[] | und
       .filter(c => c.status === 'completed' && !PASS.has(String(c.conclusion)))
       .map(c => {
         const raw =
-          c.app?.slug === 'github-actions' && Number.isInteger(c.id) ? c.html_url : (c.details_url ?? c.html_url)
+          c.app?.slug === 'github-actions' && Number.isInteger(c.id)
+            ? c.html_url
+            : (c.details_url ?? c.html_url)
         const url = clean(String(raw ?? ''), 400)
         return {
           name: clean(String(c.name ?? ''), 100) || '(no name)',
