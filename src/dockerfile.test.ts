@@ -37,11 +37,16 @@ test('each plugin dir of VM_PLUGINS has a COPY line in the worker stage, and EGM
 const serverFile = () => readFileSync(join(ROOT, 'Dockerfile.server'), 'utf8')
 const serverStage = () => serverFile().slice(serverFile().lastIndexOf('\nFROM oven/bun:'))
 
-test('the server image uses the Bun version that CI pins', () => {
-  const ci = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
-  const pins = [...new Set([...ci.matchAll(/bun-version:\s*['"]?([\d.]+)['"]?/g)].map(m => m[1]))]
-  expect(pins).toEqual(['1.3.13'])
-  expect(serverFile()).toMatch(new RegExp(`^FROM oven/bun:${pins[0]}-debian$`, 'm'))
+test('the images and workflows pin Bun with the gVisor timeout fix', () => {
+  for (const name of ['ci', 'release', 'release-tag']) {
+    const workflow = readFileSync(join(ROOT, `.github/workflows/${name}.yml`), 'utf8')
+    const pins = [...new Set([...workflow.matchAll(/bun-version:\s*['"]?([\d.]+)['"]?/g)].map(m => m[1]))]
+    expect(pins).toEqual(['1.4.4'])
+  }
+  for (const name of ['worker', 'broker', 'server']) {
+    const docker = readFileSync(join(ROOT, `Dockerfile.${name}`), 'utf8')
+    expect(docker).toMatch(/^FROM oven\/bun:1\.4\.4-debian(?: AS bun)?$/m)
+  }
 })
 
 test('the server image installs and smokes each tool', () => {

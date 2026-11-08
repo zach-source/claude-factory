@@ -1,5 +1,5 @@
 /**
- * A second entry of this hook (matcher Write|Edit|MultiEdit|NotebookEdit) runs `fileWriteReason`
+ * A second entry of this hook (matcher Write|Edit|MultiEdit|NotebookEdit|apply_patch) runs `fileWriteReason` (or `applyPatchReason` for a codex apply_patch)
  * on the tool's file path (claude-factory-g4du). The Bash text rules below do not see those tools.
  *
  * This PreToolUse hook for Bash denies `rm -r` and `rm -rf` in all spellings or wrappers.
@@ -2890,10 +2890,17 @@ export const FACTORY_RUN_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_RUN. ' +
   'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
   'Do not retry this command.'
-const FACTORY_RUN_GUARD: EnvGuard = {
-  name: 'FACTORY_RUN',
-  cmds: FACTORY_CLI_WORDS,
-  reason: FACTORY_RUN_REASON,
+const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmds: FACTORY_CLI_WORDS, reason: FACTORY_RUN_REASON }
+// claude-factory-qn8a.31: bin/factory unpacks the FACTORY_VM_ENV JSON into its own env and its children's
+// env, so a worker that sets it can carry GIT_CONFIG_*, FACTORY_FROM, FACTORY_RUN, HOME or BEADS_ACTOR.
+export const FACTORY_VM_ENV_REASON =
+  'The factory denies this command: do not set, clear, export, or re-export FACTORY_VM_ENV. ' +
+  'The factory unpacks this variable into the environment of every factory command, so it can carry any ' +
+  'other variable past the other guards. Do not retry this command.'
+const FACTORY_VM_ENV_GUARD: EnvGuard = {
+  name: 'FACTORY_VM_ENV',
+  cmds: new Set(['factory']),
+  reason: FACTORY_VM_ENV_REASON,
 }
 const BEADS_ACTOR_GUARD: EnvGuard = {
   name: 'BEADS_ACTOR',
@@ -3995,8 +4002,8 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
  * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
  * flag value, and every word of a segment that does not skip its operands.
  * ponytail: these pass: a name built at run time (a variable, printf), a script file, a symlink
- * from an earlier call, a program that picks the path, git config -f (qn8a.50), codex apply_patch
- * (qn8a.22), the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
+ * from an earlier call, a program that picks the path, git config -f (qn8a.50),
+ * the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
  * directory copy that names no file (qn8a.52), and a symlink made earlier in the same command (qn8a.54).
  * The sandbox is the barrier.
  * Upgrade path: resolve each word against the real FACTORY_HOME.
@@ -9936,7 +9943,7 @@ function denyAtScan(
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
-    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD]) {
+    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD, FACTORY_VM_ENV_GUARD]) {
       if (touchesBeadsActor(words, state, g)) return state.work < 0 ? SCAN_BUDGET_REASON : g.reason
     }
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
@@ -10058,6 +10065,8 @@ function denyAtScan(
       continue
     }
     const b = baseWord(cmd[0]!)
+    // claude-factory-qn8a.22: the worker has the apply_patch tool, which the hook checks; codex applies a shell one unseen
+    if (/^apply_?patch$/.test(b)) return APPLY_PATCH_SHELL_REASON
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
@@ -10898,8 +10907,8 @@ function protectedParts(parts: string[], xdg: string[]): boolean {
  * claude-factory-g4du: the reason to deny a Write, Edit, MultiEdit or NotebookEdit of `path`, or undefined.
  * It fails closed on a missing, empty, NUL or ~user path. It checks the lexical path and the real path
  * (the nearest existing ancestor through realpath), in lower case, so a symlink or a case change does not pass.
- * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config,
- * codex apply_patch (claude-factory-qn8a.22). The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
+ * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config.
+ * The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
  * (claude-factory-qn8a.21); rigs.json and worker-settings*.json are claude-factory-qn8a.20.
  */
 export function fileWriteReason(
@@ -10950,6 +10959,59 @@ export function fileWriteReason(
       foldNonAscii(p.split(sep).pop() ?? ''),
     )
   return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
+}
+
+export const APPLY_PATCH_REASON =
+  'The factory denies this apply_patch: the hook cannot read it. The hook reads only the lines that start with *** and needs each one to be *** Begin Patch, *** End Patch, *** End of File, or *** Add File:, *** Delete File:, *** Update File: or *** Move to: and a path that does not start with ~. If a content line starts with ***, edit that line with a script in .scratch/. Do not retry this exact patch.'
+
+export const APPLY_PATCH_SHELL_REASON =
+  'The factory denies this command: it runs apply_patch in the shell. Use your apply_patch tool. The hook checks each path of that tool. Do not retry this exact command.'
+
+// The Rust char::is_whitespace set: codex trims patch lines with it. JS trim() differs at U+0085 and U+FEFF.
+const RUST_WS = '\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const RUST_TRIM = new RegExp(`^[${RUST_WS}]+|[${RUST_WS}]+$`, 'g')
+
+/**
+ * claude-factory-qn8a.22: the paths that a codex apply_patch input adds, deletes, updates or moves to, or
+ * undefined when the input is not the closed grammar (the fail-closed case). Pure: it calls no fs function.
+ * Only tool_input.command is read, and it must be the only key. Each line that starts with *** (after the
+ * Rust trim) must be a known header; any other *** line, a ~ path or a patch with no Add, Delete or Update header is undefined.
+ */
+export function applyPatchPaths(input: unknown): string[] | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
+  const keys = Object.keys(input)
+  const command = (input as { command?: unknown }).command
+  if (keys.length !== 1 || typeof command !== 'string') return undefined
+  if (command.includes('\0')) return undefined
+  const paths: string[] = []
+  let files = 0
+  for (const raw of command.split('\n')) {
+    const line = raw.replace(RUST_TRIM, '')
+    if (!line.startsWith('***')) continue
+    if (line === '*** Begin Patch' || line === '*** End Patch' || line === '*** End of File') continue
+    const m = /^\*\*\* (Add File|Delete File|Update File|Move to): (.+)$/.exec(line)
+    if (!m || m[2]!.startsWith('~')) return undefined
+    if (m[1] !== 'Move to') files++
+    paths.push(m[2]!)
+  }
+  return files ? paths : undefined
+}
+
+/** claude-factory-qn8a.22: the reason to deny a codex apply_patch input, or undefined. Same arguments as fileWriteReason. */
+export function applyPatchReason(
+  input: unknown,
+  cwd: string,
+  env?: { home: string; xdg?: string | undefined },
+  root?: string,
+  hookDir?: string,
+): string | undefined {
+  const paths = applyPatchPaths(input)
+  if (!paths) return APPLY_PATCH_REASON
+  for (const p of paths) {
+    const r = fileWriteReason(p, cwd, env, root, hookDir)
+    if (r) return r
+  }
+  return undefined
 }
 
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
@@ -11048,6 +11110,20 @@ function handle(input: unknown) {
   const argh = process.argv.indexOf('--harness')
   // claude-factory-ay4w: a hook config with no --harness falls back to the launch env (an AX VM sets FACTORY_HARNESS)
   const harness = argh >= 0 ? process.argv[argh + 1] : process.env.FACTORY_HARNESS
+  if (i?.tool_name === 'apply_patch') {
+    // claude-factory-qn8a.22: a codex apply_patch carries its paths in the patch text
+    const reason = applyPatchReason(
+      i.tool_input,
+      i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      undefined,
+      process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd(),
+    )
+    if (reason) {
+      denyOut(reason)
+      logDenial(reason, `apply_patch ${applyPatchPaths(i.tool_input)?.join(' ') ?? ''}`, harness)
+    }
+    return
+  }
   if (i?.tool_name && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(i.tool_name)) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
