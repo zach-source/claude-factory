@@ -10659,7 +10659,7 @@ export function clampTimeout(
 }
 
 export const HOOK_CONTROL_REASON =
-  'The factory denies this write: it targets the hook source, a .claude/settings.json or settings.local.json file, or a .cursor/hooks.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
+  'The factory denies this write: it targets the hook source, a .claude/settings.json or settings.local.json file, a .cursor/hooks.json file, or a file in .grok. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
 
 // a parent of the hook dir (also a bare /) is a hook-control path in a segment with one of these words and in cd:
 // find / and ls -d / and alias ~ must stay allowed
@@ -10704,6 +10704,9 @@ function hookControlPath(abs: string, root: string, hookDir: string, ancestor = 
   const n = parts.length
   if (parts[n - 1] === '.claude') return true
   if (parts[n - 1] === '.cursor' || (n >= 2 && parts[n - 2] === '.cursor' && parts[n - 1] === 'hooks.json'))
+    return true
+  // grok loads hooks and config from .grok/hooks/*.json and .grok/config.toml
+  if (parts[n - 1] === '.grok' || parts[n - 2] === '.grok' || (n >= 3 && parts[n - 3] === '.grok'))
     return true
   if (n >= 2 && parts[n - 2] === '.claude' && SETTINGS_NAMES.includes(parts[n - 1]!)) return true
   const h = foldLower(hookDir)
@@ -11115,7 +11118,7 @@ export function reasonName(reason: string): string {
   return 'UNKNOWN'
 }
 
-const HARNESSES = ['claude', 'codex', 'pi', 'cursor']
+const HARNESSES = ['claude', 'codex', 'pi', 'cursor', 'grok']
 
 /**
  * claude-factory-uzes, -wkg4: the deny log keeps no secret. The first `=` or `${` and all text after it become ***.
@@ -11195,6 +11198,20 @@ export function cursorReply(printed: string[]) {
   return { permission: 'allow' }
 }
 
+/**
+ * Grok's preToolUse input in Claude's shape: run_terminal_command is Bash, an edit or write is Write, read_file is Read
+ * (its path is target_file). Grok reads Claude's reply as it is, so there is no reply adapter.
+ */
+export function grokInput(input: unknown) {
+  const i = input as { tool_name?: string; tool_input?: Record<string, unknown> }
+  const t = i?.tool_name
+  if (t === 'run_terminal_command') return { ...i, tool_name: 'Bash' }
+  if (t === 'search_replace' || t === 'write') return { ...i, tool_name: 'Write' }
+  if (t === 'read_file')
+    return { ...i, tool_name: 'Read', tool_input: { ...i.tool_input, file_path: i.tool_input?.target_file } }
+  return t === 'grep' ? { ...i, tool_name: 'Grep' } : input
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -11216,7 +11233,7 @@ async function main() {
     console.log(JSON.stringify(cursorReply(printed)))
     return
   }
-  guard(input)
+  guard(flag('--harness') === 'grok' ? grokInput(input) : input)
 }
 
 const flag = (name: string) => {

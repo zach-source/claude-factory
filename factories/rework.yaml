@@ -13,6 +13,9 @@ params:
   cursor: cursor-agent --force --trust
   cursor_resolve_model: grok-4.7-low
   cursor_resolve_share: '0'
+  grok: grok --permission-mode bypassPermissions --trust
+  grok_resolve_model: grok-4.7
+  grok_resolve_share: '0'
 rules: |-
   - Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions and commands win over your habits.
   - Change what the PR needs and nothing else. Never skip or weaken a test, never rebase or force-push.

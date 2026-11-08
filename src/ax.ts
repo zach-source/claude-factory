@@ -48,7 +48,7 @@ export const modelOf = (agent: string) => agent.match(/(?:^|\s)(?:--model|-m)[\s
 export const providerOf = (agent: string) => agent.match(/(?:^|\s)--provider[\s=]+'?([^'\s]+)'?/)?.[1]
 
 /** the agents a VM can run headless and resume: see worker.ts */
-export type Harness = 'claude' | 'codex' | 'pi' | 'cursor'
+export type Harness = 'claude' | 'codex' | 'pi' | 'cursor' | 'grok'
 
 /**
  * a rig's extra egress rule: HTTPS to `hosts`, and with a vault `key` the gateway puts that agent-vault credential in
@@ -110,6 +110,8 @@ export type Launch = {
   codexAuth?: 'apikey' | 'chatgpt'
   /** a cursor worker's hooks.json text (cli.ts vmCursorHooks); serve writes it to ~/.cursor before each turn */
   cursorHooks?: string
+  /** a grok worker's hook file text (cli.ts vmGrokHooks); serve writes it to $GROK_HOME/hooks before each turn */
+  grokHooks?: string
   env: Record<string, string>
   /** the rig origin's host when it is GitLab: its tokens are injected like GitHub's */
   gitlabHost?: string
@@ -133,6 +135,7 @@ const FLAT_KEYS = new Set([
   'FACTORY_CLAUDE_FLAGS',
   'FACTORY_CODEX_HOME_FILES',
   'FACTORY_CURSOR_HOOKS',
+  'FACTORY_GROK_HOOKS',
   'FACTORY_PRIVATE_PATTERNS',
 ])
 
@@ -180,6 +183,7 @@ export function manifest(l: Launch) {
           ...(l.claudeFlags?.length && { FACTORY_CLAUDE_FLAGS: JSON.stringify(l.claudeFlags) }),
           ...(l.codexHome && { FACTORY_CODEX_HOME_FILES: JSON.stringify(l.codexHome) }),
           ...(l.cursorHooks && { FACTORY_CURSOR_HOOKS: l.cursorHooks }),
+          ...(l.grokHooks && { FACTORY_GROK_HOOKS: l.grokHooks }),
           ...(l.privatePatterns && { FACTORY_PRIVATE_PATTERNS: l.privatePatterns }),
         }),
       }),
@@ -280,7 +284,7 @@ export type Poll = {
   log?: string
   /** an egress-gateway outage serve is retrying a turn through: see worker.ts egressFailure */
   egress?: { since: number; tries: number; last: string }
-  /** a codex or cursor turn that ended on a usage limit or a refused login (kind auth): see worker.ts codexLimit, cursorLimit */
+  /** a codex, cursor or grok turn that ended on a usage limit or a refused login (kind auth): see worker.ts codexLimit, cursorLimit, grokLimit */
   limit?: { at: number; kind: string; resetsAt: number }
 }
 
@@ -649,6 +653,8 @@ export const launch = (l: Launch) => {
         l.codexAuth !== 'chatgpt' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       // cursor-agent swaps this key for an access token at api2.cursor.sh; the rig's cursor rule injects the real one there
       ...(l.harness === 'cursor' && { CURSOR_API_KEY: 'placeholder' }),
+      // grok sends this key as a bearer token to api.x.ai; the rig's grok rule injects the real one there
+      ...(l.harness === 'grok' && { XAI_API_KEY: 'placeholder' }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
       GIT_CONFIG_COUNT: l.gitlabHost ? '2' : '1',

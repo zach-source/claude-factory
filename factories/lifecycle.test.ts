@@ -766,6 +766,12 @@ test('implement, verify, security, plan and review split to codex, and the exec 
     expect(lc.params![`cursor_${st}_model`]).toBeTruthy()
   }
   expect(lc.params!.cursor).toContain('cursor-agent')
+  // grok is off for every station until a rig sets its share
+  for (const st of ['plan', 'implement', 'verify', 'review', 'security']) {
+    expect(lc.params![`grok_${st}_share`]).toBe('0')
+    expect(lc.params![`grok_${st}_model`]).toBeTruthy()
+  }
+  expect(lc.params!.grok).toContain('grok --permission-mode')
   validate(lifecycle as Factory)
 })
 
