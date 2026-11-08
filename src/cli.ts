@@ -10,10 +10,12 @@ import {
   readSettings,
   setDevenv,
   setSetting,
+  SETTING_KEYS,
   settingsRows,
   unsetDevenv,
   unsetSetting,
 } from './settings'
+import { buildImage, IMAGE_KEY, type Target } from './image'
 import {
   appendFileSync,
   chmodSync,
@@ -11415,6 +11417,7 @@ const usage = `factory — herdr software factories on xstate
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
+  image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
@@ -12784,6 +12787,41 @@ if (import.meta.main && !outboxCmd)
           else unsetSetting(file, key!)
           console.log(`unset ${key}`)
         } else fail(usage)
+        break
+      }
+      case 'image': {
+        refuseWorker('image build', true)
+        const usage = 'usage: factory image build [--target worker|manager]'
+        const t = args[2]
+        const ok =
+          args[0] === 'build' &&
+          (args.length === 1 ||
+            (args.length === 3 && args[1] === '--target' && (t === 'worker' || t === 'manager')))
+        if (!ok) fail(usage)
+        const target: Target = args.length === 3 ? (t as Target) : 'worker'
+        const head = Bun.spawnSync(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'])
+        if (head.exitCode !== 0) fail(`cannot read the HEAD of ${ROOT}`)
+        let ref: string
+        try {
+          ref = await buildImage({
+            target,
+            settingsFile: join(HOME, 'settings.json'),
+            root: ROOT,
+            sha: head.stdout.toString().trim(),
+            env: BOOT_ENV,
+            // fd 2: the docker stdout goes to the stderr of this command, so stdout holds only the ref
+            run: argv => Bun.spawn(['docker', ...argv], { stdio: ['inherit', 2, 'inherit'] }).exited,
+          })
+        } catch (e) {
+          fail((e as Error).message)
+        }
+        const key = IMAGE_KEY[target]
+        const name = SETTING_KEYS.find(k => k.key === key)?.env
+        if (name && BOOT_ENV[name] !== undefined)
+          console.error(
+            `factory: ${name} is set in the environment and overrides the stored ${key}; unset it to use the new image`,
+          )
+        console.log(ref!)
         break
       }
       case 'rig': {
