@@ -2,9 +2,87 @@ import { expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { bestSlot, MISSING_HELP, parseUsage, tokenConfig, type Slot } from './claude-token'
 
 // bin/claude-token with fake op and curl on PATH, and a jq wrapper that logs its argv
 const SCRIPT = join(import.meta.dir, '..', 'bin', 'claude-token')
+
+test('bestSlot selects only allowed slots without a change to its input', () => {
+  const slot = (n: number, status: Slot['status'], use7d?: number): Slot => ({
+    n,
+    status,
+    use7d,
+    hasToken: true,
+    live: false,
+  })
+  const cases: [Slot[], number | undefined][] = [
+    [[], undefined],
+    [[slot(1, 'refused', 0.1), slot(2, 'ok', 0.9)], 2],
+    [[slot(2, 'ok', 0.2), slot(1, 'ok', 0.2)], 1],
+    [[slot(1, 'ok'), slot(2, 'ok', 0)], 2],
+    [[slot(2, 'ok', 0), slot(1, 'ok')], 2],
+    [[slot(1, 'error', 0), slot(2, 'empty', 0)], undefined],
+    [[slot(2, 'ok'), slot(1, 'ok')], 1],
+  ]
+  for (const [slots, expected] of cases) {
+    const before = structuredClone(slots)
+    expect(bestSlot(slots)).toBe(expected)
+    expect(slots).toEqual(before)
+  }
+})
+
+test('parseUsage reads headers and refuses unknown status', () => {
+  for (const [value, status] of [
+    ['allowed', 'ok'],
+    ['allowed_warning', 'ok'],
+    ['rejected', 'refused'],
+    ['blocked', 'error'],
+    ['', 'error'],
+  ]) {
+    expect(String(parseUsage(new Headers({ 'Anthropic-Ratelimit-Unified-Status': value! })).status)).toBe(
+      status!,
+    )
+  }
+  expect(parseUsage(new Headers()).status).toBe('error')
+  for (const value of ['abc', '', '  ']) {
+    expect(
+      parseUsage(new Headers({ 'anthropic-ratelimit-unified-7d-utilization': value })).use7d,
+    ).toBeUndefined()
+  }
+  expect(parseUsage(new Headers()).use7d).toBeUndefined()
+  expect(
+    parseUsage(
+      new Headers({
+        'Anthropic-Ratelimit-Unified-7d-Utilization': '0',
+        'anthropic-ratelimit-unified-5h-utilization': '0.5',
+      }),
+    ),
+  ).toEqual({ status: 'error', use7d: 0, use5h: 0.5 })
+})
+
+test('tokenConfig requires all store keys and one slot placeholder', () => {
+  const stored = {
+    'token.read': ' read ',
+    'token.write': 'write',
+    'token.live-field': 'live',
+    'token.slot-field': 'account_%s_token',
+    'token.active-field': 'active',
+  }
+  expect(() => tokenConfig({})).toThrow(
+    'token.read, token.write, token.live-field, token.slot-field, token.active-field',
+  )
+  expect(() => tokenConfig({})).toThrow(MISSING_HELP)
+  expect(() => tokenConfig({ ...stored, 'token.read': '  ' })).toThrow('missing: token.read')
+  for (const value of ['slot', '%s_%s'])
+    expect(() => tokenConfig({ ...stored, 'token.slot-field': value })).toThrow('exactly one time')
+  expect(tokenConfig(stored)).toEqual({
+    read: ' read ',
+    write: 'write',
+    liveField: 'live',
+    slotField: 'account_%s_token',
+    activeField: 'active',
+  })
+})
 
 function fixture() {
   const tmp = mkdtempSync(join(tmpdir(), 'claude-token-'))
