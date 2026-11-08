@@ -31,6 +31,8 @@ function setup(withWiki = true) {
   mkdirSync(repo, { recursive: true })
   writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: 'acme', repo, factory: join(dir, 'f.ts') }]))
   if (withWiki) expect(factory(['wiki', 'init'], { FACTORY_NO_KICK: '1' }).code).toBe(0)
+  // a fresh write stamp: the refresh tests must not race a write pass for wiki.lock
+  writeFileSync(join(home, 'wiki-write.stamp'), '')
 }
 async function waitFor(path: string, tries = 150) {
   for (let i = 0; i < tries && !existsSync(path); i++) await sleep(100)
@@ -102,3 +104,55 @@ test('AC7 a negative FACTORY_WIKI_REFRESH_MIN falls back to 30 min', async () =>
   await sleep(1500)
   expect(statSync(stamp()).mtimeMs).toBe(t)
 })
+
+// ---- the write kick (claude-factory-tx6c.7): every 180 min, never while halted ----
+const wstamp = () => join(home, 'wiki-write.stamp')
+/** the write stamp, set `min` minutes old */
+function aged(min: number) {
+  writeFileSync(wstamp(), '')
+  const t = new Date(Date.now() - min * 60_000)
+  utimesSync(wstamp(), t, t)
+}
+/** ticks and tells whether the stamp moved: a moved stamp means one launch */
+async function launched(env: Record<string, string> = {}) {
+  const t = existsSync(wstamp()) ? statSync(wstamp()).mtimeMs : 0
+  factory(['tick'], env)
+  await sleep(1500)
+  return existsSync(wstamp()) && statSync(wstamp()).mtimeMs !== t
+}
+
+test('write AC6 kick matrix: age, wiki, lock, halt, NO_KICK', async () => {
+  setup()
+  rmSync(wstamp())
+  expect(await launched()).toBe(true) // no stamp
+  setup()
+  aged(181)
+  expect(await launched()).toBe(true)
+  setup()
+  aged(10)
+  expect(await launched()).toBe(false)
+  setup(false)
+  expect(await launched()).toBe(false)
+  setup()
+  mkdirSync(join(home, 'wiki.lock'), { recursive: true })
+  writeFileSync(join(home, 'wiki.lock', 'pid'), String(process.pid))
+  expect(await launched()).toBe(false)
+  for (const state of ['paused', 'stopping']) {
+    setup()
+    writeFileSync(join(home, 'halt.json'), JSON.stringify({ state, at: Date.now(), told: {}, closed: {} }))
+    expect(await launched()).toBe(false)
+  }
+  setup()
+  expect(await launched({ FACTORY_NO_KICK: '1' })).toBe(false)
+}, 60_000)
+
+test('write AC6 FACTORY_WIKI_WRITE_MIN: 1 moves a 2 min stamp; bad values keep 180', async () => {
+  setup()
+  aged(2)
+  expect(await launched({ FACTORY_WIKI_WRITE_MIN: '1' })).toBe(true)
+  for (const v of ['0', '-5', 'abc', 'Infinity']) {
+    setup()
+    aged(10)
+    expect([v, await launched({ FACTORY_WIKI_WRITE_MIN: v })]).toEqual([v, false])
+  }
+}, 60_000)
