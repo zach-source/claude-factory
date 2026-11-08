@@ -91,3 +91,13 @@ test('a --once step without the lease is refused and makes no model call', () =>
   expect(r.code).not.toBe(0)
   expect(r.err).toContain('no patrol: herdr:one (herdr) holds the manager lease')
 })
+
+test('a busy lease lock passes the live holder and refuses another one', () => {
+  mkdirSync(join(home, 'lease.lock'), { recursive: true })
+  writeFileSync(join(home, 'lease.lock', 'pid'), String(process.pid))
+  take(home, { holder: 'herdr:one', kind: 'herdr', at: Date.now() })
+  expect(factory(['patrol', '--once'], { FACTORY_LEASE_HOLDER: 'herdr:one' }).out).toContain('nothing due')
+  expect(factory(['patrol', '--once'], { FACTORY_LEASE_HOLDER: 'pane:p9' }).err).toContain(
+    'no patrol: herdr:one',
+  )
+})

@@ -326,6 +326,7 @@ const DENIED = [
   'fork',
   'tick',
   'lease',
+  'herdr',
   'beads',
   'watch',
   'sync',
@@ -373,6 +374,7 @@ const DENIED = [
   'gc',
   'sweep',
   'wiki',
+  'settings',
 ]
 const switchCases = () => {
   const src = readFileSync(join(import.meta.dir, 'cli.ts'), 'utf8')

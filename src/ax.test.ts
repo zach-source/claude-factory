@@ -18,6 +18,10 @@ import { vmCodexHome } from './cli'
 import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
 
+const parentEnv = { ...process.env }
+for (const key of Object.keys(process.env))
+  if (key.startsWith('FACTORY_') || key.startsWith('BEADS_')) delete process.env[key]
+
 const dir = join(tmpdir(), `ax-${process.pid}`)
 const calls = join(dir, 'calls.log')
 // a fake `ax`: logs its argv and stdin, answers from files named after the subcommand
@@ -57,7 +61,10 @@ esac
 )
 chmodSync(kubectl, 0o755)
 process.env.FACTORY_KUBECTL = kubectl
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true })
+  process.env = parentEnv
+})
 beforeEach(() => {
   for (const f of [
     'calls.log',
@@ -76,6 +83,29 @@ beforeEach(() => {
     rmSync(join(dir, f), { force: true })
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
+
+test('the AX fixtures ignore inherited worker and Beads settings', () => {
+  const p = Bun.spawnSync(
+    [
+      process.execPath,
+      'test',
+      import.meta.filename,
+      '-t',
+      '^the worker briefs once|^syncBeads recovers a real bd',
+    ],
+    {
+      env: {
+        ...process.env,
+        FACTORY_HARNESS: 'invalid',
+        FACTORY_REPO: '',
+        FACTORY_BEADS_REMOTE: '',
+        BEADS_DIR: join(dir, 'parent-beads'),
+      },
+      timeout: 20_000,
+    },
+  )
+  expect(p.exitCode, p.stderr.toString()).toBe(0)
+})
 
 test('controller readiness requires current observed generation and available replicas', () => {
   const ready = {
@@ -1653,7 +1683,7 @@ echo '{"type":"system","subtype":"init","session_id":"sess-g"}'
 
 test("a turn is the headless command of the rig's agent, resuming by that agent's own session; the prompt never sits on its argv (claude-factory-kcg.1)", () => {
   for (const k of ['FACTORY_CLAUDE', 'FACTORY_CODEX', 'FACTORY_PI']) delete process.env[k] // an earlier test's fakes
-  const pi = { piDir: '/o/pi' }
+  const pi = { piDir: '/o/pi', plugins: [] }
   // codex: no session -> '-- -' ('-' reads the prompt from stdin); the agents all read the prompt from
   // stdin, never argv, since a prompt over Linux's MAX_ARG_STRLEN (131072 bytes) made posix_spawn fail with
   // ENAMETOOLONG (claude-factory-kcg)
@@ -1674,7 +1704,7 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
   ])
   expect(worker.turnArgv('pi', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
-    // claude-factory-hg9o: the image's worker rules (no /opt/plugins here, so no --skill)
+    // claude-factory-hg9o: the worker rules, with no plugins in this fixture
     ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-system\.md$/)],
     // claude-factory-66ib: the VM-only lines
     ...['--append-system-prompt', expect.stringMatching(/\/src\/worker-vm\.md$/)],
@@ -1843,6 +1873,7 @@ cat > ${dir}/pi.stdin.$n
     FACTORY_HARNESS: 'pi',
     FACTORY_PI: pi,
     FACTORY_BRIEF: 'pi brief',
+    FACTORY_SKILLS: '',
     FACTORY_WORKER_DIR: own,
     FACTORY_WORKER_REPO: repo,
   })
@@ -2673,10 +2704,14 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     FACTORY_WORKER_REPO: repo,
     FACTORY_HARNESS: 'codex',
     FACTORY_CODEX: fake,
+    FACTORY_SKILLS: 'asd-ste100,egm',
     FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', '../config.toml': 'x = 1\n' }),
   })
   try {
-    worker.codexHome(home)
+    worker.codexHome(home, 30_000, [])
+    expect(worker.imagePlugins()).toEqual(['/opt/plugins/asd-ste100'])
+    delete process.env.FACTORY_SKILLS
+    expect(worker.imagePlugins()).not.toContain('/opt/plugins/egm')
     expect(readdirSync(home).sort()).toEqual(['AGENTS.md', 'config.toml', 'hooks.json'])
     expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
     expect(readFileSync(join(home, 'AGENTS.md'), 'utf8')).toContain(
