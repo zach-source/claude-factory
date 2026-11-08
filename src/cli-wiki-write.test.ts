@@ -58,6 +58,7 @@ echo "$*" > '${data}/agent-args'
 cat > '${data}/agent-prompt'
 echo x >> '${data}/agent-runs'
 if [ -f '${data}/agent-exit' ]; then echo failed >&2; exit 3; fi
+if [ -f '${data}/agent-edit' ]; then sed -i 's/Text\\./Changed./' solutions/2026-10/person.md; fi
 for f in '${data}'/pages/solutions/*/*.md; do
   id=$(basename "$f" .md | sed 's/^fix-//')
   if grep -q "\\"id\\": \\"$id\\"" '${data}/agent-prompt'; then
@@ -285,14 +286,17 @@ slow('write AC2 an unmerged PR in ship_pr and a foreign URL make no group', () =
   const r = factory(['wiki', 'write', '--dry-run'])
   expect(r.out).not.toContain('acme-1')
   expect(r.out).not.toContain('acme-2')
-  expect(readFileSync(join(data, 'gh-calls'), 'utf8')).not.toContain('evil')
+  expect(r.out).toContain('1 waiting')
+  const calls = readFileSync(join(data, 'gh-calls'), 'utf8')
+  expect(calls).not.toContain('evil')
+  expect(calls).not.toMatch(/pulls\/1$/m)
 })
 
 slow('write AC3 a failing agent keeps the stamp and commits and records nothing', () => {
   one()
   writeFileSync(join(data, 'agent-exit'), '')
   const r = factory(['wiki', 'write'])
-  expect(r.out).not.toContain('1 pages')
+  expect(r.out).toContain('agent failed')
   expect(existsSync(join(home, 'wiki-write.stamp'))).toBe(true)
   expect(git('rev-list', '--count', 'HEAD')).toBe('1')
   expect(state().written).toBeUndefined()
@@ -353,4 +357,50 @@ slow('write AC7 the log holds no source secret', () => {
   factory(['wiki', 'write'])
   expect(prompt()).not.toContain(secret)
   expect(wikiLog()).not.toContain(secret)
+})
+
+slow('write AC3 the source bound defers groups and keeps the timestamp back', () => {
+  setup()
+  const beads = Array.from({ length: 40 }, (_, i) =>
+    closed(`acme-${i + 1}`, {
+      metadata: { ship_pr: `https://github.com/acme/widget/pull/${i + 10}` },
+      close_reason: 'x'.repeat(9000),
+    }),
+  )
+  seed(beads)
+  beads.forEach((b, i) => pr(i + 10, `${b.id}: fix`, ['src/a.ts']))
+  const r = factory(['wiki', 'write', '--dry-run'], { FACTORY_WIKI_WRITE_CAP: '100' })
+  const groups = r.out.split('\n').filter(l => l.startsWith('group')).length
+  expect(groups).toBeGreaterThan(0)
+  expect(groups).toBeLessThan(40)
+  expect(r.out).toContain(`${40 - groups} waiting`)
+})
+
+slow('write AC4 a change to a person line restores the page and adds a flag', () => {
+  one()
+  const person = page('acme-0', 'https://github.com/acme/widget/pull/4')
+  mkdirSync(join(wiki(), 'solutions', '2026-10'), { recursive: true })
+  writeFileSync(join(wiki(), 'solutions', '2026-10', 'person.md'), person)
+  git('add', '-A')
+  git('-c', 'user.name=person', '-c', 'user.email=person@example.com', 'commit', '-qm', 'person page')
+  writeFileSync(join(data, 'agent-edit'), '')
+  factory(['wiki', 'write'])
+  expect(readFileSync(join(wiki(), 'solutions', '2026-10', 'person.md'), 'utf8')).toBe(person)
+  expect(wikiLog()).toContain("person's line in solutions/2026-10/person.md")
+  expect(git('ls-tree', '-r', '--name-only', 'HEAD')).toContain('needs-person.md')
+})
+
+slow('write AC5 a commit failure leaves progress unchanged and the next pass retries', () => {
+  one()
+  const hook = join(wiki(), '.git', 'hooks', 'pre-commit')
+  mkdirSync(join(hook, '..'), { recursive: true })
+  writeFileSync(hook, '#!/bin/sh\nexit 1\n')
+  chmodSync(hook, 0o755)
+  const r = factory(['wiki', 'write'])
+  expect(r.out).toContain('commit failed')
+  expect(state().written).toBeUndefined()
+  expect(state().lastWriteAt).toBeUndefined()
+  rmSync(hook)
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written)).toEqual(['acme-1'])
 })
