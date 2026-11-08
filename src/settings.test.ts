@@ -241,7 +241,7 @@ describe('AC7: pure resolve', () => {
     const env = { FACTORY_MAX_RUNS: '3' }
     const rows = resolveSettings(stored, env)
     expect(rows.map(r => r.key)).toEqual(SETTING_KEYS.map(s => s.key))
-    expect(SETTING_KEYS.length).toBe(17)
+    expect(SETTING_KEYS.length).toBe(18)
     expect(stored).toEqual({ kubectl: 'k' })
     expect(env).toEqual({ FACTORY_MAX_RUNS: '3' })
   })
@@ -258,7 +258,7 @@ describe('devenv.json store', () => {
     )
     expect(statSync(f).mode & 0o777).toBe(0o600)
     expect(readdirSync(join(f, '..'))).toEqual(['devenv.json'])
-    expect(SETTING_KEYS.length).toBe(17)
+    expect(SETTING_KEYS.length).toBe(18)
   })
   test('AC2 unset removes one field; absent field or file writes nothing', () => {
     const f = dfile()

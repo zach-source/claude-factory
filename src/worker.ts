@@ -25,6 +25,7 @@ import {
   codexFeaturesBad,
   codexSkills,
   CURSOR_FLAGS,
+  GROK_FLAGS,
   cutOffCall,
   cutOffNote,
   piFlags,
@@ -33,7 +34,7 @@ import {
 } from './harness'
 import { rmSafe } from './home-guard'
 import * as memory from './memory'
-import { cursorUsageOf, sessionOf, type Usage } from './metrics'
+import { cursorUsageOf, grokUsageOf, sessionOf, type Usage } from './metrics'
 import { cut } from './cut'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
@@ -87,12 +88,13 @@ export function queue(argv: string[], usage?: Usage[], bdSkew?: string) {
 
 /**
  * what this VM's Claude session spent, with its subagents, for the report to carry. The laptop cannot
- * read the VM's transcripts. A cursor worker's rows come from its own stream; one with no Claude transcript (codex, pi) gives none. Never throws.
+ * read the VM's transcripts. A cursor or grok worker's rows come from its own stream; one with no Claude transcript (codex, pi) gives none. Never throws.
  */
 export function usageOfSession(run: string): Usage[] {
   try {
     if (harness() === 'cursor')
       return cursorUsageOf(readFileSync(join(own(), 'cursor.jsonl'), 'utf8').split('\n'))
+    if (harness() === 'grok') return grokUsageOf(readFileSync(join(own(), 'grok.jsonl'), 'utf8').split('\n'))
     const session = state()?.session
     if (!session || !/^[A-Za-z0-9-]+$/.test(session)) return []
     const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')
@@ -345,12 +347,12 @@ export function syncBeads({ tries = 3 } = {}): SyncResult {
   return { ok: false, ...last }
 }
 
-type Harness = 'claude' | 'codex' | 'pi' | 'cursor'
+type Harness = 'claude' | 'codex' | 'pi' | 'cursor' | 'grok'
 const harness = (): Harness => (process.env.FACTORY_HARNESS as Harness | undefined) ?? 'claude'
 
 /**
  * the argv of one headless turn of an agent. Claude: `-p --resume <id>`; codex: `exec`, then
- * `exec resume <id>`; cursor: `-p --resume <id>`; pi: `-p --session-id <id>`, which pi creates on first use. The brief is the first turn,
+ * `exec resume <id>`; cursor: `-p --resume <id>`; grok: `--prompt-file /dev/stdin -r <id>`; pi: `-p --session-id <id>`, which pi creates on first use. The brief is the first turn,
  * with no session yet; later turns resume it with the next prompt. The agents' permission prompts are off:
  * the microVM is the sandbox.
  *
@@ -358,7 +360,7 @@ const harness = (): Harness => (process.env.FACTORY_HARNESS as Harness | undefin
  * execve() caps one argv string at MAX_ARG_STRLEN (131072 bytes). A prompt over that limit made posix_spawn
  * fail with ENAMETOOLONG, and that error killed the worker turn (claude-factory-kcg). `claude -p` with no
  * prompt argument reads stdin. codex exec's trailing `-` does the same. So do `pi -p` and `cursor-agent -p` with no
- * message argument.
+ * message argument, and grok's `--prompt-file /dev/stdin`.
  */
 export function turnArgv(
   h: Harness,
@@ -399,6 +401,15 @@ export function turnArgv(
         ...model('--model'),
         ...(o.session ? ['--resume', o.session] : []),
       ]
+    case 'grok':
+      return [
+        process.env.FACTORY_GROK ?? 'grok',
+        ...['--prompt-file', '/dev/stdin', '--output-format', 'streaming-json'],
+        ...['--permission-mode', 'bypassPermissions', '--trust', ...GROK_FLAGS],
+        ...['--rules', grokRules()],
+        ...model('-m'),
+        ...(o.session ? ['-r', o.session] : []),
+      ]
     case 'pi':
       return [
         process.env.FACTORY_PI ?? 'pi',
@@ -412,9 +423,10 @@ export function turnArgv(
   }
 }
 
-/** the session a turn's output names: the init event of Claude or cursor, codex's thread.started; pi's id is ours, given up front */
+/** the session a turn's output names: the init event of Claude or cursor, grok's end event, codex's thread.started; pi's id is ours, given up front */
 export function sessionIn(h: Harness, out: string) {
   if (h === 'claude' || h === 'cursor') return out.match(/"session_id":"([^"]+)"/)?.[1]
+  if (h === 'grok') return out.match(/"type":"end"[^\n]*?"sessionId":"([^"]+)"/)?.[1]
   if (h === 'codex') return out.match(/"type":"thread\.started"[^\n]*?"thread_id":"([^"]+)"/)?.[1]
 }
 
@@ -468,6 +480,7 @@ export function egressFailure(h: Harness, out: string, err: string): string | nu
 async function turn(text: string, model?: string, session?: string, onSession?: (id: string) => void) {
   codexHome() // a turn can rewrite /etc/codex/requirements.toml when serve stays root: check again before each spawn
   cursorHome()
+  grokHome()
   const h = harness()
   // pi has no output to read an id from: it takes one on first use
   const id = h === 'pi' ? (session ?? crypto.randomUUID()) : session
@@ -1164,6 +1177,27 @@ export function cursorHome(home = homedir()) {
   writeFileSync(join(home, '.cursor', 'hooks.json'), hooks, { mode: 0o600 })
 }
 
+/**
+ * A grok worker's guard in the VM, written at serve start and before each turn: the laptop's hook file (the deny hook) goes to
+ * $GROK_HOME/hooks/factory.json. It fails closed, as cursorHome does: a .grok/hooks dir in the repo would add hooks beside it.
+ */
+export function grokHome(home = homedir()) {
+  if (harness() !== 'grok') return
+  const hooks = process.env.FACTORY_GROK_HOOKS
+  if (!hooks) throw new Error('a grok worker needs FACTORY_GROK_HOOKS from the laptop')
+  const local = join(repo(), '.grok', 'hooks')
+  if (existsSync(local)) throw new Error(`a grok worker keeps the deny hook on: ${local} would add hooks`)
+  const dir = join(process.env.GROK_HOME ?? join(home, '.grok'), 'hooks')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  writeFileSync(join(dir, 'factory.json'), hooks, { mode: 0o600 })
+}
+
+/** grok appends this to its system prompt (`--rules`) on every turn */
+const grokRules = () =>
+  ['worker-system.md', 'worker-vm.md', 'worker-grok.md']
+    .map(f => readFileSync(join(import.meta.dir, f), 'utf8'))
+    .join('')
+
 /** cursor has no system prompt flag: the worker rules lead its first prompt, as AGENTS.md does for codex */
 const cursorRules = () =>
   ['worker-system.md', 'worker-vm.md', 'worker-cursor.md']
@@ -1284,6 +1318,7 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   loadDevenv()
   codexHome()
   cursorHome()
+  grokHome()
   const services = await startServices()
   let session = prior?.session
   let egress: Egress | undefined = prior?.egress
@@ -1384,10 +1419,30 @@ export function cursorLimit(out: string, at = Date.now()) {
   return null
 }
 
-/** the usage limit in the last 64 KiB of the codex or cursor stream; null for another harness or no stream yet */
+/**
+ * Find the xAI quota or rate error that ended a grok turn: the last `error` or `end` event decides. A later `end` gives null.
+ * ponytail: the exact text of xAI's credit and rate errors is not yet seen; this matches the codes (402, 429) and words they are likely to use.
+ */
+export function grokLimit(out: string, at = Date.now()) {
+  for (const line of out.split('\n').reverse()) {
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'error' && e.type !== 'end') continue
+      return e.type === 'error' &&
+        /\b(402|429)\b|credits|rate.?limit|quota|resource_exhausted/i.test(String(e.message))
+        ? { at, kind: 'usage', resetsAt: 0 }
+        : null
+    } catch {
+      // not a JSON line: the cut first line of the tail
+    }
+  }
+  return null
+}
+
+/** the usage limit in the last 64 KiB of the codex, cursor or grok stream; null for another harness or no stream yet */
 function limitNow() {
   const h = harness()
-  if (h !== 'codex' && h !== 'cursor') return null
+  if (h !== 'codex' && h !== 'cursor' && h !== 'grok') return null
   try {
     const file = join(own(), `${h}.jsonl`)
     const { size, mtimeMs } = statSync(file)
@@ -1395,7 +1450,7 @@ function limitNow() {
     const fd = openSync(file, 'r')
     readSync(fd, buf, 0, buf.length, size - buf.length)
     closeSync(fd)
-    return (h === 'codex' ? codexLimit : cursorLimit)(buf.toString(), mtimeMs)
+    return (h === 'codex' ? codexLimit : h === 'grok' ? grokLimit : cursorLimit)(buf.toString(), mtimeMs)
   } catch {
     return null
   }

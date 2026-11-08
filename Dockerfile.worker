@@ -40,6 +40,7 @@ ARG CLAUDE_CODE_VERSION=2.1.291
 ARG CODEX_VERSION=0.160.1
 ARG PI_VERSION=0.80.2
 ARG CURSOR_VERSION=2026.11.05-86047df
+ARG GROK_VERSION=1.0.77
 ARG GH_VERSION=2.98.0
 ARG GLAB_VERSION=1.99.0
 ARG BD_VERSION=1.3.2
@@ -53,9 +54,12 @@ RUN mkdir /tmp/glab && curl -fsSL https://gitlab.com/gitlab-org/cli/-/releases/v
   | tar -xz -C /tmp/glab && mv /tmp/glab/bin/glab /usr/local/bin/glab && rm -rf /tmp/glab
 RUN curl -fsSL https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz \
   | tar -xz -C /usr/local/bin bd
-# the agents a rig can choose (rig add --agent): claude, codex, cursor or pi, each run headless by `factory worker serve`
+# the agents a rig can choose (rig add --agent): claude, codex, cursor, grok or pi, each run headless by `factory worker serve`
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} \
-    @earendil-works/pi-coding-agent@${PI_VERSION} && npm cache clean --force
+    @earendil-works/pi-coding-agent@${PI_VERSION} @xai-official/grok@${GROK_VERSION} && npm cache clean --force
+# grok, pinned above: GROK_DISABLE_AUTOUPDATER=1 turns off its update check, and every factory launch also passes --no-auto-update.
+# It needs FACTORY_AX_GROK=1 on the laptop; its deny hook is $GROK_HOME/hooks/factory.json (worker.ts grokHome)
+ENV GROK_DISABLE_AUTOUPDATER=1
 # codex keeps unified_exec on under --disable and -c; only this managed pin turns it off. With it on, write_stdin
 # runs a command with no PreToolUse hook (claude-factory-fzm3). codexHome refuses a launch that shows it on
 RUN mkdir -p /etc/codex && printf '[features]\nunified_exec = false\n' > /etc/codex/requirements.toml \

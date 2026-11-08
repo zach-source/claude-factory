@@ -363,6 +363,8 @@ export type Usage = {
   output: number
   turns: number
   peak: number
+  /** what an API-billed harness (grok) charged, in millionths of a dollar */
+  costMicro?: number
 }
 
 /**
@@ -453,7 +455,11 @@ export function validUsage(raw: unknown, node: string, seq: number): Usage[] {
     if (typeof session !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(session)) return []
     const n = NUMS.map(k => r[k])
     if (!n.every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e12)) return []
-    return [{ node, seq, session, model, ...Object.fromEntries(NUMS.map((k, i) => [k, n[i]])) } as Usage]
+    const c = r.costMicro
+    const cost = typeof c === 'number' && Number.isInteger(c) && c > 0 && c <= 1e12 ? { costMicro: c } : {}
+    return [
+      { node, seq, session, model, ...Object.fromEntries(NUMS.map((k, i) => [k, n[i]])), ...cost } as Usage,
+    ]
   })
 }
 
@@ -533,6 +539,40 @@ export function cursorUsageOf(lines: string[]): Usage[] {
     r.turns++
     r.peak = Math.max(r.peak, n('inputTokens') + n('cacheReadTokens') + n('cacheWriteTokens'))
     rows.set(e.session_id, r)
+  }
+  return [...rows.values()]
+}
+
+/**
+ * a grok worker's spend, one row for each session, from its streaming-json lines. Each `end` event holds one turn's
+ * usage and cost, so the turns add up. `input_tokens` leaves out the cached ones. The function skips bad lines.
+ */
+export function grokUsageOf(lines: string[]): Usage[] {
+  const rows = new Map<string, Usage>()
+  for (const line of lines) {
+    let e: Record<string, any>
+    try {
+      e = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (e?.type !== 'end' || !e.usage || typeof e.sessionId !== 'string') continue
+    const n = (k: string) => Number(e.usage[k]) || 0
+    const r = rows.get(e.sessionId) ?? {
+      ...{ node: '?', seq: 0, session: e.sessionId, model: Object.keys(e.modelUsage ?? {})[0] ?? 'grok' },
+      ...{ input: 0, cacheWrite: 0, cacheRead: 0, output: 0, turns: 0, peak: 0, costMicro: 0 },
+    }
+    r.input += n('input_tokens')
+    r.cacheWrite += n('cache_creation_input_tokens')
+    r.cacheRead += n('cache_read_input_tokens')
+    r.output += n('output_tokens')
+    r.turns++
+    r.peak = Math.max(
+      r.peak,
+      n('input_tokens') + n('cache_read_input_tokens') + n('cache_creation_input_tokens'),
+    )
+    r.costMicro = r.costMicro! + Math.round((Number(e.total_cost_usd) || 0) * 1e6)
+    rows.set(e.sessionId, r)
   }
   return [...rows.values()]
 }
