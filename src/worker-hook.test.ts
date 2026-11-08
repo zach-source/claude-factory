@@ -12206,3 +12206,64 @@ test('gh api repo setting writes: a wide GraphQL URL keeps every mutation check'
     repoDeny('gh api -X PUT https://api.github.com/repos/acme/widget/contents/api/graphql -f branch=main'),
   ).toBe(PUSH_REASON)
 })
+
+// claude-factory-qn8a.14: a leading redirect word must not hide a dynamic command head.
+const REDIRECT_GATE = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+const redirectDeny = (c: string) => denyReason(c, '/root/repo', ['gtr'], REDIRECT_GATE)
+
+test.each([
+  '>/dev/null $X "rm -rf /"',
+  '> /dev/null $X "rm -rf /"',
+  '>x $X "rm -rf /"',
+  '>>log $X "rm -rf /"',
+  '2>/dev/null $X "rm -rf /"',
+  '>/dev/null 2>&1 $X "rm -rf /"',
+  'nice >/dev/null $X "rm -rf /"',
+  'sudo >/dev/null $X "rm -rf /"',
+  '>/dev/null $X rm -rf /',
+  '>/dev/null $X "git push origin main"',
+])('qn8a.14 redirect dynamic deny %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+test.each(['>/dev/null $X "hello world"', '>/dev/null "$ROOT/bin/factory" status', '>/dev/null $EDITOR notes.md'])(
+  'qn8a.14 redirect controls allow %s',
+  c => {
+    expect(redirectDeny(c)).toBeUndefined()
+  },
+)
+
+test.each([
+  '>/dev/null eval "rm -rf /"',
+  '>/dev/null rm -rf /',
+  '>/dev/null sh -c "rm -rf /"',
+  '>/dev/null $X -c "rm -rf /"',
+  '&>/dev/null $X "rm -rf /"',
+  '</dev/null $X "rm -rf /"',
+  '2>&1 $X "rm -rf /"',
+])('qn8a.14 redirect controls deny %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+test.each([
+  'sudo -u root >out nice -n 5 >err $X "rm -rf /"',
+  'timeout >out 5 $X "rm -rf /"',
+  'A=1 >out $X "rm -rf /"',
+  '>a >b $X "rm -rf /"',
+  '>a >>b 2>c $X "rm -rf /"',
+  '>> a $X "rm -rf /"',
+  '>|x $X "rm -rf /"',
+  '>&2 $X "rm -rf /"',
+  '<<<hi $X "rm -rf /"',
+  '<>f $X "rm -rf /"',
+  '3<f $X "rm -rf /"',
+  '{fd}>f $X "rm -rf /"',
+  '&>>f $X "rm -rf /"',
+  'nice >a sudo >b $X "rm -rf /"',
+])('qn8a.14 redirect anchor invariants deny %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+test('qn8a.14 redirect anchor invariants allow a safe nested wrapper', () => {
+  expect(redirectDeny('sudo -u root >out nice -n 5 >err $EDITOR notes.md')).toBeUndefined()
+})
