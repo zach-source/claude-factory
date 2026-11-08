@@ -106,6 +106,28 @@ export default {
     codex_security_share: '0.3', // share of runs whose security uses codex; 0 turns it off
     codex_judge_model: 'gpt-6-astra', // codex in place of judge_model at plan and review
     codex_judge_share: '0', // share of runs whose plan and review use codex; off until a rig sets it
+    cursor: 'cursor-agent --force --trust', // the cursor launcher (the deny hook stays on); no station splits to it yet
+    cursor_plan_model: 'grok-4.7-low', // cursor at plan
+    cursor_plan_share: '0', // share of runs whose plan uses cursor; 0 turns it off
+    cursor_implement_model: 'grok-4.7-low', // cursor at implement
+    cursor_implement_share: '0', // share of runs whose implement uses cursor; 0 turns it off
+    cursor_verify_model: 'grok-4.7-low', // cursor at verify
+    cursor_verify_share: '0', // share of runs whose verify uses cursor; 0 turns it off
+    cursor_review_model: 'grok-4.7-low', // cursor at review
+    cursor_review_share: '0', // share of runs whose review uses cursor; 0 turns it off
+    cursor_security_model: 'grok-4.7-low', // cursor at security
+    cursor_security_share: '0', // share of runs whose security uses cursor; 0 turns it off
+    grok: 'grok --permission-mode bypassPermissions --trust', // the grok launcher (the deny hook stays on); no station splits to it yet
+    grok_plan_model: 'grok-4.7', // grok at plan
+    grok_plan_share: '0', // share of runs whose plan uses grok; 0 turns it off
+    grok_implement_model: 'grok-4.7', // grok at implement
+    grok_implement_share: '0', // share of runs whose implement uses grok; 0 turns it off
+    grok_verify_model: 'grok-4.7', // grok at verify
+    grok_verify_share: '0', // share of runs whose verify uses grok; 0 turns it off
+    grok_review_model: 'grok-4.7', // grok at review
+    grok_review_share: '0', // share of runs whose review uses grok; 0 turns it off
+    grok_security_model: 'grok-4.7', // grok at security
+    grok_security_share: '0', // share of runs whose security uses grok; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,

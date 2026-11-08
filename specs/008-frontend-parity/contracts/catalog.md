@@ -49,8 +49,10 @@ These operations come from the current CLI. The CLI command stays. It calls the 
 | Operation | CLI today | Route |
 | --- | --- | --- |
 | `catalog.show` | (new) | `GET /v1/catalog` |
+| `catalog.echo` | (new, the parity fixture) | `GET /v1/catalog/echo` |
 | `board.show` | `factory tick` (JSON) | `GET /v1/board` |
-| `runs.show` | `factory status <run>` | `GET /v1/runs/:id` |
+| `runs.show` | `factory show <run>` | `GET /v1/runs/:id` |
+| `runs.status` | `factory status` | `GET /v1/status` |
 | `runs.screen` | `herdr pane read` or `ax ssh` (new op) | `GET /v1/runs/:id/screen` |
 | `runs.start` | `factory start` | `POST /v1/start` |
 | `runs.queue` | `factory queue` | `POST /v1/queue` |
@@ -68,7 +70,7 @@ These operations come from the current CLI. The CLI command stays. It calls the 
 | `rigs.list`, `rigs.set` | `factory rigs`, `factory rig set` | `GET /v1/rigs`, `POST /v1/rigs/:name` |
 | `runners.show` | (the mod's Runners tab) | `GET /v1/runners` |
 | `mail.list` | the manager mail in the tick | `GET /v1/mail` |
-| `factory.stop`, `factory.resume` | `factory stop`, `factory resume` | `POST /v1/halt`, `POST /v1/resume` |
+| `factory.halt` | `factory stop`, `factory resume` | `POST /v1/halt` with `mode` |
 | `lease.show`, `lease.release` | `factory lease status`, `release` | `GET /v1/lease`, `POST /v1/lease/release` |
 | `steps.reports` | the patrol, pm, brief and review logs | `GET /v1/steps` |
 | `guard.check` | the Claude mod's `tool.call` gate | `POST /v1/guard/check` (read: it changes nothing) |
