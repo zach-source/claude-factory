@@ -997,10 +997,11 @@ A PR belongs to a live run when its branch is the run's (`factory/<run>`) or the
   normal verify and review. With no live run, the factory starts a run of the rig's factory at implement on
   the PR's own branch. That run pushes to the PR branch and opens no new PR. A PR with both labels takes
   this path.
+- **`fix-tests`**: for a PR whose build jobs or tests fail. The route is the same as for `rework`. The goal and the mail name the failed check runs of the PR head (at most 10) and their log links. The worker makes only the checks pass: it changes no behavior that the tests do not check, and it does not disable, skip or weaken a test. After 5 runs for one PR (`REQUEUE_MAX`), the factory starts no more runs. The board shows the PR and its failed checks. Fix it by hand, then remove the label. On GitLab, the factory does not read the failed jobs, so the worker reads them.
 
-A `conflict` or `rework` PR that belongs to a live run goes to that run instead, so two workers never
+A `conflict`, `rework` or `fix-tests` PR that belongs to a live run goes to that run instead, so two workers never
 push to one branch. For `conflict`, the current station is mailed what the label asks (a parked one wakes).
-For `rework`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
+For `rework` and `fix-tests`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
 run's factory has no implement station, the current station gets the mail. A PR that is queued with ship
 is unchanged: the ship run gets the label.
 

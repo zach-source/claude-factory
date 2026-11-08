@@ -126,3 +126,30 @@ export function ciReport(arg: string[], gh: Gh): CiResult {
   }
   return { text: out.join('\n'), exit: 1 }
 }
+
+/**
+ * The failed check runs of a GitHub check-runs answer, or undefined when the answer has no usable shape.
+ * A run is failed when it is completed and its conclusion is not success, neutral or skipped.
+ * Names are cleaned. A URL is kept only when it is https, printable ASCII and has none of ()<>.
+ */
+export function failedChecks(out: string): { name: string; url: string }[] | undefined {
+  try {
+    const runs = JSON.parse(out).check_runs as Check[]
+    if (!Array.isArray(runs)) return undefined
+    return runs
+      .filter(c => c.status === 'completed' && !PASS.has(String(c.conclusion)))
+      .map(c => {
+        const raw =
+          c.app?.slug === 'github-actions' && Number.isInteger(c.id)
+            ? c.html_url
+            : (c.details_url ?? c.html_url)
+        const url = clean(String(raw ?? ''), 400)
+        return {
+          name: clean(String(c.name ?? ''), 100) || '(no name)',
+          url: /^https:\/\/[\x21-\x7e]{1,300}$/.test(url) && !/[()<>]/.test(url) ? url : '',
+        }
+      })
+  } catch {
+    return undefined
+  }
+}
