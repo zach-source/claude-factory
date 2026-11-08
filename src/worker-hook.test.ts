@@ -10,6 +10,7 @@ import {
   baseWord,
   baseWordForTest,
   dynamicHeadDenyForTest,
+  commandAnchorsForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   FACTORY_FROM_REASON,
@@ -12209,7 +12210,7 @@ test('gh api repo setting writes: a wide GraphQL URL keeps every mutation check'
 
 // claude-factory-qn8a.14: a leading redirect word must not hide a dynamic command head.
 // PR 235 (ibas, a quoted script after a dynamic head) closed unmerged, so `$X "rm -rf /"` allows
-// even with no redirect. The parity test covers those rows: a redirect must not change the verdict.
+// even with no redirect. The parity tests cover those rows: a redirect must never loosen the verdict.
 const REDIRECT_GATE = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
 const redirectDeny = (c: string) => denyReason(c, '/root/repo', ['gtr'], REDIRECT_GATE)
 
@@ -12255,8 +12256,8 @@ test.each([
   ['sudo -u root >out nice -n 5 >err $X "rm -rf /"', 'sudo -u root nice -n 5 $X "rm -rf /"'],
   ['timeout >out 5 $X "rm -rf /"', 'timeout 5 $X "rm -rf /"'],
   ['2>&1 $X "rm -rf /"', '$X "rm -rf /"'],
-])('qn8a.14 redirect anchor invariants: verdict of %s equals %s', (withRedirect, plain) => {
-  expect(!!redirectDeny(withRedirect)).toBe(!!redirectDeny(plain))
+])('qn8a.14 redirect anchor invariants: verdict of %s never allows more than %s', (withRedirect, plain) => {
+  if (redirectDeny(plain)) expect(redirectDeny(withRedirect)).toBeTruthy()
 })
 
 test.each([
@@ -12269,4 +12270,23 @@ test.each([
 
 test('qn8a.14 redirect anchor invariants allow a safe nested wrapper', () => {
   expect(redirectDeny('sudo -u root >out nice -n 5 >err $EDITOR notes.md')).toBeUndefined()
+})
+
+test.each([
+  ['sudo', ...Array.from({ length: 30 }, () => ['-Z', 'v', 'env']).flat(), '$X'],
+  ['nice', ...Array.from({ length: 40 }, () => ['-Q', '$G']).flat(), 'x'],
+])('qn8a.14 redirect keeps the anchor budget of one pass %#', (...words) => {
+  const pure = commandAnchorsForTest(words).length
+  expect(commandAnchorsForTest(['>x', ...words]).length).toBe(pure)
+  expect(commandAnchorsForTest(['>x', ...words, '>y']).length).toBeLessThanOrEqual(pure + 1)
+})
+
+test.each([
+  ['>/dev/null g*t push origin main', 'g*t push origin main'],
+  ['>/dev/null rm -r *', 'rm -r *'],
+  ['>/dev/null /bin/echo alias=$Y', '/bin/echo alias=$Y'],
+  ['>out set -A $n x', 'set -A $n x'],
+  ['>/dev/null echo $A', 'echo $A'],
+])('qn8a.14 redirect keeps the alias and glob verdict of %s', (withRedirect, plain) => {
+  if (redirectDeny(plain)) expect(redirectDeny(withRedirect)).toBeTruthy()
 })

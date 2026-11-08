@@ -2686,9 +2686,25 @@ function commandAnchors(words: string[]): number[] {
   const raw = commandAnchorsOf(words)
   if (kept.length === words.length) return raw
   const out = commandAnchorsOf(kept.map(k => words[k]!)).map(k => kept[k]!)
-  for (const a of raw) if (!out.includes(a)) out.push(a)
+  // Keep the budget of one pass: the merged list is never longer than the longer single list.
+  const limit = Math.max(raw.length, out.length)
+  for (const a of raw) if (out.length < limit && !out.includes(a)) out.push(a)
   return out
 }
+
+// claude-factory-qn8a.14: the first head of each reading: without redirects, then the raw words.
+// A caller that reads only the first head must treat both as possible.
+function firstHeads(words: string[]): number[] {
+  const kept = nonRedirectIndices(words)
+  const raw = commandAnchorsOf(words)[0]
+  if (kept.length === words.length) return raw === undefined ? [] : [raw]
+  const k = commandAnchorsOf(kept.map(i => words[i]!))[0]
+  const out = k === undefined ? [] : [kept[k]!]
+  if (raw !== undefined && !out.includes(raw)) out.push(raw)
+  return out
+}
+
+export { commandAnchors as commandAnchorsForTest }
 
 function commandAnchorsOf(words: string[]): number[] {
   let i = 0
@@ -6379,19 +6395,19 @@ const NAME_BUILT = /[$`]/
 
 // claude-factory-mn2y: a name-building argument of a command that is not provably external.
 function segmentDynArg(words: string[]): boolean {
-  const first = commandAnchors(words)[0]
-  if (
-    first === undefined ||
-    externalProgram(words[first]!) ||
-    words[first] === 'echo' ||
-    words[first] === 'cd' ||
-    // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
-    ((words[first] === '[' || words[first] === '[[') &&
-      testBuiltinSafe(words[first]!, words.slice(first + 1))) ||
-    words[first]!.startsWith('#')
-  )
-    return false
-  return words.some((w, i) => i > first && NAME_BUILT.test(w))
+  return firstHeads(words).some(first => {
+    if (
+      externalProgram(words[first]!) ||
+      words[first] === 'echo' ||
+      words[first] === 'cd' ||
+      // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
+      ((words[first] === '[' || words[first] === '[[') &&
+        testBuiltinSafe(words[first]!, words.slice(first + 1))) ||
+      words[first]!.startsWith('#')
+    )
+      return false
+    return words.some((w, i) => i > first && NAME_BUILT.test(w))
+  })
 }
 
 // claude-factory-mn2y: true when this segment may define a shell alias.
@@ -6402,12 +6418,13 @@ function segmentDynArg(words: string[]): boolean {
 function segmentMayDefineAlias(words: string[]): boolean {
   if (words[0] === 'alias' && words.slice(1).every(w => /^[A-Za-z0-9_.:@%+,/-]+$/.test(w))) return false
   const anchors = commandAnchors(words)
-  const first = anchors[0]
-  const safe = first !== undefined && externalProgram(words[first]!)
+  const heads = firstHeads(words)
+  const safe = heads.length > 0 && heads.every(h => externalProgram(words[h]!))
+  const first = Math.max(...heads)
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (!/alias/i.test(w)) continue
-    if (safe && i > first! && !/[$`]/.test(w)) continue
+    if (safe && i > first && !/[$`]/.test(w)) continue
     return true
   }
   for (const a of anchors) {
