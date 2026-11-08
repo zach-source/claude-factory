@@ -80,6 +80,7 @@ import {
   room,
   clusterCap,
   slot,
+  passSettings,
   withoutFleet,
   type RigFacts,
   factoryLabelName,
@@ -120,6 +121,8 @@ test("the factory's Claudes load every mod but herdr-fleet", () => {
   expect(withoutFleet('/m/herdr-fleet').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
   expect(withoutFleet('/m/herdr-fleet:/m/other').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('/m/other')
   expect(withoutFleet('').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
+  expect(passSettings('').permissions.deny).toEqual(['Edit(./.git/**)'])
+  expect(passSettings('/m/herdr-fleet').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
 })
 
 test('a worker still working at its time limit is warned once and given half again', () => {

@@ -3499,6 +3499,12 @@ export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? ''
   },
 })
 
+/** withoutFleet() plus a deny rule: the file-edit tools of an agent pass cannot write the pass's own .git. Only `Edit(path)` rules match, and `./` is the cwd. */
+export const passSettings = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
+  ...withoutFleet(dirs),
+  permissions: { deny: ['Edit(./.git/**)'] },
+})
+
 /**
  * what to do about a launch that has not shown its Claude yet: wait, press Enter (the command sat
  * unsent on the line), type it again, then give up. Each step counts as a nudge.
@@ -5338,7 +5344,15 @@ async function dream() {
     if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
       return 'nothing new since the last dream'
     const start = Date.now()
-    const before = git(MEMORY, 'rev-parse', 'HEAD')
+    // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
+    const refuse = (why: string) => {
+      appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
+      return why
+    }
+    const memRun = wikiRun(MEMORY)
+    const pair = headPair(memRun)
+    if (!pair) return refuse('dream: no branch head, dream refused')
+    const before = pair.sha
     const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
     const proposalsBefore = memory.proposals(MEMORY)
     // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
@@ -5369,11 +5383,6 @@ async function dream() {
     const model = process.env.FACTORY_DREAM_CODEX
     let codexHome: string | undefined
     if (model) {
-      // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
-      const refuse = (why: string) => {
-        appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
-        return why
-      }
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model))
         return refuse('FACTORY_DREAM_CODEX is not a model name')
       // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
@@ -5419,7 +5428,7 @@ async function dream() {
           [
             ...claudeCommand().split(/\s+/),
             ...['-p', '--permission-mode', 'acceptEdits'],
-            ...['--settings', JSON.stringify(withoutFleet())],
+            ...['--settings', JSON.stringify(passSettings())],
             ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
           ],
           { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
@@ -5432,7 +5441,6 @@ async function dream() {
     appendFileSync(dreamLog, `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
     if (removed.length) appendFileSync(dreamLog, removedLine(removed))
     storeDreamUsage(start, codexHome)
-    if (p.exitCode !== 0) return said
     // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
     const overProposals = memory.proposalsOverCap(
       proposalsBefore.map(p => p.name),
@@ -5441,6 +5449,17 @@ async function dream() {
     for (const name of overProposals) rmSync(join(memory.proposalsDir(MEMORY), `${name}.md`))
     if (overProposals.length)
       appendFileSync(join(HOME, 'dream.log'), `dropped proposals over the cap: ${overProposals.join(', ')}\n`)
+    // a pass that moved HEAD commits nothing: its edits stay in the worktree for the next dream's notes commit
+    const kept = headKept(memRun, pair)
+    if (kept !== 'same') {
+      const line =
+        kept === 'moved'
+          ? 'dream: HEAD moved in the pass, nothing committed'
+          : 'dream: HEAD moved in the pass, restore failed, nothing committed'
+      appendFileSync(dreamLog, `${line}\n`)
+      return line
+    }
+    if (p.exitCode !== 0) return said
     git(MEMORY, 'add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
     // through the alias it left on the entry that absorbed it (claude-factory-59r.11).
