@@ -17,8 +17,8 @@ The person's clients call this API: the console (the `mod` plugin), the factory 
 | `GET /v1/runs/<id>`                                                      | The same JSON as `factory show <id>`.                                                     | `factory show`         |
 | `GET /v1/status`                                                         | The same text as `factory status`.                                                        | `factory status`       |
 | `GET /v1/prs`, `/v1/backlog`, `/v1/metrics`, `/v1/decisions`, `/v1/plan` | The same JSON or text as the CLI command of that name.                                    | the CLI commands       |
-| `GET /v1/catalog` | The operation catalog of specs/008-frontend-parity/contracts/catalog.md. | the CLI help |
-| `GET /v1/catalog/echo?text=<text>` | The text. A parity fixture. | (none) |
+| `GET /v1/catalog` | The operation catalog of specs/008-frontend-parity/contracts/catalog.md. | (new) |
+| `GET /v1/catalog/echo?text=<text>` | The text. A parity fixture. | (new) |
 | `GET /v1/events?after=<id>`                                              | Server-sent events: one event for each board change.                                      | the console's 5 s poll |
 
 ## Action endpoints

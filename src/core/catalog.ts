@@ -87,7 +87,6 @@ export function makeCatalog(ops: Op[]): Op[] {
   return [...ops].sort((a, b) => (a.name < b.name ? -1 : 1))
 }
 
-const own = (op: Op, k: string) => op.inputs.find(f => f.name === k)
 const pathNames = (op: Op) => params(op).map(p => p.slice(1))
 
 /** path params are the raw segments of url.pathname, in route order, never decoded */
