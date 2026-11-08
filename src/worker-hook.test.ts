@@ -12209,8 +12209,7 @@ test('gh api repo setting writes: a wide GraphQL URL keeps every mutation check'
 })
 
 // claude-factory-qn8a.14: a leading redirect word must not hide a dynamic command head.
-// PR 235 (ibas, a quoted script after a dynamic head) closed unmerged, so `$X "rm -rf /"` allows
-// even with no redirect. The parity tests cover those rows: a redirect must never loosen the verdict.
+// A dynamic head can expand to eval or sh -c, so the words after it are a script (ibas, PR 235).
 const REDIRECT_GATE = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
 const redirectDeny = (c: string) => denyReason(c, '/root/repo', ['gtr'], REDIRECT_GATE)
 
@@ -12243,21 +12242,77 @@ test.each([
   expect(redirectDeny(c)).toBeTruthy()
 })
 
+const SCRIPT_ROWS = [
+  '$X "rm -rf /"',
+  '$X "git push origin main"',
+  '$X \'rm -rf\' /',
+  '$X x "rm -rf /"',
+  "$X 'git push' origin main",
+  '${X:-${Y}/} "rm -rf /"',
+  'e$X "rm -rf /"',
+  "env -u BEADS_ACTOR $X 'bd create acme'",
+  "env -u FACTORY_FROM $X 'factory mail acme manager'",
+]
+const REDIRECT_PREFIXES = ['>/dev/null', '> /dev/null', '>x', '>>log', '2>/dev/null', '>/dev/null 2>&1', '>|x', '&>>f', '<>f', '3<f', '{fd}>f', '>a >>b 2>c']
+const WRAPPER_PREFIXES = [
+  'nice >/dev/null',
+  'sudo >/dev/null',
+  'sudo -u root >out nice -n 5 >err',
+  'timeout >out 5',
+  'A=1 >out',
+  'nice >a sudo >b',
+]
+
 test.each([
-  ['>/dev/null $X "rm -rf /"', '$X "rm -rf /"'],
-  ['> /dev/null $X "rm -rf /"', '$X "rm -rf /"'],
-  ['>x $X "rm -rf /"', '$X "rm -rf /"'],
-  ['>>log $X "rm -rf /"', '$X "rm -rf /"'],
-  ['2>/dev/null $X "rm -rf /"', '$X "rm -rf /"'],
-  ['>/dev/null 2>&1 $X "rm -rf /"', '$X "rm -rf /"'],
-  ['nice >/dev/null $X "rm -rf /"', 'nice $X "rm -rf /"'],
-  ['sudo >/dev/null $X "rm -rf /"', 'sudo $X "rm -rf /"'],
-  ['>/dev/null $X "git push origin main"', '$X "git push origin main"'],
-  ['sudo -u root >out nice -n 5 >err $X "rm -rf /"', 'sudo -u root nice -n 5 $X "rm -rf /"'],
-  ['timeout >out 5 $X "rm -rf /"', 'timeout 5 $X "rm -rf /"'],
-  ['2>&1 $X "rm -rf /"', '$X "rm -rf /"'],
-])('qn8a.14 redirect anchor invariants: verdict of %s never allows more than %s', (withRedirect, plain) => {
-  if (redirectDeny(plain)) expect(redirectDeny(withRedirect)).toBeTruthy()
+  ...REDIRECT_PREFIXES.flatMap(p => SCRIPT_ROWS.map(r => `${p} ${r}`)),
+  ...WRAPPER_PREFIXES.flatMap(p => SCRIPT_ROWS.slice(0, 2).map(r => `${p} ${r}`)),
+  ...SCRIPT_ROWS,
+])('qn8a.14 redirect dynamic deny quoted %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+test.each([
+  '2>&1 $X "rm -rf /"',
+  '</dev/null $X "rm -rf /"',
+  '>/dev/null eval "rm -rf /"',
+  '>/dev/null sh -c "rm -rf /"',
+])('qn8a.14 redirect controls deny %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+test.each([
+  '"$PY" -c "print(1)"',
+  '$X "hello world"',
+  '$EDITOR notes.md',
+  '$GIT status',
+  '$X "a b" c',
+  '$GREP -n "foo bar" file',
+  '$CC -o out "my file.c"',
+  '${PAGER:-less} "notes file.md"',
+  '"${ROOT}/bin/factory" status',
+  '"$ROOT/bin/factory" status',
+])('qn8a.14 dynamic script prerequisite allows %s, plain and after a redirect', c => {
+  expect(redirectDeny(c)).toBeUndefined()
+  expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 dynamic script prerequisite reads both script forms %#', p => {
+  for (const c of SCRIPT_ROWS) expect(redirectDeny(p + c)).toBeTruthy()
+})
+
+test.each([
+  ['$X ' + Array(200).fill('"x y"').join(' ')],
+  [Array(200).fill('$X').join(' ') + ' "x y"'],
+])('qn8a.14 script budget stays linear %#', cmd => {
+  const t = Date.now()
+  redirectDeny(`>x ${cmd}`)
+  expect(Date.now() - t).toBeLessThan(1000)
+})
+
+test('qn8a.14 script budget denies a script nested past the depth limit', () => {
+  let s = 'rm -rf /'
+  for (let i = 0; i < 30; i++) s = `$X "${s.replace(/"/g, '\\"')}"`
+  expect(redirectDeny(`>x $X '${s.replace(/'/g, '')}'`)).toBeTruthy()
 })
 
 test.each([
@@ -12289,8 +12344,23 @@ test.each([
   ['>/dev/null g*t push origin main', 'g*t push origin main'],
   ['>/dev/null rm -r *', 'rm -r *'],
   ['>/dev/null /bin/echo alias=$Y', '/bin/echo alias=$Y'],
-  ['>out set -A $n x', 'set -A $n x'],
-  ['>/dev/null echo $A', 'echo $A'],
 ])('qn8a.14 redirect keeps the alias and glob verdict of %s', (withRedirect, plain) => {
-  if (redirectDeny(plain)) expect(redirectDeny(withRedirect)).toBeTruthy()
+  expect(redirectDeny(plain)).toBeTruthy()
+  expect(redirectDeny(withRedirect)).toBeTruthy()
+})
+
+test.each(['set -A $n x', 'echo $A'])('qn8a.14 redirect keeps the allow verdict of %s', c => {
+  expect(redirectDeny(c)).toBeUndefined()
+  expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+})
+
+test('qn8a.14 redirect keeps both first-head readings', () => {
+  expect(commandAnchorsForTest(['>x', '/bin/echo', 'alias'])).toContain(1)
+  expect(commandAnchorsForTest(['>x', '/bin/echo', 'alias'])[0]).toBe(1)
+  expect(commandAnchorsForTest(['>x', 'echo', '$name'])).toEqual(expect.arrayContaining([0, 1]))
+})
+
+test('qn8a.14 redirect anchor budget stays at the raw tail-scan count', () => {
+  const words = ['nice', ...Array.from({ length: 40 }, () => ['-Q', '$G']).flat(), 'x']
+  expect(commandAnchorsForTest(['>x', ...words]).length).toBeLessThanOrEqual(commandAnchorsForTest(words).length)
 })
