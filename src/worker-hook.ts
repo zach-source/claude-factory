@@ -2675,7 +2675,22 @@ function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | u
   return result
 }
 
+/**
+ * claude-factory-qn8a.14: the indices of the command heads in `words`. A redirect word is not a
+ * head. This reads the words without redirects first, then the original words, so a quote the
+ * tokenizer dropped cannot hide a head. Every index is into `words`. The redirect-free heads come
+ * first, so a caller that reads only `[0]` sees the real head.
+ */
 function commandAnchors(words: string[]): number[] {
+  const kept = nonRedirectIndices(words)
+  const raw = commandAnchorsOf(words)
+  if (kept.length === words.length) return raw
+  const out = commandAnchorsOf(kept.map(k => words[k]!)).map(k => kept[k]!)
+  for (const a of raw) if (!out.includes(a)) out.push(a)
+  return out
+}
+
+function commandAnchorsOf(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
     const w = words[i]!
@@ -5400,7 +5415,12 @@ function ghAliasExpansion(text: string): string[] | undefined {
  * Without this, the redirect word reads as the gh verb or the gh sub word and hides the real one.
  */
 function dropRedirectWords(words: string[]): string[] {
-  const out: string[] = []
+  return nonRedirectIndices(words).map(i => words[i]!)
+}
+
+// The indices of the words that are not redirect words. A bare operator also drops its target.
+function nonRedirectIndices(words: string[]): number[] {
+  const out: number[] = []
   for (let i = 0; i < words.length; i++) {
     // claude-factory-7xmz.4: zsh also reads `>&|`, `>&!`, `>>&|`, `>>&!`, `>|`, `>!`. 7xmz.5: bash
     // reads a `{a[0]}` fd name with a subscript.
@@ -5409,7 +5429,7 @@ function dropRedirectWords(words: string[]): string[] {
         words[i]!,
       )
     if (!m) {
-      out.push(words[i]!)
+      out.push(i)
       continue
     }
     if (m[1] === '') i++
