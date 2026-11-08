@@ -466,7 +466,7 @@ const person = (msg: string) => {
   git('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', msg)
 }
 /** a driver for the blame guard: `before` saves the blame, `after` runs keepPersonLines() then commitWiki() */
-function guardPass(mode: 'before' | 'after') {
+function guardPass(mode: 'before' | 'after', shim = '') {
   const script = join(dir, 'guard.ts')
   const saved = join(dir, 'blame.json')
   writeFileSync(
@@ -477,17 +477,30 @@ const saved = '${saved}'
 if (process.argv[2] === 'before') {
   const b = wikiBlame()
   if (!b) process.exit(3)
-  writeFileSync(saved, JSON.stringify([...b]))
+  writeFileSync(saved, JSON.stringify({ ref: b.ref, sha: b.sha, blames: [...b.blames] }))
 } else {
-  const ok = keepPersonLines(new Map(JSON.parse(readFileSync(saved, 'utf8'))), 'the pass tidied it')
+  const o = JSON.parse(readFileSync(saved, 'utf8'))
+  const ok = keepPersonLines({ ...o, blames: new Map(o.blames) }, 'the pass tidied it')
   if (!ok) process.exit(4)
   commitWiki('write', 'pass')
 }
 `,
   )
+  const sbin = join(dir, 'guard-shim')
+  mkdirSync(sbin, { recursive: true })
+  if (shim) {
+    writeFileSync(join(sbin, 'git'), `#!/bin/sh\n${shim}\nexec '${Bun.which('git')}' "$@"\n`)
+    chmodSync(join(sbin, 'git'), 0o755)
+  }
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
   return Bun.spawnSync(['bun', script, mode], {
-    env: { ...laptop, FACTORY_HOME: home, FACTORY_NO_KICK: '1', FACTORY_SELF_UPDATE: '0' },
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      PATH: mode === 'after' ? `${sbin}:${laptop.PATH}` : laptop.PATH,
+      FACTORY_NO_KICK: '1',
+      FACTORY_SELF_UPDATE: '0',
+    },
     stderr: 'pipe',
   })
 }
@@ -542,6 +555,130 @@ test('AC4 a pass that deletes a page with a person line gets it back; factory-on
   writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
   expect(guardPass('after').exitCode).toBe(0)
   expect(at('index.md')).toContain('New index')
+  expect(existsSync(join(wiki(), 'needs-person.md'))).toBe(false)
+})
+
+/** a person commit on glossary.md, the blame saved, and the pass's edit of that line; returns the person's text */
+function headSetup() {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const mine = readFileSync(join(wiki(), 'glossary.md'), 'utf8').replace(
+    'one tracked task in bd',
+    'my own words',
+  )
+  writeFileSync(join(wiki(), 'glossary.md'), mine)
+  person('mine')
+  expect(guardPass('before').exitCode).toBe(0)
+  return mine
+}
+const branch = () => git('symbolic-ref', '--short', 'HEAD')
+const refFile = (name: string) => join(wiki(), '.git', 'refs', 'heads', name)
+const movedLine = 'wiki: HEAD moved in the pass, nothing committed'
+
+test('AC1 a pass that rewinds the branch ref loses no person line and makes no commit', () => {
+  const mine = headSetup()
+  const sha = git('rev-parse', 'HEAD')
+  const count = git('rev-list', '--count', 'HEAD')
+  const init = git('rev-list', '--max-parents=0', 'HEAD')
+  writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
+  writeFileSync(refFile(branch()), `${init}\n`)
+  expect(guardPass('after').exitCode).toBe(4)
+  expect(git('rev-parse', 'HEAD')).toBe(sha)
+  expect(git('rev-list', '--count', 'HEAD')).toBe(count)
+  expect(at('glossary.md')).toBe(mine)
+  expect(wikiLog()).toContain(movedLine)
+  expect(wikiLog()).not.toContain('page kept, flagged')
+})
+
+test('AC1 a pass that moves HEAD to another branch is put back', () => {
+  headSetup()
+  const sha = git('rev-parse', 'HEAD')
+  const ref = git('symbolic-ref', 'HEAD')
+  writeFileSync(refFile('other'), `${sha}\n`)
+  writeFileSync(join(wiki(), '.git', 'HEAD'), 'ref: refs/heads/other\n')
+  expect(guardPass('after').exitCode).toBe(4)
+  expect(git('symbolic-ref', 'HEAD')).toBe(ref)
+  expect(git('rev-parse', 'refs/heads/other')).toBe(sha)
+  expect(wikiLog()).toContain(movedLine)
+})
+
+test('AC1 a commit made during the pass stays: no rewind, no factory commit', () => {
+  headSetup()
+  appendFileSync(join(wiki(), 'index.md'), 'person later\n')
+  person('later')
+  const sha = git('rev-parse', 'HEAD')
+  expect(guardPass('after').exitCode).toBe(4)
+  expect(git('rev-parse', 'HEAD')).toBe(sha)
+  expect(at('index.md').endsWith('person later\n')).toBe(true)
+  expect(wikiLog()).toContain(movedLine)
+})
+
+test('AC1 a pass that writes the same sha back to the ref is allowed', () => {
+  const mine = headSetup()
+  writeFileSync(refFile(branch()), `${git('rev-parse', 'HEAD')}\n`)
+  writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'New index'))
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('glossary.md')).toBe(mine)
+  expect(at('index.md')).toContain('New index')
+})
+
+test('AC1 when the restore fails, only the restore failed line is written and nothing is committed', () => {
+  const mine = headSetup()
+  const sha = git('rev-parse', 'HEAD')
+  const init = git('rev-list', '--max-parents=0', 'HEAD')
+  writeFileSync(join(wiki(), 'glossary.md'), mine.replace('my own words', 'agent words'))
+  writeFileSync(refFile(branch()), `${init}\n`)
+  expect(guardPass('after', 'case "$*" in *update-ref*) exit 1;; esac').exitCode).toBe(4)
+  expect(wikiLog()).toContain('wiki: HEAD moved in the pass, restore failed, nothing committed')
+  expect(wikiLog()).not.toContain(movedLine)
+  expect(git('rev-parse', 'HEAD')).toBe(init)
+  expect(sha).not.toBe(init)
+  expect(git('log', '--all', '--author=factory@', '--format=%H')).toBe(init)
+})
+
+test('AC1 a detached HEAD refuses the pass', () => {
+  headSetup()
+  git('checkout', '-q', '--detach')
+  expect(guardPass('before').exitCode).toBe(3)
+  expect(wikiLog()).toContain('wiki: no branch head, pass refused')
+})
+
+test('AC1 a garbage .git/HEAD fails the restore and never touches a repo in a parent', () => {
+  setup()
+  mkdirSync(home, { recursive: true })
+  expect(Bun.spawnSync(['git', '-C', home, 'init', '-q']).exitCode).toBe(0)
+  writeFileSync(join(home, 'f'), 'x')
+  Bun.spawnSync(['git', '-C', home, 'add', '-A'])
+  Bun.spawnSync(['git', '-C', home, '-c', 'user.name=p', '-c', 'user.email=p@acme.example', 'commit', '-qm', 'x'])
+  const homeHead = () => Bun.spawnSync(['git', '-C', home, 'rev-parse', 'HEAD']).stdout.toString()
+  const before = homeHead()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(guardPass('before').exitCode).toBe(0)
+  writeFileSync(join(wiki(), '.git', 'HEAD'), 'garbage\n')
+  expect(guardPass('after').exitCode).toBe(4)
+  expect(wikiLog()).toContain('wiki: HEAD moved in the pass, restore failed, nothing committed')
+  expect(wikiLog()).not.toContain(movedLine)
+  expect(homeHead()).toBe(before)
+})
+
+test('AC3 a page over 65,536 bytes counts as empty: the person line is put back and flagged', () => {
+  const mine = headSetup()
+  writeFileSync(join(wiki(), 'glossary.md'), `${mine}${'\n'.repeat(65_537 - Buffer.byteLength(mine))}`)
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(at('glossary.md')).toBe(mine)
+  expect(at('needs-person.md')).toContain('`glossary.md`')
+  expect(wikiLog()).toContain("wiki: person's line in glossary.md, page kept, flagged")
+})
+
+test('AC3 a page of exactly 65,536 bytes that keeps the person line is allowed', () => {
+  const mine = headSetup()
+  const text = `${mine}${'factory line\n'.repeat(10)}`
+  const big = `${text}${'\n'.repeat(65_536 - Buffer.byteLength(text))}`
+  expect(Buffer.byteLength(big)).toBe(65_536)
+  writeFileSync(join(wiki(), 'glossary.md'), big)
+  expect(guardPass('after').exitCode).toBe(0)
+  expect(Buffer.byteLength(at('glossary.md'))).toBe(65_536)
   expect(existsSync(join(wiki(), 'needs-person.md'))).toBe(false)
 })
 
