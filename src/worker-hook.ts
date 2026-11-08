@@ -2890,7 +2890,11 @@ export const FACTORY_RUN_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_RUN. ' +
   'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
   'Do not retry this command.'
-const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmds: FACTORY_CLI_WORDS, reason: FACTORY_RUN_REASON }
+const FACTORY_RUN_GUARD: EnvGuard = {
+  name: 'FACTORY_RUN',
+  cmds: FACTORY_CLI_WORDS,
+  reason: FACTORY_RUN_REASON,
+}
 // claude-factory-qn8a.31: bin/factory unpacks the FACTORY_VM_ENV JSON into its own env and its children's
 // env, so a worker that sets it can carry GIT_CONFIG_*, FACTORY_FROM, FACTORY_RUN, HOME or BEADS_ACTOR.
 export const FACTORY_VM_ENV_REASON =
