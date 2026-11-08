@@ -304,6 +304,19 @@ slow('write AC3 a failing agent keeps the stamp and commits and records nothing'
   expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
 })
 
+slow('write AC2 a file list of 100 files may be cut off, so the bead waits', () => {
+  setup()
+  seed([closed('acme-1', { metadata: { ship_pr: PR5 } })])
+  pr(
+    5,
+    'acme-1: fix it',
+    Array.from({ length: 100 }, (_, i) => `src/f${i}.ts`),
+  )
+  const r = factory(['wiki', 'write', '--dry-run'])
+  expect(r.out).not.toContain('group:')
+  expect(r.out).toContain('1 waiting')
+})
+
 slow('write AC3 a bad codex model name makes no agent call', () => {
   one()
   const r = factory(['wiki', 'write'], { FACTORY_DREAM_CODEX: '-bad model' })

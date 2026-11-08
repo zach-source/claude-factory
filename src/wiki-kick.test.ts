@@ -132,17 +132,21 @@ test('write AC6 kick matrix: age, wiki, lock, halt, NO_KICK', async () => {
   aged(10)
   expect(await launched()).toBe(false)
   setup(false)
+  aged(181)
   expect(await launched()).toBe(false)
   setup()
+  aged(181)
   mkdirSync(join(home, 'wiki.lock'), { recursive: true })
   writeFileSync(join(home, 'wiki.lock', 'pid'), String(process.pid))
   expect(await launched()).toBe(false)
   for (const state of ['paused', 'stopping']) {
     setup()
+    aged(181)
     writeFileSync(join(home, 'halt.json'), JSON.stringify({ state, at: Date.now(), told: {}, closed: {} }))
     expect(await launched()).toBe(false)
   }
   setup()
+  aged(181)
   expect(await launched({ FACTORY_NO_KICK: '1' })).toBe(false)
 }, 60_000)
 
@@ -154,5 +158,7 @@ test('write AC6 FACTORY_WIKI_WRITE_MIN: 1 moves a 2 min stamp; bad values keep 1
     setup()
     aged(10)
     expect([v, await launched({ FACTORY_WIKI_WRITE_MIN: v })]).toEqual([v, false])
+    aged(181)
+    expect([v, await launched({ FACTORY_WIKI_WRITE_MIN: v })]).toEqual([v, true])
   }
 }, 60_000)
