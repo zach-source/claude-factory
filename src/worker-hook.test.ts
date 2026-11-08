@@ -12304,6 +12304,8 @@ test.each([
   '${PAGER:-less} "notes file.md"',
   '"${ROOT}/bin/factory" status',
   '"$ROOT/bin/factory" status',
+  '"$ROOT/bin/tool" "rm -rf x y"',
+  '${ROOT}/bin/tool "rm -rf x y"',
 ])('qn8a.14 dynamic script prerequisite allows %s, plain and after a redirect', c => {
   expect(redirectDeny(c)).toBeUndefined()
   expect(redirectDeny(`>out ${c}`)).toBeUndefined()
@@ -12311,6 +12313,11 @@ test.each([
 
 test.each(['', '>out '])('qn8a.14 dynamic script prerequisite reads both script forms %#', p => {
   for (const c of SCRIPT_ROWS) expect(redirectDeny(p + c)).toBeTruthy()
+})
+
+test.each(['', '>out '])('qn8a.14 dynamic script prerequisite reads the env guard mirror %#', p => {
+  expect(redirectDeny(`${p}env -i $X x 'bd create acme'`)).toBe(BEADS_ACTOR_REASON)
+  expect(redirectDeny(`${p}env -i $X x 'factory mail acme manager'`)).toContain('FACTORY_FROM')
 })
 
 test.each([['$X ' + Array(200).fill('"x y"').join(' ')], [Array(200).fill('$X').join(' ') + ' "x y"']])(
