@@ -3519,6 +3519,12 @@ export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? ''
   },
 })
 
+/** withoutFleet() plus a deny rule: the file-edit tools of an agent pass cannot write the pass's own .git. Only `Edit(path)` rules match, and `./` is the cwd. */
+export const passSettings = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
+  ...withoutFleet(dirs),
+  permissions: { deny: ['Edit(./.git/**)'] },
+})
+
 /**
  * what to do about a launch that has not shown its Claude yet: wait, press Enter (the command sat
  * unsent on the line), type it again, then give up. Each step counts as a nudge.
@@ -4761,39 +4767,91 @@ function wikiTombstones(dir: string) {
   return list
 }
 
-/**
- * `git blame --line-porcelain HEAD` of each tracked page outside rigs/, for keepPersonLines() after an agent pass.
- * An empty Map when there is no commit yet. Undefined (and a journal line) when a blame fails: the pass must not run.
- */
-export function wikiBlame(dir = join(HOME, 'wiki')) {
-  const blames = new Map<string, string>()
-  if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return blames
-  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'])
-  if (tracked.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
-  for (const path of tracked.out.toString().split('\0')) {
-    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
-    const b = wikiGit(dir, ['blame', '--line-porcelain', 'HEAD', '--', path])
-    if (b.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
-    blames.set(path, b.out.toString())
-  }
-  return blames
+type HeadPair = { ref: string; sha: string }
+type GitRun = (args: string[]) => { code: number; out: string }
+
+/** the branch ref and commit sha that HEAD names now; undefined with no commit or a detached HEAD */
+function headPair(run: GitRun): HeadPair | undefined {
+  const ref = run(['symbolic-ref', '-q', 'HEAD'])
+  const sha = run(['rev-parse', '--verify', '-q', 'HEAD'])
+  return ref.code === 0 && sha.code === 0 && ref.out && sha.out ? { ref: ref.out, sha: sha.out } : undefined
 }
 
 /**
- * After an agent pass: put back each page where the pass changed or removed a person's line, and add a flag
- * with the page, the line and `reason` to needs-person.md. The rest of the pass stays. False when a restore fails.
+ * After an agent pass: 'same' when HEAD is as recorded, and 'moved' when HEAD went forward (a commit made during
+ * the pass stays) or was put back. Any other move is undone with symbolic-ref and update-ref; 'restore failed' when
+ * that fails. A pass that gets no tool that makes a commit or an object cannot make a forward move.
  */
-export function keepPersonLines(before: Map<string, string>, reason: string, dir = join(HOME, 'wiki')) {
+function headKept(run: GitRun, pair: HeadPair): 'same' | 'moved' | 'restore failed' {
+  const now = headPair(run)
+  if (now && now.ref === pair.ref) {
+    if (now.sha === pair.sha) return 'same'
+    if (run(['merge-base', '--is-ancestor', pair.sha, now.sha]).code === 0) return 'moved'
+  }
+  const ok =
+    run(['symbolic-ref', 'HEAD', pair.ref]).code === 0 && run(['update-ref', pair.ref, pair.sha]).code === 0
+  return ok ? 'moved' : 'restore failed'
+}
+
+const wikiRun =
+  (dir: string): GitRun =>
+  args => {
+    const r = wikiGit(dir, args)
+    return { code: r.code, out: r.out.toString().trim() }
+  }
+
+/**
+ * The branch ref and sha of HEAD, and `git blame --line-porcelain <sha>` of each tracked page outside rigs/,
+ * for keepPersonLines() after an agent pass. Undefined (and a journal line) when there is no branch head
+ * (no commit, or a detached HEAD) or a blame fails: the pass must not run.
+ */
+export function wikiBlame(dir = join(HOME, 'wiki')) {
+  const pair = headPair(wikiRun(dir))
+  if (!pair) return (wikiLog('wiki: no branch head, pass refused'), undefined)
+  const blames = new Map<string, string>()
+  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', pair.sha])
+  if (tracked.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+  for (const path of tracked.out.toString().split('\0')) {
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
+    const b = wikiGit(dir, ['blame', '--line-porcelain', pair.sha, '--', path])
+    if (b.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+    blames.set(path, b.out.toString())
+  }
+  return { ...pair, blames }
+}
+
+/**
+ * After an agent pass: first check that HEAD is where wikiBlame() saw it (false, with a journal line, when
+ * it moved). Then put back each page where the pass changed or removed a person's line, and add a flag
+ * with the page, the line and `reason` to needs-person.md. The rest of the pass stays. False when a restore fails.
+ * A page over WIKI_PAGE_MAX bytes counts as empty.
+ */
+export function keepPersonLines(
+  before: NonNullable<ReturnType<typeof wikiBlame>>,
+  reason: string,
+  dir = join(HOME, 'wiki'),
+) {
+  const kept = headKept(wikiRun(dir), before)
+  if (kept !== 'same')
+    return (
+      wikiLog(
+        kept === 'moved'
+          ? 'wiki: HEAD moved in the pass, nothing committed'
+          : 'wiki: HEAD moved in the pass, restore failed, nothing committed',
+      ),
+      false
+    )
   const flags: string[] = []
-  for (const [path, blame] of before) {
+  for (const [path, blame] of before.blames) {
     const file = join(dir, path)
     let text = ''
     try {
-      if (lstatSync(file).isFile()) text = readFileSync(file, 'utf8')
+      const st = lstatSync(file)
+      if (st.isFile() && st.size <= WIKI_PAGE_MAX) text = readFileSync(file, 'utf8')
     } catch {}
     const hits = humanLines(blame, text, WIKI_EMAIL)
     if (!hits.length) continue
-    if (wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path]).code !== 0)
+    if (wikiGit(dir, ['restore', '--staged', '--worktree', `--source=${before.sha}`, '--', path]).code !== 0)
       return (wikiLog('wiki: restore failed, nothing committed'), false)
     for (const h of hits) flags.push(flagLine(path, h.line, reason))
     wikiLog(`wiki: person's line in ${path}, page kept, flagged`)
@@ -5306,7 +5364,15 @@ async function dream() {
     if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
       return 'nothing new since the last dream'
     const start = Date.now()
-    const before = git(MEMORY, 'rev-parse', 'HEAD')
+    // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
+    const refuse = (why: string) => {
+      appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
+      return why
+    }
+    const memRun = wikiRun(MEMORY)
+    const pair = headPair(memRun)
+    if (!pair) return refuse('dream: no branch head, dream refused')
+    const before = pair.sha
     const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
     const proposalsBefore = memory.proposals(MEMORY)
     // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
@@ -5337,11 +5403,6 @@ async function dream() {
     const model = process.env.FACTORY_DREAM_CODEX
     let codexHome: string | undefined
     if (model) {
-      // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
-      const refuse = (why: string) => {
-        appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
-        return why
-      }
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model))
         return refuse('FACTORY_DREAM_CODEX is not a model name')
       // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
@@ -5387,7 +5448,7 @@ async function dream() {
           [
             ...claudeCommand().split(/\s+/),
             ...['-p', '--permission-mode', 'acceptEdits'],
-            ...['--settings', JSON.stringify(withoutFleet())],
+            ...['--settings', JSON.stringify(passSettings())],
             ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
           ],
           { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
@@ -5400,7 +5461,6 @@ async function dream() {
     appendFileSync(dreamLog, `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
     if (removed.length) appendFileSync(dreamLog, removedLine(removed))
     storeDreamUsage(start, codexHome)
-    if (p.exitCode !== 0) return said
     // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
     const overProposals = memory.proposalsOverCap(
       proposalsBefore.map(p => p.name),
@@ -5409,6 +5469,17 @@ async function dream() {
     for (const name of overProposals) rmSync(join(memory.proposalsDir(MEMORY), `${name}.md`))
     if (overProposals.length)
       appendFileSync(join(HOME, 'dream.log'), `dropped proposals over the cap: ${overProposals.join(', ')}\n`)
+    // a pass that moved HEAD commits nothing: its edits stay in the worktree for the next dream's notes commit
+    const kept = headKept(memRun, pair)
+    if (kept !== 'same') {
+      const line =
+        kept === 'moved'
+          ? 'dream: HEAD moved in the pass, nothing committed'
+          : 'dream: HEAD moved in the pass, restore failed, nothing committed'
+      appendFileSync(dreamLog, `${line}\n`)
+      return line
+    }
+    if (p.exitCode !== 0) return said
     git(MEMORY, 'add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
     // through the alias it left on the entry that absorbed it (claude-factory-59r.11).
