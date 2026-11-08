@@ -2686,9 +2686,11 @@ function commandAnchors(words: string[]): number[] {
   const raw = commandAnchorsOf(words)
   if (kept.length === words.length) return raw
   const out = commandAnchorsOf(kept.map(k => words[k]!)).map(k => kept[k]!)
-  // Keep the budget of one pass: the merged list is never longer than the longer single list.
+  // Budget: the first raw head always stays. The other raw heads fill up to the longer single list.
   const limit = Math.max(raw.length, out.length)
-  for (const a of raw) if (out.length < limit && !out.includes(a)) out.push(a)
+  raw.forEach((a, i) => {
+    if (!out.includes(a) && (i === 0 || out.length < limit)) out.push(a)
+  })
   return out
 }
 

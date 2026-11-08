@@ -12281,7 +12281,7 @@ test.each([
   ['nice', ...Array.from({ length: 40 }, () => ['-Q', '$G']).flat(), 'x'],
 ])('qn8a.14 redirect keeps the anchor budget of one pass %#', (...words) => {
   const pure = commandAnchorsForTest(words).length
-  expect(commandAnchorsForTest(['>x', ...words]).length).toBe(pure)
+  expect(commandAnchorsForTest(['>x', ...words]).length).toBeLessThanOrEqual(pure + 1)
   expect(commandAnchorsForTest(['>x', ...words, '>y']).length).toBeLessThanOrEqual(pure + 1)
 })
 
