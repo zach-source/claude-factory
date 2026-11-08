@@ -214,6 +214,7 @@ test('failedChecks', () => {
     'https://a b',
     'https://a(b)',
     'https://a<b',
+    'https://a\u00e9b',
     `https://${'a'.repeat(301)}`,
   ])
     expect(one({ details_url: u })?.[0]?.url).toBe('')
