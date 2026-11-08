@@ -295,6 +295,7 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
+import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { maskAssignments } from './worker-hook'
 
 const ROOT = resolve(import.meta.dir, '..')
@@ -2529,10 +2530,32 @@ export function splitPick(runId: string, shareName: string, share: string | unde
   const h = createHash('sha256').update(`${runId}:${shareName}`).digest().readUInt32BE(0)
   return h / 2 ** 32 < Number(share)
 }
+const GATE_KEEP_MS = 6 * 3_600_000
+/**
+ * May this station start cursor? Only with a known weekly pool reading under the cap (setting cursor.cap). The first look decides and
+ * <run>/cursor-gate.json keeps the answer for 6 hours, so a worker in flight keeps its agent when the meter moves. A "no" logs one line.
+ */
+export function cursorAllowed(runId: string, node: string, env = process.env, now = Date.now(), home = HOME) {
+  const file = join(home, 'runs', runId, 'cursor-gate.json')
+  let memo: Record<string, { at: number; use: boolean }> = {}
+  try {
+    memo = readJson(file)
+  } catch {} // none yet
+  const kept = memo[node]
+  if (kept && now - kept.at < GATE_KEEP_MS) return kept.use
+  const v = cursorVerdict(cursorMeter(home, now), cursorCap(env))
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeJson(file, { ...memo, [node]: { at: now, use: v.use } })
+  } catch {} // an unsaved answer is asked again
+  if (!v.use) console.error(`cursor gate: ${runId} ${node} uses its other agent: ${v.why}`)
+  return v.use
+}
+
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
  * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex), and elsewhere only when
- * the `pin` file exists (claude-factory-fzm3).
+ * the `pin` file exists (claude-factory-fzm3). A cursor pick that `allowed` refuses becomes the station's own agent.
  */
 export const pickAgent = (
   runId: string,
@@ -2542,6 +2565,7 @@ export const pickAgent = (
   runner: string,
   env = process.env,
   pin = CODEX_PIN,
+  allowed = cursorAllowed,
 ) => {
   const params = paramsOf(def, rig, env)
   const split = def.nodes[node]!.split
@@ -2550,7 +2574,9 @@ export const pickAgent = (
     split &&
     (runner === 'ax' ? axCodex(env) : existsSync(pin)) &&
     splitPick(runId, split.share, params[split.share])
-  return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
+  const own = def.nodes[node]!.agent ?? def.agent ?? AGENT
+  const agent = fill(rig?.agent ?? (picked ? split.agent : own), params)
+  return harnessOf(agent) === 'cursor' && !allowed(runId, node, env) ? fill(own, params) : agent
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
   pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
@@ -6671,6 +6697,7 @@ async function tick(isPatrol = false) {
   if (!release) return { busy: true }
   try {
     const now = Date.now()
+    await refreshCursorMeter(HOME, process.env, now)
     const linearState = existsSync(linearSyncFile())
       ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
       : {}
@@ -11524,6 +11551,10 @@ async function status(id: string | undefined) {
         (err ? `; last run failed: ${err}` : ''),
     )
   }
+  if (!id && process.env.CURSOR_API_KEY) {
+    await refreshCursorMeter(HOME)
+    console.log(cursorLine(cursorMeter(HOME), cursorCap()))
+  }
   if (!runIds().length) console.log("no runs yet: factory start <factory> <repo> '<goal...>'")
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
@@ -12632,9 +12663,12 @@ if (import.meta.main && !outboxCmd)
               managerUsage(since_),
             ] as const)
           : null
+        // the weekly Cursor pool as a gauge: the last reading and the cap, or null when the meter is unknown
+        const cursor = cursorMeter(HOME)
         if (args.includes('--json'))
           console.log(
             JSON.stringify({
+              cursor: cursor && { ...cursor, cap: cursorCap() },
               all: metrics(picked),
               ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
@@ -12656,6 +12690,7 @@ if (import.meta.main && !outboxCmd)
             console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
           if (Object.keys(denials).length)
             console.log('\ndenials by harness and reason:\n' + renderDenials(denials))
+          if (cursor || process.env.CURSOR_API_KEY) console.log('\n' + cursorLine(cursor, cursorCap()))
         }
         if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
         break
