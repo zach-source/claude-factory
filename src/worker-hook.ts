@@ -2866,9 +2866,26 @@ export const BEADS_ACTOR_REASON =
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
-// claude-factory-ab8n: one guard per variable a worker must not change. cmd is the command word
-// that reads the variable: bd reads BEADS_ACTOR, and factory reads FACTORY_FROM (the mail sender).
-type EnvGuard = { name: string; cmd: string; reason: string; flag?: string }
+// claude-factory-ab8n: one guard per variable a worker must not change. cmds holds the command words
+// that read the variable: bd reads BEADS_ACTOR; FACTORY_FROM and FACTORY_RUN are read by the words in FACTORY_CLI_WORDS.
+type EnvGuard = { name: string; cmds: ReadonlySet<string>; reason: string; flag?: string }
+// claude-factory-qn8a.27: the CLI is TypeScript, so only the factory launcher or a JS runtime starts it.
+// ponytail: a script file under a cleared env (env -i bash x.sh), another interpreter (python3, perl)
+// and a runtime copied to another name pass. The sandbox is the barrier. Upgrade: none planned, because the hook is a best-effort guard. Each runtime word also over-denies a harmless env -i run.
+const FACTORY_CLI_WORDS: ReadonlySet<string> = new Set([
+  'factory',
+  'bun',
+  'bunx',
+  'node',
+  'nodejs',
+  'npx',
+  'npm',
+  'pnpm',
+  'yarn',
+  'deno',
+  'tsx',
+  'ts-node',
+])
 export const FACTORY_FROM_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_FROM. ' +
   'The factory reads the mail sender from this variable, and the owner-only rule trusts mail from the ' +
@@ -2877,7 +2894,11 @@ export const FACTORY_RUN_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_RUN. ' +
   'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
   'Do not retry this command.'
-const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmd: 'factory', reason: FACTORY_RUN_REASON }
+const FACTORY_RUN_GUARD: EnvGuard = {
+  name: 'FACTORY_RUN',
+  cmds: FACTORY_CLI_WORDS,
+  reason: FACTORY_RUN_REASON,
+}
 // claude-factory-qn8a.31: bin/factory unpacks the FACTORY_VM_ENV JSON into its own env and its children's
 // env, so a worker that sets it can carry GIT_CONFIG_*, FACTORY_FROM, FACTORY_RUN, HOME or BEADS_ACTOR.
 export const FACTORY_VM_ENV_REASON =
@@ -2886,16 +2907,20 @@ export const FACTORY_VM_ENV_REASON =
   'other variable past the other guards. Do not retry this command.'
 const FACTORY_VM_ENV_GUARD: EnvGuard = {
   name: 'FACTORY_VM_ENV',
-  cmd: 'factory',
+  cmds: new Set(['factory']),
   reason: FACTORY_VM_ENV_REASON,
 }
 const BEADS_ACTOR_GUARD: EnvGuard = {
   name: 'BEADS_ACTOR',
-  cmd: 'bd',
+  cmds: new Set(['bd']),
   reason: BEADS_ACTOR_REASON,
   flag: 'actor',
 }
-const FACTORY_FROM_GUARD: EnvGuard = { name: 'FACTORY_FROM', cmd: 'factory', reason: FACTORY_FROM_REASON }
+const FACTORY_FROM_GUARD: EnvGuard = {
+  name: 'FACTORY_FROM',
+  cmds: FACTORY_CLI_WORDS,
+  reason: FACTORY_FROM_REASON,
+}
 
 const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
 
@@ -3018,7 +3043,7 @@ function segmentRunsBdCommand(
   let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
-    if (bw === g.cmd) return true
+    if (g.cmds.has(bw)) return true
     if (shellSlotWord(words[k]!)) {
       // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
@@ -3268,7 +3293,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     const b = baseWord(w)
-    if (b === g.cmd) bdIdx.push(i)
+    if (g.cmds.has(b)) bdIdx.push(i)
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {
