@@ -1256,7 +1256,7 @@ function shownCommand(command: string): string {
  * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
-export function gatedCommand(rawCommand: string): { question: string; deny: string } | null {
+export function gatedCommand(rawCommand: string): { question: string; deny: string; ask: boolean } | null {
   // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
@@ -1279,7 +1279,7 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
     substitution = {
       phrase:
         'run a factory command with a shell substitution (a dollar sign, a backtick or an unquoted parenthesis) or a form the hook cannot read',
-      deny: 'The person did not confirm this shell substitution. Put untrusted text in single quotes or in a file.',
+      deny: 'The person did not confirm this shell substitution. Run the factory CLI with literal arguments, by name (`factory` or the full bin/factory path), with no $VAR, $(...), backticks, loops, here-docs or unquoted parentheses. FACTORY_HOME is already set. For several runs, make one call per command. Put untrusted text in single quotes or in a file.',
       detail: `The first one is at character ${at}: «${around}».${unseen}`,
     }
   }
@@ -1316,6 +1316,8 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
     : ''
   const names = [...(who ? [who] : []), ...named]
   return {
+    // only a person-decision kind is worth a dialog; a substitution or unreadable form alone is denied at once
+    ask: kinds.length > 0,
     question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
     deny: [
       ...(unreadable
