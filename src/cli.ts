@@ -290,7 +290,7 @@ import {
   type SyncEntry,
 } from './sync'
 import { rmQuiet, rmSafe } from './home-guard'
-import { ciReport } from './ci'
+import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
 import { maskAssignments } from './worker-hook'
 
@@ -9469,8 +9469,9 @@ async function labelPass() {
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
-  const live = startedRunIds()
-    .map(id => ({ id, ...current(id) }))
+  const all = startedRunIds().map(id => ({ id, ...current(id) }))
+  const goals = all.map(r => r.run.goal)
+  const live = all
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
     .map(r => ({
       id: r.id,
@@ -9508,6 +9509,9 @@ async function labelPass() {
               )
               return found.filter((pr, i) => found.findIndex(o => o.url === pr.url) === i)
             },
+            // ponytail: GitLab job names are not read; the goal tells the worker to read them.
+            // Upgrade path: read projects/:id/pipelines/:pipeline_id/jobs?scope[]=failed from the MR head_pipeline.
+            failed: (): undefined => undefined,
             state: (url: string) => {
               const iid = prRef(url)?.number
               if (!iid) return undefined
@@ -9541,6 +9545,20 @@ async function labelPass() {
                 const rows = await githubPulls(spawnGh, slug(), rig.repo, { state: 'open', pages: 10 })
                 if (!rows) throw new Error('gh api pulls failed')
                 return (githubRows(rows) as LabeledPr[]).filter(pr => labelAction(pr) !== undefined)
+              },
+              failed: (pr: LabeledPr) => {
+                if (!/^[0-9a-f]{40}$/.test(pr.headRefOid ?? '')) return undefined
+                try {
+                  return failedChecks(
+                    gh('api', `repos/${slug()}/commits/${pr.headRefOid}/check-runs?per_page=100`),
+                  )
+                } catch (err) {
+                  const why = (err as Error).message.split('\n')[0]
+                  console.log(
+                    `${new Date().toISOString()} fix-tests ${pr.url}: check-runs read failed: ${why}`,
+                  )
+                  return undefined
+                }
               },
               state: (url: string) => {
                 const path = githubPullPath(url)
@@ -9576,7 +9594,12 @@ async function labelPass() {
       const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
         ? beads(rig.repo, 'factory').shipQueue()
         : []
-      for (const pr of labeled) {
+      for (const listed of labeled) {
+        // the checks are read only for a PR that goes to a run: a fork or a close PR makes no call
+        const pr =
+          listed.labels.some(l => l.name === FIX_TESTS_LABEL) && labelAction(listed) === 'rework'
+            ? { ...listed, failed: forge.failed(listed) }
+            : listed
         const action = labelAction(pr)
         const queuedBead = action === 'rework' ? queuedOwner(pr, shipped) : undefined
         // a queued PR closed unmerged leaves the queue: the ship run would loop on it as the next PR
@@ -9584,7 +9607,15 @@ async function labelPass() {
           const closed = queuedOwner(pr, shipped)
           if (closed) beads(rig.repo, 'factory').unship(closed.id, `${pr.url} was closed unmerged`)
         }
-        if (queuedBead) {
+        const runId = prOwner(pr, live)
+        const tries = fixTestsTries(pr.url, goals)
+        const route = labelRoute(pr, {
+          queued: !!queuedBead,
+          owner: !!runId,
+          room: room(rig, busy, undefined, held),
+          tries,
+        })
+        if (route === 'ship' && queuedBead) {
           // the rig's ship run owns a queued PR: it hears of the label, and no rework run starts
           const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
           forge.unlabel(pr, reworkLabels(pr))
@@ -9596,24 +9627,26 @@ async function labelPass() {
           console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
           continue
         }
-        const runId = prOwner(pr, live)
-        if (action === 'close') {
+        if (route === 'close') {
           forge.close(pr, `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`)
           if (runId) post(runId, { type: 'ABORT' })
           console.log(`${new Date().toISOString()} closed ${pr.url}${runId ? ` (run ${runId})` : ''}`)
-        } else if (action === 'fork') {
+        } else if (route === 'fork') {
           errors.push({
             id: `rig:${rig.name}`,
             error: `${pr.url} is labeled ${reworkLabels(pr).join(', ')} but comes from a fork: rework it there`,
           })
-        } else if (action === 'rework' && runId) {
+        } else if (route === 'capped') {
+          errors.push({ id: `rig:${rig.name}`, error: cappedRow(pr, tries) })
+          console.log(`${new Date().toISOString()} fix-tests ${pr.url}: capped after ${tries} runs`)
+        } else if (route === 'owner' && runId) {
           const owner = live.find(r => r.id === runId)!
           const implement = Object.hasOwn((await loadPinned(loadRun(runId).factory)).nodes, 'implement')
           reworkOwned(pr, { ...owner, implement }, { ...forge, post })
           console.log(
             `${new Date().toISOString()} rework ${pr.url} → its run ${runId} (was at ${owner.node})`,
           )
-        } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
+        } else if (route === 'start') {
           forge.unlabel(pr, reworkLabels(pr))
           const start = reworkStart(pr, rig.factory)
           const { run, def } = await createTracked(
