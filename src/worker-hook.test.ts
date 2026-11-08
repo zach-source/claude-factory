@@ -12245,7 +12245,7 @@ test.each([
 const SCRIPT_ROWS = [
   '$X "rm -rf /"',
   '$X "git push origin main"',
-  '$X \'rm -rf\' /',
+  "$X 'rm -rf' /",
   '$X x "rm -rf /"',
   "$X 'git push' origin main",
   '${X:-${Y}/} "rm -rf /"',
@@ -12253,7 +12253,20 @@ const SCRIPT_ROWS = [
   "env -u BEADS_ACTOR $X 'bd create acme'",
   "env -u FACTORY_FROM $X 'factory mail acme manager'",
 ]
-const REDIRECT_PREFIXES = ['>/dev/null', '> /dev/null', '>x', '>>log', '2>/dev/null', '>/dev/null 2>&1', '>|x', '&>>f', '<>f', '3<f', '{fd}>f', '>a >>b 2>c']
+const REDIRECT_PREFIXES = [
+  '>/dev/null',
+  '> /dev/null',
+  '>x',
+  '>>log',
+  '2>/dev/null',
+  '>/dev/null 2>&1',
+  '>|x',
+  '&>>f',
+  '<>f',
+  '3<f',
+  '{fd}>f',
+  '>a >>b 2>c',
+]
 const WRAPPER_PREFIXES = [
   'nice >/dev/null',
   'sudo >/dev/null',
@@ -12300,14 +12313,14 @@ test.each(['', '>out '])('qn8a.14 dynamic script prerequisite reads both script 
   for (const c of SCRIPT_ROWS) expect(redirectDeny(p + c)).toBeTruthy()
 })
 
-test.each([
-  ['$X ' + Array(200).fill('"x y"').join(' ')],
-  [Array(200).fill('$X').join(' ') + ' "x y"'],
-])('qn8a.14 script budget stays linear %#', cmd => {
-  const t = Date.now()
-  redirectDeny(`>x ${cmd}`)
-  expect(Date.now() - t).toBeLessThan(1000)
-})
+test.each([['$X ' + Array(200).fill('"x y"').join(' ')], [Array(200).fill('$X').join(' ') + ' "x y"']])(
+  'qn8a.14 script budget stays linear %#',
+  cmd => {
+    const t = Date.now()
+    redirectDeny(`>x ${cmd}`)
+    expect(Date.now() - t).toBeLessThan(1000)
+  },
+)
 
 test('qn8a.14 script budget denies a script nested past the depth limit', () => {
   let s = 'rm -rf /'
@@ -12362,5 +12375,7 @@ test('qn8a.14 redirect keeps both first-head readings', () => {
 
 test('qn8a.14 redirect anchor budget stays at the raw tail-scan count', () => {
   const words = ['nice', ...Array.from({ length: 40 }, () => ['-Q', '$G']).flat(), 'x']
-  expect(commandAnchorsForTest(['>x', ...words]).length).toBeLessThanOrEqual(commandAnchorsForTest(words).length)
+  expect(commandAnchorsForTest(['>x', ...words]).length).toBeLessThanOrEqual(
+    commandAnchorsForTest(words).length,
+  )
 })

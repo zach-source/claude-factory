@@ -3026,6 +3026,31 @@ function shCScriptValue(words: string[], start: number): string | undefined {
   return undefined
 }
 
+// claude-factory-ibas: the first dynamic head word (X in `$X "rm -rf /"`) can expand to eval or
+// sh -c. Then the later words are a script. Returns the script texts to read: the joined words
+// (eval) and each later word that holds a space or shell operator (sh -c "$1"). Only the first
+// dynamic anchor counts; the joined read recurses into the later ones (cbai).
+// claude-factory-qn8a.14: commandAnchors skips redirect words, so a redirect before the head
+// does not hide the script.
+function dynamicHeadScripts(words: string[]): string[] {
+  // A wrapper skips a zsh split word (${=X}) as NAME=value, so it is never an anchor. Add it.
+  const splits = words.flatMap((w, i) => (/^"?\$\{?=/.test(w) ? [i] : []))
+  for (const a of [...commandAnchors(words), ...splits]) {
+    const head = words[a]!
+    // A head with a slash ("$ROOT/bin/factory") names a path, so it is not read.
+    // ibas.6, .7: drop ${...} groups first; any other unquoted dollar (e$X) makes it dynamic.
+    const bare = head.replace(/\$\{[^}]*\}/g, '$V')
+    // ibas.9: only a slash after the last close brace is a path; a nested or escaped brace hides none.
+    const path = head.slice(head.lastIndexOf('}') + 1).includes('/')
+    if (head.startsWith("'") || !bare.includes('$') || path) continue
+    const rest = words.slice(a + 1)
+    // A here-string form has its own, more specific deny (SHELL_STDIN_REASON).
+    if (!rest.length || rest.includes('<<<')) return []
+    return [rest.join(' '), ...rest.filter(w => /[\s;&|<>()$`]/.test(w))]
+  }
+  return []
+}
+
 // claude-factory-igj: this checks words from index start to the end of the one segment words.
 // It returns true for a bd word there, or for a sh/bash/zsh/dash -c script or an eval word that
 // holds a bd word. depth bounds the recursion. MAX_SHELL_DEPTH bounds it the same way, for
@@ -3047,6 +3072,8 @@ function segmentRunsBdCommand(
   let evalScanned = false
   let slotEnd = 0
   let trapEnd = 0
+  for (const t of dynamicHeadScripts(start ? words.slice(start) : words))
+    if (stringNamesBdCommand(t, state, g, depth + 1)) return true
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (bw === g.cmd) return true
@@ -8760,6 +8787,11 @@ function anyShellReason(
       }
       break
     }
+  }
+  // claude-factory-ibas: run last, so an earlier rule keeps its own reason.
+  for (const t of dynamicHeadScripts(words)) {
+    const r = denyAt(t, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
+    if (r) return r
   }
   return undefined
 }
