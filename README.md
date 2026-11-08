@@ -688,7 +688,7 @@ pi has no MCP client, so its pane says that the file was not loaded.
 
 `--runner` says where a rig's workers run: `herdr` panes on this machine (the default), or `ax`, an
 AX microVM on a cluster ([docs/remote-runner.md](docs/remote-runner.md)). A VM runs the rig's agent
-(claude, codex or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
+(claude, codex, cursor or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
 reach more hosts, with agent-vault's credential `KEY` injected for them. Runners are an interface
 (`src/runner.ts`): a new one is a module and a registry entry.
 

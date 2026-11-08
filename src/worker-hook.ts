@@ -10659,7 +10659,7 @@ export function clampTimeout(
 }
 
 export const HOOK_CONTROL_REASON =
-  'The factory denies this write: it targets the hook source or a .claude/settings.json or settings.local.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
+  'The factory denies this write: it targets the hook source, a .claude/settings.json or settings.local.json file, or a .cursor/hooks.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
 
 // a parent of the hook dir (also a bare /) is a hook-control path in a segment with one of these words and in cd:
 // find / and ls -d / and alias ~ must stay allowed
@@ -10703,6 +10703,8 @@ function hookControlPath(abs: string, root: string, hookDir: string, ancestor = 
   const parts = a.split('/').filter(Boolean)
   const n = parts.length
   if (parts[n - 1] === '.claude') return true
+  if (parts[n - 1] === '.cursor' || (n >= 2 && parts[n - 2] === '.cursor' && parts[n - 1] === 'hooks.json'))
+    return true
   if (n >= 2 && parts[n - 2] === '.claude' && SETTINGS_NAMES.includes(parts[n - 1]!)) return true
   const h = foldLower(hookDir)
   const r = foldLower(root)
@@ -11113,7 +11115,7 @@ export function reasonName(reason: string): string {
   return 'UNKNOWN'
 }
 
-const HARNESSES = ['claude', 'codex', 'pi']
+const HARNESSES = ['claude', 'codex', 'pi', 'cursor']
 
 /**
  * claude-factory-uzes, -wkg4: the deny log keeps no secret. The first `=` or `${` and all text after it become ***.
@@ -11168,6 +11170,31 @@ function denyOut(reason: string) {
   )
 }
 
+/**
+ * Cursor's preToolUse input in Claude's shape: Shell is Bash. Write (an edit also arrives as Write) and Delete carry a
+ * file_path, so both go to the file-write guard. Read, Grep and other tools keep their names.
+ */
+export function cursorInput(input: unknown) {
+  const i = input as { tool_name?: string }
+  const tool = i?.tool_name
+  const name = tool === 'Shell' ? 'Bash' : tool === 'Delete' ? 'Write' : tool
+  return name === tool ? input : { ...i, tool_name: name }
+}
+
+/** the lines `handle` printed, in Cursor's reply: the first deny (user_message shows to the model), else allow */
+export function cursorReply(printed: string[]) {
+  for (const l of printed) {
+    const o = JSON.parse(l).hookSpecificOutput
+    if (o?.permissionDecision === 'deny')
+      return {
+        permission: 'deny',
+        user_message: o.permissionDecisionReason,
+        agent_message: o.permissionDecisionReason,
+      }
+  }
+  return { permission: 'allow' }
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -11176,6 +11203,28 @@ async function main() {
   } catch {
     return
   }
+  if (flag('--harness') === 'cursor') {
+    // a guard prints its deny through console.log: catch the lines and answer in Cursor's shape
+    const printed: string[] = []
+    const log = console.log
+    console.log = (l: string) => void printed.push(l)
+    try {
+      guard(cursorInput(input))
+    } finally {
+      console.log = log
+    }
+    console.log(JSON.stringify(cursorReply(printed)))
+    return
+  }
+  guard(input)
+}
+
+const flag = (name: string) => {
+  const at = process.argv.indexOf(name)
+  return at >= 0 ? process.argv[at + 1] : undefined
+}
+
+function guard(input: unknown) {
   // claude-factory-sibp: a throw in any guard denies. An uncaught throw exits 1, and Claude Code lets the command run.
   try {
     handle(input)
