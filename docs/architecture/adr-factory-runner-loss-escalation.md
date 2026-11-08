@@ -2,8 +2,8 @@
 
 ## Context
 
-On a pull request of the infra-blocks rig, two stations of one run reran the
-Lint job 8 times (postmortem beads infra-blocks-b9hm and infra-blocks-9ijs).
+On a pull request of the acme-blocks rig, two stations of one run reran the
+Lint job 8 times (postmortem beads acme-blocks-b9hm and acme-blocks-9ijs).
 Kubelet evicted the ARC runner pods on one host. The rule "rerun at most
 twice" was only in factory memory. A blocked run parked, but no station filed
 work to fix the host.

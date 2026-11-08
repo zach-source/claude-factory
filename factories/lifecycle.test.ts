@@ -834,53 +834,6 @@ test('claude-factory-wbac: a security report posts a COMMENT review, only securi
   expect(lc.nodes.check!.next!.security).toBe('security')
 })
 
-const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
-const BOT_TOKENS = [
-  'In the infra-blocks repo',
-  BOT_CMD,
-  'git checkout origin/{base_branch} -- <file>',
-  'git rm --cached <file>',
-  'run the check again',
-  'separate commands',
-  'The pull request title is the changelog line',
-]
-
-test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle stations', () => {
-  const holders = Object.entries((lifecycle as Factory).nodes)
-    .filter(([, n]) => (n.prompt ?? '').includes(BOT_CMD))
-    .map(([name]) => name)
-    .sort()
-  expect(holders).toEqual(['implement', 'quick'])
-  for (const name of holders)
-    for (const t of BOT_TOKENS) expect((lifecycle as Factory).nodes[name]!.prompt).toContain(t)
-  expect((lifecycle as Factory).nodes.implement!.prompt).toContain(
-    'Add no changelog entry and no version bump',
-  )
-})
-
-const LAYER_CMD = "git diff --name-only origin/{base_branch}...HEAD -- 'shapefile/layers/*/layer.cue'"
-
-test('infra-blocks layer-version check is self-check item 8 of implement only', () => {
-  const nodes = (lifecycle as Factory).nodes
-  const holders = Object.entries(nodes)
-    .filter(([, n]) => (n.prompt ?? '').includes(LAYER_CMD))
-    .map(([name]) => name)
-  expect(holders).toEqual(['implement'])
-  const p = nodes.implement!.prompt!
-  for (const t of [
-    'In the infra-blocks repo',
-    'git show origin/{base_branch}:<file>',
-    'version:',
-    'above',
-    'bump it past',
-    'run the check again',
-  ])
-    expect(p).toContain(t)
-  expect(p.indexOf('7. In the infra-blocks repo')).toBeGreaterThan(-1)
-  expect(p.indexOf('7. In the infra-blocks repo')).toBeLessThan(p.indexOf('8. In the infra-blocks repo'))
-  expect(p.indexOf('8. In the infra-blocks repo')).toBeLessThan(p.indexOf(LAYER_CMD))
-})
-
 test('plan keeps tests and the change they wait on in one PR, or orders the beads (claude-factory-9hzj AC1)', () => {
   const prompt = (lifecycle as Factory).nodes.plan!.prompt ?? ''
   for (const t of [

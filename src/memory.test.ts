@@ -2181,7 +2181,7 @@ test('citesTracker() finds a bead id or a PR reference', () => {
   for (const s of [
     'claude-factory-3u1.1.1',
     'fab-6otc',
-    'infra-blocks-38e0',
+    'acme-blocks-38e0',
     'ax-706',
     'acme-6kw.2',
     'fab-bb1.1.7',
