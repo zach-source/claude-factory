@@ -28,6 +28,8 @@ Keep all merged PRs for the bead, including separate code and release PRs.
 Read file lists for `trivial()`; retain its current classification. Do not invent a whitespace-diff classifier here.
 Exclude groups with no non-trivial merged PR. Keep all related merged PR links for each retained group.
 Use `writeGroups()` for shared-PR groups and its existing cap, default 20, oldest first.
+The current helper removes trivial PRs from each group. Restore those related PR links after group selection.
+Test a code PR plus a trivial release PR; the page must retain both links.
 Extend its input and prompt with rig names, reports and ISO close dates.
 Preserve cross-rig identity when groups share a PR. Include all contributing rigs in the page.
 
@@ -136,7 +138,9 @@ Set `FACTORY_NO_KICK=1` except in kick tests. Wait for detached children before 
 2. Commit the write pass: collection, prompt context, bounded input, agent, guard, commit and durable progress.
    Touch `src/cli.ts`, `src/wiki.ts` and their tests only as needed. Check AC1–AC5 and AC7.
 3. Commit the kick and CLI help. Check AC6 and all wiki regression tests.
-   Run `bun test src factories`, the repo typecheck, plugin tests, formatter, gate, gitleaks and `bun audit`.
+   Run `bun test --timeout 30000 src factories`, `bun x tsc --noEmit -p .`, and `claude plugin test mod`.
+   Run `bun x prettier@3.9.9 --check .`, the repo gate, gitleaks and `bun audit`.
+   Run `tsc -p mod` only when the generated plugin types exist; CI checks plugin types through its plugin job.
    Required CI checks must pass on the final head. Do not ship the tests commit by itself.
 
 The tasks form one pull request and fit one 120-minute implement pass.
