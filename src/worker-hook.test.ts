@@ -12272,6 +12272,10 @@ test('qn8a.14 redirect anchor invariants allow a safe nested wrapper', () => {
   expect(redirectDeny('sudo -u root >out nice -n 5 >err $EDITOR notes.md')).toBeUndefined()
 })
 
+test('qn8a.14 a redirect word without a slash stays a possible head', () => {
+  expect(redirectDeny('2>&1 $X "rm -rf /"')).toBeTruthy()
+})
+
 test.each([
   ['sudo', ...Array.from({ length: 30 }, () => ['-Z', 'v', 'env']).flat(), '$X'],
   ['nice', ...Array.from({ length: 40 }, () => ['-Q', '$G']).flat(), 'x'],
