@@ -760,6 +760,12 @@ test('implement, verify, security, plan and review split to codex, and the exec 
   expect(lc.params!.codex_share).toBe('0.3')
   expect(lc.params!.codex_judge_share).toBe('0') // a rig turns the codex judge tier on itself
   expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
+  // cursor is off for every station until a rig sets its share
+  for (const st of ['plan', 'implement', 'verify', 'review', 'security']) {
+    expect(lc.params![`cursor_${st}_share`]).toBe('0')
+    expect(lc.params![`cursor_${st}_model`]).toBeTruthy()
+  }
+  expect(lc.params!.cursor).toContain('cursor-agent')
   validate(lifecycle as Factory)
 })
 
