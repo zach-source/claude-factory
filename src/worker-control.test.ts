@@ -375,6 +375,7 @@ const DENIED = [
   'sweep',
   'wiki',
   'settings',
+  'image',
 ]
 const switchCases = () => {
   const src = readFileSync(join(import.meta.dir, 'cli.ts'), 'utf8')

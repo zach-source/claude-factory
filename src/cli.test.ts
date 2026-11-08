@@ -80,10 +80,17 @@ import {
   room,
   clusterCap,
   slot,
+  passSettings,
   withoutFleet,
   type RigFacts,
   factoryLabelName,
   hold,
+  labelRoute,
+  fixTestsTries,
+  cappedRow,
+  FIX_TESTS_ASK,
+  REQUEUE_MAX,
+  type LabeledPr,
 } from './cli'
 
 test("a factory home's sync pushes what its .gitignore lets in, and its memory to the memory branch", () => {
@@ -120,6 +127,8 @@ test("the factory's Claudes load every mod but herdr-fleet", () => {
   expect(withoutFleet('/m/herdr-fleet').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
   expect(withoutFleet('/m/herdr-fleet:/m/other').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('/m/other')
   expect(withoutFleet('').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
+  expect(passSettings('').permissions.deny).toEqual(['Edit(./.git/**)'])
+  expect(passSettings('/m/herdr-fleet').env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
 })
 
 test('a worker still working at its time limit is warned once and given half again', () => {
@@ -2853,6 +2862,121 @@ test('an unowned rework label starts the rig factory at implement on the PR bran
   const conflict = reworkStart(labelPr('conflict'), 'lifecycle')
   expect(conflict).toMatchObject({ spec: 'rework', branch: undefined, at: undefined })
   expect(conflict.goal).toBe(reworkGoal(labelPr('conflict')))
+})
+
+const FA = 'a'.repeat(40)
+const FJOB = 'https://github.com/acme/widget/actions/runs/1/job/11'
+const fpr = (names: string[], extra: Partial<LabeledPr> = {}) => ({
+  ...(labelPr(...names) as LabeledPr),
+  ...extra,
+})
+
+test('fix-tests label: labelAction and reworkGoal', () => {
+  expect(labelAction(fpr(['fix-tests']))).toBe('rework')
+  const goal = reworkGoal(fpr(['fix-tests'], { headRefOid: FA, failed: [{ name: 'test', url: FJOB }] }))
+  expect(goal).toContain(
+    `labeled fix-tests: make its failing build jobs and tests pass; change no behavior that the tests do not check, and do not disable, skip or weaken a test (failed checks at aaaaaaa: test ${FJOB}; run factory ci 7 for the logs)`,
+  )
+  expect(reworkGoal(fpr(['rework', 'fix-tests'], { headRefOid: FA, failed: [] }))).toContain(
+    'labeled rework and fix-tests: make the changes its reviews and checks ask for and make its failing build jobs and tests pass',
+  )
+  expect(reworkGoal(fpr(['rework']))).not.toContain('failing build jobs')
+  expect(reworkGoal(fpr(['conflict']))).not.toContain('failing build jobs')
+  for (const n of ['fixtests', 'Fix-Tests', 'fix-tests ']) expect(labelAction(fpr([n]))).toBeUndefined()
+})
+
+test('fix-tests label: labelRoute', () => {
+  const R = REQUEUE_MAX
+  const rows: [string[], boolean, boolean, boolean, number, number, string | undefined][] = [
+    [['bug'], false, false, false, 1, 0, undefined],
+    [['close', 'fix-tests'], false, true, false, 1, 0, 'close'],
+    [['fix-tests'], true, true, true, 1, R, 'fork'],
+    [['fix-tests'], false, true, false, 1, 0, 'ship'],
+    [['fix-tests'], false, true, true, 0, R, 'ship'],
+    [['fix-tests'], false, false, true, 1, R, 'owner'],
+    [['fix-tests'], false, false, false, 1, R, 'capped'],
+    [['fix-tests'], false, false, false, 0, R, 'capped'],
+    [['rework', 'fix-tests'], false, false, false, 1, R, 'capped'],
+    [['fix-tests'], false, false, false, 1, R - 1, 'start'],
+    [['fix-tests'], false, false, false, 0, R - 1, 'wait'],
+    [['rework'], false, true, false, 1, 0, 'ship'],
+    [['rework'], false, false, true, 1, 0, 'owner'],
+    [['rework'], false, false, false, 1, R + 3, 'start'],
+    [['rework'], false, false, false, 0, 0, 'wait'],
+  ]
+  for (const [labels, fork, queued, owner, room, tries, route] of rows)
+    expect(labelRoute(fpr(labels, { isCrossRepository: fork }), { queued, owner, room, tries })).toBe(
+      route as never,
+    )
+})
+
+test('fix-tests label: goes through implement', () => {
+  expect(reworkStart(fpr(['fix-tests']), 'lifecycle')).toMatchObject({
+    spec: 'lifecycle',
+    at: 'implement',
+    branch: 'fix/thing',
+  })
+  const sent: { type: string; node?: string; to?: string }[] = []
+  const unlabeled: string[][] = []
+  const io = {
+    unlabel: (_p: unknown, l: string[]) => unlabeled.push(l),
+    comment: () => 0,
+    post: (_id: string, ev: unknown) => sent.push(ev as never),
+  }
+  reworkOwned(fpr(['fix-tests']), { id: 'r', node: 'review', c: { log: [] } as never, implement: true }, io)
+  expect(unlabeled).toEqual([['fix-tests']])
+  expect(sent.map(e => e.type)).toEqual(['MAIL', 'GOTO'])
+  expect(sent[0]).toMatchObject({ to: 'implement' })
+  expect(sent[1]).toMatchObject({ node: 'implement' })
+})
+
+test('fix-tests label: failed checks text', () => {
+  const text = (extra: Partial<LabeledPr>) => reworkGoal(fpr(['fix-tests'], extra))
+  expect(text({ headRefOid: FA })).toContain(
+    `${FIX_TESTS_ASK} (the factory did not read its checks: read the failed jobs of its head commit; on GitHub, factory ci 7 shows the logs)`,
+  )
+  expect(text({ headRefOid: FA, failed: [] })).toContain(
+    `${FIX_TESTS_ASK} (no check run had failed at aaaaaaa when the label was read; the factory does not read commit statuses: run gh pr checks 7)`,
+  )
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ name: `c${i + 1}`, url: i ? FJOB : '' }))
+  const many = text({ headRefOid: FA, failed: twelve })
+  expect(many).toContain(`(failed checks at aaaaaaa: c1; c2 ${FJOB}; `)
+  expect(many).toContain(`c10 ${FJOB}; +2 more; run factory ci 7 for the logs)`)
+  expect(many).not.toContain('c11')
+})
+
+test('fix-tests label: fixTestsTries', () => {
+  const url = 'https://github.com/acme/widget/pull/7'
+  const g7 = reworkStart(fpr(['fix-tests']), 'lifecycle').goal
+  const g70 = reworkStart(fpr(['fix-tests'], { number: 70, url: `${url}0` }), 'lifecycle').goal
+  const r7 = reworkStart(fpr(['rework']), 'lifecycle').goal
+  expect(fixTestsTries(url, [g7, g7])).toBe(2)
+  expect(fixTestsTries(url, [g70])).toBe(0)
+  expect(fixTestsTries(url, [r7])).toBe(0)
+  expect(fixTestsTries(url, ['g'])).toBe(0)
+})
+
+test('fix-tests label: cappedRow', () => {
+  const pr = (failed?: { name: string; url: string }[]) => fpr(['fix-tests'], { headRefOid: FA, failed })
+  const head = 'https://github.com/acme/widget/pull/7 is labeled fix-tests, but'
+  const tail = 'fix it by hand, then remove the label'
+  expect(
+    cappedRow(
+      pr([
+        { name: 'a', url: '' },
+        { name: 'b', url: FJOB },
+      ]),
+      5,
+    ),
+  ).toBe(`${head} 5 runs did not make its checks pass (failed: a, b): ${tail}`)
+  expect(cappedRow(pr(undefined), 6)).toBe(
+    `${head} 6 runs did not make its checks pass (failed checks not read): ${tail}`,
+  )
+  expect(cappedRow(pr([]), 5)).toBe(
+    `${head} 5 runs did not make its checks pass (no failed check run at aaaaaaa): ${tail}`,
+  )
+  const twelve = Array.from({ length: 12 }, (_, i) => ({ name: `c${i + 1}`, url: '' }))
+  expect(cappedRow(pr(twelve), 5)).toContain('(failed: c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, +2 more)')
 })
 
 test('managerCommand([], "") holds no per-launch extras and ignores the caller plugin dirs (claude-factory-772)', () => {

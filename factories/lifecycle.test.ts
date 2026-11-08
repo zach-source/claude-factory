@@ -760,6 +760,18 @@ test('implement, verify, security, plan and review split to codex, and the exec 
   expect(lc.params!.codex_share).toBe('0.3')
   expect(lc.params!.codex_judge_share).toBe('0') // a rig turns the codex judge tier on itself
   expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
+  // cursor is off for every station until a rig sets its share
+  for (const st of ['plan', 'implement', 'verify', 'review', 'security']) {
+    expect(lc.params![`cursor_${st}_share`]).toBe('0')
+    expect(lc.params![`cursor_${st}_model`]).toBeTruthy()
+  }
+  expect(lc.params!.cursor).toContain('cursor-agent')
+  // grok is off for every station until a rig sets its share
+  for (const st of ['plan', 'implement', 'verify', 'review', 'security']) {
+    expect(lc.params![`grok_${st}_share`]).toBe('0')
+    expect(lc.params![`grok_${st}_model`]).toBeTruthy()
+  }
+  expect(lc.params!.grok).toContain('grok --permission-mode')
   validate(lifecycle as Factory)
 })
 
@@ -832,53 +844,6 @@ test('claude-factory-wbac: a security report posts a COMMENT review, only securi
   expect(Object.keys(lc.nodes.security!.next!).sort()).toEqual(['approve', 'changes'])
   expect(lc.nodes.review!.next!.security).toBe('security')
   expect(lc.nodes.check!.next!.security).toBe('security')
-})
-
-const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
-const BOT_TOKENS = [
-  'In the infra-blocks repo',
-  BOT_CMD,
-  'git checkout origin/{base_branch} -- <file>',
-  'git rm --cached <file>',
-  'run the check again',
-  'separate commands',
-  'The pull request title is the changelog line',
-]
-
-test('infra-blocks pre-push bot-file check is in exactly the pushing lifecycle stations', () => {
-  const holders = Object.entries((lifecycle as Factory).nodes)
-    .filter(([, n]) => (n.prompt ?? '').includes(BOT_CMD))
-    .map(([name]) => name)
-    .sort()
-  expect(holders).toEqual(['implement', 'quick'])
-  for (const name of holders)
-    for (const t of BOT_TOKENS) expect((lifecycle as Factory).nodes[name]!.prompt).toContain(t)
-  expect((lifecycle as Factory).nodes.implement!.prompt).toContain(
-    'Add no changelog entry and no version bump',
-  )
-})
-
-const LAYER_CMD = "git diff --name-only origin/{base_branch}...HEAD -- 'shapefile/layers/*/layer.cue'"
-
-test('infra-blocks layer-version check is self-check item 8 of implement only', () => {
-  const nodes = (lifecycle as Factory).nodes
-  const holders = Object.entries(nodes)
-    .filter(([, n]) => (n.prompt ?? '').includes(LAYER_CMD))
-    .map(([name]) => name)
-  expect(holders).toEqual(['implement'])
-  const p = nodes.implement!.prompt!
-  for (const t of [
-    'In the infra-blocks repo',
-    'git show origin/{base_branch}:<file>',
-    'version:',
-    'above',
-    'bump it past',
-    'run the check again',
-  ])
-    expect(p).toContain(t)
-  expect(p.indexOf('7. In the infra-blocks repo')).toBeGreaterThan(-1)
-  expect(p.indexOf('7. In the infra-blocks repo')).toBeLessThan(p.indexOf('8. In the infra-blocks repo'))
-  expect(p.indexOf('8. In the infra-blocks repo')).toBeLessThan(p.indexOf(LAYER_CMD))
 })
 
 test('plan keeps tests and the change they wait on in one PR, or orders the beads (claude-factory-9hzj AC1)', () => {

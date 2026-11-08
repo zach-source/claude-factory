@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
 import * as broker from './broker'
-import { vmCodexHome } from './cli'
+import { privatePatterns, vmCodexHome } from './cli'
 import { CODEX_GUARD_FLAGS } from './harness'
 import * as worker from './worker'
 
@@ -2236,6 +2236,52 @@ test('a ChatGPT-mode codex task has no API-key env, and its inputs hold only pla
   }
 })
 
+test('a cursor task has a placeholder API key, its hooks in the env and no codex or claude key', () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    ax.launch({
+      ...{ name: 't5', repo: 'r', branch: 'b', image: 'i', brief: 'x', harness: 'cursor' },
+      cursorHooks: '{"version":1}',
+      env: {},
+    })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env: Record<string, string> = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.FACTORY_HARNESS).toBe('cursor')
+    expect(env.FACTORY_CURSOR_HOOKS).toBe('{"version":1}')
+    expect(env.CURSOR_API_KEY).toBe('placeholder')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
+test('a grok task has a placeholder API key, its hooks in the env and no codex or claude key', () => {
+  writeFileSync(join(dir, 'actor'), '')
+  process.env.FACTORY_AX_VAULT = 'factory'
+  try {
+    ax.launch({
+      ...{ name: 't6', repo: 'r', branch: 'b', image: 'i', brief: 'x', harness: 'grok' },
+      grokHooks: '{"hooks":{}}',
+      env: {},
+    })
+    const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+    const env: Record<string, string> = Object.fromEntries(
+      task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]),
+    )
+    expect(env.FACTORY_HARNESS).toBe('grok')
+    expect(env.FACTORY_GROK_HOOKS).toBe('{"hooks":{}}')
+    expect(env.XAI_API_KEY).toBe('placeholder')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
 test("a station's model reads codex's -m too, and pi's provider", () => {
   expect(ax.modelOf('codex --dangerously-bypass-approvals-and-sandbox -m o3')).toBe('o3')
   expect(ax.modelOf('pi --provider anthropic --model claude-x')).toBe('claude-x')
@@ -3253,4 +3299,30 @@ test('a bad server URL fails closed: http, junk and the person-CA port 8444 thro
   expect(serverRules(polWith('https://factory.factory.svc.cluster.local', ''))).toEqual([
     { https: { hostnames: ['factory.factory.svc.cluster.local'] } },
   ])
+})
+
+// claude-factory-jluz.1: the VM has no info/private-patterns; the laptop sends the rig repo's file
+test('private patterns ride flat in the task env, and a rig repo file is read from its git dir', () => {
+  const env = (m: string) =>
+    Object.fromEntries(
+      JSON.parse(m.split('\n---\n')[1]!).spec.env.map((e: { name: string; value: string }) => [
+        e.name,
+        e.value,
+      ]),
+    )
+  const l = { name: 'p', repo: 'r', branch: 'b', image: 'i', env: {} }
+  expect(env(ax.manifest({ ...l, privatePatterns: 'secretcorp\n' })).FACTORY_PRIVATE_PATTERNS).toBe(
+    'secretcorp\n',
+  )
+  expect(env(ax.manifest(l)).FACTORY_PRIVATE_PATTERNS).toBeUndefined()
+  const repo = mkdtempSync(join(tmpdir(), 'jluz1-'))
+  try {
+    Bun.spawnSync(['git', 'init', '-q', repo])
+    expect(privatePatterns(repo)).toBeUndefined()
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'info', 'private-patterns'), 'secretcorp\n')
+    expect(privatePatterns(repo)).toBe('secretcorp\n')
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
 })

@@ -166,6 +166,13 @@ for (const [label, env] of [
       expect(existsSync(mark('claude.argv'))).toBe(true)
       expect(existsSync(mark('codex.argv'))).toBe(false)
       expect(read('claude.stdin')).not.toContain('keeps .git read-only')
+      const argv = read('claude.argv').trimEnd().split('\n')
+      expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!).permissions.deny).toEqual(['Edit(./.git/**)'])
+      expect(argv.slice(argv.indexOf('--allowedTools') + 1)).toEqual([
+        'Bash(mkdir:*)',
+        'Bash(git mv:*)',
+        'Bash(git rm:*)',
+      ])
     },
     SLOW,
   )

@@ -1351,6 +1351,11 @@ const GATED_KINDS = [
     phrase: 'create the factory wiki and set its remote',
     deny: 'The person did not confirm this wiki init. Ask them to run it.',
   },
+  {
+    re: /\bfactory\s+image\b/g,
+    phrase: 'build and push a factory image to a registry',
+    deny: 'The person did not confirm this image push. Ask them to run it.',
+  },
 ]
 
 // Cadence and log caps. The mod and `factory patrol --once` (src/once.ts) use the same values.
