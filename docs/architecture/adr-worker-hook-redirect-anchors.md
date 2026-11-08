@@ -2,7 +2,7 @@
 
 ## Context
 
-Bead: `claude-factory-qn8a.14`. Status: proposed for implementation.
+Bead: `claude-factory-qn8a.14`. Status: revised plan after four implementation rounds.
 
 At `30e36e0e`, all ten unsafe rows below return `undefined` from `denyReason`.
 The three safe controls also return `undefined`.
@@ -12,10 +12,20 @@ A scratch probe confirmed these results without execution of the command text.
 A slash in that word can hide a dynamic command from a later check.
 The same problem occurs after `nice` and `sudo`.
 
+At `3ef9d269`, the unquoted rows deny, but the quoted script rows still allow.
+The tests at `src/worker-hook.test.ts:12259` can pass without an assertion when the plain command allows.
+The earlier ADR amendment confused parity with the required denial. This revision removes that amendment.
+
+The missing prerequisite is the dynamic script reader from PR 235.
+The owner closed that PR for conflicts, not because the owner rejected its behavior.
+The [owner comment](https://github.com/zach-source/claude-factory/pull/235#issuecomment-6306781897) permits a class run to reuse its commits.
+Rebuild the required reader here. Do not reopen PR 235 or wait for its deferred bead.
+Keep the tests and the prerequisite in PR 702. Do not ship a deliberately red final head.
+
 ## Decision
 
 Change `src/worker-hook.ts` and `src/worker-hook.test.ts`.
-Add one release note at the end of Unreleased in `CHANGELOG.md`.
+The release station writes the changelog, per `factories/lifecycle.ts:200`. Implement must add no release note or version bump.
 Do not change the factory definition or the sandbox.
 
 Use the existing redirect grammar in `dropRedirectWords`.
@@ -24,6 +34,16 @@ Keep indices relative to the original word array for every caller.
 Preserve wrapper flag values, assignments, timeout durations, anchor caps, scan budgets, and nested wrapper behavior.
 Do not duplicate the redirect regular expression across readers.
 A small shared redirect-width helper is acceptable if both readers use it.
+
+Keep the redirect work through `3ef9d269`. Adapt `dynamicHeadScripts` from `412b8d4` to the current shared anchors.
+Read the joined words after the first dynamic head as an eval script.
+Also read each later word with whitespace or a shell operator as a possible script.
+Use the existing `denyAt` path in `anyShellReason`, after the current checks, so existing reasons keep priority.
+Use the same extraction in `segmentRunsBdCommand` through `stringNamesBdCommand` with the current `EnvGuard` argument.
+Preserve the caller's root, gate, variable table, directory state, recursion depth, and shared work budget.
+Do not copy the old function signatures or reset the budget for each script.
+Read only the first applicable dynamic anchor per interpretation. The joined script covers later dynamic heads through recursion.
+Reuse the prior nested-brace and path controls. Do not add a parser dependency or resolve variables from the environment.
 
 The tokenizer removes some quote information.
 Keep the original interpretation as well as the interpretation without redirects where quotes create ambiguity.
@@ -37,12 +57,15 @@ Rejected alternatives:
 - Strip redirects from all command arrays: indices change, and quoted arguments can lose their original interpretation.
 - Deny all dynamic heads after redirects: this rejects the three required safe controls.
 - Add a shell parser dependency: the installed tokenizer and redirect reader already supply the required data.
+- Retain parity tests: they accept the reported bypass and can make zero assertions.
+- Wait for ibas: its PR is closed, and the prerequisite fits this run.
+- Cherry-pick the complete old branch: it includes obsolete context and a release note that this station must not write.
 
 ## Grammar and scope
 
 This is a best-effort deny hook, not permission to execute a command.
 The sandbox remains the security boundary.
-The fail-closed rule is: redirects must not hide a command head from any existing anchored denial.
+The fail-closed rule is: redirects must not hide a dynamic head or a prohibited script after that head.
 If either supported interpretation denies, the complete command must deny before command execution.
 
 The reader uses only the token string, its original index, and the next token for a detached target.
@@ -60,10 +83,24 @@ Existing checks retain their rejection rules for unsupported shell syntax and in
 This patch adds no shell execution, target expansion, file open, render, or downstream command call.
 Tests call the pure guard with fake gate readers; unsafe command text must never run.
 
+The script reader accepts token strings and original indices from the existing tokenizer, not a second shell parser.
+Its dynamic-head grammar covers dollar expansions, quoted dollar heads, literal prefixes such as `e$X`, and zsh split expansions.
+Retain the old tests for nested and escaped parameter braces before a slash.
+A literal path suffix after the last parameter brace excludes the head from this script interpretation.
+Examples are `$ROOT/bin/factory` and `${ROOT}/bin/factory`. An expansion-internal slash is not a literal path suffix.
+Single-quoted literal heads are not dollar expansions.
+Script candidates are the joined suffix and each suffix word with whitespace or `; & | < > ( ) $` or backtick.
+The existing shell reader checks these candidates. Its malformed-input, depth, and work-limit rejections must remain fail-closed.
+Unrecognized redirects must not consume a word or its next token. Keep their raw interpretation under the existing checks.
+Do not treat an unrecognized form as a safe path or discard it.
+This deny-only hook does not claim a closed grammar for all allowed shell commands.
+It adds no downstream execution. Tests must show zero command executions, file opens for targets, and real gate subprocess calls.
+
 Out of scope: a full shell grammar, redirect side effects, process-substitution target parsing,
 new wrapper syntax, and the separate assignment defect in `qn8a.59`.
 The process-substitution defect in `qn8a.40` remains separate.
 Do not make this patch depend on either sibling.
+Also out of scope: all other `qn8a.6` instances, a dynamic head as the tool itself (`$X -rf /`), and `find -exec` redesign.
 
 ## Acceptance criteria
 
@@ -76,11 +113,8 @@ Run `bun test --timeout 30000 src/worker-hook.test.ts -t qn8a.14`.
 Record the failures before the fix, then the pass after the fix.
 Denial means a nonempty reason; allowance means `undefined`.
 
-Amendment: the rows with a quoted script word after `$X` cannot deny from this
-change. The quoted-script rule is claude-factory-ibas (PR 235, closed unmerged;
-the bead is deferred). Until ibas lands, the test for those rows asserts parity:
-the verdict with the redirect equals the verdict without it. Unquoted rows must deny.
-The control `2>&1 $X "rm -rf /"` in AC2 follows the same rule.
+Every row needs an unconditional denial assertion. Also deny the quoted rows without a redirect.
+The missing ibas reader is part of this implementation, not an exception to AC1.
 
 ```text
 >/dev/null $X "rm -rf /"
@@ -128,6 +162,18 @@ Add a safe nested-wrapper control with `$EDITOR notes.md` that must allow.
 Check the current behavior first; do not broaden existing denials to satisfy a new allowance.
 Exercise an anchored glob denial and an alias-definition denial after a redirect with their existing gate fixtures.
 Record which test covers each anchor caller. Keep current caps and index semantics.
+The caller map must include these ten consumers:
+`gluedAtCommandSlot`, `gluedBraceSlots`, `dynamicHeadRmReading`, `shellStdinReason1`, `segmentDynArg`,
+`segmentMayDefineAlias`, `anyGlobCommandWord`, `anyDynamicCommandReason1`, `anyLiveApplyWord`, and `anyDynamicLiveApplyReason1`.
+Use actual alias fixtures, including a fake alias that expands to a prohibited command.
+Replace the conditional tests at `src/worker-hook.test.ts:12294` with explicit expected results.
+Pin both first-head classifications for `['>x', '/bin/echo', 'alias']` and `['>x', 'echo', '$name']`.
+Preserve the `sdur` reason-order tests and all unknown-flag and tail-scan denials.
+Pin the raw baseline budget before edits: the ordinary cap is 16, and the existing tail scan can add candidates.
+The review's `nice` plus 40 `-Q $G` pairs plus `x` returns 18 without a redirect.
+It must return at most 18 with `>x`; do not impose a false absolute limit of 16 on the tail scan.
+Preserve the current single-pass bound for plain, nested-wrapper, unknown-flag, and tail-scan cases.
+Do not discard a required raw denial to meet a count. A length assertion alone does not prove behavior.
 Run the AC1 command and `bun test --timeout 30000 src/worker-hook.test.ts`.
 
 AC4. Prove the redirect fix matters with a buildable mutation.
@@ -136,6 +182,9 @@ After the fix commit, disable only the new redirect skip.
 Use `factory mutate <file:line> <old> <new> -- bun test --timeout 30000 src/worker-hook.test.ts -t qn8a.14`.
 The mutant must build, and at least one AC1 assertion must fail. Exit 0 means the test killed the mutant.
 If the implementation has separate skip branches, mutate each branch alone.
+Also mutate the joined script read, individual script read, environment-guard mirror, and path classification separately.
+Each mutation needs a targeted failed assertion, not an unrelated error or a build failure.
+If `factory mutate` refuses this file, use a temporary literal edit after a commit and restore only that edit.
 Restore the committed code and confirm a clean worktree.
 No required check may remain red on the final pull request head.
 
@@ -145,6 +194,45 @@ Run `bun test --timeout 30000 src factories`, `bunx tsc --noEmit -p .`,
 Run `bun audit` and `gitleaks detect --log-opts=origin/main..HEAD`.
 Record tool gaps separately; do not call an unavailable check a pass.
 The required CI checks `test`, `plugin`, `typecheck`, and `format` must pass on that head.
+Use Bun 1.4.4, Prettier 3.9.9, and Claude Code 2.1.291, as specified in `.github/workflows/ci.yml`.
+The full test command must also set `PKGGATE_E2E_REQUIRE=1` and `PG_SCRATCH_REQUIRE=1`, as CI does.
+Put those exports in a scratch script if the worker hook rejects inline assignments.
+
+AC6. Test `qn8a.14 dynamic script prerequisite` must check both script interpretations and the shared environment guards.
+Run the AC1 command. These inputs must deny, both plain and after `>out`:
+
+```text
+$X 'rm -rf' /
+$X x "rm -rf /"
+$X 'git push' origin main
+${X:-${Y}/} "rm -rf /"
+e$X "rm -rf /"
+env -u BEADS_ACTOR $X 'bd create acme'
+env -u FACTORY_FROM $X 'factory mail acme manager'
+```
+
+Use fake gates and test-local environment values for both guarded variables. No real bead or mail command may run.
+Retain the PR 235 nested-brace, quoted-head, split-head, and safe-path rows in the existing test file.
+These inputs must allow with and without `>out`:
+
+```text
+"$PY" -c "print(1)"
+$X "hello world"
+$EDITOR notes.md
+$GIT status
+$X "a b" c
+$GREP -n "foo bar" file
+$CC -o out "my file.c"
+${PAGER:-less} "notes file.md"
+"${ROOT}/bin/factory" status
+```
+
+AC7. Test `qn8a.14 script budget` must preserve bounded work and reject exhausted parser budgets before execution.
+Run the AC1 command and the existing worker-hook timing tests without higher thresholds.
+Measure both PR 235 cases: 200 `$X` words then `"x y"`, and `$X` then 200 `"x y"` words.
+Each must finish in less than 1 second on the test runner. Record durations before and after the fix.
+Add nested-script cases that exhaust depth and work budgets; assert denial and zero downstream command executions.
+Do not add production metrics or execute any supplied script to measure this behavior.
 
 ## Risk, rollout, and rollback
 
@@ -170,25 +258,23 @@ The ship soak can use revision evidence and offline guard results; it needs no l
 
 ## Commit tasks
 
-1. Add the AC1–AC3 regression tests. Record red results against the parent code.
-   Check: the focused command, plus a baseline inventory of existing control results.
-2. Fix the shared anchor reader and add the release note. Depend on task 1.
-   Check: AC1–AC5, the caller audit, and isolated mutations.
+1. `claude-factory-qn8a.14.7`: add unconditional AC1–AC3 and AC6–AC7 tests in `src/worker-hook.test.ts`.
+   Record red results against `3ef9d269`. Check the focused command and baseline safe controls.
+2. `claude-factory-qn8a.14.3` (reopened): adapt the script prerequisite in `src/worker-hook.ts`. Depend on task 1.
+   Preserve the redirect fix and the anchor budget. Check AC1–AC7 and isolated mutations.
+   Correct stale comments in the touched functions and refresh the PR evidence. Add no changelog entry.
 
 Both tasks fit one 120-minute implement pass and one pull request.
 The test commit can fail locally before the fix; the final pull request head must pass every required check.
 
 ## Plan evidence
 
-Plan read the repo metadata, existing ADR, CI workflow, anchor callers, and redirect reader.
+Plan read the repo metadata, existing ADR, CI workflow, anchor callers, redirect reader, and prior PR 235 code.
 No root `CLAUDE.md`, `AGENTS.md`, or `CONTRIBUTING.md` exists in this checkout.
-The bead had no children or prior comments. This branch had no pull request.
-The memory search returned no local notes.
-Plan changed only this ADR; implementation and mutation evidence belong to the next station.
-
-Tasks: `claude-factory-qn8a.14.1` adds tests; `claude-factory-qn8a.14.2` depends on it and supplies the fix.
-The hook baseline has 6,326 passes and one failure in the Git builtin inventory test.
-That failure also occurs alone on Git 2.47.0. No production code changed in plan.
-Typecheck and the ADR format check pass.
-The VM has no `bunx` executable; `bun x` or the installed binary supplies the equivalent command.
-Plan did not run the full repo suite, plugin check, audit, or secret scan.
+The retry starts at `3ef9d269`, with a clean worktree and draft PR 702.
+CI run `42461843247` passed test, plugin, typecheck, and format on that code head.
+The focused `qn8a.14|leadingRedirects|sdur|anchor` command passed 86 tests with 74 assertions.
+A separate pure probe confirmed three quoted-script allowances, one unquoted denial, and all three required safe allowances.
+The memory search returned no local notes. Plan changes only this ADR.
+Plan did not repeat the full suite, typecheck, plugin check, audit, secret scan, or mutations.
+These prior checks do not satisfy the revised AC1 or prove the future implementation.
