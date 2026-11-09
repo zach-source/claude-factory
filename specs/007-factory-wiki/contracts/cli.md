@@ -4,7 +4,7 @@ All commands use `FACTORY_HOME`. All commands except `find` and `status` take `w
 
 | Command | Does | Exit |
 |---------|------|------|
-| `factory wiki init [--remote <url>]` | Makes `$HOME/wiki/` a git repo if it is not one. Seeds `index.md` and `glossary.md`. Sets `origin` to `--remote` or `FACTORY_WIKI_REMOTE`. Checks visibility. | 0, or 1 when the seed commit fails, the remote is public or its visibility is unknown |
+| `factory wiki init [--remote <url>]` | Makes `$HOME/wiki/` a git repo if it is not one. Seeds `index.md` and `glossary.md`. Sets `origin` to `--remote` or `FACTORY_WIKI_REMOTE`. Checks visibility. | 0, or 1 when the seed commit fails, the remote is public, its visibility is unknown or the repo config has a key outside the allow-list |
 | `factory wiki refresh [--dry-run]` | Makes `rigs/*.md` and the rig list in `index.md`, then commits and pushes. `--dry-run` prints the changed paths and writes nothing. | 0 |
 | `factory wiki write [--dry-run] [--bead <id>]` | Runs the write pass on the beads closed since `lastWriteAt`, or on one bead. `--dry-run` prints the input groups and does not run the agent. | 0, or 1 when the agent fails (the stamp stays written) |
 | `factory wiki groom [--dry-run]` | Runs the groom pass and opens a PR. `--dry-run` prints the plan and does not apply it. It skips when a groom PR is open. | 0 |
@@ -41,6 +41,11 @@ All commands use `FACTORY_HOME`. All commands except `find` and `status` take `w
 - `wiki: secret shape in <path>, page kept at last version`
 - `wiki: person's line in <path>, page kept, flagged`
 - `wiki: remote is public, push refused`
+- `wiki: repo config not allowed, push refused`
+- `wiki: repo config not allowed, nothing committed`
+- `wiki: repo config not allowed, pull skipped`
+- `wiki groom: repo config not allowed, skipped`
+- `wiki groom: repo config not allowed, nothing committed`
 
 ## Commits
 

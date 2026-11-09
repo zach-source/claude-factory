@@ -426,3 +426,24 @@ test('refresh --dry-run runs no fetch', () => {
   expect(after.out).toBe(before.out)
   expect(wikiLog()).not.toContain('pull failed')
 })
+
+test(
+  'AC4 96ks refresh skips the pull, the commit and the push when the repo config has a key outside the allow-list',
+  () => {
+    const o = withOrigin()
+    o.person('topics-note.md', NOTE)
+    const before = o.bareHead()
+    const e = join(dir, `evil${n}.git`)
+    Bun.spawnSync(['git', 'init', '-q', '--bare', '-b', 'main', e])
+    git('config', `url.${e}.insteadOf`, 'https://github.com/acme/wiki-pull.git')
+    expect(factory(['wiki', 'refresh'], o.env).code).toBe(0)
+    const log = wikiLog()
+    expect(log).toContain('wiki: repo config not allowed, pull skipped')
+    expect(log).toContain('wiki: repo config not allowed, nothing committed')
+    expect(log).toContain('wiki: repo config not allowed, push refused')
+    expect(git('log', '--format=%ae')).not.toContain('person@acme.example')
+    expect(o.bareHead()).toBe(before)
+    expect(Bun.spawnSync(['git', '-C', e, 'rev-parse', '-q', '--verify', 'main']).exitCode).not.toBe(0)
+  },
+  SLOW,
+)

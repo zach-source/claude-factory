@@ -1,6 +1,8 @@
 import { expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import {
+  appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -83,6 +85,7 @@ import {
   clusterCap,
   slot,
   passSettings,
+  REPO_CONFIG_KEY,
   withoutFleet,
   type RigFacts,
   factoryLabelName,
@@ -3287,4 +3290,150 @@ test('cleanReport blanks control, format and line-separator chars but keeps LF, 
   for (const c of bad) expect(cleanReport(c)).toBe(' ')
   expect(cleanReport('é 😀 \u00a0 plain\n\t')).toBe('é 😀 \u00a0 plain\n\t')
   expect(cleanReport('plain ascii')).toBe('plain ascii')
+})
+
+// claude-factory-96ks: the memory push of CONFIG_SYNC reads the repo config of memory/.git first
+function syncFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'config-sync-cfg-'))
+  const who = {
+    GIT_AUTHOR_NAME: 't',
+    GIT_AUTHOR_EMAIL: 't@t',
+    GIT_COMMITTER_NAME: 't',
+    GIT_COMMITTER_EMAIL: 't@t',
+  }
+  const sh = (cwd: string, cmd: string) => {
+    const p = Bun.spawnSync(['sh', '-c', cmd], { cwd, env: { ...process.env, ...who } })
+    if (p.exitCode) throw new Error(p.stderr.toString())
+    return p.stdout.toString().trim()
+  }
+  const home = join(dir, 'home')
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  sh(dir, 'git init -q --bare origin.git && git init -q --bare -b main evil.git')
+  writeFileSync(join(home, '.gitignore'), '/*\n!/.gitignore\n!/rigs.json\n')
+  writeFileSync(join(home, 'rigs.json'), '[]')
+  writeFileSync(join(home, 'memory', 'note.md'), 'a note')
+  sh(home, `git init -q && git remote add origin ${join(dir, 'origin.git')}`)
+  sh(join(home, 'memory'), 'git init -q && git add -A && git commit -qm m')
+  const has = (repo: string) =>
+    Bun.spawnSync(['git', '-C', join(dir, repo), 'rev-parse', '-q', '--verify', 'memory']).exitCode === 0
+  return { dir, home, sh, has, mem: join(home, 'memory', '.git') }
+}
+
+const SYNC_ROWS: [string, (f: ReturnType<typeof syncFixture>) => void][] = [
+  [
+    'pushInsteadOf',
+    f =>
+      appendFileSync(
+        join(f.mem, 'config'),
+        `[url "${join(f.dir, 'evil.git')}"]\n\tpushInsteadOf = ${join(f.dir, 'origin.git')}\n`,
+      ),
+  ],
+  [
+    'insteadOf',
+    f =>
+      appendFileSync(
+        join(f.mem, 'config'),
+        `[url "${join(f.dir, 'evil.git')}"]\n\tinsteadOf = ${join(f.dir, 'origin.git')}\n`,
+      ),
+  ],
+  ['hooksPath', f => appendFileSync(join(f.mem, 'config'), `[core]\n\thooksPath = ${f.dir}\n`)],
+  [
+    'include',
+    f => {
+      writeFileSync(join(f.dir, 'inc'), '[user]\n\tname = zq\n')
+      appendFileSync(join(f.mem, 'config'), `[include]\n\tpath = ${join(f.dir, 'inc')}\n`)
+    },
+  ],
+  ['empty config', f => writeFileSync(join(f.mem, 'config'), '')],
+  [
+    'not a repo',
+    f => {
+      rmSync(f.mem, { recursive: true })
+      mkdirSync(f.mem)
+    },
+  ],
+]
+for (const [name, mutate] of SYNC_ROWS) {
+  test(
+    `AC8 96ks config sync pushes no memory when memory/.git/config has ${name}`,
+    () => {
+      const f = syncFixture()
+      mutate(f)
+      f.sh(f.home, CONFIG_SYNC)
+      expect(f.has('origin.git')).toBe(false)
+      expect(f.has('evil.git')).toBe(false)
+      expect(readFileSync(join(f.home, 'dream.log'), 'utf8')).toMatch(
+        /^\d{4}-\d\d-\d\dT[\d:]+Z memory: repo config not allowed, push refused\n$/,
+      )
+      const branch = f.sh(f.home, 'git branch --show-current')
+      expect(f.sh(join(f.dir, 'origin.git'), `git ls-tree --name-only ${branch}`).split('\n')).toEqual([
+        '.gitignore',
+        'rigs.json',
+      ])
+      rmSync(f.dir, { recursive: true, force: true })
+    },
+    { timeout: 90_000 },
+  )
+}
+
+test('AC8 96ks config sync pushes memory and runs no pre-push hook', () => {
+  const f = syncFixture()
+  const marker = join(f.dir, 'marker')
+  mkdirSync(join(f.mem, 'hooks'), { recursive: true })
+  writeFileSync(join(f.mem, 'hooks', 'pre-push'), `#!/bin/sh\necho x >> '${marker}'\n`)
+  chmodSync(join(f.mem, 'hooks', 'pre-push'), 0o755)
+  f.sh(f.home, CONFIG_SYNC)
+  expect(f.has('origin.git')).toBe(true)
+  expect(existsSync(marker)).toBe(false)
+  rmSync(f.dir, { recursive: true, force: true })
+})
+
+test('AC9 96ks REPO_CONFIG_KEY gives the same answer in TS and in grep -E', () => {
+  const keys = [
+    'core.repositoryformatversion',
+    'core.filemode',
+    'core.bare',
+    'core.logallrefupdates',
+    'core.ignorecase',
+    'core.precomposeunicode',
+    'core.symlinks',
+    'extensions.objectformat',
+    'extensions.refstorage',
+    'user.name',
+    'user.email',
+    'remote.origin.url',
+    'remote.origin.fetch',
+    'remote.origin.pushurl',
+    'branch.main.remote',
+    'branch.main.merge',
+    'branch.feat/a.b.remote',
+    'url.https://github.com/acme/x.insteadof',
+    'url.x.pushinsteadof',
+    'core.hookspath',
+    'core.fsmonitor',
+    'core.sshcommand',
+    'core.worktree',
+    'include.path',
+    'includeif.gitdir:/.path',
+    'credential.helper',
+    'http.proxy',
+    'remote.origin.receivepack',
+    'filter.zq.clean',
+    'extensions.worktreeconfig',
+    'branch.main.pushremote',
+    'branch.a\\b.remote',
+    'branch..remote',
+    'xcore.bare',
+    'core.bare2',
+  ]
+  const re = REPO_CONFIG_KEY
+  for (const k of keys) {
+    const g = Bun.spawnSync(['grep', '-Eq', re.source], {
+      stdin: Buffer.from(k + '\n'),
+      env: { ...process.env, LC_ALL: 'C' },
+    })
+    expect([k, g.exitCode === 0]).toEqual([k, re.test(k)])
+  }
+  expect(re.test('core.bare')).toBe(true)
+  expect(re.test('core.hookspath')).toBe(false)
 })
