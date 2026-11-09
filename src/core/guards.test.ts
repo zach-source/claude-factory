@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import * as view from '../../mod/hooks/view'
+import { GATED_KINDS, kindEnds } from '../../mod/hooks/view'
 import { check, INSTALL_VERB, META_WRITE, PATROL_VERB, bdWrite, gatedCommand } from './guards'
 
 test('the core exports the same rules as the mod', () => {
@@ -21,6 +22,9 @@ test('the core exports the same rules as the mod', () => {
 
 // Commands from mod/tests/gate.test.ts:7-9, 104-152, 340-391, 484-516.
 const ask = [
+  '/repo/bin/factory token use claude',
+  '/repo/bin/factory token best',
+  '/repo/bin/factory \\\ntoken \\\nuse claude',
   '/repo/bin/factory decide lifecycle-abc ship "looks good"',
   '/repo/bin/factory decisions answer api api-7 "use postgres"',
   '/repo/bin/factory start lifecycle api api-9 --owned',
@@ -157,4 +161,43 @@ test('the patrol rules preserve their order and exact reasons', () => {
     expect(check(command!, 'subagent')).toEqual({ decision: 'deny', reason })
   for (const command of ['factory status', 'bd show x', 'bd comments x', 'bd list --metadata-field a=b'])
     expect(check(command, 'subagent')).toEqual({ decision: 'allow' })
+})
+
+const repeated = 'factory start factory wiki '.repeat(Math.ceil((256 * 1024) / 27))
+const speed = [repeated, '#x\\\n' + repeated, '--owned init ' + repeated]
+
+test('the lazy gate kinds finish within one second', () => {
+  for (const command of speed) {
+    const start = performance.now()
+    check(command, 'manager')
+    const ms = performance.now() - start
+    console.log(`guard.check: ${ms.toFixed(1)} ms`)
+    expect(ms).toBeLessThan(1000)
+  }
+}, 30000)
+
+test('the tail cut preserves each old match end', () => {
+  const old = [/\bfactory\s+start\b[\s\S]*?--owned\b/g, /\bfactory\s+wiki\b[\s\S]*?\binit\b/g]
+  const rows = [
+    'factory start x --owned factory start y',
+    'factory start --owned--owned factory start a --owned_x --owned',
+    'factory wiki reinit init factory wiki initx',
+    '--owned factory start a',
+    'init factory wiki a',
+    'factory start a factory wiki b',
+    ...speed.map(t => t.slice(0, 4096)),
+  ]
+  for (const kind of GATED_KINDS) {
+    const index = old.findIndex(re => re.source === kind.re.source)
+    if (index < 0) {
+      expect(kind.tail).toBeUndefined()
+      continue
+    }
+    expect(kind.tail?.source).toBe(index === 0 ? '--owned\\b' : '\\binit\\b')
+    for (const text of rows)
+      expect(kindEnds(text, kind.re, kind.tail)).toEqual(
+        [...text.matchAll(old[index]!)].map(m => m.index! + m[0].length),
+      )
+  }
+  expect(old.every(re => GATED_KINDS.some(k => k.re.source === re.source))).toBe(true)
 })
