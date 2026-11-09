@@ -350,7 +350,7 @@ A bead over a cap loses the `factory` label. It gets the label `held:cluster:<ke
 
 To release a held bead, run `factory queue <rig|repo> <id>`. The command removes the `held:*` label and queues the bead again. The mark stays, so the guard does not hold the bead a second time.
 
-The `clusterRuns` setting in `rigs.json` is a different limit. It is the most live runs that one cluster can hold in the rig. It must be a positive integer. The default is 2. Other values give the default.
+The `clusterRuns` setting in `rigs.json` is a different limit. It is the most live runs that one cluster can hold in the rig. It must be a positive integer. The default is 2. Other values give the default. Use `factory rig set <rig> --cluster-runs 3` to set it.
 
 ```json
 [{ "name": "app", "repo": "acme/widget", "clusterRuns": 3 }]
