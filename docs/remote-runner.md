@@ -332,11 +332,13 @@ Existing pending workers are retained while that check fails; their station dead
 
 - Set `FACTORY_AX_MANAGER_IMAGE` to the manager image (`Dockerfile.worker`, target `manager`). The command stops with an error if it is not set.
 - The command stops if the task already runs. The task is the one-manager lease (see Attach to the AX manager).
+- The command stops if the Workspace `f-manager` exists, and names the `ax ... delete workspace f-manager` command. An old Workspace keeps an old home and its `.migrated`. To keep the Workspace (a suspend and resume), add `--reuse-workspace`.
+- The command puts a new launch id in the task env as `FACTORY_AX_LAUNCH_ID`. With `--reuse-workspace`, the task has no launch id.
 - The task has `spec.debug: true`, so `factory attach` and `factory say` can reach it.
 - The task runs `factory manager host <manager args>`. The task env has `FACTORY_IN_AX=1`, `FACTORY_HOME=/workspace/w/home` and `CLAUDE_CONFIG_DIR=/workspace/w/claude`. Both directories are on the workspace volume, which stays across a suspend.
 - The task env also holds the vault placeholders and `FACTORY_CA`, as a worker gets them. The task holds no secret. The laptop passes `FACTORY_MAX_RUNS`, `FACTORY_AX_IMAGE`, `FACTORY_AX_VAULT`, `FACTORY_AX_ATESPACE`, `FACTORY_AX_PKG_GATE`, `FACTORY_AX_CAPABILITIES` (also when it is empty), `FACTORY_AX_CODEX`, `FACTORY_AX_CURSOR`, `FACTORY_AX_GROK` and `GRPC_ENFORCE_ALPN_ENABLED` to the task when they are set. The task env always has `FACTORY_AX_MANAGER`, the task's own name, so the AX sweep in the task skips its own task. If the laptop has `CURSOR_API_KEY` (the Cursor pool meter), the task gets `CURSOR_API_KEY=placeholder` (only with `FACTORY_AX_VAULT`), and the manager policy gets `api2.cursor.sh` with the vault key `CURSOR_API_KEY` on `/auth/` only. The real key does not go to the task. It sends the content of `FACTORY_AX_ENV` (a JSON file on the laptop), because the task has no laptop paths. In the task, `FACTORY_AX_ENV` can be the JSON itself.
 - `FACTORY_AX_MANAGER_SSH_PUBKEY` names a public key file on the laptop (for example `~/.ssh/id_ed25519.pub`). The laptop sends its lines as `FACTORY_SSH_AUTHORIZED_KEYS`. The command stops with an error if a line is not an OpenSSH public key. The error does not show the text. Do not give it a private key.
-- The egress policy has the worker defaults (Anthropic, GitHub, the Nix caches), `claude.ai`, and the host of `AX_SERVER` when it is set. The command tries to create the policy for 2 minutes, because the actor appears a short time after the apply.
+- The egress policy has the worker defaults (Anthropic, GitHub, the Nix caches), `claude.ai`, and the host of `AX_SERVER` when it is set. The command tries to create the policy for 2 minutes, because the actor appears a short time after the apply. If the policy exists (from an old task of the same name), the command updates it in place with `kubectl ate update egress-policy`. The update body has the stored `metadata` (`uid` and `version`) from `get -o json`. The policy broker does the same for a worker policy.
 
 `factory manager host` runs inside the task. It stops unless `FACTORY_IN_AX=1`. It does these steps:
 
@@ -429,12 +431,23 @@ Limits:
 - A store is made once. Later syncs pull; they do not make it again.
 - A run that the laptop made keeps the laptop's worktree path. The task has no such worktree. A worker on AX does not need it.
 
+#### Preflight
+
+Do these checks before step 3. `<ctx>` is `FACTORY_AX_CONTEXT`, and the atespace is `factory` (`FACTORY_AX_ATESPACE`).
+
+1. The Workspace `f-manager` must not exist. `ax --context <ctx> -a factory get workspace f-manager` must say not found. If it exists, delete it with `ax --context <ctx> -a factory delete workspace f-manager`. `factory manager --ax` also refuses it.
+2. The Task `f-manager` must not exist. `ax --context <ctx> -a factory get task f-manager` must say not found.
+3. Look for an old EgressPolicy: `kubectl ate --context <ctx> get egress-policy f-manager -a factory -o json`. An old policy does not stop the launch: `factory manager --ax` updates it in place.
+4. After step 3, the task env must have `FACTORY_AX_LAUNCH_ID` (`ax --context <ctx> -a factory get task f-manager`). `factory migrate-to-ax` reads it there and writes `launch=<id>` into `.migrated`.
+
+The host starts the manager only on a `.migrated` with its own launch id. A backup restore writes the same id. With a launch id, a home with `rigs.json` and no good marker does not start the manager. In that case the host logs `.migrated is not of launch <id>` in `manager-host.log`. With no launch id (`--reuse-workspace`), the host trusts any `.migrated`, as before.
+
 #### Steps
 
 1. Stop the laptop manager. Stop `factory loop` and `factory tick` too.
 2. Run `factory migrate-to-ax --dry-run`. It prints what moves, the size, and what stays. It writes nothing and sends nothing. If it stops with a list of runs, those runs have a worker in a herdr pane on the laptop. A pane cannot move. Finish or abort those runs, or let them reach a station boundary (a gate or a wait). Then run the dry run again.
 3. Run `factory manager --ax`. The task starts. Its host sees an empty home and waits for the migration. It does not start the manager yet. For a new factory with no migration, set `FACTORY_AX_FRESH=1` on the laptop before this step.
-4. Run `factory migrate-to-ax`. It packs a tar.gz and computes its sha256. Then it sends the archive to the task and unpacks it into `FACTORY_HOME` as the worker user. The unpack writes `FACTORY_HOME/.migrated` last. The host sees the marker, runs `factory repos sync`, and starts the manager.
+4. Run `factory migrate-to-ax`. It packs a tar.gz and computes its sha256. Then it sends the archive to the task and unpacks it into `FACTORY_HOME` as the worker user. The unpack writes `FACTORY_HOME/.migrated` last, with the task's launch id. The host sees the marker, runs `factory repos sync`, and starts the manager.
    - If the ax CLI has `ax stdio` (the AX fork; its `--help` lists it), the archive goes in one stream on stdin. In the task, a shell script writes it to `.factory-worker/migrate.tgz.tmp`, compares its sha256 with the laptop's, and only then moves it to `migrate.tgz`. A mismatch removes the file and stops the migrate.
    - If the ax CLI has no `ax stdio`, the archive goes as base64 parts of 96 KB with `put`, one `ax ssh` call each. Then `sha256sum` in the task must give the laptop's hash. This is slow: about 14,000 calls for 1 GB.
 5. Run `factory attach`. The board shows the same runs as the laptop did.

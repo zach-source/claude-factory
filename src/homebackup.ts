@@ -15,6 +15,8 @@ export type BackupCfg = {
   ws: string
   remote?: string
   branch: string
+  /** the task's FACTORY_AX_LAUNCH_ID: a restore writes it into .migrated (managerhost.markerOk) */
+  launch?: string
   /** test hook: replaces EXCLUDES */
   excludes?: string[]
 }
@@ -358,7 +360,10 @@ export function restore(cfg: BackupCfg): Outcome {
       const bad = steps.find(p => p.exitCode !== 0)
       if (bad) return { error: `git memory: ${clean(bad.stderr.toString())}` }
     }
-    writeFileSync(join(cfg.ws, 'home', '.migrated'), `restored ${sha}\n`)
+    writeFileSync(
+      join(cfg.ws, 'home', '.migrated'),
+      `restored ${sha}${cfg.launch ? ` launch=${cfg.launch}` : ''}\n`,
+    )
     rmSync(RESTORING(cfg.ws))
     return { restored: sha }
   } catch (e) {
