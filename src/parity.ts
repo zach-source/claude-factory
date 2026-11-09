@@ -75,7 +75,7 @@ export async function checkParity(catalog: Op[], fronts: FrontEnd[], gaps: Gap[]
       if (!known.has(h.op)) out.push(`${fe.name}: hidden ${h.op} is not in the catalog`)
       else {
         const other = fronts.find(f => f.name === h.shownIn)
-        if (!other || other === fe || other.hidden.some(x => x.op === h.op))
+        if (!other || other.hidden.some(x => x.op === h.op))
           out.push(`${fe.name}: hidden ${h.op} must name a front end that shows it`)
       }
     }
