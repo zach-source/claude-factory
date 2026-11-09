@@ -1,9 +1,9 @@
 # The package age gate (claude-factory-ei0): an in-cluster registry proxy that is the only Go/npm/PyPI
 # registry host a VM task may reach once FACTORY_AX_PKG_GATE is on (see docs/remote-runner.md, "Package
-# age gate"). It runs the same worker image as every AX task (built by hack/push-worker.sh), with its
+# age gate"). It runs the same worker image as every AX task (built by `factory image build`), with its
 # ax-task-runner ENTRYPOINT overridden to run `factory pkg-gate serve` directly instead.
 #
-# Apply with the worker image substituted for ${FACTORY_AX_IMAGE} (the digest hack/push-worker.sh prints):
+# Apply with the worker image substituted for ${FACTORY_AX_IMAGE} (the `<tag>@<digest>` that `factory image build` prints):
 #   envsubst '${FACTORY_AX_IMAGE}' < deploy/pkg-gate.yaml | kubectl apply -f -
 # Dry-run (no cluster, or before a FACTORY_AX_IMAGE is known) with the literal placeholder instead:
 #   kubectl apply --dry-run=client -f deploy/pkg-gate.yaml

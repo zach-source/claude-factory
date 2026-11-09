@@ -37,11 +37,16 @@ test('each plugin dir of VM_PLUGINS has a COPY line in the worker stage, and EGM
 const serverFile = () => readFileSync(join(ROOT, 'Dockerfile.server'), 'utf8')
 const serverStage = () => serverFile().slice(serverFile().lastIndexOf('\nFROM oven/bun:'))
 
-test('the server image uses the Bun version that CI pins', () => {
-  const ci = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
-  const pins = [...new Set([...ci.matchAll(/bun-version:\s*['"]?([\d.]+)['"]?/g)].map(m => m[1]))]
-  expect(pins).toEqual(['1.3.13'])
-  expect(serverFile()).toMatch(new RegExp(`^FROM oven/bun:${pins[0]}-debian$`, 'm'))
+test('the images and workflows pin Bun with the gVisor timeout fix', () => {
+  for (const name of ['ci', 'release', 'release-tag']) {
+    const workflow = readFileSync(join(ROOT, `.github/workflows/${name}.yml`), 'utf8')
+    const pins = [...new Set([...workflow.matchAll(/bun-version:\s*['"]?([\d.]+)['"]?/g)].map(m => m[1]))]
+    expect(pins).toEqual(['1.4.4'])
+  }
+  for (const name of ['worker', 'broker', 'server']) {
+    const docker = readFileSync(join(ROOT, `Dockerfile.${name}`), 'utf8')
+    expect(docker).toMatch(/^FROM oven\/bun:1\.4\.4-debian(?: AS bun)?$/m)
+  }
 })
 
 test('the server image installs and smokes each tool', () => {
@@ -84,6 +89,24 @@ test('the worker image pins codex unified_exec off, since write_stdin skips the 
   expect(worker).toContain("printf '[features]\\nunified_exec = false\\n' > /etc/codex/requirements.toml")
   expect(worker).toContain('chmod 0644 /etc/codex/requirements.toml')
   expect(worker.indexOf('/etc/codex/requirements.toml')).toBeGreaterThan(worker.indexOf('@openai/codex@'))
+})
+
+test('the worker image pins cursor-agent to a version and links it, so the CLI cannot update itself in the VM', () => {
+  const worker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  expect(worker).toMatch(/^ARG CURSOR_VERSION=\d{4}\.\d+\.\d+-[0-9a-f]+$/m)
+  expect(worker).toContain(
+    'https://downloads.cursor.com/lab/${CURSOR_VERSION}/linux/x64/agent-cli-package.tar.gz',
+  )
+  expect(worker).toContain(
+    'ln -s /opt/cursor-agent/${CURSOR_VERSION}/cursor-agent /usr/local/bin/cursor-agent',
+  )
+})
+
+test('the worker image pins grok to a version and turns its updater off', () => {
+  const worker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  expect(worker).toMatch(/^ARG GROK_VERSION=\d+\.\d+\.\d+$/m)
+  expect(worker).toContain('@xai-official/grok@${GROK_VERSION}')
+  expect(worker).toContain('ENV GROK_DISABLE_AUTOUPDATER=1')
 })
 
 // 823x: nix-shell -p read the base image's channel (go1.23) while the pin held go 1.26

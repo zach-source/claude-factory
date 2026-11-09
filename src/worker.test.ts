@@ -14,22 +14,43 @@ import {
   startServices,
   imagePlugins,
   trustNote,
+  writePrivatePatterns,
 } from './worker'
 
 // claude-factory-qda.4: the laptop names a station's skills in FACTORY_SKILLS; unset is an older laptop
 test('imagePlugins picks the image plugin dirs by FACTORY_SKILLS', () => {
-  expect(imagePlugins('')).toEqual([])
-  expect(imagePlugins(undefined)).toEqual([
-    '/opt/plugins/asd-ste100',
-    '/opt/plugins/code-review',
-    '/opt/plugins/egm',
-  ])
-  expect(imagePlugins('asd-ste100,egm')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
-  expect(imagePlugins('asd-ste100')).toEqual(['/opt/plugins/asd-ste100'])
-  expect(imagePlugins('asd-ste100,code-review')).toEqual([
-    '/opt/plugins/asd-ste100',
-    '/opt/plugins/code-review',
-  ])
+  const saved = { ...process.env }
+  delete process.env.FACTORY_SKILLS
+  delete process.env.FACTORY_HARNESS
+  try {
+    expect(imagePlugins('')).toEqual([])
+    expect(imagePlugins(undefined)).toEqual([
+      '/opt/plugins/asd-ste100',
+      '/opt/plugins/code-review',
+      '/opt/plugins/egm',
+    ])
+    expect(imagePlugins('asd-ste100,egm')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
+    expect(imagePlugins('asd-ste100')).toEqual(['/opt/plugins/asd-ste100'])
+    expect(imagePlugins('asd-ste100,code-review')).toEqual([
+      '/opt/plugins/asd-ste100',
+      '/opt/plugins/code-review',
+    ])
+  } finally {
+    process.env = saved
+  }
+})
+
+test('imagePlugins excludes egm for codex and pi', () => {
+  const was = process.env.FACTORY_SKILLS
+  delete process.env.FACTORY_SKILLS
+  try {
+    expect(imagePlugins(undefined, 'codex')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/code-review'])
+    expect(imagePlugins('asd-ste100,egm', 'pi')).toEqual(['/opt/plugins/asd-ste100'])
+    expect(imagePlugins('asd-ste100,egm', 'claude')).toEqual(['/opt/plugins/asd-ste100', '/opt/plugins/egm'])
+  } finally {
+    if (was === undefined) delete process.env.FACTORY_SKILLS
+    else process.env.FACTORY_SKILLS = was
+  }
 })
 
 function sh(cmd: string[], cwd: string) {
@@ -833,5 +854,26 @@ describe('excludeScratch', () => {
     writeFileSync(join(wt, '.scratch', 'a', 'b'), 'scratch')
     expect(sh(['git', 'status', '--porcelain'], wt)).toBe('')
     expect(Bun.spawnSync(['git', 'check-ignore', '.scratch/a/b'], { cwd: wt }).exitCode).toBe(0)
+  })
+})
+
+// claude-factory-jluz.1: serve writes the laptop's private patterns into the clone's git dir
+describe('writePrivatePatterns', () => {
+  let dir: string
+  afterEach(() => {
+    delete process.env.FACTORY_PRIVATE_PATTERNS
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('writes the env text to info/private-patterns, and does nothing when the env is unset', () => {
+    dir = mkdtempSync(join(tmpdir(), 'privpat-'))
+    Bun.spawnSync(['git', 'init', '-q', dir])
+    const file = join(dir, '.git', 'info', 'private-patterns')
+    writePrivatePatterns(dir)
+    expect(existsSync(file)).toBe(false)
+    process.env.FACTORY_PRIVATE_PATTERNS = 'secretcorp\n'
+    writePrivatePatterns(dir)
+    expect(readFileSync(file, 'utf8')).toBe('secretcorp\n')
+    writePrivatePatterns(join(dir, 'not-a-repo')) // outside a git repo: no throw
   })
 })

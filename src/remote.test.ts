@@ -1,5 +1,5 @@
 // The runner with an AX worker, end to end through bin/factory: a fake `ax` stands in for the cluster.
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
@@ -42,6 +42,7 @@ const defaultHerdr = join(dir, 'default-herdr')
 mkdirSync(dir, { recursive: true })
 writeFileSync(defaultHerdr, '#!/bin/sh\nexit 1\n')
 chmodSync(defaultHerdr, 0o755)
+afterEach(() => rmSync(join(home, 'runs'), { recursive: true, force: true }))
 afterAll(() => {
   // the host's real herdr must list no workspace under this run's own tmp dir. It ignores other sessions' workspaces
   const bin = Bun.which('herdr')
@@ -64,6 +65,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     env: {
       ...laptop,
       FACTORY_HOME: home,
+      FACTORY_WORKER_DIR: join(dir, 'worker'),
       FACTORY_NO_KICK: '1',
       FACTORY_AX: join(dir, 'ax'),
       FACTORY_KUBECTL: readyController(),
@@ -385,6 +387,18 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+
+test('a run fixture can remain until its test ends', () => {
+  launched('cleanup-check')
+  expect(existsSync(join(home, 'runs', 'cleanup-check'))).toBe(true)
+})
+
+test('a later test does not poll a prior run fixture', () => {
+  cluster('Running', { status: 'idle', lines: [] })
+  expect(factory(['tick']).code).toBe(0)
+  expect(called()).not.toContain('get task')
+})
+
 function readyController() {
   const path = join(dir, 'ready-controller')
   writeFileSync(
@@ -702,6 +716,29 @@ test('memory search --from logs shown with the run and station; without it, no b
   expect(rows()[1].by).toBeUndefined()
   rmSync(memDir, { recursive: true })
 }, 60_000)
+
+test('a laptop memory search does not import the parent worker snapshot', () => {
+  const parent = join(dir, 'parent-worker')
+  const source = join(dir, 'parent-memory')
+  mkdirSync(parent, { recursive: true })
+  mkdirSync(join(source, 'topic'), { recursive: true })
+  writeFileSync(join(source, 'topic', 'n.md'), '---\nsummary: parent snapshot note\n---\nbody\n')
+  expect(memorySnapshotPut(source, undefined, join(parent, 'memory.tgz')).put).toBe(true)
+  const keep = process.env.FACTORY_WORKER_DIR
+  process.env.FACTORY_WORKER_DIR = parent
+  const memDir = join(home, 'memory')
+  rmSync(memDir, { recursive: true, force: true })
+  try {
+    const r = factory(['memory', 'search', 'parent snapshot note'])
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('nothing in ')
+    expect(existsSync(memDir)).toBe(false)
+  } finally {
+    if (keep === undefined) delete process.env.FACTORY_WORKER_DIR
+    else process.env.FACTORY_WORKER_DIR = keep
+    rmSync(memDir, { recursive: true, force: true })
+  }
+})
 
 test('a report appended after the worker deletes its already-replayed probes still replays (claude-factory-4x1)', () => {
   const seq = launched('r8')
@@ -1664,7 +1701,7 @@ test('rig add --egress and --agent are for a runner that can take them', () => {
   expect(add('--egress', 'api.openai.com=OPENAI').err).toContain('add --runner ax')
   expect(add('--runner', 'ax', '--egress', 'https://x.com').err).toContain('not a hostname')
   expect(add('--runner', 'ax', '--egress', 'api.openai.com=openai').err).toContain('SCREAMING_SNAKE_CASE')
-  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude, codex or pi')
+  expect(add('--runner', 'ax', '--agent', 'my-script').err).toContain('claude, codex, cursor, grok or pi')
   expect(add('--runner', 'ax', '--agent', 'codex -m o3').err).toContain('FACTORY_AX_CODEX=1')
   expect(add('--runner', 'ax', '--mcp', join(dir, 'mcp.json')).err).toContain('--mcp does not reach')
   const ok = add(
@@ -1801,7 +1838,7 @@ test("inside a VM Claude keeps the worker's tools and prompt but none of the lap
     // claude-factory-cr6: the same deny-rm-rf PreToolUse hook a laptop worker gets, run from the VM image
     hooks: {
       PreToolUse: [
-        ...['Bash', 'Write|Edit|MultiEdit|NotebookEdit', 'Read|Grep'].map(matcher => ({
+        ...['Bash', 'Write|Edit|MultiEdit|NotebookEdit|apply_patch', 'Read|Grep'].map(matcher => ({
           matcher,
           hooks: [
             {

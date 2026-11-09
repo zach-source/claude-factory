@@ -62,17 +62,17 @@ const PRS = [
     ],
   },
   {
-    run: 'lifecycle-mv581ntbax',
-    rig: 'infra-blocks',
-    bead: 'infra-blocks-5nzp',
+    run: 'lifecycle-run-prs1',
+    rig: 'acme-blocks',
+    bead: 'acme-blocks-c3d4',
     node: 'done',
     ended: true,
     at: 2,
     prs: [
       PR({
-        url: 'https://github.com/acme/widget-deploy/pull/2923',
+        url: 'https://github.com/acme/widget-deploy/pull/1002',
         repo: 'acme/widget-deploy',
-        number: 2923,
+        number: 1002,
         title: 'Bypass application targets',
         role: 'code',
         state: 'OPEN',
@@ -139,8 +139,8 @@ test(
     expect(drawn).toContain('lifecycle-mv4y4yyjy4')
     expect(drawn).toContain('fab-bb1.1.7')
     expect(drawn).toContain('implement')
-    expect(drawn).toContain('lifecycle-mv581ntbax')
-    expect(drawn).toContain('infra-blocks-5nzp')
+    expect(drawn).toContain('lifecycle-run-prs1')
+    expect(drawn).toContain('acme-blocks-c3d4')
     expect(drawn).toContain('run ended')
     // own PRs: repo#number, state word, role, title
     expect(drawn).toContain('acme/widget')
@@ -148,7 +148,7 @@ test(
     expect(drawn).toContain('merged')
     expect(drawn).toContain('code')
     expect(drawn).toContain('Add the thing')
-    expect(drawn).toContain('2923')
+    expect(drawn).toContain('1002')
     expect(drawn).toContain('needs approval')
     // #552 is own-role (code) and a draft: the tab marks it 'draft', not 'closed' (wyc.9)
     expect(drawn).toContain('552')

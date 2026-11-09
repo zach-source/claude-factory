@@ -2119,6 +2119,7 @@ export function managerActivity(lines: string[], since: number) {
       continue
     }
     const at = Date.parse(e.timestamp ?? '')
+    if (Number.isNaN(at)) continue // a record with no time, such as api-request-blob, is not activity
     const content = e.message?.content
     const hm = new Date(at).toISOString().slice(0, 16).replace('T', ' ')
     if (e.type === 'user' && !e.isMeta && typeof content === 'string') {

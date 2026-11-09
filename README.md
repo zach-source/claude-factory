@@ -269,6 +269,17 @@ factory rig history                                         # the newest 20 snap
 factory rig undo [n]                                        # restore snapshot n (default 1); `rig undo` again reverses it
 ```
 
+`factory settings` keeps the machine settings in `settings.json` of the factory home. A stored value
+fills an environment variable that is not set, so the environment wins.
+
+```sh
+factory settings                          # each key, its value and its source: default, stored or environment
+factory settings set ax.vault acme-vault  # store one value; a secret-class value is refused
+factory settings unset ax.vault           # remove a stored value
+```
+
+A row reads `environment (overrides stored)` when an environment value differs from the stored one. A worker cannot run `set` or `unset`.
+
 A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web
 fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
 room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
@@ -677,7 +688,7 @@ pi has no MCP client, so its pane says that the file was not loaded.
 
 `--runner` says where a rig's workers run: `herdr` panes on this machine (the default), or `ax`, an
 AX microVM on a cluster ([docs/remote-runner.md](docs/remote-runner.md)). A VM runs the rig's agent
-(claude, codex or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
+(claude, codex, cursor, grok or pi) headless; `--egress host[,host]...[=KEY[:Header:Prefix]]` (repeatable) lets it
 reach more hosts, with agent-vault's credential `KEY` injected for them. Runners are an interface
 (`src/runner.ts`): a new one is a module and a registry entry.
 
@@ -986,10 +997,11 @@ A PR belongs to a live run when its branch is the run's (`factory/<run>`) or the
   normal verify and review. With no live run, the factory starts a run of the rig's factory at implement on
   the PR's own branch. That run pushes to the PR branch and opens no new PR. A PR with both labels takes
   this path.
+- **`fix-tests`**: for a PR whose build jobs or tests fail. The route is the same as for `rework`. The goal and the mail name the failed check runs of the PR head (at most 10) and their log links. The worker makes only the checks pass: it changes no behavior that the tests do not check, and it does not disable, skip or weaken a test. After 5 runs for one PR (`REQUEUE_MAX`), the factory starts no more runs. The board shows the PR and its failed checks. Fix it by hand, then remove the label. On GitLab, the factory does not read the failed jobs, so the worker reads them.
 
-A `conflict` or `rework` PR that belongs to a live run goes to that run instead, so two workers never
+A `conflict`, `rework` or `fix-tests` PR that belongs to a live run goes to that run instead, so two workers never
 push to one branch. For `conflict`, the current station is mailed what the label asks (a parked one wakes).
-For `rework`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
+For `rework` and `fix-tests`, the run moves to implement (as `factory goto` does) and the mail goes to implement. If the
 run's factory has no implement station, the current station gets the mail. A PR that is queued with ship
 is unchanged: the ship run gets the label.
 
@@ -1073,6 +1085,11 @@ git config core.hooksPath .beads-hooks
 Put one extended regex on each line of `<git common dir>/info/private-patterns`. The guard matches
 them without case, against the added lines of the staged diff, the author and the commit message.
 The repo holds no pattern file. If the file is missing or empty, the guard checks nothing and says so.
+
+To check a PR or issue text before you post it, pipe the text in: `hack/guard-private.sh text < body.md`.
+It prints the matching lines and exits 1. The worker hook runs the same check on `gh pr`, `gh issue` and
+`gh api` calls that publish text. It reads the command and the body file. A worker on an AX VM gets a copy
+of the rig repo's pattern file at the clone, so the commit guard and this hook work there too.
 
 ## Plugins
 
@@ -1200,6 +1217,107 @@ nodes:
 
 `factory check <file>` validates one. A run pins its factory resolved, so a base changed later
 reaches only new runs.
+
+## Run the manager from the Herdr app
+
+The Herdr desktop app can run the factory with no Claude manager session. The factory mod for the
+app is in `herdr/mods/factory`, and its layout is `herdr/layouts/factory.json`.
+
+The mod is a second local UI beside the Claude mod (`mod/`). Use one of them at a time on a factory
+home.
+
+### Install the mod
+
+Run this command with `FACTORY_HOME` set to the factory home that the mod must work:
+
+```sh
+FACTORY_HOME=<factory home> factory herdr install [--app-home <dir>]
+```
+
+The command does these steps:
+
+- It copies the mod into `<app home>/mods/factory`.
+- It copies the layout into `<app home>/layouts/factory.json`.
+- It writes `config.json` beside the mod, with this CLI (`bin/factory`) and the factory home.
+
+The app home is `--app-home`, else `$HERDR_APP_HOME`, else `~/.config/herdr-app`. To update the
+mod, run the command again. The app reloads it.
+
+To show the mod, switch to the factory layout:
+
+```sh
+herdr-app do layout.switch '{"name":"factory"}'
+```
+
+The mod has `"place": "none"`, so it shows only where a layout puts it. It does not dock into your
+main layout.
+
+### What the mod does
+
+- The panel ticks the factory each 5 s with `factory tick --keep-mail`.
+- The panel runs the manager steps headless, on their own timers:
+
+  | Command | Each |
+  | --- | --- |
+  | `factory patrol --once` | 60 s |
+  | `factory brief --once` | 2 min |
+  | `factory review --once` | 5 min |
+  | `factory decisions` | 5 min |
+  | `factory pm --once` | 1 h |
+
+  A step with no work prints `nothing due` and makes no model call.
+- Each command runs detached, because the app stops an `exec` call after 30 s. The output goes to
+  `<factory home>/herdr/<name>.out`, `.err` and `.done`.
+- The board shows the live runs by rig and by state: gates, stuck, working and waiting. Click a run
+  to read its worker screen (`herdr pane read`).
+- `Interview (n)` opens a dialog with the gates and the bd decisions. Each answer is a button. A
+  gate button runs `factory decide <run> <outcome>`. A decision button runs
+  `factory decisions answer <rig> <bead> <option>`. The mod command `factory.interview` also opens
+  the dialog, so you can bind it to a key in `keys.json`.
+- Toasts tell you of a blocked worker, of manager mail and of each patrol report.
+- A copy of the mod with props `{ "band": true }` draws a status band of one line. The factory
+  layout puts one above the status bar.
+
+### The headless steps
+
+`factory patrol|pm|brief|review --once` runs one manager step with `claude -p`. The Herdr mod uses
+them, and you can also run them by hand.
+
+- `factory tick --keep-mail` saves the tick in `<home>/manager-tick.json`. It also keeps the
+  manager mail in `<home>/patrol-state.json` for the next patrol.
+- The steps write the same logs as the Claude mod: `patrol-log.jsonl`, `pm-log.jsonl`,
+  `brief-log.jsonl`, `review-log.jsonl` and `manager-usage.jsonl`.
+- Each patrol Bash call goes through the `factory patrol-guard` PreToolUse hook. The hook refuses
+  the same commands that the Claude mod refuses for a patrol.
+- `--codex <model>` runs pm, brief or review on codex in its read-only sandbox. The patrol refuses
+  codex, because codex has no hook for the Bash guard.
+
+### The manager lease
+
+Only one manager ticks and patrols a factory home at a time. The Claude mod, the Herdr mod and
+`factory loop` take the local lease `<home>/manager.lease` before a tick or a step.
+
+- The holder renews the lease on each tick.
+- A lease is stale after 60 s with no renewal, or when its recorded pid is dead. The next manager
+  then takes it.
+- A manager without the lease shows the board only. It starts no patrol, pm, briefer or reviewer.
+  Its status line names the holder.
+- `FACTORY_LEASE_HOLDER` and `FACTORY_LEASE_KIND` name a holder. With no name, the holder is the
+  herdr pane (`pane:$HERDR_PANE_ID`), else the parent process.
+
+```sh
+factory lease status    # who holds the lease, and when it was renewed
+factory lease release   # drop the lease, for example after a crash
+```
+
+### How it differs from the Claude mod
+
+- The Herdr mod has no chat. To start, fork or steer runs, use the CLI or the Claude mod.
+- The workers stay in the herdr TUI and in AX. The Herdr mod shows no live worker pane. It shows
+  the last lines of a worker screen only.
+- The Herdr mod has no confirm step after a gate button. The click is the decision.
+- The Claude mod runs the manager steps as hidden subagents. The Herdr mod runs them through the
+  `--once` commands.
 
 ## herdr sidebar
 

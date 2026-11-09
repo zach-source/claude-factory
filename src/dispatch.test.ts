@@ -426,7 +426,8 @@ function fakePrecheckBd(extra: Record<string, unknown> = {}) {
 
 /** fake gh: it logs every call. `$GH_FAIL` set makes every call fail, like a timeout or a rate
  * limit. `$GH_FAIL_HEAD` set makes only a head lookup (`api ...&head=`) fail (claude-factory-6as.9). Else it answers
- * `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout. `$GH_LABELED` (the same shape) is what the label pass lists. */
+ * `$GH_JSON` (a `gh pr list --json ...` shaped array, or `[]`) on stdout. `$GH_LABELED` (the same shape) is what the label pass lists.
+ * A check-runs read answers the array `$GH_CHECK_RUNS` (default `[]`), or fails when `$GH_FAIL_CHECKS` is set. */
 function fakeGh() {
   // the REST `pulls?state=closed&head=<owner>:<branch>` answer: $GH_JSON rows (the old `gh pr list` shape) as merged pulls
   const restScript = join(pbin, 'rest-pulls.ts')
@@ -454,7 +455,7 @@ console.log(JSON.stringify(rows))
   number: p.number,
   html_url: p.url,
   state: 'open',
-  head: { ref: p.headRefName, repo: p.isCrossRepository ? { full_name: 'fork/r' } : { full_name: 'acme/widget' } },
+  head: { ref: p.headRefName, sha: p.headRefOid, repo: p.isCrossRepository ? { full_name: 'fork/r' } : { full_name: 'acme/widget' } },
   base: { ref: p.baseRefName, repo: { full_name: 'acme/widget' } },
   labels: p.labels,
 }))
@@ -473,6 +474,7 @@ console.log(JSON.stringify(rows))
     '  "api repos/"*"/pulls/"[0-9]*) printf \'%s\' "$GH_PULL"; exit 0;;',
     '  "api -X DELETE "*) if [ -n "$GH_FAIL_EDIT" ]; then echo "gh: forbidden" >&2; exit 1; fi; exit 0;;',
     '  "api "*"state=open"*) bun "' + restOpen + '"; exit 0;;',
+    '  "api repos/"*"/check-runs"*) if [ -n "$GH_FAIL_CHECKS" ]; then echo "gh: boom" >&2; exit 1; fi; printf \'{"check_runs":%s}\' "${GH_CHECK_RUNS:-[]}"; exit 0;;',
     'esac',
     'printf \'%s\' "$GH_JSON"',
   ].join('\n')
@@ -839,7 +841,7 @@ test('a second pass adds 0 new comments for a bead a live run already holds', ()
  * run's node here is `'aborted'`, so dispatch's `linked` map drops it and the bead looks unowned.
  * Only the candidate loop's own scan for a run with this bead (cli.ts, `runBranches`) can still find
  * it, through the PR's head branch. */
-function endedRun(id: string, bead: string) {
+function endedRun(id: string, bead: string, goal = 'g') {
   const f = join(pdir, 'mini.json')
   if (!existsSync(f)) writeFileSync(f, JSON.stringify(MINI))
   const actor = createActor(compile(MINI)).start()
@@ -852,7 +854,7 @@ function endedRun(id: string, bead: string) {
       id,
       factory: f,
       repo: 'n/a',
-      goal: 'g',
+      goal,
       ws: 'ws1',
       worktree: 'n/a',
       branch: 'b',
@@ -1848,7 +1850,7 @@ test('a conflict label that cannot come off mails its run once, not every pass',
 })
 
 /** a bead run with the goal that reworkStart gives for PR 7, plus that PR as a labeled open pull */
-function heldReworkRun() {
+function heldReworkRun(labels = ['rework']) {
   fixtureReset([{ id: 'acme-1', title: 't', labels: ['factory'] }])
   expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
   const id = runDirs()[0]!
@@ -1858,7 +1860,8 @@ function heldReworkRun() {
     headRefName: 'someone/branch',
     baseRefName: 'main',
     isCrossRepository: false,
-    labels: [{ name: 'rework' }],
+    headRefOid: 'a'.repeat(40),
+    labels: labels.map(name => ({ name })),
   }
   const file = join(phome, 'runs', id, 'run.json')
   const run = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
@@ -1880,6 +1883,91 @@ test('a held rework run owns its PR: a rework label mails it and starts no secon
   for (let i = 0; i < 2; i++) labelPassAgain({ GH_LABELED: JSON.stringify([pr]) })
   expect(runDirs()).toHaveLength(before)
   expect(inboxOf(id)).toContain('was labeled rework')
+})
+
+const FIXA = 'a'.repeat(40)
+const FIXJOB = 'https://github.com/acme/widget/actions/runs/1/job/11'
+const failedRun = (name: string) =>
+  JSON.stringify([
+    {
+      id: 11,
+      name,
+      status: 'completed',
+      conclusion: 'failure',
+      html_url: FIXJOB,
+      app: { slug: 'github-actions' },
+    },
+  ])
+const labelsJson = () =>
+  JSON.parse(readFileSync(join(phome, 'labels.json'), 'utf8')) as { id: string; error: string }[]
+const fixPr = () => ({
+  number: 7,
+  url: 'https://github.com/acme/widget/pull/7',
+  headRefName: 'someone/branch',
+  baseRefName: 'main',
+  isCrossRepository: false,
+  headRefOid: FIXA,
+  labels: [{ name: 'fix-tests' }],
+})
+
+test('fix-tests on a fork PR gives the fork row and no write', () => {
+  fixtureReset([])
+  labelPassAgain({ GH_LABELED: JSON.stringify([{ ...fixPr(), isCrossRepository: true }]) })
+  expect(labelsJson()).toEqual([
+    {
+      id: 'rig:a',
+      error:
+        'https://github.com/acme/widget/pull/7 is labeled fix-tests but comes from a fork: rework it there',
+    },
+  ])
+  expect(runDirs()).toHaveLength(0)
+  const calls = readFileSync(ghCallsLog, 'utf8')
+  for (const w of ['api -X DELETE', 'issues/7/comments', 'check-runs']) expect(calls).not.toContain(w)
+})
+
+test('fix-tests on a run-owned PR mails the failed checks', () => {
+  const { id, pr } = heldReworkRun(['fix-tests'])
+  labelPassAgain({ GH_LABELED: JSON.stringify([pr]), GH_CHECK_RUNS: failedRun('unit tests') })
+  const calls = readFileSync(ghCallsLog, 'utf8')
+  expect(calls.split(`gh api repos/acme/widget/commits/${FIXA}/check-runs?per_page=100`)).toHaveLength(2)
+  expect(inboxOf(id)).toContain('was labeled fix-tests')
+  expect(inboxOf(id)).toContain(`unit tests ${FIXJOB}`)
+  expect(calls).toContain('api -X DELETE repos/acme/widget/issues/7/labels/fix-tests')
+})
+
+test('fix-tests with a failed check-runs read still mails the run', () => {
+  const { id, pr } = heldReworkRun(['fix-tests'])
+  const out = labelPassAgain({ GH_LABELED: JSON.stringify([pr]), GH_FAIL_CHECKS: '1' })
+  expect(inboxOf(id)).toContain('the factory did not read its checks')
+  expect(out.out).toContain('fix-tests https://github.com/acme/widget/pull/7: check-runs read failed')
+})
+
+test('fix-tests stops at REQUEUE_MAX runs for one PR', () => {
+  fixtureReset([])
+  const goal = reworkStart({ ...fixPr(), labels: [{ name: 'fix-tests' }] } as never, 'lifecycle').goal
+  const env = { GH_LABELED: JSON.stringify([fixPr()]), GH_CHECK_RUNS: failedRun('test') }
+  const capped = 'is labeled fix-tests, but 5 runs did not make its checks pass (failed: test)'
+  for (let i = 0; i < 4; i++) endedRun(`old-${i}`, `b-${i}`, goal)
+  const rigs = join(phome, 'rigs.json')
+  const noRoom = (maxRuns: number) =>
+    writeFileSync(rigs, JSON.stringify([{ ...JSON.parse(readFileSync(rigs, 'utf8'))[0], maxRuns }]))
+  noRoom(0)
+  labelPassAgain(env)
+  expect(labelsJson().filter(r => r.error.includes('runs did not make'))).toEqual([]) // 4 runs: wait
+  endedRun('old-4', 'b-4', goal)
+  for (let i = 0; i < 2; i++) {
+    labelPassAgain(env)
+    expect(labelsJson()).toEqual([
+      {
+        id: 'rig:a',
+        error: `https://github.com/acme/widget/pull/7 ${capped}: fix it by hand, then remove the label`,
+      },
+    ])
+  }
+  expect(runDirs()).toHaveLength(5)
+  const calls = readFileSync(ghCallsLog, 'utf8')
+  expect(calls).not.toContain('api -X DELETE')
+  expect(calls).not.toContain('issues/7/comments')
 })
 
 test('a live rework run is aborted when its PR is merged, not when it is open (czy5)', () => {

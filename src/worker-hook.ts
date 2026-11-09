@@ -1,5 +1,5 @@
 /**
- * A second entry of this hook (matcher Write|Edit|MultiEdit|NotebookEdit) runs `fileWriteReason`
+ * A second entry of this hook (matcher Write|Edit|MultiEdit|NotebookEdit|apply_patch) runs `fileWriteReason` (or `applyPatchReason` for a codex apply_patch)
  * on the tool's file path (claude-factory-g4du). The Bash text rules below do not see those tools.
  *
  * This PreToolUse hook for Bash denies `rm -r` and `rm -rf` in all spellings or wrappers.
@@ -465,6 +465,10 @@ export interface HookGate {
   /** claude-factory-usqc: the function names in the same snapshots (see `shellSnapshotFunctions`). Unset
    * or undefined means the hook cannot prove an argument word safe, so it scans every word for an alias. */
   shellFunctions?: () => Set<string> | undefined
+  /** claude-factory-jluz.1: the 1-based lines of `text` that match the repo's private patterns
+   * (`<git common dir>/info/private-patterns`). Undefined: the repo has no such file, nothing to check.
+   * `[0]`: the check itself failed. Unset: no check. */
+  privateHits?: (text: string) => number[] | undefined
 }
 
 /**
@@ -1576,7 +1580,10 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
   // easj.19: no recursion. This loop visits every exec word, so a nested find needs only the path test.
   for (let k = 1; k < cmd.length - 1; k++) {
     if (!FIND_EXEC_WORDS.has(cmd[k]!)) continue
-    const sub0 = realCommand(cmd.slice(k + 1))
+    const raw = cmd.slice(k + 1)
+    const sub0 = realCommand(raw)
+    // qn8a.13: a brace list in a wrapper word or the head can expand to find with any start path.
+    if (raw.slice(0, raw.length - sub0.length + 1).some(w => BRACE_LIST_WORD.test(w))) return true
     const sub = sub0.some(w => /[<>]/.test(w)) ? dropRedirectWords(sub0) : sub0
     if (sub.length && baseWord(sub[0]!) === 'find' && findHasDelete(sub) && findDeletePathDeny(sub, root))
       return true
@@ -2862,9 +2869,26 @@ export const BEADS_ACTOR_REASON =
   "bd fills a bead's created_by from this variable, and the flood guard trusts created_by to find a " +
   'sweep-filed bead. Do not retry this command.'
 
-// claude-factory-ab8n: one guard per variable a worker must not change. cmd is the command word
-// that reads the variable: bd reads BEADS_ACTOR, and factory reads FACTORY_FROM (the mail sender).
-type EnvGuard = { name: string; cmd: string; reason: string; flag?: string }
+// claude-factory-ab8n: one guard per variable a worker must not change. cmds holds the command words
+// that read the variable: bd reads BEADS_ACTOR; FACTORY_FROM and FACTORY_RUN are read by the words in FACTORY_CLI_WORDS.
+type EnvGuard = { name: string; cmds: ReadonlySet<string>; reason: string; flag?: string }
+// claude-factory-qn8a.27: the CLI is TypeScript, so only the factory launcher or a JS runtime starts it.
+// ponytail: a script file under a cleared env (env -i bash x.sh), another interpreter (python3, perl)
+// and a runtime copied to another name pass. The sandbox is the barrier. Upgrade: none planned, because the hook is a best-effort guard. Each runtime word also over-denies a harmless env -i run.
+const FACTORY_CLI_WORDS: ReadonlySet<string> = new Set([
+  'factory',
+  'bun',
+  'bunx',
+  'node',
+  'nodejs',
+  'npx',
+  'npm',
+  'pnpm',
+  'yarn',
+  'deno',
+  'tsx',
+  'ts-node',
+])
 export const FACTORY_FROM_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_FROM. ' +
   'The factory reads the mail sender from this variable, and the owner-only rule trusts mail from the ' +
@@ -2873,14 +2897,33 @@ export const FACTORY_RUN_REASON =
   'The factory denies this command: do not set, clear, export, or re-export FACTORY_RUN. ' +
   'The factory reads the run of this worker from this variable, and it refuses a report or mail for any other run. ' +
   'Do not retry this command.'
-const FACTORY_RUN_GUARD: EnvGuard = { name: 'FACTORY_RUN', cmd: 'factory', reason: FACTORY_RUN_REASON }
+const FACTORY_RUN_GUARD: EnvGuard = {
+  name: 'FACTORY_RUN',
+  cmds: FACTORY_CLI_WORDS,
+  reason: FACTORY_RUN_REASON,
+}
+// claude-factory-qn8a.31: bin/factory unpacks the FACTORY_VM_ENV JSON into its own env and its children's
+// env, so a worker that sets it can carry GIT_CONFIG_*, FACTORY_FROM, FACTORY_RUN, HOME or BEADS_ACTOR.
+export const FACTORY_VM_ENV_REASON =
+  'The factory denies this command: do not set, clear, export, or re-export FACTORY_VM_ENV. ' +
+  'The factory unpacks this variable into the environment of every factory command, so it can carry any ' +
+  'other variable past the other guards. Do not retry this command.'
+const FACTORY_VM_ENV_GUARD: EnvGuard = {
+  name: 'FACTORY_VM_ENV',
+  cmds: new Set(['factory']),
+  reason: FACTORY_VM_ENV_REASON,
+}
 const BEADS_ACTOR_GUARD: EnvGuard = {
   name: 'BEADS_ACTOR',
-  cmd: 'bd',
+  cmds: new Set(['bd']),
   reason: BEADS_ACTOR_REASON,
   flag: 'actor',
 }
-const FACTORY_FROM_GUARD: EnvGuard = { name: 'FACTORY_FROM', cmd: 'factory', reason: FACTORY_FROM_REASON }
+const FACTORY_FROM_GUARD: EnvGuard = {
+  name: 'FACTORY_FROM',
+  cmds: FACTORY_CLI_WORDS,
+  reason: FACTORY_FROM_REASON,
+}
 
 const ENV_IGNORE_ENVIRONMENT_LONG = 'ignore-environment'
 
@@ -3003,7 +3046,7 @@ function segmentRunsBdCommand(
   let trapEnd = 0
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
-    if (bw === g.cmd) return true
+    if (g.cmds.has(bw)) return true
     if (shellSlotWord(words[k]!)) {
       // claude-factory-38jm: a dynamic word in the option slot can expand to -c and a bd script.
       // Fail closed. slotEnd keeps the walks O(n), as in anyShellReason.
@@ -3253,7 +3296,7 @@ function touchesBeadsActor(words: string[], state: ScanState, g: EnvGuard, depth
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     const b = baseWord(w)
-    if (b === g.cmd) bdIdx.push(i)
+    if (g.cmds.has(b)) bdIdx.push(i)
     // claude-factory-8pc.27: `env -u BEADS_ACTOR` clears the name for the command that env
     // runs. `env -i` clears every name.
     if (b === 'env') {
@@ -3970,8 +4013,8 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
  * The write words are those of `globalGitConfigUse`: a redirect target, an `of=` value, an output
  * flag value, and every word of a segment that does not skip its operands.
  * ponytail: these pass: a name built at run time (a variable, printf), a script file, a symlink
- * from an earlier call, a program that picks the path, git config -f (qn8a.50), codex apply_patch
- * (qn8a.22), the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
+ * from an earlier call, a program that picks the path, git config -f (qn8a.50),
+ * the hook source and settings.local.json (qn8a.21), a re-point of origin (qn8a.45), a
  * directory copy that names no file (qn8a.52), and a symlink made earlier in the same command (qn8a.54).
  * The sandbox is the barrier.
  * Upgrade path: resolve each word against the real FACTORY_HOME.
@@ -8866,6 +8909,90 @@ function memoGate(gate: HookGate): HookGate {
   return memo
 }
 
+// claude-factory-jluz.1: the repo is public. A worker must not publish a private name in a PR or issue text.
+export const privateTextReason = (command: string, gate?: HookGate): string | undefined => {
+  if (!gate?.privateHits) return undefined
+  const files = new Set<string>()
+  let publishes = false
+  for (const words of segments(command)) {
+    const f = ghPublishFiles(words)
+    if (f) publishes = true
+    for (const x of f ?? []) files.add(x)
+  }
+  if (!publishes) return undefined
+  const found: string[] = []
+  const lines = gate.privateHits(command)
+  if (lines === undefined) return undefined
+  if (lines.length) found.push(`the command text (${lineList(lines)})`)
+  for (const f of files) {
+    const text = gate.readFile?.(f)
+    if (text === undefined)
+      return `${PRIVATE_TEXT_PREFIX}the body file ${f} cannot be read, so it cannot be checked. Write the body to a plain file first, then name that file.`
+    const hits = gate.privateHits(text) ?? []
+    if (hits.length) found.push(`${f} (${lineList(hits)})`)
+  }
+  return found.length
+    ? `${PRIVATE_TEXT_PREFIX}the text would publish private names. Matches: ${found.join('; ')}. Use placeholders such as acme in the title and body. Do not retry this exact command.`
+    : undefined
+}
+const PRIVATE_TEXT_PREFIX = 'The factory denies this command: '
+const lineList = (n: number[]) => (n[0] === 0 ? 'the check failed' : `line ${n.join(', ')}`)
+
+/** The body files of a `gh` call that publishes text to GitHub, or undefined for any other call. */
+function ghPublishFiles(words: string[]): string[] | undefined {
+  const cmd = realCommand(words)
+  if (baseWord(cmd[0] ?? '') !== 'gh') return undefined
+  const tail = cmd.slice(1)
+  const { index: vi } = firstVerbIndex(tail, GH_VALUE_FLAGS)
+  const verb = vi >= 0 ? tail[vi] : undefined
+  const rest = vi >= 0 ? tail.slice(vi + 1) : []
+  if (verb === 'pr' || verb === 'issue') {
+    const { index: si } = firstVerbIndex(rest, GH_SUB_VALUE_FLAGS)
+    const sub = si >= 0 ? rest[si] : undefined
+    const subs = verb === 'pr' ? ['create', 'edit', 'comment', 'review'] : ['create', 'edit', 'comment']
+    if (sub === undefined || !subs.includes(sub)) return undefined
+    return flagValuesInOrder(rest.slice(si + 1), new Set(['-F', '--body-file']))
+  }
+  if (verb !== 'api') return undefined
+  const apiArgs = expandGhShortClusters(rest)
+  const { index: ei } = firstVerbIndex(apiArgs, GH_API_VALUE_FLAGS)
+  const endpoint = ei >= 0 ? apiArgs[ei] : undefined
+  if (!endpoint || !/(^|\/)(pulls|issues)(\/|$)/.test(decodeApiPath(normalizeEndpoint(endpoint)) ?? endpoint))
+    return undefined
+  const fields = ghApiFields(apiArgs)
+  const input = flagValue(apiArgs, new Set(['--input']))
+  const method = (flagValue(apiArgs, new Set(['-X', '--method'])) ?? '').toUpperCase()
+  if ((method || (fields.length > 0 || input !== undefined ? 'POST' : 'GET')) === 'GET') return undefined
+  const files = fields.filter(f => f.value.startsWith('@')).map(f => f.value.slice(1))
+  return input === undefined ? files : [...files, input]
+}
+
+/** claude-factory-jluz.1: for `gate.privateHits`. grep runs the patterns, so the match is the one the commit guard makes. */
+export function privateHitLines(text: string, cwd: string): number[] | undefined {
+  try {
+    const g = Bun.spawnSync(['git', '-C', cwd, 'rev-parse', '--git-common-dir'], { timeout: 5000 })
+    if (g.exitCode !== 0) return undefined
+    const file = resolvePath(cwd, g.stdout.toString().trim(), 'info', 'private-patterns')
+    const pats = readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(l => l.trim() && !l.startsWith('#'))
+    if (!pats.length) return undefined
+    const p = Bun.spawnSync(['grep', '-n', '-i', '-E', ...pats.flatMap(x => ['-e', x])], {
+      stdin: Buffer.from(text),
+      timeout: 5000,
+    })
+    if (p.exitCode === 1) return []
+    if (p.exitCode !== 0) return [0]
+    return p.stdout
+      .toString()
+      .split('\n')
+      .filter(Boolean)
+      .map(l => Number.parseInt(l, 10))
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : [0]
+  }
+}
+
 /**
  * the reason to deny `command`, or undefined to let Claude Code's own prompt decide.
  * `root` is the worktree root. An rm operand outside it is risky too (see riskyTarget).
@@ -8899,7 +9026,7 @@ export function denyReason(
   const scan = scanReason(command, root, personOnly, gate, MAX_SCAN_WORK, now() + SCAN_TIME_MS)
   if (scan) return scan
   // claude-factory-qn8a.19: a read of a harness token file or dir. It reads the raw text, not the parse.
-  return tokenReason(command, gate?.cwd ?? root ?? process.cwd(), root)
+  return tokenReason(command, gate?.cwd ?? root ?? process.cwd(), root) ?? privateTextReason(command, gate)
 }
 
 /**
@@ -9911,7 +10038,7 @@ function denyAtScan(
     // claude-factory-8pc.24: check the raw segment words, before realCommand strips a leading
     // VAR=val or wrapper word, so `BEADS_ACTOR=x bd create ...` and `env BEADS_ACTOR=x bd create
     // ...` both still show the assignment here.
-    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD]) {
+    for (const g of [BEADS_ACTOR_GUARD, FACTORY_FROM_GUARD, FACTORY_RUN_GUARD, FACTORY_VM_ENV_GUARD]) {
       if (touchesBeadsActor(words, state, g)) return state.work < 0 ? SCAN_BUDGET_REASON : g.reason
     }
     // claude-factory-zl5.33: checked before realCommand strips xargs, since the thing this
@@ -10033,6 +10160,8 @@ function denyAtScan(
       continue
     }
     const b = baseWord(cmd[0]!)
+    // claude-factory-qn8a.22: the worker has the apply_patch tool, which the hook checks; codex applies a shell one unseen
+    if (/^apply_?patch$/.test(b)) return APPLY_PATCH_SHELL_REASON
     // claude-factory-9zd5: namesGitAdminPath reads this segment's raw words, the same words
     // touchesBeadsActor and setsDangerousGitConfigEnv read above. isGitOrGhSegment tells R2
     // whether this segment's own command is git, a dashed git-<verb> binary, or gh.
@@ -10533,7 +10662,7 @@ export function clampTimeout(
 }
 
 export const HOOK_CONTROL_REASON =
-  'The factory denies this write: it targets the hook source or a .claude/settings.json or settings.local.json file. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
+  'The factory denies this write: it targets the hook source, a .claude/settings.json or settings.local.json file, a .cursor/hooks.json file, or a file in .grok. A write there turns the guard off. To read the file, use cat or git show origin/main:<path>. Do not retry this write.'
 
 // a parent of the hook dir (also a bare /) is a hook-control path in a segment with one of these words and in cd:
 // find / and ls -d / and alias ~ must stay allowed
@@ -10577,6 +10706,11 @@ function hookControlPath(abs: string, root: string, hookDir: string, ancestor = 
   const parts = a.split('/').filter(Boolean)
   const n = parts.length
   if (parts[n - 1] === '.claude') return true
+  if (parts[n - 1] === '.cursor' || (n >= 2 && parts[n - 2] === '.cursor' && parts[n - 1] === 'hooks.json'))
+    return true
+  // grok loads hooks and config from .grok/hooks/*.json and .grok/config.toml
+  if (parts[n - 1] === '.grok' || parts[n - 2] === '.grok' || (n >= 3 && parts[n - 3] === '.grok'))
+    return true
   if (n >= 2 && parts[n - 2] === '.claude' && SETTINGS_NAMES.includes(parts[n - 1]!)) return true
   const h = foldLower(hookDir)
   const r = foldLower(root)
@@ -10873,8 +11007,8 @@ function protectedParts(parts: string[], xdg: string[]): boolean {
  * claude-factory-g4du: the reason to deny a Write, Edit, MultiEdit or NotebookEdit of `path`, or undefined.
  * It fails closed on a missing, empty, NUL or ~user path. It checks the lexical path and the real path
  * (the nearest existing ancestor through realpath), in lower case, so a symlink or a case change does not pass.
- * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config,
- * codex apply_patch (claude-factory-qn8a.22). The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
+ * Known gaps: a hard link made earlier, a bare repo dir named x.git, GIT_CONFIG_GLOBAL, the gh config.
+ * The hook source and .claude/settings*.json answer with HOOK_CONTROL_REASON
  * (claude-factory-qn8a.21); rigs.json and worker-settings*.json are claude-factory-qn8a.20.
  */
 export function fileWriteReason(
@@ -10927,6 +11061,59 @@ export function fileWriteReason(
   return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
 }
 
+export const APPLY_PATCH_REASON =
+  'The factory denies this apply_patch: the hook cannot read it. The hook reads only the lines that start with *** and needs each one to be *** Begin Patch, *** End Patch, *** End of File, or *** Add File:, *** Delete File:, *** Update File: or *** Move to: and a path that does not start with ~. If a content line starts with ***, edit that line with a script in .scratch/. Do not retry this exact patch.'
+
+export const APPLY_PATCH_SHELL_REASON =
+  'The factory denies this command: it runs apply_patch in the shell. Use your apply_patch tool. The hook checks each path of that tool. Do not retry this exact command.'
+
+// The Rust char::is_whitespace set: codex trims patch lines with it. JS trim() differs at U+0085 and U+FEFF.
+const RUST_WS = '\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const RUST_TRIM = new RegExp(`^[${RUST_WS}]+|[${RUST_WS}]+$`, 'g')
+
+/**
+ * claude-factory-qn8a.22: the paths that a codex apply_patch input adds, deletes, updates or moves to, or
+ * undefined when the input is not the closed grammar (the fail-closed case). Pure: it calls no fs function.
+ * Only tool_input.command is read, and it must be the only key. Each line that starts with *** (after the
+ * Rust trim) must be a known header; any other *** line, a ~ path or a patch with no Add, Delete or Update header is undefined.
+ */
+export function applyPatchPaths(input: unknown): string[] | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
+  const keys = Object.keys(input)
+  const command = (input as { command?: unknown }).command
+  if (keys.length !== 1 || typeof command !== 'string') return undefined
+  if (command.includes('\0')) return undefined
+  const paths: string[] = []
+  let files = 0
+  for (const raw of command.split('\n')) {
+    const line = raw.replace(RUST_TRIM, '')
+    if (!line.startsWith('***')) continue
+    if (line === '*** Begin Patch' || line === '*** End Patch' || line === '*** End of File') continue
+    const m = /^\*\*\* (Add File|Delete File|Update File|Move to): (.+)$/.exec(line)
+    if (!m || m[2]!.startsWith('~')) return undefined
+    if (m[1] !== 'Move to') files++
+    paths.push(m[2]!)
+  }
+  return files ? paths : undefined
+}
+
+/** claude-factory-qn8a.22: the reason to deny a codex apply_patch input, or undefined. Same arguments as fileWriteReason. */
+export function applyPatchReason(
+  input: unknown,
+  cwd: string,
+  env?: { home: string; xdg?: string | undefined },
+  root?: string,
+  hookDir?: string,
+): string | undefined {
+  const paths = applyPatchPaths(input)
+  if (!paths) return APPLY_PATCH_REASON
+  for (const p of paths) {
+    const r = fileWriteReason(p, cwd, env, root, hookDir)
+    if (r) return r
+  }
+  return undefined
+}
+
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
 export function reasonName(reason: string): string {
   for (const [k, v] of Object.entries({ ...self, HOME_REASON }))
@@ -10934,7 +11121,7 @@ export function reasonName(reason: string): string {
   return 'UNKNOWN'
 }
 
-const HARNESSES = ['claude', 'codex', 'pi']
+const HARNESSES = ['claude', 'codex', 'pi', 'cursor', 'grok']
 
 /**
  * claude-factory-uzes, -wkg4: the deny log keeps no secret. The first `=` or `${` and all text after it become ***.
@@ -10989,6 +11176,45 @@ function denyOut(reason: string) {
   )
 }
 
+/**
+ * Cursor's preToolUse input in Claude's shape: Shell is Bash. Write (an edit also arrives as Write) and Delete carry a
+ * file_path, so both go to the file-write guard. Read, Grep and other tools keep their names.
+ */
+export function cursorInput(input: unknown) {
+  const i = input as { tool_name?: string }
+  const tool = i?.tool_name
+  const name = tool === 'Shell' ? 'Bash' : tool === 'Delete' ? 'Write' : tool
+  return name === tool ? input : { ...i, tool_name: name }
+}
+
+/** the lines `handle` printed, in Cursor's reply: the first deny (user_message shows to the model), else allow */
+export function cursorReply(printed: string[]) {
+  for (const l of printed) {
+    const o = JSON.parse(l).hookSpecificOutput
+    if (o?.permissionDecision === 'deny')
+      return {
+        permission: 'deny',
+        user_message: o.permissionDecisionReason,
+        agent_message: o.permissionDecisionReason,
+      }
+  }
+  return { permission: 'allow' }
+}
+
+/**
+ * Grok's preToolUse input in Claude's shape: run_terminal_command is Bash, an edit or write is Write, read_file is Read
+ * (its path is target_file). Grok reads Claude's reply as it is, so there is no reply adapter.
+ */
+export function grokInput(input: unknown) {
+  const i = input as { tool_name?: string; tool_input?: Record<string, unknown> }
+  const t = i?.tool_name
+  if (t === 'run_terminal_command') return { ...i, tool_name: 'Bash' }
+  if (t === 'search_replace' || t === 'write') return { ...i, tool_name: 'Write' }
+  if (t === 'read_file')
+    return { ...i, tool_name: 'Read', tool_input: { ...i.tool_input, file_path: i.tool_input?.target_file } }
+  return t === 'grep' ? { ...i, tool_name: 'Grep' } : input
+}
+
 async function main() {
   const text = await Bun.stdin.text()
   let input: unknown
@@ -10997,6 +11223,28 @@ async function main() {
   } catch {
     return
   }
+  if (flag('--harness') === 'cursor') {
+    // a guard prints its deny through console.log: catch the lines and answer in Cursor's shape
+    const printed: string[] = []
+    const log = console.log
+    console.log = (l: string) => void printed.push(l)
+    try {
+      guard(cursorInput(input))
+    } finally {
+      console.log = log
+    }
+    console.log(JSON.stringify(cursorReply(printed)))
+    return
+  }
+  guard(flag('--harness') === 'grok' ? grokInput(input) : input)
+}
+
+const flag = (name: string) => {
+  const at = process.argv.indexOf(name)
+  return at >= 0 ? process.argv[at + 1] : undefined
+}
+
+function guard(input: unknown) {
   // claude-factory-sibp: a throw in any guard denies. An uncaught throw exits 1, and Claude Code lets the command run.
   try {
     handle(input)
@@ -11023,6 +11271,20 @@ function handle(input: unknown) {
   const argh = process.argv.indexOf('--harness')
   // claude-factory-ay4w: a hook config with no --harness falls back to the launch env (an AX VM sets FACTORY_HARNESS)
   const harness = argh >= 0 ? process.argv[argh + 1] : process.env.FACTORY_HARNESS
+  if (i?.tool_name === 'apply_patch') {
+    // claude-factory-qn8a.22: a codex apply_patch carries its paths in the patch text
+    const reason = applyPatchReason(
+      i.tool_input,
+      i.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      undefined,
+      process.env.CLAUDE_PROJECT_DIR || i.cwd || process.cwd(),
+    )
+    if (reason) {
+      denyOut(reason)
+      logDenial(reason, `apply_patch ${applyPatchPaths(i.tool_input)?.join(' ') ?? ''}`, harness)
+    }
+    return
+  }
   if (i?.tool_name && ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(i.tool_name)) {
     const reason = fileWriteReason(
       i.tool_input?.file_path ?? i.tool_input?.notebook_path,
@@ -11109,6 +11371,7 @@ function handle(input: unknown) {
     // `root` here. `gitReason`'s push-dir fold (`gitChdir`) and `cwdInsideGitDir`'s R4 check both
     // read this field; `gitReason` falls back to `root` itself at its own call site.
     cwd: i.cwd,
+    privateHits: text => privateHitLines(text, i.cwd || root),
   }
   const reason = denyReason(i.tool_input?.command ?? '', root, personOnly, gate)
   if (!reason) {

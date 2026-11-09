@@ -19,6 +19,18 @@ import { STATUS_CODES } from 'node:http'
 import type { Socket } from 'node:net'
 import { join, resolve, sep } from 'node:path'
 import { createServer as createTlsServer } from 'node:tls'
+import {
+  CATALOG,
+  OpError,
+  readBody,
+  readQuery,
+  type Ctx,
+  type Input,
+  type Op,
+  type RunResult,
+  type Runner,
+} from './core/catalog'
+export type { RunResult, Runner } from './core/catalog'
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/
@@ -96,9 +108,6 @@ export function personCerts(dir: string, serverName: string) {
   ].join('\n')
 }
 
-export type RunResult = { code: number; out: string; err: string; timedOut?: boolean }
-/** run one CLI form; `text` is mail text that the runner passes by file */
-export type Runner = (argv: string[], text?: string) => Promise<RunResult>
 export type ClientOpts = {
   home: string
   run: Runner
@@ -166,127 +175,23 @@ export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), t
   }
 }
 
-const SEG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const KEY = /^[A-Za-z0-9-]{8,128}$/
 const MAX_BODY = 128 * 1024
-const MAX_TEXT = 65536
 const DAY = 24 * 3600_000
-
-type Field = 'seg' | 'text' | 'note' | 'abs' | 'manager' | 'true' | 'stop|resume'
-type Body = Record<string, string | boolean>
-type Route = {
-  method: 'GET' | 'POST'
-  path: string // ':' matches one SEG
-  query?: Record<string, 'seg' | '1'>
-  body?: Record<string, Field>
-  optional?: string[]
-  /** argv for the CLI; mail text goes separately */
-  argv: (p: string[], q: URLSearchParams, b: Body) => string[]
-}
-
-/** the closed route table of contracts/client-api.md: 8 GET forms and 7 POST forms */
-const ROUTES: Route[] = [
-  { method: 'GET', path: '/v1/runs/:', argv: p => ['show', p[0]!] },
-  {
-    method: 'GET',
-    path: '/v1/status',
-    query: { run: 'seg' },
-    argv: (_, q) => (q.has('run') ? ['status', q.get('run')!] : ['status']),
-  },
-  { method: 'GET', path: '/v1/prs', argv: () => ['prs'] },
-  { method: 'GET', path: '/v1/backlog', argv: () => ['backlog'] },
-  { method: 'GET', path: '/v1/decisions', argv: () => ['decisions', 'list'] },
-  { method: 'GET', path: '/v1/plan', argv: () => ['plan', 'show'] },
-  {
-    method: 'GET',
-    path: '/v1/metrics',
-    query: { rig: 'seg', since: 'seg', json: '1', tokens: '1' },
-    argv: (_, q) => [
-      'metrics',
-      ...(q.has('rig') ? ['--rig', q.get('rig')!] : []),
-      ...(q.has('since') ? ['--since', q.get('since')!] : []),
-      ...(q.has('json') ? ['--json'] : []),
-      ...(q.has('tokens') ? ['--tokens'] : []),
-    ],
-  },
-  {
-    method: 'POST',
-    path: '/v1/runs/:/decide',
-    body: { outcome: 'seg', note: 'note' },
-    argv: (p, _, b) => ['decide', p[0]!, b.outcome as string, ...(b.note ? [b.note as string] : [])],
-  },
-  {
-    method: 'POST',
-    path: '/v1/runs/:/mail',
-    body: { to: 'seg', text: 'text', from: 'manager', cwd: 'abs', wake: 'true' },
-    optional: ['wake'],
-    argv: (p, _, b) => ['mail', p[0]!, b.to as string, ...(b.wake ? ['--wake'] : [])],
-  },
-  {
-    method: 'POST',
-    path: '/v1/runs/:/goto',
-    body: { node: 'seg' },
-    argv: (p, _, b) => ['goto', p[0]!, b.node as string],
-  },
-  { method: 'POST', path: '/v1/runs/:/abort', body: {}, argv: p => ['abort', p[0]!] },
-  {
-    method: 'POST',
-    path: '/v1/start',
-    body: { factory: 'seg', station: 'seg', rig: 'seg', goal: 'text', owned: 'true' },
-    optional: ['station', 'owned'],
-    argv: (_, __, b) => [
-      'start',
-      b.station ? `${b.factory}@${b.station}` : (b.factory as string),
-      b.rig as string,
-      b.goal as string,
-      ...(b.owned ? ['--owned'] : []),
-    ],
-  },
-  { method: 'POST', path: '/v1/halt', body: { mode: 'stop|resume' }, argv: (_, __, b) => [b.mode as string] },
-  {
-    method: 'POST',
-    path: '/v1/decisions/:/:/answer',
-    body: { text: 'text' },
-    argv: (p, _, b) => ['decisions', 'answer', p[0]!, p[1]!, b.text as string],
-  },
-]
 
 const reply = (status: number, body: string, json = true) =>
   new Response(body, { status, headers: { 'content-type': json ? 'application/json' : 'text/plain' } })
 const refuse = (status: number, why: string) => reply(status, `${JSON.stringify({ refused: why })}\n`)
 const looksJson = (s: string) => /^\s*[{[]/.test(s)
 
-function fieldOk(kind: Field, v: unknown): boolean {
-  switch (kind) {
-    case 'seg':
-      return typeof v === 'string' && SEG.test(v)
-    case 'text':
-    case 'note':
-      return (
-        typeof v === 'string' &&
-        v.length <= MAX_TEXT &&
-        (kind === 'note' || v.length >= 1) &&
-        !v.includes('\u0000')
-      )
-    case 'abs':
-      return typeof v === 'string' && v.startsWith('/') && v.length <= 4096 && !v.includes('\u0000')
-    case 'manager':
-      return v === 'manager'
-    case 'true':
-      return v === true
-    case 'stop|resume':
-      return v === 'stop' || v === 'resume'
-  }
-}
-
-/** match a request path to a route; the segments are not checked yet */
-function match(method: string, path: string): { route: Route; params: string[] } | undefined {
+/** match a request path to an operation of the catalog; the segments are not checked yet */
+function match(method: string, path: string): { op: Op; params: string[] } | undefined {
   const parts = path.split('/')
-  for (const route of ROUTES) {
-    const want = route.path.split('/')
-    if (route.method !== method || want.length !== parts.length) continue
-    if (want.every((w, i) => w === ':' || w === parts[i]))
-      return { route, params: parts.filter((_, i) => want[i] === ':') }
+  for (const op of CATALOG) {
+    const want = op.route.path.split('/')
+    if (op.route.method !== method || want.length !== parts.length) continue
+    if (want.every((w, i) => w.startsWith(':') || w === parts[i]))
+      return { op, params: parts.filter((_, i) => want[i]!.startsWith(':')) }
   }
 }
 
@@ -345,37 +250,38 @@ export function clientHandler(o: ClientOpts) {
   const storeFile = join(o.home, 'client-idempotency.json')
   const auditFile = join(o.home, 'client-actions.jsonl')
   let chain: Promise<unknown> = Promise.resolve()
-  const answer = async (r: RunResult) =>
-    r.timedOut
-      ? refuse(504, 'the command timed out')
-      : r.code === 0
-        ? reply(200, r.out, looksJson(r.out))
-        : refuse(422, r.err.slice(0, 500))
+  const ctx: Ctx = { home: o.home, cli: o.run, board: o.board }
+  const call = async (op: Op, input: Input): Promise<Response> => {
+    try {
+      const r = await op.run(ctx, input)
+      return r.timedOut
+        ? refuse(504, 'the command timed out')
+        : r.code === 0
+          ? reply(200, r.out, op.output === 'json' || looksJson(r.out))
+          : refuse(422, r.err.slice(0, 500))
+    } catch (e) {
+      if (e instanceof OpError) return refuse(e.status, e.message)
+      throw e
+    }
+  }
 
   return async (req: Request, ip: string): Promise<Response> => {
     // A worker token must not open this port, whatever the value or the route (FR-010).
     if (req.headers.has('authorization'))
       return refuse(403, 'worker tokens are not accepted on the client port')
     const url = new URL(req.url)
-    if (req.method === 'GET' && url.pathname === '/v1/board') {
-      if (url.search) return refuse(400, 'bad query')
-      const b = o.board()
-      return b === null || b === undefined ? refuse(503, 'no tick yet') : reply(200, JSON.stringify(b) + '\n')
-    }
     const m = match(req.method, url.pathname)
     if (!m) return refuse(404, 'no such route')
-    const { route, params } = m
-    if (!params.every(p => SEG.test(p))) return refuse(400, 'bad path segment')
-    const q = url.searchParams
-    const keys = [...q.keys()]
-    const allowed = route.query ?? {}
-    if (new Set(keys).size !== keys.length || keys.some(k => !(k in allowed))) return refuse(400, 'bad query')
-    for (const k of keys)
-      if (allowed[k] === '1' ? q.get(k) !== '1' : !SEG.test(q.get(k)!)) return refuse(400, 'bad query')
-
-    if (route.method === 'GET') {
-      const r = await o.run(route.argv(params, q, {}))
-      return answer(r)
+    const { op, params } = m
+    const q = readQuery(op, params, url.search)
+    if (typeof q === 'string') return refuse(400, q)
+    // ponytail: op.rights is not enforced. Every caller holds the person certificate, so every caller is the owner. Enforcement needs identity transport (aya5.6).
+    if (op.route.method === 'GET') {
+      try {
+        return await call(op, q)
+      } catch (e) {
+        return refuse(500, `internal error: ${String((e as Error)?.message ?? e).slice(0, 200)}`)
+      }
     }
 
     const key = req.headers.get('idempotency-key') ?? ''
@@ -394,19 +300,11 @@ export function clientHandler(o: ClientOpts) {
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
       return refuse(400, 'body must be an object')
-    const spec = route.body ?? {}
-    const b = parsed as Record<string, unknown>
-    const optional = route.optional ?? []
-    if (
-      Object.keys(b).some(k => !(k in spec)) ||
-      Object.keys(spec).some(k => !optional.includes(k) && !(k in b)) ||
-      Object.entries(b).some(([k, v]) => !fieldOk(spec[k]!, v))
-    )
-      return refuse(400, 'bad body')
-    const body = b as Body
-    if (url.pathname === '/v1/start' && (body.goal as string).split(/\s+/).includes('--owned'))
+    const body = readBody(op, q, parsed as Record<string, unknown>)
+    if (typeof body === 'string') return refuse(400, body)
+    if (op.name === 'runs.start' && (body.goal as string).split(/\s+/).includes('--owned'))
       return refuse(400, 'the goal must not hold the word --owned: set owned')
-    if (/\/mail$/.test(url.pathname) && insideRunWorktree(o.home, params[0]!, body.cwd as string))
+    if (op.name === 'runs.mail' && insideRunWorktree(o.home, body.id as string, body.cwd as string))
       return refuse(403, 'a worker cannot send mail as the manager from inside the run worktree')
 
     const path = url.pathname
@@ -424,8 +322,7 @@ export function clientHandler(o: ClientOpts) {
               ? reply(row.status, row.body, looksJson(row.body))
               : refuse(409, 'Idempotency-Key was used for another request')
         } else {
-          const text = path.endsWith('/mail') ? (body.text as string) : undefined
-          res = await answer(await o.run(route.argv(params, q, body), text))
+          res = await call(op, body)
           rows[key] = { at: now, hash, status: res.status, body: await res.clone().text() }
           writeStore(storeFile, rows, now)
         }
@@ -438,7 +335,7 @@ export function clientHandler(o: ClientOpts) {
         key,
         status: res.status,
       }
-      if (path.endsWith('/decide')) line.outcome = body.outcome
+      if (op.name === 'gates.decide') line.outcome = body.outcome
       try {
         appendFileSync(auditFile, `${JSON.stringify(line)}\n`, { mode: 0o600 })
       } catch (e) {

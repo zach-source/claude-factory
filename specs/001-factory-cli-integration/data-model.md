@@ -50,6 +50,8 @@ A copy of `rigs.json` in `rigs-history/<timestamp>.json`. The newest 20 stay. A 
 | `ax.env`               | `FACTORY_AX_ENV`             | Path of the extra env JSON file             |
 | `kubectl`              | `FACTORY_KUBECTL`            | Default `kubectl`                           |
 | `max-runs`             | `FACTORY_MAX_RUNS`           | Default 16                                  |
+| `cursor.cap`           | `FACTORY_CURSOR_CAP`         | Weekly Cursor pool percent. Default 60      |
+| `grok.weeklyBudgetUsd` | `FACTORY_GROK_WEEKLY_BUDGET_USD` | Weekly Grok spend in dollars. Unset: no gate |
 | `image.registry`       | none                         | Used by `image build`                       |
 | `image.builder`        | none                         | Used by `image build`                       |
 | `token.read`           | none                         | Shell command. Prints one field value.      |
@@ -65,7 +67,7 @@ The exact list is the `SETTING_KEYS` table in `src/settings.ts`. A key outside t
 
 ## Token slot (computed from the store)
 
-`{ n, hasToken, use7d, use5h, status, live }`. `status` is `ok`, `refused` (at its limit) or `empty` (no token). The live slot number comes from the `token.active-field`. No token value is part of this record.
+`{ n, hasToken, use7d, use5h, status, live }`. `status` is `ok`, `refused` (at its limit), `empty` (no token), or `error` (the probe failed or gave no status). The live slot number comes from the `token.active-field`. No token value is part of this record.
 
 ## Worker image
 

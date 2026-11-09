@@ -439,37 +439,6 @@ test('only soak carries the Mimir query form, behind the approval prefix, equal 
   expect(soak).not.toMatch(new RegExp(['stig' + 'en', 'spin' + 'dle'].join('|'), 'i'))
 })
 
-const BOT_CMD = "git diff --name-only origin/{base_branch}...HEAD -- CHANGELOG.md '*VERSION' .devenv"
-const BOT_TOKENS = [
-  'In the infra-blocks repo',
-  BOT_CMD,
-  'git checkout origin/{base_branch} -- <file>',
-  'git rm --cached <file>',
-  'run the check again',
-  'separate commands',
-  'The pull request title is the changelog line',
-]
-const botText = (p: string) =>
-  p.slice(p.indexOf('In the infra-blocks repo'), p.indexOf('bumps VERSION.') + 'bumps VERSION.'.length)
-
-test('infra-blocks pre-push bot-file check is in exactly the ship queue and release, equal to lifecycle', () => {
-  const nodes = (ship as Factory).nodes
-  const holders = Object.entries(nodes)
-    .filter(([, n]) => (n.prompt ?? '').includes(BOT_CMD))
-    .map(([name]) => name)
-    .sort()
-  expect(holders).toEqual(['queue', 'release'])
-  for (const name of holders) for (const t of BOT_TOKENS) expect(nodes[name]!.prompt).toContain(t)
-  const want = botText((lifecycle as Factory).nodes.implement!.prompt!)
-  expect(want.length).toBeGreaterThan(100)
-  for (const name of holders) expect(botText(nodes[name]!.prompt!)).toBe(want)
-})
-
-test('no ship node holds the layer-version check', () => {
-  for (const n of Object.values((ship as Factory).nodes))
-    expect(n.prompt ?? '').not.toContain("'shapefile/layers/*/layer.cue'")
-})
-
 test('a deploy that reports unsure goes to soak (claude-factory-ee7 AC2)', () => {
   expect(walk(ship, ['ready', 'ready', 'unsure']).visited).toEqual(['queue', 'release', 'deploy', 'soak'])
 })

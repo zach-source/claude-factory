@@ -33,15 +33,17 @@ FROM golang:1.27-bookworm AS egm
 ARG EGM_COMMIT=dea7761de06ce5b51c177ebb9bba0469f24af5a4
 RUN git clone https://github.com/google/elephant-goldfish-model /egm && git -C /egm checkout ${EGM_COMMIT}
 
-FROM oven/bun:1.3.13-debian AS bun
+FROM oven/bun:1.4.4-debian AS bun
 
 FROM node:22-bookworm-slim AS worker
 ARG CLAUDE_CODE_VERSION=2.1.291
 ARG CODEX_VERSION=0.160.1
 ARG PI_VERSION=0.80.2
+ARG CURSOR_VERSION=2026.11.05-86047df
+ARG GROK_VERSION=1.0.77
 ARG GH_VERSION=2.98.0
 ARG GLAB_VERSION=1.99.0
-ARG BD_VERSION=1.3.0
+ARG BD_VERSION=1.3.2
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client python3 \
   && rm -rf /var/lib/apt/lists/*
@@ -52,13 +54,22 @@ RUN mkdir /tmp/glab && curl -fsSL https://gitlab.com/gitlab-org/cli/-/releases/v
   | tar -xz -C /tmp/glab && mv /tmp/glab/bin/glab /usr/local/bin/glab && rm -rf /tmp/glab
 RUN curl -fsSL https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_amd64.tar.gz \
   | tar -xz -C /usr/local/bin bd
-# the agents a rig can choose (rig add --agent): claude, codex or pi, each run headless by `factory worker serve`
+# the agents a rig can choose (rig add --agent): claude, codex, cursor, grok or pi, each run headless by `factory worker serve`
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} \
-    @earendil-works/pi-coding-agent@${PI_VERSION} && npm cache clean --force
+    @earendil-works/pi-coding-agent@${PI_VERSION} @xai-official/grok@${GROK_VERSION} && npm cache clean --force
+# grok, pinned above: GROK_DISABLE_AUTOUPDATER=1 turns off its update check, and every factory launch also passes --no-auto-update.
+# It needs FACTORY_AX_GROK=1 on the laptop; its deny hook is $GROK_HOME/hooks/factory.json (worker.ts grokHome)
+ENV GROK_DISABLE_AUTOUPDATER=1
 # codex keeps unified_exec on under --disable and -c; only this managed pin turns it off. With it on, write_stdin
 # runs a command with no PreToolUse hook (claude-factory-fzm3). codexHome refuses a launch that shows it on
 RUN mkdir -p /etc/codex && printf '[features]\nunified_exec = false\n' > /etc/codex/requirements.toml \
   && chmod 0644 /etc/codex/requirements.toml
+# cursor-agent, pinned: it replaces its own binary in the background unless started with --disable-auto-update, which every
+# factory launch passes. It needs FACTORY_AX_CURSOR=1 on the laptop; its deny hook is ~/.cursor/hooks.json (worker.ts cursorHome)
+RUN mkdir -p /opt/cursor-agent/${CURSOR_VERSION} \
+  && curl -fsSL https://downloads.cursor.com/lab/${CURSOR_VERSION}/linux/x64/agent-cli-package.tar.gz \
+  | tar -xz --strip-components=1 -C /opt/cursor-agent/${CURSOR_VERSION} \
+  && ln -s /opt/cursor-agent/${CURSOR_VERSION}/cursor-agent /usr/local/bin/cursor-agent
 # Nix, single-user and owned by root (no daemon and no build users: gVisor refuses setgroups): an agent installs
 # a tool it lacks with `nix shell nixpkgs#<pkg>`, nixpkgs pinned here and fetched at build time, or enters a
 # repo's own devenv.nix with `devenv shell`, whose nixpkgs devenv's cache holds. What neither cache has (a

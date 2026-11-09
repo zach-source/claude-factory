@@ -1517,6 +1517,8 @@ export const register: Register = (on, options) => {
     // any of them only after they confirm it here, since it has no other way to intercept the manager's
     // own shell (FACTORY_FROM, which refuses these for workers, is unset in the manager session)
     if (!gated) return next(pinned)
+    // nobody watches the dialog in a manager loop: deny a substitution-only or unreadable-only command with its rewrite hint
+    if (!gated.ask) return { deny: gated.deny }
     const choice = await $.ui.ask(gated.question, ['Allow', 'Deny']).catch(() => 'Deny')
     return choice === 'Allow' ? next(pinned) : { deny: gated.deny }
   })

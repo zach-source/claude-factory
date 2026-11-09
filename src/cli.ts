@@ -2,7 +2,20 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
-import { loadIntoEnv } from './settings'
+import {
+  devenvRows,
+  isDevenvKey,
+  loadIntoEnv,
+  readDevenv,
+  readSettings,
+  setDevenv,
+  setSetting,
+  SETTING_KEYS,
+  settingsRows,
+  unsetDevenv,
+  unsetSetting,
+} from './settings'
+import { buildImage, IMAGE_KEY, type Target } from './image'
 import {
   appendFileSync,
   chmodSync,
@@ -121,6 +134,8 @@ import {
   CODEX_GUARD_FLAGS,
   CODEX_PIN,
   CODEX_UNGUARDED,
+  CURSOR_FLAGS,
+  GROK_FLAGS,
   claudeCommand,
   codexFeaturesBad,
   beadsOnlyCodexDir,
@@ -129,6 +144,7 @@ import {
   cutOffCall,
   cutOffNote,
   harnessOf,
+  skillsFor,
   piFlags,
   readMcp,
   sq,
@@ -182,6 +198,7 @@ import * as client from './client'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
 import * as leases from './lease'
+import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
 import { assertAxRunner, assertServerRigs, guardedTick, movedRigRefusal, splitPlan } from './splithome'
 import { bdEnv, clonesRepos, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
@@ -279,8 +296,10 @@ import {
   type SyncEntry,
 } from './sync'
 import { rmQuiet, rmSafe } from './home-guard'
-import { ciReport } from './ci'
+import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
+import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
+import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
 import { maskAssignments } from './worker-hook'
 
 const ROOT = resolve(import.meta.dir, '..')
@@ -309,7 +328,8 @@ const ORPHANS_MS = 10 * 60_000 // how often the rigs' open factory drafts are sw
 const CLOSE_LABEL = 'close'
 const CONFLICT_LABEL = 'conflict'
 const REWORK_LABEL = 'rework'
-const REWORK_LABELS = [CONFLICT_LABEL, REWORK_LABEL]
+const FIX_TESTS_LABEL = 'fix-tests'
+const REWORK_LABELS = [CONFLICT_LABEL, REWORK_LABEL, FIX_TESTS_LABEL]
 const WATCH_MS = 60_000 // how often the pull requests parked stations wait on are looked at
 /** what the factory's workers learned, shared by every run and groomed by the dream */
 const MEMORY = join(HOME, 'memory')
@@ -343,7 +363,7 @@ const DREAM_SOON_MS = 2 * 3600_000
 const INBOX_FULL = 12
 const HEARTBEAT_MS = 120_000 // well inside bd's claim lease (5 min)
 /** a bead requeued this many times gets deferred instead: a factory that always requeues never loops forever */
-const REQUEUE_MAX = 5
+export const REQUEUE_MAX = 5
 const GRACE_MS = 90_000 // a worker idle this long without reporting gets nudged...
 const STALL_MS = 20 * 60_000 // a working worker whose tail and branch head stand still this long is nudged, then failed
 const NUDGES = 4 // ...this many times, each wait twice the last (90s to 24 min), then fails
@@ -468,11 +488,16 @@ const lease = () => {
 }
 /**
  * takes or renews the local manager lease (claude-factory-s01d.2). It returns the lease of the
- * other holder when that holder keeps it. A busy lock counts as a refusal: the next tick tries again.
+ * other holder when that holder keeps it. A busy lock refuses, unless this holder has a live lease.
  */
 function localLease(want = leases.asker(process.env, process.ppid)): leases.Lease | undefined {
   const release = hold('lease.lock')
-  if (!release) return leases.readLease(HOME) ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
+  if (!release) {
+    // a take of the same holder (a tick beside a patrol) holds the lock: a live lease of this holder is still ours
+    const cur = leases.readLease(HOME)
+    if (cur && cur.holder === want.holder && !leases.isStale(cur, Date.now())) return undefined
+    return cur ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
+  }
   try {
     const d = leases.take(HOME, want)
     return d.ok ? undefined : d.lease
@@ -875,7 +900,7 @@ export function outboxDenial(
   const ok =
     typeof d.at === 'number' &&
     Number.isFinite(d.at) &&
-    ['claude', 'codex', 'pi', 'unknown'].includes(d.harness) &&
+    ['claude', 'codex', 'pi', 'cursor', 'grok', 'unknown'].includes(d.harness) &&
     typeof d.reason === 'string' &&
     /^[A-Z][A-Z0-9_]{0,63}$/.test(d.reason) &&
     typeof d.command === 'string' &&
@@ -1324,7 +1349,7 @@ Object.assign(runners, { herdr: herdrRunner, ax: axRunner })
  */
 function priorWork(run: Run) {
   if (!run.bead || !run.base) return ''
-  // commits name a bead by its short id too, with or without a prefix: infra-blocks-4t9a, ib-4t9a, (4t9a)
+  // commits name a bead by its short id too, with or without a prefix: acme-blocks-4t9a, ab-4t9a, (4t9a)
   const short = run.bead.slice(run.bead.lastIndexOf('-') + 1).replaceAll('.', '\\.')
   const grep = `--grep=(^|[^a-z0-9.])([a-z]+-)*${short}([^a-z0-9.]|$)`
   // not git(): a missing base must not stop the worker's launch
@@ -1355,6 +1380,13 @@ const MEMORY_GIT_IDENTITY_FALLBACK = {
   GIT_COMMITTER_NAME: 'factory',
   GIT_COMMITTER_EMAIL: 'factory@localhost',
 }
+/** the rig repo's info/private-patterns text for the VM (the guard hooks read it there), or undefined when the repo has none */
+export function privatePatterns(repo: string) {
+  const p = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const file = join(p.stdout.toString().trim(), 'info', 'private-patterns')
+  return p.exitCode === 0 && existsSync(file) ? readFileSync(file, 'utf8') || undefined : undefined
+}
+
 function git(cwd: string, ...args: string[]) {
   const probe = Bun.spawnSync(['git', '-C', cwd, 'var', 'GIT_AUTHOR_IDENT'], { env: process.env })
   const env = probe.exitCode === 0 ? process.env : { ...process.env, ...MEMORY_GIT_IDENTITY_FALLBACK }
@@ -1674,7 +1706,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
       personOnlyContexts(rigOf(run.repo)),
       !!mergeAuthority(rigOf(run.repo)),
     ),
-    ...skillLines(workerSkills(def, n, rigOf(run.repo))),
+    ...skillLines(skillsFor(harnessOf(agentOfNode(run, def, node)), workerSkills(def, n, rigOf(run.repo)))),
     '',
     ...remembered(run, node, notes),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
@@ -1684,6 +1716,15 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Your task',
     fill(n.prompt.trim(), prm),
+    ...(rig?.pushRules?.length
+      ? [
+          '',
+          '## Before each push',
+          ...rig.pushRules.map((r, i) =>
+            fill(`${i + 1}. ${r}`, { base_branch: baseBranchOf(def, rig, run.repo) }),
+          ),
+        ]
+      : []),
     // the journal is the run's memory: every station's report, so a plan or a baseline reaches every later station
     ...(c.log.length
       ? [
@@ -2028,6 +2069,47 @@ export function axCodexRefused(agent: string, env = process.env) {
       'the ax runner runs codex only with FACTORY_AX_CODEX=1: set it with an image that has the codex guard',
     )
 }
+/** the cursor guard needs the image's hooks and pinned CLI (Dockerfile.worker): an older image has neither */
+export const axCursor = (env = process.env) => env.FACTORY_AX_CURSOR === '1'
+export function axCursorRefused(agent: string, env = process.env) {
+  if (harnessOf(agent) === 'cursor' && !axCursor(env))
+    fail(
+      'the ax runner runs cursor only with FACTORY_AX_CURSOR=1: set it with an image that has cursor-agent',
+    )
+}
+/** the grok guard needs the image's hooks and pinned CLI (Dockerfile.worker): an older image has neither */
+export const axGrok = (env = process.env) => env.FACTORY_AX_GROK === '1'
+export function axGrokRefused(agent: string, env = process.env) {
+  if (harnessOf(agent) === 'grok' && !axGrok(env))
+    fail('the ax runner runs grok only with FACTORY_AX_GROK=1: set it with an image that has grok')
+}
+/**
+ * a grok worker in a VM: the CLI sends XAI_API_KEY as a bearer token to api.x.ai, the only host it needs (the feedback and
+ * trace host stays shut). The VM holds a placeholder key; the gateway injects the vault key XAI_API_KEY on every path, as the API is plain bearer.
+ */
+export const grokEgress = (egress: Egress[] = []) =>
+  egress.some(e => e.hosts.includes('api.x.ai'))
+    ? egress
+    : [...egress, { hosts: ['api.x.ai'], key: 'XAI_API_KEY', header: 'Authorization', prefix: 'Bearer ' }]
+/**
+ * a cursor worker in a VM: cursor-agent posts its API key to api2.cursor.sh/auth/ and uses the access token it gets back.
+ * The VM holds a placeholder key; the gateway injects the vault key CURSOR_API_KEY on that path only. The other hosts pass as they are.
+ * Substrate accepts only path prefixes that start and end with /, so /auth/ stands for /auth/exchange_user_api_key.
+ */
+export const cursorEgress = (egress: Egress[] = []) =>
+  egress.some(e => e.hosts.includes('api2.cursor.sh'))
+    ? egress
+    : [
+        ...egress,
+        {
+          hosts: ['api2.cursor.sh'],
+          pathPrefixes: ['/auth/'],
+          key: 'CURSOR_API_KEY',
+          header: 'Authorization',
+          prefix: 'Bearer ',
+        },
+        { hosts: ['api2.cursor.sh', 'api3.cursor.sh', 'repo42.cursor.sh', '*.api5.cursor.sh'] },
+      ]
 /** a VM codex worker uses the API key only when its rig names api.openai.com; else it logs in with ChatGPT */
 export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
   egress.some(e => e.hosts.includes('api.openai.com')) ? 'apikey' : 'chatgpt'
@@ -2067,18 +2149,26 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
-  if (!harness) fail(`the ax runner runs claude, codex or pi workers, not "${agent}"`)
+  if (!harness) fail(`the ax runner runs claude, codex, cursor, grok or pi workers, not "${agent}"`)
   axCodexRefused(agent)
+  axCursorRefused(agent)
+  axGrokRefused(agent)
   const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
   // the VM clones its beads from the rig's beadsRemote: its egress needs that Dolt rule
   const doltEgress = ax.withDoltEgress(
-    harness === 'codex' ? codexEgress(rig?.egress) : rig?.egress,
+    harness === 'codex'
+      ? codexEgress(rig?.egress)
+      : harness === 'cursor'
+        ? cursorEgress(rig?.egress)
+        : harness === 'grok'
+          ? grokEgress(rig?.egress)
+          : rig?.egress,
     hasRunBeads ? rig : undefined,
   )
   // a VM reaches the collector at its in-cluster address, the laptop at a NodePort: FACTORY_AX_OTLP_ENDPOINT wins
   const otel =
-    harness === 'pi'
-      ? undefined // pi has no OTel support
+    harness === 'pi' || harness === 'cursor' || harness === 'grok'
+      ? undefined // none has OTel support
       : otelFor(
           run,
           node,
@@ -2195,6 +2285,15 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
           )
         : undefined,
     codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
+    cursorHooks:
+      harness === 'cursor'
+        ? vmCursorHooks(personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        : undefined,
+    grokHooks:
+      harness === 'grok'
+        ? vmGrokHooks(personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
+        : undefined,
+    privatePatterns: rig && privatePatterns(rig.repo),
     gitlabHost,
     sandboxClass: rig?.sandboxClass,
     env: {
@@ -2205,7 +2304,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       FACTORY_RUN: run.id,
       FACTORY_DENY_LOG: '1',
       FACTORY_DEF_NAME: def.name,
-      FACTORY_SKILLS: skills.join(','),
+      FACTORY_SKILLS: skillsFor(harness, skills).join(','),
       ...(reviewer && { FACTORY_GH_REVIEWER: '1' }),
       ...(harness === 'claude' && { FACTORY_DEADLINE: deadlineOf(def, node, c) }),
       BEADS_ACTOR: `${actorOf(run.id)}/${node}`,
@@ -2213,9 +2312,13 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       // each agent's config and sessions on the workspace volume, so a session survives a suspend
       CLAUDE_CONFIG_DIR: `${ax.OWN}/claude`,
       CODEX_HOME: `${ax.OWN}/codex`,
+      CURSOR_CONFIG_DIR: `${ax.OWN}/cursor`,
+      GROK_HOME: `${ax.OWN}/grok`,
       PI_CODING_AGENT_DIR: `${ax.OWN}/pi-agent`,
       // the deny hook finds the worktree root here; Claude sets it for itself, codex does not
-      ...(harness === 'codex' && { CLAUDE_PROJECT_DIR: ax.REPO }),
+      ...((harness === 'codex' || harness === 'cursor' || harness === 'grok') && {
+        CLAUDE_PROJECT_DIR: ax.REPO,
+      }),
       ...(hasRunBeads && { FACTORY_BEADS: '1' }),
       ...(hasRunBeads &&
         rig?.beadsRemote && {
@@ -2250,7 +2353,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
  * (claude-factory-zl5). Its own argv is `--protected-branches a,b`.
  * `merge` is the rig's owner/repo (claude-factory-l3tl). It adds `--merge-authority owner/repo`: the hook then lets the ship
  * release station run one strict `gh pr merge` form, for that repo only (-R required).
- * `harness` adds `--harness claude|codex`: the hook logs it with each denial (claude-factory-dsfg).
+ * `harness` adds `--harness claude|codex|cursor|grok`: the hook logs it with each denial (claude-factory-dsfg).
  * An older VM image's hook copy ignores argv it does not know.
  * The claude entry has `onFailure: 'block'` (claude-factory-qn8a.36).
  * Claude Code 2.1.295 or later then blocks the call if the hook times out, crashes or gives bad output.
@@ -2259,7 +2362,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
 const denyHook = (
   bun: string,
   file: string,
-  harness: 'claude' | 'codex',
+  harness: 'claude' | 'codex' | 'cursor' | 'grok',
   contexts?: string[],
   branches?: string[],
   merge?: string,
@@ -2285,7 +2388,7 @@ const denyHook = (
   ]
   return [
     { matcher: 'Bash', hooks },
-    { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks },
+    { matcher: 'Write|Edit|MultiEdit|NotebookEdit|apply_patch', hooks },
     // claude-factory-qn8a.19: Read and Grep must not reach the harness token files
     { matcher: 'Read|Grep', hooks },
   ]
@@ -2388,6 +2491,37 @@ export function vmCodexHome(
 }
 
 /**
+ * Cursor's hooks.json: the deny hook as a preToolUse command. The adapter in worker-hook.ts (`--harness cursor`) reads Cursor's
+ * tool names and answers in Cursor's shape. failClosed blocks the call when the hook crashes or times out.
+ */
+const cursorHooks = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) =>
+  JSON.stringify({
+    version: 1,
+    hooks: {
+      preToolUse: [
+        {
+          command: denyHook(bun, file, 'cursor', contexts, branches, merge)[0]!.hooks[0]!.command,
+          timeout: 10,
+          failClosed: true,
+        },
+      ],
+    },
+  })
+/** a cursor worker's hooks.json in the VM: `serve` writes it to ~/.cursor/hooks.json before each turn */
+export const vmCursorHooks = (contexts?: string[], branches?: string[], merge?: string) =>
+  cursorHooks('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge)
+
+/**
+ * Grok runs the Claude settings shape of hooks from .grok/hooks/*.json. The adapter in worker-hook.ts (`--harness grok`)
+ * maps Grok's tool names to the guards. Grok reads Claude's deny reply as it is. A hook that cannot start fails open in Grok.
+ */
+const grokHooks = (bun: string, file: string, contexts?: string[], branches?: string[], merge?: string) =>
+  JSON.stringify({ hooks: { PreToolUse: denyHook(bun, file, 'grok', contexts, branches, merge) } })
+/** a grok worker's hook file in the VM: `serve` writes it to $GROK_HOME/hooks/factory.json before each turn */
+export const vmGrokHooks = (contexts?: string[], branches?: string[], merge?: string) =>
+  grokHooks('/usr/local/bin/bun', `${ax.FACTORY_DIR}/src/worker-hook.ts`, contexts, branches, merge)
+
+/**
  * The auth.json of a ChatGPT-mode VM codex. Every token in it is a placeholder: codex reads the claims without a
  * signature check and does not refresh before exp, and the gateway swaps the real access token and account id into
  * the request headers. The JWTs are built here so that no token-like string sits in the source.
@@ -2444,10 +2578,51 @@ export function splitPick(runId: string, shareName: string, share: string | unde
   const h = createHash('sha256').update(`${runId}:${shareName}`).digest().readUInt32BE(0)
   return h / 2 ** 32 < Number(share)
 }
+const GATE_KEEP_MS = 6 * 3_600_000
+/**
+ * May this station start `name` (cursor or grok)? The first look decides and <run>/<name>-gate.json keeps the answer for 6 hours,
+ * so a worker in flight keeps its agent when the meter moves. A "no" logs one line.
+ */
+function stickyGate(
+  name: string,
+  runId: string,
+  node: string,
+  now: number,
+  home: string,
+  verdict: () => { use: boolean; why: string },
+) {
+  const file = join(home, 'runs', runId, `${name}-gate.json`)
+  let memo: Record<string, { at: number; use: boolean }> = {}
+  try {
+    memo = readJson(file)
+  } catch {} // none yet
+  const kept = memo[node]
+  if (kept && now - kept.at < GATE_KEEP_MS) return kept.use
+  const v = verdict()
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeJson(file, { ...memo, [node]: { at: now, use: v.use } })
+  } catch {} // an unsaved answer is asked again
+  if (!v.use) console.error(`${name} gate: ${runId} ${node} uses its other agent: ${v.why}`)
+  return v.use
+}
+/** cursor starts only with a known weekly pool reading under the cap (setting cursor.cap) */
+export const cursorAllowed = (
+  runId: string,
+  node: string,
+  env = process.env,
+  now = Date.now(),
+  home = HOME,
+) => stickyGate('cursor', runId, node, now, home, () => cursorVerdict(cursorMeter(home, now), cursorCap(env)))
+/** grok starts while the week's spend is under the budget (setting grok.weeklyBudgetUsd); with no budget it always does */
+export const grokAllowed = (runId: string, node: string, env = process.env, now = Date.now(), home = HOME) =>
+  grokBudget(env) === undefined ||
+  stickyGate('grok', runId, node, now, home, () => grokVerdict(grokSpent(home, now), grokBudget(env)))
+
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
  * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex), and elsewhere only when
- * the `pin` file exists (claude-factory-fzm3).
+ * the `pin` file exists (claude-factory-fzm3). A cursor or grok pick that `allowed` or `grokOk` refuses becomes the station's own agent.
  */
 export const pickAgent = (
   runId: string,
@@ -2457,6 +2632,8 @@ export const pickAgent = (
   runner: string,
   env = process.env,
   pin = CODEX_PIN,
+  allowed = cursorAllowed,
+  grokOk = grokAllowed,
 ) => {
   const params = paramsOf(def, rig, env)
   const split = def.nodes[node]!.split
@@ -2465,7 +2642,12 @@ export const pickAgent = (
     split &&
     (runner === 'ax' ? axCodex(env) : existsSync(pin)) &&
     splitPick(runId, split.share, params[split.share])
-  return fill(rig?.agent ?? (picked ? split.agent : (def.nodes[node]!.agent ?? def.agent ?? AGENT)), params)
+  const own = def.nodes[node]!.agent ?? def.agent ?? AGENT
+  const agent = fill(rig?.agent ?? (picked ? split.agent : own), params)
+  const h = harnessOf(agent)
+  return (h === 'cursor' && !allowed(runId, node, env)) || (h === 'grok' && !grokOk(runId, node, env))
+    ? fill(own, params)
+    : agent
 }
 export const agentOfNode = (run: Run, def: Factory, node: string) =>
   pickAgent(run.id, def, node, rigOf(run.repo), stationRunnerName(run, def, node))
@@ -2754,6 +2936,7 @@ export function runTokenSwap(
   }
   const until = swapUntil(hit, now, ok, TOKEN_SWAP_WAIT_MS)
   writeJson(file, { at: hit.at, until, ran: now } satisfies TokenSwapState)
+  if (ok) writeUnhold(runnerName, codex, now, now + TOKEN_SWAP_WAIT_MS, home)
   return until
 }
 
@@ -2777,6 +2960,123 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
     until: ok ? now + TOKEN_SWAP_WAIT_MS : now,
     ran: now,
   } satisfies TokenSwapState)
+}
+
+type UnholdMark = { before: number; from: number; woke: number }
+const unholdFile = (runner: string, codex: boolean, home = HOME) =>
+  join(home, `unhold-${runner}${codex ? '-codex' : ''}.json`)
+
+/**
+ * This function reads an unhold mark: `before` is the time of the swap (only older holds wake), `from` is the
+ * first time a wake may happen, `woke` is the count woken so far. A mark that is not a well-formed object, or
+ * that has a before or from too far ahead, is deleted and counts as no mark.
+ */
+export function trustedUnhold(file: string, now: number): UnholdMark | undefined {
+  if (!existsSync(file)) return undefined
+  let m: unknown
+  try {
+    m = readJson<unknown>(file)
+  } catch {
+    m = undefined
+  }
+  const { before, from, woke } = (typeof m === 'object' && m !== null ? m : {}) as Record<string, unknown>
+  const num = (v: unknown): v is number => Number.isFinite(v)
+  if (
+    num(before) &&
+    num(from) &&
+    num(woke) &&
+    before <= now + LIMIT_SKEW_MS &&
+    from <= now + LIMIT_RESET_MAX_MS
+  )
+    return { before, from, woke }
+  rmSync(file, { force: true })
+  return undefined
+}
+
+/** This function writes the mark of a runner and harness. A rewrite keeps the old woke count. */
+export function writeUnhold(runner: string, codex: boolean, before: number, from: number, home = HOME) {
+  const woke = trustedUnhold(unholdFile(runner, codex, home), before)?.woke ?? 0
+  writeJson(unholdFile(runner, codex, home), { before, from, woke } satisfies UnholdMark)
+}
+
+/**
+ * This function picks the held stations to wake, the oldest hold first. Each pick takes one slot:
+ * room() applies the town cap `max` and the rig's maxRuns. It adds each pick to `busy`, so a caller can share
+ * one list over many calls.
+ */
+export function pickUnholds<T extends { rig: Pick<Rig, 'name' | 'maxRuns'> | undefined; at: number }>(
+  cands: T[],
+  busy: (string | undefined)[],
+  held: (string | undefined)[],
+  max = MAX_BUSY,
+): T[] {
+  const used = busy
+  const out: T[] = []
+  for (const c of [...cands].sort((a, b) => a.at - b.at)) {
+    if (room(c.rig, used, max, held) <= 0) continue
+    used.push(c.rig?.name)
+    out.push(c)
+  }
+  return out
+}
+
+/**
+ * This function runs once in each tick. For each unhold mark it wakes the stations held by a usage limit of the
+ * mark's runner and harness, as far as the free slots allow. It ends the mark when no such station is left, and then
+ * returns one manager mail. A station wakes only when it waits after an 'outage' hold with a limit or login reason
+ * of the right harness, that hold is older than the swap, and its runner is the mark's runner.
+ */
+export async function unholdPass(now: number): Promise<(Mail & { run: string })[]> {
+  const mails: (Mail & { run: string })[] = []
+  if (halted()) return mails
+  let slots: Awaited<ReturnType<typeof busyRigs>> | undefined
+  for (const runner of Object.values(runners).filter(r => !r.local)) {
+    for (const codex of [false, true]) {
+      const file = unholdFile(runner.name, codex)
+      const m = trustedUnhold(file, now)
+      if (!m || now < m.from) continue
+      const reason = codex
+        ? /^Codex (usage limit|login refused) \(/
+        : /^Claude (usage limit|login refused) \(/
+      const cands: { id: string; node: string; rig: Rig | undefined; at: number }[] = []
+      for (const id of runIds()) {
+        try {
+          const { run, value, c } = current(id)
+          const [node, sub] = where(value)
+          const last = c.log.at(-1)
+          if (sub !== 'waiting' || last?.node !== node || last.outcome !== 'outage') continue
+          if (last.at > m.before || !reason.test(last.summary)) continue
+          if (runnerOfStation(run, await loadPinned(run.factory), node).name !== runner.name) continue
+          cands.push({ id, node, rig: rigOf(run.repo), at: last.at })
+        } catch {
+          continue // a run dir before its state.json, or a def that does not load
+        }
+      }
+      slots ??= await busyRigs()
+      const picked = pickUnholds(cands, slots.busy, slots.held)
+      for (const p of picked)
+        post(p.id, {
+          type: 'MAIL',
+          from: 'factory',
+          to: p.node,
+          wake: true,
+          text: `[factory] The ${runner.name} ${codex ? 'Codex' : 'Claude'} token was swapped: the usage-limit hold ends.`,
+        })
+      const woke = m.woke + picked.length
+      if (picked.length < cands.length) writeJson(file, { ...m, woke } satisfies UnholdMark)
+      else {
+        rmSync(file, { force: true })
+        if (woke)
+          mails.push({
+            run: 'factory',
+            from: 'factory',
+            text: `Woke ${woke} stations held by the ${codex ? 'Codex' : 'Claude'} usage limit on ${runner.name} after the token swap.`,
+            at: now,
+          })
+      }
+    }
+  }
+  return mails
 }
 
 /** the model behind the `haiku` alias for workers and the manager. Claude Code 2.1.291 maps it to Haiku 4.5 */
@@ -3190,6 +3490,98 @@ export function codexWorker(
 }
 
 /**
+ * A cursor worker in a pane. Cursor loads <worktree>/.cursor/hooks.json, so the deny hook goes there, hidden from git by
+ * info/exclude; the person's ~/.cursor stays as it is. The worker rules lead the first prompt (command's `rules`).
+ * Fail closed: a hooks.json the factory did not write refuses the launch, as codexWorker does for a .codex dir.
+ */
+export function cursorWorker(
+  run: Pick<Run, 'worktree'>,
+  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'>,
+  home = HOME,
+  hookFile = join(ROOT, 'src', 'worker-hook.ts'),
+) {
+  if (!existsSync(hookFile)) fail(`a cursor worker needs the deny hook, and ${hookFile} is missing`)
+  const file = join(run.worktree, '.cursor', 'hooks.json')
+  if (existsSync(file) && !readFileSync(file, 'utf8').includes(hookFile))
+    fail(`a cursor worker keeps the deny hook on: ${file} is not the factory's and would add hooks`)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(
+    file,
+    cursorHooks(
+      process.execPath,
+      hookFile,
+      personOnlyContexts(rig),
+      protectedBranches(rig),
+      mergeAuthority(rig),
+    ),
+  )
+  const exclude = resolve(run.worktree, git(run.worktree, 'rev-parse', '--git-path', 'info/exclude'))
+  mkdirSync(dirname(exclude), { recursive: true })
+  const hidden = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
+  if (!hidden.split('\n').includes('/.cursor/hooks.json'))
+    appendFileSync(exclude, `${hidden && !hidden.endsWith('\n') ? '\n' : ''}/.cursor/hooks.json\n`)
+  const id = commitIdentity(home)
+  const rules = join(home, 'worker-cursor.md')
+  writeFileSync(
+    rules,
+    readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') +
+      readFileSync(join(ROOT, 'src', 'worker-cursor.md'), 'utf8') +
+      id.rule,
+  )
+  return {
+    env: { CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
+    extra: ` ${CURSOR_FLAGS.join(' ')}`,
+    rules,
+  }
+}
+
+/**
+ * A grok worker in a pane. Grok loads <worktree>/.grok/hooks/*.json (with --trust, which the launch passes), so the deny hook goes
+ * there, hidden from git by info/exclude; the person's ~/.grok stays as it is. The worker rules go on `--rules` (command's `rules`).
+ * Fail closed: a hooks dir the factory did not write refuses the launch, as cursorWorker does for a hooks.json.
+ */
+export function grokWorker(
+  run: Pick<Run, 'worktree'>,
+  rig?: Pick<Rig, 'personOnlyContexts' | 'protectedBranches' | 'mergeAuthority'>,
+  home = HOME,
+  hookFile = join(ROOT, 'src', 'worker-hook.ts'),
+) {
+  if (!existsSync(hookFile)) fail(`a grok worker needs the deny hook, and ${hookFile} is missing`)
+  const dir = join(run.worktree, '.grok', 'hooks')
+  if (existsSync(dir) && readdirSync(dir).some(f => f !== 'factory.json'))
+    fail(`a grok worker keeps the deny hook on: ${dir} holds hooks the factory did not write`)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'factory.json'),
+    grokHooks(
+      process.execPath,
+      hookFile,
+      personOnlyContexts(rig),
+      protectedBranches(rig),
+      mergeAuthority(rig),
+    ),
+  )
+  const exclude = resolve(run.worktree, git(run.worktree, 'rev-parse', '--git-path', 'info/exclude'))
+  mkdirSync(dirname(exclude), { recursive: true })
+  const hidden = existsSync(exclude) ? readFileSync(exclude, 'utf8') : ''
+  if (!hidden.split('\n').includes('/.grok/hooks/factory.json'))
+    appendFileSync(exclude, `${hidden && !hidden.endsWith('\n') ? '\n' : ''}/.grok/hooks/factory.json\n`)
+  const id = commitIdentity(home)
+  const rules = join(home, 'worker-grok.md')
+  writeFileSync(
+    rules,
+    readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') +
+      readFileSync(join(ROOT, 'src', 'worker-grok.md'), 'utf8') +
+      id.rule,
+  )
+  return {
+    env: { CLAUDE_PROJECT_DIR: run.worktree, ...(id.env as Record<string, string>) },
+    extra: ` ${GROK_FLAGS.join(' ')}`,
+    rules,
+  }
+}
+
+/**
  * when the station fails a worker that is still working (`deadline`: 1.5x its minutes from launch), in ms. The deny
  * hook clamps a Bash call's timeout to it, so a command ends before the run fails (claude-factory-p0yt)
  */
@@ -3221,7 +3613,7 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const h = harnessOf(agent)
-  const skills = workerSkills(def, def.nodes[node]!, rig)
+  const skills = skillsFor(h, workerSkills(def, def.nodes[node]!, rig))
   const otel = otelFor(run, node, c, agent, process.env.FACTORY_OTLP_ENDPOINT)
   warnSkillsForHarness(h, skills, node, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'))
   const setup =
@@ -3229,10 +3621,14 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
       ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)), otel })
       : h === 'pi'
         ? piWorker(HOME, userPluginDirs(workerPluginNames(skills)))
-        : {
-            extra: workerFlags(def, rig, HOME, skills, node),
-            env: { FACTORY_DEADLINE: deadlineOf(def, node, c), ...otel?.env },
-          }
+        : h === 'cursor'
+          ? cursorWorker(run, rig)
+          : h === 'grok'
+            ? grokWorker(run, rig)
+            : {
+                extra: workerFlags(def, rig, HOME, skills, node),
+                env: { FACTORY_DEADLINE: deadlineOf(def, node, c), ...otel?.env },
+              }
   return command(agent, prompt, {
     session,
     ...setup,
@@ -3375,6 +3771,12 @@ export const withoutFleet = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? ''
   },
 })
 
+/** withoutFleet() plus a deny rule: the file-edit tools of an agent pass cannot write the pass's own .git. Only `Edit(path)` rules match, and `./` is the cwd. */
+export const passSettings = (dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => ({
+  ...withoutFleet(dirs),
+  permissions: { deny: ['Edit(./.git/**)'] },
+})
+
 /**
  * what to do about a launch that has not shown its Claude yet: wait, press Enter (the command sat
  * unsent on the line), type it again, then give up. Each step counts as a nudge.
@@ -3444,8 +3846,18 @@ export function holdFloor(
 }
 
 /** a VM's codex token and Claude token have separate limits: a codex limit must not hide a Claude one */
-export const limitPagedFile = (runner: { local?: boolean; name: string }, codex: boolean) =>
-  join(HOME, runner.local ? 'limit-paged.json' : `limit-paged-${runner.name}${codex ? '-codex' : ''}.json`)
+export const limitPagedFile = (
+  runner: { local?: boolean; name: string },
+  codex: boolean,
+  cursor = false,
+  grok = false,
+) =>
+  join(
+    HOME,
+    runner.local
+      ? 'limit-paged.json'
+      : `limit-paged-${runner.name}${codex ? '-codex' : cursor ? '-cursor' : grok ? '-grok' : ''}.json`,
+  )
 
 /**
  * This function reads a limit-paged file. The file can hold data from before the bound. A value that is not a
@@ -3479,11 +3891,16 @@ export function trustedEgressPaged(file: string, now: number): { since: number; 
 }
 
 /** the facts a patrol needs about a working run: how long, how quiet, and whether its runner waits on a usage limit */
-function facts(run: Run, c: Ctx, now: number, codex = false): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
+function facts(
+  run: Run,
+  c: Ctx,
+  now: number,
+  h?: string | null,
+): Pick<Row, 'inMin' | 'quietMin' | 'limitUntil'> {
   if (!c.pane || !c.startedAt) return {}
   const p = progressOf(run)
   const runner = runnerOf(c.pane)
-  const paged = limitPagedFile(runner, codex)
+  const paged = limitPagedFile(runner, h === 'codex', h === 'cursor', h === 'grok')
   const until = trustedPaged(paged, now)
   return {
     inMin: Math.floor((now - c.startedAt) / 60_000),
@@ -3696,30 +4113,37 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         ? tailOf(run.worktree, c.session)
         : ''
       : (info?.tail ?? '')
-  const isCodex = harnessOf(agentOfNode(run, def, node)) === 'codex'
+  const agentHarness = harnessOf(agentOfNode(run, def, node))
+  const isCodex = agentHarness === 'codex'
+  const isCursor = agentHarness === 'cursor'
+  const isGrok = agentHarness === 'grok'
+  const pool = isCursor ? 'Cursor' : isGrok ? 'Grok' : isCodex ? 'Codex' : 'Claude'
   if (isCodex && !runner.local) refreshCodexToken(now, runner.name)
-  const hit = trustedHit(isCodex && !runner.local ? info?.limit : limitHit(tail), now)
+  const hit = trustedHit((isCodex || isCursor || isGrok) && !runner.local ? info?.limit : limitHit(tail), now)
   if (!hit && runner.local) clearLimit(servedAt(tail))
   if (hit && hit.at > c.startedAt) {
     // A VM's Claude uses the vault's token. ccswitch does not rotate this token. With a swap command,
     // runTokenSwap moves to a new slot, and the worker goes on when the vault refreshes. With no swap
     // command, the worker waits for the reset, and the nudge below then gives it its next turn.
     const refused = hit.kind === 'auth'
+    // a Cursor or Grok limit has no swap command: the worker waits for the reset
     const until = runner.local
       ? swapAccount(hit, now)
-      : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
+      : isCursor || isGrok
+        ? hit.resetsAt || hit.at + 3_600_000
+        : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
       // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
       if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
-        const reason = `${isCodex ? 'Codex' : 'Claude'} ${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
+        const reason = `${pool} ${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
         send({ type: 'FAIL', seq: c.seq, reason, hold: until })
         return 'usage limit'
       }
-      const paged = limitPagedFile(runner, isCodex)
+      const paged = limitPagedFile(runner, isCodex, isCursor, isGrok)
       if (trustedPaged(paged, now) < until) {
         const text = runner.local
           ? `Every Claude account is ${refused ? 'login refused' : 'at its usage limit'} (${hit.kind}); workers wait until ${new Date(until).toLocaleString()} and restart then. Log in another account with ccswitch to go on sooner.`
-          : `The ${isCodex ? 'Codex' : 'Claude'} token ${runner.name} workers run on is ${refused ? `login refused (${hit.kind})` : `at its usage limit (${hit.kind})`}; they wait until ${new Date(until).toLocaleString()} and go on then.`
+          : `The ${pool} token ${runner.name} workers run on is ${refused ? `login refused (${hit.kind})` : `at its usage limit (${hit.kind})`}; they wait until ${new Date(until).toLocaleString()} and go on then.`
         send({ type: 'MAIL', from: 'factory', to: 'manager', text })
         writeJson(paged, until)
       }
@@ -3760,7 +4184,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   const egressReason =
     egress &&
     `egress gateway: model API unreachable since ${new Date(egress.since).toISOString()} (${retries(egress.tries)}): ${egress.last}`
-  const limitPage = limitPagedFile(runner, isCodex)
+  const limitPage = limitPagedFile(runner, isCodex, isCursor, isGrok)
   const pagedUntil = trustedPaged(limitPage, now)
   // an outage is held, not failed: the machine spends no attempt on it (claude-factory-dhof). Only this
   // reconciler sets hold; a worker's own report never does.
@@ -4041,8 +4465,10 @@ function storeCodexUsage(run: Run, node: string, seq: number) {
   } catch {}
 }
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
-const appendUsage = (id: string, rows: Usage[]) =>
+const appendUsage = (id: string, rows: Usage[]) => {
   appendFileSync(usageFile(id), rows.map(r => JSON.stringify(r) + '\n').join(''))
+  logGrokSpend(HOME, id, rows)
+}
 /** a run's stored rows; a node, seq, session and model that was stored twice (a resumed worker) keeps its last row */
 function storedUsage(id: string): Usage[] {
   if (!existsSync(usageFile(id))) return []
@@ -4110,7 +4536,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
       ...row(run, def, actor.getSnapshot().value, ctx(), agent, error),
       ...(sub === 'working' &&
         !def.nodes[node]?.gate &&
-        facts(run, ctx(), now, harnessOf(agentOfNode(run, def, node)) === 'codex')),
+        facts(run, ctx(), now, harnessOf(agentOfNode(run, def, node)))),
     },
     manager: manager.map(m => ({ run: run.id, ...m })),
   }
@@ -4628,39 +5054,91 @@ function wikiTombstones(dir: string) {
   return list
 }
 
-/**
- * `git blame --line-porcelain HEAD` of each tracked page outside rigs/, for keepPersonLines() after an agent pass.
- * An empty Map when there is no commit yet. Undefined (and a journal line) when a blame fails: the pass must not run.
- */
-export function wikiBlame(dir = join(HOME, 'wiki')) {
-  const blames = new Map<string, string>()
-  if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return blames
-  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'])
-  if (tracked.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
-  for (const path of tracked.out.toString().split('\0')) {
-    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
-    const b = wikiGit(dir, ['blame', '--line-porcelain', 'HEAD', '--', path])
-    if (b.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
-    blames.set(path, b.out.toString())
-  }
-  return blames
+type HeadPair = { ref: string; sha: string }
+type GitRun = (args: string[]) => { code: number; out: string }
+
+/** the branch ref and commit sha that HEAD names now; undefined with no commit or a detached HEAD */
+function headPair(run: GitRun): HeadPair | undefined {
+  const ref = run(['symbolic-ref', '-q', 'HEAD'])
+  const sha = run(['rev-parse', '--verify', '-q', 'HEAD'])
+  return ref.code === 0 && sha.code === 0 && ref.out && sha.out ? { ref: ref.out, sha: sha.out } : undefined
 }
 
 /**
- * After an agent pass: put back each page where the pass changed or removed a person's line, and add a flag
- * with the page, the line and `reason` to needs-person.md. The rest of the pass stays. False when a restore fails.
+ * After an agent pass: 'same' when HEAD is as recorded, and 'moved' when HEAD went forward (a commit made during
+ * the pass stays) or was put back. Any other move is undone with symbolic-ref and update-ref; 'restore failed' when
+ * that fails. A pass that gets no tool that makes a commit or an object cannot make a forward move.
  */
-export function keepPersonLines(before: Map<string, string>, reason: string, dir = join(HOME, 'wiki')) {
+function headKept(run: GitRun, pair: HeadPair): 'same' | 'moved' | 'restore failed' {
+  const now = headPair(run)
+  if (now && now.ref === pair.ref) {
+    if (now.sha === pair.sha) return 'same'
+    if (run(['merge-base', '--is-ancestor', pair.sha, now.sha]).code === 0) return 'moved'
+  }
+  const ok =
+    run(['symbolic-ref', 'HEAD', pair.ref]).code === 0 && run(['update-ref', pair.ref, pair.sha]).code === 0
+  return ok ? 'moved' : 'restore failed'
+}
+
+const wikiRun =
+  (dir: string): GitRun =>
+  args => {
+    const r = wikiGit(dir, args)
+    return { code: r.code, out: r.out.toString().trim() }
+  }
+
+/**
+ * The branch ref and sha of HEAD, and `git blame --line-porcelain <sha>` of each tracked page outside rigs/,
+ * for keepPersonLines() after an agent pass. Undefined (and a journal line) when there is no branch head
+ * (no commit, or a detached HEAD) or a blame fails: the pass must not run.
+ */
+export function wikiBlame(dir = join(HOME, 'wiki')) {
+  const pair = headPair(wikiRun(dir))
+  if (!pair) return (wikiLog('wiki: no branch head, pass refused'), undefined)
+  const blames = new Map<string, string>()
+  const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', pair.sha])
+  if (tracked.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+  for (const path of tracked.out.toString().split('\0')) {
+    if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
+    const b = wikiGit(dir, ['blame', '--line-porcelain', pair.sha, '--', path])
+    if (b.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
+    blames.set(path, b.out.toString())
+  }
+  return { ...pair, blames }
+}
+
+/**
+ * After an agent pass: first check that HEAD is where wikiBlame() saw it (false, with a journal line, when
+ * it moved). Then put back each page where the pass changed or removed a person's line, and add a flag
+ * with the page, the line and `reason` to needs-person.md. The rest of the pass stays. False when a restore fails.
+ * A page over WIKI_PAGE_MAX bytes counts as empty.
+ */
+export function keepPersonLines(
+  before: NonNullable<ReturnType<typeof wikiBlame>>,
+  reason: string,
+  dir = join(HOME, 'wiki'),
+) {
+  const kept = headKept(wikiRun(dir), before)
+  if (kept !== 'same')
+    return (
+      wikiLog(
+        kept === 'moved'
+          ? 'wiki: HEAD moved in the pass, nothing committed'
+          : 'wiki: HEAD moved in the pass, restore failed, nothing committed',
+      ),
+      false
+    )
   const flags: string[] = []
-  for (const [path, blame] of before) {
+  for (const [path, blame] of before.blames) {
     const file = join(dir, path)
     let text = ''
     try {
-      if (lstatSync(file).isFile()) text = readFileSync(file, 'utf8')
+      const st = lstatSync(file)
+      if (st.isFile() && st.size <= WIKI_PAGE_MAX) text = readFileSync(file, 'utf8')
     } catch {}
     const hits = humanLines(blame, text, WIKI_EMAIL)
     if (!hits.length) continue
-    if (wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path]).code !== 0)
+    if (wikiGit(dir, ['restore', '--staged', '--worktree', `--source=${before.sha}`, '--', path]).code !== 0)
       return (wikiLog('wiki: restore failed, nothing committed'), false)
     for (const h of hits) flags.push(flagLine(path, h.line, reason))
     wikiLog(`wiki: person's line in ${path}, page kept, flagged`)
@@ -5173,7 +5651,15 @@ async function dream() {
     if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
       return 'nothing new since the last dream'
     const start = Date.now()
-    const before = git(MEMORY, 'rev-parse', 'HEAD')
+    // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
+    const refuse = (why: string) => {
+      appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
+      return why
+    }
+    const memRun = wikiRun(MEMORY)
+    const pair = headPair(memRun)
+    if (!pair) return refuse('dream: no branch head, dream refused')
+    const before = pair.sha
     const { promotions, duplicates } = await memory.tierCandidates(MEMORY)
     const proposalsBefore = memory.proposals(MEMORY)
     // listed for the dream to fix by hand (claude-factory-59r.21): applyTiers() finds the same topics
@@ -5204,11 +5690,6 @@ async function dream() {
     const model = process.env.FACTORY_DREAM_CODEX
     let codexHome: string | undefined
     if (model) {
-      // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
-      const refuse = (why: string) => {
-        appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
-        return why
-      }
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model))
         return refuse('FACTORY_DREAM_CODEX is not a model name')
       // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
@@ -5254,7 +5735,7 @@ async function dream() {
           [
             ...claudeCommand().split(/\s+/),
             ...['-p', '--permission-mode', 'acceptEdits'],
-            ...['--settings', JSON.stringify(withoutFleet())],
+            ...['--settings', JSON.stringify(passSettings())],
             ...['--allowedTools', 'Bash(mkdir:*)', 'Bash(git mv:*)', 'Bash(git rm:*)'],
           ],
           { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
@@ -5267,7 +5748,6 @@ async function dream() {
     appendFileSync(dreamLog, `${new Date(start).toISOString()} exit ${p.exitCode}\n${said}\n`)
     if (removed.length) appendFileSync(dreamLog, removedLine(removed))
     storeDreamUsage(start, codexHome)
-    if (p.exitCode !== 0) return said
     // FR-018: at most PROPOSAL_CAP (3) new proposals per dream, whatever the dream wrote
     const overProposals = memory.proposalsOverCap(
       proposalsBefore.map(p => p.name),
@@ -5276,6 +5756,17 @@ async function dream() {
     for (const name of overProposals) rmSync(join(memory.proposalsDir(MEMORY), `${name}.md`))
     if (overProposals.length)
       appendFileSync(join(HOME, 'dream.log'), `dropped proposals over the cap: ${overProposals.join(', ')}\n`)
+    // a pass that moved HEAD commits nothing: its edits stay in the worktree for the next dream's notes commit
+    const kept = headKept(memRun, pair)
+    if (kept !== 'same') {
+      const line =
+        kept === 'moved'
+          ? 'dream: HEAD moved in the pass, nothing committed'
+          : 'dream: HEAD moved in the pass, restore failed, nothing committed'
+      appendFileSync(dreamLog, `${line}\n`)
+      return line
+    }
+    if (p.exitCode !== 0) return said
     git(MEMORY, 'add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
     // through the alias it left on the entry that absorbed it (claude-factory-59r.11).
@@ -5353,6 +5844,9 @@ function devenvPass(names: string[], force = false) {
     writeFileSync(join(HOME, 'devenv.stamp'), '') // the kick's clock: a pass started, whatever it finds
     if (!existsSync(devenvConfig())) return [`no ${devenvConfig()}: see docs/remote-runner.md`]
     const cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    const miss = devenv.configMissing(cfg)
+    if (miss.length)
+      return [`${devenvConfig()} lacks ${miss.join(', ')}: run factory settings set devenv.<field> <value>`]
     const image =
       process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the image the devenv is built in')
     const chosen = rigs().filter(r =>
@@ -6341,6 +6835,7 @@ async function tick(isPatrol = false) {
   if (!release) return { busy: true }
   try {
     const now = Date.now()
+    await refreshCursorMeter(HOME, process.env, now)
     const linearState = existsSync(linearSyncFile())
       ? readJson<Record<string, LinearSyncState>>(linearSyncFile())
       : {}
@@ -6356,6 +6851,12 @@ async function tick(isPatrol = false) {
       reviewed: reviewedItems(),
     }
     const halt = halted()
+    try {
+      out.manager.push(...(await unholdPass(now)))
+    } catch (e) {
+      // the marks stay, so the next tick tries again; the run loop must go on
+      console.error(`unhold: ${e instanceof Error ? e.message : String(e)}`)
+    }
     for (const id of runIds()) {
       try {
         const { row, manager } = await tickRun(loadRun(id), now, halted())
@@ -7440,6 +7941,8 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
+  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; edit rigs.json by hand */
+  pushRules?: string[]
   /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
   skills?: string[]
   /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). Edit rigs.json by hand. */
@@ -9134,6 +9637,9 @@ export type LabeledPr = {
   baseRefName: string
   isCrossRepository: boolean
   labels: { name: string }[]
+  headRefOid?: string
+  /** the failed check runs at headRefOid; undefined when the pass did not read them */
+  failed?: { name: string; url: string }[]
 }
 const reworkLabels = (pr: LabeledPr) => REWORK_LABELS.filter(name => pr.labels.some(l => l.name === name))
 /** what a person's label on a pull request asks: close it (and its run), or a rework run for its conflicts or changes */
@@ -9142,18 +9648,66 @@ export function labelAction(pr: LabeledPr) {
   if (!reworkLabels(pr).length) return undefined
   return pr.isCrossRepository ? 'fork' : 'rework' // a fork's branch is not ours to push
 }
+export const FIX_TESTS_ASK =
+  'make its failing build jobs and tests pass; change no behavior that the tests do not check, and do not disable, skip or weaken a test'
+const SHOWN = 10 // failed checks named in a goal or a board row
+/** the failed checks of a fix-tests PR, as the parenthesis after FIX_TESTS_ASK */
+function failedText(pr: LabeledPr) {
+  const sha = pr.headRefOid?.slice(0, 7)
+  if (!pr.failed)
+    return `(the factory did not read its checks: read the failed jobs of its head commit; on GitHub, factory ci ${pr.number} shows the logs)`
+  if (!pr.failed.length)
+    return `(no check run had failed at ${sha} when the label was read; the factory does not read commit statuses: run gh pr checks ${pr.number})`
+  const shown = pr.failed.slice(0, SHOWN).map(c => (c.url ? `${c.name} ${c.url}` : c.name))
+  const more = pr.failed.length > SHOWN ? [`+${pr.failed.length - SHOWN} more`] : []
+  return `(failed checks at ${sha}: ${[...shown, ...more, `run factory ci ${pr.number} for the logs`].join('; ')})`
+}
 const asksOf = (pr: LabeledPr) =>
   `labeled ${reworkLabels(pr).join(' and ')}: ${reworkLabels(pr)
     .map(name =>
       name === CONFLICT_LABEL
         ? 'resolve its merge conflicts'
-        : 'make the changes its reviews and checks ask for',
+        : name === FIX_TESTS_LABEL
+          ? `${FIX_TESTS_ASK} ${failedText(pr)}`
+          : 'make the changes its reviews and checks ask for',
     )
     .join(' and ')}`
 export const reworkGoal = (pr: LabeledPr) =>
   `Pull request #${pr.number} (${pr.url}) is stuck, ${asksOf(pr)}. Branch ${pr.headRefName}, base ${pr.baseRefName}.`
 /** the PR URL at the head of a rework goal (reworkGoal), or undefined for any other goal */
 export const reworkPr = (goal: string) => /^Pull request #\d+ \(([^\s()]+)\) is stuck,/.exec(goal)?.[1]
+/** how many earlier runs, live or over, were started for this PR with the fix-tests ask */
+export const fixTestsTries = (url: string, goals: string[]) =>
+  goals.filter(g => reworkPr(g) === url && g.includes(FIX_TESTS_ASK)).length
+/** the board row for a fix-tests PR that has used up REQUEUE_MAX runs */
+export function cappedRow(pr: LabeledPr, tries: number) {
+  const names = pr.failed?.slice(0, SHOWN).map(c => c.name) ?? []
+  if (pr.failed && pr.failed.length > SHOWN) names.push(`+${pr.failed.length - SHOWN} more`)
+  const what = !pr.failed
+    ? 'failed checks not read'
+    : !pr.failed.length
+      ? `no failed check run at ${pr.headRefOid?.slice(0, 7)}`
+      : `failed: ${names.join(', ')}`
+  return `${pr.url} is labeled fix-tests, but ${tries} runs did not make its checks pass (${what}): fix it by hand, then remove the label`
+}
+/**
+ * where a labeled PR goes, in order: close, fork error, the ship run of a queued PR, the live run that owns it,
+ * the board row of a fix-tests PR with REQUEUE_MAX earlier runs, a new run when the rig has room, else wait.
+ * Only fix-tests is capped: its label comes back after each run, so a new run per label could loop.
+ */
+export function labelRoute(
+  pr: LabeledPr,
+  ctx: { queued: boolean; owner: boolean; room: number; tries: number },
+) {
+  const action = labelAction(pr)
+  if (action === undefined) return undefined
+  if (action === 'close') return 'close' as const
+  if (action === 'fork') return 'fork' as const
+  if (ctx.queued) return 'ship' as const
+  if (ctx.owner) return 'owner' as const
+  if (pr.labels.some(l => l.name === FIX_TESTS_LABEL) && ctx.tries >= REQUEUE_MAX) return 'capped' as const
+  return ctx.room > 0 ? ('start' as const) : ('wait' as const)
+}
 /**
  * the live run that owns a pull request. The PR is on the run's branch, or a report of the run links it,
  * or the run is a rework run for it. A rework run uses the PR's own branch, so only its goal names the PR.
@@ -9202,7 +9756,8 @@ export const labelMail = (
 })
 
 /** a `rework` label asks for changes, so the work goes through implement; a bare `conflict` label only needs a rebase */
-const wantsChanges = (pr: LabeledPr) => reworkLabels(pr).includes(REWORK_LABEL)
+const wantsChanges = (pr: LabeledPr) =>
+  reworkLabels(pr).includes(REWORK_LABEL) || reworkLabels(pr).includes(FIX_TESTS_LABEL)
 
 /** the run to start for a rework-labeled PR no run owns: implement on the PR's own branch, or the one-station rework.yaml */
 export function reworkStart(pr: LabeledPr, factory: string) {
@@ -9408,8 +9963,9 @@ async function labelPass() {
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
-  const live = startedRunIds()
-    .map(id => ({ id, ...current(id) }))
+  const all = startedRunIds().map(id => ({ id, ...current(id) }))
+  const goals = all.map(r => r.run.goal)
+  const live = all
     .filter(r => !['done', 'aborted'].includes(where(r.value)[0]))
     .map(r => ({
       id: r.id,
@@ -9447,6 +10003,9 @@ async function labelPass() {
               )
               return found.filter((pr, i) => found.findIndex(o => o.url === pr.url) === i)
             },
+            // ponytail: GitLab job names are not read; the goal tells the worker to read them.
+            // Upgrade path: read projects/:id/pipelines/:pipeline_id/jobs?scope[]=failed from the MR head_pipeline.
+            failed: (): undefined => undefined,
             state: (url: string) => {
               const iid = prRef(url)?.number
               if (!iid) return undefined
@@ -9480,6 +10039,20 @@ async function labelPass() {
                 const rows = await githubPulls(spawnGh, slug(), rig.repo, { state: 'open', pages: 10 })
                 if (!rows) throw new Error('gh api pulls failed')
                 return (githubRows(rows) as LabeledPr[]).filter(pr => labelAction(pr) !== undefined)
+              },
+              failed: (pr: LabeledPr) => {
+                if (!/^[0-9a-f]{40}$/.test(pr.headRefOid ?? '')) return undefined
+                try {
+                  return failedChecks(
+                    gh('api', `repos/${slug()}/commits/${pr.headRefOid}/check-runs?per_page=100`),
+                  )
+                } catch (err) {
+                  const why = (err as Error).message.split('\n')[0]
+                  console.log(
+                    `${new Date().toISOString()} fix-tests ${pr.url}: check-runs read failed: ${why}`,
+                  )
+                  return undefined
+                }
               },
               state: (url: string) => {
                 const path = githubPullPath(url)
@@ -9515,7 +10088,12 @@ async function labelPass() {
       const shipped = labeled.some(pr => ['rework', 'close'].includes(labelAction(pr)!))
         ? beads(rig.repo, 'factory').shipQueue()
         : []
-      for (const pr of labeled) {
+      for (const listed of labeled) {
+        // the checks are read only for a PR that goes to a run: a fork or a close PR makes no call
+        const pr =
+          listed.labels.some(l => l.name === FIX_TESTS_LABEL) && labelAction(listed) === 'rework'
+            ? { ...listed, failed: forge.failed(listed) }
+            : listed
         const action = labelAction(pr)
         const queuedBead = action === 'rework' ? queuedOwner(pr, shipped) : undefined
         // a queued PR closed unmerged leaves the queue: the ship run would loop on it as the next PR
@@ -9523,7 +10101,15 @@ async function labelPass() {
           const closed = queuedOwner(pr, shipped)
           if (closed) beads(rig.repo, 'factory').unship(closed.id, `${pr.url} was closed unmerged`)
         }
-        if (queuedBead) {
+        const runId = prOwner(pr, live)
+        const tries = fixTestsTries(pr.url, goals)
+        const route = labelRoute(pr, {
+          queued: !!queuedBead,
+          owner: !!runId,
+          room: room(rig, busy, undefined, held),
+          tries,
+        })
+        if (route === 'ship' && queuedBead) {
           // the rig's ship run owns a queued PR: it hears of the label, and no rework run starts
           const text = `[factory] ${pr.url} (${queuedBead.id}) was ${asksOf(pr)}. Treat it as changes needed: follow your rework steps.`
           forge.unlabel(pr, reworkLabels(pr))
@@ -9535,24 +10121,26 @@ async function labelPass() {
           console.log(`${new Date().toISOString()} rework ${pr.url} → ship queue (${queuedBead.id})`)
           continue
         }
-        const runId = prOwner(pr, live)
-        if (action === 'close') {
+        if (route === 'close') {
           forge.close(pr, `Closed by claude-factory: labeled \`${CLOSE_LABEL}\`.`)
           if (runId) post(runId, { type: 'ABORT' })
           console.log(`${new Date().toISOString()} closed ${pr.url}${runId ? ` (run ${runId})` : ''}`)
-        } else if (action === 'fork') {
+        } else if (route === 'fork') {
           errors.push({
             id: `rig:${rig.name}`,
             error: `${pr.url} is labeled ${reworkLabels(pr).join(', ')} but comes from a fork: rework it there`,
           })
-        } else if (action === 'rework' && runId) {
+        } else if (route === 'capped') {
+          errors.push({ id: `rig:${rig.name}`, error: cappedRow(pr, tries) })
+          console.log(`${new Date().toISOString()} fix-tests ${pr.url}: capped after ${tries} runs`)
+        } else if (route === 'owner' && runId) {
           const owner = live.find(r => r.id === runId)!
           const implement = Object.hasOwn((await loadPinned(loadRun(runId).factory)).nodes, 'implement')
           reworkOwned(pr, { ...owner, implement }, { ...forge, post })
           console.log(
             `${new Date().toISOString()} rework ${pr.url} → its run ${runId} (was at ${owner.node})`,
           )
-        } else if (action === 'rework' && room(rig, busy, undefined, held) > 0) {
+        } else if (route === 'start') {
           forge.unlabel(pr, reworkLabels(pr))
           const start = reworkStart(pr, rig.factory)
           const { run, def } = await createTracked(
@@ -10112,9 +10700,17 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
     fail(`--mcp does not reach a ${runner} worker: its servers' commands would have to exist in the VM`)
   if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'pi')
     fail('--mcp does not reach a pi worker: pi has no MCP client (constitution I)')
+  if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'cursor')
+    fail(
+      '--mcp does not reach a cursor worker: its servers would load from an mcp.json the deny hook does not cover',
+    )
+  if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'grok')
+    fail('--mcp does not reach a grok worker: its servers are not behind the deny hook')
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${runner} runner is claude, codex or pi (not "${agent}")`)
+    fail(`--agent for the ${runner} runner is claude, codex, cursor, grok or pi (not "${agent}")`)
   if (remote && agent !== undefined) axCodexRefused(agent, env)
+  if (remote && agent !== undefined) axCursorRefused(agent, env)
+  if (remote && agent !== undefined) axGrokRefused(agent, env)
   if (egress?.length) {
     if (!remote) fail('--egress applies to a runner with an egress policy: add --runner ax')
     for (const host of egress.flatMap(e => e.hosts).filter(h => ax.isRegistryHost(h)))
@@ -10138,6 +10734,11 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
     fail('monitor needs --slo "<read-only command>": add it, or drop monitor from --sweeps')
   if (rig.sweeps?.includes('drift') && !rig.drift)
     fail('drift needs --drift "<read-only command>": add it, or drop drift from --sweeps')
+  if (
+    rig.pushRules !== undefined &&
+    !(Array.isArray(rig.pushRules) && rig.pushRules.every(r => typeof r === 'string' && r.trim()))
+  )
+    fail('pushRules is a list of non-empty strings')
   const b = rig.beadsRemote
   if (b) {
     if (![b.name, b.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
@@ -11205,6 +11806,12 @@ async function status(id: string | undefined) {
         (err ? `; last run failed: ${err}` : ''),
     )
   }
+  if (!id && process.env.CURSOR_API_KEY) {
+    await refreshCursorMeter(HOME)
+    console.log(cursorLine(cursorMeter(HOME), cursorCap()))
+  }
+  if (!id && (grokSpent(HOME) > 0 || grokBudget() !== undefined))
+    console.log(grokLine(grokSpent(HOME), grokBudget()))
   if (!runIds().length) console.log("no runs yet: factory start <factory> <repo> '<goal...>'")
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
@@ -11382,13 +11989,15 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
+  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
+  image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
   rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
-                                     station as that command (claude, codex or pi), --mcp gives its workers
+                                     station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
                                      the MCP servers in a Claude-shaped mcpServers file; --egress (repeatable, runner ax) lets the VM reach
                                      those hosts, injecting the agent-vault credential KEY for them; --linear opts the rig into the
                                      Linear pull loop, for these Linear team ids; --linear-projects and --linear-labels route an issue of
@@ -11462,6 +12071,7 @@ const usage = `factory — herdr software factories on xstate
   cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
                                      (tick --keep-mail saves the tick and the manager's mail for patrol --once)
+  herdr install [--app-home <dir>]   copy the Herdr app manager mod and its layout into the app folder
   lease [status|release]             who holds the local manager lease (only its holder ticks); release it
   patrol --once                      one headless manager patrol: answers the kept mail and works the board
   pm --once | brief --once | review --once [--codex <model>]   one headless pm, gate-brief or skill/proposal review
@@ -11476,6 +12086,7 @@ const usage = `factory — herdr software factories on xstate
   mail <run> <node|manager> [--wake] '<text...>'|--text-file path  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
   poke <run> '[text...]'             nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
+  unhold <runner> [--codex]          after a token swap by hand: wake the stations that runner's usage limit holds, as far as slots are free
   fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
@@ -11749,6 +12360,20 @@ if (import.meta.main && !outboxCmd)
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
         process.exit(await superviseManager(args))
+      case 'herdr': {
+        refuseWorker('herdr', true)
+        const at = args.indexOf('--app-home')
+        if (args[0] !== 'install' || args.length !== (at > 0 ? 3 : 1) || (at > 0 && !args[at + 1]))
+          fail('usage: factory herdr install [--app-home <dir>]')
+        const repo = resolve(import.meta.dir, '..')
+        const app = at > 0 ? resolve(args[at + 1]!) : herdrApp.appHomeOf(process.env)
+        const out = herdrApp.install(repo, app, join(repo, 'bin', 'factory'), HOME)
+        console.log(
+          `installed the factory mod in ${out.mod} and the layout in ${out.layout}, for the home ${HOME}`,
+        )
+        console.log("in the Herdr app, run layout.switch {name: 'factory'} to show it")
+        break
+      }
       case 'home':
         if (args[0] === 'split') {
           refuseWorker('home split', true)
@@ -12317,9 +12942,13 @@ if (import.meta.main && !outboxCmd)
               managerUsage(since_),
             ] as const)
           : null
+        // the weekly Cursor pool as a gauge: the last reading and the cap, or null when the meter is unknown
+        const cursor = cursorMeter(HOME)
         if (args.includes('--json'))
           console.log(
             JSON.stringify({
+              cursor: cursor && { ...cursor, cap: cursorCap() },
+              grok: { spentUsd: grokSpent(HOME), budgetUsd: grokBudget() ?? null },
               all: metrics(picked),
               ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
               precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
@@ -12341,6 +12970,9 @@ if (import.meta.main && !outboxCmd)
             console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
           if (Object.keys(denials).length)
             console.log('\ndenials by harness and reason:\n' + renderDenials(denials))
+          if (cursor || process.env.CURSOR_API_KEY) console.log('\n' + cursorLine(cursor, cursorCap()))
+          if (grokSpent(HOME) > 0 || grokBudget() !== undefined)
+            console.log('\n' + grokLine(grokSpent(HOME), grokBudget()))
         }
         if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
         break
@@ -12618,6 +13250,18 @@ if (import.meta.main && !outboxCmd)
         post(run.id, { type: 'RETRY' })
         break
       }
+      case 'unhold': {
+        refuseWorker('unhold', true)
+        const codex = args[1] === '--codex'
+        const r = args[0] ? runners[args[0]] : undefined
+        if (!r || r.local !== false || args.length > (codex ? 2 : 1))
+          fail('usage: factory unhold <runner> [--codex]; the runner is a remote one, such as ax')
+        writeUnhold(r!.name, codex, Date.now(), Date.now())
+        console.log(
+          `marked: the next tick wakes the ${r!.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
+        )
+        break
+      }
       case 'goto': {
         refuseWorker('goto')
         const run = loadRun(args[0])
@@ -12722,6 +13366,64 @@ if (import.meta.main && !outboxCmd)
         if (trapped.length) fail(`${def.name}: no way to done from ${trapped.join(', ')}`)
         console.log(`${def.name}: valid, ${Object.keys(def.nodes).length} stations from ${def.start}`)
         if (unreachable.length) console.log(`only reached by @station or goto: ${unreachable.join(', ')}`)
+        break
+      }
+      case 'settings': {
+        const file = join(HOME, 'settings.json')
+        const dfile = devenvConfig()
+        const [sub = 'list', key, value] = args
+        const usage = 'usage: factory settings [list] | set <key> <value> | unset <key>'
+        if (sub === 'list' && args.length <= 1) {
+          // BOOT_ENV: process.env already holds the stored values that loadIntoEnv filled in
+          console.log(
+            [...settingsRows(readSettings(file), BOOT_ENV), ...devenvRows(readDevenv(dfile))].join('\n'),
+          )
+        } else if (sub === 'set' && args.length === 3) {
+          refuseWorker('settings set')
+          if (isDevenvKey(key!)) setDevenv(dfile, key!, value!)
+          else setSetting(file, key!, value!)
+          console.log(`set ${key}`)
+        } else if (sub === 'unset' && args.length === 2) {
+          refuseWorker('settings unset')
+          if (isDevenvKey(key!)) unsetDevenv(dfile, key!)
+          else unsetSetting(file, key!)
+          console.log(`unset ${key}`)
+        } else fail(usage)
+        break
+      }
+      case 'image': {
+        refuseWorker('image build', true)
+        const usage = 'usage: factory image build [--target worker|manager]'
+        const t = args[2]
+        const ok =
+          args[0] === 'build' &&
+          (args.length === 1 ||
+            (args.length === 3 && args[1] === '--target' && (t === 'worker' || t === 'manager')))
+        if (!ok) fail(usage)
+        const target: Target = args.length === 3 ? (t as Target) : 'worker'
+        const head = Bun.spawnSync(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'])
+        if (head.exitCode !== 0) fail(`cannot read the HEAD of ${ROOT}`)
+        let ref: string
+        try {
+          ref = await buildImage({
+            target,
+            settingsFile: join(HOME, 'settings.json'),
+            root: ROOT,
+            sha: head.stdout.toString().trim(),
+            env: BOOT_ENV,
+            // fd 2: the docker stdout goes to the stderr of this command, so stdout holds only the ref
+            run: argv => Bun.spawn(['docker', ...argv], { stdio: ['inherit', 2, 'inherit'] }).exited,
+          })
+        } catch (e) {
+          fail((e as Error).message)
+        }
+        const key = IMAGE_KEY[target]
+        const name = SETTING_KEYS.find(k => k.key === key)?.env
+        if (name && BOOT_ENV[name] !== undefined)
+          console.error(
+            `factory: ${name} is set in the environment and overrides the stored ${key}; unset it to use the new image`,
+          )
+        console.log(ref!)
         break
       }
       case 'rig': {
