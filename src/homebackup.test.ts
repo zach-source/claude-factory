@@ -50,6 +50,35 @@ const empty = () => {
   return ws
 }
 
+test('d289.19: a staged file over 50 MB goes up as <path>.gz and comes back byte-equal; a small file stays plain', () => {
+  const r = remote()
+  const a = workspace()
+  const line = (i: number) => `{"n":${i},"text":"metrics line ${i} ünï ✓"}\n`
+  const big = Buffer.from(Array.from({ length: 1_400_000 }, (_, i) => line(i)).join(''))
+  expect(big.length).toBeGreaterThan(60 * 1024 * 1024)
+  writeFileSync(join(a, 'home', 'metrics.jsonl'), big)
+  const session = join(a, 'claude', 'projects', SLUG, 's1.jsonl')
+  writeFileSync(session, big)
+  const out = backup(cfg(a, r), true)
+  expect(out.error).toBeUndefined()
+  const tree = sh('--git-dir', r, 'ls-tree', '-r', '-l', 'manager-home')
+  expect(tree).toContain('\thome/metrics.jsonl.gz')
+  expect(tree).toContain(`\tclaude/projects/${SLUG}/s1.jsonl.gz`)
+  expect(tree).not.toContain('\thome/metrics.jsonl\n')
+  expect(tree).toContain('\thome/rigs.json\n')
+  // no blob in the pushed tree is over 50 MB
+  for (const l of tree.split('\n')) expect(Number(l.split(/\s+/)[3]) || 0).toBeLessThan(50 * 1024 * 1024)
+  // a second backup with the same files makes no commit
+  expect(backup(cfg(a, r), true).changed).toBe(false)
+  const b = empty()
+  expect(restore(cfg(b, r)).error).toBeUndefined()
+  expect(readFileSync(join(b, 'home', 'metrics.jsonl')).equals(big)).toBe(true)
+  expect(readFileSync(join(b, 'claude', 'projects', SLUG, 's1.jsonl')).equals(big)).toBe(true)
+  expect(readFileSync(join(b, 'home', 'rigs.json'), 'utf8')).toBe('[{"name":"acme"}]')
+  for (const f of ['home/metrics.jsonl.gz', 'home/.backup-gz.json'])
+    expect(existsSync(join(b, f))).toBe(false)
+}, 120_000)
+
 test('AC1: a backup restores into an empty home with the same state', () => {
   const r = remote()
   const a = workspace()
