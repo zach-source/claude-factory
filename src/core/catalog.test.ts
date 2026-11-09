@@ -145,14 +145,17 @@ describe('readQuery and readBody', () => {
 })
 
 describe('CATALOG', () => {
-  test('has 19 operations: 12 GET and 7 POST', () => {
-    expect(CATALOG.length).toBe(19)
+  test('has 20 operations: 12 GET and 8 POST', () => {
+    expect(CATALOG.length).toBe(20)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(12)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(7)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(8)
+    expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
+      'guard.check',
+    ])
   })
   test('rights map as before', () => {
     for (const o of CATALOG) {
-      const get = o.route.method === 'GET'
+      const get = o.route.method === 'GET' || o.name === 'guard.check'
       expect(o.rights).toBe(get ? 'read' : 'owner')
       expect(o.mutates).toBe(!get)
       expect(o.long).toBe(false)
@@ -171,6 +174,7 @@ describe('CATALOG', () => {
       'factory.halt POST /v1/halt',
       'gates.brief GET /v1/runs/:id/brief',
       'gates.decide POST /v1/runs/:id/decide',
+      'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',

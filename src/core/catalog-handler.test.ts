@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { clientHandler, type RunResult } from '../server-api'
 import type { Port } from './catalog'
+import { CATALOG } from './catalog'
 
 // the board and catalog tests call no port function
 const port = new Proxy({} as Port, {
@@ -18,7 +19,8 @@ const setup = (board: () => unknown = () => null) => {
     calls.push(argv)
     return { code: 0, out: 'ok\n', err: '' }
   }
-  return { calls, h: clientHandler({ home, run, port, board }) }
+  const logs: string[] = []
+  return { home, logs, calls, h: clientHandler({ home, run, port, board, log: s => logs.push(s) }) }
 }
 type H = ReturnType<typeof setup>['h']
 const get = (h: H, path: string) => h(new Request(`http://x${path}`), '1.2.3.4')
@@ -46,6 +48,7 @@ const NAMES = [
   'factory.halt',
   'gates.brief',
   'gates.decide',
+  'guard.check',
   'lease.show',
   'metrics.show',
   'plan.show',
@@ -59,7 +62,7 @@ const NAMES = [
 ]
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 19 operations', async () => {
+  test('serves the envelope with the 20 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)
@@ -85,6 +88,83 @@ describe('GET /v1/catalog', () => {
     const { h } = setup()
     expect((await get(h, '/v1/catalog?x=1')).status).toBe(400)
     expect((await post(h, '/v1/catalog', {})).status).toBe(404)
+  })
+})
+
+describe('guard.check', () => {
+  const check = (h: H, body: string, headers: Record<string, string> = {}) =>
+    h(
+      new Request('http://x/v1/guard/check', {
+        method: 'POST',
+        body,
+        headers: { 'content-type': 'application/json', ...headers },
+      }),
+      '1.2.3.4',
+    )
+  const clean = (t: ReturnType<typeof setup>) => {
+    expect(existsSync(join(t.home, 'client-idempotency.json'))).toBe(false)
+    expect(existsSync(join(t.home, 'client-actions.jsonl'))).toBe(false)
+    expect(t.calls).toEqual([])
+    expect(t.logs).toEqual([])
+  }
+  test('answers without a key, runner call, audit, or idempotency file', async () => {
+    const t = setup()
+    for (const [command, role, decision] of [
+      ['factory decide r1 ok', 'manager', 'ask'],
+      ['factory status', 'manager', 'allow'],
+      ['bd close x', 'subagent', 'deny'],
+    ]) {
+      const r = await check(t.h, JSON.stringify({ command, role }))
+      expect(r.status).toBe(200)
+      const body = (await r.json()) as any
+      expect(body.decision).toBe(decision)
+      if (decision === 'ask') expect(body.question).toContain('Allow it?')
+    }
+    expect(
+      (await check(t.h, '{"command":"factory status","role":"manager"}', { 'idempotency-key': 'x' })).status,
+    ).toBe(200)
+    clean(t)
+  })
+  for (const body of [
+    { role: 'manager' },
+    { command: '', role: 'manager' },
+    { command: 'x'.repeat(65537), role: 'manager' },
+    { command: '\u0000', role: 'manager' },
+    { command: 5, role: 'manager' },
+    { command: 'x', role: 'person' },
+    { command: 'x' },
+    { command: 'x', role: 'manager', cwd: '/x' },
+    [],
+    { command: '"'.repeat(65536), role: 'manager' },
+  ])
+    test(`rejects bad body ${JSON.stringify(body).slice(0, 80)}`, async () => {
+      const t = setup()
+      expect((await check(t.h, JSON.stringify(body))).status).toBe(400)
+      clean(t)
+    })
+  test('rejects bad JSON, content type, method, and worker authorization', async () => {
+    const t = setup()
+    expect((await check(t.h, 'no')).status).toBe(400)
+    expect((await check(t.h, '{}', { 'content-type': 'text/plain' })).status).toBe(400)
+    expect((await get(t.h, '/v1/guard/check')).status).toBe(404)
+    expect((await check(t.h, '{}', { authorization: 'Bearer x' })).status).toBe(403)
+    clean(t)
+  })
+  test('an internal error gives 500 without files or logs', async () => {
+    const op = CATALOG.find(o => o.name === 'guard.check')!
+    const run = op.run
+    const t = setup()
+    try {
+      op.run = async () => {
+        throw new Error('guard failed')
+      }
+      const r = await check(t.h, '{"command":"x","role":"manager"}')
+      expect(r.status).toBe(500)
+      expect(await r.json()).toEqual({ refused: 'internal error: guard failed' })
+      clean(t)
+    } finally {
+      op.run = run
+    }
   })
 })
 
