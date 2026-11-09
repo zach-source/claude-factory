@@ -618,7 +618,13 @@ test('AC10 ownership before observation: a child whose environ is never readable
   const real = observe
   try {
     await sleep(200)
-    observe = () => procObserver({ readEnv: denied }) // the first and every later read is denied
+    // deny the first and every later read for the child and its own children only: a global denial would pin
+    // unrelated live processes of this user as unknown for the rest of the run
+    const deniedForTree = (pid: number) => {
+      if (pid === child.pid || ppidOf(readStat(pid)) === child.pid) return denied()
+      return readFileSync(`/proc/${pid}/environ`, 'utf8')
+    }
+    observe = () => procObserver({ readEnv: deniedForTree })
     expect(await stopOwned(500)).toBe(false) // a live child is not a successful cleanup
     expect(alive(child.pid)).toBe(true)
     await expect(settled(300)).rejects.toThrow('fixture kept')
