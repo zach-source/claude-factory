@@ -181,18 +181,6 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
   const okMcp = join(dir, 'ok-mcp.json')
   writeFileSync(okMcp, '{"mcpServers":{}}')
   const rows: string[][] = [
-    ...Object.entries({
-      '--cluster-runs': ['0', '1.5', '-1', 'abc', ''],
-      '--auto-queue': ['5,3', '2,0', '2', '2,3,4', 'on', ''],
-      '--push-rule': [' ', ''],
-      '--skills': ['nope', 'asd-ste100,', '', 'none,egm'],
-      '--otel-content': ['false', 'no', 'OFF', ''],
-      '--sandbox-class': ['kata', 'MICROVM', ''],
-    }).flatMap(([flag, values]) => [
-      ...values.map(value => ['x', flag, value]),
-      ['x', flag],
-      ...(flag === '--push-rule' ? [] : [['x', flag, values[0]!, flag, values[0]!]]),
-    ]),
     ['x', '--push-rule', 'ok', '--push-rule', ''],
     ['x', '--push-rule', 'none', '--push-rule', 'x'],
     ['x', '--push-rule', 'none', '--push-rule', 'none'],
@@ -244,6 +232,24 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
     '--sandbox-class',
   ])
     expect(factory(['rig', 'set', 'x']).err).toContain(flag)
+})
+
+test.each(
+  Object.entries({
+    '--cluster-runs': ['0', '1.5', '-1', 'abc', ''],
+    '--auto-queue': ['5,3', '2,0', '2', '2,3,4', 'on', ''],
+    '--push-rule': [' ', ''],
+    '--skills': ['nope', 'asd-ste100,', '', 'none,egm'],
+    '--otel-content': ['false', 'no', 'OFF', ''],
+    '--sandbox-class': ['kata', 'MICROVM', ''],
+  }),
+)('rig set refuses bad values for %s', (flag, values) => {
+  seed()
+  refused([
+    ...values.map(value => ['set', 'x', flag, value]),
+    ['set', 'x', flag],
+    ...(flag === '--push-rule' ? [] : [['set', 'x', flag, values[0]!, flag, values[0]!]]),
+  ])
 })
 
 test('rig set clears autoQueue, pushRules, skills, otelContent and sandboxClass', () => {
