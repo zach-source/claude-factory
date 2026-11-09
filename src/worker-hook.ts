@@ -70,7 +70,7 @@
 import { appendFileSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
-import { HOME_REASON, homeReason } from './home-guard'
+import { HOME_REASON, homeReason, LOADED_REASON, type LoadedText } from './home-guard'
 import { TOKEN_READ_REASON, tokenPathReason, tokenReason } from './token-guard'
 export { TOKEN_READ_REASON }
 import * as self from './worker-hook'
@@ -436,6 +436,9 @@ export interface HookGate {
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
+  /** claude-factory-qn8a.37: the texts that git hooks, git config values and config files in the tool
+   * call's cwd load (see `loadedTexts`). undefined means the read failed: the home guard denies. */
+  loaded?: (command: string) => LoadedText[] | undefined
 
   /** claude-factory-bemr: a map from a git alias name (lowercase, no `alias.` prefix) to its raw
    * config text. The keys come from `alias.<name>` in `git config --get-regexp ^alias\.`. The
@@ -9119,7 +9122,8 @@ export function denyReason(
   // claude-factory-qn8a.30: the Bash tool adds a newline, so a last backslash joins the next line
   if (command.endsWith('\\')) command += '\n'
   // the home guard reads the text first (with the added newline): no parse bypass can reach a delete of $HOME
-  const home = homeReason(command, gate?.readFile)
+  const loaded = gate?.loaded ? (gate.loaded(command) ?? null) : undefined
+  const home = homeReason(command, gate?.readFile, undefined, loaded)
   if (home) return home
   if (rawActorFlag(command)) return BEADS_ACTOR_REASON
   const now = gate?.now ?? Date.now
@@ -10558,6 +10562,84 @@ function readSmallFile(path: string, cwd: string): string | undefined {
   }
 }
 
+// claude-factory-qn8a.37: the two loader spawns share this budget (ms). The 10 s PreToolUse timeout holds it.
+const LOADED_BUDGET_MS = 1000
+// the config files that a verb loads and runs: npm, bun, prettier and make
+const CONFIG_NAME =
+  /^(?:package\.json|bunfig\.toml|\.prettierrc(?:\..+)?|prettier\.config\..+|[Mm]akefile|GNUmakefile)$/
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * claude-factory-qn8a.37: the texts that a command can load with no script named: git config values,
+ * the files of the git hooks dir (not *.sample), the CONFIG_NAME files in cwd and each parent, and
+ * the node_modules/.bin files that the command or a config text names. Each text has the dir that
+ * its relative paths resolve against. It does not depend on the verbs of `command`, so a quote or
+ * an alias cannot hide a git verb. It returns undefined when git cannot read the config in time:
+ * the home guard then denies (fail closed). An unreadable file gives no text.
+ * ponytail: config in a subdir below cwd or in a dir that cd, git -C or --prefix names, a package
+ * name that selects a program, a script that a hook calls, and a file over 64 KiB are not read.
+ * Upgrade path: a real shell parser, or a per-file config lookup for prettier.
+ */
+export function loadedTexts(command: string, cwd: string): LoadedText[] | undefined {
+  const start = Date.now()
+  const git = (args: string[], left: number) => {
+    try {
+      return Bun.spawnSync(['git', '-C', cwd, ...args], { timeout: left })
+    } catch {
+      return undefined
+    }
+  }
+  const s1 = git(['config', '-z', '--list'], LOADED_BUDGET_MS)
+  if (s1?.exitCode !== 0) return undefined
+  const left = LOADED_BUDGET_MS - (Date.now() - start)
+  if (left <= 0) return undefined
+  const s2 = git(['rev-parse', '--show-toplevel', '--git-path', 'hooks'], left)
+  if (s2?.exitCode !== 0 && s2?.exitCode !== 128) return undefined
+  let top = cwd
+  let hooks: string | undefined
+  if (s2.exitCode === 0) {
+    const [t, h] = s2.stdout.toString().split('\n')
+    if (!t || !h) return undefined
+    top = t
+    hooks = resolvePath(cwd, h)
+  }
+  const out: LoadedText[] = []
+  for (const rec of s1.stdout.toString().split('\0')) {
+    const nl = rec.indexOf('\n')
+    if (nl >= 0) out.push({ text: rec.slice(nl + 1), dir: top })
+  }
+  const names = (d: string) => {
+    try {
+      return readdirSync(d)
+    } catch {
+      return []
+    }
+  }
+  if (hooks)
+    for (const n of names(hooks)) {
+      const text = n.endsWith('.sample') ? undefined : readSmallFile(joinPath(hooks, n), cwd)
+      if (text !== undefined) out.push({ text, dir: top })
+    }
+  const dirs: string[] = []
+  for (let d = resolvePath(cwd); ; d = dirname(d)) {
+    dirs.push(d)
+    if (dirname(d) === d) break
+  }
+  for (const d of dirs)
+    for (const n of names(d)) {
+      const text = CONFIG_NAME.test(n) ? readSmallFile(joinPath(d, n), cwd) : undefined
+      if (text !== undefined) out.push({ text, dir: d })
+    }
+  const hay = [command, ...out.map(o => o.text)].join('\n')
+  for (const d of dirs)
+    for (const b of names(joinPath(d, 'node_modules', '.bin'))) {
+      if (!new RegExp('(?<![\\w.-])' + escapeRe(b) + '(?![\\w-])').test(hay)) continue
+      const text = readSmallFile(joinPath(d, 'node_modules', '.bin', b), cwd)
+      if (text !== undefined) out.push({ text, dir: d })
+    }
+  return out
+}
+
 //
 // claude-factory-bemr: this function reads every alias entry from git config, for gate.gitAliases.
 // dir is the directory to read config for.
@@ -11216,7 +11298,7 @@ export function applyPatchReason(
 
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
 export function reasonName(reason: string): string {
-  for (const [k, v] of Object.entries({ ...self, HOME_REASON }))
+  for (const [k, v] of Object.entries({ ...self, HOME_REASON, LOADED_REASON }))
     if (k.endsWith('REASON') && v === reason) return k
   return 'UNKNOWN'
 }
@@ -11454,6 +11536,7 @@ function handle(input: unknown) {
     // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
     // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
     readFile: path => readSmallFile(path, i.cwd || root),
+    loaded: c => loadedTexts(c, i.cwd || root),
     // claude-factory-bemr.6: this code reads the alias table at the tool call's own cwd.
     // It does not read the table at root.
     // The Bash tool runs the command at i.cwd. An earlier cd word can move i.cwd away from
