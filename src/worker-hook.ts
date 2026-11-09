@@ -460,7 +460,8 @@ export interface HookGate {
   /** claude-factory-1zr5: the shell aliases in the newest Claude Code shell snapshots (see
    * `shellSnapshotAliases`): name to unquoted value, or null for a value the reader cannot unquote.
    * The Bash tool shell expands them, but the hook sees only the alias word. Unset means no alias
-   * check. Undefined from the function means a read error: the hook denies every command. */
+   * check. Undefined from the function means a read error: the hook denies every command.
+   * A key `*.NAME` (value null) is a zsh suffix alias NAME. */
   shellAliases?: () => Map<string, string | null> | undefined
   /** claude-factory-usqc: the function names in the same snapshots (see `shellSnapshotFunctions`). Unset
    * or undefined means the hook cannot prove an argument word safe, so it scans every word for an alias. */
@@ -9295,6 +9296,7 @@ function requoteWord(w: string): string {
  *   - a name other than git or gh, whose expansion holds a git, gh or git-<verb> word, denies.
  *   - any other alias: the expansion replaces the word, and `denyAt` scans the result again.
  *     It skips the names already expanded, as zsh does, and denies past MAX_SHELL_ALIAS_DEPTH.
+ *   - a word with a `.` whose text after the last `.` is a suffix alias (`*.NAME` key) denies.
  */
 // claude-factory-usqc: builtins that print or test and never run, define or load a word. A function
 // or an alias of the same name still fails Q5 and Q3.
@@ -9351,6 +9353,8 @@ function shellAliasReason(
   }
   for (let i = 0; i < end; i++) {
     const name = words[i]!
+    if (name.includes('.') && table.has('*.' + name.slice(name.lastIndexOf('.') + 1)))
+      return SHELL_ALIAS_REASON
     if (!table.has(name) || stack.includes(name)) continue
     const value = table.get(name)
     if (value === null || value === undefined) return SHELL_ALIAS_REASON
@@ -10709,7 +10713,8 @@ export function shellSnapshotFunctions(
  * sources a snapshot before each command, so its aliases expand there. The hook never learns which
  * snapshot a session uses, so it reads the union.
  *
- * A value maps to null when this reader cannot unquote it. A missing folder gives an empty Map.
+ * A value maps to null when this reader cannot unquote it. A line `alias -s NAME=VALUE` (zsh suffix
+ * alias) maps the key `*.NAME` to null; a suffix line that does not fit gives undefined. A missing folder gives an empty Map.
  * A folder or file that cannot be read, or a file over 4 MiB, gives undefined (fail closed).
  * `read` gives the file texts, oldest first (default `snapshotTexts`).
  */
@@ -10724,6 +10729,18 @@ export function shellSnapshotAliases(
     for (const text of texts) {
       const lines = text.split('\n')
       for (let n = 0; n < lines.length; n++) {
+        if (/^alias -s(?:\s|$)/.test(lines[n]!)) {
+          // ponytail: the `*.` key prefix keeps suffix aliases in the same Map type, so HookGate.shellAliases
+          // does not change. A regular alias named `*.sh` can share the key; that only makes it null (deny).
+          // Upgrade: a separate Set field on HookGate if a second consumer needs it.
+          const s = /^alias -s (?:-- )?([A-Za-z0-9_+-]+)=/.exec(lines[n]!)
+          if (!s) return undefined
+          const v = unquoteAliasValue(lines, n, s[0].length)
+          if (!v) return undefined
+          table.set('*.' + s[1]!, null)
+          n = v.end
+          continue
+        }
         const m = /^alias -- ([^=\s]+)=/.exec(lines[n]!)
         if (!m) continue
         const parsed = unquoteAliasValue(lines, n, m[0].length)
