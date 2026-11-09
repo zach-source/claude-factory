@@ -1121,7 +1121,9 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 
 This repo is public. `hack/guard-private.sh` refuses a commit that carries a secret or a private
 name. The tracked `.beads-hooks/pre-commit` and `.beads-hooks/commit-msg` run it after the beads
-hooks. In a clean clone, run this one command to install both hooks:
+hooks. The tracked `.beads-hooks/pre-push` runs `factory parity`: it refuses the push when a gap
+bead in `parity-gaps.json` is closed. In a clean clone, run this one command to install the three
+hooks:
 
 ```sh
 git config core.hooksPath .beads-hooks

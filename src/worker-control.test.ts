@@ -1,6 +1,6 @@
 // claude-factory-5y7b: a worker cannot run factory say, stop, resume, start or fork.
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -300,6 +300,32 @@ for (const verb of ['skills', 'proposals']) {
   })
 }
 
+// claude-factory-hpmc.7: factory parity runs for a worker and in server mode; a fake bd gives the bead status.
+for (const [label, env] of [
+  ['a worker', { FACTORY_RUN: 'lifecycle-x' }],
+  ['server mode', { FACTORY_SERVER: 'https://127.0.0.1:9' }],
+] as const) {
+  for (const status of ['open', 'closed']) {
+    test(`parity: ${label}, bead ${status}`, () => {
+      const bin = mkdtempSync(join(tmpdir(), 'parity-bd-'))
+      try {
+        const sh = `#!/bin/sh\ncase "$1" in\n  show) printf '[{"id":"%s","status":"${status}"}]\\n' "$2" ;;\n  *) exit 1 ;;\nesac\n`
+        writeFileSync(join(bin, 'bd'), sh, { mode: 0o755 })
+        const p = run(['parity'], { ...env, PATH: `${bin}:${process.env.PATH}` })
+        expect(p.exitCode).toBe(status === 'open' ? 0 : 1)
+        if (status === 'closed') expect(p.stdout.toString()).toContain('status closed')
+      } finally {
+        rmSync(bin, { recursive: true, force: true })
+      }
+    }, 30_000)
+  }
+}
+test('parity: an argument is a usage error', () => {
+  const p = run(['parity', 'x'], {})
+  expect(p.exitCode).toBe(2)
+  expect(p.stderr.toString()).toContain('usage: factory parity')
+})
+
 // claude-factory-e10f: a worker runs only the verbs on an allowlist; a new verb is refused until someone lists it.
 const ALLOWED = [
   'report',
@@ -317,6 +343,7 @@ const ALLOWED = [
   'worker',
   'file-elsewhere',
   'rig',
+  'parity',
 ]
 const DENIED = [
   'unhold',

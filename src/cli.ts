@@ -157,6 +157,7 @@ import { INSTALL_VERB, META_WRITE, bdWrite, gatedCommand } from '../mod/hooks/vi
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
+import { GAPS_FILE, parity } from './parity'
 import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
@@ -11199,6 +11200,7 @@ const WORKER_VERBS = [
   'ci',
   'worker',
   'file-elsewhere',
+  'parity',
 ]
 
 /** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, `rig show`, or usage) */
@@ -12331,6 +12333,7 @@ const usage = `factory — herdr software factories on xstate
                                      the approve gate, review loops, failures by kind, each station's outcomes
   ci <pr>                            the PR's checks on its head SHA; each failed job's step and log tail
                                      (exit 0 green, 1 failed, 2 pending, 3 error)
+  parity                             each gap bead in parity-gaps.json is still open (the pre-push hook runs it)
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>   apply one literal edit, run the test, restore the file;
                                      exit 0 killed, 1 survived, 2 refused, 3 timeout, 4 restore failed
@@ -13118,6 +13121,22 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('dream')
         console.log(await dream())
         break
+      case 'parity': {
+        if (args.length) {
+          console.error('usage: factory parity')
+          process.exit(2)
+        }
+        const show = (id: string) => {
+          try {
+            const p = Bun.spawnSync(['bd', 'show', id, '--json'], { cwd: ROOT, timeout: 30_000 })
+            const err = p.exitCode === null ? 'timed out after 30 s' : p.stderr.toString()
+            return { code: p.exitCode ?? 1, out: p.stdout.toString(), err }
+          } catch (e) {
+            return { code: 1, out: '', err: (e as Error).message }
+          }
+        }
+        process.exit(parity({ file: GAPS_FILE, show, print: l => console.log(l) }))
+      }
       case 'pg-scratch':
         process.exit(pgScratch(args, { cwd: process.cwd(), env: process.env }))
         break

@@ -1,0 +1,26 @@
+[
+  {
+    "op": "catalog.echo",
+    "frontEnd": "cli",
+    "bead": "claude-factory-hpmc.8",
+    "reason": "no generic view yet"
+  },
+  {
+    "op": "catalog.echo",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-hpmc.9",
+    "reason": "no generic view yet"
+  },
+  {
+    "op": "catalog.echo",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.10",
+    "reason": "no generic view yet"
+  },
+  {
+    "op": "catalog.echo",
+    "frontEnd": "web",
+    "bead": "claude-factory-hpmc.11",
+    "reason": "no generic view yet"
+  }
+]
