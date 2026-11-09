@@ -286,3 +286,26 @@ test('a worker cannot run factory server', () => {
   expect(p.exitCode).not.toBe(0)
   expect(existsSync(leaseFile(home))).toBe(false)
 }, 30_000)
+
+test('onBoard gets each accepted tick result, not a busy or a thrown one', async () => {
+  const seen: unknown[] = []
+  const results: unknown[] = [{ a: 1 }, { busy: true }, 'throw', { a: 2 }]
+  const s = serve({
+    home: lease().replace(/\/[^/]+$/, ''),
+    port: 0,
+    everyMs: 20,
+    leaseMs: 1000,
+    log: () => {},
+    tick: () => {
+      const r = results.shift()
+      if (r === 'throw') throw new Error('x')
+      return r
+    },
+    onBoard: b => seen.push(b),
+  })
+  const until = Date.now() + 3000
+  while (results.length && Date.now() < until) await Bun.sleep(10)
+  await Bun.sleep(30)
+  await s.stop()
+  expect(seen.slice(0, 2)).toEqual([{ a: 1 }, { a: 2 }])
+})

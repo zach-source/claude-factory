@@ -203,7 +203,9 @@ describe('refusals make zero calls', () => {
     ['Authorization on an unknown path', h => get(h, '/nope', { authorization: 'x' }), 403],
     ['unknown path', h => get(h, '/v1/nope'), 404],
     ['rigs with a query', h => get(h, '/v1/rigs?x=1'), 400],
-    ['events not served', h => get(h, '/v1/events'), 404],
+    ['events with an extra segment', h => get(h, '/v1/events/x'), 404],
+    ['events POST', h => post(h, '/v1/events', {}), 404],
+    ['events with Authorization', h => get(h, '/v1/events?after=zz', { authorization: '' }), 403],
     ['rigs PUT', h => h(new Request('http://x/v1/rigs/a', { method: 'PUT', body: '{}' }), 'ip'), 404],
     ['rigs DELETE', h => h(new Request('http://x/v1/rigs/a', { method: 'DELETE' }), 'ip'), 404],
     ['GET on a POST path', h => get(h, '/v1/halt'), 404],
@@ -407,5 +409,103 @@ describe('audit', () => {
     const lines = readFileSync(join(t.home, 'client-actions.jsonl'), 'utf8').trim().split('\n')
     expect(lines.length).toBe(1)
     expect('outcome' in JSON.parse(lines[0]!)).toBe(false)
+  })
+})
+
+/** read frames from a stream until `n` events came, then cancel */
+const frames = async (res: Response, n: number) => {
+  const rd = res.body!.getReader()
+  const dec = new TextDecoder()
+  let text = ''
+  while ((text.match(/\n\n/g) ?? []).length < n) {
+    const { value, done } = await Promise.race([
+      rd.read(),
+      Bun.sleep(2000).then(() => ({ value: undefined, done: true })),
+    ])
+    if (done) break
+    text += dec.decode(value)
+  }
+  await rd.cancel()
+  return text
+}
+const frame = (id: number, b: unknown) => `id: ${id}\ndata: ${JSON.stringify(b)}\n\n`
+
+describe('events query grammar', () => {
+  const ok = ['', '?after=0', '?after=0001', '?after=9007199254740993']
+  const bad = ['?after=', '?after=abc', '?after=-1', '?after=+1', '?after=1x', '?after=1.0', '?after=1e2', '?after=%31', '?after=1&after=2', '?x=1', '?after', '?after=1&', '?after=1 2', '?after=\u0661']
+  for (const q of ok)
+    test(`allows ${q || 'no query'}`, async () => {
+      const t = setup()
+      const r = await get(t.h, `/v1/events${q}`)
+      expect(r.status).toBe(200)
+      expect(r.headers.get('content-type')).toBe('text/event-stream; charset=utf-8')
+      expect(t.calls).toEqual([])
+      await r.body!.cancel()
+    })
+  for (const q of bad)
+    test(`denies ${JSON.stringify(q)}`, async () => {
+      const t = setup()
+      expect((await get(t.h, `/v1/events${q}`)).status).toBe(400)
+      expect(t.calls).toEqual([])
+    })
+})
+
+describe('events replay and ring', () => {
+  test('replay then live, each event once', async () => {
+    const t = setup()
+    t.h.publish({ a: 1 })
+    t.h.publish({ a: 2 })
+    const r = await get(t.h, '/v1/events?after=1')
+    setTimeout(() => t.h.publish({ a: 3 }), 10)
+    expect(await frames(r, 2)).toBe(frame(2, { a: 2 }) + frame(3, { a: 3 }))
+  })
+  test('equal boards add no event; a mutated object does not alter an old event', async () => {
+    const t = setup()
+    const b = { n: 1 }
+    t.h.publish(b)
+    t.h.publish({ n: 1 })
+    b.n = 2
+    t.h.publish(b)
+    expect(await frames(await get(t.h, '/v1/events'), 2)).toBe(frame(1, { n: 1 }) + frame(2, { n: 2 }))
+  })
+  test('retains 256 snapshots', async () => {
+    const t = setup()
+    for (let i = 1; i <= 258; i++) t.h.publish({ i })
+    const all = await frames(await get(t.h, '/v1/events'), 256)
+    expect(all.startsWith(frame(3, { i: 3 }))).toBe(true)
+    expect(all.endsWith(frame(258, { i: 258 }))).toBe(true)
+    expect(await frames(await get(t.h, '/v1/events?after=257'), 1)).toBe(frame(258, { i: 258 }))
+    const r = await get(t.h, '/v1/events?after=259')
+    t.h.publish({ i: 259 })
+    t.h.publish({ i: 260 })
+    expect(await frames(r, 1)).toBe(frame(260, { i: 260 }))
+    const big = await get(t.h, '/v1/events?after=9007199254740993')
+    expect(await frames(big, 1)).toBe('')
+  })
+  test('a fresh handler starts at id 1', async () => {
+    const t = setup()
+    t.h.publish({ a: 1 })
+    const u = t.make()
+    u.publish({ b: 1 })
+    expect(await frames(await get(u, '/v1/events'), 1)).toBe(frame(1, { b: 1 }))
+  })
+  test('a cancelled reader releases its subscriber and a slow one is closed on overflow', async () => {
+    const t = setup()
+    expect(t.h.subscribers()).toBe(0)
+    const r = await get(t.h, '/v1/events')
+    expect(t.h.subscribers()).toBe(1)
+    await r.body!.cancel()
+    expect(t.h.subscribers()).toBe(0)
+    const slow = await get(t.h, '/v1/events')
+    for (let i = 0; i < 600; i++) t.h.publish({ i })
+    expect(t.h.subscribers()).toBe(0)
+    const rd = slow.body!.getReader()
+    let n = 0
+    for (;;) {
+      const x = await rd.read()
+      if (x.done) break
+      n++
+    }
+    expect(n).toBeLessThanOrEqual(512)
   })
 })

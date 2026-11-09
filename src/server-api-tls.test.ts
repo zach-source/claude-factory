@@ -69,12 +69,14 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, 
   const home = tmp()
   let s: ReturnType<typeof serve>
   const handle = clientHandler({ home, run, port, board: () => s.board() })
+  const onBoard = handle.publish
   s = serve({
     home,
     port: 0,
     everyMs: 50,
     leaseMs: 1000,
     tick,
+    onBoard,
     log: () => {},
     client: {
       port: 0,
@@ -277,5 +279,33 @@ describe('parseFlags', () => {
     expect(() => parseFlags([...all.slice(0, 7)])).toThrow(/usage/)
     expect(() => parseFlags(['--port', '8444', ...all])).toThrow(/usage/)
     expect(() => parseFlags(['--client-port', '70000', ...all.slice(2)])).toThrow(/usage/)
+  })
+})
+
+describe('events over mTLS', () => {
+  test('replay then live frames arrive before the connection closes', async () => {
+    let n = 0
+    const t = start(() => ({ n: ++n }))
+    const who = pair(A)
+    const p = Bun.spawn(
+      [
+        ...['curl', '-sN', '-i', '--max-time', '8', '--cacert', join(A, 'ca.crt')],
+        ...['--cert', who.cert, '--key', who.key],
+        ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`],
+        `${t.url}/v1/events?after=0`,
+      ],
+      { stdout: 'pipe', stderr: 'ignore' },
+    )
+    const rd = p.stdout.getReader()
+    let text = ''
+    const dec = new TextDecoder()
+    while ((text.match(/id: \d+\ndata/g) ?? []).length < 2) {
+      const { value, done } = await rd.read()
+      if (done) break
+      text += dec.decode(value)
+    }
+    p.kill()
+    expect(text.toLowerCase()).toContain('content-type: text/event-stream; charset=utf-8')
+    expect(text).toContain('id: 1\ndata: {"n":1}\n\nid: 2\ndata: {"n":2}\n\n')
   })
 })
