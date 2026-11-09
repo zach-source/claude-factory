@@ -607,6 +607,9 @@ describe('serveSocket event transport', () => {
     sock.emit('drain')
     await tick()
     expect(sock.written.length).toBe(2)
+    sock.destroy()
+    await tick()
+    expect(h.subscribers()).toBe(0)
   })
   test('repeated drain cycles leave no listeners, and close during drain releases the stream', async () => {
     const h = setup().h

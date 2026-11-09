@@ -336,67 +336,121 @@ describe('parseFlags', () => {
   })
 })
 
-describe('events over mTLS', () => {
-  test('replay then live frames arrive before the connection closes', async () => {
-    let n = 0
-    const t = start(() => ({ n: ++n }))
-    const who = pair(A)
-    const p = Bun.spawn(
-      [
-        ...['curl', '-sN', '-i', '--max-time', '8', '--cacert', join(A, 'ca.crt')],
-        ...['--cert', who.cert, '--key', who.key],
-        ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`],
-        `${t.url}/v1/events?after=0`,
-      ],
-      { stdout: 'pipe', stderr: 'ignore' },
-    )
-    const rd = p.stdout.getReader()
-    let text = ''
-    const dec = new TextDecoder()
-    while ((text.match(/id: \d+\ndata/g) ?? []).length < 2) {
-      const { value, done } = await rd.read()
-      if (done) break
-      text += dec.decode(value)
+describe('events over mTLS: replay then live', () => {
+  test('held ticks: replay crosses into live once, an equal tick adds nothing, stop ends every stream', async () => {
+    let cur: unknown = { n: 0 }
+    let free = false
+    const waiting: (() => void)[] = []
+    const tick = async () => {
+      if (!free) await new Promise<void>(r => waiting.push(r))
+      return cur
     }
-    p.kill()
-    expect(text.toLowerCase()).toContain('content-type: text/event-stream; charset=utf-8')
-    expect(text).toContain('id: 1\ndata: {"n":1}\n\nid: 2\ndata: {"n":2}\n\n')
-  })
-  test('two clients, a reconnect after n+1 and UTF-8 frames', async () => {
-    const boards: unknown[] = [{ n: 1, t: 'é€' }, { n: 2 }, { n: 2 }, { n: 3, nested: { a: [1] } }, null]
-    let i = 0
-    const t = start(() => boards[Math.min(i++, boards.length - 1)])
+    const pause = async (ok: () => boolean) => {
+      const until = performance.now() + 5000
+      while (!ok() && performance.now() < until) await Bun.sleep(5)
+      expect(ok()).toBe(true)
+    }
+    // A release ends the held tick. The next tick is held again only after the board went to onBoard.
+    const release = async (board: unknown) => {
+      await pause(() => waiting.length > 0)
+      cur = board
+      waiting.shift()?.()
+      await pause(() => waiting.length > 0)
+    }
+    const t = start(tick)
     const who = pair(A)
-    const curl = (after: number) =>
-      Bun.spawn(
+    const readers: { pump: Promise<void>; kill: () => void; exited: Promise<number> }[] = []
+    const reader = (after: number) => {
+      const p = Bun.spawn(
         [
-          ...['curl', '-sN', '--max-time', '8', '--cacert', join(A, 'ca.crt')],
+          ...['curl', '-sN', '-i', '--max-time', '20', '--cacert', join(A, 'ca.crt')],
           ...['--cert', who.cert, '--key', who.key],
           ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`],
           `${t.url}/v1/events?after=${after}`,
         ],
         { stdout: 'pipe', stderr: 'ignore' },
       )
-    const collect = async (p: ReturnType<typeof curl>, ids: number) => {
       const rd = p.stdout.getReader()
       const dec = new TextDecoder()
-      let text = ''
-      while ((text.match(/id: \d+\ndata/g) ?? []).length < ids) {
-        const { value, done } = await rd.read()
-        if (done) break
-        text += dec.decode(value)
+      const frames: string[] = []
+      let head = ''
+      let buf = ''
+      let eof = false
+      const take = (chunk: string) => {
+        buf += chunk
+        if (!head) {
+          const k = buf.indexOf('\r\n\r\n')
+          if (k < 0) return
+          head = buf.slice(0, k)
+          buf = buf.slice(k + 4)
+        }
+        for (let k = buf.indexOf('\n\n'); k >= 0; k = buf.indexOf('\n\n')) {
+          frames.push(buf.slice(0, k + 2))
+          buf = buf.slice(k + 2)
+        }
       }
-      p.kill()
-      return text
+      const pump = (async () => {
+        for (;;) {
+          const r = await rd.read()
+          if (r.done) break
+          take(dec.decode(r.value, { stream: true }))
+        }
+        take(dec.decode())
+        eof = true
+      })()
+      const x = {
+        frames,
+        head: () => head,
+        rest: () => buf,
+        eof: () => eof,
+        pump,
+        kill: () => p.kill(),
+        exited: p.exited,
+      }
+      readers.push(x)
+      return x
     }
-    const [a, b] = await Promise.all([collect(curl(0), 4), collect(curl(0), 4)])
-    expect(a).toBe(b)
-    expect(a).toContain('id: 1\ndata: {"n":1,"t":"é€"}\n\n')
-    expect(a).toContain('id: 3\ndata: {"n":3,"nested":{"a":[1]}}\n\n')
-    expect(a).toContain('id: 4\ndata: null\n\n')
-    const c = await collect(curl(3), 1)
-    expect(c).toBe('id: 4\ndata: null\n\n')
-  })
+    try {
+      await release({ n: 1, t: 'é€' })
+      const a = reader(0)
+      const b = reader(0)
+      await pause(() => a.frames.length >= 1 && b.frames.length >= 1)
+      expect(a.head().toLowerCase()).toContain('content-type: text/event-stream; charset=utf-8')
+      expect(a.frames).toEqual(['id: 1\ndata: {"n":1,"t":"é€"}\n\n'])
+      await release({ n: 2, nested: { a: [1] } })
+      await pause(() => a.frames.length >= 2 && b.frames.length >= 2)
+      const c = reader(1)
+      await pause(() => c.frames.length >= 1)
+      expect(c.frames).toEqual(['id: 2\ndata: {"n":2,"nested":{"a":[1]}}\n\n'])
+      await release(null)
+      await pause(() => [a, b, c].every(r => r.frames.length >= (r === c ? 2 : 3)))
+      await release(null)
+      await release({ marker: 4 })
+      await pause(() => [a, b, c].every(r => r.frames.length >= (r === c ? 3 : 4)))
+      free = true
+      for (const r of waiting.splice(0)) r()
+      await t.s.stop()
+      await Promise.all(readers.map(r => r.pump))
+      const f = [
+        'id: 1\ndata: {"n":1,"t":"é€"}\n\n',
+        'id: 2\ndata: {"n":2,"nested":{"a":[1]}}\n\n',
+        'id: 3\ndata: null\n\n',
+        'id: 4\ndata: {"marker":4}\n\n',
+      ]
+      expect(a.frames).toEqual(f)
+      expect(b.frames).toEqual(f)
+      expect(c.frames).toEqual(f.slice(1))
+      for (const r of [a, b, c]) {
+        expect(r.eof()).toBe(true)
+        expect(r.rest()).toBe('')
+      }
+    } finally {
+      free = true
+      for (const r of waiting.splice(0)) r()
+      for (const r of readers) r.kill()
+      await Promise.all(readers.map(r => r.exited))
+    }
+  }, 30000)
 })
 
 describe('events over mTLS: barriers', () => {
