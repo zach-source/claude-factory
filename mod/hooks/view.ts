@@ -1313,8 +1313,9 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const kinds = GATED_KINDS.flatMap(k => {
     const per = reads.map(r => {
       // a kind with a trailer matches only up to its last trailer, so the lazy gap stays linear
-      const last = 'tail' in k ? [...r.text.matchAll(k.tail)].at(-1) : undefined
-      const text = 'tail' in k ? (last ? r.text.slice(0, last.index! + last[0].length) : '') : r.text
+      const tail = 'tail' in k ? k.tail : undefined
+      const last = tail ? [...r.text.matchAll(tail)].at(-1) : undefined
+      const text = tail ? (last ? r.text.slice(0, last.index! + last[0].length) : '') : r.text
       const ends = [...text.matchAll(k.re)].map(m => m.index! + m[0].length)
       return { count: ends.length, hidden: ends.filter(end => end > r.cut).length, base: !r.canonical }
     })
