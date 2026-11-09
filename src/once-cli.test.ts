@@ -175,7 +175,7 @@ test('patrol-guard denies the subagent verbs and allows reads', () => {
       'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
     ],
     ['bd update x --set-metadata a=b', 'a subagent never writes bead metadata'],
-  ]) {
+  ] as const) {
     const r = guard(bad)
     expect([bad, r.code]).toEqual([bad, 2])
     expect(r.err).toBe(reason + '\n')

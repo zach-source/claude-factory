@@ -394,7 +394,8 @@ function isValidRigPlan(x: unknown): x is FactoryRigPlan {
 /** Checks the shape of a whole plan read from `plan.json`: a real `at`, a `rigs` object whose
  * every entry passes `isValidRigPlan`, and a `proposals` array. A hand-edited or truncated file
  * can fail this; `readPlan` then reads it as no plan, the same as a missing or corrupt file
- * (claude-factory-dun.18, mirrors `isValidPlanShape`, src/cli.ts). */
+ * (claude-factory-dun.18, mirrors `isValidPlanShape`, src/plan.ts).
+ * claude-factory-hpmc.9 removes this copy when the mod no longer reads the plan. */
 export function isValidPlan(p: unknown): p is FactoryPlan {
   if (!p || typeof p !== 'object') return false
   const o = p as Record<string, unknown>

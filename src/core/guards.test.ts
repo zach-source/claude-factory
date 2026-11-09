@@ -12,11 +12,11 @@ test('the core exports the same rules as the mod', () => {
     bdWrite,
     gatedCommand,
   }))
-    expect(value).toBe(view[name as keyof typeof view])
+    expect(Object.is(value, view[name as keyof typeof view])).toBe(true)
   for (const file of ['cli.ts', 'once.ts']) {
     const text = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     for (const m of text.matchAll(/import\s*(?:type\s*)?\{([^}]*)\}\s*from '\.\.\/mod\/hooks\/view'/g))
-      expect(m[1]).not.toMatch(/\b(gatedCommand|bdWrite|INSTALL_VERB|META_WRITE|PATROL_VERB)\b/)
+      expect(m[1]).not.toMatch(/\b(gatedCommand|bdWrite|INSTALL_VERB|META_WRITE|PATROL_VERB|isValidPlan)\b/)
   }
 })
 
@@ -157,8 +157,8 @@ test('the patrol rules preserve their order and exact reasons', () => {
       'factory decide r1 ok',
       'The person did not confirm this gate decision. Ask them which outcome they want. A patrol never decides this: leave it for the person.',
     ],
-  ])
-    expect(check(command!, 'subagent')).toEqual({ decision: 'deny', reason })
+  ] as const)
+    expect(check(command, 'subagent')).toEqual({ decision: 'deny', reason })
   for (const command of ['factory status', 'bd show x', 'bd comments x', 'bd list --metadata-field a=b'])
     expect(check(command, 'subagent')).toEqual({ decision: 'allow' })
 })
