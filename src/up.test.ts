@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { needsInstall, upCheck, upDir } from './up'
+import { inStore, needsInstall, upCheck, upDir } from './up'
 
 const HERDR = 'factory up: not in a herdr pane; start herdr first so workers get panes'
 
@@ -37,6 +37,11 @@ test('needsInstall: missing or older node_modules', () => {
   expect(needsInstall(4, 5)).toBe(true)
   expect(needsInstall(5, 5)).toBe(false)
   expect(needsInstall(6, 5)).toBe(false)
+})
+
+test('inStore: only a Nix store path', () => {
+  expect(inStore('/nix/store/abc-claude-factory/share/claude-factory')).toBe(true)
+  expect(inStore('/home/u/claude-factory')).toBe(false)
 })
 
 const CLI = join(import.meta.dir, 'cli.ts')
