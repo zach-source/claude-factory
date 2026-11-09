@@ -71,19 +71,58 @@ function swapFixture() {
       mode: 0o755,
     },
   )
-  const keep = { c: process.env.FACTORY_AX_CODEX_TOKEN_SWAP, k: process.env.FACTORY_AX_TOKEN_SWAP }
+  const decoy = mkdtempSync(join(tmpdir(), 'swap-decoy-'))
+  const keep = {
+    c: process.env.FACTORY_AX_CODEX_TOKEN_SWAP,
+    k: process.env.FACTORY_AX_TOKEN_SWAP,
+    h: process.env.FACTORY_HOME,
+    m: process.env.FV9AI_MARK,
+  }
   const restore = () => {
     for (const [k, v] of [
       ['FACTORY_AX_CODEX_TOKEN_SWAP', keep.c],
       ['FACTORY_AX_TOKEN_SWAP', keep.k],
+      ['FACTORY_HOME', keep.h],
+      ['FV9AI_MARK', keep.m],
     ] as const) {
       if (v === undefined) delete process.env[k]
       else process.env[k] = v
     }
     rmSync(home, { recursive: true, force: true })
+    rmSync(decoy, { recursive: true, force: true })
   }
-  return { home, bin, log, restore }
+  return { home, bin, log, decoy, restore }
 }
+
+test('a swap command and the Codex refresh get FACTORY_HOME from the home argument, not the loop env', () => {
+  const f = swapFixture()
+  const send = (() => {}) as never
+  const script = (seen: string, out: string) =>
+    `#!/bin/sh\nprintf '%s %s\\n' "$FACTORY_HOME" "$FV9AI_MARK" > ${join(f.home, seen)}\necho '${out}'\n`
+  try {
+    writeFileSync(join(f.home, 'claude.sh'), script('seen-claude', 'slot 2 is live'), { mode: 0o755 })
+    writeFileSync(join(f.home, 'codex.sh'), script('seen-codex', 'label a@acme.test is live'), {
+      mode: 0o755,
+    })
+    process.env.FACTORY_HOME = f.decoy
+    process.env.FV9AI_MARK = 'zq'
+    process.env.FACTORY_AX_TOKEN_SWAP = join(f.home, 'claude.sh')
+    process.env.FACTORY_AX_CODEX_TOKEN_SWAP = join(f.home, 'codex.sh')
+    expect(f.home).not.toBe(process.cwd())
+    expect(f.home).not.toBe(f.decoy)
+    const want = `${f.home} zq\n`
+    const hit = { at: 1_000, resetsAt: 0 }
+    expect(runTokenSwap(hit, 5_000, 'ax', send, 'implement', 'claude', f.home)).toBe(305_000)
+    expect(readFileSync(join(f.home, 'seen-claude'), 'utf8')).toBe(want)
+    expect(runTokenSwap(hit, 5_000, 'ax', send, 'implement', 'codex', f.home)).toBe(305_000)
+    expect(readFileSync(join(f.home, 'seen-codex'), 'utf8')).toBe(want)
+    rmSync(join(f.home, 'seen-codex'))
+    refreshCodexToken(5_000 + 12 * 3_600_000, 'ax', f.home)
+    expect(readFileSync(join(f.home, 'seen-codex'), 'utf8')).toBe(want)
+  } finally {
+    f.restore()
+  }
+})
 
 test('a Codex token swap uses its own command and state file, mails the label, and leaves Claude alone', () => {
   const f = swapFixture()
