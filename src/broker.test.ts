@@ -789,6 +789,13 @@ test('a credentialUri or effects outside rules[i].https.effects.replaceHeaders i
     'empty hostnames': rule({ hostnames: [], effects }),
     'string hostnames': rule({ hostnames: 'api.anthropic.com', effects }),
     'number hostnames': rule({ hostnames: [5], effects }),
+    'number hostnames, no entry': rule({ hostnames: [5], effects: { replaceHeaders: [] } }),
+    'credentialUri array': rule({
+      hostnames,
+      effects: { replaceHeaders: [{ header: 'Authorization', credentialUri: [U('ANTHROPIC')] }] },
+    }),
+    'empty effects beside https': { rules: [{ https: { hostnames }, effects: {} }] },
+    'empty effects in http': { rules: [{ http: { hostnames, effects: {} } }] },
     'top level credentialUri': { ...rule({ hostnames, effects }), credentialUri: U('ANTHROPIC') },
   }
   for (const [name, body] of Object.entries(rows)) {
@@ -830,6 +837,7 @@ test('FACTORY_BROKER_KEY_HOSTS is parsed and a bad value throws', () => {
     '{"K":[]}',
     '{"K":"a.example.com"}',
     '{"K":[5]}',
+    '{"K":[["a.example.com"]]}',
     '{"K":["A.example.com"]}',
     '{"K":["*.example.com"]}',
     '{"K":["a.example.com."]}',
@@ -857,6 +865,10 @@ test('a refused policy logs one line with no secret and no newline', async () =>
     const l2 = String(logged[0]![0])
     expect(l2).not.toContain('\n')
     expect(l2.length).toBeLessThanOrEqual(400)
+    logged.length = 0
+    expect((await put(keyed(['x'.repeat(1000)], 'ANTHROPIC'))).status).toBe(400)
+    expect(logged.length).toBe(1)
+    expect(String(logged[0]![0]).length).toBeLessThanOrEqual(400)
     logged.length = 0
     expect((await put(keyed(['api.anthropic.com'], 'ANTHROPIC'))).status).toBe(200)
     expect(logged).toEqual([])
