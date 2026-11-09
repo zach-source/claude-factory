@@ -1445,7 +1445,8 @@ function git(cwd: string, ...args: string[]) {
 /** every git call that can reach a remote (fetch, ls-remote, push) gets this: a credential prompt
  * never blocks (it fails instead), and a timeout caps how long a hung connection can hold
  * gc-worktrees.lock (claude-factory-l38.12). It never skips hooks. */
-const GIT_NETWORK_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+/** at call time: in the AX manager host, worker.trustCA sets GIT_SSL_CAINFO after this module loads */
+export const gitNetworkEnv = () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0' })
 const GIT_NETWORK_TIMEOUT_MS = 30_000
 
 /**
@@ -1966,7 +1967,7 @@ function reviveWorktree(run: Run) {
   // only a genuine network failure gets its own message, never the blame-gc message below.
   const reachable =
     Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], {
-      env: GIT_NETWORK_ENV,
+      env: gitNetworkEnv(),
       timeout: GIT_NETWORK_TIMEOUT_MS,
     }).exitCode === 0
   if (!reachable)
@@ -1975,7 +1976,7 @@ function reviveWorktree(run: Run) {
         `${run.branch} still exists there. Check network access, then retry.`,
     )
   Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], {
-    env: GIT_NETWORK_ENV,
+    env: gitNetworkEnv(),
     timeout: GIT_NETWORK_TIMEOUT_MS,
   })
   if (verify(`refs/remotes/origin/${run.branch}`))
@@ -2978,7 +2979,11 @@ export function runTokenSwap(
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
     return waiting ? Math.max(state!.until, state!.ran! + gap) : state!.until
   }
-  const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
+  const p = Bun.spawnSync(cmd.split(' '), {
+    cwd: ROOT,
+    timeout: 30_000,
+    env: { ...process.env, FACTORY_HOME: home },
+  })
   const ok = p.exitCode === 0
   if (ok) {
     const live = (codex ? /label (\S+) is live/ : /slot (\S+) is live/).exec(p.stdout.toString())?.[1] ?? '?'
@@ -3008,7 +3013,11 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const file = join(home, `token-swap-${runnerName}-codex.json`)
   const state = trustedSwapState(file, now)
   if (state && now - state.at < CODEX_REFRESH_MS) return
-  const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
+  const code = Bun.spawnSync(cmd.split(' '), {
+    cwd: ROOT,
+    timeout: 30_000,
+    env: { ...process.env, FACTORY_HOME: home },
+  }).exitCode
   const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
   writeJson(file, {
     at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
@@ -5060,7 +5069,7 @@ function wikiLog(line: string) {
 /** git in the wiki: no identity, repo or index from the caller's environment, and literal pathspecs */
 function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<string, string> = {}) {
   const env: Record<string, string | undefined> = {
-    ...(network ? GIT_NETWORK_ENV : process.env),
+    ...(network ? gitNetworkEnv() : process.env),
     GIT_LITERAL_PATHSPECS: '1',
     GIT_CEILING_DIRECTORIES: dirname(dir),
   }
@@ -5319,7 +5328,7 @@ function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh 
   )
     return c.value
   const p = Bun.spawnSync(['gh', 'repo', 'view', remote, '--json', 'visibility', '--jq', '.visibility'], {
-    env: GIT_NETWORK_ENV,
+    env: gitNetworkEnv(),
     stderr: 'pipe',
     timeout: 30_000,
   })
@@ -5455,7 +5464,7 @@ function wikiGroom(dryRun: boolean) {
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const PR_RE = new RegExp(`^https://${esc(r.host)}/${esc(r.owner)}/${esc(r.repo)}/pull/[1-9][0-9]*$`, 'i')
   const gh = (args: string[]) =>
-    Bun.spawnSync(['gh', ...args], { env: GIT_NETWORK_ENV, stderr: 'pipe', timeout: 30_000 })
+    Bun.spawnSync(['gh', ...args], { env: gitNetworkEnv(), stderr: 'pipe', timeout: 30_000 })
 
   const stored = readWikiState().groomPr as { url?: unknown } | undefined | null
   if (stored !== undefined) {
@@ -6701,7 +6710,7 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
 function branchFacts(repo: string, dryRun: boolean): gc.BranchFact[] | null {
   if (!dryRun) {
     const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', '--no-tags', 'origin'], {
-      env: GIT_NETWORK_ENV,
+      env: gitNetworkEnv(),
       timeout: 120_000,
     })
     if (fetch.exitCode !== 0) return null
@@ -6721,7 +6730,7 @@ function branchFacts(repo: string, dryRun: boolean): gc.BranchFact[] | null {
   ])
   const remote = Bun.spawnSync(
     ['git', '-C', repo, 'ls-remote', '--heads', 'origin', 'refs/heads/factory/*'],
-    { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+    { env: gitNetworkEnv(), timeout: GIT_NETWORK_TIMEOUT_MS },
   )
   if (local.exitCode !== 0 || remote.exitCode !== 0) return null
   const byName = new Map<string, { local: string | null; remote: string | null }>()
@@ -6915,7 +6924,7 @@ export function deleteBranchCas(repo: string, name: string, local: string | null
         'origin',
         `:refs/heads/${name}`,
       ],
-      { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+      { env: gitNetworkEnv(), timeout: GIT_NETWORK_TIMEOUT_MS },
     )
     remoteOk = p.exitCode === 0
     if (!remoteOk) error = (error ? `${error}; ` : '') + p.stderr.toString().trim()
@@ -7334,7 +7343,7 @@ function defaultBranch(repo: string): string {
 export function conflictsOf(repo: string, base: string, branch: string): string[] {
   const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
   const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '-q', 'origin', ref(base), ref(branch)], {
-    env: GIT_NETWORK_ENV,
+    env: gitNetworkEnv(),
     timeout: GIT_NETWORK_TIMEOUT_MS,
   })
   if (fetch.exitCode !== 0) return []
