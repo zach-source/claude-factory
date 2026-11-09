@@ -22,5 +22,95 @@
     "frontEnd": "web",
     "bead": "claude-factory-hpmc.11",
     "reason": "no generic view yet"
+  },
+  {
+    "harness": "pi",
+    "station": "all",
+    "bead": "claude-factory-gf16e.5",
+    "reason": "no deny hook on herdr or ax: piWorker and the VM turn add rules and skills only. agents.order never moves a station to pi"
+  },
+  {
+    "harness": "pi",
+    "station": "all",
+    "bead": "claude-factory-gf16e.1",
+    "reason": "refuses a rig's --mcp servers (no MCP client): agents.order moves an --mcp rig only to claude or codex"
+  },
+  {
+    "harness": "grok",
+    "station": "all",
+    "bead": "claude-factory-gf16e.1",
+    "reason": "refuses a rig's --mcp servers (not behind the deny hook): agents.order moves an --mcp rig only to claude or codex"
+  },
+  {
+    "harness": "codex",
+    "station": "all",
+    "bead": "claude-factory-gf16e.8",
+    "reason": "no ctxguard and no FACTORY_DEADLINE Bash timeout clamp"
+  },
+  {
+    "harness": "grok",
+    "station": "all",
+    "bead": "claude-factory-gf16e.8",
+    "reason": "no ctxguard and no FACTORY_DEADLINE Bash timeout clamp"
+  },
+  {
+    "harness": "pi",
+    "station": "all",
+    "bead": "claude-factory-gf16e.8",
+    "reason": "no ctxguard and no FACTORY_DEADLINE Bash timeout clamp"
+  },
+  {
+    "harness": "pi",
+    "station": "all",
+    "bead": "claude-factory-gf16e.9",
+    "reason": "worker rules name Claude-only tools (Agent, Write, Grep); pi has no worker-pi.md mapping"
+  },
+  {
+    "harness": "codex",
+    "station": "all",
+    "bead": "claude-factory-gf16e.9",
+    "reason": "worker-codex.md does not say the Agent tool is absent"
+  },
+  {
+    "harness": "codex",
+    "station": "plan",
+    "bead": "claude-factory-gf16e.10",
+    "reason": "the egm goldfish review is dropped with no warning"
+  },
+  {
+    "harness": "pi",
+    "station": "plan",
+    "bead": "claude-factory-gf16e.10",
+    "reason": "the egm goldfish review is dropped with no warning"
+  },
+  {
+    "harness": "grok",
+    "station": "all",
+    "bead": "claude-factory-gf16e.10",
+    "reason": "gets no plugin skills (asd-ste100, egm, code-review)"
+  },
+  {
+    "harness": "codex",
+    "station": "all",
+    "bead": "claude-factory-gf16e.11",
+    "reason": "no usage-limit reading on a herdr pane, so agents.order cannot move it at a limit there"
+  },
+  {
+    "harness": "grok",
+    "station": "all",
+    "bead": "claude-factory-gf16e.11",
+    "reason": "no usage-limit reading on a herdr pane, so agents.order cannot move it at a limit there"
+  },
+  {
+    "harness": "pi",
+    "station": "all",
+    "bead": "claude-factory-gf16e.11",
+    "reason": "no usage-limit reading on any runner"
+  },
+  {
+    "harness": "grok",
+    "station": "all",
+    "bead": "claude-factory-gf16e.12",
+    "reason": "the deny hook fails open when it cannot start"
   }
 ]
