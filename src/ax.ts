@@ -1010,6 +1010,11 @@ const MANAGER_AX_SERVER = 'FACTORY_AX_MANAGER_AX_SERVER'
 const MANAGER_ROUTER = 'FACTORY_AX_MANAGER_ROUTER'
 const MANAGER_BROKER = 'FACTORY_AX_MANAGER_BROKER'
 
+/**
+ * keys whose empty value means something, so it goes over too: no capabilities (workers stay root), and AX OTel
+ * off (unset, launchTask falls back to FACTORY_OTLP_ENDPOINT, the laptop's LAN collector)
+ */
+const EMPTY_MEANS = new Set(['FACTORY_AX_CAPABILITIES', 'FACTORY_AX_OTLP_ENDPOINT'])
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
 export function managerEnv(
   env: Record<string, string | undefined> = process.env,
@@ -1022,12 +1027,9 @@ export function managerEnv(
     FACTORY_HOME: `${WS}/home`,
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
-    // an empty FACTORY_AX_CAPABILITIES means "none" (workers stay root), so it goes over too
+    // an EMPTY_MEANS key goes over also when it is empty
     ...Object.fromEntries(
-      MANAGER_PASS.filter(k => env[k] || (k === 'FACTORY_AX_CAPABILITIES' && env[k] === '')).map(k => [
-        k,
-        env[k]!,
-      ]),
+      MANAGER_PASS.filter(k => env[k] || (EMPTY_MEANS.has(k) && env[k] === '')).map(k => [k, env[k]!]),
     ),
     // the task has no laptop paths: it gets the content. Worker env, the same that each worker task gets
     ...(env.FACTORY_AX_ENV && { FACTORY_AX_ENV: JSON.stringify(readAxEnv(env.FACTORY_AX_ENV, read)) }),

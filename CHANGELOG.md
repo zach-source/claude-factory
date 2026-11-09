@@ -6,6 +6,10 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: `factory manager --ax` passes an empty `FACTORY_AX_OTLP_ENDPOINT` to the task (claude-factory-d289.13). Empty turns AX OTel off. Unset, the manager fell back to `FACTORY_OTLP_ENDPOINT`, the laptop's LAN collector at an IP. ate-api refuses an IP as a policy hostname, so no worker task in the AX manager got an egress policy.
+
+- Fixed: the policy broker's `GET /controller` ran kubectl with `--request-timeout=5s`. In a pod, that flag makes kubectl skip the in-cluster config and call `localhost:8080`, so the route always answered 502 (claude-factory-d289.13). The broker now runs it with no client flag, and `run()` stops the call after 30 s.
+
 - Fixed: in the AX manager, a resumed run got no worker task, and nothing showed why (claude-factory-d289.13). The cause was an old policy broker image with no `GET /controller` route. Each launch failed `AX executor unavailable`, and `haltRun` tried again on each tick. Now the error names the broker answer (`broker GET /controller answered 404: ...`). The tick keeps a run's error in `runs/<id>/tick-error.txt`, and `factory status` shows it. `launches.jsonl` gets a line only after a launch succeeds. An empty `FACTORY_AX_ATESPACE` now means `factory`, as an unset one does.
 
 - Fixed: cutover preflight (claude-factory-d289.11, claude-factory-d289.12). (1) `createPolicy` and the policy broker get the stored egress policy first. If it exists, they update it in place with its `metadata` `uid` and `version`. Before, `factory manager --ax` failed `AlreadyExists` on an old `f-manager` policy, and the broker deleted and created. (2) `factory manager --ax` refuses an existing Workspace `f-manager` and names the delete command. `--reuse-workspace` keeps it, for a suspend and resume. (3) `factory manager --ax` puts a new `FACTORY_AX_LAUNCH_ID` in the task env. `factory migrate-to-ax` and the backup restore write `launch=<id>` into `.migrated`. The host starts the manager only on a marker with its own id, and a hand-made home does not count while an id is set.

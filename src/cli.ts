@@ -319,6 +319,7 @@ import * as leaseOp from './core/ops/lease'
 import * as metricsOp from './core/ops/metrics'
 import * as planOp from './core/ops/plan'
 import * as prsOp from './core/ops/prs'
+import * as rigsOp from './core/ops/rigs'
 import * as runsOp from './core/ops/runs'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
@@ -1564,7 +1565,7 @@ const skillsShape = (v: unknown, where: string) =>
 /**
  * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
  * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
- * A rig name outside the worker image refuses here, because a person edits rigs.json by hand.
+ * A rig name outside the worker image refuses here, because rigs.json can hold a name that no command checked (an older file, or an edit outside the CLI).
  * `loadFactory` checks the other two layers (claude-factory-qda).
  */
 export function workerSkills(
@@ -8175,7 +8176,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
  * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, its
  * due sweeps start one pass each under `factory sweep` (claude-factory-8pc.16), and `maxRuns` caps
  * its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's rigs.json is written by
- * `factory rig add` and can be edited by hand.
+ * `factory rig add`, `rig rm`, `rig set`, `rig env`, `rig egress`, `rig beads-remote` and `rig undo`.
  */
 export type Rig = {
   name: string
@@ -8184,7 +8185,7 @@ export type Rig = {
   remote?: string
   factory: string
   maxRuns?: number
-  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; edit rigs.json by hand */
+  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; no command sets it yet (claude-factory-3fxna) */
   clusterRuns?: number
   /** when the rig has room and no labeled bead to start, queue the best unlabeled ready leaf beads (src/autoqueue.ts); off when absent */
   autoQueue?: AutoQueue
@@ -8210,11 +8211,11 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
-  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; edit rigs.json by hand */
+  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; no command sets it yet (claude-factory-3fxna) */
   pushRules?: string[]
-  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
+  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); no command sets it yet (claude-factory-3fxna) */
   skills?: string[]
-  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). Edit rigs.json by hand. */
+  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). No command sets it yet (claude-factory-3fxna). */
   otelContent?: boolean
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
@@ -8227,7 +8228,7 @@ export type Rig = {
   /**
    * the AX sandbox class its VM workers (the ax runner) run in (ax-3hy). `microvm` for a repo whose
    * workers build with Nix, which fails under gVisor; AX's gvisor default when absent. The cluster
-   * needs a microvm WorkerPool. Edit rigs.json by hand
+   * needs a microvm WorkerPool. No command sets it yet (claude-factory-3fxna).
    */
   sandboxClass?: ax.SandboxClass
   /**
@@ -10849,6 +10850,47 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   return { busy, held }
 }
 
+/** the lines of `factory rig list`: each rig, its busy count and its settings, then the town's count */
+async function rigListLines(print: Print) {
+  const { busy, held } = await busyRigs()
+  if (!rigs().length) print('no rigs: factory rig add <name> <repo> [factory]')
+  for (const r of rigs()) {
+    // a stuck run holds this rig's own slot, so it counts here too (not the town's)
+    const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
+    let sweepsLine = r.sweeps
+    if (sweepsLine === undefined) {
+      try {
+        sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
+      } catch {
+        sweepsLine = []
+      }
+    }
+    print(
+      `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
+    )
+    if (r.goal) print(`  goal: ${r.goal}`)
+    if (r.slo) print(`  slo: ${r.slo}`)
+    if (r.drift) print(`  drift: ${r.drift}`)
+    if (r.agent) print(`  agent: ${r.agent}`)
+    if (personOnlyContexts(r)?.length) print(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
+    if (protectedBranches(r)?.length) print(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
+    if (r.mergeAuthority === true)
+      print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
+    if (r.mcp) print(`  mcp: ${r.mcp}`)
+    for (const [k, v] of Object.entries(r.params ?? {})) print(`  param ${k}: ${v}`)
+    if (r.linear) {
+      const extra = [
+        r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
+        r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
+      ].filter(Boolean)
+      print(
+        `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
+      )
+    }
+  }
+  print(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+}
+
 async function assertRoom(repo: string) {
   if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
   const { busy, held } = await busyRigs()
@@ -12149,7 +12191,7 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
-  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
+  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins; devenv.builder, devenv.token and devenv.push go to HOME/devenv.json
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   token [list] | use <n> | best        Claude token slots: the live slot and each slot's 7d and 5h use; make slot n live, or the slot with the lowest 7d use
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
@@ -12365,6 +12407,7 @@ export const corePort: Port = {
   records,
   refreshMerges,
   managerUsage,
+  rigList: rigListLines,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13823,45 +13866,7 @@ if (import.meta.main && !outboxCmd)
             }, 'cleared beadsRemote')
           }
         } else if (sub === 'list') {
-          const { busy, held } = await busyRigs()
-          if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
-          for (const r of rigs()) {
-            // a stuck run holds this rig's own slot, so it counts here too (not the town's)
-            const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
-            let sweepsLine = r.sweeps
-            if (sweepsLine === undefined) {
-              try {
-                sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
-              } catch {
-                sweepsLine = []
-              }
-            }
-            console.log(
-              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
-            )
-            if (r.goal) console.log(`  goal: ${r.goal}`)
-            if (r.slo) console.log(`  slo: ${r.slo}`)
-            if (r.drift) console.log(`  drift: ${r.drift}`)
-            if (r.agent) console.log(`  agent: ${r.agent}`)
-            if (personOnlyContexts(r)?.length)
-              console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
-            if (protectedBranches(r)?.length)
-              console.log(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
-            if (r.mergeAuthority === true)
-              console.log(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
-            if (r.mcp) console.log(`  mcp: ${r.mcp}`)
-            for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
-            if (r.linear) {
-              const extra = [
-                r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
-                r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
-              ].filter(Boolean)
-              console.log(
-                `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
-              )
-            }
-          }
-          console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+          emit(await rigsOp.list(cliCtx(), {}))
         } else if (sub === 'history') {
           const snaps = snapshots(rigsFile())
           if (!snaps.length) console.log('no rig history')

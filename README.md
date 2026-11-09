@@ -22,8 +22,11 @@ cd ~/my-factory
 ~/repos/workspaces/claude-factory/bin/factory manager   # add --resume <session> to bring one back
 ```
 
-Or in one step from a herdr pane: `bin/factory-up [factory-dir] [--resume <session>]` installs deps,
-inits the factory (default `$FACTORY_HOME`, else `~/factory`) if new, and starts its manager.
+Or in one step from a herdr pane: `bin/factory up [factory-dir] [manager args...]`. It stops if `bun` or
+`claude` is not on `PATH`. It runs `bun install` when `node_modules` is missing or older than `bun.lock`.
+It makes the factory if the dir has no `rigs.json`. It warns outside herdr, then starts the manager.
+The dir is the first argument when it does not start with `-`, else `$FACTORY_HOME`, else `~/factory`.
+The other arguments go to the manager. Example: `bin/factory up ~/my-factory --resume <session>`.
 
 In the manager session:
 
@@ -264,6 +267,12 @@ factory rig add gitops ~/repos/gitops --sweeps drift --drift "flux get kustomiza
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig set app --max 5 --goal ship v3                  # change only the named fields; a name or a repo path
 factory rig show app                                        # every field of the rig, secret values hidden
+factory rig env set svc FACTORY_SERVICES=0                  # svc runs on ax: set one env key of its VM workers
+factory rig env unset svc FACTORY_SERVICES
+factory rig egress add svc cache.example=NIX_CACHE --port 8443   # add one egress rule
+factory rig egress rm svc cache.example                     # remove the rule with these hosts
+factory rig beads-remote set svc --name ds --url https://dolt.example/svc --user svc
+factory rig beads-remote clear svc
 factory rig rm docs                                         # nothing new starts; its runs carry on
 factory rig history                                         # the newest 20 snapshots of rigs.json, newest first
 factory rig undo [n]                                        # restore snapshot n (default 1); `rig undo` again reverses it
@@ -276,17 +285,43 @@ fills an environment variable that is not set, so the environment wins.
 factory settings                          # each key, its value and its source: default, stored or environment
 factory settings set ax.vault acme-vault  # store one value; a secret-class value is refused
 factory settings unset ax.vault           # remove a stored value
+factory settings set devenv.builder amd64-builder  # devenv.builder, devenv.token, devenv.push go to devenv.json
 ```
 
 A row reads `environment (overrides stored)` when an environment value differs from the stored one. A worker cannot run `set` or `unset`.
 
+`factory image build` builds and pushes an AX image and stores its digest. If the env variable of that setting is set, the command warns that the variable overrides the stored value.
+
+```sh
+factory settings set image.registry <registry>/<org>   # where the images go
+factory settings set image.builder <builder>           # an amd64 buildx builder
+factory image build                    # build and push the AX worker image; prints image@digest, stores ax.image
+factory image build --target manager   # the AX manager image; stores ax.manager-image
+```
+
+### Token slots
+
+`factory token` shows and swaps the Claude token slots. First set the token store with `factory settings set`:
+
+- `token.read`: a shell command that prints the value of the field named `"$1"`.
+- `token.write`: a shell command that stores its stdin as the field named `"$1"`.
+- `token.live-field`: the field that agent-vault reads for the live token.
+- `token.slot-field`: the slot field name, with `%s` one time for the slot number (`account_%s_token`).
+- `token.active-field`: the field that holds the live slot number.
+
+```sh
+factory token            # the live slot, and the 7d and 5h use of each slot
+factory token use 2      # make slot 2 live
+factory token best       # make the allowed slot with the lowest 7d use live
+```
+
 A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web
 fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
-room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
-redefine a rig with `rig add`; there is one rig per repo.
+room, so the manager fills each rig up to its own cap. Change one field with `rig set`, `rig env`, `rig egress` or `rig beads-remote`. `rig add` again
+redefines the whole rig. There is one rig per repo.
 
 A rig starts only beads with the `factory` label. To keep a rig busy from its unlabeled ready
-beads, set `autoQueue` in `rigs.json`, for example `"autoQueue": { "minPriority": 2, "perHour": 3 }`.
+beads, give the rig the field `autoQueue` in `rigs.json`, for example `"autoQueue": { "minPriority": 2, "perHour": 3 }` (no command sets it yet: claude-factory-3fxna).
 When the rig has room and no labeled bead to start, dispatch takes up to `perHour` beads in a
 rolling hour. It takes only leaf beads (no parent, no open child, not an epic) with no assignee, a
 priority of `minPriority` or higher urgency (0 is the highest), and no `rejected`, `owner`,
