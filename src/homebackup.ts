@@ -35,6 +35,8 @@ export const EXCLUDES = [
   '/home/manager-host.log',
   '/home/.restoring',
   '/home/ui-cache/',
+  // the beads stores: GBs of Dolt data with an empty nested .git; repos sync runs bd bootstrap from Dolt again
+  '/home/beads/',
   'worktrees/',
 ]
 
