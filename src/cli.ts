@@ -8382,7 +8382,24 @@ async function migrateToAx(args: string[]) {
     fail(`the manager's home in ${task} already holds a factory: use --force to write over it`)
   const dir = mkdtempSync(join(tmpdir(), 'factory-migrate-'))
   const out = join(dir, 'migrate.tgz')
-  console.log(`packed ${migrate.mb(migrate.pack(HOME, p, out))}; sending to ${task}`)
+  const size = migrate.pack(HOME, p, out)
+  const sha = migrate.sha256File(out)
+  console.log(`packed ${migrate.mb(size)} (sha256 ${sha}); sending to ${task}`)
+  if (ax.hasStdio()) {
+    // one stream; the task keeps the file only when its sha256 is the same
+    const t0 = Date.now()
+    const r = await ax.sendStdio(task, 'migrate.tgz', out, sha)
+    if (!r.ok) fail(`the archive did not arrive over ax stdio: ${r.err}`)
+    console.log(`sent over ax stdio in ${Math.round((Date.now() - t0) / 1000)} s; sha256 matches`)
+  } else await sendParts(task, out, sha)
+  ax.unpackMigration('migrate.tgz', HOME)
+  rmSafe(dir, { recursive: true, force: true })
+  console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
+}
+
+/** the old way, for an ax CLI with no `ax stdio`: base64 parts of PUT_PART over ax ssh, then a sha256 check */
+async function sendParts(task: string, out: string, sha: string) {
+  console.log('this ax CLI has no `ax stdio`: sending put parts over ax ssh (slow)')
   const b64 = readFileSync(out).toString('base64')
   const parts = Math.ceil(b64.length / ax.PUT_PART)
   for (let i = 0; i < parts; i++) {
@@ -8395,9 +8412,8 @@ async function migrateToAx(args: string[]) {
     if (!r.ok) fail(`part ${i + 1} of ${parts} did not arrive: ${r.err}`)
     if ((i + 1) % 50 === 0) console.log(`sent ${i + 1} of ${parts}`)
   }
-  ax.unpackMigration('migrate.tgz', HOME)
-  rmSafe(dir, { recursive: true, force: true })
-  console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
+  const got = ax.remoteSha(task, 'migrate.tgz')
+  if (got !== sha) fail(`the archive in ${task} has sha256 ${got}, not ${sha}: run the migrate again`)
 }
 
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */

@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Changed: `factory migrate-to-ax` sends the archive in one `ax stdio` stream when the ax CLI has `ax stdio`, and the task keeps it only when its sha256 is the laptop's. Without `ax stdio` it sends the 96 KB `put` parts as before, then checks the sha256 in the task. The pack leaves out all but the newest `*.memory.tgz` of each run, and the dry run gives their count and size (claude-factory-d289.7).
+
 - Fixed: the AX manager task gets `FACTORY_AX_CODEX`, `FACTORY_AX_CURSOR`, `FACTORY_AX_GROK` and `GRPC_ENFORCE_ALPN_ENABLED` from the laptop, and `FACTORY_AX_MANAGER` (its own name, so its AX sweep skips it). The Cursor pool meter works in the task with `CURSOR_API_KEY=placeholder` and a manager egress rule that injects the vault key `CURSOR_API_KEY` on `api2.cursor.sh/auth/` (claude-factory-d289.5).
 
 - New: attach to the AX manager with `herdr --remote` over ssh (claude-factory-d289.4). `factory manager host` puts the worker in the `tty` group and writes `sshd_config`, a host key (first start only) and `authorized_keys` in `/workspace/w/ssh`. The keys come from `FACTORY_SSH_AUTHORIZED_KEYS`, which `factory manager --ax` fills from the public key file `FACTORY_AX_MANAGER_SSH_PUBKEY`. It refuses any line that is not a public key. `factory attach --ssh-config` prints the ssh Host block: a ProxyCommand that runs `sshd -i` as the worker through `ax stdio` (an ax CLI with `ax stdio` is necessary). The manager image installs herdr `0.9.3` from its release, pinned by sha256, in place of nixpkgs herdr `0.9.5`, so it is the same version as the laptop.
