@@ -3,11 +3,14 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1944,6 +1947,154 @@ echo '{"type":"thread.started","thread_id":"th-1"}'
   }
 })
 
+const linuxOnly = process.platform !== 'linux'
+const gone = (pid: number) => {
+  try {
+    const st = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return st.slice(st.lastIndexOf(')') + 2)[0] === 'Z'
+  } catch {
+    return true
+  }
+}
+const pidOf = (f: string) => Number(readFileSync(f, 'utf8'))
+const killPids = (d: string, names: string[]) => {
+  for (const n of names)
+    try {
+      process.kill(pidOf(join(d, n)), 'SIGKILL')
+    } catch {}
+}
+
+/** a fake codex (or claude) that answers `features list` and otherwise runs `body` after reading stdin */
+function leftoverFake(name: string, body: string, line: string) {
+  const bin = join(dir, name)
+  writeFileSync(
+    bin,
+    `#!/bin/sh
+case "$*" in *'features list') printf 'hooks stable true\\nunified_exec stable false\\nshell_snapshot stable false\\nmulti_agent stable false\\ncode_mode stable false\\n'; exit;; esac
+cat > /dev/null
+${body}
+echo '${line}'
+`,
+  )
+  chmodSync(bin, 0o755)
+  return bin
+}
+
+function leftoverEnv(tag: string, harness: string, bin: string) {
+  const own = join(dir, `own-${tag}`)
+  const repo = join(dir, `repo-${tag}`)
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  Object.assign(process.env, {
+    FACTORY_HARNESS: harness,
+    [harness === 'codex' ? 'FACTORY_CODEX' : 'FACTORY_CLAUDE']: bin,
+    FACTORY_BRIEF: 'brief',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    CODEX_HOME: join(own, 'codex'),
+    FACTORY_CODEX_HOME_FILES: '{}',
+  })
+  delete process.env.FACTORY_REPO
+  delete process.env.FACTORY_CA
+  return own
+}
+
+const three = (d: string) => `sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${d}/pid.1
+nohup sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${d}/pid.2
+setsid sh -c 'echo $$ > ${d}/pid.3; exec sleep 300' </dev/null >/dev/null 2>&1 &
+sleep 0.3`
+
+test.skipIf(linuxOnly)(
+  'serve kills what a codex turn left, in any session, and no other harness (claude-factory-qn8a.35)',
+  async () => {
+    const d = join(dir, 'reap-a')
+    mkdirSync(d)
+    const outside = Bun.spawn(['sleep', '300'])
+    const saved = { ...process.env }
+    try {
+      const own = leftoverEnv(
+        'reap-a',
+        'codex',
+        leftoverFake('codex-reap', three(d), '{"type":"thread.started","thread_id":"th-1"}'),
+      )
+      await worker.serve('o3', { once: true })
+      for (const n of [1, 2, 3]) expect(gone(pidOf(join(d, `pid.${n}`)))).toBe(true)
+      expect(worker.poll(0).session).toBe('th-1')
+      expect(gone(outside.pid)).toBe(false)
+      expect(existsSync(own)).toBe(true)
+      // a claude turn has no reaper: its children stay alive
+      killPids(d, ['pid.1'])
+      const d2 = join(dir, 'reap-b')
+      mkdirSync(d2)
+      process.env = { ...saved }
+      leftoverEnv(
+        'reap-b',
+        'claude',
+        leftoverFake('claude-reap', three(d2), '{"type":"result","is_error":false,"result":"done"}'),
+      )
+      try {
+        await worker.serve('m1', { once: true })
+        for (const n of [1, 2, 3]) expect(gone(pidOf(join(d2, `pid.${n}`)))).toBe(false)
+      } finally {
+        killPids(d2, ['pid.1', 'pid.2', 'pid.3'])
+      }
+    } finally {
+      outside.kill('SIGKILL')
+      killPids(d, ['pid.1', 'pid.2', 'pid.3'])
+      process.env = saved
+    }
+  },
+)
+
+test.skipIf(linuxOnly)(
+  'a leftover that keeps the stdout pipe open does not stop a codex turn (claude-factory-qn8a.35)',
+  async () => {
+    const d = join(dir, 'reap-c')
+    mkdirSync(d)
+    const saved = { ...process.env }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      leftoverEnv(
+        'reap-c',
+        'codex',
+        leftoverFake(
+          'codex-pipe',
+          `sleep 300 & echo $! > ${d}/pid.4`,
+          '{"type":"thread.started","thread_id":"th-1"}',
+        ),
+      )
+      const stop = new Promise<never>(
+        (_, rej) => (timer = setTimeout(() => rej(new Error('serve hung')), 10_000)),
+      )
+      await Promise.race([worker.serve('o3', { once: true }), stop])
+      expect(worker.poll(0).session).toBe('th-1')
+    } finally {
+      clearTimeout(timer)
+      killPids(d, ['pid.4'])
+      process.env = saved
+    }
+  },
+)
+
+test.skipIf(linuxOnly)(
+  'a codex turn that kills its reaper stops serve (claude-factory-qn8a.35)',
+  async () => {
+    const saved = { ...process.env }
+    try {
+      const own = leftoverEnv(
+        'reap-d',
+        'codex',
+        leftoverFake('codex-kill', 'kill -9 $PPID', '{"type":"thread.started","thread_id":"th-1"}'),
+      )
+      await expect(worker.serve('o3', { once: true })).rejects.toThrow("the turn's reaper failed")
+      expect(readFileSync(join(own, 'serve.log'), 'utf8')).toContain('serve died')
+    } finally {
+      process.env = saved
+    }
+  },
+)
+
 test('a pi worker names its own session and keeps it across turns', async () => {
   const own = join(dir, 'own4')
   const repo = join(dir, 'repo4')
@@ -2890,6 +3041,72 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     process.env.FACTORY_HARNESS = 'claude'
     expect(() => worker.codexHome(join(tmp, 'none'))).not.toThrow()
     expect(existsSync(join(tmp, 'none'))).toBe(false)
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
+    Object.assign(process.env, keep)
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('codexHome writes each guard file fresh and fails closed on a link or a directory (claude-factory-qn8a.35)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-codex-link-'))
+  const repo = join(tmp, 'repo')
+  const argv = join(tmp, 'argv')
+  const fake = join(tmp, 'fake-codex')
+  const on =
+    'hooks stable true\nunified_exec stable false\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
+  writeFileSync(
+    fake,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > '${argv}'\nprintf '${on.replaceAll('\n', '\\n')}'\n`,
+    {
+      mode: 0o755,
+    },
+  )
+  mkdirSync(repo)
+  const keep = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: fake,
+    FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', 'config.toml': 'x = 1\n' }),
+  })
+  try {
+    const home = join(tmp, 'home')
+    const outside = join(tmp, 'outside')
+    mkdirSync(home)
+    writeFileSync(outside, 'keep')
+    symlinkSync(outside, join(home, 'hooks.json'))
+    symlinkSync('/dev/null', join(home, 'config.toml'))
+    worker.codexHome(home, 30_000, [])
+    for (const [f, t] of [
+      ['hooks.json', '{"hooks":{}}'],
+      ['config.toml', 'x = 1\n'],
+    ] as const) {
+      expect(lstatSync(join(home, f)).isFile()).toBe(true)
+      expect(readFileSync(join(home, f), 'utf8')).toBe(t)
+    }
+    expect(readFileSync(outside, 'utf8')).toBe('keep')
+    writeFileSync(join(home, 'hooks.json'), 'other')
+    worker.codexHome(home, 30_000, [])
+    expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
+
+    const dirHome = join(tmp, 'dirhome')
+    mkdirSync(join(dirHome, 'hooks.json'), { recursive: true })
+    writeFileSync(join(dirHome, 'hooks.json', 'x'), 'x')
+    rmSync(argv, { force: true })
+    expect(() => worker.codexHome(dirHome, 30_000, [])).toThrow('cannot replace')
+    expect(existsSync(argv)).toBe(false)
+
+    const real = join(tmp, 'real')
+    const linkHome = join(tmp, 'linkhome')
+    mkdirSync(real)
+    chmodSync(real, 0o755)
+    symlinkSync(real, linkHome)
+    rmSync(argv, { force: true })
+    expect(() => worker.codexHome(linkHome, 30_000, [])).toThrow('is not a plain directory')
+    expect(existsSync(argv)).toBe(false)
+    expect(readdirSync(real)).toEqual([])
+    expect(statSync(real).mode & 0o777).toBe(0o755)
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
     Object.assign(process.env, keep)
