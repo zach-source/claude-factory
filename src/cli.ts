@@ -203,7 +203,17 @@ import * as managerhost from './managerhost'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
-import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import {
+  bdEnv,
+  httpsRemote,
+  inAx,
+  isLaptopPane,
+  mapRigs,
+  mapRunRepo,
+  mapRunWorktree,
+  stationRunnerName,
+  syncRepos,
+} from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
 import { personCerts } from './server-api'
@@ -300,6 +310,16 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
+import { refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
+import type { Ctx as OpCtx, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
+import * as backlogOp from './core/ops/backlog'
+import * as decisionsOp from './core/ops/decisions'
+import * as gatesOp from './core/ops/gates'
+import * as leaseOp from './core/ops/lease'
+import * as metricsOp from './core/ops/metrics'
+import * as planOp from './core/ops/plan'
+import * as prsOp from './core/ops/prs'
+import * as runsOp from './core/ops/runs'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
 import { maskAssignments } from './worker-hook'
@@ -1099,9 +1119,12 @@ function bdSkewHeld(run: Run, runner: string, now: number) {
  */
 function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const task = ax.taskOf(pane)
-  const { phase, failure } = ax.read(task)
+  const { phase, failure, queued } = ax.read(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
-  if (phase === 'Pending') return { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
+  if (phase === 'Pending')
+    return queued
+      ? { status: 'pending', agent: 'ax', pending: 'waiting for a free AX worker', queued }
+      : { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
   if (phase === 'Suspended') return { status: 'suspended', agent: 'ax' }
   // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
   // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
@@ -1576,8 +1599,11 @@ function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
   const run: Run = readJson(file)
-  // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
-  return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
+  // a run the laptop made names the laptop's repo and worktree paths. In the AX task they are the rig's clone
+  // and a worktree under the factory home (launchTask revives it)
+  return inAx()
+    ? { ...run, repo: mapRunRepo(rawRigs(), run.repo), worktree: mapRunWorktree(rawRigs(), run) }
+    : run
 }
 /** complete lines only: a writer may be mid-append */
 const inboxLines = (id: string) => {
@@ -1881,9 +1907,17 @@ export const resumeNote = (run: Run, node: string, c: Ctx) =>
   ` Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${reportCmd(run, c)}`
 
-/** where a station's workers run: the station's own runner, else the rig's */
+/** where a station's workers run: the station's own runner, else the rig's. In the AX manager, never a local one */
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
-  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+  runners[
+    stationRunnerName(
+      inAx(),
+      def.nodes[node]?.runner,
+      rigOf(run.repo)?.runner,
+      DEFAULT_RUNNER,
+      name => runners[name]?.local ?? true,
+    )
+  ] ?? runners[DEFAULT_RUNNER]!
 
 /**
  * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
@@ -2048,7 +2082,7 @@ export { httpsRemote }
 
 /**
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
- * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
+ * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file or JSON) adds to its env.
  */
 /**
  * Only an image with the VM codex guard (claude-factory-72dq) may run codex. An older worker ignores the guard files,
@@ -2135,6 +2169,8 @@ const noReviewerFlag = (e: Record<string, string> = {}) => {
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
+  // a laptop run's worktree is not in the task yet: make it from the branch, as for a worktree that gc removed
+  if (inAx() && !existsSync(run.worktree)) reviveWorktree(run)
   const image =
     process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
   const rig = rigOf(run.repo)
@@ -2192,7 +2228,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     .trim()
   if (unmerged) Bun.spawnSync(['git', '-C', run.worktree, 'checkout', 'HEAD', '--', ...unmerged.split('\n')])
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
-  const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
+  const env = process.env.FACTORY_AX_ENV ? ax.readAxEnv(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
@@ -3902,6 +3938,13 @@ function facts(
 }
 
 const progressFile = (run: Run) => join(runDir(run.id), 'progress.json')
+/** when an attempt's AX task was last seen waiting for capacity: {seq, at} */
+const queuedFile = (run: Run) => join(runDir(run.id), 'queued.json')
+const queuedOf = (run: Run) =>
+  existsSync(queuedFile(run)) ? readJson<{ seq: number; at: number }>(queuedFile(run)) : undefined
+/** an attempt's clock starts when it stops waiting for AX capacity: a full pool never spends the station's time */
+export const attemptStart = (startedAt: number, seq: number, q?: { seq: number; at: number }) =>
+  q?.seq === seq ? Math.max(startedAt, q.at) : startedAt
 const progressOf = (run: Run) =>
   existsSync(progressFile(run)) ? readJson<Progress>(progressFile(run)) : undefined
 
@@ -3992,10 +4035,20 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
   }
+  // a herdr pane in the AX manager came from the laptop, and its session is not here. Start a fresh worker on
+  // AX. HANDOFF spends no attempt and clears the pane
+  if (isLaptopPane(inAx(), c.pane)) {
+    send({ type: 'HANDOFF', seq: c.seq, summary: 'worker moved to AX: relaunched fresh' })
+    return 'moved to AX'
+  }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
   if (runner.name === 'ax' && info?.status === 'pending' && holdUnavailableAx(c, send))
     return 'AX executor unavailable'
+  if (info?.queued) {
+    writeJson(queuedFile(run), { seq: c.seq, at: now })
+    return 'queued for AX capacity'
+  }
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
@@ -4204,7 +4257,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   if (stall === 'nudge') seen.nudged = true
   if (seen !== prev || stall === 'nudge') writeJson(progressFile(run), seen)
   const due = deadline(
-    now - c.startedAt,
+    now - attemptStart(c.startedAt, c.seq, queuedOf(run)),
     timeoutMin,
     status === 'working' || isAsking, // waiting on the manager's answer is work: warned, not failed
     (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(TIME_UP)),
@@ -8342,7 +8395,7 @@ async function migrateToAx(args: string[]) {
     if (!r.ok) fail(`part ${i + 1} of ${parts} did not arrive: ${r.err}`)
     if ((i + 1) % 50 === 0) console.log(`sent ${i + 1} of ${parts}`)
   }
-  ax.unpackMigration('migrate.tgz')
+  ax.unpackMigration('migrate.tgz', HOME)
   rmSafe(dir, { recursive: true, force: true })
   console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
 }
@@ -11033,26 +11086,6 @@ function managerSender(run: Run): 'manager' {
   return 'manager'
 }
 
-/**
- * claude-factory-5y7b: the env marker that says a worker runs this command, else undefined.
- * forMail skips FACTORY_FROM and FACTORY_RUN: the manager mails with FACTORY_FROM=manager (remote.test.ts) and a run worker mails its own station (run-scope.test.ts), so managerSender keeps its old three markers.
- * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
- */
-function workerMarker(
-  forMail = false,
-  env: Record<string, string | undefined> = process.env,
-): string | undefined {
-  return env.FACTORY_FROM && !forMail
-    ? 'FACTORY_FROM is set'
-    : env.FACTORY_RUN && !forMail
-      ? 'FACTORY_RUN is set'
-      : env.FACTORY_DEF_NAME
-        ? 'FACTORY_DEF_NAME is set'
-        : env.BEADS_ACTOR?.startsWith('factory/')
-          ? 'BEADS_ACTOR names a factory worker'
-          : undefined
-}
-
 /** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
 const WORKER_VERBS = [
   'report',
@@ -11175,10 +11208,11 @@ function makeFactory(dir: string) {
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
 function refuseWorker(verb: string, patrol = false) {
-  const marker = workerMarker()
-  if (marker) fail(`a worker cannot run factory ${verb} (${marker}): mail the manager instead`)
-  if (patrol && process.env.FACTORY_PATROL)
-    fail(`a patrol cannot run factory ${verb}: leave it for the person or the manager`)
+  try {
+    refuseWorkerIn(process.env, verb, patrol)
+  } catch (e) {
+    fail((e as Error).message)
+  }
 }
 
 function insideWorktree(run: Run): boolean {
@@ -11889,54 +11923,54 @@ function record(id: string): RunRecord {
   }
 }
 
-async function status(id: string | undefined) {
+async function status(id: string | undefined, print: Print = l => console.log(l)) {
   const halt = halted()
   if (halt && !id)
-    console.log(
+    print(
       halt.state === 'paused'
         ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
         : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
     )
   const stale = !id && managerStale(HOME, managerCommand([], ''))
-  if (stale) console.log(stale)
+  if (stale) print(stale)
   if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
     const age = backupAge(HOME, Date.now())
     const err = backupError(HOME)
-    console.log(
+    print(
       (age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`) +
         (err ? `; last run failed: ${err}` : ''),
     )
   }
   if (!id && process.env.CURSOR_API_KEY) {
     await refreshCursorMeter(HOME)
-    console.log(cursorLine(cursorMeter(HOME), cursorCap()))
+    print(cursorLine(cursorMeter(HOME), cursorCap()))
   }
   if (!id && (grokSpent(HOME) > 0 || grokBudget() !== undefined))
-    console.log(grokLine(grokSpent(HOME), grokBudget()))
-  if (!runIds().length) console.log("no runs yet: factory start <factory> <repo> '<goal...>'")
+    print(grokLine(grokSpent(HOME), grokBudget()))
+  if (!runIds().length) print("no runs yet: factory start <factory> <repo> '<goal...>'")
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
     const def = await loadPinned(run.factory)
     const r = row(run, def, value, c, agentOf(def, value, c))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
-    console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
+    print(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     // a bead's goal carries its whole description: bd show <bead> has it
-    console.log(`  goal: ${clip(r.goal!.split('\n')[0]!, 200)}`)
-    if (id) console.log(`  factory: ${run.factoryFrom ?? run.factory}`)
-    if (r.error) console.log(`  error: ${r.error}`)
+    print(`  goal: ${clip(r.goal!.split('\n')[0]!, 200)}`)
+    if (id) print(`  factory: ${run.factoryFrom ?? run.factory}`)
+    if (r.error) print(`  error: ${r.error}`)
     if (id && run.bead) {
       const tasks = beads(run.repo, 'factory').children(run.bead)
       const closed = tasks.filter(t => t.status === 'closed').length
-      console.log(`  bead: ${run.bead}, tasks ${closed}/${tasks.length} closed (bd children ${run.bead})`)
-    } else if (run.bead) console.log(`  bead: ${run.bead}`)
+      print(`  bead: ${run.bead}, tasks ${closed}/${tasks.length} closed (bd children ${run.bead})`)
+    } else if (run.bead) print(`  bead: ${run.bead}`)
     if (r.gate)
-      console.log(
+      print(
         `  gate: ${r.gate.question}\n  decide: factory decide ${r.id} <${r.gate.outcomes.join('|')}> '[note]'`,
       )
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
-    if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
+    if (mail.length) print(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
     for (const e of id ? c.log : c.log.slice(-1))
-      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
+      print(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
   }
   if (!id) {
     const ships = liveShipRuns()
@@ -11944,7 +11978,7 @@ async function status(id: string | undefined) {
       const repo = rigs().find(r => r.name === rig)!.repo
       const live = ships.find(s => s.run.repo === repo)
       const lines = shipLines(queue, live && { id: live.run.id, node: live.node })
-      if (lines.length) console.log(`rig ${rig}\n${lines.join('\n')}`)
+      if (lines.length) print(`rig ${rig}\n${lines.join('\n')}`)
     }
   }
 }
@@ -12144,6 +12178,7 @@ const usage = `factory — herdr software factories on xstate
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
+  attach --ssh-config                print the ssh config Host block for herdr --remote <AX manager task>
   say '<text...>'                    type text and Enter into the AX manager's pane
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
@@ -12299,6 +12334,35 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** the helpers of this file that the catalog operations call (src/core/ops) */
+export const corePort: Port = {
+  show,
+  status,
+  backlog,
+  prs,
+  decisionsList,
+  planShowText,
+  gateBriefFacts,
+  records,
+  refreshMerges,
+  managerUsage,
+}
+const cliCtx = (): OpCtx => ({
+  home: HOME,
+  env: process.env,
+  port: corePort,
+  board: () => null,
+  cli: () => fail('no CLI runner in the CLI'),
+})
+/** the input of an op from CLI words: a missing word leaves its key out */
+const defined = (o: Record<string, string | boolean | undefined>): OpInput =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as OpInput
+const emit = (r: OpResult) => {
+  process.stdout.write(r.out)
+  process.stderr.write(r.err)
+  process.exitCode = r.code
+}
+
 if (import.meta.main && !outboxCmd)
   try {
     switch (cmd) {
@@ -12401,7 +12465,7 @@ if (import.meta.main && !outboxCmd)
           leases.release(HOME)
           console.log('released the manager lease')
         } else if (!args.length || (args[0] === 'status' && args.length === 1))
-          console.log(leases.leaseLine(leases.readLease(HOME), Date.now()))
+          emit(await leaseOp.show(cliCtx(), {}))
         else fail('usage: factory lease [status|release]')
         break
       }
@@ -12423,7 +12487,7 @@ if (import.meta.main && !outboxCmd)
       case 'server':
         refuseWorker('server', true)
         lease()
-        server.main(args, HOME, () => tick())
+        server.main(args, HOME, () => tick(), corePort)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -12481,8 +12545,13 @@ if (import.meta.main && !outboxCmd)
         break
       case 'attach': {
         refuseWorker('attach', true)
+        if (args[0] === '--ssh-config' && args.length === 1) {
+          // the Host block for ~/.ssh/config, then `herdr --remote <task>` (docs/remote-runner.md)
+          console.log(ax.sshConfigBlock())
+          break
+        }
         const follow = args[0] === '--follow'
-        if (args.length > (follow ? 1 : 0)) fail('usage: factory attach [--follow]')
+        if (args.length > (follow ? 1 : 0)) fail('usage: factory attach [--follow | --ssh-config]')
         for (;;) {
           const pane = ax.attachRead()
           console.log(follow ? `\x1b[2J\x1b[H${pane}` : pane)
@@ -13007,93 +13076,33 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'show':
-        console.log(JSON.stringify(await show(args[0])))
+        emit(await runsOp.show(cliCtx(), defined({ id: args[0] })))
         break
       case 'metrics': {
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
-        const rig = opt('--rig')
-        const since = opt('--since')
-        const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
-        if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
-        const picked = await refreshMerges(records().filter(r => inWindow(r, rig, days)))
-        const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
-        const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
-        // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
-        // fail-opens (logPrecheck), independent of bd; this command is the only reader.
-        const since_ = since ? Date.now() - days * 86_400_000 : 0
-        const precheckAll = existsSync(precheckFile())
-          ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
-          : []
-        const launchFile = join(HOME, 'launches.jsonl')
-        const launchesAll = existsSync(launchFile) ? parseLaunchLines(readFileSync(launchFile, 'utf8')) : []
-        const launches = launchesAll.filter(l => l.at >= since_ && (!rig || l.rig === rig))
-        // claude-factory-dsfg: runs/*/denials.jsonl, one file a run. --rig maps a run to its rig through
-        // every launch line (not the --since window: a denial can be newer than its run's first launch)
-        const rigOfRun = new Map(launchesAll.map(l => [l.run, l.rig]))
-        const denials = denialStats(
-          (existsSync(join(HOME, 'runs'))
-            ? readdirSync(join(HOME, 'runs'), { withFileTypes: true })
-            : []
-          ).flatMap(d => {
-            const f = join(HOME, 'runs', d.name, 'denials.jsonl')
-            if (!d.isDirectory() || !existsSync(f) || (rig && rigOfRun.get(d.name) !== rig)) return []
-            return parseDenialLines(readFileSync(f, 'utf8')).filter(l => l.at >= since_)
-          }),
-        )
-        const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
-        // --tokens reads what runs stored (record().sessions) and manager-usage.jsonl, never a live transcript
-        const tokenArgs = args.includes('--tokens')
-          ? ([
-              picked.flatMap(r => (r.sessions ?? []).map(u => ({ ...u, run: r.id }))),
-              new Set(picked.filter(r => fate(r) === 'shipped').map(r => r.id)),
-              managerUsage(since_),
-            ] as const)
-          : null
-        // the weekly Cursor pool as a gauge: the last reading and the cap, or null when the meter is unknown
-        const cursor = cursorMeter(HOME)
-        if (args.includes('--json'))
-          console.log(
-            JSON.stringify({
-              cursor: cursor && { ...cursor, cap: cursorCap() },
-              grok: { spentUsd: grokSpent(HOME), budgetUsd: grokBudget() ?? null },
-              all: metrics(picked),
-              ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
-              precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
-              launches,
-              denials,
-              rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
+        emit(
+          await metricsOp.show(
+            cliCtx(),
+            defined({
+              rig: opt('--rig'),
+              since: opt('--since'),
+              json: args.includes('--json') || undefined,
+              tokens: args.includes('--tokens') || undefined,
             }),
-          )
-        else {
-          console.log(
-            render(
-              metrics(picked),
-              `${basename(HOME)}${since ? `, last ${days}d` : ''}`,
-              precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
-            ),
-          )
-          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
-          if (launches.length)
-            console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
-          if (Object.keys(denials).length)
-            console.log('\ndenials by harness and reason:\n' + renderDenials(denials))
-          if (cursor || process.env.CURSOR_API_KEY) console.log('\n' + cursorLine(cursor, cursorCap()))
-          if (grokSpent(HOME) > 0 || grokBudget() !== undefined)
-            console.log('\n' + grokLine(grokSpent(HOME), grokBudget()))
-        }
-        if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
+          ),
+        )
         break
       }
       case 'backlog':
-        console.log(JSON.stringify(await backlog()))
+        emit(await backlogOp.show(cliCtx(), {}))
         break
       case 'prs':
-        console.log(JSON.stringify(await prs()))
+        emit(await prsOp.show(cliCtx(), {}))
         break
       case 'decisions': {
         const [sub, ...rest] = args
         if (!sub || sub === 'list') {
-          console.log(JSON.stringify(decisionsList()))
+          emit(await decisionsOp.list(cliCtx(), {}))
           break
         }
         if (sub === 'answer') {
@@ -13151,7 +13160,7 @@ if (import.meta.main && !outboxCmd)
       case 'plan': {
         const [sub, arg] = args
         if (!sub || sub === 'show') {
-          console.log(planShowText())
+          emit(await planOp.show(cliCtx(), {}))
           break
         }
         if (sub === 'facts') {
@@ -13187,7 +13196,7 @@ if (import.meta.main && !outboxCmd)
       case 'gate-brief': {
         const [sub, a1, a2] = args
         if (sub === 'facts') {
-          console.log(JSON.stringify(await gateBriefFacts(a1)))
+          emit(await gatesOp.brief(cliCtx(), defined({ id: a1 })))
           break
         }
         if (sub === 'set') {
@@ -13235,7 +13244,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'status':
-        await status(args[0])
+        emit(await runsOp.status(cliCtx(), defined({ run: args[0] })))
         break
       case 'digest':
         await digest()

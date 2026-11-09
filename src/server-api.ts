@@ -27,6 +27,7 @@ import {
   type Ctx,
   type Input,
   type Op,
+  type Port,
   type RunResult,
   type Runner,
 } from './core/catalog'
@@ -111,6 +112,8 @@ export function personCerts(dir: string, serverName: string) {
 export type ClientOpts = {
   home: string
   run: Runner
+  /** the cli.ts helpers that the in-process operations call */
+  port: Port
   /** the last tick result, null before the first tick */
   board: () => unknown
   log?: (line: string) => void
@@ -250,8 +253,15 @@ export function clientHandler(o: ClientOpts) {
   const storeFile = join(o.home, 'client-idempotency.json')
   const auditFile = join(o.home, 'client-actions.jsonl')
   let chain: Promise<unknown> = Promise.resolve()
-  const ctx: Ctx = { home: o.home, cli: o.run, board: o.board }
   const call = async (op: Op, input: Input): Promise<Response> => {
+    // a new env for each call, as cliRunner gave a new env to each subprocess
+    const ctx: Ctx = {
+      home: o.home,
+      cli: o.run,
+      board: o.board,
+      env: personEnv(process.env, o.home),
+      port: o.port,
+    }
     try {
       const r = await op.run(ctx, input)
       return r.timedOut
