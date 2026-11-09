@@ -10919,9 +10919,10 @@ async function orphanPass() {
         prs,
         ctx,
         {
-          beadStatus: async id => {
+          bead: async id => {
             try {
-              return beads(rig.repo, 'factory').show(id)?.status ?? null
+              const b = beads(rig.repo, 'factory').show(id)
+              return b?.status ? { status: b.status, reason: b.close_reason } : null
             } catch {
               return null
             }
@@ -10937,6 +10938,7 @@ async function orphanPass() {
                 v && {
                   mergeable: v.mergeable ?? 'UNKNOWN',
                   changes: v.reviewDecision === 'CHANGES_REQUESTED',
+                  approved: v.reviewDecision === 'APPROVED',
                 }
               )
             }
@@ -10961,6 +10963,8 @@ async function orphanPass() {
                     ? 'MERGEABLE'
                     : 'UNKNOWN',
               changes: status === 'requested_changes',
+              // ponytail: the MR endpoint has no approval field, so a GitLab MR never counts as approved. Upgrade: the MR /approvals endpoint (as src/prs.ts reads approvals.approved).
+              approved: false,
             }
           },
           label: async (pr, labels) => {
@@ -11010,7 +11014,7 @@ async function orphanPass() {
       )
       const shown = new Set<string>()
       for (const s of skipped)
-        if (/^(fork|record) failed/.test(s.why)) {
+        if (/^((fork|record) failed|held for the person: )/.test(s.why)) {
           shown.add(s.url)
           errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
         }
