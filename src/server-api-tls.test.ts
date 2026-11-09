@@ -69,12 +69,14 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, 
   const home = tmp()
   let s: ReturnType<typeof serve>
   const handle = clientHandler({ home, run, port, board: () => s.board() })
+  const onBoard = handle.publish
   s = serve({
     home,
     port: 0,
     everyMs: 50,
     leaseMs: 1000,
     tick,
+    onBoard,
     log: () => {},
     client: {
       port: 0,
@@ -332,4 +334,212 @@ describe('parseFlags', () => {
     expect(() => parseFlags(['--port', '8444', ...all])).toThrow(/usage/)
     expect(() => parseFlags(['--client-port', '70000', ...all.slice(2)])).toThrow(/usage/)
   })
+})
+
+describe('events over mTLS: replay then live', () => {
+  test('held ticks: replay crosses into live once, an equal tick adds nothing, stop ends every stream', async () => {
+    let cur: unknown = { n: 0 }
+    let free = false
+    const waiting: (() => void)[] = []
+    const tick = async () => {
+      if (!free) await new Promise<void>(r => waiting.push(r))
+      return cur
+    }
+    const pause = async (ok: () => boolean) => {
+      const until = performance.now() + 5000
+      while (!ok() && performance.now() < until) await Bun.sleep(5)
+      expect(ok()).toBe(true)
+    }
+    // A release ends the held tick. The next tick is held again only after the board went to onBoard.
+    const release = async (board: unknown) => {
+      await pause(() => waiting.length > 0)
+      cur = board
+      waiting.shift()?.()
+      await pause(() => waiting.length > 0)
+    }
+    const t = start(tick)
+    const who = pair(A)
+    const readers: { pump: Promise<void>; kill: () => void; exited: Promise<number> }[] = []
+    const reader = (after: number) => {
+      const p = Bun.spawn(
+        [
+          ...['curl', '-sN', '-i', '--max-time', '20', '--cacert', join(A, 'ca.crt')],
+          ...['--cert', who.cert, '--key', who.key],
+          ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`],
+          `${t.url}/v1/events?after=${after}`,
+        ],
+        { stdout: 'pipe', stderr: 'ignore' },
+      )
+      const rd = p.stdout.getReader()
+      const dec = new TextDecoder()
+      const frames: string[] = []
+      let head = ''
+      let buf = ''
+      let eof = false
+      const take = (chunk: string) => {
+        buf += chunk
+        if (!head) {
+          const k = buf.indexOf('\r\n\r\n')
+          if (k < 0) return
+          head = buf.slice(0, k)
+          buf = buf.slice(k + 4)
+        }
+        for (let k = buf.indexOf('\n\n'); k >= 0; k = buf.indexOf('\n\n')) {
+          frames.push(buf.slice(0, k + 2))
+          buf = buf.slice(k + 2)
+        }
+      }
+      const pump = (async () => {
+        for (;;) {
+          const r = await rd.read()
+          if (r.done) break
+          take(dec.decode(r.value, { stream: true }))
+        }
+        take(dec.decode())
+        eof = true
+      })()
+      const x = {
+        frames,
+        head: () => head,
+        rest: () => buf,
+        eof: () => eof,
+        pump,
+        kill: () => p.kill(),
+        exited: p.exited,
+      }
+      readers.push(x)
+      return x
+    }
+    try {
+      await release({ n: 1, t: 'é€' })
+      const a = reader(0)
+      const b = reader(0)
+      await pause(() => a.frames.length >= 1 && b.frames.length >= 1)
+      expect(a.head().toLowerCase()).toContain('content-type: text/event-stream; charset=utf-8')
+      expect(a.frames).toEqual(['id: 1\ndata: {"n":1,"t":"é€"}\n\n'])
+      await release({ n: 2, nested: { a: [1] } })
+      await pause(() => a.frames.length >= 2 && b.frames.length >= 2)
+      const c = reader(1)
+      await pause(() => c.frames.length >= 1)
+      expect(c.frames).toEqual(['id: 2\ndata: {"n":2,"nested":{"a":[1]}}\n\n'])
+      await release(null)
+      await pause(() => [a, b, c].every(r => r.frames.length >= (r === c ? 2 : 3)))
+      await release(null)
+      await release({ marker: 4 })
+      await pause(() => [a, b, c].every(r => r.frames.length >= (r === c ? 3 : 4)))
+      free = true
+      for (const r of waiting.splice(0)) r()
+      await t.s.stop()
+      // The server close must end every stream. The socket ends without TLS close_notify, so curl exits 56 or 0 by itself, by TLS library version (28 is a timeout and a kill has a signal).
+      await within('stream EOF', 5000, Promise.all(readers.map(r => r.pump)))
+      for (const c of await within('curl exit', 5000, Promise.all(readers.map(r => r.exited))))
+        expect([0, 56]).toContain(c)
+      const f = [
+        'id: 1\ndata: {"n":1,"t":"é€"}\n\n',
+        'id: 2\ndata: {"n":2,"nested":{"a":[1]}}\n\n',
+        'id: 3\ndata: null\n\n',
+        'id: 4\ndata: {"marker":4}\n\n',
+      ]
+      expect(a.frames).toEqual(f)
+      expect(b.frames).toEqual(f)
+      expect(c.frames).toEqual(f.slice(1))
+      for (const r of [a, b, c]) {
+        expect(r.eof()).toBe(true)
+        expect(r.rest()).toBe('')
+      }
+    } finally {
+      free = true
+      for (const r of waiting.splice(0)) r()
+      for (const r of readers) r.kill()
+      await Promise.all(readers.map(r => r.exited))
+    }
+  }, 30000)
+})
+
+// Wait for a promise, or fail at the deadline. The timer is cleared so it cannot outlive the test.
+const within = async <T>(what: string, ms: number, p: Promise<T>): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error(`${what}: not done in ${ms} ms`)), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+describe('events over mTLS: barriers', () => {
+  test('headers come before the first tick ends, two live changes arrive once each, and server stop ends the stream', async () => {
+    let cur: unknown = { n: 0 }
+    let free = false
+    const waiting: (() => void)[] = []
+    const tick = async () => {
+      if (!free) await new Promise<void>(r => waiting.push(r))
+      return cur
+    }
+    const release = async (board: unknown) => {
+      const until = performance.now() + 5000
+      while (waiting.length === 0 && performance.now() < until) await Bun.sleep(5)
+      expect(waiting.length).toBeGreaterThan(0)
+      cur = board
+      waiting.shift()?.()
+    }
+    const t = start(tick)
+    const who = pair(A)
+    const p = Bun.spawn(
+      [
+        ...['openssl', 's_client', '-connect', `localhost:${t.s.clientPort}`, '-servername', 'localhost'],
+        ...['-CAfile', join(A, 'ca.crt'), '-quiet', '-tls1_3', '-cert', who.cert, '-key', who.key],
+      ],
+      { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', timeout: 15000 },
+    )
+    try {
+      // curl keeps a header until the first body byte. This test sends the request by hand and keeps stdin open.
+      p.stdin.write('GET /v1/events?after=0 HTTP/1.1\r\nHost: localhost\r\n\r\n')
+      await p.stdin.flush()
+      const rd = p.stdout.getReader()
+      const dec = new TextDecoder()
+      let text = ''
+      let done = false
+      const until = async (re: RegExp) => {
+        while (!re.test(text) && !done) {
+          const r = await within('read', 10000, rd.read())
+          if (r.done) done = true
+          else text += dec.decode(r.value)
+        }
+      }
+      // the first tick is held: the stream is open and has no event yet
+      await until(/\r\n\r\n/)
+      expect(waiting.length).toBe(1)
+      expect(text.toLowerCase()).toContain('content-type: text/event-stream')
+      expect(text).not.toContain('id:')
+      await release({ n: 1 })
+      await until(/id: 1\ndata: \{"n":1\}\n\n/)
+      await release({ n: 2 })
+      await until(/id: 2\ndata: \{"n":2\}\n\n/)
+      // a later tick sees an equal board; the reader stays active until the stop closes the stream
+      await release({ n: 2 })
+      free = true
+      for (const r of waiting.splice(0)) r()
+      await t.s.stop()
+      // The server close must end the stream before the client deadline, and openssl must exit by itself.
+      await within('stream EOF', 5000, until(/never/))
+      expect(done).toBe(true)
+      expect(text.match(/^id: /gm)?.length).toBe(2)
+      expect(text.endsWith('id: 2\ndata: {"n":2}\n\n')).toBe(true)
+      const code = await within('openssl exit', 5000, p.exited)
+      expect(p.signalCode).toBeNull()
+      // The exit code depends on the TLS library version; a timeout or kill has a signal or a hang, and fails above.
+      expect([0, 1]).toContain(code)
+    } finally {
+      free = true
+      for (const r of waiting.splice(0)) r()
+      p.kill()
+      await p.exited
+      await t.s.stop()
+    }
+  }, 20000)
 })
