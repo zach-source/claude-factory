@@ -11,6 +11,16 @@ New to claude-factory? Start with [docs/onboarding.md](docs/onboarding.md).
 
 ## Run it
 
+With Nix, run the factory with no checkout. The package holds its own `node_modules`, so no `bun install` runs:
+
+```sh
+nix run github:zach-source/claude-factory -- --help
+nix profile install github:zach-source/claude-factory   # puts factory on PATH
+```
+
+A store install does not write into its own directory. It does not self-update. Update it with its flake.
+Without `FACTORY_HOME`, it uses `~/factory`. From a checkout, use the steps below.
+
 ```sh
 bun install
 bin/factory init ~/my-factory   # a new factory: a directory for its rigs and runs

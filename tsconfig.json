@@ -27,5 +27,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["mod", "node_modules"]
+  "exclude": ["mod", "node_modules", "result"]
 }

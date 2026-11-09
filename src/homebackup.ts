@@ -1,4 +1,13 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, relative } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { claudeFiles } from './migrate'
@@ -28,7 +37,7 @@ export type BackupCfg = {
 export const EXCLUDES = [
   '.claude.json',
   '.credentials.json',
-  'settings*.json',
+  '/claude/**/settings*.json',
   'rigs.json.*',
   '*.lock',
   '/home/bin/',
@@ -98,6 +107,17 @@ function git(
 const memDir = (ws: string) => join(ws, 'home', 'memory')
 const DREAM_AT = (ws: string) => join(ws, 'home', 'memory-dream.at')
 const RESTORING = (ws: string) => join(ws, 'home', '.restoring')
+
+/** d289.21: the host writes FACTORY_HOME/backup.want when a backup is due. A tick does not start while it is fresh */
+export const WANT_MS = 600_000
+export const backupWant = (home: string) => join(home, 'backup.want')
+export const backupWanted = (home: string, now = Date.now()) => {
+  try {
+    return now - statSync(backupWant(home)).mtimeMs < WANT_MS
+  } catch {
+    return false
+  }
+}
 
 function init(cfg: BackupCfg) {
   if (!existsSync(GIT_DIR(cfg.ws))) {
@@ -277,8 +297,8 @@ type Staged = { mode: string; path: string; blob: string }
  * The staged blobs are what leaves the VM. gitleaks scans them (a copy in a temp dir, named by index). Each file
  * with a finding gets a new blob with [REDACTED] in place of the secret, in the index only: the work tree file
  * stays. A second scan of the new blobs must find nothing. No gitleaks: refuse, as a scan that did not run is not
- * a clean one. ponytail: the scan copies the changed blobs to disk and runs under the tick lock; the first
- * backup copies the whole home. Scan outside the lock if a tick waits too long
+ * a clean one. It runs after the tick lock is free. ponytail: the scan copies the changed blobs to disk; the
+ * first backup copies the whole home
  */
 function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { error: string } {
   if (!staged.length) return { redacted: [] }
@@ -334,7 +354,7 @@ const GZ_LIST = 'home/.backup-gz.json'
  * Each index file over 50 MB goes in the index as <path>.gz, after the scrub (the scan reads the plain text).
  * The work tree file stays. The add stages the plain file again each time, so each backup does this again; the
  * same text gives the same gzip blob, so no commit. GZ_LIST names the paths. ponytail: reads and gzips each
- * big file at each backup, under the tick lock
+ * big file at each backup, after the tick lock is free
  */
 function gzipBig(cfg: BackupCfg): string | undefined {
   const ls = git(cfg, ['ls-files', '--stage', '-z']).out.split('\0').filter(Boolean)
@@ -388,7 +408,9 @@ function gunzipBig(ws: string): string | undefined {
  * Snapshot and push. Refuses when the home is not ready (an empty home must not replace a good backup) and when
  * the secret scan cannot run (nothing stays staged). It never forces a push. scrub redacts each secret it finds.
  * The result goes to home/backup.json.
- * `lock` guards the snapshot only. The push runs after the lock is free, because a push can take minutes.
+ * `lock` guards the snapshot only: the memory snapshot and the add into the index. The scan, the redaction, the
+ * gzip, the commit and the push read the index only, so they run after the lock is free (d289.21).
+ * When it takes the lock, it removes backup.want, so the ticks start again.
  * With no local history and a branch on the remote, the first commit goes on top of the remote tip.
  */
 export function backup(
@@ -410,8 +432,14 @@ export function backup(
   let sha = ''
   let dirty = false
   let redacted: string[] = []
-  const release = lock()
-  if (!release) return { skipped: 'lock' }
+  const held = lock()
+  if (!held) return { skipped: 'lock' }
+  rmSync(backupWant(join(cfg.ws, 'home')), { force: true })
+  let release: (() => void) | undefined = held
+  const free = () => {
+    release?.()
+    release = undefined
+  }
   try {
     init(cfg)
     if (!git(cfg, ['rev-parse', '--verify', 'HEAD']).ok) {
@@ -442,6 +470,8 @@ export function backup(
       const m = /^:\d+ (\d+) \S+ (\S+) /.exec(raw[i]!)
       if (m && m[1]!.startsWith('100')) staged.push({ mode: m[1]!, path: raw[i + 1]!, blob: m[2]! }) // regular files, no gitlink
     }
+    // the blobs are in the object store now: a tick can change the home files again
+    free()
     const scan = scrub(cfg, staged)
     if ('error' in scan) {
       git(cfg, ['reset', '-q'])
@@ -463,9 +493,22 @@ export function backup(
   } catch (e) {
     return fail(clean((e as Error).message))
   } finally {
-    release()
+    free()
   }
   try {
+    // d289.20: local commits that the remote refused (for example GH001) must not go up again.
+    // If the remote tip is absent or an ancestor of HEAD, push one commit of the HEAD tree on that tip
+    const tip = remoteTip(cfg)
+    if (tip && typeof tip === 'object') return fail(tip.error)
+    const parent = git(cfg, ['rev-parse', '--verify', '-q', 'HEAD^']).out
+    const behind = !tip || git(cfg, ['merge-base', '--is-ancestor', tip, 'HEAD']).ok
+    if (behind && tip !== sha && parent !== (tip ?? '')) {
+      const msg = git(cfg, ['log', '-1', '--format=%B', 'HEAD']).out
+      const c = git(cfg, ['commit-tree', 'HEAD^{tree}', ...(tip ? ['-p', tip] : []), '-m', msg])
+      if (!c.ok) return fail(`git commit-tree: ${c.err}`)
+      git(cfg, ['update-ref', `refs/heads/${cfg.branch}`, c.out])
+      sha = c.out
+    }
     const push = git(cfg, ['push', '-q', remote, `HEAD:refs/heads/${cfg.branch}`], PUSH_MS)
     if (!push.ok) return fail(`git push: ${push.err.split('\n').at(-1)}`)
     // blob sizes come from the tree: a file that left the work tree after the commit cannot break this
