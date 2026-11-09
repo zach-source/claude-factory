@@ -10608,16 +10608,17 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
   if (s1?.exitCode !== 0) return undefined
   const left = LOADED_BUDGET_MS - (Date.now() - start)
   if (left <= 0) return undefined
-  const s2 = git(['rev-parse', '--show-toplevel', '--git-path', 'hooks'], left)
+  // hooks first: in a bare repo or inside .git, --show-toplevel exits 128 after git prints the hooks line
+  const s2 = git(['rev-parse', '--git-path', 'hooks', '--show-toplevel'], left)
   if (s2?.exitCode !== 0 && s2?.exitCode !== 128) return undefined
   let top = cwd
   let hooks: string | undefined
+  const [h, t] = s2.stdout.toString().split('\n')
   if (s2.exitCode === 0) {
-    const [t, h] = s2.stdout.toString().split('\n')
     if (!t || !h) return undefined
     top = t
     hooks = resolvePath(cwd, h)
-  }
+  } else if (h) hooks = resolvePath(cwd, h)
   const out: LoadedText[] = []
   for (const rec of s1.stdout.toString().split('\0')) {
     const nl = rec.indexOf('\n')
