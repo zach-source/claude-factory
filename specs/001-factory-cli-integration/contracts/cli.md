@@ -52,7 +52,8 @@ factory token best
 
 - `list` shows the live slot and the 7-day use, 5-hour use and status of each slot. With no store configured it prints how to set `token.read` and `token.write`.
 - `use <n>` exits 1 and changes nothing when slot `n` has no token.
-- `best` makes the slot with the lowest 7-day use live among the slots that are not refused. If all are refused it says so and changes nothing.
+- If the live-field write succeeds and the active-field write fails, `use` and `best` exit 1. They say that the slot token is live. This is the exception to the no-write rule above.
+- `best` makes the slot with the lowest 7-day use live among slots with status `ok`. If none has status `ok`, it says so and changes nothing.
 - A locked store or an interactive sign-in need exits 1 and changes nothing.
 
 ## Up
