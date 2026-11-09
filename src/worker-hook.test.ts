@@ -12437,6 +12437,7 @@ test.each(['', '>out '])('qn8a.14 caller gluedBraceSlots %#', p => {
 test.each(['', '>out '])('qn8a.14 caller dynamicHeadRmReading %#', p => {
   expect(callerDeny(`${p}$X rm -rf /x`)).toBe(REASON)
   expect(callerDeny(`${p}$X echo ok`)).toBeUndefined()
+  expect(callerDeny(`${p}$X -- rm -rf /`)).toBe(REASON)
 })
 
 test.each(['', '>out '])('qn8a.14 caller shellStdinReason1 %#', p => {
@@ -12454,11 +12455,13 @@ test('qn8a.14 caller segmentMayDefineAlias returns both first-head results', () 
   expect(segmentMayDefineAliasForTest(['>x', '/bin/echo', 'alias'])).toBe(true)
   expect(segmentMayDefineAliasForTest(['/bin/echo', 'alias'])).toBe(false)
   expect(segmentMayDefineAliasForTest(['>x', '/bin/echo', 'name'])).toBe(false)
+  expect(callerDeny('>out $MAKE -j$N all')).toBeTruthy()
 })
 
 test.each(['', '>out '])('qn8a.14 caller anyGlobCommandWord %#', p => {
   expect(callerDeny(`${p}g*t push`)).toContain('shell expansion')
   expect(callerDeny(`${p}echo *.md`)).toBeUndefined()
+  expect(callerDeny(`${p}*.md`)).toContain('shell expansion')
 })
 
 test.each(['', '>out '])('qn8a.14 caller anyDynamicCommandReason1 %#', p => {
@@ -12469,11 +12472,13 @@ test.each(['', '>out '])('qn8a.14 caller anyDynamicCommandReason1 %#', p => {
 test.each(['', '>out '])('qn8a.14 caller anyLiveApplyWord %#', p => {
   expect(callerDeny(`${p}kubectl --context acme apply -f x`)).toBe(LIVE_REASON)
   expect(callerDeny(`${p}kubectl --context acme get pods`)).toBeUndefined()
+  expect(callerDeny(`${p}flux --context acme zzz`)).toBe(LIVE_REASON)
 })
 
 test.each(['', '>out '])('qn8a.14 caller anyDynamicLiveApplyReason1 %#', p => {
   expect(callerDeny(`${p}$K --context acme delete -f x`)).toContain('shell expansion')
   expect(callerDeny(`${p}$K --context acme get pods`)).toBeUndefined()
+  expect(callerDeny(`${p}$K apply -f x`)).toBeTruthy()
 })
 
 test.each(['', '>out '])('qn8a.14 a git alias p for push denies and the fake reader is called %#', p => {
