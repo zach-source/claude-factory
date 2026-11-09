@@ -8,157 +8,103 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Current handoff at 19edc540
+## Current handoff at 8c81c2ac
 
 This section overrides earlier task lists and AC10 implementation choices. AC1–AC9 and their closed source grammar remain required.
 Keep PR #714 as a draft. Keep `.16`, `.17`, `.20` and `.21` closed.
-The `.21` change narrows fault injection to a child tree. Do not repeat that change.
-The nested assertion tests now call the actual cleanup hook. Preserve those tests and both outcomes.
-No new production defect is established. This pass completes the existing test isolation contract.
+Reopen `.18` and `.19`; keep their dependency. No new production defect is established.
+Commit `62a50f77` removed receipts and host scans. Preserve that work, the default refusal stubs, and parent environment restoration.
 
-### Evidence and decision
+### Evidence and bounded design
 
-Commit `a55221d9` preserves unresolved launches and validates receipts before direct-handle signals.
-It also removes some shell descendants and gives the outer nested test its own child handle.
-Commit `19edc540` adds an injected no-`/proc` exit check. Preserve those corrections; do not repeat them.
-Plan read the latest review and the current source. No new production defect was found.
-At `src/wiki-kick.test.ts:88`, receipts still contain PIDs. Lines 142–144 signal those PIDs without retained handles.
-Line 245 derives launch intent from wiki stamps after `spawnSync`; this excludes non-wiki kicks.
-The shell tools at lines 360 and 429 still create descendants outside the registry.
-Nested cleanup at lines 795, 819 and 835 trusts returned paths instead of outer-known fixture paths.
-Lines 41–78 and 207–210 still need `/proc` or `ps`. The injected adapter test does not prove portable cleanup.
-PID 1 at line 867 does not force `EPERM`. Inject the error at the owned-handle boundary instead.
-Exact-head CI passed at `19edc540`. These source defects and omitted controls remain despite that result.
+Plan read `src/wiki-kick.test.ts` at `8c81c2ac`.
+Lines 54–59 remove every handle before a signal can throw. A thrown signal loses the whole list.
+Plan extracted the actual helper and injected `EPERM` into the first of two fake handles.
+Result: first call threw, zero handles remained, and a second cleanup returned true. No process or signal was necessary.
+Lines 55 and 80–82 disagree: cleanup sends SIGKILL, but the supervisor needs SIGTERM to await its children.
+Lines 73–78 retain Node children only. Bun calls and shell descendants at lines 204 and 272 remain outside that scope.
+A child `error` event at line 76 also resolves exit proof without a child exit.
+Lines 107–120 retain only a string after a synchronous CLI timeout, not a handle with an awaitable scope.
+The timeout control clears that string at line 449 without independent exit proof.
+The nested denied row uses a string marker and removes its fixture without an explicit child-exit assertion.
+These are source findings. Plan did not run a real orphan probe or the full suite.
 
-Plan ran `.scratch/wiki-plan-spawn-probe.ts` with Bun 1.4.4.
-A `bun:test` module mock intercepted `node:child_process.spawn` before a dynamic import used it.
-The probe retained one real detached child handle, suppressed its `unref`, and awaited exit code 0.
-It made zero host process queries. This proves the API mechanism only, not CLI interception or descendant cleanup.
-Use the installed APIs. No new dependency is necessary.
+Complete the existing preload supervisor; do not replace it with another discovery mechanism.
+Use existing Bun and Node handles. Keep all fixture code in `src/wiki-kick.test.ts`.
+Generate disposable helpers in the fixture directory. Add no production code, flag or dependency.
+Convert `factory()` to an awaited asynchronous helper so the outer test retains its supervisor handle through timeouts.
+Separate command result from child-scope completion when a test must observe an active pass.
+Preserve real CLI arguments, environment, results and kick decisions.
+Register delayed launch intent before its delay. Cancellation must resolve that intent or retain the fixture.
+The parent must request orderly supervisor cancellation and await descendant completion before supervisor exit.
+Never treat a supervisor's forced death as proof that its descendants exited.
+Retain each handle until its exit settles, even if another handle throws or refuses a signal.
+Attempt cleanup of the other owned handles after one error; keep unresolved handles and report the error.
+An error before child creation can resolve that failed launch. An error after creation cannot replace exit proof.
+Preserve the command's explicit exit status while the fixture completes its child scope.
+Cover process APIs that these fixture paths execute. Retain Bun child handles where necessary.
+Use single-process stubs or shell `exec` when no descendant is necessary; do not write a general shell parser.
+A synchronous helper can remain only when its completion and timeout behavior cannot orphan a fixture descendant.
+Reject fixed sleeps, stamp-only completion, new PID receipts and host scans: none supplies retained exit proof.
 
-Use explicit fixture launch ownership. Remove host-wide `/proc` and `ps` discovery as cleanup authority.
-Use existing Bun or Node child handles and a small fixture launcher with an acknowledged launch/exit lifecycle.
-Register each launch before it can outlive its caller. Keep each handle until its exit event or awaited exit.
-The launcher must retain its children across a delayed start, missing lock, lock removal and home changes.
-An intercepted launch must still execute the real CLI and preserve its arguments, environment and kick decision.
-A fixture preload or launcher can retain the real spawn handle; it must not simulate a successful wiki pass.
-Own fixture agent descendants too. Stop and await them before the supervisor reports completion.
-Keep the fixture code in `src/wiki-kick.test.ts`; generate disposable helper files inside its fixture directory.
-Do not change production code, add a production option, or add a dependency.
-Do not add another host process parser. Do not treat a tag, parent PID or recent start time as ownership authority.
-An unrelated same-user orphan is outside this test's ownership, even when its environment cannot be read.
+### AC10 final contract and first tests
 
-### AC10 final contract
-
-The fail-closed rule is: fixture removal requires independent exit proof for every registered launch and its owned descendants.
-An absent lock, empty observation, signal request, observer failure or permission error cannot prove exit.
-Only the owned handle can authorize a signal. A reused numeric PID cannot authorize one.
-No-launch completion is allowed only after the launcher confirms zero launches and has exited.
-The fixture must survive any failure to prove exit. A failure must produce a test error.
+The fail-closed rule is: fixture removal requires awaited exit proof for every owned launch and descendant.
+Only retained handles authorize signals. A lock, stamp, signal result, timeout or supervisor death cannot establish complete scope exit.
 No external forge, transport or outbox call is allowed. Controlled fixture calls and local git remain allowed.
-Arbitrary shell input, host process discovery and production supervision are out of scope.
+Host process discovery, arbitrary shell grammar and production supervision are out of scope.
+There is no receipt parser now. Do not restore it or its obsolete schema controls.
+The earlier source grammar for AC1–AC9 remains unchanged.
 
-| Check | Required positive and negative controls |
+Command for each control below:
+`bun test --timeout 60000 src/wiki-kick.test.ts --test-name-pattern AC10`.
+
+| AC and test name | Required positive and negative assertions |
 | --- | --- |
-| AC10.1 ownership and exit | Real child starts after three seconds and after the start deadline. Register it before either delay. Live child, absent lock and removed lock must not permit cleanup. Deny first and later environment/stat reads; ownership must remain unchanged. Deny a liveness query with `EPERM`; never count it as exit. An unrelated child remains alive and receives zero signals. Reused PID and unavailable identity receive zero numeric-PID signals. Await all owned descendants after cancellation. |
-| AC10.2 portable lifecycle | Execute the same controls without `/proc` or `ps`. No platform skip is allowed. Confirm normal completion, zero launch, two homes, launch failure and failed exit proof. The real write, ambient, refresh and groom passes must use this lifecycle. Restore parent environment values. All four default forge/agent stubs must record and refuse an explicit call. |
-| AC10.3 actual cleanup hook | Keep the nested assertion-error tests. Clean row: nonzero test exit, child exit, then fixture removal. Denied-proof row: nonzero test exit, live owned child, retained fixture. The outer fixture must own and await that child before final removal. |
+| AC10.1 `AC10 signal error retains all handles` | Inject EPERM into the first of two owned handles. Keep its handle; stop and await the other. Repeat cleanup; unresolved exit still denies fixture removal. After independent exit, removal is allowed. |
+| AC10.1 `AC10 cancellation awaits descendant scope` | Use the actual cleanup path on a supervisor, pass and tool. Assert tool exit, then pass exit, then supervisor exit, then removal. An unrelated child receives zero signals. Forced supervisor death must retain the fixture. |
+| AC10.1 `AC10 delayed launch survives deadline` | Register a launch before a delay greater than three seconds and greater than its start deadline. Exercise the actual hook. An absent or removed lock cannot release ownership. Cancellation resolves the intent without a later launch, or the fixture stays. |
+| AC10.1 `AC10 spawn error is not live child exit` | A failed spawn with no child permits completion. An error after child creation does not. Explicit command exit and CLI timeout must preserve descendant exit proof. |
+| AC10.2 `AC10 portable lifecycle matrix` | Disable both /proc access and ps execution for the whole lifecycle. Assert zero observer calls. Cover delayed launch, normal exit, zero total launches, two homes, spawn failure and failed proof. No platform skips. |
+| AC10.3 `AC10 assertion cleanup` | Run the real nested afterEach after an assertion error. Clean: nonzero test exit, awaited child exit, then removal. Denied: error, retained fixture and unresolved owned child. The outer scope stops and awaits that child before final removal. |
 
-Proof: `bun test --timeout 60000 src/wiki-kick.test.ts --test-name-pattern AC10`.
-Keep the eight earlier lifecycle controls. Their test names can change only with an explicit evidence-table mapping.
-An unused observer API needs no new parser matrix after removal; test its former failure effects at the lifecycle boundary.
-If any serialized receipt remains necessary, use only fixture-generated records bound to a parent-held handle.
-Its closed fields are `launchId` (parent-issued nonempty token) and `event` (`started` or `exited`).
-Reject unknown fields, unknown IDs, duplicate/out-of-order events, wrong types and malformed JSON before any cleanup action.
-Reject absolute paths, relative paths and PID fields in receipts; no receipt authorizes a signal or file access.
-Receipt rejection must produce zero signals and zero fixture removals. An `exited` receipt alone cannot replace awaited exit.
-Prefer in-memory handles so this serialization is unnecessary.
+Write these controls before the correction. Record the red results against `8c81c2ac`.
+Use outer-owned handles and outer-known paths for nested cleanup. A returned PID or path grants no authority.
+Do not clear `stuck` or a handle registry to make a real-process control pass.
+A synthetic unresolved handle can resolve through its controlled exit promise; it must still exercise the actual hook.
+Keep the existing real tick, write, refresh, groom, ambient and four explicit refusal-stub tests.
+Keep the deadline, removed-lock, two-home, unrelated-child, no-launch and failed-proof behaviors in the matrix.
+Former environment/stat failures and PID reuse need no parser tests after parser removal.
+Their replacement is zero observer calls plus retained handle ownership throughout cleanup.
+State native macOS evidence separately from portable fixture evidence. An injected ps row is no longer applicable.
 
-### Concrete lifecycle boundary
+### Tasks, checks and evidence
 
-Intercept the real launch call, before the child starts. A shim that reports its own PID after startup is too late.
-The CLI uses `node:child_process.spawn` for detached kicks and Bun process calls for agent passes.
-Use a fixture preload or supervisor at these call boundaries. Keep its retained handles reachable until cleanup ends.
-First prove interception with one real tick and one real wiki pass. Verify arguments, environment, result and descendant exit.
-Use the first 20 minutes of `.18` for this integration check, before the rest of the fixture rewrite.
-Install the fixture preload before the CLI imports `node:child_process`.
-Keep the real spawn call and returned handle inside the process that owns the child.
-The outer test can own that fixture supervisor; it need not hold a grandchild's native handle.
-The supervisor must await its children before its own successful exit can prove scope completion.
-Report command completion separately from scope completion. An explicit CLI exit must not bypass descendant cleanup.
-Convert synchronous fixture calls to asynchronous calls where that separation needs them.
-Do not wait for all passes before the test can observe their locks or exercise cancellation.
-Propagate the fixture preload to descendant CLI processes and retain their child handles too.
-Use single-process Bun tools, or shell `exec`, where a stub needs no descendant.
-These changes affect the test fixture only; preserve the CLI's real kick choices and pass results.
-If the integration check fails, keep both tasks open and send the manager the exact failure.
-Do not substitute another PID parser or report the tasks complete from partial controls.
-The fixture must handle non-wiki detached kicks too. A wiki stamp cannot serve as the complete launch registry.
-Use `exec` for single-process shell fixtures, or retain and await each child in their fixture supervisor.
-Do not treat the death of a shell as proof that its child exited.
-For nested denied-proof tests, let the outer fixture own the child before the nested test starts.
-Give the nested hook a restricted lifecycle view that denies exit proof. Keep the real handle in the outer fixture.
-After the hook fails, the outer fixture stops and awaits its handle. It then removes its own known fixture path.
-Do not recover authority from a path or PID that the nested test returns.
-
-| State or event | Required action |
-| --- | --- |
-| Before launch | Register the launch intent and its owning scope before any delay or asynchronous spawn. |
-| Spawn succeeds | Retain the returned handle. Bind the intent to that handle, independent of locks, stamps and homes. |
-| Spawn fails before child creation | Record the spawn error. Resolve only that intent; preserve all other handles. |
-| Start or exit deadline | Fail the wait. Retain unresolved intents and live handles; never clear them to permit removal. |
-| Cancel request | Signal only retained handles after validation. A successful signal request does not prove exit. |
-| Exit event or awaited exit | Resolve that handle only. Wait for every owned descendant before scope completion. |
-| Cleanup error or denied proof | Report the error and keep the fixture. A catch cannot turn unknown state into success. |
-| Complete scope | Remove the fixture only after all intents resolve and all owned handles have awaited exits. |
-
-Add these controls before the correction. Each belongs to AC10 and uses the AC10 command above.
-Keep the earlier eight controls and the three AC10 subcriteria; these rows make their missing assertions explicit.
-
-| Test name | Required assertions |
-| --- | --- |
-| `AC10 unseen launch deadline retains ownership` | Delay startup beyond the deadline. Exercise the actual hook. Unresolved intent and fixture remain until independent exit proof. |
-| `AC10 rejected receipt has zero cleanup calls` | If receipts remain, reject every prohibited schema row before signals, spawns or removal. Include a live direct handle. |
-| `AC10 descendant exit precedes removal` | Cancel a fixture with a live descendant. Await both handles before removal; assert exit order. |
-| `AC10 denied exit proof retains fixture` | Inject `EPERM` or a rejected exit query. Assert hook failure, retained fixture and zero unauthorized signals. |
-| `AC10 portable lifecycle matrix` | Disable access to both `/proc` and `ps`. Execute delayed start, normal exit, no launch, two homes and spawn failure. Include both nested assertion rows. |
-
-Receipt tests can disappear only when the receipt parser disappears. Record that removal in the evidence table.
-An unused observer needs no substitute parser. Assert that the complete lifecycle makes zero host-observer calls instead.
-For a no-wiki-launch tick, await any non-wiki children. Distinguish zero wiki launches from zero total launches.
-Test reports must map each row to a test name and its exit, fixture and unauthorized-call assertions.
-
-### Tasks and test order
-
-1. Complete reopened `.18`, 75 minutes, one commit: add failing ownership/error controls, then replace PID-receipt cleanup authority.
-   Record the red results before the correction. Preserve actual CLI passes, tool stubs and environment isolation.
-   Check AC10.1 and AC10.3, including every owned descendant and the unrelated-child negative control.
-2. Complete reopened `.19`, 25 minutes, one commit after `.18`: complete portable controls and the test-to-control evidence table.
-   Check AC10.2 without process files or host process commands. Do not skip the first-observation or nested-denied rows.
+1. `claude-factory-tx6c.7.18`, 75 minutes, one commit: first add red AC10.1 and AC10.3 controls.
+   Complete retained scope cancellation, signal-error retention and nested-hook proof in the same green commit.
+2. `claude-factory-tx6c.7.19`, 25 minutes, one commit after `.18`: complete AC10.2 and the control-to-test table.
+   Preserve the real pass and isolation regressions. No further receipt or observer adapter work is necessary.
 3. Reserve 20 minutes for regression checks. Required CI wait time is separate.
 
-Keep `.20` closed unless its preserved nested controls expose a new failure. Do not create duplicate tasks.
-Run each wiki test file separately with `bun test --timeout 60000`: `src/wiki-kick.test.ts`, `src/cli-wiki-write.test.ts`,
-`src/wiki.test.ts`, `src/prs.test.ts` and `src/cli-wiki-find.test.ts`. Repeat `src/wiki-kick.test.ts` after these checks.
-Run `bun run typecheck`, changed-file Prettier, `git diff --check`, the repository gate, `bun audit` and gitleaks.
-Use `gitleaks detect --log-opts=origin/main..HEAD`. Require final-head test, typecheck, plugin and format CI.
-Each task close comment must give the test name, red result, exit assertion, fixture assertion, command/result and commit.
-Record failed controls before the correction in the same task. Commit the final green tests and fixture change together.
-Do not close either task from a suite total or an ADR commit. Its evidence table must cover every applicable control.
-After the fix commit, mutate exit-proof refusal and ownership retention separately. Each control must kill its own mutant.
-Restore each mutant. Do not ship required checks red. State native macOS evidence separately from portable fixture evidence.
+Each close comment must name the test, red result, exit order, fixture result, unauthorized-call count, command and commit.
+A suite total or ADR commit cannot close a task. Do not publish a final head with red required checks.
+After the fix commit, mutate handle retention and scope-exit refusal separately. Restore each mutant after its control fails.
+Run each file separately with `bun test --timeout 60000`: `src/wiki-kick.test.ts`, `src/cli-wiki-write.test.ts`,
+`src/wiki.test.ts`, `src/prs.test.ts` and `src/cli-wiki-find.test.ts`. Repeat wiki-kick after those checks.
+Run repository typecheck, changed-file Prettier, `git diff --check`, the repository gate and `bun audit`.
+Run `gitleaks detect --log-opts=origin/main..HEAD`. Require final-head test, typecheck, plugin and format CI.
+If the retained-scope integration fails, keep both tasks open and mail the manager the exact failure.
+Do not substitute partial controls or silently accept the Bun-child limit.
 
 ### Risk, release and observations
 
-This work is **security-sensitive**: child lifetime and inherited access affect test isolation.
-Reject further scan heuristics: failed reads cannot establish ownership, and same-user orphans can belong to another test.
-Reject fixed sleeps and lock-only waits: neither proves exit. Reject a production supervisor: this defect concerns the fixture.
-There is no production migration, new flag, dependency or `.factory/` change.
-Keep `FACTORY_WIKI_WRITE_MIN`, `FACTORY_DREAM_CODEX`, the 45-minute agent limit and existing test timeout override unchanged.
+This work is **security-sensitive**: child lifetime, permissions and inherited access affect fixture isolation.
+No production migration, new flag, dependency or `.factory/` change is necessary.
+Keep `FACTORY_WIKI_WRITE_MIN`, `FACTORY_DREAM_CODEX`, the 45-minute agent limit and the test timeout override unchanged.
 Review and security must inspect the final head. A person must merge PR #714 before release.
 Rollback uses a revert PR and a person's merge. Preserve wiki pages and `wiki-state.json`.
-Test evidence consists of owned launches, awaited exits, fixture retention and zero unrelated signals or external calls.
-Production evidence remains committed pages, `written`, `lastWriteAt`, masked `wiki.log`, counts and the push result.
+Test observations are owned launches, awaited exit order, retained fixtures and zero unauthorized signals or external calls.
+Production observations remain committed pages, `written`, `lastWriteAt`, masked `wiki.log`, counts and the push result.
 AC7 remains **must-see-live** in authorized ship soak: `factory wiki write --bead claude-factory-3w8o`.
 Inspect the soak's own seven-section page with PR #590 and #591, state, log and remote result.
 The soak must not substitute its deadline for this evidence. No live read is a pre-merge criterion.
