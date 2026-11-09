@@ -1730,6 +1730,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
   // only base_branch fills prompts: other {names} in a prompt stay as written
   const prm: Record<string, string> =
     def.params?.base_branch === undefined ? {} : { base_branch: baseBranchOf(def, rig, run.repo) }
+  const fastCheck = paramsOf(def, rig).fast_check?.trim()
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
@@ -1750,6 +1751,16 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Your task',
     fill(n.prompt.trim(), prm),
+    ...(fastCheck
+      ? [
+          '',
+          '## Fast check',
+          "The rig's fast check (format, lint, build-file lists). Run it at the worktree root. Exit 0 is green.",
+          '~~~sh',
+          fastCheck,
+          '~~~',
+        ]
+      : []),
     ...(rig?.pushRules?.length
       ? [
           '',

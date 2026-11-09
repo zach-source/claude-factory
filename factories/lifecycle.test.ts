@@ -759,6 +759,7 @@ test('implement, verify, security, plan and review split to codex, and the exec 
   for (const id of ['check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
   expect(lc.params!.codex_share).toBe('0.3')
   expect(lc.params!.codex_judge_share).toBe('0') // a rig turns the codex judge tier on itself
+  expect(lc.params!.fast_check).toBe('') // a rig sets its own fast check; empty is off
   expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
   // cursor is off for every station until a rig sets its share
   for (const st of ['plan', 'implement', 'verify', 'review', 'security']) {

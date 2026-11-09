@@ -107,6 +107,7 @@ export default {
     codex_security_share: '0.3', // share of runs whose security uses codex; 0 turns it off
     codex_judge_model: 'gpt-6-astra', // codex in place of judge_model at plan and review
     codex_judge_share: '0', // share of runs whose plan and review use codex; off until a rig sets it
+    fast_check: '', // a rig's fast check command (format, lint, build-file lists); empty turns it off
     cursor: 'cursor-agent --force --trust', // the cursor launcher (the deny hook stays on); no station splits to it yet
     cursor_plan_model: 'grok-4.7-low', // cursor at plan
     cursor_plan_share: '0', // share of runs whose plan uses cursor; 0 turns it off
