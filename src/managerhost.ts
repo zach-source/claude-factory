@@ -343,6 +343,11 @@ export async function host(
   )
   // the rig repos and their beads stores, before the manager reads them; a failure is logged, and the manager still starts
   for (const problem of prepare?.() ?? []) log(`repos sync: ${problem}`)
+  if (process.env.FACTORY_AX_MANAGER_DRY === '1') {
+    // a staging copy of a live home: no herdr, no manager, no tick and no backup
+    log('dry: the home is ready; the manager does not start (FACTORY_AX_MANAGER_DRY=1)')
+    for (;;) await Bun.sleep(3_600_000)
+  }
   await bringUp(args, home, log, session())
   // ponytail: polls every 30 s with no backoff. A manager that exits inside a live herdr is not restarted
   // (superviseManager restarts its Claude); a herdr that keeps dying restarts every 30 s

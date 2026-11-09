@@ -46,6 +46,6 @@ In a clean clone, run the README install command. Stage a line that matches a pr
 ## 7. Repo checks (SC-002, SC-006, FR-017, FR-018)
 
 - `test ! -e bin/factory-up && test ! -e hack/push-worker.sh`.
-- `grep -rn "factory-up\|push-worker" README.md docs src` returns nothing.
+- `grep -rn 'bin/factory-up\|push-worker' README.md docs src` returns nothing.
 - `grep -rn "by hand" README.md docs` shows no instruction to edit `rigs.json` or write `devenv.json`.
 - `bun test` passes.

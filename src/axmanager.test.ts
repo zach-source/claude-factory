@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
 import { isLaptopPane, mapRunWorktree, stationRunnerName } from './axrepos'
-import { attemptStart } from './cli'
+import { attemptStart, gitNetworkEnv } from './cli'
 import { seedClaudeJson, seedSettings, sshdConfig } from './managerhost'
 
 const PUB = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGs0bWVrZXlrZXlrZXlrZXlrZXlrZXlrZXlrZXlrZXk laptop'
@@ -85,6 +85,8 @@ test('managerEnv passes the pkg gate, an empty capabilities list, and FACTORY_AX
     ax.managerEnv({ FACTORY_AX_OTLP_ENDPOINT: '', FACTORY_OTLP_ENDPOINT: 'http://192.0.2.1:4318' }),
   ).toMatchObject({ FACTORY_AX_OTLP_ENDPOINT: '' })
   expect('FACTORY_AX_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
+  // a staging copy: the host prepares the home and does not start the manager
+  expect(ax.managerEnv({ FACTORY_AX_MANAGER_DRY: '1' })).toMatchObject({ FACTORY_AX_MANAGER_DRY: '1' })
   expect(ax.readAxEnv('{"A":"1"}')).toEqual({ A: '1' })
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '["secret"]' }))).toThrow(/not a JSON object/)
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '{bad secret' }))).toThrow(
@@ -341,5 +343,19 @@ test('sendStdio streams the file to ax stdio and needs the task to print the sam
     expect(ax.hasStdio()).toBe(false)
   } finally {
     process.env = saved
+  }
+})
+
+test('gitNetworkEnv reads the env at call time: the host sets the gateway CA after the CLI loads (claude-factory-d289.14)', () => {
+  const saved = process.env.GIT_SSL_CAINFO
+  process.env.GIT_SSL_CAINFO = '/later/egress-ca.crt'
+  try {
+    expect(gitNetworkEnv()).toMatchObject({
+      GIT_SSL_CAINFO: '/later/egress-ca.crt',
+      GIT_TERMINAL_PROMPT: '0',
+    })
+  } finally {
+    if (saved === undefined) delete process.env.GIT_SSL_CAINFO
+    else process.env.GIT_SSL_CAINFO = saved
   }
 })
