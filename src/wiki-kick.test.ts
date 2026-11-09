@@ -48,49 +48,109 @@ function alive(pid: number, stat: (pid: number) => string = readStat) {
     return true // kill(pid, 0) succeeded, so a failed /proc read is not proof of exit
   }
 }
-/** every pid that ever carried TAG: an identity is kept until exit is proved, whatever later reads say */
-const known = new Set<number>()
+/** what one look at the host found: pids that carry TAG, and live pids of ours whose environment cannot be read */
+type Seen = { tagged: number[]; unknown: number[] }
 const procOk = existsSync('/proc/self/environ')
-/** the pids that carry TAG now. Linux reads /proc; macOS has no /proc, so it reads `ps -E` output. A failed list throws. */
-function scanTagged(
-  readEnv: (pid: number) => string = pid => readFileSync(`/proc/${pid}/environ`, 'utf8'),
-  list: () => number[] = () => readdirSync('/proc').map(Number),
-) {
-  const out: number[] = []
-  if (!procOk) {
-    const r = Bun.spawnSync(['ps', '-axwwE', '-o', 'pid=,command='])
-    if (r.exitCode !== 0) throw new Error('ps failed: no child list')
-    for (const line of r.stdout.toString().split('\n')) {
-      const m = /^\s*(\d+)\s.*FACTORY_WIKI_TEST_TAG=(\S+)/.exec(line)
-      if (m && m[2] === TAG) out.push(Number(m[1]))
-    }
-    return out
-  }
-  for (const pid of list()) {
-    if (!pid) continue
+const startOf = (stat: string) => Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19])
+const ownStart = procOk ? startOf(readStat(process.pid)) : 0
+const errCode = (e: unknown) => (e as NodeJS.ErrnoException).code
+const ppidOf = (stat: string) => Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+/**
+ * Linux adapter: read /proc. A pid that is gone does not count. A pid is unknown when all of these hold: it has
+ * no readable environment, it belongs to this user, it started after this test process, and its parent is this
+ * process, init or another unknown pid. An orphan of a launch has the parent init. A sibling in the shell
+ * pipeline that runs the tests has another parent, so it is not unknown.
+ */
+function procObserver(
+  o: {
+    readEnv?: (pid: number) => string
+    list?: () => number[]
+    stat?: (pid: number) => string
+    uid?: (pid: number) => number
+  } = {},
+): Seen {
+  const readEnv = o.readEnv ?? (pid => readFileSync(`/proc/${pid}/environ`, 'utf8'))
+  const stat = o.stat ?? readStat
+  const uid = o.uid ?? (pid => statSync(`/proc/${pid}`).uid)
+  const seen: Seen = { tagged: [], unknown: [] }
+  const blind = new Map<number, number>()
+  for (const pid of (o.list ?? (() => readdirSync('/proc').map(Number)))()) {
+    if (!pid || pid === process.pid) continue
     try {
-      if (readEnv(pid).includes(`FACTORY_WIKI_TEST_TAG=${TAG}\0`)) out.push(pid)
-    } catch {
-      // gone, or not ours to read; a pid seen before stays in `known`
+      if (readEnv(pid).includes(`FACTORY_WIKI_TEST_TAG=${TAG}\0`)) seen.tagged.push(pid)
+    } catch (e) {
+      if (errCode(e) === 'ENOENT' || errCode(e) === 'ESRCH') continue
+      try {
+        const st = stat(pid)
+        if (uid(pid) === process.getuid!() && startOf(st) >= ownStart) blind.set(pid, ppidOf(st))
+      } catch {
+        // gone while we looked
+      }
     }
   }
-  return out
+  const mine = new Set<number>([process.pid, 1])
+  for (let grew = true; grew;) {
+    grew = false
+    for (const [pid, ppid] of blind) {
+      if (mine.has(ppid) && !mine.has(pid)) {
+        mine.add(pid)
+        seen.unknown.push(pid)
+        grew = true
+      }
+    }
+  }
+  return seen
 }
+/** macOS adapter: no /proc, so read `ps -E` output. A failed list throws: no list is no proof. */
+function psObserver(
+  run: () => { exitCode: number; stdout: { toString(): string } } = () =>
+    Bun.spawnSync(['ps', '-axwwE', '-o', 'pid=,command=']),
+): Seen {
+  const r = run()
+  if (r.exitCode !== 0) throw new Error('ps failed: no child list')
+  const seen: Seen = { tagged: [], unknown: [] }
+  for (const line of r.stdout.toString().split('\n')) {
+    const m = /^\s*(\d+)\s.*FACTORY_WIKI_TEST_TAG=(\S+)/.exec(line)
+    if (m && m[2] === TAG && Number(m[1]) !== process.pid) seen.tagged.push(Number(m[1]))
+  }
+  return seen
+}
+let observe: () => Seen = () => (procOk ? procObserver() : psObserver())
+/** every pid that ever carried TAG, with its start time: an identity is kept until exit is proved */
+const known = new Map<number, number>()
+const unknownSeen = new Map<number, number>()
+const startNow = (pid: number) => {
+  try {
+    return startOf(readStat(pid))
+  } catch {
+    return NaN
+  }
+}
+/** the same process: a reused pid has another start time. Where the start time is unreadable, trust the pid. */
+const same = (pid: number, start: number) =>
+  alive(pid) && (isNaN(start) || isNaN(startNow(pid)) || start === startNow(pid))
 /** the live processes that ever carried TAG, in any home; never the test itself */
-function tagged(scan: () => number[] = scanTagged) {
-  for (const pid of scan()) if (pid !== process.pid) known.add(pid)
-  return [...known].filter(pid => alive(pid))
+function tagged() {
+  const seen = observe()
+  for (const pid of seen.tagged) if (!known.has(pid)) known.set(pid, startNow(pid))
+  for (const pid of seen.unknown) if (!unknownSeen.has(pid)) unknownSeen.set(pid, startNow(pid))
+  return [...known].filter(([pid, start]) => same(pid, start)).map(([pid]) => pid)
 }
+/** live processes that may be ours but whose environment cannot be read: they cannot be signalled or cleared */
+const unproven = () => [...unknownSeen].filter(([pid, start]) => same(pid, start)).map(([pid]) => pid)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-/** stop every owned child and wait for its exit; false when one is still alive at the deadline */
-async function stopOwned(ms = 10_000) {
+// the nested row (AC10 assertion cleanup) shortens the hook waits; a normal run keeps these
+let hookMs = 10_000
+let settleMs = 5_000
+/** stop every owned child and wait for its exit; false when one is still alive or unproven at the deadline */
+async function stopOwned(ms = hookMs) {
   for (const h of handles.splice(0)) {
     h.kill(9)
     await h.exited
   }
   for (const t = Date.now(); ; await sleep(50)) {
     const pids = tagged()
-    if (!pids.length) return true
+    if (!pids.length && !unproven().length) return true
     if (Date.now() - t > ms) return false
     for (const pid of pids) {
       try {
@@ -103,7 +163,7 @@ async function stopOwned(ms = 10_000) {
 }
 /** every owned child has exited (the passes end by themselves); a deadline stops them and throws */
 async function settled(ms = 15_000) {
-  for (const t = Date.now(); tagged().length; await sleep(100)) {
+  for (const t = Date.now(); tagged().length || unproven().length; await sleep(100)) {
     if (Date.now() - t > ms) {
       if (!(await stopOwned())) throw new Error('an owned child did not exit: fixture kept')
       throw new Error('a pass did not end')
@@ -112,7 +172,7 @@ async function settled(ms = 15_000) {
 }
 afterEach(async () => {
   try {
-    await settled(5_000)
+    await settled(settleMs)
   } catch {
     // stopOwned already ran
   }
@@ -179,7 +239,11 @@ async function passEnded(startMs = 10_000, endMs = 15_000) {
       throw new Error('the pass never took wiki.lock')
     }
   }
-  for (const t = Date.now(); existsSync(lock) || tagged().length || alive(pid); await sleep(100)) {
+  for (
+    const t = Date.now();
+    existsSync(lock) || tagged().length || unproven().length || alive(pid);
+    await sleep(100)
+  ) {
     if (Date.now() - t > endMs) {
       if (!(await stopOwned())) throw new Error('an owned child did not exit: fixture kept')
       throw new Error('the pass did not end')
@@ -524,34 +588,156 @@ test('AC10 control: children of two homes in one test are all accounted for', as
   for (const k of kids) expect(alive(k.pid)).toBe(false)
 }, 30_000)
 
+const taggedEnv = { ...process.env, FACTORY_WIKI_TEST_TAG: TAG }
+const denied = () => {
+  throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+}
+
 test('AC10 control: an environ read that fails after a sighting keeps the child owned', async () => {
-  const p = own(Bun.spawn(['sleep', '60'], { env: { ...process.env, FACTORY_WIKI_TEST_TAG: TAG } }))
+  const p = own(Bun.spawn(['sleep', '60'], { env: taggedEnv }))
   await sleep(200)
   expect(tagged()).toContain(p.pid)
-  const failing = () =>
-    scanTagged(
-      () => {
-        throw new Error('EACCES')
-      },
-      () => [p.pid],
-    )
-  expect(failing()).toEqual([])
-  expect(tagged(failing)).toContain(p.pid) // the identity survives the failed read
+  const failing = procObserver({ readEnv: denied, list: () => [p.pid] })
+  expect(failing.tagged).toEqual([])
+  observe = () => failing
+  try {
+    expect(tagged()).toContain(p.pid) // the identity survives the failed read
+  } finally {
+    observe = () => (procOk ? procObserver() : psObserver())
+  }
   expect(await stopOwned()).toBe(true)
   expect(alive(p.pid)).toBe(false)
 }, 30_000)
 
-test('AC10 control: a failed assertion still runs the cleanup that stops and awaits the child', async () => {
-  const p = own(Bun.spawn(['sleep', '60'], { env: { ...process.env, FACTORY_WIKI_TEST_TAG: TAG } }))
-  await sleep(200)
+test('AC10 ownership before observation: a child whose environ is never readable blocks cleanup', async () => {
+  setup(false)
+  const lock = join(home, 'wiki.lock')
+  const child = Bun.spawn(['sh', '-c', `sleep 1; mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 60`], {
+    env: taggedEnv,
+  }) // no handle in `handles`: only the observer can find it
+  const real = observe
   try {
-    expect(1).toBe(2)
-  } catch {
-    // the afterEach hook is the same stopOwned path
+    await sleep(200)
+    observe = () => procObserver({ readEnv: denied }) // the first and every later read is denied
+    expect(await stopOwned(500)).toBe(false) // a live child is not a successful cleanup
+    expect(alive(child.pid)).toBe(true)
+    await expect(settled(300)).rejects.toThrow('fixture kept')
+    expect(alive(child.pid)).toBe(true)
+    expect(existsSync(dir)).toBe(true)
   } finally {
-    expect(await stopOwned()).toBe(true)
+    observe = real
+    child.kill(9)
+    await child.exited
   }
-  expect(alive(p.pid)).toBe(false)
+  expect(await stopOwned()).toBe(true) // exit is proved: the unproven pid is gone
+}, 30_000)
+
+test('AC10 supported hosts: the ps adapter gives the same exit contract without /proc', async () => {
+  const child = Bun.spawn(['sleep', '60'], { env: taggedEnv })
+  const real = observe
+  const out = (lines: string[]) => ({ exitCode: 0, stdout: lines.join('\n') })
+  try {
+    expect(
+      psObserver(() =>
+        out([
+          `  ${child.pid} sleep 60 HOME=/x FACTORY_WIKI_TEST_TAG=${TAG} PATH=/bin`,
+          '  4242 sleep 60 FACTORY_WIKI_TEST_TAG=other-tag',
+          '  4243 sleep 60 PATH=/bin',
+        ]),
+      ),
+    ).toEqual({ tagged: [child.pid], unknown: [] })
+    observe = () => psObserver(() => out([`${child.pid} sleep 60 FACTORY_WIKI_TEST_TAG=${TAG}`]))
+    expect(tagged()).toEqual([child.pid])
+    observe = () => psObserver(() => ({ exitCode: 1, stdout: '' })) // a failed observer fails closed
+    expect(() => tagged()).toThrow('no child list')
+    await expect(stopOwned(300)).rejects.toThrow('no child list')
+    expect(alive(child.pid)).toBe(true)
+    observe = () => psObserver(() => out([])) // an empty list later does not clear a sighted child
+    expect(tagged()).toEqual([child.pid])
+    observe = () => psObserver(() => out([`${child.pid} sleep 60 FACTORY_WIKI_TEST_TAG=${TAG}`]))
+    expect(await stopOwned()).toBe(true)
+    expect(alive(child.pid)).toBe(false)
+  } finally {
+    observe = real
+    child.kill(9)
+    await child.exited
+  }
+}, 30_000)
+
+// ---- AC10 assertion cleanup: a nested `bun test` runs only the fixture test below, with this file's real afterEach ----
+const nestedRow = process.env.FACTORY_WIKI_NESTED
+test.skipIf(!nestedRow)('AC10 nested fixture (started by the AC10 assertion cleanup test)', async () => {
+  setup(false)
+  hookMs = settleMs = 300
+  const child =
+    nestedRow === 'clean'
+      ? own(Bun.spawn(['sleep', '60'], { env: taggedEnv }))
+      : Bun.spawn(['sleep', '60'], { env: taggedEnv })
+  if (nestedRow === 'denied') observe = () => procObserver({ readEnv: denied })
+  await sleep(200)
+  writeFileSync(process.env.FACTORY_WIKI_NESTED_OUT!, JSON.stringify({ pid: child.pid, dir }))
+  expect(1).toBe(2) // the intentional assertion error
+})
+
+async function nestedRun(row: 'clean' | 'denied') {
+  const out = join(dir, `nested-${row}.json`)
+  mkdirSync(dir, { recursive: true })
+  const p = own(
+    Bun.spawn(
+      [
+        process.execPath,
+        'test',
+        '--timeout',
+        '60000',
+        import.meta.path,
+        '--test-name-pattern',
+        'AC10 nested fixture',
+      ],
+      {
+        env: { ...process.env, FACTORY_WIKI_NESTED: row, FACTORY_WIKI_NESTED_OUT: out },
+        stdout: 'ignore',
+        stderr: 'ignore',
+      },
+    ),
+  )
+  const exit = await p.exited
+  return { exit, ...(JSON.parse(readFileSync(out, 'utf8')) as { pid: number; dir: string }) }
+}
+
+test('AC10 assertion cleanup: after a failed assertion the hook stops the child, then removes the fixture', async () => {
+  const r = await nestedRun('clean')
+  expect(r.exit).not.toBe(0)
+  expect(alive(r.pid)).toBe(false)
+  expect(existsSync(r.dir)).toBe(false)
+}, 60_000)
+
+test('AC10 assertion cleanup: without exit proof the hook fails and the fixture stays', async () => {
+  let r: { exit: number; pid: number; dir: string } | undefined
+  try {
+    r = await nestedRun('denied')
+    expect(r.exit).not.toBe(0)
+    expect(alive(r.pid)).toBe(true) // the hook could not prove exit, and it did not signal the pid
+    expect(existsSync(r.dir)).toBe(true)
+  } finally {
+    if (r) {
+      process.kill(r.pid, 'SIGKILL')
+      for (let i = 0; i < 100 && alive(r.pid); i++) await sleep(50)
+      expect(alive(r.pid)).toBe(false)
+      rmSync(r.dir, { recursive: true, force: true })
+    }
+  }
+}, 60_000)
+
+test('AC10 control: an unreadable pid is unknown only for this user, after the start, in our tree', () => {
+  const fields = (ppid: number, start: number) =>
+    `9 (x) S ${ppid} ${Array(17).fill('0').join(' ')} ${start} 0`
+  const look = (stat: string, uid = process.getuid!()) =>
+    procObserver({ readEnv: denied, list: () => [9], stat: () => stat, uid: () => uid }).unknown
+  expect(look(fields(1, ownStart + 1))).toEqual([9]) // an orphan of a launch
+  expect(look(fields(process.pid, ownStart + 1))).toEqual([9]) // a direct child
+  expect(look(fields(4242, ownStart + 1))).toEqual([]) // a sibling in the shell pipeline
+  expect(look(fields(1, ownStart - 1))).toEqual([]) // older than this test
+  expect(look(fields(1, ownStart + 1), process.getuid!() + 1)).toEqual([]) // another user
 })
 
 test('AC10 control: a live pid with an unreadable /proc record counts as alive', () => {
