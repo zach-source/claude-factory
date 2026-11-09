@@ -129,6 +129,8 @@ export type WorktreeFact = {
    * removed or snapshotted (claude-factory-l38.7: a failed read must never read as clean or small) */
   dirty: 'clean' | 'small' | 'large' | 'unknown'
   bytes: number
+  /** a dir that a run owns and that git no longer lists (a `git worktree remove` that stopped halfway) */
+  unregistered?: true
 }
 
 /** one factory/* branch's local and/or remote tip, and whether each is an ancestor of origin/<default> */
@@ -221,7 +223,13 @@ export type RigWorktreeFacts = {
   beadClosed: Record<string, boolean>
 }
 
-export type WorktreeRemoval = { runId: string; path: string; bytes: number; snapshot: boolean }
+export type WorktreeRemoval = {
+  runId: string
+  path: string
+  bytes: number
+  snapshot: boolean
+  unregistered?: true
+}
 export type BranchRemoval = { runId: string; name: string; local: string | null; remote: string | null }
 export type Kept = { kind: 'worktree' | 'branch'; runId: string | null; name: string; reason: string }
 export type RigWorktreePlan = {
@@ -318,7 +326,13 @@ export function worktreePlan(
         if (w.branch) keptBranches.add(w.branch)
         continue
       }
-      removeWorktrees.push({ runId: owner.id, path: w.path, bytes: w.bytes, snapshot: w.dirty === 'small' })
+      removeWorktrees.push({
+        runId: owner.id,
+        path: w.path,
+        bytes: w.bytes,
+        snapshot: w.dirty === 'small',
+        ...(w.unregistered && { unregistered: true as const }),
+      })
     }
     const removeBranches: BranchRemoval[] = []
     const noFacts = rig.branches === null || rig.prs === null

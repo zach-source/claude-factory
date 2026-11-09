@@ -41,12 +41,12 @@ export type OrphanCtx = {
 }
 
 export type OrphanIo = {
-  /** a bead's status, or null when bd cannot say */
-  beadStatus: (id: string) => Promise<string | null>
+  /** a bead's status and close reason, or null when bd cannot say */
+  bead: (id: string) => Promise<{ status: string; reason?: string } | null>
   /** the PR head's CI, or null when the call failed */
   checks: (pr: OrphanPr) => Promise<Checks | null>
-  /** the PR's mergeable state ('MERGEABLE', 'CONFLICTING' or other) and whether a review asks for changes; null when unreadable */
-  view: (pr: OrphanPr) => Promise<{ mergeable: string; changes: boolean } | null>
+  /** the PR's mergeable state ('MERGEABLE', 'CONFLICTING' or other), whether a review asks for changes and whether a person's APPROVED review decision stands; null when unreadable */
+  view: (pr: OrphanPr) => Promise<{ mergeable: string; changes: boolean; approved: boolean } | null>
   /** adds labels to the PR */
   label: (pr: OrphanPr, labels: string[]) => Promise<void> | void
   /** closes the PR with a comment */
@@ -124,13 +124,34 @@ export async function orphanSweep(
     const src = runOf(pr)!
     const bead = ctx.runs.get(src)!.bead
     if (bead) {
-      const status = await io.beadStatus(bead)
-      if (status === null) {
+      const info = await io.bead(bead)
+      if (info === null) {
         skip(pr.url, 'bead unreadable')
         continue
       }
+      const status = info.status
       if (status === 'closed' || status === 'deferred') {
-        if (done() >= acts) continue
+        // the repair pass (closeParents) closes a parent with this exact reason; it is no merge, so the PR stays (claude-factory-i1qiv)
+        let hold = status === 'closed' && info.reason === 'every child is closed' ? info.reason : undefined
+        if (!hold) {
+          if (done() >= acts) continue
+          if (lookups >= ORPHAN_CHECKS_MAX) {
+            skip(pr.url, 'lookup cap')
+            continue
+          }
+          lookups++
+          const v = await io.view(pr).catch(() => null)
+          if (!v) {
+            skip(pr.url, 'view unreadable')
+            continue
+          }
+          if (v.approved) hold = 'approved'
+        }
+        if (hold) {
+          if (!hasLabel(pr, 'owner') && done() < acts) await label(pr, src, ['owner'])
+          skip(pr.url, `held for the person: ${hold}`)
+          continue
+        }
         try {
           await io.close(
             pr,
