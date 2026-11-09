@@ -1565,7 +1565,7 @@ const skillsShape = (v: unknown, where: string) =>
 /**
  * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
  * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
- * A rig name outside the worker image refuses here, because a person edits rigs.json by hand.
+ * A rig name outside the worker image refuses here, because rigs.json can hold a name that no command checked (an older file, or an edit outside the CLI).
  * `loadFactory` checks the other two layers (claude-factory-qda).
  */
 export function workerSkills(
@@ -8176,7 +8176,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
  * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, its
  * due sweeps start one pass each under `factory sweep` (claude-factory-8pc.16), and `maxRuns` caps
  * its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's rigs.json is written by
- * `factory rig add` and can be edited by hand.
+ * `factory rig add`, `rig rm`, `rig set`, `rig env`, `rig egress`, `rig beads-remote` and `rig undo`.
  */
 export type Rig = {
   name: string
@@ -8185,7 +8185,7 @@ export type Rig = {
   remote?: string
   factory: string
   maxRuns?: number
-  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; edit rigs.json by hand */
+  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; no command sets it yet (claude-factory-3fxna) */
   clusterRuns?: number
   /** when the rig has room and no labeled bead to start, queue the best unlabeled ready leaf beads (src/autoqueue.ts); off when absent */
   autoQueue?: AutoQueue
@@ -8211,11 +8211,11 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
-  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; edit rigs.json by hand */
+  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; no command sets it yet (claude-factory-3fxna) */
   pushRules?: string[]
-  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
+  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); no command sets it yet (claude-factory-3fxna) */
   skills?: string[]
-  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). Edit rigs.json by hand. */
+  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). No command sets it yet (claude-factory-3fxna). */
   otelContent?: boolean
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
@@ -8228,7 +8228,7 @@ export type Rig = {
   /**
    * the AX sandbox class its VM workers (the ax runner) run in (ax-3hy). `microvm` for a repo whose
    * workers build with Nix, which fails under gVisor; AX's gvisor default when absent. The cluster
-   * needs a microvm WorkerPool. Edit rigs.json by hand
+   * needs a microvm WorkerPool. No command sets it yet (claude-factory-3fxna).
    */
   sandboxClass?: ax.SandboxClass
   /**
@@ -12191,7 +12191,7 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
-  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
+  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins; devenv.builder, devenv.token and devenv.push go to HOME/devenv.json
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   token [list] | use <n> | best        Claude token slots: the live slot and each slot's 7d and 5h use; make slot n live, or the slot with the lowest 7d use
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
