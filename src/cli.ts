@@ -319,6 +319,7 @@ import * as leaseOp from './core/ops/lease'
 import * as metricsOp from './core/ops/metrics'
 import * as planOp from './core/ops/plan'
 import * as prsOp from './core/ops/prs'
+import * as rigsOp from './core/ops/rigs'
 import * as runsOp from './core/ops/runs'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
@@ -475,6 +476,21 @@ export type Row = {
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
+/**
+ * the error of the run's last tick, in runs/<id>/tick-error.txt. The tick output goes away, so
+ * `factory status` reads it from there. A tick with no error removes the file
+ */
+const tickErrorFile = (id: string) => join(runDir(id), 'tick-error.txt')
+function keepTickError(id: string, error: string | undefined) {
+  try {
+    if (error) writeFileSync(tickErrorFile(id), `${new Date().toISOString()} ${error}\n`)
+    else rmSync(tickErrorFile(id), { force: true })
+  } catch {
+    // best effort: the tick row still has the error
+  }
+}
+const tickError = (id: string) =>
+  existsSync(tickErrorFile(id)) ? readFileSync(tickErrorFile(id), 'utf8').trim() : undefined
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
 function durable(path: string, text: string, flag: 'w' | 'a') {
@@ -2047,8 +2063,10 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, full())
   }
+  const address = runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
+  // after the launch: a launch that throws is not a launch
   logLaunch(run, node, c.seq, agentOfNode(run, def, node), !!session)
-  return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
+  return address
 }
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
@@ -4562,6 +4580,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   } catch (err) {
     error = (err as Error).message
   }
+  keepTickError(run.id, error)
 
   error ??= run.bead ? trackOf(run.id, saved).error : undefined
 
@@ -10831,6 +10850,47 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   return { busy, held }
 }
 
+/** the lines of `factory rig list`: each rig, its busy count and its settings, then the town's count */
+async function rigListLines(print: Print) {
+  const { busy, held } = await busyRigs()
+  if (!rigs().length) print('no rigs: factory rig add <name> <repo> [factory]')
+  for (const r of rigs()) {
+    // a stuck run holds this rig's own slot, so it counts here too (not the town's)
+    const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
+    let sweepsLine = r.sweeps
+    if (sweepsLine === undefined) {
+      try {
+        sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
+      } catch {
+        sweepsLine = []
+      }
+    }
+    print(
+      `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
+    )
+    if (r.goal) print(`  goal: ${r.goal}`)
+    if (r.slo) print(`  slo: ${r.slo}`)
+    if (r.drift) print(`  drift: ${r.drift}`)
+    if (r.agent) print(`  agent: ${r.agent}`)
+    if (personOnlyContexts(r)?.length) print(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
+    if (protectedBranches(r)?.length) print(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
+    if (r.mergeAuthority === true)
+      print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
+    if (r.mcp) print(`  mcp: ${r.mcp}`)
+    for (const [k, v] of Object.entries(r.params ?? {})) print(`  param ${k}: ${v}`)
+    if (r.linear) {
+      const extra = [
+        r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
+        r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
+      ].filter(Boolean)
+      print(
+        `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
+      )
+    }
+  }
+  print(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+}
+
 async function assertRoom(repo: string) {
   if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
   const { busy, held } = await busyRigs()
@@ -11953,7 +12013,7 @@ async function status(id: string | undefined, print: Print = l => console.log(l)
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
     const def = await loadPinned(run.factory)
-    const r = row(run, def, value, c, agentOf(def, value, c))
+    const r = row(run, def, value, c, agentOf(def, value, c), tickError(runId))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     print(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     // a bead's goal carries its whole description: bd show <bead> has it
@@ -12349,6 +12409,7 @@ export const corePort: Port = {
   records,
   refreshMerges,
   managerUsage,
+  rigList: rigListLines,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13858,45 +13919,7 @@ if (import.meta.main && !outboxCmd)
             }, 'cleared beadsRemote')
           }
         } else if (sub === 'list') {
-          const { busy, held } = await busyRigs()
-          if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
-          for (const r of rigs()) {
-            // a stuck run holds this rig's own slot, so it counts here too (not the town's)
-            const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
-            let sweepsLine = r.sweeps
-            if (sweepsLine === undefined) {
-              try {
-                sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
-              } catch {
-                sweepsLine = []
-              }
-            }
-            console.log(
-              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
-            )
-            if (r.goal) console.log(`  goal: ${r.goal}`)
-            if (r.slo) console.log(`  slo: ${r.slo}`)
-            if (r.drift) console.log(`  drift: ${r.drift}`)
-            if (r.agent) console.log(`  agent: ${r.agent}`)
-            if (personOnlyContexts(r)?.length)
-              console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
-            if (protectedBranches(r)?.length)
-              console.log(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
-            if (r.mergeAuthority === true)
-              console.log(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
-            if (r.mcp) console.log(`  mcp: ${r.mcp}`)
-            for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
-            if (r.linear) {
-              const extra = [
-                r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
-                r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
-              ].filter(Boolean)
-              console.log(
-                `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
-              )
-            }
-          }
-          console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+          emit(await rigsOp.list(cliCtx(), {}))
         } else if (sub === 'history') {
           const snaps = snapshots(rigsFile())
           if (!snaps.length) console.log('no rig history')
