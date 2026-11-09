@@ -7,6 +7,10 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - Added: the worker and manager images have herdr core (`hc` 0.1.19, pinned by sha256), so the Herdr app can reach an AX task with `hc machine add` (docs/remote-runner.md, Attach with the Herdr app).
+- Fixed: the AX manager host backup did not run after the first one: back-to-back ticks held `tick.lock`, and the backup stopped after 2 min of tries (claude-factory-d289.21).
+  - Now the host writes `FACTORY_HOME/backup.want` when a backup is due. A tick does not start while that file is younger than 10 min. The backup removes it when it takes the lock.
+  - The backup waits up to 10 min for the running tick.
+  - Under the lock, the backup only snapshots the memory and adds the files to its index. The gitleaks scan, the redaction, the gzip, the commit and the push run after the lock is free.
 - Fixed: after GitHub refused an AX manager home backup push, each later push sent the refused commit again and failed (claude-factory-d289.20). Now the backup pushes one commit of the current tree on the remote tip, or a root commit if the remote branch is absent.
 - Fixed: GitHub refused the AX manager home backup push (GH001: a file over 100 MB) (claude-factory-d289.19).
   - Now the backup stores each file over 50 MB as gzip, at `<path>.gz`, after the secret scan.
