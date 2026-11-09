@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { tailUtf8 } from './screen'
 import { screen } from './worker'
 
 describe('worker screen', () => {
@@ -51,6 +52,19 @@ describe('worker screen', () => {
       expect(Buffer.byteLength(got)).toBeLessThanOrEqual(65536)
       expect(Buffer.byteLength(got)).toBeGreaterThan(65533)
       expect(got.endsWith('€' + pad + 'END')).toBe(true)
+    }
+  })
+
+  test('the decoded text stays within 65536 bytes: invalid bytes and an incomplete last character', () => {
+    writeFileSync(stream('claude'), Buffer.alloc(65536, 0xff))
+    expect(Buffer.byteLength(screen())).toBeLessThanOrEqual(65536)
+    writeFileSync(stream('claude'), Buffer.concat([Buffer.alloc(65535, 0x61), Buffer.from([0xe2])]))
+    expect(Buffer.byteLength(screen())).toBeLessThanOrEqual(65536)
+    for (const buf of [
+      Buffer.alloc(65536, 0xff),
+      Buffer.concat([Buffer.alloc(65535, 0x61), Buffer.from([0xe2])]),
+    ]) {
+      expect(Buffer.byteLength(tailUtf8(buf))).toBeLessThanOrEqual(65536)
     }
   })
 

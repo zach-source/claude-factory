@@ -30,7 +30,14 @@ export function tailUtf8(buf: Uint8Array, cut = false): string {
     while (i < 3 && i < b.length && (b[i]! & 0xc0) === 0x80) i++
     b = b.subarray(i)
   }
-  return Buffer.from(b).toString('utf8')
+  const text = Buffer.from(b).toString('utf8')
+  // invalid bytes decode to 3-byte U+FFFD: cap the decoded text again, on a character edge
+  const out = Buffer.from(text, 'utf8')
+  if (out.length <= SCREEN_MAX) return text
+  const t = out.subarray(out.length - SCREEN_MAX)
+  let j = 0
+  while (j < 3 && j < t.length && (t[j]! & 0xc0) === 0x80) j++
+  return t.subarray(j).toString('utf8')
 }
 
 /**
