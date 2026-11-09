@@ -1,11 +1,14 @@
-// `factory tick` starts `factory wiki refresh` (claude-factory-tx6c.5). kickWiki in src/cli.ts is the only
-// caller. It runs at most once in FACTORY_WIKI_REFRESH_MIN minutes (default 30), only when wiki/.git exists,
-// and also while the factory is halted. The tests follow src/gc-kick.test.ts.
+// `factory tick` starts `factory wiki refresh` (claude-factory-tx6c.5) and `factory wiki groom`
+// (claude-factory-tx6c.9). kickWiki in src/cli.ts is the only caller. Refresh runs at most once in
+// FACTORY_WIKI_REFRESH_MIN minutes (default 30), also while halted. Groom runs once in FACTORY_WIKI_GROOM_MIN
+// minutes (default 1440), not while halted. At most one pass starts in each tick, and only when wiki/.git exists.
+// The tests follow src/gc-kick.test.ts.
 import { afterEach, expect, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -30,10 +33,11 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 const stamp = () => join(home, 'wiki-refresh.stamp')
+const groomStampPath = () => join(home, 'wiki-groom.stamp')
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 /** a new home with one rig; `repo` is a wiki repo with the seed pages when true */
-function setup(withWiki = true) {
+function setup(withWiki = true, groomStamp = true) {
   home = join(dir, `home${++n}`)
   mkdirSync(home, { recursive: true })
   const repo = join(dir, `repo${n}`)
@@ -42,6 +46,7 @@ function setup(withWiki = true) {
   if (withWiki) expect(factory(['wiki', 'init'], { FACTORY_NO_KICK: '1' }).code).toBe(0)
   // a fresh write stamp: the refresh tests must not race a write pass for wiki.lock
   writeFileSync(join(home, 'wiki-write.stamp'), '')
+  if (groomStamp) writeFileSync(groomStampPath(), '')
 }
 async function waitFor(path: string, tries = 150) {
   for (let i = 0; i < tries && !existsSync(path); i++) await sleep(100)
@@ -125,6 +130,7 @@ function aged(min: number) {
 /** ticks and tells whether the stamp moved: a moved stamp means one launch */
 async function launched(env: Record<string, string> = {}) {
   const t = existsSync(wstamp()) ? statSync(wstamp()).mtimeMs : 0
+  writeFileSync(stamp(), '') // a fresh refresh stamp: one wiki pass in each tick, so refresh must not take it
   factory(['tick'], env)
   await sleep(1500)
   return existsSync(wstamp()) && statSync(wstamp()).mtimeMs !== t
@@ -196,3 +202,64 @@ test('write AC6 a tick after a launch starts no second pass at once', async () =
   expect(await launched()).toBe(false)
   expect(await launched()).toBe(false)
 }, 60_000)
+
+/** a fake claude that leaves a marker file: a groom pass with no remote must never reach it */
+function fakeClaude() {
+  const claude = join(dir, 'claude')
+  const marker = join(dir, 'claude-ran')
+  writeFileSync(claude, `#!/bin/sh\ntouch ${marker}\n`)
+  chmodSync(claude, 0o755)
+  return { env: { FACTORY_CLAUDE: claude }, marker }
+}
+const wikiLogText = () =>
+  existsSync(join(home, 'wiki.log')) ? readFileSync(join(home, 'wiki.log'), 'utf8') : ''
+
+test('AC10 a fresh refresh stamp and no groom stamp: the tick starts a groom pass', async () => {
+  setup(true, false)
+  writeFileSync(stamp(), '')
+  const c = fakeClaude()
+  factory(['tick'], c.env)
+  for (let i = 0; i < 150 && !wikiLogText().includes('wiki groom: no remote, skipped'); i++) await sleep(100)
+  expect(existsSync(groomStampPath())).toBe(true)
+  expect(wikiLogText()).toContain('wiki groom: no remote, skipped')
+  expect(existsSync(c.marker)).toBe(false)
+}, 30_000)
+
+test('AC10 a fresh groom stamp starts no groom pass', async () => {
+  setup()
+  writeFileSync(stamp(), '')
+  const t = statSync(groomStampPath()).mtimeMs
+  factory(['tick'])
+  await sleep(1500)
+  expect(statSync(groomStampPath()).mtimeMs).toBe(t)
+})
+
+test('AC10 FACTORY_WIKI_GROOM_MIN=1 and a groom stamp 2 min old: the tick grooms', async () => {
+  setup()
+  writeFileSync(stamp(), '')
+  const old = new Date(Date.now() - 120_000)
+  utimesSync(groomStampPath(), old, old)
+  factory(['tick'], { FACTORY_WIKI_GROOM_MIN: '1' })
+  await sleep(1500)
+  expect(statSync(groomStampPath()).mtimeMs).toBeGreaterThan(old.getTime() + 60_000)
+})
+
+test('AC10 a halted factory gets no groom pass', async () => {
+  setup(true, false)
+  writeFileSync(stamp(), '')
+  writeFileSync(
+    join(home, 'halt.json'),
+    JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
+  )
+  factory(['tick'])
+  await sleep(1500)
+  expect(existsSync(groomStampPath())).toBe(false)
+})
+
+test('AC10 one wiki pass in each tick: no stamps at all gives the refresh stamp only', async () => {
+  setup(true, false)
+  factory(['tick'])
+  await sleep(1500)
+  expect(existsSync(stamp())).toBe(true)
+  expect(existsSync(groomStampPath())).toBe(false)
+})
