@@ -9163,6 +9163,55 @@ test('shellSnapshotAliases gives an empty Map for a missing folder and undefined
   expect(shellSnapshotAliases(bad)).toBeUndefined()
 })
 
+test('shellSnapshotAliases reads alias -s lines as suffix keys and skips their value lines (claude-factory-qn8a.28)', () => {
+  const dir = snapDir({
+    'snapshot-zsh-1.sh': [
+      'alias -s sh=zqx',
+      'alias -s -- py=zqy',
+      "alias -s md='zqz one",
+      "alias -- git=echo'",
+      'alias -- acme=widget',
+      '',
+    ].join('\n'),
+  })
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('*.sh')).toBeNull()
+  expect(t.has('*.sh')).toBe(true)
+  expect(t.has('*.py')).toBe(true)
+  expect(t.has('*.md')).toBe(true)
+  expect(t.has('git')).toBe(false)
+  expect(t.get('acme')).toBe('widget')
+  expect(t.has('sh')).toBe(false)
+  for (const bad of ["alias -s 'a b'=x", 'alias -s', "alias -s sh=$'a\\nb'"])
+    expect(shellSnapshotAliases(snapDir({ 'snapshot-zsh-1.sh': bad + '\n' }))).toBeUndefined()
+})
+
+test('denyReason denies a command word whose last suffix is a snapshot alias -s name (claude-factory-qn8a.28)', () => {
+  const gateFor = (text: string, fns = true): HookGate => ({
+    ...snapGate(() => shellSnapshotAliases(snapDir(text ? { 'snapshot-zsh-1.sh': text } : {}))),
+    shellFunctions: fns ? () => new Set<string>() : undefined,
+  })
+  const gate = gateFor('alias -s sh=zqx\n')
+  for (const cmd of [
+    'x.sh',
+    './run.sh',
+    '/opt/acme/x.sh arg',
+    'A=1 x.sh',
+    'ls; x.sh',
+    'echo x && x.sh',
+    '(x.sh)',
+    'a.b.sh',
+    '.sh',
+  ])
+    expect([cmd, denyReason(cmd, '/w', undefined, gate)]).toEqual([cmd, SHELL_ALIAS_REASON])
+  for (const cmd of ['x.txt', 'x.shx', 'xsh', 'cat x.sh', 'ls -la'])
+    expect([cmd, denyReason(cmd, '/w', undefined, gate)]).toEqual([cmd, undefined])
+  expect(denyReason('x.sh', '/w', undefined, gateFor(''))).toBeUndefined()
+  expect(denyReason('cat x.sh', '/w', undefined, gateFor('alias -s sh=zqx\n', false))).toBe(
+    SHELL_ALIAS_REASON,
+  )
+})
+
 // claude-factory-1zr5: the spawned hook reads the folder that CLAUDE_CONFIG_DIR names
 const spawnEnv = (configDir: string) => ({
   ...process.env,
