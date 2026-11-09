@@ -195,3 +195,105 @@ test('the question counts the later hits that it does not show', SLOW, async () 
     expect(question(command), command).not.toContain('are not shown')
   }
 })
+
+test('a non-literal verb word after a literal caller is denied with no dialog', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Allow')
+  const rows = [
+    '/usr/bin/bun src/cli.ts dec* r1 ship',
+    `${F} dec* r1 ship`,
+    `${F} de{c,}ide r1 ship`,
+    `${F} deci?e r1 ship`,
+    `${F} [d]ecide r1 ship`,
+    `${F} dec${BT}true${BT}ide r1 ship`,
+    `bash -c '${F} "$0" r1 ship' decide`,
+    'bun src/cli.ts dec* r1 ship',
+  ]
+  for (const command of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toContain('literal word')
+  }
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(0)
+})
+
+test(
+  'the substitution gate also fires on the strip copy and on a source-file caller',
+  SLOW,
+  async ($, on) => {
+    const { n } = harness(on, 'Allow')
+    for (const command of [
+      `${F.replace('factory', "fact''ory")} mail r1 plan "$(id)"`,
+      'bun src/cli.ts mail r1 plan "$(id)"',
+      '/usr/bin/bun src/cli.ts mail r1 plan "$(id)"',
+    ]) {
+      const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+      expect(r.deny, command).toContain('shell substitution')
+    }
+    expect(n.asked).toBe(0)
+    expect(n.ran).toBe(0)
+  },
+)
+
+test('plain commands near the caller word stay ungated', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Deny')
+  const rows = [
+    'ls /x/factory-notes',
+    'echo $HOME',
+    'ls *.md',
+    `${F} start lifecycle api "fix the thing"`,
+    'grep -n x src/cli.ts',
+    'cat src/cli.ts',
+    'wc -l src/cli.ts src/*.ts',
+    '(cd /w/rig && grep -n decide src/cli.ts)',
+    "gh pr view 1 --json title --jq '{a: .title, b: .x}'",
+  ]
+  for (const command of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toBeUndefined()
+  }
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(rows.length)
+})
+
+test(
+  'a substitution deny stays a deny when the kind comes only from the canonical read',
+  SLOW,
+  async ($, on) => {
+    const { n } = harness(on, 'Allow')
+    for (const command of [
+      `${F} mail r1 plan "$(id) decide"`,
+      'F=/repo/bin/factory; for r in $(cat s); do $F decide $r ship; done',
+    ]) {
+      const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+      expect(r.deny, command).toContain('shell substitution')
+    }
+    const c = await $.tool.call({
+      tool: 'Bash',
+      command: 'echo hi #x\\\n/repo/bin/f*y decide r1 ship',
+      description: 'x',
+    })
+    expect(c.deny).toContain('Remove the backslash at the end of the comment line')
+    expect(n.asked).toBe(0)
+    expect(n.ran).toBe(0)
+  },
+)
+
+test('gatedCommand runs in linear time on hostile text', SLOW, () => {
+  const texts = [
+    '$'.repeat(200000),
+    'f*y '.repeat(50000),
+    '/repo/bin/factory ' + 'a*'.repeat(100000),
+    "'".repeat(200000),
+    '$ start '.repeat(25000),
+    '/repo/bin/factory start '.repeat(8000),
+    '$ wiki '.repeat(28000),
+    '{a,'.repeat(66000),
+    '/'.repeat(200000),
+    'x/bun '.repeat(33000),
+  ]
+  for (const [i, t] of texts.entries()) {
+    const t0 = performance.now()
+    gatedCommand(t)
+    expect(performance.now() - t0, `row ${i + 1}`).toBeLessThan(2000)
+  }
+})

@@ -553,3 +553,110 @@ test('factory token use and best ask the person; token list does not', SLOW, asy
   await run('/repo/bin/factory memory search token use')
   expect(asked).toBe(before)
 })
+
+const PHRASE = {
+  decide: 'decide a factory gate',
+  answer: "answer a person's bd decision",
+  start: "start a bead carrying its owner's decisions",
+  wiki: 'create the factory wiki and set its remote',
+}
+
+// claude-factory-6tl1: a hidden caller word or verb word still gets the Allow question
+const HIDDEN_ROWS: [string, string][] = [
+  ["/repo/bin/fact''ory decide r1 ship", PHRASE.decide],
+  ['/repo/bin/fac\\tory decide r1 ship', PHRASE.decide],
+  ['X=ory; /repo/bin/fact$X decide r1 ship', PHRASE.decide],
+  ['/repo/bin/f*y decide r1 ship', PHRASE.decide],
+  ['bash -c "/repo/bin/factory \\\\\ndecide r1 ship"', PHRASE.decide],
+  ["/repo/bin/factory 'decide' r1 ship", PHRASE.decide],
+  ['bun src/cli.ts decide r1 ship', PHRASE.decide],
+  ['/repo/bin/factory "decisions" answer api api-7 x', PHRASE.answer],
+  ["/repo/bin/fact''ory start lifecycle api w-2 --owned", PHRASE.start],
+  ["/repo/bin/factory start lifecycle api w-2 --own''ed", PHRASE.start],
+  ["/repo/bin/factory wi''ki init", PHRASE.wiki],
+  ['$(printf /repo/bin/fac; printf tory) decide r1 ship', PHRASE.decide],
+  ['/repo/bin/fac`printf tory` decide r1 ship', PHRASE.decide],
+  ['/repo/bin/f?ctory decide r1 ship', PHRASE.decide],
+  ['/repo/bin/[f]actory decide r1 ship', PHRASE.decide],
+  ['/repo/bin/fac{tory,} decide r1 ship', PHRASE.decide],
+  ['{/repo/bin/factory,decide} r1 ship', PHRASE.decide],
+  ['{/repo/bin/f*y,decide} r1 ship', PHRASE.decide],
+  ['bun {src/cli.ts,decide} r1 ship', PHRASE.decide],
+  ['bun run /x/src/cli.ts decide r1 ship', PHRASE.decide],
+]
+
+function askHarness(on: any, answer: () => string) {
+  mock.clock(on)
+  const n = { asked: 0, ran: 0 }
+  const questions: string[] = []
+  on('tool.call', { tool: 'AskUserQuestion' }, (_: unknown, e: any) => {
+    n.asked += 1
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: answer() } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    n.ran += 1
+    return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+  })
+  return { n, questions }
+}
+
+test(
+  'a quote, backslash, variable or glob in the caller word or the verb still asks',
+  SLOW,
+  async ($, on) => {
+    let answer = 'Deny'
+    const { n, questions } = askHarness(on, () => answer)
+    const run = (command: string) => $.tool.call({ tool: 'Bash', command, description: 'x' })
+
+    for (const [command, phrase] of HIDDEN_ROWS) {
+      const before = n.asked
+      const r = await run(command)
+      expect(n.asked, command).toBe(before + 1)
+      expect(questions.at(-1), command).toContain(phrase)
+      expect(r.deny, command).toContain('did not confirm')
+    }
+    expect(n.ran).toBe(0)
+
+    answer = 'Allow'
+    const allowed = await run(HIDDEN_ROWS[0]![0])
+    expect(allowed.deny).toBeUndefined()
+    expect(n.ran).toBe(1)
+  },
+)
+
+test('a hidden start is named as the text not shown behind a long decide', SLOW, async ($, on) => {
+  const { questions } = askHarness(on, () => 'Deny')
+  const command = `/repo/bin/factory decide r1 reject '${'a'.repeat(270)}' && /repo/bin/fact''ory start lifecycle acme w-2 --owned`
+  await $.tool.call({ tool: 'Bash', command, description: 'x' })
+  expect(questions).toHaveLength(1)
+  expect(questions[0]).toContain(PHRASE.decide)
+  expect(questions[0]).toContain(PHRASE.start)
+  expect(questions[0]).toContain(`The text not shown holds: ${PHRASE.start}`)
+})
+
+test(
+  'quoted prose with a dollar word and decide asks and is not a substitution deny',
+  SLOW,
+  async ($, on) => {
+    const { questions } = askHarness(on, () => 'Deny')
+    const r = await $.tool.call({
+      tool: 'Bash',
+      command: "/repo/bin/factory mail r1 plan 'use $X decide'",
+      description: 'x',
+    })
+    expect(questions).toHaveLength(1)
+    expect(questions[0]).toContain(PHRASE.decide)
+    expect(r.deny).not.toContain('shell substitution')
+  },
+)
+
+test('the cut inside a hidden word keeps the decide in the text not shown', SLOW, async ($, on) => {
+  const { questions } = askHarness(on, () => 'Deny')
+  const command =
+    '/repo/bin/factory status ' + 'a'.repeat(250) + ' /very/long/path/to/some/dir/f*y decide r1 ship'
+  await $.tool.call({ tool: 'Bash', command, description: 'x' })
+  expect(questions).toHaveLength(1)
+  expect(questions[0]).toContain(`The text not shown holds: ${PHRASE.decide}`)
+})
