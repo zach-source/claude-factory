@@ -52,7 +52,8 @@ const CODEX_EXEC = codex('codex_exec_model')
 const CODEX_SECURITY = codex('codex_security_model')
 const CODEX_JUDGE = codex('codex_judge_model')
 // stations that read or change production need the laptop's kubectl, cluster access and network, which a
-// rig's VM workers (--runner ax) do not have: they stay in herdr panes whatever the rig's runner
+// rig's VM workers (--runner ax) do not have: on the laptop manager they stay in herdr panes whatever the
+// rig's runner. The AX manager ignores this pin: there these stations run as AX workers like the others
 const LAPTOP = 'herdr'
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.

@@ -353,3 +353,76 @@ test('refresh pushes main to origin when one is set', () => {
   const head = git('rev-parse', 'HEAD')
   expect(Bun.spawnSync(['git', '-C', b, 'rev-parse', 'main']).stdout.toString().trim()).toBe(head)
 })
+
+/** a wiki with a local bare origin, plus a scratch clone that plays the person who edits on GitHub */
+function withOrigin() {
+  setup()
+  seedAll()
+  const b = join(dir, `bare${n}.git`)
+  Bun.spawnSync(['git', 'init', '-q', '--bare', '-b', 'main', b])
+  const url = 'https://github.com/acme/wiki-pull.git'
+  const cfg = join(dir, `cfg${n}`)
+  writeFileSync(cfg, `[url "${b}"]\n\tinsteadOf = ${url}\n`)
+  const env = { GIT_CONFIG_GLOBAL: cfg }
+  expect(factory(['wiki', 'init', '--remote', url], env).code).toBe(0)
+  const clone = join(dir, `clone${n}`)
+  const g = (...a: string[]) => {
+    const p = Bun.spawnSync(['git', '-C', clone, ...a], { env: { ...process.env, ...env } })
+    if (p.exitCode !== 0) throw new Error(`git ${a.join(' ')}: ${p.stderr.toString()}`)
+    return p.stdout.toString().trim()
+  }
+  Bun.spawnSync(['git', 'clone', '-q', b, clone], { env: { ...process.env, ...env } })
+  const person = (file: string, text: string) => {
+    writeFileSync(join(clone, file), text)
+    g('add', '-A')
+    g('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', 'person')
+    g('push', '-q', 'origin', 'HEAD:main')
+  }
+  const bareHead = () => Bun.spawnSync(['git', '-C', b, 'rev-parse', 'main']).stdout.toString().trim()
+  return { b, env, person, bareHead, clone }
+}
+
+test('refresh pulls a remote commit first and pushes its own commit on top', () => {
+  const o = withOrigin()
+  o.person('topics-note.md', NOTE)
+  expect(factory(['wiki', 'refresh'], o.env).code).toBe(0)
+  expect(git('log', '--format=%ae').split('\n')).toContain('person@acme.example')
+  expect(read('topics-note.md')).toBe(NOTE)
+  expect(o.bareHead()).toBe(git('rev-parse', 'HEAD'))
+})
+
+test('refresh builds index.md from the pulled text', () => {
+  const o = withOrigin()
+  const index = `${read('index.md')}Added by a person.\n`
+  o.person('index.md', index)
+  expect(factory(['wiki', 'refresh'], o.env).code).toBe(0)
+  expect(read('index.md')).toContain('Added by a person.')
+  expect(Bun.spawnSync(['git', '-C', o.b, 'show', 'main:index.md']).stdout.toString()).toContain(
+    'Added by a person.',
+  )
+})
+
+test('a pull that fails keeps the dirty edit and leaves no rebase or stash', () => {
+  const o = withOrigin()
+  const cfg = join(dir, `cfg${n}`)
+  writeFileSync(cfg, `${readFileSync(cfg, 'utf8')}[rebase]\n\tautoStash = true\n`)
+  o.person('index.md', `${read('index.md')}Remote line.\n`)
+  writeFileSync(join(wiki(), 'glossary.md'), 'dirty edit\n')
+  const r = factory(['wiki', 'refresh'], o.env)
+  expect(r.code).toBe(0)
+  expect(wikiLog()).toMatch(/wiki: pull failed \(exit \d+\), refresh goes on/)
+  expect(read('glossary.md')).toBe('dirty edit\n')
+  expect(git('stash', 'list')).toBe('')
+  expect(existsSync(join(wiki(), '.git', 'rebase-merge'))).toBe(false)
+  expect(existsSync(join(wiki(), '.git', 'rebase-apply'))).toBe(false)
+})
+
+test('refresh --dry-run runs no fetch', () => {
+  const o = withOrigin()
+  const before = factory(['wiki', 'refresh', '--dry-run'], o.env)
+  rmSync(o.b, { recursive: true, force: true })
+  const after = factory(['wiki', 'refresh', '--dry-run'], o.env)
+  expect(after.code).toBe(0)
+  expect(after.out).toBe(before.out)
+  expect(wikiLog()).not.toContain('pull failed')
+})

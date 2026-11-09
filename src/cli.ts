@@ -164,7 +164,11 @@ import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import {
   flagLine,
+  groomCap,
+  groomPlan,
+  groomPrompt,
   humanLines,
+  outsidePlan,
   pageMatches,
   parse as parseWikiPage,
   renderRigPage,
@@ -199,7 +203,17 @@ import * as managerhost from './managerhost'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
-import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
+import {
+  bdEnv,
+  httpsRemote,
+  inAx,
+  isLaptopPane,
+  mapRigs,
+  mapRunRepo,
+  mapRunWorktree,
+  stationRunnerName,
+  syncRepos,
+} from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
 import { personCerts } from './server-api'
@@ -295,6 +309,16 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
+import { refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
+import type { Ctx as OpCtx, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
+import * as backlogOp from './core/ops/backlog'
+import * as decisionsOp from './core/ops/decisions'
+import * as gatesOp from './core/ops/gates'
+import * as leaseOp from './core/ops/lease'
+import * as metricsOp from './core/ops/metrics'
+import * as planOp from './core/ops/plan'
+import * as prsOp from './core/ops/prs'
+import * as runsOp from './core/ops/runs'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
 import { maskAssignments } from './worker-hook'
@@ -1094,9 +1118,12 @@ function bdSkewHeld(run: Run, runner: string, now: number) {
  */
 function taskInfo(run: Run, pane: string): WorkerInfo | null {
   const task = ax.taskOf(pane)
-  const { phase, failure } = ax.read(task)
+  const { phase, failure, queued } = ax.read(task)
   // `agent` set: the VM's agent is always there, so the reconciler never relaunches or restarts it as a pane's
-  if (phase === 'Pending') return { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
+  if (phase === 'Pending')
+    return queued
+      ? { status: 'pending', agent: 'ax', pending: 'waiting for a free AX worker', queued }
+      : { status: 'pending', agent: 'ax', pending: 'task phase Pending' }
   if (phase === 'Suspended') return { status: 'suspended', agent: 'ax' }
   // gone, and why, kept next to the task's other files; `failed` carries it into the attempt's FAIL reason
   // (task .2's reconciler check) instead of the generic "worker pane ... was closed"
@@ -1571,8 +1598,11 @@ function loadRun(id: string | undefined): Run {
   const file = join(runDir(id ?? ''), 'run.json')
   if (!existsSync(file)) fail(`no run "${id}" (runs: ${runIds().join(', ') || 'none'})`)
   const run: Run = readJson(file)
-  // a run the laptop made names the laptop's repo path: in the AX task it is the rig's clone
-  return inAx() ? { ...run, repo: mapRunRepo(rawRigs(), run.repo) } : run
+  // a run the laptop made names the laptop's repo and worktree paths. In the AX task they are the rig's clone
+  // and a worktree under the factory home (launchTask revives it)
+  return inAx()
+    ? { ...run, repo: mapRunRepo(rawRigs(), run.repo), worktree: mapRunWorktree(rawRigs(), run) }
+    : run
 }
 /** complete lines only: a writer may be mid-append */
 const inboxLines = (id: string) => {
@@ -1876,9 +1906,17 @@ export const resumeNote = (run: Run, node: string, c: Ctx) =>
   ` Carry on as the "${node}" station where you left off: ` +
   `check git status and git log first. When finished, report exactly once: ${reportCmd(run, c)}`
 
-/** where a station's workers run: the station's own runner, else the rig's */
+/** where a station's workers run: the station's own runner, else the rig's. In the AX manager, never a local one */
 const runnerOfStation = (run: Run, def: Factory, node: string) =>
-  runners[def.nodes[node]?.runner ?? rigOf(run.repo)?.runner ?? DEFAULT_RUNNER] ?? runners[DEFAULT_RUNNER]!
+  runners[
+    stationRunnerName(
+      inAx(),
+      def.nodes[node]?.runner,
+      rigOf(run.repo)?.runner,
+      DEFAULT_RUNNER,
+      name => runners[name]?.local ?? true,
+    )
+  ] ?? runners[DEFAULT_RUNNER]!
 
 /**
  * `factory gc --worktrees` can remove a finished run's worktree. A person can revive the run with
@@ -2043,7 +2081,7 @@ export { httpsRemote }
 
 /**
  * a worker in an AX task on the cluster: the run's branch, pushed, is its workspace. Its brief names the CLI
- * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file) adds to its env.
+ * and the worktree as the VM sees them, and FACTORY_AX_ENV (a JSON file or JSON) adds to its env.
  */
 /**
  * Only an image with the VM codex guard (claude-factory-72dq) may run codex. An older worker ignores the guard files,
@@ -2130,6 +2168,8 @@ const noReviewerFlag = (e: Record<string, string> = {}) => {
 function launchTask({ run, def, node, c, brief: text }: Job) {
   const unavailable = ax.unavailable()
   if (unavailable) fail(unavailable)
+  // a laptop run's worktree is not in the task yet: make it from the branch, as for a worktree that gc removed
+  if (inAx() && !existsSync(run.worktree)) reviveWorktree(run)
   const image =
     process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
   const rig = rigOf(run.repo)
@@ -2187,7 +2227,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     .trim()
   if (unmerged) Bun.spawnSync(['git', '-C', run.worktree, 'checkout', 'HEAD', '--', ...unmerged.split('\n')])
   git(run.worktree, 'push', 'origin', `HEAD:refs/heads/${run.branch}`)
-  const env = process.env.FACTORY_AX_ENV ? readJson<Record<string, string>>(process.env.FACTORY_AX_ENV) : {}
+  const env = process.env.FACTORY_AX_ENV ? ax.readAxEnv(process.env.FACTORY_AX_ENV) : {}
   const name = ax.taskName(run.id, c.seq)
   const origin = originRef(run.repo)
   const gitlabHost = origin?.forge === 'gitlab' ? origin.host : undefined
@@ -3897,6 +3937,13 @@ function facts(
 }
 
 const progressFile = (run: Run) => join(runDir(run.id), 'progress.json')
+/** when an attempt's AX task was last seen waiting for capacity: {seq, at} */
+const queuedFile = (run: Run) => join(runDir(run.id), 'queued.json')
+const queuedOf = (run: Run) =>
+  existsSync(queuedFile(run)) ? readJson<{ seq: number; at: number }>(queuedFile(run)) : undefined
+/** an attempt's clock starts when it stops waiting for AX capacity: a full pool never spends the station's time */
+export const attemptStart = (startedAt: number, seq: number, q?: { seq: number; at: number }) =>
+  q?.seq === seq ? Math.max(startedAt, q.at) : startedAt
 const progressOf = (run: Run) =>
   existsSync(progressFile(run)) ? readJson<Progress>(progressFile(run)) : undefined
 
@@ -3987,10 +4034,20 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
     return 'starting'
   }
+  // a herdr pane in the AX manager came from the laptop, and its session is not here. Start a fresh worker on
+  // AX. HANDOFF spends no attempt and clears the pane
+  if (isLaptopPane(inAx(), c.pane)) {
+    send({ type: 'HANDOFF', seq: c.seq, summary: 'worker moved to AX: relaunched fresh' })
+    return 'moved to AX'
+  }
   const runner = runnerOf(c.pane)
   const info = runner.info(run, c.pane)
   if (runner.name === 'ax' && info?.status === 'pending' && holdUnavailableAx(c, send))
     return 'AX executor unavailable'
+  if (info?.queued) {
+    writeJson(queuedFile(run), { seq: c.seq, at: now })
+    return 'queued for AX capacity'
+  }
   // the runner gave up retrying something itself (a put stuck over ax ssh): fail now, with its reason, instead
   // of the generic "was closed" or a silent retry forever
   if (info?.failed) {
@@ -4199,7 +4256,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
   if (stall === 'nudge') seen.nudged = true
   if (seen !== prev || stall === 'nudge') writeJson(progressFile(run), seen)
   const due = deadline(
-    now - c.startedAt,
+    now - attemptStart(c.startedAt, c.seq, queuedOf(run)),
     timeoutMin,
     status === 'working' || isAsking, // waiting on the manager's answer is work: warned, not failed
     (c.mail[node] ?? []).some(m => m.from === 'factory' && m.at >= c.startedAt && m.text.includes(TIME_UP)),
@@ -5254,19 +5311,251 @@ function wikiAllowed(r: { host: string; owner: string; repo: string }, fresh = f
 }
 
 /**
- * Push HEAD to main of origin only when origin passes wikiRemote() and its visibility is PRIVATE or INTERNAL.
+ * Push HEAD to `branch` (default main) of origin only when the checkout is on that branch and origin passes wikiRemote() and its visibility is PRIVATE or INTERNAL.
  * It pushes to the checked URL, never to the name `origin`, so a pushurl set by hand is not used. No origin:
  * nothing to do. True when the push worked.
  */
-export function pushWiki(dir = join(HOME, 'wiki')) {
+export function pushWiki(dir = join(HOME, 'wiki'), branch = 'main') {
+  if (wikiGit(dir, ['symbolic-ref', '-q', 'HEAD']).out.toString().trim() !== `refs/heads/${branch}`)
+    return (wikiLog(`wiki: checkout not on ${branch}, push refused`), false)
   const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
   if (!url) return false
   const r = wikiRemote(url)
   if (!r) return (wikiLog('wiki: remote not allowed, push refused'), false)
   if (!wikiAllowed(r)) return false
-  const p = wikiGit(dir, ['push', url, 'HEAD:main'], true)
+  const p = wikiGit(dir, ['push', url, `HEAD:refs/heads/${branch}`], true)
   if (p.code !== 0) wikiLog(`wiki: push failed (exit ${p.code})`)
   return p.code === 0
+}
+
+/**
+ * Pull main of origin into the checkout (rebase, so each commit keeps its author for the blame guard). A failed
+ * pull gets a rebase abort and a journal line; the caller goes on. No origin: nothing to do.
+ */
+function pullWiki(dir: string) {
+  const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
+  if (!url) return
+  if (!wikiRemote(url)) return wikiLog('wiki: remote not allowed, pull skipped')
+  const args = ['-c', 'user.name=factory', '-c', `user.email=${WIKI_EMAIL}`, '-c', 'commit.gpgsign=false']
+  const p = wikiGit(
+    dir,
+    [...args, '-c', 'rebase.autoStash=false', 'pull', '--rebase', '--no-autostash', '-q', url, 'main'],
+    true,
+    { GIT_COMMITTER_NAME: 'factory', GIT_COMMITTER_EMAIL: WIKI_EMAIL },
+  )
+  if (p.code === 0) return
+  wikiGit(dir, ['rebase', '--abort'])
+  wikiLog(`wiki: pull failed (exit ${p.code ?? 'timeout'}), refresh goes on`)
+}
+
+const GROOM_PLAN_ONLY = '\n\nDo only step 1 now. Print the plan and change no file.\n'
+const GROOM_APPLY =
+  '\n\nStep 1 is done. The rig repos are not open to you now. Do only step 2, for these lines and no other:\n\n'
+
+/** one groom agent call: `-p`, no MCP, no project settings; stdout and stderr are piped so raw output stays private */
+function groomAgent(dir: string, stdin: string, mode: string, tools: string, addDirs: string[]) {
+  const settings = passSettings()
+  const p = Bun.spawnSync(
+    [
+      ...claudeCommand().split(/\s+/),
+      ...['-p', '--strict-mcp-config', '--setting-sources', 'user'],
+      ...['--permission-mode', mode, '--tools', tools],
+      ...addDirs.flatMap(d => ['--add-dir', d]),
+      ...[
+        '--settings',
+        JSON.stringify({ ...settings, env: { ...settings.env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } }),
+      ],
+    ],
+    { cwd: dir, stdin: Buffer.from(stdin), stdout: 'pipe', stderr: 'pipe', timeout: 45 * 60_000 },
+  )
+  return { code: p.exitCode, out: p.stdout.toString() }
+}
+
+/**
+ * `factory wiki groom`: ask an agent for a plan, apply it on branch groom/<date> from origin/main, revert every
+ * path outside the plan, and open a pull request with the plan as its body. It never merges and never pushes
+ * main. With `dryRun` it only prints the plan. Each stop journals one fixed line and the pass exits 0.
+ */
+function wikiGroom(dryRun: boolean) {
+  const dir = join(HOME, 'wiki')
+  const g = (...args: string[]) => wikiGit(dir, args)
+  const text = (r: { out: Buffer }) => r.out.toString().trim()
+  const list = (...args: string[]) =>
+    g('ls-files', '-z', ...args)
+      .out.toString()
+      .split('\0')
+      .filter(Boolean)
+  const exit = (r: { code: number | null }) => r.code ?? 'timeout'
+  const plan = () => {
+    const repos = rigs()
+      .map(r => r.repo)
+      .filter(d => existsSync(d))
+    const prompt = groomPrompt(wikiPages(dir), wikiTombstones(dir), groomCap())
+    const r = groomAgent(dir, prompt + GROOM_PLAN_ONLY, 'default', 'Read,Glob,Grep', repos)
+    if (r.code !== 0) return wikiLog(`wiki groom: plan call failed (exit ${exit(r)})`)
+    const actions = groomPlan(r.out)
+    if (!actions.length) return wikiLog('wiki groom: no actions')
+    return {
+      prompt,
+      actions,
+      planText: actions.map(a => `${a.op} ${a.paths.join(' ')} — ${a.reason}`).join('\n'),
+    }
+  }
+  if (dryRun) {
+    const p = plan()
+    if (p) console.log(p.planText)
+    return
+  }
+
+  const head = text(g('symbolic-ref', '-q', 'HEAD'))
+  if (head.startsWith('refs/heads/groom/')) {
+    if (g('status', '--porcelain', '-z', '--untracked-files=all').out.length)
+      return wikiLog('wiki groom: left-over groom checkout not clean, skipped')
+    if (g('checkout', '-q', 'main').code !== 0) return wikiLog('wiki groom: checkout of main failed')
+    g('branch', '-q', '-D', head.slice('refs/heads/'.length))
+    wikiLog('wiki groom: left-over groom checkout, back on main')
+  }
+  const url = text(g('config', '--get', 'remote.origin.url'))
+  if (!url) return wikiLog('wiki groom: no remote, skipped')
+  const r = wikiRemote(url)
+  if (!r) return wikiLog('wiki: remote not allowed, push refused')
+  if (!wikiAllowed(r)) return
+  const slug = `${r.host}/${r.owner}/${r.repo}`
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const PR_RE = new RegExp(`^https://${esc(r.host)}/${esc(r.owner)}/${esc(r.repo)}/pull/[1-9][0-9]*$`, 'i')
+  const gh = (args: string[]) =>
+    Bun.spawnSync(['gh', ...args], { env: GIT_NETWORK_ENV, stderr: 'pipe', timeout: 30_000 })
+
+  const stored = readWikiState().groomPr as { url?: unknown } | undefined | null
+  if (stored !== undefined) {
+    const u = stored !== null && typeof stored === 'object' ? stored.url : undefined
+    if (typeof u !== 'string' || !PR_RE.test(u)) return wikiLog('wiki groom: stored PR is not valid, skipped')
+    // REST with the owner in the path (src/prs.test.ts rule): the AX gateway needs it
+    const v = gh([
+      'api',
+      '--hostname',
+      r.host,
+      `repos/${r.owner}/${r.repo}/pulls/${u.split('/').pop()}`,
+      '--jq',
+      '.state',
+    ])
+    const state = v.exitCode === 0 ? v.stdout.toString().trim() : ''
+    if (state === 'open') return wikiLog(`wiki groom: skipped, PR ${u} open`)
+    if (state !== 'closed') return wikiLog(`wiki groom: PR ${u} state unknown, skipped`)
+    const { groomPr: _gone, ...rest } = readWikiState()
+    writeWikiState(rest)
+  }
+
+  if (
+    text(g('symbolic-ref', '-q', 'HEAD')) !== 'refs/heads/main' ||
+    g('status', '--porcelain', '-z', '--untracked-files=all').out.length
+  )
+    return wikiLog('wiki groom: wiki checkout not clean or not on main, skipped')
+  writeFileSync(join(HOME, 'wiki-groom.stamp'), '')
+  const fetch = g('fetch', '-q', url, '+refs/heads/main:refs/remotes/origin/main')
+  if (fetch.code !== 0) return wikiLog(`wiki groom: fetch failed (exit ${exit(fetch)})`)
+  const branch = `groom/${new Date().toISOString().slice(0, 10)}`
+  if (g('checkout', '-q', '-B', branch, 'refs/remotes/origin/main').code !== 0)
+    return wikiLog('wiki groom: checkout failed')
+  let ignoredBefore = new Set<string>()
+  let keepFiles = false
+  try {
+    if (list('-o', '--exclude-standard').length) {
+      keepFiles = true
+      return wikiLog('wiki groom: untracked files on the groom branch, skipped')
+    }
+    ignoredBefore = new Set(list('-o', '-i', '--exclude-standard'))
+    const p = plan()
+    if (!p) return
+    for (const a of p.actions) wikiLog(`wiki groom: plan ${a.op} ${a.paths.join(' ')}`)
+    const before = wikiBlame(dir)
+    if (!before) return
+    const ap = groomAgent(
+      dir,
+      `${p.prompt}${GROOM_APPLY}${p.planText}\n`,
+      'acceptEdits',
+      'Read,Glob,Grep,Edit,Write',
+      [],
+    )
+    if (ap.code !== 0) return wikiLog(`wiki groom: apply call failed (exit ${exit(ap)}), nothing committed`)
+    const kept = headKept(wikiRun(dir), before)
+    if (kept !== 'same')
+      return wikiLog(
+        kept === 'moved'
+          ? 'wiki groom: HEAD moved in the pass, nothing committed'
+          : 'wiki groom: HEAD moved in the pass, restore failed, nothing committed',
+      )
+
+    const changedPaths = () => {
+      if (g('add', '-A').code !== 0) return undefined
+      const d = g('diff', '--cached', '--name-only', '-z', '--no-renames', 'HEAD')
+      if (d.code !== 0) return undefined
+      const files = d.out.toString().split('\0').filter(Boolean)
+      for (const f of list('-o', '-i', '--exclude-standard')) if (!ignoredBefore.has(f)) files.push(f)
+      return files
+    }
+    const changed = changedPaths()
+    if (!changed) return wikiLog('wiki groom: git failed, nothing committed')
+    for (const path of outsidePlan(changed, p.actions)) {
+      if (g('cat-file', '-e', `HEAD:${path}`).code === 0)
+        g('restore', '--staged', '--worktree', '--source=HEAD', '--', path)
+      else {
+        g('rm', '--cached', '-f', '-q', '--ignore-unmatch', '--', path)
+        g('clean', '-f', '-f', '-x', '-q', '--', path)
+      }
+      wikiLog(
+        WIKI_PAGE_PATH.test(path) && !path.split('/').includes('..') && !/\p{Cc}/u.test(path)
+          ? `wiki groom: ${path} is not in the plan, reverted`
+          : 'wiki groom: a path not in the plan, reverted',
+      )
+    }
+    const after = changedPaths()
+    if (!after) return wikiLog('wiki groom: git failed, nothing committed')
+    if (outsidePlan(after, p.actions).length) return wikiLog('wiki groom: revert failed, nothing committed')
+
+    if (!keepPersonLines(before, 'groom', dir)) return
+    const c = commitWiki('groom', `${p.actions.length} actions`, dir)
+    if (c === false) return
+    if (c === null) return wikiLog('wiki groom: no change, no PR')
+    if (!pushWiki(dir, branch)) return
+    const body = p.planText
+      .split('\n')
+      .map(l => `    ${l}`)
+      .join('\n')
+    const make = gh([
+      ...['pr', 'create', '--repo', slug, '--base', 'main', '--head', branch],
+      ...['--title', `wiki groom: ${p.actions.length} actions`, '--body', body],
+    ])
+    let pr = make.exitCode === 0 ? make.stdout.toString().trim().split('\n').pop()! : ''
+    if (!PR_RE.test(pr)) {
+      const l = gh([
+        'api',
+        '--hostname',
+        r.host,
+        `repos/${r.owner}/${r.repo}/pulls?head=${r.owner}:${branch}&state=open`,
+        '--jq',
+        '.[0].html_url',
+      ])
+      pr = l.exitCode === 0 ? l.stdout.toString().trim() : ''
+      if (!PR_RE.test(pr)) return wikiLog(`wiki groom: PR create failed (exit ${make.exitCode ?? 'timeout'})`)
+    }
+    writeWikiState({ ...readWikiState(), groomPr: { url: pr, branch, openedAt: new Date().toISOString() } })
+    const done = `wiki groom: PR ${pr} with ${p.actions.length} actions`
+    wikiLog(done)
+    console.log(done)
+  } finally {
+    let ok = true
+    if (!keepFiles) {
+      ok = g('reset', '-q', '--hard').code === 0
+      for (const f of list('-o', '--exclude-standard', '--directory'))
+        ok = g('clean', '-f', '-f', '-d', '-q', '--', f).code === 0 && ok
+      for (const f of list('-o', '-i', '--exclude-standard'))
+        if (!ignoredBefore.has(f)) ok = g('clean', '-f', '-f', '-d', '-x', '-q', '--', f).code === 0 && ok
+    }
+    ok = g('checkout', '-q', 'main').code === 0 && ok
+    ok = g('branch', '-q', '-D', branch).code === 0 && ok
+    if (!ok) wikiLog(`wiki groom: cleanup failed, checkout left on ${branch}`)
+  }
 }
 
 /**
@@ -6229,22 +6518,23 @@ const kickGc = () => {
 }
 
 /**
- * `factory wiki refresh` at most every FACTORY_WIKI_REFRESH_MIN minutes (a positive number, default 30).
+ * `factory wiki <pass>` at most every FACTORY_WIKI_<PASS>_MIN minutes (a positive number, else `defMin`).
  * It does nothing while $HOME/wiki/.git is missing or wiki.lock is held. It writes the stamp before the spawn,
- * so a slow pass gets no second one. A halt does not stop it: the pages show a halted factory too.
+ * so a slow pass gets no second one. True only when it spawned.
  */
-const kickWiki = () => {
-  if (!existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return
-  const min = Number(process.env.FACTORY_WIKI_REFRESH_MIN)
-  const stamp = join(HOME, 'wiki-refresh.stamp')
+const kickWiki = (pass: 'refresh' | 'groom', defMin: number) => {
+  if (!existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return false
+  const min = Number(process.env[`FACTORY_WIKI_${pass.toUpperCase()}_MIN`])
+  const stamp = join(HOME, `wiki-${pass}.stamp`)
   const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
-  if (age < (min > 0 ? min : 30) * 60_000) return
+  if (age < (min > 0 ? min : defMin) * 60_000) return false
   writeFileSync(stamp, '')
-  spawnChild(CLI, ['wiki', 'refresh'], {
+  spawnChild(CLI, ['wiki', pass], {
     detached: true,
     stdio: 'ignore',
     env: kickEnv(process.env, HOME),
   }).unref()
+  return true
 }
 
 // ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
@@ -6854,7 +7144,8 @@ async function tick(isPatrol = false) {
       kickGc()
       kickGcWorktrees()
       kickSweeps()
-      kickWiki()
+      // one wiki pass in each tick, so refresh and groom never race for wiki.lock; a halt gets refresh only
+      if (!kickWiki('refresh', 30) && !halted()) kickWiki('groom', 24 * 60)
     }
   }
 }
@@ -8065,7 +8356,24 @@ async function migrateToAx(args: string[]) {
     fail(`the manager's home in ${task} already holds a factory: use --force to write over it`)
   const dir = mkdtempSync(join(tmpdir(), 'factory-migrate-'))
   const out = join(dir, 'migrate.tgz')
-  console.log(`packed ${migrate.mb(migrate.pack(HOME, p, out))}; sending to ${task}`)
+  const size = migrate.pack(HOME, p, out)
+  const sha = migrate.sha256File(out)
+  console.log(`packed ${migrate.mb(size)} (sha256 ${sha}); sending to ${task}`)
+  if (ax.hasStdio()) {
+    // one stream; the task keeps the file only when its sha256 is the same
+    const t0 = Date.now()
+    const r = await ax.sendStdio(task, 'migrate.tgz', out, sha)
+    if (!r.ok) fail(`the archive did not arrive over ax stdio: ${r.err}`)
+    console.log(`sent over ax stdio in ${Math.round((Date.now() - t0) / 1000)} s; sha256 matches`)
+  } else await sendParts(task, out, sha)
+  ax.unpackMigration('migrate.tgz', HOME)
+  rmSafe(dir, { recursive: true, force: true })
+  console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
+}
+
+/** the old way, for an ax CLI with no `ax stdio`: base64 parts of PUT_PART over ax ssh, then a sha256 check */
+async function sendParts(task: string, out: string, sha: string) {
+  console.log('this ax CLI has no `ax stdio`: sending put parts over ax ssh (slow)')
   const b64 = readFileSync(out).toString('base64')
   const parts = Math.ceil(b64.length / ax.PUT_PART)
   for (let i = 0; i < parts; i++) {
@@ -8078,9 +8386,8 @@ async function migrateToAx(args: string[]) {
     if (!r.ok) fail(`part ${i + 1} of ${parts} did not arrive: ${r.err}`)
     if ((i + 1) % 50 === 0) console.log(`sent ${i + 1} of ${parts}`)
   }
-  ax.unpackMigration('migrate.tgz')
-  rmSafe(dir, { recursive: true, force: true })
-  console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
+  const got = ax.remoteSha(task, 'migrate.tgz')
+  if (got !== sha) fail(`the archive in ${task} has sha256 ${got}, not ${sha}: run the migrate again`)
 }
 
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
@@ -10769,26 +11076,6 @@ function managerSender(run: Run): 'manager' {
   return 'manager'
 }
 
-/**
- * claude-factory-5y7b: the env marker that says a worker runs this command, else undefined.
- * forMail skips FACTORY_FROM and FACTORY_RUN: the manager mails with FACTORY_FROM=manager (remote.test.ts) and a run worker mails its own station (run-scope.test.ts), so managerSender keeps its old three markers.
- * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
- */
-function workerMarker(
-  forMail = false,
-  env: Record<string, string | undefined> = process.env,
-): string | undefined {
-  return env.FACTORY_FROM && !forMail
-    ? 'FACTORY_FROM is set'
-    : env.FACTORY_RUN && !forMail
-      ? 'FACTORY_RUN is set'
-      : env.FACTORY_DEF_NAME
-        ? 'FACTORY_DEF_NAME is set'
-        : env.BEADS_ACTOR?.startsWith('factory/')
-          ? 'BEADS_ACTOR names a factory worker'
-          : undefined
-}
-
 /** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
 const WORKER_VERBS = [
   'report',
@@ -10911,10 +11198,11 @@ function makeFactory(dir: string) {
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
 function refuseWorker(verb: string, patrol = false) {
-  const marker = workerMarker()
-  if (marker) fail(`a worker cannot run factory ${verb} (${marker}): mail the manager instead`)
-  if (patrol && process.env.FACTORY_PATROL)
-    fail(`a patrol cannot run factory ${verb}: leave it for the person or the manager`)
+  try {
+    refuseWorkerIn(process.env, verb, patrol)
+  } catch (e) {
+    fail((e as Error).message)
+  }
 }
 
 function insideWorktree(run: Run): boolean {
@@ -11625,54 +11913,54 @@ function record(id: string): RunRecord {
   }
 }
 
-async function status(id: string | undefined) {
+async function status(id: string | undefined, print: Print = l => console.log(l)) {
   const halt = halted()
   if (halt && !id)
-    console.log(
+    print(
       halt.state === 'paused'
         ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
         : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
     )
   const stale = !id && managerStale(HOME, managerCommand([], ''))
-  if (stale) console.log(stale)
+  if (stale) print(stale)
   if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
     const age = backupAge(HOME, Date.now())
     const err = backupError(HOME)
-    console.log(
+    print(
       (age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`) +
         (err ? `; last run failed: ${err}` : ''),
     )
   }
   if (!id && process.env.CURSOR_API_KEY) {
     await refreshCursorMeter(HOME)
-    console.log(cursorLine(cursorMeter(HOME), cursorCap()))
+    print(cursorLine(cursorMeter(HOME), cursorCap()))
   }
   if (!id && (grokSpent(HOME) > 0 || grokBudget() !== undefined))
-    console.log(grokLine(grokSpent(HOME), grokBudget()))
-  if (!runIds().length) console.log("no runs yet: factory start <factory> <repo> '<goal...>'")
+    print(grokLine(grokSpent(HOME), grokBudget()))
+  if (!runIds().length) print("no runs yet: factory start <factory> <repo> '<goal...>'")
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
     const def = await loadPinned(run.factory)
     const r = row(run, def, value, c, agentOf(def, value, c))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
-    console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
+    print(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     // a bead's goal carries its whole description: bd show <bead> has it
-    console.log(`  goal: ${clip(r.goal!.split('\n')[0]!, 200)}`)
-    if (id) console.log(`  factory: ${run.factoryFrom ?? run.factory}`)
-    if (r.error) console.log(`  error: ${r.error}`)
+    print(`  goal: ${clip(r.goal!.split('\n')[0]!, 200)}`)
+    if (id) print(`  factory: ${run.factoryFrom ?? run.factory}`)
+    if (r.error) print(`  error: ${r.error}`)
     if (id && run.bead) {
       const tasks = beads(run.repo, 'factory').children(run.bead)
       const closed = tasks.filter(t => t.status === 'closed').length
-      console.log(`  bead: ${run.bead}, tasks ${closed}/${tasks.length} closed (bd children ${run.bead})`)
-    } else if (run.bead) console.log(`  bead: ${run.bead}`)
+      print(`  bead: ${run.bead}, tasks ${closed}/${tasks.length} closed (bd children ${run.bead})`)
+    } else if (run.bead) print(`  bead: ${run.bead}`)
     if (r.gate)
-      console.log(
+      print(
         `  gate: ${r.gate.question}\n  decide: factory decide ${r.id} <${r.gate.outcomes.join('|')}> '[note]'`,
       )
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
-    if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
+    if (mail.length) print(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
     for (const e of id ? c.log : c.log.slice(-1))
-      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
+      print(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
   }
   if (!id) {
     const ships = liveShipRuns()
@@ -11680,7 +11968,7 @@ async function status(id: string | undefined) {
       const repo = rigs().find(r => r.name === rig)!.repo
       const live = ships.find(s => s.run.repo === repo)
       const lines = shipLines(queue, live && { id: live.run.id, node: live.node })
-      if (lines.length) console.log(`rig ${rig}\n${lines.join('\n')}`)
+      if (lines.length) print(`rig ${rig}\n${lines.join('\n')}`)
     }
   }
 }
@@ -11713,10 +12001,17 @@ const WIKI_RIG_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/
 /**
  * One `factory wiki refresh` pass: write rigs/<rig>.md for each rig with a valid name and the rig list in
  * index.md, from the run rows, the ship queues and the merged-PR cache (no gh call). A run that cannot be
- * read is left out. With `dryRun` it only returns the changed paths. Else it commits, pushes and journals.
+ * read is left out. With `dryRun` it only returns the changed paths. Else it first needs the checkout on main
+ * (a left-over groom branch skips the pass) and pulls main of origin, then commits, pushes and journals.
  */
 async function wikiRefresh(dryRun: boolean): Promise<string[]> {
   const dir = join(HOME, 'wiki')
+  if (!dryRun) {
+    // a groom pass that died leaves the checkout on its branch: refresh must not commit or push there
+    if (wikiGit(dir, ['symbolic-ref', '-q', 'HEAD']).out.toString().trim() !== 'refs/heads/main')
+      return (wikiLog('wiki: checkout not on main, refresh skipped'), [])
+    pullWiki(dir)
+  }
   const rows: RigRow[] = []
   for (const id of startedRunIds()) {
     try {
@@ -11873,6 +12168,7 @@ const usage = `factory — herdr software factories on xstate
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
+  attach --ssh-config                print the ssh config Host block for herdr --remote <AX manager task>
   say '<text...>'                    type text and Enter into the AX manager's pane
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
@@ -12028,6 +12324,35 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** the helpers of this file that the catalog operations call (src/core/ops) */
+export const corePort: Port = {
+  show,
+  status,
+  backlog,
+  prs,
+  decisionsList,
+  planShowText,
+  gateBriefFacts,
+  records,
+  refreshMerges,
+  managerUsage,
+}
+const cliCtx = (): OpCtx => ({
+  home: HOME,
+  env: process.env,
+  port: corePort,
+  board: () => null,
+  cli: () => fail('no CLI runner in the CLI'),
+})
+/** the input of an op from CLI words: a missing word leaves its key out */
+const defined = (o: Record<string, string | boolean | undefined>): OpInput =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as OpInput
+const emit = (r: OpResult) => {
+  process.stdout.write(r.out)
+  process.stderr.write(r.err)
+  process.exitCode = r.code
+}
+
 if (import.meta.main && !outboxCmd)
   try {
     switch (cmd) {
@@ -12131,7 +12456,7 @@ if (import.meta.main && !outboxCmd)
           leases.release(HOME)
           console.log('released the manager lease')
         } else if (!args.length || (args[0] === 'status' && args.length === 1))
-          console.log(leases.leaseLine(leases.readLease(HOME), Date.now()))
+          emit(await leaseOp.show(cliCtx(), {}))
         else fail('usage: factory lease [status|release]')
         break
       }
@@ -12153,7 +12478,7 @@ if (import.meta.main && !outboxCmd)
       case 'server':
         refuseWorker('server', true)
         lease()
-        server.main(args, HOME, () => tick())
+        server.main(args, HOME, () => tick(), corePort)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -12211,8 +12536,13 @@ if (import.meta.main && !outboxCmd)
         break
       case 'attach': {
         refuseWorker('attach', true)
+        if (args[0] === '--ssh-config' && args.length === 1) {
+          // the Host block for ~/.ssh/config, then `herdr --remote <task>` (docs/remote-runner.md)
+          console.log(ax.sshConfigBlock())
+          break
+        }
         const follow = args[0] === '--follow'
-        if (args.length > (follow ? 1 : 0)) fail('usage: factory attach [--follow]')
+        if (args.length > (follow ? 1 : 0)) fail('usage: factory attach [--follow | --ssh-config]')
         for (;;) {
           const pane = ax.attachRead()
           console.log(follow ? `\x1b[2J\x1b[H${pane}` : pane)
@@ -12536,6 +12866,27 @@ if (import.meta.main && !outboxCmd)
           }
           break
         }
+        if (args[0] === 'groom') {
+          const dry = args[1] === '--dry-run'
+          if (args.length > (dry ? 2 : 1)) {
+            console.error('usage: factory wiki groom [--dry-run]')
+            process.exitCode = 2
+            break
+          }
+          const release = hold('wiki.lock')
+          if (!release) {
+            console.log('wiki: busy')
+            break
+          }
+          try {
+            if (!existsSync(join(HOME, 'wiki', '.git')))
+              console.log('wiki: not set up: run factory wiki init')
+            else wikiGroom(dry)
+          } finally {
+            release()
+          }
+          break
+        }
         const i = args.indexOf('--remote')
         const remoteArg = i < 0 ? undefined : args[i + 1]
         const rest = i < 0 ? args : args.filter((_, j) => j !== i && j !== i + 1)
@@ -12716,93 +13067,33 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'show':
-        console.log(JSON.stringify(await show(args[0])))
+        emit(await runsOp.show(cliCtx(), defined({ id: args[0] })))
         break
       case 'metrics': {
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
-        const rig = opt('--rig')
-        const since = opt('--since')
-        const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
-        if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
-        const picked = await refreshMerges(records().filter(r => inWindow(r, rig, days)))
-        const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
-        const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
-        // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
-        // fail-opens (logPrecheck), independent of bd; this command is the only reader.
-        const since_ = since ? Date.now() - days * 86_400_000 : 0
-        const precheckAll = existsSync(precheckFile())
-          ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
-          : []
-        const launchFile = join(HOME, 'launches.jsonl')
-        const launchesAll = existsSync(launchFile) ? parseLaunchLines(readFileSync(launchFile, 'utf8')) : []
-        const launches = launchesAll.filter(l => l.at >= since_ && (!rig || l.rig === rig))
-        // claude-factory-dsfg: runs/*/denials.jsonl, one file a run. --rig maps a run to its rig through
-        // every launch line (not the --since window: a denial can be newer than its run's first launch)
-        const rigOfRun = new Map(launchesAll.map(l => [l.run, l.rig]))
-        const denials = denialStats(
-          (existsSync(join(HOME, 'runs'))
-            ? readdirSync(join(HOME, 'runs'), { withFileTypes: true })
-            : []
-          ).flatMap(d => {
-            const f = join(HOME, 'runs', d.name, 'denials.jsonl')
-            if (!d.isDirectory() || !existsSync(f) || (rig && rigOfRun.get(d.name) !== rig)) return []
-            return parseDenialLines(readFileSync(f, 'utf8')).filter(l => l.at >= since_)
-          }),
-        )
-        const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
-        // --tokens reads what runs stored (record().sessions) and manager-usage.jsonl, never a live transcript
-        const tokenArgs = args.includes('--tokens')
-          ? ([
-              picked.flatMap(r => (r.sessions ?? []).map(u => ({ ...u, run: r.id }))),
-              new Set(picked.filter(r => fate(r) === 'shipped').map(r => r.id)),
-              managerUsage(since_),
-            ] as const)
-          : null
-        // the weekly Cursor pool as a gauge: the last reading and the cap, or null when the meter is unknown
-        const cursor = cursorMeter(HOME)
-        if (args.includes('--json'))
-          console.log(
-            JSON.stringify({
-              cursor: cursor && { ...cursor, cap: cursorCap() },
-              grok: { spentUsd: grokSpent(HOME), budgetUsd: grokBudget() ?? null },
-              all: metrics(picked),
-              ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
-              precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
-              launches,
-              denials,
-              rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
+        emit(
+          await metricsOp.show(
+            cliCtx(),
+            defined({
+              rig: opt('--rig'),
+              since: opt('--since'),
+              json: args.includes('--json') || undefined,
+              tokens: args.includes('--tokens') || undefined,
             }),
-          )
-        else {
-          console.log(
-            render(
-              metrics(picked),
-              `${basename(HOME)}${since ? `, last ${days}d` : ''}`,
-              precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
-            ),
-          )
-          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
-          if (launches.length)
-            console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
-          if (Object.keys(denials).length)
-            console.log('\ndenials by harness and reason:\n' + renderDenials(denials))
-          if (cursor || process.env.CURSOR_API_KEY) console.log('\n' + cursorLine(cursor, cursorCap()))
-          if (grokSpent(HOME) > 0 || grokBudget() !== undefined)
-            console.log('\n' + grokLine(grokSpent(HOME), grokBudget()))
-        }
-        if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
+          ),
+        )
         break
       }
       case 'backlog':
-        console.log(JSON.stringify(await backlog()))
+        emit(await backlogOp.show(cliCtx(), {}))
         break
       case 'prs':
-        console.log(JSON.stringify(await prs()))
+        emit(await prsOp.show(cliCtx(), {}))
         break
       case 'decisions': {
         const [sub, ...rest] = args
         if (!sub || sub === 'list') {
-          console.log(JSON.stringify(decisionsList()))
+          emit(await decisionsOp.list(cliCtx(), {}))
           break
         }
         if (sub === 'answer') {
@@ -12860,7 +13151,7 @@ if (import.meta.main && !outboxCmd)
       case 'plan': {
         const [sub, arg] = args
         if (!sub || sub === 'show') {
-          console.log(planShowText())
+          emit(await planOp.show(cliCtx(), {}))
           break
         }
         if (sub === 'facts') {
@@ -12896,7 +13187,7 @@ if (import.meta.main && !outboxCmd)
       case 'gate-brief': {
         const [sub, a1, a2] = args
         if (sub === 'facts') {
-          console.log(JSON.stringify(await gateBriefFacts(a1)))
+          emit(await gatesOp.brief(cliCtx(), defined({ id: a1 })))
           break
         }
         if (sub === 'set') {
@@ -12944,7 +13235,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'status':
-        await status(args[0])
+        emit(await runsOp.status(cliCtx(), defined({ run: args[0] })))
         break
       case 'digest':
         await digest()

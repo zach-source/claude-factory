@@ -3,6 +3,8 @@
 // queues what the worker's `factory report|mail|memory add` would have done in an outbox, which the
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
+import { readFileSync } from 'node:fs'
+import { sq } from './harness'
 import { WORKER_USER } from './worker'
 import { workerPolicyRefusal } from './broker'
 import { parseNames } from './axsweep'
@@ -198,6 +200,9 @@ export function manifest(l: Launch) {
   }
   return [workspace, task].map(d => JSON.stringify(d, null, 2)).join('\n---\n')
 }
+
+/** a task that waits for a free worker in the pool: AX puts it on no full worker (Ready reason WaitingForCapacity) */
+export const isCapacityWait = (yaml: string) => /^\s+reason:\s*"?WaitingForCapacity\b/m.test(yaml)
 
 /** a task's phase from `ax get task` (YAML): Pending, Running, Suspended, Failed, Terminating; null when gone */
 export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1] ?? null
@@ -692,10 +697,15 @@ export const launch = (l: Launch) => {
   must(['apply', '-f', '-'], manifest({ ...l, env }))
   return `ax://${l.name}`
 }
-/** the task's phase and, when AX says why it failed, that reason: one `ax get task` */
-export function read(task: string): { phase: string | null; failure?: string } {
+/** the task's phase, the reason when AX says why it failed, and whether it waits for capacity: one `ax get task` */
+export function read(task: string): { phase: string | null; failure?: string; queued?: boolean } {
   const r = ax(['get', 'task', task])
-  if (r.ok) return { phase: phaseOf(r.out), failure: failureOf(r.out) }
+  if (r.ok)
+    return {
+      phase: phaseOf(r.out),
+      failure: failureOf(r.out),
+      queued: phaseOf(r.out) === 'Pending' && isCapacityWait(r.out),
+    }
   if (/not ?found/i.test(r.err)) return { phase: null }
   throw new Error(`ax get task: ${r.err}`)
 }
@@ -786,6 +796,60 @@ export function put(task: string, name: string, part: number, parts: number, bas
   return r.ok ? { ok: true as const } : { ok: false as const, err: r.err }
 }
 export const PUT_PART = 96_000
+
+/** whether this ax CLI has `ax stdio` (the AX fork): its help lists the command. One `ax --help` */
+export function hasStdio() {
+  const r = ax(['--help'])
+  return /^\s+stdio\s/m.test(`${r.out}\n${r.err}`)
+}
+
+/**
+ * The task side of a stdio send. It writes stdin to `<dir>/<name>.tmp`, then checks its sha256.
+ * On a match it moves the file to `<dir>/<name>` and prints the hash. Else it removes the file and exits 3.
+ * It uses no -a, -n, --context or --server: ax reads them after `--`.
+ */
+export const receiveScript = (name: string, sha: string, dir = OWN) => {
+  if (!/^[\w.-]+$/.test(name) || !/^[0-9a-f]{64}$/.test(sha))
+    throw new Error('receiveScript: bad name or sha256')
+  const t = `${dir}/${name}.tmp`
+  return (
+    `set -e; mkdir -p ${dir}; cat > ${t}; h=$(sha256sum ${t} | cut -c1-64); ` +
+    `if [ "$h" = ${sha} ]; then mv ${t} ${dir}/${name}; echo "$h"; ` +
+    `else rm -f ${t}; echo "sha256 mismatch: got $h" >&2; exit 3; fi`
+  )
+}
+
+/**
+ * Stream `file` into the task's OWN/<name> in one `ax stdio` call, as the worker user. The task checks
+ * the laptop's sha256 before it keeps the file. ponytail: one try, 2 h at most; the caller decides on a retry
+ */
+export async function sendStdio(task: string, name: string, file: string, sha: string) {
+  const p = Bun.spawn(
+    [
+      AX(),
+      ...context(),
+      '-a',
+      ATESPACE(),
+      'stdio',
+      task,
+      '--',
+      ...asWorker(['sh', '-c', receiveScript(name, sha)]),
+    ],
+    { stdin: Bun.file(file), stdout: 'pipe', stderr: 'pipe', env: process.env, timeout: 2 * 60 * 60_000 },
+  )
+  const [out, err, code] = await Promise.all([
+    new Response(p.stdout).text(),
+    new Response(p.stderr).text(),
+    p.exited,
+  ])
+  return code === 0 && out.trim() === sha
+    ? { ok: true as const }
+    : { ok: false as const, err: (err.trim() || out.trim() || `exit ${code}`).slice(-300) }
+}
+
+/** the sha256 of OWN/<name> in the task (after a send of put parts), as the worker user */
+export const remoteSha = (task: string, name: string) =>
+  must(['ssh', task, '--', ...asWorker(['sh', '-c', `sha256sum ${OWN}/${name} | cut -c1-64`])]).trim()
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
 /**
@@ -834,6 +898,52 @@ export function remoteManager(): string | undefined {
   return undefined
 }
 
+/**
+ * The attach path (claude-factory-d289.1). The laptop's ssh starts `sshd -i` in the task through `ax stdio`.
+ * sshd runs as the worker user. Root has no SYS_CHROOT, and a root sshd fails at its chroot.
+ * `factory manager host` writes the config, the host key and authorized_keys in SSH_DIR, on the volume.
+ */
+export const SSH_DIR = `${WS}/ssh`
+export const SSHD_CONFIG = `${SSH_DIR}/sshd_config`
+export const SSHD = '/nix/var/nix/profiles/default/bin/sshd'
+/** the command that the ProxyCommand starts in the task. It has no -a, -n, --context or --server: ax reads them after `--` */
+export const sshdCommand = () => [
+  'setpriv',
+  `--reuid=${WORKER_USER}`,
+  `--regid=${WORKER_USER}`,
+  '--init-groups',
+  SSHD,
+  '-i',
+  '-f',
+  SSHD_CONFIG,
+]
+
+/** the ssh config Host block for `herdr --remote <task>` (needs an ax CLI with `ax stdio`, from the AX fork) */
+export const sshConfigBlock = (task = managerTask()) =>
+  [
+    `Host ${task}`,
+    `  User ${WORKER_USER}`,
+    `  ProxyCommand ${[AX(), ...context(), '-a', ATESPACE(), 'stdio', task, '--', ...sshdCommand()].join(' ')}`,
+  ].join('\n')
+
+/** the env the task reads its authorized_keys from; the laptop fills it from FACTORY_AX_MANAGER_SSH_PUBKEY */
+export const AUTHORIZED_KEYS_ENV = 'FACTORY_SSH_AUTHORIZED_KEYS'
+const PUBKEY =
+  /^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/]+=*( \S.*)?$/
+/**
+ * This makes authorized_keys text from public key lines. It throws for each other line.
+ * A private key must not go into the task env. The error does not show the text.
+ */
+export function publicKeys(text: string) {
+  const lines = text
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+  if (!lines.length || lines.some(l => !PUBKEY.test(l)))
+    throw new Error('FACTORY_AX_MANAGER_SSH_PUBKEY must be an OpenSSH public key file (id_ed25519.pub)')
+  return `${lines.join('\n')}\n`
+}
+
 /** the laptop's knobs the manager task needs to launch its own workers */
 const MANAGER_PASS = [
   'FACTORY_MAX_RUNS',
@@ -841,11 +951,19 @@ const MANAGER_PASS = [
   'FACTORY_AX_IMAGE',
   'FACTORY_AX_VAULT',
   'FACTORY_AX_ATESPACE',
+  'FACTORY_AX_PKG_GATE',
+  'FACTORY_AX_CAPABILITIES',
   'FACTORY_AX_BACKUP_REMOTE',
   'FACTORY_AX_BACKUP_BRANCH',
   'FACTORY_AX_BACKUP_EVERY',
   'FACTORY_OTLP_ENDPOINT',
   'FACTORY_AX_OTLP_ENDPOINT',
+  // the harness gates (cli.ts axCodex, axCursor, axGrok): without them the manager refuses those VM workers
+  'FACTORY_AX_CODEX',
+  'FACTORY_AX_CURSOR',
+  'FACTORY_AX_GROK',
+  // the manager's ax CLI talks gRPC over TLS to an endpoint that does not select ALPN (grpc-go 1.67+ refuses it)
+  'GRPC_ENFORCE_ALPN_ENABLED',
 ]
 
 /**
@@ -858,17 +976,36 @@ const MANAGER_ROUTER = 'FACTORY_AX_MANAGER_ROUTER'
 const MANAGER_BROKER = 'FACTORY_AX_MANAGER_BROKER'
 
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
-export function managerEnv(env: Record<string, string | undefined> = process.env) {
+export function managerEnv(
+  env: Record<string, string | undefined> = process.env,
+  read: (path: string) => string = p => readFileSync(p, 'utf8'),
+) {
   return {
     FACTORY_IN_AX: '1',
+    // the task's own name: the AX sweep in the task skips it, and createPolicy keys the manager policy on it
+    FACTORY_AX_MANAGER: env.FACTORY_AX_MANAGER ?? 'f-manager',
     FACTORY_HOME: `${WS}/home`,
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
-    ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
+    // an empty FACTORY_AX_CAPABILITIES means "none" (workers stay root), so it goes over too
+    ...Object.fromEntries(
+      MANAGER_PASS.filter(k => env[k] || (k === 'FACTORY_AX_CAPABILITIES' && env[k] === '')).map(k => [
+        k,
+        env[k]!,
+      ]),
+    ),
+    // the task has no laptop paths: it gets the content. Worker env, the same that each worker task gets
+    ...(env.FACTORY_AX_ENV && { FACTORY_AX_ENV: JSON.stringify(readAxEnv(env.FACTORY_AX_ENV, read)) }),
+    // a public key only: publicKeys refuses anything else
+    ...(env.FACTORY_AX_MANAGER_SSH_PUBKEY && {
+      [AUTHORIZED_KEYS_ENV]: publicKeys(read(env.FACTORY_AX_MANAGER_SSH_PUBKEY)),
+    }),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
     // the gateway adds the real token (managerEgress). The VM holds a placeholder. The CLI sends a token only over https
     ...(env.FACTORY_AX_VAULT &&
       env[MANAGER_AX_SERVER]?.startsWith('https://') && { AX_AUTH_TOKEN: 'placeholder' }),
+    // the Cursor pool meter (cursor-meter.ts): a placeholder, and managerEgress has the gateway put the vault key in
+    ...(env.FACTORY_AX_VAULT && env.CURSOR_API_KEY && { CURSOR_API_KEY: 'placeholder' }),
     ...(env[MANAGER_BROKER] && {
       FACTORY_POLICY_BROKER: env[MANAGER_BROKER],
       // the swap runs in the broker pod, where the op writer token is; the VM holds none
@@ -877,6 +1014,18 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
     ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
   }
+}
+
+/**
+ * FACTORY_AX_ENV: a JSON file of extra worker env, or the JSON itself (a value that starts with `{`). The manager
+ * task has no laptop paths, so the laptop sends it the content. Errors never carry the content
+ */
+export function readAxEnv(value: string, read: (path: string) => string = p => readFileSync(p, 'utf8')) {
+  try {
+    const v: unknown = JSON.parse(value.trimStart().startsWith('{') ? value : read(value))
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, string>
+  } catch {}
+  throw new Error('FACTORY_AX_ENV is not a JSON object or the path of a JSON file')
 }
 
 /** `host:port` of the router URL (port 80 when it names none); undefined when the value is not a URL */
@@ -936,6 +1085,7 @@ export function withDoltEgress(egress: Egress[] | undefined, rig?: DoltRig): Egr
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
  * A value that is not a URL adds no rule. A rig's beadsRemote adds its Dolt rule, and a --linear rig adds Linear's.
+ * A laptop CURSOR_API_KEY (the pool meter) adds the api2.cursor.sh rules, with the vault key CURSOR_API_KEY on /auth/.
  */
 export function managerEgress(
   env: Record<string, string | undefined> = process.env,
@@ -972,7 +1122,20 @@ export function managerEgress(
   const linear = rigs.some(r => r.linear)
     ? [{ hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' }]
     : []
-  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear]
+  // the Cursor pool meter posts its key to api2.cursor.sh/auth/ and then reads the usage with the access token it gets
+  const cursor = env.CURSOR_API_KEY
+    ? [
+        {
+          hosts: ['api2.cursor.sh'],
+          pathPrefixes: ['/auth/'],
+          key: 'CURSOR_API_KEY',
+          header: 'Authorization',
+          prefix: 'Bearer ',
+        },
+        { hosts: ['api2.cursor.sh'] },
+      ]
+    : []
+  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear, ...cursor]
 }
 
 /**
@@ -1051,11 +1214,31 @@ export const managerHomeUsed = () =>
     ]),
   ).trim() === 'used'
 
+/** escape `s` as a literal in a sed pattern or replacement; `/` is the delimiter */
+const sedLit = (s: string, pattern: boolean) => s.replace(pattern ? /[\\/.[\]*^$]/g : /[\\/&]/g, '\\$&')
+
 /**
- * unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home, then
- * write .migrated: `factory manager host` waits for that marker before it starts the manager
+ * The shell command that changes the laptop's factory home `from` to the task's home. It edits only the run
+ * state files: run.json, track.json, state.json and inbox.jsonl. It does not edit prompts or briefs.
+ * A match must end at a character that cannot continue a path name. So `/h/f` does not match `/h/f2`.
  */
-export const unpackMigration = (name: string) =>
+export function rewriteHomeCmd(from: string, to = MANAGER_HOME) {
+  const src = from.replace(/\/+$/, '')
+  if (!src) return ':'
+  const expr = `s/${sedLit(src, true)}\\([^A-Za-z0-9_.-]\\|$\\)/${sedLit(to, false)}\\1/g`
+  return (
+    `if [ -d ${to}/runs ]; then find ${to}/runs -maxdepth 2 -type f ` +
+    `\\( -name run.json -o -name track.json -o -name state.json -o -name inbox.jsonl \\) ` +
+    `-exec sed -i -e ${sq(expr)} {} +; fi`
+  )
+}
+
+/**
+ * Unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home. Then
+ * write .migrated: `factory manager host` waits for that marker before it starts the manager.
+ * `laptopHome` is the laptop's factory home. Run state holds it in absolute paths, and the unpack rewrites it.
+ */
+export const unpackMigration = (name: string, laptopHome = '') =>
   must(
     managerCmd([
       'sh',
@@ -1064,6 +1247,7 @@ export const unpackMigration = (name: string) =>
       `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; ` +
         `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
         `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
+        `${rewriteHomeCmd(laptopHome)}; ` +
         `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )

@@ -150,10 +150,16 @@ ENV IS_SANDBOX=1
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]
 
 # The manager's image: the worker image plus what the manager session needs. The manager runs as a long-lived
-# AX task. ax-task-runner stays PID 1. herdr and dolt come from the pinned nixpkgs (dolt is for bd's server mode)
+# AX task. ax-task-runner stays PID 1. dolt comes from the pinned nixpkgs (dolt is for bd's server mode).
+# herdr is the upstream release binary, pinned by sha256. `herdr --remote` from the laptop needs a compatible
+# herdr in the task, so keep HERDR_VERSION the same as the laptop's. sshd for the attach is the image's Nix openssh
 FROM worker AS manager
-RUN nix profile install --profile /nix/var/nix/profiles/default nixpkgs#herdr nixpkgs#dolt \
-  && herdr --version && dolt version
+ARG HERDR_VERSION=0.9.3
+ARG HERDR_SHA256=18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7
+RUN nix profile install --profile /nix/var/nix/profiles/default nixpkgs#dolt && dolt version \
+  && curl -fsSL -o /usr/local/bin/herdr https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64 \
+  && echo "${HERDR_SHA256}  /usr/local/bin/herdr" | sha256sum -c - && chmod 755 /usr/local/bin/herdr \
+  && herdr --version && test -x /nix/var/nix/profiles/default/bin/sshd
 COPY --from=axcli /ax-cli /usr/local/bin/ax
 # the laptop-side lease code keys on this
 ENV FACTORY_IN_AX=1

@@ -1,4 +1,15 @@
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  closeSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { MANAGER_CWD } from './ax'
@@ -131,11 +142,48 @@ export type Plan = {
   claude: string[]
   skipped: string[]
   runs: string[]
+  /** the older *.memory.tgz of the moved runs (`runs/<id>/<file>`), which pack() leaves out */
+  staleMemory: string[]
+  /** their size */
+  staleBytes: number
   left: number
   bytes: number
   refusal?: string
   rigsError?: string
   rigs: (RigRow & { remote?: string })[]
+}
+
+/** the seq of a memory archive name `<task>-<seq>.memory.tgz`; -1 when it has none */
+const seqOf = (name: string) => Number(name.match(/-(\d+)\.memory\.tgz$/)?.[1] ?? -1)
+
+/**
+ * The memory archives of one run dir that must not move: each `*.memory.tgz` except the newest. The laptop
+ * writes one at each worker launch and deletes it after the put, so only the newest can wait for a put.
+ * The newest has the highest seq. With equal seqs, the newest mtime wins.
+ */
+export function staleMemoryOf(files: { name: string; mtimeMs: number }[]) {
+  const archives = files.filter(f => f.name.endsWith('.memory.tgz'))
+  const newest = archives.reduce<(typeof archives)[number] | undefined>(
+    (a, f) =>
+      !a || seqOf(f.name) > seqOf(a.name) || (seqOf(f.name) === seqOf(a.name) && f.mtimeMs > a.mtimeMs)
+        ? f
+        : a,
+    undefined,
+  )
+  return archives.filter(f => f !== newest).map(f => f.name)
+}
+
+/** the sha256 of a file, read in 1 MiB blocks; the migrate checks it on both ends */
+export function sha256File(path: string) {
+  const h = new Bun.CryptoHasher('sha256')
+  const buf = Buffer.alloc(1 << 20)
+  const fd = openSync(path, 'r')
+  try {
+    for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0;) h.update(buf.subarray(0, n))
+  } finally {
+    closeSync(fd)
+  }
+  return h.digest('hex')
 }
 
 const sizeOf = (path: string): number => {
@@ -170,6 +218,12 @@ export function plan(
   const rigsFile = join(home, 'rigs.json')
   const m = migratedRigs(existsSync(rigsFile) ? JSON.parse(readFileSync(rigsFile, 'utf8')) : [], originOf)
   const claude = claudeFiles(readSessions(home), config)
+  const staleMemory = move.flatMap(id => {
+    const dir = join(runsDir, id)
+    const files = readdirSync(dir).map(name => ({ name, mtimeMs: statSync(join(dir, name)).mtimeMs }))
+    return staleMemoryOf(files).map(name => `runs/${id}/${name}`)
+  })
+  const staleBytes = staleMemory.reduce((n, f) => n + statSync(join(home, f)).size, 0)
   const bytes =
     take.reduce((n, f) => n + sizeOf(join(home, f)), 0) +
     claude.reduce((n, f) => n + sizeOf(f), 0) +
@@ -177,12 +231,15 @@ export function plan(
       const t = join(runsDir, id, 'transcripts') // pack() leaves these out
       return n + sizeOf(join(runsDir, id)) - (existsSync(t) ? sizeOf(t) : 0)
     }, 0) +
-    statSync(rigsFile).size
+    statSync(rigsFile).size -
+    staleBytes
   return {
     top: take,
     claude,
     skipped,
     runs: move,
+    staleMemory,
+    staleBytes,
     left: runs.length - move.length,
     bytes,
     refusal: local.length ? localRunsRefusal(local) : undefined,
@@ -199,6 +256,11 @@ export const describe = (p: Plan) =>
     `moves: ${p.top.join(', ')}, and ${p.runs.length} run dirs (${p.left} finished runs stay behind; runs/*/transcripts stay behind)`,
     `the manager's Claude: ${p.claude.length ? p.claude.map(f => basename(f)).join(', ') : 'nothing found (no memory or transcript)'}`,
     ...(p.skipped.length ? [`left behind (big or laptop-only): ${p.skipped.join(', ')}`] : []),
+    ...(p.staleMemory.length
+      ? [
+          `older memory archives left behind: ${p.staleMemory.length} (${mb(p.staleBytes)}); each run keeps its newest`,
+        ]
+      : []),
     `size before compression: ${mb(p.bytes)}`,
   ].join('\n')
 
@@ -223,7 +285,19 @@ export function pack(home: string, p: Plan, out: string) {
     const fromTmp = ['rigs.json', 'manager-sessions.json', ...(p.claude.length ? [CLAUDE_STAGE] : [])]
     // COPYFILE_DISABLE: macOS tar adds an AppleDouble ._ file for each file with extended attributes
     const r = Bun.spawnSync(
-      ['tar', '-czf', out, '--exclude=./runs/*/transcripts', '-C', home, ...names, '-C', tmp, ...fromTmp],
+      [
+        'tar',
+        '-czf',
+        out,
+        '--exclude=./runs/*/transcripts',
+        ...p.staleMemory.map(f => `--exclude=./${f}`),
+        '-C',
+        home,
+        ...names,
+        '-C',
+        tmp,
+        ...fromTmp,
+      ],
       {
         env: { ...process.env, COPYFILE_DISABLE: '1' },
         stderr: 'pipe',
