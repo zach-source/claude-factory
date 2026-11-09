@@ -8189,7 +8189,7 @@ export type Rig = {
   maxRuns?: number
   /** The most live runs per cluster (clusterKey in src/filing-guard.ts). Default 2. Set with `factory rig set --cluster-runs n`. */
   clusterRuns?: number
-  /** Queue ready leaf beads when the rig has room (src/autoqueue.ts). Off when absent. Set with `factory rig set --auto-queue p,n|off`. */
+  /** When the rig has room and no labeled bead, queue the best unlabeled ready leaf beads (src/autoqueue.ts). Off when absent. Use `factory rig set --auto-queue p,n|off`. */
   autoQueue?: AutoQueue
   sweeps?: string[]
   /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
@@ -8215,7 +8215,7 @@ export type Rig = {
   runner?: string
   /** Rules before each push, one paragraph each; `{base_branch}` expands. Set with `factory rig set --push-rule text|none` (repeatable). */
   pushRules?: string[]
-  /** Extra skills for all workers, from harness.ts VM_PLUGINS. Set with `factory rig set --skills a,b|none`. */
+  /** Skills for all workers in this rig, on top of the factory and station lists. Names come from harness.ts VM_PLUGINS. Use `factory rig set --skills a,b|none`. */
   skills?: string[]
   /** The literal false turns off tool details in the OTel export (src/otel.ts). Use `factory rig set --otel-content on|off`. */
   otelContent?: boolean
