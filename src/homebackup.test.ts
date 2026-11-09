@@ -640,7 +640,14 @@ test('a962: the backup auth header goes only to git calls under the backup remot
     "const s=Bun.serve({port:0,fetch(r){require('fs').appendFileSync(process.env.REC_FILE,new URL(r.url).pathname+' '+(r.headers.get('authorization')??'none')+'\\n');return new Response('no',{status:404})}});console.log(s.port)"
   const srv = Bun.spawn(['bun', '-e', script], { env: { ...process.env, REC_FILE: rec }, stdout: 'pipe' })
   try {
-    const port = Number((await srv.stdout.getReader().read().then(r => Buffer.from(r.value!).toString())).trim())
+    const port = Number(
+      (
+        await srv.stdout
+          .getReader()
+          .read()
+          .then(r => Buffer.from(r.value!).toString())
+      ).trim(),
+    )
     const lines = () => readFileSync(rec, 'utf8').split('\n')
     const bin = join(tmp(), 'gitleaks')
     writeFileSync(bin, "#!/bin/sh\necho '[]'\n", { mode: 0o755 })
@@ -661,7 +668,9 @@ test('a962: the backup auth header goes only to git calls under the backup remot
     // no auth: no header
     writeFileSync(rec, '')
     backup({ ...c, ws: mk(), auth: undefined }, true)
-    expect(lines().find(l => l.startsWith('/acme/widget.git/info/refs'))).toBe('/acme/widget.git/info/refs none')
+    expect(lines().find(l => l.startsWith('/acme/widget.git/info/refs'))).toBe(
+      '/acme/widget.git/info/refs none',
+    )
     // another URL on the same host gets none
     writeFileSync(rec, '')
     const ls = Bun.spawn(['git', 'ls-remote', `http://127.0.0.1:${port}/acme/other.git`], {
@@ -670,7 +679,9 @@ test('a962: the backup auth header goes only to git calls under the backup remot
       stderr: 'pipe',
     })
     await ls.exited
-    expect(lines().find(l => l.startsWith('/acme/other.git/info/refs'))).toBe('/acme/other.git/info/refs none')
+    expect(lines().find(l => l.startsWith('/acme/other.git/info/refs'))).toBe(
+      '/acme/other.git/info/refs none',
+    )
     expect(authEnv({ ws, branch: 'b' })).toEqual({})
   } finally {
     srv.kill()
