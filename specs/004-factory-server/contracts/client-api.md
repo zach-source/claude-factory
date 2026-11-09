@@ -34,6 +34,7 @@ Each action endpoint takes `Idempotency-Key`, as in the worker API.
 | `POST /v1/halt`                                 | `{mode: "stop" or "resume"}`            | `factory stop`, `factory resume`    |
 | `POST /v1/lease/release`                        | `{}`                                    | `factory lease release`             |
 | `POST /v1/queue`                                | `{rig, bead, station?}`                 | `factory queue`                     |
+| `POST /v1/rigs/<name>`                          | `{goal?, max?, sweeps?, runner?, agent?, mcp?, params?}` | `factory rig set`    |
 | `POST /v1/decisions/<key>/answer`               | `{text}`                                | `factory decisions answer`          |
 | `PUT /v1/rigs/<name>`, `DELETE /v1/rigs/<name>` | the rig fields                          | `factory rig add`, `factory rig rm` |
 

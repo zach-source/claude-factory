@@ -50,6 +50,7 @@ const NAMES = [
   'plan.show',
   'prs.show',
   'rigs.list',
+  'rigs.set',
   'runners.show',
   'runs.abort',
   'runs.goto',
@@ -62,7 +63,7 @@ const NAMES = [
 ]
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 25 operations', async () => {
+  test('serves the envelope with the 26 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)

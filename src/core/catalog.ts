@@ -37,6 +37,19 @@ export type Port = {
   goto: (id: string | undefined, node: string | undefined, print: Print) => Promise<void>
   abort: (id: string | undefined) => void
   halt: (mode: 'stop' | 'resume', print: Print) => void
+  rigSet: (
+    name: string | undefined,
+    set: {
+      goal?: string
+      max?: string
+      sweeps?: string
+      runner?: string
+      agent?: string
+      mcp?: string
+      params: string[]
+    },
+    print: Print,
+  ) => Promise<void>
   queue: (m: { rig?: string; bead?: string; station?: string }, who: { env: Env }, print: Print) => void
   start: (
     m: { spec?: string; rig?: string; goal: string; owned: boolean },
@@ -213,6 +226,13 @@ const H: Record<string, string> = {
   owned: 'the person owns the run',
   mode: 'stop or resume',
   bead: 'the bead id',
+  name: 'the rig name',
+  max: 'the most busy runs of the rig, at least 1',
+  sweeps: 'the sweeps, a,b or none',
+  runner: 'the runner of the workers, for example herdr or ax',
+  agent: 'the agent command of the workers',
+  mcp: 'the MCP config file on the server',
+  params: 'the factory params, one name=value on each line',
 }
 const f = (name: string, kind: Kind, required = true, help = H[name]!, values?: string[]): Field => ({
   name,
@@ -237,7 +257,7 @@ const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({
   run,
 })
 
-/** the 25 operations: the routes of the client port, the board, the catalog and the parity fixture */
+/** the 26 operations: the routes of the client port, the board, the catalog and the parity fixture */
 export const CATALOG: Op[] = makeCatalog([
   local(
     {
@@ -494,6 +514,26 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     (c, i) => runsOps.queue(c, i),
+  ),
+  local(
+    {
+      name: 'rigs.set',
+      summary: 'Change the settings of a rig.',
+      method: 'POST',
+      path: '/v1/rigs/:name',
+      inputs: [
+        id('name'),
+        f('goal', 'text', false, 'the goal of the rig'),
+        f('max', 'id', false),
+        f('sweeps', 'text', false),
+        f('runner', 'id', false),
+        f('agent', 'text', false),
+        f('mcp', 'path', false),
+        f('params', 'text', false),
+      ],
+    },
+    'text',
+    (c, i) => rigsOps.set(c, i),
   ),
   local(
     {

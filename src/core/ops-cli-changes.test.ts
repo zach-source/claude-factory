@@ -511,6 +511,12 @@ if (!update) {
     expect(r.body).toBe(outOf('QU1').out)
     expect(r.bd).toEqual((golden.QU1 as { bd: string[] }).bd)
   })
+  test('server: rig set', () => {
+    const r = post(freshHome(), '/v1/rigs/api', { max: '3' }, OUT, { files: ['rigs.json'] })
+    expect(r.status).toBe(200)
+    expect(r.body).toBe(outOf('RS1').out)
+    expect(r.files).toEqual((golden.RS1 as { files: unknown }).files)
+  })
   test('server: lease release', () => {
     const home = freshHome()
     seedLease(home)

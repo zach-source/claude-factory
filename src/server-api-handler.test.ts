@@ -39,6 +39,7 @@ const setup = (o: { board?: unknown } = {}) => {
       print('{"ok":1}')
     ),
     queue: (m, _who, print) => (log('queue', [m]), print('{"ok":1}')),
+    rigSet: async (name, set, print) => (log('rigSet', [name, set]), print('{"ok":1}')),
     halt: (mode, print) => (log('halt', [mode]), print('{"ok":1}')),
     mail: async (m, who, print) => (
       (lastEnv = who.env),
@@ -208,6 +209,36 @@ describe('action routes', () => {
       { rig: 'acme', bead: 'b1', station: 'plan' },
       [p('queue', { rig: 'acme', bead: 'b1', station: 'plan' })],
     ],
+    [
+      '/v1/rigs/acme',
+      { max: '3' },
+      [
+        p('rigSet', 'acme', {
+          goal: undefined,
+          max: '3',
+          sweeps: undefined,
+          runner: undefined,
+          agent: undefined,
+          mcp: undefined,
+          params: [],
+        }),
+      ],
+    ],
+    [
+      '/v1/rigs/acme',
+      { params: 'a=1\nb=2' },
+      [
+        p('rigSet', 'acme', {
+          goal: undefined,
+          max: undefined,
+          sweeps: undefined,
+          runner: undefined,
+          agent: undefined,
+          mcp: undefined,
+          params: ['a=1', 'b=2'],
+        }),
+      ],
+    ],
     ['/v1/halt', { mode: 'stop' }, [p('halt', 'stop')]],
     ['/v1/halt', { mode: 'resume' }, [p('halt', 'resume')]],
     ['/v1/decisions/acme/b1/answer', { text: 'yes' }, [p('decisionsAnswer', 'acme', 'b1', 'yes')]],
@@ -234,6 +265,19 @@ describe('POST /v1/start env', () => {
       if (old === undefined) delete process.env.FACTORY_PATROL
       else process.env.FACTORY_PATROL = old
     }
+  })
+})
+
+describe('POST /v1/rigs/:name with an empty body', () => {
+  test('passes the form check, makes one call and a throw gives 422', async () => {
+    const t = setup()
+    t.port.rigSet = async () => {
+      t.calls.push({ port: 'rigSet', args: [] })
+      throw new Error('usage')
+    }
+    const r = await post(t.h, '/v1/rigs/acme', {})
+    expect(r.status).toBe(422)
+    expect(t.calls.length).toBe(1)
   })
 })
 
@@ -308,6 +352,11 @@ describe('refusals make zero calls', () => {
     ['queue with an extra key', h => post(h, '/v1/queue', { rig: 'acme', bead: 'b1', x: 1 }), 400],
     ['queue with a bad rig', h => post(h, '/v1/queue', { rig: 'a/b', bead: 'b1' }), 400],
     ['queue with a number station', h => post(h, '/v1/queue', { rig: 'acme', bead: 'b1', station: 1 }), 400],
+    ['rig set with a dot-dot name', h => post(h, '/v1/rigs/..%2f', { max: '3' }), 400],
+    ['rig set with a deeper path', h => post(h, '/v1/rigs/a/b', { max: '3' }), 404],
+    ['rig set with a number max', h => post(h, '/v1/rigs/acme', { max: 3 }), 400],
+    ['rig set with an extra key', h => post(h, '/v1/rigs/acme', { x: '1' }), 400],
+    ['rig set with a relative mcp', h => post(h, '/v1/rigs/acme', { mcp: 'rel/path' }), 400],
     ['goal with --owned', h => post(h, '/v1/start', { factory: 'f', rig: 'r', goal: 'a --owned b' }), 400],
     ['owned false', h => post(h, '/v1/start', { factory: 'f', rig: 'r', goal: 'g', owned: false }), 400],
     [

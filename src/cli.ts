@@ -12507,6 +12507,61 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+const RIG_SET_USAGE =
+  "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]..."
+
+/** `factory rig set`: the lookup and the checks of each field, then one edit of rigs.json */
+async function rigSet(
+  name: string | undefined,
+  { goal, max, sweeps, runner, agent, mcp, params }: Parameters<Port['rigSet']>[1],
+  print: Print,
+) {
+  if (!name) fail(RIG_SET_USAGE)
+  const target = rigs().find(r => r.repo === repoOf(name!))
+  if (!target) fail(`${repoOf(name!)} is not a rig`)
+  const set: Record<string, unknown> = {}
+  const unset: string[] = []
+  if (goal !== undefined) {
+    if (!goal.trim()) fail('--goal needs text')
+    set.goal = goal
+  }
+  if (max !== undefined) {
+    if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
+    set.maxRuns = Number(max)
+  }
+  if (sweeps !== undefined) {
+    set.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
+    await checkSweeps(set.sweeps as string[], target!.sweepsFactory, target!.repo)
+  }
+  if (runner !== undefined) {
+    if (runner === DEFAULT_RUNNER) unset.push('runner')
+    else set.runner = runner
+  }
+  if (agent !== undefined) set.agent = agent
+  if (mcp !== undefined) {
+    set.mcp = expand(mcp)
+    try {
+      readMcp(set.mcp as string)
+    } catch (err) {
+      fail(`--mcp ${mcp}: ${(err as Error).message}`)
+    }
+  }
+  if (params.length) {
+    const def = await loadFactory(factorySource(target!.factory, target!.repo))
+    set.params = checkParams(def, params, target!.params)
+  }
+  if (!Object.keys(set).length && !unset.length) fail(RIG_SET_USAGE)
+  edit(list =>
+    list.map(r => {
+      if (r.name !== target!.name) return r
+      const next = applyRigChange(r, set, unset) as Rig
+      for (const w of validateRig(next)) console.warn(w)
+      return next
+    }),
+  )
+  print(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
+}
+
 /** `factory queue <rig|repo> <bead> [station]`: who.env decides whether a patrol asks */
 function queueBead(m: { rig?: string; bead?: string; station?: string }, who: { env: Env }, print: Print) {
   const { rig: repo, bead: id, station } = m
@@ -12566,6 +12621,7 @@ export const corePort: Port = {
   abort: abortRun,
   mail: mailRun,
   halt: haltFactory,
+  rigSet,
   queue: queueBead,
   start: startRun,
 }
@@ -13756,8 +13812,6 @@ if (import.meta.main && !outboxCmd)
           if (!found) fail(`${at} is not a rig`)
           console.log(JSON.stringify(redactRig(found!), null, 2))
         } else if (sub === 'set') {
-          const usage =
-            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]..."
           const foreign = [
             [slo, '--slo'],
             [drift, '--drift'],
@@ -13769,51 +13823,23 @@ if (import.meta.main && !outboxCmd)
             [protectedBranch.length, '--protected-branch'],
             [mergeAuth, '--merge-authority'],
           ].find(([v]) => v !== undefined && v !== 0 && v !== false)
-          if (foreign) fail(`rig set does not change ${foreign[1]}: ${usage}`)
-          if (!name || args.length > 2) fail(usage)
-          const target = rigs().find(r => r.repo === repoOf(name!))
-          if (!target) fail(`${repoOf(name!)} is not a rig`)
-          const set: Record<string, unknown> = {}
-          const unset: string[] = []
-          if (goal !== undefined) {
-            if (!goal.trim()) fail('--goal needs text')
-            set.goal = goal
-          }
-          if (max !== undefined) {
-            if (!/^[1-9]\d*$/.test(max)) fail(`--max is a number of runs, at least 1 (not "${max}")`)
-            set.maxRuns = Number(max)
-          }
-          if (sweeps !== undefined) {
-            set.sweeps = sweeps === 'none' ? [] : sweeps.split(',')
-            await checkSweeps(set.sweeps as string[], target!.sweepsFactory, target!.repo)
-          }
-          if (runner !== undefined) {
-            if (runner === DEFAULT_RUNNER) unset.push('runner')
-            else set.runner = runner
-          }
-          if (agent !== undefined) set.agent = agent
-          if (mcp !== undefined) {
-            set.mcp = expand(mcp)
-            try {
-              readMcp(set.mcp as string)
-            } catch (err) {
-              fail(`--mcp ${mcp}: ${(err as Error).message}`)
-            }
-          }
-          if (params.length) {
-            const def = await loadFactory(factorySource(target!.factory, target!.repo))
-            set.params = checkParams(def, params, target!.params)
-          }
-          if (!Object.keys(set).length && !unset.length) fail(usage)
-          edit(list =>
-            list.map(r => {
-              if (r.name !== target!.name) return r
-              const next = applyRigChange(r, set, unset) as Rig
-              for (const w of validateRig(next)) console.warn(w)
-              return next
-            }),
+          if (foreign) fail(`rig set does not change ${foreign[1]}: ${RIG_SET_USAGE}`)
+          if (!name || args.length > 2) fail(RIG_SET_USAGE)
+          emit(
+            await rigsOp.set(
+              cliCtx(),
+              defined({
+                name,
+                goal,
+                max,
+                sweeps,
+                runner,
+                agent,
+                mcp,
+                params: params.length ? params.join('\n') : undefined,
+              }),
+            ),
           )
-          console.log(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
         } else if (sub === 'env' || sub === 'egress' || sub === 'beads-remote') {
           const usages: Record<string, string> = {
             'env set': 'factory rig env set <rig|repo> KEY=VALUE',
