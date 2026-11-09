@@ -22,8 +22,16 @@ export type Gap = { op: string; frontEnd: FrontEndName; bead: string; reason: st
 export const GAPS_FILE = resolve(import.meta.dir, '..', 'parity-gaps.json')
 
 const KEYS = ['op', 'frontEnd', 'bead', 'reason']
+// a harness gap: a station that cannot run the same on that harness (claude-factory-gf16e.2); not a front-end gap
+export type HarnessGap = { harness: string; station: string; bead: string; reason: string }
+const HARNESS_KEYS = ['harness', 'station', 'bead', 'reason']
+const HARNESSES = ['claude', 'codex', 'grok', 'pi', 'cursor']
 const BEAD_FIELD = { name: 'bead', kind: 'id', required: true, help: '' } as const
 const F = 'parity-gaps.json'
+
+/** the harness gaps of the gap file; parseGaps checks their shape */
+export const harnessGaps = (text: string): HarnessGap[] =>
+  (JSON.parse(text) as Record<string, string>[]).filter(o => 'harness' in o) as HarnessGap[]
 
 /** Parse the gap file. Fail closed: throw at the first bad item. */
 export function parseGaps(text: string, catalog: Op[] = CATALOG): Gap[] {
@@ -43,6 +51,15 @@ export function parseGaps(text: string, catalog: Op[] = CATALOG): Gap[] {
     if (!it || typeof it !== 'object' || Array.isArray(it)) throw bad('not an object')
     const o = it as Record<string, unknown>
     const ks = Object.keys(o)
+    if (ks.includes('harness')) {
+      if (ks.length !== HARNESS_KEYS.length || !HARNESS_KEYS.every(k => ks.includes(k)))
+        throw bad('keys must be harness, station, bead, reason')
+      for (const k of HARNESS_KEYS)
+        if (typeof o[k] !== 'string' || !(o[k] as string).trim()) throw bad(`${k} must be a string`)
+      if (!HARNESSES.includes(o.harness as string)) throw bad(`harness ${o.harness} is not a harness`)
+      if (!fieldOk(BEAD_FIELD, o.bead as string)) throw bad('bead must be a bead id')
+      return
+    }
     if (ks.length !== KEYS.length || !KEYS.every(k => ks.includes(k)))
       throw bad('keys must be op, frontEnd, bead, reason')
     for (const k of KEYS) if (typeof o[k] !== 'string') throw bad(`${k} must be a string`)

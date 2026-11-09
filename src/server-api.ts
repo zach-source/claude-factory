@@ -345,7 +345,7 @@ export function clientHandler(o: ClientOpts) {
     }
 
     const key = req.headers.get('idempotency-key') ?? ''
-    if (!KEY.test(key)) return refuse(400, 'Idempotency-Key must match ^[A-Za-z0-9-]{8,128}$')
+    if (op.mutates && !KEY.test(key)) return refuse(400, 'Idempotency-Key must match ^[A-Za-z0-9-]{8,128}$')
     if (!/^application\/json\s*(;.*)?$/i.test(req.headers.get('content-type') ?? ''))
       return refuse(400, 'content-type must be application/json')
     const len = Number(req.headers.get('content-length') ?? 0)
@@ -366,6 +366,14 @@ export function clientHandler(o: ClientOpts) {
       return refuse(400, 'the goal must not hold the word --owned: set owned')
     if (op.name === 'runs.mail' && insideRunWorktree(o.home, body.id as string, body.cwd as string))
       return refuse(403, 'a worker cannot send mail as the manager from inside the run worktree')
+
+    if (!op.mutates) {
+      try {
+        return await call(op, body)
+      } catch (e) {
+        return refuse(500, `internal error: ${String((e as Error)?.message ?? e).slice(0, 200)}`)
+      }
+    }
 
     const path = url.pathname
     const hash = createHash('sha256').update(`${req.method}\0${path}\0${raw}`).digest('hex')

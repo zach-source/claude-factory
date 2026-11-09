@@ -216,18 +216,25 @@ describe('stranger certificates never reach the handler', () => {
   })
 })
 
-describe('request grammar of the client listener', () => {
-  const send = async (port: number, text: string) => {
-    const p = Bun.spawn(
-      [
-        ...['openssl', 's_client', '-connect', `localhost:${port}`, '-servername', 'localhost'],
-        ...['-CAfile', join(A, 'ca.crt'), '-quiet', '-tls1_3', '-cert', join(A, 'person.crt')],
-        ...['-key', join(A, 'person.key')],
-      ],
-      { stdin: new Blob([text]), stdout: 'pipe', stderr: 'ignore', timeout: 5000 },
-    )
-    return ((await new Response(p.stdout).text()).match(/^HTTP\/1\.1 (\d+)/) ?? [])[1] ?? 'none'
+const send = async (port: number, text: string) => {
+  const start = performance.now()
+  const p = Bun.spawn(
+    [
+      ...['openssl', 's_client', '-connect', `localhost:${port}`, '-servername', 'localhost'],
+      ...['-CAfile', join(A, 'ca.crt'), '-quiet', '-tls1_3', '-cert', join(A, 'person.crt')],
+      ...['-key', join(A, 'person.key')],
+    ],
+    { stdin: new Blob([text]), stdout: 'pipe', stderr: 'ignore', timeout: 5000 },
+  )
+  const out = await new Response(p.stdout).text()
+  await p.exited
+  return {
+    status: out.match(/^HTTP\/1\.1 (\d+)/)?.[1] ?? 'none',
+    body: out.split('\r\n\r\n').slice(1).join('\r\n\r\n'),
+    ms: performance.now() - start,
   }
+}
+describe('request grammar of the client listener', () => {
   const rows: [string, string, string][] = [
     ['chunked body', 'GET /v1/prs HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n', '400'],
     ['Expect header', 'GET /v1/prs HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n\r\n', '400'],
@@ -248,18 +255,65 @@ describe('request grammar of the client listener', () => {
   for (const [name, text, want] of rows)
     test(`${name} gives ${want} and no call`, async () => {
       const t = start()
-      expect(want.split(' or ')).toContain(await send(t.s.clientPort!, text))
+      expect(want.split(' or ')).toContain((await send(t.s.clientPort!, text)).status)
       expect(t.calls.length).toBe(0)
     })
   test('a valid GET and a valid POST are served', async () => {
     const t = start()
-    expect(await send(t.s.clientPort!, 'GET /v1/prs HTTP/1.1\r\nHost: x\r\n\r\n')).toBe('200')
+    expect((await send(t.s.clientPort!, 'GET /v1/prs HTTP/1.1\r\nHost: x\r\n\r\n')).status).toBe('200')
     const body = '{"mode":"stop"}'
     const post = `POST /v1/halt HTTP/1.1\r\nHost: x\r\ncontent-type: application/json\r\nidempotency-key: once-only-key\r\ncontent-length: ${body.length}\r\n\r\n${body}`
-    expect(await send(t.s.clientPort!, post)).toBe('200')
+    expect((await send(t.s.clientPort!, post)).status).toBe('200')
     expect(t.calls).toEqual([['prs'], ['stop']])
   })
 })
+
+const postRequest = (path: string, value: unknown, key = '') => {
+  const body = JSON.stringify(value)
+  return `POST ${path} HTTP/1.1\r\nHost: x\r\ncontent-type: application/json\r\n${key ? `idempotency-key: ${key}\r\n` : ''}content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+}
+
+test('guard.check answers through mTLS within one second', async () => {
+  const t = start()
+  for (const command of [
+    'factory decide r1 ok',
+    ('#x\\\n' + 'factory start factory wiki '.repeat(3000)).slice(0, 65536),
+  ]) {
+    const r = await send(t.s.clientPort!, postRequest('/v1/guard/check', { command, role: 'manager' }))
+    expect(r.status).toBe('200')
+    expect(JSON.parse(r.body).decision).toBe(command.startsWith('#') ? 'deny' : 'ask')
+    console.log(`guard.check mTLS: ${r.ms.toFixed(1)} ms`)
+    expect(r.ms).toBeLessThan(1000)
+  }
+})
+
+test('guard.check does not wait for a mutating POST', async () => {
+  const t = start(undefined, undefined, 3000)
+  let finished = false
+  const action = send(
+    t.s.clientPort!,
+    postRequest('/v1/start', { factory: 'lifecycle', rig: 'acme', goal: 'x' }, 'guard-start-key'),
+  ).then(r => {
+    finished = true
+    return r
+  })
+  try {
+    const until = performance.now() + 5000
+    while (t.calls.length === 0 && performance.now() < until) await Bun.sleep(10)
+    expect(t.calls.length).toBe(1)
+    const r = await send(
+      t.s.clientPort!,
+      postRequest('/v1/guard/check', { command: 'factory status', role: 'manager' }),
+    )
+    expect(r.status).toBe('200')
+    expect(JSON.parse(r.body)).toEqual({ decision: 'allow' })
+    console.log(`guard.check during action: ${r.ms.toFixed(1)} ms`)
+    expect(r.ms).toBeLessThan(1000)
+    expect(finished).toBe(false)
+  } finally {
+    await action
+  }
+}, 15000)
 
 describe('parseFlags', () => {
   const all = ['--client-port', '8444', '--tls-cert', '/c', '--tls-key', '/k', '--person-ca', '/ca']

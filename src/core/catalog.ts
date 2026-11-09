@@ -1,5 +1,6 @@
-/** The operation catalog. It lists each feature of the manager with its inputs and its /v1 route. It imports node: modules, the operation files in ./ops, and types from ../metrics. */
+/** The operation catalog. It imports node: modules, ./guards, the operation files in ./ops, and types from ../metrics. */
 import type { ManagerUsage, RunRecord } from '../metrics'
+import { check, type Role } from './guards'
 import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
 import * as gatesOps from './ops/gates'
@@ -231,8 +232,36 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** the 23 operations: the routes of the client port, the board, the catalog and the parity fixture */
+/** The 25 operations cover the client port, board, catalog and parity fixture. */
 export const CATALOG: Op[] = makeCatalog([
+  {
+    ...local(
+      {
+        name: 'guard.check',
+        summary: 'Check a Bash command of the manager or of a subagent: allow, ask or deny.',
+        method: 'POST',
+        path: '/v1/guard/check',
+        inputs: [
+          f('command', 'text', true, 'the Bash command, as the shell gets it'),
+          {
+            name: 'role',
+            kind: 'enum',
+            required: true,
+            values: ['manager', 'subagent'],
+            help: 'manager: the main chat of the manager; subagent: the rules of factory patrol-guard',
+          },
+        ],
+      },
+      'json',
+      async (_, i) => ({
+        code: 0,
+        out: JSON.stringify(check(i.command as string, i.role as Role)) + '\n',
+        err: '',
+      }),
+    ),
+    rights: 'read',
+    mutates: false,
+  },
   local(
     {
       name: 'board.show',
