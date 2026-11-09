@@ -231,7 +231,7 @@ export function unavailable(): string | undefined {
   try {
     let raw: string
     if (BROKER()) {
-      // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
+      // the manager's VM and the server pod have no kube API access: the broker reads the Deployment's readiness fields
       const r = broker('GET', '/controller')
       // an old broker image has no /controller route: say what the broker answered
       if (!r.ok)
@@ -318,7 +318,7 @@ function must(args: string[], stdin?: string) {
 }
 
 /**
- * the policy broker's base URL (src/broker.ts), set inside the AX manager's VM, which cannot reach ate-api:
+ * the policy broker's base URL (src/broker.ts), set in the AX manager's VM and in the server pod, which cannot reach ate-api:
  * policies and the gateway CA then go to it over HTTP, not through kubectl. Unset, kubectl as before
  */
 const BROKER = () => process.env.FACTORY_POLICY_BROKER?.replace(/\/+$/, '')

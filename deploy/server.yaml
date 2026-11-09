@@ -1,6 +1,7 @@
 # The factory server (Dockerfile.server). Set the image by digest and the client gateway namespace, then apply:
 #   SERVER_IMAGE=<registry>/factory-server@sha256:<digest> CLIENT_GATEWAY_NAMESPACE=<ns> envsubst '$SERVER_IMAGE $CLIENT_GATEWAY_NAMESPACE' < deploy/server.yaml | kubectl apply -f -
-# Owner step. Confirm the namespaces before apply.
+# Owner step. Confirm the namespaces before apply. Apply deploy/broker.yaml first: FACTORY_POLICY_BROKER sends policy calls
+# to the broker, and its NetworkPolicy must admit this pod.
 # Make each Secret by hand, outside this file. This file holds Secret names only, never values:
 #   kubectl -n factory create secret generic factory-github --from-literal=token=<github token>
 #   kubectl -n factory create secret generic factory-linear --from-literal=token=<linear key>          (optional)
