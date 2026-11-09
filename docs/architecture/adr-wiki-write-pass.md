@@ -8,7 +8,90 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Current handoff at 855bb6a5
+## Current handoff at 0a91a6f2
+
+This section overrides earlier task lists and AC10 implementation choices. AC1–AC9 and the source grammar remain unchanged.
+Keep PR #714 as a draft. Keep `.16` and `.17` closed. No new production defect is established.
+The latest review examined `4864c110`; commit `489966b7` then added `known`, a macOS fallback, and two controls.
+Plan ran the two new controls: two passed, zero failed. Those results do not prove the full lifecycle contract.
+
+### Remaining findings
+
+1. Ownership still depends on a successful process scan before the first observation.
+   `scanTagged()` ignores environment-read errors at `src/wiki-kick.test.ts:73`.
+   `settled()` and `stopOwned()` accept an empty scan as completion at lines 106 and 93.
+   The `known` set fixes loss after observation; retain that behavior or its equivalent.
+2. The macOS branch at line 60 has no executed platform control.
+   It ignores the injected `readEnv` and `list` functions used by the new environment-failure test.
+   That test therefore cannot test its intended failure on macOS.
+   A fallback present in source is not evidence that the supported host works.
+3. The assertion control at line 544 catches the assertion and calls `stopOwned()` directly.
+   It does not exercise the registered cleanup hook or prove fixture retention when exit proof fails.
+
+These are three bounded parts of the recurring AC10 finding. Do not repeat completed source or recovery work.
+
+### AC10 completion checks
+
+The fail-closed rule is: only independent exit proof for every owned launch permits fixture removal.
+Unknown ownership, a failed observation, an empty scan, an absent lock, or a signal request cannot prove exit.
+Process inspection must never select an unrelated process for a signal.
+Use fixture launch receipts, direct handles, or a small fixture supervisor to register ownership before the launch returns.
+Keep this mechanism in `src/wiki-kick.test.ts`; use an existing process API and no production option.
+Prefer this explicit lifecycle to a host-wide environment parser. Remove obsolete scan code if receipts replace it.
+Do not add a shell parser. Arbitrary host processes, external process control, and production supervision are out of scope.
+
+| AC10 control | Required evidence and negative rows |
+| --- | --- |
+| AC10.1: ownership before observation | Delay a real fixture child before its first lock. Deny its first and later environment reads. A live child cannot produce successful cleanup. Stop and await it before removal. Keep the existing after-observation refusal control. |
+| AC10.2: supported hosts | Exercise the lifecycle without `/proc`. Linux and macOS must use the same exit contract. A failed observer or transport must fail closed. Test both platform branches through injection if branches remain. Never skip the environment-failure control on macOS. |
+| AC10.3: assertion and cleanup failure | Use a nested Bun test fixture with an intentional assertion failure and the actual cleanup hook. Its parent must observe nonzero exit, child exit, and fixture removal after exit. Deny exit proof in a second row: the hook must fail and retain the fixture. The outer test must stop its own children afterward. |
+
+Name the new tests `AC10 ownership before observation`, `AC10 supported hosts`, and `AC10 assertion cleanup`.
+Proof for each: `bun test --timeout 60000 src/wiki-kick.test.ts --test-name-pattern AC10`.
+Retain the eight earlier controls, explicit refusal checks for all four stubs, and zero external calls/outbox writes.
+Retain real write, ambient, refresh and groom CLI passes. Synthetic controls supplement those passes.
+The no-launch row must permit immediate completion with zero launch receipts and zero fixture transport calls.
+The normal completion row must permit cleanup after proven exit. A child that removes its lock remains owned until exit.
+Retain ownership across home changes. Do not signal a reused PID without proof that it remains the owned process.
+If a process observer remains, test its unknown/error result separately from confirmed absence.
+`kill(pid, 0)` permission failures are unknown; only confirmed absence or an awaited exit can establish exit.
+
+### Tasks and validation
+
+1. Reopen `.18`: AC10.1, one commit, 40 minutes. Add the first-observation failure control before the fixture correction.
+   Record its failure, then make ownership independent of successful environment reads.
+2. `.19`, AC10.2: one commit, 25 minutes, after `.18`.
+   Remove host-specific discovery if step one makes it unnecessary. Otherwise test each retained platform adapter explicitly.
+3. `.20`, AC10.3: one commit, 25 minutes, after `.19`.
+   Test the actual cleanup hook through the isolated nested fixture, including failure to prove exit.
+4. Reserve 30 minutes for regression checks and the evidence table. Required CI wait time is separate.
+
+Use `.scratch/` for generated probe files. A nested test must use isolated tools, home, transport and routing values.
+Commit only the final green fixture changes for each task. Record red results before the correction in its task comment.
+Do not ship required checks red. Do not add another process library or a general fixture framework.
+Run each of these files with `bun test --timeout 60000`: `src/cli-wiki-write.test.ts`, `src/wiki-kick.test.ts`,
+`src/wiki.test.ts`, `src/prs.test.ts`, and `src/cli-wiki-find.test.ts`. Then repeat `src/wiki-kick.test.ts`.
+Run `bun run typecheck`, changed-file Prettier, `git diff --check`, `bun audit`, and the repository gate.
+Run `gitleaks detect --log-opts=origin/main..HEAD`. Require final-head test, typecheck, plugin and format CI.
+Each close comment must map its control to a test name, exit assertion, fixture assertion, command and result.
+For each changed guard, commit first and kill one independent mutant with the relevant control.
+An unsupported host result must remain an explicit evidence gap; do not describe an untested fallback as verified.
+
+### Risk, rollout and observability
+
+This work is **security-sensitive** because fixture children can retain inherited access after cleanup.
+No production code, state migration, dependency, flag, `.factory/` file or live operation changes in this plan.
+Reject fixed sleeps, lock-only cleanup, and scan emptiness as exit proof; each repeats the same failure class.
+Keep the existing CLI, three-hour kick, halt policy, agent tools and 45-minute timeout contracts.
+Review and security must inspect the final head. A person must merge PR #714 before release.
+Rollback uses a revert PR and a person's merge. Preserve wiki pages and `wiki-state.json`.
+Test observability consists of launch receipts, exit results, fixture retention, and the control evidence table.
+Production observability remains committed pages, `written`, `lastWriteAt`, masked `wiki.log`, counts and the push result.
+AC7 remains **must-see-live**, only in authorized ship soak: `factory wiki write --bead claude-factory-3w8o`.
+The soak must inspect its own seven-section page with PR #590 and #591 and its state/log/remote result.
+The soak must not use its deadline instead of that evidence. No live read is a pre-merge criterion.
+
+## Prior handoff at 855bb6a5
 
 This section replaces earlier task lists. AC1–AC10 and the finite source table remain the acceptance contract.
 Keep draft PR #714. Do not repeat the production fixes or the completed source matrix.
