@@ -27,6 +27,7 @@ const fake = () => {
     goto: async (id, node, print) => (calls.push(['goto', id, node]), print('queued')),
     abort: id => void calls.push(['abort', id]),
     start: async (m, who, print, tick) => (calls.push(['start', m, who, tick]), print('started')),
+    queue: (m, who, print) => (calls.push(['queue', m, who]), print('queued')),
     halt: (mode, print) => (calls.push(['halt', mode]), print(mode)),
     mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
   }
@@ -65,6 +66,12 @@ describe('moved reads run in process (AC1)', () => {
     ['factory.halt', { mode: 'stop' }, [['halt', 'stop']]],
     ['factory.halt', { mode: 'resume' }, [['halt', 'resume']]],
     ['lease.release', {}, []],
+    [
+      'runs.queue',
+      { rig: 'acme', bead: 'b1', station: 'plan' },
+      [['queue', { rig: 'acme', bead: 'b1', station: 'plan' }, { env: {} }]],
+    ],
+    ['runs.queue', { rig: 'acme', bead: 'b1' }, [['queue', { rig: 'acme', bead: 'b1' }, { env: {} }]]],
     ['runners.show', {}, []],
     ['mail.list', {}, []],
     ['steps.reports', {}, []],

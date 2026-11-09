@@ -145,10 +145,10 @@ describe('readQuery and readBody', () => {
 })
 
 describe('CATALOG', () => {
-  test('has 24 operations: 16 GET and 8 POST', () => {
-    expect(CATALOG.length).toBe(24)
+  test('has 25 operations: 16 GET and 9 POST', () => {
+    expect(CATALOG.length).toBe(25)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(16)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(8)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(9)
   })
   test('rights map as before', () => {
     for (const o of CATALOG) {
@@ -211,6 +211,7 @@ describe('CATALOG', () => {
       'runs.abort POST /v1/runs/:id/abort',
       'runs.goto POST /v1/runs/:id/goto',
       'runs.mail POST /v1/runs/:id/mail',
+      'runs.queue POST /v1/queue',
       'runs.show GET /v1/runs/:id',
       'runs.start POST /v1/start',
       'runs.status GET /v1/status',

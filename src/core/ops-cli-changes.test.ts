@@ -504,6 +504,13 @@ if (!update) {
     expect(lines.length).toBeGreaterThan(1)
     expect(r.herdr).toEqual(lines.slice(0, lines.findIndex(l => l.startsWith('worktree create')) + 1))
   })
+  test('server: queue', () => {
+    rmSync(calls(), { force: true })
+    const r = post(freshHome(), '/v1/queue', { rig: 'api', bead: 'api-q' })
+    expect(r.status).toBe(200)
+    expect(r.body).toBe(outOf('QU1').out)
+    expect(r.bd).toEqual((golden.QU1 as { bd: string[] }).bd)
+  })
   test('server: lease release', () => {
     const home = freshHome()
     seedLease(home)
@@ -547,6 +554,19 @@ console.log(JSON.stringify(r))
     const allowed = inProc(freshHome(), mail, {}, { BEADS_ACTOR: 'factory/x/y' })
     expect(allowed.code).toBe(0)
     expect(allowed.inbox).toEqual([{ run: 'r1', type: 'MAIL', from: 'manager', to: 'review', text: 'x' }])
+  })
+  test('in process: runs.queue reads FACTORY_PATROL from the env of ctx, not of the process', () => {
+    const q = (bead: string, ctxEnv: object, procEnv = {}) => {
+      rmSync(calls(), { force: true })
+      const r = inProc(freshHome(), { rig: 'api', bead }, ctxEnv, procEnv, OUT, 'runs.queue')
+      return { ...r, bd: state(freshHome()).bd }
+    }
+    const unreadable = q('api-1', PAT)
+    expect(unreadable.err).toBe(outOf('QU4').err)
+    expect(unreadable.bd.some(l => l.startsWith('queue') || l.startsWith('update'))).toBe(false)
+    expect(q('api-disc', PAT).err).toBe(outOf('QU6').err)
+    const allowed = q('api-q', {}, PAT)
+    expect(allowed.code).toBe(0)
   })
   test('in process: runs.start reads FACTORY_PATROL from the env of ctx, not of the process', () => {
     const input = { factory: 'lifecycle', rig: 'api', goal: 'api-own', owned: true }

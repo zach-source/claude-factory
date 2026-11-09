@@ -38,6 +38,7 @@ const setup = (o: { board?: unknown } = {}) => {
       (lastEnv = who.env),
       print('{"ok":1}')
     ),
+    queue: (m, _who, print) => (log('queue', [m]), print('{"ok":1}')),
     halt: (mode, print) => (log('halt', [mode]), print('{"ok":1}')),
     mail: async (m, who, print) => (
       (lastEnv = who.env),
@@ -202,6 +203,11 @@ describe('action routes', () => {
       { factory: 'lifecycle', station: 'plan', rig: 'acme', goal: 'g', owned: true },
       [p('start', { spec: 'lifecycle@plan', rig: 'acme', goal: 'g', owned: true }, 'no tick')],
     ],
+    [
+      '/v1/queue',
+      { rig: 'acme', bead: 'b1', station: 'plan' },
+      [p('queue', { rig: 'acme', bead: 'b1', station: 'plan' })],
+    ],
     ['/v1/halt', { mode: 'stop' }, [p('halt', 'stop')]],
     ['/v1/halt', { mode: 'resume' }, [p('halt', 'resume')]],
     ['/v1/decisions/acme/b1/answer', { text: 'yes' }, [p('decisionsAnswer', 'acme', 'b1', 'yes')]],
@@ -298,6 +304,10 @@ describe('refusals make zero calls', () => {
     ['empty text', h => post(h, '/v1/decisions/a/b/answer', { text: '' }), 400],
     ['NUL in text', h => post(h, '/v1/decisions/a/b/answer', { text: 'a\u0000b' }), 400],
     ['bad outcome seg', h => post(h, '/v1/runs/r1/decide', { outcome: '-x', note: '' }), 400],
+    ['queue without bead', h => post(h, '/v1/queue', { rig: 'acme' }), 400],
+    ['queue with an extra key', h => post(h, '/v1/queue', { rig: 'acme', bead: 'b1', x: 1 }), 400],
+    ['queue with a bad rig', h => post(h, '/v1/queue', { rig: 'a/b', bead: 'b1' }), 400],
+    ['queue with a number station', h => post(h, '/v1/queue', { rig: 'acme', bead: 'b1', station: 1 }), 400],
     ['goal with --owned', h => post(h, '/v1/start', { factory: 'f', rig: 'r', goal: 'a --owned b' }), 400],
     ['owned false', h => post(h, '/v1/start', { factory: 'f', rig: 'r', goal: 'g', owned: false }), 400],
     [

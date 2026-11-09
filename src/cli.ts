@@ -8111,7 +8111,7 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 /** claude-factory-7a7e: the CLI layer behind PATROL step 4 (register.tsx). A patrol cannot start or queue a
  * bead filed from another rig (metadata.discovered_from), or a child of one, until a person adds the
  * `factory` label. Fail closed: an unreadable parent or a chain longer than 8 refuses too. */
-function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead, env: Env = process.env) {
+function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead, env: Env) {
   if (!env.FACTORY_PATROL) return
   const no = (why: string): never => fail(`${x.id} ${why}: a patrol cannot start it: a person queues it`)
   const hold = x.labels?.find(isHoldLabel)
@@ -12507,6 +12507,28 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** `factory queue <rig|repo> <bead> [station]`: who.env decides whether a patrol asks */
+function queueBead(m: { rig?: string; bead?: string; station?: string }, who: { env: Env }, print: Print) {
+  const { rig: repo, bead: id, station } = m
+  if (!repo || !id) fail('usage: factory queue <rig|repo> <bead> [station]')
+  const root = repoOf(repo!)
+  const b = beads(root, 'factory')
+  if (who.env.FACTORY_PATROL) {
+    let cur: Bead | null = null
+    try {
+      cur = b.lookup(id!)
+    } catch {
+      // refused below
+    }
+    if (!cur) fail(`${id} cannot be read: a patrol cannot start it: a person queues it`)
+    refusePatrolDiscovered(b, cur!, who.env)
+  }
+  b.queue(id!, station)
+  print(
+    `queued ${id}${station ? ` at ${station}` : ''}: ${rigOf(root) ? 'it starts at the next dispatch' : 'make the repo a rig (factory rig add) for it to start'}`,
+  )
+}
+
 /** `factory stop` and `factory resume` */
 function haltFactory(mode: 'stop' | 'resume', print: Print) {
   if (mode === 'stop') {
@@ -12544,6 +12566,7 @@ export const corePort: Port = {
   abort: abortRun,
   mail: mailRun,
   halt: haltFactory,
+  queue: queueBead,
   start: startRun,
 }
 const cliCtx = (): OpCtx => ({
@@ -13392,28 +13415,9 @@ if (import.meta.main && !outboxCmd)
         fail(`unknown gate-brief command "${sub}": facts <run> or set <key> <file>`)
         break
       }
-      case 'queue': {
-        refuseWorker('queue')
-        const [repo, id, station] = args
-        if (!repo || !id) fail('usage: factory queue <rig|repo> <bead> [station]')
-        const root = repoOf(repo!)
-        const b = beads(root, 'factory')
-        if (process.env.FACTORY_PATROL) {
-          let cur: Bead | null = null
-          try {
-            cur = b.lookup(id!)
-          } catch {
-            // refused below
-          }
-          if (!cur) fail(`${id} cannot be read: a patrol cannot start it: a person queues it`)
-          refusePatrolDiscovered(b, cur!)
-        }
-        b.queue(id!, station)
-        console.log(
-          `queued ${id}${station ? ` at ${station}` : ''}: ${rigOf(root) ? 'it starts at the next dispatch' : 'make the repo a rig (factory rig add) for it to start'}`,
-        )
+      case 'queue':
+        emit(await runsOp.queue(cliCtx(), defined({ rig: args[0], bead: args[1], station: args[2] })))
         break
-      }
       case 'file-elsewhere':
         fileElsewhere(args)
         break

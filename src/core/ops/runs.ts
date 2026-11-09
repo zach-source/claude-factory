@@ -61,3 +61,19 @@ export async function start(ctx: Ctx, i: Input): Promise<RunResult> {
     await ctx.port.start(m, { env: ctx.env }, print, ctx.tick)
   })
 }
+
+/** `factory queue <rig> <bead> [station]`; a patrol must not queue a bead it may not start (ctx.env, never process.env) */
+export async function queue(ctx: Ctx, i: Input): Promise<RunResult> {
+  return inProc(print => {
+    refuseWorker(ctx.env, 'queue')
+    ctx.port.queue(
+      {
+        rig: i.rig as string | undefined,
+        bead: i.bead as string | undefined,
+        station: i.station as string | undefined,
+      },
+      { env: ctx.env },
+      print,
+    )
+  })
+}
