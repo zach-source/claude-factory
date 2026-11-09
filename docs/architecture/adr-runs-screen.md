@@ -96,6 +96,23 @@ Distinguish absent run, no worker, invalid address, unavailable screen, process 
 A missing executable, dead pane, unreachable task, or old worker verb must fail with the applicable reason.
 Do not include raw subprocess stderr, credentials, or screen text in errors.
 
+Bead claude-factory-hpmc.3.5 sets these process reasons in `boundedRun` (`src/screen.ts`).
+Each reason comes only from the local spawn result. The read never parses stdout or stderr text.
+
+| Spawn result                                                     | Reason                            |
+| ---------------------------------------------------------------- | --------------------------------- |
+| The spawn throws (missing or not executable binary)              | `worker screen process failed`    |
+| The deadline kills the process                                   | `worker screen timed out`         |
+| stdout or stderr exceeds its buffer                              | `worker screen is too large`      |
+| The process ends on a signal that the read did not send          | `worker screen process failed`    |
+| The process exits nonzero                                        | `worker screen could not be read` |
+| The process exits 0                                              | the screen text                   |
+
+A nonzero exit means that the tool ran and could not get the screen.
+For Herdr, this includes a dead pane. For AX, this includes an unreachable task and an old worker without the verb.
+It also includes each worker refusal: no stream, not a regular file, and unknown harness.
+The VM is not trusted, so the laptop does not map remote exit codes to more reasons.
+
 AC5. Tests `runs.screen byte cap` and `worker screen bounded read` cover ASCII and multibyte UTF-8.
 Put a unique marker at the end of each fixture and assert that it survives.
 Cover 65,535, 65,536, and 65,537 bytes, plus a larger stream file.
