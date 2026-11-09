@@ -300,7 +300,7 @@ slow('write AC2 an unmerged PR in ship_pr and a foreign URL make no group', () =
   const r = factory(['wiki', 'write', '--dry-run'])
   expect(r.out).not.toContain('acme-1')
   expect(r.out).not.toContain('acme-2')
-  expect(r.out).toContain('1 waiting')
+  expect(r.out).toContain('2 waiting')
   const calls = readFileSync(join(data, 'gh-calls'), 'utf8')
   expect(calls).not.toContain('evil')
   expect(calls).not.toMatch(/pulls\/1$/m)
@@ -797,7 +797,7 @@ slow('write AC9 a refused global GitHub list calls no agent, and both beads reco
     writeFileSync(LIST(), JSON.stringify(bad))
     factory(['wiki', 'write'])
     expect(runs()).toBe(0)
-    expect(state().written).toBeUndefined()
+    expect(Object.keys(state().written ?? {})).toEqual([])
     expect(state().lastWriteAt).toBe(PRIOR)
   }
   writeFileSync(LIST(), JSON.stringify([l9, l8]))

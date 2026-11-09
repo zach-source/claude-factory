@@ -270,6 +270,7 @@ import {
   githubLabelArgv,
   githubCommentArgv,
   githubMergedJson,
+  isoDateTime,
   gitlabMergedJson,
   githubUnlabelArgv,
   githubPullPath,
@@ -8698,7 +8699,7 @@ async function mergedPrsFor(
           cli.gh,
           ref.slug,
           repo,
-          { pages: 3, timeoutMs: PRECHECK_TIMEOUT_MS, strict },
+          { pages: strict ? 30 : 3, timeoutMs: PRECHECK_TIMEOUT_MS, strict, host: origin.host },
           e => (firstErr = e),
         )
       : null
@@ -12180,11 +12181,14 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
     gl ? `projects/${encodeURIComponent(slug)}/merge_requests/${num}` : `repos/${slug}/pulls/${num}`,
   )) as Record<string, unknown> | null
   if (!pr || Array.isArray(pr)) return null
-  // a reply without its own number and state fields is incomplete, never "not merged"
+  // a reply without its own number, a merge field, a title or a text body is incomplete, never "not merged"
+  const body = gl ? pr.description : pr.body
   if (
-    gl
+    (gl
       ? pr.iid !== num || !['opened', 'closed', 'locked', 'merged'].includes(pr.state as string)
-      : pr.number !== num || (pr.merged_at !== null && typeof pr.merged_at !== 'string')
+      : pr.number !== num || (pr.merged_at !== null && !isoDateTime(pr.merged_at))) ||
+    !text(pr.title) ||
+    (body != null && typeof body !== 'string')
   )
     return null
   const merged = gl ? pr.state === 'merged' : text(pr.merged_at) !== ''
@@ -12196,17 +12200,26 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
         : `repos/${slug}/pulls/${num}/files?per_page=100`,
     )
     // ponytail: one page of 100 files; a longer list stays unresolved. Page it when a real PR needs it.
-    const list = gl && f && !Array.isArray(f) && f.overflow !== true ? f.changes : f
+    const list = gl ? (f && !Array.isArray(f) && !f.overflow ? f.changes : null) : f
     rows = Array.isArray(list) && list.length > 0 && (gl || list.length < 100) ? list : null
   }
+  // a file path is a label for the agent, never a filesystem target: refuse anything but a plain relative path
+  const pathOk = (v: unknown): v is string =>
+    typeof v === 'string' &&
+    !/[\\\u0000-\u001f\u007f]/.test(v) &&
+    v.split('/').every(g => g && g !== '.' && g !== '..')
   const files: PrFile[] | null =
     rows &&
-    rows.every(
-      r =>
-        r !== null &&
-        typeof r === 'object' &&
-        text((r as Record<string, unknown>)[gl ? 'new_path' : 'filename']),
-    )
+    rows.every(r => {
+      const x = r as Record<string, unknown> | null
+      return (
+        !!x &&
+        typeof x === 'object' &&
+        !Array.isArray(x) &&
+        pathOk(x[gl ? 'new_path' : 'filename']) &&
+        (x[gl ? 'diff' : 'patch'] === undefined || typeof x[gl ? 'diff' : 'patch'] === 'string')
+      )
+    })
       ? rows.map(r => {
           const x = r as Record<string, unknown>
           const path = text(x[gl ? 'new_path' : 'filename'])
@@ -12214,7 +12227,7 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
           return path.endsWith('package.json') && patch ? { path, patch } : { path }
         })
       : null
-  return { merged, title: text(pr.title), body: text(gl ? pr.description : pr.body), files }
+  return { merged, title: text(pr.title), body: text(body), files }
 }
 
 /**
@@ -12317,7 +12330,15 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
     const t = typeof s === 'string' ? s : ''
     return t.length > WRITE_STR ? `${t.slice(0, WRITE_STR)} [truncated]` : t
   }
-  const cli = { gh: spawnGh, glab: spawnGlab }
+  // one closed-PR list scan serves every bead of this pass; the next pass reads fresh data
+  const scans = new Map<string, ReturnType<typeof spawnGh>>()
+  const gh: Gh = (argv, opts) => {
+    if (!/^repos\/[^/]+\/[^/]+\/pulls\?/.test(argv[1] ?? '')) return spawnGh(argv, opts)
+    const k = `${opts.cwd} ${argv.join(' ')}`
+    if (!scans.has(k)) scans.set(k, spawnGh(argv, opts))
+    return scans.get(k)!
+  }
+  const cli = { gh, glab: spawnGlab }
   const wb: WriteBead[] = []
   const prs = new Map<string, WritePr>()
   const settled: number[] = []
@@ -12345,9 +12366,14 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
           settled.push(closedAt)
           continue
         }
-        const meta = typeof full.metadata?.ship_pr === 'string' ? full.metadata.ship_pr : ''
+        const raw = full.metadata?.ship_pr
+        const meta = typeof raw === 'string' ? raw : ''
         const urls = new Set<string>()
-        if (wikiPrNumber(meta, origin)) urls.add(meta)
+        // an absent ship_pr lets discovery decide; a present one that is not this rig's own PR URL is incomplete input
+        if (raw != null) {
+          if (!wikiPrNumber(meta, origin)) throw new Error('ship_pr is malformed')
+          urls.add(meta)
+        }
         const short = shortBeadId(id)
         for (const m of await mergedPrsFor(rig.repo, origin, id, [], cli, true))
           if ((citesBead(id, m.title) || (short && citesBead(short, m.title))) && wikiPrNumber(m.url, origin))

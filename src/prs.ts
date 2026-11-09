@@ -1039,29 +1039,69 @@ export async function githubWatchView(gh: Gh, url: string, cwd: string): Promise
   }
 }
 
+const ISO_TIME = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?(Z|[+-](\d\d):(\d\d))$/
+
+/** an ISO 8601 date-time with a zone (`2026-11-01T00:00:00Z`) on a real calendar day; date-only text is not one */
+export function isoDateTime(v: unknown): boolean {
+  const m = typeof v === 'string' ? ISO_TIME.exec(v) : null
+  if (!m) return false
+  const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number]
+  const t = new Date(Date.UTC(y, mo - 1, d, h, mi, s))
+  return (
+    t.getUTCFullYear() === y &&
+    t.getUTCMonth() === mo - 1 &&
+    t.getUTCDate() === d &&
+    h < 24 &&
+    mi < 60 &&
+    s < 60 &&
+    (m[8] === undefined || (Number(m[8]) < 24 && Number(m[9]) < 60)) &&
+    Number.isFinite(Date.parse(v as string))
+  )
+}
+
+/** a PR or MR number that the wiki accepts: an integer from 1 to 999999999 */
+export const prNumberOk = (v: unknown): v is number =>
+  Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 999_999_999
+
+const isRow = (p: unknown): p is Json => !!p && typeof p === 'object' && !Array.isArray(p)
+const nonEmpty = (v: unknown) => typeof v === 'string' && v.length > 0
+
 /** the merged PRs of a repo as `gh pr list --state merged --json` text (`parseMergedPrs` reads it), or null
- * when a call fails. REST has no merged filter, so this lists closed PRs and keeps the ones with a merge date. */
+ * when a call fails. REST has no merged filter, so this lists closed PRs and keeps the ones with a merge date.
+ * `strict` (the wiki write pass) proves the read complete: every row must have its number, its own `host` URL,
+ * a title and a null or ISO merge date, and a full last page (at the `pages` limit) is not proof of absence.
+ * Anything else gives null, never an empty list. */
 export async function githubMergedJson(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { pages: number; head?: string; timeoutMs?: number; strict?: boolean },
+  o: { pages: number; head?: string; timeoutMs?: number; strict?: boolean; host?: string },
   onErr?: (err: string) => void,
 ): Promise<string | null> {
   const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o }, onErr)
   if (!rows) return null
-  const merged = rows.filter(p => str(p?.merged_at))
-  // strict: a row without its number or URL is incomplete input, not an absent PR
-  if (o.strict && rows.some(p => !p || typeof p.number !== 'number' || !str(p.html_url))) {
-    onErr?.('malformed pull request row')
-    return null
+  if (o.strict) {
+    const url = (n: number) => `https://${o.host ?? 'github.com'}/${slug}/pull/${n}`
+    const bad = rows.some(
+      p =>
+        !isRow(p) ||
+        !prNumberOk(p.number) ||
+        p.html_url !== url(p.number) ||
+        !nonEmpty(p.title) ||
+        (p.merged_at !== null && !isoDateTime(p.merged_at)),
+    )
+    if (bad || rows.length >= o.pages * 100) {
+      onErr?.(bad ? 'malformed pull request row' : 'pull request list not fully read')
+      return null
+    }
   }
-  return JSON.stringify(githubRows(merged))
+  return JSON.stringify(githubRows(rows.filter(p => str(p?.merged_at))))
 }
 
 /** the merged MRs of a GitLab project as `gh pr list --json` shaped text (`parseMergedPrs` reads it), found by a
  * title search or by source branch, or null when the call fails. The API `state=merged` filter is trusted; rows
- * that say otherwise are dropped. */
+ * that say otherwise are dropped. `strict` (the wiki write pass) gives null for a reply that is not a list, a row
+ * without its number, own URL, title or a known state, and a full page of 30 rows (more may exist). */
 export async function gitlabMergedJson(
   glab: Gh,
   host: string,
@@ -1101,18 +1141,19 @@ export async function gitlabMergedJson(
     return null
   }
   const mrs = v as Record<string, unknown>[]
-  // strict: a malformed row, or a merged row without its number or URL, is incomplete input
   if (
     o.strict &&
-    mrs.some(
-      m =>
-        !m ||
-        typeof m !== 'object' ||
-        typeof m.state !== 'string' ||
-        (m.state === 'merged' && (typeof m.iid !== 'number' || !str(m.web_url))),
-    )
+    (mrs.length >= 30 ||
+      mrs.some(
+        m =>
+          !isRow(m) ||
+          !prNumberOk(m.iid) ||
+          m.web_url !== `https://${host}/${path}/-/merge_requests/${m.iid}` ||
+          !nonEmpty(m.title) ||
+          !['opened', 'closed', 'locked', 'merged'].includes(m.state as string),
+      ))
   ) {
-    onErr?.('malformed merge request row')
+    onErr?.('malformed or full merge request reply')
     return null
   }
   return JSON.stringify(
