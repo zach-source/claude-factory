@@ -315,20 +315,26 @@ test(
   "the pane header and the band say how fresh the pm's plan is, and call it stale past 2 hours",
   SLOW,
   async ($, on) => {
-    const clock = mock.clock(on)
+    let now = 0
+    // ponytail: one tick per wall clock jump; use full advances for tests that count timer ticks.
+    const clock = mock.clock(((event, handler) =>
+      on(event, (event === 'clock.now' ? () => ({ value: now }) : handler) as never)) as On)
     const files = new Map<string, string>()
     planMocks(on, files)
     const start = 0
-    const savedPlan = {
-      at: start,
-      rigs: { api: { items: [], findings: [{ kind: 'goal-no-beads', rig: 'api', key: 'k1', text: 'x' }] } },
-      proposals: [],
-    }
-    files.set('/home/acme/plan.json', JSON.stringify(savedPlan))
+    files.set(
+      '/home/acme/plan.json',
+      JSON.stringify({
+        at: start,
+        rigs: { api: { items: [], findings: [{ kind: 'goal-no-beads', rig: 'api', key: 'k1', text: 'x' }] } },
+        proposals: [],
+      }),
+    )
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
-    await clock.advance(12 * 60_000)
+    now = 12 * 60_000
+    await clock.advance(5_000)
     await clock.settle()
 
     const pane = await $.ui.mount({
@@ -351,9 +357,8 @@ test(
     })
     expect(JSON.stringify(await band.drawn())).toContain('plan 12m ago · 1 finding')
 
-    // Age the stored plan by two hours. One tick refreshes both views.
-    savedPlan.at -= 2 * 60 * 60_000
-    files.set('/home/acme/plan.json', JSON.stringify(savedPlan))
+    // 2h12m since plan.at: past PLAN_FRESH_MS, so both now call it stale instead.
+    now += 2 * 60 * 60_000
     await clock.advance(5_000)
     await clock.settle()
     expect(JSON.stringify(await pane.drawn())).toContain('plan stale')
