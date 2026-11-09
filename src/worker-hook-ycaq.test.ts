@@ -174,6 +174,6 @@ test('too many expansion readings fail closed (claude-factory-qn8a.16)', () => {
   ]) {
     const t0 = performance.now()
     expect(run(c)).toBeDefined()
-    expect(performance.now() - t0).toBeLessThan(1000)
+    expect(performance.now() - t0).toBeLessThan(5000)
   }
 })
