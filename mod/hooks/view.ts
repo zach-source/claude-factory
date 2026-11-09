@@ -1261,7 +1261,12 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
   // `factory` as a command word (`factory`, `bin/factory`), not a part of a path such as `acme-factory/x`
-  const at = /(?<![\w.-])factory(?![\w./-])/.test(command) ? substitutionIn(rawCommand) : -1
+  const baseTexts = unreadable
+    ? [rawCommand.replace(/\\\n/g, '\n'), rawCommand.replace(/\\\n/g, '')]
+    : [command]
+  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t))) ? substitutionIn(rawCommand) : -1
+  // claude-factory-6tl1: the first word after the caller must be a literal word
+  const verbHidden = baseTexts.some(t => VERB_HIDDEN.test(strip(t)))
   let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
@@ -1288,26 +1293,40 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
     unreadable
       ? [(t: string) => t.replace(/\\\n/g, '\n'), (t: string) => t.replace(/\\\n/g, '')]
       : [joinLines]
-  ).map(f => {
-    const text = f(rawCommand)
-    // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
-    return {
-      text,
-      cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
-    }
-  })
+  )
+    .map(f => {
+      const text = f(rawCommand)
+      // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
+      return {
+        text,
+        cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
+        canonical: false,
+      }
+    })
+    .flatMap(r => {
+      // the canonical read: the strip copy with each hidden word read as `factory`. A cut that splits a word drops that word.
+      const s = strip(r.text)
+      let h = strip(r.text.slice(0, r.cut))
+      if (h.length < s.length && /\S/.test(s[h.length]!)) h = h.replace(/\S+$/, '')
+      return [r, { text: canon(s), cut: canon(h).length, canonical: true }]
+    })
   const kinds = GATED_KINDS.flatMap(k => {
     const per = reads.map(r => {
-      const ends = [...r.text.matchAll(k.re)].map(m => m.index! + m[0].length)
-      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length }
+      // a kind with a trailer matches only up to its last trailer, so the lazy gap stays linear
+      const last = 'tail' in k ? [...r.text.matchAll(k.tail)].at(-1) : undefined
+      const text = 'tail' in k ? (last ? r.text.slice(0, last.index! + last[0].length) : '') : r.text
+      const ends = [...text.matchAll(k.re)].map(m => m.index! + m[0].length)
+      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length, base: !r.canonical }
     })
     const count = Math.max(...per.map(x => x.count))
-    return count ? [{ ...k, count, hidden: Math.max(...per.map(x => x.hidden)) }] : []
+    const base = per.some(x => x.base && x.count > 0)
+    return count ? [{ ...k, count, base, hidden: Math.max(...per.map(x => x.hidden)) }] : []
   })
-  if (!unreadable && !substitution && !kinds.length) return null
+  if (!unreadable && !substitution && !verbHidden && !kinds.length) return null
   const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
   const named = [
     ...(substitution ? [substitution.phrase] : []),
+    ...(verbHidden ? ['run a factory command whose verb is not a literal word'] : []),
     ...kinds.map(k => `${k.phrase}${times(k.count)}`),
   ]
   const hidden = kinds.filter(k => k.hidden > 0)
@@ -1317,7 +1336,8 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const names = [...(who ? [who] : []), ...named]
   return {
     // only a person-decision kind is worth a dialog; a substitution or unreadable form alone is denied at once
-    ask: kinds.length > 0,
+    // a kind found on a base read asks. One found only on the canonical read asks only if nothing else is wrong.
+    ask: kinds.some(k => k.base) || (kinds.length > 0 && !substitution && !verbHidden && !unreadable),
     question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
     deny: [
       ...(unreadable
@@ -1326,10 +1346,32 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
           ]
         : []),
       ...(substitution ? [substitution.deny] : []),
+      ...(verbHidden
+        ? [
+            'The person did not confirm this verb. Write the factory verb as a literal word, with no $, backtick, * ? [ or {.',
+          ]
+        : []),
       ...kinds.map(k => k.deny),
     ].join(' '),
   }
 }
+
+/** the shell drops these before it runs a word */
+const strip = (s: string) => s.replace(/[\\'"]/g, '')
+/** the CLI by its source file: `bun src/cli.ts`, `bun run x/cli.ts`, `node cli.js` */
+const CLI = String.raw`(?:^|[\s;&|(])(?:[^\s;&|()]*/)?(?:bun|node|run)\s+(?:\S*/)?cli(?:\.\w+)?`
+/** the factory CLI as a command word */
+const CALLER = new RegExp(String.raw`(?<![\w.-])factory(?![\w./-])|${CLI}(?=[\s;&|),}]|$)`)
+/** a word the hook cannot read as a literal command name */
+const HIDDEN = /[$`*?[)]|(?:^|[/;&|])cli(?:\.\w+)?$/
+const one = (p: string) => (HIDDEN.test(p) ? 'factory' : p)
+/** the strip copy with each such word read as `factory`, so GATED_KINDS match it; a brace word reads as its parts */
+const canon = (s: string) =>
+  s.replace(/\S+/g, w =>
+    w.includes('{') ? `${w.split(/[{,}]/).filter(Boolean).map(one).join(' ')} factory` : one(w),
+  )
+/** a non-literal verb word after the caller word */
+const VERB_HIDDEN = new RegExp(String.raw`(?:(?<![\w.-])factory|${CLI})\s+[^\s$\x60*?[{]*[$\x60*?[{]`)
 
 /** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
 const GATED_KINDS = [
@@ -1345,11 +1387,13 @@ const GATED_KINDS = [
   },
   {
     re: /\bfactory\s+start\b[\s\S]*?--owned\b/g,
+    tail: /--owned\b/g,
     phrase: "start a bead carrying its owner's decisions",
     deny: 'The person did not confirm starting this owner-only bead.',
   },
   {
     re: /\bfactory\s+wiki\b[\s\S]*?\binit\b/g,
+    tail: /\binit\b/g,
     phrase: 'create the factory wiki and set its remote',
     deny: 'The person did not confirm this wiki init. Ask them to run it.',
   },
