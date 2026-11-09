@@ -202,7 +202,7 @@ import * as migrate from './migrate'
 import { bdEnv, httpsRemote, inAx, mapRigs, mapRunRepo, syncRepos } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
-import { personCerts } from './server-api'
+import { cliRunner, personCerts } from './server-api'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -11934,6 +11934,7 @@ const usage = `factory — herdr software factories on xstate
   cert person <dir> <server-name>     make the person CA, person and server certificates for the client API (new folder, 0700)
   tick | loop [--interval ms]        advance every run once, or forever (default 5s), keeping the rigs' sweeps running
                                      (tick --keep-mail saves the tick and the manager's mail for patrol --once)
+  core [--home d] [--port n] | core status | core stop   the local core: ticks, patrols and serves the front ends on 127.0.0.1
   herdr install [--app-home <dir>]   copy the Herdr app manager mod and its layout into the app folder
   lease [status|release]             who holds the local manager lease (only its holder ticks); release it
   patrol --once                      one headless manager patrol: answers the kept mail and works the board
@@ -12180,6 +12181,84 @@ if (import.meta.main && !outboxCmd)
         lease()
         server.main(args, HOME, () => tick())
         break
+      case 'core': {
+        let flags: server.CoreFlags = {}
+        try {
+          flags = server.parseCoreFlags(args)
+        } catch (e) {
+          fail((e as Error).message)
+        }
+        const dir = flags.home === undefined ? HOME : resolve(flags.home)
+        if (flags.home !== undefined && (!existsSync(dir) || !statSync(dir).isDirectory()))
+          fail(`--home ${dir} is not a directory`)
+        if (flags.sub === 'status') {
+          const c = client.findCore(dir)
+          if (!c) fail(`no core on ${dir}: ${leases.leaseLine(leases.readLease(dir), Date.now())}`)
+          try {
+            const r = await fetch(`${c!.url}/v1/core`, {
+              headers: { authorization: `Bearer ${c!.token}` },
+              signal: AbortSignal.timeout(2000),
+            })
+            if (!r.ok) throw new Error(`answered ${r.status}`)
+            const { ticks } = (await r.json()) as { ticks: number }
+            console.log(
+              `core ${c!.holder} runs on ${c!.url} (pid ${c!.pid}, catalog version ${c!.catalogVersion}, ${ticks} ticks)`,
+            )
+          } catch (e) {
+            fail(
+              `core ${c!.holder} holds the lease on port ${c!.port} but does not answer: ${(e as Error).message}`,
+            )
+          }
+          break
+        }
+        refuseWorker('core', true)
+        lease()
+        if (flags.sub === 'stop') {
+          const c = client.findCore(dir)
+          if (!c) fail(`no core on ${dir}`)
+          process.kill(c!.pid, 'SIGTERM')
+          const t0 = Date.now()
+          for (;;) {
+            try {
+              process.kill(c!.pid, 0)
+            } catch (e) {
+              if ((e as NodeJS.ErrnoException).code !== 'EPERM') break
+            }
+            if (Date.now() - t0 > 60_000) fail(`core pid ${c!.pid} did not exit in 60 s`)
+            await Bun.sleep(100)
+          }
+          console.log('core stopped')
+          break
+        }
+        if (dir !== HOME) {
+          // HOME is fixed at import, so a core on another home runs in a child of its own
+          const rest = args.filter((_, i) => args[i] !== '--home' && args[i - 1] !== '--home')
+          const child = Bun.spawn([process.execPath, import.meta.path, 'core', ...rest], {
+            env: { ...BOOT_ENV, FACTORY_HOME: dir },
+            stdio: ['inherit', 'inherit', 'inherit'],
+          })
+          for (const s of ['SIGTERM', 'SIGINT'] as const) process.on(s, () => child.kill(s))
+          process.exit(await child.exited)
+        }
+        const holder = `core:${process.pid}`
+        const leaseEnv = {
+          FACTORY_LEASE_HOLDER: holder,
+          FACTORY_LEASE_KIND: 'core',
+          FACTORY_LEASE_PID: String(process.pid),
+        }
+        server.coreMain(flags, HOME, {
+          tick: async () => {
+            const out = await tick(true)
+            if (!out.busy) keepTick(HOME, out) // as `tick --keep-mail`: the patrol reads this file
+            return out
+          },
+          lease: () => localLease({ holder, kind: 'core', pid: process.pid, at: Date.now() }),
+          runner: cliRunner(HOME),
+          step: (argv, signal) =>
+            cliRunner(HOME, import.meta.path, 20 * 60_000, { env: leaseEnv, signal })(argv),
+        })
+        break
+      }
       case 'cert': {
         refuseWorker('cert', true)
         const [what, dir, name, ...more] = args
