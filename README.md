@@ -263,6 +263,9 @@ factory rig add docs ~/repos/docs rework --sweeps none
 factory rig add gitops ~/repos/gitops --sweeps drift --drift "flux get kustomizations -A; flux get helmreleases -A"
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig set app --max 5 --goal ship v3                  # change only the named fields; a name or a repo path
+factory rig set app --cluster-runs 3 --auto-queue 2,3
+factory rig set app --skills asd-ste100,egm --sandbox-class microvm
+factory rig egress add app broker.example.com=AWS_BROKER:Authorization: --port 8443 --path-prefix /v1/aws/acme/
 factory rig show app                                        # every field of the rig, secret values hidden
 factory rig rm docs                                         # nothing new starts; its runs carry on
 factory rig history                                         # the newest 20 snapshots of rigs.json, newest first
@@ -282,11 +285,11 @@ A row reads `environment (overrides stored)` when an environment value differs f
 
 A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web
 fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
-room, so the manager fills each rig up to its own cap. Edit `rigs.json` by hand or
-redefine a rig with `rig add`; there is one rig per repo.
+room, so the manager fills each rig up to its own cap. Change a rig with `rig set`,
+`rig env` and `rig egress`, or redefine it with `rig add`. There is one rig per repo.
 
 A rig starts only beads with the `factory` label. To keep a rig busy from its unlabeled ready
-beads, set `autoQueue` in `rigs.json`, for example `"autoQueue": { "minPriority": 2, "perHour": 3 }`.
+beads, use `factory rig set <rig> --auto-queue 2,3`. Use `--auto-queue off` to remove this setting.
 When the rig has room and no labeled bead to start, dispatch takes up to `perHour` beads in a
 rolling hour. It takes only leaf beads (no parent, no open child, not an epic) with no assignee, a
 priority of `minPriority` or higher urgency (0 is the highest), and no `rejected`, `owner`,

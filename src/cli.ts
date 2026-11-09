@@ -1565,7 +1565,7 @@ const skillsShape = (v: unknown, where: string) =>
 /**
  * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
  * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
- * A rig name outside the worker image refuses here, because a person edits rigs.json by hand.
+ * An older rigs.json can hold a name that no command checked. Refuse that name here.
  * `loadFactory` checks the other two layers (claude-factory-qda).
  */
 export function workerSkills(
@@ -8176,7 +8176,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
  * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, its
  * due sweeps start one pass each under `factory sweep` (claude-factory-8pc.16), and `maxRuns` caps
  * its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's rigs.json is written by
- * `factory rig add` and can be edited by hand.
+ * `factory rig add`. Use `factory rig set`, `rig env` and `rig egress` to change it.
  */
 export type Rig = {
   name: string
@@ -8185,9 +8185,9 @@ export type Rig = {
   remote?: string
   factory: string
   maxRuns?: number
-  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; edit rigs.json by hand */
+  /** The most live runs per cluster (clusterKey in src/filing-guard.ts). Default 2. Set with `factory rig set --cluster-runs n`. */
   clusterRuns?: number
-  /** when the rig has room and no labeled bead to start, queue the best unlabeled ready leaf beads (src/autoqueue.ts); off when absent */
+  /** Queue ready leaf beads when the rig has room (src/autoqueue.ts). Off when absent. Set with `factory rig set --auto-queue p,n|off`. */
   autoQueue?: AutoQueue
   sweeps?: string[]
   /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
@@ -8211,11 +8211,11 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
-  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; edit rigs.json by hand */
+  /** Rules before each push, one paragraph each; `{base_branch}` expands. Set with `factory rig set --push-rule text|none` (repeatable). */
   pushRules?: string[]
-  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
+  /** Extra skills for all workers, from harness.ts VM_PLUGINS. Set with `factory rig set --skills a,b|none`. */
   skills?: string[]
-  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). Edit rigs.json by hand. */
+  /** The literal false turns off tool details in the OTel export (src/otel.ts). Use `factory rig set --otel-content on|off`. */
   otelContent?: boolean
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
@@ -8228,7 +8228,7 @@ export type Rig = {
   /**
    * the AX sandbox class its VM workers (the ax runner) run in (ax-3hy). `microvm` for a repo whose
    * workers build with Nix, which fails under gVisor; AX's gvisor default when absent. The cluster
-   * needs a microvm WorkerPool. Edit rigs.json by hand
+   * needs a microvm WorkerPool. Use `factory rig set --sandbox-class gvisor|microvm`.
    */
   sandboxClass?: ax.SandboxClass
   /**
@@ -8432,19 +8432,19 @@ function edit(fn: (list: Rig[]) => Rig[]) {
   }
 }
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
-/** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
+/** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a rigs.json written outside the CLI) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
   Array.isArray(rig?.personOnlyContexts) && rig.personOnlyContexts.every(c => typeof c === 'string')
     ? rig.personOnlyContexts
     : undefined
-/** `rig.protectedBranches`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
+/** `rig.protectedBranches`, or undefined when it is absent or not an array of strings (a rigs.json written outside the CLI) */
 const protectedBranches = (rig?: Pick<Rig, 'protectedBranches'>): string[] | undefined =>
   Array.isArray(rig?.protectedBranches) && rig.protectedBranches.every(b => typeof b === 'string')
     ? rig.protectedBranches
     : undefined
 /**
  * the rig's owner/repo (from its origin remote) when `rig.mergeAuthority` is the literal true
- * (a hand-edited rigs.json cannot loosen it), else undefined. No readable origin gives undefined: no merge.
+ * (a rigs.json written outside the CLI cannot loosen it), else undefined. No readable origin gives undefined: no merge.
  */
 const mergeAuthority = (rig?: Pick<Rig, 'mergeAuthority'> & { repo?: string }): string | undefined => {
   if (rig?.mergeAuthority !== true || !rig.repo) return undefined

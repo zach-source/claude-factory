@@ -63,7 +63,7 @@ export type Egress = {
   prefix?: string
   port?: number
   http?: boolean
-  /** only these request paths (needs a Substrate with egress pathPrefixes live) */
+  /** Only these request paths. Set with `rig egress add --path-prefix`. Needs a Substrate with egress pathPrefixes live. */
   pathPrefixes?: string[]
   /** several injections on one rule, instead of key, header and prefix */
   headers?: { header: string; prefix: string; key: string }[]
