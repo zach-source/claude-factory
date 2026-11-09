@@ -59,10 +59,11 @@ const NAMES = [
   'runs.show',
   'runs.start',
   'runs.status',
+  'steps.reports',
 ]
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 22 operations', async () => {
+  test('serves the envelope with the 23 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)

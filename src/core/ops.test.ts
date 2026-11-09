@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CATALOG, OpError, type Ctx, type Input, type Port } from './catalog'
@@ -47,6 +47,7 @@ describe('moved reads run in process (AC1)', () => {
     ['rigs.list', {}, [['rigList']]],
     ['runners.show', {}, []],
     ['mail.list', {}, []],
+    ['steps.reports', {}, []],
     ['metrics.show', {}, [['records'], ['refreshMerges', []]]],
     [
       'metrics.show',
@@ -172,6 +173,39 @@ describe('runners.show and mail.list read the board', () => {
     expect((await run('mail.list', withBoard({ manager: m }), {})).out).toBe(JSON.stringify(m) + '\n')
     expect((await run('mail.list', withBoard({}), {})).out).toBe('[]\n')
     expect((await run('mail.list', withBoard({ manager: 'x' }), {})).out).toBe('[]\n')
+  })
+})
+
+describe('steps.reports reads the last entry of each step log', () => {
+  const files = {
+    patrol: 'patrol-log.jsonl',
+    pm: 'pm-log.jsonl',
+    brief: 'brief-log.jsonl',
+    review: 'review-log.jsonl',
+  }
+  test('no log files gives four nulls', async () => {
+    const r = await run('steps.reports', fake().ctx(), {})
+    expect(r.out).toBe('{"patrol":null,"pm":null,"brief":null,"review":null}\n')
+  })
+  test('each key gives the last entry that parses of its own file', async () => {
+    const ctx = fake().ctx()
+    for (const [k, f] of Object.entries(files))
+      writeFileSync(
+        join(ctx.home, f),
+        `${JSON.stringify({ k, n: 1 })}\n${JSON.stringify({ k, n: 2 })}\n{"k":"${k}","n":`,
+      )
+    const r = await run('steps.reports', ctx, {})
+    expect(JSON.parse(r.out)).toEqual({
+      patrol: { k: 'patrol', n: 2 },
+      pm: { k: 'pm', n: 2 },
+      brief: { k: 'brief', n: 2 },
+      review: { k: 'review', n: 2 },
+    })
+  })
+  test('a file with only bad lines gives null', async () => {
+    const ctx = fake().ctx()
+    writeFileSync(join(ctx.home, files.pm), 'x\n{\n')
+    expect(JSON.parse((await run('steps.reports', ctx, {})).out).pm).toBeNull()
   })
 })
 

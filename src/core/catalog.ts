@@ -11,6 +11,7 @@ import * as prsOps from './ops/prs'
 import * as rigsOps from './ops/rigs'
 import * as runnersOps from './ops/runners'
 import * as runsOps from './ops/runs'
+import * as stepsOps from './ops/steps'
 
 export type Kind = 'id' | 'text' | 'note' | 'path' | 'flag' | 'enum'
 export type Field = { name: string; kind: Kind; required: boolean; help: string; values?: string[] }
@@ -219,7 +220,7 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** the 22 operations: the routes of the client port, the board, the catalog and the parity fixture */
+/** the 23 operations: the routes of the client port, the board, the catalog and the parity fixture */
 export const CATALOG: Op[] = makeCatalog([
   local(
     {
@@ -377,6 +378,16 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'json',
     (c, i) => mailOps.list(c, i),
+  ),
+  local(
+    {
+      name: 'steps.reports',
+      summary: 'Show the last patrol, pm, brief and review reports.',
+      method: 'GET',
+      path: '/v1/steps',
+    },
+    'json',
+    (c, i) => stepsOps.reports(c, i),
   ),
   local(
     { name: 'lease.show', summary: 'Show the manager lease.', method: 'GET', path: '/v1/lease' },
