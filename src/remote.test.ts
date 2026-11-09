@@ -3333,8 +3333,8 @@ const CODEX_ROW = {
  * An AX station that timed out: the FAIL line replays, backoff goes back to working, and the old task
  * closes (the pane changes). Returns the rows stored for run `id`, the timed-out seq and the tick's exit code.
  */
-function timeoutTick(id: string, usage: { out: string; code: number }, stored?: object) {
-  const seq = launched(id)
+function timeoutTick(id: string, usage: { out: string; code: number }, stored?: object, pane?: string) {
+  const seq = launched(id, true, 't', pane)
   if (stored)
     writeFileSync(join(home, 'runs', id, 'usage.jsonl'), JSON.stringify({ node: 'a', seq, ...stored }) + '\n')
   writeFileSync(
@@ -3382,7 +3382,7 @@ test('an old image that exits 1 stores no rows, and the task still closes (aure.
 })
 
 const noRows: [string, string][] = [
-  ['output over 64 KiB', JSON.stringify([{ ...CODEX_ROW, model: 'm'.repeat(70 * 1024) }])],
+  ['output over 64 KiB', JSON.stringify([CODEX_ROW]) + ' '.repeat(70 * 1024)], // valid JSON: only the cap refuses it
   ['not JSON', 'lots'],
   ['not an array', JSON.stringify(CODEX_ROW)],
   ['an empty array', '[]'],
@@ -3404,15 +3404,9 @@ test.each(noRows.map(([n, out], i) => [n, out, i] as const))(
 )
 
 test('a herdr pane makes no worker usage call at close (aure.1 AC2)', () => {
-  const seq = launched('rc5', true, 't', 'w1:p1')
-  writeFileSync(
-    join(home, 'runs', 'rc5', 'inbox.jsonl'),
-    JSON.stringify({ type: 'DONE', seq, outcome: 'ready', summary: 'x' }) + '\n',
-  )
-  clusterUsage('Running', { status: 'idle', lines: [] }, { out: JSON.stringify([CODEX_ROW]), code: 0 })
-  factory(['tick'])
-  expect(called()).not.toContain('worker usage')
-  rmSync(join(home, 'runs', 'rc5'), { recursive: true })
+  const { rows, log } = timeoutTick('rc5', { out: JSON.stringify([CODEX_ROW]), code: 0 }, undefined, 'w1:p1')
+  expect(rows).toEqual([])
+  expect(log).not.toContain('worker usage')
 })
 
 /** the fake cluster with a task in `phase` whose status.conditions hold `conds` (YAML list lines) */
