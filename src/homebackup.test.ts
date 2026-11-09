@@ -90,6 +90,7 @@ test('AC2: the login files, locks, bin, devenv, logs and rigs.json backups stay 
     'home/devenv/x',
     'home/herdr.log',
     'home/backup.json',
+    'home/beads/acme/.beads/x',
     'home/runs/r1/worktrees/acme/f.txt',
     `claude/.credentials.json`,
     `claude/projects/${SLUG}/other.jsonl`,
@@ -117,6 +118,7 @@ test('AC2: each exclude rule is needed', () => {
     '/home/backup.json': 'home/backup.json',
     '/home/manager-host.log': 'home/manager-host.log',
     '/home/ui-cache/': 'home/ui-cache/rig.json',
+    '/home/beads/': 'home/beads/acme/.beads/x',
     'worktrees/': 'home/runs/r1/worktrees/acme/f.txt',
   }
   for (const [rule, file] of Object.entries(probes)) {
@@ -129,19 +131,40 @@ test('AC2: each exclude rule is needed', () => {
   }
 })
 
-test('AC3: a secret in a staged file stops the commit and the push, and the error names the file', () => {
+// a fake token with enough entropy for the gitleaks github-pat rule
+const TOKEN = 'ghp_' + 'aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5'
+const pushedFile = (r: string, path: string) => sh('--git-dir', r, 'show', `manager-home:${path}`)
+
+test('d289.19: gitleaks finds secrets in the staged blobs; the push has them redacted, the work tree keeps them', () => {
   const r = remote()
   const ws = workspace()
-  expect(backup(cfg(ws, r), true).error).toBeUndefined()
-  const before = sh('--git-dir', r, 'rev-parse', 'manager-home')
-  const token = 'ghp_' + 'a'.repeat(36)
-  put(join(ws, 'home', 'memory', 'leak.md'), `token ${token}`)
+  const leak = `line one\n  token=${TOKEN} end\n`
+  put(join(ws, 'home', 'memory', 'leak.md'), leak)
+  const auth = Buffer.from(`x:${TOKEN}`).toString('base64')
+  const docker = Buffer.from(JSON.stringify({ auths: { 'ghcr.io': { auth } } })).toString('base64')
+  put(join(ws, 'home', 'runs', 'r1', 'pull.json'), `{".dockerconfigjson":"${docker}"}\n`)
+  const pg = 'postgres://postgres:postgres@localhost:5432/db\n'
+  put(join(ws, 'home', 'runs', 'r1', 'prompt.md'), pg)
   const out = backup(cfg(ws, r), true)
-  expect(out.error).toContain('home/memory/leak.md')
-  expect(out.error).not.toContain(token)
-  expect(sh('--git-dir', r, 'rev-parse', 'manager-home')).toBe(before)
-  // nothing stays staged: the next backup without the file works
-  rmSync(join(ws, 'home', 'memory', 'leak.md'))
+  expect(out.error).toBeUndefined()
+  expect(pushedFile(r, 'home/memory/leak.md')).toBe('line one\n  token=[REDACTED] end')
+  expect(pushedFile(r, 'home/runs/r1/pull.json')).toBe('{".dockerconfigjson":"[REDACTED]"}')
+  expect(pushedFile(r, 'home/runs/r1/prompt.md')).toBe(pg.trim())
+  expect(readFileSync(join(ws, 'home', 'memory', 'leak.md'), 'utf8')).toBe(leak)
+  // the log names the rule and the path, never the value
+  expect(out.redacted).toContain('github-pat home/memory/leak.md')
+  expect(out.redacted!.some(x => x.endsWith(' home/runs/r1/pull.json'))).toBe(true)
+  expect(JSON.stringify(out)).not.toContain(TOKEN)
+  expect(JSON.stringify(out)).not.toContain(docker)
+})
+
+test('d289.19: with no gitleaks the backup refuses, and nothing stays staged', () => {
+  const r = remote()
+  const ws = workspace()
+  expect(backup({ ...cfg(ws, r), gitleaks: '/no/gitleaks' }, true).error).toBe(
+    'backup refused: gitleaks is missing',
+  )
+  expect(sh('--git-dir', join(ws, 'backup.git'), 'ls-files')).toBe('')
   expect(backup(cfg(ws, r), true).error).toBeUndefined()
 })
 
@@ -271,18 +294,16 @@ test('AC12: a token in an old memory commit is not in the remote tree, a token i
   expect(g.exitCode).toBe(1) // 1 means no blob holds the token
 })
 
-test('AC12: a token in a work tree memory file, binary too, stops the backup and names the file', () => {
-  for (const body of [
-    Buffer.from('ghp_' + 'a'.repeat(36)),
-    Buffer.concat([Buffer.from([0, 1, 2, 0]), Buffer.from('ghp_' + 'a'.repeat(36))]),
-  ]) {
+test('AC12: a token in a work tree memory file, binary too, is redacted in the push', () => {
+  for (const head of [Buffer.alloc(0), Buffer.from([0, 1, 2, 0])]) {
     const r = remote()
     const a = workspace()
     memGit(a, 'init', '-q')
-    writeFileSync(join(a, 'home', 'memory', 'x.bin'), body)
+    writeFileSync(join(a, 'home', 'memory', 'x.bin'), Buffer.concat([head, Buffer.from(TOKEN)]))
     const out = backup(cfg(a, r), true)
-    expect(out.error).toContain('home/memory/x.bin')
-    expect(pushed(r)).toBe(false)
+    expect(out.redacted).toEqual(['github-pat home/memory/x.bin'])
+    const g = Bun.spawnSync(['git', '--git-dir', r, 'grep', '-q', '-a', TOKEN, 'manager-home'])
+    expect(g.exitCode).toBe(1) // 1 means no blob holds the token
   }
 })
 
@@ -465,14 +486,13 @@ test('secretFile finds URL userinfo, JWT and the other vendor token shapes', () 
   expect(secretFile(Buffer.from('see https://example.com/a and user@host'))).toBe(false)
 })
 
-test('the scan reads the staged blob: a token in a binary memory file stops the backup', () => {
+test('the scan reads the staged blob: a token in a binary memory file is redacted', () => {
   const r = remote()
   const ws = workspace()
-  put(join(ws, 'home', 'memory', 'b.bin'), 'a\0b ghp_' + 'a'.repeat(36))
+  put(join(ws, 'home', 'memory', 'b.bin'), `a\0b ${TOKEN}`)
   const out = backup(cfg(ws, r), true)
-  expect(out.error).toContain('home/memory/b.bin')
-  expect(out.error).not.toContain('ghp_')
-  expect(sh('--git-dir', r, 'branch', '--list')).toBe('')
+  expect(out.error).toBeUndefined()
+  expect(pushedFile(r, 'home/memory/b.bin')).toBe('a\0b [REDACTED]')
 })
 
 test('a nested repo at home/.git is refused, not saved as a gitlink', () => {

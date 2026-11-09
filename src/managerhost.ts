@@ -128,6 +128,7 @@ export async function backupStep(
     if (o.skipped === 'lock') log(`backup skipped: a tick held the lock at ${tries} tries`)
     else if (o.error) log(o.error.startsWith('backup refused') ? o.error : `backup failed: ${o.error}`)
     else if (o.changed) log(`backup ${o.sha}`)
+    for (const x of o.redacted ?? []) log(`backup redacted ${x}`) // the rule id and the path, never the value
   } catch (e) {
     log(`backup failed: ${(e as Error).message}`)
   }
