@@ -10,6 +10,8 @@ import {
   parseUsage,
   probe,
   slotRows,
+  TOKEN_USAGE,
+  tokenCommand,
   tokenConfig,
   useSlot,
   type Fetch,
@@ -545,6 +547,90 @@ test('probes start in parallel and use the fixed request', async () => {
     slotRows(await result).forEach(noSecret)
   } finally {
     release()
+    f.done()
+  }
+})
+
+const storedOf = (cfg: ReturnType<typeof storeFixture>['cfg']) => ({
+  'token.read': cfg.read,
+  'token.write': cfg.write,
+  'token.live-field': cfg.liveField,
+  'token.slot-field': cfg.slotField,
+  'token.active-field': cfg.activeField,
+})
+
+test('token command: list shows the live slot and no token', async () => {
+  const f = storeFixture()
+  try {
+    for (const args of [[], ['list']]) {
+      const lines = noSecret(await tokenCommand(args, storedOf(f.cfg), f.fetchFn)).split('\n')
+      expect(lines).toHaveLength(4)
+      expect(lines[0]).toBe('live: slot 1')
+      expect(lines[1]).toBe('slot  7d       5h       status')
+      expect(lines[2]).toStartWith('1 ')
+      expect(lines[3]).toStartWith('2 ')
+    }
+    expect(f.read('writes.log')).toBe('')
+  } finally {
+    f.done()
+  }
+})
+
+test('token command: use makes the slot live with no probe', async () => {
+  const f = storeFixture()
+  try {
+    const out = noSecret(await tokenCommand(['use', '2'], storedOf(f.cfg), f.fetchFn))
+    expect(out).toBe('slot 2 is live; agent-vault picks it up within 5 minutes')
+    expect(f.read('store/live')).toBe('zqsecret-2')
+    expect(f.read('store/active')).toBe('2')
+    expect(f.calls).toHaveLength(0)
+  } finally {
+    f.done()
+  }
+})
+
+test('token command: best picks the lowest 7-day use', async () => {
+  const f = storeFixture()
+  const g = storeFixture()
+  try {
+    noSecret(await tokenCommand(['best'], storedOf(f.cfg), f.fetchFn))
+    expect(f.read('store/live')).toBe('zqsecret-2')
+    g.usage('zqsecret-1', 'rejected', '0.5')
+    g.usage('zqsecret-2', 'rejected', '0.2')
+    await safeReject(() => tokenCommand(['best'], storedOf(g.cfg), g.fetchFn), 'no slot is allowed')
+    expect(g.read('writes.log')).toBe('')
+  } finally {
+    f.done()
+    g.done()
+  }
+})
+
+test('token command: refuses every other argument form with no store call', async () => {
+  const f = storeFixture()
+  try {
+    const bad = [
+      ['use'],
+      ['use', '0'],
+      ['use', '-1'],
+      ['use', '1.5'],
+      ['use', '1e1'],
+      ['use', '0x2'],
+      ['use', '1000'],
+      ['use', '02'],
+      ['use', '2', '3'],
+      ['list', 'x'],
+      ['best', 'x'],
+      ['swap'],
+      ['--help'],
+    ]
+    for (const args of bad)
+      await safeReject(() => tokenCommand(args, storedOf(f.cfg), f.fetchFn), TOKEN_USAGE)
+    expect(f.read('argv.log')).toBe('')
+    expect(f.calls).toHaveLength(0)
+    await safeReject(() => tokenCommand(['use', '999'], storedOf(f.cfg), f.fetchFn), 'cannot read slot 999')
+    expect(f.read('writes.log')).toBe('')
+    await safeReject(() => tokenCommand(['list'], {}, f.fetchFn), 'token.read')
+  } finally {
     f.done()
   }
 })

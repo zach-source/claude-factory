@@ -7,6 +7,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -34,7 +35,7 @@ import {
 } from './harness'
 import { rmSafe } from './home-guard'
 import * as memory from './memory'
-import { cursorUsageOf, grokUsageOf, sessionOf, type Usage } from './metrics'
+import { codexUsageOf, cursorUsageOf, grokUsageOf, sessionOf, validUsage, type Usage } from './metrics'
 import { cut } from './cut'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
@@ -87,14 +88,36 @@ export function queue(argv: string[], usage?: Usage[], bdSkew?: string) {
 }
 
 /**
+ * The rollouts of a private CODEX_HOME since `since` (y3zo dream; vffe.3 laptop codex station). Read at most 20 plain files that have a rollout
+ * name, are 64 MiB or smaller and sit under the private home's sessions/. Send every row through validUsage.
+ */
+export function codexHomeUsage(codexHome: string, since: number, node: string, seq: number) {
+  const sessions = join(codexHome, 'sessions')
+  if (!existsSync(sessions)) return []
+  // ponytail: this reads each whole file; the upgrade is a stream of the last token_count.
+  const rows = (readdirSync(sessions, { recursive: true }) as string[])
+    .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(basename(f)))
+    .sort()
+    .filter(f => {
+      const st = lstatSync(join(sessions, f))
+      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= since
+    })
+    .slice(0, 20)
+    .flatMap(f => codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? [])
+  return validUsage(rows, node, seq)
+}
+
+/**
  * what this VM's Claude session spent, with its subagents, for the report to carry. The laptop cannot
- * read the VM's transcripts. A cursor or grok worker's rows come from its own stream; one with no Claude transcript (codex, pi) gives none. Never throws.
+ * read the VM's transcripts. A cursor or grok worker's rows come from its own stream, a codex worker's from its rollouts; one with no Claude transcript (pi) gives none. Never throws.
  */
 export function usageOfSession(run: string): Usage[] {
   try {
     if (harness() === 'cursor')
       return cursorUsageOf(readFileSync(join(own(), 'cursor.jsonl'), 'utf8').split('\n'))
     if (harness() === 'grok') return grokUsageOf(readFileSync(join(own(), 'grok.jsonl'), 'utf8').split('\n'))
+    if (harness() === 'codex')
+      return codexHomeUsage(process.env.CODEX_HOME ?? join(own(), 'codex'), 0, '?', 0)
     const session = state()?.session
     if (!session || !/^[A-Za-z0-9-]+$/.test(session)) return []
     const projects = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects')

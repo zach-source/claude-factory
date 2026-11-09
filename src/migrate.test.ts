@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { homeReady } from './managerhost'
+import { homeReady, markerOk } from './managerhost'
 import {
   claudeFiles,
   describe,
@@ -104,6 +104,18 @@ test('the host waits on an empty home for the marker, and starts on a marker, a 
   expect(homeReady({ ...f, hasRigs: true, archive: true })).toBe(false)
   expect(homeReady({ ...f, migrated: true, restoring: true })).toBe(false)
   expect(homeReady({ ...f, fresh: true, restoring: true })).toBe(false)
+  // a launch id set: a hand-made home is not enough, since an old workspace has rigs.json too
+  expect(homeReady({ ...f, hasRigs: true, launch: true })).toBe(false)
+  expect(homeReady({ ...f, migrated: true, launch: true })).toBe(true)
+})
+
+test('markerOk trusts a .migrated of this launch only; with no launch id, any marker', () => {
+  expect(markerOk('2026-11-09T10:00:00Z launch=id-1\n', 'id-1')).toBe(true)
+  expect(markerOk('restored abc123 launch=id-1\n', 'id-1')).toBe(true)
+  expect(markerOk('2026-11-09T10:00:00Z launch=id-0\n', 'id-1')).toBe(false)
+  expect(markerOk('2026-10-19T10:00:00Z\n', 'id-1')).toBe(false)
+  expect(markerOk('launch=id-10\n', 'id-1')).toBe(false)
+  expect(markerOk('2026-10-19T10:00:00Z\n', undefined)).toBe(true)
 })
 
 test('pack makes a tar.gz with the migrated rigs.json and without the laptop-only files', () => {

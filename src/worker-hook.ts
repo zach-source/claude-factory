@@ -2627,6 +2627,7 @@ function gluedBraceSlots(words: string[]): Set<number> {
   }
   return slots
 }
+export { gluedBraceSlots as gluedBraceSlotsForTest }
 function braceBodies(words: string[], braceWords: Set<string>): string[][] {
   const out: string[][] = []
   let slots: Set<number> | undefined
@@ -2682,7 +2683,42 @@ function dynamicHeadRmReading(words: string[], root?: string): 'deny' | 'rm' | u
   return result
 }
 
+/**
+ * claude-factory-qn8a.14: the indices of the command heads in `words`. A redirect word is not a
+ * head. This reads the words without redirects first, then the original words, so a quote the
+ * tokenizer dropped cannot hide a head. Every index is into `words`. The redirect-free heads come
+ * first, so a caller that reads only `[0]` sees the real head.
+ */
 function commandAnchors(words: string[]): number[] {
+  const kept = nonRedirectIndices(words)
+  const raw = commandAnchorsOf(words)
+  if (kept.length === words.length) return raw
+  const out = commandAnchorsOf(kept.map(k => words[k]!)).map(k => kept[k]!)
+  // Budget: the merged list never grows past the longer single list. The first raw head can use
+  // one extra slot only while the list is under the one-pass cap.
+  const limit = Math.max(raw.length, out.length)
+  raw.forEach((a, i) => {
+    if (out.includes(a)) return
+    if (out.length < limit || (i === 0 && out.length < MAX_COMMAND_ANCHORS)) out.push(a)
+  })
+  return out
+}
+
+// claude-factory-qn8a.14: the first head of each reading: without redirects, then the raw words.
+// A caller that reads only the first head must treat both as possible.
+function firstHeads(words: string[]): number[] {
+  const kept = nonRedirectIndices(words)
+  const raw = commandAnchorsOf(words)[0]
+  if (kept.length === words.length) return raw === undefined ? [] : [raw]
+  const k = commandAnchorsOf(kept.map(i => words[i]!))[0]
+  const out = k === undefined ? [] : [kept[k]!]
+  if (raw !== undefined && !out.includes(raw)) out.push(raw)
+  return out
+}
+
+export { commandAnchors as commandAnchorsForTest }
+
+function commandAnchorsOf(words: string[]): number[] {
   let i = 0
   while (i < words.length) {
     const w = words[i]!
@@ -3023,6 +3059,31 @@ function shCScriptValue(words: string[], start: number): string | undefined {
   return undefined
 }
 
+// claude-factory-ibas: the first dynamic head word (X in `$X "rm -rf /"`) can expand to eval or
+// sh -c. Then the later words are a script. Returns the script texts to read: the joined words
+// (eval) and each later word that holds a space or shell operator (sh -c "$1"). Only the first
+// dynamic anchor counts; the joined read recurses into the later ones (cbai).
+// claude-factory-qn8a.14: commandAnchors skips redirect words, so a redirect before the head
+// does not hide the script.
+function dynamicHeadScripts(words: string[]): string[] {
+  // A wrapper skips a zsh split word (${=X}) as NAME=value, so it is never an anchor. Add it.
+  const splits = words.flatMap((w, i) => (/^"?\$\{?=/.test(w) ? [i] : []))
+  for (const a of [...commandAnchors(words), ...splits]) {
+    const head = words[a]!
+    // A head with a slash ("$ROOT/bin/factory") names a path, so it is not read.
+    // ibas.6, .7: drop ${...} groups first; any other unquoted dollar (e$X) makes it dynamic.
+    const bare = head.replace(/\$\{[^}]*\}/g, '$V')
+    // ibas.9: only a slash after the last close brace is a path; a nested or escaped brace hides none.
+    const path = head.slice(head.lastIndexOf('}') + 1).includes('/')
+    if (head.startsWith("'") || !bare.includes('$') || path) continue
+    const rest = words.slice(a + 1)
+    // The tokenizer drops quotes, so a quoted here-string token looks like a here-string. Read the script anyway.
+    if (!rest.length) return []
+    return [rest.join(' '), ...rest.filter(w => /[\s;&|<>()$`]/.test(w))]
+  }
+  return []
+}
+
 // claude-factory-igj: this checks words from index start to the end of the one segment words.
 // It returns true for a bd word there, or for a sh/bash/zsh/dash -c script or an eval word that
 // holds a bd word. depth bounds the recursion. MAX_SHELL_DEPTH bounds it the same way, for
@@ -3044,6 +3105,8 @@ function segmentRunsBdCommand(
   let evalScanned = false
   let slotEnd = 0
   let trapEnd = 0
+  for (const t of dynamicHeadScripts(start ? words.slice(start) : words))
+    if (stringNamesBdCommand(t, state, g, depth + 1)) return true
   for (let k = start; k < words.length; k++) {
     const bw = baseWord(words[k]!)
     if (g.cmds.has(bw)) return true
@@ -5432,7 +5495,12 @@ function ghAliasExpansion(text: string): string[] | undefined {
  * Without this, the redirect word reads as the gh verb or the gh sub word and hides the real one.
  */
 function dropRedirectWords(words: string[]): string[] {
-  const out: string[] = []
+  return nonRedirectIndices(words).map(i => words[i]!)
+}
+
+// The indices of the words that are not redirect words. A bare operator also drops its target.
+function nonRedirectIndices(words: string[]): number[] {
+  const out: number[] = []
   for (let i = 0; i < words.length; i++) {
     // claude-factory-7xmz.4: zsh also reads `>&|`, `>&!`, `>>&|`, `>>&!`, `>|`, `>!`. 7xmz.5: bash
     // reads a `{a[0]}` fd name with a subscript.
@@ -5441,7 +5509,7 @@ function dropRedirectWords(words: string[]): string[] {
         words[i]!,
       )
     if (!m) {
-      out.push(words[i]!)
+      out.push(i)
       continue
     }
     if (m[1] === '') i++
@@ -6391,20 +6459,22 @@ const NAME_BUILT = /[$`]/
 
 // claude-factory-mn2y: a name-building argument of a command that is not provably external.
 function segmentDynArg(words: string[]): boolean {
-  const first = commandAnchors(words)[0]
-  if (
-    first === undefined ||
-    externalProgram(words[first]!) ||
-    words[first] === 'echo' ||
-    words[first] === 'cd' ||
-    // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
-    ((words[first] === '[' || words[first] === '[[') &&
-      testBuiltinSafe(words[first]!, words.slice(first + 1))) ||
-    words[first]!.startsWith('#')
-  )
-    return false
-  return words.some((w, i) => i > first && NAME_BUILT.test(w))
+  return firstHeads(words).some(first => {
+    if (
+      externalProgram(words[first]!) ||
+      words[first] === 'echo' ||
+      words[first] === 'cd' ||
+      // claude-factory-0hkb: the test builtin writes no alias; its arguments are not names
+      ((words[first] === '[' || words[first] === '[[') &&
+        testBuiltinSafe(words[first]!, words.slice(first + 1))) ||
+      words[first]!.startsWith('#')
+    )
+      return false
+    return words.some((w, i) => i > first && NAME_BUILT.test(w))
+  })
 }
+
+export { segmentDynArg as segmentDynArgForTest }
 
 // claude-factory-mn2y: true when this segment may define a shell alias.
 // W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
@@ -6414,12 +6484,13 @@ function segmentDynArg(words: string[]): boolean {
 function segmentMayDefineAlias(words: string[]): boolean {
   if (words[0] === 'alias' && words.slice(1).every(w => /^[A-Za-z0-9_.:@%+,/-]+$/.test(w))) return false
   const anchors = commandAnchors(words)
-  const first = anchors[0]
-  const safe = first !== undefined && externalProgram(words[first]!)
+  const heads = firstHeads(words)
+  const safe = heads.length > 0 && heads.every(h => externalProgram(words[h]!))
+  const first = Math.max(...heads)
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
     if (!/alias/i.test(w)) continue
-    if (safe && i > first! && !/[$`]/.test(w)) continue
+    if (safe && i > first && !/[$`]/.test(w)) continue
     return true
   }
   for (const a of anchors) {
@@ -6430,6 +6501,7 @@ function segmentMayDefineAlias(words: string[]): boolean {
   }
   return false
 }
+export { segmentMayDefineAlias as segmentMayDefineAliasForTest }
 
 // claude-factory-mn2y: the raw text has no expansion, substitution or brace, and every segment
 // is an alias command.
@@ -8751,6 +8823,13 @@ function anyShellReason(
       }
       break
     }
+  }
+  // claude-factory-ibas: run last, so an earlier rule keeps its own reason.
+  for (const t of dynamicHeadScripts(words)) {
+    const r = denyAt(t, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
+    // A here-string keeps its own, more specific reason (SHELL_STDIN_REASON). The tokenizer drops
+    // quotes, so a quoted here-string token looks the same: it still denies, with that reason.
+    if (r) return words.some(w => w.includes('<<<')) ? SHELL_STDIN_REASON : r
   }
   // claude-factory-qn8a.15: a dynamic word in a find exec slot can expand to sh -c, so read each
   // later slot word as a script (deny-only). A slot ends at ; or at + after {}.

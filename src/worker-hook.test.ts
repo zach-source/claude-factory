@@ -1,5 +1,6 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import * as fsNs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -10,6 +11,10 @@ import {
   baseWord,
   baseWordForTest,
   dynamicHeadDenyForTest,
+  commandAnchorsForTest,
+  gluedBraceSlotsForTest,
+  segmentDynArgForTest,
+  segmentMayDefineAliasForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   FACTORY_FROM_REASON,
@@ -12287,3 +12292,405 @@ test('gh api repo setting writes: a wide GraphQL URL keeps every mutation check'
     repoDeny('gh api -X PUT https://api.github.com/repos/acme/widget/contents/api/graphql -f branch=main'),
   ).toBe(PUSH_REASON)
 })
+
+// claude-factory-qn8a.14: a leading redirect word must not hide a dynamic command head.
+// A dynamic head can expand to eval or sh -c, so the words after it are a script (ibas, PR 235).
+const REDIRECT_GATE = { headOf: () => 'factory/x', originHead: () => 'main', gitAliases: () => new Map() }
+const redirectDeny = (c: string) => denyReason(c, '/root/repo', ['gtr'], REDIRECT_GATE)
+
+test.each([
+  '>/dev/null $X rm -rf /',
+  '>x $X rm -rf /',
+  '> /dev/null $X rm -rf /',
+  '>>log $X rm -rf /',
+  '2>/dev/null $X rm -rf /',
+  '>/dev/null 2>&1 $X rm -rf /',
+  'nice >/dev/null $X rm -rf /',
+  'sudo >/dev/null $X rm -rf /',
+  'sudo -u root >out nice -n 5 >err $X rm -rf /',
+  'timeout >out 5 $X rm -rf /',
+  'A=1 >out $X rm -rf /',
+  '>a >>b 2>c $X rm -rf /',
+  '>|x $X rm -rf /',
+  '<<<hi $X rm -rf /',
+  '<>f $X rm -rf /',
+  '3<f $X rm -rf /',
+  '{fd}>f $X rm -rf /',
+  '&>>f $X rm -rf /',
+  'nice >a sudo >b $X rm -rf /',
+  '>/dev/null eval "rm -rf /"',
+  '>/dev/null rm -rf /',
+  '>/dev/null sh -c "rm -rf /"',
+  '>/dev/null $X -c "rm -rf /"',
+  '&>/dev/null $X "rm -rf /"',
+])('qn8a.14 redirect dynamic deny %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+const SCRIPT_ROWS = [
+  '$X "rm -rf /"',
+  '$X "git push origin main"',
+  "$X 'rm -rf' /",
+  '$X x "rm -rf /"',
+  "$X 'git push' origin main",
+  '${X:-${Y}/} "rm -rf /"',
+  'e$X "rm -rf /"',
+  "env -u BEADS_ACTOR $X 'bd create acme'",
+  "env -u FACTORY_FROM $X 'factory mail acme manager'",
+]
+const REDIRECT_PREFIXES = [
+  '>/dev/null',
+  '> /dev/null',
+  '>x',
+  '>>log',
+  '2>/dev/null',
+  '>/dev/null 2>&1',
+  '>|x',
+  '&>>f',
+  '<>f',
+  '3<f',
+  '{fd}>f',
+  '>a >>b 2>c',
+]
+const WRAPPER_PREFIXES = [
+  'nice >/dev/null',
+  'sudo >/dev/null',
+  'sudo -u root >out nice -n 5 >err',
+  'timeout >out 5',
+  'A=1 >out',
+  'nice >a sudo >b',
+]
+
+test.each([
+  ...REDIRECT_PREFIXES.flatMap(p => SCRIPT_ROWS.map(r => `${p} ${r}`)),
+  ...WRAPPER_PREFIXES.flatMap(p => SCRIPT_ROWS.slice(0, 2).map(r => `${p} ${r}`)),
+  ...SCRIPT_ROWS,
+])('qn8a.14 redirect dynamic deny quoted %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+test.each([
+  '2>&1 $X "rm -rf /"',
+  '</dev/null $X "rm -rf /"',
+  '>/dev/null eval "rm -rf /"',
+  '>/dev/null sh -c "rm -rf /"',
+])('qn8a.14 redirect controls deny %s', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+})
+
+test.each([
+  '"$PY" -c "print(1)"',
+  '$X "hello world"',
+  '$EDITOR notes.md',
+  '$GIT status',
+  '$X "a b" c',
+  '$GREP -n "foo bar" file',
+  '$CC -o out "my file.c"',
+  '${PAGER:-less} "notes file.md"',
+  '"${ROOT}/bin/factory" status',
+  '"$ROOT/bin/factory" status',
+  '"$ROOT/bin/tool" "rm -rf x y"',
+  '${ROOT}/bin/tool "rm -rf x y"',
+])('qn8a.14 dynamic script prerequisite allows %s, plain and after a redirect', c => {
+  expect(redirectDeny(c)).toBeUndefined()
+  expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 dynamic script prerequisite reads both script forms %#', p => {
+  for (const c of SCRIPT_ROWS) expect(redirectDeny(p + c)).toBeTruthy()
+})
+
+test.each(['', '>out '])('qn8a.14 dynamic script prerequisite reads the env guard mirror %#', p => {
+  expect(redirectDeny(`${p}env -i $X x 'bd create acme'`)).toBe(BEADS_ACTOR_REASON)
+  expect(redirectDeny(`${p}env -i $X x 'factory mail acme manager'`)).toContain('FACTORY_FROM')
+})
+
+test.each([['$X ' + Array(200).fill('"x y"').join(' ')], [Array(200).fill('$X').join(' ') + ' "x y"']])(
+  'qn8a.14 script budget stays linear %#',
+  cmd => {
+    const t = Date.now()
+    redirectDeny(`>x ${cmd}`)
+    expect(Date.now() - t).toBeLessThan(1000)
+  },
+)
+
+test.each(['', '>x '])('qn8a.14 script depth limit denies with the depth reason %#', p => {
+  const deep = (n: number) => `${p}$X x ${'eval '.repeat(n)}echo ok`
+  expect(redirectDeny(deep(5))).toBeUndefined()
+  expect(redirectDeny(deep(40))).toContain('nests more than 32')
+})
+
+test.each([
+  '>/dev/null $X "hello world"',
+  '>/dev/null "$ROOT/bin/factory" status',
+  '>/dev/null $EDITOR notes.md',
+])('qn8a.14 redirect controls allow %s', c => {
+  expect(redirectDeny(c)).toBeUndefined()
+})
+
+test('qn8a.14 redirect anchor invariants allow a safe nested wrapper', () => {
+  expect(redirectDeny('sudo -u root >out nice -n 5 >err $EDITOR notes.md')).toBeUndefined()
+})
+
+test('qn8a.14 a redirect word without a slash stays a possible head', () => {
+  expect(redirectDeny('2>&1 $X "rm -rf /"')).toBeTruthy()
+})
+
+test.each([
+  ['sudo', ...Array.from({ length: 30 }, () => ['-Z', 'v', 'env']).flat(), '$X'],
+  ['nice', ...Array.from({ length: 40 }, () => ['-Q', '$G']).flat(), 'x'],
+])('qn8a.14 redirect keeps the anchor budget of one pass %#', (...words) => {
+  const pure = commandAnchorsForTest(words).length
+  expect(commandAnchorsForTest(['>x', ...words]).length).toBeLessThanOrEqual(pure)
+  expect(commandAnchorsForTest(['>x', ...words, '>y']).length).toBeLessThanOrEqual(pure)
+})
+
+test.each([
+  ['>/dev/null g*t push origin main', 'g*t push origin main'],
+  ['>/dev/null rm -r *', 'rm -r *'],
+  ['>/dev/null /bin/echo alias=$Y', '/bin/echo alias=$Y'],
+])('qn8a.14 redirect keeps the alias and glob verdict of %s', (withRedirect, plain) => {
+  expect(redirectDeny(plain)).toBeTruthy()
+  expect(redirectDeny(withRedirect)).toBeTruthy()
+})
+
+test.each(['set -A $n x', 'echo $A'])('qn8a.14 redirect keeps the allow verdict of %s', c => {
+  expect(redirectDeny(c)).toBeUndefined()
+  expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+})
+
+test('qn8a.14 redirect keeps both first-head readings', () => {
+  expect(commandAnchorsForTest(['>x', '/bin/echo', 'alias'])).toContain(1)
+  expect(commandAnchorsForTest(['>x', '/bin/echo', 'alias'])[0]).toBe(1)
+  expect(commandAnchorsForTest(['>x', 'echo', '$name'])).toEqual(expect.arrayContaining([0, 1]))
+})
+
+test('qn8a.14 redirect anchor budget stays at the raw tail-scan count', () => {
+  const words = ['nice', ...Array.from({ length: 40 }, () => ['-Q', '$G']).flat(), 'x']
+  expect(commandAnchorsForTest(['>x', ...words]).length).toBeLessThanOrEqual(
+    commandAnchorsForTest(words).length,
+  )
+})
+
+// claude-factory-qn8a.14.3: a quoted "<<<" argument is no here-string, so it must not hide the script.
+test.each(['', '>/dev/null ', 'sudo '])('qn8a.14 a quoted here-string word keeps the script read %#', p => {
+  expect(redirectDeny(`${p}$X x "echo ok; rm -rf / #" "<<<"`)).toBeTruthy()
+  expect(redirectDeny(`${p}$X x "git push origin main" '<<<'`)).toBeTruthy()
+  expect(redirectDeny(`${p}$X x "echo ok; rm -rf / #" a"<<<"`)).toBeTruthy()
+  expect(redirectDeny(`${p}env -i $X x 'bd create acme' "<<<"`)).toBe(BEADS_ACTOR_REASON)
+  expect(redirectDeny(`${p}env -i $X x 'factory mail acme manager' "<<<"`)).toContain('FACTORY_FROM')
+})
+
+// A real here-string keeps its own, more specific reason.
+test('qn8a.14 a real here-string word keeps the stdin reason', () => {
+  expect(redirectDeny('$X x "rm -rf /" <<<hi')).toBe(SHELL_STDIN_REASON)
+})
+
+// A path head and a single-quoted head are never read as a dynamic head.
+test.each(['"$ROOT/bin/factory" status', '\'$X\' "hello world"', '${ROOT}/x "rm -rf y z"'])(
+  'qn8a.14 head forms that stay allowed %s',
+  c => {
+    expect(redirectDeny(c)).toBeUndefined()
+    expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+  },
+)
+
+// claude-factory-qn8a.14.7: the caller map of docs/architecture/adr-worker-hook-redirect-anchors.md.
+// Each row names one commandAnchors consumer. The prefix is the redirect word that moved the head.
+const CALLER_GATE = (aliases: Map<string, string>, seen: string[]) => ({
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => {
+    seen.push('read')
+    return aliases
+  },
+})
+const callerDeny = (c: string) => denyReason(c, '/root/repo', ['acme'], REDIRECT_GATE)
+
+test.each(['', '>out '])('qn8a.14 caller gluedAtCommandSlot %#', p => {
+  expect(callerDeny(`${p}git>f push origin main`)).toBe(PUSH_REASON)
+  expect(callerDeny(`${p}git>f status`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller gluedBraceSlots %#', p => {
+  expect(callerDeny(`${p}{rm,-rf,/x}`)).toBeTruthy()
+  expect(callerDeny(`${p}echo {a,b}`)).toBeUndefined()
+})
+
+test('qn8a.14 caller gluedBraceSlots reads the glued head after a redirect', () => {
+  const words = ['>out', '{git', 'push', 'origin', 'main', '}']
+  expect(gluedBraceSlotsForTest(words).has(1)).toBe(true)
+  expect(gluedBraceSlotsForTest(words.slice(1)).has(0)).toBe(true)
+  expect(gluedBraceSlotsForTest(['echo', '{git', 'push']).has(1)).toBe(false)
+})
+
+test.each(['', '>out '])('qn8a.14 caller dynamicHeadRmReading %#', p => {
+  expect(callerDeny(`${p}$X rm -rf /x`)).toBe(REASON)
+  expect(callerDeny(`${p}$X echo ok`)).toBeUndefined()
+  expect(callerDeny(`${p}$X -- rm -rf /`)).toBe(REASON)
+})
+
+test.each(['', '>out '])('qn8a.14 caller shellStdinReason1 %#', p => {
+  expect(callerDeny(`${p}sh <<< hi`)).toBe(SHELL_STDIN_REASON)
+  expect(callerDeny(`${p}ls <<< hi`)).toBeUndefined()
+})
+
+test('qn8a.14 caller segmentDynArg returns both first-head results', () => {
+  expect(segmentDynArgForTest(['>x', 'echo', '$name'])).toBe(true)
+  expect(segmentDynArgForTest(['echo', '$name'])).toBe(false)
+  expect(segmentDynArgForTest(['>x', 'echo', 'name'])).toBe(false)
+})
+
+test('qn8a.14 caller segmentMayDefineAlias returns both first-head results', () => {
+  expect(segmentMayDefineAliasForTest(['>x', '/bin/echo', 'alias'])).toBe(true)
+  expect(segmentMayDefineAliasForTest(['/bin/echo', 'alias'])).toBe(false)
+  expect(segmentMayDefineAliasForTest(['>x', '/bin/echo', 'name'])).toBe(false)
+  expect(callerDeny('>out $MAKE -j$N all')).toBeTruthy()
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyGlobCommandWord %#', p => {
+  expect(callerDeny(`${p}g*t push`)).toContain('shell expansion')
+  expect(callerDeny(`${p}echo *.md`)).toBeUndefined()
+  expect(callerDeny(`${p}*.md`)).toContain('shell expansion')
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyDynamicCommandReason1 %#', p => {
+  expect(callerDeny(`${p}$X push origin main`)).toContain('shell expansion')
+  expect(callerDeny(`${p}$X`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyLiveApplyWord %#', p => {
+  expect(callerDeny(`${p}kubectl --context acme apply -f x`)).toBe(LIVE_REASON)
+  expect(callerDeny(`${p}kubectl --context acme get pods`)).toBeUndefined()
+  expect(callerDeny(`${p}flux --context acme zzz`)).toBe(LIVE_REASON)
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyDynamicLiveApplyReason1 %#', p => {
+  expect(callerDeny(`${p}$K --context acme delete -f x`)).toContain('shell expansion')
+  expect(callerDeny(`${p}$K --context acme get pods`)).toBeUndefined()
+  expect(callerDeny(`${p}$K apply -f x`)).toBeTruthy()
+})
+
+test.each(['', '>out '])('qn8a.14 a git alias p for push denies and the fake reader is called %#', p => {
+  const seen: string[] = []
+  const gate = CALLER_GATE(new Map([['p', 'push']]), seen)
+  expect(denyReason(`${p}git p origin main`, '/root/repo', ['acme'], gate)).toBe(PUSH_REASON)
+  expect(seen.length).toBeGreaterThan(0)
+  const seen2: string[] = []
+  const gate2 = CALLER_GATE(new Map([['p', 'push']]), seen2)
+  expect(denyReason(`${p}git status`, '/root/repo', ['acme'], gate2)).toBeUndefined()
+})
+
+// AC6: head forms from 412b8d4:src/worker-hook-ibas.test.ts, plain and after a redirect.
+test.each([
+  '"$X" "rm -rf /"',
+  '"$@" "rm -rf /"',
+  '${=X} "rm -rf /"',
+  '"${X/b/a}" "rm -rf /"',
+  '"${X:-${Y}/}" "rm -rf /"',
+  '${X:-${Y}/} "rm -rf /"',
+  '${X:-\\}/} "rm -rf /"',
+  '${X:-"}/"} "rm -rf /"',
+  '${X#${Y}/} "rm -rf /"',
+  '$@ "rm -rf /"',
+  '${X} "rm -rf /"',
+  '${X%/} "rm -rf /"',
+  'ev${X} "rm -rf /"',
+])('qn8a.14 unsafe dynamic head denies %s, plain and after a redirect', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+  expect(redirectDeny(`>out ${c}`)).toBeTruthy()
+  expect(redirectDeny(`> out ${c}`)).toBeTruthy()
+})
+
+test.each([
+  '"$PY" -c "print(1)"',
+  '$X "hello world"',
+  '$EDITOR notes.md',
+  '$GIT status',
+  '$X "a b" c',
+  '$GREP -n "foo bar" file',
+  '$CC -o out "my file.c"',
+  '${PAGER:-less} "notes file.md"',
+  '"${ROOT}/bin/factory" status',
+])('qn8a.14 safe dynamic head allows %s, plain and after a redirect', c => {
+  expect(redirectDeny(c)).toBeUndefined()
+  expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+})
+
+// claude-factory-qn8a.14.9: both script readers bound their work and depth, and run nothing.
+// Reader 1: anyShellReason -> denyAt. Reader 2: segmentRunsBdCommand -> stringNamesBdCommand.
+// Budgets are the scanReason work budget. Each charge is a count of characters (see spendWork).
+const AC7_FAKE_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+}
+const ac7Scan = (c: string, budget?: number) => scanReason(c, '/root/repo', ['acme'], AC7_FAKE_GATE, budget)
+
+// Each row: command, budget that reaches the script recursion and runs out inside it,
+// and the smallest budget that lets the whole scan finish. One less must still deny.
+const AC7_ROWS: Array<[string, string, number, number]> = [
+  ['shell', '$X "hello world"', 80, 209],
+  ['shell after redirect', '>zz $X "hello world"', 100, 232],
+  ['env', 'env -i $X x y', 28, 118],
+  ['env after redirect', '>zz env -i $X x y', 36, 141],
+]
+
+test.each(AC7_ROWS)(
+  'qn8a.14 script budget %s: exhausted inside the script read, exact at the boundary',
+  (_name, cmd, inside, finish) => {
+    expect(ac7Scan(cmd, inside)).toBe(SCAN_BUDGET_REASON)
+    expect(ac7Scan(cmd, finish - 1)).not.toBeUndefined()
+    expect(ac7Scan(cmd, finish)).toBeUndefined()
+    expect(ac7Scan(cmd)).toBeUndefined()
+  },
+)
+
+test('qn8a.14 script budget: a bd word in the script reads as BEADS_ACTOR_REASON only with enough budget', () => {
+  const cmd = "env -i $X x 'bd create acme'"
+  expect(ac7Scan(cmd, 28)).toBe(SCAN_BUDGET_REASON)
+  expect(ac7Scan(cmd, 1000)).toBe(BEADS_ACTOR_REASON)
+  expect(ac7Scan(`>zz ${cmd}`, 1000)).toBe(BEADS_ACTOR_REASON)
+})
+
+// Depth: the shell reader returns DEEP_COMMAND_REASON. The boolean bd reader answers true,
+// so the conservative environment denial is BEADS_ACTOR_REASON.
+test.each(['', '>zz '])('qn8a.14 script depth limit is exact for both readers %#', p => {
+  const shell = (n: number) => ac7Scan(`${p}$X x ${'eval '.repeat(n)}echo ok`)
+  expect(shell(31)).toBeUndefined()
+  expect(shell(32)).toBe(DEEP_COMMAND_REASON)
+  expect(shell(40)).toBe(DEEP_COMMAND_REASON)
+  const env = (n: number) => ac7Scan(`${p}env -i $X x ${'eval '.repeat(n)}echo ok`)
+  expect(env(30)).toBeUndefined()
+  expect(env(31)).toBe(BEADS_ACTOR_REASON)
+  expect(env(40)).toBe(BEADS_ACTOR_REASON)
+})
+
+// Observed APIs: Bun.spawnSync and Bun.spawn (process launch, also the real gate readers), and the
+// five node:fs functions that worker-hook.ts imports (appendFileSync, readdirSync, readFileSync,
+// realpathSync, statSync). A redirect target is opened only through one of them.
+// Bun tests in one file run one after another, so the process-wide spies cannot meet another test.
+test.each(AC7_ROWS)(
+  'qn8a.14 script readers launch nothing and open nothing: %s',
+  (_name, cmd, inside, finish) => {
+    const names = ['appendFileSync', 'readdirSync', 'readFileSync', 'realpathSync', 'statSync'] as const
+    const fsSpies = names.map(n => spyOn(fsNs, n))
+    const spawnSync = spyOn(Bun, 'spawnSync')
+    const spawn = spyOn(Bun, 'spawn')
+    try {
+      for (const b of [inside, finish - 1, finish, 1000]) ac7Scan(cmd, b)
+      ac7Scan("env -i $X x 'bd create acme'", 1000)
+      expect(spawnSync.mock.calls.length).toBe(0)
+      expect(spawn.mock.calls.length).toBe(0)
+      for (const s of fsSpies) expect(s.mock.calls.length).toBe(0)
+      // The spies are live: a direct call shows up.
+      fsNs.statSync('.')
+      expect(fsSpies[4]!.mock.calls.length).toBe(1)
+    } finally {
+      for (const s of fsSpies) s.mockRestore()
+      spawnSync.mockRestore()
+      spawn.mockRestore()
+    }
+  },
+)

@@ -70,7 +70,7 @@ test('AC1: a backup restores into an empty home with the same state', () => {
     `claude/projects/${SLUG}/memory/m.md`,
   ])
     expect(readFileSync(join(b, f), 'utf8')).toBe(readFileSync(join(a, f), 'utf8'))
-  expect(readFileSync(join(b, 'home', '.migrated'), 'utf8')).toContain(`restored ${out.sha}`)
+  expect(readFileSync(join(b, 'home', '.migrated'), 'utf8')).toBe(`restored ${out.sha}\n`)
   // the next backup from the restored home pushes on top
   put(join(b, 'home', 'memory', 'b.md'), 'more')
   expect(backup(cfg(b, r), true).error).toBeUndefined()
@@ -172,6 +172,14 @@ test('AC4: an unready home never pushes, and a rejected push never forces', () =
   expect(backup(cfg(other, remote()), true).error).toBeUndefined() // local history, not the remote's
   expect(backup(cfg(other, r), true).error).toContain('git push')
   expect(sh('--git-dir', r, 'rev-parse', 'manager-home')).toBe(good)
+})
+
+test('a restore for a launch writes its launch id into .migrated', () => {
+  const r = remote()
+  const out = backup(cfg(workspace(), r), true)
+  const b = empty()
+  expect(restore({ ...cfg(b, r), launch: 'id-1' }).restored).toBe(out.sha)
+  expect(readFileSync(join(b, 'home', '.migrated'), 'utf8')).toBe(`restored ${out.sha} launch=id-1\n`)
 })
 
 test('AC5: restore does nothing to a used home', () => {

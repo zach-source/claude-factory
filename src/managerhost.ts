@@ -54,7 +54,9 @@ export function lastSession(json: string): string | undefined {
 /**
  * whether the host starts the manager now. The .migrated marker or FACTORY_AX_FRESH=1 (a new factory) says yes. A
  * home with rigs.json and no marker is a hand-made one: yes, unless a migration archive is on the volume, since
- * its unpack writes rigs.json before it ends. An empty home waits for `factory migrate-to-ax`
+ * its unpack writes rigs.json before it ends. An empty home waits for `factory migrate-to-ax`.
+ * With a launch id, the marker must be of this launch, and a hand-made home does not count: an old Workspace
+ * of the same name also has rigs.json
  */
 export const homeReady = (f: {
   migrated: boolean
@@ -63,7 +65,12 @@ export const homeReady = (f: {
   archive: boolean
   /** home/.restoring: a restore did not end, so the home may hold half a checkout */
   restoring?: boolean
-}) => !f.restoring && (f.migrated || f.fresh || (f.hasRigs && !f.archive))
+  /** FACTORY_AX_LAUNCH_ID is set */
+  launch?: boolean
+}) => !f.restoring && (f.migrated || f.fresh || (f.hasRigs && !f.archive && !f.launch))
+
+/** whether a .migrated text is of launch `id`; with no id (a reused Workspace), any marker */
+export const markerOk = (text: string, id?: string) => !id || text.match(/\blaunch=([\w-]+)/)?.[1] === id
 
 /** restore an empty home from the backup branch (192.9); logs what it did and never throws. True when a retry can help */
 export function restoreStep(
@@ -301,9 +308,12 @@ export async function host(
     const f = join(home, 'manager-sessions.json')
     return existsSync(f) ? lastSession(readFileSync(f, 'utf8')) : undefined
   }
+  const launch = process.env.FACTORY_AX_LAUNCH_ID || undefined
+  const marker = join(home, '.migrated')
   const ready = () =>
     homeReady({
-      migrated: existsSync(join(home, '.migrated')),
+      migrated: existsSync(marker) && markerOk(readFileSync(marker, 'utf8'), launch),
+      launch: !!launch,
       fresh: process.env.FACTORY_AX_FRESH === '1',
       hasRigs: existsSync(join(home, 'rigs.json')),
       restoring: existsSync(join(home, '.restoring')),
@@ -315,10 +325,15 @@ export async function host(
     ws: dirname(home),
     remote: basename(home) === 'home' ? process.env.FACTORY_AX_BACKUP_REMOTE : undefined,
     branch: process.env.FACTORY_AX_BACKUP_BRANCH || 'manager-home',
+    launch,
   }
   if (process.env.FACTORY_AX_BACKUP_REMOTE && !bcfg.remote)
     log('backup off: FACTORY_HOME is not <workspace>/home')
   const backupMs = Number(process.env.FACTORY_AX_BACKUP_EVERY) || 600_000
+  if (existsSync(marker) && !markerOk(readFileSync(marker, 'utf8'), launch))
+    log(
+      `.migrated is not of launch ${launch}: an old home. Delete the Workspace, or run factory migrate-to-ax --force`,
+    )
   if (!ready()) log('waiting for `factory migrate-to-ax` (or FACTORY_AX_FRESH=1) before the manager starts')
   // ponytail: no timeout: an empty home waits until the laptop migrates it. A restore that failed is tried again
   await awaitHome(

@@ -266,6 +266,11 @@ test('renderTokens shows the hit rate, a cost from PRICES, the shipped run token
   expect(costOf(rows[0]!, rows[0]!.model)).toBeCloseTo(40.25)
   expect(costOf(rows[2]!, rows[2]!.model)).toBeCloseTo(24.15)
   expect(costOf(rows[3]!, rows[3]!.model)).toBeNull()
+  const mil = { input: 1e6, cacheWrite: 1e6, cacheRead: 1e6, output: 1e6 }
+  expect(costOf(mil, 'claude-fable-5-1')).toBeCloseTo(72.75) // aure.1 AC5: 10 + 12.5 + 0.25 + 50
+  expect(costOf(mil, 'claude-fable-5')).toBeCloseTo(73.5)
+  expect(costOf(mil, 'claude-opus-4-7')).toBeCloseTo(36.75)
+  expect(costOf(mil, 'gpt-6-astra')).toBeNull()
   expect(text).toContain('cost ~$104.65') // 2 opus rows + 1 sonnet row
   expect(text).toContain('1 rows of an unknown model not priced')
   expect(text).toMatch(/implement\s+claude-opus-4-7\s+2/)
