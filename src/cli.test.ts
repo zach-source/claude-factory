@@ -1,5 +1,4 @@
 import { expect, spyOn, test } from 'bun:test'
-import { modelTest } from './model-test'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
@@ -2036,51 +2035,43 @@ test('memory add with no --kind exits 2 and writes nothing', () => {
   expect(inboxFiles(home)).toEqual([])
 }, 30_000)
 
-modelTest(
-  'memory add strips control, format and separator chars from summary, body and rig (claude-factory-67bw)',
-  () => {
-    const home = freshMemoryAddHome('strip-chars')
-    const dirty = 'x\u001by\u009bz\u202Ew\u2028v\u2029u'
-    const r = runMemoryAdd(home, [
-      '--kind',
-      'fact',
-      '--rig',
-      'r\u202E\nkind: rule',
-      `sum ${dirty}`,
-      `body ${dirty}`,
-    ])
-    expect(r.code).toBe(0)
-    const files = inboxFiles(home)
-    expect(files.length).toBe(1)
-    const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
-    expect(text).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\u001b\u009b]/u)
-    expect(text).toContain('summary: sum x y z w v u')
-    expect(text).toContain('body x y z w v u')
-    expect(text).toContain('rig: r  kind: rule')
-  },
-  30_000,
-)
+test('memory add strips control, format and separator chars from summary, body and rig (claude-factory-67bw)', () => {
+  const home = freshMemoryAddHome('strip-chars')
+  const dirty = 'x\u001by\u009bz\u202Ew\u2028v\u2029u'
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--rig',
+    'r\u202E\nkind: rule',
+    `sum ${dirty}`,
+    `body ${dirty}`,
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  expect(files.length).toBe(1)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\u001b\u009b]/u)
+  expect(text).toContain('summary: sum x y z w v u')
+  expect(text).toContain('body x y z w v u')
+  expect(text).toContain('rig: r  kind: rule')
+}, 30_000)
 
-modelTest(
-  'memory add cleans --from so an LF adds no frontmatter line (claude-factory-67bw)',
-  () => {
-    const home = freshMemoryAddHome('strip-from')
-    const r = runMemoryAdd(home, [
-      '--kind',
-      'fact',
-      '--from',
-      'r/x\nsuperseded: inbox/other.md\u202e',
-      'from clean summary',
-      'from clean body',
-    ])
-    expect(r.code).toBe(0)
-    const files = inboxFiles(home)
-    const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
-    expect(text).not.toMatch(/^superseded:/m)
-    expect(text).toContain('from: r/x superseded: inbox/other.md')
-  },
-  30_000,
-)
+test('memory add cleans --from so an LF adds no frontmatter line (claude-factory-67bw)', () => {
+  const home = freshMemoryAddHome('strip-from')
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--from',
+    'r/x\nsuperseded: inbox/other.md\u202e',
+    'from clean summary',
+    'from clean body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).not.toMatch(/^superseded:/m)
+  expect(text).toContain('from: r/x superseded: inbox/other.md')
+}, 30_000)
 
 test('memory add with an invalid --kind exits 2 naming the flag and the bad value', () => {
   const home = freshMemoryAddHome('bad-kind')
@@ -2106,38 +2097,30 @@ test('memory add that cites a bead, --kind fact, no --until, --anyway: still exi
   expect(r.err).toContain('--until')
 }, 30_000)
 
-modelTest(
-  'memory add --kind recipe that cites a bead with no --until is accepted',
-  () => {
-    const home = freshMemoryAddHome('recipe-ok')
-    const r = runMemoryAdd(home, ['--kind', 'recipe', 'acme-1x2.3 taught us this', 'a plain body'])
-    expect(r.code).toBe(0)
-    expect(inboxFiles(home)).toHaveLength(1)
-  },
-  30_000,
-)
+test('memory add --kind recipe that cites a bead with no --until is accepted', () => {
+  const home = freshMemoryAddHome('recipe-ok')
+  const r = runMemoryAdd(home, ['--kind', 'recipe', 'acme-1x2.3 taught us this', 'a plain body'])
+  expect(r.code).toBe(0)
+  expect(inboxFiles(home)).toHaveLength(1)
+}, 30_000)
 
-modelTest(
-  'memory add --kind rule --until <bead id> is accepted and the file carries both fields',
-  () => {
-    const home = freshMemoryAddHome('rule-until-ok')
-    const r = runMemoryAdd(home, [
-      '--kind',
-      'rule',
-      '--until',
-      'acme-1x2.3',
-      'acme-1x2.3 taught us this',
-      'a plain body',
-    ])
-    expect(r.code).toBe(0)
-    const files = inboxFiles(home)
-    expect(files).toHaveLength(1)
-    const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
-    expect(text).toContain('kind: rule')
-    expect(text).toContain('until: acme-1x2.3')
-  },
-  30_000,
-)
+test('memory add --kind rule --until <bead id> is accepted and the file carries both fields', () => {
+  const home = freshMemoryAddHome('rule-until-ok')
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'rule',
+    '--until',
+    'acme-1x2.3',
+    'acme-1x2.3 taught us this',
+    'a plain body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  expect(files).toHaveLength(1)
+  const text = readFileSync(join(home, 'memory', 'inbox', files[0]!), 'utf8')
+  expect(text).toContain('kind: rule')
+  expect(text).toContain('until: acme-1x2.3')
+}, 30_000)
 
 test('memory add with a bad --until value exits 2 naming --until', () => {
   const home = freshMemoryAddHome('bad-until')
@@ -2188,34 +2171,26 @@ test('memory add refuses a repeated --rig, a bare -- and a flag after the summar
   expect(inboxFiles(home)).toEqual([])
 }, 60_000)
 
-modelTest(
-  'memory add still accepts --anyway on either side, a mid-word -- and a single-dash word',
-  () => {
-    for (const [tag, row] of [
-      ['anyway-before', ['--kind', 'fact', '--anyway', 'a plain summary', 'a body']],
-      ['anyway-after', ['--kind', 'fact', 'a plain summary', '--anyway', 'a body']],
-      ['mid-dash', ['--kind', 'fact', 'a plain summary', 'run bun test --timeout 30000']],
-      ['single-dash', ['--kind', 'fact', 'a plain summary', '-p']],
-    ] as [string, string[]][]) {
-      const home = freshMemoryAddHome(tag)
-      const r = runMemoryAdd(home, row)
-      expect(r.code).toBe(0)
-      expect(inboxFiles(home)).toHaveLength(1)
-    }
-  },
-  60_000,
-)
-
-modelTest(
-  'memory add that cites nothing needs no --until',
-  () => {
-    const home = freshMemoryAddHome('no-cite-ok')
-    const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body'])
+test('memory add still accepts --anyway on either side, a mid-word -- and a single-dash word', () => {
+  for (const [tag, row] of [
+    ['anyway-before', ['--kind', 'fact', '--anyway', 'a plain summary', 'a body']],
+    ['anyway-after', ['--kind', 'fact', 'a plain summary', '--anyway', 'a body']],
+    ['mid-dash', ['--kind', 'fact', 'a plain summary', 'run bun test --timeout 30000']],
+    ['single-dash', ['--kind', 'fact', 'a plain summary', '-p']],
+  ] as [string, string[]][]) {
+    const home = freshMemoryAddHome(tag)
+    const r = runMemoryAdd(home, row)
     expect(r.code).toBe(0)
     expect(inboxFiles(home)).toHaveLength(1)
-  },
-  30_000,
-)
+  }
+}, 60_000)
+
+test('memory add that cites nothing needs no --until', () => {
+  const home = freshMemoryAddHome('no-cite-ok')
+  const r = runMemoryAdd(home, ['--kind', 'fact', 'a plain summary', 'a plain body'])
+  expect(r.code).toBe(0)
+  expect(inboxFiles(home)).toHaveLength(1)
+}, 30_000)
 
 // claude-factory-3u1.1.2: `factory memory add --supersedes <note path>`. FR-009.
 const usageLinesOf = (home: string) =>
@@ -2516,163 +2491,143 @@ test('memory helped on a real note still exits 0 and logs it', () => {
   expect(usageLinesOf(home).map(l => l.path)).toEqual(['beads/x.md'])
 }, 30_000)
 
-modelTest(
-  'memory add --supersedes on a short note writes one superseded: line, keeps every other byte, and logs contradicted',
-  () => {
-    const home = freshMemoryAddHome('supersedes-success')
-    mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
-    const before = '---\nsummary: an old short note\nunknown: kept\n---\nold body text\n'
-    writeFileSync(join(home, 'memory', 'beads', 'old.md'), before)
-    const r = runMemoryAdd(home, [
-      '--from',
-      'run1/implement',
-      '--kind',
-      'fact',
-      '--supersedes',
-      'beads/old.md',
-      'a new replacement note',
-      'a new body',
-    ])
-    expect(r.code).toBe(0)
-    const files = inboxFiles(home)
-    expect(files).toHaveLength(1)
-    const after = readFileSync(join(home, 'memory', 'beads', 'old.md'), 'utf8')
-    expect(after).toBe(
-      `---\nsummary: an old short note\nunknown: kept\nsuperseded: inbox/${files[0]}\n---\nold body text\n`,
-    )
-    const lines = usageLinesOf(home)
-    const contradicted = lines.find(l => l.path === 'beads/old.md' && l.contradicted === 1)
-    expect(contradicted?.by).toBe('run1/implement')
-  },
-  30_000,
-)
+test('memory add --supersedes on a short note writes one superseded: line, keeps every other byte, and logs contradicted', () => {
+  const home = freshMemoryAddHome('supersedes-success')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  const before = '---\nsummary: an old short note\nunknown: kept\n---\nold body text\n'
+  writeFileSync(join(home, 'memory', 'beads', 'old.md'), before)
+  const r = runMemoryAdd(home, [
+    '--from',
+    'run1/implement',
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/old.md',
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  expect(files).toHaveLength(1)
+  const after = readFileSync(join(home, 'memory', 'beads', 'old.md'), 'utf8')
+  expect(after).toBe(
+    `---\nsummary: an old short note\nunknown: kept\nsuperseded: inbox/${files[0]}\n---\nold body text\n`,
+  )
+  const lines = usageLinesOf(home)
+  const contradicted = lines.find(l => l.path === 'beads/old.md' && l.contradicted === 1)
+  expect(contradicted?.by).toBe('run1/implement')
+}, 30_000)
 
-modelTest(
-  'memory add --supersedes replaces an already-superseded line instead of adding a second one',
-  () => {
-    const home = freshMemoryAddHome('supersedes-replace')
-    mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
-    writeFileSync(
-      join(home, 'memory', 'beads', 'old.md'),
-      '---\nsummary: an old short note\nsuperseded: inbox/stale.md\n---\nold body text\n',
-    )
-    const r = runMemoryAdd(home, [
-      '--kind',
-      'fact',
-      '--supersedes',
-      'beads/old.md',
-      'a new replacement note',
-      'a new body',
-    ])
-    expect(r.code).toBe(0)
-    const files = inboxFiles(home)
-    const after = readFileSync(join(home, 'memory', 'beads', 'old.md'), 'utf8')
-    expect(after).toBe(`---\nsummary: an old short note\nsuperseded: inbox/${files[0]}\n---\nold body text\n`)
-  },
-  30_000,
-)
+test('memory add --supersedes replaces an already-superseded line instead of adding a second one', () => {
+  const home = freshMemoryAddHome('supersedes-replace')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(
+    join(home, 'memory', 'beads', 'old.md'),
+    '---\nsummary: an old short note\nsuperseded: inbox/stale.md\n---\nold body text\n',
+  )
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'beads/old.md',
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  const after = readFileSync(join(home, 'memory', 'beads', 'old.md'), 'utf8')
+  expect(after).toBe(`---\nsummary: an old short note\nsuperseded: inbox/${files[0]}\n---\nold body text\n`)
+}, 30_000)
 
-modelTest(
-  "memory add --supersedes follows a rename log to the note's current path",
-  () => {
-    const home = freshMemoryAddHome('supersedes-rename')
-    mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
-    writeFileSync(join(home, 'memory', 'beads', 'new-name.md'), '---\nsummary: moved note\n---\nbody\n')
-    writeFileSync(
-      join(home, 'memory', '.renames.jsonl'),
-      `${JSON.stringify({ old: 'inbox/old-name.md', new: 'beads/new-name.md' })}\n`,
-    )
-    const r = runMemoryAdd(home, [
-      '--kind',
-      'fact',
-      '--supersedes',
-      'inbox/old-name.md',
-      'a new replacement note',
-      'a new body',
-    ])
-    expect(r.code).toBe(0)
-    const files = inboxFiles(home)
-    const after = readFileSync(join(home, 'memory', 'beads', 'new-name.md'), 'utf8')
-    expect(after).toBe(`---\nsummary: moved note\nsuperseded: inbox/${files[0]}\n---\nbody\n`)
-  },
-  30_000,
-)
+test("memory add --supersedes follows a rename log to the note's current path", () => {
+  const home = freshMemoryAddHome('supersedes-rename')
+  mkdirSync(join(home, 'memory', 'beads'), { recursive: true })
+  writeFileSync(join(home, 'memory', 'beads', 'new-name.md'), '---\nsummary: moved note\n---\nbody\n')
+  writeFileSync(
+    join(home, 'memory', '.renames.jsonl'),
+    `${JSON.stringify({ old: 'inbox/old-name.md', new: 'beads/new-name.md' })}\n`,
+  )
+  const r = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    '--supersedes',
+    'inbox/old-name.md',
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  const files = inboxFiles(home)
+  const after = readFileSync(join(home, 'memory', 'beads', 'new-name.md'), 'utf8')
+  expect(after).toBe(`---\nsummary: moved note\nsuperseded: inbox/${files[0]}\n---\nbody\n`)
+}, 30_000)
 
-modelTest(
-  'memory add --supersedes on a CORE.md#hash fact writes no marker, says so, and still logs contradicted',
-  () => {
-    const home = freshMemoryAddHome('supersedes-core-hash')
-    mkdirSync(join(home, 'memory'), { recursive: true })
-    const before = '- a core lesson\n'
-    writeFileSync(join(home, 'memory', 'CORE.md'), before)
-    const hash = createHash('sha1').update('a core lesson').digest('hex').slice(0, 8)
-    const r = runMemoryAdd(home, [
-      '--from',
-      'run1/implement',
-      '--kind',
-      'fact',
-      '--supersedes',
-      `CORE.md#${hash}`,
-      'a new replacement note',
-      'a new body',
-    ])
-    expect(r.code).toBe(0)
-    expect(r.out.toLowerCase()).toContain('no marker')
-    expect(readFileSync(join(home, 'memory', 'CORE.md'), 'utf8')).toBe(before) // untouched
-    const lines = usageLinesOf(home)
-    const contradicted = lines.find(l => l.path === `CORE.md#${hash}` && l.contradicted === 1)
-    expect(contradicted?.by).toBe('run1/implement')
-  },
-  30_000,
-)
+test('memory add --supersedes on a CORE.md#hash fact writes no marker, says so, and still logs contradicted', () => {
+  const home = freshMemoryAddHome('supersedes-core-hash')
+  mkdirSync(join(home, 'memory'), { recursive: true })
+  const before = '- a core lesson\n'
+  writeFileSync(join(home, 'memory', 'CORE.md'), before)
+  const hash = createHash('sha1').update('a core lesson').digest('hex').slice(0, 8)
+  const r = runMemoryAdd(home, [
+    '--from',
+    'run1/implement',
+    '--kind',
+    'fact',
+    '--supersedes',
+    `CORE.md#${hash}`,
+    'a new replacement note',
+    'a new body',
+  ])
+  expect(r.code).toBe(0)
+  expect(r.out.toLowerCase()).toContain('no marker')
+  expect(readFileSync(join(home, 'memory', 'CORE.md'), 'utf8')).toBe(before) // untouched
+  const lines = usageLinesOf(home)
+  const contradicted = lines.find(l => l.path === `CORE.md#${hash}` && l.contradicted === 1)
+  expect(contradicted?.by).toBe('run1/implement')
+}, 30_000)
 
-modelTest(
-  'memory add --supersedes on a duplicate hit logs confirmed only and does not mark the named note',
-  () => {
-    const home = freshMemoryAddHome('supersedes-dup')
-    // the note the new attempt will match as a duplicate (same phrasing proven in memory-add-dup-from.test.ts)
-    const dupSetup = runMemoryAdd(home, [
-      '--from',
-      'run1/implement',
-      '--kind',
-      'fact',
-      'fabriek has no CHANGELOG file or per-PR version bump convention',
-      'checked the whole history',
-    ])
-    expect(dupSetup.code).toBe(0)
-    // an unrelated note, the one --supersedes names: it must be left alone
-    const targetSetup = runMemoryAdd(home, [
-      '--kind',
-      'fact',
-      'acme widget retries flush three times before it gives up',
-      'checked the code',
-    ])
-    expect(targetSetup.code).toBe(0)
-    const targetFile = inboxFiles(home).find(f => f.startsWith('acme-widget'))!
-    const targetPath = `inbox/${targetFile}`
-    const before = readFileSync(join(home, 'memory', targetPath), 'utf8')
+test('memory add --supersedes on a duplicate hit logs confirmed only and does not mark the named note', () => {
+  const home = freshMemoryAddHome('supersedes-dup')
+  // the note the new attempt will match as a duplicate (same phrasing proven in memory-add-dup-from.test.ts)
+  const dupSetup = runMemoryAdd(home, [
+    '--from',
+    'run1/implement',
+    '--kind',
+    'fact',
+    'fabriek has no CHANGELOG file or per-PR version bump convention',
+    'checked the whole history',
+  ])
+  expect(dupSetup.code).toBe(0)
+  // an unrelated note, the one --supersedes names: it must be left alone
+  const targetSetup = runMemoryAdd(home, [
+    '--kind',
+    'fact',
+    'acme widget retries flush three times before it gives up',
+    'checked the code',
+  ])
+  expect(targetSetup.code).toBe(0)
+  const targetFile = inboxFiles(home).find(f => f.startsWith('acme-widget'))!
+  const targetPath = `inbox/${targetFile}`
+  const before = readFileSync(join(home, 'memory', targetPath), 'utf8')
 
-    const r = runMemoryAdd(home, [
-      '--from',
-      'run2/verify',
-      '--kind',
-      'fact',
-      '--supersedes',
-      targetPath,
-      'no changelog or version bump convention exists in fabriek',
-      'hit the same thing',
-    ])
-    expect(r.code).toBe(0)
-    expect(r.out).toContain('already noted')
-    expect(r.out).toContain('--supersedes was not applied')
-    expect(readFileSync(join(home, 'memory', targetPath), 'utf8')).toBe(before)
-    const lines = usageLinesOf(home)
-    expect(lines.some(l => l.path === targetPath && l.contradicted === 1)).toBe(false)
-    const confirmed = lines.find(l => l.confirmed === 1)
-    expect(confirmed?.by).toBe('run2/verify')
-  },
-  30_000,
-)
+  const r = runMemoryAdd(home, [
+    '--from',
+    'run2/verify',
+    '--kind',
+    'fact',
+    '--supersedes',
+    targetPath,
+    'no changelog or version bump convention exists in fabriek',
+    'hit the same thing',
+  ])
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('already noted')
+  expect(r.out).toContain('--supersedes was not applied')
+  expect(readFileSync(join(home, 'memory', targetPath), 'utf8')).toBe(before)
+  const lines = usageLinesOf(home)
+  expect(lines.some(l => l.path === targetPath && l.contradicted === 1)).toBe(false)
+  const confirmed = lines.find(l => l.confirmed === 1)
+  expect(confirmed?.by).toBe('run2/verify')
+}, 30_000)
 
 // claude-factory-1zr5: a worker's Bash runs a script that clears the shell-snapshot aliases
 test("workerSettings sets CLAUDE_ENV_FILE to the factory's script and keeps the user's value for it to source", () => {
@@ -3141,50 +3096,46 @@ test('trustedEgress keeps a sane VM egress record and drops the rest (claude-fac
   expect(trustedEgress({ ...ok, last: 'y'.repeat(500) }, now)!.last).toHaveLength(201)
 })
 
-modelTest(
-  'launchNotes logs a failed search once, and a store with only CORE.md gives no notes',
-  () => {
-    const root = mkdtempSync(join(tmpdir(), 'launch-notes-'))
-    const run = (home: string) => {
-      const code = `import { launchNotes } from ${JSON.stringify(join(import.meta.dir, 'cli.ts'))}
+test('launchNotes logs a failed search once, and a store with only CORE.md gives no notes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'launch-notes-'))
+  const run = (home: string) => {
+    const code = `import { launchNotes } from ${JSON.stringify(join(import.meta.dir, 'cli.ts'))}
 console.log(JSON.stringify(launchNotes({ id: 'r1', repo: '/nowhere', goal: 'agents never approve a pull request' } as any, 'plan')))`
-      const p = Bun.spawnSync(['bun', '-e', code], {
-        env: { ...process.env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
-      })
-      return JSON.parse(p.stdout.toString().trim().split('\n').pop()!)
-    }
-    // a memory path that is a file: the search exits 1
-    const bad = join(root, 'bad')
-    mkdirSync(bad)
-    writeFileSync(join(bad, 'memory'), 'x')
-    expect(run(bad)).toBe('')
-    const lines = readFileSync(join(bad, 'launches.log'), 'utf8').trim().split('\n')
-    expect(lines).toHaveLength(1)
-    expect(lines[0]).toContain('r1/plan launch memory search failed: exit 1')
-    // CORE.md only: the brief prints it in full already
-    const core = join(root, 'core')
-    mkdirSync(join(core, 'memory'), { recursive: true })
-    writeFileSync(join(core, 'memory', 'CORE.md'), '# CORE\n\n- Agents never approve a pull request.\n')
-    expect(run(core)).toBe('')
-    expect(existsSync(join(core, 'launches.log'))).toBe(false)
-    // a bullet that coreFor cut (over CORE_BUDGET) reaches no brief, so the search must still find it
-    const cut = join(root, 'cut')
-    mkdirSync(join(cut, 'memory'), { recursive: true })
-    const filler = Array.from(
-      { length: 40 },
-      (_, i) => `- Filler fact ${i} about unrelated build caches and disk layout.`,
-    )
-    writeFileSync(
-      join(cut, 'memory', 'CORE.md'),
-      `# CORE\n\n${filler.join('\n')}\n- Agents never approve a pull request.\n`,
-    )
-    const out = run(cut)
-    expect(out).toContain('Agents never approve a pull request')
-    expect(out).not.toContain('Filler fact 0 ')
-    rmSync(root, { recursive: true })
-  },
-  120_000,
-)
+    const p = Bun.spawnSync(['bun', '-e', code], {
+      env: { ...process.env, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+    })
+    return JSON.parse(p.stdout.toString().trim().split('\n').pop()!)
+  }
+  // a memory path that is a file: the search exits 1
+  const bad = join(root, 'bad')
+  mkdirSync(bad)
+  writeFileSync(join(bad, 'memory'), 'x')
+  expect(run(bad)).toBe('')
+  const lines = readFileSync(join(bad, 'launches.log'), 'utf8').trim().split('\n')
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).toContain('r1/plan launch memory search failed: exit 1')
+  // CORE.md only: the brief prints it in full already
+  const core = join(root, 'core')
+  mkdirSync(join(core, 'memory'), { recursive: true })
+  writeFileSync(join(core, 'memory', 'CORE.md'), '# CORE\n\n- Agents never approve a pull request.\n')
+  expect(run(core)).toBe('')
+  expect(existsSync(join(core, 'launches.log'))).toBe(false)
+  // a bullet that coreFor cut (over CORE_BUDGET) reaches no brief, so the search must still find it
+  const cut = join(root, 'cut')
+  mkdirSync(join(cut, 'memory'), { recursive: true })
+  const filler = Array.from(
+    { length: 40 },
+    (_, i) => `- Filler fact ${i} about unrelated build caches and disk layout.`,
+  )
+  writeFileSync(
+    join(cut, 'memory', 'CORE.md'),
+    `# CORE\n\n${filler.join('\n')}\n- Agents never approve a pull request.\n`,
+  )
+  const out = run(cut)
+  expect(out).toContain('Agents never approve a pull request')
+  expect(out).not.toContain('Filler fact 0 ')
+  rmSync(root, { recursive: true })
+}, 120_000)
 
 test('trustedHit bounds a VM limit hit: at to the laptop clock, kind to a fixed set, resetsAt to 8 days', () => {
   const now = 1_700_000_000_000

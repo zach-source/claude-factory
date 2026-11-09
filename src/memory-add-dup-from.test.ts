@@ -2,7 +2,6 @@
 // (claude-factory-59r.16): without it, tally()'s `runs` falls back to counting UTC days, so a long
 // entry helped by 3 different runs on the same day never reaches decide()'s promote threshold.
 import { expect, test } from 'bun:test'
-import { modelTest } from './model-test'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,47 +17,43 @@ const run = (args: string[]) => {
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
 }
 
-modelTest(
-  'a duplicate `memory add` logs the finding run under its own note, not with no `by` at all',
-  () => {
-    rmSync(dir, { recursive: true, force: true })
-    mkdirSync(home, { recursive: true })
-    const first = run([
-      'memory',
-      'add',
-      '--rig',
-      'fabriek',
-      '--from',
-      'run1/implement',
-      '--kind',
-      'fact',
-      'fabriek has no CHANGELOG file or per-PR version bump convention',
-      'checked the whole history',
-    ])
-    expect(first.code).toBe(0)
+test('a duplicate `memory add` logs the finding run under its own note, not with no `by` at all', () => {
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(home, { recursive: true })
+  const first = run([
+    'memory',
+    'add',
+    '--rig',
+    'fabriek',
+    '--from',
+    'run1/implement',
+    '--kind',
+    'fact',
+    'fabriek has no CHANGELOG file or per-PR version bump convention',
+    'checked the whole history',
+  ])
+  expect(first.code).toBe(0)
 
-    const second = run([
-      'memory',
-      'add',
-      '--rig',
-      'fabriek',
-      '--from',
-      'run2/verify',
-      '--kind',
-      'fact',
-      'no changelog or version bump convention exists in fabriek',
-      'hit the same thing',
-    ])
-    expect(second.code).toBe(0)
-    expect(second.out).toContain('already noted')
+  const second = run([
+    'memory',
+    'add',
+    '--rig',
+    'fabriek',
+    '--from',
+    'run2/verify',
+    '--kind',
+    'fact',
+    'no changelog or version bump convention exists in fabriek',
+    'hit the same thing',
+  ])
+  expect(second.code).toBe(0)
+  expect(second.out).toContain('already noted')
 
-    const lines = readFileSync(join(home, 'memory', '.usage.jsonl'), 'utf8')
-      .trim()
-      .split('\n')
-      .map(l => JSON.parse(l))
-    const confirmed = lines.find(l => l.confirmed === 1)
-    expect(confirmed?.by).toBe('run2/verify')
-    expect(lines.some(l => l.helped === 1)).toBe(false) // a duplicate confirms, it never logs helped (claude-factory-3u1.1.2)
-  },
-  60_000,
-)
+  const lines = readFileSync(join(home, 'memory', '.usage.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  const confirmed = lines.find(l => l.confirmed === 1)
+  expect(confirmed?.by).toBe('run2/verify')
+  expect(lines.some(l => l.helped === 1)).toBe(false) // a duplicate confirms, it never logs helped (claude-factory-3u1.1.2)
+}, 60_000)

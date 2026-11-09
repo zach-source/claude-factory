@@ -1,6 +1,5 @@
 // The runner with an AX worker, end to end through bin/factory: a fake `ax` stands in for the cluster.
 import { afterAll, afterEach, describe, expect, test } from 'bun:test'
-import { modelTest } from './model-test'
 import {
   chmodSync,
   existsSync,
@@ -697,30 +696,26 @@ test('helped accepts the VM memory path', () => {
   rmSync(memDir, { recursive: true })
 }, 60_000)
 
-modelTest(
-  'memory search --from logs shown with the run and station; without it, no by',
-  () => {
-    const memDir = join(home, 'memory')
-    mkdirSync(join(memDir, 'topic'), { recursive: true })
-    writeFileSync(
-      join(memDir, 'topic', 'n.md'),
-      '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
-    )
-    const usage = join(memDir, '.usage.jsonl')
-    const rows = () =>
-      readFileSync(usage, 'utf8')
-        .trim()
-        .split('\n')
-        .map(l => JSON.parse(l))
-    expect(factory(['memory', 'search', '--from', 'r1/plan', 'dolt lock']).code).toBe(0)
-    expect(rows()).toHaveLength(1)
-    expect(rows()[0]).toMatchObject({ path: 'topic/n.md', shown: 1, by: 'r1/plan' })
-    expect(factory(['memory', 'search', 'dolt lock']).code).toBe(0)
-    expect(rows()[1].by).toBeUndefined()
-    rmSync(memDir, { recursive: true })
-  },
-  60_000,
-)
+test('memory search --from logs shown with the run and station; without it, no by', () => {
+  const memDir = join(home, 'memory')
+  mkdirSync(join(memDir, 'topic'), { recursive: true })
+  writeFileSync(
+    join(memDir, 'topic', 'n.md'),
+    '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
+  )
+  const usage = join(memDir, '.usage.jsonl')
+  const rows = () =>
+    readFileSync(usage, 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+  expect(factory(['memory', 'search', '--from', 'r1/plan', 'dolt lock']).code).toBe(0)
+  expect(rows()).toHaveLength(1)
+  expect(rows()[0]).toMatchObject({ path: 'topic/n.md', shown: 1, by: 'r1/plan' })
+  expect(factory(['memory', 'search', 'dolt lock']).code).toBe(0)
+  expect(rows()[1].by).toBeUndefined()
+  rmSync(memDir, { recursive: true })
+}, 60_000)
 
 test('a laptop memory search does not import the parent worker snapshot', () => {
   const parent = join(dir, 'parent-worker')
@@ -2067,7 +2062,7 @@ test('a replayed memory add or helped always starts with the forced --from (clau
   ])
 })
 
-modelTest('a replayed memory add that ends with a bare --rig keeps its from (claude-factory-zw2n)', () => {
+test('a replayed memory add that ends with a bare --rig keeps its from (claude-factory-zw2n)', () => {
   const h = join(dir, 'zw2n-home')
   mkdirSync(h, { recursive: true })
   const argv = replayable(
@@ -2588,90 +2583,86 @@ test('memorySnapshotPut skips a snapshot over the cap, and a throw never blocks 
   rmSync(mem, { recursive: true })
 })
 
-modelTest(
-  'an ax launch searches the laptop memory once and puts the top notes in the brief',
-  () => {
-    const sh = (cwd: string, ...a: string[]) => {
-      const p = Bun.spawnSync(a, { cwd })
-      if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
-    }
-    mkdirSync(dir, { recursive: true })
-    const memDir = join(home, 'memory')
-    for (const [id, withNote] of [
-      ['r21a', true],
-      ['r21b', false],
-    ] as const) {
-      rmSync(memDir, { recursive: true, force: true })
-      if (withNote) {
-        mkdirSync(join(memDir, 'topic'), { recursive: true })
-        writeFileSync(
-          join(memDir, 'topic', 'n.md'),
-          '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
-        )
-      }
-      const origin = join(dir, id, 'origin.git')
-      const worktree = join(dir, id, 'wt')
-      mkdirSync(join(dir, id), { recursive: true })
-      sh(dir, 'git', 'init', '-q', '--bare', origin)
-      sh(dir, 'git', 'clone', '-q', origin, worktree)
-      writeFileSync(join(worktree, 'a'), 'a\n')
-      sh(worktree, 'git', 'add', '.')
-      sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
-      sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
-      const runDir = join(home, 'runs', id)
-      mkdirSync(join(runDir, 'prompts'), { recursive: true })
-      writeFileSync(join(home, 'dream.stamp'), '')
-      writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
-      const run = {
-        id,
-        factory: join(runDir, 'factory.ts'),
-        repo: worktree,
-        goal: 'fix the dolt lock',
-        ws: 'w1',
-        worktree,
-      }
-      writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
-      const actor = createActor(compile(def)).start()
-      actor.send({ type: 'TICK', at: Date.now() })
-      writeFileSync(
-        join(runDir, 'state.json'),
-        JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
-      )
-      writeFileSync(
-        join(home, 'rigs.json'),
-        JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
-      )
-      cluster('Running', { status: 'idle', lines: [] })
-      const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img' }).out
-      expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
-      const briefFile = readdirSync(runDir).find(f => f.endsWith('.brief.md'))!
-      const brief = readFileSync(join(runDir, briefFile), 'utf8')
-      const usage = join(memDir, '.usage.jsonl')
-      // the snapshot of the notes the rig can see goes after the brief (claude-factory-vffe.4)
-      const stem = briefFile.replace(/\.brief\.md$/, '')
-      const sideNow = JSON.parse(readFileSync(join(runDir, `${stem}.json`), 'utf8'))
-      expect(sideNow.put).toEqual(withNote ? ['brief.md', 'memory.tgz'] : ['brief.md'])
-      expect(existsSync(join(runDir, `${stem}.memory.tgz`))).toBe(withNote)
-      if (withNote) {
-        expect(brief).toContain('The factory already searched for your goal and station')
-        expect(brief).toContain('bd init locks the shared Dolt server')
-        expect(brief).toContain(join(memDir, 'topic', 'n.md'))
-        const rows = readFileSync(usage, 'utf8')
-          .trim()
-          .split('\n')
-          .map(l => JSON.parse(l))
-        expect(rows).toHaveLength(1) // one launch, one shown line, not one per read of the brief
-        expect(rows[0]).toMatchObject({ path: 'topic/n.md', shown: 1, by: `${id}/a` })
-      } else {
-        expect(brief).not.toContain('already searched')
-        expect(existsSync(usage)).toBe(false)
-      }
-      rmSync(runDir, { recursive: true })
-    }
+test('an ax launch searches the laptop memory once and puts the top notes in the brief', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+  }
+  mkdirSync(dir, { recursive: true })
+  const memDir = join(home, 'memory')
+  for (const [id, withNote] of [
+    ['r21a', true],
+    ['r21b', false],
+  ] as const) {
     rmSync(memDir, { recursive: true, force: true })
-  },
-  60_000,
-) // git clones and whole ticks
+    if (withNote) {
+      mkdirSync(join(memDir, 'topic'), { recursive: true })
+      writeFileSync(
+        join(memDir, 'topic', 'n.md'),
+        '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
+      )
+    }
+    const origin = join(dir, id, 'origin.git')
+    const worktree = join(dir, id, 'wt')
+    mkdirSync(join(dir, id), { recursive: true })
+    sh(dir, 'git', 'init', '-q', '--bare', origin)
+    sh(dir, 'git', 'clone', '-q', origin, worktree)
+    writeFileSync(join(worktree, 'a'), 'a\n')
+    sh(worktree, 'git', 'add', '.')
+    sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+    sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+    const runDir = join(home, 'runs', id)
+    mkdirSync(join(runDir, 'prompts'), { recursive: true })
+    writeFileSync(join(home, 'dream.stamp'), '')
+    writeFileSync(join(runDir, 'factory.ts'), `export default ${JSON.stringify(def)}`)
+    const run = {
+      id,
+      factory: join(runDir, 'factory.ts'),
+      repo: worktree,
+      goal: 'fix the dolt lock',
+      ws: 'w1',
+      worktree,
+    }
+    writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, branch: `factory/${id}` }))
+    const actor = createActor(compile(def)).start()
+    actor.send({ type: 'TICK', at: Date.now() })
+    writeFileSync(
+      join(runDir, 'state.json'),
+      JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }),
+    )
+    writeFileSync(
+      join(home, 'rigs.json'),
+      JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+    )
+    cluster('Running', { status: 'idle', lines: [] })
+    const out = factory(['tick'], { FACTORY_AX_IMAGE: 'img' }).out
+    expect(JSON.parse(out).runs.find((r: { id: string }) => r.id === id).error).toBeNull()
+    const briefFile = readdirSync(runDir).find(f => f.endsWith('.brief.md'))!
+    const brief = readFileSync(join(runDir, briefFile), 'utf8')
+    const usage = join(memDir, '.usage.jsonl')
+    // the snapshot of the notes the rig can see goes after the brief (claude-factory-vffe.4)
+    const stem = briefFile.replace(/\.brief\.md$/, '')
+    const sideNow = JSON.parse(readFileSync(join(runDir, `${stem}.json`), 'utf8'))
+    expect(sideNow.put).toEqual(withNote ? ['brief.md', 'memory.tgz'] : ['brief.md'])
+    expect(existsSync(join(runDir, `${stem}.memory.tgz`))).toBe(withNote)
+    if (withNote) {
+      expect(brief).toContain('The factory already searched for your goal and station')
+      expect(brief).toContain('bd init locks the shared Dolt server')
+      expect(brief).toContain(join(memDir, 'topic', 'n.md'))
+      const rows = readFileSync(usage, 'utf8')
+        .trim()
+        .split('\n')
+        .map(l => JSON.parse(l))
+      expect(rows).toHaveLength(1) // one launch, one shown line, not one per read of the brief
+      expect(rows[0]).toMatchObject({ path: 'topic/n.md', shown: 1, by: `${id}/a` })
+    } else {
+      expect(brief).not.toContain('already searched')
+      expect(existsSync(usage)).toBe(false)
+    }
+    rmSync(runDir, { recursive: true })
+  }
+  rmSync(memDir, { recursive: true, force: true })
+}, 60_000) // git clones and whole ticks
 
 test("a pull that kept the VM's version of an issue says on it what the laptop had", () => {
   // what dolt sql -r json printed for the pull's statements, one line each
