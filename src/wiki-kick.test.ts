@@ -805,6 +805,7 @@ test('AC10 control: a live pid with an unreadable /proc record counts as alive',
   ).toBe(true)
   expect(alive(process.pid, () => `${process.pid} (sh) Z 1`)).toBe(false)
   expect(alive(2 ** 22 + 12345)).toBe(false) // ESRCH: gone
+  expect(alive(1, () => '1 (init) S 0')).toBe(true) // EPERM for another user's pid: alive, not gone
 })
 
 test('AC10 control: a policy row that launches nothing starts no wiki pass and calls no forge', async () => {
