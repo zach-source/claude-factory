@@ -4,7 +4,7 @@
 // `memory compact` (not --dry-run) must take the same lock. It must refuse while a dream holds it.
 // It must release the lock, so a later compact can still run.
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -107,4 +107,25 @@ test('factory memory compact keeps a configured git identity instead of overridi
     .stdout.toString()
     .trim()
   expect(author).toBe('Zach Taylor <zach@example.com>')
+})
+
+test('AC7e 96ks factory memory compact commits nothing with a key outside the allow-list', () => {
+  rmSync(dir, { recursive: true, force: true })
+  const memory = join(home, 'memory')
+  mkdirSync(memory, { recursive: true })
+  const git = (...a: string[]) =>
+    Bun.spawnSync(['git', '-C', memory, '-c', 'user.name=p', '-c', 'user.email=p@acme.example', ...a])
+      .stdout.toString()
+      .trim()
+  git('init', '-q')
+  git('commit', '-qm', 'seed', '--allow-empty')
+  git('config', `url.${dir}/evil.insteadOf`, 'zq')
+  const before = git('rev-parse', 'HEAD')
+  const r = run(['memory', 'compact'])
+  expect(r.code).toBe(1)
+  expect(git('rev-parse', 'HEAD')).toBe(before)
+  expect(readFileSync(join(home, 'dream.log'), 'utf8')).toContain(
+    'memory: repo config not allowed, nothing committed',
+  )
+  expect(existsSync(join(home, 'dream.lock'))).toBe(false)
 })
