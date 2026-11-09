@@ -166,6 +166,13 @@ test('AC7 a negative FACTORY_WIKI_REFRESH_MIN falls back to 30 min', async () =>
 
 // ---- the write kick (claude-factory-tx6c.7): every 180 min, never while halted ----
 const wstamp = () => join(home, 'wiki-write.stamp')
+/** a rig with .beads and a bd that waits 1 s and fails: a pass holds wiki.lock long enough for passEnded to see it */
+function slowPass() {
+  mkdirSync(join(dir, `repo${n}`, '.beads'), { recursive: true })
+  fixtureTools()
+  writeFileSync(join(fx(), 'bd'), '#!/bin/sh\nsleep 1\nexit 1\n')
+  chmodSync(join(fx(), 'bd'), 0o755)
+}
 /** the write stamp, set `min` minutes old */
 function aged(min: number) {
   writeFileSync(wstamp(), '')
@@ -176,14 +183,7 @@ function aged(min: number) {
 async function launched(env: Record<string, string> = {}) {
   const t = existsSync(wstamp()) ? statSync(wstamp()).mtimeMs : 0
   writeFileSync(stamp(), '') // a fresh refresh stamp: one wiki pass in each tick, so refresh must not take it
-  const beads = join(dir, `repo${n}`, '.beads')
-  if (!existsSync(beads)) {
-    // a pass that holds wiki.lock for 1 s, so passEnded can see it start and end; the pass then fails at once
-    mkdirSync(beads)
-    fixtureTools()
-    writeFileSync(join(fx(), 'bd'), '#!/bin/sh\nsleep 1\nexit 1\n')
-    chmodSync(join(fx(), 'bd'), 0o755)
-  }
+  if (!existsSync(join(dir, `repo${n}`, '.beads'))) slowPass()
   factory(['tick'], env)
   const moved = existsSync(wstamp()) && statSync(wstamp()).mtimeMs !== t
   if (moved) await passEnded()
@@ -342,9 +342,10 @@ test('AC10 an ambient wiki remote reaches no setup or tick child', async () => {
   Object.assign(process.env, seeded)
   try {
     setup()
+    slowPass()
     factory(['tick'])
-    await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
     await passEnded() // the detached children end before the checks and the cleanup
+    expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
     expect(existsSync(forgeCalls())).toBe(false)
     expect(
       Bun.spawnSync(['git', '-C', join(home, 'wiki'), 'config', '--get', 'remote.origin.url']).exitCode,
