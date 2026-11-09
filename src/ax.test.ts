@@ -318,6 +318,15 @@ test('unpackMigration writes the launch id into .migrated, and no id with none',
   expect(() => ax.unpackMigration('migrate.tgz', '', 'a b')).toThrow('launch id')
 })
 
+test('an empty FACTORY_AX_ATESPACE is the default atespace factory', () => {
+  process.env.FACTORY_AX_ATESPACE = ''
+  try {
+    expect(ax.ATESPACE()).toBe('factory')
+  } finally {
+    delete process.env.FACTORY_AX_ATESPACE
+  }
+})
+
 test('workspaceExists: true when ax has it, false when not found, and any other error throws', () => {
   expect(ax.workspaceExists('f-manager')).toBe(false)
   writeFileSync(join(dir, 'ws'), 'metadata:\n  name: f-manager\n')
@@ -2711,6 +2720,10 @@ test('with FACTORY_POLICY_BROKER set, unavailable() asks the broker and does not
     expect(ax.unavailable()).toContain('is not ready at its current generation')
     writeFileSync(join(dir, 'bctl'), 'controller: boom\n502')
     expect(ax.unavailable()).toContain('could not be observed')
+    expect(ax.unavailable()).toContain('broker GET /controller answered 502: controller: boom')
+    // an old broker image has no /controller route (cutover attempt 2)
+    writeFileSync(join(dir, 'bctl'), 'not found\n404')
+    expect(ax.unavailable()).toContain('answered 404: not found')
   } finally {
     if (saved[0] === undefined) delete process.env.FACTORY_POLICY_BROKER
     else process.env.FACTORY_POLICY_BROKER = saved[0]
