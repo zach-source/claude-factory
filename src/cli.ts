@@ -4409,11 +4409,18 @@ function haltRun(
 function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt: number) {
   try {
     if (runnerOf(pane).name !== 'herdr' || !startedAt) return
-    const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
+    // a transcript that the previous station still wrote belongs to the first station that stored its session
+    const owner = new Map<string, Usage>()
+    for (const r of storedUsage(run.id)) if (!owner.has(r.session)) owner.set(r.session, r)
+    const rows = usageOf(run, startedAt)
     // a codex pane keeps its rollouts in its own CODEX_HOME (codexWorker): store them as the AX path does
     try {
       rows.push(...codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
     } catch {} // a bad codex file must not drop the Claude rows
+    rows.forEach((u, i) => {
+      const o = owner.get(u.session)
+      rows[i] = { ...u, node: o?.node ?? node, seq: o?.seq ?? seq }
+    })
     if (rows.length) appendUsage(run.id, rows)
   } catch {}
 }

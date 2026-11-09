@@ -613,7 +613,10 @@ export function costOf(t: Tok, model: string) {
   const family = Object.keys(PRICES).find(k => model.toLowerCase().includes(k))
   if (!family) return null
   const p = PRICES[family]!
-  return (t.input * p.in + t.cacheWrite * p.in * 1.25 + t.cacheRead * (p.read ?? p.in * 0.1) + t.output * p.out) / 1e6
+  return (
+    (t.input * p.in + t.cacheWrite * p.in * 1.25 + t.cacheRead * (p.read ?? p.in * 0.1) + t.output * p.out) /
+    1e6
+  )
 }
 
 /** the share of the context a turn re-sent that came from the cache; null when there was no context */
