@@ -57,7 +57,10 @@ echo "$*" > '${data}/agent-args'
 echo "$CODEX_HOME" > '${data}/agent-codexhome'
 [ -f '${home}/wiki-write.stamp' ] && echo yes > '${data}/agent-stamp'
 cat > '${data}/agent-prompt'
+printf '%s\\n' "$@" > '${data}/agent-argv'
+env > '${data}/agent-env'
 echo x >> '${data}/agent-runs'
+if [ -f '${data}/agent-hang' ]; then exec sleep 30; fi
 if [ -f '${data}/agent-commit' ]; then git -c user.name=x -c user.email=x@example.com commit --allow-empty -qm moved; fi
 if [ -f '${data}/agent-exit' ]; then echo failed >&2; exit 3; fi
 if [ -f '${data}/agent-edit' ]; then sed -i 's/Text\\./Changed./' solutions/2026-10/person.md; fi
@@ -442,6 +445,58 @@ slow('write AC3 a codex run uses the sandbox flags, the note and its own CODEX_H
   expect(Object.keys(state().written)).toEqual(['acme-1'])
 })
 
+slow('write AC3 the claude run gets the exact settings and tool list', () => {
+  one()
+  factory(['wiki', 'write'])
+  const argv = readFileSync(join(data, 'agent-argv'), 'utf8').split('\n')
+  const settings = JSON.parse(argv[argv.indexOf('--settings') + 1])
+  expect(settings.permissions).toEqual({ deny: ['Edit(./.git/**)'] })
+  expect(settings.env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
+  expect(argv.slice(argv.indexOf('--allowedTools') + 1, argv.indexOf('--allowedTools') + 8)).toEqual([
+    'Read',
+    'Write',
+    'Edit',
+    'Glob',
+    'Grep',
+    'Bash(git mv:*)',
+    'Bash(git rm:*)',
+  ])
+})
+
+slow('write AC3 a codex run keeps only the allowed env and both tmp exclusions', () => {
+  one()
+  const codex = join(dir, `bin${n}`, 'codex')
+  factory(['wiki', 'write'], {
+    FACTORY_DREAM_CODEX: 'gpt-x',
+    FACTORY_CODEX: codex,
+    GITHUB_TOKEN: 'zqsecret',
+  })
+  const argv = readFileSync(join(data, 'agent-argv'), 'utf8')
+  expect(argv).toContain('sandbox_workspace_write.exclude_slash_tmp=true')
+  expect(argv).toContain('sandbox_workspace_write.exclude_tmpdir_env_var=true')
+  const keys = readFileSync(join(data, 'agent-env'), 'utf8')
+    .split('\n')
+    .map(l => l.split('=')[0])
+    .filter(k => k && !['PWD', 'SHLVL', '_', 'OLDPWD'].includes(k))
+  expect(keys.sort()).toEqual(
+    ['CODEX_HOME', 'HOME', 'LANG', 'PATH', 'TERM'].filter(k => k === 'CODEX_HOME' || keys.includes(k)).sort(),
+  )
+  expect(keys).not.toContain('GITHUB_TOKEN')
+})
+
+slow('write AC3 a timed out agent leaves the stamp, frees the lock, commits and records nothing', () => {
+  one()
+  writeFileSync(join(data, 'agent-hang'), '')
+  const before = git('rev-parse', 'HEAD')
+  const r = factory(['wiki', 'write'], { FACTORY_WIKI_AGENT_MS: '1500' })
+  expect(r.out).toContain('agent failed')
+  expect(existsSync(join(home, 'wiki-write.stamp'))).toBe(true)
+  expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
+  expect(git('rev-parse', 'HEAD')).toBe(before)
+  expect(state().written).toBeUndefined()
+  expect(state().lastWriteAt).toBeUndefined()
+})
+
 slow('write AC3 a codex run refuses a wiki that holds .codex', () => {
   one()
   mkdirSync(join(wiki(), '.codex'))
@@ -589,4 +644,28 @@ slow('write AC2 the release PR record keeps its title and body in the prompt', (
   pr(5, 'acme-3: fix it', ['src/a.ts'])
   factory(['wiki', 'write'])
   expect(prompt()).toContain('"title": "acme-3 release notes"')
+})
+
+slow('write AC2 a merged_at that is not a string or null keeps the bead waiting', () => {
+  setup()
+  seed(
+    [closed('acme-1'), closed('acme-2', { metadata: { ship_pr: 'https://github.com/acme/widget/pull/6' } })],
+    [pr(9, 'acme-1: fix it', ['src/a.ts'])],
+  )
+  pr(6, 'acme-2: fix it', ['src/b.ts'])
+  for (const n of [9, 6]) {
+    const f = join(data, `gh-${key(`repos/acme/widget/pulls/${n}`)}`)
+    writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), merged_at: 42 }))
+  }
+  const r = factory(['wiki', 'write', '--dry-run'])
+  expect(r.out).toContain('0 groups from 0 beads; 2 waiting')
+})
+
+slow('write AC3 202 beads on one PR stay waiting whole, never cut to 200', () => {
+  setup()
+  seed(Array.from({ length: 202 }, (_, i) => closed(`acme-${i + 1}`, { metadata: { ship_pr: PR5 } })))
+  pr(5, 'acme-1: fix it', ['src/a.ts'])
+  const r = factory(['wiki', 'write', '--dry-run'])
+  expect(r.out).not.toContain('group:')
+  expect(r.out).toContain('0 groups from 0 beads; 202 waiting')
 })

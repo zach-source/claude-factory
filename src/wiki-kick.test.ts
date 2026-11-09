@@ -2,7 +2,7 @@
 // caller. It runs at most once in FACTORY_WIKI_REFRESH_MIN minutes (default 30), only when wiki/.git exists,
 // and also while the factory is halted. The tests follow src/gc-kick.test.ts.
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -161,6 +161,23 @@ test('write AC6 FACTORY_WIKI_WRITE_MIN: 1 moves a 2 min stamp; bad values keep 1
     aged(181)
     expect([v, await launched({ FACTORY_WIKI_WRITE_MIN: v })]).toEqual([v, true])
   }
+}, 60_000)
+
+test('write AC6 a launch whose pass fails at once is not repeated by the next two ticks', async () => {
+  setup()
+  rmSync(wstamp())
+  // a rig with .beads and a bd that fails: the pass ends in an error at once
+  mkdirSync(join(dir, `repo${n}`, '.beads'))
+  const bin = join(dir, `bin${n}`)
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nexit 1\n')
+  chmodSync(join(bin, 'bd'), 0o755)
+  const env = { PATH: `${bin}:${process.env.PATH}` }
+  expect(await launched(env)).toBe(true)
+  const t = statSync(wstamp()).mtimeMs
+  expect(await launched(env)).toBe(false)
+  expect(await launched(env)).toBe(false)
+  expect(statSync(wstamp()).mtimeMs).toBe(t)
 }, 60_000)
 
 test('write AC6 a tick after a launch starts no second pass at once', async () => {

@@ -11900,7 +11900,11 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
   )) as Record<string, unknown> | null
   if (!pr || Array.isArray(pr)) return null
   // a reply without its own number and state fields is incomplete, never "not merged"
-  if (gl ? pr.iid !== num || typeof pr.state !== 'string' : pr.number !== num || !('merged_at' in pr))
+  if (
+    gl
+      ? pr.iid !== num || !['opened', 'closed', 'locked', 'merged'].includes(pr.state as string)
+      : pr.number !== num || (pr.merged_at !== null && typeof pr.merged_at !== 'string')
+  )
     return null
   const merged = gl ? pr.state === 'merged' : text(pr.merged_at) !== ''
   let rows: unknown[] | null = null
@@ -11934,7 +11938,7 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
 
 /**
  * Bounds one group for the prompt. It removes each patch: only the trivial test used it. It keeps at most 200
- * items in an array. It cuts each string to 8192, then 2048, then 512 characters until the group fits
+ * files per PR and marks the omission. It returns null if a bead, PR or link array has over 200 items. It cuts each string to 8192, then 2048, then 512 characters until the group fits
  * WRITE_TOTAL. It returns null if the group is still too big. The caller then keeps its beads pending.
  */
 function wikiBound(g: WriteGroup): WriteGroup | null {
@@ -11942,18 +11946,23 @@ function wikiBound(g: WriteGroup): WriteGroup | null {
     ...v,
     prs: v.prs.map(p => ({ ...p, files: p.files.map(f => ({ path: f.path })) })),
   })
+  // an identity array (beads, prs, bead.prs) is never cut: a cut bead would count as written
+  if (g.beads.length > 200 || g.prs.length > 200 || g.beads.some(b => b.prs.length > 200)) return null
   for (const cut of [WRITE_STR, 2048, 512]) {
-    const out = JSON.parse(JSON.stringify(strip(g)), (_k, x) =>
+    const out = JSON.parse(JSON.stringify(strip(g)), (k, x) =>
       typeof x === 'string' && x.length > cut
         ? `${x.slice(0, cut)} [truncated]`
-        : Array.isArray(x) && x.length > 200
-          ? x.slice(0, 200)
+        : k === 'files' && Array.isArray(x) && x.length > 200
+          ? [...x.slice(0, 200), { path: '[more files omitted]' }]
           : x,
     ) as WriteGroup
     if (JSON.stringify(out).length <= WRITE_TOTAL) return out
   }
   return null
 }
+
+// ponytail: FACTORY_WIKI_AGENT_MS exists only so a test can cut the 45 min limit; leave it unset in use
+const WIKI_AGENT_MS = Number(process.env.FACTORY_WIKI_AGENT_MS) > 0 ? Number(process.env.FACTORY_WIKI_AGENT_MS) : 45 * 60_000
 
 /** the model run of a write pass: Claude, or Codex with FACTORY_DREAM_CODEX. A string is a refusal. */
 function wikiAgent(prompt: string, dir: string): { code: number | null; said: string } | string {
@@ -11990,7 +11999,7 @@ function wikiAgent(prompt: string, dir: string): { code: number | null; said: st
             CODEX_HOME: codexHome,
           },
           stdin: Buffer.from(prompt + DREAM_CODEX_NOTE),
-          timeout: 45 * 60_000,
+          timeout: WIKI_AGENT_MS,
         },
       )
     : Bun.spawnSync(
@@ -12000,7 +12009,7 @@ function wikiAgent(prompt: string, dir: string): { code: number | null; said: st
           ...['--settings', JSON.stringify(passSettings())],
           ...['--allowedTools', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(git mv:*)', 'Bash(git rm:*)'],
         ],
-        { cwd: dir, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
+        { cwd: dir, stdin: Buffer.from(prompt), timeout: WIKI_AGENT_MS },
       )
   const said = p.stdout.toString().trim() || p.stderr.toString().trim()
   return { code: p.exitCode, said }
