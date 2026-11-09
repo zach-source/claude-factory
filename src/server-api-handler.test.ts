@@ -633,6 +633,23 @@ describe('serveSocket event transport', () => {
     expect(h.subscribers()).toBe(0)
     expect(sock.ended).toBe(true)
   })
+  test('a socket close aborts the Request signal', async () => {
+    let sig: AbortSignal | undefined
+    const sock = fake(() => true)
+    serveSocket(
+      sock as never,
+      async req => {
+        sig = req.signal
+        return new Response('x')
+      },
+      1000,
+    )
+    sock.emit('data', Buffer.from('GET /v1/board HTTP/1.1\r\nhost: x\r\n\r\n'))
+    await tick()
+    expect(sig?.aborted).toBe(false)
+    sock.destroy()
+    expect(sig?.aborted).toBe(true)
+  })
   test('a socket close aborts the request and frees the subscriber', async () => {
     const h = setup().h
     const sock = fake(() => true)
