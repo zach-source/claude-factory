@@ -27,7 +27,9 @@ export type BackupCfg = {
   branch: string
   /** the task's FACTORY_AX_LAUNCH_ID: a restore writes it into .migrated (managerhost.markerOk) */
   launch?: string
-  /** test hook: replaces EXCLUDES */
+  /** base64 of x-access-token:<token>: sent as a header to git calls under `remote` only (the server home backup) */
+  auth?: string
+  /** replaces EXCLUDES (the server adds its lease file; tests) */
   excludes?: string[]
   /** test hook: the gitleaks binary (default `gitleaks` on PATH) */
   gitleaks?: string
@@ -63,6 +65,16 @@ export const secretFile = (b: Buffer) => {
 const GIT_DIR = (ws: string) => join(ws, 'backup.git')
 const clean = (s: string) => s.replace(/\/\/[^/@\s]+@/g, '//').trim() // a URL's userinfo never reaches a log
 
+/** env that gives git the Basic header for the backup remote only. The token never reaches argv or a log */
+export const authEnv = (cfg: BackupCfg): Record<string, string> =>
+  cfg.auth && cfg.remote
+    ? {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: `http.${cfg.remote}.extraHeader`,
+        GIT_CONFIG_VALUE_0: `Authorization: Basic ${cfg.auth}`,
+      }
+    : {}
+
 function git(
   cfg: BackupCfg,
   args: string[],
@@ -87,7 +99,7 @@ function git(
       ...args,
     ],
     {
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...o.env },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...authEnv(cfg), ...o.env },
       timeout,
       stdout: 'pipe',
       stderr: 'pipe',

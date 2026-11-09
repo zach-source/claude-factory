@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  authEnv,
   backup,
   backupAge,
   backupWant,
@@ -629,4 +630,60 @@ test('a nested repo at home/.git is refused, not saved as a gitlink', () => {
   const out = backup(cfg(ws, r), true)
   expect(out.error).toContain('home/.git')
   expect(sh('--git-dir', r, 'branch', '--list')).toBe('')
+})
+
+test('a962: the backup auth header goes only to git calls under the backup remote, never to a log', async () => {
+  const dir = tmp()
+  const rec = join(dir, 'rec')
+  writeFileSync(rec, '')
+  const script =
+    "const s=Bun.serve({port:0,fetch(r){require('fs').appendFileSync(process.env.REC_FILE,new URL(r.url).pathname+' '+(r.headers.get('authorization')??'none')+'\\n');return new Response('no',{status:404})}});console.log(s.port)"
+  const srv = Bun.spawn(['bun', '-e', script], { env: { ...process.env, REC_FILE: rec }, stdout: 'pipe' })
+  try {
+    const port = Number(
+      (
+        await srv.stdout
+          .getReader()
+          .read()
+          .then(r => Buffer.from(r.value!).toString())
+      ).trim(),
+    )
+    const lines = () => readFileSync(rec, 'utf8').split('\n')
+    const bin = join(tmp(), 'gitleaks')
+    writeFileSync(bin, "#!/bin/sh\necho '[]'\n", { mode: 0o755 })
+    const mk = () => {
+      const ws = tmp()
+      put(join(ws, 'home', 'rigs.json'), '[]')
+      return ws
+    }
+    const url = `http://127.0.0.1:${port}/acme/widget.git`
+    const ws = mk()
+    const c = { ws, remote: url, branch: 'server-home', auth: 'eHE6enE=', gitleaks: bin }
+    const out = backup(c, true)
+    expect(lines().find(l => l.startsWith('/acme/widget.git/info/refs'))).toBe(
+      '/acme/widget.git/info/refs Basic eHE6enE=',
+    )
+    expect(out.error ?? '').not.toContain('eHE6enE')
+    expect(readFileSync(join(ws, 'home', 'backup.json'), 'utf8')).not.toContain('eHE6enE')
+    // no auth: no header
+    writeFileSync(rec, '')
+    backup({ ...c, ws: mk(), auth: undefined }, true)
+    expect(lines().find(l => l.startsWith('/acme/widget.git/info/refs'))).toBe(
+      '/acme/widget.git/info/refs none',
+    )
+    // another URL on the same host gets none
+    writeFileSync(rec, '')
+    const ls = Bun.spawn(['git', 'ls-remote', `http://127.0.0.1:${port}/acme/other.git`], {
+      env: { ...process.env, ...authEnv(c), GIT_TERMINAL_PROMPT: '0' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    await ls.exited
+    expect(lines().find(l => l.startsWith('/acme/other.git/info/refs'))).toBe(
+      '/acme/other.git/info/refs none',
+    )
+    expect(authEnv({ ws, branch: 'b' })).toEqual({})
+  } finally {
+    srv.kill()
+  }
 })
