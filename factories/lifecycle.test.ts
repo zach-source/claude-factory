@@ -124,7 +124,11 @@ test('a run pinned before the ship change still walks release -> deploy -> soak 
     ...lifecycle,
     nodes: {
       ...lifecycle.nodes,
-      review: { ...lifecycle.nodes.review!, next: { approve: 'release', changes: 'implement' } },
+      review: {
+        ...lifecycle.nodes.review!,
+        securityRoute: undefined,
+        next: { approve: 'release', changes: 'implement' },
+      },
       release: { prompt: 'release', next: { ready: 'deploy' } },
       deploy: { prompt: 'deploy', awaitsPr: true, next: { deployed: { to: 'soak', delayMin: 15 } } },
       soak: { prompt: 'soak', next: { healthy: 'done' } },
@@ -399,12 +403,30 @@ test('small AC3: check changes loops back through quick; quick full joins the fu
   expect(lifecycle.nodes.check!.rounds).toBe(3)
 })
 
+test('AC8: review and check take their security route from the runner, not from their own judgment', () => {
+  const { review, check, plan } = lifecycle.nodes
+  for (const n of [review!, check!]) {
+    expect(n.prompt).toContain('## Security route')
+    expect(n.prompt).toContain('never report security')
+    expect(n.prompt).not.toContain('removes a gate, lets more run unattended')
+    expect(n.securityRoute).toBe(true)
+  }
+  expect(review!.prompt).not.toContain('the plan or the diff is security-sensitive')
+  expect(check!.prompt).not.toContain('the diff or the bead is security-sensitive')
+  expect(plan!.prompt).toContain('Security-sensitive: yes (<area>)')
+  expect(
+    Object.entries(lifecycle.nodes)
+      .filter(([, n]) => n.securityRoute)
+      .map(([id]) => id),
+  ).toEqual(['review', 'check'])
+})
+
 test('small AC4/AC5/AC6: check marks an approved PR ready and promises a diff summary for security; quick is Sonnet, check is Opus', () => {
   const check = lifecycle.nodes.check!
   for (const needle of [
     'draft',
     'gh pr review <n> --comment --body-file <path>',
-    'security-sensitive',
+    '## Security route',
     'git diff --stat origin/{base_branch}...HEAD',
     '60 files',
     '+N more',

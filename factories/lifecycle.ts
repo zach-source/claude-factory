@@ -11,8 +11,8 @@ const liveDedupe =
 // The whole software lifecycle as one graph. A run enters at triage (or at a
 // station, `lifecycle@incident`) and walks one of these loops:
 //
-//   build      plan → implement ⇄ verify ⇄ review (→ security) → hand off to ship
-//   small      triage → quick ⇄ check (→ security if flagged) → hand off to ship
+//   build      plan → implement ⇄ verify ⇄ review (→ security on a sensitive path or plan) → hand off to ship
+//   small      triage → quick ⇄ check (→ security on a sensitive path) → hand off to ship
 //   optimize   baseline → plan → implement ⇄ verify (against the target) → … → hand off   (abandon when disproved)
 //   refactor   characterize → plan → implement ⇄ verify (pinned behavior holds) → … → hand off
 //   incident   incident → rollback | plan → … → hand off
@@ -176,7 +176,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
 1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them. Each AC names the test or command that proves it, and its negative rows (the inputs that must stay denied or allowed). For a guard, validator or parser, define the class as one fail-closed rule, not as a list of forms, and name the forms that are out of scope. When the change adds a guard that parses another tool's input (a shell command, a Kustomize tree, a config file), specify a closed grammar: list each field and path form the guard reads, reject every other form before any render or run, and test that a rejection makes zero downstream calls.
 2. Design: the change, the files it touches, the alternatives you rejected and why.
 3. Test plan: the failing tests implement writes first.
-4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access.
+4. Risk: security, data, migrations, backward compatibility. Write "security-sensitive" when it touches auth, secrets, crypto, input parsing, permissions or infrastructure access. End the Risk section with one line \`Security-sensitive: yes (<area>)\` or \`Security-sensitive: no\`. The runner reads this line to decide whether review sends the build to security.
 5. Rollout and rollback: flags, migration order, how to undo it.
 6. Observability: the metrics, logs or checks that prove it works in production; the ship run's soak reads them. Mark an AC must-see-live when the soak must see its own output before it reports healthy; the soak then never uses its deadline.
 7. Tasks: the work broken into small tasks, each one commit with its own check, in dependency order. Record them (see Tracking) and list them in the summary. Size the tasks so one implement pass (120 minutes) can finish all of them. If the work is bigger, plan the first part in this run and file the rest as separate beads that depend on this one. If this bead's tests stay red until the change of another bead lands, plan both in one pull request (the tests commit first, then the change), or make this bead depend on the other bead. Do not plan a pull request that ships with red required checks by design.
@@ -255,7 +255,8 @@ ${notBlocked('green')}`,
 A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 ${blockingScope}
 Post the review on the pull request: implement opens it as a draft. If this run has no pull request, do not push: report changes with the one item "push the branch and open the draft pull request". ${postVerdict}
-Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the plan or the diff is security-sensitive, or when it changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/{base_branch}...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
+Report approve; changes with a numbered list of everything to fix, found in one pass over the whole diff (including each earlier fix's sibling sites), so the next round does not surface what this one could have, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the \`## Security route\` section of this brief says required. When it says not required, never report security: put each security finding in changes. The runner refuses a verdict that does not match the section. Include the pull request link. For security, also include \`git diff --stat origin/{base_branch}...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
+      securityRoute: true,
       next: { approve: { to: 'done', ship: true }, changes: 'implement', security: 'security' },
     },
     security: {
@@ -304,7 +305,8 @@ Run the repo's full pipeline: the build, every test suite, linters, type checks,
 Then review the diff as you would before a merge: correctness, the tests' quality, simplicity, naming, backward compatibility. A change to .factory/ changes how every later run works: read it as a policy change, not a refactor.
 ${blockingScope}
 Post the verdict on the pull request. If this run has no pull request, do not push: report changes with the one item "push the branch and open the draft pull request". ${postVerdict}
-Report approve; or changes with one numbered list of every failure and finding, found in one pass over the whole diff, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the diff or the bead is security-sensitive (auth, secrets, crypto, input parsing, permissions, infrastructure access, or the label \`security\`), or the diff changes .factory/ in a way that removes a gate, lets more run unattended, or raises a limit or a cadence. Include the pull request link. For security, also include \`git diff --stat origin/{base_branch}...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
+Report approve; or changes with one numbered list of every failure and finding, found in one pass over the whole diff, each also recorded as a task of this run (see Tracking); or security when everything else is approved and the \`## Security route\` section of this brief says required. When it says not required, never report security: put each security finding in changes. The runner refuses a verdict that does not match the section. Include the pull request link. For security, also include \`git diff --stat origin/{base_branch}...HEAD\` (at most 60 files, then "+N more") and one line per changed area, so a retry after a timeout can work from that instead of rereading the whole branch.`,
+      securityRoute: true,
       next: { approve: { to: 'done', ship: true }, changes: 'quick', security: 'security' },
     },
 
