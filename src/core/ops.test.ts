@@ -27,6 +27,7 @@ const fake = () => {
     ),
     goto: async (id, node, print) => (calls.push(['goto', id, node]), print('queued')),
     abort: id => void calls.push(['abort', id]),
+    screen: async id => (calls.push(['screen', id]), 'screen text'),
     mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
   }
   const home = mkdtempSync(join(tmpdir(), 'ops-'))
@@ -44,6 +45,7 @@ const run = (name: string, ctx: Ctx, input: Input) => CATALOG.find(o => o.name =
 describe('moved reads run in process (AC1)', () => {
   const rows: [string, Input, Call[]][] = [
     ['runs.show', { id: 'r1' }, [['show', 'r1']]],
+    ['runs.screen', { id: 'r1' }, [['screen', 'r1']]],
     ['runs.status', { run: 'r1' }, [['status', 'r1']]],
     ['runs.status', {}, [['status', undefined]]],
     ['prs.show', {}, [['prs']]],
