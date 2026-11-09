@@ -319,14 +319,12 @@ test(
     const files = new Map<string, string>()
     planMocks(on, files)
     const start = 0
-    files.set(
-      '/home/acme/plan.json',
-      JSON.stringify({
-        at: start,
-        rigs: { api: { items: [], findings: [{ kind: 'goal-no-beads', rig: 'api', key: 'k1', text: 'x' }] } },
-        proposals: [],
-      }),
-    )
+    const savedPlan = {
+      at: start,
+      rigs: { api: { items: [], findings: [{ kind: 'goal-no-beads', rig: 'api', key: 'k1', text: 'x' }] } },
+      proposals: [],
+    }
+    files.set('/home/acme/plan.json', JSON.stringify(savedPlan))
 
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
@@ -353,8 +351,10 @@ test(
     })
     expect(JSON.stringify(await band.drawn())).toContain('plan 12m ago · 1 finding')
 
-    // 2h12m since plan.at: past PLAN_FRESH_MS, so both now call it stale instead
-    await clock.advance(2 * 60 * 60_000)
+    // Age the stored plan by two hours. One tick refreshes both views.
+    savedPlan.at -= 2 * 60 * 60_000
+    files.set('/home/acme/plan.json', JSON.stringify(savedPlan))
+    await clock.advance(5_000)
     await clock.settle()
     expect(JSON.stringify(await pane.drawn())).toContain('plan stale')
     expect(JSON.stringify(await band.drawn())).toContain('plan stale')
