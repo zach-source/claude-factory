@@ -31,8 +31,9 @@ export const DEVENV_FILES = ['devenv.nix', 'devenv.yaml', 'devenv.lock']
 export const cacheKey = (blobs: string, image: string) =>
   createHash('sha256').update(`${image}\n${blobs}`).digest('hex').slice(0, 16)
 
-/** whether a rig needs a build: never built, or built from other files or another image */
-export const isDue = (stamp: Stamp | undefined, key: string, force = false) => force || stamp?.key !== key
+/** whether a rig needs a build: never built, built from other files or another image, or the last build failed */
+export const isDue = (stamp: Stamp | undefined, key: string, force = false) =>
+  force || stamp?.key !== key || !stamp.ok
 
 // at REPO, the path the VM clones to: a devenv's derivations depend on its root
 export const DOCKERFILE = `# syntax=docker/dockerfile:1

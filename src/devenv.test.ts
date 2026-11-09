@@ -26,6 +26,7 @@ test("a rig's devenv is rebuilt when its devenv files or the worker image change
   expect(isDue(undefined, key)).toBe(true)
   expect(isDue(stamp, key)).toBe(false)
   expect(isDue(stamp, key, true)).toBe(true)
+  expect(isDue({ ...stamp, ok: false }, key)).toBe(true) // a failed build is retried on the next pass
   expect(isDue(stamp, cacheKey(first.blobs, 'img@2'))).toBe(true)
 
   // code changes leave the devenv as it was; a lock change is a new build, seen after a fetch
