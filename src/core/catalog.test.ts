@@ -25,6 +25,20 @@ const op = (over: Partial<Op> = {}): Op => ({
 })
 const idIn = (name: string, required = true): Field => ({ name, kind: 'id', required, help: 'h' })
 
+test('runs.screen has the bounded read contract', () => {
+  const screen = CATALOG.find(o => o.name === 'runs.screen')
+  expect(screen).toBeDefined()
+  expect(screen).toMatchObject({
+    inputs: [{ name: 'id', kind: 'id', required: true, help: 'the run id' }],
+    output: 'text',
+    rights: 'read',
+    mutates: false,
+    long: false,
+    route: { method: 'GET', path: '/v1/runs/:id/screen' },
+    since: 1,
+  })
+})
+
 describe('makeCatalog', () => {
   const refused: [string, Op[]][] = [
     ['a duplicate name', [op(), op({ route: { method: 'GET', path: '/v1/u' } })]],

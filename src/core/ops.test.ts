@@ -33,6 +33,30 @@ const fake = () => {
 }
 const run = (name: string, ctx: Ctx, input: Input) => CATALOG.find(o => o.name === name)!.run(ctx, input)
 
+describe('runs.screen', () => {
+  test('returns the port result with no extra newline or CLI call', async () => {
+    const t = fake()
+    const ctx = t.ctx()
+    ctx.port.screen = async id => {
+      t.calls.push(['screen', id])
+      return { code: 0, out: 'last screen', err: '' }
+    }
+    expect(await run('runs.screen', ctx, { id: 'r1' })).toEqual({ code: 0, out: 'last screen', err: '' })
+    expect(t.calls).toEqual([['screen', 'r1']])
+    expect(t.cli).toEqual([])
+  })
+
+  for (const input of [{}, { id: '' }, { id: '../r1' }, { id: '-r1' }, { id: true }, { id: 'a'.repeat(129) }, { id: 'r1', pane: 'w1:p1' }])
+    test(`refuses direct input ${JSON.stringify(input)} before the port`, async () => {
+      const t = fake()
+      const result = await run('runs.screen', t.ctx(), input).catch(e => e)
+      expect(result).toBeInstanceOf(OpError)
+      expect(result.status).toBe(400)
+      expect(t.calls).toEqual([])
+      expect(t.cli).toEqual([])
+    })
+})
+
 describe('moved reads run in process (AC1)', () => {
   const rows: [string, Input, Call[]][] = [
     ['runs.show', { id: 'r1' }, [['show', 'r1']]],

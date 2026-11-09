@@ -3,7 +3,7 @@
 // The goldens come from origin/main f80d1fe0, before the move. The same bytes must hold after it.
 // The fixtures copy gatebrief-cli.test.ts: a run `r1` at a gate and a run `r2` at `verify`.
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -386,4 +386,151 @@ test('a refusal of the server holds the CLI stderr line', () => {
   const [c] = serverGet(H0, ['/v1/metrics?since=0d'])
   expect(c!.status).toBe(422)
   expect(refused(c!.body)).toBe(GOLD.i!.err)
+})
+
+const screenFixture = (pane: unknown) => {
+  const home = join(dir, 'screen')
+  mkdirSync(join(home, 'runs', 'r1'), { recursive: true })
+  writeFileSync(join(home, 'rigs.json'), '[]')
+  writeFileSync(join(home, 'runs', 'r1', 'run.json'), JSON.stringify({ id: 'r1' }))
+  writeFileSync(join(home, 'runs', 'r1', 'state.json'), JSON.stringify({ snapshot: { context: { pane } } }))
+  writeFileSync(join(home, 'outbox.jsonl'), 'unchanged\n')
+  const calls = join(home, 'calls.jsonl')
+  writeFileSync(calls, '')
+  const fake = join(home, 'transport')
+  writeFileSync(fake, `#!${process.execPath}
+import { appendFileSync, writeFileSync, writeSync } from 'node:fs'
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + '\\n')
+writeFileSync(${JSON.stringify(join(home, 'pid'))}, String(process.pid))
+const mode = process.env.SCREEN_MODE
+if (mode === 'failure') { writeSync(2, 'zqsecret'); process.exit(1) }
+if (mode?.includes('flood')) {
+  for (let i = 0; i < 128; i++) { writeSync(1, Buffer.alloc(65536, 'x')); writeSync(2, Buffer.alloc(65536, 'e')) }
+  writeSync(1, '€latest screen')
+}
+if (mode?.includes('hang')) setInterval(() => {}, 1000)
+else if (!mode?.includes('flood')) writeSync(1, 'last screen')
+`)
+  chmodSync(fake, 0o755)
+  const runner = join(home, 'request.ts')
+  writeFileSync(runner, `
+import { corePort } from ${JSON.stringify(join(import.meta.dir, '..', 'cli.ts'))}
+import { clientHandler } from ${JSON.stringify(join(import.meta.dir, '..', 'server-api.ts'))}
+const h = clientHandler({ home: process.env.FACTORY_HOME!, port: corePort, board: () => null, run: async () => { throw new Error('no runner') } })
+const start = Date.now()
+await Promise.all(process.argv.slice(2).map(async path => {
+  const response = await h(new Request('http://x' + path), '1.2.3.4')
+  console.log(JSON.stringify({ path, status: response.status, body: await response.text(), elapsed: Date.now() - start }))
+}))
+`)
+  const files = ['runs/r1/run.json', 'runs/r1/state.json', 'outbox.jsonl', 'rigs.json']
+  const before = files.map(f => readFileSync(join(home, f), 'utf8'))
+  return {
+    home,
+    calls: () => readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)),
+    unchanged: () => expect(files.map(f => readFileSync(join(home, f), 'utf8'))).toEqual(before),
+    request: async (mode = '', paths = ['/v1/runs/r1/screen']) => {
+      const p = Bun.spawn([process.execPath, runner, ...paths], {
+        env: cleanEnv(home, { FACTORY_HERDR: fake, FACTORY_AX: fake, FACTORY_AX_CONTEXT: 'acme', FACTORY_AX_ATESPACE: 'screens', FACTORY_AX_CAPABILITIES: 'SETUID,SETGID', SCREEN_MODE: mode }),
+        stdout: 'pipe', stderr: 'pipe',
+      })
+      const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited])
+      expect({ code, err }).toEqual({ code: 0, err: '' })
+      return out.trim().split('\n').map(l => JSON.parse(l) as { path: string; status: number; body: string; elapsed: number })
+    },
+    exited: () => {
+      const pid = Number(readFileSync(join(home, 'pid'), 'utf8'))
+      expect(() => process.kill(pid, 0)).toThrow()
+    },
+  }
+}
+
+for (const pane of ['w1:p1', 'opaque-1'])
+  test(`runs.screen reads herdr pane ${pane} with exact argv`, async () => {
+    const t = screenFixture(pane)
+    const [r] = await t.request()
+    expect(r).toMatchObject({ status: 200, body: 'last screen' })
+    expect(t.calls()).toEqual([['pane', 'read', pane, '--source', 'recent-unwrapped', '--lines', '60']])
+    t.unchanged()
+  })
+
+test('runs.screen gives reasons for absent runs and panes', async () => {
+  const t = screenFixture(null)
+  const [missing, idle] = await t.request('', ['/v1/runs/absent/screen', '/v1/runs/r1/screen'])
+  expect(missing!.status).toBe(404)
+  expect(idle!.status).toBe(409)
+  expect(refused(missing!.body).length).toBeGreaterThan(0)
+  expect(refused(idle!.body).length).toBeGreaterThan(0)
+  expect(t.calls()).toEqual([])
+  t.unchanged()
+})
+
+for (const pane of [false, 1, {}, [], '', ' ', 'a b', '-pane', '/pane', 'a/b', 'a;id', 'a$(id)', 'a\nb', 'a'.repeat(129), 'ax://', 'ax://-bad', 'ax://Bad', 'ax://a/b', 'ax://a b', 'ax://bad-', `ax://${'a'.repeat(64)}`])
+  test(`runs.screen refuses stored address ${JSON.stringify(pane)}`, async () => {
+    const t = screenFixture(pane)
+    const [r] = await t.request()
+    expect(r!.status).toBe(422)
+    expect(refused(r!.body).length).toBeGreaterThan(0)
+    expect(t.calls()).toEqual([])
+    t.unchanged()
+  })
+
+for (const task of ['f-acme-1', 'a', 'a'.repeat(63)])
+  test(`runs.screen reads AX task ${task} as the worker`, async () => {
+    const t = screenFixture(`ax://${task}`)
+    const [r] = await t.request()
+    expect(r).toMatchObject({ status: 200, body: 'last screen' })
+    expect(t.calls()).toEqual([['--context', 'acme', '-a', 'screens', 'ssh', task, '--', 'setpriv', '--reuid=worker', '--regid=worker', '--init-groups', 'env', 'HOME=/home/worker', 'USER=worker', 'factory', 'worker', 'screen']])
+    t.unchanged()
+  })
+
+for (const pane of ['w1:p1', 'ax://f-acme-1']) {
+  test(`runs.screen hides transport errors for ${pane}`, async () => {
+    const t = screenFixture(pane)
+    const [r] = await t.request('failure')
+    expect(r!.status).toBe(422)
+    expect(refused(r!.body)).not.toContain('zqsecret')
+    expect(refused(r!.body).length).toBeGreaterThan(0)
+    expect(t.calls()).toHaveLength(1)
+    t.unchanged()
+  })
+  test(`runs.screen caps a stdout and stderr flood for ${pane}`, async () => {
+    const t = screenFixture(pane)
+    const [r] = await t.request('flood')
+    expect(r!.status).toBe(200)
+    expect(Buffer.byteLength(r!.body)).toBe(65536)
+    expect(r!.body.endsWith('€latest screen')).toBe(true)
+    expect(r!.body).not.toContain('�')
+    t.exited()
+    t.unchanged()
+  }, 30000)
+  for (const mode of ['hang', 'flood-hang'])
+    test(`runs.screen reaps ${mode} for ${pane} without a blocked fast read`, async () => {
+      const t = screenFixture(pane)
+      const rows = await t.request(mode, ['/v1/runs/r1/screen', '/v1/catalog/echo?text=fast'])
+      const fast = rows.find(r => r.path.includes('echo'))!
+      const hung = rows.find(r => r.path.includes('/screen'))!
+      expect(fast).toMatchObject({ status: 200, body: 'fast\n' })
+      expect(fast.elapsed).toBeLessThan(2000)
+      expect(hung.status).toBe(504)
+      expect(hung.elapsed).toBeGreaterThanOrEqual(8900)
+      expect(hung.elapsed).toBeLessThan(10000)
+      t.exited()
+      t.unchanged()
+    }, 30000)
+}
+
+test('worker screen accepts no extra operands or flags', () => {
+  const home = join(dir, 'verb-screen')
+  mkdirSync(home, { recursive: true })
+  writeFileSync(join(home, 'claude.jsonl'), 'only stream')
+  const extra = { FACTORY_WORKER_DIR: home, FACTORY_HARNESS: 'claude' }
+  expect(factory(home, ['worker', 'screen'], extra)).toEqual({ code: 0, out: 'only stream', err: '' })
+  for (const arg of ['claude', '--lines', '../codex.jsonl']) {
+    const r = factory(home, ['worker', 'screen', arg], extra)
+    expect(r.code).toBe(1)
+    expect(r.out).toBe('')
+    expect(r.err).not.toContain('only stream')
+  }
+  expect(existsSync(join(home, 'outbox.jsonl'))).toBe(false)
 })

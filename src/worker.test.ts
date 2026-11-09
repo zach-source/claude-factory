@@ -1,4 +1,6 @@
-import { describe, expect, test, afterEach, beforeEach } from 'bun:test'
+import { describe, expect, test, afterEach, beforeEach, spyOn } from 'bun:test'
+import * as fs from 'node:fs'
+import * as worker from './worker'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,6 +18,95 @@ import {
   trustNote,
   writePrivatePatterns,
 } from './worker'
+
+describe('worker screen', () => {
+  const saved = { ...process.env }
+  let home: string
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'worker-screen-'))
+    process.env.FACTORY_WORKER_DIR = home
+    delete process.env.FACTORY_HARNESS
+  })
+  afterEach(() => {
+    process.env = { ...saved }
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  for (const h of ['claude', 'codex', 'cursor', 'grok', 'pi'])
+    test(`reads only the ${h} stream`, () => {
+      for (const name of ['claude', 'codex', 'cursor', 'grok', 'pi'])
+        writeFileSync(join(home, `${name}.jsonl`), `${name}\n`)
+      process.env.FACTORY_HARNESS = h
+      expect(worker.screen()).toBe(`${h}\n`)
+    })
+
+  test('defaults to Claude and accepts a missing or empty stream', () => {
+    expect(worker.screen()).toBe('')
+    writeFileSync(join(home, 'claude.jsonl'), '')
+    expect(worker.screen()).toBe('')
+    writeFileSync(join(home, 'claude.jsonl'), 'default')
+    expect(worker.screen()).toBe('default')
+  })
+
+  for (const [source, want] of [
+    ['x'.repeat(65536), 'x'.repeat(65536)],
+    ['ax'.repeat(32768) + 'z', 'x' + 'ax'.repeat(32767) + 'z'],
+    ['€' + 'x'.repeat(65535), 'x'.repeat(65535)],
+    ['😀' + 'x'.repeat(65534), 'x'.repeat(65534)],
+    ['x'.repeat(65532) + '😀', 'x'.repeat(65532) + '😀'],
+  ])
+    test(`caps ${Buffer.byteLength(source)} bytes at a UTF-8 boundary`, () => {
+      writeFileSync(join(home, 'claude.jsonl'), source)
+      const out = worker.screen()
+      expect(out).toBe(want)
+      expect(Buffer.byteLength(out)).toBeLessThanOrEqual(65536)
+      expect(out).not.toContain('�')
+    })
+
+  test('uses bounded positional reads for a large file', () => {
+    const fd = fs.openSync(join(home, 'claude.jsonl'), 'w')
+    fs.ftruncateSync(fd, 64 * 1024 * 1024)
+    fs.writeSync(fd, Buffer.alloc(65536, 'z'), 0, 65536, 64 * 1024 * 1024 - 65536)
+    fs.closeSync(fd)
+    const original = fs.readSync
+    const reads: { length: number; position: number | null }[] = []
+    const spy = spyOn(fs, 'readSync').mockImplementation((fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null) => {
+      reads.push({ length, position })
+      return original(fd, buffer, offset, length, position)
+    })
+    try {
+      expect(worker.screen()).toBe('z'.repeat(65536))
+      expect(reads.length).toBeGreaterThan(0)
+      expect(reads.reduce((n, r) => n + r.length, 0)).toBeLessThanOrEqual(65536)
+      expect(reads.every(r => r.position !== null && r.position >= 64 * 1024 * 1024 - 65536)).toBe(true)
+    } finally { spy.mockRestore() }
+  })
+
+  for (const h of ['', '../codex', '/etc/passwd', 'unknown', 'CLAUDE'])
+    test(`refuses harness ${JSON.stringify(h)} before file access`, () => {
+      process.env.FACTORY_HARNESS = h
+      const spy = spyOn(fs, 'openSync')
+      try {
+        expect(() => worker.screen()).toThrow()
+        expect(spy).not.toHaveBeenCalled()
+      } finally { spy.mockRestore() }
+    })
+
+  for (const kind of ['symlink', 'directory', 'fifo'])
+    test(`refuses a ${kind} without a stream read`, () => {
+      const path = join(home, 'claude.jsonl')
+      if (kind === 'symlink') {
+        writeFileSync(join(home, 'codex.jsonl'), 'other stream')
+        fs.symlinkSync(join(home, 'codex.jsonl'), path)
+      } else if (kind === 'directory') mkdirSync(path)
+      else expect(Bun.spawnSync(['mkfifo', path]).exitCode).toBe(0)
+      const spy = spyOn(fs, 'readSync')
+      try {
+        expect(() => worker.screen()).toThrow()
+        expect(spy).not.toHaveBeenCalled()
+      } finally { spy.mockRestore() }
+    })
+})
 
 // claude-factory-qda.4: the laptop names a station's skills in FACTORY_SKILLS; unset is an older laptop
 test('imagePlugins picks the image plugin dirs by FACTORY_SKILLS', () => {

@@ -108,6 +108,38 @@ describe('catalog.echo', () => {
     })
 })
 
+describe('runs.screen route', () => {
+  const screenHandler = () => {
+    const calls: unknown[] = []
+    const p = new Proxy({} as Port, {
+      get: (_t, key) => async (...args: unknown[]) => {
+        calls.push([key, ...args])
+        return { code: 0, out: 'screen bytes', err: '' }
+      },
+    })
+    return { calls, h: clientHandler({ home: mkdtempSync(join(tmpdir(), 'screen-h-')), port: p, board: () => null, run: async () => { throw new Error('no CLI') } }) }
+  }
+  test('GET calls only screen once', async () => {
+    const { h, calls } = screenHandler()
+    const response = await get(h, '/v1/runs/r1/screen')
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('screen bytes')
+    expect(calls).toEqual([['screen', 'r1']])
+  })
+  for (const path of ['/v1/runs//screen', '/v1/runs/%2E%2E/screen', '/v1/runs/a%2Fb/screen', '/v1/runs/-r1/screen', `/v1/runs/${'a'.repeat(129)}/screen`, '/v1/runs/r1/screen?lines=1'])
+    test(`refuses ${path}`, async () => {
+      const { h, calls } = screenHandler()
+      expect((await get(h, path)).status).toBeGreaterThanOrEqual(400)
+      expect(calls).toEqual([])
+    })
+  test('POST and authorization headers call no port', async () => {
+    const { h, calls } = screenHandler()
+    expect((await post(h, '/v1/runs/r1/screen', {})).status).toBe(404)
+    expect((await h(new Request('http://x/v1/runs/r1/screen', { headers: { authorization: 'Bearer fake' } }), '1.2.3.4')).status).toBe(403)
+    expect(calls).toEqual([])
+  })
+})
+
 describe('input checks', () => {
   for (const p of [
     '/v1/board?x=1',

@@ -93,6 +93,35 @@ beforeEach(() => {
 })
 const logged = () => readFileSync(calls, 'utf8').trim().split('\n')
 
+test('screen uses current context, atespace, and worker identity', async () => {
+  const saved = { ...process.env }
+  const executable = join(dir, 'screen-ax')
+  const argvFile = join(dir, 'screen-argv')
+  writeFileSync(executable, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)))\nprocess.stdout.write('AX screen')\n`)
+  chmodSync(executable, 0o755)
+  try {
+    process.env.FACTORY_AX = executable
+    process.env.FACTORY_AX_CONTEXT = 'acme'
+    process.env.FACTORY_AX_ATESPACE = 'screens'
+    process.env.FACTORY_AX_CAPABILITIES = 'SETUID,SETGID'
+    expect(await ax.screen('f-acme-1')).toEqual({ code: 0, out: 'AX screen', err: '' })
+    expect(JSON.parse(readFileSync(argvFile, 'utf8'))).toEqual(['--context', 'acme', '-a', 'screens', 'ssh', 'f-acme-1', '--', 'setpriv', '--reuid=worker', '--regid=worker', '--init-groups', 'env', 'HOME=/home/worker', 'USER=worker', 'factory', 'worker', 'screen'])
+    process.env.FACTORY_AX_CAPABILITIES = ''
+    expect((await ax.screen('a')).code).toBe(0)
+    expect(JSON.parse(readFileSync(argvFile, 'utf8'))).toEqual(['--context', 'acme', '-a', 'screens', 'ssh', 'a', '--', 'factory', 'worker', 'screen'])
+  } finally { process.env = saved }
+})
+
+test('screen rejects invalid tasks before SSH', async () => {
+  for (const task of ['', '-bad', 'Bad', 'a/b', 'a b', 'bad-', 'a'.repeat(64)]) {
+    const result = await ax.screen(task)
+    expect(result.code).toBe(1)
+    expect(result.out).toBe('')
+    expect(result.err.length).toBeGreaterThan(0)
+  }
+  expect(existsSync(calls)).toBe(false)
+})
+
 test('the AX fixtures ignore inherited worker and Beads settings', () => {
   const p = Bun.spawnSync(
     [
