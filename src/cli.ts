@@ -9775,7 +9775,7 @@ async function patrolGuard() {
   if (META_WRITE.test(joined)) return deny('a subagent never writes bead metadata')
   if (bdWrite(joined))
     return deny(
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
     )
 }
 
