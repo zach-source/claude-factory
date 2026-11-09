@@ -68,11 +68,30 @@ function setup(withWiki = true, groomStamp = true) {
   writeFileSync(join(home, 'wiki-write.stamp'), '')
   if (groomStamp) writeFileSync(groomStampPath(), '')
 }
-/** a detached pass has ended: wait (at most 2 s) for it to take wiki.lock, then (at most 15 s) for it to free it */
-async function passEnded() {
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    // a zombie that init has not reaped has exited
+    return !/^\d+ \([^)]*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+  } catch {
+    return false
+  }
+}
+/**
+ * a detached pass has ended: wait for it to take wiki.lock (and read its pid), then for the lock to go, then for
+ * that pid to exit. A deadline throws, so a pass that never starts or never ends fails the test.
+ */
+async function passEnded(startMs = 10_000, endMs = 15_000) {
   const lock = join(home, 'wiki.lock')
-  for (let i = 0; i < 40 && !existsSync(lock); i++) await sleep(50)
-  for (let i = 0; i < 150 && existsSync(lock); i++) await sleep(100)
+  const pidFile = join(lock, 'pid')
+  let pid = 0
+  for (const t = Date.now(); !pid; await sleep(50)) {
+    if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, 'utf8')) || 0
+    if (!pid && Date.now() - t > startMs) throw new Error('the pass never took wiki.lock')
+  }
+  for (const t = Date.now(); existsSync(lock) || alive(pid); await sleep(100)) {
+    if (Date.now() - t > endMs) throw new Error('the pass did not end')
+  }
 }
 async function waitFor(path: string, tries = 150) {
   for (let i = 0; i < tries && !existsSync(path); i++) await sleep(100)
@@ -157,6 +176,14 @@ function aged(min: number) {
 async function launched(env: Record<string, string> = {}) {
   const t = existsSync(wstamp()) ? statSync(wstamp()).mtimeMs : 0
   writeFileSync(stamp(), '') // a fresh refresh stamp: one wiki pass in each tick, so refresh must not take it
+  const beads = join(dir, `repo${n}`, '.beads')
+  if (!existsSync(beads)) {
+    // a pass that holds wiki.lock for 1 s, so passEnded can see it start and end; the pass then fails at once
+    mkdirSync(beads)
+    fixtureTools()
+    writeFileSync(join(fx(), 'bd'), '#!/bin/sh\nsleep 1\nexit 1\n')
+    chmodSync(join(fx(), 'bd'), 0o755)
+  }
   factory(['tick'], env)
   const moved = existsSync(wstamp()) && statSync(wstamp()).mtimeMs !== t
   if (moved) await passEnded()
@@ -331,4 +358,33 @@ test('AC10 an ambient wiki remote reaches no setup or tick child', async () => {
       else process.env[k] = v
     }
   }
+}, 30_000)
+
+test('AC10 passEnded waits for a pass that takes the lock after 3 s and exits after the lock goes', async () => {
+  setup()
+  const lock = join(home, 'wiki.lock')
+  const child = Bun.spawn([
+    'sh',
+    '-c',
+    `sleep 3; mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 1; rm -r '${lock}'`,
+  ])
+  await passEnded()
+  expect(alive(child.pid)).toBe(false)
+  await child.exited
+}, 30_000)
+
+test('AC10 passEnded fails when the pass never starts or never ends, and the fixture child is reaped', async () => {
+  setup()
+  await expect(passEnded(300, 300)).rejects.toThrow('never took')
+  const lock = join(home, 'wiki.lock')
+  const child = Bun.spawn(['sleep', '60'])
+  try {
+    mkdirSync(lock, { recursive: true })
+    writeFileSync(join(lock, 'pid'), String(child.pid))
+    await expect(passEnded(300, 300)).rejects.toThrow('did not end')
+  } finally {
+    child.kill()
+    await child.exited
+  }
+  expect(alive(child.pid)).toBe(false)
 }, 30_000)

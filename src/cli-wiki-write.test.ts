@@ -51,7 +51,7 @@ echo null
   )
   fake(
     'gh',
-    `if [ "$1" = repo ]; then echo "$*" >> '${data}/gh-repo-calls'; echo PRIVATE; exit 0; fi
+    `if [ "$1" = repo ]; then echo "$*" >> '${data}/gh-repo-calls'; if [ -f '${data}/gh-repo-ok' ]; then echo PRIVATE; exit 0; fi; echo failed >&2; exit 1; fi
 echo "$*" >> '${data}/gh-calls'
 f='${data}/gh-'$(printf '%s' "$2" | sed 's/[^A-Za-z0-9]/_/g')
 if [ -f "$f" ]; then cat "$f"; else echo 'not found' >&2; exit 1; fi
@@ -547,6 +547,7 @@ slow('write AC5 a failed push keeps the commit, and the next pass pushes it', ()
   const cfg = join(dir, `cfg${n}`)
   writeFileSync(cfg, `[url "${b}"]\n\tinsteadOf = ${url}\n`)
   git('remote', 'add', 'origin', url)
+  writeFileSync(join(data, 'gh-repo-ok'), '') // this test needs the private-repo check to pass
   const env = { GIT_CONFIG_GLOBAL: cfg }
   factory(['wiki', 'write'], env)
   expect(wikiLog()).toContain('wiki: push failed')
