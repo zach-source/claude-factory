@@ -890,6 +890,12 @@ const MANAGER_PASS = [
   'FACTORY_AX_BACKUP_EVERY',
   'FACTORY_OTLP_ENDPOINT',
   'FACTORY_AX_OTLP_ENDPOINT',
+  // the harness gates (cli.ts axCodex, axCursor, axGrok): without them the manager refuses those VM workers
+  'FACTORY_AX_CODEX',
+  'FACTORY_AX_CURSOR',
+  'FACTORY_AX_GROK',
+  // the manager's ax CLI talks gRPC over TLS to an endpoint that does not select ALPN (grpc-go 1.67+ refuses it)
+  'GRPC_ENFORCE_ALPN_ENABLED',
 ]
 
 /**
@@ -908,6 +914,8 @@ export function managerEnv(
 ) {
   return {
     FACTORY_IN_AX: '1',
+    // the task's own name: the AX sweep in the task skips it, and createPolicy keys the manager policy on it
+    FACTORY_AX_MANAGER: env.FACTORY_AX_MANAGER ?? 'f-manager',
     FACTORY_HOME: `${WS}/home`,
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
@@ -928,6 +936,8 @@ export function managerEnv(
     // the gateway adds the real token (managerEgress). The VM holds a placeholder. The CLI sends a token only over https
     ...(env.FACTORY_AX_VAULT &&
       env[MANAGER_AX_SERVER]?.startsWith('https://') && { AX_AUTH_TOKEN: 'placeholder' }),
+    // the Cursor pool meter (cursor-meter.ts): a placeholder, and managerEgress has the gateway put the vault key in
+    ...(env.FACTORY_AX_VAULT && env.CURSOR_API_KEY && { CURSOR_API_KEY: 'placeholder' }),
     ...(env[MANAGER_BROKER] && {
       FACTORY_POLICY_BROKER: env[MANAGER_BROKER],
       // the swap runs in the broker pod, where the op writer token is; the VM holds none
@@ -1007,6 +1017,7 @@ export function withDoltEgress(egress: Egress[] | undefined, rig?: DoltRig): Egr
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
  * A value that is not a URL adds no rule. A rig's beadsRemote adds its Dolt rule, and a --linear rig adds Linear's.
+ * A laptop CURSOR_API_KEY (the pool meter) adds the api2.cursor.sh rules, with the vault key CURSOR_API_KEY on /auth/.
  */
 export function managerEgress(
   env: Record<string, string | undefined> = process.env,
@@ -1043,7 +1054,20 @@ export function managerEgress(
   const linear = rigs.some(r => r.linear)
     ? [{ hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' }]
     : []
-  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear]
+  // the Cursor pool meter posts its key to api2.cursor.sh/auth/ and then reads the usage with the access token it gets
+  const cursor = env.CURSOR_API_KEY
+    ? [
+        {
+          hosts: ['api2.cursor.sh'],
+          pathPrefixes: ['/auth/'],
+          key: 'CURSOR_API_KEY',
+          header: 'Authorization',
+          prefix: 'Bearer ',
+        },
+        { hosts: ['api2.cursor.sh'] },
+      ]
+    : []
+  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear, ...cursor]
 }
 
 /**
