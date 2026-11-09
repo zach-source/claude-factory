@@ -240,6 +240,8 @@ test('a plain word or JSON near the caller is not denied', SLOW, () => {
     'ls /x/factory-notes/a{b,c}d',
     `${F} status`,
     'ls -la',
+    'wc -l src/cli.ts src/*.ts',
+    'bun test x; cat src/cli.ts',
   ])
     expect(gatedCommand(c), c).toBeNull()
 })
@@ -255,6 +257,12 @@ test('a non-literal verb word after a literal caller is denied with no dialog', 
     `${F} dec${BT}true${BT}ide r1 ship`,
     `bash -c '${F} "$0" r1 ship' decide`,
     'bun src/cli.ts dec* r1 ship',
+    'bun --smol src/cli.ts dec* r1 ship',
+    'bun --cwd /x run --smol src/cli.ts dec* r1 ship',
+    'V=decide; bun --smol src/cli.ts $V r1 ship',
+    'bun --smol src/cli.ts start lifecycle acme w-2 --o{w,w}ned',
+    'bun --smol src/cli.ts decisions an{s,s}wer r1 x',
+    'bun --smol src/cli.ts wiki in{i,i}t',
   ]
   for (const command of rows) {
     const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
@@ -272,6 +280,7 @@ test(
     for (const command of [
       `${F.replace('factory', "fact''ory")} mail r1 plan "$(id)"`,
       'bun src/cli.ts mail r1 plan "$(id)"',
+      'bun --smol src/cli.ts mail r1 plan "$(id)"',
       '/usr/bin/bun src/cli.ts mail r1 plan "$(id)"',
     ]) {
       const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
@@ -339,6 +348,8 @@ test('gatedCommand runs in linear time on hostile text', SLOW, () => {
     '/'.repeat(200000),
     'x/bun '.repeat(33000),
     '/repo/bin/factory {a,'.repeat(20000),
+    'bun '.repeat(50000),
+    'bun --x '.repeat(30000) + 'src/cli.ts dec*',
     '/repo/bin/factory a{'.repeat(40000),
     '/repo/bin/factory x{'.repeat(40000) + ',',
     '/repo/bin/factory ' + '{'.repeat(200000),

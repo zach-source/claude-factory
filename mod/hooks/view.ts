@@ -1272,7 +1272,9 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const baseTexts = unreadable
     ? [rawCommand.replace(/\\\n/g, '\n'), rawCommand.replace(/\\\n/g, '')]
     : [command]
-  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t))) ? substitutionIn(rawCommand) : -1
+  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t)) || cliCall(strip(t)))
+    ? substitutionIn(rawCommand)
+    : -1
   // claude-factory-6tl1: the first word after the caller must be a literal word
   const verbHidden = baseTexts.some(t => VERB_HIDDEN.test(strip(t)))
   let substitution: { phrase: string; deny: string; detail: string } | undefined
@@ -1367,6 +1369,19 @@ const strip = (s: string) => s.replace(/[\\'"]/g, '')
 const CLI = String.raw`(?:^|[\s;&|(])(?:[^\s;&|()]*/)?(?:bun|node|run)\s+(?:\S*/)?cli(?:\.\w+)?`
 /** the factory CLI as a command word */
 const CALLER = new RegExp(String.raw`(?<![\w.-])factory(?![\w./-])|${CLI}(?=[\s;&|),}]|$)`)
+/** a runner word (bun, node, run) and a later cli word in one simple command, with any words between (`bun --smol src/cli.ts`). One linear word scan. */
+function cliCall(t: string): { start: number; end: number } | null {
+  let runner = -1
+  for (const m of t.matchAll(/[^\s;&|()]+|[;&|()]/g)) {
+    const w = m[0]
+    if (/^[;&|()]$/.test(w)) runner = -1
+    else if (runner >= 0 && /(?:^|\/)cli(?:\.\w+)?$/.test(w))
+      return { start: runner, end: m.index! + w.length }
+    else if (runner < 0 && /(?:^|\/)(?:bun|node|run)$/.test(w)) runner = m.index!
+  }
+  return null
+}
+const VERB_AFTER = /\s+[^\s$\x60*?[{]*[$\x60*?[{]/y
 /** a word the hook cannot read as a literal command name */
 const HIDDEN = /[$`*?[)]|(?:^|[/;&|])cli(?:\.\w+)?$/
 const one = (p: string) => (HIDDEN.test(p) ? 'factory' : p)
@@ -1382,6 +1397,11 @@ const GLUED_BRACE = /[\w-]\{+[^\s{},]*[,}]|[,{][^\s{},]*\}+[\w-]/
 /** a non-literal verb word after the caller word, or a brace word anywhere after it (no bound, no split on `;&|`: the strip copy lost the quotes) */
 const VERB_HIDDEN = {
   test: (t: string) => {
+    const c = cliCall(t)
+    if (c) {
+      VERB_AFTER.lastIndex = c.end
+      if (VERB_AFTER.test(t) || GLUED_BRACE.test(t.slice(c.start))) return true
+    }
     const i = t.search(CALLER)
     return VERB_FIRST.test(t) || (i >= 0 && GLUED_BRACE.test(t.slice(i)))
   },
