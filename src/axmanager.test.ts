@@ -85,6 +85,8 @@ test('managerEnv passes the pkg gate, an empty capabilities list, and FACTORY_AX
     ax.managerEnv({ FACTORY_AX_OTLP_ENDPOINT: '', FACTORY_OTLP_ENDPOINT: 'http://192.0.2.1:4318' }),
   ).toMatchObject({ FACTORY_AX_OTLP_ENDPOINT: '' })
   expect('FACTORY_AX_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
+  // a staging copy: the host prepares the home and does not start the manager
+  expect(ax.managerEnv({ FACTORY_AX_MANAGER_DRY: '1' })).toMatchObject({ FACTORY_AX_MANAGER_DRY: '1' })
   expect(ax.readAxEnv('{"A":"1"}')).toEqual({ A: '1' })
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '["secret"]' }))).toThrow(/not a JSON object/)
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '{bad secret' }))).toThrow(
