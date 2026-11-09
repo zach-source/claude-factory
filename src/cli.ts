@@ -2102,8 +2102,18 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   return address
 }
 
+/** launch() refused. The factory opens no tab, and a retry in the next tick would refuse again */
+class LaunchRefused extends Error {}
+
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
-function launchPane({ run, def, node, c, session, file }: Job) {
+export function launchPane({ run, def, node, c, session, file }: Job) {
+  // build the command first: a refused launch (a worker the person key must not reach) opens no tab
+  let cmd: string
+  try {
+    cmd = launch(run, def, node, c, file, session)
+  } catch (err) {
+    throw new LaunchRefused((err as Error).message)
+  }
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -2132,7 +2142,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  typeLaunch(pane, launch(run, def, node, c, file, session))
+  typeLaunch(pane, cmd)
   return pane
 }
 
@@ -4106,7 +4116,14 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         return 'merge conflict'
       }
     }
-    const pane = spawn(run, def, node, c)
+    let pane: string
+    try {
+      pane = spawn(run, def, node, c)
+    } catch (err) {
+      if (!(err instanceof LaunchRefused)) throw err
+      send({ type: 'FAIL', seq: c.seq, reason: `launch refused: ${err.message}` })
+      return 'launch refused'
+    }
     send({ type: 'SPAWNED', seq: c.seq, pane })
     const box = c.mail[node] ?? [] // the brief carried the whole box
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
