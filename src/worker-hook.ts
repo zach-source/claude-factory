@@ -1580,7 +1580,10 @@ function findDeleteDeny(cmdIn: string[], root?: string): boolean {
   // easj.19: no recursion. This loop visits every exec word, so a nested find needs only the path test.
   for (let k = 1; k < cmd.length - 1; k++) {
     if (!FIND_EXEC_WORDS.has(cmd[k]!)) continue
-    const sub0 = realCommand(cmd.slice(k + 1))
+    const raw = cmd.slice(k + 1)
+    const sub0 = realCommand(raw)
+    // qn8a.13: a brace list in a wrapper word or the head can expand to find with any start path.
+    if (raw.slice(0, raw.length - sub0.length + 1).some(w => BRACE_LIST_WORD.test(w))) return true
     const sub = sub0.some(w => /[<>]/.test(w)) ? dropRedirectWords(sub0) : sub0
     if (sub.length && baseWord(sub[0]!) === 'find' && findHasDelete(sub) && findDeletePathDeny(sub, root))
       return true
