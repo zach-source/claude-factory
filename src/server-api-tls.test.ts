@@ -430,7 +430,9 @@ describe('events over mTLS: replay then live', () => {
       free = true
       for (const r of waiting.splice(0)) r()
       await t.s.stop()
-      await Promise.all(readers.map(r => r.pump))
+      // The server close must end every stream. The socket ends without TLS close_notify, so curl exits 56 by itself (seen 1 of 1 run; 28 is a timeout and a kill has a signal).
+      await within('stream EOF', 5000, Promise.all(readers.map(r => r.pump)))
+      expect(await within('curl exit', 5000, Promise.all(readers.map(r => r.exited)))).toEqual([56, 56, 56])
       const f = [
         'id: 1\ndata: {"n":1,"t":"é€"}\n\n',
         'id: 2\ndata: {"n":2,"nested":{"a":[1]}}\n\n',
@@ -452,6 +454,21 @@ describe('events over mTLS: replay then live', () => {
     }
   }, 30000)
 })
+
+// Wait for a promise, or fail at the deadline. The timer is cleared so it cannot outlive the test.
+const within = async <T>(what: string, ms: number, p: Promise<T>): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error(`${what}: not done in ${ms} ms`)), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 describe('events over mTLS: barriers', () => {
   test('headers come before the first tick ends, two live changes arrive once each, and server stop ends the stream', async () => {
@@ -476,40 +493,53 @@ describe('events over mTLS: barriers', () => {
         ...['openssl', 's_client', '-connect', `localhost:${t.s.clientPort}`, '-servername', 'localhost'],
         ...['-CAfile', join(A, 'ca.crt'), '-quiet', '-tls1_3', '-cert', who.cert, '-key', who.key],
       ],
-      { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', timeout: 15000 },
+      { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', timeout: 15000 },
     )
-    // curl keeps a header until the first body byte. This test sends the request by hand and keeps stdin open.
-    p.stdin.write('GET /v1/events?after=0 HTTP/1.1\r\nHost: localhost\r\n\r\n')
-    await p.stdin.flush()
-    const rd = p.stdout.getReader()
-    const dec = new TextDecoder()
-    let text = ''
-    let done = false
-    const until = async (re: RegExp) => {
-      while (!re.test(text) && !done) {
-        const r = await rd.read()
-        if (r.done) done = true
-        else text += dec.decode(r.value)
+    try {
+      // curl keeps a header until the first body byte. This test sends the request by hand and keeps stdin open.
+      p.stdin.write('GET /v1/events?after=0 HTTP/1.1\r\nHost: localhost\r\n\r\n')
+      await p.stdin.flush()
+      const rd = p.stdout.getReader()
+      const dec = new TextDecoder()
+      let text = ''
+      let done = false
+      const until = async (re: RegExp) => {
+        while (!re.test(text) && !done) {
+          const r = await within('read', 10000, rd.read())
+          if (r.done) done = true
+          else text += dec.decode(r.value)
+        }
       }
+      // the first tick is held: the stream is open and has no event yet
+      await until(/\r\n\r\n/)
+      expect(waiting.length).toBe(1)
+      expect(text.toLowerCase()).toContain('content-type: text/event-stream')
+      expect(text).not.toContain('id:')
+      await release({ n: 1 })
+      await until(/id: 1\ndata: \{"n":1\}\n\n/)
+      await release({ n: 2 })
+      await until(/id: 2\ndata: \{"n":2\}\n\n/)
+      // a later tick sees an equal board; the reader stays active until the stop closes the stream
+      await release({ n: 2 })
+      free = true
+      for (const r of waiting.splice(0)) r()
+      await t.s.stop()
+      // The server close must end the stream before the client deadline, and openssl must exit by itself.
+      await within('stream EOF', 5000, until(/never/))
+      expect(done).toBe(true)
+      expect(text.match(/^id: /gm)?.length).toBe(2)
+      expect(text.endsWith('id: 2\ndata: {"n":2}\n\n')).toBe(true)
+      const code = await within('openssl exit', 5000, p.exited)
+      expect(p.signalCode).toBeNull()
+      // The server ends the socket without TLS close_notify: openssl exits 1 with this EOF diagnostic (seen 4 of 4 runs).
+      expect(code).toBe(1)
+      expect(await new Response(p.stderr).text()).toContain('unexpected eof while reading')
+    } finally {
+      free = true
+      for (const r of waiting.splice(0)) r()
+      p.kill()
+      await p.exited
+      await t.s.stop()
     }
-    // the first tick is held: the stream is open and has no event yet
-    await until(/\r\n\r\n/)
-    expect(waiting.length).toBe(1)
-    expect(text.toLowerCase()).toContain('content-type: text/event-stream')
-    expect(text).not.toContain('id:')
-    await release({ n: 1 })
-    await until(/id: 1\ndata: \{"n":1\}\n\n/)
-    await release({ n: 2 })
-    await until(/id: 2\ndata: \{"n":2\}\n\n/)
-    // a later tick sees an equal board; the reader stays active until the stop closes the stream
-    await release({ n: 2 })
-    free = true
-    for (const r of waiting.splice(0)) r()
-    await t.s.stop()
-    await until(/never/)
-    expect(done).toBe(true)
-    expect(text.match(/^id: /gm)?.length).toBe(2)
-    expect(text.endsWith('id: 2\ndata: {"n":2}\n\n')).toBe(true)
-    await p.exited
   }, 20000)
 })
