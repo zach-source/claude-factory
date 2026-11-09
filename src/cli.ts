@@ -104,6 +104,7 @@ import {
 } from './beads'
 import { clusterKey } from './filing-guard'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
+import { hideParseText } from './secrets'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -8437,7 +8438,15 @@ async function sendParts(task: string, out: string, sha: string) {
 }
 
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
-const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+const rawRigs = (): Rig[] => {
+  if (!existsSync(rigsFile())) return []
+  const text = readFileSync(rigsFile(), 'utf8')
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    throw new Error(`${rigsFile()}: not valid JSON (${hideParseText((e as Error).message)})`)
+  }
+}
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
 const rigs = (): Rig[] => mapRigs(rawRigs())
 /** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
@@ -10888,13 +10897,14 @@ async function rigListLines(print: Print) {
     if (r.goal) print(`  goal: ${r.goal}`)
     if (r.slo) print(`  slo: ${r.slo}`)
     if (r.drift) print(`  drift: ${r.drift}`)
-    if (r.agent) print(`  agent: ${r.agent}`)
+    const safe = redactRig(r)
+    if (r.agent) print(`  agent: ${safe.agent}`)
     if (personOnlyContexts(r)?.length) print(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
     if (protectedBranches(r)?.length) print(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
     if (r.mergeAuthority === true)
       print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
     if (r.mcp) print(`  mcp: ${r.mcp}`)
-    for (const [k, v] of Object.entries(r.params ?? {})) print(`  param ${k}: ${v}`)
+    for (const [k, v] of Object.entries(safe.params ?? {})) print(`  param ${k}: ${v}`)
     if (r.linear) {
       const extra = [
         r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
@@ -13908,7 +13918,7 @@ if (import.meta.main && !outboxCmd)
             try {
               return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
             } catch (e) {
-              throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
+              throw new Error(`${from}: not valid JSON (${hideParseText((e as Error).message)})`)
             }
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)

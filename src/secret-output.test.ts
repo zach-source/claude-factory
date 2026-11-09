@@ -4,6 +4,9 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { tokenCommand } from './claude-token'
+import { hideParseText } from './secrets'
+
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const SHAPED = 'ghp_' + 'zqsecret' + 'a'.repeat(28)
 const KEYED = 'zqsecret' + '-keyed'
@@ -203,4 +206,67 @@ describe('a bad rigs.json hides its text', () => {
     writeFileSync(join(home, 'rigs-history', '99990101T000000000Z.json'), bad(repo))
     row(run, rigsPath, ['rig', 'undo'])
   }, 60_000)
+})
+
+describe('hideParseText', () => {
+  test.each([
+    [
+      'JSON Parse error: Unexpected identifier "' + 'zqsecret' + '"',
+      'JSON Parse error: Unexpected identifier <hidden>',
+    ],
+    ['JSON Parse error: "\\u' + 'zqse" is not a valid unicode escape', 'JSON Parse error: <hidden>'],
+    ['a "b" c "d', 'a <hidden>'],
+    ['a "b\nc"', 'a <hidden>'],
+    ["JSON Parse error: Expected '}'", "JSON Parse error: Expected '}'"],
+    ['', ''],
+  ])('%s', (input, out) => {
+    expect(hideParseText(input)).toBe(out)
+  })
+})
+
+describe('token list and best', () => {
+  const store = () => {
+    const { tmp } = setup()
+    return { tmp, stored: tokenKeys(tmp) as Record<string, string> }
+  }
+  const header = (init: unknown) => (init as { headers: Record<string, string> }).headers.authorization
+  const okFetch = (seen: string[]) => async (_u: unknown, init: unknown) => {
+    seen.push(header(init)!)
+    return new Response(null, {
+      headers: {
+        'anthropic-ratelimit-unified-status': 'allowed',
+        'anthropic-ratelimit-unified-7d-utilization': '0.2',
+      },
+    })
+  }
+  const throwFetch = async (_u: unknown, init: unknown) => {
+    throw new Error(header(init))
+  }
+
+  test('list probes each token and prints none', async () => {
+    const { stored } = store()
+    const seen: string[] = []
+    const text = await tokenCommand(['list'], stored, okFetch(seen) as never)
+    expect(text).not.toContain('zqsecret')
+    expect(seen.sort()).toEqual(['Bearer zqsecret-1', 'Bearer zqsecret-2'])
+  })
+
+  test('best picks slot 1 on a tie and prints no token', async () => {
+    const { tmp, stored } = store()
+    const text = await tokenCommand(['best'], stored, okFetch([]) as never)
+    expect(text).not.toContain('zqsecret')
+    expect(readFileSync(join(tmp, 'store', 'live'), 'utf8')).toBe('zqsecret-1')
+    expect(readFileSync(join(tmp, 'store', 'active'), 'utf8')).toBe('1')
+  })
+
+  test('a probe error hides the token', async () => {
+    const { stored } = store()
+    const text = await tokenCommand(['list'], stored, throwFetch as never)
+    expect(text).not.toContain('zqsecret')
+    expect(text).toContain('error')
+    let msg = ''
+    await tokenCommand(['best'], stored, throwFetch as never).catch(e => (msg = (e as Error).message))
+    expect(msg).not.toBe('')
+    expect(msg).not.toContain('zqsecret')
+  })
 })

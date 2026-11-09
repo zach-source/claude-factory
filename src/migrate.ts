@@ -10,6 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { hideParseText } from './secrets'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { MANAGER_CWD } from './ax'
@@ -240,7 +241,14 @@ export function plan(
   const local = localLiveRuns(runs)
   const move = runsToMove(runs, keep)
   const rigsFile = join(home, 'rigs.json')
-  const m = migratedRigs(existsSync(rigsFile) ? JSON.parse(readFileSync(rigsFile, 'utf8')) : [], originOf)
+  const rigsText = existsSync(rigsFile) ? readFileSync(rigsFile, 'utf8') : '[]'
+  let rigList: unknown
+  try {
+    rigList = JSON.parse(rigsText)
+  } catch (e) {
+    throw new Error(`${rigsFile}: not valid JSON (${hideParseText((e as Error).message)})`)
+  }
+  const m = migratedRigs(rigList as Parameters<typeof migratedRigs>[0], originOf)
   const claude = claudeFiles(readSessions(home), config)
   const staleMemory = move.flatMap(id => {
     const dir = join(runsDir, id)
