@@ -145,6 +145,16 @@ test('rig set changes one field and leaves every other byte equal (by name and b
   const rows: [string[], Record<string, unknown>, string[]][] = [
     [['--goal', 'new', 'words'], { goal: 'new words' }, []],
     [['--max', '3'], { maxRuns: 3 }, []],
+    [['--cluster-runs', '3'], { clusterRuns: 3 }, []],
+    [['--auto-queue', '2,3'], { autoQueue: { minPriority: 2, perHour: 3 } }, []],
+    [
+      ['--push-rule', 'run bun test', '--push-rule', 'no force'],
+      { pushRules: ['run bun test', 'no force'] },
+      [],
+    ],
+    [['--skills', 'asd-ste100,egm'], { skills: ['asd-ste100', 'egm'] }, []],
+    [['--otel-content', 'off'], { otelContent: false }, []],
+    [['--sandbox-class', 'microvm'], { sandboxClass: 'microvm' }, []],
     [['--sweeps', 'none'], { sweeps: [] }, []],
     [['--agent', 'claude'], { agent: 'claude' }, []],
     [['--param', 'base_branch=main'], { params: { base_branch: 'main' } }, []],
@@ -171,6 +181,25 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
   const okMcp = join(dir, 'ok-mcp.json')
   writeFileSync(okMcp, '{"mcpServers":{}}')
   const rows: string[][] = [
+    ...Object.entries({
+      '--cluster-runs': ['0', '1.5', '-1', 'abc', ''],
+      '--auto-queue': ['5,3', '2,0', '2', '2,3,4', 'on', ''],
+      '--push-rule': [' ', ''],
+      '--skills': ['nope', 'asd-ste100,', '', 'none,egm'],
+      '--otel-content': ['false', 'no', 'OFF', ''],
+      '--sandbox-class': ['kata', 'MICROVM', ''],
+    }).flatMap(([flag, values]) => [
+      ...values.map(value => ['x', flag, value]),
+      ['x', flag],
+      ...(flag === '--push-rule' ? [] : [['x', flag, values[0]!, flag, values[0]!]]),
+    ]),
+    ['x', '--push-rule', 'ok', '--push-rule', ''],
+    ['x', '--push-rule', 'none', '--push-rule', 'x'],
+    ['x', '--push-rule', 'none', '--push-rule', 'none'],
+    ['y', '--sandbox-class', 'microvm'],
+    ['x', '--path-prefix', '/a/', '--max', '2'],
+    ['x', '--port', '1', '--max', '2'],
+    ['--cluster-runs', '3', 'x'],
     ['x', '--max', '0'],
     ['x', '--max', 'abc'],
     ['x', '--runner', 'nope'],
@@ -206,6 +235,51 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
     expect(histCount(), row.join(' ')).toBe(0)
   }
   expect(factory(['rig', 'set', 'x']).err).toContain('usage: factory rig set')
+  for (const flag of [
+    '--cluster-runs',
+    '--auto-queue',
+    '--push-rule',
+    '--skills',
+    '--otel-content',
+    '--sandbox-class',
+  ])
+    expect(factory(['rig', 'set', 'x']).err).toContain(flag)
+})
+
+test('rig set clears autoQueue, pushRules, skills, otelContent and sandboxClass', () => {
+  const fields = {
+    autoQueue: { minPriority: 2, perHour: 3 },
+    pushRules: ['test'],
+    skills: ['egm'],
+    otelContent: false,
+    sandboxClass: 'microvm',
+  }
+  for (const [flag, value, key] of [
+    ['--auto-queue', 'off', 'autoQueue'],
+    ['--push-rule', 'none', 'pushRules'],
+    ['--skills', 'none', 'skills'],
+    ['--otel-content', 'on', 'otelContent'],
+    ['--sandbox-class', 'gvisor', 'sandboxClass'],
+  ]) {
+    const { x, y } = seed(fields)
+    const next: Record<string, unknown> = { ...x }
+    delete next[key!]
+    const r = factory(['rig', 'set', 'x', flag!, value!])
+    expect(r).toEqual({ code: 0, err: '', out: `rig x: set ${key}\n` })
+    expect(text()).toBe(JSON.stringify([next, y], null, 2))
+  }
+  seed()
+  const before = text()
+  expect(factory(['rig', 'set', 'x', '--auto-queue', 'off']).code).toBe(0)
+  expect(text()).toBe(before)
+  seed({ sandboxClass: 'microvm' }, false)
+  refused([['set', 'x', '--runner', 'herdr']])
+  expect(factory(['rig', 'set', 'x', '--runner', 'herdr']).err).toContain(
+    '--sandbox-class needs the ax runner',
+  )
+  expect(factory(['rig', 'set', 'y', '--sandbox-class', 'microvm']).err).toContain(
+    '--sandbox-class needs the ax runner',
+  )
 })
 
 test('a worker or a patrol cannot run rig set, but can run rig show', () => {

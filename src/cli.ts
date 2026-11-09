@@ -10874,6 +10874,8 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
       )
   }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
+  if (rig.sandboxClass !== undefined && !remote)
+    fail('--sandbox-class needs the ax runner: add --runner ax, or run rig set --sandbox-class gvisor first')
   if (rig.maxRuns !== undefined && !(Number.isInteger(rig.maxRuns) && rig.maxRuns >= 1))
     fail(`--max is a number of runs, at least 1 (not "${rig.maxRuns}")`)
   if (rig.slo !== undefined && !rig.slo.trim())
@@ -12137,7 +12139,7 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
@@ -13633,7 +13635,15 @@ if (import.meta.main && !outboxCmd)
           console.log(JSON.stringify(redactRig(found!), null, 2))
         } else if (sub === 'set') {
           const usage =
-            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]..."
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
+          const val = (f: string) => (args.includes(f) ? (opt(f) ?? '') : undefined)
+          const clusterRuns = val('--cluster-runs')
+          const autoQueue = val('--auto-queue')
+          const pushRules: string[] = []
+          while (args.includes('--push-rule')) pushRules.push(opt('--push-rule') ?? '')
+          const skills = val('--skills')
+          const otelContent = val('--otel-content')
+          const sandboxClass = val('--sandbox-class')
           const foreign = [
             [slo, '--slo'],
             [drift, '--drift'],
@@ -13651,6 +13661,49 @@ if (import.meta.main && !outboxCmd)
           if (!target) fail(`${repoOf(name!)} is not a rig`)
           const set: Record<string, unknown> = {}
           const unset: string[] = []
+          if (clusterRuns !== undefined) {
+            if (!/^[1-9]\d*$/.test(clusterRuns))
+              fail(`--cluster-runs is a number of runs, at least 1 (not "${clusterRuns}")`)
+            set.clusterRuns = Number(clusterRuns)
+          }
+          if (autoQueue !== undefined) {
+            if (autoQueue === 'off') unset.push('autoQueue')
+            else {
+              const m = /^([0-4]),([1-9]\d*)$/.exec(autoQueue)
+              if (!m)
+                fail(
+                  `--auto-queue is <minPriority 0-4>,<perHour 1 or more>, e.g. 2,3, or off (not "${autoQueue}")`,
+                )
+              set.autoQueue = { minPriority: Number(m![1]), perHour: Number(m![2]) }
+            }
+          }
+          if (pushRules.length) {
+            if (pushRules.some(r => !r.trim()) || (pushRules.includes('none') && pushRules.length !== 1))
+              fail('--push-rule is a non-empty rule text, or one --push-rule none alone')
+            if (pushRules[0] === 'none') unset.push('pushRules')
+            else set.pushRules = pushRules
+          }
+          if (skills !== undefined) {
+            if (skills === 'none') unset.push('skills')
+            else {
+              const names = skills.split(',')
+              const bad = names.flatMap(n => unknownSkill(n, '--skills'))
+              if (bad.length) fail(bad.join('; '))
+              set.skills = names
+            }
+          }
+          if (otelContent !== undefined) {
+            if (otelContent !== 'on' && otelContent !== 'off')
+              fail(`--otel-content is on or off (not "${otelContent}")`)
+            if (otelContent === 'on') unset.push('otelContent')
+            else set.otelContent = false
+          }
+          if (sandboxClass !== undefined) {
+            if (sandboxClass !== 'gvisor' && sandboxClass !== 'microvm')
+              fail(`--sandbox-class is gvisor or microvm (not "${sandboxClass}")`)
+            if (sandboxClass === 'gvisor') unset.push('sandboxClass')
+            else set.sandboxClass = sandboxClass
+          }
           if (goal !== undefined) {
             if (!goal.trim()) fail('--goal needs text')
             set.goal = goal
