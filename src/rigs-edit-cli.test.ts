@@ -145,6 +145,22 @@ test('rig set changes one field and leaves every other byte equal (by name and b
   const rows: [string[], Record<string, unknown>, string[]][] = [
     [['--goal', 'new', 'words'], { goal: 'new words' }, []],
     [['--max', '3'], { maxRuns: 3 }, []],
+    [['--cluster-runs', '3'], { clusterRuns: 3 }, []],
+    [['--cluster-runs', '9'.repeat(308)], { clusterRuns: Number('9'.repeat(308)) }, []],
+    [['--auto-queue', '2,3'], { autoQueue: { minPriority: 2, perHour: 3 } }, []],
+    [
+      ['--auto-queue', `2,${'9'.repeat(308)}`],
+      { autoQueue: { minPriority: 2, perHour: Number('9'.repeat(308)) } },
+      [],
+    ],
+    [
+      ['--push-rule', 'run bun test', '--push-rule', 'no force'],
+      { pushRules: ['run bun test', 'no force'] },
+      [],
+    ],
+    [['--skills', 'asd-ste100,egm'], { skills: ['asd-ste100', 'egm'] }, []],
+    [['--otel-content', 'off'], { otelContent: false }, []],
+    [['--sandbox-class', 'microvm'], { sandboxClass: 'microvm' }, []],
     [['--sweeps', 'none'], { sweeps: [] }, []],
     [['--agent', 'claude'], { agent: 'claude' }, []],
     [['--param', 'base_branch=main'], { params: { base_branch: 'main' } }, []],
@@ -171,6 +187,13 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
   const okMcp = join(dir, 'ok-mcp.json')
   writeFileSync(okMcp, '{"mcpServers":{}}')
   const rows: string[][] = [
+    ['x', '--push-rule', 'ok', '--push-rule', ''],
+    ['x', '--push-rule', 'none', '--push-rule', 'x'],
+    ['x', '--push-rule', 'none', '--push-rule', 'none'],
+    ['y', '--sandbox-class', 'microvm'],
+    ['x', '--path-prefix', '/a/', '--max', '2'],
+    ['x', '--port', '1', '--max', '2'],
+    ['--cluster-runs', '3', 'x'],
     ['x', '--max', '0'],
     ['x', '--max', 'abc'],
     ['x', '--runner', 'nope'],
@@ -206,6 +229,71 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
     expect(histCount(), row.join(' ')).toBe(0)
   }
   expect(factory(['rig', 'set', 'x']).err).toContain('usage: factory rig set')
+  for (const flag of [
+    '--cluster-runs',
+    '--auto-queue',
+    '--push-rule',
+    '--skills',
+    '--otel-content',
+    '--sandbox-class',
+  ])
+    expect(factory(['rig', 'set', 'x']).err).toContain(flag)
+})
+
+test.each(
+  Object.entries({
+    '--cluster-runs': ['0', '1.5', '-1', 'abc', '', '9'.repeat(309)],
+    '--auto-queue': ['5,3', '2,0', '2', '2,3,4', 'on', '', `2,${'9'.repeat(309)}`],
+    '--push-rule': [' ', ''],
+    '--skills': ['nope', 'asd-ste100,', '', 'none,egm'],
+    '--otel-content': ['false', 'no', 'OFF', ''],
+    '--sandbox-class': ['kata', 'MICROVM', ''],
+  }),
+)('rig set refuses bad values for %s', (flag, values) => {
+  seed()
+  refused([
+    ...values.map(value => ['set', 'x', flag, value]),
+    ['set', 'x', flag],
+    ...(flag === '--push-rule' ? [] : [['set', 'x', flag, values[0]!, flag, values[0]!]]),
+  ])
+  if (flag === '--push-rule')
+    expect(factory(['rig', 'set', 'x', flag, ' ']).err).toContain('--push-rule is a non-empty rule text')
+})
+
+test('rig set clears autoQueue, pushRules, skills, otelContent and sandboxClass', () => {
+  const fields = {
+    autoQueue: { minPriority: 2, perHour: 3 },
+    pushRules: ['test'],
+    skills: ['egm'],
+    otelContent: false,
+    sandboxClass: 'microvm',
+  }
+  for (const [flag, value, key] of [
+    ['--auto-queue', 'off', 'autoQueue'],
+    ['--push-rule', 'none', 'pushRules'],
+    ['--skills', 'none', 'skills'],
+    ['--otel-content', 'on', 'otelContent'],
+    ['--sandbox-class', 'gvisor', 'sandboxClass'],
+  ]) {
+    const { x, y } = seed(fields)
+    const next: Record<string, unknown> = { ...x }
+    delete next[key!]
+    const r = factory(['rig', 'set', 'x', flag!, value!])
+    expect(r).toEqual({ code: 0, err: '', out: `rig x: set ${key}\n` })
+    expect(text()).toBe(JSON.stringify([next, y], null, 2))
+  }
+  seed()
+  const before = text()
+  expect(factory(['rig', 'set', 'x', '--auto-queue', 'off']).code).toBe(0)
+  expect(text()).toBe(before)
+  seed({ sandboxClass: 'microvm' }, false)
+  refused([['set', 'x', '--runner', 'herdr']])
+  expect(factory(['rig', 'set', 'x', '--runner', 'herdr']).err).toContain(
+    '--sandbox-class needs the ax runner',
+  )
+  expect(factory(['rig', 'set', 'y', '--sandbox-class', 'microvm']).err).toContain(
+    '--sandbox-class needs the ax runner',
+  )
 })
 
 test('a worker or a patrol cannot run rig set, but can run rig show', () => {
@@ -427,6 +515,79 @@ test('rig egress add then rm returns the list', () => {
   expect(list()[0].egress).toHaveLength(1)
   factory(['rig', 'egress', 'rm', 'x', 'h.example.com'])
   expect(text()).toBe(b)
+})
+
+test('rig egress add --path-prefix stores the prefixes; rm returns the list', () => {
+  seed()
+  const before = text()
+  const prefixes = ['/v1/aws/acme/', '/v1/aws/acme-b/']
+  const r = factory([
+    'rig',
+    'egress',
+    'add',
+    'x',
+    'broker.example.com=AWS_BROKER:Authorization:',
+    '--port',
+    '8443',
+    ...prefixes.flatMap(p => ['--path-prefix', p]),
+  ])
+  expect(r).toMatchObject({ code: 0, err: '' })
+  expect(list()[0].egress[1]).toEqual({
+    hosts: ['broker.example.com'],
+    key: 'AWS_BROKER',
+    header: 'Authorization',
+    prefix: '',
+    port: 8443,
+    pathPrefixes: prefixes,
+  })
+  expect(factory(['rig', 'egress', 'rm', 'x', 'broker.example.com']).code).toBe(0)
+  expect(text()).toBe(before)
+  expect(
+    factory([
+      'rig',
+      'egress',
+      'add',
+      'x',
+      'results-receiver.actions.githubusercontent.com',
+      '--path-prefix',
+      '/actions-results/',
+    ]).code,
+  ).toBe(0)
+  expect(list()[0].egress[1]).toEqual({
+    hosts: ['results-receiver.actions.githubusercontent.com'],
+    pathPrefixes: ['/actions-results/'],
+  })
+})
+
+test('rig egress refuses unsafe path prefixes and flags outside their scope', () => {
+  seed()
+  refused([
+    ...[
+      'a/',
+      '/',
+      '',
+      '/v1/aws/acme',
+      '/a//b/',
+      '/a/../b/',
+      '/.git/',
+      '/a b/',
+      '/a?x',
+      '/a%2F',
+      '/a*',
+      '/ax_auth/',
+      '/github-reviewer/',
+      '/GitHub_Reviewer/',
+    ].map(p => ['egress', 'add', 'x', 'h.example.com', '--path-prefix', p]),
+    ...['api.github.com', 'GitHub.com'].map(h => ['egress', 'add', 'x', h, '--path-prefix', '/a/']),
+    ['egress', 'add', 'x', 'h.example.com', '--path-prefix', '/a/', '--path-prefix', '/a/'],
+    ['egress', 'add', 'x', 'h.example.com', '--path-prefix'],
+    ['egress', 'rm', 'x', 'example.com', '--path-prefix', '/a/'],
+    ['env', 'set', 'x', 'A=b', '--path-prefix', '/a/'],
+    ['beads-remote', 'clear', 'x', '--path-prefix', '/a/'],
+    ['env', 'set', 'x', 'A=b', '--cluster-runs', '3'],
+    ['egress', 'add', 'x', 'h.example.com', '--skills', 'egm'],
+  ])
+  expect(factory(['rig', 'egress', 'add', 'x']).err).toContain('--path-prefix')
 })
 
 test('rig egress add on a local runner is refused', () => {
