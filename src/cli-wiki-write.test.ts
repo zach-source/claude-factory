@@ -801,6 +801,21 @@ slow('write AC9 a refused global GitHub list calls no agent, and both beads reco
   factory(['wiki', 'write'])
   expect(Object.keys(state().written).sort()).toEqual(['acme-1', 'acme-2'])
   expect(runs()).toBe(1)
+  const done = state().lastWriteAt
+  expect(done).not.toBe(PRIOR)
+  for (const [id, num] of [
+    ['acme-1', 8],
+    ['acme-2', 9],
+  ]) {
+    const text = git('show', `HEAD:solutions/2026-11/fix-${id}.md`)
+    for (const s of SECTIONS) expect(text).toContain(`## ${s}`)
+    expect(text).toContain(`https://github.com/acme/widget/pull/${num}`)
+  }
+  const head = git('rev-parse', 'HEAD')
+  factory(['wiki', 'write'])
+  expect(runs()).toBe(1)
+  expect(git('rev-parse', 'HEAD')).toBe(head)
+  expect(state().lastWriteAt).toBe(done)
 })
 
 slow(
@@ -840,6 +855,7 @@ slow(
 slow('write AC8 a malformed metadata ship_pr keeps the bead pending without a detail call', () => {
   setup()
   for (const meta of [
+    null,
     '',
     5,
     'https://github.com/acme/widget/pull/5?x=1',
@@ -959,6 +975,140 @@ esac
   factory(['wiki', 'write'])
   expect(runs()).toBe(2)
 })
+
+slow('write AC9 a recovered code plus release pair commits both links and both source records', () => {
+  setup()
+  seed([closed('acme-3', { closed_at: OLD, metadata: { ship_pr: PR5 } }), closed('acme-5')], [])
+  pr(5, 'acme-3: fix it', ['src/a.ts'])
+  const rel = pr(7, 'acme-3 release notes', ['CHANGELOG.md'])
+  const other = pr(9, 'acme-5: fix it', ['src/c.ts'])
+  const R7 = 'https://github.com/acme/widget/pull/7'
+  const body = `${PR5} ${R7}`
+  stage('solutions/2026-11/fix-acme-3.md', page('acme-3', body))
+  stage('solutions/2026-11/fix-acme-5.md', page('acme-5', 'https://github.com/acme/widget/pull/9'))
+  prior()
+  writeFileSync(LIST(), JSON.stringify([{}]))
+  factory(['wiki', 'write'])
+  expect(runs()).toBe(0)
+  expect(state().lastWriteAt).toBe(PRIOR)
+  writeFileSync(LIST(), JSON.stringify([other, rel]))
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written).sort()).toEqual(['acme-3', 'acme-5'])
+  expect(prompt()).toContain(PR5)
+  expect(prompt()).toContain(R7)
+  expect(prompt()).toContain('acme-3 release notes')
+  const text = git('show', 'HEAD:solutions/2026-11/fix-acme-3.md')
+  for (const s of SECTIONS) expect(text).toContain(`## ${s}`)
+  expect(text).toContain(PR5)
+  expect(text).toContain(R7)
+  const done = state().lastWriteAt
+  const head = git('rev-parse', 'HEAD')
+  factory(['wiki', 'write'])
+  expect(runs()).toBe(1)
+  expect(git('rev-parse', 'HEAD')).toBe(head)
+  expect(state().lastWriteAt).toBe(done)
+})
+
+/** a GitLab rig: acme-old (older, MR 7) and acme-new (MR 8); the replies are files under data, `ch7` is the MR 7 file list */
+function gitlabRig() {
+  setup()
+  Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'remote',
+    'set-url',
+    'origin',
+    'https://gitlab.example.com/acme/widget.git',
+  ])
+  seed([closed('acme-old', { closed_at: OLD }), closed('acme-new')])
+  const mrow = (iid: number, title: string) => ({
+    iid,
+    web_url: `https://gitlab.example.com/acme/widget/-/merge_requests/${iid}`,
+    title,
+    state: 'merged',
+    description: null,
+  })
+  const j = (name: string, v: unknown) => writeFileSync(join(data, name), JSON.stringify(v))
+  j('full-old', [mrow(7, 'acme-old: fix it')])
+  j('full-new', [mrow(8, 'acme-new: fix it')])
+  j('mr7', mrow(7, 'acme-old: fix it'))
+  j('mr8', mrow(8, 'acme-new: fix it'))
+  j('ch7', { changes: [{ new_path: 'src/b.ts', diff: '' }] })
+  j('ch8', { changes: [{ new_path: 'src/a.ts', diff: '' }] })
+  const glab = join(dir, `bin${n}`, 'glab')
+  writeFileSync(
+    glab,
+    `#!/bin/sh
+d='${data}'
+case "$*" in
+  *search=acme-old*) cat "$d/full-old";;
+  *search=acme-new*) cat "$d/full-new";;
+  *merge_requests/7/changes*) cat "$d/ch7";;
+  *merge_requests/8/changes*) cat "$d/ch8";;
+  *merge_requests/7*) cat "$d/mr7";;
+  *merge_requests/8*) cat "$d/mr8";;
+  *) echo '[]';;
+esac
+`,
+  )
+  chmodSync(glab, 0o755)
+  stage('solutions/2026-11/fix-acme-old.md', page('acme-old', GL))
+  stage('solutions/2026-11/fix-acme-new.md', page('acme-new', GL.replace('7', '8')))
+  prior()
+  return j
+}
+
+slow('write AC9 a malformed GitLab full id reply keeps the older bead pending, then it recovers', () => {
+  const j = gitlabRig()
+  j('full-old', {})
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written)).toEqual(['acme-new'])
+  expect(state().lastWriteAt).toBe(PRIOR)
+  j('full-old', [
+    {
+      iid: 7,
+      web_url: GL,
+      title: 'acme-old: fix it',
+      state: 'merged',
+      description: null,
+    },
+  ])
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written).sort()).toEqual(['acme-new', 'acme-old'])
+  expect(git('show', 'HEAD:solutions/2026-11/fix-acme-old.md')).toContain(GL)
+  const done = state().lastWriteAt
+  expect(done).not.toBe(PRIOR)
+  factory(['wiki', 'write'])
+  expect(runs()).toBe(2)
+  expect(state().lastWriteAt).toBe(done)
+})
+
+for (const [name, changes, complete] of [
+  ['an absent overflow', { changes: [{ new_path: 'src/b.ts', diff: '' }] }, true],
+  ['overflow false', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: false }, true],
+  ['overflow null', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: null }, false],
+  ['overflow 0', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: 0 }, false],
+  ['overflow 1', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: 1 }, false],
+  ['overflow true', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: true }, false],
+  ['overflow an empty string', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: '' }, false],
+  ['overflow an array', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: [] }, false],
+  ['overflow an object', { changes: [{ new_path: 'src/b.ts', diff: '' }], overflow: {} }, false],
+  ['an empty change list', { changes: [] }, false],
+  ['a bad new_path', { changes: [{ new_path: '../x.ts', diff: '' }] }, false],
+  ['a null diff', { changes: [{ new_path: 'src/b.ts', diff: null }] }, false],
+] as const)
+  slow(
+    `write AC8 GitLab file list with ${name} ${complete ? 'is complete' : 'keeps the bead pending'}`,
+    () => {
+      const j = gitlabRig()
+      j('ch7', changes)
+      const out = factory(['wiki', 'write', '--dry-run']).out
+      expect(out).toContain(
+        complete ? '2 groups from 2 beads; 0 waiting' : '1 groups from 1 beads; 1 waiting',
+      )
+    },
+  )
 
 test('AC10 ambient remote and routing values reach no setup or command child', () => {
   const seeded: Record<string, string> = {
