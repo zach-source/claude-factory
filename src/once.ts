@@ -80,9 +80,13 @@ export type ModelResult = {
   usage?: Usage
   /** every Bash command the model ran */
   commands: string[]
+  /** the same Bash commands with their tool_use ids */
+  calls: { id: string; command: string }[]
+  /** the Claude session id of the run */
+  session?: string
 }
 
-type ModelCall = {
+export type ModelCall = {
   system: string
   input: string
   model: string
@@ -95,6 +99,14 @@ type ModelCall = {
   codex?: string
   /** the longest the call runs */
   timeoutMs: number
+  /** keep the session on disk, so a later call can resume it */
+  persist?: boolean
+  /** a session id to resume (persist mode only) */
+  resume?: string
+  /** the child's working directory */
+  cwd?: string
+  /** the env that the child starts from, in place of process.env */
+  baseEnv?: Record<string, string | undefined>
 }
 
 /** the same check as FACTORY_DREAM_CODEX */
@@ -154,7 +166,11 @@ function appendLog(home: string, name: string, cap: number, entry: unknown) {
 }
 
 /** one manager-usage.jsonl row, the same shape as the mod's appendManagerUsage. A failure never reaches the caller. */
-function appendUsage(home: string, name: 'patrol' | 'pm' | 'briefer' | 'reviewer', usage?: Usage) {
+export function appendUsage(
+  home: string,
+  name: 'patrol' | 'pm' | 'briefer' | 'reviewer' | 'chat',
+  usage?: Usage,
+) {
   try {
     if (!usage) return
     const row = {
@@ -178,6 +194,7 @@ export function parseStream(
   model: string,
 ): Omit<ModelResult, 'durationMs'> & { durationMs?: number } {
   const commands: string[] = []
+  const calls: { id: string; command: string }[] = []
   let result: Record<string, any> | undefined
   let seenModel = model
   for (const l of out.split('\n')) {
@@ -190,12 +207,14 @@ export function parseStream(
     if (e.type === 'assistant') {
       seenModel = e.message?.model ?? seenModel
       for (const b of e.message?.content ?? [])
-        if (b?.type === 'tool_use' && b.name === 'Bash' && typeof b.input?.command === 'string')
+        if (b?.type === 'tool_use' && b.name === 'Bash' && typeof b.input?.command === 'string') {
           commands.push(b.input.command)
+          if (typeof b.id === 'string') calls.push({ id: b.id, command: b.input.command })
+        }
     } else if (e.type === 'result') result = e
   }
   if (!result)
-    return { isOk: false, text: '', error: 'the model gave no result', reason: 'no-result', commands }
+    return { isOk: false, text: '', error: 'the model gave no result', reason: 'no-result', commands, calls }
   const u = result.usage
   const usage = u && {
     model: seenModel,
@@ -213,22 +232,16 @@ export function parseStream(
     durationMs: typeof result.duration_ms === 'number' ? result.duration_ms : undefined,
     usage,
     commands,
+    calls,
+    session: typeof result.session_id === 'string' ? result.session_id : undefined,
   }
 }
 
 const ALLOWED_ENV = ['PATH', 'HOME', 'TERM', 'LANG']
 
-/** The one model call. Tests point FACTORY_CLAUDE (or FACTORY_CODEX) at a stub. */
-export function runModel(c: ModelCall): ModelResult {
-  const start = Date.now()
-  const fail = (error: string): ModelResult => ({
-    isOk: false,
-    text: '',
-    error,
-    reason: 'spawn-failed',
-    durationMs: Date.now() - start,
-    commands: [],
-  })
+type Spawn = { argv: string[]; env: Record<string, string | undefined>; stdin: string }
+
+function modelSpawn(c: ModelCall): Spawn {
   const argv = c.codex
     ? [
         process.env.FACTORY_CODEX ?? 'codex',
@@ -236,7 +249,8 @@ export function runModel(c: ModelCall): ModelResult {
       ]
     : [
         ...claudeCommand().split(/\s+/),
-        ...['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence'],
+        ...['-p', '--output-format', 'stream-json', '--verbose'],
+        ...(c.persist ? (c.resume ? ['--resume', c.resume] : []) : ['--no-session-persistence']),
         ...['--model', c.model, '--max-turns', String(c.maxTurns), '--tools', c.tools],
         // -p has nobody to ask: allow the step's tools, so a call is not refused. The guard hook still runs first.
         ...(c.tools ? ['--allowedTools', c.tools] : []),
@@ -250,25 +264,29 @@ export function runModel(c: ModelCall): ModelResult {
     ? Object.fromEntries(
         ALLOWED_ENV.flatMap(k => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])),
       )
-    : { ...process.env, ...c.env }
-  const spawn = () => Bun.spawnSync(argv, { env, stdin: Buffer.from(stdin), timeout: c.timeoutMs })
-  let p: ReturnType<typeof spawn>
-  try {
-    p = spawn()
-  } catch (err) {
-    return fail(line(String(err), 300))
-  }
+    : { ...(c.baseEnv ?? process.env), ...c.env }
+  return { argv, env, stdin }
+}
+
+/** turns the exit of a model child into a ModelResult */
+function modelResult(
+  c: ModelCall,
+  out: string,
+  err: string,
+  exitCode: number | null,
+  start: number,
+): ModelResult {
   const durationMs = Date.now() - start
-  const out = p.stdout.toString()
   if (c.codex) {
-    const isOk = p.exitCode === 0
+    const isOk = exitCode === 0
     return {
       isOk,
       text: out.trim(),
-      error: isOk ? undefined : line(p.stderr.toString() || `codex exited ${p.exitCode}`, 300),
+      error: isOk ? undefined : line(err || `codex exited ${exitCode}`, 300),
       reason: isOk ? 'completed' : 'failed',
       durationMs,
       commands: [],
+      calls: [],
     }
   }
   const r = parseStream(out, c.model)
@@ -276,10 +294,68 @@ export function runModel(c: ModelCall): ModelResult {
     return {
       ...r,
       durationMs,
-      error: line(p.stderr.toString() || out || `the model exited ${p.exitCode}`, 300),
+      error: line(err || out || `the model exited ${exitCode}`, 300),
       reason: 'spawn-failed',
     }
   return { ...r, durationMs: r.durationMs ?? durationMs }
+}
+
+const spawnFailed = (error: string, start: number): ModelResult => ({
+  isOk: false,
+  text: '',
+  error,
+  reason: 'spawn-failed',
+  durationMs: Date.now() - start,
+  commands: [],
+  calls: [],
+})
+
+/** The one model call. Tests point FACTORY_CLAUDE (or FACTORY_CODEX) at a stub. */
+export function runModel(c: ModelCall): ModelResult {
+  const start = Date.now()
+  const { argv, env, stdin } = modelSpawn(c)
+  let p: Bun.SyncSubprocess<'pipe', 'pipe'>
+  try {
+    p = Bun.spawnSync(argv, { env, cwd: c.cwd, stdin: Buffer.from(stdin), timeout: c.timeoutMs })
+  } catch (err) {
+    return spawnFailed(line(String(err), 300), start)
+  }
+  return modelResult(c, p.stdout.toString(), p.stderr.toString(), p.exitCode, start)
+}
+
+/**
+ * The same call as runModel, without blocking the process. The child leads its own process group,
+ * and the timeout kills the group, so a grandchild cannot keep a pipe open.
+ */
+export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
+  const start = Date.now()
+  const { argv, env, stdin } = modelSpawn(c)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const proc = Bun.spawn(argv, {
+      env,
+      cwd: c.cwd,
+      stdin: Buffer.from(stdin),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      detached: true,
+    })
+    timer = setTimeout(() => {
+      try {
+        process.kill(-proc.pid, 'SIGKILL')
+      } catch {}
+    }, c.timeoutMs)
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    return modelResult(c, out, err, proc.exitCode, start)
+  } catch (err) {
+    return spawnFailed(line(String(err), 300), start)
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 const mailId = (m: FactoryMail) => `${m.run}\0${m.from}\0${m.at}\0${m.text}`
