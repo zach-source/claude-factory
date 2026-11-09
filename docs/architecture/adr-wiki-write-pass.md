@@ -8,7 +8,108 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Revision after review round four
+## Current handoff at 9b8bc55d
+
+This section overrides prior task lists, not AC1–AC10 or their source grammar.
+Keep draft PR #714 and all existing fixes. Do not repeat completed production work.
+Task `.17` now has code/release source checks and committed-page recovery checks. Keep it closed unless a check fails.
+Reopen `.18`, then `.16`. These two commits fit one 120-minute pass.
+
+### Remaining evidence gaps
+
+The last commit added both GitLab detail entry paths, real file-refusal passes, release pairs and default kick tools.
+It did not complete the field matrix. For example, the file table omits string `false`, invalid JSON and failed commands.
+The file table still uses only discovery. GitHub detail/file checks also need the full matrix and durable refusal assertions.
+At `src/wiki-kick.test.ts:78`, `passEnded()` returns after its polling limit without an assertion.
+An absent lock can mean either a completed child or a child that has not started.
+The page marker at line 319 does not prove process exit. Several launch tests still use fixed sleeps.
+At `src/cli-wiki-write.test.ts:56`, the default `gh repo` response succeeds without an explicit fixture override.
+These are acceptance evidence gaps. This plan does not claim a new production defect.
+
+### Finite AC8 test inventory
+
+Retain the closed source grammar below. Validate consumed fields before filters, defaults or projections.
+An incomplete source must stay pending; it must never become a successful empty source.
+Ignore unused API fields. Branch lookup, shell parsing and new page fields remain out of scope.
+Use table tests for the following value classes. Each slash-separated value is a separate row.
+For each applicable field, run the table through metadata and discovery on both forges.
+Use the appropriate forge field name. The GitLab overflow field has no GitHub equivalent.
+
+| Field or boundary | Accepted rows | Rejected rows |
+| --- | --- | --- |
+| Detail root/read | Valid object with extra unused field | Failed command; invalid JSON; null; array; empty object |
+| `number` / `iid` | Requested positive integer | Absent; null; string; zero; fraction; different integer |
+| `title` | Nonempty string | Absent; null; empty string; number |
+| GitHub `merged_at` | Valid date-time; null | Absent; number; empty string; impossible date |
+| GitLab `state` | merged; opened; closed; locked | Absent; null; number; unknown string |
+| `body` / `description` | Absent; null; string | Boolean; number; array; object |
+| Files root/read | Valid nonempty files/changes list | Failed command; invalid JSON; null; wrong root type; absent changes; empty list |
+| File row | Object with valid path | Null; array; empty object |
+| `filename` / `new_path` | `src/a.ts`; `src/nested/a.ts` | Absent; null; number; empty; `/a`; `a//b`; `./a`; `a/../b`; backslash; control character |
+| `patch` / `diff` | Absent; string | Null; boolean; number; array; object |
+| GitLab `overflow` | Absent; false | True; null; 0; 1; empty string; string `false`; array; object |
+| `metadata.ship_pr` | Absent; canonical rig URL | Null; boolean; number; empty string; array; object; noncanonical URL |
+
+For metadata URLs, retain the existing host, project, credentials, port, query, fragment and number-mismatch refusal tests.
+Retain strict discovery root/row, date, identity and pagination tests in `src/prs.test.ts`.
+Reference those tests in the task evidence; do not duplicate every parser row in CLI tests.
+The CLI detail/file matrix must exercise both entry paths. Include a nested GitLab project as a positive and negative control.
+For metadata absence, assert discovery occurs. For malformed metadata, assert zero discovery, detail, file and agent calls for that bead.
+For rejected discovery, assert zero detail/file/agent calls. For rejected detail, assert zero file/agent calls.
+For rejected files, assert zero agent calls for the affected bead and no classification-based completion.
+Use real passes for refusals. Each must retain the exact prior `lastWriteAt` and exclude the affected bead from `written`.
+Assert that an unrelated valid bead can commit. Count calls by bead or PR, not across unrelated work.
+Known unmerged metadata remains pending. Valid empty discovery can settle a bead; invalid source data cannot.
+Positive rows must reach their expected next stage. An early unrelated refusal does not prove field acceptance.
+Proof: `bun test --timeout 60000 src/prs.test.ts src/cli-wiki-write.test.ts`.
+
+### AC9 and AC10 completion evidence
+
+Keep AC9's fixed dates, both prompt source records, seven-section committed blobs, exact timestamps and stable third-pass HEAD.
+Audit all five cases: GitHub detail/files, global GitHub, GitLab full ID, GitLab short ID and code/release pair.
+Do not infer a missing PR source object from a URL in the bead object. Assert both PR records in the prompt.
+Proof: `bun test --timeout 60000 src/cli-wiki-write.test.ts --test-name-pattern AC9`.
+
+AC10 requires proof of child completion, not merely a bounded wait.
+Track each launched fixture child through a completion signal and process exit, or an equivalent observable lifecycle.
+On a wait deadline, fail the test and stop/reap its fixture children before cleanup.
+Do not accept an absent lock as proof that an unobserved child exited.
+Use this check in every affected launch test and the ambient-environment regression, before assertions and cleanup.
+Add a controlled delayed-child test that exceeds the old two-second start window.
+Add a child that does not complete; the wait must fail rather than report success.
+Test unexpected `gh repo` as a recorded refusal. Permit a successful private-repo response only through an explicit fixture override.
+Keep default fail-and-record `gh`, `glab`, Claude and Codex tools, routing exclusions, transport interception and parent restoration.
+Retain local git and fixture source reads as positive controls. No regression can contact a real service on pre-fix code.
+Proof: `bun test --timeout 60000 src/cli-wiki-write.test.ts src/wiki-kick.test.ts`.
+
+### Commits, risk and release
+
+1. `.18`, 35 minutes: add delayed-child and timeout checks first, then correct waits and default forge responses.
+   Commit only the test fixture changes. Run AC10 before the source matrix.
+2. `.16`, 65 minutes: complete the finite matrix and record each row's test name and call/state assertions.
+   Run AC8, AC9 and all wiki regression tests. Keep `.17` closed if its audit passes.
+   Add a production fix only if a new row proves a defect; commit the red test before that fix.
+
+Reserve 20 minutes for format, typecheck and final evidence. CI wait time is separate.
+Do not repeat old red tests against old commits. New tests can pass current production code.
+For new guard checks, commit first, then mutate one guard at a time; each mutant must build and fail its intended test.
+The final PR head must pass test, typecheck, plugin and format CI. A prior head does not satisfy this requirement.
+Use the repository test/typecheck commands, the repository gate, `bun audit`, and gitleaks before the final handoff.
+Do not close a task with only a suite total: include the finite matrix or lifecycle evidence it owns.
+
+This work is **security-sensitive** because source validation and child isolation control external access.
+No new flag, dependency, migration, state format, production permission or `.factory/` change is necessary.
+Reject a parser rewrite and another partial value patch. Existing adapters and table tests are sufficient.
+Preserve the 180-minute kick, halt policy, 45-minute agent default, person guard and committed-page progress.
+Keep the existing `FACTORY_WIKI_WRITE_MIN`, `FACTORY_DREAM_CODEX` and test timeout override contracts.
+Release still needs review, security, exact-head CI and a person's merge. Rollback uses a revert PR and a person's merge.
+Preserve wiki pages and state on rollback. Do not reset progress by hand.
+Observe counts, masked `wiki.log` failures, state, committed pages and the remote result.
+AC7 remains **must-see-live** for authorized ship soak: its own page must contain PR #590 and #591.
+Run `factory wiki write --bead claude-factory-3w8o` only in that authorized live step.
+The soak cannot substitute its deadline for evidence. No live read is a pre-merge acceptance condition.
+
+## Prior revision after review round four
 
 This revision takes precedence over earlier task lists. AC1–AC9 remain required; AC10 below adds test isolation.
 Keep draft PR #714. Tasks `.1` through `.15` are complete. Do not repeat them.
