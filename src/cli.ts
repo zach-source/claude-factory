@@ -103,7 +103,9 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
+import { routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
+import { hideParseText, hideSecret } from './secrets'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -157,6 +159,7 @@ import { INSTALL_VERB, META_WRITE, bdWrite, gatedCommand } from '../mod/hooks/vi
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
+import { GAPS_FILE, parity } from './parity'
 import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
@@ -420,6 +423,8 @@ export type Run = {
   bead?: string
   /** a rig's ship run: only the runner writes this, and it counts against no run limit (claude-factory-rtuw) */
   ship?: true
+  /** the ship branch a rework run started from: set once, so a later bead edit cannot move the security diff */
+  shipBranch?: string
 }
 type Saved = {
   cursor: number
@@ -1733,7 +1738,15 @@ const skillLines = (skills: string[]) =>
     ? ['', '## Skills', ...skills.map(s => `- ${s}: ${SKILL_USE[s] ?? 'load it when it applies'}`)]
     : []
 
-export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[], notes = '') {
+export function brief(
+  run: Run,
+  def: Factory,
+  node: string,
+  c: Ctx,
+  inbox: Mail[],
+  notes = '',
+  route?: SecurityRoute,
+) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
   const parked = isParked(c, node) ? c.log.at(-1) : undefined
@@ -1768,6 +1781,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Your task',
     fill(n.prompt.trim(), prm),
+    ...(route ? ['', '## Security route', routeLine(route)] : []),
     ...(fastCheck
       ? [
           '',
@@ -2069,7 +2083,13 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   // a resumed session keeps the notes it was launched with; a new brief searches once, however often it is read
   const notes = session ? '' : launchNotes(run, node)
-  const full = () => brief(run, def, node, c, c.mail[node] ?? [], notes)
+  const route = def.nodes[node]?.securityRoute
+    ? session
+      ? savedRoute(run, c)
+      : securityRouteOf(run, def, c)
+    : undefined
+  if (route && !session) writeJson(routeFile(run), { seq: c.seq, route })
+  const full = () => brief(run, def, node, c, c.mail[node] ?? [], notes, route)
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
   if (!session) {
     mkdirSync(dirname(file), { recursive: true })
@@ -2215,7 +2235,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
-  if (!harness) fail(`the ax runner runs claude, codex, cursor, grok or pi workers, not "${agent}"`)
+  if (!harness)
+    fail(`the ax runner runs claude, codex, cursor, grok or pi workers, not "${hideSecret(agent)}"`)
   axCodexRefused(agent)
   axCursorRefused(agent)
   axGrokRefused(agent)
@@ -6133,7 +6154,12 @@ function devenvPass(names: string[], force = false) {
   try {
     writeFileSync(join(HOME, 'devenv.stamp'), '') // the kick's clock: a pass started, whatever it finds
     if (!existsSync(devenvConfig())) return [`no ${devenvConfig()}: see docs/remote-runner.md`]
-    const cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    let cfg: devenv.DevenvConfig
+    try {
+      cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    } catch (e) {
+      throw new Error(`${devenvConfig()}: not valid JSON (${hideParseText((e as Error).message)})`)
+    }
     const miss = devenv.configMissing(cfg)
     if (miss.length)
       return [`${devenvConfig()} lacks ${miss.join(', ')}: run factory settings set devenv.<field> <value>`]
@@ -7373,6 +7399,78 @@ export function conflictsOf(repo: string, base: string, branch: string): string[
   return [...new Set(end < 0 ? lines : lines.slice(0, end))]
 }
 
+/**
+ * The paths the branch changes against `base`, from origin. It gives null when the fetch or the diff fails,
+ * so the security route fails closed. `-z` and core.quotePath=false keep a non-ASCII path whole, and
+ * --no-renames lists both names of a rename.
+ */
+export function changedPaths(repo: string, base: string, branch: string): string[] | null {
+  const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
+  const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '-q', 'origin', ref(base), ref(branch)], {
+    env: gitNetworkEnv(),
+    timeout: GIT_NETWORK_TIMEOUT_MS,
+  })
+  if (fetch.exitCode !== 0) return null
+  const p = Bun.spawnSync([
+    'git',
+    '-c',
+    'core.quotePath=false',
+    '-C',
+    repo,
+    'diff',
+    '--name-only',
+    '--no-renames',
+    '-z',
+    `origin/${base}...origin/${branch}`,
+  ])
+  if (p.exitCode !== 0) return null
+  return p.stdout
+    .toString()
+    .split('\0')
+    .filter(x => x)
+}
+
+const routeFile = (run: Run) => join(runDir(run.id), 'security-route.json')
+
+/** The runner's security route for this run: changed paths, the plan's line and the bead's labels. */
+function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
+  let labels: string[] | null = []
+  const ref = run.shipBranch ?? run.branch
+  if (run.bead) {
+    try {
+      const bead = beads(run.repo, actorOf(run.id)).lookup(run.bead)
+      if (bead) {
+        labels = bead.labels ?? []
+      } else labels = null
+    } catch {
+      labels = null
+    }
+  }
+  const plan = c.log.findLast(e => e.node === 'plan' && e.outcome === 'ready')?.summary
+  return securityRoute({
+    paths: changedPaths(run.repo, baseBranchOf(def, rigOf(run.repo), run.repo), ref),
+    plan,
+    labels,
+  })
+}
+
+/** The route file of this attempt, or the fail-closed route when it is missing, malformed or old. */
+function savedRoute(run: Run, c: Ctx): SecurityRoute {
+  const closed = { required: true, why: ['route not recorded'] }
+  try {
+    const j = JSON.parse(readFileSync(routeFile(run), 'utf8'))
+    const r = j?.route
+    return j?.seq === c.seq &&
+      typeof r?.required === 'boolean' &&
+      Array.isArray(r.why) &&
+      r.why.every((w: unknown) => typeof w === 'string')
+      ? { required: r.required, why: r.why }
+      : closed
+  } catch {
+    return closed
+  }
+}
+
 /** one read-only `gh` call on the laptop (claude-factory-q08): a non-zero exit or a timeout throws */
 function ghRead(repo: string, args: string[], timeout = 30_000): string {
   const p = Bun.spawnSync(['gh', ...args], { cwd: repo, timeout, maxBuffer: 8_000_000 })
@@ -7998,7 +8096,15 @@ async function createRun(
     from,
     ship,
     onto,
-  }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
+    shipBranch,
+  }: {
+    id: string
+    bead?: string
+    from?: { run: Run; saved: Saved }
+    ship?: true
+    onto?: string
+    shipBranch?: string
+  },
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
@@ -8058,6 +8164,7 @@ async function createRun(
     ...(from && { forkedFrom: from.run.id }),
     ...(bead && { bead }),
     ...(ship && { ship }),
+    ...(shipBranch && { shipBranch }),
   }
   // the source's worker stays the source's: the fork launches its own
   const snapshot = from
@@ -8090,7 +8197,7 @@ async function createTracked(
     // the goal says the worktree starts from this branch: do not fall back to the default branch
     if (shipBranch && !onto)
       throw new Error(`origin has no branch ${shipBranch}: a rework run must start from it`)
-    return await createRun(spec, repo, goal, { id, bead, from, ship, onto })
+    return await createRun(spec, repo, goal, { id, bead, from, ship, onto, shipBranch })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
@@ -8457,7 +8564,15 @@ async function sendParts(task: string, out: string, sha: string) {
 }
 
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
-const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+const rawRigs = (): Rig[] => {
+  if (!existsSync(rigsFile())) return []
+  const text = readFileSync(rigsFile(), 'utf8')
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    throw new Error(`${rigsFile()}: not valid JSON (${hideParseText((e as Error).message)})`)
+  }
+}
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
 const rigs = (): Rig[] => mapRigs(rawRigs())
 /** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
@@ -10905,23 +11020,24 @@ async function rigListLines(print: Print) {
     print(
       `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
     )
-    if (r.goal) print(`  goal: ${r.goal}`)
-    if (r.slo) print(`  slo: ${r.slo}`)
-    if (r.drift) print(`  drift: ${r.drift}`)
-    if (r.agent) print(`  agent: ${r.agent}`)
+    const safe = redactRig(r)
+    if (r.goal) print(`  goal: ${safe.goal}`)
+    if (r.slo) print(`  slo: ${safe.slo}`)
+    if (r.drift) print(`  drift: ${safe.drift}`)
+    if (r.agent) print(`  agent: ${safe.agent}`)
     if (personOnlyContexts(r)?.length) print(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
     if (protectedBranches(r)?.length) print(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
     if (r.mergeAuthority === true)
       print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
-    if (r.mcp) print(`  mcp: ${r.mcp}`)
-    for (const [k, v] of Object.entries(r.params ?? {})) print(`  param ${k}: ${v}`)
-    if (r.linear) {
+    if (r.mcp) print(`  mcp: ${safe.mcp}`)
+    for (const [k, v] of Object.entries(safe.params ?? {})) print(`  param ${k}: ${v}`)
+    if (safe.linear) {
       const extra = [
-        r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
-        r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
+        safe.linear.projects?.length ? `projects ${safe.linear.projects.join('|')}` : '',
+        safe.linear.labels?.length ? `labels ${safe.linear.labels.join('|')}` : '',
       ].filter(Boolean)
       print(
-        `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
+        `  linear: team ${safe.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
       )
     }
   }
@@ -10958,7 +11074,7 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
   if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'grok')
     fail('--mcp does not reach a grok worker: its servers are not behind the deny hook')
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${runner} runner is claude, codex, cursor, grok or pi (not "${agent}")`)
+    fail(`--agent for the ${runner} runner is claude, codex, cursor, grok or pi (not "${hideSecret(agent)}")`)
   if (remote && agent !== undefined) axCodexRefused(agent, env)
   if (remote && agent !== undefined) axCursorRefused(agent, env)
   if (remote && agent !== undefined) axGrokRefused(agent, env)
@@ -11201,6 +11317,7 @@ const WORKER_VERBS = [
   'ci',
   'worker',
   'file-elsewhere',
+  'parity',
 ]
 
 /** why a worker may not run this verb, else undefined (no marker, a listed verb, `rig list`, `rig show`, or usage) */
@@ -12333,6 +12450,7 @@ const usage = `factory — herdr software factories on xstate
                                      the approve gate, review loops, failures by kind, each station's outcomes
   ci <pr>                            the PR's checks on its head SHA; each failed job's step and log tail
                                      (exit 0 green, 1 failed, 2 pending, 3 error)
+  parity                             each gap bead in parity-gaps.json is still open (the pre-push hook runs it)
   check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>   apply one literal edit, run the test, restore the file;
                                      exit 0 killed, 1 survived, 2 refused, 3 timeout, 4 restore failed
@@ -13120,6 +13238,22 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('dream')
         console.log(await dream())
         break
+      case 'parity': {
+        if (args.length) {
+          console.error('usage: factory parity')
+          process.exit(2)
+        }
+        const show = (id: string) => {
+          try {
+            const p = Bun.spawnSync(['bd', 'show', id, '--json'], { cwd: ROOT, timeout: 30_000 })
+            const err = p.exitCode === null ? 'timed out after 30 s' : p.stderr.toString()
+            return { code: p.exitCode ?? 1, out: p.stdout.toString(), err }
+          } catch (e) {
+            return { code: 1, out: '', err: (e as Error).message }
+          }
+        }
+        process.exit(parity({ file: GAPS_FILE, show, print: l => console.log(l) }))
+      }
       case 'pg-scratch':
         process.exit(pgScratch(args, { cwd: process.cwd(), env: process.env }))
         break
@@ -13435,6 +13569,18 @@ if (import.meta.main && !outboxCmd)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
         const text = cleanReport(summaryArgs(args).slice(3).join(' '))
+        if (n?.securityRoute && (outcome === 'security' || outcome === 'approve')) {
+          const route = savedRoute(run, c)
+          const line = routeLine(route)
+          if (outcome === 'security' && !route.required && !SECURITY_REASON.test(text))
+            fail(
+              `the security route for this diff is not required (${line}). Post your verdict as the approve rules say: the APPROVE review when FACTORY_GH_REVIEWER is 1, then mark the pull request ready if those rules allow it. Then report approve. Or, for a concrete security finding that the path rule missed, add one summary line Security-reason: <path>:<line> <what is sensitive> and report security again.`,
+            )
+          if (outcome === 'approve' && route.required)
+            fail(
+              `this diff needs the security station (${line}). If you marked the pull request ready, run gh pr ready <n> --undo. If you posted an APPROVE review, dismiss it: gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<review id>/dismissals -f message='security review follows' -f event=DISMISS. If the dismissal fails, name the review id in your summary. Post the verdict as a COMMENT, then report security.`,
+            )
+        }
         post(
           run.id,
           outcome === 'fail'
@@ -14005,7 +14151,7 @@ if (import.meta.main && !outboxCmd)
             try {
               return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
             } catch (e) {
-              throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
+              throw new Error(`${from}: not valid JSON (${hideParseText((e as Error).message)})`)
             }
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)

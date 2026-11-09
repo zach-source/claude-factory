@@ -780,8 +780,8 @@ factory rig add svc ~/repos/svc --runner ax --agent "codex -m gpt-5-codex" --egr
 
 | Loop                          | Stations                                                                                           |
 | ----------------------------- | -------------------------------------------------------------------------------------------------- |
-| build                         | triage → plan → implement ⇄ verify ⇄ review (→ security) → **hand off to ship**                    |
-| small (docs, test-only, tiny) | triage → quick ⇄ check (→ security only when flagged) → **hand off to ship**                       |
+| build                         | triage → plan → implement ⇄ verify ⇄ review (→ security on a sensitive path or plan) → **hand off to ship**                    |
+| small (docs, test-only, tiny) | triage → quick ⇄ check (→ security on a sensitive path) → **hand off to ship**                       |
 | optimize (performance, cost)  | baseline → plan → implement ⇄ verify against the target → … → hand off to ship; abandon when disproved |
 | refactor                      | characterize (pin behavior) → plan → implement ⇄ verify → … → hand off to ship                     |
 | incident                      | incident → rollback or plan → … → hand off to ship                                                 |
@@ -803,7 +803,7 @@ Sonnet does the implement work. Opus does the plan work and the review work. Fab
 
 Triage selects `small` for a change that is docs-only, test-only, or tiny. A tiny change has about 50 changed lines or fewer. It changes 3 files or fewer. It has no new dependency, no migration, and no public API change. Triage does not select `small` when the change is security-sensitive or when it changes a factory definition.
 
-The `small` loop skips the Opus plan step. It adds the security station only when `check` flags the change. Ship's deploy reports `published`, with no soak, for a docs-only or test-only change. The same applies to a library or to a change to `.factory/` only. The test `factories/lifecycle.test.ts` walks every loop through the machine.
+The `small` loop skips the Opus plan step. It adds the security station only when the runner's security route says required (a sensitive changed path, or the bead label `security`), or when check names a concrete finding in a `Security-reason:` line. Ship's deploy reports `published`, with no soak, for a docs-only or test-only change. The same applies to a library or to a change to `.factory/` only. The test `factories/lifecycle.test.ts` walks every loop through the machine.
 
 `bin/factory help` lists every command; the manager model uses the same CLI.
 
@@ -915,8 +915,7 @@ commit it, and the repo owns its factory like any other code:
   answered the same way, costly models) and files one change to `.factory/` per finding.
   Postmortems file the factory changes an incident exposed.
 - **Those changes ship like any change**: plan, implement, `factory check` in verify, a review
-  that reads them as policy (security review when they remove a gate, widen what runs
-  unattended or raise a limit), and your merge. Deploy reports them as published.
+  that reads them as policy (a change to `.factory/` always goes to security review), and your merge. Deploy reports them as published.
 - `factory mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>` is the worker's mutation check. It
   applies one literal edit to a tracked, clean file, runs the test, restores the file byte for byte (also
   after a timeout or a signal), and prints one row. Exit 0 means killed, 1 survived, 2 refused, 3 timeout,
@@ -1124,7 +1123,9 @@ In a repo with `.beads/`, beads is the factory's task tracker. [docs/beads.md](d
 
 This repo is public. `hack/guard-private.sh` refuses a commit that carries a secret or a private
 name. The tracked `.beads-hooks/pre-commit` and `.beads-hooks/commit-msg` run it after the beads
-hooks. In a clean clone, run this one command to install both hooks:
+hooks. The tracked `.beads-hooks/pre-push` runs `factory parity`: it refuses the push when a gap
+bead in `parity-gaps.json` is closed. In a clean clone, run this one command to install the three
+hooks:
 
 ```sh
 git config core.hooksPath .beads-hooks
@@ -1176,7 +1177,7 @@ export default {
 Per station: `retries` (default 2), `timeoutMin` (60), `parkMin` (60), `agent` (worker command),
 `rounds` (how many times it may report one outcome in a run before the next such report is held for
 the manager; lifecycle's review and security each have 3; only a looping-back outcome counts, so review's `security` and `approve` never do; see `rounds` in src/machine.ts), `countRounds` (the outcomes that count toward `rounds`, instead of the graph rule; lifecycle's security sets it to `changes`), `onRounds` (a node for a re-plan at the round cap, below),
-`repeatMail` (an outcome that mails the manager on a repeat, below), `mergeCheck` (an outcome the runner reports when the branch conflicts with the default branch, below), `gate: true` for a station the
+`repeatMail` (an outcome that mails the manager on a repeat, below), `mergeCheck` (an outcome the runner reports when the branch conflicts with the default branch, below), `securityRoute` (the runner computes the security route when it starts the station, writes it in the brief, and refuses `approve` when the route is required, and refuses `security` when the route is not required and the summary has no `Security-reason:` line), `gate: true` for a station the
 person decides instead of a worker, and `awaitsPr: true` for a station that must wait for someone
 to merge, close or update a pull or merge request an arrival's report links, before it starts a
 worker (lifecycle's `deploy`; see Parking below). An edge can wait: `{ to: 'soak', delayMin: 15 }`

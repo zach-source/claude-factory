@@ -128,7 +128,18 @@ test('route: denied forms are a string, and local commands stay local', () => {
   expect(route('beads', [])).toBe(
     'factory beads has no server mode: unset FACTORY_SERVER to run it on the local home',
   )
-  for (const c of [undefined, 'help', '--help', '-h', 'check', 'mutate', 'ci', 'pg-scratch', 'devenv'])
+  for (const c of [
+    undefined,
+    'help',
+    '--help',
+    '-h',
+    'check',
+    'mutate',
+    'ci',
+    'pg-scratch',
+    'devenv',
+    'parity',
+  ])
     expect(route(c, [])).toEqual({ local: true })
 })
 

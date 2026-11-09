@@ -222,6 +222,7 @@ test('worker-codex.md prose rows: a quoted heredoc with later lines and a comman
 test('the hooks.json command denies rm -rf, a person-only kubectl change and a push to main', () => {
   const f = fixture()
   f.make()
+  mkdirSync(f.run.worktree, { recursive: true })
   const pre = JSON.parse(readFileSync(join(f.dir, 'hooks.json'), 'utf8')).hooks.PreToolUse
   const cmd: string = pre.at(-1).hooks[0].command
   const run = (text: string) =>

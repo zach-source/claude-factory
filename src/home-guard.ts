@@ -3,7 +3,7 @@
  * Two layers use it:
  *   - `homeReason` runs first in the worker hook. It reads the raw and the backslash-newline-joined command text, and the text of
  *     each script file the command names (unless the whole command is read-only), before any
- *     parse. A delete word plus a whole-home reference denies the call.
+ *     parse. It also reads the texts that git hooks, git config values and config files load. A delete word plus a whole-home reference denies the call.
  *   - `rmSafe` replaces each recursive `rmSync` in the runner. It refuses `/`, the home dir and
  *     every dir above the home dir.
  */
@@ -13,8 +13,30 @@ import { dirname, resolve, sep } from 'node:path'
 
 export const HOME_REASON =
   'The factory denies this command: it deletes or moves with a delete word and names the home ' +
-  'directory (~, $HOME, the home path, or a dir above it), or it runs a script that does. Name ' +
-  'the exact path inside the worktree to delete. Never write a cleanup that can resolve to $HOME.'
+  'directory (~, $HOME, the home path, or a dir above it), or it runs a script, a git hook or a ' +
+  'config file that does. Name the exact path inside the worktree to delete. Never write a cleanup ' +
+  'that can resolve to $HOME.'
+
+export const LOADED_REASON =
+  'The factory denies this command: it cannot read the git config of this directory, or the hooks, ' +
+  'config files and node_modules/.bin files there are too many or too large to check (over 1024 ' +
+  'files or 4 MiB). Run the command from a smaller worktree, or ask the manager.'
+
+export const OVERRIDE_REASON =
+  'The factory denies this command: it names core.hooksPath, include.path or includeIf, or ' +
+  'runs a git alias that does. The home guard cannot check the programs that such a setting ' +
+  'loads. To search, use the Grep tool. For a commit message, use git commit -F <file>.'
+
+// claude-factory-qn8a.37.14: an inline hooks dir or include override. The rule reads no value.
+const OVERRIDE = /hookspath|include\.path|includeif\./
+const strip = (t: string) =>
+  t
+    .replace(/\\\n/g, '')
+    .replace(/['"\\$]/g, '')
+    .toLowerCase()
+
+/** the most files that the guard reads for the loaded texts of one command; the next read denies */
+export const MAX_LOADED_READS = 64
 
 /** the home dirs to protect: os.homedir() and $HOME, when they differ */
 export function homes(): string[] {
@@ -96,6 +118,8 @@ const test1 = (text: string, word: RegExp) => {
   return (DELETE.test(text) || DELETE.test(f)) && (word.test(f) || API.test(text))
 }
 const hits = (text: string, word: RegExp) => test1(text, word) || test1(join(text), word)
+// remove the JSON and TOML string escapes (a package.json script that puts \" around the home word)
+const unjson = (t: string) => t.replace(/\\(["\\/])/g, '$1')
 
 // a run of path chars between a lead and a terminator char; ':' ends a path:line word
 const SCRIPT = /(?:^|[\s'"=(`;&|:<>])([\w./-]+)(?=$|[\s'";&|)`:<>])/g
@@ -240,10 +264,10 @@ function readerSegment(w: string[]): boolean {
  * the script read runs. A sed word after the script, with quotes removed, must not start with -. For git, only
  * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
  * scripts (no w, e, r, -i, -f).
- * ponytail: a program that an earlier git config or env var sets (diff.external, core.pager,
- * textconv), a git hook and a prettier config file are not covered. False denies stay for awk,
- * rg, sort, jq, find, xargs, globs, $, subshells, heredocs, line joins and verbs outside the
- * reader and non-runner tables. Upgrade path: a real shell parser.
+ * ponytail: for what the loaded texts of homeReason cover and do not cover, see loadedTexts in
+ * src/worker-hook.ts. False denies stay for awk, rg, sort, jq, find, xargs, globs, $, subshells,
+ * heredocs, line joins and verbs outside the reader and non-runner tables. Upgrade path: a real
+ * shell parser.
  */
 function readOnly(command: string): boolean {
   let seg: string[] = []
@@ -261,9 +285,48 @@ function readOnly(command: string): boolean {
   return seg.length > 0 && readerSegment(seg)
 }
 
+/** A text that a config file or a git hook loads, and the dir that its relative paths resolve against. */
+export type LoadedText = { text: string; dir: string; alias?: true }
+
 /**
- * HOME_REASON when `command`, or a script file it names, holds a delete word and a whole-home
- * word. `readFile` reads a named script (small files only); without it, only the command text counts.
+ * Test the named files of `text`. With `dir`, each path resolves against `dir`, the JSON-unescaped
+ * text is tested too, and the reads count against MAX_LOADED_READS ('cap' past it).
+ */
+function namedHits(
+  text: string,
+  readFile: (path: string) => string | undefined,
+  word: RegExp,
+  protect: string[],
+  seen: Set<string>,
+  dir?: string,
+  reads?: { n: number },
+): boolean | 'cap' {
+  const paths = [
+    ...[...text.matchAll(SCRIPT)].map(m => m[1]!),
+    ...[...join(text).matchAll(SCRIPT)].map(m => m[1]!),
+    ...[...text.matchAll(WORD)].flatMap(m => candidates(unshell(m[0]), protect)),
+  ]
+  for (const w of paths) {
+    if (!isFile(w)) continue
+    const path = dir === undefined ? w : resolve(dir, w)
+    if (seen.has(path)) continue
+    seen.add(path)
+    const body = readFile(path)
+    if (body === undefined) continue
+    if (reads && ++reads.n > MAX_LOADED_READS) return 'cap'
+    if (hits(body, word) || (dir !== undefined && hits(unjson(body), word))) return true
+  }
+  return false
+}
+
+/**
+ * HOME_REASON when `command`, a script file it names, or a loaded text holds a delete word and a
+ * whole-home word. `readFile` reads a named script (small files only); without it, only the command text counts.
+ * `loaded` holds the texts that git hooks, git config values and config files load (the worker hook
+ * builds them). null means the loader failed: LOADED_REASON. With a
+ * loader, a command or alias text that names core.hooksPath, include.path or includeIf gives
+ * OVERRIDE_REASON. A loaded text is always tested, also for a
+ * read-only command, and the files it names are read once (one level).
  * A read-only command (see readOnly: readers and non-runners) runs no file, so its named files are not read.
  * ponytail: one level of scripts, no follow of a script that calls another; add it if a bypass shows
  */
@@ -271,21 +334,22 @@ export function homeReason(
   command: string,
   readFile?: (path: string) => string | undefined,
   protect = homes(),
+  loaded?: LoadedText[] | null,
 ): string | undefined {
   const word = homeWord(protect)
   if (hits(command, word)) return HOME_REASON
-  if (!readFile || readOnly(command)) return undefined
-  const seen = new Set<string>()
-  const paths = [
-    ...[...command.matchAll(SCRIPT)].map(m => m[1]!),
-    ...[...join(command).matchAll(SCRIPT)].map(m => m[1]!),
-    ...[...command.matchAll(WORD)].flatMap(m => candidates(unshell(m[0]), protect)),
-  ]
-  for (const w of paths) {
-    if (!isFile(w) || seen.has(w)) continue
-    seen.add(w)
-    const text = readFile(w)
-    if (text !== undefined && hits(text, word)) return HOME_REASON
+  if (loaded === null) return LOADED_REASON
+  if (loaded !== undefined && OVERRIDE.test(strip(command))) return OVERRIDE_REASON
+  const loadedSeen = new Set<string>()
+  const reads = { n: 0 }
+  for (const { text, dir, alias } of loaded ?? []) {
+    if (alias && OVERRIDE.test(strip(text))) return OVERRIDE_REASON
+    if (hits(text, word) || hits(unjson(text), word)) return HOME_REASON
+    if (!readFile) continue
+    const r = namedHits(text, readFile, word, protect, loadedSeen, dir, reads)
+    if (r === 'cap') return LOADED_REASON
+    if (r) return HOME_REASON
   }
-  return undefined
+  if (!readFile || readOnly(command)) return undefined
+  return namedHits(command, readFile, word, protect, new Set<string>()) ? HOME_REASON : undefined
 }
