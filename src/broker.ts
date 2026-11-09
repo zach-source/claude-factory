@@ -1,5 +1,5 @@
 // The policy broker: a small in-cluster HTTP server that creates and deletes worker egress policies and reads
-// the egress gateway's CA for the AX manager. The manager's VM cannot reach ate-api (TLS to a Substrate pod-cert
+// the egress gateway's CA for the AX manager and the factory server pod. The manager's VM cannot reach ate-api (TLS to a Substrate pod-cert
 // CA), so it asks this broker, which holds a Kubernetes ServiceAccount token that ate-api accepts.
 // See docs/remote-runner.md, Policy broker.
 

@@ -164,7 +164,7 @@ test('patrol-guard denies the subagent verbs and allows reads', () => {
   for (const [bad, reason] of [
     [
       'bd label add x y',
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
     ],
     [
       'factory decide r1 ok',
@@ -175,6 +175,18 @@ test('patrol-guard denies the subagent verbs and allows reads', () => {
       'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
     ],
     ['bd update x --set-metadata a=b', 'a subagent never writes bead metadata'],
+    [
+      'bd comment x y --actor p',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+    ],
+    [
+      'bd comments add x y -a p',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+    ],
+    [
+      'BEADS_ACTOR=p bd comment x y',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+    ],
   ] as const) {
     const r = guard(bad)
     expect([bad, r.code]).toEqual([bad, 2])
