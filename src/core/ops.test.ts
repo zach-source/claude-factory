@@ -27,6 +27,7 @@ const fake = () => {
     ),
     goto: async (id, node, print) => (calls.push(['goto', id, node]), print('queued')),
     abort: id => void calls.push(['abort', id]),
+    start: async (m, who, print, tick) => (calls.push(['start', m, who, tick]), print('started')),
     halt: (mode, print) => (calls.push(['halt', mode]), print(mode)),
     mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
   }
@@ -96,7 +97,42 @@ describe('moved reads run in process (AC1)', () => {
       await op.run(t.ctx(), input)
       if (t.cli.length) bridged.push(op.name)
     }
-    expect(bridged).toEqual(['runs.start'])
+    expect(bridged).toEqual([])
+  })
+})
+
+describe('runs.start gives the ctx env and the ctx tick to the port', () => {
+  const m = { spec: 'lifecycle', rig: 'acme', goal: 'do it', owned: false }
+  test('the same env object and the same tick function', async () => {
+    const t = fake()
+    const env = { MARK: 'a' }
+    const tick = async () => ({})
+    const ctx = { ...t.ctx(env), tick }
+    expect((await run('runs.start', ctx, { factory: 'lifecycle', rig: 'acme', goal: 'do it' })).out).toBe(
+      'started\n',
+    )
+    expect(t.calls).toEqual([['start', m, { env }, tick]])
+    expect((t.calls[0]![2] as { env: unknown }).env).toBe(env)
+    expect(t.calls[0]![3]).toBe(tick)
+  })
+  test('no tick in ctx gives no tick; a station joins the factory name; owned is passed', async () => {
+    const t = fake()
+    await run('runs.start', t.ctx(), {
+      factory: 'lifecycle',
+      station: 'plan',
+      rig: 'acme',
+      goal: 'g',
+      owned: true,
+    })
+    expect(t.calls).toEqual([
+      ['start', { spec: 'lifecycle@plan', rig: 'acme', goal: 'g', owned: true }, { env: {} }, undefined],
+    ])
+  })
+  test('a worker is refused and the port is not called', async () => {
+    const t = fake()
+    const r = await run('runs.start', t.ctx({ FACTORY_RUN: 'r1' }), { factory: 'f', rig: 'r', goal: 'g' })
+    expect(r.err).toContain('a worker cannot run factory start')
+    expect(t.calls).toEqual([])
   })
 })
 

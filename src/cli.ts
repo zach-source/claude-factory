@@ -8111,8 +8111,8 @@ const openChildren = (b: ReturnType<typeof beads>, id: string) =>
 /** claude-factory-7a7e: the CLI layer behind PATROL step 4 (register.tsx). A patrol cannot start or queue a
  * bead filed from another rig (metadata.discovered_from), or a child of one, until a person adds the
  * `factory` label. Fail closed: an unreadable parent or a chain longer than 8 refuses too. */
-function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
-  if (!process.env.FACTORY_PATROL) return
+function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead, env: Env = process.env) {
+  if (!env.FACTORY_PATROL) return
   const no = (why: string): never => fail(`${x.id} ${why}: a patrol cannot start it: a person queues it`)
   const hold = x.labels?.find(isHoldLabel)
   if (hold) no(`carries the hold ${hold}`)
@@ -8136,7 +8136,11 @@ function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
   }
 }
 
-function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk = false } = {}) {
+function beadFor(
+  repo: string,
+  goal: string,
+  { extra = [] as string[], isOwnerOk = false, env = process.env as Env } = {},
+) {
   if (!hasBeads(repo)) return { goal, handedOff: false }
   const b = beads(repo, 'factory')
   // a bare id, or the id in front of '<id>: <title>': goalOf writes every run's goal that way, so a goal
@@ -8175,9 +8179,9 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
     // own pinned Bash prefix, never on the main chat's: this refuses the patrol even when it got
     // here with --owned on a bead that really is owned, the same as the FACTORY_FROM refusals
     // below for a worker.
-    if (isOwned(named) && process.env.FACTORY_PATROL)
+    if (isOwned(named) && env.FACTORY_PATROL)
       fail(`${named.id} carries its owner's decisions: a patrol cannot start it, even with --owned`)
-    refusePatrolDiscovered(b, named)
+    refusePatrolDiscovered(b, named, env)
     const open = openChildren(b, named.id)
     if (open.length)
       fail(
@@ -11133,7 +11137,13 @@ async function defineRig(
   return rig
 }
 
-async function start(factory: string | undefined, repo: string | undefined, goal: string, isOwnerOk = false) {
+async function startRun(
+  m: { spec?: string; rig?: string; goal: string; owned: boolean },
+  who: { env: Env },
+  print: Print,
+  tickNow?: () => Promise<unknown>,
+) {
+  const { spec: factory, rig: repo, goal } = m
   if (!factory || !repo || !goal) fail("usage: factory start <factory>[@station] <rig|repo> '<goal...>'")
   const root = repoOf(repo!)
   await assertRoom(root)
@@ -11147,7 +11157,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
     fail(
       `only the runner starts a ship run, once for each rig with a queue: see factory ship ${rigOf(root)?.name ?? root}`,
     )
-  const linked = beadFor(root, goal, { isOwnerOk })
+  const linked = beadFor(root, goal, { isOwnerOk: m.owned, env: who.env })
   const { run, def } = await createTracked(
     spec!,
     preview.name,
@@ -11164,8 +11174,8 @@ async function start(factory: string | undefined, repo: string | undefined, goal
       `warning: could not clear the owner label of ${linked.bead}: it stays handed off. Run: factory queue to clear it by hand`,
     )
   if (at && at !== def.start && Object.hasOwn(def.nodes, at)) post(run.id, { type: 'GOTO', node: at })
-  await tick() // launches the first worker now rather than at the next tick
-  console.log(
+  if (tickNow) await tickNow() // the CLI launches the first worker now; the server loop does it at its next tick
+  print(
     `started ${run.id} in ${run.worktree}${run.ws ? ` (herdr workspace ${run.ws})` : ''}, following ${run.factoryFrom}${run.bead ? `, bead ${run.bead}` : ''}`,
   )
 }
@@ -12534,6 +12544,7 @@ export const corePort: Port = {
   abort: abortRun,
   mail: mailRun,
   halt: haltFactory,
+  start: startRun,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -12541,6 +12552,7 @@ const cliCtx = (): OpCtx => ({
   port: corePort,
   board: () => null,
   cli: () => fail('no CLI runner in the CLI'),
+  tick: () => tick(),
 })
 /** the input of an op from CLI words: a missing word leaves its key out */
 const defined = (o: Record<string, string | boolean | undefined>): OpInput =>
@@ -12610,9 +12622,14 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'start': {
-        refuseWorker('start')
         const words = args.slice(2)
-        await start(args[0], args[1], words.filter(w => w !== '--owned').join(' '), words.includes('--owned'))
+        const goal = words.filter(w => w !== '--owned').join(' ')
+        emit(
+          await runsOp.start(
+            cliCtx(),
+            defined({ factory: args[0], rig: args[1], goal, owned: words.includes('--owned') }),
+          ),
+        )
         break
       }
       case 'fork':

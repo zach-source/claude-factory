@@ -45,3 +45,19 @@ export async function mail(ctx: Ctx, i: Input): Promise<RunResult> {
     )
   })
 }
+
+/** `factory start <factory>[@station] <rig> <goal...>`; the server gives no ctx.tick: its own loop launches the first worker */
+export async function start(ctx: Ctx, i: Input): Promise<RunResult> {
+  return inProc(async print => {
+    refuseWorker(ctx.env, 'start')
+    const f = i.factory as string | undefined
+    const spec = f && i.station ? `${f}@${i.station}` : f
+    const m = {
+      spec,
+      rig: i.rig as string | undefined,
+      goal: (i.goal as string | undefined) ?? '',
+      owned: i.owned === true,
+    }
+    await ctx.port.start(m, { env: ctx.env }, print, ctx.tick)
+  })
+}

@@ -37,6 +37,11 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     ),
     goto: async (id, node, print) => (log('goto', [id, node]), print('{"ok":1}')),
     abort: id => void log('abort', [id]),
+    start: async (m, who, print, tick) => (
+      log('start', [m, tick === undefined ? 'no tick' : 'tick']),
+      (lastEnv = who.env),
+      print('{"ok":1}')
+    ),
     halt: (mode, print) => (log('halt', [mode]), print('{"ok":1}')),
     mail: async (m, who, print) => (
       (lastEnv = who.env),
@@ -171,12 +176,12 @@ describe('action routes', () => {
     [
       '/v1/start',
       { factory: 'lifecycle', rig: 'acme', goal: 'do it' },
-      [{ argv: ['start', 'lifecycle', 'acme', 'do it'] }],
+      [p('start', { spec: 'lifecycle', rig: 'acme', goal: 'do it', owned: false }, 'no tick')],
     ],
     [
       '/v1/start',
       { factory: 'lifecycle', station: 'plan', rig: 'acme', goal: 'g', owned: true },
-      [{ argv: ['start', 'lifecycle@plan', 'acme', 'g', '--owned'] }],
+      [p('start', { spec: 'lifecycle@plan', rig: 'acme', goal: 'g', owned: true }, 'no tick')],
     ],
     ['/v1/halt', { mode: 'stop' }, [p('halt', 'stop')]],
     ['/v1/halt', { mode: 'resume' }, [p('halt', 'resume')]],
@@ -189,6 +194,22 @@ describe('action routes', () => {
       expect(r.status).toBe(200)
       expect(t.calls).toEqual(calls)
     })
+})
+
+describe('POST /v1/start env', () => {
+  test('the port gets personEnv, never the patrol marker of the server process', async () => {
+    const old = process.env.FACTORY_PATROL
+    process.env.FACTORY_PATROL = '1'
+    try {
+      const t = setup()
+      const r = await post(t.h, '/v1/start', { factory: 'lifecycle', rig: 'acme', goal: 'do it' })
+      expect(r.status).toBe(200)
+      expect(t.env().FACTORY_PATROL).toBeUndefined()
+    } finally {
+      if (old === undefined) delete process.env.FACTORY_PATROL
+      else process.env.FACTORY_PATROL = old
+    }
+  })
 })
 
 describe('POST /v1/lease/release', () => {

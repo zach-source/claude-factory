@@ -39,6 +39,12 @@ export type Port = {
   goto: (id: string | undefined, node: string | undefined, print: Print) => Promise<void>
   abort: (id: string | undefined) => void
   halt: (mode: 'stop' | 'resume', print: Print) => void
+  start: (
+    m: { spec?: string; rig?: string; goal: string; owned: boolean },
+    who: { env: Env },
+    print: Print,
+    tick?: () => Promise<unknown>,
+  ) => Promise<void>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -46,7 +52,15 @@ export type Port = {
   ) => Promise<void>
 }
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
-export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
+export type Ctx = {
+  home: string
+  cli: Runner
+  board: () => unknown
+  env: Env
+  port: Port
+  /** the CLI runs one tick after a start; the server has its own tick loop, so it gives none */
+  tick?: () => Promise<unknown>
+}
 export type Input = Record<string, string | boolean>
 export type Op = {
   name: string
@@ -461,7 +475,7 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     (c, i) => runsOps.abort(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'runs.start',
       summary: 'Start a run of a factory on a rig.',
@@ -475,13 +489,8 @@ export const CATALOG: Op[] = makeCatalog([
         f('owned', 'flag', false),
       ],
     },
-    i => [
-      'start',
-      i.station ? `${i.factory}@${i.station}` : (i.factory as string),
-      i.rig as string,
-      i.goal as string,
-      ...(i.owned ? ['--owned'] : []),
-    ],
+    'text',
+    (c, i) => runsOps.start(c, i),
   ),
   local(
     {

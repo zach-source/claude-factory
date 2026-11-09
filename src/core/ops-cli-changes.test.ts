@@ -489,6 +489,21 @@ if (!update) {
     expect(back.body).toBe(outOf('H3').out)
     expect(post(home, '/v1/halt', { mode: 'resume' }, OUT).status).toBe(422)
   })
+  test('server: start creates the run and does not tick', () => {
+    const home = freshHome()
+    seedWeb(home)
+    rmSync(herdrLog(), { force: true })
+    resetWeb()
+    const r = post(home, '/v1/start', { factory: 'tiny', rig: 'web', goal: 'do it' }, OUT, {
+      env: SENV(),
+      herdr: true,
+    })
+    expect(r.status).toBe(200)
+    expect(r.body).toBe(outOf('S1').out)
+    const lines = (golden.S1 as { herdr: string[] }).herdr
+    expect(lines.length).toBeGreaterThan(1)
+    expect(r.herdr).toEqual(lines.slice(0, lines.findIndex(l => l.startsWith('worktree create')) + 1))
+  })
   test('server: lease release', () => {
     const home = freshHome()
     seedLease(home)
@@ -513,10 +528,11 @@ console.log(JSON.stringify(r))
     ctxEnv: object,
     procEnv: Record<string, string> = {},
     cwd = OUT,
+    name = 'runs.mail',
   ) => {
     const sf = join(dir, 'op.ts')
     writeFileSync(sf, OPSCRIPT)
-    const argv = [process.execPath, sf, home, 'runs.mail', JSON.stringify(input), JSON.stringify(ctxEnv)]
+    const argv = [process.execPath, sf, home, name, JSON.stringify(input), JSON.stringify(ctxEnv)]
     const p = Bun.spawnSync(argv, { env: cleanEnv(home, procEnv), cwd, timeout: 60_000 })
     if (p.exitCode !== 0) throw new Error('script failed: ' + p.stderr.toString())
     const r = JSON.parse(p.stdout.toString().trim().split('\n').at(-1)!) as { code: number; err: string }
@@ -531,6 +547,14 @@ console.log(JSON.stringify(r))
     const allowed = inProc(freshHome(), mail, {}, { BEADS_ACTOR: 'factory/x/y' })
     expect(allowed.code).toBe(0)
     expect(allowed.inbox).toEqual([{ run: 'r1', type: 'MAIL', from: 'manager', to: 'review', text: 'x' }])
+  })
+  test('in process: runs.start reads FACTORY_PATROL from the env of ctx, not of the process', () => {
+    const input = { factory: 'lifecycle', rig: 'api', goal: 'api-own', owned: true }
+    const refused = inProc(freshHome(), input, PAT, {}, OUT, 'runs.start')
+    expect(refused.code).toBe(1)
+    expect(refused.err).toBe(outOf('S5').err)
+    const allowed = inProc(freshHome(), input, {}, PAT, OUT, 'runs.start')
+    expect(allowed.err).not.toContain('a patrol cannot start it')
   })
   test('in process: the cwd of the input counts, the cwd of the process does not', () => {
     const refused = inProc(freshHome(), { ...mail, cwd: join(WT, 'sub') }, {})
