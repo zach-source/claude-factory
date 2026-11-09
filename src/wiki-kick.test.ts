@@ -2,7 +2,16 @@
 // caller. It runs at most once in FACTORY_WIKI_REFRESH_MIN minutes (default 30), only when wiki/.git exists,
 // and also while the factory is halted. The tests follow src/gc-kick.test.ts.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 

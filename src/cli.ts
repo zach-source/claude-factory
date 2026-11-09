@@ -11962,7 +11962,8 @@ function wikiBound(g: WriteGroup): WriteGroup | null {
 }
 
 // ponytail: FACTORY_WIKI_AGENT_MS exists only so a test can cut the 45 min limit; leave it unset in use
-const WIKI_AGENT_MS = Number(process.env.FACTORY_WIKI_AGENT_MS) > 0 ? Number(process.env.FACTORY_WIKI_AGENT_MS) : 45 * 60_000
+const WIKI_AGENT_MS =
+  Number(process.env.FACTORY_WIKI_AGENT_MS) > 0 ? Number(process.env.FACTORY_WIKI_AGENT_MS) : 45 * 60_000
 
 /** the model run of a write pass: Claude, or Codex with FACTORY_DREAM_CODEX. A string is a refusal. */
 function wikiAgent(prompt: string, dir: string): { code: number | null; said: string } | string {

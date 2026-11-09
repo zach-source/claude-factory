@@ -449,7 +449,7 @@ slow('write AC3 the claude run gets the exact settings and tool list', () => {
   one()
   factory(['wiki', 'write'])
   const argv = readFileSync(join(data, 'agent-argv'), 'utf8').split('\n')
-  const settings = JSON.parse(argv[argv.indexOf('--settings') + 1])
+  const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]!)
   expect(settings.permissions).toEqual({ deny: ['Edit(./.git/**)'] })
   expect(settings.env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
   expect(argv.slice(argv.indexOf('--allowedTools') + 1, argv.indexOf('--allowedTools') + 8)).toEqual([
