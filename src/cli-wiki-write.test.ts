@@ -67,7 +67,7 @@ for a in "$@"; do
   case "$a" in
     -C|-c) skip=1; continue ;;
     -*) continue ;;
-    push|fetch|pull|ls-remote|clone) echo "$*" >> '${data}/git-net'; echo 'blocked' >&2; exit 1 ;;
+    push|fetch|pull|ls-remote|clone) [ -n "$BLOCK_GIT_NET" ] || break; echo "$*" >> '${data}/git-net'; echo 'blocked' >&2; exit 1 ;;
   esac
   break
 done
@@ -1164,6 +1164,7 @@ test('AC10 ambient remote and routing values reach no setup or command child', (
   const seeded: Record<string, string> = {
     FACTORY_WIKI_REMOTE: 'https://example.invalid/acme/ambient.git',
     FACTORY_OUTBOX: join(dir, 'outbox'),
+    BLOCK_GIT_NET: '1',
     FACTORY_FROM: 'ambient',
     FACTORY_RUN: 'ambient-run',
   }
