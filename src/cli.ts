@@ -137,6 +137,7 @@ import {
   CODEX_PIN,
   CODEX_UNGUARDED,
   CURSOR_FLAGS,
+  type Harness,
   GROK_FLAGS,
   claudeCommand,
   codexFeaturesBad,
@@ -2707,19 +2708,20 @@ export function splitPick(runId: string, shareName: string, share: string | unde
 }
 const GATE_KEEP_MS = 6 * 3_600_000
 /**
- * May this station start `name` (cursor or grok)? The first look decides and <run>/<name>-gate.json keeps the answer for 6 hours,
- * so a worker in flight keeps its agent when the meter moves. A "no" logs one line.
+ * the first answer of `verdict` for this station, kept in <run>/<name>-gate.json for 6 hours, so a worker in flight keeps
+ * its agent when a meter or a limit moves. A `why` logs one line. With `inRun`, nothing is saved unless the run dir exists.
  */
-function stickyGate(
+function sticky<T>(
   name: string,
   runId: string,
   node: string,
   now: number,
   home: string,
-  verdict: () => { use: boolean; why: string },
-) {
+  verdict: () => { use: T; why?: string },
+  inRun = false,
+): T {
   const file = join(home, 'runs', runId, `${name}-gate.json`)
-  let memo: Record<string, { at: number; use: boolean }> = {}
+  let memo: Record<string, { at: number; use: T }> = {}
   try {
     memo = readJson(file)
   } catch {} // none yet
@@ -2727,11 +2729,32 @@ function stickyGate(
   if (kept && now - kept.at < GATE_KEEP_MS) return kept.use
   const v = verdict()
   try {
-    mkdirSync(dirname(file), { recursive: true })
-    writeJson(file, { ...memo, [node]: { at: now, use: v.use } })
+    if (!inRun) mkdirSync(dirname(file), { recursive: true })
+    if (existsSync(dirname(file))) writeJson(file, { ...memo, [node]: { at: now, use: v.use } })
   } catch {} // an unsaved answer is asked again
-  if (!v.use) console.error(`${name} gate: ${runId} ${node} uses its other agent: ${v.why}`)
+  if (v.why) console.error(`${name} gate: ${runId} ${node} ${v.why}`)
   return v.use
+}
+/** May this station start `name` (cursor or grok)? A "no" logs one line. */
+const stickyGate = (
+  name: string,
+  runId: string,
+  node: string,
+  now: number,
+  home: string,
+  verdict: () => { use: boolean; why: string },
+) =>
+  sticky(name, runId, node, now, home, () => {
+    const v = verdict()
+    return { use: v.use, ...(!v.use && { why: `uses its other agent: ${v.why}` }) }
+  })
+/** forgets a station's harness pick, so its next launch asks the order again (after its usage limit hit) */
+function forgetPick(runId: string, node: string, home = HOME) {
+  const file = join(home, 'runs', runId, 'order-gate.json')
+  try {
+    const { [node]: _, ...rest } = readJson<Record<string, unknown>>(file)
+    writeJson(file, rest)
+  } catch {} // no pick saved
 }
 /** cursor starts only with a known weekly pool reading under the cap (setting cursor.cap) */
 export const cursorAllowed = (
@@ -2746,35 +2769,112 @@ export const grokAllowed = (runId: string, node: string, env = process.env, now 
   grokBudget(env) === undefined ||
   stickyGate('grok', runId, node, now, home, () => grokVerdict(grokSpent(home, now), grokBudget(env)))
 
+/** the harnesses a station moves through, from setting agents.order (FACTORY_AGENTS_ORDER) */
+export const agentsOrder = (env = process.env) =>
+  (env.FACTORY_AGENTS_ORDER?.trim() || 'claude,codex,grok,pi') // the default of settings.ts agents.order
+    .split(',')
+    .map(s => s.trim())
+    .filter((h): h is Harness => ['claude', 'codex', 'grok', 'pi', 'cursor'].includes(h))
+// a harness's launcher when the station names no command of its own for it; a factory param of the same name wins
+const LAUNCHERS: Record<Harness, string> = {
+  claude: `${claudeCommand()} --dangerously-skip-permissions`,
+  codex: 'codex --dangerously-bypass-approvals-and-sandbox',
+  grok: 'grok --permission-mode bypassPermissions --trust',
+  pi: 'pi',
+  cursor: 'cursor-agent --force --trust',
+}
+/** <home>/harness-limit-<runner>.json: for each harness, when its usage limit on that runner lifts, in ms */
+const harnessLimitFile = (runner: string, home = HOME) => join(home, `harness-limit-${runner}.json`)
+/** is this harness at its usage limit on this runner? */
+export function harnessLimited(runner: string, h: Harness, now = Date.now(), home = HOME) {
+  try {
+    const until = readJson<Record<string, unknown>>(harnessLimitFile(runner, home))[h]
+    return typeof until === 'number' && until > now && until <= now + LIMIT_RESET_MAX_MS
+  } catch {
+    return false
+  }
+}
+export function recordHarnessLimit(runner: string, h: Harness, until: number, home = HOME) {
+  const file = harnessLimitFile(runner, home)
+  let m: Record<string, number> = {}
+  try {
+    m = readJson(file)
+  } catch {} // none yet
+  writeJson(file, { ...m, [h]: until })
+}
+
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
  * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex), and elsewhere only when
- * the `pin` file exists (claude-factory-fzm3). A cursor or grok pick that `allowed` or `grokOk` refuses becomes the station's own agent.
+ * the `pin` file exists (claude-factory-fzm3). A rig's agent pins its harness: a cursor or grok pick that `allowed`
+ * or `grokOk` refuses becomes the station's own agent. Else a pick that its gate refuses, or that is at its usage
+ * limit, moves to the first harness of agents.order that its gate allows and that is not at its limit
+ * (claude-factory-gf16e). The move is kept in <run>/order-gate.json and logs one line.
  */
 export const pickAgent = (
   runId: string,
   def: Factory,
   node: string,
-  rig: Pick<Rig, 'agent' | 'params'> | undefined,
+  rig: Pick<Rig, 'agent' | 'params' | 'mcp'> | undefined,
   runner: string,
   env = process.env,
   pin = CODEX_PIN,
   allowed = cursorAllowed,
   grokOk = grokAllowed,
+  limited = (h: Harness) => harnessLimited(runner, h),
+  now = Date.now(),
+  home = HOME,
 ) => {
   const params = paramsOf(def, rig, env)
   const split = def.nodes[node]!.split
   // a host without the unified_exec pin cannot launch codex (the probe refuses), so the split keeps Claude there
-  const picked =
-    split &&
-    (runner === 'ax' ? axCodex(env) : existsSync(pin)) &&
-    splitPick(runId, split.share, params[split.share])
-  const own = def.nodes[node]!.agent ?? def.agent ?? AGENT
+  const codexOk = runner === 'ax' ? axCodex(env) : existsSync(pin)
+  const picked = split && codexOk && splitPick(runId, split.share, params[split.share])
+  const own = fill(def.nodes[node]!.agent ?? def.agent ?? AGENT, params)
   const agent = fill(rig?.agent ?? (picked ? split.agent : own), params)
-  const h = harnessOf(agent)
-  return (h === 'cursor' && !allowed(runId, node, env)) || (h === 'grok' && !grokOk(runId, node, env))
-    ? fill(own, params)
-    : agent
+  const h0 = harnessOf(agent)
+  if (rig?.agent || !h0)
+    return (h0 === 'cursor' && !allowed(runId, node, env)) || (h0 === 'grok' && !grokOk(runId, node, env))
+      ? own
+      : agent
+  // a move target needs more than a pick: the codex pin on a host, and a deny hook (pi has none yet: claude-factory-gf16e.5)
+  const gateOk = (h: Harness, target = false) =>
+    h === 'cursor'
+      ? (runner !== 'ax' || axCursor(env)) && allowed(runId, node, env)
+      : h === 'grok'
+        ? (runner !== 'ax' || axGrok(env)) && grokOk(runId, node, env)
+        : h === 'codex'
+          ? target
+            ? codexOk
+            : runner !== 'ax' || axCodex(env)
+          : h !== 'pi' || !target
+  // pi, cursor and grok refuse a rig's MCP servers (harness.ts command)
+  const usable = (h: Harness, ok: boolean) =>
+    ok && (!rig?.mcp || h === 'claude' || h === 'codex') && !limited(h)
+  const h = sticky(
+    'order',
+    runId,
+    node,
+    now,
+    home,
+    () => {
+      const ok0 = gateOk(h0)
+      if (usable(h0, ok0)) return { use: h0 }
+      const next = agentsOrder(env).find(x => x !== h0 && usable(x, gateOk(x, true)))
+      // none left: the station's own agent, which waits out its limit as before
+      if (!next) return { use: ok0 ? h0 : (harnessOf(own) ?? h0) }
+      return { use: next, why: `moves from ${h0} to ${next}: ${ok0 ? 'usage limit' : 'gate refused'}` }
+    },
+    true,
+  )
+  const split2 = split && fill(split.agent, params)
+  return h === h0
+    ? agent
+    : harnessOf(own) === h
+      ? own
+      : split2 && harnessOf(split2) === h
+        ? split2
+        : fill(params[h] ?? LAUNCHERS[h], params)
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
   pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
@@ -4283,6 +4383,18 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         ? hit.resetsAt || hit.at + 3_600_000
         : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
+      // a long wait: the next harness of agents.order takes the station now, if one is free (claude-factory-gf16e)
+      if (agentHarness && !refused && (runner.local || until - now > TOKEN_SWAP_WAIT_MS)) {
+        recordHarnessLimit(runner.name, agentHarness, until)
+        forgetPick(run.id, node)
+        const next = harnessOf(agentOfNode(run, def, node))
+        if (next && next !== agentHarness) {
+          if (runner.local) runner.close(c.pane)
+          const reason = `${pool} usage limit (${hit.kind}) until ${new Date(until).toISOString()}: ${node} moves to ${next} (agents.order)`
+          send({ type: 'FAIL', seq: c.seq, reason, hold: now, holdMin: 0 })
+          return 'usage limit'
+        }
+      }
       // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
       if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
         const reason = `${pool} ${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`

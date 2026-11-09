@@ -6,6 +6,13 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Added: the setting `agents.order` (env `FACTORY_AGENTS_ORDER`, default `claude,codex,grok,pi`) moves a station to another harness (claude-factory-gf16e.1).
+  - The rig agent, then the share, then the station agent pick first, as before. A rig agent still pins one harness.
+  - A gate can refuse the pick (`FACTORY_AX_CODEX`, `FACTORY_AX_GROK`, `FACTORY_AX_CURSOR`, the cursor cap, the Grok budget). Then the station takes the first harness of the order with an open gate and no usage limit.
+  - A usage limit with a long wait records the limit in `harness-limit-<runner>.json`. The station then parks for 0 min ("held, not failed", in the run log) and starts on the next harness.
+  - The pick is kept in `runs/<id>/order-gate.json` for 6 hours, so a worker in flight keeps its harness. The factory log gets one `order gate:` line for each move.
+  - cursor is in the order only when you name it. pi is never a move target, because a pi worker has no deny hook yet (claude-factory-gf16e.5). A rig with `--mcp` moves only to claude or codex.
+
 - Added: the worker and manager images have herdr core (`hc` 0.1.19, pinned by sha256), so the Herdr app can reach an AX task with `hc machine add` (docs/remote-runner.md, Attach with the Herdr app).
 - Fixed: the AX manager host backup did not run after the first one: back-to-back ticks held `tick.lock`, and the backup stopped after 2 min of tries (claude-factory-d289.21).
   - Now the host writes `FACTORY_HOME/backup.want` when a backup is due. A tick does not start while that file is younger than 10 min. The backup removes it when it takes the lock.
