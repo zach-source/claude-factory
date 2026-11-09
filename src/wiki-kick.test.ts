@@ -235,11 +235,11 @@ test('write AC6 FACTORY_WIKI_WRITE_MIN: 1 moves a 2 min stamp; bad values keep 1
 test('write AC6 a launch whose pass fails at once is not repeated by the next two ticks', async () => {
   setup()
   rmSync(wstamp())
-  // a rig with .beads and a bd that fails: the pass ends in an error at once
+  // a rig with .beads and a bd that fails after 1 s: the pass ends in an error, and passEnded can see it
   mkdirSync(join(dir, `repo${n}`, '.beads'))
   const bin = join(dir, `bin${n}`)
   mkdirSync(bin)
-  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nexit 1\n')
+  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nsleep 1\nexit 1\n')
   chmodSync(join(bin, 'bd'), 0o755)
   const env = { PATH: `${bin}:${process.env.PATH}` }
   expect(await launched(env)).toBe(true)
