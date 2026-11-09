@@ -73,9 +73,9 @@ Rules:
 - Exit code 0 when no check is `FAIL`, else 1.
 - A pre-existing rig with no remote and no `beadsLocal` gets `warn`, not `FAIL`.
 
-### 4. Refuse a run without `.beads` (FR-016)
+### 4. Init beads for a run without `.beads` (FR-016)
 
-- `beadFor` calls `fail` with the `bd init` fix instead of returning `{ goal }`. This covers `factory start` and `factory fork`.
+- `beadFor` runs `bd init --local` in a repo without `.beads` and prints one line that says so. Then it files the run's bead as usual. If the init fails, it calls `fail` with the error and the `bd init` fix. This covers `factory start` and `factory fork`.
 - `tracking()` loses its checklist branch. A run always has a bead.
 - The README sentence "Without `.beads/`, runs keep task lists in their reports instead" goes away. The usage text "In a repo with .beads, every run works a bead" becomes "Every run works a bead".
 - Not changed: the sweeps guard (the `no .beads directory` message in the sweeps pass). It is a related path that already skips such a rig.
@@ -93,7 +93,8 @@ Rules:
 | `src/beadscheck.ts`                | New. Checks, `MIN_BD`, the runner                                                            |
 | `src/beadscheck.test.ts`           | New. Each check, for ok, warn and FAIL, with a fake runner                                   |
 | `src/cli.ts`                       | `defineRig` and its usage text, `Rig.beadsLocal`, `beads doctor`, `beadFor`, `tracking()`, usage text |
-| `src/cli.test.ts`                  | `rig add` failures (no `.beads`, old `bd`, no remote, unseeded remote), `--beads-local`, doctor line format, `start` refusal |
+| `src/cli.test.ts`                  | `rig add` failures (no `.beads`, old `bd`, no remote, unseeded remote), `--beads-local`, doctor line format, `start` in a bare repo runs `bd init --local` |
+| `Dockerfile.server`                | `BD_VERSION` 1.3.0 to 1.3.2                                                                  |
 | `README.md`, `docs/beads.md`, `docs/onboarding.md` | As in section 5                                                              |
 
 ## Phases and tasks
@@ -104,10 +105,10 @@ Rules:
 | 1     | `src/beadscheck.ts` and its tests                                                                 |
 | 2     | `rig add` checks and `--beads-local` (FR-014)                                                     |
 | 3     | `factory beads doctor` (FR-015)                                                                   |
-| 4     | Refuse a run without `.beads` (FR-016)                                                            |
+| 4     | Init beads for a run without `.beads` (FR-016)                                                            |
 | 5     | Docs, and the public-repo check                                                                   |
 
-## Open questions for the owner
+## Owner decisions (2026-11-09)
 
-1. **Minimum `bd`.** `Dockerfile.worker` pins 1.3.2 and `Dockerfile.server` pins 1.3.0. This plan sets `MIN_BD` to 1.3.0. Raise it to 1.3.2?
-2. **A bare repo.** FR-016 makes `factory start` fail in a repo without `.beads`. Should it run `bd init --local` there instead?
+1. **Minimum `bd`:** `MIN_BD` is 1.3.2, the worker pin. Raise `BD_VERSION` in `Dockerfile.server` from 1.3.0 to 1.3.2 in the same change.
+2. **A bare repo:** `factory start` runs `bd init --local` there (FR-016). It does not refuse.

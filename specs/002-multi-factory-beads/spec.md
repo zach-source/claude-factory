@@ -29,6 +29,8 @@ Today `rig add` needs `.beads`, but it does not check `bd`, the store, the Dolt 
 ### Session 2026-11-09
 
 - Q: What stays of this spec? → A: Owner decision: cut the spec to User Story 3 ("Beads are required and checked") with FR-014, FR-015 and FR-016. User Story 5 (`docs/beads.md`, FR-019) is done. The rest is deferred. See [Deferred](#deferred).
+- Q: What is the minimum `bd`? → A: 1.3.2, the version that workers run (owner, 2026-11-09).
+- Q: What does FR-016 do in a repo without `.beads`? → A: `factory start` runs `bd init --local` there and continues (owner, 2026-11-09).
 
 ## User Scenarios & Testing _(mandatory)_
 
@@ -73,7 +75,7 @@ A person who has not used the factory reads one guide and can make a repo a rig,
 
 - **FR-014**: `factory rig add` MUST verify that `bd` is present and new enough, that the repo has `.beads`, that the store answers, and that the Dolt remote exists and has data. With `--beads-local`, it MUST skip the remote checks and record that the rig has no remote.
 - **FR-015**: `factory beads doctor [rig]` MUST report each check on one line with a fix. It MUST NOT change anything.
-- **FR-016**: Every run MUST work a bead. The factory MUST refuse to start a run in a repo without `.beads`.
+- **FR-016**: Every run MUST work a bead. In a repo without `.beads`, `factory start` and `factory fork` MUST run `bd init --local` first and say so in their output. They MUST refuse the run only when that init fails, and the error MUST name the fix.
 - **FR-019** (done): `docs/beads.md` MUST explain how to use the factory with beads. The README and `docs/remote-runner.md` MUST link to it.
 
 ### Key Entities
@@ -91,7 +93,7 @@ A person who has not used the factory reads one guide and can make a repo a rig,
 
 ## Assumptions
 
-- The repo pins `bd` in two places today: `Dockerfile.worker` (`BD_VERSION=1.3.2`, the version that workers run) and `Dockerfile.server` (`BD_VERSION=1.3.0`). `docs/onboarding.md` says that the first `bd` on `PATH` must match the repo's schema. The minimum version for FR-014 is one constant in `src/`. This spec sets it to 1.3.0, the lowest pin. The owner can raise it to 1.3.2.
+- The repo pins `bd` in two places today: `Dockerfile.worker` (`BD_VERSION=1.3.2`, the version that workers run) and `Dockerfile.server` (`BD_VERSION=1.3.0`). `docs/onboarding.md` says that the first `bd` on `PATH` must match the repo's schema. The minimum version for FR-014 is one constant in `src/`. This spec sets it to 1.3.2, the worker pin (owner, 2026-11-09). `Dockerfile.server` moves to 1.3.2 too.
 - Each rig that is not `--beads-local` has one Dolt remote that every factory and AX worker of the rig can reach: a Dolt server's remotesapi, DoltHub, or the repo's git origin (`refs/dolt/data`).
 - People can still claim beads by hand. The factory never dispatches an assigned bead.
 
