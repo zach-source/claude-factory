@@ -1,0 +1,422 @@
+{
+  "D1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "decided approve at g of r1\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "DONE",
+        "seq": 3,
+        "outcome": "approve",
+        "summary": "looks good"
+      }
+    ]
+  },
+  "D2": {
+    "results": [
+      {
+        "code": 0,
+        "out": "decided approve at g of r1\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "DONE",
+        "seq": 3,
+        "outcome": "approve",
+        "summary": "approve, decided by the person"
+      }
+    ]
+  },
+  "D3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: decision must be one of: approve\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "D4": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: r2 is not at a gate (it is at verify)\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "D5": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a patrol cannot decide a gate: leave it for the person\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "D6": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "a worker cannot run factory decide (FACTORY_FROM is set): mail the manager instead\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "Q1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "answered api-1\n",
+        "err": ""
+      }
+    ],
+    "bd": [
+      "human respond api-1 -r go now --actor factory/person"
+    ],
+    "decisions": null,
+    "inbox": []
+  },
+  "Q2": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a patrol cannot answer the person's decisions: leave it for them\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "Q3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: usage: factory decisions answer <rig> <bead> '<text...>'\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "Q4": {
+    "results": [
+      {
+        "code": 0,
+        "out": "answered api-1\n",
+        "err": ""
+      }
+    ],
+    "bd": [
+      "human respond api-1 -r go --actor factory/person"
+    ],
+    "decisions": [
+      "bd:api:api-7",
+      "own:api:api-7"
+    ],
+    "inbox": []
+  },
+  "Q5": {
+    "results": [
+      {
+        "code": 0,
+        "out": "answered api-7\n",
+        "err": ""
+      }
+    ],
+    "bd": [
+      "comment api-7 start it --actor factory/person"
+    ],
+    "decisions": [
+      "bd:api:api-1"
+    ],
+    "inbox": []
+  },
+  "M1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "mailed review\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "MAIL",
+        "from": "manager",
+        "to": "review",
+        "text": "hello there"
+      }
+    ]
+  },
+  "M2": {
+    "results": [
+      {
+        "code": 0,
+        "out": "mailed review\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "MAIL",
+        "from": "manager",
+        "to": "review",
+        "text": "hi",
+        "wake": true
+      }
+    ]
+  },
+  "M3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: mailbox must be one of: verify, review, g, manager\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "M4": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a worker cannot send mail as the manager (the working directory is inside the run worktree); a worker mails as its own station\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "M5": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a worker cannot send mail as the manager (BEADS_ACTOR names a factory worker); a worker mails as its own station\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "M6": {
+    "results": [
+      {
+        "code": 0,
+        "out": "mailed review\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "MAIL",
+        "from": "review",
+        "to": "review",
+        "text": "x"
+      }
+    ]
+  },
+  "M7": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: FACTORY_FROM must name a station of this factory\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "M8": {
+    "results": [
+      {
+        "code": 0,
+        "out": "mailed review\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "MAIL",
+        "from": "manager",
+        "to": "review",
+        "text": "hi from file"
+      }
+    ]
+  },
+  "MH": {
+    "results": [
+      {
+        "code": 0,
+        "out": "mailed deploy\nheld for deploy: parked on https://github.com/acme/widget/pull/42; it starts a worker when one changes or at <TIME>; add --wake only for an answer that changes the wait\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r3",
+        "type": "MAIL",
+        "from": "manager",
+        "to": "deploy",
+        "text": "hello"
+      }
+    ]
+  },
+  "G1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "queued goto review for r1: the next tick applies it\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "GOTO",
+        "node": "review"
+      }
+    ]
+  },
+  "G2": {
+    "results": [
+      {
+        "code": 0,
+        "out": "queued goto review for r1: the next tick applies it\n",
+        "err": ""
+      },
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a goto to review is queued since <TIME> and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches review\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "GOTO",
+        "node": "review"
+      }
+    ]
+  },
+  "G3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: node must be one of: verify, review, g, done\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "G4": {
+    "results": [
+      {
+        "code": 0,
+        "out": "queued goto review for r1: the next tick applies it\n",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "GOTO",
+        "node": "review"
+      }
+    ]
+  },
+  "A1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "",
+        "err": ""
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": [
+      {
+        "run": "r1",
+        "type": "ABORT"
+      }
+    ]
+  },
+  "A2": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: no run \"nope\" (runs: r1, r2, r3)\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "A3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "a worker cannot run factory abort (BEADS_ACTOR names a factory worker): mail the manager instead\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  }
+}
