@@ -116,6 +116,12 @@ const AC1 = [
   '$G-pus${^E:-h} origin main',
   '$G-pus${=E:-h} origin main',
   '$G-pus${+E:-h} origin main',
+  '$G-pus${E/#/h} origin main',
+  '$G-pus${E/%/h} origin main',
+  '$G-pus${(l:1::h:)E} origin main',
+  '$G-pus${(r:1::h:)E} origin main',
+  '$G-pus${(l.1..h.)E} origin main',
+  '$G-${(l:4::push:)E} origin main',
   '$G-pus${E::=h} origin main',
   '$G-pu${E-}}sh origin main',
 ]
