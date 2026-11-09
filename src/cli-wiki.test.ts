@@ -104,6 +104,11 @@ test('AC2 init without a remote seeds the repo and makes one commit', () => {
   const glossary = readFileSync(join(wiki(), 'glossary.md'), 'utf8')
   expect(glossary).toContain('kind: "glossary"')
   for (const t of ['station', 'soak', 'rig', 'ship lane', 'bead', 'run']) expect(glossary).toContain(t)
+  const slugs = glossary
+    .split('\n')
+    .filter(l => l.startsWith('## '))
+    .map(l => l.slice(3).toLowerCase().replace(/ /g, '-'))
+  for (const t of ['station', 'soak', 'rig', 'ship-lane', 'bead', 'run']) expect(slugs).toContain(t)
   expect(Bun.spawnSync(['git', '-C', wiki(), 'config', '--get', 'remote.origin.url']).exitCode).toBe(1)
   expect(ghCalls()).toBe(0)
   // a second init changes nothing, and keeps a page a person committed

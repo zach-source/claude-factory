@@ -5074,7 +5074,7 @@ const WIKI_VISIBLE = ['PUBLIC', 'PRIVATE', 'INTERNAL']
 const WIKI_CACHE_MS = 24 * 3600_000
 const WIKI_SEEDS: Record<string, string> = {
   'index.md': `---\nkind: "index"\ntitle: "Factory wiki"\n---\nThe factory writes this wiki. Start from the pages below.\n`,
-  'glossary.md': `---\nkind: "glossary"\ntitle: "Glossary"\n---\n- station: one step of a factory run, such as plan or implement.\n- soak: the time a deployed change runs under watch before a run ends.\n- rig: a repository the factory works on.\n- ship lane: the path of a pull request from ready to merged.\n- bead: one tracked task in bd.\n- run: one trip of a goal through the stations of a factory.\n`,
+  'glossary.md': `---\nkind: "glossary"\ntitle: "Glossary"\n---\n## station\n\none step of a factory run, such as plan or implement.\n\n## soak\n\nthe time a deployed change runs under watch before a run ends.\n\n## rig\n\na repository the factory works on.\n\n## ship lane\n\nthe path of a pull request from ready to merged.\n\n## bead\n\none tracked task in bd.\n\n## run\n\none trip of a goal through the stations of a factory.\n`,
 }
 
 /**
