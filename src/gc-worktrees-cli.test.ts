@@ -802,7 +802,8 @@ test('i: goto after gc recreates the removed worktree of an ax run too (claude-f
   expect(factory(['goto', id, 'implement']).code).toBe(0)
   // the ax launch itself may fail here (fake ax); the worktree must be back before it runs
   const ax = join(bin, 'ax')
-  writeFileSync(ax, '#!/bin/sh\nexit 1\n')
+  const axLog = join(dir, 'ax-calls.log')
+  writeFileSync(ax, `#!/bin/sh\necho "$@" >> '${axLog}'\nexit 1\n`)
   chmodSync(ax, 0o755)
   const kubectl = join(bin, 'kubectl')
   const ready =
@@ -813,11 +814,13 @@ test('i: goto after gc recreates the removed worktree of an ax run too (claude-f
     FACTORY_KUBECTL: kubectl,
     FACTORY_HERDR: noPanes(),
     FACTORY_AX: ax,
+    FACTORY_AX_IMAGE: 'acme/worker:1',
     CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
     FACTORY_GC: '0',
   })
   expect(existsSync(worktree)).toBe(true)
   expect(readFileSync(join(worktree, `${id}.txt`), 'utf8')).toBe(id)
+  expect(readFileSync(axLog, 'utf8')).toContain('apply') // the launch reached ax
   expect(git(repo, 'branch', '--list', branch)).not.toBe('')
 })
 
