@@ -503,6 +503,79 @@ test('rig egress add then rm returns the list', () => {
   expect(text()).toBe(b)
 })
 
+test('rig egress add --path-prefix stores the prefixes; rm returns the list', () => {
+  seed()
+  const before = text()
+  const prefixes = ['/v1/aws/acme/', '/v1/aws/acme-b/']
+  const r = factory([
+    'rig',
+    'egress',
+    'add',
+    'x',
+    'broker.example.com=AWS_BROKER:Authorization:',
+    '--port',
+    '8443',
+    ...prefixes.flatMap(p => ['--path-prefix', p]),
+  ])
+  expect(r).toMatchObject({ code: 0, err: '' })
+  expect(list()[0].egress[1]).toEqual({
+    hosts: ['broker.example.com'],
+    key: 'AWS_BROKER',
+    header: 'Authorization',
+    prefix: '',
+    port: 8443,
+    pathPrefixes: prefixes,
+  })
+  expect(factory(['rig', 'egress', 'rm', 'x', 'broker.example.com']).code).toBe(0)
+  expect(text()).toBe(before)
+  expect(
+    factory([
+      'rig',
+      'egress',
+      'add',
+      'x',
+      'results-receiver.actions.githubusercontent.com',
+      '--path-prefix',
+      '/actions-results/',
+    ]).code,
+  ).toBe(0)
+  expect(list()[0].egress[1]).toEqual({
+    hosts: ['results-receiver.actions.githubusercontent.com'],
+    pathPrefixes: ['/actions-results/'],
+  })
+})
+
+test('rig egress refuses unsafe path prefixes and flags outside their scope', () => {
+  seed()
+  refused([
+    ...[
+      'a/',
+      '/',
+      '',
+      '/v1/aws/acme',
+      '/a//b/',
+      '/a/../b/',
+      '/.git/',
+      '/a b/',
+      '/a?x',
+      '/a%2F',
+      '/a*',
+      '/ax_auth/',
+      '/github-reviewer/',
+      '/GitHub_Reviewer/',
+    ].map(p => ['egress', 'add', 'x', 'h.example.com', '--path-prefix', p]),
+    ...['api.github.com', 'GitHub.com'].map(h => ['egress', 'add', 'x', h, '--path-prefix', '/a/']),
+    ['egress', 'add', 'x', 'h.example.com', '--path-prefix', '/a/', '--path-prefix', '/a/'],
+    ['egress', 'add', 'x', 'h.example.com', '--path-prefix'],
+    ['egress', 'rm', 'x', 'example.com', '--path-prefix', '/a/'],
+    ['env', 'set', 'x', 'A=b', '--path-prefix', '/a/'],
+    ['beads-remote', 'clear', 'x', '--path-prefix', '/a/'],
+    ['env', 'set', 'x', 'A=b', '--cluster-runs', '3'],
+    ['egress', 'add', 'x', 'h.example.com', '--skills', 'egm'],
+  ])
+  expect(factory(['rig', 'egress', 'add', 'x']).err).toContain('--path-prefix')
+})
+
 test('rig egress add on a local runner is refused', () => {
   seed()
   const before = text()

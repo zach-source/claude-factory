@@ -12199,7 +12199,7 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
@@ -13808,12 +13808,15 @@ if (import.meta.main && !outboxCmd)
           const usages: Record<string, string> = {
             'env set': 'factory rig env set <rig|repo> KEY=VALUE',
             'env unset': 'factory rig env unset <rig|repo> KEY',
-            'egress add': 'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n]',
+            'egress add':
+              'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]...',
             'egress rm': 'factory rig egress rm <rig|repo> host[,host]...',
             'beads-remote set': 'factory rig beads-remote set <rig|repo> --name n --url u --user user',
             'beads-remote clear': 'factory rig beads-remote clear <rig|repo>',
           }
           const [port, bName, bUrl, bUser] = [opt('--port'), opt('--name'), opt('--url'), opt('--user')]
+          const pathPrefix: string[] = []
+          while (args.includes('--path-prefix')) pathPrefix.push(opt('--path-prefix') ?? '')
           const [verb, at, arg, ...extra] = args.slice(1)
           const key = `${sub} ${verb}`
           const usage =
@@ -13840,6 +13843,7 @@ if (import.meta.main && !outboxCmd)
             [params, egress, personOnlyContext, protectedBranch].some(l => l.length) ||
             mergeAuth ||
             (port !== undefined && key !== 'egress add') ||
+            (pathPrefix.length > 0 && key !== 'egress add') ||
             ([bName, bUrl, bUser].some(v => v !== undefined) && key !== 'beads-remote set')
           const noArg = sub === 'beads-remote'
           if (!usages[key] || stray || !at || extra.length || (noArg ? arg !== undefined : !arg))
@@ -13886,6 +13890,21 @@ if (import.meta.main && !outboxCmd)
               if (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535)
                 fail(`--port is a number from 1 to 65535 (not "${port}")`)
               rule!.port = Number(port)
+            }
+            for (const p of pathPrefix) {
+              if (!/^(\/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)+\/$/.test(p))
+                fail(
+                  `--path-prefix is a URL path that ends in /, such as /v1/aws/acme/: segments of letters, digits and -._~ that do not start with . (not "${p}")`,
+                )
+              if (pathPrefix.indexOf(p) !== pathPrefix.lastIndexOf(p))
+                fail(`--path-prefix "${p}" is given two times`)
+            }
+            if (pathPrefix.length) {
+              const why = broker.workerPolicyRefusal({
+                rules: [{ https: { hostnames: rule!.hosts, pathPrefixes: pathPrefix } }],
+              })
+              if (why) fail(`--path-prefix: the broker refuses this worker rule: it ${why}`)
+              rule!.pathPrefixes = pathPrefix
             }
             change(
               r => {
