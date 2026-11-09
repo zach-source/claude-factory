@@ -109,6 +109,15 @@ const AC1 = [
   '${TOOL:-config} x',
   '$G-pu${E-{x}}sh origin main',
   '$G-pus${E:-"}"}h origin main',
+  '$G-pus${(L)E:-h} origin main',
+  '$G-pus${(L)E:-H} origin main',
+  '$G-pus${${E}:-h} origin main',
+  '$G-pus${~E:-h} origin main',
+  '$G-pus${^E:-h} origin main',
+  '$G-pus${=E:-h} origin main',
+  '$G-pus${+E:-h} origin main',
+  '$G-pus${E::=h} origin main',
+  '$G-pu${E-}}sh origin main',
 ]
 const AC2 = [
   '=git-push origin main',

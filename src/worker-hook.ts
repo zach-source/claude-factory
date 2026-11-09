@@ -8100,8 +8100,27 @@ function dynamicDashedVerb(w: string): boolean {
 }
 
 const DYN_READINGS_CAP = 64
-const DYN_OP_BODY = /^(?:[a-z_]\w*|[0-9]+|[@*#?!$-]):?[-=+]([\s\S]*)$/
 const DYN_PLAIN_EXP = /^\$(?:[a-z_]\w*|[@*#?!$0-9-])/
+
+/**
+ * claude-factory-qn8a.16.3: fail closed. Whatever prefix a `${..}` body has, every `-`, `=` or
+ * `+` in it outside a nested `${..}` can start a default word. Returns the readings of all such words, or null when one
+ * list passes DYN_READINGS_CAP.
+ */
+function dynOpWords(body: string, memo: Map<string, string[] | null>): string[] | null {
+  const out: string[] = []
+  let depth = 0
+  for (let j = 0; j < body.length; j++) {
+    if (body.startsWith('${', j)) depth++
+    else if (body[j] === '}') depth = Math.max(0, depth - 1)
+    if (depth || !'-=+'.includes(body[j]!)) continue
+    const r = dynReadings(body.slice(j + 1), memo)
+    if (!r) return null
+    out.push(...r)
+    if (out.length > DYN_READINGS_CAP) return null
+  }
+  return out
+}
 
 /**
  * claude-factory-qn8a.16: all readings of a word. `${X:-w}` (also `-`, `=`, `:=`, `+`, `:+`)
@@ -8122,8 +8141,7 @@ function dynReadings(s: string, memo: Map<string, string[] | null>): string[] | 
   let res: string[] | null = []
   if (i >= s.length) res = [lit]
   for (let k = s.indexOf('}', i + 2); i < s.length && res && k >= 0; k = s.indexOf('}', k + 1)) {
-    const op = DYN_OP_BODY.exec(s.slice(i + 2, k))
-    const word = op ? dynReadings(op[1]!, memo) : []
+    const word = dynOpWords(s.slice(i + 2, k), memo)
     const tail = dynReadings(s.slice(k + 1), memo)
     if (!word || !tail) res = null
     else for (const a of ['', ...word]) for (const b of tail) res.push(lit + a + b)
@@ -9872,6 +9890,9 @@ function denyAt(
       if (r === FUNSUB_REASON) return r
       // claude-factory-teku: `${(@)_}` reads as `${_}` here; a head `$_` stays denied.
       if (r === DYNAMIC_VERB_REASON && LAST_ARG_HEAD.test(bare)) return r
+      // claude-factory-qn8a.16.3: the lexer cut the word at the flag group, so read it whole here.
+      if (r === DYNAMIC_VERB_REASON && bare.split(/\s+/).some(t => t.includes('$') && dynamicDashedVerb(t)))
+        return r
     }
   }
   const late: { reason?: string; glued?: string; kept?: string } = {}
