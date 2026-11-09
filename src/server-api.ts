@@ -443,7 +443,11 @@ const HEADER = /^([A-Za-z0-9!#$%&'*+.^_`|~-]+):[ \t]*([^\r\n\0]*?)[ \t]*$/
  * Read one HTTP/1.1 request from an authorized socket and write one answer, then close.
  * The grammar is closed: no chunked body, no pipelining, no keep-alive, and a duplicate of a header that the handler reads is an error.
  */
-function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise<Response>, idleMs: number) {
+export function serveSocket(
+  sock: Socket,
+  handle: (req: Request, ip: string) => Promise<Response>,
+  idleMs: number,
+) {
   const reply = (status: number, body: string, type = 'application/json', extra = '') => {
     sock.end(
       `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? 'Status'}\r\ncontent-type: ${type}\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n${extra}\r\n${body}`,
@@ -462,7 +466,10 @@ function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise
     try {
       const body = buf.subarray(head!.end, head!.end + head!.length)
       const ip = sock.remoteAddress ?? ''
+      const gone = new AbortController()
+      sock.once('close', () => gone.abort())
       const req = new Request(`https://client.invalid${head!.target}`, {
+        signal: gone.signal,
         method: head!.method,
         headers: head!.headers,
         ...(head!.method !== 'GET' && head!.method !== 'HEAD' && { body }),
@@ -470,17 +477,11 @@ function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise
       const res = await handle(req, ip)
       if (res.headers.get('content-type')?.startsWith('text/event-stream') && res.body) {
         // close-delimited stream: no content-length, and the socket drain paces the reader
-        sock.write(
-          `HTTP/1.1 200 OK\r\ncontent-type: ${res.headers.get('content-type')}\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n`,
-        )
-        const rd = res.body.getReader()
-        sock.on('close', () => void rd.cancel().catch(() => {}))
-        try {
-          for (;;) {
-            const { value, done } = await rd.read()
-            if (done || sock.destroyed) break
-            if (!sock.write(value))
-              await new Promise<void>(r => {
+        // wait for drain or close when a write returns false; remove both paired listeners
+        const flushed = (ok: boolean) =>
+          ok || sock.destroyed
+            ? undefined
+            : new Promise<void>(r => {
                 const go = () => {
                   sock.off('drain', go)
                   sock.off('close', go)
@@ -489,6 +490,18 @@ function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise
                 sock.on('drain', go)
                 sock.on('close', go)
               })
+        const rd = res.body.getReader()
+        sock.on('close', () => void rd.cancel().catch(() => {}))
+        try {
+          await flushed(
+            sock.write(
+              `HTTP/1.1 200 OK\r\ncontent-type: ${res.headers.get('content-type')}\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n`,
+            ),
+          )
+          for (;;) {
+            const { value, done } = await rd.read()
+            if (done || sock.destroyed) break
+            await flushed(sock.write(value))
           }
         } finally {
           sock.end()

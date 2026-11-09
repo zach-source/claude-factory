@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Port } from './core/catalog'
-import { clientHandler, type RunResult } from './server-api'
+import { clientHandler, serveSocket, type RunResult } from './server-api'
 
 type Call = { argv: string[]; text?: string } | { port: string; args: unknown[] }
 let seq = 0
@@ -561,5 +562,82 @@ describe('events replay and ring', () => {
     dead.abort()
     await t.h(new Request('http://x/v1/events', { signal: dead.signal }), '1.2.3.4')
     expect(t.h.subscribers()).toBe(0)
+  })
+})
+
+describe('serveSocket event transport', () => {
+  const fake = (writeOk: () => boolean) =>
+    Object.assign(new EventEmitter(), {
+      destroyed: false,
+      remoteAddress: '127.0.0.1',
+      written: [] as string[],
+      ended: false,
+      setTimeout: () => {},
+      write(c: string | Uint8Array) {
+        this.written.push(String(c))
+        return writeOk()
+      },
+      end() {
+        this.ended = true
+      },
+      destroy() {
+        this.destroyed = true
+        this.emit('close')
+      },
+    })
+  const tick = () => new Promise(r => setTimeout(r, 20))
+  const open = (sock: ReturnType<typeof fake>, h: H) => {
+    serveSocket(sock as never, h, 1000)
+    sock.emit('data', Buffer.from('GET /v1/events?after=0 HTTP/1.1\r\nhost: x\r\n\r\n'))
+  }
+
+  test('the header write waits for drain before the first body read', async () => {
+    const h = setup().h
+    h.publish({ n: 1 })
+    let ok = false
+    const sock = fake(() => ok)
+    open(sock, h)
+    await tick()
+    expect(sock.written.length).toBe(1)
+    expect(sock.written[0]).toContain('text/event-stream')
+    ok = true
+    sock.emit('drain')
+    await tick()
+    expect(sock.written.length).toBe(2)
+  })
+  test('repeated drain cycles leave no listeners, and close during drain releases the stream', async () => {
+    const h = setup().h
+    let ok = true
+    const sock = fake(() => ok)
+    open(sock, h)
+    await tick()
+    for (let i = 1; i <= 25; i++) {
+      ok = false
+      h.publish({ n: i })
+      await tick()
+      sock.emit('drain')
+      await tick()
+    }
+    expect(sock.listenerCount('drain')).toBe(0)
+    expect(sock.listenerCount('close')).toBeLessThanOrEqual(3)
+    ok = false
+    h.publish({ n: 99 })
+    await tick()
+    expect(sock.listenerCount('drain')).toBe(1)
+    sock.destroy()
+    await tick()
+    expect(sock.listenerCount('drain')).toBe(0)
+    expect(h.subscribers()).toBe(0)
+    expect(sock.ended).toBe(true)
+  })
+  test('a socket close aborts the request and frees the subscriber', async () => {
+    const h = setup().h
+    const sock = fake(() => true)
+    open(sock, h)
+    await tick()
+    expect(h.subscribers()).toBe(1)
+    sock.destroy()
+    await tick()
+    expect(h.subscribers()).toBe(0)
   })
 })
