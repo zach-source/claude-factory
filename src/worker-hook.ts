@@ -3073,7 +3073,7 @@ function dynamicHeadScripts(words: string[]): string[] {
     const path = head.slice(head.lastIndexOf('}') + 1).includes('/')
     if (head.startsWith("'") || !bare.includes('$') || path) continue
     const rest = words.slice(a + 1)
-    // The tokenizer drops quotes, so a quoted "<<<" looks like a here-string. Read the script anyway.
+    // The tokenizer drops quotes, so a quoted here-string token looks like a here-string. Read the script anyway.
     if (!rest.length) return []
     return [rest.join(' '), ...rest.filter(w => /[\s;&|<>()$`]/.test(w))]
   }
@@ -8821,7 +8821,7 @@ function anyShellReason(
   for (const t of dynamicHeadScripts(words)) {
     const r = denyAt(t, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
     // A here-string keeps its own, more specific reason (SHELL_STDIN_REASON). The tokenizer drops
-    // quotes, so a quoted "<<<" word looks the same: it still denies, with that reason.
+    // quotes, so a quoted here-string token looks the same: it still denies, with that reason.
     if (r) return words.some(w => w.includes('<<<')) ? SHELL_STDIN_REASON : r
   }
   return undefined
