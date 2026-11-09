@@ -199,6 +199,24 @@ Complete this coverage map in this ADR with exact test names before task closure
 | `anyLiveApplyWord` | A literal apply against a fake protected context denies after a redirect. |
 | `anyDynamicLiveApplyReason1` | A dynamic apply against that fake context denies after a redirect. |
 
+Recorded result (task `claude-factory-qn8a.14.7`). Each test runs plain and after `>out`, in `src/worker-hook.test.ts`:
+
+| Consumer | Test name | Deny row, allow control |
+| --- | --- | --- |
+| `gluedAtCommandSlot` | `qn8a.14 caller gluedAtCommandSlot` | `git>f push origin main` is PUSH_REASON; `git>f status` allows. |
+| `gluedBraceSlots` | `qn8a.14 caller gluedBraceSlots` | `{rm,-rf,/x}` denies; `echo {a,b}` allows. |
+| `dynamicHeadRmReading` | `qn8a.14 caller dynamicHeadRmReading` | `$X rm -rf /x` is REASON; `$X echo ok` allows. |
+| `shellStdinReason1` | `qn8a.14 caller shellStdinReason1` | `sh <<< hi` is SHELL_STDIN_REASON; `ls <<< hi` allows. |
+| `segmentDynArg` | `qn8a.14 caller segmentDynArg returns both first-head results` | `['>x','echo','$name']` is true; the two plain controls are false. |
+| `segmentMayDefineAlias` | `qn8a.14 caller segmentMayDefineAlias returns both first-head results` | `['>x','/bin/echo','alias']` is true; the two plain controls are false. |
+| `anyGlobCommandWord` | `qn8a.14 caller anyGlobCommandWord` | `g*t push` denies; `echo *.md` allows. |
+| `anyDynamicCommandReason1` | `qn8a.14 caller anyDynamicCommandReason1` | `$X push origin main` denies; `$X` allows. |
+| `anyLiveApplyWord` | `qn8a.14 caller anyLiveApplyWord` | `kubectl --context acme apply -f x` is LIVE_REASON; `get pods` allows. |
+| `anyDynamicLiveApplyReason1` | `qn8a.14 caller anyDynamicLiveApplyReason1` | `$K --context acme delete -f x` denies; `get pods` allows. |
+
+The alias test is `qn8a.14 a git alias p for push denies and the fake reader is called`.
+The AC6 head tests are `qn8a.14 unsafe dynamic head denies` and `qn8a.14 safe dynamic head allows`.
+
 Select glued/live rows from their existing tests. Use context `acme`; never call a cluster.
 Each row needs an explicit result and a named test. Another rule's early denial does not prove this consumer.
 Use a focused buildable mutation when public behavior cannot show which consumer supplied the result.

@@ -6470,6 +6470,8 @@ function segmentDynArg(words: string[]): boolean {
   })
 }
 
+export { segmentDynArg as segmentDynArgForTest }
+
 // claude-factory-mn2y: true when this segment may define a shell alias.
 // W1: a word holds "alias" (any case) and is not provably an argument of a safe program.
 // W2: a dynamic command word, then a word with "=" or a dynamic word ($A g=...).
@@ -6495,6 +6497,7 @@ function segmentMayDefineAlias(words: string[]): boolean {
   }
   return false
 }
+export { segmentMayDefineAlias as segmentMayDefineAliasForTest }
 
 // claude-factory-mn2y: the raw text has no expansion, substitution or brace, and every segment
 // is an alias command.

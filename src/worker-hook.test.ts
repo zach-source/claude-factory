@@ -11,6 +11,8 @@ import {
   baseWordForTest,
   dynamicHeadDenyForTest,
   commandAnchorsForTest,
+  segmentDynArgForTest,
+  segmentMayDefineAliasForTest,
   ALIAS_USE_REASON,
   BEADS_ACTOR_REASON,
   FACTORY_FROM_REASON,
@@ -12409,3 +12411,113 @@ test.each(['"$ROOT/bin/factory" status', '\'$X\' "hello world"', '${ROOT}/x "rm 
     expect(redirectDeny(`>out ${c}`)).toBeUndefined()
   },
 )
+
+// claude-factory-qn8a.14.7: the caller map of docs/architecture/adr-worker-hook-redirect-anchors.md.
+// Each row names one commandAnchors consumer. The prefix is the redirect word that moved the head.
+const CALLER_GATE = (aliases: Map<string, string>, seen: string[]) => ({
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => {
+    seen.push('read')
+    return aliases
+  },
+})
+const callerDeny = (c: string) => denyReason(c, '/root/repo', ['acme'], REDIRECT_GATE)
+
+test.each(['', '>out '])('qn8a.14 caller gluedAtCommandSlot %#', p => {
+  expect(callerDeny(`${p}git>f push origin main`)).toBe(PUSH_REASON)
+  expect(callerDeny(`${p}git>f status`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller gluedBraceSlots %#', p => {
+  expect(callerDeny(`${p}{rm,-rf,/x}`)).toBeTruthy()
+  expect(callerDeny(`${p}echo {a,b}`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller dynamicHeadRmReading %#', p => {
+  expect(callerDeny(`${p}$X rm -rf /x`)).toBe(REASON)
+  expect(callerDeny(`${p}$X echo ok`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller shellStdinReason1 %#', p => {
+  expect(callerDeny(`${p}sh <<< hi`)).toBe(SHELL_STDIN_REASON)
+  expect(callerDeny(`${p}ls <<< hi`)).toBeUndefined()
+})
+
+test('qn8a.14 caller segmentDynArg returns both first-head results', () => {
+  expect(segmentDynArgForTest(['>x', 'echo', '$name'])).toBe(true)
+  expect(segmentDynArgForTest(['echo', '$name'])).toBe(false)
+  expect(segmentDynArgForTest(['>x', 'echo', 'name'])).toBe(false)
+})
+
+test('qn8a.14 caller segmentMayDefineAlias returns both first-head results', () => {
+  expect(segmentMayDefineAliasForTest(['>x', '/bin/echo', 'alias'])).toBe(true)
+  expect(segmentMayDefineAliasForTest(['/bin/echo', 'alias'])).toBe(false)
+  expect(segmentMayDefineAliasForTest(['>x', '/bin/echo', 'name'])).toBe(false)
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyGlobCommandWord %#', p => {
+  expect(callerDeny(`${p}g*t push`)).toContain('shell expansion')
+  expect(callerDeny(`${p}echo *.md`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyDynamicCommandReason1 %#', p => {
+  expect(callerDeny(`${p}$X push origin main`)).toContain('shell expansion')
+  expect(callerDeny(`${p}$X`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyLiveApplyWord %#', p => {
+  expect(callerDeny(`${p}kubectl --context acme apply -f x`)).toBe(LIVE_REASON)
+  expect(callerDeny(`${p}kubectl --context acme get pods`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 caller anyDynamicLiveApplyReason1 %#', p => {
+  expect(callerDeny(`${p}$K --context acme delete -f x`)).toContain('shell expansion')
+  expect(callerDeny(`${p}$K --context acme get pods`)).toBeUndefined()
+})
+
+test.each(['', '>out '])('qn8a.14 a git alias p for push denies and the fake reader is called %#', p => {
+  const seen: string[] = []
+  const gate = CALLER_GATE(new Map([['p', 'push']]), seen)
+  expect(denyReason(`${p}git p origin main`, '/root/repo', ['acme'], gate)).toBe(PUSH_REASON)
+  expect(seen.length).toBeGreaterThan(0)
+  const seen2: string[] = []
+  const gate2 = CALLER_GATE(new Map([['p', 'push']]), seen2)
+  expect(denyReason(`${p}git status`, '/root/repo', ['acme'], gate2)).toBeUndefined()
+})
+
+// AC6: head forms from 412b8d4:src/worker-hook-ibas.test.ts, plain and after a redirect.
+test.each([
+  '"$X" "rm -rf /"',
+  '"$@" "rm -rf /"',
+  '${=X} "rm -rf /"',
+  '"${X/b/a}" "rm -rf /"',
+  '"${X:-${Y}/}" "rm -rf /"',
+  '${X:-${Y}/} "rm -rf /"',
+  '${X:-\\}/} "rm -rf /"',
+  '${X:-"}/"} "rm -rf /"',
+  '${X#${Y}/} "rm -rf /"',
+  '$@ "rm -rf /"',
+  '${X} "rm -rf /"',
+  '${X%/} "rm -rf /"',
+  'ev${X} "rm -rf /"',
+])('qn8a.14 unsafe dynamic head denies %s, plain and after a redirect', c => {
+  expect(redirectDeny(c)).toBeTruthy()
+  expect(redirectDeny(`>out ${c}`)).toBeTruthy()
+  expect(redirectDeny(`> out ${c}`)).toBeTruthy()
+})
+
+test.each([
+  '"$PY" -c "print(1)"',
+  '$X "hello world"',
+  '$EDITOR notes.md',
+  '$GIT status',
+  '$X "a b" c',
+  '$GREP -n "foo bar" file',
+  '$CC -o out "my file.c"',
+  '${PAGER:-less} "notes file.md"',
+  '"${ROOT}/bin/factory" status',
+])('qn8a.14 safe dynamic head allows %s, plain and after a redirect', c => {
+  expect(redirectDeny(c)).toBeUndefined()
+  expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+})
