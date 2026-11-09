@@ -400,40 +400,62 @@ describe('events over mTLS', () => {
 })
 
 describe('events over mTLS: barriers', () => {
-  test('headers come before any change, a live change arrives once, and server stop ends the stream', async () => {
+  test('headers come before the first tick ends, two live changes arrive once each, and server stop ends the stream', async () => {
     let cur: unknown = { n: 0 }
-    const t = start(() => cur)
+    let free = false
+    const waiting: (() => void)[] = []
+    const tick = async () => {
+      if (!free) await new Promise<void>(r => waiting.push(r))
+      return cur
+    }
+    const release = async (board: unknown) => {
+      const until = performance.now() + 5000
+      while (waiting.length === 0 && performance.now() < until) await Bun.sleep(5)
+      expect(waiting.length).toBeGreaterThan(0)
+      cur = board
+      waiting.shift()?.()
+    }
+    const t = start(tick)
     const who = pair(A)
     const p = Bun.spawn(
       [
-        ...['curl', '-sN', '-i', '--max-time', '10', '--cacert', join(A, 'ca.crt')],
-        ...['--cert', who.cert, '--key', who.key],
-        ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`],
-        `${t.url}/v1/events?after=0`,
+        ...['openssl', 's_client', '-connect', `localhost:${t.s.clientPort}`, '-servername', 'localhost'],
+        ...['-CAfile', join(A, 'ca.crt'), '-quiet', '-tls1_3', '-cert', who.cert, '-key', who.key],
       ],
-      { stdout: 'pipe', stderr: 'ignore' },
+      { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', timeout: 15000 },
     )
+    // curl keeps a header until the first body byte. This test sends the request by hand and keeps stdin open.
+    p.stdin.write('GET /v1/events?after=0 HTTP/1.1\r\nHost: localhost\r\n\r\n')
+    await p.stdin.flush()
     const rd = p.stdout.getReader()
     const dec = new TextDecoder()
     let text = ''
+    let done = false
     const until = async (re: RegExp) => {
-      while (!re.test(text)) {
-        const { value, done } = await rd.read()
-        if (done) break
-        text += dec.decode(value)
+      while (!re.test(text) && !done) {
+        const r = await rd.read()
+        if (r.done) done = true
+        else text += dec.decode(r.value)
       }
     }
-    // the first tick publishes the first board as id 1; the board stays equal after that
-    await until(/id: 1\ndata: \{"n":0\}\n\n/)
+    // the first tick is held: the stream is open and has no event yet
+    await until(/\r\n\r\n/)
+    expect(waiting.length).toBe(1)
     expect(text.toLowerCase()).toContain('content-type: text/event-stream')
-    expect(text).not.toContain('id: 2')
-    cur = { n: 1 }
-    await until(/id: 2\ndata: \{"n":1\}\n\n/)
-    await Bun.sleep(200)
-    expect(text.match(/id: 2\n/g)?.length).toBe(1)
-    expect(text).not.toContain('id: 3')
+    expect(text).not.toContain('id:')
+    await release({ n: 1 })
+    await until(/id: 1\ndata: \{"n":1\}\n\n/)
+    await release({ n: 2 })
+    await until(/id: 2\ndata: \{"n":2\}\n\n/)
+    // a later tick sees an equal board; the reader stays active until the stop closes the stream
+    await release({ n: 2 })
+    free = true
+    for (const r of waiting.splice(0)) r()
     await t.s.stop()
-    const end = await Promise.race([p.exited, Bun.sleep(5000).then(() => 'open')])
-    expect(end).not.toBe('open')
-  })
+    await until(/never/)
+    expect(done).toBe(true)
+    expect(text.match(/^id: /gm)?.length).toBe(2)
+    expect(text.endsWith('id: 2\ndata: {"n":2}\n\n')).toBe(true)
+    await p.exited
+  }, 20000)
 })
