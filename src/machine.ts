@@ -164,6 +164,12 @@ export type Node = {
    * `validate` refuses this field on a gate: a gate has no worker to time out.
    */
   onTimeout?: { timeoutMin: number; prompt?: string }
+  /**
+   * The runner decides the security route when it starts this station (src/security-route.ts), writes it in
+   * the brief as `## Security route`, and `report` refuses `approve` when the route is required, and `security`
+   * when it is not required and the summary has no `Security-reason:` line. `validate` refuses this field on a gate, and on a node whose `next` lacks `security` or `approve`.
+   */
+  securityRoute?: true
 }
 
 export type Factory = {
@@ -356,6 +362,13 @@ export function validate(def: Factory): Factory {
           !Object.keys(node.next ?? {}).includes(node.mergeCheck) &&
           `${id}: mergeCheck "${node.mergeCheck}" is not an outcome in next`,
         node.gate && node.mergeCheck !== undefined && `${id}: a gate has no worker, so no mergeCheck`,
+        node.gate && node.securityRoute && `${id}: a gate has no worker, so no securityRoute`,
+        node.securityRoute &&
+          !(
+            Object.keys(node.next ?? {}).includes('security') &&
+            Object.keys(node.next ?? {}).includes('approve')
+          ) &&
+          `${id}: securityRoute needs the outcomes security and approve in next`,
         ...Object.entries(node.next ?? {}).flatMap(([outcome, edge]) => [
           WORKER_OUTCOMES.includes(outcome) && `${id}: outcome "${outcome}" is reserved`,
           edgeTo(edge) !== 'done' &&

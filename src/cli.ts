@@ -103,6 +103,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
+import { routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
@@ -421,6 +422,8 @@ export type Run = {
   bead?: string
   /** a rig's ship run: only the runner writes this, and it counts against no run limit (claude-factory-rtuw) */
   ship?: true
+  /** the ship branch a rework run started from: set once, so a later bead edit cannot move the security diff */
+  shipBranch?: string
 }
 type Saved = {
   cursor: number
@@ -1734,7 +1737,15 @@ const skillLines = (skills: string[]) =>
     ? ['', '## Skills', ...skills.map(s => `- ${s}: ${SKILL_USE[s] ?? 'load it when it applies'}`)]
     : []
 
-export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[], notes = '') {
+export function brief(
+  run: Run,
+  def: Factory,
+  node: string,
+  c: Ctx,
+  inbox: Mail[],
+  notes = '',
+  route?: SecurityRoute,
+) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
   const parked = isParked(c, node) ? c.log.at(-1) : undefined
@@ -1769,6 +1780,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Your task',
     fill(n.prompt.trim(), prm),
+    ...(route ? ['', '## Security route', routeLine(route)] : []),
     ...(fastCheck
       ? [
           '',
@@ -2070,7 +2082,13 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   // a resumed session keeps the notes it was launched with; a new brief searches once, however often it is read
   const notes = session ? '' : launchNotes(run, node)
-  const full = () => brief(run, def, node, c, c.mail[node] ?? [], notes)
+  const route = def.nodes[node]?.securityRoute
+    ? session
+      ? savedRoute(run, c)
+      : securityRouteOf(run, def, c)
+    : undefined
+  if (route && !session) writeJson(routeFile(run), { seq: c.seq, route })
+  const full = () => brief(run, def, node, c, c.mail[node] ?? [], notes, route)
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
   if (!session) {
     mkdirSync(dirname(file), { recursive: true })
@@ -7374,6 +7392,78 @@ export function conflictsOf(repo: string, base: string, branch: string): string[
   return [...new Set(end < 0 ? lines : lines.slice(0, end))]
 }
 
+/**
+ * The paths the branch changes against `base`, from origin. It gives null when the fetch or the diff fails,
+ * so the security route fails closed. `-z` and core.quotePath=false keep a non-ASCII path whole, and
+ * --no-renames lists both names of a rename.
+ */
+export function changedPaths(repo: string, base: string, branch: string): string[] | null {
+  const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
+  const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '-q', 'origin', ref(base), ref(branch)], {
+    env: gitNetworkEnv(),
+    timeout: GIT_NETWORK_TIMEOUT_MS,
+  })
+  if (fetch.exitCode !== 0) return null
+  const p = Bun.spawnSync([
+    'git',
+    '-c',
+    'core.quotePath=false',
+    '-C',
+    repo,
+    'diff',
+    '--name-only',
+    '--no-renames',
+    '-z',
+    `origin/${base}...origin/${branch}`,
+  ])
+  if (p.exitCode !== 0) return null
+  return p.stdout
+    .toString()
+    .split('\0')
+    .filter(x => x)
+}
+
+const routeFile = (run: Run) => join(runDir(run.id), 'security-route.json')
+
+/** The runner's security route for this run: changed paths, the plan's line and the bead's labels. */
+function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
+  let labels: string[] | null = []
+  const ref = run.shipBranch ?? run.branch
+  if (run.bead) {
+    try {
+      const bead = beads(run.repo, actorOf(run.id)).lookup(run.bead)
+      if (bead) {
+        labels = bead.labels ?? []
+      } else labels = null
+    } catch {
+      labels = null
+    }
+  }
+  const plan = c.log.findLast(e => e.node === 'plan' && e.outcome === 'ready')?.summary
+  return securityRoute({
+    paths: changedPaths(run.repo, baseBranchOf(def, rigOf(run.repo), run.repo), ref),
+    plan,
+    labels,
+  })
+}
+
+/** The route file of this attempt, or the fail-closed route when it is missing, malformed or old. */
+function savedRoute(run: Run, c: Ctx): SecurityRoute {
+  const closed = { required: true, why: ['route not recorded'] }
+  try {
+    const j = JSON.parse(readFileSync(routeFile(run), 'utf8'))
+    const r = j?.route
+    return j?.seq === c.seq &&
+      typeof r?.required === 'boolean' &&
+      Array.isArray(r.why) &&
+      r.why.every((w: unknown) => typeof w === 'string')
+      ? { required: r.required, why: r.why }
+      : closed
+  } catch {
+    return closed
+  }
+}
+
 /** one read-only `gh` call on the laptop (claude-factory-q08): a non-zero exit or a timeout throws */
 function ghRead(repo: string, args: string[], timeout = 30_000): string {
   const p = Bun.spawnSync(['gh', ...args], { cwd: repo, timeout, maxBuffer: 8_000_000 })
@@ -7999,7 +8089,15 @@ async function createRun(
     from,
     ship,
     onto,
-  }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
+    shipBranch,
+  }: {
+    id: string
+    bead?: string
+    from?: { run: Run; saved: Saved }
+    ship?: true
+    onto?: string
+    shipBranch?: string
+  },
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
@@ -8059,6 +8157,7 @@ async function createRun(
     ...(from && { forkedFrom: from.run.id }),
     ...(bead && { bead }),
     ...(ship && { ship }),
+    ...(shipBranch && { shipBranch }),
   }
   // the source's worker stays the source's: the fork launches its own
   const snapshot = from
@@ -8091,7 +8190,7 @@ async function createTracked(
     // the goal says the worktree starts from this branch: do not fall back to the default branch
     if (shipBranch && !onto)
       throw new Error(`origin has no branch ${shipBranch}: a rework run must start from it`)
-    return await createRun(spec, repo, goal, { id, bead, from, ship, onto })
+    return await createRun(spec, repo, goal, { id, bead, from, ship, onto, shipBranch })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
@@ -13452,6 +13551,18 @@ if (import.meta.main && !outboxCmd)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
         const text = cleanReport(summaryArgs(args).slice(3).join(' '))
+        if (n?.securityRoute && (outcome === 'security' || outcome === 'approve')) {
+          const route = savedRoute(run, c)
+          const line = routeLine(route)
+          if (outcome === 'security' && !route.required && !SECURITY_REASON.test(text))
+            fail(
+              `the security route for this diff is not required (${line}). Post your verdict as the approve rules say: the APPROVE review when FACTORY_GH_REVIEWER is 1, then mark the pull request ready if those rules allow it. Then report approve. Or, for a concrete security finding that the path rule missed, add one summary line Security-reason: <path>:<line> <what is sensitive> and report security again.`,
+            )
+          if (outcome === 'approve' && route.required)
+            fail(
+              `this diff needs the security station (${line}). If you marked the pull request ready, run gh pr ready <n> --undo. If you posted an APPROVE review, dismiss it: gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<review id>/dismissals -f message='security review follows' -f event=DISMISS. If the dismissal fails, name the review id in your summary. Post the verdict as a COMMENT, then report security.`,
+            )
+        }
         post(
           run.id,
           outcome === 'fail'

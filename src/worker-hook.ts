@@ -3927,7 +3927,13 @@ function globalGitConfigUse(
 }
 
 // the protected files as globs: rigs.json and one worker-settings file per rig (and per skills set)
-const FACTORY_CONFIG_GLOBS = ['rigs.json', 'worker-settings*.json', 'inbox.jsonl', 'state.json']
+const FACTORY_CONFIG_GLOBS = [
+  'rigs.json',
+  'worker-settings*.json',
+  'inbox.jsonl',
+  'state.json',
+  'security-route.json',
+]
 
 type GlobTok = { star: true } | { star: false; test: (c: string) => boolean; lit?: string }
 
@@ -4047,7 +4053,8 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
     c.includes('rigs.json') ||
     c.includes('worker-settings') ||
     c.includes('inbox.jsonl') ||
-    c.includes('state.json')
+    c.includes('state.json') ||
+    c.includes('security-route.json')
   )
     return 1
   const last = c.split('/').pop() ?? c
@@ -4062,7 +4069,7 @@ function namesFactoryConfigPlain(c: string, state?: ScanState): 0 | 1 | 2 | 3 {
       i = cls.j
     }
   }
-  if (/rigs\.json|worker-settings|inbox\.jsonl|state\.json/.test(first)) return 1
+  if (/rigs\.json|worker-settings|inbox\.jsonl|state\.json|security-route\.json/.test(first)) return 1
   if (!FACTORY_CONFIG_GLOBS.some(g => globsMeet(last, g, state))) return 0
   return /[a-z]/.test(last) ? 2 : 3
 }
@@ -11172,7 +11179,7 @@ export function fileWriteReason(
   } catch {}
   const inside = (p: string) => [root, realRoot].some(r => !!r && p.startsWith(r.endsWith(sep) ? r : r + sep))
   const config = (p: string) =>
-    /^((rigs|worker-settings.*)\.json|inbox\.jsonl|state\.json)$/i.test(
+    /^((rigs|worker-settings.*)\.json|inbox\.jsonl|state\.json|security-route\.json)$/i.test(
       foldNonAscii(p.split(sep).pop() ?? ''),
     )
   return [abs, real].some(p => config(p) && !inside(p)) ? FACTORY_CONFIG_REASON : undefined
