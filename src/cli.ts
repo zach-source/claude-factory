@@ -3473,7 +3473,16 @@ function codexGuardOff(agent: string): string | undefined {
  * A pi worker's rules and skills: the worker rules (as a Claude worker gets them) appended to pi's system prompt,
  * and the person's worker plugins' skills by --skill (constitution I). It commits as the factory home says.
  */
-export function piWorker(home = HOME, plugins = userPluginDirs()) {
+export function piWorker(
+  home = HOME,
+  plugins = userPluginDirs(),
+  key = join(homedir(), '.config', 'factory', 'person.key'),
+) {
+  // ponytail: pi has no deny hook, so it could read the person key. When claude-factory-qn8a.84 lands, drop this refusal.
+  if (existsSync(key))
+    fail(
+      `a pi worker has no deny hook (claude-factory-qn8a.84), so it could read the person key ${key}: use a claude or codex worker`,
+    )
   const id = commitIdentity(home)
   const rules = join(home, 'worker-system.md')
   writeFileSync(rules, readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') + id.rule)

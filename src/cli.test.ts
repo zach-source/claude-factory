@@ -2753,13 +2753,22 @@ test('piWorker appends the worker rules to pi and passes each plugin skill', () 
   const home = mkdtempSync(join(tmpdir(), 'pi-home-'))
   const plugin = join(home, 'plugin')
   mkdirSync(join(plugin, 'skills', 'ste'), { recursive: true })
-  const { extra } = piWorker(home, [plugin])
+  const { extra } = piWorker(home, [plugin], join(home, 'no-key'))
   const rules = join(home, 'worker-system.md')
   expect(extra).toBe(` '--append-system-prompt' '${rules}' '--skill' '${join(plugin, 'skills', 'ste')}'`)
   expect(readFileSync(rules, 'utf8')).toStartWith(
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
   )
   expect(readFileSync(rules, 'utf8')).not.toContain('GOMAXPROCS') // claude-factory-66ib: VM-only
+})
+
+// claude-factory-m4sk: pi has no deny hook, so it must not launch while a person key exists
+test('piWorker refuses a launch while the person key exists', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pi-home-'))
+  const key = join(home, 'person.key')
+  writeFileSync(key, 'x')
+  expect(() => piWorker(home, [], key)).toThrow('claude-factory-qn8a.84')
+  expect(existsSync(join(home, 'worker-system.md'))).toBe(false) // it fails before any write
 })
 
 test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {
