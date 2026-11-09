@@ -8,7 +8,85 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Current handoff at 9b8bc55d
+## Current handoff at 855bb6a5
+
+This section replaces earlier task lists. AC1–AC10 and the finite source table remain the acceptance contract.
+Keep draft PR #714. Do not repeat the production fixes or the completed source matrix.
+Commit `c8a2e607` adds eight real-pass matrices across both forges, entry paths and source parts.
+Keep `.16` and `.17` closed unless a named acceptance check fails. Reopen only `.18` for the remaining lifecycle gap.
+
+### Remaining lifecycle gap
+
+At `src/wiki-kick.test.ts:36`, `reap()` sends a signal to the current lock holder but does not await exit.
+At line 47, cleanup deletes the fixture immediately afterward.
+At line 116, a start deadline has no child identity to stop.
+At line 120, an end deadline forgets the observed PID if the child already removed its lock.
+Refresh and groom tests at lines 129, 145, 167, 300, 320 and 342 still use page, log or delay checks.
+The delayed fixture at line 393 has no unconditional cleanup if its wait fails.
+The prior `/proc` refusal fix is present. Retain it.
+These are test-lifecycle gaps, not evidence of a new production defect.
+
+### AC10 completion: ownership survives lock removal
+
+The test must own each launched fixture process until it proves exit, independently of `wiki.lock`.
+Record launch identity before a child can outlive its test. Retain each identity across home changes and lock removal.
+Use process handles or a fixture supervisor with a completion handshake. Keep this mechanism inside the test fixture.
+Use a process group only when the fixture owns that group. Never signal an arbitrary PID from an untrusted file.
+The lock can show pass progress; it cannot be the sole child registry.
+After normal completion, prove exit before result assertions and fixture removal.
+After any assertion error or deadline, stop owned children and await exit before fixture removal.
+Await `child.exited` for direct Bun children. For detached children, prove exit through the owned supervisor or equivalent lifecycle.
+An exit signal request alone is not exit proof. A failed `/proc` read alone is not exit proof.
+If cleanup cannot prove exit, fail explicitly and retain the fixture for diagnosis.
+
+Add these named AC10 controls before the fixture correction:
+
+| Test control | Required result |
+| --- | --- |
+| Child starts after three seconds | Wait observes start and exit; assertions occur after exit |
+| Child starts after the start deadline | Wait rejects; cleanup stops and awaits the owned child before it can use deleted fixtures |
+| Child never completes with its lock present | Wait rejects; cleanup proves exit before fixture removal |
+| Child removes its lock but remains alive | End deadline rejects; cleanup stops the saved child identity and proves exit |
+| Assertion fails after launch | Unconditional cleanup stops and awaits that child |
+| Home changes within one test | Cleanup accounts for children from every home, not only the final home |
+| Live PID with an unreadable `/proc` record | Treat the child as alive until independent exit proof exists |
+| No-launch policy row | Zero launches; no phantom child wait or fixture transport call |
+
+Apply the same exit proof to write, ambient, refresh and groom launches in `src/wiki-kick.test.ts`.
+Retain the fixture forge/agent stubs, transport interception, routing exclusions and parent environment restoration.
+Verify each default stub records and refuses an explicit call; do not infer that behavior from an unused stub.
+Keep actual CLI pass assertions. A fixture supervisor must not replace the production pass with a simulated success.
+Proof: `bun test --timeout 60000 src/wiki-kick.test.ts`.
+Repeat that file once after the combined wiki suite to detect leftover children.
+
+### Remaining task and checks
+
+1. `.18`, one commit, 90 minutes: add the lifecycle controls, record their failure, then correct fixture ownership and cleanup.
+   Change `src/wiki-kick.test.ts`; change the write fixture only if the same ownership gap is reachable there.
+   Use existing process APIs. Add no dependency, production flag, parser or generic process framework.
+   Include a test-to-control evidence table in the task close comment.
+2. Reserve 30 minutes for regression, typecheck, format and evidence. Required CI wait time is separate.
+
+Run `bun test --timeout 60000 src/cli-wiki-write.test.ts src/wiki-kick.test.ts src/wiki.test.ts src/prs.test.ts src/cli-wiki-find.test.ts`.
+Then run repository typecheck, test/plugin checks, the repository gate, `bun audit` and gitleaks.
+Required test, typecheck, plugin and format CI must pass on the final PR head.
+Do not reopen source tasks merely to repeat old fixes. Report a specific failed row if the matrix finds a regression.
+Do not accept a suite total as proof of lifecycle cleanup. Name each control and its exit assertion.
+
+### Scope, risk and release
+
+This correction is **security-sensitive**: tests must not leave children with inherited access after their fixtures disappear.
+Reject another lock-only kill or fixed sleep: neither proves process ownership or exit.
+No production code, migration, permission, state format, dependency or `.factory/` change is planned.
+Retain the three-hour kick, halt rule, agent tools, 45-minute default and existing override contracts.
+Review and security must inspect the final head. A person must merge PR #714 before release.
+Rollback uses a revert PR and a person's merge. Preserve wiki pages and `wiki-state.json`.
+AC7 remains **must-see-live** for authorized ship soak; it is not a pre-merge requirement.
+The soak must run `factory wiki write --bead claude-factory-3w8o` and inspect its own committed seven-section page.
+That page must name PR #590 and #591. Check state, masked log, counts and remote result.
+The soak cannot substitute its deadline for this evidence.
+
+## Prior handoff at 9b8bc55d
 
 This section overrides prior task lists, not AC1–AC10 or their source grammar.
 Keep draft PR #714 and all existing fixes. Do not repeat completed production work.
