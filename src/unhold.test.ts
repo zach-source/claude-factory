@@ -250,14 +250,13 @@ test('AC2: one Claude mark and one Codex mark share one cap in a tick', () => {
   expect(rs.filter(r => wakesOf(r).length)).toHaveLength(2)
 })
 
-test('a run that does not load does not stop the tick or the mark', () => {
+test('a run that does not load does not stop the tick: the held ax run wakes', () => {
   const bad = held('nope')
   const a = held('ax')
   mark('unhold-ax.json', { before: Date.now() + 1000, from: 0, woke: 0 })
   const tick = factory(['tick'])
   expect(tick.code).toBe(0)
-  expect(existsSync(join(home, 'unhold-ax.json'))).toBe(true)
-  expect(tick.err).toContain('unhold:')
+  expect(tick.err).not.toContain('unhold:')
   expect(wakesOf(bad)).toHaveLength(0)
-  expect(wakesOf(a)).toHaveLength(0)
+  expect(wakesOf(a).length).toBeGreaterThan(0)
 })
