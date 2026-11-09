@@ -125,6 +125,8 @@ spec:
           env:
             - name: FACTORY_HOME
               value: /var/lib/factory/home
+            - name: FACTORY_POLICY_BROKER
+              value: http://factory-policy-broker.factory-broker.svc:8080
             - name: GH_TOKEN
               valueFrom:
                 secretKeyRef: { name: factory-github, key: token }
