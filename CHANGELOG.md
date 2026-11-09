@@ -6,6 +6,13 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Changed: the default factory home is the platform data dir (claude-factory-nnkqp).
+  - The order stays: `FACTORY_HOME`, then the nearest dir up with a `rigs.json`, then the default home.
+  - The default home is `$XDG_DATA_HOME/claude-factory` when `XDG_DATA_HOME` is set. Else it is `~/Library/Application Support/claude-factory` on macOS, else `~/.local/share/claude-factory`.
+  - Before, a checkout used its `.factory-state/`, and a Nix store install and `factory up` used `~/factory`.
+  - Compatibility: if the default home has no `rigs.json` but an old default has one, the factory uses the old one. It prints a one-line note on stderr that names the new path.
+  - The macOS path has a space. Tests now start `factory up` and a worker launch line in a home with a space.
+
 - Added: `parity-gaps.json` also lists harness gaps, one item for each harness and station: `{harness, station, bead, reason}` (claude-factory-gf16e.2). Each gap has a child bead of epic gf16e. The main gaps are these:
   - A pi worker has no deny hook.
   - codex, grok and pi have no ctxguard and no Bash timeout clamp.

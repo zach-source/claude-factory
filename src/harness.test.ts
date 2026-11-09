@@ -220,3 +220,22 @@ test('beadsOnlyCodexDir accepts only the .codex dir that bd init writes', () => 
   writeFileSync(file, '')
   expect(beadsOnlyCodexDir(file)).toBe(false)
 })
+
+test('a home with a space: the launch line sources the launch file, and the worker reads its prompt', () => {
+  const home = join(mkdtempSync(join(tmpdir(), 'harness-')), 'Application Support', 'claude-factory')
+  mkdirSync(home, { recursive: true })
+  const prompt = join(home, 'prompt.md')
+  writeFileSync(prompt, 'hello from the prompt')
+  // a fake agent the shell finds on PATH: it prints its last argument, the prompt text
+  const bin = join(home, 'bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\nfor a; do last=$a; done; printf %s "$last"\n', {
+    mode: 0o755,
+  })
+  const line = writeLaunch(home, 'p1', command('claude', prompt, { extra: ' --x' }))
+  const p = Bun.spawnSync(['sh', '-c', line], {
+    env: { PATH: `${bin}:/usr/bin:/bin`, FACTORY_HOME: home, HERDR_PANE_ID: 'p1' },
+  })
+  expect(p.stderr.toString()).toBe('')
+  expect(p.stdout.toString()).toBe('hello from the prompt')
+})

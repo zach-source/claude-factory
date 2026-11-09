@@ -164,7 +164,7 @@ import { GAPS_FILE, parity } from './parity'
 import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
-import { inStore, needsInstall, upCheck, upDir } from './up'
+import { defaultHome, inStore, needsInstall, platformHome, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import {
@@ -331,8 +331,20 @@ import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './gr
 import { maskAssignments } from './worker-hook'
 
 const ROOT = resolve(import.meta.dir, '..')
-// a Nix store install cannot hold its own state, so it uses `factory up`'s default home
-const DEFAULT_HOME = inStore(ROOT) ? join(homedir(), 'factory') : join(ROOT, '.factory-state')
+// the platform data dir, unless only an old default (the checkout's .factory-state, or ~/factory) holds a factory
+const DEFAULT = defaultHome(
+  platformHome(process.env, process.platform, homedir()),
+  [join(ROOT, '.factory-state'), join(homedir(), 'factory')],
+  d => existsSync(join(d, 'rigs.json')),
+)
+const DEFAULT_HOME = DEFAULT.dir
+let noted = false
+/** DEFAULT_HOME, and the one-line note on stderr (once) when it is an old default */
+function usedDefault(): string {
+  if (DEFAULT.note && !noted) console.error(DEFAULT.note)
+  noted = true
+  return DEFAULT_HOME
+}
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
 const factoryAt = (dir: string): string | undefined =>
   existsSync(join(dir, 'rigs.json')) ? dir : dirname(dir) === dir ? undefined : factoryAt(dirname(dir))
@@ -340,7 +352,7 @@ const factoryAt = (dir: string): string | undefined =>
 // absolute, so a relative FACTORY_HOME (`FACTORY_HOME=.`) still matches pane cwds and survives a cd
 const HOME = process.env.FACTORY_HOME
   ? resolve(process.env.FACTORY_HOME)
-  : (factoryAt(process.cwd()) ?? DEFAULT_HOME)
+  : (factoryAt(process.cwd()) ?? usedDefault())
 /** where a repo keeps its own factories, versioned with its code */
 const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
@@ -2106,7 +2118,7 @@ function launchNotesFailed(run: Run, node: string, why: string) {
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
-  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
+  if (!existsSync(run.worktree)) reviveWorktree(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   // a resumed session keeps the notes it was launched with; a new brief searches once, however often it is read
   const notes = session ? '' : launchNotes(run, node)
@@ -4942,6 +4954,33 @@ const isAlive = (pid: number) => {
     return true
   } catch (err) {
     return (err as { code?: string }).code === 'EPERM'
+  }
+}
+
+/**
+ * `factory server backup`: one backup of the server home in its own process, so a long git call cannot stop the server's lease renewal.
+ * backup.lock keeps one backup per home. While it holds that lock, it removes the git lock files that a killed backup left.
+ */
+async function serverBackup() {
+  const b = server.serverBackupCfg(process.env, HOME)
+  if (!b) return console.log('backup off: no remote')
+  if ('off' in b) return console.log(b.off)
+  const own = hold('backup.lock')
+  if (!own) return console.log('backup skipped: another backup runs')
+  try {
+    const gitDir = join(b.cfg.ws, 'backup.git')
+    if (existsSync(gitDir))
+      for (const f of readdirSync(gitDir, { recursive: true, encoding: 'utf8' }))
+        if (f.endsWith('.lock') && (!f.includes('/') || f.startsWith('refs/')))
+          rmSync(join(gitDir, f), { force: true })
+    await managerhost.backupStep(
+      b.cfg,
+      existsSync(join(HOME, 'rigs.json')),
+      () => hold('tick.lock'),
+      console.log,
+    )
+  } finally {
+    own()
   }
 }
 
@@ -11566,7 +11605,7 @@ function makeFactory(dir: string) {
   console.log(
     [
       `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
-      `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
+      `  cd ${sq(dir)} && ${sq(CLI)} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
       `and run its manager there: ${CLI} manager (fullscreen, so the console docks beside the chat; lean: no MCP servers, without herdr-fleet)`,
     ].join('\n'),
   )
@@ -12585,7 +12624,9 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps (not from a Nix store
                                      install), init a new dir, run the manager there (dir: the first arg, else
-                                     FACTORY_HOME, else ~/factory)
+                                     FACTORY_HOME, else the platform data dir: XDG_DATA_HOME/claude-factory,
+                                     else ~/Library/Application Support/claude-factory on macOS, else
+                                     ~/.local/share/claude-factory)
   rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
@@ -12700,7 +12741,7 @@ const usage = `factory — herdr software factories on xstate
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the base commit of the run (never a PR branch's),
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
-(FACTORY_HOME, else the nearest directory up holding a rigs.json). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
+(FACTORY_HOME, else the nearest directory up holding a rigs.json, else the default home in up). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
 or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
@@ -12946,8 +12987,23 @@ if (import.meta.main && !outboxCmd)
         break
       case 'server':
         refuseWorker('server', true)
+        if (args[0] === 'backup') {
+          if (args.length > 1) fail('usage: factory server backup')
+          await serverBackup()
+          break
+        }
         lease()
-        server.main(args, HOME, () => tick(), corePort)
+        const backup = () => {
+          const p = Bun.spawn([CLI, 'server', 'backup'], {
+            stdout: 'inherit',
+            stderr: 'inherit',
+            env: kickEnv(process.env, HOME),
+          })
+          return p.exited.then(c => {
+            if (c !== 0) throw new Error(`exit ${c}`)
+          })
+        }
+        server.main(args, HOME, () => tick(), corePort, backup)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -13843,7 +13899,8 @@ if (import.meta.main && !outboxCmd)
       }
       case 'up': {
         refuseWorker('up', true)
-        const { dir, rest } = upDir(args, BOOT_ENV, homedir())
+        const { dir, rest } = upDir(args, BOOT_ENV, homedir(), DEFAULT_HOME)
+        if (dir === DEFAULT_HOME) usedDefault()
         const { errors, warnings } = upCheck(t => !!Bun.which(t), BOOT_ENV)
         if (errors.length) fail(errors.join('\n'))
         const modules = join(ROOT, 'node_modules')
