@@ -1358,6 +1358,11 @@ const GATED_KINDS = [
     phrase: 'build and push a factory image to a registry',
     deny: 'The person did not confirm this image push. Ask them to run it.',
   },
+  {
+    re: /\bfactory\s+token\s+(use|best)\b/g,
+    phrase: 'change the live Claude token slot',
+    deny: 'The person did not confirm this token swap. Ask them to run it.',
+  },
 ]
 
 // Cadence and log caps. The mod and `factory patrol --once` (src/once.ts) use the same values.

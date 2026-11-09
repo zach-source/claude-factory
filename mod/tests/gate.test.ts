@@ -525,3 +525,35 @@ test(
     expect(asked).toBe(before)
   },
 )
+
+test(
+  'factory token use and best ask the person; token list does not',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    let asked = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+      asked += 1
+      const question = e.questions[0]!.question
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+    const run = (command: string) => $.tool.call({ tool: 'Bash', command, description: 'token' })
+
+    for (const command of [
+      '/repo/bin/factory token use 2',
+      '/repo/bin/factory token best',
+      '/repo/bin/factory \\\ntoken \\\nuse 2',
+    ]) {
+      const before = asked
+      expect((await run(command)).deny).toContain('did not confirm')
+      expect(asked).toBe(before + 1)
+    }
+    const before = asked
+    await run('/repo/bin/factory token')
+    await run('/repo/bin/factory token list')
+    await run('/repo/bin/factory settings set token.read cmd')
+    await run('/repo/bin/factory memory search token use')
+    expect(asked).toBe(before)
+  },
+)
