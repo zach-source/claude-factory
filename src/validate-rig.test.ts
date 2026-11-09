@@ -67,7 +67,12 @@ test('max, slo, drift, sweeps', () => {
 test('validateRig does no console output', () => {
   const w = spyOn(console, 'warn')
   const e = spyOn(console, 'error')
-  ok({ runner: 'ax', egress: [{ hosts: ['pypi.org'], key: 'K' }] })
-  expect(w).not.toHaveBeenCalled()
-  expect(e).not.toHaveBeenCalled()
+  try {
+    ok({ runner: 'ax', egress: [{ hosts: ['pypi.org'], key: 'K' }] })
+    expect(w).not.toHaveBeenCalled()
+    expect(e).not.toHaveBeenCalled()
+  } finally {
+    w.mockRestore()
+    e.mockRestore()
+  }
 })
