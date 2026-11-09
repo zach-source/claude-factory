@@ -8,6 +8,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -23,27 +24,85 @@ const dir = join(realpathSync(tmpdir()), `wiki-kick-${process.pid}`)
 let n = 0
 let home = ''
 
-/** the pid in wiki.lock of the current home; 0 when none, or when the test itself plays the holder */
-function holder() {
+// Child ownership (AC10). The tick starts detached passes, so the test holds no handle for them. Every child of a
+// factory() call carries TAG in its environment, and its own children inherit it: /proc names them whatever the
+// lock or the home says. A direct Bun child is owned by handle. Cleanup stops all of them and proves exit.
+const TAG = `wk-${process.pid}-${Date.now()}`
+const handles: ReturnType<typeof Bun.spawn>[] = []
+/** own a direct child: cleanup kills it and awaits child.exited */
+function own<T extends ReturnType<typeof Bun.spawn>>(child: T): T {
+  handles.push(child)
+  return child
+}
+const readStat = (pid: number) => readFileSync(`/proc/${pid}/stat`, 'utf8')
+/** a zombie that init has not reaped has exited; a failed /proc read is not proof of exit */
+function alive(pid: number, stat: (pid: number) => string = readStat) {
   try {
-    const pid = Number(readFileSync(join(home, 'wiki.lock', 'pid'), 'utf8')) || 0
-    return pid === process.pid ? 0 : pid
+    process.kill(pid, 0)
   } catch {
-    return 0
+    return false
+  }
+  try {
+    return !/^\d+ \([^)]*\) Z/.test(stat(pid))
+  } catch {
+    return true // kill(pid, 0) succeeded, so a failed /proc read is not proof of exit
   }
 }
-/** stop the pass that holds wiki.lock, so cleanup never leaves a running child */
-function reap() {
-  try {
-    if (holder()) process.kill(holder(), 'SIGKILL')
-  } catch {
-    // the pass already ended
+/** the live processes that carry TAG, in any home; never the test itself */
+function tagged() {
+  const out: number[] = []
+  for (const name of readdirSync('/proc')) {
+    const pid = Number(name)
+    if (!pid || pid === process.pid) continue
+    try {
+      if (
+        readFileSync(`/proc/${pid}/environ`, 'utf8').includes(`FACTORY_WIKI_TEST_TAG=${TAG}\0`) &&
+        alive(pid)
+      )
+        out.push(pid)
+    } catch {
+      // gone, or not ours to read
+    }
+  }
+  return out
+}
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+/** stop every owned child and wait for its exit; false when one is still alive at the deadline */
+async function stopOwned(ms = 10_000) {
+  for (const h of handles.splice(0)) {
+    h.kill(9)
+    await h.exited
+  }
+  for (const t = Date.now(); ; await sleep(50)) {
+    const pids = tagged()
+    if (!pids.length) return true
+    if (Date.now() - t > ms) return false
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // gone
+      }
+    }
+  }
+}
+/** every owned child has exited (the passes end by themselves); a deadline stops them and throws */
+async function settled(ms = 15_000) {
+  for (const t = Date.now(); tagged().length; await sleep(100)) {
+    if (Date.now() - t > ms) {
+      if (!(await stopOwned())) throw new Error('an owned child did not exit: fixture kept')
+      throw new Error('a pass did not end')
+    }
   }
 }
 afterEach(async () => {
-  // a refresh or groom pass may still hold the lock: give it 5 s to end, then stop it
-  for (let i = 0; i < 50 && holder(); i++) await sleep(100)
-  reap()
+  try {
+    await settled(5_000)
+  } catch {
+    // stopOwned already ran
+  }
+  // no exit proof: keep the fixture, so no child works on a deleted home
+  if (!(await stopOwned())) throw new Error(`an owned child did not exit: fixture kept in ${dir}`)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -65,6 +124,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     env: {
       ...laptop,
       FACTORY_HOME: home,
+      FACTORY_WIKI_TEST_TAG: TAG,
       FACTORY_SELF_UPDATE: '0',
       FACTORY_GC: '0',
       FACTORY_CLAUDE: join(fx(), 'claude'),
@@ -76,7 +136,6 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
 }
 const stamp = () => join(home, 'wiki-refresh.stamp')
 const groomStampPath = () => join(home, 'wiki-groom.stamp')
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 /** a new home with one rig; `repo` is a wiki repo with the seed pages when true */
 function setup(withWiki = true, groomStamp = true) {
@@ -90,22 +149,9 @@ function setup(withWiki = true, groomStamp = true) {
   writeFileSync(join(home, 'wiki-write.stamp'), '')
   if (groomStamp) writeFileSync(groomStampPath(), '')
 }
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0)
-  } catch {
-    return false
-  }
-  try {
-    // a zombie that init has not reaped has exited
-    return !/^\d+ \([^)]*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
-  } catch {
-    return true // kill(pid, 0) succeeded, so a failed /proc read is not proof of exit
-  }
-}
 /**
- * a detached pass has ended: wait for it to take wiki.lock (and read its pid), then for the lock to go, then for
- * that pid to exit. A deadline throws, so a pass that never starts or never ends fails the test.
+ * a detached pass has ended: wait for it to take wiki.lock, then for the lock to go, then for every owned child to
+ * exit. The owned set does not depend on the lock. A deadline stops the owned children, awaits them and throws.
  */
 async function passEnded(startMs = 10_000, endMs = 15_000) {
   const lock = join(home, 'wiki.lock')
@@ -113,23 +159,23 @@ async function passEnded(startMs = 10_000, endMs = 15_000) {
   let pid = 0
   for (const t = Date.now(); !pid; await sleep(50)) {
     if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, 'utf8')) || 0
-    if (!pid && Date.now() - t > startMs) throw new Error('the pass never took wiki.lock')
+    if (!pid && Date.now() - t > startMs) {
+      if (!(await stopOwned())) throw new Error('an owned child did not exit: fixture kept')
+      throw new Error('the pass never took wiki.lock')
+    }
   }
-  for (const t = Date.now(); existsSync(lock) || alive(pid); await sleep(100)) {
+  for (const t = Date.now(); existsSync(lock) || tagged().length || alive(pid); await sleep(100)) {
     if (Date.now() - t > endMs) {
-      reap()
+      if (!(await stopOwned())) throw new Error('an owned child did not exit: fixture kept')
       throw new Error('the pass did not end')
     }
   }
-}
-async function waitFor(path: string, tries = 150) {
-  for (let i = 0; i < tries && !existsSync(path); i++) await sleep(100)
 }
 
 test('AC7 a tick with a wiki repo and no stamp writes the stamp and the rig page', async () => {
   setup()
   factory(['tick'])
-  await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
+  await settled()
   expect(existsSync(stamp())).toBe(true)
   expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
 }, 30_000)
@@ -137,7 +183,7 @@ test('AC7 a tick with a wiki repo and no stamp writes the stamp and the rig page
 test('AC7 a tick without wiki/.git makes no stamp and no wiki dir', async () => {
   setup(false)
   factory(['tick'])
-  await sleep(1500)
+  await settled()
   expect(existsSync(stamp())).toBe(false)
   expect(existsSync(join(home, 'wiki'))).toBe(false)
 })
@@ -149,7 +195,7 @@ test('AC7 a halted factory still gets the refresh', async () => {
     JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
   )
   factory(['tick'])
-  await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
+  await settled()
   expect(existsSync(stamp())).toBe(true)
   expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
 }, 30_000)
@@ -159,7 +205,7 @@ test('AC7 a fresh stamp starts no refresh', async () => {
   writeFileSync(stamp(), '')
   const t = statSync(stamp()).mtimeMs
   factory(['tick'])
-  await sleep(1500)
+  await settled()
   expect(statSync(stamp()).mtimeMs).toBe(t)
   expect(existsSync(join(home, 'wiki', 'rigs'))).toBe(false)
 })
@@ -170,7 +216,7 @@ test('AC7 FACTORY_WIKI_REFRESH_MIN=1 and a stamp 2 min old: the tick refreshes',
   const old = new Date(Date.now() - 120_000)
   utimesSync(stamp(), old, old)
   factory(['tick'], { FACTORY_WIKI_REFRESH_MIN: '1' })
-  await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
+  await settled()
   expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true)
   expect(statSync(stamp()).mtimeMs).toBeGreaterThan(old.getTime() + 60_000)
 }, 30_000)
@@ -180,7 +226,7 @@ test('AC7 a held wiki.lock starts no refresh', async () => {
   mkdirSync(join(home, 'wiki.lock'), { recursive: true })
   writeFileSync(join(home, 'wiki.lock', 'pid'), String(process.pid))
   factory(['tick'])
-  await sleep(1500)
+  await settled()
   expect(existsSync(stamp())).toBe(false)
 })
 
@@ -189,7 +235,7 @@ test('AC7 a negative FACTORY_WIKI_REFRESH_MIN falls back to 30 min', async () =>
   writeFileSync(stamp(), '')
   const t = statSync(stamp()).mtimeMs
   factory(['tick'], { FACTORY_WIKI_REFRESH_MIN: '-5' })
-  await sleep(1500)
+  await settled()
   expect(statSync(stamp()).mtimeMs).toBe(t)
 })
 
@@ -302,7 +348,7 @@ test('AC10 a fresh refresh stamp and no groom stamp: the tick starts a groom pas
   writeFileSync(stamp(), '')
   const c = fakeClaude()
   factory(['tick'], c.env)
-  for (let i = 0; i < 150 && !wikiLogText().includes('wiki groom: no remote, skipped'); i++) await sleep(100)
+  await settled()
   expect(existsSync(groomStampPath())).toBe(true)
   expect(wikiLogText()).toContain('wiki groom: no remote, skipped')
   expect(existsSync(c.marker)).toBe(false)
@@ -313,7 +359,7 @@ test('AC10 a fresh groom stamp starts no groom pass', async () => {
   writeFileSync(stamp(), '')
   const t = statSync(groomStampPath()).mtimeMs
   factory(['tick'])
-  await sleep(1500)
+  await settled()
   expect(statSync(groomStampPath()).mtimeMs).toBe(t)
 })
 
@@ -323,7 +369,7 @@ test('AC10 FACTORY_WIKI_GROOM_MIN=1 and a groom stamp 2 min old: the tick grooms
   const old = new Date(Date.now() - 120_000)
   utimesSync(groomStampPath(), old, old)
   factory(['tick'], { FACTORY_WIKI_GROOM_MIN: '1' })
-  await sleep(1500)
+  await settled()
   expect(statSync(groomStampPath()).mtimeMs).toBeGreaterThan(old.getTime() + 60_000)
 })
 
@@ -335,14 +381,14 @@ test('AC10 a halted factory gets no groom pass', async () => {
     JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
   )
   factory(['tick'])
-  await sleep(1500)
+  await settled()
   expect(existsSync(groomStampPath())).toBe(false)
 })
 
 test('AC10 one wiki pass in each tick: no stamps at all gives the refresh stamp only', async () => {
   setup(true, false)
   factory(['tick'])
-  await sleep(1500)
+  await settled()
   expect(existsSync(stamp())).toBe(true)
   expect(existsSync(groomStampPath())).toBe(false)
 })
@@ -390,33 +436,107 @@ test('AC10 an ambient wiki remote reaches no setup or tick child', async () => {
   }
 }, 30_000)
 
-test('AC10 passEnded waits for a pass that takes the lock after 3 s and exits after the lock goes', async () => {
+test('AC10 control: a child that starts after 3 s is waited for; assertions follow its exit', async () => {
   setup()
   const lock = join(home, 'wiki.lock')
-  const child = Bun.spawn([
-    'sh',
-    '-c',
-    `sleep 3; mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 1; rm -r '${lock}'`,
-  ])
+  const child = own(
+    Bun.spawn(['sh', '-c', `sleep 3; mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 1; rm -r '${lock}'`]),
+  )
   await passEnded()
   expect(alive(child.pid)).toBe(false)
   await child.exited
 }, 30_000)
 
-test('AC10 passEnded fails when the pass never starts or never ends, and the fixture child is reaped', async () => {
+test('AC10 control: a child that starts after the start deadline is stopped and awaited', async () => {
   setup()
-  await expect(passEnded(300, 300)).rejects.toThrow('never took')
   const lock = join(home, 'wiki.lock')
-  const child = Bun.spawn(['sleep', '60'])
-  try {
-    mkdirSync(lock, { recursive: true })
-    writeFileSync(join(lock, 'pid'), String(child.pid))
-    await expect(passEnded(300, 300)).rejects.toThrow('did not end')
-    await child.exited // the deadline itself stopped the child
-    expect(alive(child.pid)).toBe(false)
-  } finally {
-    child.kill()
-    await child.exited
-  }
+  const marker = join(dir, 'late-ran')
+  const child = own(
+    Bun.spawn(['sh', '-c', `sleep 1; touch '${marker}'; mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 60`]),
+  )
+  await expect(passEnded(300, 300)).rejects.toThrow('never took')
+  expect(await child.exited).not.toBe(0) // killed: it cannot use the fixture later
   expect(alive(child.pid)).toBe(false)
+  await sleep(1200)
+  expect(existsSync(marker)).toBe(false)
 }, 30_000)
+
+test('AC10 control: a child that never completes with its lock present is stopped and awaited', async () => {
+  setup()
+  const lock = join(home, 'wiki.lock')
+  const child = own(Bun.spawn(['sleep', '60']))
+  mkdirSync(lock, { recursive: true })
+  writeFileSync(join(lock, 'pid'), String(child.pid))
+  await expect(passEnded(300, 300)).rejects.toThrow('did not end')
+  expect(alive(child.pid)).toBe(false)
+  await child.exited
+}, 30_000)
+
+test('AC10 control: a child that removes its lock but stays alive is stopped by identity', async () => {
+  setup()
+  const lock = join(home, 'wiki.lock')
+  const child = own(
+    Bun.spawn(['sh', '-c', `mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 1; rm -r '${lock}'; sleep 60`]),
+  )
+  await expect(passEnded(5_000, 4_000)).rejects.toThrow('did not end')
+  expect(existsSync(lock)).toBe(false)
+  expect(alive(child.pid)).toBe(false)
+  await child.exited
+}, 30_000)
+
+test('AC10 control: a tagged child that no handle and no lock names is found and stopped', async () => {
+  setup()
+  const p = Bun.spawn(['sh', '-c', 'sleep 60 & wait'], {
+    env: { ...process.env, FACTORY_WIKI_TEST_TAG: TAG },
+  })
+  own(p)
+  await sleep(300)
+  expect(tagged().length).toBeGreaterThan(1) // the shell and its sleep
+  expect(await stopOwned()).toBe(true)
+  expect(tagged()).toEqual([])
+  await p.exited
+}, 30_000)
+
+test('AC10 control: children of two homes in one test are all accounted for', async () => {
+  const kids = []
+  for (let i = 0; i < 2; i++) {
+    setup()
+    kids.push(own(Bun.spawn(['sleep', '60'], { env: { ...process.env, FACTORY_WIKI_TEST_TAG: TAG } })))
+  }
+  await sleep(300)
+  expect(tagged().sort()).toEqual(kids.map(k => k.pid).sort())
+  expect(await stopOwned()).toBe(true)
+  for (const k of kids) expect(alive(k.pid)).toBe(false)
+}, 30_000)
+
+test('AC10 control: a live pid with an unreadable /proc record counts as alive', () => {
+  expect(
+    alive(process.pid, () => {
+      throw new Error('EACCES')
+    }),
+  ).toBe(true)
+  expect(alive(process.pid, () => `${process.pid} (sh) Z 1`)).toBe(false)
+})
+
+test('AC10 control: a policy row that launches nothing starts no wiki pass and calls no forge', async () => {
+  setup()
+  aged(10)
+  expect(await launched()).toBe(false)
+  await settled() // the tick starts other passes (sweeps); none of them is a wiki pass
+  expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
+  expect(existsSync(forgeCalls())).toBe(false)
+})
+
+test('AC10 each default stub records an explicit call and refuses it', () => {
+  fixtureTools()
+  for (const name of ['gh', 'glab', 'claude', 'codex']) {
+    const r = Bun.spawnSync([join(fx(), name), 'probe'])
+    expect([name, r.exitCode]).toEqual([name, 1])
+  }
+  expect(readFileSync(forgeCalls(), 'utf8').trim().split('\n')).toEqual([
+    'gh probe',
+    'glab probe',
+    'claude probe',
+    'codex probe',
+  ])
+})
