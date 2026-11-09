@@ -70,7 +70,7 @@
 import { appendFileSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
-import { HOME_REASON, homeReason } from './home-guard'
+import { HOME_REASON, homeReason, LOADED_REASON, OVERRIDE_REASON, type LoadedText } from './home-guard'
 import { TOKEN_READ_REASON, tokenPathReason, tokenReason } from './token-guard'
 export { TOKEN_READ_REASON }
 import * as self from './worker-hook'
@@ -436,6 +436,9 @@ export interface HookGate {
   /** the text of a small file this guard needs to read (a `gh api graphql` query file), capped and
    * resolved relative to the tool call's own cwd; undefined when it cannot be read */
   readFile?: (path: string) => string | undefined
+  /** claude-factory-qn8a.37: the texts that git hooks, git config values and config files in the tool
+   * call's cwd load (see `loadedTexts`). undefined means the read failed: the home guard denies. */
+  loaded?: (command: string) => LoadedText[] | undefined
 
   /** claude-factory-bemr: a map from a git alias name (lowercase, no `alias.` prefix) to its raw
    * config text. The keys come from `alias.<name>` in `git config --get-regexp ^alias\.`. The
@@ -9127,7 +9130,8 @@ export function denyReason(
   // claude-factory-qn8a.30: the Bash tool adds a newline, so a last backslash joins the next line
   if (command.endsWith('\\')) command += '\n'
   // the home guard reads the text first (with the added newline): no parse bypass can reach a delete of $HOME
-  const home = homeReason(command, gate?.readFile)
+  const loaded = gate?.loaded ? (gate.loaded(command) ?? null) : undefined
+  const home = homeReason(command, gate?.readFile, undefined, loaded)
   if (home) return home
   if (rawActorFlag(command)) return BEADS_ACTOR_REASON
   const now = gate?.now ?? Date.now
@@ -10569,6 +10573,112 @@ function readSmallFile(path: string, cwd: string): string | undefined {
   }
 }
 
+// claude-factory-qn8a.37: the two loader spawns share this budget (ms). The 10 s PreToolUse timeout holds it.
+const LOADED_BUDGET_MS = 1000
+// the config files that a verb loads and runs: npm, bun, prettier and make
+const CONFIG_NAME =
+  /^(?:package\.json|bunfig\.toml|\.prettierrc(?:\..+)?|prettier\.config\..+|[Mm]akefile|GNUmakefile)$/
+// claude-factory-qn8a.37.18: caps on the files that loadedTexts reads from a dir list (hooks, config, bins).
+const MAX_LOADED_FILES = 1024
+const MAX_LOADED_CHARS = 4 * 1024 * 1024
+
+/**
+ * claude-factory-qn8a.37: the texts that a command can load with no script named: git config
+ * values (an alias value has alias: true), the files of the git hooks dir (not *.sample), the
+ * CONFIG_NAME files in cwd and each parent, and every node_modules/.bin file in cwd and each
+ * parent (read from the dir list, with no name match). Each text has the dir that its relative
+ * paths resolve against. It does not read `command`, so a quote or an alias cannot hide a verb
+ * or a bin name. It returns undefined when git cannot read the config in time, or when the
+ * dir-list files pass MAX_LOADED_FILES (1024) or MAX_LOADED_CHARS (4 MiB): the home guard then
+ * denies (fail closed).
+ * An unreadable file gives no text. homeReason denies an inline core.hooksPath, include.path or
+ * includeIf in the command or in an alias value (OVERRIDE_REASON), so no dir that the command
+ * names is read.
+ * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir,
+ * --prefix or --config names; a package name that selects a program; a path relative to a bin;
+ * a script that a bin or hook calls; a file over 64 KiB; a file name outside CONFIG_NAME; an env
+ * var that sets a program; an override key that an expansion builds (${E}, $(..), a backtick,
+ * $'\x..', a variable, {a,b}); an override in a config file, a hook file or a named script (only
+ * alias values are tested). False denies: any Bash text that holds hookspath, include.path or
+ * includeif. after quotes, backslashes and $ are removed (grep, a commit -m, bd text); a git
+ * alias value that names one; a bin file with a delete word and a whole-home word (it denies each
+ * command in that tree); a tree with more than 64 named files (MAX_LOADED_READS), 1024 loaded
+ * files or 4 MiB of loaded text.
+ * Upgrade path: a real shell parser, or a per-file config lookup for prettier.
+ */
+export function loadedTexts(command: string, cwd: string): LoadedText[] | undefined {
+  const start = Date.now()
+  const git = (args: string[], left: number) => {
+    try {
+      return Bun.spawnSync(['git', '-C', cwd, ...args], { timeout: left })
+    } catch {
+      return undefined
+    }
+  }
+  const s1 = git(['config', '-z', '--list'], LOADED_BUDGET_MS)
+  if (s1?.exitCode !== 0) return undefined
+  const left = LOADED_BUDGET_MS - (Date.now() - start)
+  if (left <= 0) return undefined
+  // hooks first: in a bare repo or inside .git, --show-toplevel exits 128 after git prints the hooks line
+  const s2 = git(['rev-parse', '--git-path', 'hooks', '--show-toplevel'], left)
+  if (s2?.exitCode !== 0 && s2?.exitCode !== 128) return undefined
+  let top = cwd
+  let hooks: string | undefined
+  const [h, t] = s2.stdout.toString().split('\n')
+  if (s2.exitCode === 0) {
+    if (!t || !h) return undefined
+    top = t
+    hooks = resolvePath(cwd, h)
+  } else if (h) hooks = resolvePath(cwd, h)
+  const out: LoadedText[] = []
+  for (const rec of s1.stdout.toString().split('\0')) {
+    const nl = rec.indexOf('\n')
+    if (nl < 0) continue
+    const text = rec.slice(nl + 1)
+    if (rec.slice(0, nl).toLowerCase().startsWith('alias.')) out.push({ text, dir: top, alias: true })
+    else out.push({ text, dir: top })
+  }
+  const names = (d: string) => {
+    try {
+      return readdirSync(d)
+    } catch {
+      return []
+    }
+  }
+  let files = 0
+  let chars = 0
+  // false when a cap is passed: loadedTexts then returns undefined
+  const take = (path: string, dir: string) => {
+    if (++files > MAX_LOADED_FILES) return false
+    const text = readSmallFile(path, cwd)
+    if (text === undefined) return true
+    chars += text.length
+    if (chars > MAX_LOADED_CHARS) return false
+    out.push({ text, dir })
+    return true
+  }
+  if (hooks)
+    for (const n of names(hooks)) {
+      if (n.endsWith('.sample')) continue
+      if (!take(joinPath(hooks, n), top)) return undefined
+    }
+  const dirs: string[] = []
+  for (let d = resolvePath(cwd); ; d = dirname(d)) {
+    dirs.push(d)
+    if (dirname(d) === d) break
+  }
+  for (const d of dirs)
+    for (const n of names(d)) {
+      if (!CONFIG_NAME.test(n)) continue
+      if (!take(joinPath(d, n), d)) return undefined
+    }
+  for (const d of dirs) {
+    const bd = joinPath(d, 'node_modules', '.bin')
+    for (const b of names(bd)) if (!take(joinPath(bd, b), d)) return undefined
+  }
+  return out
+}
+
 //
 // claude-factory-bemr: this function reads every alias entry from git config, for gate.gitAliases.
 // dir is the directory to read config for.
@@ -11240,7 +11350,7 @@ export function applyPatchReason(
 
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
 export function reasonName(reason: string): string {
-  for (const [k, v] of Object.entries({ ...self, HOME_REASON }))
+  for (const [k, v] of Object.entries({ ...self, HOME_REASON, LOADED_REASON, OVERRIDE_REASON }))
     if (k.endsWith('REASON') && v === reason) return k
   return 'UNKNOWN'
 }
@@ -11478,6 +11588,7 @@ function handle(input: unknown) {
     // claude-factory-zl5.8: this resolves against the tool call's own cwd, not `root`.
     // If `i.cwd` has no value (no `cd`, no override), this falls back to `root`.
     readFile: path => readSmallFile(path, i.cwd || root),
+    loaded: c => loadedTexts(c, i.cwd || root),
     // claude-factory-bemr.6: this code reads the alias table at the tool call's own cwd.
     // It does not read the table at root.
     // The Bash tool runs the command at i.cwd. An earlier cd word can move i.cwd away from
