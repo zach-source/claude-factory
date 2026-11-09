@@ -413,3 +413,18 @@ describe('this repo', () => {
     expect(Date.now() - t).toBeLessThan(1000)
   })
 })
+
+describe('loadedTexts in a bare repo and inside .git', () => {
+  test('reads the hooks dir of a bare repo', () => {
+    const d = mkdtempSync(join(tmpdir(), 'loaded-bare-'))
+    git(d, 'init', '-q', '--bare')
+    put(d, 'hooks/pre-push', bad())
+    expect(run('git push origin factory/x', d)).toBe(HOME_REASON)
+  })
+
+  test('reads the hooks dir when cwd is inside .git', () => {
+    const d = repo()
+    put(d, '.git/hooks/pre-push', bad())
+    expect(run('git push origin factory/x', d, join(d, '.git'))).toBe(HOME_REASON)
+  })
+})
