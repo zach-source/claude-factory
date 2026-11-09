@@ -1,5 +1,6 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { claudeFiles } from './migrate'
 
 /**
@@ -19,6 +20,8 @@ export type BackupCfg = {
   launch?: string
   /** test hook: replaces EXCLUDES */
   excludes?: string[]
+  /** test hook: the gitleaks binary (default `gitleaks` on PATH) */
+  gitleaks?: string
 }
 
 /** gitignore rules, relative to the workspace: what never goes in the backup */
@@ -35,6 +38,8 @@ export const EXCLUDES = [
   '/home/manager-host.log',
   '/home/.restoring',
   '/home/ui-cache/',
+  // the beads stores: GBs of Dolt data with an empty nested .git; repos sync runs bd bootstrap from Dolt again
+  '/home/beads/',
   'worktrees/',
 ]
 
@@ -53,7 +58,7 @@ function git(
   cfg: BackupCfg,
   args: string[],
   timeout = 120_000,
-  o: { tree?: string; env?: Record<string, string>; input?: string } = {},
+  o: { tree?: string; env?: Record<string, string>; input?: string | Buffer } = {},
 ) {
   const p = Bun.spawnSync(
     [
@@ -160,6 +165,79 @@ export type Outcome = {
   restored?: string
   skipped?: string
   error?: string
+  /** `<rule id> <path>` of each secret that the push has as [REDACTED]; never the value */
+  redacted?: string[]
+}
+
+/** one gitleaks finding. It holds the secret: it stays in memory, and no log, file or error gets it */
+export type Leak = { RuleID: string; File: string; Secret: string; Tags?: string[] }
+
+const B64 = /[A-Za-z0-9+/_-]{16,}={0,2}/g
+/** whether a base64 run decodes to text that holds the needle, also after up to `depth` nested decodes */
+const holds = (run: string, needle: string, depth: number): boolean => {
+  const t = Buffer.from(run, 'base64').toString('latin1')
+  return t.includes(needle) || (depth > 1 && (t.match(B64) ?? []).some(r => holds(r, needle, depth - 1)))
+}
+
+/**
+ * The text with each secret of the findings replaced by [REDACTED], found by content: gitleaks reads big files
+ * in chunks, so its line and column numbers do not point at the text. Each occurrence of a plain secret goes.
+ * For a `decoded:*` finding, the secret is the decoded text: each base64 run that decodes to text holding it
+ * goes. The text is latin1 (one char for each byte), and each secret is its UTF-8 bytes, so multibyte text
+ * before a secret does not matter.
+ */
+export function redact(text: Buffer, leaks: Leak[]): Buffer {
+  const bytes = (x: string) => Buffer.from(x, 'utf8').toString('latin1')
+  const isDecoded = (l: Leak) => (l.Tags ?? []).some(t => t.startsWith('decoded:'))
+  const plain = [...new Set(leaks.filter(l => l.Secret && !isDecoded(l)).map(l => bytes(l.Secret)))]
+  const decoded = [...new Set(leaks.filter(l => l.Secret && isDecoded(l)).map(l => bytes(l.Secret)))]
+  let s = text.toString('latin1')
+  for (const n of plain.sort((x, y) => y.length - x.length)) s = s.split(n).join('[REDACTED]')
+  if (decoded.length) s = s.replace(B64, run => (decoded.some(n => holds(run, n, 3)) ? '[REDACTED]' : run))
+  return Buffer.from(s, 'latin1')
+}
+
+/**
+ * gitleaks over the files of dir; the findings, or an error. The report holds the secrets: it goes to a pipe
+ * only (stdout), never to a file or a log, and no error text gets any of it
+ */
+function gitleaks(bin: string, dir: string): Leak[] | { error: string } {
+  const p = Bun.spawnSync(
+    [
+      bin,
+      'dir',
+      dir,
+      '--no-banner',
+      '--log-level',
+      'error',
+      '--exit-code',
+      '0',
+      '--report-format',
+      'json',
+      '--report-path',
+      '-',
+    ],
+    { stdout: 'pipe', stderr: 'pipe', timeout: 600_000 },
+  )
+  if (p.exitCode !== 0) return { error: `gitleaks exit ${p.exitCode}` }
+  try {
+    return JSON.parse(p.stdout.toString() || '[]') as Leak[]
+  } catch {
+    return { error: 'gitleaks: the report is not JSON' }
+  }
+}
+
+/** the contents of `git cat-file --batch` output, in order */
+function splitBatch(buf: Buffer): Buffer[] {
+  const out: Buffer[] = []
+  for (let i = 0; i < buf.length;) {
+    const nl = buf.indexOf(10, i)
+    const size = Number(buf.subarray(i, nl).toString().split(' ')[2])
+    if (!Number.isFinite(size)) throw new Error('git cat-file: a blob is missing') // an unread blob is not a clean one
+    out.push(buf.subarray(nl + 1, nl + 1 + size))
+    i = nl + 1 + size + 1
+  }
+  return out
 }
 
 /** the paths to snapshot: home/, and the manager's Claude memory and session files */
@@ -193,9 +271,123 @@ function record(cfg: BackupCfg, o: Outcome, stats: { files?: number; bytes?: num
   } catch {}
 }
 
+type Staged = { mode: string; path: string; blob: string }
+
 /**
- * Snapshot and push. Refuses when the home is not ready (an empty home must not replace a good backup), when a
- * staged file holds a secret (nothing stays staged), and never forces a push. The result goes to home/backup.json.
+ * The staged blobs are what leaves the VM. gitleaks scans them (a copy in a temp dir, named by index). Each file
+ * with a finding gets a new blob with [REDACTED] in place of the secret, in the index only: the work tree file
+ * stays. A second scan of the new blobs must find nothing. No gitleaks: refuse, as a scan that did not run is not
+ * a clean one. ponytail: the scan copies the changed blobs to disk and runs under the tick lock; the first
+ * backup copies the whole home. Scan outside the lock if a tick waits too long
+ */
+function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { error: string } {
+  if (!staged.length) return { redacted: [] }
+  const bin = Bun.which(cfg.gitleaks ?? 'gitleaks')
+  if (!bin) return { error: 'backup refused: gitleaks is missing' }
+  const r = git(cfg, ['cat-file', '--batch'], 120_000, { input: staged.map(s => s.blob).join('\n') + '\n' })
+  if (!r.ok) return { error: `git cat-file: ${r.err}` }
+  const blobs = splitBatch(r.buf)
+  const scan = (files: Map<number, Buffer>) => {
+    const dir = mkdtempSync(join(cfg.ws, '.backup-scan-')) // the workspace disk: /tmp can be small; no pathspec covers it
+    try {
+      for (const [i, b] of files) writeFileSync(join(dir, String(i)), b)
+      const leaks = gitleaks(bin, dir)
+      if ('error' in leaks) return leaks
+      const by = new Map<number, Leak[]>()
+      for (const l of leaks) {
+        const i = Number(l.File.split('/').at(-1))
+        by.set(i, [...(by.get(i) ?? []), l])
+      }
+      return by
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const found = scan(new Map(blobs.map((b, i) => [i, b])))
+  if ('error' in found) return { error: `backup refused: ${found.error}` }
+  const fixed = new Map([...found].map(([i, leaks]) => [i, redact(blobs[i]!, leaks)]))
+  const left = scan(fixed)
+  if ('error' in left) return { error: `backup refused: ${left.error}` }
+  if (left.size)
+    return {
+      error: `backup refused: a secret is left after redaction in ${[...left.keys()].map(i => staged[i]!.path).join(', ')}`,
+    }
+  for (const [i, b] of fixed) {
+    const h = git(cfg, ['hash-object', '-w', '--stdin'], 120_000, { input: b })
+    if (!h.ok) return { error: `git hash-object: ${h.err}` }
+    const u = git(cfg, ['update-index', '--cacheinfo', `${staged[i]!.mode},${h.out},${staged[i]!.path}`])
+    if (!u.ok) return { error: `git update-index: ${u.err}` }
+  }
+  return {
+    redacted: [...found].flatMap(([i, leaks]) => [
+      ...new Set(leaks.map(l => `${l.RuleID} ${staged[i]!.path}`)),
+    ]),
+  }
+}
+
+/** GitHub refuses a file over 100 MB and warns over 50 MB: the backup stores a bigger file as gzip */
+const GZ_OVER = 50 * 1024 * 1024
+/** the list of paths that the backup stored as <path>.gz; the restore gunzips only these */
+const GZ_LIST = 'home/.backup-gz.json'
+
+/**
+ * Each index file over 50 MB goes in the index as <path>.gz, after the scrub (the scan reads the plain text).
+ * The work tree file stays. The add stages the plain file again each time, so each backup does this again; the
+ * same text gives the same gzip blob, so no commit. GZ_LIST names the paths. ponytail: reads and gzips each
+ * big file at each backup, under the tick lock
+ */
+function gzipBig(cfg: BackupCfg): string | undefined {
+  const ls = git(cfg, ['ls-files', '--stage', '-z']).out.split('\0').filter(Boolean)
+  const rows = ls.map(l => /^(\d+) (\S+) \d+\t(.*)$/s.exec(l)).filter(m => m && m[1]!.startsWith('100'))
+  const sizes = git(cfg, ['cat-file', '--batch-check=%(objectsize)'], 120_000, {
+    input: rows.map(m => m![2]).join('\n') + '\n',
+  }).out.split('\n')
+  const big = rows.filter((m, i) => Number(sizes[i]) > GZ_OVER && m![3] !== GZ_LIST).map(m => m!)
+  const put = (path: string, b: Buffer, mode = '100644') => {
+    const h = git(cfg, ['hash-object', '-w', '--stdin'], 120_000, { input: b })
+    if (!h.ok) return `git hash-object: ${h.err}`
+    const u = git(cfg, ['update-index', '--add', '--cacheinfo', `${mode},${h.out},${path}`])
+    return u.ok ? undefined : `git update-index: ${u.err}`
+  }
+  for (const [, mode, blob, path] of big) {
+    if (existsSync(join(cfg.ws, `${path}.gz`)))
+      return `backup refused: ${path} is over 50 MB and ${path}.gz exists`
+    const c = git(cfg, ['cat-file', 'blob', blob!])
+    if (!c.ok) return `git cat-file: ${c.err}`
+    const e = put(`${path}.gz`, gzipSync(c.buf, { level: 6 }), mode)
+    if (e) return e
+    git(cfg, ['update-index', '--force-remove', '--', path!])
+  }
+  if (!big.length) return void git(cfg, ['update-index', '--force-remove', '--', GZ_LIST])
+  return put(GZ_LIST, Buffer.from(JSON.stringify(big.map(m => m[3])) + '\n'))
+}
+
+/** after a checkout: gunzip each <path>.gz that GZ_LIST names back to <path>, then drop the list */
+function gunzipBig(ws: string): string | undefined {
+  const f = join(ws, GZ_LIST)
+  if (!existsSync(f)) return
+  let list: unknown
+  try {
+    list = JSON.parse(readFileSync(f, 'utf8'))
+  } catch {
+    return `restore: ${GZ_LIST} is not JSON`
+  }
+  for (const p of Array.isArray(list) ? list : []) {
+    // only the paths the backup writes, and no way out of them
+    if (typeof p !== 'string' || p.split('/').includes('..') || !/^(home|claude\/projects)\//.test(p))
+      continue
+    const gz = join(ws, `${p}.gz`)
+    if (!existsSync(gz)) continue
+    writeFileSync(join(ws, p), gunzipSync(readFileSync(gz)))
+    rmSync(gz)
+  }
+  rmSync(f)
+}
+
+/**
+ * Snapshot and push. Refuses when the home is not ready (an empty home must not replace a good backup) and when
+ * the secret scan cannot run (nothing stays staged). It never forces a push. scrub redacts each secret it finds.
+ * The result goes to home/backup.json.
  * `lock` guards the snapshot only. The push runs after the lock is free, because a push can take minutes.
  * With no local history and a branch on the remote, the first commit goes on top of the remote tip.
  */
@@ -217,6 +409,7 @@ export function backup(
   if (existsSync(join(cfg.ws, 'home', '.git'))) return fail('backup refused: home/.git exists (nested repo)')
   let sha = ''
   let dirty = false
+  let redacted: string[] = []
   const release = lock()
   if (!release) return { skipped: 'lock' }
   try {
@@ -244,20 +437,21 @@ export function backup(
     const raw = git(cfg, ['diff', '--cached', '--raw', '--no-renames', '--diff-filter=d', '-z']).out.split(
       '\0',
     )
-    const staged: { path: string; blob: string }[] = []
+    const staged: Staged[] = []
     for (let i = 0; i + 1 < raw.length; i += 2) {
       const m = /^:\d+ (\d+) \S+ (\S+) /.exec(raw[i]!)
-      if (m && m[1]!.startsWith('100')) staged.push({ path: raw[i + 1]!, blob: m[2]! }) // regular files, no gitlink
+      if (m && m[1]!.startsWith('100')) staged.push({ mode: m[1]!, path: raw[i + 1]!, blob: m[2]! }) // regular files, no gitlink
     }
-    const blobs = (list: { blob: string }[]) => {
-      const r = git(cfg, ['cat-file', '--batch'], 120_000, { input: list.map(s => s.blob).join('\n') + '\n' })
-      if (!r.ok) throw new Error(`git cat-file: ${r.err}`) // an unread blob is not a clean one
-      return r.buf
-    }
-    const bad = staged.length && secretFile(blobs(staged)) ? staged.filter(s => secretFile(blobs([s]))) : []
-    if (bad.length) {
+    const scan = scrub(cfg, staged)
+    if ('error' in scan) {
       git(cfg, ['reset', '-q'])
-      return fail(`backup refused: secret-like text in ${bad.map(s => s.path).join(', ')}`)
+      return fail(scan.error)
+    }
+    redacted = scan.redacted
+    const gz = gzipBig(cfg)
+    if (gz) {
+      git(cfg, ['reset', '-q'])
+      return fail(gz)
     }
     dirty = git(cfg, ['diff', '--cached', '--quiet']).ok === false
     if (dirty) {
@@ -277,7 +471,7 @@ export function backup(
     // blob sizes come from the tree: a file that left the work tree after the commit cannot break this
     const tree = git(cfg, ['ls-tree', '-r', '-l', 'HEAD']).out.split('\n').filter(Boolean)
     const bytes = tree.reduce((n, l) => n + (Number((l.split('\t')[0] ?? '').trim().split(/\s+/)[3]) || 0), 0)
-    const o = { sha, changed: dirty }
+    const o = { sha, changed: dirty, ...(redacted.length && { redacted }) }
     record(cfg, o, { files: tree.length, bytes })
     return o
   } catch (e) {
@@ -324,6 +518,8 @@ export function restore(cfg: BackupCfg): Outcome {
     writeFileSync(RESTORING(cfg.ws), `${sha}\n`)
     const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])
     if (!c.ok) return { error: `git checkout: ${c.err}` }
+    const gz = gunzipBig(cfg.ws)
+    if (gz) return { error: gz }
     const mem = memDir(cfg.ws)
     if (existsSync(mem)) {
       // memory is plain files in the backup: make it a repo again, dated by the last dream, so the next dream reads the journal from there

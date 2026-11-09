@@ -266,6 +266,9 @@ factory rig add docs ~/repos/docs rework --sweeps none
 factory rig add gitops ~/repos/gitops --sweeps drift --drift "flux get kustomizations -A; flux get helmreleases -A"
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig set app --max 5 --goal ship v3                  # change only the named fields; a name or a repo path
+factory rig set app --cluster-runs 3 --auto-queue 2,3
+factory rig set app --runner ax --skills asd-ste100,egm --sandbox-class microvm
+factory rig egress add app broker.example.com=AWS_BROKER:Authorization: --port 8443 --path-prefix /v1/aws/acme/
 factory rig show app                                        # every field of the rig, secret values hidden
 factory rig env set svc FACTORY_SERVICES=0                  # svc runs on ax: set one env key of its VM workers
 factory rig env unset svc FACTORY_SERVICES
@@ -317,11 +320,11 @@ factory token best       # make the allowed slot with the lowest 7d use live
 
 A rig's name stands for its repo in every command (`start lifecycle web ...`, `queue web
 fx-12`); a repo outside the rigs is given as a path (`./app`, `~/repos/app`). The board tags each run with its rig and the backlog is grouped by rig, with its
-room, so the manager fills each rig up to its own cap. Change one field with `rig set`, `rig env`, `rig egress` or `rig beads-remote`. `rig add` again
-redefines the whole rig. There is one rig per repo.
+room, so the manager fills each rig up to its own cap. Change one field with `rig set`, `rig env`, `rig egress` or `rig beads-remote`.
+`rig add` again redefines the whole rig. There is one rig per repo.
 
 A rig starts only beads with the `factory` label. To keep a rig busy from its unlabeled ready
-beads, give the rig the field `autoQueue` in `rigs.json`, for example `"autoQueue": { "minPriority": 2, "perHour": 3 }` (no command sets it yet: claude-factory-3fxna).
+beads, use `factory rig set <rig> --auto-queue 2,3`. Use `--auto-queue off` to remove this setting.
 When the rig has room and no labeled bead to start, dispatch takes up to `perHour` beads in a
 rolling hour. It takes only leaf beads (no parent, no open child, not an epic) with no assignee, a
 priority of `minPriority` or higher urgency (0 is the highest), and no `rejected`, `owner`,

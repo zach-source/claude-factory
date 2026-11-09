@@ -1595,7 +1595,7 @@ const skillsShape = (v: unknown, where: string) =>
 /**
  * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
  * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
- * A rig name outside the worker image refuses here, because rigs.json can hold a name that no command checked (an older file, or an edit outside the CLI).
+ * An older rigs.json can hold a name that no command checked. Refuse that name here.
  * `loadFactory` checks the other two layers (claude-factory-qda).
  */
 export function workerSkills(
@@ -8345,9 +8345,9 @@ export type Rig = {
   remote?: string
   factory: string
   maxRuns?: number
-  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; no command sets it yet (claude-factory-3fxna) */
+  /** The most live runs per cluster (clusterKey in src/filing-guard.ts). Default 2. Set with `factory rig set --cluster-runs n`. */
   clusterRuns?: number
-  /** when the rig has room and no labeled bead to start, queue the best unlabeled ready leaf beads (src/autoqueue.ts); off when absent */
+  /** When the rig has room and no labeled bead, queue the best unlabeled ready leaf beads (src/autoqueue.ts). Off when absent. Use `factory rig set --auto-queue p,n|off`. */
   autoQueue?: AutoQueue
   sweeps?: string[]
   /** a sweep station's factory, in place of the built-in "sweeps" (factories/sweeps.ts) */
@@ -8371,11 +8371,11 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
-  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; no command sets it yet (claude-factory-3fxna) */
+  /** Rules before each push, one paragraph each; `{base_branch}` expands. Set with `factory rig set --push-rule text|none` (repeatable). */
   pushRules?: string[]
-  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); no command sets it yet (claude-factory-3fxna) */
+  /** Skills for all workers in this rig, on top of the factory and station lists. Names come from harness.ts VM_PLUGINS. Use `factory rig set --skills a,b|none`. */
   skills?: string[]
-  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). No command sets it yet (claude-factory-3fxna). */
+  /** The literal false turns off tool details in the OTel export (src/otel.ts). Use `factory rig set --otel-content on|off`. */
   otelContent?: boolean
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
@@ -8388,7 +8388,7 @@ export type Rig = {
   /**
    * the AX sandbox class its VM workers (the ax runner) run in (ax-3hy). `microvm` for a repo whose
    * workers build with Nix, which fails under gVisor; AX's gvisor default when absent. The cluster
-   * needs a microvm WorkerPool. No command sets it yet (claude-factory-3fxna).
+   * needs a microvm WorkerPool. Use `factory rig set --sandbox-class gvisor|microvm`.
    */
   sandboxClass?: ax.SandboxClass
   /**
@@ -8615,19 +8615,19 @@ function edit(fn: (list: Rig[]) => Rig[]) {
   }
 }
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
-/** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
+/** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a rigs.json written outside the CLI) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
   Array.isArray(rig?.personOnlyContexts) && rig.personOnlyContexts.every(c => typeof c === 'string')
     ? rig.personOnlyContexts
     : undefined
-/** `rig.protectedBranches`, or undefined when it is absent or not an array of strings (a hand-edited rigs.json) */
+/** `rig.protectedBranches`, or undefined when it is absent or not an array of strings (a rigs.json written outside the CLI) */
 const protectedBranches = (rig?: Pick<Rig, 'protectedBranches'>): string[] | undefined =>
   Array.isArray(rig?.protectedBranches) && rig.protectedBranches.every(b => typeof b === 'string')
     ? rig.protectedBranches
     : undefined
 /**
  * the rig's owner/repo (from its origin remote) when `rig.mergeAuthority` is the literal true
- * (a hand-edited rigs.json cannot loosen it), else undefined. No readable origin gives undefined: no merge.
+ * (a rigs.json written outside the CLI cannot loosen it), else undefined. No readable origin gives undefined: no merge.
  */
 const mergeAuthority = (rig?: Pick<Rig, 'mergeAuthority'> & { repo?: string }): string | undefined => {
   if (rig?.mergeAuthority !== true || !rig.repo) return undefined
@@ -11118,6 +11118,8 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
       )
   }
   if (agent !== undefined && !agent.trim()) fail('--agent is the worker command, e.g. "codex --full-auto"')
+  if (rig.sandboxClass !== undefined && !remote)
+    fail('--sandbox-class needs the ax runner: add --runner ax, or run rig set --sandbox-class gvisor first')
   if (rig.maxRuns !== undefined && !(Number.isInteger(rig.maxRuns) && rig.maxRuns >= 1))
     fail(`--max is a number of runs, at least 1 (not "${rig.maxRuns}")`)
   if (rig.slo !== undefined && !rig.slo.trim())
@@ -12464,7 +12466,7 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
@@ -13933,7 +13935,15 @@ if (import.meta.main && !outboxCmd)
           console.log(JSON.stringify(redactRig(found!), null, 2))
         } else if (sub === 'set') {
           const usage =
-            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]..."
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
+          const val = (f: string) => (args.includes(f) ? (opt(f) ?? '') : undefined)
+          const clusterRuns = val('--cluster-runs')
+          const autoQueue = val('--auto-queue')
+          const pushRules: string[] = []
+          while (args.includes('--push-rule')) pushRules.push(opt('--push-rule') ?? '')
+          const skills = val('--skills')
+          const otelContent = val('--otel-content')
+          const sandboxClass = val('--sandbox-class')
           const foreign = [
             [slo, '--slo'],
             [drift, '--drift'],
@@ -13951,6 +13961,49 @@ if (import.meta.main && !outboxCmd)
           if (!target) fail(`${repoOf(name!)} is not a rig`)
           const set: Record<string, unknown> = {}
           const unset: string[] = []
+          if (clusterRuns !== undefined) {
+            if (!/^[1-9]\d*$/.test(clusterRuns) || !Number.isFinite(Number(clusterRuns)))
+              fail(`--cluster-runs is a number of runs, at least 1 (not "${clusterRuns}")`)
+            set.clusterRuns = Number(clusterRuns)
+          }
+          if (autoQueue !== undefined) {
+            if (autoQueue === 'off') unset.push('autoQueue')
+            else {
+              const m = /^([0-4]),([1-9]\d*)$/.exec(autoQueue)
+              if (!m || !Number.isFinite(Number(m[2])))
+                fail(
+                  `--auto-queue is <minPriority 0-4>,<perHour 1 or more>, e.g. 2,3, or off (not "${autoQueue}")`,
+                )
+              set.autoQueue = { minPriority: Number(m![1]), perHour: Number(m![2]) }
+            }
+          }
+          if (pushRules.length) {
+            if (pushRules.some(r => !r.trim()) || (pushRules.includes('none') && pushRules.length !== 1))
+              fail('--push-rule is a non-empty rule text, or one --push-rule none alone')
+            if (pushRules[0] === 'none') unset.push('pushRules')
+            else set.pushRules = pushRules
+          }
+          if (skills !== undefined) {
+            if (skills === 'none') unset.push('skills')
+            else {
+              const names = skills.split(',')
+              const bad = names.flatMap(n => unknownSkill(n, '--skills'))
+              if (bad.length) fail(bad.join('; '))
+              set.skills = names
+            }
+          }
+          if (otelContent !== undefined) {
+            if (otelContent !== 'on' && otelContent !== 'off')
+              fail(`--otel-content is on or off (not "${otelContent}")`)
+            if (otelContent === 'on') unset.push('otelContent')
+            else set.otelContent = false
+          }
+          if (sandboxClass !== undefined) {
+            if (sandboxClass !== 'gvisor' && sandboxClass !== 'microvm')
+              fail(`--sandbox-class is gvisor or microvm (not "${sandboxClass}")`)
+            if (sandboxClass === 'gvisor') unset.push('sandboxClass')
+            else set.sandboxClass = sandboxClass
+          }
           if (goal !== undefined) {
             if (!goal.trim()) fail('--goal needs text')
             set.goal = goal
@@ -13994,12 +14047,15 @@ if (import.meta.main && !outboxCmd)
           const usages: Record<string, string> = {
             'env set': 'factory rig env set <rig|repo> KEY=VALUE',
             'env unset': 'factory rig env unset <rig|repo> KEY',
-            'egress add': 'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n]',
+            'egress add':
+              'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]...',
             'egress rm': 'factory rig egress rm <rig|repo> host[,host]...',
             'beads-remote set': 'factory rig beads-remote set <rig|repo> --name n --url u --user user',
             'beads-remote clear': 'factory rig beads-remote clear <rig|repo>',
           }
           const [port, bName, bUrl, bUser] = [opt('--port'), opt('--name'), opt('--url'), opt('--user')]
+          const pathPrefix: string[] = []
+          while (args.includes('--path-prefix')) pathPrefix.push(opt('--path-prefix') ?? '')
           const [verb, at, arg, ...extra] = args.slice(1)
           const key = `${sub} ${verb}`
           const usage =
@@ -14026,6 +14082,7 @@ if (import.meta.main && !outboxCmd)
             [params, egress, personOnlyContext, protectedBranch].some(l => l.length) ||
             mergeAuth ||
             (port !== undefined && key !== 'egress add') ||
+            (pathPrefix.length > 0 && key !== 'egress add') ||
             ([bName, bUrl, bUser].some(v => v !== undefined) && key !== 'beads-remote set')
           const noArg = sub === 'beads-remote'
           if (!usages[key] || stray || !at || extra.length || (noArg ? arg !== undefined : !arg))
@@ -14072,6 +14129,21 @@ if (import.meta.main && !outboxCmd)
               if (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535)
                 fail(`--port is a number from 1 to 65535 (not "${port}")`)
               rule!.port = Number(port)
+            }
+            for (const p of pathPrefix) {
+              if (!/^(\/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)+\/$/.test(p))
+                fail(
+                  `--path-prefix is a URL path that ends in /, such as /v1/aws/acme/: segments of letters, digits and -._~ that do not start with . (not "${p}")`,
+                )
+              if (pathPrefix.indexOf(p) !== pathPrefix.lastIndexOf(p))
+                fail(`--path-prefix "${p}" is given two times`)
+            }
+            if (pathPrefix.length) {
+              const why = broker.workerPolicyRefusal({
+                rules: [{ https: { hostnames: rule!.hosts, pathPrefixes: pathPrefix } }],
+              })
+              if (why) fail(`--path-prefix: the broker refuses this worker rule: it ${why}`)
+              rule!.pathPrefixes = pathPrefix
             }
             change(
               r => {

@@ -6,6 +6,23 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: GitHub refused the AX manager home backup push (GH001: a file over 100 MB) (claude-factory-d289.19).
+  - Now the backup stores each file over 50 MB as gzip, at `<path>.gz`, after the secret scan.
+  - `home/.backup-gz.json` in the branch names these paths. The restore unzips only these, back to `<path>`.
+  - The file in the home does not change.
+
+- Fixed: the gitleaks redaction of the AX manager home backup left secrets in big files, and the backup stopped (claude-factory-d289.19).
+  - gitleaks reads big files in chunks. So its line and column numbers did not point at the secret.
+  - Now the backup finds each secret by its text. The gitleaks report goes to a pipe only. No log or file gets it.
+  - For a base64-decoded finding, each base64 run that decodes to the secret becomes `[REDACTED]`.
+
+- Changed: the AX manager home backup scans the staged files with gitleaks, and redacts each secret that it finds (claude-factory-d289.19).
+  - Before, the token-shape regex list stopped the backup. In the AX manager, it flagged 225 files, and all were false alarms.
+  - Now the push has `[REDACTED]` in place of each secret. The file in the home does not change.
+  - The log names the rule id and the path, never the value.
+  - If gitleaks is not there, the backup stops, as before.
+  - CI installs gitleaks 8.30.1, the version in the manager image.
+
 - Fixed: the AX manager host did not make a backup (claude-factory-d289.18).
   - A tick holds the tick lock most of the time. So each backup try found the lock and stopped.
   - Now, if the lock is held, the host tries again each second for 2 min. Then it logs one skip line.
