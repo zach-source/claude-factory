@@ -1,5 +1,5 @@
 // claude-factory-hpmc.7: the front-end parity check (spec 008, FR-018, FR-019).
-import { expect, test } from 'bun:test'
+import { afterAll, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -147,8 +147,13 @@ test('AC6: parseGaps refuses each bad form with its message', () => {
   expect(parseGaps('[]')).toEqual([])
 })
 
+const gapDirs: string[] = []
+afterAll(() => {
+  for (const d of gapDirs) rmSync(d, { recursive: true, force: true })
+})
 function gapsFile(gaps: Gap[]): string {
   const d = mkdtempSync(join(tmpdir(), 'parity-file-'))
+  gapDirs.push(d)
   const f = join(d, 'g.json')
   writeFileSync(f, JSON.stringify(gaps))
   return f

@@ -12334,7 +12334,7 @@ const usage = `factory — herdr software factories on xstate
   ci <pr>                            the PR's checks on its head SHA; each failed job's step and log tail
                                      (exit 0 green, 1 failed, 2 pending, 3 error)
   parity                             each gap bead in parity-gaps.json is still open (the pre-push hook runs it)
-  check <factory file>              validate a factory: graph, outcomes, a way to done from every station
+  check <factory file>               validate a factory: graph, outcomes, a way to done from every station
   mutate [--timeout s] <file[:line]> <old> <new> -- <test argv...>   apply one literal edit, run the test, restore the file;
                                      exit 0 killed, 1 survived, 2 refused, 3 timeout, 4 restore failed
   status [run]                       runs at a glance, or one run's full log
