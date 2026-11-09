@@ -9,11 +9,9 @@ import {
   PATROL_LOG_CAP,
   PATROL_LOG_RECENT,
   PATROL_MS,
-  PATROL_VERB,
   PM_LOG_CAP,
   REVIEWER_LOG_CAP,
   cutText,
-  isValidPlan,
   line,
   patrol,
 } from '../mod/hooks/view'
@@ -29,6 +27,8 @@ import type {
   FactoryRun,
 } from '../mod/types'
 import { claudeCommand } from './harness'
+import { PATROL_VERB } from './core/guards'
+import { isValidPlanShape } from './plan'
 import { stepPrompt } from './steps'
 
 /** the mod's rt.unsent, rt.seen, rt.patrolAt, rt.sig and rt.sigAt, kept in `<home>/patrol-state.json` */
@@ -305,7 +305,7 @@ export function patrolOnce(io: Io): string {
     last,
     new Set(),
     log,
-    isValidPlan(plan) ? plan : undefined,
+    isValidPlanShape(plan) ? plan : undefined,
     now,
     [...(tick.reviewed ?? []), ...(tick.reviews ?? [])],
   )
