@@ -33,6 +33,15 @@ export type Port = {
   refreshMerges: (recs: RunRecord[]) => Promise<RunRecord[]>
   managerUsage: (since: number) => ManagerUsage[]
   rigList: (print: Print) => Promise<void>
+  decide: (id: string | undefined, outcome: string | undefined, note: string, print: Print) => Promise<void>
+  decisionsAnswer: (rig: string, bead: string, text: string, print: Print) => void
+  goto: (id: string | undefined, node: string | undefined, print: Print) => Promise<void>
+  abort: (id: string | undefined) => void
+  mail: (
+    m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
+    who: { env: Env; cwd: string },
+    print: Print,
+  ) => Promise<void>
 }
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
 export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
@@ -394,7 +403,7 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     (c, i) => leaseOps.show(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'gates.decide',
       summary: 'Decide a gate of a run.',
@@ -402,9 +411,10 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/runs/:id/decide',
       inputs: [id('id'), id('outcome'), f('note', 'note')],
     },
-    i => ['decide', i.id as string, i.outcome as string, ...(i.note ? [i.note as string] : [])],
+    'text',
+    (c, i) => gatesOps.decide(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'runs.mail',
       summary: 'Send mail to a station of a run as the manager.',
@@ -419,11 +429,15 @@ export const CATALOG: Op[] = makeCatalog([
         f('wake', 'flag', false),
       ],
     },
-    i => ['mail', i.id as string, i.to as string, ...(i.wake ? ['--wake'] : [])],
     'text',
-    i => i.text as string,
+    async (c, i) => {
+      // the text file form of the old runner cut the end and refused a text of only blanks
+      const text = typeof i.text === 'string' ? i.text.trimEnd() : ''
+      if (!text) throw new OpError(422, 'the mail text is empty')
+      return runsOps.mail(c, { ...i, text })
+    },
   ),
-  bridge(
+  local(
     {
       name: 'runs.goto',
       summary: 'Move a run to a station.',
@@ -431,9 +445,10 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/runs/:id/goto',
       inputs: [id('id'), id('node')],
     },
-    i => ['goto', i.id as string, i.node as string],
+    'text',
+    (c, i) => runsOps.goto(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'runs.abort',
       summary: 'Abort a run and close its worker.',
@@ -441,7 +456,8 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/runs/:id/abort',
       inputs: [id('id')],
     },
-    i => ['abort', i.id as string],
+    'text',
+    (c, i) => runsOps.abort(c, i),
   ),
   bridge(
     {
@@ -475,7 +491,7 @@ export const CATALOG: Op[] = makeCatalog([
     },
     i => [i.mode as string],
   ),
-  bridge(
+  local(
     {
       name: 'decisions.answer',
       summary: 'Answer a question that waits for the person.',
@@ -483,6 +499,7 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/decisions/:rig/:bead/answer',
       inputs: [id('rig'), id('bead'), f('text', 'text', true, 'the answer')],
     },
-    i => ['decisions', 'answer', i.rig as string, i.bead as string, i.text as string],
+    'text',
+    (c, i) => decisionsOps.answer(c, i),
   ),
 ])
