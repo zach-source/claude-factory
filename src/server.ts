@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
+import type { Port } from './core/catalog'
 import { clientHandler, clientListener, cliRunner } from './server-api'
 
 export type Lease = { holder: string; until: number }
@@ -241,7 +242,7 @@ function need(path: string): string {
 }
 
 /** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port ... --tls-cert ... --tls-key ... --person-ca ...]`. The caller passes the tick, so there is no import cycle with cli.ts. */
-export function main(args: string[], home: string, tick: () => unknown) {
+export function main(args: string[], home: string, tick: () => unknown, port: Port) {
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
   const log = (l: string) => console.log(l)
@@ -250,7 +251,7 @@ export function main(args: string[], home: string, tick: () => unknown) {
     cert: need(f.client.cert),
     key: need(f.client.key),
     ca: need(f.client.ca),
-    handle: clientHandler({ home, run: cliRunner(home), board: () => s?.board() ?? null, log }),
+    handle: clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log }),
   }
   s = serve({ home, port: f.port, everyMs: f.everyMs, leaseMs: f.leaseMs, tick, client })
   console.log(
