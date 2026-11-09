@@ -9,6 +9,7 @@
 #   kubectl -n factory create secret tls factory-server-tls --cert=<tls.crt> --key=<tls.key>
 #   kubectl -n factory create secret generic factory-person-ca --from-file=ca.crt=<person ca file>
 #   kubectl -n factory create secret generic factory-worker-key --from-file=key=<worker key file>
+#   kubectl -n factory create secret generic factory-backup --from-literal=remote=<https url> --from-literal=basic=<base64 of x-access-token:token>   (optional: the home backup)
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -134,6 +135,11 @@ spec:
             - name: AX_AUTH_TOKEN
               valueFrom:
                 secretKeyRef: { name: factory-ax-auth, key: token, optional: true }
+            - name: FACTORY_SERVER_BACKUP_REMOTE
+              valueFrom:
+                secretKeyRef: { name: factory-backup, key: remote, optional: true }
+            - name: FACTORY_SERVER_BACKUP_AUTH_FILE
+              value: /etc/factory/backup/basic
           ports:
             - containerPort: 8080
             - containerPort: 8443
@@ -147,6 +153,7 @@ spec:
             - { name: tls, mountPath: /etc/factory/tls, readOnly: true }
             - { name: person-ca, mountPath: /etc/factory/person-ca, readOnly: true }
             - { name: worker-key, mountPath: /etc/factory/worker-key, readOnly: true }
+            - { name: backup, mountPath: /etc/factory/backup, readOnly: true }
       volumes:
         - name: home
           persistentVolumeClaim:
@@ -160,6 +167,11 @@ spec:
         - name: worker-key
           secret:
             secretName: factory-worker-key
+        - name: backup
+          secret:
+            secretName: factory-backup
+            optional: true
+            items: [{ key: basic, path: basic }]
 ---
 apiVersion: v1
 kind: Service
