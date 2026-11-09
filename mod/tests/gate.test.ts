@@ -496,35 +496,30 @@ test('factory wiki init asks the person; other wiki and memory commands do not',
   expect(asked).toBe(before)
 })
 
-test(
-  'factory image asks the person; settings and memory commands that name image do not',
-  SLOW,
-  async ($, on) => {
-    mock.clock(on)
-    let asked = 0
-    on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
-      asked += 1
-      const question = e.questions[0]!.question
-      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
-    })
-    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
-    const run = (command: string) => $.tool.call({ tool: 'Bash', command, description: 'image' })
+test('factory image asks the person; memory commands that name image do not', SLOW, async ($, on) => {
+  mock.clock(on)
+  let asked = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    asked += 1
+    const question = e.questions[0]!.question
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+  const run = (command: string) => $.tool.call({ tool: 'Bash', command, description: 'image' })
 
-    for (const command of [
-      '/repo/bin/factory image build',
-      '/repo/bin/factory image build --target manager',
-      '/repo/bin/factory \\\nimage \\\nbuild',
-    ]) {
-      const before = asked
-      expect((await run(command)).deny).toContain('did not confirm')
-      expect(asked).toBe(before + 1)
-    }
+  for (const command of [
+    '/repo/bin/factory image build',
+    '/repo/bin/factory image build --target manager',
+    '/repo/bin/factory \\\nimage \\\nbuild',
+  ]) {
     const before = asked
-    await run('/repo/bin/factory settings set image.registry ghcr.io/acme')
-    await run('/repo/bin/factory memory search image')
-    expect(asked).toBe(before)
-  },
-)
+    expect((await run(command)).deny).toContain('did not confirm')
+    expect(asked).toBe(before + 1)
+  }
+  const before = asked
+  await run('/repo/bin/factory memory search image')
+  expect(asked).toBe(before)
+})
 
 test('factory token use and best ask the person; token list does not', SLOW, async ($, on) => {
   mock.clock(on)
@@ -549,7 +544,38 @@ test('factory token use and best ask the person; token list does not', SLOW, asy
   const before = asked
   await run('/repo/bin/factory token')
   await run('/repo/bin/factory token list')
-  await run('/repo/bin/factory settings set token.read cmd')
   await run('/repo/bin/factory memory search token use')
+  expect(asked).toBe(before)
+})
+
+test('factory settings set and unset ask the person; settings list does not', SLOW, async ($, on) => {
+  mock.clock(on)
+  let asked = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    asked += 1
+    const question = e.questions[0]!.question
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'ok', stderr: '', interrupted: false } }))
+  const run = (command: string) => $.tool.call({ tool: 'Bash', command, description: 'settings' })
+  for (const command of [
+    '/repo/bin/factory settings set ax.image x',
+    '/repo/bin/factory settings set ax.manager-image x',
+    '/repo/bin/factory settings set ax.vault x',
+    '/repo/bin/factory settings set ax.context x',
+    '/repo/bin/factory settings set ax.env /x',
+    '/repo/bin/factory settings set token.read cmd',
+    '/repo/bin/factory settings set token.write cmd',
+    '/repo/bin/factory settings set image.registry ghcr.io/acme',
+    '/repo/bin/factory settings unset ax.image',
+    '/repo/bin/factory \\\nsettings \\\nset ax.image x',
+  ]) {
+    const before = asked
+    expect((await run(command)).deny).toContain('did not confirm')
+    expect(asked).toBe(before + 1)
+  }
+  const before = asked
+  await run('/repo/bin/factory settings list')
+  await run('/repo/bin/factory settings')
   expect(asked).toBe(before)
 })
