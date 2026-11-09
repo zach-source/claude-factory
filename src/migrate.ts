@@ -173,6 +173,9 @@ export function isPushed(run: RunPaths) {
     (existsSync(run.worktree) && gitOut(['-C', run.worktree, 'rev-parse', 'HEAD'])) ||
     gitOut(['-C', run.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${run.branch}`])
   if (!local || local === remote) return true
+  // the repo can lack the newer origin commits of the branch; fetch them, or merge-base gives a false alarm
+  if (gitOut(['-C', run.repo, 'cat-file', '-e', `${remote}^{commit}`]) === undefined)
+    gitOut(['-C', run.repo, 'fetch', '--quiet', 'origin', `refs/heads/${run.branch}`])
   return gitOut(['-C', run.repo, 'merge-base', '--is-ancestor', local, remote]) !== undefined
 }
 
