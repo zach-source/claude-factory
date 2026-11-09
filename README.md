@@ -734,6 +734,16 @@ can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise 
 The default worker and the dream start from `FACTORY_CLAUDE` too, and its executable is treated
 as Claude.
 
+`fast_check` is a lifecycle param that no worker command names. The runner shows it in each
+brief as a `## Fast check` section. The default is empty, which turns it off; a value of only
+whitespace is off too. `implement` and `quick` run the command before they report ready.
+`verify` and `check` run it first and stop on a non-zero exit.
+
+Use only fast checks (seconds):
+format, lint, build-file lists. Do not use the full test suite. Set it for each rig, not as the
+global `FACTORY_FAST_CHECK`: an env value applies to every rig with no value of its own. Example:
+`factory rig set acme --param fast_check='bunx prettier --check .'`.
+
 Lifecycle sends a share of runs to Codex. Three share params set it: `codex_share` for `implement` and
 `verify` (default `0.3`), `codex_security_share` for `security` (default `0.3`), and `codex_judge_share` for
 `plan` and `review` (default `0`, so off). `check` and `incident` never go to Codex. A hash of the run id

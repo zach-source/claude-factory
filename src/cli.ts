@@ -310,8 +310,8 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
-import { refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
-import type { Ctx as OpCtx, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
+import { managerSender as managerSenderIn, refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
+import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
@@ -1747,6 +1747,7 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
   // only base_branch fills prompts: other {names} in a prompt stay as written
   const prm: Record<string, string> =
     def.params?.base_branch === undefined ? {} : { base_branch: baseBranchOf(def, rig, run.repo) }
+  const fastCheck = paramsOf(def, rig).fast_check?.trim()
   return [
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
@@ -1767,6 +1768,16 @@ export function brief(run: Run, def: Factory, node: string, c: Ctx, inbox: Mail[
     '',
     '## Your task',
     fill(n.prompt.trim(), prm),
+    ...(fastCheck
+      ? [
+          '',
+          '## Fast check',
+          "The rig's fast check (format, lint, build-file lists). Run it at the worktree root. Exit 0 is green.",
+          '~~~sh',
+          fastCheck,
+          '~~~',
+        ]
+      : []),
     ...(rig?.pushRules?.length
       ? [
           '',
@@ -11131,18 +11142,18 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   )
 }
 
-/**
- * claude-factory-ab8n: the sender for mail the manager posts (mail, poke and fork).
- * A worker has FACTORY_DEF_NAME, a factory/ BEADS_ACTOR, or a cwd inside its run's worktree.
- * It must not mail as the manager, because the owner-only rule trusts mail from the manager.
- * It returns 'manager' when no marker is present. Otherwise it fails and posts nothing.
- */
-function managerSender(run: Run): 'manager' {
-  const marker =
-    workerMarker(true) ??
-    (insideWorktree(run) ? 'the working directory is inside the run worktree' : undefined)
-  if (marker) fail(`a worker cannot send mail as the manager (${marker}); a worker mails as its own station`)
-  return 'manager'
+/** the cwd of this process, or '' when its folder is gone: then no worktree matches, as before */
+function here(): string {
+  try {
+    return process.cwd()
+  } catch {
+    return ''
+  }
+}
+
+/** claude-factory-ab8n: the sender for mail the manager posts (mail, poke and fork); see src/core/caller.ts */
+function managerSender(run: Run, env: Env = process.env, cwd = here()): 'manager' {
+  return managerSenderIn(env, cwd, run)
 }
 
 /** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
@@ -11271,17 +11282,6 @@ function refuseWorker(verb: string, patrol = false) {
     refuseWorkerIn(process.env, verb, patrol)
   } catch (e) {
     fail((e as Error).message)
-  }
-}
-
-function insideWorktree(run: Run): boolean {
-  if (!run.worktree || run.worktree === run.repo) return false
-  try {
-    const wt = realpathSync(run.worktree)
-    const cwd = realpathSync(process.cwd())
-    return cwd === wt || cwd.startsWith(wt + sep)
-  } catch {
-    return false
   }
 }
 
@@ -11738,11 +11738,7 @@ function staleProposal(key: string, rows: DecisionsRow[]): boolean {
 
 /** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
  * gets a comment (queuing or starting it is a separate choice, made in the console or with start --owned) */
-function decisionsAnswer(rigName: string, id: string, text: string) {
-  if (workerMarker()) fail("a worker cannot answer the person's decisions: mail the manager instead")
-  // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above, behind
-  // the mod's own regex deny for this command.
-  if (process.env.FACTORY_PATROL) fail("a patrol cannot answer the person's decisions: leave it for them")
+function decisionsAnswer(rigName: string, id: string, text: string, print: Print) {
   const b = beads(repoOf(rigName), 'factory/person')
   if (b.human().some(x => x.id === id)) b.respond(id, text)
   else b.comment(id, text)
@@ -11752,7 +11748,86 @@ function decisionsAnswer(rigName: string, id: string, text: string) {
     for (const k of keys) delete all[k]
     writeJson(decisionsFile(), all)
   }
-  console.log(`answered ${id}`)
+  print(`answered ${id}`)
+}
+
+async function mailRun(
+  m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
+  who: { env: Env; cwd: string },
+  print: Print,
+) {
+  const run = loadRun(m.id)
+  const def = await loadPinned(run.factory)
+  const workerFrom =
+    who.env.FACTORY_FROM && who.env.FACTORY_FROM !== 'manager' ? who.env.FACTORY_FROM : undefined
+  if (workerFrom !== undefined && !Object.hasOwn(def.nodes, workerFrom))
+    fail('FACTORY_FROM must name a station of this factory')
+  const boxes = Object.keys(def.nodes).concat('manager')
+  if (!boxes.includes(m.to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
+  post(run.id, {
+    type: 'MAIL',
+    from: workerFrom ?? managerSender(run, who.env, who.cwd),
+    to: m.to!,
+    text: cleanReport(m.text),
+    ...(m.wake && { wake: true as const }),
+  })
+  print(`mailed ${m.to}`)
+  const { c } = current(run.id)
+  if (!m.wake && isMailHeld(c, m.to!, def.nodes[m.to!]?.holdMail)) {
+    const last = c.log.at(-1)!
+    const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
+    const on = urls.length
+      ? `parked on ${urls.join(', ')}; it starts a worker when one changes or`
+      : `blocked twice in a row on the same wait; it starts a worker`
+    print(
+      `held for ${m.to}: ${on} at ${new Date(c.wakeAt).toISOString()}; add --wake only for an answer that changes the wait`,
+    )
+  }
+}
+
+async function gotoRun(id: string | undefined, node: string | undefined, print: Print) {
+  const run = loadRun(id)
+  const nodes = Object.keys((await loadPinned(run.factory)).nodes).concat('done')
+  if (!nodes.includes(node ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
+  const target = node!
+  const saved = readJson<Saved>(join(runDir(run.id), 'state.json'))
+  const pending = inboxLines(run.id)
+    .slice(saved.cursor)
+    .map(l => JSON.parse(l) as Ev)
+  const queued = pending.find(e => e.type === 'GOTO')
+  if (queued?.type === 'GOTO')
+    fail(
+      `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
+    )
+  const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
+  if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
+  // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
+  const other =
+    ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
+      ? otherLiveShip(run)
+      : undefined
+  if (other)
+    fail(
+      `${other.run.id} is a live ship run on ${run.repo}: goto ${target} would revive ${run.id} as a second ship run on the rig. Run factory abort ${other.run.id}, then goto again.`,
+    )
+  post(run.id, { type: 'GOTO', node: target })
+  print(`queued goto ${target} for ${run.id}: the next tick applies it`)
+}
+
+function abortRun(id: string | undefined) {
+  post(loadRun(id).id, { type: 'ABORT' })
+}
+
+async function decideGate(id: string | undefined, outcome: string | undefined, note: string, print: Print) {
+  const { run, value, c } = current(id)
+  const [node, sub] = where(value)
+  const n = (await loadPinned(run.factory)).nodes[node]
+  if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
+  const outcomes = Object.keys(n!.next)
+  if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
+  const summary = note || `${outcome}, decided by the person`
+  post(run.id, { type: 'DONE', seq: c.seq, outcome: outcome!, summary })
+  print(`decided ${outcome} at ${node} of ${run.id}`)
 }
 
 /** one raw `label: effect` option, split the same way the console's own parser splits it: at the first ": "
@@ -12407,6 +12482,11 @@ export const corePort: Port = {
   refreshMerges,
   managerUsage,
   rigList: rigListLines,
+  decide: decideGate,
+  decisionsAnswer,
+  goto: gotoRun,
+  abort: abortRun,
+  mail: mailRun,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13171,7 +13251,7 @@ if (import.meta.main && !outboxCmd)
           const [rigName, id, ...text] = rest
           if (!rigName || !id || !text.length)
             fail("usage: factory decisions answer <rig> <bead> '<text...>'")
-          decisionsAnswer(rigName!, id!, text.join(' '))
+          emit(await decisionsOp.answer(cliCtx(), { rig: rigName!, bead: id!, text: text.join(' ') }))
           break
         }
         if (sub === 'propose' && rest[1]?.startsWith('--')) {
@@ -13349,20 +13429,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'decide': {
         const [id, outcome, ...note] = args
-        // ponytail: an env check, not a lock: it stops a worker deciding by habit, not one set on it
-        if (workerMarker()) fail('a worker cannot decide a gate: mail the manager instead')
-        // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above,
-        // behind the mod's own regex deny for this command.
-        if (process.env.FACTORY_PATROL) fail('a patrol cannot decide a gate: leave it for the person')
-        const { run, value, c } = current(id)
-        const [node, sub] = where(value)
-        const n = (await loadPinned(run.factory)).nodes[node]
-        if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
-        const outcomes = Object.keys(n!.next)
-        if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
-        const summary = note.join(' ') || `${outcome}, decided by the person`
-        post(run.id, { type: 'DONE', seq: c.seq, outcome: outcome!, summary })
-        console.log(`decided ${outcome} at ${node} of ${run.id}`)
+        emit(await gatesOp.decide(cliCtx(), defined({ id, outcome, note: note.join(' ') })))
         break
       }
       case 'mail': {
@@ -13370,35 +13437,12 @@ if (import.meta.main && !outboxCmd)
         const [id, to, ...rest] = fileArgs('mail', args)
         const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
-        const run = loadRun(id)
-        const def = await loadPinned(run.factory)
-        const workerFrom =
-          process.env.FACTORY_FROM && process.env.FACTORY_FROM !== 'manager'
-            ? process.env.FACTORY_FROM
-            : undefined
-        if (workerFrom !== undefined && !Object.hasOwn(def.nodes, workerFrom))
-          fail('FACTORY_FROM must name a station of this factory')
-        const boxes = Object.keys(def.nodes).concat('manager')
-        if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
-        post(run.id, {
-          type: 'MAIL',
-          from: workerFrom ?? managerSender(run),
-          to: to!,
-          text: cleanReport(text.join(' ')),
-          ...(wake && { wake: true as const }),
-        })
-        console.log(`mailed ${to}`)
-        const { c } = current(run.id)
-        if (!wake && isMailHeld(c, to!, def.nodes[to!]?.holdMail)) {
-          const last = c.log.at(-1)!
-          const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
-          const on = urls.length
-            ? `parked on ${urls.join(', ')}; it starts a worker when one changes or`
-            : `blocked twice in a row on the same wait; it starts a worker`
-          console.log(
-            `held for ${to}: ${on} at ${new Date(c.wakeAt).toISOString()}; add --wake only for an answer that changes the wait`,
-          )
-        }
+        emit(
+          await runsOp.mail(
+            cliCtx(),
+            defined({ id, to, text: text.join(' '), wake: wake || undefined, cwd: here() }),
+          ),
+        )
         break
       }
       case 'poke': {
@@ -13440,39 +13484,11 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
-      case 'goto': {
-        refuseWorker('goto')
-        const run = loadRun(args[0])
-        const nodes = Object.keys((await loadPinned(run.factory)).nodes).concat('done')
-        if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
-        const target = args[1]!
-        const saved = readJson<Saved>(join(runDir(run.id), 'state.json'))
-        const pending = inboxLines(run.id)
-          .slice(saved.cursor)
-          .map(l => JSON.parse(l) as Ev)
-        const queued = pending.find(e => e.type === 'GOTO')
-        if (queued?.type === 'GOTO')
-          fail(
-            `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
-          )
-        const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
-        if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
-        // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
-        const other =
-          ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
-            ? otherLiveShip(run)
-            : undefined
-        if (other)
-          fail(
-            `${other.run.id} is a live ship run on ${run.repo}: goto ${target} would revive ${run.id} as a second ship run on the rig. Run factory abort ${other.run.id}, then goto again.`,
-          )
-        post(run.id, { type: 'GOTO', node: target })
-        console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
+      case 'goto':
+        emit(await runsOp.goto(cliCtx(), defined({ id: args[0], node: args[1] })))
         break
-      }
       case 'abort':
-        refuseWorker('abort')
-        post(loadRun(args[0]).id, { type: 'ABORT' })
+        emit(await runsOp.abort(cliCtx(), defined({ id: args[0] })))
         break
       case 'init': {
         if (!args[0]) fail('usage: factory init <dir>')
