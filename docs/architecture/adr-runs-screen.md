@@ -101,7 +101,8 @@ Use the repo's test fixture conventions. Update catalog name/count fixtures with
 
 Touch `src/core/catalog.ts`, `src/core/ops/runs.ts`, `src/cli.ts`, `src/ax.ts`, and `src/worker.ts`.
 Extend the test files named above and any typed port fixtures that need the new method.
-Add one CHANGELOG bullet at the end of Unreleased. Leave `src/worker-system.md` and `.factory/` unchanged.
+Add no changelog entry or version change. The release step writes the changelog.
+Leave `src/worker-system.md` and `.factory/` unchanged.
 Keep transport logic outside the core import graph. Reuse current configuration and worker identity helpers.
 Do not add a dependency, persistent cache, configurable cap, or second screen API.
 
@@ -141,7 +142,7 @@ Use the normal soak deadline; this feature needs no new metrics or persistent lo
 
 1. `claude-factory-keuya.2`: Add the AC1 through AC6 tests. Record the expected failures before the feature exists.
 2. `claude-factory-keuya.3`: Add the bounded worker verb and transport helpers. Check worker, AX, and transport tests.
-3. `claude-factory-keuya.1`: Add the core port and catalog operation. Update catalog fixtures and the CHANGELOG. Run all AC tests.
+3. `claude-factory-keuya.1`: Add the core port and catalog operation. Update catalog fixtures. Run all AC tests.
 
 Tasks 2 and 3 depend on task 1; task 3 also depends on task 2.
 Keep all three commits in one draft pull request. The scope fits one 120-minute implement pass.
