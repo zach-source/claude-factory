@@ -1045,11 +1045,18 @@ export async function githubMergedJson(
   gh: Gh,
   slug: string,
   cwd: string,
-  o: { pages: number; head?: string; timeoutMs?: number },
+  o: { pages: number; head?: string; timeoutMs?: number; strict?: boolean },
   onErr?: (err: string) => void,
 ): Promise<string | null> {
   const rows = await githubPulls(gh, slug, cwd, { state: 'closed', ...o }, onErr)
-  return rows ? JSON.stringify(githubRows(rows.filter(p => str(p.merged_at)))) : null
+  if (!rows) return null
+  const merged = rows.filter(p => str(p?.merged_at))
+  // strict: a row without its number or URL is incomplete input, not an absent PR
+  if (o.strict && rows.some(p => !p || typeof p.number !== 'number' || !str(p.html_url))) {
+    onErr?.('malformed pull request row')
+    return null
+  }
+  return JSON.stringify(githubRows(merged))
 }
 
 /** the merged MRs of a GitLab project as `gh pr list --json` shaped text (`parseMergedPrs` reads it), found by a
@@ -1060,7 +1067,7 @@ export async function gitlabMergedJson(
   host: string,
   path: string,
   cwd: string,
-  o: ({ search: string } | { sourceBranch: string }) & { timeoutMs?: number },
+  o: ({ search: string } | { sourceBranch: string }) & { timeoutMs?: number; strict?: boolean },
   onErr?: (err: string) => void,
 ): Promise<string | null> {
   const q =
@@ -1084,11 +1091,32 @@ export async function gitlabMergedJson(
   try {
     v = JSON.parse(res.out)
   } catch {
-    return '[]'
+    if (!o.strict) return '[]'
+    onErr?.('malformed merge request reply')
+    return null
   }
-  if (!Array.isArray(v)) return '[]'
+  if (!Array.isArray(v)) {
+    if (!o.strict) return '[]'
+    onErr?.('malformed merge request reply')
+    return null
+  }
+  const mrs = v as Record<string, unknown>[]
+  // strict: a malformed row, or a merged row without its number or URL, is incomplete input
+  if (
+    o.strict &&
+    mrs.some(
+      m =>
+        !m ||
+        typeof m !== 'object' ||
+        typeof m.state !== 'string' ||
+        (m.state === 'merged' && (typeof m.iid !== 'number' || !str(m.web_url))),
+    )
+  ) {
+    onErr?.('malformed merge request row')
+    return null
+  }
   return JSON.stringify(
-    (v as Record<string, unknown>[])
+    mrs
       .filter(m => m.state === 'merged')
       .map(m => ({
         number: m.iid,

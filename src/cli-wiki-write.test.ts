@@ -669,3 +669,39 @@ slow('write AC3 202 beads on one PR stay waiting whole, never cut to 200', () =>
   expect(r.out).not.toContain('group:')
   expect(r.out).toContain('0 groups from 0 beads; 202 waiting')
 })
+
+const LIST = () =>
+  join(data, `gh-${key('repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1')}`)
+const OLD = '2026-11-01T00:00:00Z'
+
+slow('write AC2 a malformed GitHub list row keeps the older bead pending', () => {
+  setup()
+  seed([closed('acme-1', { closed_at: OLD }), closed('acme-2')], [pr(9, 'acme-2: fix it', ['src/a.ts'])])
+  writeFileSync(LIST(), JSON.stringify([{}]))
+  const r = factory(['wiki', 'write', '--dry-run'])
+  expect(r.out).toContain('0 groups from 0 beads; 2 waiting')
+  writeFileSync(LIST(), JSON.stringify([pr(8, 'acme-1: fix it', ['src/b.ts'])]))
+  expect(factory(['wiki', 'write', '--dry-run']).out).toContain('acme-1')
+})
+
+slow('write AC2 a malformed GitLab reply or failed short id read keeps the bead pending', () => {
+  setup()
+  Bun.spawnSync(['git', '-C', repo, 'remote', 'set-url', 'origin', 'https://gitlab.example.com/acme/widget.git'])
+  seed([closed('acme-abc1.2')])
+  const bin = join(dir, `bin${n}`)
+  const glab = (body: string) => {
+    writeFileSync(join(bin, 'glab'), `#!/bin/sh\n${body}\n`)
+    chmodSync(join(bin, 'glab'), 0o755)
+  }
+  for (const body of [
+    'echo "{}"',
+    'echo "not json"',
+    'echo "[{}]"',
+    'case "$*" in *search=acme-abc1.2*) echo "[]";; *) echo "{}";; esac',
+    'case "$*" in *search=acme-abc1.2*) echo "[]";; *) echo failed >&2; exit 1;; esac',
+  ]) {
+    glab(body)
+    const r = factory(['wiki', 'write', '--dry-run'])
+    expect([body, r.out]).toEqual([body, expect.stringContaining('0 groups from 0 beads; 1 waiting')])
+  }
+})

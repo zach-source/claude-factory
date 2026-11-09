@@ -8385,6 +8385,7 @@ async function mergedPrsFor(
   id: string,
   branches: string[],
   cli: { gh: Gh; glab: Gh },
+  strict = false,
 ): Promise<MergedPr[]> {
   const gl = origin.forge === 'gitlab'
   const glabPath = `${origin.owner}/${origin.repo}`
@@ -8398,7 +8399,7 @@ async function mergedPrsFor(
         origin.host,
         glabPath,
         repo,
-        { search: id, timeoutMs: PRECHECK_TIMEOUT_MS },
+        { search: id, timeoutMs: PRECHECK_TIMEOUT_MS, strict },
         e => (firstErr = e),
       )
     : ref
@@ -8407,7 +8408,7 @@ async function mergedPrsFor(
           cli.gh,
           ref.slug,
           repo,
-          { pages: 3, timeoutMs: PRECHECK_TIMEOUT_MS },
+          { pages: 3, timeoutMs: PRECHECK_TIMEOUT_MS, strict },
           e => (firstErr = e),
         )
       : null
@@ -8420,7 +8421,9 @@ async function mergedPrsFor(
     const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
       search: short,
       timeoutMs: PRECHECK_TIMEOUT_MS,
+      strict,
     })
+    if (strict && byShort === null) throw new Error('short id search failed')
     if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
   // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
@@ -12068,7 +12071,7 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
         const urls = new Set<string>()
         if (wikiPrNumber(meta, origin)) urls.add(meta)
         const short = shortBeadId(id)
-        for (const m of await mergedPrsFor(rig.repo, origin, id, [], cli))
+        for (const m of await mergedPrsFor(rig.repo, origin, id, [], cli, true))
           if ((citesBead(id, m.title) || (short && citesBead(short, m.title))) && wikiPrNumber(m.url, origin))
             urls.add(m.url)
         const merged: string[] = []
