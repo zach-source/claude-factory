@@ -1162,10 +1162,24 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
   if (existsSync(local) && !beadsOnlyCodexDir(local))
     throw new Error(`a codex worker keeps the deny hook on: ${local} would add project config`)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // before chmodSync, which follows a link
+  if (!lstatSync(dir).isDirectory())
+    throw new Error(`a codex worker keeps the deny hook on: ${dir} is not a plain directory`)
   chmodSync(dir, 0o700)
+  // remove, then create with wx: a link a turn left at the path is replaced, never written through
+  const put = (path: string, text: string) => {
+    try {
+      rmSync(path, { force: true })
+      writeFileSync(path, text, { mode: 0o600, flag: 'wx' })
+    } catch (e) {
+      throw new Error(
+        `a codex worker keeps the deny hook on: cannot replace ${path} (${(e as Error).message})`,
+      )
+    }
+  }
   for (const [name, text] of Object.entries(JSON.parse(files) as Record<string, string>))
-    writeFileSync(join(dir, basename(name)), text, { mode: 0o600 })
-  writeFileSync(
+    put(join(dir, basename(name)), text)
+  put(
     join(dir, 'AGENTS.md'),
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
       readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8') +

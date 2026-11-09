@@ -3,11 +3,14 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -2890,6 +2893,72 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     process.env.FACTORY_HARNESS = 'claude'
     expect(() => worker.codexHome(join(tmp, 'none'))).not.toThrow()
     expect(existsSync(join(tmp, 'none'))).toBe(false)
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
+    Object.assign(process.env, keep)
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('codexHome writes each guard file fresh and fails closed on a link or a directory (claude-factory-qn8a.35)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-codex-link-'))
+  const repo = join(tmp, 'repo')
+  const argv = join(tmp, 'argv')
+  const fake = join(tmp, 'fake-codex')
+  const on =
+    'hooks stable true\nunified_exec stable false\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
+  writeFileSync(
+    fake,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > '${argv}'\nprintf '${on.replaceAll('\n', '\\n')}'\n`,
+    {
+      mode: 0o755,
+    },
+  )
+  mkdirSync(repo)
+  const keep = { ...process.env }
+  Object.assign(process.env, {
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX: fake,
+    FACTORY_CODEX_HOME_FILES: JSON.stringify({ 'hooks.json': '{"hooks":{}}', 'config.toml': 'x = 1\n' }),
+  })
+  try {
+    const home = join(tmp, 'home')
+    const outside = join(tmp, 'outside')
+    mkdirSync(home)
+    writeFileSync(outside, 'keep')
+    symlinkSync(outside, join(home, 'hooks.json'))
+    symlinkSync('/dev/null', join(home, 'config.toml'))
+    worker.codexHome(home, 30_000, [])
+    for (const [f, t] of [
+      ['hooks.json', '{"hooks":{}}'],
+      ['config.toml', 'x = 1\n'],
+    ]) {
+      expect(lstatSync(join(home, f)).isFile()).toBe(true)
+      expect(readFileSync(join(home, f), 'utf8')).toBe(t)
+    }
+    expect(readFileSync(outside, 'utf8')).toBe('keep')
+    writeFileSync(join(home, 'hooks.json'), 'other')
+    worker.codexHome(home, 30_000, [])
+    expect(readFileSync(join(home, 'hooks.json'), 'utf8')).toBe('{"hooks":{}}')
+
+    const dirHome = join(tmp, 'dirhome')
+    mkdirSync(join(dirHome, 'hooks.json'), { recursive: true })
+    writeFileSync(join(dirHome, 'hooks.json', 'x'), 'x')
+    rmSync(argv, { force: true })
+    expect(() => worker.codexHome(dirHome, 30_000, [])).toThrow('cannot replace')
+    expect(existsSync(argv)).toBe(false)
+
+    const real = join(tmp, 'real')
+    const linkHome = join(tmp, 'linkhome')
+    mkdirSync(real)
+    chmodSync(real, 0o755)
+    symlinkSync(real, linkHome)
+    rmSync(argv, { force: true })
+    expect(() => worker.codexHome(linkHome, 30_000, [])).toThrow('is not a plain directory')
+    expect(existsSync(argv)).toBe(false)
+    expect(readdirSync(real)).toEqual([])
+    expect(statSync(real).mode & 0o777).toBe(0o755)
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
     Object.assign(process.env, keep)
