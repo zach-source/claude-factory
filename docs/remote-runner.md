@@ -485,7 +485,7 @@ The factory does not do the steps that start with "Owner".
 3. Run `factory home split /tmp/server-home --dry-run`. Read the plan. If it names a run in a herdr pane, finish or abort that run, or let it reach a station boundary. Then run it again.
 4. Run `factory home split /tmp/server-home`.
 5. Owner: copy `/tmp/server-home` into the pod. Put `rigs.json` last, so a tick never sees a rig without its runs: `tar -C /tmp/server-home -cf - memory runs rigs.json | kubectl -n factory exec -i deploy/factory-server -- tar -C /var/lib/factory/home -xf -`. If the split moved no run, leave `runs` out of the list.
-6. Restart the laptop manager with `bin/factory-up`. It now has the herdr rigs only.
+6. Restart the laptop manager with `factory up`. It now has the herdr rigs only.
 7. Do checks 4 to 7 of the quickstart.
 
 #### What the server checks
@@ -507,7 +507,7 @@ The factory does not do the steps that start with "Owner".
 2. Copy the home off the PVC backup, or off the live PVC if it is whole: `kubectl -n factory cp <pod>:/var/lib/factory/home /tmp/server-home-back`. Use a pod that mounts the PVC. The PVC backup is the owner's snapshot of the volume. The factory does not make it yet (claude-factory-a962).
 3. Put the live runs back: copy each `/tmp/server-home-back/runs/<id>` to the local `runs/<id>`. The local copy in `split-<stamp>/runs/` is older, so do not use it.
 4. Remove the moved rigs from `split.json`. Remove the file if it is empty. Then put the rigs back in the local `rigs.json`. Run `factory rig undo`, or run `factory rig add <name> <repo> --runner ax` for each rig. Check with `factory rig`.
-5. Run `bin/factory-up`. The laptop ticks every rig again.
+5. Run `factory up`. The laptop ticks every rig again.
 
 Copy the memory notes that the server wrote into the local `memory/` by hand. The two copies diverge (claude-factory-4z8f).
 
