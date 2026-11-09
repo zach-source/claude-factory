@@ -8,7 +8,7 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Current handoff at 7f0795a9
+## Current handoff at 5db1839b
 
 This section overrides earlier task lists and AC10 implementation choices. AC1–AC9 and their closed source grammar remain required.
 Keep PR #714 as a draft. Keep `.16`, `.17`, `.20` and `.21` closed.
@@ -18,15 +18,18 @@ No new production defect is established. This pass completes the existing test i
 
 ### Evidence and decision
 
-At this head, `alive()` catches every signal error as exit (`src/wiki-kick.test.ts:39–44`).
-`procObserver()` discards a child when environment and stat reads fail (lines 81–88).
-Plan extracted these actual helpers into an isolated probe with fake system calls.
-An `EPERM` result produced `alive: false`. Failed environment and stat reads produced two empty lists.
-The probe sent no signals and started no fixture child.
-`same()` trusts a PID when its start identity is unavailable (lines 129–131).
-The first-observation and nested-denied controls still call Linux helpers on every host (lines 623–627 and 682).
-The injected `ps` control does not exercise those paths on macOS.
-These paths violate the current AC10 contract, independent of the final CI result for `.21`.
+Commit `49bd4cc7` replaced scans with PID receipts. Commit `6c151c57` added an `EPERM` check.
+Do not repeat those changes. Neither commit completes the retained-handle contract.
+At `src/wiki-kick.test.ts:157`, `launchSeen()` clears unresolved launches after its deadline.
+The hook suppresses the error at lines 173–178. It can then remove the fixture without exit proof.
+Review's actual-helper probe confirmed `pendingAfterDeadline: 0` and `fixtureRemovedWithoutLaunchExitProof: true`.
+Plan read these paths but did not repeat that probe.
+Lines 88–112 and 134–136 use PID receipts to authorize signals. Lines 126–131 signal handles before receipt validation.
+The shell controls at lines 547, 559 and 583 create descendants outside the registry.
+Nested cleanup at lines 773 and 792–795 trusts serialized PID/path data instead of retained handles.
+Lines 41–78 and 199–200 still depend on `/proc` or `ps`. The injected adapter test does not prove portable cleanup.
+PID 1 at line 808 does not force `EPERM`. Inject the error at the owned-handle boundary instead.
+The exact-head CI passed. These source defects and omitted controls remain despite that result.
 
 Use explicit fixture launch ownership. Remove host-wide `/proc` and `ps` discovery as cleanup authority.
 Use existing Bun or Node child handles and a small fixture launcher with an acknowledged launch/exit lifecycle.
@@ -66,12 +69,53 @@ Reject absolute paths, relative paths and PID fields in receipts; no receipt aut
 Receipt rejection must produce zero signals and zero fixture removals. An `exited` receipt alone cannot replace awaited exit.
 Prefer in-memory handles so this serialization is unnecessary.
 
+### Concrete lifecycle boundary
+
+Intercept the real launch call, before the child starts. A shim that reports its own PID after startup is too late.
+The CLI uses `node:child_process.spawn` for detached kicks and Bun process calls for agent passes.
+Use a fixture preload or supervisor at these call boundaries. Keep its retained handles reachable until cleanup ends.
+First prove interception with one real tick and one real wiki pass. Verify arguments, environment, result and descendant exit.
+The fixture must handle non-wiki detached kicks too. A wiki stamp cannot serve as the complete launch registry.
+Use `exec` for single-process shell fixtures, or retain and await each child in their fixture supervisor.
+Do not treat the death of a shell as proof that its child exited.
+For nested denied-proof tests, let the outer fixture own the child before the nested test starts.
+Give the nested hook a restricted lifecycle view that denies exit proof. Keep the real handle in the outer fixture.
+After the hook fails, the outer fixture stops and awaits its handle. It then removes its own known fixture path.
+Do not recover authority from a path or PID that the nested test returns.
+
+| State or event | Required action |
+| --- | --- |
+| Before launch | Register the launch intent and its owning scope before any delay or asynchronous spawn. |
+| Spawn succeeds | Retain the returned handle. Bind the intent to that handle, independent of locks, stamps and homes. |
+| Spawn fails before child creation | Record the spawn error. Resolve only that intent; preserve all other handles. |
+| Start or exit deadline | Fail the wait. Retain unresolved intents and live handles; never clear them to permit removal. |
+| Cancel request | Signal only retained handles after validation. A successful signal request does not prove exit. |
+| Exit event or awaited exit | Resolve that handle only. Wait for every owned descendant before scope completion. |
+| Cleanup error or denied proof | Report the error and keep the fixture. A catch cannot turn unknown state into success. |
+| Complete scope | Remove the fixture only after all intents resolve and all owned handles have awaited exits. |
+
+Add these controls before the correction. Each belongs to AC10 and uses the AC10 command above.
+Keep the earlier eight controls and the three AC10 subcriteria; these rows make their missing assertions explicit.
+
+| Test name | Required assertions |
+| --- | --- |
+| `AC10 unseen launch deadline retains ownership` | Delay startup beyond the deadline. Exercise the actual hook. Unresolved intent and fixture remain until independent exit proof. |
+| `AC10 rejected receipt has zero cleanup calls` | If receipts remain, reject every prohibited schema row before signals, spawns or removal. Include a live direct handle. |
+| `AC10 descendant exit precedes removal` | Cancel a fixture with a live descendant. Await both handles before removal; assert exit order. |
+| `AC10 denied exit proof retains fixture` | Inject `EPERM` or a rejected exit query. Assert hook failure, retained fixture and zero unauthorized signals. |
+| `AC10 portable lifecycle matrix` | Disable access to both `/proc` and `ps`. Execute delayed start, normal exit, no launch, two homes and spawn failure. Include both nested assertion rows. |
+
+Receipt tests can disappear only when the receipt parser disappears. Record that removal in the evidence table.
+An unused observer needs no substitute parser. Assert that the complete lifecycle makes zero host-observer calls instead.
+For a no-wiki-launch tick, await any non-wiki children. Distinguish zero wiki launches from zero total launches.
+Test reports must map each row to a test name and its exit, fixture and unauthorized-call assertions.
+
 ### Tasks and test order
 
-1. Reopen `.18`, 65 minutes, one commit: add failing ownership/error controls, then replace scan-based cleanup authority.
+1. Complete reopened `.18`, 65 minutes, one commit: add failing ownership/error controls, then replace PID-receipt cleanup authority.
    Record the red results before the correction. Preserve actual CLI passes, tool stubs and environment isolation.
    Check AC10.1 and AC10.3, including every owned descendant and the unrelated-child negative control.
-2. Reopen `.19`, 30 minutes, one commit after `.18`: complete portable controls and the test-to-control evidence table.
+2. Complete reopened `.19`, 30 minutes, one commit after `.18`: complete portable controls and the test-to-control evidence table.
    Check AC10.2 without process files or host process commands. Do not skip the first-observation or nested-denied rows.
 3. Reserve 25 minutes for regression checks. Required CI wait time is separate.
 
@@ -81,6 +125,8 @@ Run each wiki test file separately with `bun test --timeout 60000`: `src/wiki-ki
 Run `bun run typecheck`, changed-file Prettier, `git diff --check`, the repository gate, `bun audit` and gitleaks.
 Use `gitleaks detect --log-opts=origin/main..HEAD`. Require final-head test, typecheck, plugin and format CI.
 Each task close comment must give the test name, red result, exit assertion, fixture assertion, command/result and commit.
+Record failed controls before the correction in the same task. Commit the final green tests and fixture change together.
+Do not close either task from a suite total or an ADR commit. Its evidence table must cover every applicable control.
 After the fix commit, mutate exit-proof refusal and ownership retention separately. Each control must kill its own mutant.
 Restore each mutant. Do not ship required checks red. State native macOS evidence separately from portable fixture evidence.
 
