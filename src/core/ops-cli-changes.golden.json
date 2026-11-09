@@ -407,5 +407,607 @@
     "bd": [],
     "decisions": null,
     "inbox": []
+  },
+  "H1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most 5 min. Ticks carry it out; factory status shows it. factory resume brings them back.\n",
+        "err": ""
+      }
+    ],
+    "files": {
+      "halt.json": {
+        "state": "stopping",
+        "told": {},
+        "closed": {}
+      },
+      "resume.json": null
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "H2": {
+    "results": [
+      {
+        "code": 0,
+        "out": "stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most 5 min. Ticks carry it out; factory status shows it. factory resume brings them back.\n",
+        "err": ""
+      },
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: already stopping\n"
+      }
+    ],
+    "files": {
+      "halt.json": {
+        "state": "stopping",
+        "told": {},
+        "closed": {}
+      },
+      "resume.json": null
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "H3": {
+    "results": [
+      {
+        "code": 0,
+        "out": "stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most 5 min. Ticks carry it out; factory status shows it. factory resume brings them back.\n",
+        "err": ""
+      },
+      {
+        "code": 0,
+        "out": "resuming 0 worker(s) in their own conversations at the next tick\n",
+        "err": ""
+      }
+    ],
+    "files": {
+      "halt.json": null,
+      "resume.json": {}
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "H4": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: the factory is not stopped\n"
+      }
+    ],
+    "files": {
+      "halt.json": null,
+      "resume.json": null
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "H5": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a patrol cannot run factory stop: leave it for the person or the manager\n"
+      }
+    ],
+    "files": {
+      "halt.json": null,
+      "resume.json": null
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "H6": {
+    "results": [
+      {
+        "code": 0,
+        "out": "stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most 5 min. Ticks carry it out; factory status shows it. factory resume brings them back.\n",
+        "err": ""
+      },
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a patrol cannot run factory resume: leave it for the person or the manager\n"
+      }
+    ],
+    "files": {
+      "halt.json": {
+        "state": "stopping",
+        "told": {},
+        "closed": {}
+      },
+      "resume.json": null
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "L1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "released the manager lease\n",
+        "err": ""
+      }
+    ],
+    "files": {
+      "manager.lease": null
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "L2": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a patrol cannot run factory lease: leave it for the person or the manager\n"
+      }
+    ],
+    "files": {
+      "manager.lease": {
+        "holder": "x",
+        "kind": "manager"
+      }
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "L3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: usage: factory lease [status|release]\n"
+      }
+    ],
+    "files": {
+      "manager.lease": {
+        "holder": "x",
+        "kind": "manager"
+      }
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "rig api: set maxRuns\n",
+        "err": ""
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle",
+          "maxRuns": 3
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS2": {
+    "results": [
+      {
+        "code": 0,
+        "out": "rig api: set goal\n",
+        "err": ""
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle",
+          "goal": "finish it"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: --max is a number of runs, at least 1 (not \"0\")\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS4": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: no rig \"nope\" in the factory <HOME> (rigs: api)\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS5": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]...\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS6": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: rig set does not change --slo: usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]...\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS7": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: a patrol cannot run factory rig set: leave it for the person or the manager\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS8": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: --param is name=value, its name one of lifecycle's params: base_branch, claude, exec_model, judge_model, security_model, codex, codex_exec_model, codex_security_model, codex_share, codex_security_share, codex_judge_model, codex_judge_share, fast_check, cursor, cursor_plan_model, cursor_plan_share, cursor_implement_model, cursor_implement_share, cursor_verify_model, cursor_verify_share, cursor_review_model, cursor_review_share, cursor_security_model, cursor_security_share, grok, grok_plan_model, grok_plan_share, grok_implement_model, grok_implement_share, grok_verify_model, grok_verify_share, grok_review_model, grok_review_share, grok_security_model, grok_security_share (not \"nope=1\")\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS9": {
+    "results": [
+      {
+        "code": 0,
+        "out": "rig api: set runner\n",
+        "err": ""
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle",
+          "runner": "ax"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "RS10": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: --runner is herdr, ax (not \"nope\")\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        }
+      ]
+    },
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "QU1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "queued api-q: it starts at the next dispatch\n",
+        "err": ""
+      }
+    ],
+    "bd": [
+      "update api-q --add-label factory --remove-label rejected --remove-label human --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --actor factory"
+    ],
+    "decisions": null,
+    "inbox": []
+  },
+  "QU2": {
+    "results": [
+      {
+        "code": 0,
+        "out": "queued api-q at review: it starts at the next dispatch\n",
+        "err": ""
+      }
+    ],
+    "bd": [
+      "update api-q --add-label factory --remove-label rejected --remove-label human --remove-label stale? --remove-label owner --unset-metadata owner_question --unset-metadata owner_since --add-label station:review --actor factory"
+    ],
+    "decisions": null,
+    "inbox": []
+  },
+  "QU3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: usage: factory queue <rig|repo> <bead> [station]\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "QU4": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: api-1 cannot be read: a patrol cannot start it: a person queues it\n"
+      }
+    ],
+    "bd": ["show api-1 --json --actor factory"],
+    "decisions": null,
+    "inbox": []
+  },
+  "QU5": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: no rig \"nope\" in the factory <HOME> (rigs: api)\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "QU6": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: api-disc came from another rig (metadata.discovered_from on api-disc): a patrol cannot start it: a person queues it\n"
+      }
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "S1": {
+    "results": [
+      {
+        "code": 0,
+        "out": "started <RUN> in <WTWEB> (herdr workspace ws1), following .factory/tiny.json at <SHA>\n",
+        "err": ""
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        },
+        {
+          "name": "web",
+          "repo": "<WEB>",
+          "factory": "tiny"
+        }
+      ]
+    },
+    "herdr": [
+      "worktree create --cwd <WEB> --branch factory/<RUN> --base <SHA> --label web/<RUN> --no-focus --json",
+      "workspace report-metadata ws1 --source claude-factory --token factory=work · working --ttl-ms 300000",
+      "pane list"
+    ],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "S2": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: usage: factory start <factory>[@station] <rig|repo> '<goal...>'\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        },
+        {
+          "name": "web",
+          "repo": "<WEB>",
+          "factory": "tiny"
+        }
+      ]
+    },
+    "herdr": [],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "S3": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: no rig \"nope\" in the factory <HOME> (rigs: api, web)\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        },
+        {
+          "name": "web",
+          "repo": "<WEB>",
+          "factory": "tiny"
+        }
+      ]
+    },
+    "herdr": [],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "S4": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: no station \"nowhere\" in tiny: work, review\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        },
+        {
+          "name": "web",
+          "repo": "<WEB>",
+          "factory": "tiny"
+        }
+      ]
+    },
+    "herdr": [],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
+  },
+  "S5": {
+    "results": [
+      {
+        "code": 1,
+        "out": "",
+        "err": "factory: api-own carries its owner's decisions: a patrol cannot start it, even with --owned\n"
+      }
+    ],
+    "files": {
+      "rigs.json": [
+        {
+          "name": "api",
+          "repo": "<RAPI>",
+          "factory": "lifecycle"
+        },
+        {
+          "name": "web",
+          "repo": "<WEB>",
+          "factory": "tiny"
+        }
+      ]
+    },
+    "herdr": [],
+    "bd": [],
+    "decisions": null,
+    "inbox": []
   }
 }

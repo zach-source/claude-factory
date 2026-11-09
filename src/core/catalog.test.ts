@@ -160,6 +160,35 @@ describe('CATALOG', () => {
     }
     expect(CATALOG_VERSION).toBe(1)
   })
+  test('runs.start and factory.halt keep their metadata (values of 65af6c4d)', () => {
+    const meta = (n: string) => {
+      const { run: _run, ...rest } = CATALOG.find(o => o.name === n)!
+      return rest
+    }
+    const common = { output: 'text', rights: 'owner', mutates: true, long: false, since: 1 }
+    expect(meta('runs.start')).toEqual({
+      name: 'runs.start',
+      summary: 'Start a run of a factory on a rig.',
+      inputs: [
+        { name: 'factory', kind: 'id', required: true, help: 'the factory name' },
+        { name: 'rig', kind: 'id', required: true, help: 'the rig name' },
+        { name: 'goal', kind: 'text', required: true, help: 'the goal of the run' },
+        { name: 'station', kind: 'id', required: false, help: 'the station to start at' },
+        { name: 'owned', kind: 'flag', required: false, help: 'the person owns the run' },
+      ],
+      route: { method: 'POST', path: '/v1/start' },
+      ...common,
+    } as never)
+    expect(meta('factory.halt')).toEqual({
+      name: 'factory.halt',
+      summary: 'Stop or resume the factory.',
+      inputs: [
+        { name: 'mode', kind: 'enum', required: true, help: 'stop or resume', values: ['stop', 'resume'] },
+      ],
+      route: { method: 'POST', path: '/v1/halt' },
+      ...common,
+    } as never)
+  })
   test('names and routes', () => {
     expect(CATALOG.map(o => `${o.name} ${o.route.method} ${o.route.path}`)).toEqual([
       'backlog.show GET /v1/backlog',

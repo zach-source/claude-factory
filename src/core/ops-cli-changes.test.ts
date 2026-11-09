@@ -20,6 +20,9 @@ const OUT = join(dir, 'out')
 const REPO = join(dir, 'repo')
 const WT = join(dir, 'wt')
 const RAPI = join(dir, 'r-api')
+const WEB = join(dir, 'web')
+const HBIN = join(dir, 'hbin')
+const CCONF = join(dir, 'claude-config')
 let n = 0
 
 const STRIP = [
@@ -118,6 +121,11 @@ function freshHome(): string {
 }
 
 const calls = () => join(dir, 'calls.log')
+const herdrLog = () => join(dir, 'herdr.log')
+const resetWeb = () => {
+  rmSync(join(dir, 'wt-web'), { recursive: true, force: true })
+  Bun.spawnSync(['git', '-C', WEB, 'worktree', 'prune'])
+}
 
 beforeAll(() => {
   rmSync(dir, { recursive: true, force: true })
@@ -131,12 +139,47 @@ beforeAll(() => {
       'case "$1 $2" in',
       `"human list") printf '%s' '[{"id":"api-1","title":"t"}]';;`,
       `"ready --json") printf '%s' '[]';;`,
+      `"show api-q") printf '%s' '[{"id":"api-q","title":"t","status":"open"}]';;`,
+      `"show api-own") printf '%s' '[{"id":"api-own","title":"t","status":"open","metadata":{"owner_decisions":"x"}}]';;`,
+      `"show api-disc") printf '%s' '[{"id":"api-disc","title":"t","status":"open","metadata":{"discovered_from":"other-1"}}]';;`,
       `*) echo "$*" >> ${calls()}; echo answered;;`,
       'esac',
     ].join('\n'),
   )
   for (const f of ['gh', 'bd']) chmodSync(join(bin, f), 0o755)
   Bun.spawnSync(['git', 'init', '-q', RAPI])
+  mkdirSync(join(WEB, '.factory'), { recursive: true })
+  writeFileSync(
+    join(WEB, '.factory', 'tiny.json'),
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: {
+        work: { prompt: 'Do it.', next: { ok: 'review' } },
+        review: { prompt: 'Review it.', next: { ok: 'done' } },
+      },
+    }),
+  )
+  const git = (...a: string[]) => Bun.spawnSync(['git', '-C', WEB, ...a])
+  git('init', '-q')
+  git('add', '-A')
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init')
+  mkdirSync(HBIN, { recursive: true })
+  writeFileSync(
+    join(HBIN, 'herdr'),
+    [
+      '#!/bin/sh',
+      `echo "$*" >> ${herdrLog()}`,
+      'case "$1 $2" in',
+      `  "worktree create") git -C "$4" worktree add -q -b "$6" ${join(dir, 'wt-web')} "$8"; printf '%s' '{"result":{"workspace":{"workspace_id":"ws1"},"worktree":{"path":"${join(dir, 'wt-web')}"}}}';;`,
+      '  "worktree remove") exit 0;;',
+      '  *) exit 1;;',
+      'esac',
+    ].join('\n'),
+  )
+  chmodSync(join(HBIN, 'herdr'), 0o755)
+  mkdirSync(CCONF, { recursive: true })
+  writeFileSync(join(CCONF, '.claude.json'), JSON.stringify({ projects: {} }))
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -144,12 +187,21 @@ const norm = (home: string, s: string) =>
   s
     .split(home)
     .join('<HOME>')
+    .split(join(dir, 'wt-web'))
+    .join('<WTWEB>')
     .split(WT)
     .join('<WT>')
     .split(REPO)
     .join('<REPO>')
     .split(RAPI)
     .join('<RAPI>')
+    .split(WEB)
+    .join('<WEB>')
+    .replace(/\btiny-[0-9a-z]+\b/g, '<RUN>')
+    .replace(/\b[0-9a-f]{40}\b/g, '<SHA>')
+    .replace(/ at [0-9a-f]{8}\b/g, ' at <SHA>')
+    .split(ROOT)
+    .join('<ROOT>')
     .replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, '<TIME>')
 
 const inbox = (home: string, id: string): unknown[] => {
@@ -163,9 +215,25 @@ const inbox = (home: string, id: string): unknown[] => {
       return rest
     })
 }
-const state = (home: string) => {
+type Want = { files?: string[]; herdr?: boolean }
+const fileJson = (p: string): unknown => {
+  if (!existsSync(p)) return null
+  const j = JSON.parse(readFileSync(p, 'utf8'))
+  if (Array.isArray(j)) return j
+  const { at: _at, ...rest } = j
+  return rest
+}
+const state = (home: string, want: Want = {}) => {
   const f = join(home, 'decisions.json')
   return {
+    ...(want.files && {
+      files: JSON.parse(
+        norm(home, JSON.stringify(Object.fromEntries(want.files.map(n => [n, fileJson(join(home, n))])))),
+      ),
+    }),
+    ...(want.herdr && {
+      herdr: existsSync(herdrLog()) ? norm(home, readFileSync(herdrLog(), 'utf8')).trim().split('\n') : [],
+    }),
     bd: existsSync(calls()) ? norm(home, readFileSync(calls(), 'utf8')).trim().split('\n') : [],
     decisions: existsSync(f) ? Object.keys(JSON.parse(readFileSync(f, 'utf8'))).sort() : null,
     inbox: ['r1', 'r2', 'r3'].flatMap(id =>
@@ -178,7 +246,25 @@ type Row = {
   id: string
   calls: { argv: string[]; env?: Record<string, string>; cwd?: string }[]
   seed?: (home: string) => void
+  files?: string[]
+  herdr?: boolean
 }
+const seedLease = (home: string) =>
+  writeFileSync(join(home, 'manager.lease'), JSON.stringify({ holder: 'x', kind: 'manager', at: 1 }))
+const seedWeb = (home: string) => {
+  rmSync(join(home, 'runs'), { recursive: true, force: true })
+  writeFileSync(join(home, 'labels.stamp'), '')
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([
+      { name: 'api', repo: RAPI, factory: 'lifecycle' },
+      { name: 'web', repo: WEB, factory: 'tiny' },
+    ]),
+  )
+}
+const SENV = () => ({ FACTORY_HERDR: join(HBIN, 'herdr'), CLAUDE_CONFIG_DIR: CCONF })
+const PAT = { FACTORY_PATROL: '1' }
+const rs = (...a: string[]) => ({ argv: ['rig', 'set', ...a] })
 const seedKeys = (home: string) =>
   writeFileSync(
     join(home, 'decisions.json'),
@@ -220,10 +306,54 @@ const ROWS: Row[] = [
   { id: 'A1', calls: [c('abort', 'r1')] },
   { id: 'A2', calls: [c('abort', 'nope')] },
   { id: 'A3', calls: [{ argv: ['abort', 'r1'], env: { BEADS_ACTOR: 'factory/x/y' } }] },
+  ...(() => {
+    const halt = { files: ['halt.json', 'resume.json'] }
+    const lease = { files: ['manager.lease'], seed: seedLease }
+    const rig = { files: ['rigs.json'] }
+    const st = { ...rig, seed: seedWeb, herdr: true }
+    return [
+      { id: 'H1', ...halt, calls: [c('stop')] },
+      { id: 'H2', ...halt, calls: [c('stop'), c('stop')] },
+      { id: 'H3', ...halt, calls: [c('stop'), c('resume')] },
+      { id: 'H4', ...halt, calls: [c('resume')] },
+      { id: 'H5', ...halt, calls: [{ argv: ['stop'], env: PAT }] },
+      { id: 'H6', ...halt, calls: [c('stop'), { argv: ['resume'], env: PAT }] },
+      { id: 'L1', ...lease, calls: [c('lease', 'release')] },
+      { id: 'L2', ...lease, calls: [{ argv: ['lease', 'release'], env: PAT }] },
+      { id: 'L3', ...lease, calls: [c('lease', 'release', 'x')] },
+      { id: 'RS1', ...rig, calls: [rs('api', '--max', '3')] },
+      { id: 'RS2', ...rig, calls: [rs('api', '--goal', 'finish it')] },
+      { id: 'RS3', ...rig, calls: [rs('api', '--max', '0')] },
+      { id: 'RS4', ...rig, calls: [rs('nope', '--max', '3')] },
+      { id: 'RS5', ...rig, calls: [rs('api')] },
+      { id: 'RS6', ...rig, calls: [rs('api', '--slo', 'x')] },
+      { id: 'RS7', ...rig, calls: [{ ...rs('api', '--max', '3'), env: PAT }] },
+      { id: 'RS8', ...rig, calls: [rs('api', '--param', 'nope=1')] },
+      { id: 'RS9', ...rig, calls: [rs('api', '--runner', 'ax')] },
+      { id: 'RS10', ...rig, calls: [rs('api', '--runner', 'nope')] },
+      { id: 'QU1', calls: [c('queue', 'api', 'api-q')] },
+      { id: 'QU2', calls: [c('queue', 'api', 'api-q', 'review')] },
+      { id: 'QU3', calls: [c('queue', 'api')] },
+      { id: 'QU4', calls: [{ argv: ['queue', 'api', 'api-1'], env: PAT }] },
+      { id: 'QU5', calls: [c('queue', 'nope', 'api-1')] },
+      { id: 'QU6', calls: [{ argv: ['queue', 'api', 'api-disc'], env: PAT }] },
+      { id: 'S1', ...st, calls: [{ argv: ['start', 'tiny', 'web', 'do it'], env: SENV() }] },
+      { id: 'S2', ...st, calls: [{ argv: ['start'], env: SENV() }] },
+      { id: 'S3', ...st, calls: [{ argv: ['start', 'tiny', 'nope', 'g'], env: SENV() }] },
+      { id: 'S4', ...st, calls: [{ argv: ['start', 'tiny@nowhere', 'web', 'g'], env: SENV() }] },
+      {
+        id: 'S5',
+        ...st,
+        calls: [{ argv: ['start', 'lifecycle', 'api', 'api-own', '--owned'], env: { ...SENV(), ...PAT } }],
+      },
+    ] as Row[]
+  })(),
 ]
 
 const runRow = (row: Row) => {
   rmSync(calls(), { force: true })
+  rmSync(herdrLog(), { force: true })
+  resetWeb()
   const home = freshHome()
   writeFileSync(join(home, 'text', 'm.md'), 'hi from file\n')
   row.seed?.(home)
@@ -236,7 +366,7 @@ const runRow = (row: Row) => {
     })
     return { code: p.exitCode, out: norm(home, p.stdout.toString()), err: norm(home, p.stderr.toString()) }
   })
-  return { results, ...state(home) }
+  return { results, ...state(home, row) }
 }
 
 const golden: Record<string, unknown> = existsSync(GOLDEN) ? JSON.parse(readFileSync(GOLDEN, 'utf8')) : {}
