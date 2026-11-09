@@ -110,7 +110,11 @@ describe('factory token', () => {
 
   test('workers and patrols cannot run factory token', () => {
     const { run, read } = setup()
-    for (const env of [{ FACTORY_FROM: 'x' }, { FACTORY_RUN: 'r1' }, { FACTORY_PATROL: '1' }])
+    for (const env of <Record<string, string>[]>[
+      { FACTORY_FROM: 'x' },
+      { FACTORY_RUN: 'r1' },
+      { FACTORY_PATROL: '1' },
+    ])
       for (const args of [['list'], ['use', '2']]) {
         const r = run(['token', ...args], env)
         expect(r.code).toBe(1)
