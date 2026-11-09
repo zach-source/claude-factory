@@ -18,8 +18,8 @@ The repo does not state a version for most tools. The table shows what the repo 
 
 | Tool | Needed | What the repo states |
 | --- | --- | --- |
-| Claude Code (`claude`) | Yes | `bin/factory-up` stops if `claude` is not on `PATH`. No version is stated. |
-| `bun` | Yes | `bin/factory-up` stops if `bun` is not on `PATH`. No version is stated. |
+| Claude Code (`claude`) | Yes | `factory up` stops if `claude` is not on `PATH`. No version is stated. |
+| `bun` | Yes | `factory up` stops if `bun` is not on `PATH`. No version is stated. |
 | herdr | Yes | The workers use herdr panes. Start the manager in a herdr pane. No version is stated. |
 | `bd` (beads) | Yes | The first `bd` on `PATH` must match the repo's beads schema. The multi-factory spec reads bd 1.3.0. |
 | `gh` | Yes | The factory reads pull requests with `gh`. Workers open and watch pull requests with `gh`. |
@@ -54,10 +54,10 @@ The `factory home` command prints the factory that the commands work on. The fac
 To do the install and start the manager in one step, run this command in a herdr pane:
 
 ```sh
-bin/factory-up [factory-dir] [--resume <session>]
+bin/factory up [factory-dir] [manager args...]
 ```
 
-The command installs the dependencies, makes the factory if it is new, and starts the manager. The default factory directory is `$FACTORY_HOME`. If `FACTORY_HOME` is not set, it is `~/factory`.
+It stops if `bun` or `claude` is not on `PATH`. It runs `bun install` when `node_modules` is missing or older than `bun.lock`. It makes the factory if the dir has no `rigs.json`. It warns outside herdr, then starts the manager. The dir is the first argument when it does not start with `-`, else `$FACTORY_HOME`, else `~/factory`. The other arguments go to the manager. Example: `bin/factory up ~/my-factory --resume <session>`.
 
 ## 4. Add your first rig
 
@@ -247,9 +247,9 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 
 The console also has a `stop` button and a `resume` button.
 
-A worker has `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME` or a `factory/` `BEADS_ACTOR`. A worker can run only these verbs: `report`, `mail`, `memory`, `status`, `show`, `check`, `home`, `ship`, `advisories`, `pg-scratch`, `mutate`, `ci`, `worker`, `factory rig` and `factory rig list`. Usage (`help`, `--help`, `-h`) is also open. The CLI refuses every other verb, also a new verb. The worker hook denies the control verbs. A worker mails the manager instead.
+A worker has `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME` or a `factory/` `BEADS_ACTOR`. A worker can run only these verbs: `report`, `mail`, `memory`, `status`, `show`, `check`, `home`, `ship`, `advisories`, `pg-scratch`, `mutate`, `ci`, `worker`, `file-elsewhere`, `factory rig`, `factory rig list` and `factory rig show`. Usage (`help`, `--help`, `-h`) is also open. The CLI refuses every other verb, also a new verb. The worker hook denies the control verbs. A worker mails the manager instead.
 
-Only the person and the manager run `factory stop`, `resume`, `say`, `start`, `fork`, `goto`, `retry`, `abort`, `rm`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue`, `poke`, `attach`, `manager`, `migrate-to-ax`, `rig add` and `rig rm`. A patrol (`FACTORY_PATROL`) can run `goto`, `retry`, `abort`, `rm`, `start`, `fork`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue` and `poke`. It cannot run `stop`, `resume`, `say`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `attach`, `manager`, `migrate-to-ax`, `rig add` or `rig rm`.
+Only the person and the manager run `factory stop`, `resume`, `say`, `start`, `fork`, `goto`, `retry`, `abort`, `rm`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue`, `poke`, `attach`, `manager`, `migrate-to-ax`, `up`, `token`, `image`, `rig add`, `rig rm`, `rig set`, `rig env`, `rig egress`, `rig beads-remote`, `rig history` and `rig undo`. A patrol (`FACTORY_PATROL`) can run `goto`, `retry`, `abort`, `rm`, `start`, `fork`, `beads`, `watch`, `sync`, `dream`, `devenv`, `linear`, `queue` and `poke`. It cannot run `stop`, `resume`, `say`, `tick`, `loop`, `self-update`, `gc`, `sweep`, `attach`, `manager`, `migrate-to-ax`, `up`, `token`, `image`, `rig add`, `rig rm`, `rig set`, `rig env`, `rig egress`, `rig beads-remote`, `rig history` or `rig undo`. A patrol can run `settings set` and `settings unset`; a worker cannot.
 
 ### Attach to the AX manager
 
@@ -266,7 +266,7 @@ All files are under the factory directory (`FACTORY_HOME`). The factory has no l
 
 | Path | Content |
 | --- | --- |
-| `rigs.json` | The rigs. `factory rig set`, `rig env` and `rig egress` change it. |
+| `rigs.json` | The rigs. `factory rig add`, `rig rm`, `rig set`, `rig env`, `rig egress` and `rig beads-remote` change it. `factory rig history` lists the last 20 snapshots, and `factory rig undo [n]` restores one. |
 | `runs/<run>/state.json` | The saved state of a run. A restart continues from it. |
 | `runs/<run>/inbox.jsonl` | The reports that wait for the next tick. |
 | `halt.json` | The state of `factory stop`: stopping or paused. |

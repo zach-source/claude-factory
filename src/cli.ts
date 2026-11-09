@@ -8176,7 +8176,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
  * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, its
  * due sweeps start one pass each under `factory sweep` (claude-factory-8pc.16), and `maxRuns` caps
  * its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's rigs.json is written by
- * `factory rig add`. Use `factory rig set`, `rig env` and `rig egress` to change it.
+ * `factory rig add`, `rig rm`, `rig set`, `rig env`, `rig egress`, `rig beads-remote` and `rig undo`.
  */
 export type Rig = {
   name: string
@@ -12193,7 +12193,7 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
-  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
+  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins; devenv.builder, devenv.token and devenv.push go to HOME/devenv.json
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   token [list] | use <n> | best        Claude token slots: the live slot and each slot's 7d and 5h use; make slot n live, or the slot with the lowest 7d use
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
