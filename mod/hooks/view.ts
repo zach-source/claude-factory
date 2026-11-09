@@ -1373,7 +1373,7 @@ const canon = (s: string) =>
   )
 /** a non-literal verb word after the caller word */
 const VERB_HIDDEN = new RegExp(
-  String.raw`(?:(?<![\w.-])factory|${CLI})(?:\s+[^\s$\x60*?[{]*[$\x60*?[{]|[^;&|\n]*(?:[\w-]\{[^\s}]*,|,[^\s{]*\}[\w-]))`,
+  String.raw`(?:(?<![\w.-])factory|${CLI})(?:\s+[^\s$\x60*?[{]*[$\x60*?[{]|[^;&|\n]{0,200}(?:[\w-]\{[^\s}]{0,100},|,[^\s{]{0,100}\}[\w-]))`,
 )
 
 /** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
