@@ -62,6 +62,12 @@ test('AC7: a backup step logs its result, never throws, and skips while the tick
   expect(lines.at(-1)).toBe('backup failed: disk full')
   await backupStep(cfg, true, free, log, () => ({ sha: 'abc', changed: true }))
   expect(lines.at(-1)).toBe('backup abc')
+  await backupStep(cfg, true, free, log, () => ({
+    sha: 'b',
+    changed: true,
+    redacted: ['github-pat home/m.md'],
+  }))
+  expect(lines.slice(-2)).toEqual(['backup b', 'backup redacted github-pat home/m.md'])
   await backupStep(cfg, true, free, log, () => ({ skipped: 'lock' }), 3, nap)
   expect(lines.at(-1)).toBe('backup skipped: a tick held the lock at 3 tries')
   await backupStep(cfg, false, free, log, () => ({ error: 'backup refused: home is not ready' }))
