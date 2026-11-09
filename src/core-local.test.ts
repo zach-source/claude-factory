@@ -462,7 +462,7 @@ describe('lease lost and busy', () => {
   })
   test('a busy renew (unknown or own holder) is skipped', async () => {
     let mode = 0
-    const { core, n } = make({
+    const { core, n, home } = make({
       lease: () =>
         mode === 0
           ? undefined
@@ -475,6 +475,12 @@ describe('lease lost and busy', () => {
     mode = 2
     await Bun.sleep(350)
     expect(n.tick).toBeGreaterThan(0)
+    let settled = false
+    void core.done.then(() => (settled = true))
+    await Bun.sleep(10)
+    expect(settled).toBe(false)
+    const st = await authed(core, home, '/v1/core')
+    expect((await st.json()).state).toBe('ticking')
     await core.stop()
     open.pop()
   })

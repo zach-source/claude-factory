@@ -32,8 +32,23 @@ const cleanEnv = (home: string, extra: Record<string, string> = {}) => {
 }
 
 const spawned: { kill: () => void; pid: number }[] = []
-afterEach(() => {
-  for (const p of spawned.splice(0))
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+afterEach(async () => {
+  const ps = spawned.splice(0)
+  for (const p of ps)
+    try {
+      process.kill(p.pid, 'SIGTERM')
+    } catch {}
+  const t0 = Date.now()
+  while (ps.some(p => alive(p.pid)) && Date.now() - t0 < 3000) await Bun.sleep(50)
+  for (const p of ps)
     try {
       process.kill(p.pid, 'SIGKILL')
     } catch {}
@@ -55,8 +70,17 @@ const runAsync = async (home: string, args: string[]) => {
   return { code, out, err }
 }
 const start = (home: string, args: string[] = ['--port', '0'], extra: Record<string, string> = {}) => {
+  const dir = tmp()
+  const { herdr, claude } = fakeHerdr(dir)
   const p = Bun.spawn([CLI, 'core', ...args], {
-    env: cleanEnv(home, { FACTORY_CORE_TICK_MS: '200', ...extra }),
+    env: cleanEnv(home, {
+      FACTORY_CORE_TICK_MS: '200',
+      FACTORY_HERDR: herdr,
+      FACTORY_CLAUDE: claude,
+      FACTORY_CODEX: claude,
+      CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+      ...extra,
+    }),
     stdout: 'pipe',
     stderr: 'pipe',
   })
