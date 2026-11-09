@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CATALOG, type Ctx, type Input, type Port } from './catalog'
+import { CATALOG, OpError, type Ctx, type Input, type Port } from './catalog'
 
 type Call = [string, ...unknown[]]
 const fake = () => {
@@ -45,6 +45,8 @@ describe('moved reads run in process (AC1)', () => {
     ['gates.brief', { id: 'r1' }, [['gateBriefFacts', 'r1']]],
     ['lease.show', {}, []],
     ['rigs.list', {}, [['rigList']]],
+    ['runners.show', {}, []],
+    ['mail.list', {}, []],
     ['metrics.show', {}, [['records'], ['refreshMerges', []]]],
     [
       'metrics.show',
@@ -105,6 +107,71 @@ describe('a failure gives the CLI line (inProc)', () => {
       out: '',
       err: 'factory: usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]\n',
     })
+  })
+})
+
+describe('runners.show and mail.list read the board', () => {
+  const withBoard = (b: unknown): Ctx => ({ ...fake().ctx(), board: () => b })
+  for (const name of ['runners.show', 'mail.list'])
+    for (const b of [null, undefined])
+      test(`${name} with board ${b} throws 503 no tick yet`, async () => {
+        const e = await run(name, withBoard(b), {}).catch(x => x)
+        expect(e).toBeInstanceOf(OpError)
+        expect(e.status).toBe(503)
+        expect(e.message).toBe('no tick yet')
+      })
+  test('runners.show of an empty board has the herdr group', async () => {
+    expect((await run('runners.show', withBoard({}), {})).out).toBe(
+      '[{"name":"herdr","busy":0,"rigs":[],"runs":[]}]\n',
+    )
+  })
+  test('runners.show projects the rigs and the runs', async () => {
+    const rigs = [
+      { name: 'a', repo: '/x', factory: 'lifecycle' },
+      {
+        name: 'b',
+        runner: 'ax',
+        sandboxClass: 'kata',
+        maxRuns: 0,
+        env: { K: 'zqsecret' },
+        goal: 'g',
+        repo: '/y',
+        factory: 'lifecycle',
+      },
+    ]
+    const runs = [
+      { id: 'r1', rig: 'a', node: 'verify', sub: 'working', model: 'm1', pane: 'p1' },
+      {
+        id: 'r2',
+        rig: 'b',
+        node: 'g',
+        sub: 'working',
+        gate: { question: 'q', outcomes: ['approve'] },
+        pane: null,
+      },
+      { id: 'r3', rig: 'a', node: 'done' },
+      { id: 'r4', error: 'boom' },
+      { id: 'r5', node: 'plan', sub: 'waiting', pane: 'ax://t1' },
+    ]
+    const r = await run('runners.show', withBoard({ rigs, runs }), {})
+    expect(r.out).toBe(
+      '[{"name":"herdr","busy":1,"rigs":[{"name":"a"}],"runs":[{"id":"r1","rig":"a","node":"verify","sub":"working","model":"m1","pane":"p1"}]},{"name":"ax","busy":0,"rigs":[{"name":"b","runner":"ax","sandboxClass":"kata","maxRuns":0}],"runs":[{"id":"r2","rig":"b","node":"g","sub":"working","pane":null},{"id":"r5","node":"plan","sub":"waiting","pane":"ax://t1"}]}]\n',
+    )
+    for (const w of ['zqsecret', 'goal', '/y']) expect(r.out).not.toContain(w)
+  })
+  test('runners.show counts rigs or runs that are not arrays as empty', async () => {
+    expect((await run('runners.show', withBoard({ rigs: 'x', runs: 'x' }), {})).out).toBe(
+      '[{"name":"herdr","busy":0,"rigs":[],"runs":[]}]\n',
+    )
+  })
+  test('mail.list gives the manager mail as one JSON line', async () => {
+    const m = [
+      { from: 'a', text: 'x' },
+      { from: 'b', text: 'y' },
+    ]
+    expect((await run('mail.list', withBoard({ manager: m }), {})).out).toBe(JSON.stringify(m) + '\n')
+    expect((await run('mail.list', withBoard({}), {})).out).toBe('[]\n')
+    expect((await run('mail.list', withBoard({ manager: 'x' }), {})).out).toBe('[]\n')
   })
 })
 

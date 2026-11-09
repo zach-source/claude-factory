@@ -4,10 +4,12 @@ import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
 import * as gatesOps from './ops/gates'
 import * as leaseOps from './ops/lease'
+import * as mailOps from './ops/mail'
 import * as metricsOps from './ops/metrics'
 import * as planOps from './ops/plan'
 import * as prsOps from './ops/prs'
 import * as rigsOps from './ops/rigs'
+import * as runnersOps from './ops/runners'
 import * as runsOps from './ops/runs'
 
 export type Kind = 'id' | 'text' | 'note' | 'path' | 'flag' | 'enum'
@@ -217,7 +219,7 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** the 20 operations: the routes of the client port, the board, the catalog and the parity fixture */
+/** the 22 operations: the routes of the client port, the board, the catalog and the parity fixture */
 export const CATALOG: Op[] = makeCatalog([
   local(
     {
@@ -355,6 +357,26 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     (c, i) => rigsOps.list(c, i),
+  ),
+  local(
+    {
+      name: 'runners.show',
+      summary: 'Show the live runs and rigs on each runner.',
+      method: 'GET',
+      path: '/v1/runners',
+    },
+    'json',
+    (c, i) => runnersOps.show(c, i),
+  ),
+  local(
+    {
+      name: 'mail.list',
+      summary: 'List the manager mail of the last tick.',
+      method: 'GET',
+      path: '/v1/mail',
+    },
+    'json',
+    (c, i) => mailOps.list(c, i),
   ),
   local(
     { name: 'lease.show', summary: 'Show the manager lease.', method: 'GET', path: '/v1/lease' },
