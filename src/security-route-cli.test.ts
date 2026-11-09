@@ -127,6 +127,7 @@ test('a non-ASCII path stays whole (AC5)', () => {
 
 test('a fetch that fails gives a required route with paths unknown (AC5)', () => {
   setup('src/metrics.ts')
+  git(clone, 'fetch', '-q', 'origin', '+refs/heads/b:refs/remotes/origin/b') // a stale ref must not pass for a fresh diff
   git(clone, 'remote', 'set-url', 'origin', join(dir, 'gone.git'))
   reviewRun(def(true), 'Security-sensitive: no')
   tick()
