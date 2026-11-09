@@ -398,3 +398,42 @@ describe('events over mTLS', () => {
     expect(c).toBe('id: 4\ndata: null\n\n')
   })
 })
+
+describe('events over mTLS: barriers', () => {
+  test('headers come before any change, a live change arrives once, and server stop ends the stream', async () => {
+    let cur: unknown = { n: 0 }
+    const t = start(() => cur)
+    const who = pair(A)
+    const p = Bun.spawn(
+      [
+        ...['curl', '-sN', '-i', '--max-time', '10', '--cacert', join(A, 'ca.crt')],
+        ...['--cert', who.cert, '--key', who.key],
+        ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`],
+        `${t.url}/v1/events?after=0`,
+      ],
+      { stdout: 'pipe', stderr: 'ignore' },
+    )
+    const rd = p.stdout.getReader()
+    const dec = new TextDecoder()
+    let text = ''
+    const until = async (re: RegExp) => {
+      while (!re.test(text)) {
+        const { value, done } = await rd.read()
+        if (done) break
+        text += dec.decode(value)
+      }
+    }
+    // the first tick publishes the first board as id 1; the board stays equal after that
+    await until(/id: 1\ndata: \{"n":0\}\n\n/)
+    expect(text.toLowerCase()).toContain('content-type: text/event-stream')
+    expect(text).not.toContain('id: 2')
+    cur = { n: 1 }
+    await until(/id: 2\ndata: \{"n":1\}\n\n/)
+    await Bun.sleep(200)
+    expect(text.match(/id: 2\n/g)?.length).toBe(1)
+    expect(text).not.toContain('id: 3')
+    await t.s.stop()
+    const end = await Promise.race([p.exited, Bun.sleep(5000).then(() => 'open')])
+    expect(end).not.toBe('open')
+  })
+})
