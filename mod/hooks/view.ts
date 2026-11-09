@@ -1272,11 +1272,11 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const baseTexts = unreadable
     ? [rawCommand.replace(/\\\n/g, '\n'), rawCommand.replace(/\\\n/g, '')]
     : [command]
-  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t)) || cliCall(strip(t)))
+  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t)) || cliCall(strip(mask(t))))
     ? substitutionIn(rawCommand)
     : -1
   // claude-factory-6tl1: the first word after the caller must be a literal word
-  const verbHidden = baseTexts.some(t => VERB_HIDDEN.test(strip(t)))
+  const verbHidden = baseTexts.some(t => VERB_HIDDEN.test(t))
   let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
@@ -1369,6 +1369,25 @@ const strip = (s: string) => s.replace(/[\\'"]/g, '')
 const CLI = String.raw`(?:^|[\s;&|(])(?:[^\s;&|()]*/)?(?:bun|node|run)\s+(?:\S*/)?cli(?:\.\w+)?`
 /** the factory CLI as a command word */
 const CALLER = new RegExp(String.raw`(?<![\w.-])factory(?![\w./-])|${CLI}(?=[\s;&|),}]|$)`)
+/** t with each quoted or escaped ; & | ( ) made a plain "_", same length: strip(mask(t)) and strip(t) share offsets, and a quoted separator does not end a command. One linear scan. */
+function mask(t: string): string {
+  let q = ''
+  let out = ''
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i]
+    if (c === '\\' && q !== "'" && i + 1 < t.length) {
+      out += c + (/[;&|()]/.test(t[i + 1]) ? '_' : t[i + 1])
+      i++
+    } else if (q) {
+      if (c === q) q = ''
+      out += /[;&|()]/.test(c) ? '_' : c
+    } else {
+      if (c === '"' || c === "'") q = c
+      out += c
+    }
+  }
+  return out
+}
 /** a runner word (bun, node, run) and a later cli word in one simple command, with any words between (`bun --smol src/cli.ts`). One linear word scan. */
 function cliCall(t: string): { start: number; end: number } | null {
   let runner = -1
@@ -1397,13 +1416,14 @@ const GLUED_BRACE = /[\w-]\{+[^\s{},]*[,}]|[,{][^\s{},]*\}+[\w-]/
 /** a non-literal verb word after the caller word, or a brace word anywhere after it (no bound, no split on `;&|`: the strip copy lost the quotes) */
 const VERB_HIDDEN = {
   test: (t: string) => {
-    const c = cliCall(t)
+    const s = strip(t)
+    const c = cliCall(strip(mask(t)))
     if (c) {
       VERB_AFTER.lastIndex = c.end
-      if (VERB_AFTER.test(t) || GLUED_BRACE.test(t.slice(c.start))) return true
+      if (VERB_AFTER.test(s) || GLUED_BRACE.test(s.slice(c.start))) return true
     }
-    const i = t.search(CALLER)
-    return VERB_FIRST.test(t) || (i >= 0 && GLUED_BRACE.test(t.slice(i)))
+    const i = s.search(CALLER)
+    return VERB_FIRST.test(s) || (i >= 0 && GLUED_BRACE.test(s.slice(i)))
   },
 }
 /** Return match ends. A tail cut prevents repeated scans of a suffix with no tail. */

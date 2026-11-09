@@ -263,6 +263,20 @@ test('a non-literal verb word after a literal caller is denied with no dialog', 
     'bun --smol src/cli.ts start lifecycle acme w-2 --o{w,w}ned',
     'bun --smol src/cli.ts decisions an{s,s}wer r1 x',
     'bun --smol src/cli.ts wiki in{i,i}t',
+    'V=decide; bun --define \'a:"b;c"\' src/cli.ts $V r1 ship',
+    "V=decide; bun --cwd 'a;b' /repo/src/cli.ts $V r1 ship",
+    "bun --cwd 'a;b' /repo/src/cli.ts start lifecycle acme w-2 --o{w,w}ned",
+    "bun --cwd 'a;b' src/cli.ts wiki in{i,i}t",
+    "bun --cwd 'a|b' src/cli.ts dec* r1 ship",
+    "bun --cwd 'a(b' src/cli.ts dec* r1 ship",
+    'bun --cwd a\\;b src/cli.ts dec* r1 ship',
+    'bun -i src/cli.ts dec* r1 ship',
+    'bun --bun /x/src/cli.ts dec* r1 ship',
+    'bun --config=x.toml src/cli.ts dec* r1 ship',
+    'bun --cwd /x src/cli.ts dec* r1 ship',
+    'bun run --smol src/cli.ts dec* r1 ship',
+    'bun src/cli.ts start lifecycle acme w-2 --own{e..e}d',
+    'bun src/cli.ts ima* x',
   ]
   for (const command of rows) {
     const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
@@ -281,6 +295,7 @@ test(
       `${F.replace('factory', "fact''ory")} mail r1 plan "$(id)"`,
       'bun src/cli.ts mail r1 plan "$(id)"',
       'bun --smol src/cli.ts mail r1 plan "$(id)"',
+      'bun --cwd \'a;b\' /repo/src/cli.ts mail r1 plan "$(id)"',
       '/usr/bin/bun src/cli.ts mail r1 plan "$(id)"',
     ]) {
       const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
@@ -368,6 +383,8 @@ test('gatedCommand runs in linear time on hostile text', SLOW, () => {
     '/repo/bin/factory ' + ',a}'.repeat(60000),
     '/repo/bin/factory ' + 'a{b '.repeat(50000),
     '/repo/bin/factory ' + ';{a,b}'.repeat(30000),
+    'bun --x src/cli.ts '.repeat(10000),
+    "bun --cwd 'a;b' ".repeat(20000) + 'src/cli.ts dec*',
     '/repo/bin/factory ' + '{,'.repeat(100000),
     '/repo/bin/factory start '.repeat(4000) + 'a{b,c}',
   ]
