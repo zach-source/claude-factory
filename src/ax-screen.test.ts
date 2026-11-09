@@ -12,11 +12,15 @@ writeFileSync(
   fake,
   `#!/bin/sh
 echo "$*" >> ${calls}
+[ -f ${dir}/crash ] && kill -9 $$
 [ -f ${dir}/fail ] && { echo 'secret-token-zq' >&2; exit 1; }
 cat ${dir}/ssh
 `,
 )
 chmodSync(fake, 0o755)
+const noexec = join(dir, 'noexec-ax')
+writeFileSync(noexec, '#!/bin/sh\n')
+chmodSync(noexec, 0o644)
 const saved = { ...process.env }
 const log = () => readFileSync(calls, 'utf8').trim().split('\n')
 beforeEach(() => {
@@ -25,6 +29,7 @@ beforeEach(() => {
   delete process.env.FACTORY_AX_CAPABILITIES
   rmSync(calls, { force: true })
   rmSync(join(dir, 'fail'), { force: true })
+  rmSync(join(dir, 'crash'), { force: true })
   writeFileSync(join(dir, 'ssh'), 'the screen')
 })
 afterAll(() => {
@@ -71,7 +76,14 @@ test('a failed ssh gives a reason without the remote stderr; an overflow gives a
   expect(() => ax.screen('f-run-1')).toThrow('too large')
 })
 
-test('a missing ax executable gives a reason', () => {
+test('a missing or not executable ax gives a process failure reason', () => {
   process.env.FACTORY_AX = join(dir, 'no-such-ax')
-  expect(() => ax.screen('f-run-1')).toThrow('could not be read')
+  expect(() => ax.screen('f-run-1')).toThrow('worker screen process failed')
+  process.env.FACTORY_AX = noexec
+  expect(() => ax.screen('f-run-1')).toThrow('worker screen process failed')
+})
+
+test('an ax that dies on a signal gives a process failure reason', () => {
+  writeFileSync(join(dir, 'crash'), '')
+  expect(() => ax.screen('f-run-1')).toThrow('worker screen process failed')
 })

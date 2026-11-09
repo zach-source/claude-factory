@@ -18,6 +18,7 @@ const REASON = {
   unavailable: 'worker screen could not be read',
   tooLarge: 'worker screen is too large',
   timeout: 'worker screen timed out',
+  failed: 'worker screen process failed',
 }
 
 // a fake for both binaries: FAKE_MODE picks what it does
@@ -27,6 +28,8 @@ echo $$ > "$FAKE_PID"
 case "$FAKE_MODE" in
   text) cat "$FAKE_OUT" ;;
   fail) echo secret-token-zq >&2; echo secret-token-zq; exit 1 ;;
+  crash) echo secret-token-zq >&2; kill -9 $$ ;;
+  gone) echo '{"error":{"code":"pane_not_found","message":"secret-token-zq"}}' >&2; exit 1 ;;
   silent) exec sleep 30 ;;
   stream) while true; do printf x; sleep 0.05; done ;;
   big) head -c 200000 /dev/zero | tr '\\0' a ;;
@@ -228,8 +231,26 @@ test('runs.screen refusal reasons: process failures name a reason, not stderr or
   }
   expect(m!.status).toBe(422)
   const [missing] = await get(['/v1/runs/h1/screen'], { FACTORY_HERDR: join(fakes, 'no-such-herdr') })
-  expect(missing!.status).toBe(422)
-  expect(reason(missing!)).toContain(REASON.unavailable)
+  const [missingAx] = await get(['/v1/runs/a1/screen'], { FACTORY_AX: join(fakes, 'no-such-ax') })
+  for (const g of [missing!, missingAx!]) {
+    expect(g.status).toBe(422)
+    expect(reason(g)).toContain(REASON.failed)
+    expect(g.body).not.toContain('could not be read')
+  }
+  expect(reason(missing!)).not.toBe(reason(h!))
+  expect(reason(missingAx!)).not.toBe(reason(a!))
+  const paths = ['/v1/runs/h1/screen', '/v1/runs/a1/screen']
+  for (const g of await get(paths, { FAKE_MODE: 'crash' })) {
+    expect(g.status).toBe(422)
+    expect(reason(g)).toContain(REASON.failed)
+    expect(g.body).not.toContain('secret-token-zq')
+  }
+  for (const g of await get(paths, { FAKE_MODE: 'gone' })) {
+    expect(g.status).toBe(422)
+    expect(reason(g)).toContain(REASON.unavailable)
+    expect(g.body).not.toContain('secret-token-zq')
+    expect(g.body).not.toContain('pane_not_found')
+  }
 })
 
 test('runs.screen byte cap: the newest 65536 bytes, and an overflow of either buffer fails', async () => {
