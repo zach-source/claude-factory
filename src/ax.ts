@@ -231,7 +231,7 @@ export function unavailable(): string | undefined {
   try {
     let raw: string
     if (BROKER()) {
-      // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
+      // the manager's VM and the server pod have no kube API for this: the broker reads the Deployment's readiness fields
       const r = broker('GET', '/controller')
       // an old broker image has no /controller route: say what the broker answered
       if (!r.ok)
@@ -318,11 +318,12 @@ function must(args: string[], stdin?: string) {
 }
 
 /**
- * the policy broker's base URL (src/broker.ts), set inside the AX manager's VM, which cannot reach ate-api:
- * policies and the gateway CA then go to it over HTTP, not through kubectl. Unset, kubectl as before
+ * the policy broker's base URL (src/broker.ts). The AX manager's VM sets it, because the VM cannot reach ate-api.
+ * The factory server pod sets it (deploy/server.yaml), because the pod holds no ate-api token. Policies, the
+ * controller readiness and the gateway CA then go to the broker over HTTP, not through kubectl. Unset, kubectl as before
  */
 const BROKER = () => process.env.FACTORY_POLICY_BROKER?.replace(/\/+$/, '')
-// ponytail: curl, since callers are synchronous; the manager image has it. The ceiling is one try, 30 s
+// ponytail: curl, since callers are synchronous; the manager and server images have it. The ceiling is one try, 30 s
 const CURL = () => process.env.FACTORY_CURL ?? 'curl'
 function broker(method: string, path: string, body?: string) {
   const p = Bun.spawnSync(
