@@ -97,6 +97,26 @@ describe('loadedTexts and the home guard', () => {
     expect(run(cmd, d)).toBe(LOADED_REASON)
   })
 
+  // claude-factory-qn8a.37.11: the shell or git expands ~ and a backtick, so the value is not a plain dir
+  test.each([
+    `git -c core.hooksPath=${String.fromCharCode(126)}/hk commit -m x`,
+    'git -c core.hooksPath=`echo hk` commit -m x',
+    `git -c core.hooksPath=${String.fromCharCode(36)}H commit -m x`,
+  ])(
+    'fails closed on an expanded hooks dir word: %s',
+    cmd => {
+      const d = repo()
+      put(d, 'hk/pre-commit', 'exit 0\n')
+      expect(run(cmd, d)).toBe(LOADED_REASON)
+    },
+  )
+
+  // claude-factory-qn8a.37.12: only a word after a git word counts
+  test('allows grep -c core.hooksPath', () => {
+    const d = repo()
+    expect(run('grep -c core.hooksPath README.md', d)).not.toBe(LOADED_REASON)
+  })
+
   // claude-factory-qn8a.37.8: git resolves the -c value against the top dir, not cwd
   test('reads a -c core.hooksPath dir against the top dir from a subdir', () => {
     const d = repo()

@@ -10576,12 +10576,14 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * its relative paths resolve against. It does not depend on the verbs of `command`, so a quote or
  * an alias cannot hide a git verb. It returns undefined when git cannot read the config in time:
  * the home guard then denies (fail closed). An unreadable file gives no text.
- * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir or --prefix
- * names; a package name that selects a program; a bin that nothing names; a path relative to a bin;
- * a script that a hook calls; a file over 64 KiB; a file name outside CONFIG_NAME; a name that an
- * escape other than a quote or a backslash hides (for example $'..' or a variable). A -c or
- * --config-env core.hooksPath word with a quote, a backslash or a space in it fails closed. A
- * core.hooksPath word outside a -c or --config-env word gives no deny (for example grep).
+ * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir, --prefix
+ * or --config names; a package name that selects a program; a bin that nothing names; a path
+ * relative to a bin; a script that a hook calls; a file over 64 KiB; a file name outside
+ * CONFIG_NAME; an env var that sets a program; other escapes than a quote or a backslash (for
+ * example $'..' or a variable). A -c or --config-env core.hooksPath word after a git word fails
+ * closed when it is split, has no value or has a char outside [\w./+@,=-]. A core.hooksPath word
+ * with no git word before it, or outside a -c or --config-env word, is not read. A -c
+ * core.hooksPath word after a git word in a pipe is a false deny.
  * Upgrade path: a real shell parser, or a per-file config lookup for prettier.
  */
 export function loadedTexts(command: string, cwd: string): LoadedText[] | undefined {
@@ -10628,11 +10630,15 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
   const bare = flat.replace(/['"\\]/g, '')
   const pre = '(?:^|\\s)(?:-c\\s*|--config-env[=\\s]+)'
   if (/(?:^|\s)--config-env[=\s]+core\.hookspath/i.test(bare)) return undefined
-  const keyRaw = [...flat.matchAll(new RegExp(pre + '(["\']?)core\\.hookspath(=?)(\\S*)', 'gi'))]
-  const keyBare = [...bare.matchAll(new RegExp(pre + 'core\\.hookspath', 'gi'))]
+  const afterGit = (t: string) => {
+    const i = t.search(/(?:^|[\s;&|(])git(?=\s)/)
+    return i < 0 ? '' : t.slice(i)
+  }
+  const keyRaw = [...afterGit(flat).matchAll(new RegExp(pre + '(["\']?)core\\.hookspath(=?)(\\S*)', 'gi'))]
+  const keyBare = [...afterGit(bare).matchAll(new RegExp(pre + 'core\\.hookspath', 'gi'))]
   if (keyRaw.length !== keyBare.length) return undefined
   for (const m of keyRaw) {
-    if (m[1] || !m[2] || !m[3] || /['"\\]/.test(m[3])) return undefined
+    if (m[1] || !m[2] || !/^[\w./+@,=-]+$/.test(m[3])) return undefined
     hooksDirs.push(resolvePath(top, m[3]))
   }
   for (const hd of hooksDirs)

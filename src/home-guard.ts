@@ -251,11 +251,14 @@ function readerSegment(w: string[]): boolean {
  * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
  * scripts (no w, e, r, -i, -f).
  * ponytail: the loaded texts of homeReason cover git hooks, git config values and the config files
- * in cwd and its parents. A config in a subdir below cwd or in a dir that cd, git -C, --prefix or
- * --config names, a program that a package name selects, a bin that nothing names, a path relative
- * to a bin, a script that a hook calls, a file over 64 KiB, other escapes than a quote or a
- * backslash, config names outside the worker hook list, and an env var that sets a program are
- * not covered. False denies
+ * in cwd and its parents. Not covered: config in a subdir below cwd or in a dir that cd, git -C,
+ * --git-dir, --prefix or --config names; a package name that selects a program; a bin that
+ * nothing names; a path relative to a bin; a script that a hook calls; a file over 64 KiB; a file
+ * name outside CONFIG_NAME; an env var that sets a program; other escapes than a quote or a
+ * backslash. A -c or --config-env core.hooksPath word after a git word fails closed when it is
+ * split, has no value or has a char outside [\w./+@,=-]. A core.hooksPath word with no git word
+ * before it, or outside a -c or --config-env word, is not read. A -c core.hooksPath word after a
+ * git word in a pipe is a false deny. False denies
  * stay for awk, rg, sort, jq, find, xargs, globs, $, subshells, heredocs, line joins and verbs
  * outside the reader and non-runner tables. Upgrade path: a real shell parser, or a per-file
  * config lookup for prettier.
