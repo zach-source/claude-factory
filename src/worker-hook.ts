@@ -10567,26 +10567,32 @@ const LOADED_BUDGET_MS = 1000
 // the config files that a verb loads and runs: npm, bun, prettier and make
 const CONFIG_NAME =
   /^(?:package\.json|bunfig\.toml|\.prettierrc(?:\..+)?|prettier\.config\..+|[Mm]akefile|GNUmakefile)$/
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// claude-factory-qn8a.37.18: caps on the files that loadedTexts reads from a dir list (hooks, config, bins).
+const MAX_LOADED_FILES = 1024
+const MAX_LOADED_CHARS = 4 * 1024 * 1024
 
 /**
  * claude-factory-qn8a.37: the texts that a command can load with no script named: git config
  * values (an alias value has alias: true), the files of the git hooks dir (not *.sample), the
- * CONFIG_NAME files in cwd and each parent, and the node_modules/.bin files that the command or
- * a config text names. Each text has the dir that its relative paths resolve against. It does
- * not depend on the verbs of `command`, so a quote or an alias cannot hide a git verb. It returns
- * undefined when git cannot read the config in time: the home guard then denies (fail closed).
+ * CONFIG_NAME files in cwd and each parent, and every node_modules/.bin file in cwd and each
+ * parent (read from the dir list, with no name match). Each text has the dir that its relative
+ * paths resolve against. It does not read `command`, so a quote or an alias cannot hide a verb
+ * or a bin name. It returns undefined when git cannot read the config in time, or when the
+ * dir-list files pass MAX_LOADED_FILES (1024) or MAX_LOADED_CHARS (4 MiB): the home guard then
+ * denies (fail closed).
  * An unreadable file gives no text. homeReason denies an inline core.hooksPath, include.path or
  * includeIf in the command or in an alias value (OVERRIDE_REASON), so no dir that the command
  * names is read.
  * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir,
- * --prefix or --config names; a package name that selects a program; a bin that nothing names;
- * a path relative to a bin; a script that a hook calls; a file over 64 KiB; a file name outside
- * CONFIG_NAME; an env var that sets a program; a bin name or override key that an expansion
- * builds (${E}, $(..), a backtick, $'\x..', a variable, {a,b}); an override in a config file,
- * a hook file or a named script (only alias values are tested). False denies: any Bash text that
- * holds hookspath, include.path or includeif. after quotes, backslashes and $ are removed (grep,
- * a commit -m, bd text), and a git alias value that names one.
+ * --prefix or --config names; a package name that selects a program; a path relative to a bin;
+ * a script that a bin or hook calls; a file over 64 KiB; a file name outside CONFIG_NAME; an env
+ * var that sets a program; an override key that an expansion builds (${E}, $(..), a backtick,
+ * $'\x..', a variable, {a,b}); an override in a config file, a hook file or a named script (only
+ * alias values are tested). False denies: any Bash text that holds hookspath, include.path or
+ * includeif. after quotes, backslashes and $ are removed (grep, a commit -m, bd text); a git
+ * alias value that names one; a bin file with a delete word and a whole-home word (it denies each
+ * command in that tree); a tree with more than 64 named files (MAX_LOADED_READS), 1024 loaded
+ * files or 4 MiB of loaded text.
  * Upgrade path: a real shell parser, or a per-file config lookup for prettier.
  */
 export function loadedTexts(command: string, cwd: string): LoadedText[] | undefined {
@@ -10627,10 +10633,22 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
       return []
     }
   }
+  let files = 0
+  let chars = 0
+  // false when a cap is passed: loadedTexts then returns undefined
+  const take = (path: string, dir: string) => {
+    if (++files > MAX_LOADED_FILES) return false
+    const text = readSmallFile(path, cwd)
+    if (text === undefined) return true
+    chars += text.length
+    if (chars > MAX_LOADED_CHARS) return false
+    out.push({ text, dir })
+    return true
+  }
   if (hooks)
     for (const n of names(hooks)) {
-      const text = n.endsWith('.sample') ? undefined : readSmallFile(joinPath(hooks, n), cwd)
-      if (text !== undefined) out.push({ text, dir: top })
+      if (n.endsWith('.sample')) continue
+      if (!take(joinPath(hooks, n), top)) return undefined
     }
   const dirs: string[] = []
   for (let d = resolvePath(cwd); ; d = dirname(d)) {
@@ -10639,18 +10657,13 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
   }
   for (const d of dirs)
     for (const n of names(d)) {
-      const text = CONFIG_NAME.test(n) ? readSmallFile(joinPath(d, n), cwd) : undefined
-      if (text !== undefined) out.push({ text, dir: d })
+      if (!CONFIG_NAME.test(n)) continue
+      if (!take(joinPath(d, n), d)) return undefined
     }
-  // claude-factory-qn8a.37.5: the stripped copy matches a bin name that quotes or a backslash split.
-  const texts = [command, ...out.map(o => o.text)]
-  const hay = [...texts, ...texts.map(t => t.replace(/['"\\]/g, ''))].join('\n')
-  for (const d of dirs)
-    for (const b of names(joinPath(d, 'node_modules', '.bin'))) {
-      if (!new RegExp('(?<![\\w.-])' + escapeRe(b) + '(?![\\w-])').test(hay)) continue
-      const text = readSmallFile(joinPath(d, 'node_modules', '.bin', b), cwd)
-      if (text !== undefined) out.push({ text, dir: d })
-    }
+  for (const d of dirs) {
+    const bd = joinPath(d, 'node_modules', '.bin')
+    for (const b of names(bd)) if (!take(joinPath(bd, b), d)) return undefined
+  }
   return out
 }
 

@@ -18,8 +18,9 @@ export const HOME_REASON =
   'that can resolve to $HOME.'
 
 export const LOADED_REASON =
-  'The factory denies this command: it cannot read the git config of this directory, so it cannot ' +
-  'check the programs that git loads. Run the command again from the worktree.'
+  'The factory denies this command: it cannot read the git config of this directory, or the hooks, ' +
+  'config files and node_modules/.bin files there are too many or too large to check (over 1024 ' +
+  'files or 4 MiB). Run the command from a smaller worktree, or ask the manager.'
 
 export const OVERRIDE_REASON =
   'The factory denies this command: it names core.hooksPath, include.path or includeIf, or ' +
