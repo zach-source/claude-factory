@@ -314,6 +314,7 @@ import { managerSender as managerSenderIn, refuseWorker as refuseWorkerIn, worke
 import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
+import * as factoryOp from './core/ops/factory'
 import * as gatesOp from './core/ops/gates'
 import * as leaseOp from './core/ops/lease'
 import * as metricsOp from './core/ops/metrics'
@@ -12496,6 +12497,24 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** `factory stop` and `factory resume` */
+function haltFactory(mode: 'stop' | 'resume', print: Print) {
+  if (mode === 'stop') {
+    if (halted()) fail(`already ${halted()!.state}`)
+    writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
+    print(
+      `stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most ${HALT_GRACE_MS / 60_000} min. Ticks carry it out; factory status shows it. factory resume brings them back.`,
+    )
+    return
+  }
+  const halt = halted() ?? fail('the factory is not stopped')
+  // the runs whose workers stop closed, at the station they were at: the next tick resumes each
+  const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
+  writeJson(resumeFile_(), { ...back, ...halt.closed })
+  rmSync(haltFile())
+  print(`resuming ${Object.keys(halt.closed).length} worker(s) in their own conversations at the next tick`)
+}
+
 /** the helpers of this file that the catalog operations call (src/core/ops) */
 export const corePort: Port = {
   show,
@@ -12514,6 +12533,7 @@ export const corePort: Port = {
   goto: gotoRun,
   abort: abortRun,
   mail: mailRun,
+  halt: haltFactory,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -12630,10 +12650,8 @@ if (import.meta.main && !outboxCmd)
         break
       case 'lease': {
         refuseWorker('lease', true)
-        if (args[0] === 'release' && args.length === 1) {
-          leases.release(HOME)
-          console.log('released the manager lease')
-        } else if (!args.length || (args[0] === 'status' && args.length === 1))
+        if (args[0] === 'release' && args.length === 1) emit(await leaseOp.release(cliCtx(), {}))
+        else if (!args.length || (args[0] === 'status' && args.length === 1))
           emit(await leaseOp.show(cliCtx(), {}))
         else fail('usage: factory lease [status|release]')
         break
@@ -12734,27 +12752,10 @@ if (import.meta.main && !outboxCmd)
         if (!args.length) fail("usage: factory say '<text...>'")
         ax.say(args.join(' '))
         break
-      case 'stop': {
-        refuseWorker('stop', true)
-        if (halted()) fail(`already ${halted()!.state}`)
-        writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
-        console.log(
-          `stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most ${HALT_GRACE_MS / 60_000} min. Ticks carry it out; factory status shows it. factory resume brings them back.`,
-        )
+      case 'stop':
+      case 'resume':
+        emit(await factoryOp.halt(cliCtx(), { mode: cmd }))
         break
-      }
-      case 'resume': {
-        refuseWorker('resume', true)
-        const halt = halted() ?? fail('the factory is not stopped')
-        // the runs whose workers stop closed, at the station they were at: the next tick resumes each
-        const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
-        writeJson(resumeFile_(), { ...back, ...halt.closed })
-        rmSync(haltFile())
-        console.log(
-          `resuming ${Object.keys(halt.closed).length} worker(s) in their own conversations at the next tick`,
-        )
-        break
-      }
       case 'memory': {
         if (args[0] === 'add')
           try {

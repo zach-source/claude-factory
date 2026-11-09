@@ -3,6 +3,7 @@ import type { ManagerUsage, RunRecord } from '../metrics'
 import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
 import * as gatesOps from './ops/gates'
+import * as factoryOps from './ops/factory'
 import * as leaseOps from './ops/lease'
 import * as mailOps from './ops/mail'
 import * as metricsOps from './ops/metrics'
@@ -37,6 +38,7 @@ export type Port = {
   decisionsAnswer: (rig: string, bead: string, text: string, print: Print) => void
   goto: (id: string | undefined, node: string | undefined, print: Print) => Promise<void>
   abort: (id: string | undefined) => void
+  halt: (mode: 'stop' | 'resume', print: Print) => void
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -229,7 +231,7 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** the 23 operations: the routes of the client port, the board, the catalog and the parity fixture */
+/** the 24 operations: the routes of the client port, the board, the catalog and the parity fixture */
 export const CATALOG: Op[] = makeCatalog([
   local(
     {
@@ -481,7 +483,7 @@ export const CATALOG: Op[] = makeCatalog([
       ...(i.owned ? ['--owned'] : []),
     ],
   ),
-  bridge(
+  local(
     {
       name: 'factory.halt',
       summary: 'Stop or resume the factory.',
@@ -489,7 +491,18 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/halt',
       inputs: [f('mode', 'enum', true, undefined, ['stop', 'resume'])],
     },
-    i => [i.mode as string],
+    'text',
+    (c, i) => factoryOps.halt(c, i),
+  ),
+  local(
+    {
+      name: 'lease.release',
+      summary: 'Release the manager lease.',
+      method: 'POST',
+      path: '/v1/lease/release',
+    },
+    'text',
+    (c, i) => leaseOps.release(c, i),
   ),
   local(
     {

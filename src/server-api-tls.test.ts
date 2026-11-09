@@ -52,6 +52,7 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, 
         if (delayMs) await Bun.sleep(delayMs)
         print('{"ok":1}')
       },
+      halt: (mode: string) => void calls.push([mode]),
       prs: async () => {
         calls.push(['prs'])
         if (delayMs) await Bun.sleep(delayMs)

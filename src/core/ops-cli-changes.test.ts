@@ -393,17 +393,23 @@ const res = await h(new Request('http://x' + path, { method: 'POST', headers: { 
 console.log(JSON.stringify({ status: res.status, body: await res.text() }))
 `
 
-const post = (home: string, path: string, body: object, cwd = OUT) => {
+const post = (
+  home: string,
+  path: string,
+  body: object,
+  cwd = OUT,
+  want: Want & { env?: Record<string, string> } = {},
+) => {
   const sf = join(dir, 'post.ts')
   writeFileSync(sf, SCRIPT)
   const p = Bun.spawnSync([process.execPath, sf, home, path, JSON.stringify(body)], {
-    env: cleanEnv(home),
+    env: cleanEnv(home, want.env),
     cwd,
     timeout: 60_000,
   })
   if (p.exitCode !== 0) throw new Error(`post failed: ${p.stderr.toString()}`)
   const r = JSON.parse(p.stdout.toString().trim().split('\n').at(-1)!) as { status: number; body: string }
-  return { status: r.status, body: norm(home, r.body), ...state(home) }
+  return { status: r.status, body: norm(home, r.body), ...state(home, want) }
 }
 const outOf = (id: string) => (golden[id] as { results: { out: string; err: string }[] }).results.at(-1)!
 const lineOf = (id: string) => (golden[id] as { inbox: Record<string, unknown>[] }).inbox
@@ -470,6 +476,26 @@ if (!update) {
     expect(r.status).toBe(200)
     expect(r.body).toBe(outOf('A1').out)
     expect(r.inbox).toEqual(lineOf('A1'))
+  })
+
+  test('server: stop and resume', () => {
+    const home = freshHome()
+    const stop = post(home, '/v1/halt', { mode: 'stop' }, OUT, { files: ['halt.json', 'resume.json'] })
+    expect(stop.status).toBe(200)
+    expect(stop.body).toBe(outOf('H1').out)
+    expect(stop.files).toEqual((golden.H1 as { files: unknown }).files)
+    const back = post(home, '/v1/halt', { mode: 'resume' }, OUT, { files: ['halt.json'] })
+    expect(back.status).toBe(200)
+    expect(back.body).toBe(outOf('H3').out)
+    expect(post(home, '/v1/halt', { mode: 'resume' }, OUT).status).toBe(422)
+  })
+  test('server: lease release', () => {
+    const home = freshHome()
+    seedLease(home)
+    const r = post(home, '/v1/lease/release', {}, OUT, { files: ['manager.lease'] })
+    expect(r.status).toBe(200)
+    expect(r.body).toBe(outOf('L1').out)
+    expect(r.files).toEqual((golden.L1 as { files: unknown }).files)
   })
 
   // ---- in process with the real port: ctx.env and the input cwd count, process.env and the process cwd do not ----

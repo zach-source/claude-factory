@@ -27,6 +27,7 @@ const fake = () => {
     ),
     goto: async (id, node, print) => (calls.push(['goto', id, node]), print('queued')),
     abort: id => void calls.push(['abort', id]),
+    halt: (mode, print) => (calls.push(['halt', mode]), print(mode)),
     mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
   }
   const home = mkdtempSync(join(tmpdir(), 'ops-'))
@@ -62,6 +63,9 @@ describe('moved reads run in process (AC1)', () => {
     ],
     ['runs.goto', { id: 'r1', node: 'plan' }, [['goto', 'r1', 'plan']]],
     ['runs.abort', { id: 'r1' }, [['abort', 'r1']]],
+    ['factory.halt', { mode: 'stop' }, [['halt', 'stop']]],
+    ['factory.halt', { mode: 'resume' }, [['halt', 'resume']]],
+    ['lease.release', {}, []],
     ['runners.show', {}, []],
     ['mail.list', {}, []],
     ['steps.reports', {}, []],
@@ -92,7 +96,29 @@ describe('moved reads run in process (AC1)', () => {
       await op.run(t.ctx(), input)
       if (t.cli.length) bridged.push(op.name)
     }
-    expect(bridged).toEqual(['factory.halt', 'runs.start'])
+    expect(bridged).toEqual(['runs.start'])
+  })
+})
+
+describe('factory.halt and lease.release', () => {
+  test('a mode that is not stop or resume gives the usage line and no port call', async () => {
+    const t = fake()
+    expect(await run('factory.halt', t.ctx(), { mode: 'pause' })).toEqual({
+      code: 1,
+      out: '',
+      err: 'factory: usage: factory stop | factory resume\n',
+    })
+    expect(t.calls).toEqual([])
+  })
+  test('a patrol and a worker are refused with the ctx env', async () => {
+    const t = fake()
+    const patrol = await run('factory.halt', t.ctx({ FACTORY_PATROL: '1' }), { mode: 'stop' })
+    expect(patrol.err).toBe(
+      'factory: a patrol cannot run factory stop: leave it for the person or the manager\n',
+    )
+    const worker = await run('lease.release', t.ctx({ FACTORY_RUN: 'r1' }), {})
+    expect(worker.err).toContain('a worker cannot run factory lease')
+    expect(t.calls).toEqual([])
   })
 })
 

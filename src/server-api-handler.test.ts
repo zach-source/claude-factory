@@ -37,6 +37,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     ),
     goto: async (id, node, print) => (log('goto', [id, node]), print('{"ok":1}')),
     abort: id => void log('abort', [id]),
+    halt: (mode, print) => (log('halt', [mode]), print('{"ok":1}')),
     mail: async (m, who, print) => (
       (lastEnv = who.env),
       log('mail', [m, { cwd: who.cwd }]),
@@ -51,7 +52,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
       board: () => (o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
-  return { home, calls, logs, h: make(), make, env: () => lastEnv }
+  return { home, calls, logs, port, h: make(), make, env: () => lastEnv }
 }
 type H = ReturnType<typeof setup>['h']
 const get = (h: H, path: string, headers: Record<string, string> = {}) =>
@@ -139,13 +140,14 @@ describe('read routes', () => {
     expect((await get(u.h, '/v1/board')).status).toBe(503)
     expect(t.calls.length + u.calls.length).toBe(0)
   })
-  test('a non-zero exit gives 422 with the stderr, a timeout gives 504', async () => {
-    const t = setup({ result: { code: 1, out: '', err: 'x'.repeat(900) } })
+  test('an operation that fails gives 422 with the first 500 characters of the error', async () => {
+    const t = setup()
+    t.port.halt = () => {
+      throw new Error('x'.repeat(900))
+    }
     const r = await post(t.h, '/v1/halt', { mode: 'stop' })
     expect(r.status).toBe(422)
     expect(JSON.parse(await r.text()).refused.length).toBe(500)
-    const u = setup({ result: { code: -1, timedOut: true } })
-    expect((await post(u.h, '/v1/halt', { mode: 'stop' })).status).toBe(504)
   })
 })
 
@@ -176,8 +178,8 @@ describe('action routes', () => {
       { factory: 'lifecycle', station: 'plan', rig: 'acme', goal: 'g', owned: true },
       [{ argv: ['start', 'lifecycle@plan', 'acme', 'g', '--owned'] }],
     ],
-    ['/v1/halt', { mode: 'stop' }, [{ argv: ['stop'] }]],
-    ['/v1/halt', { mode: 'resume' }, [{ argv: ['resume'] }]],
+    ['/v1/halt', { mode: 'stop' }, [p('halt', 'stop')]],
+    ['/v1/halt', { mode: 'resume' }, [p('halt', 'resume')]],
     ['/v1/decisions/acme/b1/answer', { text: 'yes' }, [p('decisionsAnswer', 'acme', 'b1', 'yes')]],
   ]
   for (const [path, body, calls] of rows)
@@ -187,6 +189,25 @@ describe('action routes', () => {
       expect(r.status).toBe(200)
       expect(t.calls).toEqual(calls)
     })
+})
+
+describe('POST /v1/lease/release', () => {
+  test('removes the lease and answers the CLI line', async () => {
+    const t = setup()
+    const f = join(t.home, 'manager.lease')
+    writeFileSync(f, JSON.stringify({ holder: 'x', kind: 'manager', at: 1 }))
+    const r = await post(t.h, '/v1/lease/release', {})
+    expect(r.status).toBe(200)
+    expect(await r.text()).toBe('released the manager lease\n')
+    expect(existsSync(f)).toBe(false)
+  })
+  test('a body key gives 400 and the lease stays', async () => {
+    const t = setup()
+    const f = join(t.home, 'manager.lease')
+    writeFileSync(f, JSON.stringify({ holder: 'x', kind: 'manager', at: 1 }))
+    expect((await post(t.h, '/v1/lease/release', { x: 1 })).status).toBe(400)
+    expect(existsSync(f)).toBe(true)
+  })
 })
 
 describe('refusals make zero calls', () => {
