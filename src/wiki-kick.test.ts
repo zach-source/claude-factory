@@ -48,23 +48,38 @@ function alive(pid: number, stat: (pid: number) => string = readStat) {
     return true // kill(pid, 0) succeeded, so a failed /proc read is not proof of exit
   }
 }
-/** the live processes that carry TAG, in any home; never the test itself */
-function tagged() {
+/** every pid that ever carried TAG: an identity is kept until exit is proved, whatever later reads say */
+const known = new Set<number>()
+const procOk = existsSync('/proc/self/environ')
+/** the pids that carry TAG now. Linux reads /proc; macOS has no /proc, so it reads `ps -E` output. A failed list throws. */
+function scanTagged(
+  readEnv: (pid: number) => string = pid => readFileSync(`/proc/${pid}/environ`, 'utf8'),
+  list: () => number[] = () => readdirSync('/proc').map(Number),
+) {
   const out: number[] = []
-  for (const name of readdirSync('/proc')) {
-    const pid = Number(name)
-    if (!pid || pid === process.pid) continue
+  if (!procOk) {
+    const r = Bun.spawnSync(['ps', '-axwwE', '-o', 'pid=,command='])
+    if (r.exitCode !== 0) throw new Error('ps failed: no child list')
+    for (const line of r.stdout.toString().split('\n')) {
+      const m = /^\s*(\d+)\s.*FACTORY_WIKI_TEST_TAG=(\S+)/.exec(line)
+      if (m && m[2] === TAG) out.push(Number(m[1]))
+    }
+    return out
+  }
+  for (const pid of list()) {
+    if (!pid) continue
     try {
-      if (
-        readFileSync(`/proc/${pid}/environ`, 'utf8').includes(`FACTORY_WIKI_TEST_TAG=${TAG}\0`) &&
-        alive(pid)
-      )
-        out.push(pid)
+      if (readEnv(pid).includes(`FACTORY_WIKI_TEST_TAG=${TAG}\0`)) out.push(pid)
     } catch {
-      // gone, or not ours to read
+      // gone, or not ours to read; a pid seen before stays in `known`
     }
   }
   return out
+}
+/** the live processes that ever carried TAG, in any home; never the test itself */
+function tagged(scan: () => number[] = scanTagged) {
+  for (const pid of scan()) if (pid !== process.pid) known.add(pid)
+  return [...known].filter(pid => alive(pid))
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 /** stop every owned child and wait for its exit; false when one is still alive at the deadline */
@@ -508,6 +523,36 @@ test('AC10 control: children of two homes in one test are all accounted for', as
   expect(await stopOwned()).toBe(true)
   for (const k of kids) expect(alive(k.pid)).toBe(false)
 }, 30_000)
+
+test('AC10 control: an environ read that fails after a sighting keeps the child owned', async () => {
+  const p = own(Bun.spawn(['sleep', '60'], { env: { ...process.env, FACTORY_WIKI_TEST_TAG: TAG } }))
+  await sleep(200)
+  expect(tagged()).toContain(p.pid)
+  const failing = () =>
+    scanTagged(
+      () => {
+        throw new Error('EACCES')
+      },
+      () => [p.pid],
+    )
+  expect(failing()).toEqual([])
+  expect(tagged(failing)).toContain(p.pid) // the identity survives the failed read
+  expect(await stopOwned()).toBe(true)
+  expect(alive(p.pid)).toBe(false)
+}, 30_000)
+
+test('AC10 control: a failed assertion still runs the cleanup that stops and awaits the child', async () => {
+  const p = own(Bun.spawn(['sleep', '60'], { env: { ...process.env, FACTORY_WIKI_TEST_TAG: TAG } }))
+  await sleep(200)
+  try {
+    expect(1).toBe(2)
+  } catch {
+    // the afterEach hook is the same stopOwned path
+  } finally {
+    expect(await stopOwned()).toBe(true)
+  }
+  expect(alive(p.pid)).toBe(false)
+})
 
 test('AC10 control: a live pid with an unreadable /proc record counts as alive', () => {
   expect(
