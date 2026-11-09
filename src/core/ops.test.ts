@@ -29,6 +29,14 @@ const fake = () => {
     abort: id => void calls.push(['abort', id]),
     screen: async id => (calls.push(['screen', id]), 'screen text'),
     mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
+    chatModel: async () => ({
+      isOk: true,
+      text: '',
+      reason: 'success',
+      durationMs: 0,
+      commands: [],
+      calls: [],
+    }),
   }
   const home = mkdtempSync(join(tmpdir(), 'ops-'))
   const ctx = (env: Record<string, string | undefined> = {}): Ctx => ({

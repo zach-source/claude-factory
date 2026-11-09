@@ -155,7 +155,17 @@ import {
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
-import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
+import {
+  CODEX_MODEL,
+  briefOnce,
+  keepTick,
+  patrolOnce,
+  pmOnce,
+  reviewOnce,
+  runModelAsync,
+  type Io,
+} from './once'
+import { guardHook } from './core/chat'
 import { check } from './core/guards'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
@@ -13031,6 +13041,7 @@ export const corePort: Port = {
   abort: abortRun,
   screen: screenRun,
   mail: mailRun,
+  chatModel: runModelAsync,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13141,6 +13152,12 @@ if (import.meta.main && !outboxCmd)
         const other = localLease()
         if (other) fail(`no ${cmd}: ${leases.leaseLine(other, Date.now())}`)
         console.log(await onceCmd(cmd, args))
+        break
+      }
+      case 'chat-guard': {
+        const r = guardHook(await Bun.stdin.text())
+        if (r.err) process.stderr.write(r.err)
+        process.exitCode = r.code
         break
       }
       case 'patrol-guard':
