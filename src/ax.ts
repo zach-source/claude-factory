@@ -3,6 +3,8 @@
 // queues what the worker's `factory report|mail|memory add` would have done in an outbox, which the
 // laptop pulls each tick and replays. See docs/remote-runner.md.
 
+import { readFileSync } from 'node:fs'
+import { sq } from './harness'
 import { WORKER_USER } from './worker'
 import { workerPolicyRefusal } from './broker'
 import { parseNames } from './axsweep'
@@ -198,6 +200,9 @@ export function manifest(l: Launch) {
   }
   return [workspace, task].map(d => JSON.stringify(d, null, 2)).join('\n---\n')
 }
+
+/** a task that waits for a free worker in the pool: AX puts it on no full worker (Ready reason WaitingForCapacity) */
+export const isCapacityWait = (yaml: string) => /^\s+reason:\s*"?WaitingForCapacity\b/m.test(yaml)
 
 /** a task's phase from `ax get task` (YAML): Pending, Running, Suspended, Failed, Terminating; null when gone */
 export const phaseOf = (yaml: string) => yaml.match(/^\s+phase:\s*"?(\w+)/m)?.[1] ?? null
@@ -692,10 +697,15 @@ export const launch = (l: Launch) => {
   must(['apply', '-f', '-'], manifest({ ...l, env }))
   return `ax://${l.name}`
 }
-/** the task's phase and, when AX says why it failed, that reason: one `ax get task` */
-export function read(task: string): { phase: string | null; failure?: string } {
+/** the task's phase, the reason when AX says why it failed, and whether it waits for capacity: one `ax get task` */
+export function read(task: string): { phase: string | null; failure?: string; queued?: boolean } {
   const r = ax(['get', 'task', task])
-  if (r.ok) return { phase: phaseOf(r.out), failure: failureOf(r.out) }
+  if (r.ok)
+    return {
+      phase: phaseOf(r.out),
+      failure: failureOf(r.out),
+      queued: phaseOf(r.out) === 'Pending' && isCapacityWait(r.out),
+    }
   if (/not ?found/i.test(r.err)) return { phase: null }
   throw new Error(`ax get task: ${r.err}`)
 }
@@ -820,6 +830,52 @@ export function remoteManager(): string | undefined {
   return undefined
 }
 
+/**
+ * The attach path (claude-factory-d289.1). The laptop's ssh starts `sshd -i` in the task through `ax stdio`.
+ * sshd runs as the worker user. Root has no SYS_CHROOT, and a root sshd fails at its chroot.
+ * `factory manager host` writes the config, the host key and authorized_keys in SSH_DIR, on the volume.
+ */
+export const SSH_DIR = `${WS}/ssh`
+export const SSHD_CONFIG = `${SSH_DIR}/sshd_config`
+export const SSHD = '/nix/var/nix/profiles/default/bin/sshd'
+/** the command that the ProxyCommand starts in the task. It has no -a, -n, --context or --server: ax reads them after `--` */
+export const sshdCommand = () => [
+  'setpriv',
+  `--reuid=${WORKER_USER}`,
+  `--regid=${WORKER_USER}`,
+  '--init-groups',
+  SSHD,
+  '-i',
+  '-f',
+  SSHD_CONFIG,
+]
+
+/** the ssh config Host block for `herdr --remote <task>` (needs an ax CLI with `ax stdio`, from the AX fork) */
+export const sshConfigBlock = (task = managerTask()) =>
+  [
+    `Host ${task}`,
+    `  User ${WORKER_USER}`,
+    `  ProxyCommand ${[AX(), ...context(), '-a', ATESPACE(), 'stdio', task, '--', ...sshdCommand()].join(' ')}`,
+  ].join('\n')
+
+/** the env the task reads its authorized_keys from; the laptop fills it from FACTORY_AX_MANAGER_SSH_PUBKEY */
+export const AUTHORIZED_KEYS_ENV = 'FACTORY_SSH_AUTHORIZED_KEYS'
+const PUBKEY =
+  /^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/]+=*( \S.*)?$/
+/**
+ * This makes authorized_keys text from public key lines. It throws for each other line.
+ * A private key must not go into the task env. The error does not show the text.
+ */
+export function publicKeys(text: string) {
+  const lines = text
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+  if (!lines.length || lines.some(l => !PUBKEY.test(l)))
+    throw new Error('FACTORY_AX_MANAGER_SSH_PUBKEY must be an OpenSSH public key file (id_ed25519.pub)')
+  return `${lines.join('\n')}\n`
+}
+
 /** the laptop's knobs the manager task needs to launch its own workers */
 const MANAGER_PASS = [
   'FACTORY_MAX_RUNS',
@@ -827,6 +883,8 @@ const MANAGER_PASS = [
   'FACTORY_AX_IMAGE',
   'FACTORY_AX_VAULT',
   'FACTORY_AX_ATESPACE',
+  'FACTORY_AX_PKG_GATE',
+  'FACTORY_AX_CAPABILITIES',
   'FACTORY_AX_BACKUP_REMOTE',
   'FACTORY_AX_BACKUP_BRANCH',
   'FACTORY_AX_BACKUP_EVERY',
@@ -844,13 +902,28 @@ const MANAGER_ROUTER = 'FACTORY_AX_MANAGER_ROUTER'
 const MANAGER_BROKER = 'FACTORY_AX_MANAGER_BROKER'
 
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
-export function managerEnv(env: Record<string, string | undefined> = process.env) {
+export function managerEnv(
+  env: Record<string, string | undefined> = process.env,
+  read: (path: string) => string = p => readFileSync(p, 'utf8'),
+) {
   return {
     FACTORY_IN_AX: '1',
     FACTORY_HOME: `${WS}/home`,
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
-    ...Object.fromEntries(MANAGER_PASS.filter(k => env[k]).map(k => [k, env[k]!])),
+    // an empty FACTORY_AX_CAPABILITIES means "none" (workers stay root), so it goes over too
+    ...Object.fromEntries(
+      MANAGER_PASS.filter(k => env[k] || (k === 'FACTORY_AX_CAPABILITIES' && env[k] === '')).map(k => [
+        k,
+        env[k]!,
+      ]),
+    ),
+    // the task has no laptop paths: it gets the content. Worker env, the same that each worker task gets
+    ...(env.FACTORY_AX_ENV && { FACTORY_AX_ENV: JSON.stringify(readAxEnv(env.FACTORY_AX_ENV, read)) }),
+    // a public key only: publicKeys refuses anything else
+    ...(env.FACTORY_AX_MANAGER_SSH_PUBKEY && {
+      [AUTHORIZED_KEYS_ENV]: publicKeys(read(env.FACTORY_AX_MANAGER_SSH_PUBKEY)),
+    }),
     ...(env[MANAGER_AX_SERVER] && { AX_SERVER: env[MANAGER_AX_SERVER] }),
     // the gateway adds the real token (managerEgress). The VM holds a placeholder. The CLI sends a token only over https
     ...(env.FACTORY_AX_VAULT &&
@@ -863,6 +936,18 @@ export function managerEnv(env: Record<string, string | undefined> = process.env
     // the fork's `ax ssh` dials the router at host:port (AX_ROUTER) instead of a port-forward it cannot make
     ...(routerAddress(env[MANAGER_ROUTER]) && { AX_ROUTER: routerAddress(env[MANAGER_ROUTER])! }),
   }
+}
+
+/**
+ * FACTORY_AX_ENV: a JSON file of extra worker env, or the JSON itself (a value that starts with `{`). The manager
+ * task has no laptop paths, so the laptop sends it the content. Errors never carry the content
+ */
+export function readAxEnv(value: string, read: (path: string) => string = p => readFileSync(p, 'utf8')) {
+  try {
+    const v: unknown = JSON.parse(value.trimStart().startsWith('{') ? value : read(value))
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, string>
+  } catch {}
+  throw new Error('FACTORY_AX_ENV is not a JSON object or the path of a JSON file')
 }
 
 /** `host:port` of the router URL (port 80 when it names none); undefined when the value is not a URL */
@@ -1037,11 +1122,31 @@ export const managerHomeUsed = () =>
     ]),
   ).trim() === 'used'
 
+/** escape `s` as a literal in a sed pattern or replacement; `/` is the delimiter */
+const sedLit = (s: string, pattern: boolean) => s.replace(pattern ? /[\\/.[\]*^$]/g : /[\\/&]/g, '\\$&')
+
 /**
- * unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home, then
- * write .migrated: `factory manager host` waits for that marker before it starts the manager
+ * The shell command that changes the laptop's factory home `from` to the task's home. It edits only the run
+ * state files: run.json, track.json, state.json and inbox.jsonl. It does not edit prompts or briefs.
+ * A match must end at a character that cannot continue a path name. So `/h/f` does not match `/h/f2`.
  */
-export const unpackMigration = (name: string) =>
+export function rewriteHomeCmd(from: string, to = MANAGER_HOME) {
+  const src = from.replace(/\/+$/, '')
+  if (!src) return ':'
+  const expr = `s/${sedLit(src, true)}\\([^A-Za-z0-9_.-]\\|$\\)/${sedLit(to, false)}\\1/g`
+  return (
+    `if [ -d ${to}/runs ]; then find ${to}/runs -maxdepth 2 -type f ` +
+    `\\( -name run.json -o -name track.json -o -name state.json -o -name inbox.jsonl \\) ` +
+    `-exec sed -i -e ${sq(expr)} {} +; fi`
+  )
+}
+
+/**
+ * Unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home. Then
+ * write .migrated: `factory manager host` waits for that marker before it starts the manager.
+ * `laptopHome` is the laptop's factory home. Run state holds it in absolute paths, and the unpack rewrites it.
+ */
+export const unpackMigration = (name: string, laptopHome = '') =>
   must(
     managerCmd([
       'sh',
@@ -1050,6 +1155,7 @@ export const unpackMigration = (name: string) =>
       `set -e; mkdir -p ${MANAGER_HOME}; tar -xzf ${OWN}/${name} -C ${MANAGER_HOME}; ` +
         `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
         `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
+        `${rewriteHomeCmd(laptopHome)}; ` +
         `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )
