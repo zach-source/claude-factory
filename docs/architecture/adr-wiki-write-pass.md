@@ -8,7 +8,118 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Revision after four implement rounds
+## Revision after review round four
+
+This revision takes precedence over earlier task lists. AC1–AC9 remain required; AC10 below adds test isolation.
+Keep draft PR #714. Tasks `.1` through `.15` are complete. Do not repeat them.
+Only tasks `.18`, `.17` and `.16` remain, in that order.
+
+### Cause and design correction
+
+The previous revision defined a closed grammar, but its tests did not cover each field's presence and value separately.
+At `2664622d`, `wikiPrInfo` uses `!f.overflow`; `wikiWrite` uses `raw != null` for `ship_pr`.
+Both expressions merge invalid present values with a valid absent field.
+The review reproduced false completion for null metadata and false completeness for false-valued overflow fields.
+The recovery tests also omit committed-content checks and some third passes.
+Finally, setup bypasses the child environment policy that the command wrapper applies.
+
+Keep the existing strict adapters and incomplete-result path. Replace truth tests with explicit presence and type checks.
+Do not add a validator framework or a second source parser.
+Build a table of consumed fields before the fix. Each row must identify its test and downstream-call assertion.
+Audit the entire table below and the earlier complete-input table, rather than only the two reproduced values.
+Use the existing test files. No production module extraction is necessary.
+
+| Field | Absent | Accepted present value | Rejected present value |
+| --- | --- | --- | --- |
+| `metadata.ship_pr` | Permit discovery | Canonical rig PR URL under the earlier identity grammar | Null, boolean, number, empty string, array, object or noncanonical URL |
+| GitLab changes `overflow` | Complete if other fields pass | Boolean false | Null, true, number, string, array or object |
+| Detail `number` / `iid` | Incomplete | Requested positive integer | Null, wrong type, zero, fractional or different number |
+| Detail `title` | Incomplete | Nonempty string | Null, empty string or another type |
+| GitHub detail `merged_at` | Incomplete | Null or valid date-time under AC8 | Other type, empty string or invalid date-time |
+| GitLab detail `state` | Incomplete | opened, closed, locked or merged | Null, another string or another type |
+| Detail `body` / `description` | Empty text | Null or string | Boolean, number, array or object |
+| File `filename` / `new_path` | Incomplete | Relative path under AC8 | Null, empty string, another type or prohibited path form |
+| File `patch` / `diff` | No patch | String | Null, boolean, number, array or object |
+
+JSON cannot contain undefined. Missing JSON properties are absent; do not use null as their equivalent.
+Ignore unused API fields. Reject all other forms of consumed fields before classification or agent work.
+Retain the earlier root, row, URL, date-time, page-limit and path grammar without expansion.
+Test metadata and discovery entry paths for both forges, including nested GitLab project paths.
+Branch discovery, unused API fields, shell source and new page grammar remain outside this correction.
+
+### Acceptance extensions
+
+**AC8 completion — Presence and value matrix.** Extend `src/cli-wiki-write.test.ts`; retain `src/prs.test.ts` coverage.
+Test every table row above with absent, accepted and rejected values on each applicable forge and entry path.
+For overflow, explicitly test absent, false, true, null, 0, 1, empty string, string false, array and object.
+Test GitLab detail roots, states, identities, titles and descriptions, then changes roots, rows, paths, diffs and overflow.
+Use command failure, invalid JSON, null, array/object mismatch and empty changes as negative controls.
+Valid absent/false overflow, absent/null descriptions, known unmerged states and extra unused fields remain accepted source shapes.
+A known unmerged metadata PR remains pending under the existing policy; valid empty discovery can settle a bead.
+Invalid metadata causes zero discovery, detail, file or agent calls for that bead.
+Invalid discovery causes zero detail, file or agent calls; invalid detail causes zero file or agent calls.
+Invalid files cause zero classification-based completion or agent calls for that bead.
+Each rejection preserves the prior timestamp and excludes the bead from `written`.
+Valid unrelated beads can commit. Existing pending pushes can retry.
+Proof: `bun test --timeout 30000 src/prs.test.ts src/cli-wiki-write.test.ts`.
+
+**AC9 completion — Durable three-pass proof.** Use fixed old, new and prior dates in the date-aware fake bead list.
+Add GitLab full-ID recovery beside short-ID recovery; retain GitHub global, malformed detail and malformed files cases.
+For per-bead refusal, pass one commits only the newer page and preserves the exact prior timestamp.
+For global GitHub refusal, pass one makes zero agent calls and preserves the exact prior timestamp.
+Repair the source before pass two. Assert committed blobs with `git show HEAD:<page>`, not only worktree text or prompts.
+Assert all seven sections, both code and release links, and both `written` identities after recovery.
+Assert the exact maximum completed close timestamp, not merely a value different from the prior timestamp.
+Pass three must preserve that timestamp and commit SHA, with zero additional agent requests.
+Use these assertions for each recovery case. A stub page with both links must also require both prompt source records.
+This prevents a prebuilt fixture from concealing loss of the release input.
+Proof: `bun test --timeout 30000 src/cli-wiki-write.test.ts`.
+
+**AC10 — Isolated child processes.** Fix setup and command children in both write and kick test files before source tests.
+Use one local environment construction path per file. Setup must use the same policy as later CLI calls.
+Remove inherited `FACTORY_WIKI_REMOTE`, `FACTORY_OUTBOX`, `FACTORY_FROM` and `FACTORY_RUN` before any child starts.
+Use a fresh `FACTORY_HOME`, `FACTORY_SELF_UPDATE=0`, and fixture forge/agent tools before the real PATH.
+Use `FACTORY_NO_KICK=1` except for explicit kick tests. Tests can supply controlled overrides after isolation.
+Stub both `gh` and `glab`; unexpected calls must fail and record the attempt, without real forge fallback.
+Use local git for fixture operations. Intercept remote transport attempts in the regression; never test against a live endpoint.
+Seed ambient remote and routing values before setup, then exercise setup, write and kick children.
+Assert zero external forge/transport calls, zero outbox writes, no inherited wiki remote and no parent-environment changes.
+Permit controlled fixture forge calls and local commits as positive controls. Wait for detached children before fixture cleanup.
+Proof: `bun test --timeout 60000 src/cli-wiki-write.test.ts src/wiki-kick.test.ts`.
+The regression must use fake transport tools even on pre-fix code, so its expected failure has no external effect.
+
+### Remaining tasks and checks
+
+These three commits fit one 120-minute implement pass, apart from CI wait time.
+
+1. `claude-factory-tx6c.7.18`, 25 minutes: add the safe AC10 regression, observe failure, then fix both child wrappers.
+   Commit the isolated fixtures and regression. Check AC10 before any source suite.
+2. `claude-factory-tx6c.7.17`, 40 minutes: complete AC9 and add the AC8 matrix cases needed by `.16`.
+   Commit tests first. Record expected failures for null metadata and invalid overflow against the unchanged production code.
+3. `claude-factory-tx6c.7.16`, 50 minutes: apply explicit field validation in `src/cli.ts` and audit AC8 coverage.
+   Run AC1–AC10 and the existing parser tests. Commit the fix only after the focused checks pass.
+
+Keep these commits in the existing PR. Do not release the red test commit alone.
+After the fix commit, mutate the overflow check and metadata presence check separately; each mutant must build and fail its test.
+Restore each mutant before the next check. Do not duplicate the closed discovery work in `src/prs.ts` without new evidence.
+Run the earlier full checks: root typecheck, full tests, plugin tests, format, repo gate, audit and gitleaks.
+Require test, typecheck, plugin and format CI on the final head. Review and security must inspect the matrix and recovery assertions.
+
+### Risk, release and evidence
+
+This correction is **security-sensitive**: external input validation and child environments control access to external services.
+It prevents false completion and accidental test access to an ambient remote. It adds no production access or credential change.
+No migration, dependency, flag, state format or `.factory/` change is necessary.
+Keep existing agent permissions, 45-minute timeout, group limits and 180-minute kick behavior.
+Reject a larger adapter rewrite: explicit field checks and complete tests resolve the present defects within this pass.
+Reject deferred coverage or dry-run-only proof: neither proves durable progress after a commit.
+Keep pending counts and masked failures in `wiki.log`; repeated pending counts identify unresolved source input.
+AC7 remains **must-see-live** for authorized ship soak, with its own page, state, log and remote result.
+The live smoke remains outside pre-merge acceptance. No live command belongs to this plan station.
+Release requires review, security and a person's merge. Rollback uses a revert PR and a person's merge.
+Preserve committed wiki pages and state on rollback. Do not reset timestamps or delete pages by hand.
+
+## Prior revision after four implement rounds
 
 ### Cause and scope
 
