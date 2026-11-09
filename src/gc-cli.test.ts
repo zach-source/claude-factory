@@ -48,13 +48,45 @@ const runDir = (id: string) => join(home, 'runs', id)
 // createdAt(id) parses the id's own trailing "-<base36 time>xx" suffix: a bare id parses to NaN
 const freshId = (name: string) => `${name}-${Date.now().toString(36)}xx`
 
+const GIT_ENV = {
+  GIT_AUTHOR_NAME: 'factory',
+  GIT_AUTHOR_EMAIL: 'factory@localhost',
+  GIT_COMMITTER_NAME: 'factory',
+  GIT_COMMITTER_EMAIL: 'factory@localhost',
+}
+const git = (cwd: string, ...args: string[]) => {
+  const p = Bun.spawnSync(['git', '-C', cwd, ...args], { env: { ...process.env, ...GIT_ENV } })
+  if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${p.stderr.toString()}`)
+  return p.stdout.toString().trim()
+}
+/** a clean git worktree on branch factory/<id>, registered in the shared repo at dir/repo */
+function realWorktree(id: string): string {
+  const repo = join(dir, 'repo')
+  if (!existsSync(join(repo, '.git'))) {
+    mkdirSync(repo, { recursive: true })
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'root')
+  }
+  const wt = join(home, 'worktrees', id)
+  git(repo, 'worktree', 'add', '-q', '-b', `factory/${id}`, wt)
+  return wt
+}
+const tip = (id: string) => git(join(dir, 'repo'), 'rev-parse', `factory/${id}`)
+const metricIds = () =>
+  existsSync(join(home, 'metrics.jsonl'))
+    ? readFileSync(join(home, 'metrics.jsonl'), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l).id as string)
+    : []
+
 /** builds run.json + state.json for one run, worked by the real xstate machine, then the run's own
  * files beside them: a `prompts/` dir, a brief, a stray backup, and a few names gc must keep. */
 function writeRun(
   id: string,
-  opts: { outcome: 'done' | 'aborted' | 'working'; finishedAt?: number },
+  opts: { outcome: 'done' | 'aborted' | 'working'; finishedAt?: number; real?: boolean },
 ): string {
-  const wt = join(dir, id)
+  const wt = opts.real ? realWorktree(id) : join(dir, id)
   mkdirSync(wt, { recursive: true })
   const d = runDir(id)
   mkdirSync(d, { recursive: true })
@@ -62,7 +94,15 @@ function writeRun(
   writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
   writeFileSync(
     join(d, 'run.json'),
-    JSON.stringify({ id, factory: factoryFile, repo: wt, goal: 'g', ws: 'w1', worktree: wt, branch: 'b' }),
+    JSON.stringify({
+      id,
+      factory: factoryFile,
+      repo: opts.real ? join(dir, 'repo') : wt,
+      goal: 'g',
+      ws: 'w1',
+      worktree: wt,
+      branch: opts.real ? `factory/${id}` : 'b',
+    }),
   )
   const actor = createActor(compile(DEF)).start()
   actor.send({ type: 'TICK', at: 0 })
@@ -105,17 +145,16 @@ test('--dry-run prints bytes per kind and the run count, and deletes nothing (AC
   expect(readdirSync(d).sort()).toEqual(before) // byte-identical: nothing removed
 })
 
-test('a real pass removes prompts/, the brief and the stray backup; every kept name stays (AC2)', () => {
+test('a run whose worktree gc cannot remove keeps its whole dir, artifacts included, and is named (AC2, lt4u AC5)', () => {
   reset()
   const id = freshId('ship')
-  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY }) // a plain dir, not a git worktree
   const out = factory(['gc', '--days', '1'])
   expect(out.code).toBe(0)
-  expect(existsSync(join(d, 'prompts'))).toBe(false)
-  expect(existsSync(join(d, 'f-implement.brief.md'))).toBe(false)
-  expect(existsSync(join(d, 'rigs.json.before-123'))).toBe(false)
-  for (const name of ['run.json', 'state.json', 'inbox.jsonl', 'track.json', 'progress.json', 'factory.ts'])
+  for (const name of ['prompts', 'f-implement.brief.md', 'rigs.json.before-123', 'run.json', 'state.json'])
     expect(existsSync(join(d, name))).toBe(true)
+  expect(out.err + out.out).toContain(id)
+  expect(metricIds()).toEqual([])
 })
 
 test('an aborted run with no journal entry still ages off createdAt(id) (AC2)', () => {
@@ -215,10 +254,10 @@ test('a working herdr: a dead pane old enough is removed, a live one and a young
   expect(existsSync(live)).toBe(true)
 })
 
-test('each pruned run gets one metrics.jsonl record line; a second pass adds none (AC6)', () => {
+test('each reaped run gets one metrics.jsonl record line; a second pass adds none (AC6)', () => {
   reset()
   const id = freshId('ship')
-  writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY, real: true })
   expect(factory(['gc', '--days', '1']).code).toBe(0)
   const metricsFile = join(home, 'metrics.jsonl')
   const linesAfterFirst = readFileSync(metricsFile, 'utf8').trim().split('\n').filter(Boolean)
@@ -259,8 +298,7 @@ test('a goto revive after gc recreates prompts/ and starts a worker with no ENOE
   reset()
   const id = freshId('ship')
   const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
-  expect(factory(['gc', '--days', '1']).code).toBe(0)
-  expect(existsSync(join(d, 'prompts'))).toBe(false) // gc removed it
+  rmSync(join(d, 'prompts'), { recursive: true }) // as an older gc did
 
   expect(factory(['goto', id, 'implement']).code).toBe(0) // queues a GOTO; the next tick drains it
 
@@ -352,10 +390,122 @@ test('resumeFile() recreates prompts/ before writing the resume note (claude-fac
 test('a half-made run dir beside an eligible run does not stop the pass (claude-factory-503.1.6)', () => {
   reset()
   const id = freshId('ship')
-  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY })
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 10 * DAY, real: true })
   mkdirSync(join(home, 'runs', 'zz-half-made'), { recursive: true }) // no run.json, no state.json
   const out = factory(['gc', '--days', '1'])
   expect(out.code).toBe(0)
-  expect(existsSync(join(d, 'prompts'))).toBe(false) // the eligible run was still pruned
+  expect(existsSync(d)).toBe(false) // the eligible run was still reaped
   expect(out.err).toContain('zz-half-made') // the skipped dir is named, not silently dropped
+})
+
+// ---- claude-factory-lt4u: gc reaps a whole finished run, as `factory rm` does
+test('lt4u AC1: an old done and an old aborted run lose dir and worktree; the branch tip and metrics stay', () => {
+  reset()
+  const a = freshId('ship')
+  const b = freshId('shop')
+  const old = Date.now() - 10 * DAY
+  const da = writeRun(a, { outcome: 'done', finishedAt: old, real: true })
+  const db = writeRun(b, { outcome: 'aborted', finishedAt: old, real: true })
+  const tips = [tip(a), tip(b)]
+  const out = factory(['gc'])
+  expect(out.code).toBe(0)
+  for (const [d, id] of [
+    [da, a],
+    [db, b],
+  ] as const) {
+    expect(existsSync(d)).toBe(false)
+    expect(existsSync(join(home, 'worktrees', id))).toBe(false)
+  }
+  expect([tip(a), tip(b)]).toEqual(tips)
+  expect(metricIds().sort()).toEqual([a, b].sort())
+  expect(factory(['gc']).code).toBe(0) // a second pass adds no record
+  expect(metricIds()).toHaveLength(2)
+})
+
+test('lt4u AC1: a run with no reproducible files, and one with its worktree already gone, are reaped', () => {
+  reset()
+  const a = freshId('ship')
+  const b = freshId('shop')
+  const old = Date.now() - 10 * DAY
+  const da = writeRun(a, { outcome: 'done', finishedAt: old, real: true })
+  for (const n of ['prompts', 'f-implement.brief.md', 'rigs.json.before-123'])
+    rmSync(join(da, n), { recursive: true })
+  const db = writeRun(b, { outcome: 'done', finishedAt: old, real: true })
+  git(join(dir, 'repo'), 'worktree', 'remove', join(home, 'worktrees', b))
+  expect(factory(['gc']).code).toBe(0)
+  expect(existsSync(da)).toBe(false)
+  expect(existsSync(db)).toBe(false)
+  expect(metricIds().sort()).toEqual([a, b].sort())
+})
+
+test('lt4u AC2: age cutoff, FACTORY_GC_DAYS, and a live run stays', () => {
+  reset()
+  const id = freshId('ship')
+  const live = freshId('live')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 3 * DAY, real: true })
+  const dl = writeRun(live, { outcome: 'working', real: true })
+  expect(factory(['gc']).code).toBe(0) // default 7 days: 3 days old stays
+  expect(existsSync(d)).toBe(true)
+  expect(factory(['gc'], { FACTORY_GC_DAYS: '2' }).code).toBe(0) // env cutoff
+  expect(existsSync(d)).toBe(false)
+  expect(existsSync(dl)).toBe(true)
+  expect(existsSync(join(home, 'worktrees', live))).toBe(true)
+})
+
+test('lt4u AC2: --days overrides FACTORY_GC_DAYS', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: Date.now() - 3 * DAY, real: true })
+  expect(factory(['gc', '--days', '9'], { FACTORY_GC_DAYS: '1' }).code).toBe(0)
+  expect(existsSync(d)).toBe(true)
+  expect(factory(['gc', '--days', '2'], { FACTORY_GC_DAYS: '9' }).code).toBe(0)
+  expect(existsSync(d)).toBe(false)
+})
+
+test('lt4u AC3: --dry-run names the runs it would reap and changes nothing', () => {
+  reset()
+  const old = freshId('ship')
+  const young = freshId('shop')
+  const live = freshId('live')
+  const d = writeRun(old, { outcome: 'done', finishedAt: Date.now() - 10 * DAY, real: true })
+  writeRun(young, { outcome: 'done', finishedAt: Date.now() - 1 * DAY, real: true })
+  writeRun(live, { outcome: 'working', real: true })
+  const before = readdirSync(d).sort()
+  const out = factory(['gc', '--dry-run'])
+  expect(out.code).toBe(0)
+  expect(out.out).toContain(`would reap ${old}`)
+  expect(out.out).not.toContain(young)
+  expect(out.out).not.toContain(live)
+  expect(readdirSync(d).sort()).toEqual(before)
+  expect(existsSync(join(home, 'worktrees', old))).toBe(true)
+  expect(existsSync(join(home, 'metrics.jsonl'))).toBe(false)
+  expect(existsSync(join(home, 'gc.log'))).toBe(false)
+})
+
+test('lt4u AC5: a refused run does not stop the next; the log names both; a metrics failure keeps the dir', () => {
+  reset()
+  const bad = freshId('aaa') // a plain dir, not a worktree: refused
+  const good = freshId('zzz')
+  const old = Date.now() - 10 * DAY
+  const dbad = writeRun(bad, { outcome: 'done', finishedAt: old })
+  const dgood = writeRun(good, { outcome: 'done', finishedAt: old, real: true })
+  const out = factory(['gc'])
+  expect(out.code).toBe(0)
+  expect(existsSync(dbad)).toBe(true)
+  expect(existsSync(dgood)).toBe(false)
+  const log = readFileSync(join(home, 'gc.log'), 'utf8')
+  expect(log).toContain(`refused ${bad}`)
+  expect(log).toContain(`reaped ${good}`)
+  expect(out.err + out.out).toContain(bad)
+
+  // a metrics.jsonl that cannot be appended to: the run dir stays, a retry after repair succeeds
+  const m = freshId('mmm')
+  const dm = writeRun(m, { outcome: 'done', finishedAt: old, real: true })
+  mkdirSync(join(home, 'metrics.jsonl'))
+  factory(['gc'])
+  expect(existsSync(dm)).toBe(true)
+  rmSync(join(home, 'metrics.jsonl'), { recursive: true })
+  factory(['gc'])
+  expect(existsSync(dm)).toBe(false)
+  expect(metricIds()).toContain(m)
 })
