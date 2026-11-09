@@ -698,6 +698,23 @@ const LIST = () =>
     `gh-${key('repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1')}`,
   )
 const OLD = '2026-11-01T00:00:00Z'
+// a bead recovered after a newer one settled: the stamp stops at the recovered bead, so the next pass reads the newer one again
+const OLD_ISO = '2026-11-01T00:00:00.000Z'
+const NEW = '2026-11-05T00:00:00.000Z' // the exact lastWriteAt after the newest bead settles
+/** the committed page of `id` holds the seven sections and every url */
+const committed = (id: string, ...urls: string[]) => {
+  const text = git('show', `HEAD:solutions/2026-11/fix-${id}.md`)
+  for (const s of SECTIONS) expect(text).toContain(`## ${s}`)
+  for (const u of urls) expect(text).toContain(u)
+}
+/** a pass with nothing left: no agent run, no new commit, the same timestamp */
+const settles = (agentRuns: number, done: string) => {
+  const head = git('rev-parse', 'HEAD')
+  factory(['wiki', 'write'])
+  expect(runs()).toBe(agentRuns)
+  expect(git('rev-parse', 'HEAD')).toBe(head)
+  expect(state().lastWriteAt).toBe(done)
+}
 
 slow('write AC2 a malformed GitHub list row keeps the older bead pending', () => {
   setup()
@@ -754,7 +771,7 @@ function twoBeads() {
   setup()
   seed([
     closed('acme-1', { closed_at: OLD, metadata: { ship_pr: PR6 } }),
-    closed('acme-2', { metadata: { ship_pr: PR5 } }),
+    closed('acme-2', { closed_at: NEW, metadata: { ship_pr: PR5 } }),
   ])
   pr(5, 'acme-2: fix it', ['src/a.ts'])
   pr(6, 'acme-1: fix it', ['src/b.ts'])
@@ -794,14 +811,15 @@ for (const [name, spoil] of [
     expect(Object.keys(state().written).sort()).toEqual(['acme-1', 'acme-2'])
     expect(runs()).toBe(2)
     expect(prompt()).toContain(PR6)
-    expect(state().lastWriteAt).not.toBe(PRIOR)
-    factory(['wiki', 'write'])
-    expect(runs()).toBe(2)
+    expect(state().lastWriteAt).toBe(OLD_ISO)
+    committed('acme-1', PR6)
+    committed('acme-2', PR5)
+    settles(2, OLD_ISO)
   })
 
 slow('write AC9 a refused global GitHub list calls no agent, and both beads recover', () => {
   setup()
-  seed([closed('acme-1', { closed_at: OLD }), closed('acme-2')], [])
+  seed([closed('acme-1', { closed_at: OLD }), closed('acme-2', { closed_at: NEW })], [])
   stage('solutions/2026-11/fix-acme-1.md', page('acme-1', 'https://github.com/acme/widget/pull/8'))
   stage('solutions/2026-11/fix-acme-2.md', page('acme-2', 'https://github.com/acme/widget/pull/9'))
   prior()
@@ -818,21 +836,10 @@ slow('write AC9 a refused global GitHub list calls no agent, and both beads reco
   factory(['wiki', 'write'])
   expect(Object.keys(state().written).sort()).toEqual(['acme-1', 'acme-2'])
   expect(runs()).toBe(1)
-  const done = state().lastWriteAt
-  expect(done).not.toBe(PRIOR)
-  for (const [id, num] of [
-    ['acme-1', 8],
-    ['acme-2', 9],
-  ]) {
-    const text = git('show', `HEAD:solutions/2026-11/fix-${id}.md`)
-    for (const s of SECTIONS) expect(text).toContain(`## ${s}`)
-    expect(text).toContain(`https://github.com/acme/widget/pull/${num}`)
-  }
-  const head = git('rev-parse', 'HEAD')
-  factory(['wiki', 'write'])
-  expect(runs()).toBe(1)
-  expect(git('rev-parse', 'HEAD')).toBe(head)
-  expect(state().lastWriteAt).toBe(done)
+  expect(state().lastWriteAt).toBe(NEW)
+  committed('acme-1', 'https://github.com/acme/widget/pull/8')
+  committed('acme-2', 'https://github.com/acme/widget/pull/9')
+  settles(1, NEW)
 })
 
 slow(
@@ -944,7 +951,7 @@ slow('write AC9 a failed GitLab short id search keeps the older bead pending unt
     'origin',
     'https://gitlab.example.com/acme/widget.git',
   ])
-  seed([closed('acme-abc1.2', { closed_at: OLD }), closed('acme-def')])
+  seed([closed('acme-abc1.2', { closed_at: OLD }), closed('acme-def', { closed_at: NEW })])
   const mrow = (iid: number, title: string) => ({
     iid,
     web_url: `https://gitlab.example.com/acme/widget/-/merge_requests/${iid}`,
@@ -989,13 +996,18 @@ esac
   expect(Object.keys(state().written).sort()).toEqual(['acme-abc1.2', 'acme-def'])
   expect(runs()).toBe(2)
   expect(prompt()).toContain(GL)
-  factory(['wiki', 'write'])
-  expect(runs()).toBe(2)
+  expect(state().lastWriteAt).toBe(OLD_ISO)
+  committed('acme-abc1.2', GL)
+  committed('acme-def', GL.replace('7', '8'))
+  settles(2, OLD_ISO)
 })
 
 slow('write AC9 a recovered code plus release pair commits both links and both source records', () => {
   setup()
-  seed([closed('acme-3', { closed_at: OLD, metadata: { ship_pr: PR5 } }), closed('acme-5')], [])
+  seed(
+    [closed('acme-3', { closed_at: OLD, metadata: { ship_pr: PR5 } }), closed('acme-5', { closed_at: NEW })],
+    [],
+  )
   pr(5, 'acme-3: fix it', ['src/a.ts'])
   const rel = pr(7, 'acme-3 release notes', ['CHANGELOG.md'])
   const other = pr(9, 'acme-5: fix it', ['src/c.ts'])
@@ -1018,12 +1030,8 @@ slow('write AC9 a recovered code plus release pair commits both links and both s
   for (const s of SECTIONS) expect(text).toContain(`## ${s}`)
   expect(text).toContain(PR5)
   expect(text).toContain(R7)
-  const done = state().lastWriteAt
-  const head = git('rev-parse', 'HEAD')
-  factory(['wiki', 'write'])
-  expect(runs()).toBe(1)
-  expect(git('rev-parse', 'HEAD')).toBe(head)
-  expect(state().lastWriteAt).toBe(done)
+  expect(state().lastWriteAt).toBe(NEW)
+  settles(1, NEW)
 })
 
 /** a GitLab rig: acme-old (older, MR 7) and acme-new (MR 8); the replies are files under data, `ch7` is the MR 7 file list */
@@ -1038,7 +1046,7 @@ function gitlabRig() {
     'origin',
     'https://gitlab.example.com/acme/widget.git',
   ])
-  seed([closed('acme-old', { closed_at: OLD }), closed('acme-new')])
+  seed([closed('acme-old', { closed_at: OLD }), closed('acme-new', { closed_at: NEW })])
   const mrow = (iid: number, title: string) => ({
     iid,
     web_url: `https://gitlab.example.com/acme/widget/-/merge_requests/${iid}`,
@@ -1058,6 +1066,7 @@ function gitlabRig() {
     glab,
     `#!/bin/sh
 d='${data}'
+echo "$*" >> "$d/glab-calls"
 case "$*" in
   *search=acme-old*) cat "$d/full-old";;
   *search=acme-new*) cat "$d/full-new";;
@@ -1093,13 +1102,37 @@ slow('write AC9 a malformed GitLab full id reply keeps the older bead pending, t
   ])
   factory(['wiki', 'write'])
   expect(Object.keys(state().written).sort()).toEqual(['acme-new', 'acme-old'])
-  expect(git('show', 'HEAD:solutions/2026-11/fix-acme-old.md')).toContain(GL)
-  const done = state().lastWriteAt
-  expect(done).not.toBe(PRIOR)
-  factory(['wiki', 'write'])
-  expect(runs()).toBe(2)
-  expect(state().lastWriteAt).toBe(done)
+  committed('acme-old', GL)
+  committed('acme-new', GL.replace('7', '8'))
+  expect(state().lastWriteAt).toBe(OLD_ISO)
+  settles(2, OLD_ISO)
 })
+
+const glabCalls = (re: RegExp) =>
+  (existsSync(join(data, 'glab-calls')) ? readFileSync(join(data, 'glab-calls'), 'utf8') : '')
+    .split('\n')
+    .filter(l => re.test(l)).length
+const MR7 = { iid: 7, web_url: GL, title: 'acme-old: fix it', state: 'merged', description: null }
+for (const [name, detail] of [
+  ['an empty object', {}],
+  ['another iid', { ...MR7, iid: 9 }],
+  ['an empty title', { ...MR7, title: '' }],
+  ['a numeric description', { ...MR7, description: 7 }],
+  ['an unknown state', { ...MR7, state: 'bogus' }],
+  ['a null state', { ...MR7, state: null }],
+  ['an array', [MR7]],
+] as const)
+  slow(`write AC8 GitLab detail with ${name} keeps the older bead pending and asks for no file list`, () => {
+    const j = gitlabRig()
+    j('mr7', detail)
+    const r = factory(['wiki', 'write'])
+    expect(r.out).toContain('1 waiting')
+    expect(glabCalls(/merge_requests\/7\/changes/)).toBe(0)
+    expect(Object.keys(state().written)).toEqual(['acme-new'])
+    expect(state().lastWriteAt).toBe(PRIOR)
+    expect(runs()).toBe(1)
+    expect(prompt()).not.toContain('"id": "acme-old"')
+  })
 
 for (const [name, changes, complete] of [
   ['an absent overflow', { changes: [{ new_path: 'src/b.ts', diff: '' }] }, true],
