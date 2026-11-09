@@ -1,6 +1,7 @@
 // claude-factory-3u1.3.1 (FR-018, research R8): the dream finds failure classes and re-learned lessons,
 // and writes at most 3 proposals one rung up the learning ladder.
 import { expect, test } from 'bun:test'
+import { modelTest } from './model-test'
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -70,24 +71,28 @@ test.each<[string, string[], string[], string[]]>([
   expect(PROPOSAL_CAP).toBe(3)
 })
 
-test('relearned names an inbox note that says what a CORE.md line already says', async () => {
-  const dir = join(tmpdir(), `memory-relearned-${process.pid}`)
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(join(dir, 'inbox'), { recursive: true })
-  writeFileSync(
-    join(dir, 'CORE.md'),
-    '- bd init on the shared Dolt server locks every repo\n- run prettier before a PR\n',
-  )
-  writeFileSync(
-    join(dir, 'inbox', 'a.md'),
-    format({ summary: 'bd init on the shared dolt server locks every repo', body: '' }),
-  )
-  writeFileSync(join(dir, 'inbox', 'b.md'), format({ summary: 'the deploy needs a VPN', body: '' }))
-  expect(await relearned(dir)).toEqual([
-    '- inbox/a.md re-learns CORE.md: bd init on the shared Dolt server locks every repo',
-  ])
-  rmSync(dir, { recursive: true, force: true })
-}, 60_000)
+modelTest(
+  'relearned names an inbox note that says what a CORE.md line already says',
+  async () => {
+    const dir = join(tmpdir(), `memory-relearned-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(join(dir, 'inbox'), { recursive: true })
+    writeFileSync(
+      join(dir, 'CORE.md'),
+      '- bd init on the shared Dolt server locks every repo\n- run prettier before a PR\n',
+    )
+    writeFileSync(
+      join(dir, 'inbox', 'a.md'),
+      format({ summary: 'bd init on the shared dolt server locks every repo', body: '' }),
+    )
+    writeFileSync(join(dir, 'inbox', 'b.md'), format({ summary: 'the deploy needs a VPN', body: '' }))
+    expect(await relearned(dir)).toEqual([
+      '- inbox/a.md re-learns CORE.md: bd init on the shared Dolt server locks every repo',
+    ])
+    rmSync(dir, { recursive: true, force: true })
+  },
+  60_000,
+)
 
 test('dreamPrompt lists failure classes, re-learned lessons and proposals, and caps proposals at 3', () => {
   const p = dreamPrompt('/m', [], [], [], undefined, [], [], [], [], 15, {

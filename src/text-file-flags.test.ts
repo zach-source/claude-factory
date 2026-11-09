@@ -1,6 +1,7 @@
 // claude-factory-jho3: `factory mail --text-file` and `factory memory add --body-file` read untrusted text from a
 // file, so no quote in the text reaches a shell. A VM expands them before it queues. Fixtures use acme names only.
 import { afterEach, expect, test } from 'bun:test'
+import { modelTest } from './model-test'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -143,7 +144,7 @@ const notes = () =>
       )
     : []
 
-test('memory add --body-file stores the file text as the body (AC2)', () => {
+modelTest('memory add --body-file stores the file text as the body (AC2)', () => {
   mkdirSync(home, { recursive: true })
   const f = txt('b.md', TEXT)
   const r = factory([...ADD, '--body-file', f, 'a plain summary'])

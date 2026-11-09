@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { modelTest } from './model-test'
 import {
   existsSync,
   mkdirSync,
@@ -136,47 +137,55 @@ test("snapshot keeps only the rig's notes", () => {
   expect(existsSync(o2)).toBe(false)
 })
 
-test('snapshot index and usage hold only kept paths', async () => {
-  const dir = fixture()
-  await search(dir, 'warm the index', { rig: 'acme' })
-  const all = JSON.parse(readFileSync(join(dir, '.index.json'), 'utf8'))
-  expect(Object.keys(all.vecs).some(p => p.includes('theirs'))).toBe(true)
-  writeFileSync(
-    join(dir, '.usage.jsonl'),
-    [
-      JSON.stringify({ path: 'ci/mine.md', at: 1, shown: 1 }),
-      JSON.stringify({ path: 'ci/theirs.md', at: 1, shown: 1 }),
-    ].join('\n') + '\n',
-  )
-  const out = join(tmp('out'), 'm.tgz')
-  snapshot(dir, 'acme', out)
-  const x = tmp('x')
-  tar('-xzf', out, '-C', x)
-  const idx = JSON.parse(readFileSync(join(x, '.index.json'), 'utf8'))
-  const { notes, topics } = walk(x)
-  const want = [...notes, ...topics.values(), ...coreNotes(x)].map(n => n.path).sort()
-  expect(Object.keys(idx.vecs).sort()).toEqual(want)
-  expect(idx.model).toBe(all.model)
-  const usage = readFileSync(join(x, '.usage.jsonl'), 'utf8').trim().split('\n')
-  expect(usage.map(l => JSON.parse(l).path)).toEqual(['ci/mine.md'])
-}, 120_000)
+modelTest(
+  'snapshot index and usage hold only kept paths',
+  async () => {
+    const dir = fixture()
+    await search(dir, 'warm the index', { rig: 'acme' })
+    const all = JSON.parse(readFileSync(join(dir, '.index.json'), 'utf8'))
+    expect(Object.keys(all.vecs).some(p => p.includes('theirs'))).toBe(true)
+    writeFileSync(
+      join(dir, '.usage.jsonl'),
+      [
+        JSON.stringify({ path: 'ci/mine.md', at: 1, shown: 1 }),
+        JSON.stringify({ path: 'ci/theirs.md', at: 1, shown: 1 }),
+      ].join('\n') + '\n',
+    )
+    const out = join(tmp('out'), 'm.tgz')
+    snapshot(dir, 'acme', out)
+    const x = tmp('x')
+    tar('-xzf', out, '-C', x)
+    const idx = JSON.parse(readFileSync(join(x, '.index.json'), 'utf8'))
+    const { notes, topics } = walk(x)
+    const want = [...notes, ...topics.values(), ...coreNotes(x)].map(n => n.path).sort()
+    expect(Object.keys(idx.vecs).sort()).toEqual(want)
+    expect(idx.model).toBe(all.model)
+    const usage = readFileSync(join(x, '.usage.jsonl'), 'utf8').trim().split('\n')
+    expect(usage.map(l => JSON.parse(l).path)).toEqual(['ci/mine.md'])
+  },
+  120_000,
+)
 
-test("snapshot search gives the laptop's top 5", async () => {
-  const dir = fixture()
-  await search(dir, 'warm the index', { rig: 'acme' })
-  const out = join(tmp('out'), 'm.tgz')
-  snapshot(dir, 'acme', out)
-  const x = tmp('x')
-  tar('-xzf', out, '-C', x)
-  const before = statSync(join(x, '.index.json')).mtimeMs
-  for (const q of ['database for tests', 'wait for green checks', 'long lesson']) {
-    const a = await search(dir, q, { rig: 'acme' })
-    const b = await search(x, q, { rig: 'acme' })
-    expect(b.map(f => f.note.path)).toEqual(a.map(f => f.note.path))
-    b.forEach((f, i) => expect(Math.abs(f.score - a[i]!.score)).toBeLessThan(1e-9))
-  }
-  expect(statSync(join(x, '.index.json')).mtimeMs).toBe(before)
-}, 120_000)
+modelTest(
+  "snapshot search gives the laptop's top 5",
+  async () => {
+    const dir = fixture()
+    await search(dir, 'warm the index', { rig: 'acme' })
+    const out = join(tmp('out'), 'm.tgz')
+    snapshot(dir, 'acme', out)
+    const x = tmp('x')
+    tar('-xzf', out, '-C', x)
+    const before = statSync(join(x, '.index.json')).mtimeMs
+    for (const q of ['database for tests', 'wait for green checks', 'long lesson']) {
+      const a = await search(dir, q, { rig: 'acme' })
+      const b = await search(x, q, { rig: 'acme' })
+      expect(b.map(f => f.note.path)).toEqual(a.map(f => f.note.path))
+      b.forEach((f, i) => expect(Math.abs(f.score - a[i]!.score)).toBeLessThan(1e-9))
+    }
+    expect(statSync(join(x, '.index.json')).mtimeMs).toBe(before)
+  },
+  120_000,
+)
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 /** `factory memory search` as a VM worker runs it: a worker dir with memory.tgz, a fresh home, no outbox */
@@ -196,21 +205,25 @@ const hits = (out: string) =>
     .filter(l => /^\d\.\d\d {2}/.test(l))
     .map(l => l.replace(/^(\d\.\d\d) {2}\S*\/memory\/(\S+).*$/, '$1 $2'))
 
-test('VM search unpacks memory.tgz', async () => {
-  const dir = fixture()
-  await search(dir, 'warm the index', { rig: 'acme' })
-  const w = tmp('worker')
-  snapshot(dir, 'acme', join(w, 'memory.tgz'))
-  for (const q of ['database for tests', 'wait for green checks']) {
-    const home = tmp('home')
-    const vm = vmSearch(w, home, q)
-    expect(vm.code).toBe(0)
-    const want = (await search(dir, q, { rig: 'acme' })).map(f => `${f.score.toFixed(2)} ${f.note.path}`)
-    expect(want.length).toBeGreaterThan(0)
-    expect(hits(vm.out)).toEqual(want)
-    expect(existsSync(join(home, 'memory', 'ci', 'mine.md'))).toBe(true)
-  }
-}, 120_000)
+modelTest(
+  'VM search unpacks memory.tgz',
+  async () => {
+    const dir = fixture()
+    await search(dir, 'warm the index', { rig: 'acme' })
+    const w = tmp('worker')
+    snapshot(dir, 'acme', join(w, 'memory.tgz'))
+    for (const q of ['database for tests', 'wait for green checks']) {
+      const home = tmp('home')
+      const vm = vmSearch(w, home, q)
+      expect(vm.code).toBe(0)
+      const want = (await search(dir, q, { rig: 'acme' })).map(f => `${f.score.toFixed(2)} ${f.note.path}`)
+      expect(want.length).toBeGreaterThan(0)
+      expect(hits(vm.out)).toEqual(want)
+      expect(existsSync(join(home, 'memory', 'ci', 'mine.md'))).toBe(true)
+    }
+  },
+  120_000,
+)
 
 test('VM search keeps an existing memory dir', () => {
   const dir = fixture()

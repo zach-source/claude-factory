@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { modelTest } from './model-test'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -271,26 +272,30 @@ test('rank() tells TIER_BONUS.long (0.01) from TIER_BONUS.fact (0.02) at the sam
   expect(withFact.map(f => f.note.path)).toEqual(['beads/other.md', 'beads/short.md'])
 })
 
-test('search indexes CORE.md bullets as fact notes, scoped to their rig section', async () => {
-  const dir = join(tmpdir(), `memory-core-${process.pid}`)
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(
-    join(dir, 'CORE.md'),
-    [
-      '- always search the memory before you start a station',
-      '## rig: fabriek',
-      '- use uv run --frozen, never bare pip',
-    ].join('\n'),
-  )
-  const [top] = await search(dir, 'how do I run python commands in this rig?', { rig: 'fabriek' })
-  expect(top!.note.path).toMatch(/^CORE\.md#[0-9a-f]{8}$/)
-  expect(top!.note.summary).toContain('uv run --frozen')
-  expect(top!.note.tier).toBe('fact')
-  // another rig never sees fabriek's CORE bullet
-  const other = await search(dir, 'how do I run python commands in this rig?', { rig: 'web' })
-  expect(other.some(f => f.note.summary.includes('uv run --frozen'))).toBe(false)
-}, 60_000)
+modelTest(
+  'search indexes CORE.md bullets as fact notes, scoped to their rig section',
+  async () => {
+    const dir = join(tmpdir(), `memory-core-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'CORE.md'),
+      [
+        '- always search the memory before you start a station',
+        '## rig: fabriek',
+        '- use uv run --frozen, never bare pip',
+      ].join('\n'),
+    )
+    const [top] = await search(dir, 'how do I run python commands in this rig?', { rig: 'fabriek' })
+    expect(top!.note.path).toMatch(/^CORE\.md#[0-9a-f]{8}$/)
+    expect(top!.note.summary).toContain('uv run --frozen')
+    expect(top!.note.tier).toBe('fact')
+    // another rig never sees fabriek's CORE bullet
+    const other = await search(dir, 'how do I run python commands in this rig?', { rig: 'web' })
+    expect(other.some(f => f.note.summary.includes('uv run --frozen'))).toBe(false)
+  },
+  60_000,
+)
 
 test('walk() turns each LONG.md entry into one note, skips .archive, and outline counts entries', () => {
   const dir = join(tmpdir(), `memory-long-${process.pid}`)
@@ -398,15 +403,19 @@ test('new notes land in the inbox, and the outline lists topics with their summa
   })
 })
 
-test('semantic search finds the note that means the query, not the one that shares its words', async () => {
-  const dir = join(tmpdir(), `memory-search-${process.pid}`)
-  rmSync(dir, { recursive: true, force: true })
-  add(dir, { summary: 'bd init on the shared Dolt server takes a lock that stalls every repo', body: '' })
-  add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
-  add(dir, { summary: 'the tracker is not slow because of the network', body: '' })
-  const [top] = await search(dir, 'why is the issue tracker frozen for all projects?')
-  expect(top!.note.summary).toContain('stalls every repo')
-}, 60_000)
+modelTest(
+  'semantic search finds the note that means the query, not the one that shares its words',
+  async () => {
+    const dir = join(tmpdir(), `memory-search-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    add(dir, { summary: 'bd init on the shared Dolt server takes a lock that stalls every repo', body: '' })
+    add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
+    add(dir, { summary: 'the tracker is not slow because of the network', body: '' })
+    const [top] = await search(dir, 'why is the issue tracker frozen for all projects?')
+    expect(top!.note.summary).toContain('stalls every repo')
+  },
+  60_000,
+)
 
 test('a shown-only line adds no run; a helped line from another run does', () => {
   const dir = join(tmpdir(), `memory-shown-runs-${process.pid}`)
@@ -699,31 +708,35 @@ test("each rig's workers read the core for every rig and their own rig's section
   expect(coreFor(core)).toBe(['- verify before you report', '## Why', '- notes'].join('\n'))
 })
 
-test('adding what a note already says finds that note', async () => {
-  const dir = join(tmpdir(), `memory-same-${process.pid}`)
-  rmSync(dir, { recursive: true, force: true })
-  add(dir, {
-    summary: 'fabriek has no CHANGELOG file or per-PR version bump convention',
-    body: 'checked the whole history',
-    rig: 'fabriek',
-  })
-  add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
-  const dup = await same(dir, {
-    summary: 'no changelog or version bump convention exists in fabriek',
-    rig: 'fabriek',
-  })
-  expect(dup?.note.summary).toContain('CHANGELOG')
-  // the summaries' vectors are cached, so the next add embeds only its own
-  expect(existsSync(join(dir, '.index.json.summaries'))).toBe(true)
-  expect(await same(dir, { summary: 'the dashboard CSP is default-src self', rig: 'fabriek' })).toBeNull()
-  // another rig's note is not this rig's lesson
-  expect(
-    await same(dir, {
+modelTest(
+  'adding what a note already says finds that note',
+  async () => {
+    const dir = join(tmpdir(), `memory-same-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    add(dir, {
+      summary: 'fabriek has no CHANGELOG file or per-PR version bump convention',
+      body: 'checked the whole history',
+      rig: 'fabriek',
+    })
+    add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
+    const dup = await same(dir, {
       summary: 'no changelog or version bump convention exists in fabriek',
-      rig: 'api',
-    }),
-  ).toBeNull()
-}, 60_000)
+      rig: 'fabriek',
+    })
+    expect(dup?.note.summary).toContain('CHANGELOG')
+    // the summaries' vectors are cached, so the next add embeds only its own
+    expect(existsSync(join(dir, '.index.json.summaries'))).toBe(true)
+    expect(await same(dir, { summary: 'the dashboard CSP is default-src self', rig: 'fabriek' })).toBeNull()
+    // another rig's note is not this rig's lesson
+    expect(
+      await same(dir, {
+        summary: 'no changelog or version bump convention exists in fabriek',
+        rig: 'api',
+      }),
+    ).toBeNull()
+  },
+  60_000,
+)
 
 test('each part of CORE.md is cut at its budget, so it cannot grow every brief', () => {
   const long = (tag: string) =>
@@ -1955,18 +1968,22 @@ test('evalScore scores each category; an abstain case hits only when search retu
   expect(evalScore([{ query: 'q' }], [['a.md']]).recall).toBe(0)
 })
 
-test('evaluate() runs the fixed query set against a real store through search()', async () => {
-  const dir = join(tmpdir(), `memory-eval-${process.pid}`)
-  rmSync(dir, { recursive: true, force: true })
-  add(dir, { summary: 'bd init on the shared Dolt server takes a lock that stalls every repo', body: '' })
-  add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
-  const r = await evaluate(dir, [
-    { query: 'why is the issue tracker frozen for all projects?', expect: 'stalls' },
-    { query: 'did the rollout finish?', expect: 'deploy finished' },
-  ])
-  expect(r.recall).toBe(1)
-  expect(r.misses).toEqual([])
-}, 60_000)
+modelTest(
+  'evaluate() runs the fixed query set against a real store through search()',
+  async () => {
+    const dir = join(tmpdir(), `memory-eval-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    add(dir, { summary: 'bd init on the shared Dolt server takes a lock that stalls every repo', body: '' })
+    add(dir, { summary: 'kubectl rollout status confirms a deploy finished', body: '' })
+    const r = await evaluate(dir, [
+      { query: 'why is the issue tracker frozen for all projects?', expect: 'stalls' },
+      { query: 'did the rollout finish?', expect: 'deploy finished' },
+    ])
+    expect(r.recall).toBe(1)
+    expect(r.misses).toEqual([])
+  },
+  60_000,
+)
 
 test('lifecycleMetrics: notes per topic, archives this pass, and the kind and until shares', () => {
   const short = (path: string, extra: Partial<Note> = {}): Note => ({
@@ -2078,102 +2095,110 @@ test('dreamPrompt names the long tier and the id rule, and adds the promotion, d
   expect(filled).toContain('claude-factory: 29 short notes (cap 15)')
 })
 
-test('longSimPairs finds a near-duplicate pair of LONG.md entries in the same topic and rig, not across a topic or a rig', async () => {
-  const dir = join(tmpdir(), `memory-longsim-${process.pid}`)
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(join(dir, 'beads'), { recursive: true })
-  mkdirSync(join(dir, 'ci'), { recursive: true })
-  const entries: LongEntry[] = [
-    {
-      id: 'a',
-      summary: 'bd init on the shared Dolt server locks every repo',
-      rig: 'claude-factory',
-      body: 'why',
-    },
-    {
-      id: 'b',
-      summary: 'bd init takes a lock on the shared Dolt server, blocking every repo',
-      rig: 'claude-factory',
-      body: 'why, reworded',
-    },
-    {
-      id: 'c',
-      summary: 'kubectl rollout status confirms a deploy finished',
-      rig: 'claude-factory',
-      body: 'unrelated',
-    },
-    {
-      id: 'd',
-      summary: 'bd init on the shared Dolt server locks every repo',
-      rig: 'sluis',
-      body: 'same words, another rig',
-    },
-  ]
-  writeFileSync(join(dir, 'beads', 'LONG.md'), formatLong(entries))
-  writeFileSync(
-    join(dir, 'ci', 'LONG.md'),
-    formatLong([
+modelTest(
+  'longSimPairs finds a near-duplicate pair of LONG.md entries in the same topic and rig, not across a topic or a rig',
+  async () => {
+    const dir = join(tmpdir(), `memory-longsim-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(join(dir, 'beads'), { recursive: true })
+    mkdirSync(join(dir, 'ci'), { recursive: true })
+    const entries: LongEntry[] = [
       {
-        id: 'e',
-        summary: 'bd init on the shared Dolt server locks every repo',
-        rig: 'claude-factory',
-        body: 'same words, another topic',
-      },
-    ]),
-  )
-
-  const pairs = await longSimPairs(dir)
-  expect(pairs.every(p => p.score >= 0.88)).toBe(true)
-  expect(
-    pairs.some(
-      p =>
-        (p.a === 'beads/LONG.md#a' && p.b === 'beads/LONG.md#b') ||
-        (p.a === 'beads/LONG.md#b' && p.b === 'beads/LONG.md#a'),
-    ),
-  ).toBe(true)
-  // c (a different lesson) pairs with nothing
-  expect(pairs.some(p => p.a.includes('#c') || p.b.includes('#c'))).toBe(false)
-  // d (another rig) and e (another topic) never pair with a, even with identical wording
-  expect(
-    pairs.some(p => p.a.includes('#d') || p.b.includes('#d') || p.a.includes('#e') || p.b.includes('#e')),
-  ).toBe(false)
-}, 60_000)
-
-test('tierCandidates composes decide(), longSimPairs() and usage() into dream-prompt lines for promotion and dedupe', async () => {
-  const dir = join(tmpdir(), `memory-tiercand-${process.pid}`)
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(join(dir, 'beads'), { recursive: true })
-  writeFileSync(
-    join(dir, 'beads', 'LONG.md'),
-    formatLong([
-      {
-        id: 'lock',
+        id: 'a',
         summary: 'bd init on the shared Dolt server locks every repo',
         rig: 'claude-factory',
         body: 'why',
       },
-      { id: 'x', summary: 'a note that only helped once', rig: 'claude-factory', body: 'body x' },
       {
-        id: 'y',
-        summary: 'a note that only helped once, in other words',
+        id: 'b',
+        summary: 'bd init takes a lock on the shared Dolt server, blocking every repo',
         rig: 'claude-factory',
-        body: 'body y',
+        body: 'why, reworded',
       },
-    ]),
-  )
-  const now = Date.parse('2026-10-15T00:00:00Z')
-  use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-a')
-  use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-b')
-  use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-c')
+      {
+        id: 'c',
+        summary: 'kubectl rollout status confirms a deploy finished',
+        rig: 'claude-factory',
+        body: 'unrelated',
+      },
+      {
+        id: 'd',
+        summary: 'bd init on the shared Dolt server locks every repo',
+        rig: 'sluis',
+        body: 'same words, another rig',
+      },
+    ]
+    writeFileSync(join(dir, 'beads', 'LONG.md'), formatLong(entries))
+    writeFileSync(
+      join(dir, 'ci', 'LONG.md'),
+      formatLong([
+        {
+          id: 'e',
+          summary: 'bd init on the shared Dolt server locks every repo',
+          rig: 'claude-factory',
+          body: 'same words, another topic',
+        },
+      ]),
+    )
 
-  const { promotions, duplicates } = await tierCandidates(dir, now)
-  expect(promotions).toEqual([
-    '- beads/LONG.md#lock (bd init on the shared Dolt server locks every repo): activation 2.69 across 3 runs',
-  ])
-  expect(duplicates).toHaveLength(1)
-  expect(duplicates[0]).toContain('beads/LONG.md#x')
-  expect(duplicates[0]).toContain('beads/LONG.md#y')
-}, 60_000)
+    const pairs = await longSimPairs(dir)
+    expect(pairs.every(p => p.score >= 0.88)).toBe(true)
+    expect(
+      pairs.some(
+        p =>
+          (p.a === 'beads/LONG.md#a' && p.b === 'beads/LONG.md#b') ||
+          (p.a === 'beads/LONG.md#b' && p.b === 'beads/LONG.md#a'),
+      ),
+    ).toBe(true)
+    // c (a different lesson) pairs with nothing
+    expect(pairs.some(p => p.a.includes('#c') || p.b.includes('#c'))).toBe(false)
+    // d (another rig) and e (another topic) never pair with a, even with identical wording
+    expect(
+      pairs.some(p => p.a.includes('#d') || p.b.includes('#d') || p.a.includes('#e') || p.b.includes('#e')),
+    ).toBe(false)
+  },
+  60_000,
+)
+
+modelTest(
+  'tierCandidates composes decide(), longSimPairs() and usage() into dream-prompt lines for promotion and dedupe',
+  async () => {
+    const dir = join(tmpdir(), `memory-tiercand-${process.pid}`)
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(join(dir, 'beads'), { recursive: true })
+    writeFileSync(
+      join(dir, 'beads', 'LONG.md'),
+      formatLong([
+        {
+          id: 'lock',
+          summary: 'bd init on the shared Dolt server locks every repo',
+          rig: 'claude-factory',
+          body: 'why',
+        },
+        { id: 'x', summary: 'a note that only helped once', rig: 'claude-factory', body: 'body x' },
+        {
+          id: 'y',
+          summary: 'a note that only helped once, in other words',
+          rig: 'claude-factory',
+          body: 'body y',
+        },
+      ]),
+    )
+    const now = Date.parse('2026-10-15T00:00:00Z')
+    use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-a')
+    use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-b')
+    use(dir, ['beads/LONG.md#lock'], 'helped', now, 'run-c')
+
+    const { promotions, duplicates } = await tierCandidates(dir, now)
+    expect(promotions).toEqual([
+      '- beads/LONG.md#lock (bd init on the shared Dolt server locks every repo): activation 2.69 across 3 runs',
+    ])
+    expect(duplicates).toHaveLength(1)
+    expect(duplicates[0]).toContain('beads/LONG.md#x')
+    expect(duplicates[0]).toContain('beads/LONG.md#y')
+  },
+  60_000,
+)
 
 // citesTracker() must find a bead id or a PR reference in free text. It drives gate()'s --until
 // requirement (claude-factory-3u1.1.1.2). Bead-id matching is case sensitive.

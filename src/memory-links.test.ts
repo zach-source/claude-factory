@@ -1,5 +1,6 @@
 // claude-factory-eqxi: a symlink in the memory store is never read and a dream removes it
 import { expect, test } from 'bun:test'
+import { modelTest } from './model-test'
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -89,7 +90,7 @@ test('a link to a secret gives no text from walk, corpus, outline, coreNotes, se
   rmSync(root, { recursive: true, force: true })
 })
 
-test('regular notes, README and CORE.md are still read', async () => {
+modelTest('regular notes, README and CORE.md are still read', async () => {
   const { root, dir } = linkStore()
   writeFileSync(join(dir, 'inbox', 'x.md'), '---\nsummary: zqplain note\n---\nbody\n')
   writeFileSync(join(dir, 'topic', 'README.md'), '---\nsummary: zqplain topic\n---\nbody\n')
