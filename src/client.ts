@@ -12,7 +12,7 @@ export type Io = { out: (s: string) => void; err: (s: string) => void }
 
 const SEG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 /** commands that stay on this machine in server mode */
-const LOCAL = new Set(['help', '--help', '-h', 'check', 'mutate', 'ci', 'pg-scratch', 'devenv'])
+const LOCAL = new Set(['help', '--help', '-h', 'check', 'mutate', 'ci', 'pg-scratch', 'devenv', 'parity'])
 const PATROL_REFUSED = new Set(['tick', 'stop', 'resume', 'decide', 'start'])
 /** with FACTORY_FROM set (the manager), local mode refuses all but mail and reads */
 const FROM_ALLOWED = new Set(['mail', 'show', 'status', 'prs', 'backlog', 'decisions', 'plan', 'metrics'])

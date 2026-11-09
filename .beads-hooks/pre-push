@@ -57,3 +57,10 @@ if command -v bd >/dev/null 2>&1; then
   if [ "$_bd_exit" -ne 0 ]; then exit "$_bd_exit"; fi
 fi
 # --- END BEADS INTEGRATION v1.3.0 ---
+
+# front-end parity: each gap bead in parity-gaps.json must still be open (claude-factory-hpmc.7)
+if command -v bd >/dev/null 2>&1 && command -v bun >/dev/null 2>&1; then
+  "$(git rev-parse --show-toplevel)/bin/factory" parity || exit 1
+else
+  echo >&2 "parity: bd or bun not on PATH: factory parity skipped"
+fi

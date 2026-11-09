@@ -14,7 +14,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { SECRETS } from './secrets'
+import { hideParseText, SECRETS } from './secrets'
 
 export const LOCK_WAIT_MS = 5_000
 export const LOCK_STALE_MS = 30_000
@@ -95,7 +95,7 @@ export function editRigs<R extends Rig>(
       try {
         cur = JSON.parse(readFileSync(file, 'utf8'))
       } catch (e) {
-        throw new Error(`${file}: not valid JSON (${(e as Error).message})`)
+        throw new Error(`${file}: not valid JSON (${hideParseText((e as Error).message)})`)
       }
       if (!Array.isArray(cur)) throw new Error(`${file}: not a JSON array`)
     }

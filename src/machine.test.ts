@@ -537,6 +537,23 @@ test('validate refuses a mergeCheck not in next, or on a gate; accepts one in ne
   expect(() => validate(g({ prompt: 'x', next: { ok: 'b' }, mergeCheck: 'ok' }))).not.toThrow()
 })
 
+test('validate refuses securityRoute on a gate or without security and approve in next', () => {
+  const g = (a: object) =>
+    ({ name: 'x', start: 'a', nodes: { a, b: { prompt: 'x', next: { ok: 'a' } } } }) as unknown as Factory
+  expect(() =>
+    validate(g({ prompt: 'x', gate: true, next: { security: 'b', approve: 'b' }, securityRoute: true })),
+  ).toThrow('a: a gate has no worker, so no securityRoute')
+  expect(() => validate(g({ prompt: 'x', next: { approve: 'b' }, securityRoute: true }))).toThrow(
+    'a: securityRoute needs the outcomes security and approve in next',
+  )
+  expect(() => validate(g({ prompt: 'x', next: { security: 'b' }, securityRoute: true }))).toThrow(
+    'a: securityRoute needs the outcomes security and approve in next',
+  )
+  expect(() =>
+    validate(g({ prompt: 'x', next: { security: 'b', approve: 'b' }, securityRoute: true })),
+  ).not.toThrow()
+})
+
 // claude-factory-qgz AC5: validate refuses each broken onRounds and a repeatMail that is not an outcome.
 test('validate refuses onRounds with no rounds, to an unknown node, to done, or to itself; and repeatMail not in next', () => {
   const graph = (node: object) => ({ name: 'x', start: 'a', nodes: { a: node } }) as unknown as Factory

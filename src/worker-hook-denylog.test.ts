@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as hook from './worker-hook'
-import { HOME_REASON } from './home-guard'
+import { HOME_REASON, LOADED_REASON, OVERRIDE_REASON } from './home-guard'
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 let home: string
@@ -93,6 +93,8 @@ describe('deny log', () => {
   test('text with no constant is UNKNOWN', () => {
     expect(hook.reasonName('some other text')).toBe('UNKNOWN')
     expect(hook.reasonName(HOME_REASON)).toBe('HOME_REASON')
+    expect(hook.reasonName(LOADED_REASON)).toBe('LOADED_REASON')
+    expect(hook.reasonName(OVERRIDE_REASON)).toBe('OVERRIDE_REASON')
   })
 
   test('reasonName round-trips every exported reason', () => {
