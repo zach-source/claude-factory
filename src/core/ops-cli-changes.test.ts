@@ -74,7 +74,15 @@ function writeRun(home: string, id: string, def: Factory, snapshot: unknown) {
   writeFileSync(file, `export default ${JSON.stringify(def)}`)
   writeFileSync(
     join(d, 'run.json'),
-    JSON.stringify({ id, factory: file, repo: REPO, goal: 'g', ws: 'ws1', worktree: WT, branch: `factory/${id}` }),
+    JSON.stringify({
+      id,
+      factory: file,
+      repo: REPO,
+      goal: 'g',
+      ws: 'ws1',
+      worktree: WT,
+      branch: `factory/${id}`,
+    }),
   )
   writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot }))
 }
@@ -113,7 +121,8 @@ const calls = () => join(dir, 'calls.log')
 
 beforeAll(() => {
   rmSync(dir, { recursive: true, force: true })
-  for (const d of [bin, OUT, REPO, WT, join(WT, 'sub'), join(RAPI, '.beads')]) mkdirSync(d, { recursive: true })
+  for (const d of [bin, OUT, REPO, WT, join(WT, 'sub'), join(RAPI, '.beads')])
+    mkdirSync(d, { recursive: true })
   writeFileSync(join(bin, 'gh'), '#!/bin/sh\nexit 1\n')
   writeFileSync(
     join(bin, 'bd'),
@@ -173,7 +182,10 @@ const seedKeys = (home: string) =>
     join(home, 'decisions.json'),
     JSON.stringify(
       Object.fromEntries(
-        ['bd:api:api-1', 'bd:api:api-7', 'own:api:api-7'].map(k => [k, { question: 'q', options: ['a', 'b'], at: 1 }]),
+        ['bd:api:api-1', 'bd:api:api-7', 'own:api:api-7'].map(k => [
+          k,
+          { question: 'q', options: ['a', 'b'], at: 1 },
+        ]),
       ),
     ),
   )
@@ -215,7 +227,11 @@ const runRow = (row: Row) => {
   row.seed?.(home)
   const results = row.calls.map(k => {
     const argv = k.argv.map(a => a.replace('<HOME>', home))
-    const p = Bun.spawnSync([CLI, ...argv], { env: cleanEnv(home, k.env), cwd: k.cwd ?? OUT, timeout: 30_000 })
+    const p = Bun.spawnSync([CLI, ...argv], {
+      env: cleanEnv(home, k.env),
+      cwd: k.cwd ?? OUT,
+      timeout: 30_000,
+    })
     return { code: p.exitCode, out: norm(home, p.stdout.toString()), err: norm(home, p.stderr.toString()) }
   })
   return { results, ...state(home) }
@@ -301,7 +317,12 @@ if (!update) {
     expect(bad.inbox).toEqual([])
   })
   test('server: mail to a held box prints the held line', () => {
-    const r = post(freshHome(), '/v1/runs/r3/mail', { to: 'deploy', text: 'hello', from: 'manager', cwd: OUT })
+    const r = post(freshHome(), '/v1/runs/r3/mail', {
+      to: 'deploy',
+      text: 'hello',
+      from: 'manager',
+      cwd: OUT,
+    })
     expect(r.status).toBe(200)
     expect(r.body).toBe(outOf('MH').out)
     expect(r.inbox).toEqual(lineOf('MH'))

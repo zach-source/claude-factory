@@ -95,9 +95,7 @@
         "err": ""
       }
     ],
-    "bd": [
-      "human respond api-1 -r go now --actor factory/person"
-    ],
+    "bd": ["human respond api-1 -r go now --actor factory/person"],
     "decisions": null,
     "inbox": []
   },
@@ -133,13 +131,8 @@
         "err": ""
       }
     ],
-    "bd": [
-      "human respond api-1 -r go --actor factory/person"
-    ],
-    "decisions": [
-      "bd:api:api-7",
-      "own:api:api-7"
-    ],
+    "bd": ["human respond api-1 -r go --actor factory/person"],
+    "decisions": ["bd:api:api-7", "own:api:api-7"],
     "inbox": []
   },
   "Q5": {
@@ -150,12 +143,8 @@
         "err": ""
       }
     ],
-    "bd": [
-      "comment api-7 start it --actor factory/person"
-    ],
-    "decisions": [
-      "bd:api:api-1"
-    ],
+    "bd": ["comment api-7 start it --actor factory/person"],
+    "decisions": ["bd:api:api-1"],
     "inbox": []
   },
   "M1": {
