@@ -320,6 +320,7 @@ import * as leaseOp from './core/ops/lease'
 import * as metricsOp from './core/ops/metrics'
 import * as planOp from './core/ops/plan'
 import * as prsOp from './core/ops/prs'
+import * as rigsOp from './core/ops/rigs'
 import * as runsOp from './core/ops/runs'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
@@ -1446,7 +1447,8 @@ function git(cwd: string, ...args: string[]) {
 /** every git call that can reach a remote (fetch, ls-remote, push) gets this: a credential prompt
  * never blocks (it fails instead), and a timeout caps how long a hung connection can hold
  * gc-worktrees.lock (claude-factory-l38.12). It never skips hooks. */
-const GIT_NETWORK_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+/** at call time: in the AX manager host, worker.trustCA sets GIT_SSL_CAINFO after this module loads */
+export const gitNetworkEnv = () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0' })
 const GIT_NETWORK_TIMEOUT_MS = 30_000
 
 /**
@@ -1567,7 +1569,7 @@ const skillsShape = (v: unknown, where: string) =>
 /**
  * The skills of a station's worker, on every backend: the sorted union of the factory's, the rig's and the station's.
  * A factory with no `skills` gives `asd-ste100`, so an older factory keeps its behavior.
- * A rig name outside the worker image refuses here, because a person edits rigs.json by hand.
+ * A rig name outside the worker image refuses here, because rigs.json can hold a name that no command checked (an older file, or an edit outside the CLI).
  * `loadFactory` checks the other two layers (claude-factory-qda).
  */
 export function workerSkills(
@@ -1976,7 +1978,7 @@ function reviveWorktree(run: Run) {
   // only a genuine network failure gets its own message, never the blame-gc message below.
   const reachable =
     Bun.spawnSync(['git', '-C', run.repo, 'ls-remote', '--exit-code', 'origin'], {
-      env: GIT_NETWORK_ENV,
+      env: gitNetworkEnv(),
       timeout: GIT_NETWORK_TIMEOUT_MS,
     }).exitCode === 0
   if (!reachable)
@@ -1985,7 +1987,7 @@ function reviveWorktree(run: Run) {
         `${run.branch} still exists there. Check network access, then retry.`,
     )
   Bun.spawnSync(['git', '-C', run.repo, 'fetch', '--quiet', 'origin', run.branch], {
-    env: GIT_NETWORK_ENV,
+    env: gitNetworkEnv(),
     timeout: GIT_NETWORK_TIMEOUT_MS,
   })
   if (verify(`refs/remotes/origin/${run.branch}`))
@@ -4591,6 +4593,8 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   let error: string | undefined
   const [node, sub] = where(actor.getSnapshot().value)
   try {
+    // a migrated run's worktree is not in the task: make it from origin before any git call in it
+    if (sub === 'working' && inAx() && !existsSync(run.worktree)) reviveWorktree(run)
     if (sub === 'working')
       agent = haltRun(run, def, node, ctx(), send, halt, now) ?? reconcile(run, def, ctx(), node, send, now)
     else agent = agentOf(def, actor.getSnapshot().value, ctx())
@@ -5074,7 +5078,7 @@ function wikiLog(line: string) {
 /** git in the wiki: no identity, repo or index from the caller's environment, and literal pathspecs */
 function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<string, string> = {}) {
   const env: Record<string, string | undefined> = {
-    ...(network ? GIT_NETWORK_ENV : process.env),
+    ...(network ? gitNetworkEnv() : process.env),
     GIT_LITERAL_PATHSPECS: '1',
     GIT_CEILING_DIRECTORIES: dirname(dir),
   }
@@ -5333,7 +5337,7 @@ function wikiVisibility(r: { host: string; owner: string; repo: string }, fresh 
   )
     return c.value
   const p = Bun.spawnSync(['gh', 'repo', 'view', remote, '--json', 'visibility', '--jq', '.visibility'], {
-    env: GIT_NETWORK_ENV,
+    env: gitNetworkEnv(),
     stderr: 'pipe',
     timeout: 30_000,
   })
@@ -5469,7 +5473,7 @@ function wikiGroom(dryRun: boolean) {
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const PR_RE = new RegExp(`^https://${esc(r.host)}/${esc(r.owner)}/${esc(r.repo)}/pull/[1-9][0-9]*$`, 'i')
   const gh = (args: string[]) =>
-    Bun.spawnSync(['gh', ...args], { env: GIT_NETWORK_ENV, stderr: 'pipe', timeout: 30_000 })
+    Bun.spawnSync(['gh', ...args], { env: gitNetworkEnv(), stderr: 'pipe', timeout: 30_000 })
 
   const stored = readWikiState().groomPr as { url?: unknown } | undefined | null
   if (stored !== undefined) {
@@ -6715,7 +6719,7 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
 function branchFacts(repo: string, dryRun: boolean): gc.BranchFact[] | null {
   if (!dryRun) {
     const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '--quiet', '--no-tags', 'origin'], {
-      env: GIT_NETWORK_ENV,
+      env: gitNetworkEnv(),
       timeout: 120_000,
     })
     if (fetch.exitCode !== 0) return null
@@ -6735,7 +6739,7 @@ function branchFacts(repo: string, dryRun: boolean): gc.BranchFact[] | null {
   ])
   const remote = Bun.spawnSync(
     ['git', '-C', repo, 'ls-remote', '--heads', 'origin', 'refs/heads/factory/*'],
-    { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+    { env: gitNetworkEnv(), timeout: GIT_NETWORK_TIMEOUT_MS },
   )
   if (local.exitCode !== 0 || remote.exitCode !== 0) return null
   const byName = new Map<string, { local: string | null; remote: string | null }>()
@@ -6929,7 +6933,7 @@ export function deleteBranchCas(repo: string, name: string, local: string | null
         'origin',
         `:refs/heads/${name}`,
       ],
-      { env: GIT_NETWORK_ENV, timeout: GIT_NETWORK_TIMEOUT_MS },
+      { env: gitNetworkEnv(), timeout: GIT_NETWORK_TIMEOUT_MS },
     )
     remoteOk = p.exitCode === 0
     if (!remoteOk) error = (error ? `${error}; ` : '') + p.stderr.toString().trim()
@@ -7348,7 +7352,7 @@ function defaultBranch(repo: string): string {
 export function conflictsOf(repo: string, base: string, branch: string): string[] {
   const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
   const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '-q', 'origin', ref(base), ref(branch)], {
-    env: GIT_NETWORK_ENV,
+    env: gitNetworkEnv(),
     timeout: GIT_NETWORK_TIMEOUT_MS,
   })
   if (fetch.exitCode !== 0) return []
@@ -8274,7 +8278,7 @@ function beadFor(repo: string, goal: string, { extra = [] as string[], isOwnerOk
  * a rig is a repo the factory works (Gas Town's rig): its ready `factory` beads start as runs, its
  * due sweeps start one pass each under `factory sweep` (claude-factory-8pc.16), and `maxRuns` caps
  * its own busy runs under the factory's FACTORY_MAX_RUNS. The factory's rigs.json is written by
- * `factory rig add` and can be edited by hand.
+ * `factory rig add`, `rig rm`, `rig set`, `rig env`, `rig egress`, `rig beads-remote` and `rig undo`.
  */
 export type Rig = {
   name: string
@@ -8283,7 +8287,7 @@ export type Rig = {
   remote?: string
   factory: string
   maxRuns?: number
-  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; edit rigs.json by hand */
+  /** the most live runs one cluster (clusterKey in src/filing-guard.ts) may hold in this rig; default 2; no command sets it yet (claude-factory-3fxna) */
   clusterRuns?: number
   /** when the rig has room and no labeled bead to start, queue the best unlabeled ready leaf beads (src/autoqueue.ts); off when absent */
   autoQueue?: AutoQueue
@@ -8309,11 +8313,11 @@ export type Rig = {
   goal?: string
   /** where its workers run: a name in the runner registry (src/runner.ts); herdr panes here when absent */
   runner?: string
-  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; edit rigs.json by hand */
+  /** rules a worker here follows before each push, one paragraph each; `{base_branch}` is filled; no command sets it yet (claude-factory-3fxna) */
   pushRules?: string[]
-  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); edit rigs.json by hand */
+  /** skills every worker in this rig gets, on top of the factory's and the station's (names in harness.ts VM_PLUGINS); no command sets it yet (claude-factory-3fxna) */
   skills?: string[]
-  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). Edit rigs.json by hand. */
+  /** The literal false turns off tool details in the OTel export of this rig (src/otel.ts). No command sets it yet (claude-factory-3fxna). */
   otelContent?: boolean
   /** worker command for every station here, e.g. `codex --dangerously-bypass-approvals-and-sandbox` or `pi` */
   agent?: string
@@ -8326,7 +8330,7 @@ export type Rig = {
   /**
    * the AX sandbox class its VM workers (the ax runner) run in (ax-3hy). `microvm` for a repo whose
    * workers build with Nix, which fails under gVisor; AX's gvisor default when absent. The cluster
-   * needs a microvm WorkerPool. Edit rigs.json by hand
+   * needs a microvm WorkerPool. No command sets it yet (claude-factory-3fxna).
    */
   sandboxClass?: ax.SandboxClass
   /**
@@ -8451,7 +8455,22 @@ function linearMail(now: number): (Mail & { run: string })[] {
 /** `factory repos sync`: clone or fetch each rig's repo in the AX task and bootstrap its beads store; the problems, one per line */
 const reposSync = (): string[] => {
   if (!inAx()) fail('factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1)')
-  return syncRepos(rawRigs(), HOME)
+  return [...syncRepos(rawRigs(), HOME), ...reviveLiveWorktrees()]
+}
+
+/** each live run's missing worktree, made from its branch on origin (a migrated run has none in the task) */
+function reviveLiveWorktrees(): string[] {
+  const problems: string[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value } = current(id)
+      if (where(value)[1] !== 'working' || existsSync(run.worktree)) continue
+      reviveWorktree(run)
+    } catch (e) {
+      problems.push(`worktree of ${id}: ${(e as Error).message}`)
+    }
+  }
+  return problems
 }
 
 const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -10948,6 +10967,47 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   return { busy, held }
 }
 
+/** the lines of `factory rig list`: each rig, its busy count and its settings, then the town's count */
+async function rigListLines(print: Print) {
+  const { busy, held } = await busyRigs()
+  if (!rigs().length) print('no rigs: factory rig add <name> <repo> [factory]')
+  for (const r of rigs()) {
+    // a stuck run holds this rig's own slot, so it counts here too (not the town's)
+    const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
+    let sweepsLine = r.sweeps
+    if (sweepsLine === undefined) {
+      try {
+        sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
+      } catch {
+        sweepsLine = []
+      }
+    }
+    print(
+      `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
+    )
+    if (r.goal) print(`  goal: ${r.goal}`)
+    if (r.slo) print(`  slo: ${r.slo}`)
+    if (r.drift) print(`  drift: ${r.drift}`)
+    if (r.agent) print(`  agent: ${r.agent}`)
+    if (personOnlyContexts(r)?.length) print(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
+    if (protectedBranches(r)?.length) print(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
+    if (r.mergeAuthority === true)
+      print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
+    if (r.mcp) print(`  mcp: ${r.mcp}`)
+    for (const [k, v] of Object.entries(r.params ?? {})) print(`  param ${k}: ${v}`)
+    if (r.linear) {
+      const extra = [
+        r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
+        r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
+      ].filter(Boolean)
+      print(
+        `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
+      )
+    }
+  }
+  print(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+}
+
 async function assertRoom(repo: string) {
   if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
   const { busy, held } = await busyRigs()
@@ -12248,7 +12308,7 @@ const usage = `factory — herdr software factories on xstate
 
   start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
-  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
+  settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins; devenv.builder, devenv.token and devenv.push go to HOME/devenv.json
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   token [list] | use <n> | best        Claude token slots: the live slot and each slot's 7d and 5h use; make slot n live, or the slot with the lowest 7d use
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
@@ -12464,6 +12524,7 @@ export const corePort: Port = {
   records,
   refreshMerges,
   managerUsage,
+  rigList: rigListLines,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13934,45 +13995,7 @@ if (import.meta.main && !outboxCmd)
             }, 'cleared beadsRemote')
           }
         } else if (sub === 'list') {
-          const { busy, held } = await busyRigs()
-          if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
-          for (const r of rigs()) {
-            // a stuck run holds this rig's own slot, so it counts here too (not the town's)
-            const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
-            let sweepsLine = r.sweeps
-            if (sweepsLine === undefined) {
-              try {
-                sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
-              } catch {
-                sweepsLine = []
-              }
-            }
-            console.log(
-              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
-            )
-            if (r.goal) console.log(`  goal: ${r.goal}`)
-            if (r.slo) console.log(`  slo: ${r.slo}`)
-            if (r.drift) console.log(`  drift: ${r.drift}`)
-            if (r.agent) console.log(`  agent: ${r.agent}`)
-            if (personOnlyContexts(r)?.length)
-              console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
-            if (protectedBranches(r)?.length)
-              console.log(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
-            if (r.mergeAuthority === true)
-              console.log(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
-            if (r.mcp) console.log(`  mcp: ${r.mcp}`)
-            for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
-            if (r.linear) {
-              const extra = [
-                r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
-                r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
-              ].filter(Boolean)
-              console.log(
-                `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
-              )
-            }
-          }
-          console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+          emit(await rigsOp.list(cliCtx(), {}))
         } else if (sub === 'history') {
           const snaps = snapshots(rigsFile())
           if (!snaps.length) console.log('no rig history')

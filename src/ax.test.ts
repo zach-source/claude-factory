@@ -427,12 +427,12 @@ test('the manager policy has the path-prefixed zach-source rules; the unprefixed
   expect(
     JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, undefined, false, true)),
   ).not.toContain('pathPrefixes')
-  // a manager with its own backup key gets the REST prefixed rule but no github.com one
+  // a manager with its own backup key still gets each owner's prefixed rules: git to zach-source needs GITHUB_ZS_BASIC
   const own = JSON.stringify(
     ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true),
   )
   expect(own).toContain('/repos/zach-source/')
-  expect(own).not.toContain('"/zach-source/"')
+  expect(own).toContain('"/zach-source/"')
 })
 
 test('a worker policy has no path-prefixed rule, whatever the rig owner', () => {
@@ -633,7 +633,7 @@ test('the manager has its own github.com vault key when a backup remote is set; 
     ax.egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
       .rules,
   )
-  expect(mgr).not.toContain('GITHUB_ZS_BASIC')
+  expect(mgr).toContain('GITHUB_ZS_BASIC')
   const rows = ax
     .egressPolicy('factory', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER', false, true)
     .rules.filter((r: any) => r.https.hostnames.some((h: string) => h.endsWith('github.com')))
@@ -646,7 +646,27 @@ test('the manager has its own github.com vault key when a backup remote is set; 
     [['api.github.com', 'uploads.github.com'], [''], 'GITHUB'],
     [['github.com'], [''], 'GITHUB_BASIC_MANAGER'],
     [['api.github.com', 'uploads.github.com'], ['/repos/zach-source/'], 'GITHUB_ZS'],
+    [['github.com'], ['/zach-source/'], 'GITHUB_ZS_BASIC'],
   ])
+  // a backup repo under an owner with its own key: that owner's github.com rule would take the backup push
+  const under = (remote: string) =>
+    JSON.stringify(
+      ax.egressPolicy(
+        'factory',
+        [],
+        undefined,
+        undefined,
+        undefined,
+        'GITHUB_BASIC_MANAGER',
+        false,
+        true,
+        undefined,
+        undefined,
+        remote,
+      ),
+    )
+  expect(under('https://github.com/zach-source/home-backup')).not.toContain('"/zach-source/"')
+  expect(under('https://github.com/acme/home-backup')).toContain('"/zach-source/"')
   expect(
     JSON.stringify(ax.egressPolicy('', [], undefined, undefined, undefined, 'GITHUB_BASIC_MANAGER')),
   ).not.toContain('pathPrefixes')

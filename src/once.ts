@@ -133,7 +133,7 @@ export function keepTick(home: string, out: TickOut) {
   saveJson(file(home, 'patrol-state.json'), { ...state, unsent: [...state.unsent, ...(out.manager ?? [])] })
 }
 
-function readLog<T>(home: string, name: string): T[] {
+export function readLog<T>(home: string, name: string): T[] {
   if (!existsSync(file(home, name))) return []
   return readFileSync(file(home, name), 'utf8')
     .split('\n')

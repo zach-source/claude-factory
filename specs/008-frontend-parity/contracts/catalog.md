@@ -67,7 +67,7 @@ These operations come from the current CLI. The CLI command stays. It calls the 
 | `prs.show` | `factory prs` | `GET /v1/prs` |
 | `plan.show` | `factory plan show` | `GET /v1/plan` |
 | `metrics.show` | `factory metrics` | `GET /v1/metrics` |
-| `rigs.list`, `rigs.set` | `factory rigs`, `factory rig set` | `GET /v1/rigs`, `POST /v1/rigs/:name` |
+| `rigs.list`, `rigs.set` | `factory rig list`, `factory rig set` | `GET /v1/rigs`, `POST /v1/rigs/:name` |
 | `runners.show` | (the mod's Runners tab) | `GET /v1/runners` |
 | `mail.list` | the manager mail in the tick | `GET /v1/mail` |
 | `factory.halt` | `factory stop`, `factory resume` | `POST /v1/halt` with `mode` |

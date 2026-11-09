@@ -6,6 +6,16 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: in the AX manager host, `factory repos sync` could not make a run's worktree again: each fetch failed TLS (claude-factory-d289.14). The git network env was a copy of the env from before the host set `GIT_SSL_CAINFO`. Now each call reads the env at call time.
+
+- Fixed: AX manager cutover gaps from attempt 3 (claude-factory-d289.14, claude-factory-d289.15, claude-factory-d289.16).
+  - In the task, a tick makes a working run's missing worktree again from the run branch on origin before any git call in it. Before, the brief's `git log` failed first, and 28 of 36 runs failed every tick.
+  - `factory migrate-to-ax` (and its `--dry-run`) lists the live runs whose branch is not on origin.
+  - The manager policy keeps each owner's github.com Basic rule (`/zach-source/` with `GITHUB_ZS_BASIC`) also with `GITHUB_BASIC_MANAGER`. The exception is the owner of `FACTORY_AX_BACKUP_REMOTE`. Before, manager git to zach-source got the manager key, which covers only the backup owner, and a 403.
+  - `factory repos sync` in the task (the host's prepare step) also makes the missing worktree of each live run.
+  - `FACTORY_AX_MANAGER_DRY=1` on the laptop makes the host stop after the prepare step: no herdr, no manager, no tick and no backup. Use it for a staging copy of a live home.
+  - The migrate pack leaves out `manager-host.log`. Before, the laptop copy replaced the host's open log, and the host's later lines were lost.
+
 - Fixed: `factory manager --ax` passes an empty `FACTORY_AX_OTLP_ENDPOINT` to the task (claude-factory-d289.13). Empty turns AX OTel off. Unset, the manager fell back to `FACTORY_OTLP_ENDPOINT`, the laptop's LAN collector at an IP. ate-api refuses an IP as a policy hostname, so no worker task in the AX manager got an egress policy.
 
 - Fixed: the policy broker's `GET /controller` ran kubectl with `--request-timeout=5s`. In a pod, that flag makes kubectl skip the in-cluster config and call `localhost:8080`, so the route always answered 502 (claude-factory-d289.13). The broker now runs it with no client flag, and `run()` stops the call after 30 s.
