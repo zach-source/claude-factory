@@ -1,5 +1,6 @@
 /** The operation catalog. It imports node: modules, ./guards, the operation files in ./ops, and types from ../metrics. */
 import type { ManagerUsage, RunRecord } from '../metrics'
+import type { ModelCall, ModelResult } from '../once'
 import { check, type Role } from './guards'
 import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
@@ -40,6 +41,8 @@ export type Port = {
   abort: (id: string | undefined) => void
   /** the bounded worker screen of a run; throws a reason when there is none */
   screen: (id: string | undefined) => Promise<string>
+  /** one async manager chat model call (src/once.ts runModelAsync); a fake in tests */
+  chatModel: (c: ModelCall) => Promise<ModelResult>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },

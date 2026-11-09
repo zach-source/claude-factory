@@ -337,3 +337,18 @@ test('runModelAsync kills the process group at the timeout', async () => {
     else process.env.FACTORY_CLAUDE = old
   }
 })
+
+test('chat-guard allows reads, asks for a gate and fails closed', () => {
+  const guard = (command: string) => factory(['chat-guard'], JSON.stringify({ tool_input: { command } }))
+  expect(guard('factory status').code).toBe(0)
+  const ask = guard('/repo/bin/factory decide lifecycle-abc ship "looks good"')
+  expect(ask.code).toBe(2)
+  expect(ask.err).toEndWith(
+    'the person must approve this command; a chat turn cannot run it: tell the person\n',
+  )
+  expect(factory(['chat-guard'], '{}')).toEqual({
+    code: 2,
+    out: '',
+    err: 'the hook input has no Bash command\n',
+  })
+})
