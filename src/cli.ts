@@ -5384,7 +5384,14 @@ function wikiGroom(dryRun: boolean) {
     const u = stored !== null && typeof stored === 'object' ? stored.url : undefined
     if (typeof u !== 'string' || !PR_RE.test(u)) return wikiLog('wiki groom: stored PR is not valid, skipped')
     // REST with the owner in the path (src/prs.test.ts rule): the AX gateway needs it
-    const v = gh(['api', `repos/${r.owner}/${r.repo}/pulls/${u.split('/').pop()}`, '--jq', '.state'])
+    const v = gh([
+      'api',
+      '--hostname',
+      r.host,
+      `repos/${r.owner}/${r.repo}/pulls/${u.split('/').pop()}`,
+      '--jq',
+      '.state',
+    ])
     const state = v.exitCode === 0 ? v.stdout.toString().trim() : ''
     if (state === 'open') return wikiLog(`wiki groom: skipped, PR ${u} open`)
     if (state !== 'closed') return wikiLog(`wiki groom: PR ${u} state unknown, skipped`)
@@ -5476,6 +5483,8 @@ function wikiGroom(dryRun: boolean) {
     if (!PR_RE.test(pr)) {
       const l = gh([
         'api',
+        '--hostname',
+        r.host,
         `repos/${r.owner}/${r.repo}/pulls?head=${r.owner}:${branch}&state=open`,
         '--jq',
         '.[0].html_url',

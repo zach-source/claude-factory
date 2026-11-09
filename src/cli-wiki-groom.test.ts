@@ -71,7 +71,7 @@ F="$FAKE_DIR"
 { for a in "$@"; do printf '%s\\037' "$a"; done; printf '\\036'; } >> "$F/gh.log"
 case "$1 $2" in
 "repo view") cat "$F/vis" 2>/dev/null || echo PRIVATE ;;
-"api repos/acme/widget-wiki/pulls/"[0-9]*) if [ -f "$F/prstate" ]; then cat "$F/prstate"; else exit 1; fi ;;
+"api --hostname") [ "$3" = "\${WANT_HOST:-github.com}" ] && case "$4" in repos/acme/widget-wiki/pulls/[0-9]*) [ -f "$F/prstate" ] && cat "$F/prstate" ;; esac ;;
 "pr create") echo ${PR} ;;
 "pr list") echo ;;
 esac
@@ -217,6 +217,25 @@ test(
     expect(creates()).toHaveLength(1)
     expect(bareGit('for-each-ref')).toBe(refs)
     expect(Bun.file(join(home, 'wiki-groom.stamp')).lastModified).toBe(stampBefore)
+  },
+  SLOW,
+)
+
+test(
+  'AC2 the PR state read names the remote host',
+  () => {
+    setup()
+    const ghe = 'https://ghe.acme.test/acme/widget-wiki.git'
+    writeFileSync(cfg, `[url "${bare}"]\n\tinsteadOf = ${ghe}\n`)
+    git('remote', 'set-url', 'origin', ghe)
+    const pr = 'https://ghe.acme.test/acme/widget-wiki/pull/4'
+    writeFileSync(
+      join(home, 'wiki-state.json'),
+      JSON.stringify({ ...state(), groomPr: { url: pr, branch: 'groom/x' } }),
+    )
+    writeFileSync(join(fake, 'prstate'), 'open\n')
+    expect(groom([], { WANT_HOST: 'ghe.acme.test' }).code).toBe(0)
+    expect(wikiLog()).toContain(`wiki groom: skipped, PR ${pr} open`)
   },
   SLOW,
 )
