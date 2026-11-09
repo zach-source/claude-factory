@@ -208,3 +208,81 @@ test('a task that waits for capacity is queued, and its clock starts when it lea
   expect(attemptStart(100, 3, { seq: 2, at: 500 })).toBe(100)
   expect(attemptStart(100, 2)).toBe(100)
 })
+
+test('managerEnv passes the harness gates and ALPN, names the task, and never the real Cursor key', () => {
+  const laptop = {
+    FACTORY_AX_VAULT: 'v1',
+    FACTORY_AX_CODEX: '1',
+    FACTORY_AX_CURSOR: '1',
+    FACTORY_AX_GROK: '1',
+    GRPC_ENFORCE_ALPN_ENABLED: 'false',
+    FACTORY_AX_MANAGER: 'f-manager-x',
+    CURSOR_API_KEY: 'key_real',
+  }
+  const env = ax.managerEnv(laptop)
+  expect(env).toMatchObject({
+    FACTORY_AX_CODEX: '1',
+    FACTORY_AX_CURSOR: '1',
+    FACTORY_AX_GROK: '1',
+    GRPC_ENFORCE_ALPN_ENABLED: 'false',
+    FACTORY_AX_MANAGER: 'f-manager-x',
+    CURSOR_API_KEY: 'placeholder',
+  })
+  expect(ax.managerEnv({}).FACTORY_AX_MANAGER).toBe('f-manager')
+  expect('CURSOR_API_KEY' in ax.managerEnv({ CURSOR_API_KEY: 'key_real' })).toBe(false)
+  expect('CURSOR_API_KEY' in ax.managerEnv({ FACTORY_AX_VAULT: 'v1' })).toBe(false)
+})
+
+test('managerEgress opens the Cursor meter only with a laptop key, and injects only on /auth/', () => {
+  expect(ax.managerEgress({}).some(r => r.hosts.includes('api2.cursor.sh'))).toBe(false)
+  expect(ax.managerEgress({ CURSOR_API_KEY: 'k' }).slice(-2)).toEqual([
+    {
+      hosts: ['api2.cursor.sh'],
+      pathPrefixes: ['/auth/'],
+      key: 'CURSOR_API_KEY',
+      header: 'Authorization',
+      prefix: 'Bearer ',
+    },
+    { hosts: ['api2.cursor.sh'] },
+  ])
+})
+
+test('the manager env with every laptop knob set stays within the AX env limit once launch adds its own', () => {
+  const all = {
+    FACTORY_MAX_RUNS: '40',
+    FACTORY_AX_FRESH: '1',
+    FACTORY_AX_IMAGE: 'i',
+    FACTORY_AX_VAULT: 'v',
+    FACTORY_AX_ATESPACE: 'a',
+    FACTORY_AX_PKG_GATE: 'http://g',
+    FACTORY_AX_CAPABILITIES: '',
+    FACTORY_AX_BACKUP_REMOTE: 'r',
+    FACTORY_AX_BACKUP_BRANCH: 'b',
+    FACTORY_AX_BACKUP_EVERY: '1',
+    FACTORY_OTLP_ENDPOINT: 'o',
+    FACTORY_AX_OTLP_ENDPOINT: 'o',
+    FACTORY_AX_CODEX: '1',
+    FACTORY_AX_CURSOR: '1',
+    FACTORY_AX_GROK: '1',
+    GRPC_ENFORCE_ALPN_ENABLED: 'false',
+    CURSOR_API_KEY: 'k',
+    FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc',
+    FACTORY_AX_MANAGER_ROUTER: 'http://r.example.svc',
+    FACTORY_AX_MANAGER_BROKER: 'http://b.example.svc',
+    FACTORY_AX_ENV: '{"A":"1"}',
+  }
+  // launch adds FACTORY_CA, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC and the 5 vault placeholders; the manifest packs past 30
+  const env = {
+    ...ax.managerEnv(all),
+    ...Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`L${i}`, 'x'])),
+  }
+  const spec = JSON.parse(
+    ax.manifest({ name: 'f-manager', image: 'i', command: ['factory'], env }).split('\n---\n')[1]!,
+  ).spec
+  expect(spec.env.length).toBeLessThanOrEqual(30)
+  const packed = spec.env.find((e: { name: string }) => e.name === 'FACTORY_VM_ENV')
+  expect(JSON.parse(packed?.value ?? '{}')).toMatchObject({
+    FACTORY_AX_GROK: '1',
+    CURSOR_API_KEY: 'placeholder',
+  })
+})
