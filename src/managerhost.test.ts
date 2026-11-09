@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   awaitHome,
   backupStep,
@@ -33,6 +36,24 @@ test('d289.18: a backup that finds the tick lock tries again each second and log
   await backupStep(cfg, true, free, m => lines.push(m), busy, 4, nap)
   expect(calls).toBe(4)
   expect(lines.slice(1)).toEqual(['backup skipped: a tick held the lock at 4 tries'])
+})
+
+test('d289.21: the backup step writes backup.want before it tries the lock, and removes it at the end', async () => {
+  const ws = mkdtempSync(join(tmpdir(), 'mhost-'))
+  mkdirSync(join(ws, 'home'))
+  const want = join(ws, 'home', 'backup.want')
+  const cfg = { ws, remote: 'r', branch: 'b' }
+  const seen: boolean[] = []
+  let n = 0
+  const busy = () => (
+    seen.push(existsSync(want)),
+    ++n < 600 ? { skipped: 'lock' as const } : { sha: 'a', changed: true }
+  )
+  const lines: string[] = []
+  // the default: 600 tries of 1 s, 10 min
+  await backupStep(cfg, true, free, m => lines.push(m), busy, undefined, nap)
+  expect([n, seen.every(Boolean), existsSync(want), lines]).toEqual([600, true, false, ['backup a']])
+  rmSync(ws, { recursive: true, force: true })
 })
 
 test('herdr down restarts everything, a live herdr with no pane restarts the manager only', () => {

@@ -519,7 +519,10 @@ Owner steps (the factory does not do them):
 
 How it works:
 
-- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot and frees it before the push. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
+- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
+- Ticks run back to back and hold `tick.lock`. So when a backup is due, the host writes `FACTORY_HOME/backup.want`. A tick does not start while that file is younger than 10 min. The host tries the lock each second, for up to 10 min. When it takes the lock, it removes `backup.want`.
+- Under `tick.lock`, the host only snapshots the memory and adds the files to the backup index. It frees the lock before the scan, the gzip, the commit and the push.
+- If GitHub refused a push (for example GH001), the next push does not send the refused commit again. If the remote tip is absent or an ancestor of the local branch, the host pushes one commit of the current tree on that tip.
 - The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `claude/**/settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log` and `worktrees/`.
 - gitleaks scans the staged files (all its rules, `generic-api-key` too). The push has `[REDACTED]` in place of each secret that it finds. The backup finds the secret by its text, not by the gitleaks line and column. The file in the home does not change.
   - `manager-host.log` gets `backup redacted <rule id> <path>` for each file. The log never holds the value.
