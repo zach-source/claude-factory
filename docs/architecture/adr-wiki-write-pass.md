@@ -3,9 +3,141 @@
 ## Context
 
 This plan covers T007, bead `claude-factory-tx6c.7`. The write helpers and person guard already exist.
-The CLI has no write pass. The tick starts refresh only.
+The initial plan added the write pass. Four implement rounds then fixed partial input and process checks.
+The current branch includes that work. The revision below defines the remaining work and overrides conflicting details below.
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
+
+## Revision after four implement rounds
+
+### Cause and scope
+
+The earlier plan required complete input but did not define its fields before each lossy conversion.
+The implementation added checks at separate layers. A later layer cannot detect a row that an earlier layer discarded.
+The tests also treated dry runs as recovery tests. Dry runs cannot prove that `lastWriteAt` remains safe.
+
+At commit `7b16655b`, strict discovery still returns `[]` for GitHub `merged_at: 42` and GitLab `state: unknown`.
+It converts an absent GitHub title into an empty string. It accepts 300 rows without proof that discovery ended.
+Local stub probes confirmed these results. These are instances of one incomplete-input defect, not separate feature requests.
+Relevant code: `src/prs.ts` (`githubMergedJson`, `gitlabMergedJson`, `githubPulls`) and `src/cli.ts` (`mergedPrsFor`, `wikiWrite`).
+
+Keep PR #714 and its existing implementation. Do not repeat tasks `.1` through `.13`.
+Narrow this pass to the wiki source boundary and durable recovery tests.
+Keep the existing agent, page guard, state format, group bounds and kick.
+The tick now permits one wiki pass: refresh, then groom, then write. Preserve that order.
+Do not change `.factory/`, add a dependency, create a new parser framework or change permissive pre-check callers.
+
+### Complete-input rule
+
+Strict discovery must validate every consumed field before a filter, default, projection or bead-title match can discard evidence.
+Only a complete, valid response can prove that a bead has no merged PR.
+Every failed read, invalid consumed field or unresolved page limit leaves the bead pending and preserves the previous timestamp.
+Apply this rule to GitHub discovery, GitLab full-ID discovery, GitLab short-ID discovery and both forge detail paths.
+Metadata and discovered URLs have the same identity rule. A malformed present metadata value is unresolved; an absent value permits discovery.
+
+Use the existing strict option and error path. Validate at the earliest layer that has the required context.
+Preserve a complete result or an explicit incomplete result through the caller. Do not encode incomplete input as `[]`.
+The existing `null` and throw paths are sufficient. No new retry queue or general result framework is necessary.
+
+The table defines a closed projection of API data. Ignore unused API fields; never use them as authority.
+Reject every other value or shape for the fields that the table reads.
+
+| Input | Accepted fields and forms | Refusal effect |
+| --- | --- | --- |
+| Discovery response | A successful command and a JSON array of non-null, non-array objects | Invalid JSON, command failure or another root shape makes the whole lookup incomplete |
+| GitHub discovery row | `number`: integer 1–999999999; `html_url`: canonical rig PR URL with the same number; `title`: nonempty string; `merged_at`: null or a valid ISO date-time string | Validate all rows before the merge filter; missing, empty or malformed values stay unresolved |
+| GitLab discovery row | `iid`: integer 1–999999999; `web_url`: canonical rig MR URL with the same number; `title`: nonempty string; `state`: opened, closed, locked or merged | Validate all rows before the state filter; unknown states stay unresolved |
+| PR identity | HTTPS with the configured forge host and exact project path; GitHub `/pull/<n>` or GitLab `/-/merge_requests/<n>` | Reject credentials, ports, query, fragment, foreign host/project, dot segments, encoded separators and number mismatch before detail calls |
+| Date-time | `YYYY-MM-DDTHH:mm:ss[.fraction](Z or ±HH:mm)` with a finite parsed value and valid calendar fields | Reject empty strings, numeric values, date-only values and impossible dates |
+| GitHub detail | Object; `number` equals the requested number; `merged_at` follows the discovery rule | Null proves unmerged; malformed data cannot prove unmerged |
+| GitLab detail | Object; `iid` equals the requested number; `state` follows the discovery rule | Known nonmerged states remain allowed; unknown states stay unresolved |
+| Detail source text | `title` is a nonempty string; `body` or `description` is absent, null or a string | Normalize absent/null body to empty text; reject another type |
+| GitHub files | Nonempty array with fewer than 100 object rows; each `filename` is a nonempty repository-relative path | Empty, full, malformed or failed replies stay unresolved |
+| GitLab changes | Object with a nonempty `changes` array; `overflow` is absent or false; each row has `new_path` | True or malformed overflow, empty changes, malformed rows and command failure stay unresolved |
+| File path and patch | Relative slash-separated path; no empty, dot or parent segment, leading slash, backslash or control character; optional string `patch`/`diff` | Reject other forms before classification; use patches only for package.json classification, then remove them |
+
+The file paths are source labels, not filesystem targets. Existing page rules still control every agent output path.
+Keep the existing trivial-change classifier. Do not add a shell, YAML or diff parser.
+Discovery does not consume branch names or merge SHAs for wiki selection. Branch discovery is outside this wiki call path.
+Keep unused field defaults for other callers. Do not require unrelated review, label or branch fields here.
+
+Completeness includes page boundaries. GitHub currently reads at most three pages of 100 rows.
+That pre-check limit cannot prove complete wiki input. In wiki strict mode, read until a short page, at most 30 pages.
+Reuse that GitHub result within the rig's current pass; do not repeat the scan for each bead.
+Keep the three-page limit for permissive pre-check callers. Add no persistent cache or configuration flag.
+In strict mode, a full final page cannot prove completion. Return incomplete at that limit.
+GitLab currently reads one page of 30 rows for each search. Treat a full page as incomplete in strict mode.
+Keep that search bound for this pass. Do not add an unbounded scan.
+An empty or short valid final page proves completion. Test each boundary, including a full page followed by a short page.
+Large repositories can remain pending under this conservative limit. The report must state this limit; a timestamp must not hide it.
+Metadata success does not excuse incomplete discovery: discovery can contain a second release PR.
+
+### Additional acceptance criteria
+
+AC1–AC7 below remain required. Add AC8 and AC9; do not replace the prior checks.
+
+**AC8 — Strict source grammar.** Add table tests in `src/prs.test.ts` and CLI cases in `src/cli-wiki-write.test.ts`.
+Command: `bun test --timeout 30000 src/prs.test.ts src/cli-wiki-write.test.ts`.
+Cover each accepted and rejected table row for each applicable forge and entry path.
+Use valid empty lists, merged rows, known unmerged rows, extra unused fields and nested GitLab projects as positive controls.
+Negative cases include null rows, arrays as rows, missing fields, wrong types, invalid identities and each full-page limit.
+Test a GitHub match on page four, a short final page and 30 full pages.
+Two beads in one rig must share one GitHub scan. A new pass must read fresh data after a refusal.
+Test title loss, invalid merge states and URL/number mismatch before any row filter.
+For rejected discovery input, assert zero detail, file-list and agent calls for the affected bead.
+For rejected detail input, assert zero file-list and agent calls for that bead.
+For rejected files, assert zero classifier-driven completion and zero agent calls for that bead.
+Assert that valid unrelated beads can still complete. Do not require a global stop or suppress a valid pending push retry.
+Legacy calls without strict mode must retain their existing results.
+
+**AC9 — Durable recovery, not dry-run recovery.** Add real stub-agent passes in `src/cli-wiki-write.test.ts`.
+Use an older bead with incomplete input and a newer bead with a valid metadata PR.
+Seed an explicit `lastWriteAt` before both close dates. Make the fake bead list honor its date filter.
+First pass: the newer bead commits; the older bead remains absent from `written`; `lastWriteAt` stays byte-for-byte unchanged.
+Second pass: repair the old input; assert the old bead's seven-section page commits and enters `written`.
+Third pass: assert no new page request for either committed bead.
+Repeat for GitHub discovery, GitLab full-ID discovery, GitLab short-ID failure, malformed detail and malformed file data.
+Include one valid code PR and one release PR in the recovered page.
+For a global discovery refusal, first assert no agent call; then repair it and prove both beads recover.
+Keep dry-run tests as AC1 output checks only.
+Command: `bun test --timeout 30000 src/cli-wiki-write.test.ts`.
+
+### Remaining commits and checks
+
+Two tasks fit one 120-minute implement pass. Preserve all prior tests and closed tasks.
+Tracked order: `claude-factory-tx6c.7.14` (tests), then `claude-factory-tx6c.7.15` (fix and checks).
+
+1. Tests, 45 minutes: add the AC8 boundary matrix and AC9 durable recovery cases to the existing test files.
+   Record failures against `7b16655b`. Commit tests first; do not publish a final head with red checks.
+2. Fix, 70 minutes: enforce the complete-input rule in existing strict adapters and their wiki caller.
+   Check AC1–AC9 and legacy adapter behavior. Use the existing incomplete-result path, without a new state format.
+   Mutate merge-state validation, title validation, identity validation and final-page refusal separately after the fix commit.
+   Each mutation must build and fail its intended test. Restore each mutation before the next check.
+
+Run `bun test --timeout 30000 src/prs.test.ts src/cli-wiki-write.test.ts src/wiki.test.ts`.
+Run `bun test --timeout 30000 src/wiki-kick.test.ts` separately if process load affects it.
+Run the repo type check, formatter, full test and plugin commands from `package.json`.
+Run the repo gate, `bun audit` and `gitleaks detect --log-opts=origin/main..HEAD`.
+Required test, typecheck, plugin and format CI jobs must pass on the final head.
+Review and security must inspect the complete matrix, not only the last failed example.
+
+### Risks, rollout and alternatives
+
+This revision is **security-sensitive**: it validates forge data and agent source identities.
+The main data risk is silent loss behind `lastWriteAt`. The conservative incomplete result prevents that loss.
+More inputs can remain pending, especially full discovery pages. That is an explicit operational limit, not completion.
+Retain the existing summary's pending count and masked failure log. AC9 proves local progress; AC7 remains **must-see-live**.
+The ship soak must inspect its own page, state, log and push result before it reports health.
+
+No migration or flag is necessary. Keep the 180-minute kick and `FACTORY_WIKI_WRITE_MIN` behavior.
+Keep `FACTORY_WIKI_AGENT_MS` unset outside tests; its default remains 45 minutes.
+Release through the existing draft PR, review, security and person's merge. No live action belongs to this plan station.
+Rollback uses a revert PR and a person's merge. Preserve wiki commits and state; do not advance or reset timestamps by hand.
+
+Reject another isolated malformed-row patch: it leaves loss at adjacent conversion steps.
+Reject a new discovery service or unbounded history crawl: neither fits this bounded correction.
+Reject a new retry store: the existing timestamp rule already preserves unresolved work.
+Reject changes to all pre-check callers: their permissive behavior predates this feature and has separate contracts.
 
 ## Decision
 
@@ -127,7 +259,7 @@ The test command is `bun test src/cli-wiki-write.test.ts src/wiki.test.ts src/wi
    The soak must check the page, state, log and remote result. A deadline alone does not prove health.
    This live smoke is not a pre-merge gate. Use an equivalent acme fixture for CI.
 
-## Test plan and tasks
+## Initial test plan and completed tasks
 
 Use fresh test homes and stub bd, forge and agent processes. Tests must not reach a live service.
 Strip `FACTORY_OUTBOX`, `FACTORY_FROM` and `FACTORY_RUN`; set `FACTORY_SELF_UPDATE=0`.
