@@ -162,9 +162,11 @@ export function cacheProposal(rigs: ProposalRig[], hasDevenv: (r: ProposalRig) =
   if (!tpl) return ['no ax rig has a usable FACTORY_NIX_CACHE: nothing to copy']
   const host = tpl.url.hostname.toLowerCase()
   const rule = tpl.rig.egress?.find(e => e.hosts.some(h => h.toLowerCase() === host))
+  // the runtime defaults of src/ax.ts: header Authorization and prefix "Bearer ", each on its own
+  const eff = (e: Egress) => ({ header: e.header ?? 'Authorization', prefix: e.prefix ?? 'Bearer ' })
   const spec =
     rule?.key &&
-    `${rule.hosts.join(',')}=${rule.key}${rule.header ? `:${rule.header}:${rule.prefix ?? ''}` : ''}`
+    `${rule.hosts.join(',')}=${rule.key}${rule.header || rule.prefix !== undefined ? `:${eff(rule).header}:${eff(rule).prefix}` : ''}`
   const safe = (t: string) => !/['\u0000-\u001f\u007f]/.test(t) && !SECRETS.some(p => p.test(t))
   const copyable = (() => {
     if (!rule || !spec || rule.headers || rule.pathPrefixes || rule.http) return false
@@ -174,8 +176,8 @@ export function cacheProposal(rigs: ProposalRig[], hasDevenv: (r: ProposalRig) =
       return (
         back.hosts.join() === rule.hosts.join() &&
         back.key === rule.key &&
-        back.header === rule.header &&
-        (back.prefix ?? '') === (rule.header ? (rule.prefix ?? '') : '')
+        eff(back).header === eff(rule).header &&
+        eff(back).prefix === eff(rule).prefix
       )
     } catch {
       return false

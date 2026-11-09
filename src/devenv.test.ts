@@ -92,6 +92,17 @@ test('cacheProposal prints the two commands for an ax rig with a devenv and no c
   )
 })
 
+test('cacheProposal keeps the runtime header and prefix defaults of the rule', () => {
+  const line = (o: object) =>
+    proposal([tpl({ egress: [{ hosts: ['cache.example'], key: 'NIX_CACHE', ...o }] }), cand()]).lines[1]
+  const add = (s: string) => `factory rig egress add acme '${s}'`
+  expect(line({})).toBe(add('cache.example=NIX_CACHE'))
+  expect(line({ prefix: 'Basic ' })).toBe(add('cache.example=NIX_CACHE:Authorization:Basic '))
+  expect(line({ prefix: '' })).toBe(add('cache.example=NIX_CACHE:Authorization:'))
+  expect(line({ header: 'X-Key' })).toBe(add('cache.example=NIX_CACHE:X-Key:Bearer '))
+  expect(line({ header: 'X-Key', prefix: '' })).toBe(add('cache.example=NIX_CACHE:X-Key:'))
+})
+
 test('cacheProposal skips a rig with the cache, with no devenv.nix, or off ax', () => {
   expect(proposal([tpl(), cand({ env: { FACTORY_NIX_CACHE: CACHE } })]).lines).toEqual([])
   expect(proposal([tpl(), cand()], false).lines).toEqual([])
