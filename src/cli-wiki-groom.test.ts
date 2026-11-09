@@ -71,7 +71,7 @@ F="$FAKE_DIR"
 { for a in "$@"; do printf '%s\\037' "$a"; done; printf '\\036'; } >> "$F/gh.log"
 case "$1 $2" in
 "repo view") cat "$F/vis" 2>/dev/null || echo PRIVATE ;;
-"pr view") if [ -f "$F/prstate" ]; then cat "$F/prstate"; else exit 1; fi ;;
+"api repos/acme/widget-wiki/pulls/"[0-9]*) if [ -f "$F/prstate" ]; then cat "$F/prstate"; else exit 1; fi ;;
 "pr create") echo ${PR} ;;
 "pr list") echo ;;
 esac
@@ -207,7 +207,7 @@ test(
   () => {
     setup()
     expect(groom().code).toBe(0)
-    writeFileSync(join(fake, 'prstate'), 'OPEN\n')
+    writeFileSync(join(fake, 'prstate'), 'open\n')
     const refs = bareGit('for-each-ref')
     const stampBefore = Bun.file(join(home, 'wiki-groom.stamp')).lastModified
     const r = groom()
@@ -224,7 +224,7 @@ test(
 test(
   'AC2 a merged or closed PR clears groomPr and runs a full pass',
   () => {
-    for (const s of ['MERGED', 'CLOSED']) {
+    for (const s of ['closed']) {
       setup()
       writeFileSync(
         join(home, 'wiki-state.json'),
@@ -246,10 +246,10 @@ test(
     const rows: [string, string | null, string][] = [
       [PR, null, 'state unknown, skipped'],
       [PR, 'weird', 'state unknown, skipped'],
-      ['https://github.com/acme/other/pull/1', 'OPEN', 'stored PR is not valid, skipped'],
-      ['--repo=x', 'OPEN', 'stored PR is not valid, skipped'],
-      ['https://github.com/acme/widget-wiki/pull/0', 'OPEN', 'stored PR is not valid, skipped'],
-      [PR.replace('github.com/acme', 'GitHub.com/Acme'), 'OPEN', 'skipped, PR'],
+      ['https://github.com/acme/other/pull/1', 'open', 'stored PR is not valid, skipped'],
+      ['--repo=x', 'open', 'stored PR is not valid, skipped'],
+      ['https://github.com/acme/widget-wiki/pull/0', 'open', 'stored PR is not valid, skipped'],
+      [PR.replace('github.com/acme', 'GitHub.com/Acme'), 'open', 'skipped, PR'],
     ]
     for (const [url, st, line] of rows) {
       setup()
@@ -258,7 +258,7 @@ test(
       expect(groom().code).toBe(0)
       expect(wikiLog()).toContain(line)
       expect(claudeCalls()).toHaveLength(0)
-      if (line.includes('not valid')) expect(ghCalls().filter(c => c[0] === 'pr')).toHaveLength(0)
+      if (line.includes('not valid')) expect(ghCalls().filter(c => c[0] === 'api')).toHaveLength(0)
     }
   },
   SLOW,
@@ -311,7 +311,7 @@ test(
     expect(claudeCalls()[0]).toContain('--tools Read,Glob,Grep ')
     expect(branches()).toBe('')
     expect(bareGit('branch', '--list', 'groom/*')).toBe('')
-    expect(ghCalls().filter(c => c[0] === 'pr')).toHaveLength(0)
+    expect(ghCalls().filter(c => c[0] === 'pr' || c[0] === 'api')).toHaveLength(0)
     expect(existsSync(join(home, 'wiki-groom.stamp'))).toBe(false)
     expect(git('rev-parse', 'main')).toBe(mainBefore)
     expect(git('status', '--porcelain')).toBe('')
@@ -386,7 +386,7 @@ test(
     setup()
     const mainBefore = git('rev-parse', 'main')
     apply(
-      `echo more >> topics/a.md\ngit update-ref "$(git symbolic-ref HEAD)" "$(git commit-tree -m evil 'HEAD^{tree}' -p HEAD)"\n`,
+      `echo more >> topics/a.md\ngit update-ref "$(git symbolic-ref HEAD)" "$(git -c user.name=x -c user.email=x@x commit-tree -m evil 'HEAD^{tree}' -p HEAD)"\n`,
     )
     expect(groom().code).toBe(0)
     expect(wikiLog()).toContain('HEAD moved in the pass, nothing committed')

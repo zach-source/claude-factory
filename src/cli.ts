@@ -5383,10 +5383,11 @@ function wikiGroom(dryRun: boolean) {
   if (stored !== undefined) {
     const u = stored !== null && typeof stored === 'object' ? stored.url : undefined
     if (typeof u !== 'string' || !PR_RE.test(u)) return wikiLog('wiki groom: stored PR is not valid, skipped')
-    const v = gh(['pr', 'view', u, '--json', 'state', '--jq', '.state'])
+    // REST with the owner in the path (src/prs.test.ts rule): the AX gateway needs it
+    const v = gh(['api', `repos/${r.owner}/${r.repo}/pulls/${u.split('/').pop()}`, '--jq', '.state'])
     const state = v.exitCode === 0 ? v.stdout.toString().trim() : ''
-    if (state === 'OPEN') return wikiLog(`wiki groom: skipped, PR ${u} open`)
-    if (state !== 'MERGED' && state !== 'CLOSED') return wikiLog(`wiki groom: PR ${u} state unknown, skipped`)
+    if (state === 'open') return wikiLog(`wiki groom: skipped, PR ${u} open`)
+    if (state !== 'closed') return wikiLog(`wiki groom: PR ${u} state unknown, skipped`)
     const { groomPr: _gone, ...rest } = readWikiState()
     writeWikiState(rest)
   }
@@ -5474,18 +5475,10 @@ function wikiGroom(dryRun: boolean) {
     let pr = make.exitCode === 0 ? make.stdout.toString().trim().split('\n').pop()! : ''
     if (!PR_RE.test(pr)) {
       const l = gh([
-        'pr',
-        'list',
-        '--repo',
-        slug,
-        '--head',
-        branch,
-        '--state',
-        'open',
-        '--json',
-        'url',
+        'api',
+        `repos/${r.owner}/${r.repo}/pulls?head=${r.owner}:${branch}&state=open`,
         '--jq',
-        '.[0].url',
+        '.[0].html_url',
       ])
       pr = l.exitCode === 0 ? l.stdout.toString().trim() : ''
       if (!PR_RE.test(pr)) return wikiLog(`wiki groom: PR create failed (exit ${make.exitCode ?? 'timeout'})`)
