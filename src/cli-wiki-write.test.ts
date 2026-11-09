@@ -74,6 +74,7 @@ done
 exec '${realGit}' "$@"
 `,
   )
+  fake('glab', `echo "$*" >> '${data}/glab-calls'\necho failed >&2\nexit 1\n`)
   const agent = `echo "$PWD" > '${data}/agent-cwd'
 echo "$*" > '${data}/agent-args'
 echo "$CODEX_HOME" > '${data}/agent-codexhome'
@@ -775,10 +776,12 @@ function twoBeads() {
   ])
   pr(5, 'acme-2: fix it', ['src/a.ts'])
   pr(6, 'acme-1: fix it', ['src/b.ts'])
-  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', PR6))
+  writeFileSync(LIST(), JSON.stringify([pr(7, 'acme-1 release notes', ['CHANGELOG.md'])]))
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', `${PR6} ${R7}`))
   stage('solutions/2026-11/fix-acme-2.md', page('acme-2', PR5))
   prior()
 }
+const R7 = 'https://github.com/acme/widget/pull/7'
 
 for (const [name, spoil] of [
   [
@@ -810,9 +813,9 @@ for (const [name, spoil] of [
     factory(['wiki', 'write'])
     expect(Object.keys(state().written).sort()).toEqual(['acme-1', 'acme-2'])
     expect(runs()).toBe(2)
-    expect(prompt()).toContain(PR6)
+    for (const t of [PR6, R7, 'acme-1: fix it', 'acme-1 release notes']) expect(prompt()).toContain(t)
     expect(state().lastWriteAt).toBe(OLD_ISO)
-    committed('acme-1', PR6)
+    committed('acme-1', PR6, R7)
     committed('acme-2', PR5)
     settles(2, OLD_ISO)
   })
@@ -820,10 +823,12 @@ for (const [name, spoil] of [
 slow('write AC9 a refused global GitHub list calls no agent, and both beads recover', () => {
   setup()
   seed([closed('acme-1', { closed_at: OLD }), closed('acme-2', { closed_at: NEW })], [])
-  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', 'https://github.com/acme/widget/pull/8'))
+  const R10 = 'https://github.com/acme/widget/pull/10'
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', `https://github.com/acme/widget/pull/8 ${R10}`))
   stage('solutions/2026-11/fix-acme-2.md', page('acme-2', 'https://github.com/acme/widget/pull/9'))
   prior()
   const l8 = pr(8, 'acme-1: fix it', ['src/b.ts'])
+  const l10 = pr(10, 'acme-1 release notes', ['CHANGELOG.md'])
   const l9 = pr(9, 'acme-2: fix it', ['src/a.ts'])
   for (const bad of [[{}], [{ ...l9, merged_at: 42 }], [{ ...l9, title: '' }]]) {
     writeFileSync(LIST(), JSON.stringify(bad))
@@ -832,12 +837,13 @@ slow('write AC9 a refused global GitHub list calls no agent, and both beads reco
     expect(Object.keys(state().written ?? {})).toEqual([])
     expect(state().lastWriteAt).toBe(PRIOR)
   }
-  writeFileSync(LIST(), JSON.stringify([l9, l8]))
+  writeFileSync(LIST(), JSON.stringify([l9, l10, l8]))
   factory(['wiki', 'write'])
   expect(Object.keys(state().written).sort()).toEqual(['acme-1', 'acme-2'])
   expect(runs()).toBe(1)
+  for (const t of ['pull/8', R10, 'acme-1: fix it', 'acme-1 release notes']) expect(prompt()).toContain(t)
   expect(state().lastWriteAt).toBe(NEW)
-  committed('acme-1', 'https://github.com/acme/widget/pull/8')
+  committed('acme-1', 'https://github.com/acme/widget/pull/8', R10)
   committed('acme-2', 'https://github.com/acme/widget/pull/9')
   settles(1, NEW)
 })
@@ -940,6 +946,7 @@ slow('write AC8 detail and file rows: bad title, body type, patch type and extra
 })
 
 const GL = 'https://gitlab.example.com/acme/widget/-/merge_requests/7'
+const GL9 = GL.replace('7', '9')
 slow('write AC9 a failed GitLab short id search keeps the older bead pending until it works', () => {
   setup()
   Bun.spawnSync([
@@ -960,12 +967,14 @@ slow('write AC9 a failed GitLab short id search keeps the older bead pending unt
     description: null,
   })
   const j = (name: string, v: unknown) => writeFileSync(join(data, name), JSON.stringify(v))
-  j('full-abc', [mrow(7, 'acme-abc1.2: fix it')])
+  j('full-abc', [mrow(7, 'acme-abc1.2: fix it'), mrow(9, 'acme-abc1.2 release notes')])
   j('full-def', [mrow(8, 'acme-def: fix it')])
   j('mr7', mrow(7, 'acme-abc1.2: fix it'))
   j('mr8', mrow(8, 'acme-def: fix it'))
+  j('mr9', mrow(9, 'acme-abc1.2 release notes'))
   j('ch7', { changes: [{ new_path: 'src/b.ts', diff: '' }] })
   j('ch8', { changes: [{ new_path: 'src/a.ts', diff: '' }] })
+  j('ch9', { changes: [{ new_path: 'CHANGELOG.md', diff: '' }] })
   writeFileSync(join(data, 'fail-short'), '')
   const glab = join(dir, `bin${n}`, 'glab')
   writeFileSync(
@@ -978,14 +987,16 @@ case "$*" in
   *search=abc1.2*) if [ -f "$d/fail-short" ]; then echo failed >&2; exit 1; fi; echo '[]';;
   *merge_requests/7/changes*) cat "$d/ch7";;
   *merge_requests/8/changes*) cat "$d/ch8";;
+  *merge_requests/9/changes*) cat "$d/ch9";;
   *merge_requests/7*) cat "$d/mr7";;
   *merge_requests/8*) cat "$d/mr8";;
+  *merge_requests/9*) cat "$d/mr9";;
   *) echo '[]';;
 esac
 `,
   )
   chmodSync(glab, 0o755)
-  stage('solutions/2026-11/fix-acme-abc1.2.md', page('acme-abc1.2', GL))
+  stage('solutions/2026-11/fix-acme-abc1.2.md', page('acme-abc1.2', `${GL} ${GL9}`))
   stage('solutions/2026-11/fix-acme-def.md', page('acme-def', GL.replace('7', '8')))
   prior()
   factory(['wiki', 'write'])
@@ -995,9 +1006,9 @@ esac
   factory(['wiki', 'write'])
   expect(Object.keys(state().written).sort()).toEqual(['acme-abc1.2', 'acme-def'])
   expect(runs()).toBe(2)
-  expect(prompt()).toContain(GL)
+  for (const t of [GL, GL9, 'acme-abc1.2: fix it', 'acme-abc1.2 release notes']) expect(prompt()).toContain(t)
   expect(state().lastWriteAt).toBe(OLD_ISO)
-  committed('acme-abc1.2', GL)
+  committed('acme-abc1.2', GL, GL9)
   committed('acme-def', GL.replace('7', '8'))
   settles(2, OLD_ISO)
 })
@@ -1026,6 +1037,7 @@ slow('write AC9 a recovered code plus release pair commits both links and both s
   expect(prompt()).toContain(PR5)
   expect(prompt()).toContain(R7)
   expect(prompt()).toContain('acme-3 release notes')
+  expect(prompt()).toContain('acme-3: fix it')
   const text = git('show', 'HEAD:solutions/2026-11/fix-acme-3.md')
   for (const s of SECTIONS) expect(text).toContain(`## ${s}`)
   expect(text).toContain(PR5)
@@ -1055,12 +1067,14 @@ function gitlabRig() {
     description: null,
   })
   const j = (name: string, v: unknown) => writeFileSync(join(data, name), JSON.stringify(v))
-  j('full-old', [mrow(7, 'acme-old: fix it')])
+  j('full-old', [mrow(7, 'acme-old: fix it'), mrow(9, 'acme-old release notes')])
   j('full-new', [mrow(8, 'acme-new: fix it')])
   j('mr7', mrow(7, 'acme-old: fix it'))
   j('mr8', mrow(8, 'acme-new: fix it'))
+  j('mr9', mrow(9, 'acme-old release notes'))
   j('ch7', { changes: [{ new_path: 'src/b.ts', diff: '' }] })
   j('ch8', { changes: [{ new_path: 'src/a.ts', diff: '' }] })
+  j('ch9', { changes: [{ new_path: 'CHANGELOG.md', diff: '' }] })
   const glab = join(dir, `bin${n}`, 'glab')
   writeFileSync(
     glab,
@@ -1072,14 +1086,16 @@ case "$*" in
   *search=acme-new*) cat "$d/full-new";;
   *merge_requests/7/changes*) cat "$d/ch7";;
   *merge_requests/8/changes*) cat "$d/ch8";;
+  *merge_requests/9/changes*) cat "$d/ch9";;
   *merge_requests/7*) cat "$d/mr7";;
   *merge_requests/8*) cat "$d/mr8";;
+  *merge_requests/9*) cat "$d/mr9";;
   *) echo '[]';;
 esac
 `,
   )
   chmodSync(glab, 0o755)
-  stage('solutions/2026-11/fix-acme-old.md', page('acme-old', GL))
+  stage('solutions/2026-11/fix-acme-old.md', page('acme-old', `${GL} ${GL9}`))
   stage('solutions/2026-11/fix-acme-new.md', page('acme-new', GL.replace('7', '8')))
   prior()
   return j
@@ -1099,10 +1115,12 @@ slow('write AC9 a malformed GitLab full id reply keeps the older bead pending, t
       state: 'merged',
       description: null,
     },
+    { iid: 9, web_url: GL9, title: 'acme-old release notes', state: 'merged', description: null },
   ])
   factory(['wiki', 'write'])
   expect(Object.keys(state().written).sort()).toEqual(['acme-new', 'acme-old'])
-  committed('acme-old', GL)
+  for (const t of [GL, GL9, 'acme-old: fix it', 'acme-old release notes']) expect(prompt()).toContain(t)
+  committed('acme-old', GL, GL9)
   committed('acme-new', GL.replace('7', '8'))
   expect(state().lastWriteAt).toBe(OLD_ISO)
   settles(2, OLD_ISO)
@@ -1121,18 +1139,27 @@ for (const [name, detail] of [
   ['an unknown state', { ...MR7, state: 'bogus' }],
   ['a null state', { ...MR7, state: null }],
   ['an array', [MR7]],
+  ['a missing iid', { ...MR7, iid: undefined }],
+  ['a missing state', { ...MR7, state: undefined }],
+  ['a missing title', { ...MR7, title: undefined }],
 ] as const)
-  slow(`write AC8 GitLab detail with ${name} keeps the older bead pending and asks for no file list`, () => {
-    const j = gitlabRig()
-    j('mr7', detail)
-    const r = factory(['wiki', 'write'])
-    expect(r.out).toContain('1 waiting')
-    expect(glabCalls(/merge_requests\/7\/changes/)).toBe(0)
-    expect(Object.keys(state().written)).toEqual(['acme-new'])
-    expect(state().lastWriteAt).toBe(PRIOR)
-    expect(runs()).toBe(1)
-    expect(prompt()).not.toContain('"id": "acme-old"')
-  })
+  for (const entry of ['discovered', 'metadata'] as const)
+    slow(`write AC8 GitLab ${entry} detail with ${name} keeps the older bead pending, no file list`, () => {
+      const j = gitlabRig()
+      if (entry === 'metadata')
+        seed([
+          closed('acme-old', { closed_at: OLD, metadata: { ship_pr: GL } }),
+          closed('acme-new', { closed_at: NEW }),
+        ])
+      j('mr7', detail)
+      const r = factory(['wiki', 'write'])
+      expect(r.out).toContain('1 waiting')
+      expect(glabCalls(/merge_requests\/7\/changes/)).toBe(0)
+      expect(Object.keys(state().written)).toEqual(['acme-new'])
+      expect(state().lastWriteAt).toBe(PRIOR)
+      expect(runs()).toBe(1)
+      expect(prompt()).not.toContain('"id": "acme-old"')
+    })
 
 for (const [name, changes, complete] of [
   ['an absent overflow', { changes: [{ new_path: 'src/b.ts', diff: '' }] }, true],
@@ -1153,12 +1180,61 @@ for (const [name, changes, complete] of [
     () => {
       const j = gitlabRig()
       j('ch7', changes)
-      const out = factory(['wiki', 'write', '--dry-run']).out
-      expect(out).toContain(
-        complete ? '2 groups from 2 beads; 0 waiting' : '1 groups from 1 beads; 1 waiting',
-      )
+      if (complete) {
+        expect(factory(['wiki', 'write', '--dry-run']).out).toContain('2 groups from 2 beads; 0 waiting')
+        return
+      }
+      expect(factory(['wiki', 'write', '--dry-run']).out).toContain('1 groups from 1 beads; 1 waiting')
+      factory(['wiki', 'write'])
+      expect(Object.keys(state().written)).toEqual(['acme-new'])
+      expect(state().lastWriteAt).toBe(PRIOR)
+      expect(runs()).toBe(1)
+      expect(prompt()).not.toContain('"id": "acme-old"')
     },
   )
+
+slow('write AC8 a nested GitLab project: a bad detail keeps the bead pending, a good one is a group', () => {
+  setup()
+  Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'remote',
+    'set-url',
+    'origin',
+    'https://gitlab.example.com/acme/team/widget.git',
+  ])
+  const NG = 'https://gitlab.example.com/acme/team/widget/-/merge_requests/7'
+  seed([closed('acme-1', { closed_at: OLD, metadata: { ship_pr: NG } })])
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', NG))
+  prior()
+  const mr = { iid: 7, web_url: NG, title: 'acme-1: fix it', state: 'merged', description: null }
+  const glab = join(dir, `bin${n}`, 'glab')
+  writeFileSync(
+    glab,
+    `#!/bin/sh
+d='${data}'
+echo "$*" >> "$d/glab-calls"
+case "$*" in
+  *acme%2Fteam%2Fwidget/merge_requests/7/changes*) echo '{"changes":[{"new_path":"src/a.ts","diff":""}]}';;
+  *acme%2Fteam%2Fwidget/merge_requests/7*) cat "$d/mr7";;
+  *) echo '[]';;
+esac
+`,
+  )
+  chmodSync(glab, 0o755)
+  writeFileSync(join(data, 'mr7'), JSON.stringify({ ...mr, iid: 8 }))
+  factory(['wiki', 'write'])
+  expect(runs()).toBe(0)
+  expect(state().lastWriteAt).toBe(PRIOR)
+  expect(Object.keys(state().written ?? {})).toEqual([])
+  expect(glabCalls(/changes/)).toBe(0)
+  writeFileSync(join(data, 'mr7'), JSON.stringify(mr))
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written)).toEqual(['acme-1'])
+  expect(prompt()).toContain(NG)
+  committed('acme-1', NG)
+})
 
 test('AC10 ambient remote and routing values reach no setup or command child', () => {
   const seeded: Record<string, string> = {
@@ -1174,7 +1250,7 @@ test('AC10 ambient remote and routing values reach no setup or command child', (
     setup()
     expect(factory(['wiki', 'write', '--dry-run']).code).toBe(0)
     expect(Bun.spawnSync(['git', '-C', wiki(), 'config', '--get', 'remote.origin.url']).exitCode).not.toBe(0)
-    for (const f of ['gh-calls', 'gh-repo-calls', 'git-net'])
+    for (const f of ['gh-calls', 'gh-repo-calls', 'glab-calls', 'git-net'])
       expect([f, existsSync(join(data, f))]).toEqual([f, false])
     expect(existsSync(join(dir, 'outbox'))).toBe(false)
     for (const [k, v] of Object.entries(seeded)) expect(process.env[k]).toBe(v)

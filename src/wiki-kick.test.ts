@@ -25,11 +25,30 @@ let home = ''
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
+/** fixture gh, glab, claude and codex first on PATH: each records its call in forge-calls and fails */
+const fx = () => join(dir, 'fx')
+const forgeCalls = () => join(dir, 'forge-calls')
+function fixtureTools() {
+  mkdirSync(fx(), { recursive: true })
+  for (const name of ['gh', 'glab', 'claude', 'codex']) {
+    writeFileSync(join(fx(), name), `#!/bin/sh\necho "${name} $*" >> '${forgeCalls()}'\nexit 1\n`)
+    chmodSync(join(fx(), name), 0o755)
+  }
+}
 const factory = (args: string[], env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_NO_KICK, FACTORY_WIKI_REMOTE, ...laptop } =
     process.env
+  fixtureTools()
   const p = Bun.spawnSync([CLI, ...args], {
-    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', ...env },
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      FACTORY_SELF_UPDATE: '0',
+      FACTORY_GC: '0',
+      FACTORY_CLAUDE: join(fx(), 'claude'),
+      ...env,
+      PATH: `${fx()}:${env.PATH ?? laptop.PATH}`,
+    },
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -48,6 +67,12 @@ function setup(withWiki = true, groomStamp = true) {
   // a fresh write stamp: the refresh tests must not race a write pass for wiki.lock
   writeFileSync(join(home, 'wiki-write.stamp'), '')
   if (groomStamp) writeFileSync(groomStampPath(), '')
+}
+/** a detached pass has ended: wait (at most 2 s) for it to take wiki.lock, then (at most 15 s) for it to free it */
+async function passEnded() {
+  const lock = join(home, 'wiki.lock')
+  for (let i = 0; i < 40 && !existsSync(lock); i++) await sleep(50)
+  for (let i = 0; i < 150 && existsSync(lock); i++) await sleep(100)
 }
 async function waitFor(path: string, tries = 150) {
   for (let i = 0; i < tries && !existsSync(path); i++) await sleep(100)
@@ -133,8 +158,9 @@ async function launched(env: Record<string, string> = {}) {
   const t = existsSync(wstamp()) ? statSync(wstamp()).mtimeMs : 0
   writeFileSync(stamp(), '') // a fresh refresh stamp: one wiki pass in each tick, so refresh must not take it
   factory(['tick'], env)
-  await sleep(1500)
-  return existsSync(wstamp()) && statSync(wstamp()).mtimeMs !== t
+  const moved = existsSync(wstamp()) && statSync(wstamp()).mtimeMs !== t
+  if (moved) await passEnded()
+  return moved
 }
 
 test('write AC6 kick matrix: age, wiki, lock, halt, NO_KICK', async () => {
@@ -291,7 +317,8 @@ test('AC10 an ambient wiki remote reaches no setup or tick child', async () => {
     setup()
     factory(['tick'])
     await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
-    await sleep(1500) // the detached children end before the checks and the cleanup
+    await passEnded() // the detached children end before the checks and the cleanup
+    expect(existsSync(forgeCalls())).toBe(false)
     expect(
       Bun.spawnSync(['git', '-C', join(home, 'wiki'), 'config', '--get', 'remote.origin.url']).exitCode,
     ).not.toBe(0)
