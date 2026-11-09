@@ -5417,6 +5417,24 @@ const wikiRun =
     return { code: r.code, out: r.out.toString().trim() }
   }
 
+/** Make `file` with `text` when no entry is there ('made'). 'kept' when a regular file with one link is there.
+ * 'bad' in every other case: a symlink, a hard link, another type, an lstat error that is not ENOENT, or a failed write.
+ * Flag 'wx' fails on any entry, a dangling symlink too, so this never writes through a link. No journal line: the caller logs. */
+export function wikiNewFile(file: string, text: string): 'made' | 'kept' | 'bad' {
+  try {
+    const st = lstatSync(file)
+    return st.isFile() && st.nlink === 1 ? 'kept' : 'bad'
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'bad'
+  }
+  try {
+    writeFileSync(file, text, { flag: 'wx' })
+    return 'made'
+  } catch {
+    return 'bad'
+  }
+}
+
 /**
  * The branch ref and sha of HEAD, and `git blame --line-porcelain <sha>` of each tracked page outside rigs/,
  * for keepPersonLines() after an agent pass. Undefined (and a journal line) when there is no branch head
@@ -5475,14 +5493,8 @@ export function keepPersonLines(
   }
   if (flags.length) {
     const file = join(dir, 'needs-person.md')
-    let regular: boolean | undefined
-    try {
-      const st = lstatSync(file)
-      regular = st.isFile() && st.nlink === 1
-    } catch {}
-    if (regular === false)
+    if (wikiNewFile(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n') === 'bad')
       return (wikiLog('wiki: needs-person.md is not a regular file, nothing committed'), false)
-    if (regular === undefined) writeFileSync(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n')
     appendFileSync(file, `${flags.join('\n')}\n`)
   }
   return true
@@ -7130,6 +7142,50 @@ function allRunRefs(): GcRunRef[] {
   })
 }
 
+/** What a forced `git worktree remove` would lose in submodules (claude-factory-m9f9). `none`: no
+ * submodule gitdir under the worktree's admin dir. `clean`: every submodule has no uncommitted work
+ * and no commit that a remote-tracking ref misses. `dirty`: otherwise, and on any read error. */
+function submoduleState(wt: string): 'none' | 'clean' | 'dirty' {
+  const run = (...a: string[]) => Bun.spawnSync(['git', ...a], { env: process.env })
+  const unpushed = ['rev-list', '-n', '1', '--all', '--not', '--remotes']
+  try {
+    const each = run(
+      '-C',
+      wt,
+      'submodule',
+      'foreach',
+      '--recursive',
+      '--quiet',
+      'git status --porcelain --ignore-submodules=none && git rev-list -n 1 --all --not --remotes',
+    )
+    if (each.exitCode !== 0 || each.stdout.toString().trim() !== '') return 'dirty'
+    const m = run('-C', wt, 'rev-parse', '--path-format=absolute', '--git-path', 'modules')
+    if (m.exitCode !== 0) return 'dirty'
+    const modules = m.stdout.toString().trim()
+    if (!existsSync(modules)) return 'none'
+    let found = false
+    // a gitdir has HEAD and objects: look only into its modules/ child. Look into each child dir of any other dir.
+    const walk = (d: string): boolean => {
+      if (!lstatSync(d).isDirectory()) return false
+      if (existsSync(join(d, 'HEAD')) && existsSync(join(d, 'objects'))) {
+        found = true
+        const r = run(`--git-dir=${d}`, ...unpushed)
+        if (r.exitCode !== 0 || r.stdout.toString().trim() !== '') return false
+        const nested = join(d, 'modules')
+        return !existsSync(nested) || walk(nested)
+      }
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        if (e.isSymbolicLink()) return false
+        if (e.isDirectory() && !walk(join(d, e.name))) return false
+      }
+      return true
+    }
+    return walk(modules) ? (found ? 'clean' : 'none') : 'dirty'
+  } catch {
+    return 'dirty'
+  }
+}
+
 /** commits every change in `path` (tracked and untracked, `.gitignore` honored) to a local-only ref
  * at `refs/factory-gc/<runId>`: a dirty-small worktree's work survives its removal (AC6). Returns the sha. */
 function snapshotWorktree(path: string, runId: string): string {
@@ -7271,6 +7327,10 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
     for (const w of p.removeWorktrees) {
       try {
         rmSync(join(w.path, '.beads.gate.lock'), { force: true })
+        // --force deletes submodule gitdirs: only when no submodule holds uncommitted or unpushed work
+        const subs = submoduleState(w.path)
+        if (subs === 'dirty')
+          throw new Error('a submodule has uncommitted work or commits on no remote: kept')
         let snapshot: string | undefined
         if (w.snapshot) {
           snapshot = snapshotWorktree(w.path, w.runId)
@@ -7288,7 +7348,7 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
           repo,
           'worktree',
           'remove',
-          ...(w.snapshot ? ['--force'] : []),
+          ...(w.snapshot || subs === 'clean' ? ['--force'] : []),
           w.path,
         ])
         if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
@@ -13478,9 +13538,21 @@ if (import.meta.main && !outboxCmd)
             process.exitCode = 1
             break
           }
-          for (const [name, text] of Object.entries(WIKI_SEEDS))
-            if (!existsSync(join(dir, name))) writeFileSync(join(dir, name), text)
-          if (commitWiki('init', 'seed index and glossary', dir, Object.keys(WIKI_SEEDS)) === false) {
+          const seeds = Object.entries(WIKI_SEEDS).filter(([name, text]) => {
+            if (wikiNewFile(join(dir, name), text) !== 'bad') return true
+            wikiLog(`wiki: ${name} is not a regular file, seed not written`)
+            process.exitCode = 1
+            return false
+          })
+          if (
+            seeds.length &&
+            commitWiki(
+              'init',
+              'seed index and glossary',
+              dir,
+              seeds.map(([n]) => n),
+            ) === false
+          ) {
             process.exitCode = 1
             break
           }
@@ -14433,10 +14505,16 @@ if (import.meta.main && !outboxCmd)
         if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
         // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
         rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
-        // no --force: herdr and git refuse a worktree with uncommitted work; the branch always stays.
+        // --force only for a clean submodule worktree (below): herdr and git refuse uncommitted work; the branch always stays.
         // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
         if (herdrPanes().some(p => isIn(p, run))) herdr('worktree', 'remove', '--workspace', run.ws)
-        else if (existsSync(run.worktree)) git(run.repo, 'worktree', 'remove', run.worktree)
+        else if (existsSync(run.worktree)) {
+          // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
+          const force =
+            submoduleState(run.worktree) === 'clean' &&
+            git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
+          git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
+        }
         // its record outlives it: metrics count removed runs too
         appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
         rmSafe(runDir(run.id), { recursive: true })

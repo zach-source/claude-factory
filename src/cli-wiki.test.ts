@@ -12,6 +12,7 @@ import {
   rmSync,
   symlinkSync,
   linkSync,
+  lstatSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -1045,3 +1046,43 @@ test(
   },
   SLOW60,
 )
+
+test.each(['dangling', 'existing', 'hardlink', 'dir'])(
+  't761 a seed path that is a symlink, hard link or dir is not written through (%s)',
+  kind => {
+    setup()
+    mkdirSync(wiki(), { recursive: true })
+    const outside = join(dir, 'outside.txt')
+    const OUT = `${page('index', 'outside')}zqoutside\n`
+    const index = join(wiki(), 'index.md')
+    if (kind === 'existing' || kind === 'hardlink') writeFileSync(outside, OUT)
+    if (kind === 'hardlink') linkSync(outside, index)
+    else if (kind === 'dir') mkdirSync(index)
+    else symlinkSync(outside, index)
+    const r = factory(['wiki', 'init'])
+    expect(r.code).toBe(1)
+    expect(wikiLog()).toContain('wiki: index.md is not a regular file, seed not written')
+    if (kind === 'dangling') expect(existsSync(outside)).toBe(false)
+    if (kind === 'existing' || kind === 'hardlink') expect(readFileSync(outside, 'utf8')).toBe(OUT)
+    if (kind === 'dir') expect(lstatSync(index).isDirectory()).toBe(true)
+    const tree = git('ls-tree', '--name-only', 'HEAD').split('\n')
+    expect(tree).toContain('glossary.md')
+    expect(tree).not.toContain('index.md')
+    expect(git('log', '-p', '--all')).not.toContain('zqoutside')
+  },
+)
+
+test('t761 init with no good seed makes no commit', () => {
+  setup()
+  mkdirSync(wiki(), { recursive: true })
+  const a = join(dir, 'outside-index.txt')
+  const b = join(dir, 'outside-glossary.txt')
+  symlinkSync(a, join(wiki(), 'index.md'))
+  symlinkSync(b, join(wiki(), 'glossary.md'))
+  writeFileSync(join(wiki(), 'other.md'), page('topic', 'Other'))
+  const r = factory(['wiki', 'init'])
+  expect(r.code).toBe(1)
+  expect(existsSync(a) || existsSync(b)).toBe(false)
+  expect(wikiLog().split('seed not written').length - 1).toBe(2)
+  expect(Bun.spawnSync(['git', '-C', wiki(), 'rev-parse', '-q', '--verify', 'HEAD']).exitCode).not.toBe(0)
+})
