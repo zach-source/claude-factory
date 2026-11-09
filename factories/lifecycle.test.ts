@@ -783,6 +783,7 @@ test('implement, verify, security, plan and review split to codex, and the exec 
   for (const id of ['check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
   expect(lc.params!.codex_share).toBe('0.3')
   expect(lc.params!.codex_judge_share).toBe('0') // a rig turns the codex judge tier on itself
+  expect(lc.params!.fast_check).toBe('') // a rig sets its own fast check; empty is off
   expect(lc.params!.codex).toContain('codex --dangerously-bypass-approvals-and-sandbox')
   // cursor is off for every station until a rig sets its share
   for (const st of ['plan', 'implement', 'verify', 'review', 'security']) {
@@ -1104,6 +1105,48 @@ test('claude-factory-k7ku AC1-AC4: verify cites exact-head CI for a local tool t
   for (const [id, node] of Object.entries(lifecycle.nodes)) {
     const prompt = (node as { prompt?: unknown }).prompt
     if (typeof prompt === 'string' && id !== 'verify') expect(prompt, id).not.toContain('Local gap:')
+  }
+})
+
+test('claude-factory-aure.3 AC3: implement, quick, verify and check run the brief fast check, once, in place', () => {
+  const S = {
+    implement:
+      'If your brief has a Fast check section, run its command at the worktree root at the final HEAD and fix the code until it exits 0; report ready only then, with the line `Fast check: exit 0` in the Self-check block. If the command cannot start on this worker (the tool is not found, or a network fetch fails), write `Fast check: not run: <error>` instead; any other non-zero exit is a defect to fix.',
+    quick:
+      'If your brief has a Fast check section, run its command at the worktree root after your last commit and fix the code until it exits 0; report ready only then, with the line `Fast check: exit 0` in the summary. If the command cannot start on this worker, put `Fast check: not run: <error>` in the summary instead.',
+    verify:
+      'If your brief has a Fast check section, run its command first. If it exits non-zero, run nothing else: report red at once with the command, its exit code and at most 20 lines of its output, record one bug task, and end with the line `Failing: fast check`. A command that cannot start on this worker follows the local tool rule below.',
+    check:
+      'If your brief has a Fast check section, run its command first. If it exits non-zero, run nothing else and skip the review: post the verdict as below with the command, its exit code and at most 20 lines of its output, record one task, and report changes.',
+  }
+  const after = {
+    implement: 'Merge origin/{base_branch} last',
+    quick: '',
+    verify: '',
+    check: '',
+  }
+  const before = {
+    implement: '2. Make an AC table',
+    quick: 'Push the branch and open it as a draft pull request',
+    verify: 'Run the full pipeline the repo defines',
+    check: "Run the repo's full pipeline",
+  }
+  for (const [id, s] of Object.entries(S)) {
+    const p = promptOf(lifecycle, id)
+    expect(p.split(s).length - 1, id).toBe(1)
+    const at = p.indexOf(s)
+    expect(at, id).toBeGreaterThan(p.indexOf(after[id as keyof typeof after]))
+    expect(at, id).toBeLessThan(p.indexOf(before[id as keyof typeof before]))
+    expect(s, id).not.toContain('## Fast check')
+    expect(s, id).not.toContain('Local gap:')
+  }
+  expect(promptOf(lifecycle, 'check')).toContain('post the verdict')
+  expect(promptOf(lifecycle, 'verify')).toContain('local tool rule')
+  for (const [id, node] of Object.entries(lifecycle.nodes)) {
+    if (id in S) continue
+    const n = node as { prompt?: unknown; onTimeout?: { prompt?: string } }
+    if (typeof n.prompt === 'string') expect(n.prompt, id).not.toContain('Fast check')
+    expect(n.onTimeout?.prompt ?? '', id).not.toContain('Fast check')
   }
 })
 
