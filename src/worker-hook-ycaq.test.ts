@@ -79,6 +79,36 @@ const AC1 = [
   'bash -c ">f $G-push origin main"',
   'xargs >f $G-push origin main',
   '>f git"$ifs"push origin main',
+  '$G-pus${E:-h} origin main',
+  '$G-pus${E-h} origin main',
+  '$G-pus${E:=h} origin main',
+  '$G-pus${E=h} origin main',
+  '$G-${E:-push} origin main',
+  '${G}${E:-push} origin main',
+  '$G-pu${E:-s}h origin main',
+  '$G-pus${G:+h} origin main',
+  '$G-pus${G+h} origin main',
+  '$G-pus${E:-${F:-h}} origin main',
+  '$G-pus${E:-${F:-${H:-h}}} origin main',
+  '$G-pus${E:-${F}h} origin main',
+  '$G-${E:-pu}${F:-sh} origin main',
+  '$G-pus${E-h}${F-x} origin main',
+  '"$G"pus${E:-h} origin main',
+  '"$G-pus${E:-h}" origin main',
+  '$G-PUS${E:-H} origin main',
+  '$G-${E:-config} x y',
+  '$G-${E:-send-pack} x',
+  '$G-pus${E:-"h"} origin main',
+  '$G-pus${E:-\\h} origin main',
+  '$G-pu${E-"}"}sh origin main',
+  '$G-pu${E-\\}}sh origin main',
+  '$G-pu${E:+"}"}sh origin main',
+  '$G-pu${E:+"}"x}sh origin main',
+  '$G-pu${E:+\\}}sh origin main',
+  '${E:-push} origin main',
+  '${TOOL:-config} x',
+  '$G-pu${E-{x}}sh origin main',
+  '$G-pus${E:-"}"}h origin main',
 ]
 const AC2 = [
   '=git-push origin main',
@@ -90,6 +120,11 @@ const AC2 = [
   'x() { $G-push origin main; }',
   'A=1 >f $G-push origin main',
   '>f =git-push origin main',
+  '$G-pus${E:?h} origin main',
+  '${G:-git} push origin main',
+  '$G-pus${E:-}h origin main',
+  'E=h; $G-pus$E origin main',
+  'E=x; $G-pus${E/x/h} origin main',
 ]
 const AC3 = [
   '$G-tool x',
@@ -105,6 +140,16 @@ const AC3 = [
   '=git-status',
   '$G-push.sh x',
   '>f $G-tool x',
+  '$G-pus${E:-x} origin main',
+  '$G-pus${E:-h}x origin main',
+  '$G-${E:-tool} x',
+  '$G-${E:-status}',
+  '${X:-/opt/tool} run',
+  '${TOOL:-/usr/bin/git} status',
+  '$G-${E:-pushx} x',
+  '$G-pus${E/x/h} origin main',
+  '${A:-x}/${B:-y}/${C:-z} run',
+  '${HOME}/bin/${T:-tool}-${V:-1}.${X:-sh} run',
 ]
 
 test('a dynamic word ending in a dashed git verb is denied', () => {
@@ -119,4 +164,16 @@ test('glued IFS pushes keep the push reason', () => {
 })
 test('other dynamic words stay allowed', () => {
   for (const c of AC3) expect(run(c), c).toBeUndefined()
+})
+test('too many expansion readings fail closed (claude-factory-qn8a.16)', () => {
+  expect(run('$G-${A1:-a}${A2:-b}${A3:-c}${A4:-d}${A5:-e} x')).toBe(DYNAMIC_VERB_REASON)
+  expect(run('$G-${A1:-a}${A2:-b}${A3:-c}${A4:-d} x')).toBeUndefined()
+  for (const c of [
+    '$G-x' + '${'.repeat(2600) + '}'.repeat(2600) + ' x',
+    '$G-x' + '${a:-}'.repeat(1300) + ' x',
+  ]) {
+    const t0 = performance.now()
+    expect(run(c)).toBeDefined()
+    expect(performance.now() - t0).toBeLessThan(1000)
+  }
 })
