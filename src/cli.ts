@@ -2104,16 +2104,20 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
 
 /** launch() refused. The factory opens no tab, and a retry in the next tick would refuse again */
 class LaunchRefused extends Error {}
+/** the FAIL for a refused launch, which would refuse again in the next tick; null for any other error */
+export function launchRefusal(err: unknown, seq: number) {
+  return err instanceof LaunchRefused
+    ? ({ type: 'FAIL', seq, reason: `launch refused: ${err.message}` } as const)
+    : null
+}
+const refuse = (msg: string): never => {
+  throw new LaunchRefused(msg)
+}
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
 export function launchPane({ run, def, node, c, session, file }: Job) {
   // build the command first: a refused launch (a worker the person key must not reach) opens no tab
-  let cmd: string
-  try {
-    cmd = launch(run, def, node, c, file, session)
-  } catch (err) {
-    throw new LaunchRefused((err as Error).message)
-  }
+  const cmd = launch(run, def, node, c, file, session)
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -3490,7 +3494,7 @@ export function piWorker(
 ) {
   // ponytail: pi has no deny hook, so it could read the person key. When claude-factory-qn8a.84 lands, drop this refusal.
   if (existsSync(key))
-    fail(
+    refuse(
       `a pi worker has no deny hook (claude-factory-qn8a.84), so it could read the person key ${key}: use a claude or codex worker`,
     )
   const id = commitIdentity(home)
@@ -3526,14 +3530,14 @@ export function codexWorker(
   } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
-  if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
+  if (!existsSync(hookFile)) refuse(`a codex worker needs the deny hook, and ${hookFile} is missing`)
   const off = codexGuardOff(agent)
-  if (off) fail(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
+  if (off) refuse(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
   // the home trusts the worktree so codex shows no folder prompt; a .codex entry there would load unguarded config,
   // unless it is the one `bd init` writes (claude-factory-8cu6)
   for (let d = resolve(run.worktree); ; d = dirname(d)) {
     if (existsSync(join(d, '.codex')) && !beadsOnlyCodexDir(join(d, '.codex')))
-      fail(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
+      refuse(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
     if (existsSync(join(d, '.git')) || dirname(d) === d) break
   }
   const user = o.userHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
@@ -3592,7 +3596,7 @@ export function codexWorker(
     : probe.exitCode !== 0
       ? 'codex features list failed'
       : codexFeaturesBad(probe.stdout.toString())
-  if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
+  if (bad) refuse(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
   return {
     env: {
       CODEX_HOME: dir,
@@ -3615,10 +3619,10 @@ export function cursorWorker(
   home = HOME,
   hookFile = join(ROOT, 'src', 'worker-hook.ts'),
 ) {
-  if (!existsSync(hookFile)) fail(`a cursor worker needs the deny hook, and ${hookFile} is missing`)
+  if (!existsSync(hookFile)) refuse(`a cursor worker needs the deny hook, and ${hookFile} is missing`)
   const file = join(run.worktree, '.cursor', 'hooks.json')
   if (existsSync(file) && !readFileSync(file, 'utf8').includes(hookFile))
-    fail(`a cursor worker keeps the deny hook on: ${file} is not the factory's and would add hooks`)
+    refuse(`a cursor worker keeps the deny hook on: ${file} is not the factory's and would add hooks`)
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(
     file,
@@ -3661,10 +3665,10 @@ export function grokWorker(
   home = HOME,
   hookFile = join(ROOT, 'src', 'worker-hook.ts'),
 ) {
-  if (!existsSync(hookFile)) fail(`a grok worker needs the deny hook, and ${hookFile} is missing`)
+  if (!existsSync(hookFile)) refuse(`a grok worker needs the deny hook, and ${hookFile} is missing`)
   const dir = join(run.worktree, '.grok', 'hooks')
   if (existsSync(dir) && readdirSync(dir).some(f => f !== 'factory.json'))
-    fail(`a grok worker keeps the deny hook on: ${dir} holds hooks the factory did not write`)
+    refuse(`a grok worker keeps the deny hook on: ${dir} holds hooks the factory did not write`)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'factory.json'),
@@ -4116,14 +4120,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         return 'merge conflict'
       }
     }
-    let pane: string
-    try {
-      pane = spawn(run, def, node, c)
-    } catch (err) {
-      if (!(err instanceof LaunchRefused)) throw err
-      send({ type: 'FAIL', seq: c.seq, reason: `launch refused: ${err.message}` })
-      return 'launch refused'
-    }
+    const pane = spawn(run, def, node, c)
     send({ type: 'SPAWNED', seq: c.seq, pane })
     const box = c.mail[node] ?? [] // the brief carried the whole box
     if (box.length) send({ type: 'READ', box: node, seen: box.length })
@@ -4649,6 +4646,9 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     else agent = agentOf(def, actor.getSnapshot().value, ctx())
   } catch (err) {
     error = (err as Error).message
+    // a refused launch would refuse again in the next tick: end the attempt (fresh, resume, swap and halt spawns)
+    const refusal = launchRefusal(err, ctx().seq)
+    if (refusal) send(refusal)
   }
   keepTickError(run.id, error)
 

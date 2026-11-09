@@ -71,6 +71,7 @@ import {
   workerFlags,
   piWorker,
   launchPane,
+  launchRefusal,
   userPluginDirs,
   workerSettings,
   workerSkills,
@@ -2782,15 +2783,20 @@ test('launchPane opens no tab when the launch is refused', () => {
   const bin = join(home, 'herdr')
   writeFileSync(bin, "#!/bin/sh\necho x >> '" + calls + "'\n", { mode: 0o755 })
   const script = `
-    import { launchPane } from ${JSON.stringify(join(import.meta.dir, 'cli'))}
+    import { launchPane, launchRefusal } from ${JSON.stringify(join(import.meta.dir, 'cli'))}
     const def = { name: 'x', start: 'a', agent: 'pi', nodes: { a: { prompt: '', next: { ok: 'done' } } } }
     const run = { id: 'r', ws: 'w', worktree: ${JSON.stringify(home)}, repo: ${JSON.stringify(home)}, branch: 'b' }
-    try { launchPane({ run, def, node: 'a', c: { attempt: 1, seq: 1, mail: {} }, file: 'p.md' } as never) } catch (e) { console.log((e as Error).message) }
+    try { launchPane({ run, def, node: 'a', c: { attempt: 1, seq: 1, mail: {} }, file: 'p.md' } as never) } catch (e) { console.log(JSON.stringify(launchRefusal(e, 7))) }
   `
   const env = { ...process.env, HOME: home, FACTORY_HERDR: bin, FACTORY_HOME: home }
   const p = Bun.spawnSync(['bun', '-e', script], { env })
-  expect(p.stdout.toString()).toContain('claude-factory-qn8a.84')
+  const ev = JSON.parse(p.stdout.toString())
+  expect(ev).toMatchObject({ type: 'FAIL', seq: 7 })
+  expect(ev.reason).toContain('launch refused: a pi worker')
+  expect(ev.reason).toContain('claude-factory-qn8a.84')
   expect(existsSync(calls)).toBe(false)
+  // any other launch error is transient: it does not end the attempt
+  expect(launchRefusal(new Error('ENOENT'), 7)).toBeNull()
 })
 
 test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {
