@@ -407,6 +407,21 @@ Limits (see claude-factory-d289.1 and claude-factory-d289.3):
 - The guest allows 10 processes at a time. Each ssh connection is one process.
 - Do not set `HERDR_REMOTE_BINARY`. Its upload echoes the binary back, and without `ENV_REPLACE` it hits the 10 MiB cap. The image has herdr on `PATH`.
 
+#### Attach with the Herdr app (herdr core)
+
+The manager and worker images have herdr core (`hc`, `HC_VERSION` in `Dockerfile.worker`). The Herdr app on the laptop reaches a task through `hc machine add`. That command runs `hc connect` in the task over ssh, or over any command given with `--via`. The laptop `hc` must not be newer than the image's `hc`. Keep them at the same version.
+
+- The manager: with the `Host f-manager` block from step 2 above, run `hc machine add f-manager`.
+- A worker task has no sshd. Use `ax stdio` as the transport. hc gives the shell line to run as the last argument, so end the command with `sh -c`:
+
+  ```bash
+  hc machine add --temp --name <task> --via "ax --context <ctx> -a factory stdio <task> -- setpriv --reuid=worker --regid=worker --init-groups sh -c"
+  ```
+
+  The `ax` process needs the same AX env as the ProxyCommand in step 2. `--temp` marks the machine as short-lived. Remove it with `hc machine rm <task>` when the task ends.
+
+The same limits as for `herdr --remote` apply: each connection is one guest process, and an image without `ENV_REPLACE` has the 10 MiB stdout cap.
+
 ### The AX sweep
 
 A failed `ax delete`, or a run that ends with its worker up, can leave a task or a workspace on the cluster. The `factory beads` pass removes them. It runs at most every 10 minutes, only when a rig has `runner: 'ax'`, and not after `factory stop`.

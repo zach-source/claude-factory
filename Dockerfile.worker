@@ -124,6 +124,16 @@ COPY --from=plugins /m/claude/plugins/asd-ste100 /opt/plugins/asd-ste100
 COPY --from=plugins /m/claude/plugins/code-review /opt/plugins/code-review
 COPY --from=egm /egm/distributions/claude /opt/plugins/egm
 
+# herdr core (hc), the upstream release binary pinned by sha256, so the Herdr app on the laptop can reach this task
+# with `hc machine add` (over `ssh <host> hc connect`, or `--via` an `ax stdio` command for a task without ssh).
+# The laptop hc must not be newer than this one: keep HC_VERSION the same as the laptop's `hc --version`
+ARG HC_VERSION=0.1.19
+ARG HC_SHA256=4adcfb423d52f24c5cc4a1e2cd2fcad1f62d28bb77876ac472c29082a3eaa424
+RUN curl -fsSL -o /tmp/hc.tgz https://releases.herdr.dev/core/${HC_VERSION}/herdr-core-linux-x86_64.tar.gz \
+  && echo "${HC_SHA256}  /tmp/hc.tgz" | sha256sum -c - \
+  && tar -xzf /tmp/hc.tgz -C /usr/local/bin herdr-core && rm /tmp/hc.tgz \
+  && chmod 755 /usr/local/bin/herdr-core && ln -s herdr-core /usr/local/bin/hc && hc --version
+
 # the factory CLI: `factory worker serve`, and report, mail and memory add, which queue in the outbox
 WORKDIR /opt/factory
 COPY package.json bun.lock tsconfig.json ./
