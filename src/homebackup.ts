@@ -168,47 +168,44 @@ export type Outcome = {
   redacted?: string[]
 }
 
-/** one gitleaks finding; the report has --redact, so it holds no value */
-export type Leak = {
-  RuleID: string
-  File: string
-  StartLine: number
-  EndLine: number
-  StartColumn: number
-  EndColumn: number
+/** one gitleaks finding. It holds the secret: it stays in memory, and no log, file or error gets it */
+export type Leak = { RuleID: string; File: string; Secret: string; Tags?: string[] }
+
+const B64 = /[A-Za-z0-9+/_-]{16,}={0,2}/g
+/** whether a base64 run decodes to text that holds the needle, also after up to `depth` nested decodes */
+const holds = (run: string, needle: string, depth: number): boolean => {
+  const t = Buffer.from(run, 'base64').toString('latin1')
+  return t.includes(needle) || (depth > 1 && (t.match(B64) ?? []).some(r => holds(r, needle, depth - 1)))
 }
 
 /**
- * The text with each finding replaced by [REDACTED]. gitleaks 8.30.1 columns are 1-based and inclusive on line 1;
- * on a later line they are one more (they count the newline before the line). The columns are bytes, so the text
- * is latin1 (one char for each byte). A base64-decoded finding marks the encoded span.
+ * The text with each secret of the findings replaced by [REDACTED], found by content: gitleaks reads big files
+ * in chunks, so its line and column numbers do not point at the text. Each occurrence of a plain secret goes.
+ * For a `decoded:*` finding, the secret is the decoded text: each base64 run that decodes to text holding it
+ * goes. The text is latin1 (one char for each byte), and each secret is its UTF-8 bytes, so multibyte text
+ * before a secret does not matter.
  */
 export function redact(text: Buffer, leaks: Leak[]): Buffer {
-  const s = text.toString('latin1')
-  const starts = [0]
-  for (let i = s.indexOf('\n'); i >= 0; i = s.indexOf('\n', i + 1)) starts.push(i + 1)
-  const at = (line: number, col: number) => (starts[line - 1] ?? s.length) + col - (line === 1 ? 1 : 2)
-  const spans = leaks
-    .map(l => [at(l.StartLine, l.StartColumn), at(l.EndLine, l.EndColumn) + 1] as const)
-    .sort((a, b) => a[0] - b[0])
-  let out = ''
-  let pos = 0
-  for (const [a, b] of spans) {
-    if (b <= pos) continue // inside a span already redacted
-    out += s.slice(pos, Math.max(a, pos)) + '[REDACTED]'
-    pos = b
-  }
-  return Buffer.from(out + s.slice(pos), 'latin1')
+  const bytes = (x: string) => Buffer.from(x, 'utf8').toString('latin1')
+  const isDecoded = (l: Leak) => (l.Tags ?? []).some(t => t.startsWith('decoded:'))
+  const plain = [...new Set(leaks.filter(l => l.Secret && !isDecoded(l)).map(l => bytes(l.Secret)))]
+  const decoded = [...new Set(leaks.filter(l => l.Secret && isDecoded(l)).map(l => bytes(l.Secret)))]
+  let s = text.toString('latin1')
+  for (const n of plain.sort((x, y) => y.length - x.length)) s = s.split(n).join('[REDACTED]')
+  if (decoded.length) s = s.replace(B64, run => (decoded.some(n => holds(run, n, 3)) ? '[REDACTED]' : run))
+  return Buffer.from(s, 'latin1')
 }
 
-/** gitleaks over the files of dir; the findings, or an error. Its report goes to stdout only, with --redact */
+/**
+ * gitleaks over the files of dir; the findings, or an error. The report holds the secrets: it goes to a pipe
+ * only (stdout), never to a file or a log, and no error text gets any of it
+ */
 function gitleaks(bin: string, dir: string): Leak[] | { error: string } {
   const p = Bun.spawnSync(
     [
       bin,
       'dir',
       dir,
-      '--redact',
       '--no-banner',
       '--log-level',
       'error',
