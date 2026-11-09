@@ -724,6 +724,20 @@ function asWorker(argv: string[]) {
 export const poll = (task: string, cursor: number): Poll =>
   JSON.parse(must(['ssh', task, '--', ...asWorker(['factory', 'worker', 'poll', String(cursor)])]))
 /**
+ * what the VM's `factory worker usage` prints, parsed; null when ssh fails (an old image has no such verb),
+ * the output is over 64 KiB or it is not JSON. The VM is untrusted: the caller sends this through validUsage.
+ * Never throws.
+ */
+export function usage(task: string): unknown {
+  const r = ax(['ssh', task, '--', ...asWorker(['factory', 'worker', 'usage'])], undefined, 20_000)
+  if (!r.ok || r.out.length > 64 * 1024) return null
+  try {
+    return JSON.parse(r.out)
+  } catch {
+    return null
+  }
+}
+/**
  * the byte budget for prompt()'s text, before it is base64'd onto the ssh argv: base64 blows up a byte
  * count by 4/3, and Linux's execve() caps one argv string at MAX_ARG_STRLEN (131072 bytes). 90,000 bytes
  * encodes to about 120,000, with headroom for the ssh command itself and the clip marker below
