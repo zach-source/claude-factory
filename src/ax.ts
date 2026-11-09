@@ -488,6 +488,15 @@ export const ACTIONS_LOG_HOSTS = [...range(0, 19), ...range(30, 49), ...range(10
 
 /** GitHub owners whose repos need their own vault key (the App's installation on that account); the Basic key adds `_BASIC` */
 const GITHUB_OWNER_KEYS: Record<string, string> = { 'zach-source': 'GITHUB_ZS' }
+/** the owner of a github.com URL (`https://github.com/<owner>/...`); undefined for anything else */
+const ownerOf = (url?: string) => {
+  try {
+    const u = new URL(url ?? '')
+    return u.hostname === 'github.com' ? u.pathname.split('/')[1] || undefined : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * a worker's EgressPolicy: HTTPS to Anthropic and GitHub, plus the rig's own rules, and nothing else. With FACTORY_AX_VAULT=<vault> the gateway
@@ -519,6 +528,7 @@ export function egressPolicy(
   manager = false,
   githubRepo?: string,
   server = process.env.FACTORY_AX_WORKER_SERVER,
+  backup = process.env.FACTORY_AX_BACKUP_REMOTE,
 ) {
   if (vault && reviewer && !(safeName(githubOwner) && safeName(githubRepo)))
     throw new Error('the reviewer egress policy needs the rig GitHub owner and repo, both plain names')
@@ -562,12 +572,12 @@ export function egressPolicy(
         reviewer ? 'GITHUB_REVIEWER_BASIC' : own ? `${own}_BASIC` : githubKey,
       ),
       // the gateway picks the key by request path (needs a Substrate with egress pathPrefixes live); manager only
-      // the github.com Basic rule is only for the shared worker key: the manager's backup push must keep
-      // GITHUB_BASIC_MANAGER, so it gets the REST API rule but not this one
+      // each owner's github.com Basic rule too, so manager git to that owner works. Not for the owner of the
+      // backup repo: its push must keep the manager's own key (GITHUB_BASIC_MANAGER)
       ...(vault && manager
         ? Object.entries(GITHUB_OWNER_KEYS).flatMap(([owner, key]) => [
             rule(apiHosts, 'Authorization', 'Bearer ', key, undefined, [`/repos/${owner}/`]),
-            ...(githubKey === 'GITHUB_BASIC'
+            ...(owner !== ownerOf(backup)
               ? [rule(['github.com'], 'Authorization', 'Basic ', `${key}_BASIC`, undefined, [`/${owner}/`])]
               : []),
           ])
@@ -997,6 +1007,8 @@ const MANAGER_PASS = [
   'FACTORY_AX_CODEX',
   'FACTORY_AX_CURSOR',
   'FACTORY_AX_GROK',
+  // a staging copy: the host prepares the home (repos, worktrees) and does not start the manager
+  'FACTORY_AX_MANAGER_DRY',
   // the manager's ax CLI talks gRPC over TLS to an endpoint that does not select ALPN (grpc-go 1.67+ refuses it)
   'GRPC_ENFORCE_ALPN_ENABLED',
 ]

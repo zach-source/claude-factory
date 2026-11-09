@@ -441,6 +441,16 @@ Limits:
 - A store is made once. Later syncs pull; they do not make it again.
 - A run that the laptop made keeps the laptop's worktree path. The task has no such worktree. A worker on AX does not need it.
 
+#### Staging copy
+
+To test a cutover with no pause of the laptop factory, use a staging task:
+
+1. Set `FACTORY_AX_MANAGER=f-manager-stage` and `FACTORY_AX_MANAGER_DRY=1`. Set `FACTORY_AX_BACKUP_BRANCH` to a branch that does not exist, so no restore runs.
+2. Run `factory manager --ax`, then `factory migrate-to-ax`. The migrate copies the home. It does not change the laptop.
+3. With `FACTORY_AX_MANAGER_DRY=1`, the host runs `factory repos sync` and then stops. It starts no herdr, no manager, no tick and no backup. So the copy starts no worker and pushes nothing.
+4. `factory repos sync` also makes the missing worktree of each live run, from its branch on origin. `manager-host.log` names each worktree that it could not make.
+5. Delete the task, its Workspace and its egress policy after the checks.
+
 #### Preflight
 
 Do these checks before step 3. `<ctx>` is `FACTORY_AX_CONTEXT`, and the atespace is `factory` (`FACTORY_AX_ATESPACE`).
@@ -449,7 +459,8 @@ Do these checks before step 3. `<ctx>` is `FACTORY_AX_CONTEXT`, and the atespace
 2. The Task `f-manager` must not exist. `ax --context <ctx> -a factory get task f-manager` must say not found.
 3. Look for an old EgressPolicy: `kubectl ate --context <ctx> get egress-policy f-manager -a factory -o json`. An old policy does not stop the launch: `factory manager --ax` updates it in place.
 4. The policy broker must be of the same build as the manager image. `GET /controller` on the broker must answer 200 with the controller readiness. An older broker answers 404. Then each worker launch in the task fails with `AX executor unavailable: controller readiness could not be observed (broker GET /controller answered 404: ...)`, and no worker task starts. To update the broker, run `kubectl set image deploy/factory-policy-broker -n factory-broker broker=<image@digest>`.
-5. After step 3, the task env must have `FACTORY_AX_LAUNCH_ID` (`ax --context <ctx> -a factory get task f-manager`). `factory migrate-to-ax` reads it there and writes `launch=<id>` into `.migrated`.
+5. The dry run (step 2) must show no line `live runs whose branch is not pushed`. In the task, a tick makes each live run's worktree again, from the run branch on origin, in `FACTORY_HOME/worktrees/<run id>`. A commit that is only in a laptop worktree does not move. Push each named branch, then run the dry run again.
+6. After step 3, the task env must have `FACTORY_AX_LAUNCH_ID` (`ax --context <ctx> -a factory get task f-manager`). `factory migrate-to-ax` reads it there and writes `launch=<id>` into `.migrated`.
 
 The host starts the manager only on a `.migrated` with its own launch id. A backup restore writes the same id. With a launch id, a home with `rigs.json` and no good marker does not start the manager. In that case the host logs `.migrated is not of launch <id>` in `manager-host.log`. With no launch id (`--reuse-workspace`), the host trusts any `.migrated`, as before.
 
