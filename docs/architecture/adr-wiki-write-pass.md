@@ -8,7 +8,98 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Current handoff at 0a91a6f2
+## Current handoff at 7f0795a9
+
+This section overrides earlier task lists and AC10 implementation choices. AC1–AC9 and their closed source grammar remain required.
+Keep PR #714 as a draft. Keep `.16`, `.17`, `.20` and `.21` closed.
+The `.21` change narrows fault injection to a child tree. Do not repeat that change.
+The nested assertion tests now call the actual cleanup hook. Preserve those tests and both outcomes.
+No new production defect is established. This pass completes the existing test isolation contract.
+
+### Evidence and decision
+
+At this head, `alive()` catches every signal error as exit (`src/wiki-kick.test.ts:39–44`).
+`procObserver()` discards a child when environment and stat reads fail (lines 81–88).
+Plan extracted these actual helpers into an isolated probe with fake system calls.
+An `EPERM` result produced `alive: false`. Failed environment and stat reads produced two empty lists.
+The probe sent no signals and started no fixture child.
+`same()` trusts a PID when its start identity is unavailable (lines 129–131).
+The first-observation and nested-denied controls still call Linux helpers on every host (lines 623–627 and 682).
+The injected `ps` control does not exercise those paths on macOS.
+These paths violate the current AC10 contract, independent of the final CI result for `.21`.
+
+Use explicit fixture launch ownership. Remove host-wide `/proc` and `ps` discovery as cleanup authority.
+Use existing Bun or Node child handles and a small fixture launcher with an acknowledged launch/exit lifecycle.
+Register each launch before it can outlive its caller. Keep each handle until its exit event or awaited exit.
+The launcher must retain its children across a delayed start, missing lock, lock removal and home changes.
+An intercepted launch must still execute the real CLI and preserve its arguments, environment and kick decision.
+A fixture preload or launcher can retain the real spawn handle; it must not simulate a successful wiki pass.
+Own fixture agent descendants too. Stop and await them before the supervisor reports completion.
+Keep the fixture code in `src/wiki-kick.test.ts`; generate disposable helper files inside its fixture directory.
+Do not change production code, add a production option, or add a dependency.
+Do not add another host process parser. Do not treat a tag, parent PID or recent start time as ownership authority.
+An unrelated same-user orphan is outside this test's ownership, even when its environment cannot be read.
+
+### AC10 final contract
+
+The fail-closed rule is: fixture removal requires independent exit proof for every registered launch and its owned descendants.
+An absent lock, empty observation, signal request, observer failure or permission error cannot prove exit.
+Only the owned handle can authorize a signal. A reused numeric PID cannot authorize one.
+No-launch completion is allowed only after the launcher confirms zero launches and has exited.
+The fixture must survive any failure to prove exit. A failure must produce a test error.
+No external forge, transport or outbox call is allowed. Controlled fixture calls and local git remain allowed.
+Arbitrary shell input, host process discovery and production supervision are out of scope.
+
+| Check | Required positive and negative controls |
+| --- | --- |
+| AC10.1 ownership and exit | Real child starts after three seconds and after the start deadline. Register it before either delay. Live child, absent lock and removed lock must not permit cleanup. Deny first and later environment/stat reads; ownership must remain unchanged. Deny a liveness query with `EPERM`; never count it as exit. An unrelated child remains alive and receives zero signals. Reused PID and unavailable identity receive zero numeric-PID signals. Await all owned descendants after cancellation. |
+| AC10.2 portable lifecycle | Execute the same controls without `/proc` or `ps`. No platform skip is allowed. Confirm normal completion, zero launch, two homes, launch failure and failed exit proof. The real write, ambient, refresh and groom passes must use this lifecycle. Restore parent environment values. All four default forge/agent stubs must record and refuse an explicit call. |
+| AC10.3 actual cleanup hook | Keep the nested assertion-error tests. Clean row: nonzero test exit, child exit, then fixture removal. Denied-proof row: nonzero test exit, live owned child, retained fixture. The outer fixture must own and await that child before final removal. |
+
+Proof: `bun test --timeout 60000 src/wiki-kick.test.ts --test-name-pattern AC10`.
+Keep the eight earlier lifecycle controls. Their test names can change only with an explicit evidence-table mapping.
+An unused observer API needs no new parser matrix after removal; test its former failure effects at the lifecycle boundary.
+If any serialized receipt remains necessary, use only fixture-generated records bound to a parent-held handle.
+Its closed fields are `launchId` (parent-issued nonempty token) and `event` (`started` or `exited`).
+Reject unknown fields, unknown IDs, duplicate/out-of-order events, wrong types and malformed JSON before any cleanup action.
+Reject absolute paths, relative paths and PID fields in receipts; no receipt authorizes a signal or file access.
+Receipt rejection must produce zero signals and zero fixture removals. An `exited` receipt alone cannot replace awaited exit.
+Prefer in-memory handles so this serialization is unnecessary.
+
+### Tasks and test order
+
+1. Reopen `.18`, 65 minutes, one commit: add failing ownership/error controls, then replace scan-based cleanup authority.
+   Record the red results before the correction. Preserve actual CLI passes, tool stubs and environment isolation.
+   Check AC10.1 and AC10.3, including every owned descendant and the unrelated-child negative control.
+2. Reopen `.19`, 30 minutes, one commit after `.18`: complete portable controls and the test-to-control evidence table.
+   Check AC10.2 without process files or host process commands. Do not skip the first-observation or nested-denied rows.
+3. Reserve 25 minutes for regression checks. Required CI wait time is separate.
+
+Keep `.20` closed unless its preserved nested controls expose a new failure. Do not create duplicate tasks.
+Run each wiki test file separately with `bun test --timeout 60000`: `src/wiki-kick.test.ts`, `src/cli-wiki-write.test.ts`,
+`src/wiki.test.ts`, `src/prs.test.ts` and `src/cli-wiki-find.test.ts`. Repeat `src/wiki-kick.test.ts` after these checks.
+Run `bun run typecheck`, changed-file Prettier, `git diff --check`, the repository gate, `bun audit` and gitleaks.
+Use `gitleaks detect --log-opts=origin/main..HEAD`. Require final-head test, typecheck, plugin and format CI.
+Each task close comment must give the test name, red result, exit assertion, fixture assertion, command/result and commit.
+After the fix commit, mutate exit-proof refusal and ownership retention separately. Each control must kill its own mutant.
+Restore each mutant. Do not ship required checks red. State native macOS evidence separately from portable fixture evidence.
+
+### Risk, release and observations
+
+This work is **security-sensitive**: child lifetime and inherited access affect test isolation.
+Reject further scan heuristics: failed reads cannot establish ownership, and same-user orphans can belong to another test.
+Reject fixed sleeps and lock-only waits: neither proves exit. Reject a production supervisor: this defect concerns the fixture.
+There is no production migration, new flag, dependency or `.factory/` change.
+Keep `FACTORY_WIKI_WRITE_MIN`, `FACTORY_DREAM_CODEX`, the 45-minute agent limit and existing test timeout override unchanged.
+Review and security must inspect the final head. A person must merge PR #714 before release.
+Rollback uses a revert PR and a person's merge. Preserve wiki pages and `wiki-state.json`.
+Test evidence consists of owned launches, awaited exits, fixture retention and zero unrelated signals or external calls.
+Production evidence remains committed pages, `written`, `lastWriteAt`, masked `wiki.log`, counts and the push result.
+AC7 remains **must-see-live** in authorized ship soak: `factory wiki write --bead claude-factory-3w8o`.
+Inspect the soak's own seven-section page with PR #590 and #591, state, log and remote result.
+The soak must not substitute its deadline for this evidence. No live read is a pre-merge criterion.
+
+## Prior handoff at 0a91a6f2
 
 This section overrides earlier task lists and AC10 implementation choices. AC1–AC9 and the source grammar remain unchanged.
 Keep PR #714 as a draft. Keep `.16` and `.17` closed. No new production defect is established.
