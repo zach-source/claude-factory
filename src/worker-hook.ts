@@ -8113,7 +8113,13 @@ function dynOpWords(body: string, memo: Map<string, string[] | null>): string[] 
   // claude-factory-qn8a.16.4: a zsh pad flag `(l:4::fill:)` or `(r..)`: each fill string is a word.
   const flags = /^\(([^)]*)\)/.exec(body)
   const pad = flags ? /[lr]/.exec(flags[1]!) : null
-  if (flags && pad) words.push(...flags[1]!.slice(pad.index + 1).split(/[^a-z0-9]+/).filter(Boolean))
+  if (flags && pad)
+    words.push(
+      ...flags[1]!
+        .slice(pad.index + 1)
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean),
+    )
   // A `/` pattern that can match the empty value (empty, or only #, % and *): the replacement is a word.
   const sl = /^[^/]*\/\/?([#%*]*)\/(?=[\s\S])/.exec(body)
   if (sl) words.push(body.slice(sl[0].length))
@@ -9907,14 +9913,13 @@ function denyAt(
       // claude-factory-qn8a.16.3: the lexer cut the word at the flag group, so read it whole here.
       if (r === DYNAMIC_VERB_REASON && bare.split(/\s+/).some(t => t.includes('$') && dynamicDashedVerb(t)))
         return r
-      // claude-factory-qn8a.16.4: a pad flag `(l:4::push:)` hides a verb in its fill. Read the head word of each segment whole.
+      // claude-factory-qn8a.16.4: a pad flag `(l:4::push:)` hides a verb in its fill. Read the head
+      // word of each segment whole.
       if (
-        command
-          .split(/[;&|\n]+/)
-          .some(seg => {
-            const h = seg.trim().split(/\s+/)[0] ?? ''
-            return /\$\{\([^()]*[lr]/.test(h) && dynamicDashedVerb(h)
-          })
+        command.split(/[;&|\n]+/).some(seg => {
+          const h = seg.trim().split(/\s+/)[0] ?? ''
+          return /\$\{\([^()]*[lr]/.test(h) && dynamicDashedVerb(h)
+        })
       )
         return DYNAMIC_VERB_REASON
     }
