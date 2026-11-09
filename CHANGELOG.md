@@ -6,6 +6,8 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: in the AX manager host, `factory repos sync` could not make a run's worktree again: each fetch failed TLS (claude-factory-d289.14). The git network env was a copy of the env from before the host set `GIT_SSL_CAINFO`. Now each call reads the env at call time.
+
 - Fixed: AX manager cutover gaps from attempt 3 (claude-factory-d289.14, claude-factory-d289.15, claude-factory-d289.16).
   - In the task, a tick makes a working run's missing worktree again from the run branch on origin before any git call in it. Before, the brief's `git log` failed first, and 28 of 36 runs failed every tick.
   - `factory migrate-to-ax` (and its `--dry-run`) lists the live runs whose branch is not on origin.
