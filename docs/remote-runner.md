@@ -279,6 +279,7 @@ Seen 2026-10-13 02:11Z and twice on 2026-10-14 (14:21Z, 14:35Z); a 2026-10-14 15
 The manager runs as a long-lived AX task. It needs more tools than a worker. `Dockerfile.worker` has a second target, `manager`. This target builds on the worker image, so the two images share their layers. The `manager` target adds these items:
 
 - `herdr` and `dolt` from the pinned nixpkgs (`NIXPKGS_REV`). `bd` uses `dolt` in server mode.
+- The runner `ax-task-runner` (both targets). To build it against an env fork with a guest fix, set the build arg `ENV_REPLACE` to a `module@version`. That module replaces `github.com/agent-substrate/env`. Example: an env fork with `live_output`, so `ax stdio` streams have no 10 MiB stdout cap.
 - The `ax` CLI, built from `./cmd/ax`. By default it builds from `google/ax` at `v0.3.1`. To use a fork with the `AX_ROUTER` patch, set `AX_CLI_REPO` and `AX_CLI_COMMIT` when you run `hack/push-worker.sh`.
 - The mod, in `/opt/factory/mod`. The manager's Claude loads it as a plugin dir.
 - `FACTORY_IN_AX=1` in the image env.
