@@ -534,19 +534,37 @@ slow('write AC2 a long source text is cut in the prompt', () => {
 
 slow('write AC2 an incomplete forge or bead reply keeps the bead waiting', () => {
   setup()
-  seed([
-    closed('acme-1', { metadata: { ship_pr: PR5 } }),
-    closed('acme-2', { metadata: { ship_pr: 'https://github.com/acme/widget/pull/6' } }),
-    closed('acme-3'),
-  ])
-  pr(5, 'acme-1: fix it', ['src/a.ts'])
+  seed(
+    [
+      closed('acme-1'),
+      closed('acme-2', { metadata: { ship_pr: 'https://github.com/acme/widget/pull/6' } }),
+      closed('acme-3'),
+    ],
+    [pr(9, 'acme-1: fix it', ['src/a.ts'])],
+  )
   pr(6, 'acme-2: fix it', ['src/b.ts'])
-  writeFileSync(join(data, `gh-${key('repos/acme/widget/pulls/5')}`), '{}')
+  writeFileSync(join(data, `gh-${key('repos/acme/widget/pulls/9')}`), '{}')
   writeFileSync(join(data, `gh-${key('repos/acme/widget/pulls/6/files?per_page=100')}`), '[]')
   rmSync(join(data, 'bead-acme-3.json'))
   const r = factory(['wiki', 'write', '--dry-run'])
   expect(r.out).not.toContain('group:')
   expect(r.out).toContain('0 groups from 0 beads; 3 waiting')
+})
+
+slow('write AC3 a group that stays too big after the cuts keeps its bead waiting', () => {
+  setup()
+  const listed = Array.from({ length: 20 }, (_, i) => {
+    const l = pr(i + 20, `acme-1: part ${i}`, [])
+    writeFileSync(
+      join(data, `gh-${key(`repos/acme/widget/pulls/${i + 20}/files?per_page=100`)}`),
+      JSON.stringify(Array.from({ length: 99 }, (_, j) => ({ filename: `src/${'d'.repeat(600)}${j}.ts` }))),
+    )
+    return l
+  })
+  seed([closed('acme-1')], listed)
+  const r = factory(['wiki', 'write', '--dry-run'])
+  expect(r.out).not.toContain('group:')
+  expect(r.out).toContain('0 groups from 0 beads; 1 waiting')
 })
 
 slow('write AC3 the count holds the completed beads only', () => {
