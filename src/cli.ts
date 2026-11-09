@@ -6990,12 +6990,13 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
         dirty = 'unknown' // a failed read must never read as clean (AC5-style)
       else if (revlist.stdout.toString().trim()) dirty = 'small' // snapshot it before removal, not removed bare
     }
-    const du = Bun.spawnSync(['du', '-sk', e.path])
-    const kb = du.exitCode === 0 ? Number(du.stdout.toString().split('\t')[0]) : 0
-    return [
-      { path: e.path, branch: e.branch, locked: e.locked, dirty, bytes: Number.isFinite(kb) ? kb * 1024 : 0 },
-    ]
+    return [{ path: e.path, branch: e.branch, locked: e.locked, dirty, bytes: duBytes(e.path) }]
   })
+}
+function duBytes(path: string): number {
+  const du = Bun.spawnSync(['du', '-sk', path])
+  const kb = du.exitCode === 0 ? Number(du.stdout.toString().split('\t')[0]) : 0
+  return Number.isFinite(kb) ? kb * 1024 : 0
 }
 
 /** every factory/* branch's local and remote tip, and whether each is an ancestor of origin's default
@@ -7264,6 +7265,22 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   const panes = strictPaneCwds()
   const facts: gc.RigWorktreeFacts[] = targetRigs.map(rig => {
     const worktrees = worktreeFacts(rig.repo)
+    // a dir a run owns that git no longer lists: a failed list gives no such fact (fail closed)
+    const reg = registeredWorktrees(rig.repo)
+    for (const r of reg ? runs.filter(r => r.repo === rig.repo && r.worktree !== '') : []) {
+      if (!existsSync(r.worktree) || isRegistered(reg!, r.worktree)) continue
+      const why = unregisteredRefusal(r.worktree, r.id, rig.repo)
+      if (why) console.log(`keep worktree ${r.worktree} (run ${r.id}, reason: unregistered, ${why})`)
+      else
+        worktrees.push({
+          path: r.worktree,
+          branch: null,
+          locked: false,
+          dirty: 'clean',
+          bytes: duBytes(r.worktree),
+          unregistered: true,
+        })
+    }
     const branches = branchFacts(rig.repo, dryRun)
     const prs = prFacts(rig.repo)
     const repoRuns = runs.filter(r => r.repo === rig.repo)
@@ -7280,7 +7297,7 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   for (const p of plans) {
     for (const w of p.removeWorktrees)
       console.log(
-        `remove worktree ${w.path} (run ${w.runId}${w.snapshot ? ', dirty: snapshot first' : ''}, ${fmtBytes(w.bytes)})`,
+        `remove worktree ${w.path} (run ${w.runId}${w.unregistered ? ', unregistered' : ''}${w.snapshot ? ', dirty: snapshot first' : ''}, ${fmtBytes(w.bytes)})`,
       )
     for (const b of p.removeBranches)
       console.log(
@@ -7296,29 +7313,40 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
     const failedWorktrees = new Set<string>()
     for (const w of p.removeWorktrees) {
       try {
-        rmSync(join(w.path, '.beads.gate.lock'), { force: true })
         let snapshot: string | undefined
-        if (w.snapshot) {
-          snapshot = snapshotWorktree(w.path, w.runId)
-          gcLog({
-            type: 'snapshot',
-            rig: p.rig,
-            run: w.runId,
-            ref: `refs/factory-gc/${w.runId}`,
-            sha: snapshot,
-          })
+        if (w.unregistered) rmUnregisteredWorktree(w.path, w.runId, repo)
+        else {
+          rmSync(join(w.path, '.beads.gate.lock'), { force: true })
+          if (w.snapshot) {
+            snapshot = snapshotWorktree(w.path, w.runId)
+            gcLog({
+              type: 'snapshot',
+              rig: p.rig,
+              run: w.runId,
+              ref: `refs/factory-gc/${w.runId}`,
+              sha: snapshot,
+            })
+          }
+          makeWritable(w.path)
+          const rm = Bun.spawnSync([
+            'git',
+            '-C',
+            repo,
+            'worktree',
+            'remove',
+            ...(w.snapshot ? ['--force'] : []),
+            w.path,
+          ])
+          if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
         }
-        const rm = Bun.spawnSync([
-          'git',
-          '-C',
-          repo,
-          'worktree',
-          'remove',
-          ...(w.snapshot ? ['--force'] : []),
-          w.path,
-        ])
-        if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
-        gcLog({ type: 'worktree', rig: p.rig, run: w.runId, path: w.path, bytes: w.bytes })
+        gcLog({
+          type: 'worktree',
+          rig: p.rig,
+          run: w.runId,
+          path: w.path,
+          bytes: w.bytes,
+          ...(w.unregistered && { unregistered: true }),
+        })
         worktreesN++
         bytesN += w.bytes
         const file = join(runDir(w.runId), 'gc.json')
