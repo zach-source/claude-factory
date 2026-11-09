@@ -6,14 +6,14 @@
 import { readFileSync } from 'node:fs'
 import { sq } from './harness'
 import { WORKER_USER } from './worker'
-import { workerPolicyRefusal } from './broker'
+import { updateBody, workerPolicyRefusal } from './broker'
 import { parseNames } from './axsweep'
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
 /** the cluster's kube context for both ax and kubectl; unset, their current context */
 const context = () => (process.env.FACTORY_AX_CONTEXT ? ['--context', process.env.FACTORY_AX_CONTEXT] : [])
-export const ATESPACE = () => process.env.FACTORY_AX_ATESPACE ?? 'factory'
+export const ATESPACE = () => process.env.FACTORY_AX_ATESPACE || 'factory'
 /** where the task's one workspace is mounted, and the repo and the worker's own files inside it */
 export const WS = '/workspace/w'
 export const REPO = `${WS}/repo`
@@ -139,6 +139,8 @@ const FLAT_KEYS = new Set([
   'FACTORY_CURSOR_HOOKS',
   'FACTORY_GROK_HOOKS',
   'FACTORY_PRIVATE_PATTERNS',
+  // migrate-to-ax reads it from `ax get task`
+  'FACTORY_AX_LAUNCH_ID',
 ])
 
 /**
@@ -230,7 +232,9 @@ export function unavailable(): string | undefined {
     if (BROKER()) {
       // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
       const r = broker('GET', '/controller')
-      if (!r.ok) return unknown
+      // an old broker image has no /controller route: say what the broker answered
+      if (!r.ok)
+        return `${unknown} (broker GET /controller answered ${r.status}: ${r.body.trim().slice(0, 200)})`
       raw = r.body
     } else {
       const p = Bun.spawnSync(
@@ -340,6 +344,7 @@ function broker(method: string, path: string, body?: string) {
   const status = Number(out.slice(nl + 1))
   return {
     ok: p.exitCode === 0 && status >= 200 && status < 300,
+    status,
     body: nl >= 0 ? out.slice(0, nl) : p.stderr.toString(),
   }
 }
@@ -630,14 +635,15 @@ export function createPolicy(
   if (why) throw new Error(`egress policy for ${task} ${why}`)
   if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
-  const p = Bun.spawnSync(
-    [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
-    {
-      stdin: Buffer.from(policy),
+  const ate = (op: string, extra: string[], stdin?: string) =>
+    Bun.spawnSync([KUBECTL(), 'ate', ...context(), op, 'egress-policy', task, '-a', ATESPACE(), ...extra], {
+      stdin: stdin === undefined ? undefined : Buffer.from(stdin),
       timeout: 30_000,
-    },
-  )
-  return p.exitCode === 0
+    })
+  // an old task of the same name can leave a policy, and a create then fails AlreadyExists: update it in place
+  const got = ate('get', ['-o', 'json'])
+  const update = got.exitCode === 0 ? updateBody(policy, got.stdout.toString()) : undefined
+  return ate(update ? 'update' : 'create', ['-f', '-'], update ?? policy).exitCode === 0
 }
 
 /**
@@ -710,6 +716,35 @@ export function read(task: string): { phase: string | null; failure?: string; qu
   throw new Error(`ax get task: ${r.err}`)
 }
 export const phase = (task: string) => read(task).phase
+
+/** whether the Workspace `name` exists; an `ax get workspace` error other than not found throws */
+export function workspaceExists(name: string) {
+  const r = ax(['get', 'workspace', name])
+  if (r.ok) return true
+  if (/not ?found/i.test(r.err)) return false
+  throw new Error(`ax get workspace: ${r.err}`)
+}
+
+/** why `factory manager --ax` refuses an existing manager Workspace: its home can hold an old factory */
+export const staleWorkspaceRefusal = (name: string) =>
+  `Workspace ${name} exists: its home can hold an old factory and an old .migrated. ` +
+  `Delete it first: ax ${[...context(), '-a', ATESPACE()].join(' ')} delete workspace ${name}. ` +
+  `To keep it (a suspend and resume), run factory manager --ax --reuse-workspace`
+
+const LAUNCH_ID = /^[\w-]+$/
+/** FACTORY_AX_LAUNCH_ID from an `ax get task` YAML; undefined when it is not there or not a plain id */
+export function launchIdOf(yaml: string): string | undefined {
+  try {
+    const spec = (Bun.YAML.parse(yaml) as { spec?: { env?: { name?: string; value?: unknown }[] } } | null)
+      ?.spec
+    const v = spec?.env?.find(e => e.name === 'FACTORY_AX_LAUNCH_ID')?.value
+    return typeof v === 'string' && LAUNCH_ID.test(v) ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+/** the launch id of task `name`, which `factory manager --ax` set */
+export const launchId = (name: string) => launchIdOf(must(['get', 'task', name]))
 /**
  * a VM command as the worker user, not root: root over `ax ssh` has no DAC_OVERRIDE or CAP_FOWNER (see
  * docs/remote-runner.md), so it cannot write `.factory-worker`, which `serve` gave to WORKER_USER. setpriv
@@ -733,6 +768,20 @@ function asWorker(argv: string[]) {
 }
 export const poll = (task: string, cursor: number): Poll =>
   JSON.parse(must(['ssh', task, '--', ...asWorker(['factory', 'worker', 'poll', String(cursor)])]))
+/**
+ * what the VM's `factory worker usage` prints, parsed; null when ssh fails (an old image has no such verb),
+ * the output is over 64 KiB or it is not JSON. The VM is untrusted: the caller sends this through validUsage.
+ * Never throws.
+ */
+export function usage(task: string): unknown {
+  const r = ax(['ssh', task, '--', ...asWorker(['factory', 'worker', 'usage'])], undefined, 20_000)
+  if (!r.ok || r.out.length > 64 * 1024) return null
+  try {
+    return JSON.parse(r.out)
+  } catch {
+    return null
+  }
+}
 /**
  * the byte budget for prompt()'s text, before it is base64'd onto the ssh argv: base64 blows up a byte
  * count by 4/3, and Linux's execve() caps one argv string at MAX_ARG_STRLEN (131072 bytes). 90,000 bytes
@@ -782,6 +831,60 @@ export function put(task: string, name: string, part: number, parts: number, bas
   return r.ok ? { ok: true as const } : { ok: false as const, err: r.err }
 }
 export const PUT_PART = 96_000
+
+/** whether this ax CLI has `ax stdio` (the AX fork): its help lists the command. One `ax --help` */
+export function hasStdio() {
+  const r = ax(['--help'])
+  return /^\s+stdio\s/m.test(`${r.out}\n${r.err}`)
+}
+
+/**
+ * The task side of a stdio send. It writes stdin to `<dir>/<name>.tmp`, then checks its sha256.
+ * On a match it moves the file to `<dir>/<name>` and prints the hash. Else it removes the file and exits 3.
+ * It uses no -a, -n, --context or --server: ax reads them after `--`.
+ */
+export const receiveScript = (name: string, sha: string, dir = OWN) => {
+  if (!/^[\w.-]+$/.test(name) || !/^[0-9a-f]{64}$/.test(sha))
+    throw new Error('receiveScript: bad name or sha256')
+  const t = `${dir}/${name}.tmp`
+  return (
+    `set -e; mkdir -p ${dir}; cat > ${t}; h=$(sha256sum ${t} | cut -c1-64); ` +
+    `if [ "$h" = ${sha} ]; then mv ${t} ${dir}/${name}; echo "$h"; ` +
+    `else rm -f ${t}; echo "sha256 mismatch: got $h" >&2; exit 3; fi`
+  )
+}
+
+/**
+ * Stream `file` into the task's OWN/<name> in one `ax stdio` call, as the worker user. The task checks
+ * the laptop's sha256 before it keeps the file. ponytail: one try, 2 h at most; the caller decides on a retry
+ */
+export async function sendStdio(task: string, name: string, file: string, sha: string) {
+  const p = Bun.spawn(
+    [
+      AX(),
+      ...context(),
+      '-a',
+      ATESPACE(),
+      'stdio',
+      task,
+      '--',
+      ...asWorker(['sh', '-c', receiveScript(name, sha)]),
+    ],
+    { stdin: Bun.file(file), stdout: 'pipe', stderr: 'pipe', env: process.env, timeout: 2 * 60 * 60_000 },
+  )
+  const [out, err, code] = await Promise.all([
+    new Response(p.stdout).text(),
+    new Response(p.stderr).text(),
+    p.exited,
+  ])
+  return code === 0 && out.trim() === sha
+    ? { ok: true as const }
+    : { ok: false as const, err: (err.trim() || out.trim() || `exit ${code}`).slice(-300) }
+}
+
+/** the sha256 of OWN/<name> in the task (after a send of put parts), as the worker user */
+export const remoteSha = (task: string, name: string) =>
+  must(['ssh', task, '--', ...asWorker(['sh', '-c', `sha256sum ${OWN}/${name} | cut -c1-64`])]).trim()
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
 /**
@@ -907,6 +1010,11 @@ const MANAGER_AX_SERVER = 'FACTORY_AX_MANAGER_AX_SERVER'
 const MANAGER_ROUTER = 'FACTORY_AX_MANAGER_ROUTER'
 const MANAGER_BROKER = 'FACTORY_AX_MANAGER_BROKER'
 
+/**
+ * keys whose empty value means something, so it goes over too: no capabilities (workers stay root), and AX OTel
+ * off (unset, launchTask falls back to FACTORY_OTLP_ENDPOINT, the laptop's LAN collector)
+ */
+const EMPTY_MEANS = new Set(['FACTORY_AX_CAPABILITIES', 'FACTORY_AX_OTLP_ENDPOINT'])
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
 export function managerEnv(
   env: Record<string, string | undefined> = process.env,
@@ -919,12 +1027,9 @@ export function managerEnv(
     FACTORY_HOME: `${WS}/home`,
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
-    // an empty FACTORY_AX_CAPABILITIES means "none" (workers stay root), so it goes over too
+    // an EMPTY_MEANS key goes over also when it is empty
     ...Object.fromEntries(
-      MANAGER_PASS.filter(k => env[k] || (k === 'FACTORY_AX_CAPABILITIES' && env[k] === '')).map(k => [
-        k,
-        env[k]!,
-      ]),
+      MANAGER_PASS.filter(k => env[k] || (EMPTY_MEANS.has(k) && env[k] === '')).map(k => [k, env[k]!]),
     ),
     // the task has no laptop paths: it gets the content. Worker env, the same that each worker task gets
     ...(env.FACTORY_AX_ENV && { FACTORY_AX_ENV: JSON.stringify(readAxEnv(env.FACTORY_AX_ENV, read)) }),
@@ -1085,10 +1190,12 @@ export async function launchManager(
   image: string,
   args: string[],
   rigs: Parameters<typeof managerEgress>[1] = [],
-  { tries = 24, waitMs = 5000 } = {},
+  { tries = 24, waitMs = 5000, launch: id }: { tries?: number; waitMs?: number; launch?: string } = {},
 ) {
   const name = managerTask()
-  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
+  // the host trusts only a .migrated with this id (managerhost.markerOk)
+  const env = { ...managerEnv(), ...(id && { FACTORY_AX_LAUNCH_ID: id }) }
+  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env })
   for (let i = 0; i < tries; i++) {
     if (
       createPolicy(
@@ -1169,9 +1276,11 @@ export function rewriteHomeCmd(from: string, to = MANAGER_HOME) {
  * Unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home. Then
  * write .migrated: `factory manager host` waits for that marker before it starts the manager.
  * `laptopHome` is the laptop's factory home. Run state holds it in absolute paths, and the unpack rewrites it.
+ * `launch` is the task's launch id. The marker holds it, so the host knows the marker is of this launch.
  */
-export const unpackMigration = (name: string, laptopHome = '') =>
-  must(
+export function unpackMigration(name: string, laptopHome = '', launch?: string) {
+  if (launch !== undefined && !LAUNCH_ID.test(launch)) throw new Error(`not a launch id: ${launch}`)
+  return must(
     managerCmd([
       'sh',
       '-c',
@@ -1180,6 +1289,7 @@ export const unpackMigration = (name: string, laptopHome = '') =>
         `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
         `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
         `${rewriteHomeCmd(laptopHome)}; ` +
-        `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
+        `echo "$(date -u +%FT%TZ)${launch ? ` launch=${launch}` : ''}" > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )
+}

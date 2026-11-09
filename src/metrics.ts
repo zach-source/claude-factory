@@ -617,11 +617,14 @@ export type ManagerUsage = {
   peak?: number
 }
 
-/** USD per million tokens, by model family. A cache write costs 1.25x the input price, a cache read 0.1x */
-export const PRICES: Record<string, { in: number; out: number }> = {
+/** USD per million tokens, by model family. A cache write costs 1.25x the input price, a cache read 0.1x unless the family sets `read`. The first key that a model name includes wins */
+export const PRICES: Record<string, { in: number; out: number; read?: number }> = {
   opus: { in: 5, out: 25 },
   sonnet: { in: 3, out: 15 },
   haiku: { in: 1, out: 5 },
+  'fable-5-1': { in: 10, out: 50, read: 0.25 },
+  // ponytail: `fable` matches any later Fable name by substring; add a key when a new Fable model appears
+  fable: { in: 10, out: 50 },
 }
 
 type Tok = { input: number; cacheWrite: number; cacheRead: number; output: number }
@@ -631,7 +634,10 @@ export function costOf(t: Tok, model: string) {
   const family = Object.keys(PRICES).find(k => model.toLowerCase().includes(k))
   if (!family) return null
   const p = PRICES[family]!
-  return (t.input * p.in + t.cacheWrite * p.in * 1.25 + t.cacheRead * p.in * 0.1 + t.output * p.out) / 1e6
+  return (
+    (t.input * p.in + t.cacheWrite * p.in * 1.25 + t.cacheRead * (p.read ?? p.in * 0.1) + t.output * p.out) /
+    1e6
+  )
 }
 
 /** the share of the context a turn re-sent that came from the cache; null when there was no context */

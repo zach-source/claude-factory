@@ -320,6 +320,7 @@ const ALLOWED = [
 ]
 const DENIED = [
   'unhold',
+  'token',
   'pkg-gate',
   'ui',
   'start',

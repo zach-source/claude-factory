@@ -190,3 +190,21 @@ export function slotRows(r: SlotList): string[] {
     ...r.slots.map(s => row(String(s.n), String(s.use7d ?? '?'), String(s.use5h ?? '?'), s.status)),
   ]
 }
+
+export const TOKEN_USAGE = 'usage: factory token [list] | use <n> | best'
+
+/** Run `factory token <args>`: the grammar check runs before any store call. Returns the text to print. */
+export async function tokenCommand(
+  args: string[],
+  stored: Record<string, string>,
+  fetchFn?: Fetch,
+): Promise<string> {
+  const list = args.length === 0 || (args.length === 1 && args[0] === 'list')
+  const use = args.length === 2 && args[0] === 'use' && /^[1-9][0-9]{0,2}$/.test(args[1]!)
+  const best = args.length === 1 && args[0] === 'best'
+  if (!list && !use && !best) throw new Error(TOKEN_USAGE)
+  const cfg = tokenConfig(stored)
+  if (use) return useSlot(cfg, Number(args[1]))
+  if (best) return await bestUse(cfg, fetchFn)
+  return slotRows(await listSlots(cfg, fetchFn)).join('\n')
+}

@@ -1,7 +1,7 @@
 // The AX manager's builders (claude-factory-d289.4): its task manifest, env and egress, the attach files, and
 // the cutover ports. Pure functions only; ax.test.ts drives launchManager through a fake ax.
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as ax from './ax'
@@ -80,6 +80,11 @@ test('managerEnv passes the pkg gate, an empty capabilities list, and FACTORY_AX
     FACTORY_AX_ENV: '{"FACTORY_BAZELRC":"x"}',
   })
   expect('FACTORY_AX_CAPABILITIES' in ax.managerEnv({})).toBe(false)
+  // empty turns AX OTel off: unset, the VM falls back to the laptop's LAN collector, an IP no policy takes
+  expect(
+    ax.managerEnv({ FACTORY_AX_OTLP_ENDPOINT: '', FACTORY_OTLP_ENDPOINT: 'http://192.0.2.1:4318' }),
+  ).toMatchObject({ FACTORY_AX_OTLP_ENDPOINT: '' })
+  expect('FACTORY_AX_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
   expect(ax.readAxEnv('{"A":"1"}')).toEqual({ A: '1' })
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '["secret"]' }))).toThrow(/not a JSON object/)
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '{bad secret' }))).toThrow(
@@ -285,4 +290,56 @@ test('the manager env with every laptop knob set stays within the AX env limit o
     FACTORY_AX_GROK: '1',
     CURSOR_API_KEY: 'placeholder',
   })
+})
+
+test('the stdio receive script keeps the file only when its sha256 is the one the laptop sent', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'axm-recv-'))
+  const data = Buffer.from('archive bytes\n')
+  const sha = new Bun.CryptoHasher('sha256').update(data).digest('hex')
+  const ok = Bun.spawnSync(['sh', '-c', ax.receiveScript('m.tgz', sha, dir)], { stdin: data })
+  expect(ok.exitCode).toBe(0)
+  expect(ok.stdout.toString().trim()).toBe(sha)
+  expect(readFileSync(join(dir, 'm.tgz'), 'utf8')).toBe('archive bytes\n')
+  const bad = Bun.spawnSync(['sh', '-c', ax.receiveScript('n.tgz', '0'.repeat(64), dir)], { stdin: data })
+  expect(bad.exitCode).toBe(3)
+  expect(bad.stderr.toString()).toContain('sha256 mismatch')
+  expect(existsSync(join(dir, 'n.tgz')) || existsSync(join(dir, 'n.tgz.tmp'))).toBe(false)
+  expect(() => ax.receiveScript('a b', sha)).toThrow()
+  expect(() => ax.receiveScript('m.tgz', 'x')).toThrow()
+  expect(ax.receiveScript('m.tgz', sha)).not.toMatch(/ -(a|n) | --(context|server)/)
+})
+
+test('sendStdio streams the file to ax stdio and needs the task to print the same sha256; hasStdio reads the help', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'axm-stdio-'))
+  const fake = join(dir, 'ax')
+  // a fake ax: its help lists stdio; `stdio` hashes stdin as the task would and records the argv
+  writeFileSync(
+    fake,
+    `#!/bin/sh\ncase "$*" in *--help*) printf 'Commands:\\n  stdio <task-name> -- cmd\\n'; exit 0;; esac\n` +
+      `echo "$*" > ${dir}/argv\n[ -n "$BAD" ] && { echo boom >&2; exit 3; }\nsha256sum | cut -c1-64\n`,
+  )
+  chmodSync(fake, 0o755)
+  const file = join(dir, 'm.tgz')
+  writeFileSync(file, Buffer.alloc(200_000, 1))
+  const sha = new Bun.CryptoHasher('sha256').update(readFileSync(file)).digest('hex')
+  const saved = { ...process.env }
+  try {
+    Object.assign(process.env, {
+      FACTORY_AX: fake,
+      FACTORY_AX_CONTEXT: 'acme',
+      FACTORY_AX_ATESPACE: 'factory',
+    })
+    expect(ax.hasStdio()).toBe(true)
+    expect(await ax.sendStdio('f-manager', 'migrate.tgz', file, sha)).toEqual({ ok: true })
+    expect(readFileSync(join(dir, 'argv'), 'utf8')).toMatch(
+      /^--context acme -a factory stdio f-manager -- setpriv /,
+    )
+    expect((await ax.sendStdio('f-manager', 'migrate.tgz', file, '1'.repeat(64))).ok).toBe(false)
+    process.env.BAD = '1'
+    expect(await ax.sendStdio('f-manager', 'migrate.tgz', file, sha)).toEqual({ ok: false, err: 'boom' })
+    writeFileSync(fake, '#!/bin/sh\necho "Commands:\n  ssh <task>"\n')
+    expect(ax.hasStdio()).toBe(false)
+  } finally {
+    process.env = saved
+  }
 })
