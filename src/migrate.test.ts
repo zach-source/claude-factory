@@ -13,6 +13,8 @@ import {
   projectSlug,
   runsToMove,
   selectTop,
+  sha256File,
+  staleMemoryOf,
 } from './migrate'
 
 const state = (value: string, pane: string | null) =>
@@ -158,4 +160,39 @@ test("pack carries the manager's Claude memory and session transcripts, with eac
   expect(names.match(/manager-sessions\.json/g)).toHaveLength(1)
   const sessions = Bun.spawnSync(['tar', '-xzOf', out, 'manager-sessions.json']).stdout.toString()
   expect(JSON.parse(sessions)).toEqual([{ session: 's1', cwd: '/workspace/w' }])
+})
+
+test('each run keeps only its newest memory archive: the highest seq, then the newest mtime', () => {
+  const f = (name: string, mtimeMs = 0) => ({ name, mtimeMs })
+  expect(
+    staleMemoryOf([f('t-2.memory.tgz'), f('t-10.memory.tgz'), f('t-3.memory.tgz'), f('state.json')]).sort(),
+  ).toEqual(['t-2.memory.tgz', 't-3.memory.tgz'])
+  expect(staleMemoryOf([f('a.memory.tgz', 1), f('b.memory.tgz', 2)])).toEqual(['a.memory.tgz'])
+  expect(staleMemoryOf([f('t-1.memory.tgz')])).toEqual([])
+  expect(staleMemoryOf([f('state.json')])).toEqual([])
+})
+
+test('pack and the plan size leave out the older memory archives of a run', () => {
+  const home = fixture({ r1: ['implement.working', 'ax://f-r1-3', 1] })
+  const before = plan(home, 0, origin).bytes
+  for (const seq of [1, 2, 3])
+    writeFileSync(join(home, 'runs', 'r1', `f-r1-${seq}.memory.tgz`), Buffer.alloc(1000))
+  const p = plan(home, 0, origin)
+  expect(p.staleMemory.sort()).toEqual(['runs/r1/f-r1-1.memory.tgz', 'runs/r1/f-r1-2.memory.tgz'])
+  expect(p.staleBytes).toBe(2000)
+  expect(p.bytes).toBe(before + 1000)
+  expect(describe(p)).toContain('older memory archives left behind: 2')
+  const out = join(mkdtempSync(join(tmpdir(), 'migrate-out-')), 'm.tgz')
+  pack(home, p, out)
+  const names = Bun.spawnSync(['tar', '-tzf', out]).stdout.toString()
+  expect(names).toContain('runs/r1/f-r1-3.memory.tgz')
+  expect(names).not.toContain('f-r1-1.memory.tgz')
+  expect(names).not.toContain('f-r1-2.memory.tgz')
+})
+
+test('sha256File is the sha256 of the bytes, also past one read block', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'migrate-sha-')), 'f')
+  const data = Buffer.alloc(3 * 1024 * 1024 + 7, 7)
+  writeFileSync(file, data)
+  expect(sha256File(file)).toBe(new Bun.CryptoHasher('sha256').update(data).digest('hex'))
 })

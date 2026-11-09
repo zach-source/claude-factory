@@ -782,6 +782,60 @@ export function put(task: string, name: string, part: number, parts: number, bas
   return r.ok ? { ok: true as const } : { ok: false as const, err: r.err }
 }
 export const PUT_PART = 96_000
+
+/** whether this ax CLI has `ax stdio` (the AX fork): its help lists the command. One `ax --help` */
+export function hasStdio() {
+  const r = ax(['--help'])
+  return /^\s+stdio\s/m.test(`${r.out}\n${r.err}`)
+}
+
+/**
+ * The task side of a stdio send. It writes stdin to `<dir>/<name>.tmp`, then checks its sha256.
+ * On a match it moves the file to `<dir>/<name>` and prints the hash. Else it removes the file and exits 3.
+ * It uses no -a, -n, --context or --server: ax reads them after `--`.
+ */
+export const receiveScript = (name: string, sha: string, dir = OWN) => {
+  if (!/^[\w.-]+$/.test(name) || !/^[0-9a-f]{64}$/.test(sha))
+    throw new Error('receiveScript: bad name or sha256')
+  const t = `${dir}/${name}.tmp`
+  return (
+    `set -e; mkdir -p ${dir}; cat > ${t}; h=$(sha256sum ${t} | cut -c1-64); ` +
+    `if [ "$h" = ${sha} ]; then mv ${t} ${dir}/${name}; echo "$h"; ` +
+    `else rm -f ${t}; echo "sha256 mismatch: got $h" >&2; exit 3; fi`
+  )
+}
+
+/**
+ * Stream `file` into the task's OWN/<name> in one `ax stdio` call, as the worker user. The task checks
+ * the laptop's sha256 before it keeps the file. ponytail: one try, 2 h at most; the caller decides on a retry
+ */
+export async function sendStdio(task: string, name: string, file: string, sha: string) {
+  const p = Bun.spawn(
+    [
+      AX(),
+      ...context(),
+      '-a',
+      ATESPACE(),
+      'stdio',
+      task,
+      '--',
+      ...asWorker(['sh', '-c', receiveScript(name, sha)]),
+    ],
+    { stdin: Bun.file(file), stdout: 'pipe', stderr: 'pipe', env: process.env, timeout: 2 * 60 * 60_000 },
+  )
+  const [out, err, code] = await Promise.all([
+    new Response(p.stdout).text(),
+    new Response(p.stderr).text(),
+    p.exited,
+  ])
+  return code === 0 && out.trim() === sha
+    ? { ok: true as const }
+    : { ok: false as const, err: (err.trim() || out.trim() || `exit ${code}`).slice(-300) }
+}
+
+/** the sha256 of OWN/<name> in the task (after a send of put parts), as the worker user */
+export const remoteSha = (task: string, name: string) =>
+  must(['ssh', task, '--', ...asWorker(['sh', '-c', `sha256sum ${OWN}/${name} | cut -c1-64`])]).trim()
 export const suspend = (task: string) => must(['suspend', 'task', task])
 export const resume = (task: string) => must(['resume', 'task', task])
 /**
