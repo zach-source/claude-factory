@@ -5560,7 +5560,7 @@ test.each([
   expect(aliasSpawnCapMs(v)).toBe(want)
 })
 
-// claude-factory-zzxp (AC2, AC3): a `git` wrapper sleeps 2.5 s for `git -C <dir> config` only.
+// claude-factory-zzxp (AC2, AC3): a `git` wrapper sleeps 2.5 s for `git -C <dir> config --get-regexp` only.
 // With the default 2000 ms cap the alias read times out and the hook fails closed.
 // With the knob at 6000 the read finishes and the push guard gives its own reason.
 test.each([

@@ -252,8 +252,10 @@ function readerSegment(w: string[]): boolean {
  * scripts (no w, e, r, -i, -f).
  * ponytail: the loaded texts of homeReason cover git hooks, git config values and the config files
  * in cwd and its parents. A config in a subdir below cwd or in a dir that cd, git -C, --prefix or
- * --config names, a program that a package name selects, a script that a hook calls, config names
- * outside the worker hook list, and an env var that sets a program are not covered. False denies
+ * --config names, a program that a package name selects, a bin that nothing names, a path relative
+ * to a bin, a script that a hook calls, a file over 64 KiB, other escapes than a quote or a
+ * backslash, config names outside the worker hook list, and an env var that sets a program are
+ * not covered. False denies
  * stay for awk, rg, sort, jq, find, xargs, globs, $, subshells, heredocs, line joins and verbs
  * outside the reader and non-runner tables. Upgrade path: a real shell parser, or a per-file
  * config lookup for prettier.

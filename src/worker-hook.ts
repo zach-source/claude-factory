@@ -10576,8 +10576,10 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * its relative paths resolve against. It does not depend on the verbs of `command`, so a quote or
  * an alias cannot hide a git verb. It returns undefined when git cannot read the config in time:
  * the home guard then denies (fail closed). An unreadable file gives no text.
- * ponytail: config in a subdir below cwd or in a dir that cd, git -C or --prefix names, a package
- * name that selects a program, a script that a hook calls, and a file over 64 KiB are not read.
+ * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir or --prefix
+ * names; a package name that selects a program; a bin that nothing names; a path relative to a bin;
+ * a script that a hook calls; a file over 64 KiB; a file name outside CONFIG_NAME; a name that an
+ * escape other than a quote or a backslash hides (for example $'..' or a variable).
  * Upgrade path: a real shell parser, or a per-file config lookup for prettier.
  */
 export function loadedTexts(command: string, cwd: string): LoadedText[] | undefined {
@@ -10615,9 +10617,18 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
       return []
     }
   }
-  if (hooks)
-    for (const n of names(hooks)) {
-      const text = n.endsWith('.sample') ? undefined : readSmallFile(joinPath(hooks, n), cwd)
+  // claude-factory-qn8a.37.4: a -c core.hooksPath=DIR word names one more hooks dir. The key is
+  // case-insensitive. A --config-env word, or a key with no value, names no dir: fail closed.
+  const hooksDirs = hooks ? [hooks] : []
+  const flat = command.replace(/\\\n/g, '')
+  if (/--config-env[=\s]+['"]?core\.hookspath/i.test(flat)) return undefined
+  for (const m of flat.matchAll(/core\.hookspath(=?)([^\s'"]*)/gi)) {
+    if (!m[1] || !m[2]) return undefined
+    hooksDirs.push(resolvePath(cwd, m[2]))
+  }
+  for (const hd of hooksDirs)
+    for (const n of names(hd)) {
+      const text = n.endsWith('.sample') ? undefined : readSmallFile(joinPath(hd, n), cwd)
       if (text !== undefined) out.push({ text, dir: top })
     }
   const dirs: string[] = []
@@ -10630,7 +10641,8 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
       const text = CONFIG_NAME.test(n) ? readSmallFile(joinPath(d, n), cwd) : undefined
       if (text !== undefined) out.push({ text, dir: d })
     }
-  const hay = [command, ...out.map(o => o.text)].join('\n')
+  // claude-factory-qn8a.37.5: the stripped copy matches a bin name that quotes or a backslash split.
+  const hay = [command, command.replace(/['"\\]/g, ''), ...out.map(o => o.text)].join('\n')
   for (const d of dirs)
     for (const b of names(joinPath(d, 'node_modules', '.bin'))) {
       if (!new RegExp('(?<![\\w.-])' + escapeRe(b) + '(?![\\w-])').test(hay)) continue

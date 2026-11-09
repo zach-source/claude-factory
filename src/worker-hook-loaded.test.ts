@@ -61,6 +61,37 @@ describe('loadedTexts and the home guard', () => {
     expect(run('git commit -m x', d, join(d, 'sub'))).toBe(HOME_REASON)
   })
 
+  test.each([
+    'git -c core.hooksPath=hk commit -m x',
+    'git -c core.hookspath=hk commit -m x',
+    'git -c CORE.HOOKSPATH=hk add x',
+  ])('denies a hooks dir that a command word sets: %s', cmd => {
+    const d = repo()
+    put(d, 'hk/pre-commit', bad())
+    expect(run(cmd, d)).toBe(HOME_REASON)
+  })
+
+  test.each([
+    'git --config-env=core.hooksPath=HP commit -m x',
+    'git --config-env core.hooksPath=HP commit -m x',
+    'git -c core.hooksPath commit -m x',
+  ])('fails closed on a hooks dir with no path: %s', cmd => {
+    const d = repo()
+    expect(run(cmd, d)).toBe(LOADED_REASON)
+  })
+
+  test('allows -c core.hooksPath with a clean hooks dir', () => {
+    const d = repo()
+    put(d, 'hk/pre-commit', 'exit 0\n')
+    expect(run('git -c core.hooksPath=hk commit -m x', d)).toBeUndefined()
+  })
+
+  test.each(['npx pretti""er --write .', 'bunx pret\\tier --write .'])('denies a split bin name: %s', cmd => {
+    const d = repo()
+    put(d, 'node_modules/.bin/prettier', bad())
+    expect(run(cmd, d)).toBe(HOME_REASON)
+  })
+
   test('denies a core.fsmonitor program, path against the top dir', () => {
     const d = repo()
     git(d, 'config', 'core.fsmonitor', './fsm.sh')
