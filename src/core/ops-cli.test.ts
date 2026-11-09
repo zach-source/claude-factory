@@ -15,6 +15,11 @@ const bin = join(dir, 'bin')
 const repoDir = join(dir, 'repo')
 const H0 = join(dir, 'h0')
 const H1 = join(dir, 'h1')
+const H2 = join(dir, 'h2')
+const RA = join(dir, 'r-alpha')
+const RB = join(dir, 'r-beta')
+const RG = join(dir, 'r-gamma')
+const SW = join(dir, 'sw', 'tidysweeps.ts')
 
 // keys that change the output between machines
 const STRIP = [
@@ -30,6 +35,7 @@ const STRIP = [
   'CURSOR_API_KEY',
   'FACTORY_CURSOR_CAP',
   'FACTORY_GROK_WEEKLY_BUDGET_USD',
+  'FACTORY_MAX_RUNS',
 ]
 
 export const cleanEnv = (home: string, extra: Record<string, string> = {}) => {
@@ -47,11 +53,35 @@ export const cleanEnv = (home: string, extra: Record<string, string> = {}) => {
 
 /** replace the machine-bound paths, so the output is the same everywhere */
 export const norm = (s: string) =>
-  s.split(H1).join('<HOME>').split(H0).join('<HOME>').split(repoDir).join('<REPO>')
+  s
+    .split(H1)
+    .join('<HOME>')
+    .split(H2)
+    .join('<HOME>')
+    .split(H0)
+    .join('<HOME>')
+    .split(RA)
+    .join('<RA>')
+    .split(RB)
+    .join('<RB>')
+    .split(RG)
+    .join('<RG>')
+    .split(repoDir)
+    .join('<REPO>')
 
 const factory = (home: string, args: string[], extra: Record<string, string> = {}) => {
+  if (home === H2) writeLinearSync()
   const p = Bun.spawnSync([CLI, ...args], { env: cleanEnv(home, extra), timeout: 30_000 })
   return { code: p.exitCode, out: norm(p.stdout.toString()), err: norm(p.stderr.toString()) }
+}
+
+/** written just before each spawn, so the age in the golden is always 10m */
+const writeLinearSync = () => {
+  const at = Date.now() - 600_000
+  writeFileSync(
+    join(H2, 'linear-sync.json'),
+    JSON.stringify({ alpha: { at, pulled: 3, unrouted: 1, truncated: true }, beta: { at, error: 'boom' } }),
+  )
 }
 
 const DEF: Factory = {
@@ -91,7 +121,7 @@ beforeAll(() => {
   // fake gh: no call may reach the network
   writeFileSync(join(bin, 'gh'), '#!/bin/sh\nexit 1\n')
   chmodSync(join(bin, 'gh'), 0o755)
-  for (const h of [H0, H1]) {
+  for (const h of [H0, H1, H2]) {
     mkdirSync(h, { recursive: true })
     writeFileSync(join(h, 'rigs.json'), '[]')
   }
@@ -112,6 +142,51 @@ beforeAll(() => {
   })
   writeRun(H1, 'r1', 'ship the thing', a.getPersistedSnapshot())
   writeRun(H1, 'r2', 'g', createActor(compile(DEF)).start().getPersistedSnapshot())
+  writeRun(H2, 'r1', 'ship the thing', a.getPersistedSnapshot())
+  writeRun(H2, 'r2', 'g', createActor(compile(DEF)).start().getPersistedSnapshot())
+  mkdirSync(join(dir, 'sw'), { recursive: true })
+  writeFileSync(
+    SW,
+    `export default ${JSON.stringify({ name: 'tidysweeps', start: 'tidy', nodes: { tidy: { prompt: 'tidy', everyMin: 60, next: { done: 'done', more: 'look' } }, look: { prompt: 'look', next: { done: 'done' } } } })}`,
+  )
+  mkdirSync(RG, { recursive: true })
+  for (const r of [RA, RB]) {
+    mkdirSync(r, { recursive: true })
+    Bun.spawnSync(['git', 'init', '-q', r])
+  }
+  Bun.spawnSync(['git', '-C', RB, 'remote', 'add', 'origin', 'https://github.com/acme/widget.git'])
+  writeFileSync(
+    join(H2, 'rigs.json'),
+    JSON.stringify([
+      {
+        name: 'alpha',
+        repo: RA,
+        factory: 'lifecycle',
+        maxRuns: 2,
+        sweeps: [],
+        goal: 'ship acme',
+        slo: 'true',
+        drift: 'true',
+        agent: 'claude',
+        personOnlyContexts: ['acme-prod'],
+        protectedBranches: ['main'],
+        mergeAuthority: true,
+        mcp: '/x/mcp.json',
+        params: { tier: 'small' },
+        linear: { team: ['T1'], projects: ['p1'], labels: ['l1'] },
+      },
+      {
+        name: 'beta',
+        repo: RB,
+        factory: 'lifecycle',
+        sweeps: ['s1', 's2'],
+        mergeAuthority: true,
+        linear: { team: ['T2'] },
+      },
+      { name: 'gamma', repo: RG, factory: 'lifecycle', sweepsFactory: SW },
+      { name: 'delta', repo: repoDir, factory: 'lifecycle', sweepsFactory: join(dir, 'sw', 'missing.ts') },
+    ]),
+  )
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -137,6 +212,10 @@ const ROWS: [string, string, string[], Record<string, string>?][] = [
   ['l3', H1, ['decisions']],
   ['l3', H1, ['decisions', 'list']],
   ['m', H0, ['status', 'nope']],
+  ['n0', H0, ['rig']],
+  ['n0', H0, ['rig', 'list']],
+  ['n2', H2, ['rig', 'list']],
+  ['n2', H2, ['rig', 'list'], { FACTORY_FROM: 'triage' }],
 ]
 
 /** the goldens: the output of origin/main f80d1fe0 after normalization (`<HOME>`, `<REPO>`) */
@@ -214,6 +293,16 @@ const GOLD: Record<string, Row> = {
   l3: {
     code: 0,
     out: '{"rigs":[],"proposals":{}}\n',
+    err: '',
+  },
+  n0: {
+    code: 0,
+    out: 'no rigs: factory rig add <name> <repo> [factory]\ntown: busy 0/16, stuck 0\n',
+    err: '',
+  },
+  n2: {
+    code: 0,
+    out: 'alpha  <RA>  lifecycle  busy 0/2  sweeps none\n  goal: ship acme\n  slo: true\n  drift: true\n  agent: claude\n  person-only contexts: acme-prod\n  protected branches: main\n  merge authority: ship release station, no origin: off\n  mcp: /x/mcp.json\n  param tier: small\n  linear: team T1, projects p1, labels l1 (pulled 3, unrouted 1, 10m ago, list truncated at 50 pages)\nbeta  <RB>  lifecycle  busy 0  sweeps s1,s2\n  merge authority: ship release station, acme/widget\n  linear: team T2 (error 10m ago: boom)\ngamma  <RG>  lifecycle  busy 0  sweeps tidy\ndelta  <REPO>  lifecycle  busy 1  sweeps none\ntown: busy 1/16, stuck 0\n',
     err: '',
   },
   m: {
