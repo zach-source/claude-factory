@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { Bead } from './beads'
+import { isValidPlan } from '../mod/hooks/view'
 import {
   buildPlan,
   churnCounts,
@@ -8,6 +9,7 @@ import {
   hashOf,
   isFresh,
   isValidRigPlan,
+  isValidPlanShape,
   orderByPlan,
   PLAN_FRESH_MS,
   proposalKey,
@@ -22,6 +24,31 @@ import {
 const HOUR = 3_600_000
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: `title ${id}`, ...extra })
 const iso = (ms: number) => new Date(ms).toISOString()
+
+test('the core plan validator keeps the mod answers', () => {
+  const valid = { at: 1, rigs: { acme: { items: [], findings: [] } }, proposals: [] }
+  for (const [value, expected] of [
+    [valid, true],
+    [{ ...valid, at: '1' }, false],
+    [{ ...valid, rigs: [] }, false],
+    [{ ...valid, rigs: null }, false],
+    [{ ...valid, rigs: { acme: {} } }, false],
+    [{ ...valid, rigs: { acme: { items: [], findings: [null] } } }, false],
+    [
+      {
+        ...valid,
+        rigs: { acme: { items: [{ id: 'x', title: 'x', why: 'x', priority: NaN }], findings: [] } },
+      },
+      false,
+    ],
+    [{ at: 1, rigs: {} }, false],
+    [null, false],
+    ['x', false],
+  ] as const) {
+    expect(isValidPlanShape(value)).toBe(expected)
+    expect(isValidPlan(value)).toBe(expected)
+  }
+})
 
 // ---- isFresh ----
 

@@ -70,6 +70,8 @@ import {
   swapUntil,
   workerFlags,
   piWorker,
+  launchPane,
+  launchRefusal,
   userPluginDirs,
   workerSettings,
   workerSkills,
@@ -2753,13 +2755,48 @@ test('piWorker appends the worker rules to pi and passes each plugin skill', () 
   const home = mkdtempSync(join(tmpdir(), 'pi-home-'))
   const plugin = join(home, 'plugin')
   mkdirSync(join(plugin, 'skills', 'ste'), { recursive: true })
-  const { extra } = piWorker(home, [plugin])
+  const { extra } = piWorker(home, [plugin], join(home, 'no-key'))
   const rules = join(home, 'worker-system.md')
   expect(extra).toBe(` '--append-system-prompt' '${rules}' '--skill' '${join(plugin, 'skills', 'ste')}'`)
   expect(readFileSync(rules, 'utf8')).toStartWith(
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8'),
   )
   expect(readFileSync(rules, 'utf8')).not.toContain('GOMAXPROCS') // claude-factory-66ib: VM-only
+})
+
+// claude-factory-m4sk: pi has no deny hook, so it must not launch while a person key exists
+test('piWorker refuses a launch while the person key exists', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pi-home-'))
+  const key = join(home, 'person.key')
+  writeFileSync(key, 'x')
+  expect(() => piWorker(home, [], key)).toThrow('claude-factory-qn8a.84')
+  expect(existsSync(join(home, 'worker-system.md'))).toBe(false) // it fails before any write
+})
+
+// claude-factory-m4sk.4: a refused launch opens no herdr tab, so a retry in each tick leaks none.
+// A child process, because os.homedir() reads HOME once, at start.
+test('launchPane opens no tab when the launch is refused', () => {
+  const home = mkdtempSync(join(tmpdir(), 'pane-home-'))
+  mkdirSync(join(home, '.config', 'factory'), { recursive: true })
+  writeFileSync(join(home, '.config', 'factory', 'person.key'), 'x')
+  const calls = join(home, 'calls')
+  const bin = join(home, 'herdr')
+  writeFileSync(bin, "#!/bin/sh\necho x >> '" + calls + "'\n", { mode: 0o755 })
+  const script = `
+    import { launchPane, launchRefusal } from ${JSON.stringify(join(import.meta.dir, 'cli'))}
+    const def = { name: 'x', start: 'a', agent: 'pi', nodes: { a: { prompt: '', next: { ok: 'done' } } } }
+    const run = { id: 'r', ws: 'w', worktree: ${JSON.stringify(home)}, repo: ${JSON.stringify(home)}, branch: 'b' }
+    try { launchPane({ run, def, node: 'a', c: { attempt: 1, seq: 1, mail: {} }, file: 'p.md' } as never) } catch (e) { console.log(JSON.stringify(launchRefusal(e, 7))) }
+  `
+  const env = { ...process.env, HOME: home, FACTORY_HERDR: bin, FACTORY_HOME: home }
+  const p = Bun.spawnSync(['bun', '-e', script], { env })
+  const ev = JSON.parse(p.stdout.toString())
+  expect(ev).toMatchObject({ type: 'FAIL', seq: 7 })
+  expect(ev.reason).toContain('launch refused: a pi worker')
+  expect(ev.reason).toContain('claude-factory-qn8a.84')
+  expect(existsSync(calls)).toBe(false)
+  // any other launch error is transient: it does not end the attempt
+  expect(launchRefusal(new Error('ENOENT'), 7)).toBeNull()
 })
 
 test('holdFloor holds an egress outage, and a stop only while a usage limit is active', () => {

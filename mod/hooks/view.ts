@@ -394,7 +394,8 @@ function isValidRigPlan(x: unknown): x is FactoryRigPlan {
 /** Checks the shape of a whole plan read from `plan.json`: a real `at`, a `rigs` object whose
  * every entry passes `isValidRigPlan`, and a `proposals` array. A hand-edited or truncated file
  * can fail this; `readPlan` then reads it as no plan, the same as a missing or corrupt file
- * (claude-factory-dun.18, mirrors `isValidPlanShape`, src/cli.ts). */
+ * (claude-factory-dun.18, mirrors `isValidPlanShape`, src/plan.ts).
+ * claude-factory-hpmc.9 removes this copy when the mod no longer reads the plan. */
 export function isValidPlan(p: unknown): p is FactoryPlan {
   if (!p || typeof p !== 'object') return false
   const o = p as Record<string, unknown>
@@ -1312,11 +1313,7 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
     })
   const kinds = GATED_KINDS.flatMap(k => {
     const per = reads.map(r => {
-      // a kind with a trailer matches only up to its last trailer, so the lazy gap stays linear
-      const tail = 'tail' in k ? k.tail : undefined
-      const last = tail ? [...r.text.matchAll(tail)].at(-1) : undefined
-      const text = tail ? (last ? r.text.slice(0, last.index! + last[0].length) : '') : r.text
-      const ends = [...text.matchAll(k.re)].map(m => m.index! + m[0].length)
+      const ends = kindEnds(r.text, k.re, k.tail)
       return { count: ends.length, hidden: ends.filter(end => end > r.cut).length, base: !r.canonical }
     })
     const count = Math.max(...per.map(x => x.count))
@@ -1375,9 +1372,18 @@ const canon = (s: string) =>
 const VERB_HIDDEN = new RegExp(
   String.raw`(?:(?<![\w.-])factory|${CLI})(?:\s+[^\s$\x60*?[{]*[$\x60*?[{]|[^;&|\n]{0,200}(?:[\w-]\{[^\s}]{0,100},|,[^\s{]{0,100}\}[\w-]))`,
 )
+/** Return match ends. A tail cut prevents repeated scans of a suffix with no tail. */
+export function kindEnds(text: string, re: RegExp, tail?: RegExp): number[] {
+  if (tail) {
+    let end = 0
+    for (const m of text.matchAll(tail)) end = m.index! + m[0].length
+    text = text.slice(0, end)
+  }
+  return [...text.matchAll(re)].map(m => m.index! + m[0].length)
+}
 
 /** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
-const GATED_KINDS = [
+export const GATED_KINDS: { re: RegExp; tail?: RegExp; phrase: string; deny: string }[] = [
   {
     re: /\bfactory\s+decide\b/g,
     phrase: 'decide a factory gate',
