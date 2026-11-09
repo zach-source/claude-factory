@@ -5287,11 +5287,13 @@ export function pushWiki(dir = join(HOME, 'wiki')) {
 
 /**
  * The pages that `wiki find` and `wiki status` can read, sorted by path. A page must meet all of these rules:
- * HEAD has it with mode 100644 or 100755, its path passes the path rule, its committed blob has at most
- * 65,536 bytes, and parse() accepts it. The function reads the committed blob, never the worktree. An agent pass
- * controls the worktree: a symlink or a hard link there must not send an outside file to stdout.
+ * HEAD has it with mode 100644 or 100755, its path passes the path rule, it is a regular file with one link and
+ * at most 65,536 bytes, and parse() accepts it. An agent pass controls the worktree.
+ * A symlink or a hard link must not send an outside file to stdout.
+ * With `committed`, the function reads the committed blob and ignores the worktree. The write pass needs this:
+ * its progress must follow the commits, never the files that an agent left behind.
  */
-function wikiPages(dir: string) {
+function wikiPages(dir: string, committed = false) {
   const ls = wikiGit(dir, ['ls-tree', '-r', '-z', 'HEAD'])
   if (ls.code !== 0) return []
   const out: { path: string; page: Page }[] = []
@@ -5301,12 +5303,19 @@ function wikiPages(dir: string) {
     const mode = e.slice(0, e.indexOf(' '))
     if (tab < 0 || (mode !== '100644' && mode !== '100755')) continue
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..')) continue
-    const sha = e.slice(0, tab).split(/\s+/)[2] ?? ''
-    if (!/^[0-9a-f]{40,64}$/.test(sha)) continue
-    const blob = wikiGit(dir, ['cat-file', 'blob', sha])
-    if (blob.code !== 0 || blob.out.length > WIKI_PAGE_MAX) continue
     try {
-      const p = parseWikiPage(blob.out.toString('utf8'))
+      let text: string
+      if (committed) {
+        const sha = e.slice(0, tab).split(/\s+/)[2] ?? ''
+        const blob = /^[0-9a-f]{40,64}$/.test(sha) ? wikiGit(dir, ['cat-file', 'blob', sha]) : null
+        if (!blob || blob.code !== 0 || blob.out.length > WIKI_PAGE_MAX) continue
+        text = blob.out.toString('utf8')
+      } else {
+        const st = lstatSync(join(dir, path))
+        if (!st.isFile() || st.nlink !== 1 || st.size > WIKI_PAGE_MAX) continue
+        text = readFileSync(join(dir, path), 'utf8')
+      }
+      const p = parseWikiPage(text)
       if ('page' in p) out.push({ path, page: p.page })
     } catch {}
   }
@@ -12007,7 +12016,7 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
   const state0 = readWikiState()
   const last = typeof state0.lastWriteAt === 'string' ? Date.parse(state0.lastWriteAt) : NaN
   const since = Number.isFinite(last) ? last : 0
-  const solutions = () => wikiPages(dir).filter(p => p.page.kind === 'solution')
+  const solutions = () => wikiPages(dir, true).filter(p => p.page.kind === 'solution')
   const done = new Set([
     ...Object.keys((state0.written as object | undefined) ?? {}),
     ...solutions().flatMap(p => p.page.beads ?? []),
