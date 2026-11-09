@@ -2978,7 +2978,11 @@ export function runTokenSwap(
     const waiting = state!.ran !== undefined && hit.at > state!.at // a newer hit held back by the swap window
     return waiting ? Math.max(state!.until, state!.ran! + gap) : state!.until
   }
-  const p = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 })
+  const p = Bun.spawnSync(cmd.split(' '), {
+    cwd: ROOT,
+    timeout: 30_000,
+    env: { ...process.env, FACTORY_HOME: home },
+  })
   const ok = p.exitCode === 0
   if (ok) {
     const live = (codex ? /label (\S+) is live/ : /slot (\S+) is live/).exec(p.stdout.toString())?.[1] ?? '?'
@@ -3008,7 +3012,11 @@ export function refreshCodexToken(now: number, runnerName: string, home = HOME) 
   const file = join(home, `token-swap-${runnerName}-codex.json`)
   const state = trustedSwapState(file, now)
   if (state && now - state.at < CODEX_REFRESH_MS) return
-  const code = Bun.spawnSync(cmd.split(' '), { cwd: ROOT, timeout: 30_000 }).exitCode
+  const code = Bun.spawnSync(cmd.split(' '), {
+    cwd: ROOT,
+    timeout: 30_000,
+    env: { ...process.env, FACTORY_HOME: home },
+  }).exitCode
   const ok = code === 0 || code === CODEX_TOKEN_FRESH // exit 3: the token is still fresh, nothing was copied
   writeJson(file, {
     at: ok ? now : now - CODEX_REFRESH_MS + 3_600_000,
