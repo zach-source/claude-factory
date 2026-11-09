@@ -105,6 +105,7 @@ import {
 import { clusterKey } from './filing-guard'
 import { routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
+import { hideParseText, hideSecret } from './secrets'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
 import { filingActor, filingGuard } from './filing-guard'
@@ -2234,7 +2235,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
-  if (!harness) fail(`the ax runner runs claude, codex, cursor, grok or pi workers, not "${agent}"`)
+  if (!harness)
+    fail(`the ax runner runs claude, codex, cursor, grok or pi workers, not "${hideSecret(agent)}"`)
   axCodexRefused(agent)
   axCursorRefused(agent)
   axGrokRefused(agent)
@@ -6152,7 +6154,12 @@ function devenvPass(names: string[], force = false) {
   try {
     writeFileSync(join(HOME, 'devenv.stamp'), '') // the kick's clock: a pass started, whatever it finds
     if (!existsSync(devenvConfig())) return [`no ${devenvConfig()}: see docs/remote-runner.md`]
-    const cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    let cfg: devenv.DevenvConfig
+    try {
+      cfg = readJson<devenv.DevenvConfig>(devenvConfig())
+    } catch (e) {
+      throw new Error(`${devenvConfig()}: not valid JSON (${hideParseText((e as Error).message)})`)
+    }
     const miss = devenv.configMissing(cfg)
     if (miss.length)
       return [`${devenvConfig()} lacks ${miss.join(', ')}: run factory settings set devenv.<field> <value>`]
@@ -8557,7 +8564,15 @@ async function sendParts(task: string, out: string, sha: string) {
 }
 
 /** rigs.json as written: on the laptop, the repo paths are the laptop's */
-const rawRigs = (): Rig[] => (existsSync(rigsFile()) ? readJson(rigsFile()) : [])
+const rawRigs = (): Rig[] => {
+  if (!existsSync(rigsFile())) return []
+  const text = readFileSync(rigsFile(), 'utf8')
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    throw new Error(`${rigsFile()}: not valid JSON (${hideParseText((e as Error).message)})`)
+  }
+}
 /** the rigs as this process works them: in the AX task, each `repo` is the rig's clone (src/axrepos.ts) */
 const rigs = (): Rig[] => mapRigs(rawRigs())
 /** change the rig file under editRigs' lock; a refusal (bad file, bad edit) ends the command */
@@ -11005,23 +11020,24 @@ async function rigListLines(print: Print) {
     print(
       `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
     )
-    if (r.goal) print(`  goal: ${r.goal}`)
-    if (r.slo) print(`  slo: ${r.slo}`)
-    if (r.drift) print(`  drift: ${r.drift}`)
-    if (r.agent) print(`  agent: ${r.agent}`)
+    const safe = redactRig(r)
+    if (r.goal) print(`  goal: ${safe.goal}`)
+    if (r.slo) print(`  slo: ${safe.slo}`)
+    if (r.drift) print(`  drift: ${safe.drift}`)
+    if (r.agent) print(`  agent: ${safe.agent}`)
     if (personOnlyContexts(r)?.length) print(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
     if (protectedBranches(r)?.length) print(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
     if (r.mergeAuthority === true)
       print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
-    if (r.mcp) print(`  mcp: ${r.mcp}`)
-    for (const [k, v] of Object.entries(r.params ?? {})) print(`  param ${k}: ${v}`)
-    if (r.linear) {
+    if (r.mcp) print(`  mcp: ${safe.mcp}`)
+    for (const [k, v] of Object.entries(safe.params ?? {})) print(`  param ${k}: ${v}`)
+    if (safe.linear) {
       const extra = [
-        r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
-        r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
+        safe.linear.projects?.length ? `projects ${safe.linear.projects.join('|')}` : '',
+        safe.linear.labels?.length ? `labels ${safe.linear.labels.join('|')}` : '',
       ].filter(Boolean)
       print(
-        `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
+        `  linear: team ${safe.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
       )
     }
   }
@@ -11058,7 +11074,7 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
   if (mcp !== undefined && agent !== undefined && harnessOf(agent) === 'grok')
     fail('--mcp does not reach a grok worker: its servers are not behind the deny hook')
   if (remote && agent !== undefined && !harnessOf(agent))
-    fail(`--agent for the ${runner} runner is claude, codex, cursor, grok or pi (not "${agent}")`)
+    fail(`--agent for the ${runner} runner is claude, codex, cursor, grok or pi (not "${hideSecret(agent)}")`)
   if (remote && agent !== undefined) axCodexRefused(agent, env)
   if (remote && agent !== undefined) axCursorRefused(agent, env)
   if (remote && agent !== undefined) axGrokRefused(agent, env)
@@ -14063,7 +14079,7 @@ if (import.meta.main && !outboxCmd)
             try {
               return JSON.parse(readFileSync(from, 'utf8')) as Rig[] // editRigs checks it is a valid list
             } catch (e) {
-              throw new Error(`${from}: not valid JSON (${(e as Error).message})`)
+              throw new Error(`${from}: not valid JSON (${hideParseText((e as Error).message)})`)
             }
           })
           console.log(`restored rigs.json from ${basename(from, '.json')}; rig undo again reverses it`)

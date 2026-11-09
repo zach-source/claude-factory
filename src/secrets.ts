@@ -1,3 +1,9 @@
+/** Bun quotes the bad input token in a JSON.parse message, and that token can be a secret: hide it. */
+export const hideParseText = (m: string) => m.replace(/"[\s\S]*$/, '<hidden>')
+
+/** the text, or `<hidden>` when it matches a token shape: for a value that a message echoes */
+export const hideSecret = (s: string) => (SECRETS.some(p => p.test(s)) ? '<hidden>' : s)
+
 /** token shapes that must not reach a stored file. A leaf module: no imports. */
 export const SECRETS = [
   /gh[pousr]_[A-Za-z0-9]{30,}/,
