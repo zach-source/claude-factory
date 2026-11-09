@@ -5,7 +5,7 @@ import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync }
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type { Port } from './core/catalog'
-import { clientHandler, clientListener, cliRunner } from './server-api'
+import { clientHandler, clientListener } from './server-api'
 
 export type Lease = { holder: string; until: number }
 
@@ -251,7 +251,7 @@ export function main(args: string[], home: string, tick: () => unknown, port: Po
     cert: need(f.client.cert),
     key: need(f.client.key),
     ca: need(f.client.ca),
-    handle: clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log }),
+    handle: clientHandler({ home, port, board: () => s?.board() ?? null, log }),
   }
   s = serve({ home, port: f.port, everyMs: f.everyMs, leaseMs: f.leaseMs, tick, client })
   console.log(

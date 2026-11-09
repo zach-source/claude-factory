@@ -3,20 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Port } from './core/catalog'
-import { clientHandler, type RunResult } from './server-api'
+import { clientHandler, personEnv } from './server-api'
 
-type Call = { argv: string[]; text?: string } | { port: string; args: unknown[] }
+type Call = { port: string; args: unknown[] }
 let seq = 0
-const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
+const setup = (o: { board?: unknown } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'sapi-h-'))
   const calls: Call[] = []
   let lastEnv: Record<string, string | undefined> = {}
   const logs: string[] = []
-  const run = async (argv: string[], text?: string): Promise<RunResult> => {
-    calls.push({ argv, text })
-    return { code: 0, out: '{"ok":1}\n', err: '', ...o.result }
-  }
-  // each port function logs into the same array as the runner, so a "zero calls" check counts both
+  // each port function logs into one array, so a "zero calls" check counts them all
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
     show: async id => (log('show', [id]), { ok: 1 }),
@@ -52,7 +48,6 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   const make = () =>
     clientHandler({
       home,
-      run,
       port,
       board: () => (o.board === undefined ? null : o.board),
       log: l => logs.push(l),
@@ -77,6 +72,30 @@ const post = (
     }),
     '1.2.3.4',
   )
+
+const NAMES = [
+  'FACTORY_SERVER',
+  'FACTORY_FROM',
+  'FACTORY_RUN',
+  'FACTORY_DEF_NAME',
+  'FACTORY_PATROL',
+  'FACTORY_OUTBOX',
+  'BEADS_ACTOR',
+]
+
+describe('personEnv', () => {
+  for (const name of NAMES)
+    test(`drops ${name}`, () => {
+      const e = personEnv({ [name]: 'x', KEEP: 'y' }, '/h')
+      expect(name in e).toBe(false)
+      expect(e.KEEP).toBe('y')
+    })
+  test('sets FACTORY_HOME and FACTORY_SELF_UPDATE=0 over the caller value', () => {
+    const e = personEnv({ FACTORY_HOME: '/other', FACTORY_SELF_UPDATE: '1' }, '/h')
+    expect(e.FACTORY_HOME).toBe('/h')
+    expect(e.FACTORY_SELF_UPDATE).toBe('0')
+  })
+})
 
 describe('read routes', () => {
   // the moved reads run in process: the port call and its arguments, never the runner

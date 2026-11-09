@@ -325,8 +325,7 @@ const serverGet = (home: string, paths: string[]): { status: number; body: strin
     [
       `import { corePort } from ${JSON.stringify(join(import.meta.dir, '..', 'cli.ts'))}`,
       `import { clientHandler } from ${JSON.stringify(join(import.meta.dir, '..', 'server-api.ts'))}`,
-      `const run = async () => { throw new Error('the runner must not run') }`,
-      `const h = clientHandler({ home: process.env.FACTORY_HOME!, run, port: corePort, board: () => null })`,
+      `const h = clientHandler({ home: process.env.FACTORY_HOME!, port: corePort, board: () => null })`,
       `for (const p of process.argv.slice(2)) {`,
       `  const r = await h(new Request('http://x' + p), '1.2.3.4')`,
       `  console.log(JSON.stringify({ status: r.status, body: await r.text() }))`,

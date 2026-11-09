@@ -6,7 +6,7 @@ import { main as clientMain } from './client'
 import type { Port } from './core/catalog'
 import { parseFlags, serve } from './server'
 import { sign } from './tokens'
-import { clientHandler, personCerts, type RunResult } from './server-api'
+import { clientHandler, personCerts } from './server-api'
 
 const dirs: string[] = []
 const tmp = () => {
@@ -39,11 +39,6 @@ const laptop = (who: string, pin: string) => {
 
 const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, delayMs = 0) => {
   const calls: string[][] = []
-  const run = async (argv: string[]): Promise<RunResult> => {
-    calls.push(argv)
-    if (delayMs) await Bun.sleep(delayMs)
-    return { code: 0, out: '{"ok":1}\n', err: '', ...({} as object) }
-  }
   // the moved reads run in process: status and prs answer here, the other port functions must not run
   const port = new Proxy(
     {
@@ -69,7 +64,7 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, 
   ) as unknown as Port
   const home = tmp()
   let s: ReturnType<typeof serve>
-  const handle = clientHandler({ home, run, port, board: () => s.board() })
+  const handle = clientHandler({ home, port, board: () => s.board() })
   s = serve({
     home,
     port: 0,

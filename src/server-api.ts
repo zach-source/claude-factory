@@ -1,5 +1,5 @@
 // Client API of `factory server` on port 8444 (claude-factory-akiq.7). Contract: specs/004-factory-server/contracts/client-api.md.
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import {
   appendFileSync,
   chmodSync,
@@ -29,9 +29,8 @@ import {
   type Op,
   type Port,
   type RunResult,
-  type Runner,
 } from './core/catalog'
-export type { RunResult, Runner } from './core/catalog'
+export type { RunResult } from './core/catalog'
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/
@@ -111,7 +110,6 @@ export function personCerts(dir: string, serverName: string) {
 
 export type ClientOpts = {
   home: string
-  run: Runner
   /** the cli.ts helpers that the in-process operations call */
   port: Port
   /** the last tick result, null before the first tick */
@@ -134,48 +132,6 @@ export function personEnv(env: Record<string, string | undefined>, home: string)
   const e = { ...env }
   for (const n of WORKER_ENV) delete e[n]
   return { ...e, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' } as Record<string, string>
-}
-
-/**
- * The real runner: one `bun cli.ts <argv>` process for each call, with cwd = home. It has no shell.
- * Mail text goes through <home>/text/<uuid>.md and --text-file. The file is gone when the call ends.
- * ponytail: one bun process per call (about 0.3 s). Upgrade path: export the command functions from cli.ts and call them in process.
- */
-export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), timeoutMs = 60_000): Runner {
-  return async (argv, text) => {
-    let file: string | undefined
-    try {
-      if (text !== undefined) {
-        mkdirSync(join(home, 'text'), { recursive: true })
-        file = join(home, 'text', `${randomUUID()}.md`)
-        writeFileSync(file, text, { mode: 0o600 })
-      }
-      const proc = Bun.spawn([process.execPath, cli, ...argv, ...(file ? ['--text-file', file] : [])], {
-        cwd: home,
-        env: personEnv(process.env, home),
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      let timedOut = false as boolean
-      const timer = setTimeout(() => {
-        timedOut = true
-        proc.kill()
-      }, timeoutMs)
-      try {
-        const [out, err, code] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-          proc.exited,
-        ])
-        return { code, out, err, ...(timedOut ? { timedOut } : {}) }
-      } finally {
-        clearTimeout(timer)
-      }
-    } finally {
-      if (file) rmSync(file, { force: true })
-    }
-  }
 }
 
 const KEY = /^[A-Za-z0-9-]{8,128}$/
@@ -247,28 +203,25 @@ function writeStore(file: string, rows: Record<string, Row>, now: number) {
 
 /**
  * The handler of the client port. The listener has already checked the person certificate (the TLS handshake is the identity).
- * Each refusal answers before the runner and writes no idempotency row. Actions run one at a time.
+ * Each refusal answers before any operation and writes no idempotency row. Actions run one at a time.
  */
 export function clientHandler(o: ClientOpts) {
   const storeFile = join(o.home, 'client-idempotency.json')
   const auditFile = join(o.home, 'client-actions.jsonl')
   let chain: Promise<unknown> = Promise.resolve()
   const call = async (op: Op, input: Input): Promise<Response> => {
-    // a new env for each call, as cliRunner gave a new env to each subprocess
+    // a new env for each call
     const ctx: Ctx = {
       home: o.home,
-      cli: o.run,
       board: o.board,
       env: personEnv(process.env, o.home),
       port: o.port,
     }
     try {
       const r = await op.run(ctx, input)
-      return r.timedOut
-        ? refuse(504, 'the command timed out')
-        : r.code === 0
-          ? reply(200, r.out, op.output === 'json' || looksJson(r.out))
-          : refuse(422, r.err.slice(0, 500))
+      return r.code === 0
+        ? reply(200, r.out, op.output === 'json' || looksJson(r.out))
+        : refuse(422, r.err.slice(0, 500))
     } catch (e) {
       if (e instanceof OpError) return refuse(e.status, e.message)
       throw e
@@ -376,7 +329,7 @@ function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise
     )
   }
   const bad = (status: number, why: string) => reply(status, `${JSON.stringify({ refused: why })}\n`)
-  // the idle limit covers the read of the request only: a CLI call can run to its own 60 s limit and answer 504
+  // the idle limit covers the read of the request only: an operation has no time limit yet (claude-factory-c8xlz)
   sock.setTimeout(idleMs, () => sock.destroy())
   sock.on('error', () => sock.destroy())
   let buf = Buffer.alloc(0)

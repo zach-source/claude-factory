@@ -386,9 +386,9 @@ for (const row of ROWS)
 // ---- the same actions through the client port handler ----
 const SCRIPT = `
 import { corePort } from ${JSON.stringify(join(ROOT, 'src', 'cli.ts'))}
-import { clientHandler, cliRunner } from ${JSON.stringify(join(ROOT, 'src', 'server-api.ts'))}
+import { clientHandler } from ${JSON.stringify(join(ROOT, 'src', 'server-api.ts'))}
 const [home, path, body] = process.argv.slice(2)
-const h = clientHandler({ home, run: cliRunner(home), port: corePort, board: () => null } as any)
+const h = clientHandler({ home, port: corePort, board: () => null } as any)
 const res = await h(new Request('http://x' + path, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'key-' + Math.random().toString(36).slice(2) + '12345678' }, body }), '127.0.0.1')
 console.log(JSON.stringify({ status: res.status, body: await res.text() }))
 `
@@ -519,7 +519,7 @@ import { corePort } from ${JSON.stringify(join(ROOT, 'src', 'cli.ts'))}
 import { CATALOG } from ${JSON.stringify(join(ROOT, 'src', 'core', 'catalog.ts'))}
 const [home, name, input, env] = process.argv.slice(2)
 const op = CATALOG.find(o => o.name === name)!
-const r = await op.run({ home, env: JSON.parse(env), port: corePort, board: () => null, cli: async () => { throw new Error('ctx.cli') } }, JSON.parse(input))
+const r = await op.run({ home, env: JSON.parse(env), port: corePort, board: () => null }, JSON.parse(input))
 console.log(JSON.stringify(r))
 `
   const inProc = (

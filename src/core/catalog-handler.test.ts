@@ -2,23 +2,20 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { clientHandler, type RunResult } from '../server-api'
+import { clientHandler } from '../server-api'
 import type { Port } from './catalog'
 
 // the board and catalog tests call no port function
-const port = new Proxy({} as Port, {
-  get: (_t, k) => () => {
-    throw new Error(`port.${String(k)} must not be called`)
-  },
-})
 const setup = (board: () => unknown = () => null) => {
   const home = mkdtempSync(join(tmpdir(), 'cat-h-'))
-  const calls: string[][] = []
-  const run = async (argv: string[]): Promise<RunResult> => {
-    calls.push(argv)
-    return { code: 0, out: 'ok\n', err: '' }
-  }
-  return { calls, h: clientHandler({ home, run, port, board }) }
+  const calls: string[] = []
+  const port = new Proxy({} as Port, {
+    get: (_t, k) => () => {
+      calls.push(String(k))
+      throw new Error(`port.${String(k)} must not be called`)
+    },
+  })
+  return { calls, h: clientHandler({ home, port, board }) }
 }
 type H = ReturnType<typeof setup>['h']
 const get = (h: H, path: string) => h(new Request(`http://x${path}`), '1.2.3.4')

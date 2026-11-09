@@ -16,9 +16,7 @@ import * as stepsOps from './ops/steps'
 
 export type Kind = 'id' | 'text' | 'note' | 'path' | 'flag' | 'enum'
 export type Field = { name: string; kind: Kind; required: boolean; help: string; values?: string[] }
-export type RunResult = { code: number; out: string; err: string; timedOut?: boolean }
-/** run one CLI form; `text` is mail text that the runner passes by file */
-export type Runner = (argv: string[], text?: string) => Promise<RunResult>
+export type RunResult = { code: number; out: string; err: string }
 export type Env = Record<string, string | undefined>
 export type Print = (line: string) => void
 /** the cli.ts helpers that the moved operations call; cli.ts builds it, tests fake it */
@@ -54,7 +52,6 @@ export type Port = {
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
 export type Ctx = {
   home: string
-  cli: Runner
   board: () => unknown
   env: Env
   port: Port
@@ -226,12 +223,7 @@ const f = (name: string, kind: Kind, required = true, help = H[name]!, values?: 
 const id = (name: string) => f(name, 'id')
 
 type Spec = { name: string; summary: string; method: 'GET' | 'POST'; path: string; inputs?: Field[] }
-const bridge = (
-  s: Spec,
-  argv: (i: Input) => string[],
-  output: Op['output'] = 'text',
-  text?: (i: Input) => string,
-): Op => ({
+const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({
   name: s.name,
   summary: s.summary,
   inputs: s.inputs ?? [],
@@ -241,9 +233,8 @@ const bridge = (
   long: false,
   route: { method: s.method, path: s.path },
   since: CATALOG_VERSION,
-  run: (ctx, i) => ctx.cli(argv(i), text?.(i)),
+  run,
 })
-const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
 /** the 24 operations: the routes of the client port, the board, the catalog and the parity fixture */
 export const CATALOG: Op[] = makeCatalog([

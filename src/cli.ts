@@ -12551,7 +12551,6 @@ const cliCtx = (): OpCtx => ({
   env: process.env,
   port: corePort,
   board: () => null,
-  cli: () => fail('no CLI runner in the CLI'),
   tick: () => tick(),
 })
 /** the input of an op from CLI words: a missing word leaves its key out */

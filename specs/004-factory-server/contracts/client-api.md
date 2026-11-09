@@ -32,6 +32,7 @@ Each action endpoint takes `Idempotency-Key`, as in the worker API.
 | `POST /v1/runs/<id>/goto`, `/abort`             |                                         | `factory goto`, `factory rm`        |
 | `POST /v1/start`                                | `{factory, rig, goal, station?, bead?}` | `factory start`                     |
 | `POST /v1/halt`                                 | `{mode: "stop" or "resume"}`            | `factory stop`, `factory resume`    |
+| `POST /v1/lease/release`                        | `{}`                                    | `factory lease release`             |
 | `POST /v1/decisions/<key>/answer`               | `{text}`                                | `factory decisions answer`          |
 | `PUT /v1/rigs/<name>`, `DELETE /v1/rigs/<name>` | the rig fields                          | `factory rig add`, `factory rig rm` |
 
@@ -86,11 +87,10 @@ The server checks the client certificate before it reads a request. It does not 
   - 403: an `Authorization` header, or a mail `cwd` inside the run worktree.
   - 404: unknown route.
   - 409: another request already used the key.
-  - 422: the CLI refused. The body holds the first 500 characters of stderr.
+  - 422: the operation refused. The body holds the first 500 characters of its error.
   - 503: no tick yet, or a corrupt store.
-  - 504: the CLI ran for more than 60 s.
 - A body is at most 128 KiB. A free-text field has 1 to 65536 characters and no U+0000. A `start` goal must not hold the word `--owned`.
 - Each POST needs `Idempotency-Key` and `content-type: application/json`. The server keeps each answer for 24 h in `<home>/client-idempotency.json` (mode 0600). The same key and the same request give the stored answer, also after a restart. The same key with another request gives 409. If the file is corrupt, the server gives 503 and runs nothing. The server runs one action at a time.
 - Each POST that passes the form check adds one line to `<home>/client-actions.jsonl`. The line has the time, client address, method, path, key and status. A `decide` line also has the outcome. The line holds no free text.
-- Each action runs `cli.ts` as a child process with the server home. The child env has no `FACTORY_SERVER`, `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME`, `FACTORY_PATROL`, `FACTORY_OUTBOX` or `BEADS_ACTOR`. Mail text goes through a file in `<home>/text/`. The server removes the file after the call.
+- Each action runs in the server process with the server home. Its env is `personEnv`: it has no `FACTORY_SERVER`, `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME`, `FACTORY_PATROL`, `FACTORY_OUTBOX` or `BEADS_ACTOR`. Mail text goes in the request. A `start` does not run a tick: the server tick loop launches the first worker.
 - `factory cert person <dir> <server-name>` makes the person CA, the person certificate and the server certificate in a new folder.

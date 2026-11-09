@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,7 +7,6 @@ import { CATALOG, OpError, type Ctx, type Input, type Port } from './catalog'
 type Call = [string, ...unknown[]]
 const fake = () => {
   const calls: Call[] = []
-  const cli: string[][] = []
   const port: Port = {
     show: async id => (calls.push(['show', id]), { ok: 1 }),
     status: async (id, print) => (calls.push(['status', id]), print('line')),
@@ -37,9 +36,8 @@ const fake = () => {
     env,
     port,
     board: () => ({}),
-    cli: async argv => (cli.push(argv), { code: 0, out: '', err: '' }),
   })
-  return { calls, cli, ctx }
+  return { calls, ctx }
 }
 const run = (name: string, ctx: Ctx, input: Input) => CATALOG.find(o => o.name === name)!.run(ctx, input)
 
@@ -78,26 +76,32 @@ describe('moved reads run in process (AC1)', () => {
     ],
   ]
   for (const [name, input, want] of rows)
-    test(`${name} ${JSON.stringify(input)} calls the port and never ctx.cli`, async () => {
+    test(`${name} ${JSON.stringify(input)} calls the port`, async () => {
       const t = fake()
       const r = await run(name, t.ctx(), input)
       expect(r.code).toBe(0)
       expect(t.calls).toEqual(want)
-      expect(t.cli).toEqual([])
     })
 
-  test('the operations that still call ctx.cli are the changes', async () => {
+  test('no operation calls a CLI subprocess', async () => {
     const dummy = (k: string, values?: string[]) =>
       k === 'enum' ? values![0]! : k === 'flag' ? true : k === 'path' ? '/x' : 'r1'
-    const bridged: string[] = []
-    for (const op of CATALOG) {
-      const t = fake()
-      const input: Input = {}
-      for (const f of op.inputs) if (f.required) input[f.name] = dummy(f.kind, f.values)
-      await op.run(t.ctx(), input)
-      if (t.cli.length) bridged.push(op.name)
+    const spawn = spyOn(Bun, 'spawn')
+    const spawnSync = spyOn(Bun, 'spawnSync')
+    try {
+      for (const op of CATALOG) {
+        const t = fake()
+        const input: Input = {}
+        for (const f of op.inputs) if (f.required) input[f.name] = dummy(f.kind, f.values)
+        expect('cli' in t.ctx()).toBe(false)
+        await op.run(t.ctx(), input)
+      }
+      expect(spawn).not.toHaveBeenCalled()
+      expect(spawnSync).not.toHaveBeenCalled()
+    } finally {
+      spawn.mockRestore()
+      spawnSync.mockRestore()
     }
-    expect(bridged).toEqual([])
   })
 })
 
@@ -390,7 +394,6 @@ describe('runs.mail gives the request cwd and the ctx env to the port (AC1, AC4)
     expect((await run('runs.mail', t.ctx(env), base)).code).toBe(0)
     expect(t.calls).toEqual([['mail', m, { env, cwd: '/x' }]])
     expect((t.calls[0]![2] as { env: unknown }).env).toBe(env)
-    expect(t.cli).toEqual([])
   })
   test('wake:true gives wake:true', async () => {
     const t = fake()
