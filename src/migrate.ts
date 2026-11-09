@@ -75,6 +75,8 @@ const NEVER = (name: string) =>
   name === 'devenv' ||
   name === 'tick.lock' ||
   name === 'herdr.log' ||
+  // the host in the task writes its own and keeps it open: a copy from the laptop would replace it
+  name === 'manager-host.log' ||
   /^rigs\.json\./.test(name) ||
   /\.lock$/.test(name)
 
@@ -151,6 +153,27 @@ export type Plan = {
   refusal?: string
   rigsError?: string
   rigs: (RigRow & { remote?: string })[]
+  /** the moved live runs whose branch is not on origin: the task makes a worktree from origin, so their work is lost */
+  unpushed: string[]
+}
+
+type RunPaths = { id: string; repo: string; worktree: string; branch: string }
+const gitOut = (args: string[]) => {
+  const p = Bun.spawnSync(['git', ...args], { stderr: 'ignore', timeout: 30_000 })
+  return p.exitCode === 0 ? p.stdout.toString().trim() : undefined
+}
+/**
+ * whether the run's work is on origin: the worktree's HEAD, else the repo's local branch, must be the origin
+ * branch or an ancestor of it. No local head counts as pushed when origin has the branch
+ */
+export function isPushed(run: RunPaths) {
+  const remote = gitOut(['-C', run.repo, 'ls-remote', 'origin', `refs/heads/${run.branch}`])?.split(/\s/)[0]
+  if (!remote) return false
+  const local =
+    (existsSync(run.worktree) && gitOut(['-C', run.worktree, 'rev-parse', 'HEAD'])) ||
+    gitOut(['-C', run.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${run.branch}`])
+  if (!local || local === remote) return true
+  return gitOut(['-C', run.repo, 'merge-base', '--is-ancestor', local, remote]) !== undefined
 }
 
 /** the seq of a memory archive name `<task>-<seq>.memory.tgz`; -1 when it has none */
@@ -197,6 +220,7 @@ export function plan(
   keep: number,
   originOf: (repo: string) => string | undefined,
   config = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+  pushed: (run: RunPaths) => boolean = isPushed,
 ): Plan {
   const entries = readdirSync(home, { withFileTypes: true }).map(d => ({
     name: d.name,
@@ -223,6 +247,11 @@ export function plan(
     const files = readdirSync(dir).map(name => ({ name, mtimeMs: statSync(join(dir, name)).mtimeMs }))
     return staleMemoryOf(files).map(name => `runs/${id}/${name}`)
   })
+  const live = new Set(runs.filter(r => r.live).map(r => r.id))
+  const unpushed = move.filter(id => {
+    const f = join(runsDir, id, 'run.json')
+    return live.has(id) && existsSync(f) && !pushed({ id, ...JSON.parse(readFileSync(f, 'utf8')) })
+  })
   const staleBytes = staleMemory.reduce((n, f) => n + statSync(join(home, f)).size, 0)
   const bytes =
     take.reduce((n, f) => n + sizeOf(join(home, f)), 0) +
@@ -245,6 +274,7 @@ export function plan(
     refusal: local.length ? localRunsRefusal(local) : undefined,
     rigsError: m.error,
     rigs: m.rigs,
+    unpushed,
   }
 }
 
@@ -259,6 +289,11 @@ export const describe = (p: Plan) =>
     ...(p.staleMemory.length
       ? [
           `older memory archives left behind: ${p.staleMemory.length} (${mb(p.staleBytes)}); each run keeps its newest`,
+        ]
+      : []),
+    ...(p.unpushed.length
+      ? [
+          `live runs whose branch is not pushed: ${p.unpushed.join(', ')} (push each branch first: the task makes their worktrees from origin)`,
         ]
       : []),
     `size before compression: ${mb(p.bytes)}`,
