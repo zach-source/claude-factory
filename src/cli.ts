@@ -14257,7 +14257,7 @@ if (import.meta.main && !outboxCmd)
       }
       default:
         console.log(usage)
-        if (cmd && cmd !== 'help') process.exitCode = 2
+        if (cmd && !['help', '--help', '-h'].includes(cmd)) process.exitCode = 2
     }
   } catch (err) {
     console.error(`factory: ${(err as Error).message}`)
