@@ -4574,6 +4574,8 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   let error: string | undefined
   const [node, sub] = where(actor.getSnapshot().value)
   try {
+    // a migrated run's worktree is not in the task: make it from origin before any git call in it
+    if (sub === 'working' && inAx() && !existsSync(run.worktree)) reviveWorktree(run)
     if (sub === 'working')
       agent = haltRun(run, def, node, ctx(), send, halt, now) ?? reconcile(run, def, ctx(), node, send, now)
     else agent = agentOf(def, actor.getSnapshot().value, ctx())
@@ -8353,7 +8355,22 @@ function linearMail(now: number): (Mail & { run: string })[] {
 /** `factory repos sync`: clone or fetch each rig's repo in the AX task and bootstrap its beads store; the problems, one per line */
 const reposSync = (): string[] => {
   if (!inAx()) fail('factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1)')
-  return syncRepos(rawRigs(), HOME)
+  return [...syncRepos(rawRigs(), HOME), ...reviveLiveWorktrees()]
+}
+
+/** each live run's missing worktree, made from its branch on origin (a migrated run has none in the task) */
+function reviveLiveWorktrees(): string[] {
+  const problems: string[] = []
+  for (const id of startedRunIds()) {
+    try {
+      const { run, value } = current(id)
+      if (where(value)[1] !== 'working' || existsSync(run.worktree)) continue
+      reviveWorktree(run)
+    } catch (e) {
+      problems.push(`worktree of ${id}: ${(e as Error).message}`)
+    }
+  }
+  return problems
 }
 
 const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
