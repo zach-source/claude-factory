@@ -23,11 +23,13 @@ Each fix is a child bead of `claude-factory-aure`.
 
 - Cost in USD is the API list price from `PRICES` in `src/metrics.ts`. The factory runs on subscription accounts. So the USD figure is only a scale. The real limit is the weekly account limit. In this window, 180 station visits stopped on `Claude usage limit (seven_day)`. So each token of waste is lost throughput.
 
-## 1. Before the numbers: the token report counts sessions two times
+- Tokens are the binding limit, not slots. Thus this doc puts the token fixes before the slot-hour fixes.
+
+## 1. The token report counts sessions two times
 
 `factory metrics --tokens` reports 8557M tokens for the window. The real figure is 6096M (+40% over-count).
 
-- Cause: `usageIn` (`src/cli.ts:11530`) takes every transcript whose mtime is at or after the station start. The previous station's transcript changes again after the next station starts. So `storeUsage` stores that session again under the next station.
+- Cause: `usageIn` in `src/cli.ts` takes every transcript whose mtime is at or after the station start. The previous station's transcript changes again after the next station starts. So `storeUsage` stores that session again under the next station.
 
 - Evidence: `usage.jsonl` has 9886 rows and 7088 unique run+session pairs. In one run, the session of triage seq 1 is also stored under plan seq 2. `storeUsage` stores the plan session again under implement seq 3. The same pattern repeats for the other stations in the run.
 
@@ -88,7 +90,7 @@ Tokens by fate:
 | quick | 146M | 339 | 0.2M |
 | all others | 147M | 576 | 0.2M |
 
-Review, security and check together use 45% of the tokens of the runs that end approved.
+In shipped runs, review, security and check together use 45% of the tokens (2210M of 4868M). In all runs, they use about 40%.
 
 ### By rig
 
@@ -115,8 +117,8 @@ rig-a has the lowest ship rate (38% of ended runs). It has 242 plan outages and 
 | # | Waste | Tokens (7d) | Sessions or slots (7d) | Evidence |
 |---|-------|-------------|------------------------|----------|
 | 1 | Rework after a `changes` verdict | 1893M (31%) | 350 runs | sessions after the first review, check or security `changes` |
-| 2 | Timed-out and lost workers | est. 659M (not stored) | 772 visits, 821 slot-hours | `no report within N min` 507, `worker stopped without reporting` 265 |
-| 3 | Security on builds that are not security-sensitive | about 490M of 981M | 488 of 701 approved builds sent on | security approves 78% |
+| 2 | Timed-out and lost workers | about 659M, an estimate (not stored) | 772 visits, 821 slot-hours | `no report within N min` 507, `worker stopped without reporting` 265 |
+| 3 | Security on builds that are not security-sensitive | at most 490M of 981M (upper bound) | 488 of 701 approved builds sent on | security approves 78%, or 59% when blocked and fail verdicts count |
 | 4 | Aborted runs | 403M (overlaps 1, 2, 7) | 153 runs | 18 runs with 20+ visits used 114M |
 | 5 | Patrol calls that find nothing | about 150M of 299M | 2926 patrols | 26 of the last 50 reports start with "Nothing" |
 | 6 | Repeat `blocked` re-checks | 66M | 440 sessions | soak 137, deploy 75, security 47, plan 46 |
@@ -171,9 +173,17 @@ Each row below is one station and harness. The rates are shares of launches in t
 
 - In the window, review sent 488 of 701 approved builds (70%) to security. In claude-factory, review sent 190 of 261.
 
-- Security then approved 366 of 467 verdicts (78%) with no change.
+- Security then approved 366 of 467 approve or changes verdicts (78%) with no change.
 
-- Security used 981M tokens. Fable used 939M. Opus used 30M at API prices. Haiku and Sonnet used the rest.
+- When blocked and fail verdicts also count, security approved 366 of 616 visits (59%). When only blocked counts, it approved 366 of 570 (64%).
+
+- Security used 981M tokens. Fable used 939M. Opus used 30M. Haiku and Sonnet used the rest.
+
+- The 490M saving is an upper bound. It has two assumptions:
+  - Security stops on about half of the builds that it sees now.
+  - Those builds need no security review.
+
+- A blocked or failed security visit also costs tokens. Thus the real saving depends on the builds that the new rule keeps.
 
 ### 3.4 Aborted runs
 
@@ -187,6 +197,14 @@ Each row below is one station and harness. The rates are shares of launches in t
 - The large ones are security rounds. Each one hit the made-worse gate. Then it re-checked the gate.
 
 - For example, `lifecycle-mw5jeh9wes` had 29 visits and 41M tokens at security round 7.
+
+- Made-worse gate waste: 21 runs stopped at a blocked security visit, and a person aborted them. They used 274M tokens.
+
+- 18 aborted runs had 20 or more visits. They used 114M tokens.
+
+- A security round that hits the gate does not end the loop. The run continues until a person aborts it.
+
+- Fix: claude-factory-aure.12. It caps the security rounds at the gate and ends the loop early.
 
 ### 3.5 Patrol
 
@@ -267,18 +285,28 @@ The savings are estimates for one week at the load of this window.
 | Rank | Bead | Fix | Expected saving a week |
 |------|------|-----|------------------------|
 | 0 | claude-factory-aure.1 | Count each session one time; store usage on timeout and for codex; price Fable | none directly; it makes the numbers correct (2461M phantom tokens) |
-| 1 | claude-factory-aure.2 | Send a build to security only for a security-sensitive diff, from the changed paths and the plan's risk line | about 490M tokens |
-| 2 | claude-factory-aure.3 | A rig fast-check command (format, lint, build files) that implement and quick must run green before they report ready | about 380M tokens (assumption: a fifth of rework is mechanical) |
+| 1 | claude-factory-aure.2 | Send a build to security only for a security-sensitive diff, from the changed paths and the plan's risk line | at most 490M tokens (upper bound, see 3.3) |
+| 2 | claude-factory-aure.3 | A rig fast-check command (format, lint, build files) that implement and quick must run green before they report ready | about 380M tokens (a guess: a fifth of rework is mechanical) |
 | 3 | claude-factory-aure.4 | Find the cause of plan and review timeouts; on a timeout, resume with "report now" before a fresh relaunch | about 330M tokens, 400 slot-hours |
-| 4 | claude-factory-aure.5 | Skip the patrol call when the due signature has not changed and the heartbeat has not passed | about 150M tokens, $200 |
-| 5 | claude-factory-aure.6 | Codex circuit breaker: on a refused login, set the codex share to 0 for the rig until the login works | about 900 launches, 900 slot-hours |
-| 6 | claude-factory-aure.7 | Report AX launch failures as an outage (no attempt spent); detect "brief never sent" in minutes; back off per rig | about 1190 slot-hours, fewer aborts |
-| 7 | claude-factory-aure.8 | A blocked park waits for an event (PR head moves, gate bead closes, mail), not a timer | about 60M tokens, 440 sessions |
-| 8 | claude-factory-aure.9 | Before a review launch, compare the PR head with the station's last `Reviewed head`; reuse the verdict when equal | about 40M tokens, 130 sessions |
-| 9 | claude-factory-aure.10 | Run pm only when the plan facts change; put the fixed prompt first so the cache hits | about 15M tokens, $60 |
-| 10 | claude-factory-aure.11 | Hold a run after N launches of one visit with no worker | stops a rare loop |
+| 4 | claude-factory-aure.5 | Skip the patrol call when the due signature has not changed and the heartbeat has not passed | about 150M manager tokens, $200 |
+| 5 | claude-factory-aure.12 | Cap the security rounds at the made-worse gate; end the gate loop early | part of the 274M in 3.4; not estimated |
+| 6 | claude-factory-aure.8 | A blocked park waits for an event (PR head moves, gate bead closes, mail), not a timer | about 60M tokens, 440 sessions |
+| 7 | claude-factory-aure.9 | Before a review launch, compare the PR head with the station's last `Reviewed head`; reuse the verdict when equal | about 40M tokens, 130 sessions |
+| 8 | claude-factory-aure.10 | Run pm only when the plan facts change; put the fixed prompt first so the cache hits | about 15M manager tokens, $60 |
+| 9 | claude-factory-aure.6 (P1) | Codex circuit breaker: on a refused login, set the codex share to 0 for the rig until the login works | about 900 launches, 900 slot-hours |
+| 10 | claude-factory-aure.7 | Report AX launch failures as an outage (no attempt spent); detect "brief never sent" in minutes; back off per rig | about 1190 slot-hours, fewer aborts |
+| 11 | claude-factory-aure.11 | Hold a run after N launches of one visit with no worker | stops a rare loop |
 
-Fixes 1 to 4 and 7 to 9 together: about 1.5B tokens a week, about 23% of worker tokens.
-Fixes 5 and 6 together: about 2000 slot-hours a week.
+Ranks 1 to 8 are token fixes. Ranks 9 to 11 are slot-hour fixes. Tokens are the binding limit, so the token fixes come first.
+
+Ranks 1 to 4 and 6 to 8 together: about 1.5B tokens a week. Read this total with these overlaps:
+
+- Security `changes` rounds are part of the rework in 3.1. Thus the savings of ranks 1, 2 and 5 overlap.
+- The rework share of rank 2 (a fifth) is a guess, not a measurement.
+- The total mixes manager tokens (patrol 150M, pm 15M) with worker tokens. Worker tokens only: about 1.3B, about 21% of 6096M. Worker and manager tokens: about 1.5B of 6578M, about 22%.
+
+Codex login refused on 73% of plan launches (3.9). This is a broken config, not a short outage. Thus claude-factory-aure.6 is P1. The codex account changed on 2026-11-08: measure the rate again before the fix.
+
+Ranks 9 and 10 together: about 2000 slot-hours a week.
 
 Do fix 0 first. Without it, the station numbers that the other fixes use as their check are wrong.
