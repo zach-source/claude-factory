@@ -6,6 +6,21 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Added: the worker and manager images have herdr core (`hc` 0.1.19, pinned by sha256), so the Herdr app can reach an AX task with `hc machine add` (docs/remote-runner.md, Attach with the Herdr app).
+- Fixed: the AX manager host backup did not run after the first one: back-to-back ticks held `tick.lock`, and the backup stopped after 2 min of tries (claude-factory-d289.21).
+  - Now the host writes `FACTORY_HOME/backup.want` when a backup is due. A tick does not start while that file is younger than 10 min. The backup removes it when it takes the lock.
+  - The backup waits up to 10 min for the running tick.
+  - Under the lock, the backup only snapshots the memory and adds the files to its index. The gitleaks scan, the redaction, the gzip, the commit and the push run after the lock is free.
+- Fixed: after GitHub refused an AX manager home backup push, each later push sent the refused commit again and failed (claude-factory-d289.20). Now the backup pushes one commit of the current tree on the remote tip, or a root commit if the remote branch is absent.
+
+- Added: a Nix flake packages the factory CLI (claude-factory-r3qja). Run it with `nix run github:zach-source/claude-factory`.
+  - `packages.default` and `packages.factory`, `apps.default` and a devShell, for aarch64-darwin, x86_64-linux and aarch64-linux.
+  - `node_modules` comes from `bun.lock` in a fixed-output derivation, with one hash for each system.
+  - A store install does not write into its own directory. `factory up` does not run `bun install`, and the self-update does not run.
+  - Without `FACTORY_HOME`, a store install uses `~/factory`. A checkout still uses its `.factory-state`.
+  - `factory --help` and `factory -h` now exit 0, as `factory help` does.
+  - CI: a new `nix` job builds the flake and runs `factory --help` and `factory status` with an empty `FACTORY_HOME`.
+
 - Fixed: GitHub refused the AX manager home backup push (GH001: a file over 100 MB) (claude-factory-d289.19).
   - Now the backup stores each file over 50 MB as gzip, at `<path>.gz`, after the secret scan.
   - `home/.backup-gz.json` in the branch names these paths. The restore unzips only these, back to `<path>`.

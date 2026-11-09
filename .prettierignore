@@ -9,3 +9,4 @@ mod/.claude-plugin/plugin.json
 specs/
 deploy/
 herdr/mods/*/*.d.ts
+result
