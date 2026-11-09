@@ -532,17 +532,17 @@ test('AC10 spawn error: before a child exists it resolves; after one exists it i
     main,
     `const { spawn } = require('node:child_process')
 spawn('/nonexistent/acme-tool', [], { stdio: 'ignore' }).on('error', () => {})
-const c = spawn(${q(process.execPath)}, ['-e', 'setTimeout(() => {}, 1500)'], { detached: true, stdio: 'ignore' })
+const c = spawn(${q(process.execPath)}, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: 'ignore' })
 c.unref()
 c.on('error', () => {})
 c.emit('error', new Error('late'))
 require('node:fs').writeFileSync(${q(pidFile)}, String(c.pid))
 `,
   )
-  const t = Date.now()
   const p = own(Bun.spawn([join(fx(), 'bun'), main], { stdout: 'ignore', stderr: 'ignore' }), true)
-  expect(await p.exited).toBe(0)
-  expect(Date.now() - t).toBeGreaterThanOrEqual(1400)
+  await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, 'utf8') !== '')
+  p.kill('SIGTERM')
+  expect(await exitedWithin(p, 10_000)).toBe(true)
   expect(gone(Number(readFileSync(pidFile, 'utf8')))).toBe(true)
 }, 30_000)
 
