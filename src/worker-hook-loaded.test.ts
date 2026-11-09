@@ -81,6 +81,47 @@ describe('loadedTexts and the home guard', () => {
     expect(run(cmd, d)).toBe(LOADED_REASON)
   })
 
+  // claude-factory-qn8a.37.7: a quote, a backslash or a space hides the key or the value
+  test.each([
+    'git -c core.hooksPath=h""k commit -m x',
+    "git -c core.hooksPath=h''k commit -m x",
+    'git -c core.hooksPath=h\\k commit -m x',
+    'git -c core.hooks""Path=hk commit -m x',
+    'git -c core.hooks\\Path=hk commit -m x',
+    'git -c "core.hooksPath=h k" commit -m x',
+    'git -c core.hooksPath=hk -c core.hooksPath=h""k2 commit -m x',
+    'git --config-env=core.hooks""Path=HP commit -m x',
+  ])('fails closed on a split hooks dir word: %s', cmd => {
+    const d = repo()
+    put(d, 'hk/pre-commit', 'exit 0\n')
+    expect(run(cmd, d)).toBe(LOADED_REASON)
+  })
+
+  // claude-factory-qn8a.37.8: git resolves the -c value against the top dir, not cwd
+  test('reads a -c core.hooksPath dir against the top dir from a subdir', () => {
+    const d = repo()
+    put(d, 'hk/pre-commit', bad())
+    mkdirSync(join(d, 'sub'))
+    expect(run('git -c core.hooksPath=hk commit -m x', d, join(d, 'sub'))).toBe(HOME_REASON)
+  })
+
+  // claude-factory-qn8a.37.10: a core.hooksPath word outside -c and --config-env gives no deny
+  test('allows a read that only names core.hooksPath', () => {
+    const d = repo()
+    expect(run('grep -n core.hooksPath README.md', d)).not.toBe(LOADED_REASON)
+  })
+
+  // claude-factory-qn8a.37.9: the joined config text is stripped like the command
+  test.each([
+    ['Makefile', 'fmt:\n\tnpx pretti""er --write .\n', 'make fmt'],
+    ['package.json', '{"scripts":{"fmt":"pret\\\\tier --write ."}}', 'npm run fmt'],
+  ])('denies a split bin name in %s', (f, text, cmd) => {
+    const d = repo()
+    put(d, f, text)
+    put(d, 'node_modules/.bin/prettier', bad())
+    expect(run(cmd, d)).toBe(HOME_REASON)
+  })
+
   test('allows -c core.hooksPath with a clean hooks dir', () => {
     const d = repo()
     put(d, 'hk/pre-commit', 'exit 0\n')

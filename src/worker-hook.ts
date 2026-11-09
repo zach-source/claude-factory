@@ -10579,7 +10579,9 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir or --prefix
  * names; a package name that selects a program; a bin that nothing names; a path relative to a bin;
  * a script that a hook calls; a file over 64 KiB; a file name outside CONFIG_NAME; a name that an
- * escape other than a quote or a backslash hides (for example $'..' or a variable).
+ * escape other than a quote or a backslash hides (for example $'..' or a variable). A -c or
+ * --config-env core.hooksPath word with a quote, a backslash or a space in it fails closed. A
+ * core.hooksPath word outside a -c or --config-env word gives no deny (for example grep).
  * Upgrade path: a real shell parser, or a per-file config lookup for prettier.
  */
 export function loadedTexts(command: string, cwd: string): LoadedText[] | undefined {
@@ -10617,14 +10619,21 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
       return []
     }
   }
-  // claude-factory-qn8a.37.4: a -c core.hooksPath=DIR word names one more hooks dir. The key is
-  // case-insensitive. A --config-env word, or a key with no value, names no dir: fail closed.
+  // claude-factory-qn8a.37.4, .7, .8, .10: a -c core.hooksPath=DIR word names one more hooks dir.
+  // Git resolves DIR against the top dir. The key is case-insensitive. Only a -c or --config-env
+  // word counts. A --config-env word, a key with no value, and a key or value that a quote, a
+  // backslash or a space splits name no dir: fail closed.
   const hooksDirs = hooks ? [hooks] : []
   const flat = command.replace(/\\\n/g, '')
-  if (/--config-env[=\s]+['"]?core\.hookspath/i.test(flat)) return undefined
-  for (const m of flat.matchAll(/core\.hookspath(=?)([^\s'"]*)/gi)) {
-    if (!m[1] || !m[2]) return undefined
-    hooksDirs.push(resolvePath(cwd, m[2]))
+  const bare = flat.replace(/['"\\]/g, '')
+  const pre = '(?:^|\\s)(?:-c\\s*|--config-env[=\\s]+)'
+  if (/(?:^|\s)--config-env[=\s]+core\.hookspath/i.test(bare)) return undefined
+  const keyRaw = [...flat.matchAll(new RegExp(pre + '(["\']?)core\\.hookspath(=?)(\\S*)', 'gi'))]
+  const keyBare = [...bare.matchAll(new RegExp(pre + 'core\\.hookspath', 'gi'))]
+  if (keyRaw.length !== keyBare.length) return undefined
+  for (const m of keyRaw) {
+    if (m[1] || !m[2] || !m[3] || /['"\\]/.test(m[3])) return undefined
+    hooksDirs.push(resolvePath(top, m[3]))
   }
   for (const hd of hooksDirs)
     for (const n of names(hd)) {
@@ -10642,7 +10651,8 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
       if (text !== undefined) out.push({ text, dir: d })
     }
   // claude-factory-qn8a.37.5: the stripped copy matches a bin name that quotes or a backslash split.
-  const hay = [command, command.replace(/['"\\]/g, ''), ...out.map(o => o.text)].join('\n')
+  const texts = [command, ...out.map(o => o.text)]
+  const hay = [...texts, ...texts.map(t => t.replace(/['"\\]/g, ''))].join('\n')
   for (const d of dirs)
     for (const b of names(joinPath(d, 'node_modules', '.bin'))) {
       if (!new RegExp('(?<![\\w.-])' + escapeRe(b) + '(?![\\w-])').test(hay)) continue
