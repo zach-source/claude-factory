@@ -432,7 +432,22 @@ const frame = (id: number, b: unknown) => `id: ${id}\ndata: ${JSON.stringify(b)}
 
 describe('events query grammar', () => {
   const ok = ['', '?after=0', '?after=0001', '?after=9007199254740993']
-  const bad = ['?after=', '?after=abc', '?after=-1', '?after=+1', '?after=1x', '?after=1.0', '?after=1e2', '?after=%31', '?after=1&after=2', '?x=1', '?after', '?after=1&', '?after=1 2', '?after=\u0661']
+  const bad = [
+    '?after=',
+    '?after=abc',
+    '?after=-1',
+    '?after=+1',
+    '?after=1x',
+    '?after=1.0',
+    '?after=1e2',
+    '?after=%31',
+    '?after=1&after=2',
+    '?x=1',
+    '?after',
+    '?after=1&',
+    '?after=1 2',
+    '?after=\u0661',
+  ]
   for (const q of ok)
     test(`allows ${q || 'no query'}`, async () => {
       const t = setup()

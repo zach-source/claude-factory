@@ -181,6 +181,7 @@ export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), t
 const KEY = /^[A-Za-z0-9-]{8,128}$/
 const MAX_BODY = 128 * 1024
 const DAY = 24 * 3600_000
+const EVENTS_KEEP = 256
 
 const reply = (status: number, body: string, json = true) =>
   new Response(body, { status, headers: { 'content-type': json ? 'application/json' : 'text/plain' } })
@@ -253,6 +254,51 @@ export function clientHandler(o: ClientOpts) {
   const storeFile = join(o.home, 'client-idempotency.json')
   const auditFile = join(o.home, 'client-actions.jsonl')
   let chain: Promise<unknown> = Promise.resolve()
+  // The ring of board changes. ponytail: volatile, 256 events, the ids restart with the process. Upgrade path: a durable log.
+  let lastJson = 'null'
+  let lastId = 0n
+  const ring: { id: bigint; frame: string }[] = []
+  type Sub = { send: (id: bigint, frame: string) => void }
+  const subs = new Set<Sub>()
+  const publish = (board: unknown) => {
+    const json = JSON.stringify(board ?? null)
+    if (json === lastJson) return
+    lastJson = json
+    const ev = { id: ++lastId, frame: `id: ${lastId}\ndata: ${json}\n\n` }
+    ring.push(ev)
+    if (ring.length > EVENTS_KEEP) ring.shift()
+    for (const sub of [...subs]) sub.send(ev.id, ev.frame)
+  }
+  const events = (after: bigint): Response => {
+    const enc = new TextEncoder()
+    let sub: Sub
+    let seen = after
+    const body = new ReadableStream<Uint8Array>(
+      {
+        start(c) {
+          // a slow client that leaves more than 512 frames unread is closed, never skipped
+          sub = {
+            send(id, frame) {
+              if (id <= seen) return
+              if ((c.desiredSize ?? 0) <= 0) {
+                subs.delete(sub)
+                return c.close()
+              }
+              seen = id
+              c.enqueue(enc.encode(frame))
+            },
+          }
+          for (const ev of ring) sub.send(ev.id, ev.frame)
+          subs.add(sub)
+        },
+        cancel: () => void subs.delete(sub),
+      },
+      { highWaterMark: 2 * EVENTS_KEEP },
+    )
+    return new Response(body, {
+      headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' },
+    })
+  }
   const call = async (op: Op, input: Input): Promise<Response> => {
     // a new env for each call, as cliRunner gave a new env to each subprocess
     const ctx: Ctx = {
@@ -275,11 +321,15 @@ export function clientHandler(o: ClientOpts) {
     }
   }
 
-  return async (req: Request, ip: string): Promise<Response> => {
+  const handle = async (req: Request, ip: string): Promise<Response> => {
     // A worker token must not open this port, whatever the value or the route (FR-010).
     if (req.headers.has('authorization'))
       return refuse(403, 'worker tokens are not accepted on the client port')
     const url = new URL(req.url)
+    if (req.method === 'GET' && url.pathname === '/v1/events') {
+      const a = /^(?:|\?after=([0-9]+))$/.exec(url.search)
+      return a ? events(BigInt(a[1] ?? 0)) : refuse(400, 'the query must be empty or after=<digits>')
+    }
     const m = match(req.method, url.pathname)
     if (!m) return refuse(404, 'no such route')
     const { op, params } = m
@@ -358,6 +408,12 @@ export function clientHandler(o: ClientOpts) {
     chain = next.catch(() => {})
     return next.catch(e => refuse(500, `internal error: ${String((e as Error)?.message ?? e).slice(0, 200)}`))
   }
+  return Object.assign(handle, {
+    /** record a board; an equal board adds no event */
+    publish,
+    /** the number of open event streams */
+    subscribers: () => subs.size,
+  })
 }
 
 const HEAD_MAX = 16 * 1024
@@ -394,6 +450,25 @@ function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise
         ...(head!.method !== 'GET' && head!.method !== 'HEAD' && { body }),
       })
       const res = await handle(req, ip)
+      if (res.headers.get('content-type')?.startsWith('text/event-stream') && res.body) {
+        // close-delimited stream: no content-length, and the socket drain paces the reader
+        sock.write(
+          `HTTP/1.1 200 OK\r\ncontent-type: ${res.headers.get('content-type')}\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n`,
+        )
+        const rd = res.body.getReader()
+        sock.on('close', () => void rd.cancel().catch(() => {}))
+        try {
+          for (;;) {
+            const { value, done } = await rd.read()
+            if (done || sock.destroyed) break
+            if (!sock.write(value))
+              await new Promise<void>(r => (sock.once('drain', r), sock.once('close', r)))
+          }
+        } finally {
+          sock.end()
+        }
+        return
+      }
       const out = Buffer.from(await res.arrayBuffer())
       sock.write(
         `HTTP/1.1 ${res.status} ${STATUS_CODES[res.status] ?? 'Status'}\r\ncontent-type: ${res.headers.get('content-type') ?? 'text/plain'}\r\ncontent-length: ${out.length}\r\nconnection: close\r\n\r\n`,

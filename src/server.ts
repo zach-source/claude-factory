@@ -77,6 +77,8 @@ export type ServeOpts = {
   everyMs: number
   leaseMs: number
   tick: () => unknown
+  /** called with each accepted tick result (not a busy one), before the next tick */
+  onBoard?: (board: unknown) => void
   holder?: string
   log?: (line: string) => void
   /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address */
@@ -132,7 +134,10 @@ export function serve(o: ServeOpts) {
     try {
       const r = await o.tick()
       // a tick that found the lock busy has no rows: keep the last full result
-      if (!(r as { busy?: boolean } | undefined)?.busy) last = r ?? null
+      if (!(r as { busy?: boolean } | undefined)?.busy) {
+        last = r ?? null
+        o.onBoard?.(last)
+      }
       h.tickOk = true
     } catch (e) {
       h.tickOk = false
@@ -246,14 +251,23 @@ export function main(args: string[], home: string, tick: () => unknown, port: Po
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
   const log = (l: string) => console.log(l)
+  const handle = clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log })
   const client = f.client && {
     port: f.client.port,
     cert: need(f.client.cert),
     key: need(f.client.key),
     ca: need(f.client.ca),
-    handle: clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log }),
+    handle,
   }
-  s = serve({ home, port: f.port, everyMs: f.everyMs, leaseMs: f.leaseMs, tick, client })
+  s = serve({
+    home,
+    port: f.port,
+    everyMs: f.everyMs,
+    leaseMs: f.leaseMs,
+    tick,
+    onBoard: handle.publish,
+    client,
+  })
   console.log(
     `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''} as ${s.holder}`,
   )
