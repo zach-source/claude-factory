@@ -24,6 +24,8 @@ export type Config = {
   kubectl: string
   /** the token swap command. It is null when CLAUDE_TOKEN_ITEM is unset, and the broker does not serve POST /token/best */
   swap: string[] | null
+  /** vault keys that are not built in, each with the hosts it can go to (FACTORY_BROKER_KEY_HOSTS) */
+  keyHosts: Record<string, string[]>
 }
 
 async function spawn(argv: string[], stdin?: string, op = false) {
@@ -44,6 +46,47 @@ async function spawn(argv: string[], stdin?: string, op = false) {
   return { code, out, err }
 }
 
+const GITHUB_HOSTS = ['api.github.com', 'uploads.github.com', 'github.com']
+const CHATGPT = ['chatgpt.com']
+/** the hosts of the vault keys that the factory itself puts in a worker policy (a key that starts with GITHUB has GITHUB_HOSTS) */
+const BUILTIN_KEY_HOSTS: Record<string, readonly string[]> = {
+  ANTHROPIC: ['api.anthropic.com'],
+  XAI_API_KEY: ['api.x.ai'],
+  CURSOR_API_KEY: ['api2.cursor.sh'],
+  CODEX_CHATGPT: CHATGPT,
+  CODEX_CHATGPT_ACCOUNT: CHATGPT,
+}
+/** a lower-case host name: no wildcard, no port, no trailing dot (src/ax.ts HOST without /i; broker.ts imports nothing) */
+const KEY_HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
+
+/**
+ * FACTORY_BROKER_KEY_HOSTS: a JSON object of vault key name to its host list, for the keys that are not built in
+ * (GITLAB, DOLT_BASIC, a rig's own keys). It comes from the broker Deployment, which the manager VM cannot change.
+ * Unset or empty gives {}. A bad value throws, so a broker with a wrong map does not start.
+ */
+export function keyHostsFrom(raw: string | undefined): Record<string, string[]> {
+  if (!raw) return {}
+  const bad = (why: string): never => {
+    throw new Error(`FACTORY_BROKER_KEY_HOSTS ${why}`)
+  }
+  let v: unknown
+  try {
+    v = JSON.parse(raw)
+  } catch {
+    return bad('is not JSON')
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return bad('is not a JSON object')
+  for (const [k, hosts] of Object.entries(v)) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(k) || k.startsWith('GITHUB') || Object.hasOwn(BUILTIN_KEY_HOSTS, k))
+      bad(
+        `names ${JSON.stringify(k)}, which is not a key that can be set (upper case, not GITHUB*, not built in)`,
+      )
+    if (!Array.isArray(hosts) || !hosts.length || hosts.some(h => typeof h !== 'string' || !KEY_HOST.test(h)))
+      bad(`has hosts for ${k} that are not a non-empty list of lower-case host names`)
+  }
+  return v as Record<string, string[]>
+}
+
 export const configFrom = (env: Record<string, string | undefined>, run: Run = spawn): Config => {
   const kubectl = env.FACTORY_KUBECTL ?? 'kubectl'
   return {
@@ -51,6 +94,7 @@ export const configFrom = (env: Record<string, string | undefined>, run: Run = s
     manager: env.FACTORY_AX_MANAGER ?? 'f-manager',
     run,
     kubectl,
+    keyHosts: keyHostsFrom(env.FACTORY_BROKER_KEY_HOSTS),
     swap: env.CLAUDE_TOKEN_ITEM ? [env.FACTORY_BROKER_TOKEN_CMD ?? 'claude-token', 'best'] : null,
     ate: [
       kubectl,
@@ -241,6 +285,72 @@ export function workerPolicyRefusal(policy: unknown): string | null {
   return walk(policy, 0)
 }
 
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * The reason the broker refuses a worker policy because of where a vault key goes, or null. Call it after
+ * workerPolicyRefusal. A vault key can be only in rules[i].https.effects.replaceHeaders[j].credentialUri, in a rule
+ * with this closed shape, and every hostname of that rule must be a host the key is pinned to (exact text, no case
+ * fold, no wildcard). A key that starts with GITHUB, and the built-in keys, have fixed hosts. Any other key has the
+ * hosts of keyHosts (FACTORY_BROKER_KEY_HOSTS), else none. A credentialUri or effects field anywhere else is refused.
+ */
+export function keyHostRefusal(policy: unknown, keyHosts: Record<string, string[]>): string | null {
+  const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
+  const vetted = new Set<unknown>()
+  const rules = isObj(policy) ? policy.rules : null
+  for (const r of Array.isArray(rules) ? rules : []) {
+    const h = isObj(r) ? r.https : null
+    if (!isObj(h) || !Object.hasOwn(h, 'effects')) continue
+    if (!same(Object.keys(r as object), ['https'])) return 'has a keyed rule that is not one https object'
+    if (Object.keys(h).some(k => !['hostnames', 'ports', 'pathPrefixes', 'paths', 'effects'].includes(k)))
+      return 'has a keyed rule with a field other than hostnames, ports, pathPrefixes, paths and effects'
+    const hosts = h.hostnames
+    if (!Array.isArray(hosts) || !hosts.length || hosts.some(x => typeof x !== 'string'))
+      return 'has a keyed rule whose hostnames are not a non-empty list of strings'
+    const e = h.effects
+    if (!isObj(e) || !same(Object.keys(e), ['replaceHeaders']) || !Array.isArray(e.replaceHeaders))
+      return 'has effects that are not one replaceHeaders list'
+    vetted.add(h)
+    for (const entry of e.replaceHeaders) {
+      if (
+        !isObj(entry) ||
+        Object.keys(entry).some(k => !['header', 'prefix', 'credentialUri'].includes(k)) ||
+        typeof entry.credentialUri !== 'string' ||
+        !CREDENTIAL_URI.test(entry.credentialUri)
+      )
+        return 'has a replaceHeaders entry with a field other than header, prefix and credentialUri'
+      vetted.add(entry)
+      const key = entry.credentialUri.slice(entry.credentialUri.lastIndexOf('/') + 1)
+      const pinned = key.startsWith('GITHUB')
+        ? GITHUB_HOSTS
+        : Object.hasOwn(BUILTIN_KEY_HOSTS, key)
+          ? BUILTIN_KEY_HOSTS[key]!
+          : Object.hasOwn(keyHosts, key)
+            ? keyHosts[key]!
+            : []
+      const stray = (hosts as string[]).find(x => !pinned.includes(x))
+      if (stray !== undefined)
+        return `sends vault key ${key} to ${stray}, a host that the key is not pinned to`
+    }
+  }
+  const walk = (v: unknown, depth: number): string | null => {
+    if (depth > 32) return 'is nested too deep'
+    if (!v || typeof v !== 'object') return null
+    if (
+      !Array.isArray(v) &&
+      !vetted.has(v) &&
+      Object.keys(v).some(k => ['credentialuri', 'effects'].includes(norm(k)))
+    )
+      return 'has a credentialUri or effects outside rules[i].https.effects.replaceHeaders'
+    for (const x of Array.isArray(v) ? v : Object.values(v)) {
+      const bad = walk(x, depth + 1)
+      if (bad) return bad
+    }
+    return null
+  }
+  return walk(policy, 0)
+}
+
 /** a policy that is not a JSON object with a rules array is not made */
 function policyText(raw: string) {
   try {
@@ -318,8 +428,13 @@ export async function handle(req: Request, c: Config): Promise<Response> {
   if (raw === null) return text(413, 'body too large\n')
   const policy = policyText(raw)
   if (!policy) return text(400, 'body is not an EgressPolicy (a JSON object with rules)\n')
-  const why = workerPolicyRefusal(JSON.parse(policy))
-  if (why) return text(400, `policy refused: it ${why}\n`)
+  const parsed = JSON.parse(policy)
+  const why = workerPolicyRefusal(parsed) ?? keyHostRefusal(parsed, c.keyHosts)
+  if (why) {
+    // JSON.stringify escapes a newline in an attacker's host, and the cap bounds the line: one refusal, one log line
+    console.error(`policy refused for ${r.atespace}/${r.actor}: ${JSON.stringify(why).slice(0, 300)}`)
+    return text(400, `policy refused: it ${why}\n`)
+  }
   // update a stored policy in place, so the actor always has one; with no stored policy, create one
   const got = await c.run([...c.ate, 'get', 'egress-policy', ...target, '-o', 'json'])
   const update = got.code === 0 ? updateBody(policy, got.out) : undefined

@@ -137,6 +137,7 @@ import {
   CODEX_PIN,
   CODEX_UNGUARDED,
   CURSOR_FLAGS,
+  type Harness,
   GROK_FLAGS,
   claudeCommand,
   codexFeaturesBad,
@@ -155,7 +156,7 @@ import {
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
 import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
-import { INSTALL_VERB, META_WRITE, bdWrite, gatedCommand } from '../mod/hooks/view'
+import { check } from './core/guards'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -2127,8 +2128,22 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   return address
 }
 
+/** launch() refused. The factory opens no tab, and a retry in the next tick would refuse again */
+class LaunchRefused extends Error {}
+/** the FAIL for a refused launch, which would refuse again in the next tick; null for any other error */
+export function launchRefusal(err: unknown, seq: number) {
+  return err instanceof LaunchRefused
+    ? ({ type: 'FAIL', seq, reason: `launch refused: ${err.message}` } as const)
+    : null
+}
+const refuse = (msg: string): never => {
+  throw new LaunchRefused(msg)
+}
+
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
-function launchPane({ run, def, node, c, session, file }: Job) {
+export function launchPane({ run, def, node, c, session, file }: Job) {
+  // build the command first: a refused launch (a worker the person key must not reach) opens no tab
+  const cmd = launch(run, def, node, c, file, session)
   const tab = () =>
     herdr(
       ...['tab', 'create', '--workspace', run.ws, '--cwd', run.worktree],
@@ -2157,7 +2172,7 @@ function launchPane({ run, def, node, c, session, file }: Job) {
     created = tab()
   }
   const pane: string = created.root_pane.pane_id
-  typeLaunch(pane, launch(run, def, node, c, file, session))
+  typeLaunch(pane, cmd)
   return pane
 }
 
@@ -2693,19 +2708,20 @@ export function splitPick(runId: string, shareName: string, share: string | unde
 }
 const GATE_KEEP_MS = 6 * 3_600_000
 /**
- * May this station start `name` (cursor or grok)? The first look decides and <run>/<name>-gate.json keeps the answer for 6 hours,
- * so a worker in flight keeps its agent when the meter moves. A "no" logs one line.
+ * the first answer of `verdict` for this station, kept in <run>/<name>-gate.json for 6 hours, so a worker in flight keeps
+ * its agent when a meter or a limit moves. A `why` logs one line. With `inRun`, nothing is saved unless the run dir exists.
  */
-function stickyGate(
+function sticky<T>(
   name: string,
   runId: string,
   node: string,
   now: number,
   home: string,
-  verdict: () => { use: boolean; why: string },
-) {
+  verdict: () => { use: T; why?: string },
+  inRun = false,
+): T {
   const file = join(home, 'runs', runId, `${name}-gate.json`)
-  let memo: Record<string, { at: number; use: boolean }> = {}
+  let memo: Record<string, { at: number; use: T }> = {}
   try {
     memo = readJson(file)
   } catch {} // none yet
@@ -2713,11 +2729,32 @@ function stickyGate(
   if (kept && now - kept.at < GATE_KEEP_MS) return kept.use
   const v = verdict()
   try {
-    mkdirSync(dirname(file), { recursive: true })
-    writeJson(file, { ...memo, [node]: { at: now, use: v.use } })
+    if (!inRun) mkdirSync(dirname(file), { recursive: true })
+    if (existsSync(dirname(file))) writeJson(file, { ...memo, [node]: { at: now, use: v.use } })
   } catch {} // an unsaved answer is asked again
-  if (!v.use) console.error(`${name} gate: ${runId} ${node} uses its other agent: ${v.why}`)
+  if (v.why) console.error(`${name} gate: ${runId} ${node} ${v.why}`)
   return v.use
+}
+/** May this station start `name` (cursor or grok)? A "no" logs one line. */
+const stickyGate = (
+  name: string,
+  runId: string,
+  node: string,
+  now: number,
+  home: string,
+  verdict: () => { use: boolean; why: string },
+) =>
+  sticky(name, runId, node, now, home, () => {
+    const v = verdict()
+    return { use: v.use, ...(!v.use && { why: `uses its other agent: ${v.why}` }) }
+  })
+/** forgets a station's harness pick, so its next launch asks the order again (after its usage limit hit) */
+function forgetPick(runId: string, node: string, home = HOME) {
+  const file = join(home, 'runs', runId, 'order-gate.json')
+  try {
+    const { [node]: _, ...rest } = readJson<Record<string, unknown>>(file)
+    writeJson(file, rest)
+  } catch {} // no pick saved
 }
 /** cursor starts only with a known weekly pool reading under the cap (setting cursor.cap) */
 export const cursorAllowed = (
@@ -2732,35 +2769,112 @@ export const grokAllowed = (runId: string, node: string, env = process.env, now 
   grokBudget(env) === undefined ||
   stickyGate('grok', runId, node, now, home, () => grokVerdict(grokSpent(home, now), grokBudget(env)))
 
+/** the harnesses a station moves through, from setting agents.order (FACTORY_AGENTS_ORDER) */
+export const agentsOrder = (env = process.env) =>
+  (env.FACTORY_AGENTS_ORDER?.trim() || 'claude,codex,grok,pi') // the default of settings.ts agents.order
+    .split(',')
+    .map(s => s.trim())
+    .filter((h): h is Harness => ['claude', 'codex', 'grok', 'pi', 'cursor'].includes(h))
+// a harness's launcher when the station names no command of its own for it; a factory param of the same name wins
+const LAUNCHERS: Record<Harness, string> = {
+  claude: `${claudeCommand()} --dangerously-skip-permissions`,
+  codex: 'codex --dangerously-bypass-approvals-and-sandbox',
+  grok: 'grok --permission-mode bypassPermissions --trust',
+  pi: 'pi',
+  cursor: 'cursor-agent --force --trust',
+}
+/** <home>/harness-limit-<runner>.json: for each harness, when its usage limit on that runner lifts, in ms */
+const harnessLimitFile = (runner: string, home = HOME) => join(home, `harness-limit-${runner}.json`)
+/** is this harness at its usage limit on this runner? */
+export function harnessLimited(runner: string, h: Harness, now = Date.now(), home = HOME) {
+  try {
+    const until = readJson<Record<string, unknown>>(harnessLimitFile(runner, home))[h]
+    return typeof until === 'number' && until > now && until <= now + LIMIT_RESET_MAX_MS
+  } catch {
+    return false
+  }
+}
+export function recordHarnessLimit(runner: string, h: Harness, until: number, home = HOME) {
+  const file = harnessLimitFile(runner, home)
+  let m: Record<string, number> = {}
+  try {
+    m = readJson(file)
+  } catch {} // none yet
+  writeJson(file, { ...m, [h]: until })
+}
+
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
  * factory's. The split applies on the ax runner only with FACTORY_AX_CODEX=1 (axCodex), and elsewhere only when
- * the `pin` file exists (claude-factory-fzm3). A cursor or grok pick that `allowed` or `grokOk` refuses becomes the station's own agent.
+ * the `pin` file exists (claude-factory-fzm3). A rig's agent pins its harness: a cursor or grok pick that `allowed`
+ * or `grokOk` refuses becomes the station's own agent. Else a pick that its gate refuses, or that is at its usage
+ * limit, moves to the first harness of agents.order that its gate allows and that is not at its limit
+ * (claude-factory-gf16e). The move is kept in <run>/order-gate.json and logs one line.
  */
 export const pickAgent = (
   runId: string,
   def: Factory,
   node: string,
-  rig: Pick<Rig, 'agent' | 'params'> | undefined,
+  rig: Pick<Rig, 'agent' | 'params' | 'mcp'> | undefined,
   runner: string,
   env = process.env,
   pin = CODEX_PIN,
   allowed = cursorAllowed,
   grokOk = grokAllowed,
+  limited = (h: Harness) => harnessLimited(runner, h),
+  now = Date.now(),
+  home = HOME,
 ) => {
   const params = paramsOf(def, rig, env)
   const split = def.nodes[node]!.split
   // a host without the unified_exec pin cannot launch codex (the probe refuses), so the split keeps Claude there
-  const picked =
-    split &&
-    (runner === 'ax' ? axCodex(env) : existsSync(pin)) &&
-    splitPick(runId, split.share, params[split.share])
-  const own = def.nodes[node]!.agent ?? def.agent ?? AGENT
+  const codexOk = runner === 'ax' ? axCodex(env) : existsSync(pin)
+  const picked = split && codexOk && splitPick(runId, split.share, params[split.share])
+  const own = fill(def.nodes[node]!.agent ?? def.agent ?? AGENT, params)
   const agent = fill(rig?.agent ?? (picked ? split.agent : own), params)
-  const h = harnessOf(agent)
-  return (h === 'cursor' && !allowed(runId, node, env)) || (h === 'grok' && !grokOk(runId, node, env))
-    ? fill(own, params)
-    : agent
+  const h0 = harnessOf(agent)
+  if (rig?.agent || !h0)
+    return (h0 === 'cursor' && !allowed(runId, node, env)) || (h0 === 'grok' && !grokOk(runId, node, env))
+      ? own
+      : agent
+  // a move target needs more than a pick: the codex pin on a host, and a deny hook (pi has none yet: claude-factory-gf16e.5)
+  const gateOk = (h: Harness, target = false) =>
+    h === 'cursor'
+      ? (runner !== 'ax' || axCursor(env)) && allowed(runId, node, env)
+      : h === 'grok'
+        ? (runner !== 'ax' || axGrok(env)) && grokOk(runId, node, env)
+        : h === 'codex'
+          ? target
+            ? codexOk
+            : runner !== 'ax' || axCodex(env)
+          : h !== 'pi' || !target
+  // pi, cursor and grok refuse a rig's MCP servers (harness.ts command)
+  const usable = (h: Harness, ok: boolean) =>
+    ok && (!rig?.mcp || h === 'claude' || h === 'codex') && !limited(h)
+  const h = sticky(
+    'order',
+    runId,
+    node,
+    now,
+    home,
+    () => {
+      const ok0 = gateOk(h0)
+      if (usable(h0, ok0)) return { use: h0 }
+      const next = agentsOrder(env).find(x => x !== h0 && usable(x, gateOk(x, true)))
+      // none left: the station's own agent, which waits out its limit as before
+      if (!next) return { use: ok0 ? h0 : (harnessOf(own) ?? h0) }
+      return { use: next, why: `moves from ${h0} to ${next}: ${ok0 ? 'usage limit' : 'gate refused'}` }
+    },
+    true,
+  )
+  const split2 = split && fill(split.agent, params)
+  return h === h0
+    ? agent
+    : harnessOf(own) === h
+      ? own
+      : split2 && harnessOf(split2) === h
+        ? split2
+        : fill(params[h] ?? LAUNCHERS[h], params)
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
   pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
@@ -3498,7 +3612,16 @@ function codexGuardOff(agent: string): string | undefined {
  * A pi worker's rules and skills: the worker rules (as a Claude worker gets them) appended to pi's system prompt,
  * and the person's worker plugins' skills by --skill (constitution I). It commits as the factory home says.
  */
-export function piWorker(home = HOME, plugins = userPluginDirs()) {
+export function piWorker(
+  home = HOME,
+  plugins = userPluginDirs(),
+  key = join(homedir(), '.config', 'factory', 'person.key'),
+) {
+  // ponytail: pi has no deny hook, so it could read the person key. When claude-factory-qn8a.84 lands, drop this refusal.
+  if (existsSync(key))
+    refuse(
+      `a pi worker has no deny hook (claude-factory-qn8a.84), so it could read the person key ${key}: use a claude or codex worker`,
+    )
   const id = commitIdentity(home)
   const rules = join(home, 'worker-system.md')
   writeFileSync(rules, readFileSync(join(ROOT, 'src', 'worker-system.md'), 'utf8') + id.rule)
@@ -3532,14 +3655,14 @@ export function codexWorker(
   } = {},
 ): { env: Record<string, string>; extra: string } {
   const hookFile = o.hookFile ?? join(ROOT, 'src', 'worker-hook.ts')
-  if (!existsSync(hookFile)) fail(`a codex worker needs the deny hook, and ${hookFile} is missing`)
+  if (!existsSync(hookFile)) refuse(`a codex worker needs the deny hook, and ${hookFile} is missing`)
   const off = codexGuardOff(agent)
-  if (off) fail(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
+  if (off) refuse(`a codex worker keeps the deny hook on: "${off}" in the agent command turns it off`)
   // the home trusts the worktree so codex shows no folder prompt; a .codex entry there would load unguarded config,
   // unless it is the one `bd init` writes (claude-factory-8cu6)
   for (let d = resolve(run.worktree); ; d = dirname(d)) {
     if (existsSync(join(d, '.codex')) && !beadsOnlyCodexDir(join(d, '.codex')))
-      fail(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
+      refuse(`a codex worker keeps the deny hook on: ${join(d, '.codex')} would add project config`)
     if (existsSync(join(d, '.git')) || dirname(d) === d) break
   }
   const user = o.userHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
@@ -3598,7 +3721,7 @@ export function codexWorker(
     : probe.exitCode !== 0
       ? 'codex features list failed'
       : codexFeaturesBad(probe.stdout.toString())
-  if (bad) fail(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
+  if (bad) refuse(`a codex worker keeps the deny hook on: the feature check failed (${bad})`)
   return {
     env: {
       CODEX_HOME: dir,
@@ -3621,10 +3744,10 @@ export function cursorWorker(
   home = HOME,
   hookFile = join(ROOT, 'src', 'worker-hook.ts'),
 ) {
-  if (!existsSync(hookFile)) fail(`a cursor worker needs the deny hook, and ${hookFile} is missing`)
+  if (!existsSync(hookFile)) refuse(`a cursor worker needs the deny hook, and ${hookFile} is missing`)
   const file = join(run.worktree, '.cursor', 'hooks.json')
   if (existsSync(file) && !readFileSync(file, 'utf8').includes(hookFile))
-    fail(`a cursor worker keeps the deny hook on: ${file} is not the factory's and would add hooks`)
+    refuse(`a cursor worker keeps the deny hook on: ${file} is not the factory's and would add hooks`)
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(
     file,
@@ -3667,10 +3790,10 @@ export function grokWorker(
   home = HOME,
   hookFile = join(ROOT, 'src', 'worker-hook.ts'),
 ) {
-  if (!existsSync(hookFile)) fail(`a grok worker needs the deny hook, and ${hookFile} is missing`)
+  if (!existsSync(hookFile)) refuse(`a grok worker needs the deny hook, and ${hookFile} is missing`)
   const dir = join(run.worktree, '.grok', 'hooks')
   if (existsSync(dir) && readdirSync(dir).some(f => f !== 'factory.json'))
-    fail(`a grok worker keeps the deny hook on: ${dir} holds hooks the factory did not write`)
+    refuse(`a grok worker keeps the deny hook on: ${dir} holds hooks the factory did not write`)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'factory.json'),
@@ -4260,6 +4383,18 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
         ? hit.resetsAt || hit.at + 3_600_000
         : runTokenSwap(hit, now, runner.name, send, node, isCodex ? 'codex' : 'claude')
     if (until > now) {
+      // a long wait: the next harness of agents.order takes the station now, if one is free (claude-factory-gf16e)
+      if (agentHarness && !refused && (runner.local || until - now > TOKEN_SWAP_WAIT_MS)) {
+        recordHarnessLimit(runner.name, agentHarness, until)
+        forgetPick(run.id, node)
+        const next = harnessOf(agentOfNode(run, def, node))
+        if (next && next !== agentHarness) {
+          if (runner.local) runner.close(c.pane)
+          const reason = `${pool} usage limit (${hit.kind}) until ${new Date(until).toISOString()}: ${node} moves to ${next} (agents.order)`
+          send({ type: 'FAIL', seq: c.seq, reason, hold: now, holdMin: 0 })
+          return 'usage limit'
+        }
+      }
       // a wait past the vault refresh would freeze this run for days: park the station until the reset (dhof hold)
       if (!runner.local && until - now > TOKEN_SWAP_WAIT_MS) {
         const reason = `${pool} ${refused ? 'login refused' : 'usage limit'} (${hit.kind}) until ${new Date(until).toISOString()}`
@@ -4648,6 +4783,9 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     else agent = agentOf(def, actor.getSnapshot().value, ctx())
   } catch (err) {
     error = (err as Error).message
+    // a refused launch would refuse again in the next tick: end the attempt (fresh, resume, swap and halt spawns)
+    const refusal = launchRefusal(err, ctx().seq)
+    if (refusal) send(refusal)
   }
   keepTickError(run.id, error)
 
@@ -8811,23 +8949,6 @@ const liveBeadIdSet = () =>
     }),
   )
 
-/** Checks `plan.json`'s shape before any caller reads `rigs` or `proposals`.
- * A hand-edited or truncated file can miss one of these fields.
- * Without this check, `orderByPlan` or `planShowText` would then throw (claude-factory-dun.17d).
- * `plan set` itself always writes the full shape. */
-function isValidPlanShape(p: unknown): p is plan.Plan {
-  if (!p || typeof p !== 'object') return false
-  const o = p as Record<string, unknown>
-  return (
-    typeof o.at === 'number' &&
-    !!o.rigs &&
-    typeof o.rigs === 'object' &&
-    !Array.isArray(o.rigs) &&
-    Object.values(o.rigs as Record<string, unknown>).every(plan.isValidRigPlan) &&
-    Array.isArray(o.proposals)
-  )
-}
-
 /** the pm's plan, read once per `dispatch()` pass: missing, corrupt, malshaped or stale
  * (`!plan.isFresh`) all read as no plan, so dispatch falls back to today's order
  * (claude-factory-dun.3, .17d). */
@@ -8835,7 +8956,7 @@ function freshPlanOrUndefined(): plan.Plan | undefined {
   if (!existsSync(planFile())) return undefined
   try {
     const p: unknown = JSON.parse(readFileSync(planFile(), 'utf8'))
-    if (!isValidPlanShape(p)) return undefined
+    if (!plan.isValidPlanShape(p)) return undefined
     return plan.isFresh(p, Date.now()) ? p : undefined
   } catch {
     return undefined
@@ -9792,18 +9913,8 @@ async function patrolGuard() {
     process.exitCode = 2 // Claude Code reads exit 2 as a deny and shows stderr to the model
   }
   if (typeof command !== 'string') return deny('the hook input has no Bash command')
-  const joined = command.replace(/\\\n/g, '')
-  const gated = gatedCommand(command)
-  if (gated) return deny(`${gated.deny} A patrol never decides this: leave it for the person.`)
-  if (INSTALL_VERB.test(joined))
-    return deny(
-      'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
-    )
-  if (META_WRITE.test(joined)) return deny('a subagent never writes bead metadata')
-  if (bdWrite(joined))
-    return deny(
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first',
-    )
+  const verdict = check(command, 'subagent')
+  if (verdict.decision === 'deny') return deny(verdict.reason)
 }
 
 /**
@@ -9999,7 +10110,7 @@ function planShowText(): string {
   } catch (err) {
     return `plan.json: ${(err as Error).message}`
   }
-  if (!isValidPlanShape(raw)) return 'plan.json: missing or malformed rigs/proposals'
+  if (!plan.isValidPlanShape(raw)) return 'plan.json: missing or malformed rigs/proposals'
   const p: plan.Plan = raw
   const now = Date.now()
   const age = Math.round((now - p.at) / 60_000)

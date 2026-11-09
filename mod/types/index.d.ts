@@ -289,7 +289,7 @@ export type FactoryBriefLogEntry = {
 export type FactoryPlanItem = { id: string; title: string; priority: number; why: string }
 /** a starvation or plan-gap finding in the pm's plan (mirrors `Finding`, src/plan.ts) */
 export type FactoryPlanFinding = {
-  kind: 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan'
+  kind: 'starved-epic' | 'goal-no-beads' | 'epic-done-open' | 'goal-no-plan' | 'file-churn'
   rig: string
   bead?: string
   key: string

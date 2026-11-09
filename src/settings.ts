@@ -25,6 +25,13 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   { key: 'cursor.cap', env: 'FACTORY_CURSOR_CAP', default: '60', check: /^(100|[1-9]?[0-9])$/ },
   // an optional dollar cap on the Grok spend of the last 7 days (src/grok-meter.ts); unset means no gate
   { key: 'grok.weeklyBudgetUsd', env: 'FACTORY_GROK_WEEKLY_BUDGET_USD', check: /^\d+(\.\d+)?$/ },
+  // the harness order of a station (cli.ts pickAgent). A gate refusal or a usage limit moves it to the next. cursor is in it only when named
+  {
+    key: 'agents.order',
+    env: 'FACTORY_AGENTS_ORDER',
+    default: 'claude,codex,grok,pi',
+    check: /^(claude|codex|grok|pi|cursor)(,(claude|codex|grok|pi|cursor))*$/,
+  },
   { key: 'image.registry' },
   { key: 'image.builder' },
   { key: 'token.read' },

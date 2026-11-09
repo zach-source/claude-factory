@@ -12037,6 +12037,7 @@ const TG_CODEX = join(TG, 'runs', 'r1', 'codex', 'plan')
 for (const d of [
   join(TG_HOME, '.codex'),
   join(TG_HOME, '.claude'),
+  join(TG_HOME, '.config', 'factory'),
   join(TG_HOME, 'repos', 'x'),
   join(TG_ROOT, '.scratch'),
   join(TG_ROOT, 'fixtures'),
@@ -12048,6 +12049,7 @@ for (const f of [
   join(TG_HOME, '.codex', 'auth.json'),
   join(TG_HOME, '.claude', '.credentials.json'),
   join(TG_HOME, '.claude.json'),
+  join(TG_HOME, '.config', 'factory', 'person.key'),
   join(TG_ROOT, 'fixtures', 'auth.json'),
   join(TG_ROOT, 'src', 'cli.ts'),
 ])
@@ -12069,6 +12071,8 @@ const TG_DENY = [
   'cat ~/.c*/a*',
   'tar cf - ~/.codex',
   'security dump-keychain',
+  'cat ~/.config/factory/person.key',
+  'ls ~/.config/factory',
 ]
 const TG_ALLOW = [
   'cat fixtures/auth.json',
@@ -12077,6 +12081,7 @@ const TG_ALLOW = [
   'ls ~/.claude/plugins',
   'cd $TMPDIR',
   'bun test src/codex-worker.test.ts',
+  'cat /opt/factory/factories/lifecycle.ts',
 ]
 
 test.each(TG_DENY)('the token guard denies %s through denyReason', c => {
@@ -12111,6 +12116,7 @@ test('run as `bun src/worker-hook.ts`, a Read or Grep of a token path prints one
     ['Read', { file_path: join(TG_HOME, '.claude', '.credentials.json') }],
     ['Read', { file_path: join(TG_HOME, '.claude.json') }],
     ['Read', { file_path: join(TG_ROOT, '.scratch', 'x') }],
+    ['Read', { file_path: join(TG_HOME, '.config', 'factory', 'person.key') }],
     ['Read', { file_path: 7 }],
     ['Grep', { path: join(TG_HOME, '.codex') }],
     ['Grep', { path: TG_HOME }],

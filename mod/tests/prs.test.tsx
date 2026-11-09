@@ -121,9 +121,8 @@ test(
     }))
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
-    // the prs view throttles its gh-backed refresh to once a minute (register.tsx's rt.prsAt, module
-    // state that can carry a later value over from an earlier test in this file); advance well past it
-    await clock.advance(10_000_000)
+    // Two minutes pass the PR refresh interval of one minute.
+    await clock.advance(120_000)
     await $.command.run({ command: 'factory', args: 'prs' } as never)
     await clock.settle()
     const ui = await $.ui.mount({
@@ -183,7 +182,7 @@ test(
     }))
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
-    await clock.advance(10_000_000)
+    await clock.advance(120_000)
     await $.command.run({ command: 'factory', args: 'prs' } as never)
     await clock.settle()
     const ui = await $.ui.mount({

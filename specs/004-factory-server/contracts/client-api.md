@@ -19,6 +19,7 @@ The person's clients call this API: the console (the `mod` plugin), the factory 
 | `GET /v1/prs`, `/v1/backlog`, `/v1/metrics`, `/v1/decisions`, `/v1/plan` | The same JSON or text as the CLI command of that name.                                    | the CLI commands       |
 | `GET /v1/catalog` | The operation catalog of specs/008-frontend-parity/contracts/catalog.md. | (new) |
 | `GET /v1/catalog/echo?text=<text>` | The text. A parity fixture. | (new) |
+| `POST /v1/guard/check` with `{command, role}` | `{decision}`: allow, ask with the question and the reason, or deny with the reason. It changes nothing and needs no `Idempotency-Key`. | the Claude mod's Bash gate (new) |
 | `GET /v1/events?after=<id>`                                              | Server-sent events: one event for each board change.                                      | the console's 5 s poll |
 
 ## Action endpoints
@@ -90,7 +91,7 @@ The server checks the client certificate before it reads a request. It does not 
   - 503: no tick yet, or a corrupt store.
   - 504: the CLI ran for more than 60 s.
 - A body is at most 128 KiB. A free-text field has 1 to 65536 characters and no U+0000. A `start` goal must not hold the word `--owned`.
-- Each POST needs `Idempotency-Key` and `content-type: application/json`. The server keeps each answer for 24 h in `<home>/client-idempotency.json` (mode 0600). The same key and the same request give the stored answer, also after a restart. The same key with another request gives 409. If the file is corrupt, the server gives 503 and runs nothing. The server runs one action at a time.
-- Each POST that passes the form check adds one line to `<home>/client-actions.jsonl`. The line has the time, client address, method, path, key and status. A `decide` line also has the outcome. The line holds no free text.
+- Each POST needs `content-type: application/json`. Each POST that changes state also needs `Idempotency-Key`. The server keeps each action answer for 24 h in `<home>/client-idempotency.json` (mode 0600). The same key and the same request give the stored answer, also after a restart. The same key with another request gives 409. If the file is corrupt, the server gives 503 and runs no action. The server runs one action at a time.
+- Each POST that changes state and passes the form check adds one line to `<home>/client-actions.jsonl`. The line has the time, client address, method, path, key and status. A `decide` line also has the outcome. The line holds no free text.
 - Each action runs `cli.ts` as a child process with the server home. The child env has no `FACTORY_SERVER`, `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME`, `FACTORY_PATROL`, `FACTORY_OUTBOX` or `BEADS_ACTOR`. Mail text goes through a file in `<home>/text/`. The server removes the file after the call.
 - `factory cert person <dir> <server-name>` makes the person CA, the person certificate and the server certificate in a new folder.

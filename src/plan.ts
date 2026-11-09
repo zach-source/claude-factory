@@ -190,7 +190,7 @@ function isValidFinding(x: unknown): x is Finding {
  * Without this check, `orderByPlan` and `planShowText` (`factory plan`) throw on
  * `.items.map`/`.items.slice` (claude-factory-dun.18).
  *
- * The caller (`isValidPlanShape`, src/cli.ts) treats a plan with any malformed rig entry as no
+ * The caller (`isValidPlanShape`, src/plan.ts) treats a plan with any malformed rig entry as no
  * plan at all, the same as a missing or corrupt file. */
 export function isValidRigPlan(x: unknown): x is RigPlan {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return false
@@ -208,6 +208,20 @@ export function isValidRigPlan(x: unknown): x is RigPlan {
     ) &&
     Array.isArray(o.findings) &&
     o.findings.every(isValidFinding)
+  )
+}
+
+/** Check the whole plan before a caller reads its rig entries. */
+export function isValidPlanShape(p: unknown): p is Plan {
+  if (!p || typeof p !== 'object') return false
+  const o = p as Record<string, unknown>
+  return (
+    typeof o.at === 'number' &&
+    !!o.rigs &&
+    typeof o.rigs === 'object' &&
+    !Array.isArray(o.rigs) &&
+    Object.values(o.rigs as Record<string, unknown>).every(isValidRigPlan) &&
+    Array.isArray(o.proposals)
   )
 }
 
