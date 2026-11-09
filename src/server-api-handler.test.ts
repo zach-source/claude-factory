@@ -521,6 +521,45 @@ describe('events replay and ring', () => {
       if (x.done) break
       n++
     }
-    expect(n).toBeLessThanOrEqual(512)
+    expect(n).toBeLessThanOrEqual(256)
+  })
+  test('257 unread frames close a slow client and a fast one keeps its stream', async () => {
+    const t = setup()
+    const slow = await get(t.h, '/v1/events')
+    const fast = await get(t.h, '/v1/events')
+    const rd = fast.body!.getReader()
+    const dec = new TextDecoder()
+    let got = ''
+    for (let i = 1; i <= 257; i++) {
+      t.h.publish({ i })
+      got += dec.decode((await rd.read()).value)
+      if (i === 256) expect(t.h.subscribers()).toBe(2)
+    }
+    expect(t.h.subscribers()).toBe(1)
+    expect(got.endsWith(frame(257, { i: 257 }))).toBe(true)
+    await rd.cancel()
+    await slow.body!.cancel()
+    expect(t.h.subscribers()).toBe(0)
+  })
+  test('an aborted request releases its subscriber, before or after an event', async () => {
+    const t = setup()
+    const ac = new AbortController()
+    const res = await t.h(new Request('http://x/v1/events', { signal: ac.signal }), '1.2.3.4')
+    expect(t.h.subscribers()).toBe(1)
+    ac.abort()
+    expect(t.h.subscribers()).toBe(0)
+    await res.body!.cancel()
+    t.h.publish({ a: 1 })
+    const bc = new AbortController()
+    const r2 = await t.h(new Request('http://x/v1/events', { signal: bc.signal }), '1.2.3.4')
+    const rd = r2.body!.getReader()
+    expect((await rd.read()).done).toBe(false)
+    bc.abort()
+    expect(t.h.subscribers()).toBe(0)
+    await rd.cancel()
+    const dead = new AbortController()
+    dead.abort()
+    await t.h(new Request('http://x/v1/events', { signal: dead.signal }), '1.2.3.4')
+    expect(t.h.subscribers()).toBe(0)
   })
 })

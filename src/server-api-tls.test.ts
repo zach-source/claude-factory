@@ -362,4 +362,39 @@ describe('events over mTLS', () => {
     expect(text.toLowerCase()).toContain('content-type: text/event-stream; charset=utf-8')
     expect(text).toContain('id: 1\ndata: {"n":1}\n\nid: 2\ndata: {"n":2}\n\n')
   })
+  test('two clients, a reconnect after n+1 and UTF-8 frames', async () => {
+    const boards: unknown[] = [{ n: 1, t: 'é€' }, { n: 2 }, { n: 2 }, { n: 3, nested: { a: [1] } }, null]
+    let i = 0
+    const t = start(() => boards[Math.min(i++, boards.length - 1)])
+    const who = pair(A)
+    const curl = (after: number) =>
+      Bun.spawn(
+        [
+          ...['curl', '-sN', '--max-time', '8', '--cacert', join(A, 'ca.crt')],
+          ...['--cert', who.cert, '--key', who.key],
+          ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`],
+          `${t.url}/v1/events?after=${after}`,
+        ],
+        { stdout: 'pipe', stderr: 'ignore' },
+      )
+    const collect = async (p: ReturnType<typeof curl>, ids: number) => {
+      const rd = p.stdout.getReader()
+      const dec = new TextDecoder()
+      let text = ''
+      while ((text.match(/id: \d+\ndata/g) ?? []).length < ids) {
+        const { value, done } = await rd.read()
+        if (done) break
+        text += dec.decode(value)
+      }
+      p.kill()
+      return text
+    }
+    const [a, b] = await Promise.all([collect(curl(0), 4), collect(curl(0), 4)])
+    expect(a).toBe(b)
+    expect(a).toContain('id: 1\ndata: {"n":1,"t":"é€"}\n\n')
+    expect(a).toContain('id: 3\ndata: {"n":3,"nested":{"a":[1]}}\n\n')
+    expect(a).toContain('id: 4\ndata: null\n\n')
+    const c = await collect(curl(3), 1)
+    expect(c).toBe('id: 4\ndata: null\n\n')
+  })
 })

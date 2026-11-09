@@ -269,14 +269,14 @@ export function clientHandler(o: ClientOpts) {
     if (ring.length > EVENTS_KEEP) ring.shift()
     for (const sub of [...subs]) sub.send(ev.id, ev.frame)
   }
-  const events = (after: bigint): Response => {
+  const events = (after: bigint, signal?: AbortSignal): Response => {
     const enc = new TextEncoder()
     let sub: Sub
     let seen = after
     const body = new ReadableStream<Uint8Array>(
       {
         start(c) {
-          // a slow client that leaves more than 512 frames unread is closed, never skipped
+          // a slow client that leaves more than 256 frames unread is closed, never skipped
           sub = {
             send(id, frame) {
               if (id <= seen) return
@@ -288,12 +288,20 @@ export function clientHandler(o: ClientOpts) {
               c.enqueue(enc.encode(frame))
             },
           }
+          const stop = () => {
+            subs.delete(sub)
+            try {
+              c.close()
+            } catch {}
+          }
+          if (signal?.aborted) return stop()
+          signal?.addEventListener('abort', stop, { once: true })
           for (const ev of ring) sub.send(ev.id, ev.frame)
           subs.add(sub)
         },
         cancel: () => void subs.delete(sub),
       },
-      { highWaterMark: 2 * EVENTS_KEEP },
+      { highWaterMark: EVENTS_KEEP },
     )
     return new Response(body, {
       headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' },
@@ -328,7 +336,9 @@ export function clientHandler(o: ClientOpts) {
     const url = new URL(req.url)
     if (req.method === 'GET' && url.pathname === '/v1/events') {
       const a = /^(?:|\?after=([0-9]+))$/.exec(url.search)
-      return a ? events(BigInt(a[1] ?? 0)) : refuse(400, 'the query must be empty or after=<digits>')
+      return a
+        ? events(BigInt(a[1] ?? 0), req.signal)
+        : refuse(400, 'the query must be empty or after=<digits>')
     }
     const m = match(req.method, url.pathname)
     if (!m) return refuse(404, 'no such route')
@@ -470,7 +480,15 @@ function serveSocket(sock: Socket, handle: (req: Request, ip: string) => Promise
             const { value, done } = await rd.read()
             if (done || sock.destroyed) break
             if (!sock.write(value))
-              await new Promise<void>(r => (sock.once('drain', r), sock.once('close', r)))
+              await new Promise<void>(r => {
+                const go = () => {
+                  sock.off('drain', go)
+                  sock.off('close', go)
+                  r()
+                }
+                sock.on('drain', go)
+                sock.on('close', go)
+              })
           }
         } finally {
           sock.end()
