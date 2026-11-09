@@ -658,13 +658,13 @@ test('a962: the backup auth header goes only to git calls under the backup remot
     }
     const url = `http://127.0.0.1:${port}/acme/widget.git`
     const ws = mk()
-    const c = { ws, remote: url, branch: 'server-home', auth: 'eHE6enFzZWNyZXQ=', gitleaks: bin }
+    const c = { ws, remote: url, branch: 'server-home', auth: 'eHE6enE=', gitleaks: bin }
     const out = backup(c, true)
     expect(lines().find(l => l.startsWith('/acme/widget.git/info/refs'))).toBe(
-      '/acme/widget.git/info/refs Basic eHE6enFzZWNyZXQ=',
+      '/acme/widget.git/info/refs Basic eHE6enE=',
     )
-    expect(out.error ?? '').not.toContain('eHE6enFzZWNyZXQ')
-    expect(readFileSync(join(ws, 'home', 'backup.json'), 'utf8')).not.toContain('eHE6enFzZWNyZXQ')
+    expect(out.error ?? '').not.toContain('eHE6enE')
+    expect(readFileSync(join(ws, 'home', 'backup.json'), 'utf8')).not.toContain('eHE6enE')
     // no auth: no header
     writeFileSync(rec, '')
     backup({ ...c, ws: mk(), auth: undefined }, true)
