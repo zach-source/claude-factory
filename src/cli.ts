@@ -13740,7 +13740,7 @@ if (import.meta.main && !outboxCmd)
           const set: Record<string, unknown> = {}
           const unset: string[] = []
           if (clusterRuns !== undefined) {
-            if (!/^[1-9]\d*$/.test(clusterRuns))
+            if (!/^[1-9]\d*$/.test(clusterRuns) || !Number.isFinite(Number(clusterRuns)))
               fail(`--cluster-runs is a number of runs, at least 1 (not "${clusterRuns}")`)
             set.clusterRuns = Number(clusterRuns)
           }
@@ -13748,7 +13748,7 @@ if (import.meta.main && !outboxCmd)
             if (autoQueue === 'off') unset.push('autoQueue')
             else {
               const m = /^([0-4]),([1-9]\d*)$/.exec(autoQueue)
-              if (!m)
+              if (!m || !Number.isFinite(Number(m[2])))
                 fail(
                   `--auto-queue is <minPriority 0-4>,<perHour 1 or more>, e.g. 2,3, or off (not "${autoQueue}")`,
                 )

@@ -146,7 +146,13 @@ test('rig set changes one field and leaves every other byte equal (by name and b
     [['--goal', 'new', 'words'], { goal: 'new words' }, []],
     [['--max', '3'], { maxRuns: 3 }, []],
     [['--cluster-runs', '3'], { clusterRuns: 3 }, []],
+    [['--cluster-runs', '9'.repeat(308)], { clusterRuns: Number('9'.repeat(308)) }, []],
     [['--auto-queue', '2,3'], { autoQueue: { minPriority: 2, perHour: 3 } }, []],
+    [
+      ['--auto-queue', `2,${'9'.repeat(308)}`],
+      { autoQueue: { minPriority: 2, perHour: Number('9'.repeat(308)) } },
+      [],
+    ],
     [
       ['--push-rule', 'run bun test', '--push-rule', 'no force'],
       { pushRules: ['run bun test', 'no force'] },
@@ -236,8 +242,8 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
 
 test.each(
   Object.entries({
-    '--cluster-runs': ['0', '1.5', '-1', 'abc', ''],
-    '--auto-queue': ['5,3', '2,0', '2', '2,3,4', 'on', ''],
+    '--cluster-runs': ['0', '1.5', '-1', 'abc', '', '9'.repeat(309)],
+    '--auto-queue': ['5,3', '2,0', '2', '2,3,4', 'on', '', `2,${'9'.repeat(309)}`],
     '--push-rule': [' ', ''],
     '--skills': ['nope', 'asd-ste100,', '', 'none,egm'],
     '--otel-content': ['false', 'no', 'OFF', ''],
