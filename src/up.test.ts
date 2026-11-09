@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { inStore, needsInstall, upCheck, upDir } from './up'
+import { defaultHome, inStore, needsInstall, platformHome, upCheck, upDir } from './up'
 
 const HERDR = 'factory up: not in a herdr pane; start herdr first so workers get panes'
 
@@ -19,17 +19,35 @@ test('upCheck: only HERDR_ENV=1 stops the herdr warning', () => {
     expect(upCheck(() => true, { HERDR_ENV: v }).warnings).toEqual([HERDR])
 })
 
-test('upDir: first arg, else FACTORY_HOME, else ~/factory', () => {
-  expect(upDir(['/x', '--resume', 's'], {}, '/home/u')).toEqual({ dir: '/x', rest: ['--resume', 's'] })
-  expect(upDir(['--resume', 's'], { FACTORY_HOME: '/h' }, '/home/u')).toEqual({
+test('upDir: first arg, else FACTORY_HOME, else the default home', () => {
+  expect(upDir(['/x', '--resume', 's'], {}, '/home/u', '/d')).toEqual({ dir: '/x', rest: ['--resume', 's'] })
+  expect(upDir(['--resume', 's'], { FACTORY_HOME: '/h' }, '/home/u', '/d')).toEqual({
     dir: '/h',
     rest: ['--resume', 's'],
   })
-  expect(upDir([], {}, '/home/u')).toEqual({ dir: '/home/u/factory', rest: [] })
-  expect(upDir([], { FACTORY_HOME: '' }, '/home/u').dir).toBe('/home/u/factory')
-  expect(upDir(['-'], {}, '/home/u')).toEqual({ dir: '/home/u/factory', rest: ['-'] })
-  expect(upDir(['rel'], {}, '/home/u').dir).toBe(resolve('rel'))
-  expect(upDir(['~/x'], {}, '/home/u').dir).toBe('/home/u/x')
+  expect(upDir([], {}, '/home/u', '/d')).toEqual({ dir: '/d', rest: [] })
+  expect(upDir([], { FACTORY_HOME: '' }, '/home/u', '/d').dir).toBe('/d')
+  expect(upDir(['-'], {}, '/home/u', '/d')).toEqual({ dir: '/d', rest: ['-'] })
+  expect(upDir(['rel'], {}, '/home/u', '/d').dir).toBe(resolve('rel'))
+  expect(upDir(['~/x'], {}, '/home/u', '/d').dir).toBe('/home/u/x')
+  expect(upDir([], {}, '/home/u', '/u/Application Support/f').dir).toBe('/u/Application Support/f')
+})
+
+test('platformHome: XDG_DATA_HOME, else the macOS or Linux data dir', () => {
+  expect(platformHome({ XDG_DATA_HOME: '/x' }, 'darwin', '/u')).toBe('/x/claude-factory')
+  expect(platformHome({ XDG_DATA_HOME: '' }, 'darwin', '/u')).toBe(
+    '/u/Library/Application Support/claude-factory',
+  )
+  expect(platformHome({}, 'linux', '/u')).toBe('/u/.local/share/claude-factory')
+})
+
+test('defaultHome: the new dir, unless only an old default holds a factory', () => {
+  const has = (dirs: string[]) => (d: string) => dirs.includes(d)
+  expect(defaultHome('/new', ['/a', '/b'], has([]))).toEqual({ dir: '/new' })
+  expect(defaultHome('/new', ['/a', '/b'], has(['/new', '/a']))).toEqual({ dir: '/new' })
+  const old = defaultHome('/new', ['/a', '/b'], has(['/b']))
+  expect(old.dir).toBe('/b')
+  expect(old.note).toContain('/new')
 })
 
 test('needsInstall: missing or older node_modules', () => {
@@ -139,6 +157,31 @@ test('AC5: a missing tool exits 1, names it, makes nothing', () => {
     expect(existsSync(join(tmp, 'new', 'rigs.json'))).toBe(false)
     expect(existsSync(log)).toBe(false)
   }
+})
+
+test('the default home has a space (the macOS path): up makes the factory there and the manager runs in it', () => {
+  fresh()
+  const data = join(tmp, 'Application Support')
+  const dir = join(data, 'claude-factory')
+  const { p, err } = up([], { FACTORY_HOME: '', XDG_DATA_HOME: data, HOME: join(tmp, 'u') })
+  expect(p.exitCode).toBe(0)
+  expect(readFileSync(join(dir, 'rigs.json'), 'utf8').trim()).toBe('[]')
+  const [cwd, home] = readFileSync(log, 'utf8').trim().split('|')
+  expect(cwd).toBe(realpathSync(dir))
+  expect(home).toBe(dir)
+  expect(err).not.toContain('old default home')
+})
+
+test('an old ~/factory with a rigs.json stays the home, with a note naming the new path', () => {
+  fresh()
+  const u = join(tmp, 'u')
+  mkdirSync(join(u, 'factory'), { recursive: true })
+  writeFileSync(join(u, 'factory', 'rigs.json'), '[]\n')
+  const data = join(tmp, 'data')
+  const { p, err } = up([], { FACTORY_HOME: '', XDG_DATA_HOME: data, HOME: u })
+  expect(p.exitCode).toBe(0)
+  expect(err).toContain(`the new default is ${join(data, 'claude-factory')}`)
+  expect(existsSync(join(data, 'claude-factory'))).toBe(false)
 })
 
 test('AC6: a patrol cannot run up', () => {
