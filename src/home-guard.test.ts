@@ -7,6 +7,7 @@ import {
   HOME_REASON,
   homeReason,
   LOADED_REASON,
+  OVERRIDE_REASON,
   protectedPath,
   rmQuiet,
   rmSafe,
@@ -654,6 +655,17 @@ describe('homeReason', () => {
     test('a null loaded list gives LOADED_REASON, after the command text', () => {
       expect(homeReason('ls', undefined, H, null)).toBe(LOADED_REASON)
       expect(homeReason(['r', 'm -rf ~'].join(''), undefined, H, null)).toBe(HOME_REASON)
+    })
+
+    test('an inline hooks override gives OVERRIDE_REASON only with a loader', () => {
+      expect(homeReason('git -c core.hooksPath=hk commit', undefined, H, [])).toBe(OVERRIDE_REASON)
+      expect(homeReason('git -c core.hooksPath=hk commit', undefined, H, undefined)).toBeUndefined()
+    })
+
+    test('an alias text with an override gives OVERRIDE_REASON, another text does not', () => {
+      const text = '-c core.hooksPath=hk commit'
+      expect(homeReason('ls', undefined, H, [{ text, dir: '/', alias: true }])).toBe(OVERRIDE_REASON)
+      expect(homeReason('ls', undefined, H, [{ text, dir: '/' }])).toBeUndefined()
     })
   })
 })

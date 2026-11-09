@@ -70,7 +70,7 @@
 import { appendFileSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join as joinPath, posix, resolve as resolvePath, sep } from 'node:path'
-import { HOME_REASON, homeReason, LOADED_REASON, type LoadedText } from './home-guard'
+import { HOME_REASON, homeReason, LOADED_REASON, OVERRIDE_REASON, type LoadedText } from './home-guard'
 import { TOKEN_READ_REASON, tokenPathReason, tokenReason } from './token-guard'
 export { TOKEN_READ_REASON }
 import * as self from './worker-hook'
@@ -11326,7 +11326,7 @@ export function applyPatchReason(
 
 /** The name of the exported *REASON constant that holds `reason`, or UNKNOWN. Counts denials by rule (claude-factory-dsfg). */
 export function reasonName(reason: string): string {
-  for (const [k, v] of Object.entries({ ...self, HOME_REASON, LOADED_REASON }))
+  for (const [k, v] of Object.entries({ ...self, HOME_REASON, LOADED_REASON, OVERRIDE_REASON }))
     if (k.endsWith('REASON') && v === reason) return k
   return 'UNKNOWN'
 }

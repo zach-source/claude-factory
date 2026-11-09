@@ -21,6 +21,11 @@ export const LOADED_REASON =
   'The factory denies this command: it cannot read the git config of this directory, so it cannot ' +
   'check the programs that git loads. Run the command again from the worktree.'
 
+export const OVERRIDE_REASON =
+  'The factory denies this command: it names core.hooksPath, include.path or includeIf, or ' +
+  'runs a git alias that does. The home guard cannot check the programs that such a setting ' +
+  'loads. To search, use the Grep tool. For a commit message, use git commit -F <file>.'
+
 /** the most files that the guard reads for the loaded texts of one command; the next read denies */
 export const MAX_LOADED_READS = 64
 
@@ -280,7 +285,7 @@ function readOnly(command: string): boolean {
 }
 
 /** A text that a config file or a git hook loads, and the dir that its relative paths resolve against. */
-export type LoadedText = { text: string; dir: string }
+export type LoadedText = { text: string; dir: string; alias?: true }
 
 /**
  * Test the named files of `text`. With `dir`, each path resolves against `dir`, the JSON-unescaped

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { HOME_REASON, homeReason, LOADED_REASON } from './home-guard'
+import { HOME_REASON, homeReason, LOADED_REASON, OVERRIDE_REASON } from './home-guard'
 import { denyReason, loadedTexts } from './worker-hook'
 
 // claude-factory-qn8a.37: the home guard reads the programs that git and config files load.
@@ -61,74 +61,67 @@ describe('loadedTexts and the home guard', () => {
     expect(run('git commit -m x', d, join(d, 'sub'))).toBe(HOME_REASON)
   })
 
+  // claude-factory-qn8a.37.4, .7, .8, .10, .11 and .12: an inline hooks or include override
+  // gives OVERRIDE_REASON, whatever the quotes, the value, the dir or the git word.
+  const D = String.fromCharCode(36)
+  const T = String.fromCharCode(126)
   test.each([
-    'git -c core.hooksPath=hk commit -m x',
-    'git -c core.hookspath=hk commit -m x',
-    'git -c CORE.HOOKSPATH=hk add x',
-  ])('denies a hooks dir that a command word sets: %s', cmd => {
-    const d = repo()
-    put(d, 'hk/pre-commit', bad())
-    expect(run(cmd, d)).toBe(HOME_REASON)
-  })
-
-  test.each([
-    'git --config-env=core.hooksPath=HP commit -m x',
-    'git --config-env core.hooksPath=HP commit -m x',
-    'git -c core.hooksPath commit -m x',
-    'git -c core.hooksPath= commit -m x',
-  ])('fails closed on a hooks dir with no path: %s', cmd => {
-    const d = repo()
-    expect(run(cmd, d)).toBe(LOADED_REASON)
-  })
-
-  // claude-factory-qn8a.37.7: a quote, a backslash or a space hides the key or the value
-  test.each([
-    'git -c core.hooksPath=h""k commit -m x',
-    "git -c core.hooksPath=h''k commit -m x",
-    'git -c core.hooksPath=h\\k commit -m x',
-    'git -c core.hooks""Path=hk commit -m x',
-    'git -c core.hooks\\Path=hk commit -m x',
-    'git -c "core.hooksPath=h k" commit -m x',
-    'git -c core.hooksPath=hk -c core.hooksPath=h""k2 commit -m x',
-    'git --config-env=core.hooks""Path=HP commit -m x',
-  ])('fails closed on a split hooks dir word: %s', cmd => {
+    ['git -c core.hooksPath=hk commit -m x', false],
+    ['git -c CORE.HOOKSPATH=hk add x', false],
+    ['git -c core.hookspath=hk commit -m x', false],
+    ['git -c core.hooksPath=hk commit -m x', true],
+    [`git -c core.hooks${D}''Path=hk commit -m x`, false],
+    ['git -c core.hook\\\nsPath=hk commit -m x', false],
+    ['echo x | git -c core.hooksPath=hk commit -F -', false],
+    ['GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=hk git commit -m x', false],
+    ['git -c include.path=inc commit -m x', false],
+    ['git -c includeIf.gitdir:/.path=inc commit -m x', false],
+    ['git --config-env=core.hooksPath=HP commit -m x', false],
+    ['git --config-env core.hooksPath=HP commit -m x', false],
+    ['git -c core.hooksPath commit -m x', false],
+    ['git -c core.hooksPath= commit -m x', false],
+    ['git -c core.hooksPath=h""k commit -m x', false],
+    ["git -c core.hooksPath=h''k commit -m x", false],
+    ['git -c core.hooksPath=h\\k commit -m x', false],
+    ['git -c core.hooks""Path=hk commit -m x', false],
+    ['git -c core.hooks\\Path=hk commit -m x', false],
+    ['git -c "core.hooksPath=h k" commit -m x', false],
+    ['git -c core.hooksPath=hk -c core.hooksPath=h""k2 commit -m x', false],
+    ['git --config-env=core.hooks""Path=HP commit -m x', false],
+    [`git -c core.hooksPath=${T}/hk commit -m x`, false],
+    ['git -c core.hooksPath=`echo hk` commit -m x', false],
+    [`git -c core.hooksPath=${D}H commit -m x`, false],
+    ['grep -c core.hooksPath README.md', false],
+    ['grep -n core.hooksPath README.md', false],
+  ] as [string, boolean][])('denies an inline hooks or include override: %s', (cmd, sub) => {
     const d = repo()
     put(d, 'hk/pre-commit', 'exit 0\n')
-    expect(run(cmd, d)).toBe(LOADED_REASON)
+    mkdirSync(join(d, 'sub'))
+    expect(run(cmd, d, sub ? join(d, 'sub') : d)).toBe(OVERRIDE_REASON)
   })
 
-  // claude-factory-qn8a.37.11: the shell or git expands ~ and a backtick, so the value is not a plain dir
-  test.each([
-    `git -c core.hooksPath=${String.fromCharCode(126)}/hk commit -m x`,
-    'git -c core.hooksPath=`echo hk` commit -m x',
-    `git -c core.hooksPath=${String.fromCharCode(36)}H commit -m x`,
-  ])(
-    'fails closed on an expanded hooks dir word: %s',
-    cmd => {
+  test.each(['-c core.hooksPath=hk commit', '-c include.path=inc commit'])(
+    'denies a git alias that holds an override: %s',
+    value => {
       const d = repo()
-      put(d, 'hk/pre-commit', 'exit 0\n')
-      expect(run(cmd, d)).toBe(LOADED_REASON)
+      git(d, 'config', 'alias.ci', value)
+      expect(run('git ci -m x', d)).toBe(OVERRIDE_REASON)
     },
   )
 
-  // claude-factory-qn8a.37.12: only a word after a git word counts
-  test('allows grep -c core.hooksPath', () => {
+  test('allows a command with no override text', () => {
     const d = repo()
-    expect(run('grep -c core.hooksPath README.md', d)).not.toBe(LOADED_REASON)
+    expect(run('git commit -m x', d)).toBeUndefined()
+    expect(run('git -c user.name=acme commit -m x', d)).toBeUndefined()
+    expect(run("grep -n 'hooks path' README.md", d)).toBeUndefined()
   })
 
-  // claude-factory-qn8a.37.8: git resolves the -c value against the top dir, not cwd
-  test('reads a -c core.hooksPath dir against the top dir from a subdir', () => {
+  test('allows a hooks dir key and an include key in the config (only alias values count)', () => {
     const d = repo()
-    put(d, 'hk/pre-commit', bad())
-    mkdirSync(join(d, 'sub'))
-    expect(run('git -c core.hooksPath=hk commit -m x', d, join(d, 'sub'))).toBe(HOME_REASON)
-  })
-
-  // claude-factory-qn8a.37.10: a core.hooksPath word outside -c and --config-env gives no deny
-  test('allows a read that only names core.hooksPath', () => {
-    const d = repo()
-    expect(run('grep -n core.hooksPath README.md', d)).not.toBe(LOADED_REASON)
+    git(d, 'config', 'core.hooksPath', 'hk')
+    git(d, 'config', 'include.path', 'inc')
+    put(d, 'hk/pre-commit', 'exit 0\n')
+    expect(run('git commit -m x', d)).toBeUndefined()
   })
 
   // claude-factory-qn8a.37.9: the joined config text is stripped like the command
@@ -140,12 +133,6 @@ describe('loadedTexts and the home guard', () => {
     put(d, f, text)
     put(d, 'node_modules/.bin/prettier', bad())
     expect(run(cmd, d)).toBe(HOME_REASON)
-  })
-
-  test('allows -c core.hooksPath with a clean hooks dir', () => {
-    const d = repo()
-    put(d, 'hk/pre-commit', 'exit 0\n')
-    expect(run('git -c core.hooksPath=hk commit -m x', d)).toBeUndefined()
   })
 
   test.each(['npx pretti""er --write .', 'bunx pret\\tier --write .'])('denies a split bin name: %s', cmd => {
