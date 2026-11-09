@@ -114,6 +114,10 @@ export type ClientOpts = {
   /** the last tick result, null before the first tick */
   board: () => unknown
   log?: (line: string) => void
+  /** the operations to serve, default the module CATALOG (tests inject more) */
+  ops?: Op[]
+  /** the local core: answer a long operation at once. `run` is the call itself; the hook decides when it runs. */
+  long?: (op: Op, run: () => Promise<Response>) => Response
 }
 
 const WORKER_ENV = [
@@ -138,7 +142,12 @@ export function personEnv(env: Record<string, string | undefined>, home: string)
  * Mail text goes through <home>/text/<uuid>.md and --text-file. The file is gone when the call ends.
  * ponytail: one bun process per call (about 0.3 s). Upgrade path: export the command functions from cli.ts and call them in process.
  */
-export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), timeoutMs = 60_000): Runner {
+export function cliRunner(
+  home: string,
+  cli = join(import.meta.dir, 'cli.ts'),
+  timeoutMs = 60_000,
+  opts: { env?: Record<string, string>; signal?: AbortSignal } = {},
+): Runner {
   return async (argv, text) => {
     let file: string | undefined
     try {
@@ -149,12 +158,15 @@ export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), t
       }
       const proc = Bun.spawn([process.execPath, cli, ...argv, ...(file ? ['--text-file', file] : [])], {
         cwd: home,
-        env: personEnv(process.env, home),
+        env: { ...personEnv(process.env, home), ...opts.env },
         stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
       })
       let timedOut = false as boolean
+      const onAbort = () => proc.kill()
+      if (opts.signal?.aborted) onAbort()
+      else opts.signal?.addEventListener('abort', onAbort, { once: true })
       const timer = setTimeout(() => {
         timedOut = true
         proc.kill()
@@ -168,6 +180,7 @@ export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), t
         return { code, out, err, ...(timedOut ? { timedOut } : {}) }
       } finally {
         clearTimeout(timer)
+        opts.signal?.removeEventListener('abort', onAbort)
       }
     } finally {
       if (file) rmSync(file, { force: true })
@@ -185,9 +198,9 @@ const refuse = (status: number, why: string) => reply(status, `${JSON.stringify(
 const looksJson = (s: string) => /^\s*[{[]/.test(s)
 
 /** match a request path to an operation of the catalog; the segments are not checked yet */
-function match(method: string, path: string): { op: Op; params: string[] } | undefined {
+function match(ops: Op[], method: string, path: string): { op: Op; params: string[] } | undefined {
   const parts = path.split('/')
-  for (const op of CATALOG) {
+  for (const op of ops) {
     const want = op.route.path.split('/')
     if (op.route.method !== method || want.length !== parts.length) continue
     if (want.every((w, i) => w.startsWith(':') || w === parts[i]))
@@ -251,7 +264,10 @@ export function clientHandler(o: ClientOpts) {
   const auditFile = join(o.home, 'client-actions.jsonl')
   let chain: Promise<unknown> = Promise.resolve()
   const ctx: Ctx = { home: o.home, cli: o.run, board: o.board }
-  const call = async (op: Op, input: Input): Promise<Response> => {
+  const ops = o.ops ?? CATALOG
+  const call = async (op: Op, input: Input): Promise<Response> =>
+    op.long && o.long ? o.long(op, () => callNow(op, input)) : callNow(op, input)
+  const callNow = async (op: Op, input: Input): Promise<Response> => {
     try {
       const r = await op.run(ctx, input)
       return r.timedOut
@@ -270,7 +286,7 @@ export function clientHandler(o: ClientOpts) {
     if (req.headers.has('authorization'))
       return refuse(403, 'worker tokens are not accepted on the client port')
     const url = new URL(req.url)
-    const m = match(req.method, url.pathname)
+    const m = match(ops, req.method, url.pathname)
     if (!m) return refuse(404, 'no such route')
     const { op, params } = m
     const q = readQuery(op, params, url.search)
@@ -323,8 +339,11 @@ export function clientHandler(o: ClientOpts) {
               : refuse(409, 'Idempotency-Key was used for another request')
         } else {
           res = await call(op, body)
-          rows[key] = { at: now, hash, status: res.status, body: await res.clone().text() }
-          writeStore(storeFile, rows, now)
+          // a 503 is without acceptance (spec 006): a retry with the same key may run later
+          if (res.status !== 503) {
+            rows[key] = { at: now, hash, status: res.status, body: await res.clone().text() }
+            writeStore(storeFile, rows, now)
+          }
         }
       }
       const line: Record<string, unknown> = {
