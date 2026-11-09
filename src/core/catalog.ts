@@ -1,5 +1,7 @@
-/** The operation catalog. It imports node: modules, ./guards, the operation files in ./ops, and types from ../metrics. */
+/** The operation catalog. It imports node: modules, ./chat, ./guards, the operation files in ./ops, and types from ../metrics and ../once. */
 import type { ManagerUsage, RunRecord } from '../metrics'
+import type { ModelCall, ModelResult } from '../once'
+import * as chat from './chat'
 import { check, type Role } from './guards'
 import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
@@ -40,6 +42,8 @@ export type Port = {
   abort: (id: string | undefined) => void
   /** the bounded worker screen of a run; throws a reason when there is none */
   screen: (id: string | undefined) => Promise<string>
+  /** one async manager chat model call (src/once.ts runModelAsync); a fake in tests */
+  chatModel: (c: ModelCall) => Promise<ModelResult>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -232,7 +236,7 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** The 25 operations cover the client port, board, catalog and parity fixture. */
+/** The 27 operations cover the client port, board, catalog and parity fixture. */
 export const CATALOG: Op[] = makeCatalog([
   {
     ...local(
@@ -316,6 +320,35 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     async (_, i) => ({ code: 0, out: (i.text as string) + '\n', err: '' }),
+  ),
+  {
+    ...local(
+      {
+        name: 'chat.send',
+        summary: 'Send a message to the manager chat and wait for its answer.',
+        method: 'POST',
+        path: '/v1/conversations/:id',
+        inputs: [
+          f('id', 'id', true, 'the conversation id'),
+          f('text', 'text', true, 'the message to the manager'),
+          f('front', 'enum', true, 'the front end that sends', ['cli', 'web', 'claude-mod', 'herdr-mod']),
+        ],
+      },
+      'json',
+      (c, i) => chat.send(c, { id: i.id as string, text: i.text as string, front: i.front as chat.Front }),
+    ),
+    long: true,
+  },
+  local(
+    {
+      name: 'chat.show',
+      summary: 'Show a manager conversation: its session and its turns.',
+      method: 'GET',
+      path: '/v1/conversations/:id',
+      inputs: [f('id', 'id', true, 'the conversation id')],
+    },
+    'json',
+    (c, i) => inProc(print => print(JSON.stringify(chat.show(c.home, i.id as string)))),
   ),
   local(
     {
