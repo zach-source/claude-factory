@@ -466,6 +466,19 @@ export function backup(
     release()
   }
   try {
+    // d289.20: local commits that the remote refused (for example GH001) must not go up again.
+    // If the remote tip is absent or an ancestor of HEAD, push one commit of the HEAD tree on that tip
+    const tip = remoteTip(cfg)
+    if (tip && typeof tip === 'object') return fail(tip.error)
+    const parent = git(cfg, ['rev-parse', '--verify', '-q', 'HEAD^']).out
+    const behind = !tip || git(cfg, ['merge-base', '--is-ancestor', tip, 'HEAD']).ok
+    if (behind && tip !== sha && parent !== (tip ?? '')) {
+      const msg = git(cfg, ['log', '-1', '--format=%B', 'HEAD']).out
+      const c = git(cfg, ['commit-tree', 'HEAD^{tree}', ...(tip ? ['-p', tip] : []), '-m', msg])
+      if (!c.ok) return fail(`git commit-tree: ${c.err}`)
+      git(cfg, ['update-ref', `refs/heads/${cfg.branch}`, c.out])
+      sha = c.out
+    }
     const push = git(cfg, ['push', '-q', remote, `HEAD:refs/heads/${cfg.branch}`], PUSH_MS)
     if (!push.ok) return fail(`git push: ${push.err.split('\n').at(-1)}`)
     // blob sizes come from the tree: a file that left the work tree after the commit cannot break this

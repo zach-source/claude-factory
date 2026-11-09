@@ -7,6 +7,7 @@ minor release may change the factory format, the CLI or the run state.
 ## Unreleased
 
 - Added: the worker and manager images have herdr core (`hc` 0.1.19, pinned by sha256), so the Herdr app can reach an AX task with `hc machine add` (docs/remote-runner.md, Attach with the Herdr app).
+- Fixed: after GitHub refused an AX manager home backup push, each later push sent the refused commit again and failed (claude-factory-d289.20). Now the backup pushes one commit of the current tree on the remote tip, or a root commit if the remote branch is absent.
 - Fixed: GitHub refused the AX manager home backup push (GH001: a file over 100 MB) (claude-factory-d289.19).
   - Now the backup stores each file over 50 MB as gzip, at `<path>.gz`, after the secret scan.
   - `home/.backup-gz.json` in the branch names these paths. The restore unzips only these, back to `<path>`.
