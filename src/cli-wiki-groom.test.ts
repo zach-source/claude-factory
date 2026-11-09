@@ -629,19 +629,16 @@ for (const exit of [0, 1]) {
       )
       const r = groom()
       expect(r.code).toBe(0)
-      expect(wikiLog()).toContain('wiki groom: repo config not allowed, nothing committed')
-      const br = `groom/${today()}`
+      // f1zc: the .git guard runs first, puts the config back and lets the cleanup finish
+      expect(wikiLog()).toContain('wiki groom: .git changed in the pass, nothing committed')
       expect(git('rev-list', '--count', 'refs/remotes/origin/main..HEAD')).toBe('0')
       expect(bareGit('branch', '--list', 'groom/*')).toBe('')
       expect(run(['git', '-C', e, 'branch', '--list', 'groom/*']).out.trim()).toBe('')
       expect(creates()).toHaveLength(0)
       expect(existsSync(join(home, 'wiki-state.json')) && 'groomPr' in state()).toBe(false)
-      expect(git('symbolic-ref', 'HEAD')).toBe(`refs/heads/${br}`)
+      expect(git('symbolic-ref', 'HEAD')).toBe('refs/heads/main')
       expect(existsSync(marker)).toBe(false)
-      const calls = claudeCalls().length
-      groom()
-      expect(wikiLog()).toContain('wiki groom: repo config not allowed, skipped')
-      expect(claudeCalls().length).toBe(calls)
+      expect(readFileSync(join(wiki(), '.git', 'config'), 'utf8')).not.toContain('insteadOf')
     },
     SLOW,
   )
