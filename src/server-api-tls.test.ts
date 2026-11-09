@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { main as clientMain } from './client'
+import type { Port } from './core/catalog'
 import { parseFlags, serve } from './server'
 import { sign } from './tokens'
 import { clientHandler, personCerts, type RunResult } from './server-api'
@@ -43,9 +44,31 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, 
     if (delayMs) await Bun.sleep(delayMs)
     return { code: 0, out: '{"ok":1}\n', err: '', ...({} as object) }
   }
+  // the moved reads run in process: status and prs answer here, the other port functions must not run
+  const port = new Proxy(
+    {
+      status: async (_id: unknown, print: (l: string) => void) => {
+        calls.push(['status'])
+        if (delayMs) await Bun.sleep(delayMs)
+        print('{"ok":1}')
+      },
+      prs: async () => {
+        calls.push(['prs'])
+        if (delayMs) await Bun.sleep(delayMs)
+        return { ok: 1 }
+      },
+    },
+    {
+      get: (t, k) =>
+        (t as Record<string, unknown>)[k as string] ??
+        (() => {
+          throw new Error(`port.${String(k)} must not be called`)
+        }),
+    },
+  ) as unknown as Port
   const home = tmp()
   let s: ReturnType<typeof serve>
-  const handle = clientHandler({ home, run, board: () => s.board() })
+  const handle = clientHandler({ home, run, port, board: () => s.board() })
   s = serve({
     home,
     port: 0,

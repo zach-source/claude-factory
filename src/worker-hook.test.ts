@@ -1063,6 +1063,87 @@ test(
   FIND_MS,
 )
 
+// claude-factory-qn8a.15: a dynamic word in a find exec slot can expand to sh -c, so the guard
+// reads each later slot word as a script.
+const Q15_GATE = { headOf: () => 'factory/x', originHead: () => 'main' }
+const q15 = (c: string) => denyReason(c, '/root/repo', ['gtr'], Q15_GATE)
+
+test.each([
+  'find . -exec $X "rm -rf /" {} +',
+  'find . -exec $X "rm -rf /" +',
+  'find . -execdir $X "rm -rf /" {} +',
+  'find . -ok $X "rm -rf /" {} +',
+  'find . -okdir $X "rm -rf /" {} +',
+  "find . -exec $X 'rm -rf /' {} +",
+  'find . -exec ${X} "rm -rf /" {} +',
+  'find . -name f -exec $X "rm -rf /" {} +',
+  'find . -exe? $X "rm -rf /" {} +',
+  'find . -exec env $X "rm -rf /" {} +',
+  'find . -exec sudo -u root $X "rm -rf /" {} +',
+  'find . -exec {sh,-c} "rm -rf /" {} +',
+  'find . -exec $X "a b" "rm -rf /" {} +',
+  'find . -exec $X a + "rm -rf /" {} +',
+  'gfind . -exec $X "rm -rf /" {} +',
+])('denyReason denies %s (claude-factory-qn8a.15)', cmd => {
+  expect(q15(cmd)).toBe(REASON)
+})
+
+test.each([
+  'gfind / -delete -exec $X "rm -rf /" {} +',
+  'gfind / -delete -exec $X "git push origin main" {} +',
+  'busybox find / -delete -exec $X "rm -rf /" {} +',
+  'bfs / -delete -exec $X "rm -rf /" {} +',
+  'command gfind / -delete -exec $X "rm -rf /" {} +',
+  'sudo gfind / -delete -exec $X "rm -rf /" {} +',
+])('denyReason denies %s (claude-factory-qn8a.15.4)', cmd => {
+  expect(q15(cmd)).toBeDefined()
+})
+
+test('denyReason denies a dynamic find exec head with git push in the script (claude-factory-qn8a.15)', () => {
+  expect(q15('find . -exec $X "git push origin main" {} +')).toBeDefined()
+})
+
+test.each([
+  'find . -exec $X {} +',
+  'find . -exec $FMT "a b" {} +',
+  'find . -exec $X "echo hi" {} +',
+  'find . -exec $X "ls -la" {} +',
+  'find . -name "*.ts" -exec $PRETTIER --write {} +',
+  'find . -name "*.go" -exec $GOFMT -l {} +',
+  'find . -exec grep -l $PAT {} +',
+  'find . -exec ls "rm -rf /" {} +',
+  'find . -exec $X {} + -exec echo "a b" {} +',
+  'find . -exec $X {} + -exec $Y {} +',
+  'find . -exec $X {} + -name "rm -rf a"',
+  "find src -name '*.ts' -exec $EDITOR {} +",
+  "find . -exec $X 'a=b' {} +",
+])('denyReason allows %s (claude-factory-qn8a.15)', cmd => {
+  expect(q15(cmd)).toBeUndefined()
+})
+
+test.each(['find . -exec $X {} \\; -name "rm -rf a"', 'find . -exec $FMT "a b" {} \\;'])(
+  'denyReason keeps SHELL_ALIAS_DEFINE_REASON for %s (claude-factory-qn8a.15)',
+  cmd => {
+    expect(q15(cmd)).toBe(SHELL_ALIAS_DEFINE_REASON)
+  },
+)
+
+test.each([
+  'find . -exec eval "rm -rf /" {} +',
+  'find . -exec sh -c "rm -rf /" +',
+  'find . -exec rm -rf / {} +',
+  'find . -exec $X rm -rf / {} +',
+  'find . -exec $X -c "rm -rf /" {} +',
+])('denyReason keeps denying %s (claude-factory-qn8a.15)', cmd => {
+  expect(q15(cmd)).toBe(REASON)
+})
+
+test('denyReason reads a 1300-word dynamic find exec slot fast (claude-factory-qn8a.15)', () => {
+  const t = Date.now()
+  expect(q15('find . -exec $X ' + '"a b" '.repeat(1300) + '{} +')).toBeUndefined()
+  expect(Date.now() - t).toBeLessThan(1000)
+}, 30_000)
+
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 
 // claude-factory-3f2z.2: `cwd` sets the filesystem cwd of the spawned hook process. It does not
