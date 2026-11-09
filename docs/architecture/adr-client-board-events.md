@@ -130,7 +130,7 @@ Extend the existing test files; no new test framework is needed.
   Valid finite GET and POST responses, request idle limits, and action idempotency still pass their existing tests.
 - **AC7: Contract and checks.** Update `specs/004-factory-server/contracts/client-api.md` with the decisions above.
   Remove only the obsolete events-404 claim and explain stream connection lifetime.
-  Add one bullet at the end of Unreleased in CHANGELOG.md.
+  The release station adds one bullet at the end of Unreleased in CHANGELOG.md.
   Required checks on the final head must pass: test, plugin, typecheck, and format.
   Run `bun audit`, the repository gate, and `gitleaks detect --log-opts=origin/main..HEAD`.
   Record each unavailable local check; do not claim a pass from an unfinished command.
@@ -196,8 +196,99 @@ No AC is must-see-live. Deterministic fake-tick tests prove the feature when pro
    Check: the focused command fails on missing behavior, with the existing access checks still intact.
 2. `claude-factory-bb05.1`: Add tick publication, the bounded ring, the query check, stream transport, and resource tests.
    Check: AC1 through AC6 pass with the focused command; run typecheck and format on the changed code.
-3. `claude-factory-bb05.3`: Update the client contract and Unreleased entry; run the complete final checks.
+3. `claude-factory-bb05.3`: Update the client contract; run the complete final checks. Release owns the Unreleased entry.
    Check: AC7 passes and the final pull request head has all required checks green.
 
 The three commits fit one 120-minute implement pass.
 No other bead must land first, and no known production defect becomes worse through this plan.
+
+## Revision after four implement rounds
+
+This section defines the remaining work. AC1 through AC7 and the product design above remain in force.
+The original tasks and review tasks through `claude-factory-bb05.8` are closed.
+Do not repeat their implementation or the initial red-test commit.
+Keep draft PR #770 and this branch. Do not open another pull request.
+
+At head `4694be2f`, the focused command passes 179 tests with 586 assertions.
+Commit `cb3d384b` contains the latest test change; `4694be2f` merges main after that change.
+The journal reversed these two roles in its fourth implement report.
+
+### Cause of the repeated reviews
+
+The tests mixed replay evidence with live-delivery evidence.
+The two tests at `src/server-api-tls.test.ts:339` use 50 ms ticks without control from the reader.
+Both can receive every frame from history, yet pass assertions that claim live delivery.
+Earlier duplicate checks stopped reads before the final assertion, so later chunks escaped those checks.
+Review also found untested transport branches; the controlled socket tests now cover those branches.
+
+The latest barrier test at `src/server-api-tls.test.ts:402` proves headers before the first tick completes.
+It also proves two live frames and EOF after server stop.
+It starts with empty history, so it does not itself prove the replay-to-live boundary.
+The handler test `replay then live, each event once` covers that boundary without the TLS transport.
+No definite product defect remains from these observations.
+
+### Narrow test design
+
+Replace the two timed TLS delivery tests with one controlled replay-to-live test in the same file.
+Keep the pre-tick header test and all access, query, history, and transport checks.
+Use the existing disposable certificates, random ports, and openssl client pattern.
+Use one active stdout reader per client and parse complete blank-line-delimited frames across arbitrary chunks.
+Flush the UTF-8 decoder at EOF. Do not infer event counts from socket chunk counts.
+Use bounded deadlines for each wait. A timeout or early EOF must fail the test.
+
+The test `controlled replay crosses into live delivery once` must follow this sequence:
+
+1. Hold each fake tick until the test releases it. Observe publication before the next step.
+2. Publish board 1 with UTF-8 text. Confirm that the board route exposes board 1.
+3. Open clients A and B with `after=0`. Read their headers and complete replay frame 1.
+4. Keep both readers active. Release board 2 with a nested field change.
+5. Require complete live frame 2 on both clients before another tick can complete.
+6. Open client C with `after=1`. Require replay frame 2, without frame 1.
+7. Release a null board. Require live frame 3 with JSON `null` on A, B, and C.
+8. Release another null board. Wait for that tick to complete; it must add no event.
+9. Release a distinct final marker board. Require frame 4 on all three clients before server stop.
+10. Stop the server and read through EOF. Assert exact complete frame arrays: A/B `[1,2,3,4]`, C `[2,3,4]`.
+
+The final marker proves delivery after the equal tick through the same ordered stream.
+All three clients must receive the same payload for each shared id.
+Assert exact payloads, headers, ids, UTF-8 text, and frame separators, as AC3 already requires.
+Duplicate, absent, stale-cursor, partial, and extra frames must fail the exact-array assertions.
+Do not create a heartbeat or another product event type for the marker; use an ordinary fake board.
+Use `finally` to release pending ticks, stop servers, cancel readers, and kill and await child processes.
+Also destroy the fake socket after the existing header-pressure assertion at `src/server-api-handler.test.ts:609`.
+Assert that its subscriber count reaches zero.
+
+This replaces evidence with stronger evidence; it removes no acceptance requirement or denied input row.
+Do not add a generic stream framework, product API, dependency, or production change for this test.
+Keep the optional lazy event-state optimization outside this pass; it does not block the feature.
+Another transport rewrite would increase risk without a known defect to fix.
+
+### Remaining task and proof
+
+The remaining task, `claude-factory-bb05.9`, is one test commit within one 120-minute implement pass.
+Its files are `src/server-api-tls.test.ts` and `src/server-api-handler.test.ts` only.
+
+First add the controlled test and confirm that it passes the current implementation.
+Commit the test before mutation checks. The initial absent-route red tests already exist in the journal.
+Prove the new test fails for each isolated, buildable defect:
+
+- Remove live subscriber registration at `subs.add(sub)`; replay works, but required live frames fail.
+- Enqueue each replay frame twice; exact frame arrays fail, even when duplicates arrive in separate chunks.
+- Remove the equal-board early return; the final marker has the wrong id and the frame arrays fail.
+
+Use the factory mutation command, or restore each manual mutation before the next one.
+Record the failing assertion or deadline for each mutant. A compile error is not proof.
+Confirm a clean worktree after each manual restoration.
+Then run the focused command, `bun x tsc --noEmit`, and Prettier 3.9.9 on both test files.
+Verify must inspect the barriers and exact-array assertions, not only the test names or pass count.
+Review must map this test to AC3 and the existing controlled socket tests to AC5.
+Run the AC7 gates on the final head; no required check can remain red by design.
+
+### Risk, release, and scope
+
+The remaining commit changes test evidence and cleanup only. It adds no migration, flag, or public behavior.
+The original security review remains required because the complete pull request changes query input and authenticated transport.
+Rollout, rollback, and ship observability remain as specified above. No AC is must-see-live.
+No owner action or other bead must complete before this test task.
+No known production defect becomes worse. No separate feature split is needed.
+Security-sensitive: yes (query input and authenticated stream transport)
