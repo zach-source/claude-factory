@@ -16,3 +16,4 @@ mod/tsconfig.json
 herdr/mods/*/*.d.ts
 herdr/mods/*/jsconfig.json
 /result
+.devenv/
