@@ -21,6 +21,10 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   { key: 'kubectl', env: 'FACTORY_KUBECTL', default: 'kubectl' },
   // a non-number makes Number() give NaN, and NaN removes the run cap (cli.ts)
   { key: 'max-runs', env: 'FACTORY_MAX_RUNS', default: '16', check: /^[1-9][0-9]*$/ },
+  // a launch uses cursor only while the weekly pool is under this percent (src/cursor-meter.ts); a number from 0 to 100
+  { key: 'cursor.cap', env: 'FACTORY_CURSOR_CAP', default: '60', check: /^(100|[1-9]?[0-9])$/ },
+  // an optional dollar cap on the Grok spend of the last 7 days (src/grok-meter.ts); unset means no gate
+  { key: 'grok.weeklyBudgetUsd', env: 'FACTORY_GROK_WEEKLY_BUDGET_USD', check: /^\d+(\.\d+)?$/ },
   { key: 'image.registry' },
   { key: 'image.builder' },
   { key: 'token.read' },

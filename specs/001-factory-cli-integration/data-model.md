@@ -50,6 +50,8 @@ A copy of `rigs.json` in `rigs-history/<timestamp>.json`. The newest 20 stay. A 
 | `ax.env`               | `FACTORY_AX_ENV`             | Path of the extra env JSON file             |
 | `kubectl`              | `FACTORY_KUBECTL`            | Default `kubectl`                           |
 | `max-runs`             | `FACTORY_MAX_RUNS`           | Default 16                                  |
+| `cursor.cap`           | `FACTORY_CURSOR_CAP`         | Weekly Cursor pool percent. Default 60      |
+| `grok.weeklyBudgetUsd` | `FACTORY_GROK_WEEKLY_BUDGET_USD` | Weekly Grok spend in dollars. Unset: no gate |
 | `image.registry`       | none                         | Used by `image build`                       |
 | `image.builder`        | none                         | Used by `image build`                       |
 | `token.read`           | none                         | Shell command. Prints one field value.      |

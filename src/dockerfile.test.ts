@@ -91,6 +91,24 @@ test('the worker image pins codex unified_exec off, since write_stdin skips the 
   expect(worker.indexOf('/etc/codex/requirements.toml')).toBeGreaterThan(worker.indexOf('@openai/codex@'))
 })
 
+test('the worker image pins cursor-agent to a version and links it, so the CLI cannot update itself in the VM', () => {
+  const worker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  expect(worker).toMatch(/^ARG CURSOR_VERSION=\d{4}\.\d+\.\d+-[0-9a-f]+$/m)
+  expect(worker).toContain(
+    'https://downloads.cursor.com/lab/${CURSOR_VERSION}/linux/x64/agent-cli-package.tar.gz',
+  )
+  expect(worker).toContain(
+    'ln -s /opt/cursor-agent/${CURSOR_VERSION}/cursor-agent /usr/local/bin/cursor-agent',
+  )
+})
+
+test('the worker image pins grok to a version and turns its updater off', () => {
+  const worker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  expect(worker).toMatch(/^ARG GROK_VERSION=\d+\.\d+\.\d+$/m)
+  expect(worker).toContain('@xai-official/grok@${GROK_VERSION}')
+  expect(worker).toContain('ENV GROK_DISABLE_AUTOUPDATER=1')
+})
+
 // 823x: nix-shell -p read the base image's channel (go1.23) while the pin held go 1.26
 const workerStage = () => {
   const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
