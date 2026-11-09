@@ -30,7 +30,7 @@ export function check(command: string, role: Role): Verdict {
     return {
       decision: 'deny',
       reason:
-        'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first',
+        'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
     }
   return { decision: 'allow' }
 }
