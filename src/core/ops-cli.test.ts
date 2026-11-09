@@ -172,7 +172,9 @@ beforeAll(() => {
         protectedBranches: ['main'],
         mergeAuthority: true,
         mcp: '/x/mcp.json',
-        params: { tier: 'small' },
+        params: { tier: 'small', FOO: 'zqsecret', API_KEY: 'zqsecret', empty: '' },
+        env: { FOO: 'zqsecret' },
+        beadsRemote: 'https://user:zqsecret@example.test/x',
         linear: { team: ['T1'], projects: ['p1'], labels: ['l1'] },
       },
       {
@@ -302,7 +304,7 @@ const GOLD: Record<string, Row> = {
   },
   n2: {
     code: 0,
-    out: 'alpha  <RA>  lifecycle  busy 0/2  sweeps none\n  goal: ship acme\n  slo: true\n  drift: true\n  agent: claude\n  person-only contexts: acme-prod\n  protected branches: main\n  merge authority: ship release station, no origin: off\n  mcp: /x/mcp.json\n  param tier: small\n  linear: team T1, projects p1, labels l1 (pulled 3, unrouted 1, 10m ago, list truncated at 50 pages)\nbeta  <RB>  lifecycle  busy 0  sweeps s1,s2\n  merge authority: ship release station, acme/widget\n  linear: team T2 (error 10m ago: boom)\ngamma  <RG>  lifecycle  busy 0  sweeps tidy\ndelta  <REPO>  lifecycle  busy 1  sweeps none\ntown: busy 1/16, stuck 0\n',
+    out: 'alpha  <RA>  lifecycle  busy 0/2  sweeps none\n  goal: ship acme\n  slo: true\n  drift: true\n  agent: claude\n  person-only contexts: acme-prod\n  protected branches: main\n  merge authority: ship release station, no origin: off\n  mcp: /x/mcp.json\n  param tier: <hidden>\n  param FOO: <hidden>\n  param API_KEY: <hidden>\n  param empty: <hidden>\n  linear: team T1, projects p1, labels l1 (pulled 3, unrouted 1, 10m ago, list truncated at 50 pages)\nbeta  <RB>  lifecycle  busy 0  sweeps s1,s2\n  merge authority: ship release station, acme/widget\n  linear: team T2 (error 10m ago: boom)\ngamma  <RG>  lifecycle  busy 0  sweeps tidy\ndelta  <REPO>  lifecycle  busy 1  sweeps none\ntown: busy 1/16, stuck 0\n',
     err: '',
   },
   m: {
@@ -375,6 +377,13 @@ test('the server answers the CLI bytes for the rig list', () => {
   expect(a).toEqual({ status: 200, body: GOLD.n2!.out })
   const [b] = serverGet(H0, ['/v1/rigs'])
   expect(b).toEqual({ status: 200, body: GOLD.n0!.out })
+})
+
+test('rigs.list hides every param value', () => {
+  const [a] = serverGet(H2, ['/v1/rigs'])
+  expect(a!.body).not.toContain('zqsecret')
+  for (const k of ['tier', 'FOO', 'API_KEY', 'empty']) expect(a!.body).toContain(`param ${k}: <hidden>`)
+  expect(a!.body).not.toContain('small')
 })
 
 test('a refusal of the server holds the CLI stderr line', () => {

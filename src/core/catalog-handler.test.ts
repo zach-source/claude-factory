@@ -225,6 +225,79 @@ describe('input checks', () => {
     const r = await get(setup(() => 'idle').h, '/v1/board')
     expect(r.headers.get('content-type')).toBe('application/json')
   })
+  test('board.show omits private rig fields', async () => {
+    const rig = {
+      name: 'alpha',
+      repo: 'acme/widget',
+      factory: 'lifecycle',
+      maxRuns: 0,
+      sweeps: [],
+      goal: 'ship acme',
+      runner: 'ax',
+      sandboxClass: 'gvisor',
+      linear: { team: ['T1'], projects: ['p1'], labels: ['l1'], zqExtra: 'zqsecret' },
+      linearSync: {
+        at: 5,
+        pulled: 3,
+        created: 1,
+        updated: 2,
+        stripped: 0,
+        unrouted: 1,
+        error: 'boom',
+        zqExtra: 'zqsecret',
+      },
+      env: { FOO: 'zqsecret', API_KEY: 'zqsecret' },
+      params: { FOO: 'zqsecret', API_KEY: 'zqsecret' },
+      beadsRemote: 'https://user:zqsecret@example.test/x',
+      zqUnknown: 'zqsecret',
+    }
+    const bare = { name: 'beta', repo: 'acme/gadget', factory: 'lifecycle', env: { FOO: 'zqsecret' } }
+    const { h, calls, logs } = setup(() => ({ runs: [{ id: 'r1' }], halt: null, rigs: [rig, bare] }))
+    const r = await get(h, '/v1/board')
+    const text = await r.text()
+    expect(r.status).toBe(200)
+    expect(text).not.toContain('zqsecret')
+    for (const k of ['env', 'params', 'beadsRemote', 'zqUnknown', 'zqExtra']) expect(text).not.toContain(k)
+    const body = JSON.parse(text)
+    expect(body.runs).toEqual([{ id: 'r1' }])
+    expect(body.rigs[0]).toEqual({
+      name: 'alpha',
+      repo: 'acme/widget',
+      factory: 'lifecycle',
+      maxRuns: 0,
+      sweeps: [],
+      goal: 'ship acme',
+      runner: 'ax',
+      sandboxClass: 'gvisor',
+      linear: { team: ['T1'], projects: ['p1'], labels: ['l1'] },
+      linearSync: { at: 5, pulled: 3, created: 1, updated: 2, stripped: 0, unrouted: 1, error: 'boom' },
+    })
+    expect(body.rigs[1]).toEqual({ name: 'beta', repo: 'acme/gadget', factory: 'lifecycle' })
+    expect(calls).toEqual([])
+    expect(logs.join('')).not.toContain('zqsecret')
+  })
+  test('board.show projection preserves internal state', async () => {
+    const src = Object.freeze({
+      runs: [],
+      rigs: Object.freeze([{ name: 'a', repo: 'r', factory: 'f', env: { FOO: 'zqsecret' } }]),
+    })
+    const { h } = setup(() => src)
+    await get(h, '/v1/board')
+    expect(await (await get(h, '/v1/board')).json()).toEqual({
+      runs: [],
+      rigs: [{ name: 'a', repo: 'r', factory: 'f' }],
+    })
+    expect(src.rigs[0]!.env.FOO).toBe('zqsecret')
+    expect(await (await get(setup(() => ({ runs: [] })).h, '/v1/board')).json()).toEqual({ runs: [] })
+    expect(await (await get(setup(() => ({ rigs: [] })).h, '/v1/board')).json()).toEqual({ rigs: [] })
+  })
+  test('board.show fails on a malformed rig without echoing it', async () => {
+    for (const rigs of ['zqsecret', { x: 'zqsecret' }, ['zqsecret'], [null]]) {
+      const r = await get(setup(() => ({ rigs })).h, '/v1/board')
+      expect(r.status).toBe(500)
+      expect(await r.text()).not.toContain('zqsecret')
+    }
+  })
   test('the board gives 503 before the first tick', async () => {
     expect((await get(setup().h, '/v1/board')).status).toBe(503)
   })
