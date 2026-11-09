@@ -204,6 +204,8 @@ const brokerEnvProblems = (server: Obj[], broker: Obj[]): string[] => {
 const brokerPolicyProblems = (broker: Obj[], server: Obj[]): string[] => {
   const np = find(broker, 'NetworkPolicy')
   const dep = find(server, 'Deployment')
+  const svc = find(broker, 'Service')
+  const port = svc.spec.ports[0].targetPort
   const want = [
     {
       from: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'ate-system' } } }],
@@ -216,14 +218,17 @@ const brokerPolicyProblems = (broker: Obj[], server: Obj[]): string[] => {
           podSelector: { matchLabels: dep.spec.template.metadata.labels },
         },
       ],
-      ports: [{ protocol: 'TCP', port: 8080 }],
+      ports: [{ protocol: 'TCP', port }],
     },
   ]
   const bad: string[] = []
   if (JSON.stringify(Object.keys(np.spec).sort()) !== '["ingress","podSelector","policyTypes"]')
     bad.push('spec keys')
   if (JSON.stringify(np.spec.policyTypes) !== '["Ingress"]') bad.push('policyTypes')
-  if (JSON.stringify(np.spec.ingress) !== JSON.stringify(want)) bad.push('ingress')
+  if (!Bun.deepEquals(np.spec.ingress, want, true)) bad.push('ingress')
+  const labels = find(broker, 'Deployment').spec.template.metadata.labels
+  if (!Bun.deepEquals(np.spec.podSelector, { matchLabels: labels }, true)) bad.push('podSelector')
+  if (!Bun.deepEquals(labels, svc.spec.selector, true)) bad.push('service selector')
   return bad
 }
 
@@ -247,7 +252,7 @@ test('the server pod sets FACTORY_POLICY_BROKER to the broker Service', () => {
   expect(brokerEnvProblems(server, broker)).toEqual([])
   const env = (m: (e: Obj[]) => Obj[]) => {
     const d = structuredClone(server)
-    const c = find(d, 'Deployment').spec.template.spec.containers[0]
+    const c = find(d, 'Deployment').spec.template.spec.containers.find((x: Obj) => x.name === 'server')
     c.env = m(c.env)
     return brokerEnvProblems(d, broker)
   }
@@ -257,7 +262,8 @@ test('the server pod sets FACTORY_POLICY_BROKER to the broker Service', () => {
       return l
     })
   expect(env(l => l.filter(e => e.name !== 'FACTORY_POLICY_BROKER'))).not.toEqual([])
-  expect(set(e => (e.value = 'http://other.factory-broker.svc:8080'))).not.toEqual([])
+  expect(set(e => (e.value = 'http://factory-policy-brokerx.factory-broker.svc:8080'))).not.toEqual([])
+  expect(env(l => [...l, { ...l.find(e => e.name === 'FACTORY_POLICY_BROKER')! }])).not.toEqual([])
   expect(set(e => (e.value = 'https://factory-policy-broker.factory-broker.svc:8080'))).not.toEqual([])
   expect(set(e => (e.value += '/'))).not.toEqual([])
   expect(set(e => (e.valueFrom = { secretKeyRef: { name: 'x', key: 'y' } }))).not.toEqual([])
@@ -273,6 +279,8 @@ test('the broker NetworkPolicy lets in ate-system and the server pod only', () =
     return brokerPolicyProblems(d, server)
   }
   const peer = (np: Obj) => np.spec.ingress[1].from[0]
+  expect(mut(np => (np.spec.podSelector.matchLabels.app = 'factory-policy-brokerx'))).not.toEqual([])
+  expect(mut(np => (np.spec.podSelector = {}))).not.toEqual([])
   expect(mut(np => delete peer(np).podSelector)).not.toEqual([])
   expect(
     mut(np => {
