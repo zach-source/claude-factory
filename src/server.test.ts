@@ -3,7 +3,8 @@ import type { Subprocess } from 'bun'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { claim, leaseFile, release, serve } from './server'
+import { backup } from './homebackup'
+import { claim, leaseFile, release, serve, serverBackupCfg } from './server'
 
 const dirs: string[] = []
 const lease = () => {
@@ -127,14 +128,32 @@ const env = (home: string) => {
   return { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1' }
 }
 const FAST = ['--port', '0', '--every-ms', '100', '--lease-ms', '1000']
-async function start(home: string) {
-  const p = Bun.spawn([CLI, 'server', ...FAST], { env: env(home), stdout: 'pipe', stderr: 'pipe' })
+async function start(home: string, extra: Record<string, string> = {}) {
+  const p = Bun.spawn([CLI, 'server', ...FAST], {
+    env: { ...env(home), ...extra },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
   kids.push(p)
-  const first = await p.stdout.getReader().read()
+  const reader = p.stdout.getReader()
+  const first = await reader.read()
   const text = new TextDecoder().decode(first.value)
   const m = /on :(\d+) as (\S+)/.exec(text)
   if (!m) throw new Error(`no start line: ${text}`)
-  return { p, port: Number(m[1]), holder: m[2]! }
+  /** wait `ms` ms, then give all text after the first chunk */
+  let buf = ''
+  void (async () => {
+    for (;;) {
+      const r = await reader.read()
+      if (r.done) return
+      buf += new TextDecoder().decode(r.value)
+    }
+  })()
+  const more = async (ms: number) => {
+    await sleep(ms)
+    return buf
+  }
+  return { p, port: Number(m[1]), holder: m[2]!, first: text, more }
 }
 const health = async (port: number) =>
   (await fetch(`http://127.0.0.1:${port}/healthz`)).json() as Promise<any>
@@ -285,4 +304,170 @@ test('a worker cannot run factory server', () => {
   const p = Bun.spawnSync([CLI, 'server', ...FAST], { env: e })
   expect(p.exitCode).not.toBe(0)
   expect(existsSync(leaseFile(home))).toBe(false)
+}, 30_000)
+
+test('a962 AC4: the start line says backup on or the off reason, and never the remote or the token', async () => {
+  const { ws, home } = wsHome()
+  const bk = bkEnv(home, 'eHE6enE=', { FACTORY_SERVER_BACKUP_REMOTE: join(ws, 'remote.git') })
+  const a = await start(home, bk)
+  const out = a.first + (await a.more(1000))
+  expect(out).toContain('backup on: branch server-home every 600000 ms')
+  expect(out).not.toContain('remote.git')
+  expect(out).not.toContain('eHE6enE=')
+  a.p.kill('SIGKILL')
+  const home2 = wsHome().home
+  const b = await start(home2, { ...bkEnv(home2, 'eHE6enE='), FACTORY_SERVER_BACKUP_BRANCH: 'manager-home' })
+  expect(b.first + (await b.more(1000))).toContain('backup off: bad branch')
+  const c = await start(wsHome().home)
+  expect(c.first + (await c.more(500))).not.toContain('backup')
+}, 30_000)
+
+// a962: server home backup config and loop
+const bkEnv = (home: string, auth: string | null, extra: Record<string, string> = {}) => {
+  const f = join(dirs[dirs.push(mkdtempSync(join(tmpdir(), 'server-auth-'))) - 1]!, 'basic')
+  if (auth !== null) writeFileSync(f, auth + '\n')
+  return {
+    FACTORY_SERVER_BACKUP_REMOTE: 'https://github.com/acme/widget.git',
+    FACTORY_SERVER_BACKUP_AUTH_FILE: f,
+    ...extra,
+  }
+}
+const wsHome = () => {
+  const ws = mkdtempSync(join(tmpdir(), 'server-ws-'))
+  dirs.push(ws)
+  const home = join(ws, 'home')
+  mkdirSync(join(home, 'runs'), { recursive: true })
+  writeFileSync(join(home, 'rigs.json'), '[]')
+  return { ws, home }
+}
+
+test('a962 AC2: serverBackupCfg is off unless every check passes, and no off text leaks the remote or the token', () => {
+  const { ws, home } = wsHome()
+  const on = bkEnv(home, 'eHE6enE=')
+  expect(serverBackupCfg({}, home)).toBeUndefined()
+  expect(serverBackupCfg({ FACTORY_SERVER_BACKUP_REMOTE: '' }, home)).toBeUndefined()
+  const off = (e: Record<string, string | undefined>, h = home) =>
+    (serverBackupCfg(e, h) as { off: string }).off
+  const BAD = 'backup off: the remote is not an https URL with no user info'
+  for (const r of [
+    'https://zqsecret@github.com/acme/widget.git',
+    'https://x:zqsecret@github.com/acme/widget.git',
+    'https://github.com/acme/w@x.git',
+    'git@github.com:acme/widget.git',
+    'ssh://github.com/acme/widget.git',
+    'http://github.com/acme/widget.git',
+    'https://github.com/acme/widget.git\nx',
+    'file:///tmp/r.git',
+  ])
+    expect(off({ ...on, FACTORY_SERVER_BACKUP_REMOTE: r })).toBe(BAD)
+  expect(
+    off({ ...on, FACTORY_SERVER_BACKUP_AUTH_FILE: undefined, FACTORY_SERVER_BACKUP_REMOTE: 'git@x:y' }),
+  ).toBe(BAD)
+  expect(off(on, join(ws, 'elsewhere'))).toBe('backup off: FACTORY_HOME is not <workspace>/home')
+  expect(off({ ...on, FACTORY_SERVER_BACKUP_BRANCH: 'manager-home' })).toBe('backup off: bad branch')
+  expect(off({ ...on, FACTORY_SERVER_BACKUP_BRANCH: 'a b' })).toBe('backup off: bad branch')
+  expect(off({ ...on, FACTORY_SERVER_BACKUP_AUTH_FILE: undefined })).toBe('backup off: no auth file')
+  const gone = join(ws, 'nope')
+  expect(off({ ...on, FACTORY_SERVER_BACKUP_AUTH_FILE: gone })).toBe(
+    `backup off: cannot read the auth file ${gone}`,
+  )
+  const o7 = off(bkEnv(home, 'zqsecret token!'))
+  expect(o7).toBe('backup off: the auth file is not base64')
+  expect(o7).not.toContain('zqsecret')
+  // on
+  const r = serverBackupCfg(on, home) as { cfg: any; everyMs: number }
+  expect(r.cfg).toMatchObject({
+    ws,
+    branch: 'server-home',
+    auth: 'eHE6enE=',
+    remote: on.FACTORY_SERVER_BACKUP_REMOTE,
+  })
+  expect(r.cfg.excludes).toContain('/home/server-lease.json*')
+  expect(r.everyMs).toBe(600_000)
+  for (const [v, ms] of [
+    ['59999', 600_000],
+    ['abc', 600_000],
+    ['60000', 60_000],
+  ] as const)
+    expect((serverBackupCfg({ ...on, FACTORY_SERVER_BACKUP_EVERY: v }, home) as any).everyMs).toBe(ms)
+})
+
+test('a962 AC2: the server config leaves the lease file out, so a second backup finds no change', () => {
+  const { ws, home } = wsHome()
+  const bin = join(ws, 'gitleaks')
+  writeFileSync(bin, "#!/bin/sh\necho '[]'\n", { mode: 0o755 })
+  const bare = mkdtempSync(join(tmpdir(), 'server-bare-'))
+  dirs.push(bare)
+  expect(Bun.spawnSync(['git', 'init', '-q', '--bare', bare]).exitCode).toBe(0)
+  const c = serverBackupCfg({ ...bkEnv(home, 'eHE6enE='), FACTORY_SERVER_BACKUP_REMOTE: bare }, home) as {
+    cfg: any
+  }
+  expect(backup({ ...c.cfg, gitleaks: bin }, true).error).toBeUndefined()
+  writeFileSync(join(home, 'server-lease.json'), '{"holder":"x","until":2}')
+  writeFileSync(join(home, 'server-lease.json.x.tmp'), 'x')
+  const o = backup({ ...c.cfg, gitleaks: bin }, true)
+  expect(o.error).toBeUndefined()
+  expect(o.changed).toBe(false)
+}, 60_000)
+
+test('a962 AC3: the backup timer runs only for the lease holder, one run at a time, and survives a failure', async () => {
+  const mk = (backupOpt: { everyMs: number; run: () => Promise<unknown> }, holder = 'a', home?: string) => {
+    const h = home ?? mkdtempSync(join(tmpdir(), 'server-bk-'))
+    if (!home) dirs.push(h)
+    const logs: string[] = []
+    const s = serve({
+      home: h,
+      port: 0,
+      everyMs: 50,
+      leaseMs: 1000,
+      holder,
+      log: l => logs.push(l),
+      tick: () => {},
+      backup: backupOpt,
+    })
+    return { s, h, logs }
+  }
+  // (0) the first run comes after everyMs
+  let n0 = 0
+  const z = mk({ everyMs: 200, run: async () => void n0++ })
+  await sleep(100)
+  expect(n0).toBe(0)
+  await z.s.stop()
+  // (a) a holder runs again and again
+  let na = 0
+  const a = mk({ everyMs: 50, run: async () => void na++ })
+  await sleep(400)
+  expect(na).toBeGreaterThanOrEqual(2)
+  await a.s.stop()
+  // (b) a run that never ends is not started a second time
+  let nb = 0
+  const b = mk({ everyMs: 50, run: () => (nb++, new Promise(() => {})) })
+  await sleep(400)
+  expect(nb).toBe(1)
+  await b.s.stop()
+  // (c) a server that waits for the lease never runs
+  let nc = 0
+  const h1 = mkdtempSync(join(tmpdir(), 'server-bk-'))
+  dirs.push(h1)
+  const c1 = mk({ everyMs: 50, run: async () => {} }, 'a', h1)
+  const c2 = mk({ everyMs: 50, run: async () => void nc++ }, 'b', h1)
+  await sleep(400)
+  expect(nc).toBe(0)
+  await c2.s.stop()
+  await c1.s.stop()
+  // (d) a failure is logged and the loop goes on
+  let nd = 0
+  const d = mk({ everyMs: 50, run: () => (nd++, Promise.reject(new Error('exit 3'))) })
+  await sleep(400)
+  expect(nd).toBeGreaterThanOrEqual(2)
+  expect(d.logs).toContain('backup failed: exit 3')
+  await d.s.stop()
+  // (e) after stop() no run starts
+  let ne = 0
+  const e = mk({ everyMs: 50, run: async () => void ne++ })
+  await sleep(200)
+  await e.s.stop()
+  const at = ne
+  await sleep(200)
+  expect(ne).toBe(at)
 }, 30_000)
