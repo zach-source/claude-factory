@@ -156,7 +156,7 @@ import {
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
 import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
-import { INSTALL_VERB, META_WRITE, bdWrite, gatedCommand } from '../mod/hooks/view'
+import { check } from './core/guards'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -8922,23 +8922,6 @@ const liveBeadIdSet = () =>
     }),
   )
 
-/** Checks `plan.json`'s shape before any caller reads `rigs` or `proposals`.
- * A hand-edited or truncated file can miss one of these fields.
- * Without this check, `orderByPlan` or `planShowText` would then throw (claude-factory-dun.17d).
- * `plan set` itself always writes the full shape. */
-function isValidPlanShape(p: unknown): p is plan.Plan {
-  if (!p || typeof p !== 'object') return false
-  const o = p as Record<string, unknown>
-  return (
-    typeof o.at === 'number' &&
-    !!o.rigs &&
-    typeof o.rigs === 'object' &&
-    !Array.isArray(o.rigs) &&
-    Object.values(o.rigs as Record<string, unknown>).every(plan.isValidRigPlan) &&
-    Array.isArray(o.proposals)
-  )
-}
-
 /** the pm's plan, read once per `dispatch()` pass: missing, corrupt, malshaped or stale
  * (`!plan.isFresh`) all read as no plan, so dispatch falls back to today's order
  * (claude-factory-dun.3, .17d). */
@@ -8946,7 +8929,7 @@ function freshPlanOrUndefined(): plan.Plan | undefined {
   if (!existsSync(planFile())) return undefined
   try {
     const p: unknown = JSON.parse(readFileSync(planFile(), 'utf8'))
-    if (!isValidPlanShape(p)) return undefined
+    if (!plan.isValidPlanShape(p)) return undefined
     return plan.isFresh(p, Date.now()) ? p : undefined
   } catch {
     return undefined
@@ -9903,18 +9886,8 @@ async function patrolGuard() {
     process.exitCode = 2 // Claude Code reads exit 2 as a deny and shows stderr to the model
   }
   if (typeof command !== 'string') return deny('the hook input has no Bash command')
-  const joined = command.replace(/\\\n/g, '')
-  const gated = gatedCommand(command)
-  if (gated) return deny(`${gated.deny} A patrol never decides this: leave it for the person.`)
-  if (INSTALL_VERB.test(joined))
-    return deny(
-      'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
-    )
-  if (META_WRITE.test(joined)) return deny('a subagent never writes bead metadata')
-  if (bdWrite(joined))
-    return deny(
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
-    )
+  const verdict = check(command, 'subagent')
+  if (verdict.decision === 'deny') return deny(verdict.reason)
 }
 
 /**
@@ -10110,7 +10083,7 @@ function planShowText(): string {
   } catch (err) {
     return `plan.json: ${(err as Error).message}`
   }
-  if (!isValidPlanShape(raw)) return 'plan.json: missing or malformed rigs/proposals'
+  if (!plan.isValidPlanShape(raw)) return 'plan.json: missing or malformed rigs/proposals'
   const p: plan.Plan = raw
   const now = Date.now()
   const age = Math.round((now - p.at) / 60_000)

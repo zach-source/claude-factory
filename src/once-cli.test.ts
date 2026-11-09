@@ -161,20 +161,43 @@ test('patrol --once refuses codex', () => {
 
 test('patrol-guard denies the subagent verbs and allows reads', () => {
   const guard = (command: string) => factory(['patrol-guard'], JSON.stringify({ tool_input: { command } }))
-  for (const bad of [
-    'bd label add x y',
-    'factory decide r1 ok',
-    'factory skills install x',
-    'bd update x --set-metadata a=b',
-    'bd comment x y --actor p',
-    'bd comments add x y -a p',
-    'BEADS_ACTOR=p bd comment x y',
-  ]) {
+  for (const [bad, reason] of [
+    [
+      'bd label add x y',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+    ],
+    [
+      'factory decide r1 ok',
+      'The person did not confirm this gate decision. Ask them which outcome they want. A patrol never decides this: leave it for the person.',
+    ],
+    [
+      'factory skills install x',
+      'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
+    ],
+    ['bd update x --set-metadata a=b', 'a subagent never writes bead metadata'],
+    [
+      'bd comment x y --actor p',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+    ],
+    [
+      'bd comments add x y -a p',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+    ],
+    [
+      'BEADS_ACTOR=p bd comment x y',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+    ],
+  ] as const) {
     const r = guard(bad)
     expect([bad, r.code]).toEqual([bad, 2])
-    expect(r.err).not.toBe('')
+    expect(r.err).toBe(reason + '\n')
   }
   for (const ok of ['factory status', 'bd show x']) expect([ok, guard(ok).code]).toEqual([ok, 0])
+  expect(factory(['patrol-guard'], '{}')).toEqual({
+    code: 2,
+    out: '',
+    err: 'the hook input has no Bash command\n',
+  })
 })
 
 test('pm --once applies the last fenced json answer', () => {
