@@ -480,6 +480,8 @@ The command holds `tick.lock` and writes `<dir>` first, `rigs.json` last. It cha
 
 The factory does not do the steps that start with "Owner".
 
+Owner: do not do step 1 with an image that holds the split, and do not do steps 3 to 5. First, claude-factory-4z8f must close, or a person accepts in a bd comment that the two memory copies diverge. With such an image, a server whose home holds a non-AX rig exits 1. Before the roll, read the pod home rig list (`kubectl -n factory exec deploy/factory-server -- cat /var/lib/factory/home/rigs.json`) and remove each rig whose runner is not `ax`.
+
 1. Owner: make the namespace, the PVC and the Secrets of `deploy/server.yaml` (`factory-github`). Make the gateway route for port 8444. If a rig has a `beadsRemote`, make Secret `factory-dolt-remote` with key `password`. Apply it: `envsubst '$SERVER_IMAGE $CLIENT_GATEWAY_NAMESPACE' < deploy/server.yaml | kubectl apply -f -`.
 2. Owner: stop the laptop manager, `factory loop` and `factory tick`.
 3. Run `factory home split /tmp/server-home --dry-run`. Read the plan. If it names a run in a herdr pane, finish or abort that run, or let it reach a station boundary. Then run it again.
