@@ -5,6 +5,8 @@ The text above names Claude tools: Bash, Read, Edit, Write, Grep and Glob. You a
 
 A hook checks each shell command. If it denies a command, do not look for a way around it. Report the denial.
 
+In the VM, each process that a turn starts stops when the turn ends. Wait for it in the same turn.
+
 The hook denies these shapes. Put the commands in a script in .scratch/. Run the script by path.
 
 - Denied: `f() { ls; }`. Use: `bash .scratch/x.sh`.

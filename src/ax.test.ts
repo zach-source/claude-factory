@@ -3081,7 +3081,7 @@ test('codexHome writes each guard file fresh and fails closed on a link or a dir
     for (const [f, t] of [
       ['hooks.json', '{"hooks":{}}'],
       ['config.toml', 'x = 1\n'],
-    ]) {
+    ] as const) {
       expect(lstatSync(join(home, f)).isFile()).toBe(true)
       expect(readFileSync(join(home, f), 'utf8')).toBe(t)
     }
