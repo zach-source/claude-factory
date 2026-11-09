@@ -24,6 +24,8 @@ export type Config = {
   kubectl: string
   /** the token swap command. It is null when CLAUDE_TOKEN_ITEM is unset, and the broker does not serve POST /token/best */
   swap: string[] | null
+  /** vault keys that are not built in, each with the hosts it can go to (FACTORY_BROKER_KEY_HOSTS) */
+  keyHosts: Record<string, string[]>
 }
 
 async function spawn(argv: string[], stdin?: string, op = false) {
@@ -44,6 +46,14 @@ async function spawn(argv: string[], stdin?: string, op = false) {
   return { code, out, err }
 }
 
+export function keyHostsFrom(_raw?: string): Record<string, string[]> {
+  return {}
+}
+
+export function keyHostRefusal(_p: unknown, _k: Record<string, string[]>): string | null {
+  return null
+}
+
 export const configFrom = (env: Record<string, string | undefined>, run: Run = spawn): Config => {
   const kubectl = env.FACTORY_KUBECTL ?? 'kubectl'
   return {
@@ -51,6 +61,7 @@ export const configFrom = (env: Record<string, string | undefined>, run: Run = s
     manager: env.FACTORY_AX_MANAGER ?? 'f-manager',
     run,
     kubectl,
+    keyHosts: keyHostsFrom(env.FACTORY_BROKER_KEY_HOSTS),
     swap: env.CLAUDE_TOKEN_ITEM ? [env.FACTORY_BROKER_TOKEN_CMD ?? 'claude-token', 'best'] : null,
     ate: [
       kubectl,
