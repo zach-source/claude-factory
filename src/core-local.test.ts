@@ -124,6 +124,7 @@ describe('token file', () => {
   })
   const refuses: [string, (f: string, home: string) => void][] = [
     ['mode 0644', f => (writeFileSync(f, TOKEN), chmodSync(f, 0o644))],
+    ['a directory', f => mkdirSync(f, { mode: 0o700 })],
     [
       'a symlink to a good token',
       (f, home) => {

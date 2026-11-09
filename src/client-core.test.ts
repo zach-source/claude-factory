@@ -35,6 +35,7 @@ const nulls: [string, () => string][] = [
   ['no core.json', () => good({ json: null })],
   ['a stopped core (no pid)', () => good({ json: { pid: undefined, holder: undefined } })],
   ['a lease of another holder', () => good({ lease: { holder: 'pane:p9', kind: 'claude' } })],
+  ['a lease of another holder with kind core', () => good({ lease: { holder: 'core:1', kind: 'core' } })],
   ['a lease of another kind', () => good({ lease: { kind: 'claude' } })],
   ['no lease', () => good({ lease: null })],
   ['a stale lease', () => good({ lease: { at: Date.now() - 120_000 } })],
