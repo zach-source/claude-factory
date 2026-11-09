@@ -555,3 +555,21 @@ test(
   },
   SLOW,
 )
+
+test.skipIf(process.getuid?.() === 0)(
+  'AC3 a path that cannot be reverted stops the pass',
+  () => {
+    setup()
+    plan('rewrite topics/a.md — x\n')
+    apply('echo more >> topics/a.md\nmkdir topics/ro\necho x > topics/ro/y.md\nchmod 555 topics/ro\n')
+    try {
+      expect(groom().code).toBe(0)
+      expect(wikiLog()).toContain('wiki groom: revert failed, nothing committed')
+      expect(creates()).toHaveLength(0)
+      expect(bareGit('branch', '--list', 'groom/*')).toBe('')
+    } finally {
+      run(['chmod', '-R', 'u+w', join(wiki(), 'topics')])
+    }
+  },
+  SLOW,
+)
