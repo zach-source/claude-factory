@@ -5350,6 +5350,24 @@ const wikiRun =
     return { code: r.code, out: r.out.toString().trim() }
   }
 
+/** Make `file` with `text` when no entry is there ('made'). 'kept' when a regular file with one link is there.
+ * 'bad' in every other case: a symlink, a hard link, another type, an lstat error that is not ENOENT, or a failed write.
+ * Flag 'wx' fails on any entry, a dangling symlink too, so this never writes through a link. No journal line: the caller logs. */
+export function wikiNewFile(file: string, text: string): 'made' | 'kept' | 'bad' {
+  try {
+    const st = lstatSync(file)
+    return st.isFile() && st.nlink === 1 ? 'kept' : 'bad'
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'bad'
+  }
+  try {
+    writeFileSync(file, text, { flag: 'wx' })
+    return 'made'
+  } catch {
+    return 'bad'
+  }
+}
+
 /**
  * The branch ref and sha of HEAD, and `git blame --line-porcelain <sha>` of each tracked page outside rigs/,
  * for keepPersonLines() after an agent pass. Undefined (and a journal line) when there is no branch head
@@ -5408,14 +5426,8 @@ export function keepPersonLines(
   }
   if (flags.length) {
     const file = join(dir, 'needs-person.md')
-    let regular: boolean | undefined
-    try {
-      const st = lstatSync(file)
-      regular = st.isFile() && st.nlink === 1
-    } catch {}
-    if (regular === false)
+    if (wikiNewFile(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n') === 'bad')
       return (wikiLog('wiki: needs-person.md is not a regular file, nothing committed'), false)
-    if (regular === undefined) writeFileSync(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n')
     appendFileSync(file, `${flags.join('\n')}\n`)
   }
   return true
@@ -13385,9 +13397,21 @@ if (import.meta.main && !outboxCmd)
             process.exitCode = 1
             break
           }
-          for (const [name, text] of Object.entries(WIKI_SEEDS))
-            if (!existsSync(join(dir, name))) writeFileSync(join(dir, name), text)
-          if (commitWiki('init', 'seed index and glossary', dir, Object.keys(WIKI_SEEDS)) === false) {
+          const seeds = Object.entries(WIKI_SEEDS).filter(([name, text]) => {
+            if (wikiNewFile(join(dir, name), text) !== 'bad') return true
+            wikiLog(`wiki: ${name} is not a regular file, seed not written`)
+            process.exitCode = 1
+            return false
+          })
+          if (
+            seeds.length &&
+            commitWiki(
+              'init',
+              'seed index and glossary',
+              dir,
+              seeds.map(([n]) => n),
+            ) === false
+          ) {
             process.exitCode = 1
             break
           }
