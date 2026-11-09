@@ -3427,7 +3427,11 @@ test("a halt close of an AX task stores the VM's usage before it deletes the tas
   const id = 'rw1'
   const seq = launched(id)
   try {
-    clusterUsage('Running', { status: 'idle', session: 's1', lines: [] }, { out: JSON.stringify([CODEX_ROW]), code: 0 })
+    clusterUsage(
+      'Running',
+      { status: 'idle', session: 's1', lines: [] },
+      { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    )
     writeHalt(id, seq)
     expect(factory(['tick']).code).toBe(0)
     const rows = storedRows(id)
@@ -3550,7 +3554,11 @@ esac
   )
   chmodSync(fakeHerdr, 0o755)
   try {
-    clusterUsage('Running', { status: 'idle', session: 's1', lines: [] }, { out: JSON.stringify([CODEX_ROW]), code: 0 })
+    clusterUsage(
+      'Running',
+      { status: 'idle', session: 's1', lines: [] },
+      { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    )
     writeHalt(id, seq)
     expect(factory(['tick'], { FACTORY_HERDR: fakeHerdr }).code).toBe(0)
     expect(readFileSync(herdrCalls, 'utf8')).toContain('pane close w1:p1')
@@ -3566,7 +3574,11 @@ test('a halt close of a Suspended AX task makes no worker usage call (claude-fac
   const id = 'rw8'
   const seq = launched(id)
   try {
-    clusterUsage('Suspended', { status: 'idle', session: 's1', lines: [] }, { out: JSON.stringify([CODEX_ROW]), code: 0 })
+    clusterUsage(
+      'Suspended',
+      { status: 'idle', session: 's1', lines: [] },
+      { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    )
     writeHalt(id, seq)
     expect(factory(['tick']).code).toBe(0)
     const log = called()
