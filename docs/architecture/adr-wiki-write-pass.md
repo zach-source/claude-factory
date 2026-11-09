@@ -8,7 +8,7 @@ The current branch includes that work. The revision below defines the remaining 
 No repository CLAUDE.md, AGENTS.md or CONTRIBUTING file exists in this checkout.
 The station brief supplies the repo rules.
 
-## Current handoff at 5db1839b
+## Current handoff at 19edc540
 
 This section overrides earlier task lists and AC10 implementation choices. AC1–AC9 and their closed source grammar remain required.
 Keep PR #714 as a draft. Keep `.16`, `.17`, `.20` and `.21` closed.
@@ -18,18 +18,23 @@ No new production defect is established. This pass completes the existing test i
 
 ### Evidence and decision
 
-Commit `49bd4cc7` replaced scans with PID receipts. Commit `6c151c57` added an `EPERM` check.
-Do not repeat those changes. Neither commit completes the retained-handle contract.
-At `src/wiki-kick.test.ts:157`, `launchSeen()` clears unresolved launches after its deadline.
-The hook suppresses the error at lines 173–178. It can then remove the fixture without exit proof.
-Review's actual-helper probe confirmed `pendingAfterDeadline: 0` and `fixtureRemovedWithoutLaunchExitProof: true`.
-Plan read these paths but did not repeat that probe.
-Lines 88–112 and 134–136 use PID receipts to authorize signals. Lines 126–131 signal handles before receipt validation.
-The shell controls at lines 547, 559 and 583 create descendants outside the registry.
-Nested cleanup at lines 773 and 792–795 trusts serialized PID/path data instead of retained handles.
-Lines 41–78 and 199–200 still depend on `/proc` or `ps`. The injected adapter test does not prove portable cleanup.
-PID 1 at line 808 does not force `EPERM`. Inject the error at the owned-handle boundary instead.
-The exact-head CI passed. These source defects and omitted controls remain despite that result.
+Commit `a55221d9` preserves unresolved launches and validates receipts before direct-handle signals.
+It also removes some shell descendants and gives the outer nested test its own child handle.
+Commit `19edc540` adds an injected no-`/proc` exit check. Preserve those corrections; do not repeat them.
+Plan read the latest review and the current source. No new production defect was found.
+At `src/wiki-kick.test.ts:88`, receipts still contain PIDs. Lines 142–144 signal those PIDs without retained handles.
+Line 245 derives launch intent from wiki stamps after `spawnSync`; this excludes non-wiki kicks.
+The shell tools at lines 360 and 429 still create descendants outside the registry.
+Nested cleanup at lines 795, 819 and 835 trusts returned paths instead of outer-known fixture paths.
+Lines 41–78 and 207–210 still need `/proc` or `ps`. The injected adapter test does not prove portable cleanup.
+PID 1 at line 867 does not force `EPERM`. Inject the error at the owned-handle boundary instead.
+Exact-head CI passed at `19edc540`. These source defects and omitted controls remain despite that result.
+
+Plan ran `.scratch/wiki-plan-spawn-probe.ts` with Bun 1.4.4.
+A `bun:test` module mock intercepted `node:child_process.spawn` before a dynamic import used it.
+The probe retained one real detached child handle, suppressed its `unref`, and awaited exit code 0.
+It made zero host process queries. This proves the API mechanism only, not CLI interception or descendant cleanup.
+Use the installed APIs. No new dependency is necessary.
 
 Use explicit fixture launch ownership. Remove host-wide `/proc` and `ps` discovery as cleanup authority.
 Use existing Bun or Node child handles and a small fixture launcher with an acknowledged launch/exit lifecycle.
@@ -75,6 +80,19 @@ Intercept the real launch call, before the child starts. A shim that reports its
 The CLI uses `node:child_process.spawn` for detached kicks and Bun process calls for agent passes.
 Use a fixture preload or supervisor at these call boundaries. Keep its retained handles reachable until cleanup ends.
 First prove interception with one real tick and one real wiki pass. Verify arguments, environment, result and descendant exit.
+Use the first 20 minutes of `.18` for this integration check, before the rest of the fixture rewrite.
+Install the fixture preload before the CLI imports `node:child_process`.
+Keep the real spawn call and returned handle inside the process that owns the child.
+The outer test can own that fixture supervisor; it need not hold a grandchild's native handle.
+The supervisor must await its children before its own successful exit can prove scope completion.
+Report command completion separately from scope completion. An explicit CLI exit must not bypass descendant cleanup.
+Convert synchronous fixture calls to asynchronous calls where that separation needs them.
+Do not wait for all passes before the test can observe their locks or exercise cancellation.
+Propagate the fixture preload to descendant CLI processes and retain their child handles too.
+Use single-process Bun tools, or shell `exec`, where a stub needs no descendant.
+These changes affect the test fixture only; preserve the CLI's real kick choices and pass results.
+If the integration check fails, keep both tasks open and send the manager the exact failure.
+Do not substitute another PID parser or report the tasks complete from partial controls.
 The fixture must handle non-wiki detached kicks too. A wiki stamp cannot serve as the complete launch registry.
 Use `exec` for single-process shell fixtures, or retain and await each child in their fixture supervisor.
 Do not treat the death of a shell as proof that its child exited.
@@ -112,12 +130,12 @@ Test reports must map each row to a test name and its exit, fixture and unauthor
 
 ### Tasks and test order
 
-1. Complete reopened `.18`, 65 minutes, one commit: add failing ownership/error controls, then replace PID-receipt cleanup authority.
+1. Complete reopened `.18`, 75 minutes, one commit: add failing ownership/error controls, then replace PID-receipt cleanup authority.
    Record the red results before the correction. Preserve actual CLI passes, tool stubs and environment isolation.
    Check AC10.1 and AC10.3, including every owned descendant and the unrelated-child negative control.
-2. Complete reopened `.19`, 30 minutes, one commit after `.18`: complete portable controls and the test-to-control evidence table.
+2. Complete reopened `.19`, 25 minutes, one commit after `.18`: complete portable controls and the test-to-control evidence table.
    Check AC10.2 without process files or host process commands. Do not skip the first-observation or nested-denied rows.
-3. Reserve 25 minutes for regression checks. Required CI wait time is separate.
+3. Reserve 20 minutes for regression checks. Required CI wait time is separate.
 
 Keep `.20` closed unless its preserved nested controls expose a new failure. Do not create duplicate tasks.
 Run each wiki test file separately with `bun test --timeout 60000`: `src/wiki-kick.test.ts`, `src/cli-wiki-write.test.ts`,
