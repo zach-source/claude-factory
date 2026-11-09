@@ -162,3 +162,11 @@ test('write AC6 FACTORY_WIKI_WRITE_MIN: 1 moves a 2 min stamp; bad values keep 1
     expect([v, await launched({ FACTORY_WIKI_WRITE_MIN: v })]).toEqual([v, true])
   }
 }, 60_000)
+
+test('write AC6 a tick after a launch starts no second pass at once', async () => {
+  setup()
+  rmSync(wstamp())
+  expect(await launched()).toBe(true)
+  expect(await launched()).toBe(false)
+  expect(await launched()).toBe(false)
+}, 60_000)

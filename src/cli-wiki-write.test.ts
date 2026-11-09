@@ -46,17 +46,19 @@ echo null
   )
   fake(
     'gh',
-    `echo "$*" >> '${data}/gh-calls'
+    `if [ "$1" = repo ]; then echo PRIVATE; exit 0; fi
+echo "$*" >> '${data}/gh-calls'
 f='${data}/gh-'$(printf '%s' "$2" | sed 's/[^A-Za-z0-9]/_/g')
 if [ -f "$f" ]; then cat "$f"; else echo 'not found' >&2; exit 1; fi
 `,
   )
-  fake(
-    'agent',
-    `echo "$PWD" > '${data}/agent-cwd'
+  const agent = `echo "$PWD" > '${data}/agent-cwd'
 echo "$*" > '${data}/agent-args'
+echo "$CODEX_HOME" > '${data}/agent-codexhome'
+[ -f '${home}/wiki-write.stamp' ] && echo yes > '${data}/agent-stamp'
 cat > '${data}/agent-prompt'
 echo x >> '${data}/agent-runs'
+if [ -f '${data}/agent-commit' ]; then git -c user.name=x -c user.email=x@example.com commit --allow-empty -qm moved; fi
 if [ -f '${data}/agent-exit' ]; then echo failed >&2; exit 3; fi
 if [ -f '${data}/agent-edit' ]; then sed -i 's/Text\\./Changed./' solutions/2026-10/person.md; fi
 for f in '${data}'/pages/solutions/*/*.md; do
@@ -66,8 +68,9 @@ for f in '${data}'/pages/solutions/*/*.md; do
     cp "$f" "solutions/$(basename "$(dirname "$f")")/"
   fi
 done
-`,
-  )
+`
+  fake('agent', agent)
+  fake('codex', agent)
   const env = { ...process.env, FACTORY_HOME: home }
   expect(
     Bun.spawnSync([CLI, 'wiki', 'init'], { env: { ...env, FACTORY_NO_KICK: '1', FACTORY_SELF_UPDATE: '0' } })
@@ -416,4 +419,156 @@ slow('write AC5 a commit failure leaves progress unchanged and the next pass ret
   rmSync(hook)
   factory(['wiki', 'write'])
   expect(Object.keys(state().written)).toEqual(['acme-1'])
+})
+
+slow('write AC3 the stamp is written before the agent runs, and the agent gets settings', () => {
+  one()
+  factory(['wiki', 'write'])
+  expect(existsSync(join(data, 'agent-stamp'))).toBe(true)
+  expect(readFileSync(join(data, 'agent-args'), 'utf8')).toContain('--settings {')
+})
+
+slow('write AC3 a codex run uses the sandbox flags, the note and its own CODEX_HOME', () => {
+  one()
+  const codex = join(dir, `bin${n}`, 'codex')
+  const r = factory(['wiki', 'write'], { FACTORY_DREAM_CODEX: 'gpt-x', FACTORY_CODEX: codex })
+  expect(r.out).toContain('wiki write: 1 pages from 1 beads; 0 waiting')
+  const args = readFileSync(join(data, 'agent-args'), 'utf8')
+  expect(args).toContain('exec -s workspace-write -c approval_policy="never"')
+  expect(args).toContain('sandbox_workspace_write.network_access=false')
+  expect(args).toContain(`-C ${wiki()} -m gpt-x -`)
+  expect(readFileSync(join(data, 'agent-codexhome'), 'utf8').trim()).toBe(join(home, 'codex-wiki'))
+  expect(prompt()).toContain('git mv and git rm fail')
+  expect(Object.keys(state().written)).toEqual(['acme-1'])
+})
+
+slow('write AC3 a codex run refuses a wiki that holds .codex', () => {
+  one()
+  mkdirSync(join(wiki(), '.codex'))
+  const codex = join(dir, `bin${n}`, 'codex')
+  const r = factory(['wiki', 'write'], { FACTORY_DREAM_CODEX: 'gpt-x', FACTORY_CODEX: codex })
+  expect(r.out).toContain('refused')
+  expect(runs()).toBe(0)
+  expect(state().written).toBeUndefined()
+})
+
+slow('write AC4 a HEAD that moved in the pass commits and records nothing', () => {
+  one()
+  writeFileSync(join(data, 'agent-commit'), '')
+  const r = factory(['wiki', 'write'])
+  expect(r.out).toContain('the guard refused')
+  expect(wikiLog()).toContain('HEAD moved in the pass')
+  expect(state().written).toBeUndefined()
+  expect(state().lastWriteAt).toBeUndefined()
+})
+
+slow('write AC5 a failed push keeps the commit, and the next pass pushes it', () => {
+  one()
+  const url = 'https://github.com/acme/widget-wiki.git'
+  const b = join(dir, `bare${n}.git`)
+  const cfg = join(dir, `cfg${n}`)
+  writeFileSync(cfg, `[url "${b}"]\n\tinsteadOf = ${url}\n`)
+  git('remote', 'add', 'origin', url)
+  const env = { GIT_CONFIG_GLOBAL: cfg }
+  factory(['wiki', 'write'], env)
+  expect(wikiLog()).toContain('wiki: push failed')
+  expect(Object.keys(state().written)).toEqual(['acme-1'])
+  Bun.spawnSync(['git', 'init', '-q', '--bare', '-b', 'main', b])
+  factory(['wiki', 'write'], env)
+  expect(runs()).toBe(1)
+  expect(Bun.spawnSync(['git', '-C', b, 'rev-parse', 'main']).stdout.toString().trim()).toBe(
+    git('rev-parse', 'HEAD'),
+  )
+})
+
+slow('write AC1 a tracked page changed in the worktree does not finish its bead', () => {
+  one()
+  mkdirSync(join(wiki(), 'solutions', '2026-10'), { recursive: true })
+  const old = page('acme-0', 'https://github.com/acme/widget/pull/4')
+  writeFileSync(join(wiki(), 'solutions', '2026-10', 'old.md'), old)
+  git('add', '-A')
+  git('-c', 'user.name=person', '-c', 'user.email=person@example.com', 'commit', '-qm', 'old page')
+  writeFileSync(join(wiki(), 'solutions', '2026-10', 'old.md'), old.replace('"acme-0"', '"acme-1"'))
+  const r = factory(['wiki', 'write', '--dry-run'])
+  expect(r.out).toContain('group: acme-1')
+})
+
+slow('write AC1 a committed page for a PR is the existing page, also after an agent failure', () => {
+  one()
+  mkdirSync(join(wiki(), 'solutions', '2026-10'), { recursive: true })
+  writeFileSync(join(wiki(), 'solutions', '2026-10', 'old.md'), page('acme-0', PR5))
+  git('add', '-A')
+  git('-c', 'user.name=person', '-c', 'user.email=person@example.com', 'commit', '-qm', 'old page')
+  writeFileSync(join(data, 'agent-exit'), '')
+  factory(['wiki', 'write'])
+  expect(prompt()).toContain('"existingPage": "solutions/2026-10/old.md"')
+  expect(state().written).toBeUndefined()
+  rmSync(join(data, 'agent-exit'))
+  writeFileSync(join(wiki(), 'solutions', '2026-10', 'old.md'), 'dirty\n')
+  factory(['wiki', 'write'])
+  expect(prompt()).toContain('"existingPage": "solutions/2026-10/old.md"')
+})
+
+slow('write AC2 a package.json patch never reaches the prompt', () => {
+  setup()
+  seed([closed('acme-1', { metadata: { ship_pr: PR5 } })])
+  pr(5, 'acme-1: fix it', ['package.json'])
+  writeFileSync(
+    join(data, `gh-${key('repos/acme/widget/pulls/5/files?per_page=100')}`),
+    JSON.stringify([{ filename: 'package.json', patch: '+  "scripts": "SECRETPATCH"' }]),
+  )
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', PR5))
+  factory(['wiki', 'write'])
+  expect(prompt()).toContain('package.json')
+  expect(prompt()).not.toContain('SECRETPATCH')
+})
+
+slow('write AC2 a long source text is cut in the prompt', () => {
+  setup()
+  seed([closed('acme-1', { metadata: { ship_pr: PR5 }, close_reason: 'y'.repeat(9000) })])
+  pr(5, 'acme-1: fix it', ['src/a.ts'])
+  factory(['wiki', 'write'])
+  expect(prompt()).toContain('[truncated]')
+  expect(prompt()).not.toContain('y'.repeat(8300))
+})
+
+slow('write AC2 an incomplete forge or bead reply keeps the bead waiting', () => {
+  setup()
+  seed([
+    closed('acme-1', { metadata: { ship_pr: PR5 } }),
+    closed('acme-2', { metadata: { ship_pr: 'https://github.com/acme/widget/pull/6' } }),
+    closed('acme-3'),
+  ])
+  pr(5, 'acme-1: fix it', ['src/a.ts'])
+  pr(6, 'acme-2: fix it', ['src/b.ts'])
+  writeFileSync(join(data, `gh-${key('repos/acme/widget/pulls/5')}`), '{}')
+  writeFileSync(join(data, `gh-${key('repos/acme/widget/pulls/6/files?per_page=100')}`), '[]')
+  rmSync(join(data, 'bead-acme-3.json'))
+  const r = factory(['wiki', 'write', '--dry-run'])
+  expect(r.out).not.toContain('group:')
+  expect(r.out).toContain('0 groups from 0 beads; 3 waiting')
+})
+
+slow('write AC3 the count holds the completed beads only', () => {
+  setup()
+  seed([
+    closed('acme-1', { metadata: { ship_pr: PR5 } }),
+    closed('acme-2', { metadata: { ship_pr: 'https://github.com/acme/widget/pull/6' } }),
+  ])
+  pr(5, 'acme-1: fix it', ['src/a.ts'])
+  pr(6, 'acme-2: fix it', ['src/b.ts'])
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', PR5))
+  stage(
+    'solutions/2026-11/fix-acme-2.md',
+    page('acme-2', 'https://github.com/acme/widget/pull/6', SECTIONS.slice(0, 3)),
+  )
+  expect(factory(['wiki', 'write']).out).toContain('wiki write: 1 pages from 1 beads; 1 waiting')
+})
+
+slow('write AC2 the release PR record keeps its title and body in the prompt', () => {
+  setup()
+  seed([closed('acme-3', { metadata: { ship_pr: PR5 } })], [pr(7, 'acme-3 release notes', ['CHANGELOG.md'])])
+  pr(5, 'acme-3: fix it', ['src/a.ts'])
+  factory(['wiki', 'write'])
+  expect(prompt()).toContain('"title": "acme-3 release notes"')
 })

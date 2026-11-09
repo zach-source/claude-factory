@@ -181,6 +181,7 @@ import {
   type PrFile,
   type RigRow,
   type WriteBead,
+  type WriteGroup,
   type WritePr,
 } from './wiki'
 import type { Page } from './wiki'
@@ -5286,9 +5287,9 @@ export function pushWiki(dir = join(HOME, 'wiki')) {
 
 /**
  * The pages that `wiki find` and `wiki status` can read, sorted by path. A page must meet all of these rules:
- * HEAD has it with mode 100644 or 100755, its path passes the path rule, it is a regular file with one link and
- * at most 65,536 bytes, and parse() accepts it. An agent pass controls the worktree.
- * A symlink or a hard link must not send an outside file to stdout.
+ * HEAD has it with mode 100644 or 100755, its path passes the path rule, its committed blob has at most
+ * 65,536 bytes, and parse() accepts it. The function reads the committed blob, never the worktree. An agent pass
+ * controls the worktree: a symlink or a hard link there must not send an outside file to stdout.
  */
 function wikiPages(dir: string) {
   const ls = wikiGit(dir, ['ls-tree', '-r', '-z', 'HEAD'])
@@ -5300,10 +5301,12 @@ function wikiPages(dir: string) {
     const mode = e.slice(0, e.indexOf(' '))
     if (tab < 0 || (mode !== '100644' && mode !== '100755')) continue
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..')) continue
+    const sha = e.slice(0, tab).split(/\s+/)[2] ?? ''
+    if (!/^[0-9a-f]{40,64}$/.test(sha)) continue
+    const blob = wikiGit(dir, ['cat-file', 'blob', sha])
+    if (blob.code !== 0 || blob.out.length > WIKI_PAGE_MAX) continue
     try {
-      const st = lstatSync(join(dir, path))
-      if (!st.isFile() || st.nlink !== 1 || st.size > WIKI_PAGE_MAX) continue
-      const p = parseWikiPage(readFileSync(join(dir, path), 'utf8'))
+      const p = parseWikiPage(blob.out.toString('utf8'))
       if ('page' in p) out.push({ path, page: p.page })
     } catch {}
   }
@@ -11887,6 +11890,9 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
     gl ? `projects/${encodeURIComponent(slug)}/merge_requests/${num}` : `repos/${slug}/pulls/${num}`,
   )) as Record<string, unknown> | null
   if (!pr || Array.isArray(pr)) return null
+  // a reply without its own number and state fields is incomplete, never "not merged"
+  if (gl ? pr.iid !== num || typeof pr.state !== 'string' : pr.number !== num || !('merged_at' in pr))
+    return null
   const merged = gl ? pr.state === 'merged' : text(pr.merged_at) !== ''
   let rows: unknown[] | null = null
   if (merged) {
@@ -11897,7 +11903,7 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
     )
     // ponytail: one page of 100 files; a longer list stays unresolved. Page it when a real PR needs it.
     const list = gl && f && !Array.isArray(f) && f.overflow !== true ? f.changes : f
-    rows = Array.isArray(list) && (gl || list.length < 100) ? list : null
+    rows = Array.isArray(list) && list.length > 0 && (gl || list.length < 100) ? list : null
   }
   const files: PrFile[] | null =
     rows &&
@@ -11915,6 +11921,29 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
         })
       : null
   return { merged, title: text(pr.title), body: text(gl ? pr.description : pr.body), files }
+}
+
+/**
+ * Bounds one group for the prompt. It removes each patch: only the trivial test used it. It keeps at most 200
+ * items in an array. It cuts each string to 8192, then 2048, then 512 characters until the group fits
+ * WRITE_TOTAL. It returns null if the group is still too big. The caller then keeps its beads pending.
+ */
+function wikiBound(g: WriteGroup): WriteGroup | null {
+  const strip = (v: WriteGroup): WriteGroup => ({
+    ...v,
+    prs: v.prs.map(p => ({ ...p, files: p.files.map(f => ({ path: f.path })) })),
+  })
+  for (const cut of [WRITE_STR, 2048, 512]) {
+    const out = JSON.parse(JSON.stringify(strip(g)), (_k, x) =>
+      typeof x === 'string' && x.length > cut
+        ? `${x.slice(0, cut)} [truncated]`
+        : Array.isArray(x) && x.length > 200
+          ? x.slice(0, 200)
+          : x,
+    ) as WriteGroup
+    if (JSON.stringify(out).length <= WRITE_TOTAL) return out
+  }
+  return null
 }
 
 /** the model run of a write pass: Claude, or Codex with FACTORY_DREAM_CODEX. A string is a refusal. */
@@ -12007,7 +12036,8 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
       if (done.has(id)) continue
       try {
         const full = b.show(id)
-        if (!full || full.status !== 'closed') continue
+        if (!full) throw new Error('bead record unread')
+        if (full.status !== 'closed') continue
         const at = Date.parse(full.closed_at ?? '')
         if (!only && Number.isFinite(at) && at < since) continue
         const closedAt = Number.isFinite(at) ? at : 0
@@ -12072,12 +12102,19 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
   const all = writeGroups(wb, [...prs.values()], Infinity)
   const groups: typeof all = []
   let size = 0
-  for (const g of all.slice(0, writeCap())) {
-    size += JSON.stringify(g).length
-    if (groups.length && size > WRITE_TOTAL) break
-    groups.push({ ...g, existingPage: g.prs.map(p => pageOfPr.get(p.url)).find(Boolean) })
+  let deferred = 0
+  for (const g of all) {
+    // writeGroups drops a trivial PR (a release record); the bead still cites it, so put it back
+    const urls = [...new Set(g.beads.flatMap(b => b.prs))].sort()
+    const s = wikiBound({ ...g, prs: urls.flatMap(u => (prs.has(u) ? [prs.get(u)!] : [])) })
+    size += s ? JSON.stringify(s).length : 0
+    if (!s || groups.length >= writeCap() || size > WRITE_TOTAL) {
+      deferred += g.beads.length
+      size -= s ? JSON.stringify(s).length : 0
+      continue
+    }
+    groups.push({ ...s, existingPage: s.prs.map(p => pageOfPr.get(p.url)).find(Boolean) })
   }
-  const deferred = all.slice(groups.length).reduce((n, g) => n + g.beads.length, 0)
   const waiting = unresolved + deferred
   const ids = groups.flatMap(g => g.beads.map(b => b.id))
   const shown = groups.map(
@@ -12087,7 +12124,7 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
     return [...shown, `wiki write: ${groups.length} groups from ${ids.length} beads; ${waiting} waiting`]
   // ponytail: the settled-bead timestamp is rebuilt each pass; a stuck bead repeats reads, never agent work
   const newest = [...settled, ...wb.map(b => b.closedAt)]
-  const finish = (committed: Set<string>, extra: string[] = []) => {
+  const finish = (committed: Set<string>) => {
     const pages = solutions()
     const written = { ...(readWikiState().written as object | undefined) } as Record<string, unknown>
     for (const p of pages) for (const bead of p.page.beads ?? []) written[bead] ??= { page: p.path }
@@ -12096,7 +12133,6 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
     const top = Math.max(0, ...newest)
     if (complete && top >= since && top > 0) state.lastWriteAt = new Date(top).toISOString()
     writeWikiState(state)
-    return extra
   }
   if (!groups.length) {
     finish(new Set())
@@ -12139,7 +12175,7 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
   finish(committed)
   pushWiki(dir)
   const left = ids.filter(id => !committed.has(id)).length
-  return [`wiki write: ${fresh} pages from ${ids.length} beads; ${waiting + left} waiting`]
+  return [`wiki write: ${fresh} pages from ${ids.length - left} beads; ${waiting + left} waiting`]
 }
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
