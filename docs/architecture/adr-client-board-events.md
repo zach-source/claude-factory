@@ -292,3 +292,87 @@ Rollout, rollback, and ship observability remain as specified above. No AC is mu
 No owner action or other bead must complete before this test task.
 No known production defect becomes worse. No separate feature split is needed.
 Security-sensitive: yes (query input and authenticated stream transport)
+
+## Revision after the timeout review
+
+This section supersedes the remaining-task section above for the next implement pass.
+At head `eb4a0528`, tasks through `claude-factory-bb05.9` are closed.
+Only `claude-factory-bb05.10` remains open. Keep draft PR #770 and the current branch.
+AC1 through AC7 remain in force. No product rewrite or new feature belongs in this pass.
+
+### Cause and decision
+
+The previous revision controlled event order but did not control the cause of EOF.
+Both TLS tests equate stdout EOF with server closure and ignore the child result.
+Curl can deliver all expected frames, then exit 28 at its 20-second deadline.
+Bun can terminate the openssl client at its 15000 ms deadline after both frames arrive.
+Thus, exact frame arrays do not prove server-stop cleanup by themselves.
+The prior mutation checks target event delivery, replay duplication, and equal-board suppression, not closure failure.
+This is a test-oracle defect. Inspection found no definite product defect.
+
+Change only `src/server-api-tls.test.ts` in one test commit.
+Keep held ticks, active readers, exact frame arrays, and both real mTLS clients.
+Keep the controlled socket tests as the direct resource-release proof.
+Do not replace the real transport test with a child-process stub.
+
+For both tests, successful closure must satisfy all these conditions before cleanup starts:
+
+- The test received all required complete frames before server stop.
+- Server stop, stdout EOF, and child exit completed within an explicit bounded closure deadline.
+- No test deadline expired, and no signal or cleanup kill caused child exit.
+- The child result matches the observed normal server-close result for that client.
+- The complete output through EOF has exactly the required frames and no partial tail.
+
+Use a 5-second closure deadline after all expected frames arrive.
+Keep the existing outer test and subprocess deadlines as last-resort limits, not success paths.
+Make deadline expiry reject the test, even if the exact frame arrays already match.
+Clear the deadline timer in `finally`. A race alone does not cancel its pending reader or child.
+Curl must exit 0; exit 28 and every other nonzero result must fail.
+For openssl, first record the normal exit code and TLS-close diagnostic on this checkout.
+Socket destruction can differ from a TLS close_notify exchange.
+Do not accept every nonzero exit as normal EOF or change product shutdown to suit openssl.
+If openssl reports a normal abrupt TLS close, accept only that observed result with its exact diagnostic class.
+Reject timeout, signal termination, certificate errors, and other errors independently of complete frame output.
+Keep stderr local to the test; never print credentials or board data as diagnostics.
+
+Use `finally` in both tests, including failures before the first tick completes.
+Release every held tick, stop the server, cancel or settle readers, and kill and await remaining child processes.
+Separate success assertions from cleanup. A cleanup kill must never supply successful closure evidence.
+Retain the existing `afterEach` cleanup as a fallback, not the only release path for held ticks.
+
+### Acceptance proof for the remaining task
+
+AC3 retains its held-tick replay/live and pre-tick header requirements.
+AC5 now explicitly requires the closure conditions above in both TLS tests.
+The proof tests are `held ticks: replay crosses into live once, an equal tick adds nothing, stop ends every stream`
+and `headers come before the first tick ends, two live changes arrive once each, and server stop ends the stream`.
+Both must accept normal server closure and reject client timeout or forced termination after complete frames.
+Failure before the first tick must still release held ticks and clients.
+AC1, AC2, AC4, AC6, and AC7 retain their existing tests and negative rows.
+The query grammar remains empty search or `^\?after=[0-9]+$`; every other query fails before subscription or downstream calls.
+No external-tool input parser or new product grammar belongs in this task.
+
+First reproduce the false success with each current test after all expected frames arrive.
+Use a temporary isolated mutation that omits the explicit server stop and lets the client deadline close stdout.
+Bound this probe and restore it before the test fix. An early timeout before complete frames proves nothing here.
+Then add the result checks, closure deadline, and cleanup in one commit.
+After that commit, repeat an isolated, buildable closure-failure mutation for each test.
+Each test must fail on its closure deadline or child result despite complete expected frames.
+Also force client termination after complete frames; both tests must reject that result.
+Use `factory mutate` or restore each manual mutation and confirm a clean worktree.
+Record the failing assertion and the client result. Compile failures do not count.
+Do not repeat the old absent-route or replay mutations; those results already exist in the journal.
+
+Run the focused command above, `bun x tsc --noEmit`, and Prettier 3.9.9 on the changed file.
+Run the AC7 gates on the final head, including the required nix check.
+Verify and review must inspect exit checks, deadline rejection, and cleanup order, not only test totals.
+No required check can remain red by design. One commit fits the 120-minute implement pass.
+No new task, dependency, separate feature, or owner decision is needed.
+
+### Risk and release
+
+The remaining task changes test evidence only. It needs no migration, flag, or product behavior change.
+The complete PR still needs security review for query input and authenticated transport.
+No known production defect becomes worse. Keep the original rollout, rollback, and ship observability steps.
+No AC is must-see-live. Live client access remains a separate approved ship-soak step.
+Security-sensitive: yes (query input and authenticated stream transport)
