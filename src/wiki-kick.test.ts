@@ -735,8 +735,12 @@ test('AC10 supported hosts: the ps identity gives the same exit contract without
     expect(status()).toEqual({ mine: [], unproven: [] })
     expect(alive(child.pid)).toBe(true)
     identityOf = psIdentity(out('Mon Nov  9 10:00:00 2026'))
+    const noProc = () => {
+      throw new Error('ENOENT') // macOS has no /proc
+    }
+    expect(alive(child.pid, noProc)).toBe(true) // alive, though the record cannot be read
     expect(await stopOwned()).toBe(true)
-    expect(alive(child.pid)).toBe(false)
+    expect(alive(child.pid, noProc)).toBe(false) // normal exit: only ESRCH proves it
   } finally {
     identityOf = hostIdentity()
     child.kill(9)
