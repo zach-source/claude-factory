@@ -1372,7 +1372,9 @@ const canon = (s: string) =>
     w.includes('{') ? `${w.split(/[{,}]/).filter(Boolean).map(one).join(' ')} factory` : one(w),
   )
 /** a non-literal verb word after the caller word */
-const VERB_HIDDEN = new RegExp(String.raw`(?:(?<![\w.-])factory|${CLI})\s+[^\s$\x60*?[{]*[$\x60*?[{]`)
+const VERB_HIDDEN = new RegExp(
+  String.raw`(?:(?<![\w.-])factory|${CLI})(?:\s+[^\s$\x60*?[{]*[$\x60*?[{]|[^;&|\n]*(?:[\w-]\{[^\s}]*,|,[^\s{]*\}[\w-]))`,
+)
 
 /** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
 const GATED_KINDS = [

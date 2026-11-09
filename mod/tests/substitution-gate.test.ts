@@ -196,6 +196,23 @@ test('the question counts the later hits that it does not show', SLOW, async () 
   }
 })
 
+test('a brace word after the caller is denied with no dialog', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Allow')
+  const rows = [
+    `${F} start lifecycle acme w-2 --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 --own{ed,}`,
+    `${F} start lifecycle acme w-2 '--o'{w,w}'ned'`,
+    `${F} wiki in{i,i}t`,
+    `${F} decisions an{s,s}wer r1 x`,
+  ]
+  for (const command of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toContain('literal word')
+  }
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(0)
+})
+
 test('a non-literal verb word after a literal caller is denied with no dialog', SLOW, async ($, on) => {
   const { n } = harness(on, 'Allow')
   const rows = [
