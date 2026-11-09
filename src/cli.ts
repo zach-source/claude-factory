@@ -164,7 +164,11 @@ import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import {
   flagLine,
+  groomCap,
+  groomPlan,
+  groomPrompt,
   humanLines,
+  outsidePlan,
   pageMatches,
   parse as parseWikiPage,
   renderRigPage,
@@ -5260,19 +5264,251 @@ function wikiAllowed(r: { host: string; owner: string; repo: string }, fresh = f
 }
 
 /**
- * Push HEAD to main of origin only when origin passes wikiRemote() and its visibility is PRIVATE or INTERNAL.
+ * Push HEAD to `branch` (default main) of origin only when the checkout is on that branch and origin passes wikiRemote() and its visibility is PRIVATE or INTERNAL.
  * It pushes to the checked URL, never to the name `origin`, so a pushurl set by hand is not used. No origin:
  * nothing to do. True when the push worked.
  */
-export function pushWiki(dir = join(HOME, 'wiki')) {
+export function pushWiki(dir = join(HOME, 'wiki'), branch = 'main') {
+  if (wikiGit(dir, ['symbolic-ref', '-q', 'HEAD']).out.toString().trim() !== `refs/heads/${branch}`)
+    return (wikiLog(`wiki: checkout not on ${branch}, push refused`), false)
   const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
   if (!url) return false
   const r = wikiRemote(url)
   if (!r) return (wikiLog('wiki: remote not allowed, push refused'), false)
   if (!wikiAllowed(r)) return false
-  const p = wikiGit(dir, ['push', url, 'HEAD:main'], true)
+  const p = wikiGit(dir, ['push', url, `HEAD:refs/heads/${branch}`], true)
   if (p.code !== 0) wikiLog(`wiki: push failed (exit ${p.code})`)
   return p.code === 0
+}
+
+/**
+ * Pull main of origin into the checkout (rebase, so each commit keeps its author for the blame guard). A failed
+ * pull gets a rebase abort and a journal line; the caller goes on. No origin: nothing to do.
+ */
+function pullWiki(dir: string) {
+  const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
+  if (!url) return
+  if (!wikiRemote(url)) return wikiLog('wiki: remote not allowed, pull skipped')
+  const args = ['-c', 'user.name=factory', '-c', `user.email=${WIKI_EMAIL}`, '-c', 'commit.gpgsign=false']
+  const p = wikiGit(
+    dir,
+    [...args, '-c', 'rebase.autoStash=false', 'pull', '--rebase', '--no-autostash', '-q', url, 'main'],
+    true,
+    { GIT_COMMITTER_NAME: 'factory', GIT_COMMITTER_EMAIL: WIKI_EMAIL },
+  )
+  if (p.code === 0) return
+  wikiGit(dir, ['rebase', '--abort'])
+  wikiLog(`wiki: pull failed (exit ${p.code ?? 'timeout'}), refresh goes on`)
+}
+
+const GROOM_PLAN_ONLY = '\n\nDo only step 1 now. Print the plan and change no file.\n'
+const GROOM_APPLY =
+  '\n\nStep 1 is done. The rig repos are not open to you now. Do only step 2, for these lines and no other:\n\n'
+
+/** one groom agent call: `-p`, no MCP, no project settings; stdout and stderr are piped so raw output stays private */
+function groomAgent(dir: string, stdin: string, mode: string, tools: string, addDirs: string[]) {
+  const settings = passSettings()
+  const p = Bun.spawnSync(
+    [
+      ...claudeCommand().split(/\s+/),
+      ...['-p', '--strict-mcp-config', '--setting-sources', 'user'],
+      ...['--permission-mode', mode, '--tools', tools],
+      ...addDirs.flatMap(d => ['--add-dir', d]),
+      ...[
+        '--settings',
+        JSON.stringify({ ...settings, env: { ...settings.env, ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } }),
+      ],
+    ],
+    { cwd: dir, stdin: Buffer.from(stdin), stdout: 'pipe', stderr: 'pipe', timeout: 45 * 60_000 },
+  )
+  return { code: p.exitCode, out: p.stdout.toString() }
+}
+
+/**
+ * `factory wiki groom`: ask an agent for a plan, apply it on branch groom/<date> from origin/main, revert every
+ * path outside the plan, and open a pull request with the plan as its body. It never merges and never pushes
+ * main. With `dryRun` it only prints the plan. Each stop journals one fixed line and the pass exits 0.
+ */
+function wikiGroom(dryRun: boolean) {
+  const dir = join(HOME, 'wiki')
+  const g = (...args: string[]) => wikiGit(dir, args)
+  const text = (r: { out: Buffer }) => r.out.toString().trim()
+  const list = (...args: string[]) =>
+    g('ls-files', '-z', ...args)
+      .out.toString()
+      .split('\0')
+      .filter(Boolean)
+  const exit = (r: { code: number | null }) => r.code ?? 'timeout'
+  const plan = () => {
+    const repos = rigs()
+      .map(r => r.repo)
+      .filter(d => existsSync(d))
+    const prompt = groomPrompt(wikiPages(dir), wikiTombstones(dir), groomCap())
+    const r = groomAgent(dir, prompt + GROOM_PLAN_ONLY, 'default', 'Read,Glob,Grep', repos)
+    if (r.code !== 0) return wikiLog(`wiki groom: plan call failed (exit ${exit(r)})`)
+    const actions = groomPlan(r.out)
+    if (!actions.length) return wikiLog('wiki groom: no actions')
+    return {
+      prompt,
+      actions,
+      planText: actions.map(a => `${a.op} ${a.paths.join(' ')} — ${a.reason}`).join('\n'),
+    }
+  }
+  if (dryRun) {
+    const p = plan()
+    if (p) console.log(p.planText)
+    return
+  }
+
+  const head = text(g('symbolic-ref', '-q', 'HEAD'))
+  if (head.startsWith('refs/heads/groom/')) {
+    if (g('status', '--porcelain', '-z', '--untracked-files=all').out.length)
+      return wikiLog('wiki groom: left-over groom checkout not clean, skipped')
+    if (g('checkout', '-q', 'main').code !== 0) return wikiLog('wiki groom: checkout of main failed')
+    g('branch', '-q', '-D', head.slice('refs/heads/'.length))
+    wikiLog('wiki groom: left-over groom checkout, back on main')
+  }
+  const url = text(g('config', '--get', 'remote.origin.url'))
+  if (!url) return wikiLog('wiki groom: no remote, skipped')
+  const r = wikiRemote(url)
+  if (!r) return wikiLog('wiki: remote not allowed, push refused')
+  if (!wikiAllowed(r)) return
+  const slug = `${r.host}/${r.owner}/${r.repo}`
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const PR_RE = new RegExp(`^https://${esc(r.host)}/${esc(r.owner)}/${esc(r.repo)}/pull/[1-9][0-9]*$`, 'i')
+  const gh = (args: string[]) =>
+    Bun.spawnSync(['gh', ...args], { env: GIT_NETWORK_ENV, stderr: 'pipe', timeout: 30_000 })
+
+  const stored = readWikiState().groomPr as { url?: unknown } | undefined | null
+  if (stored !== undefined) {
+    const u = stored !== null && typeof stored === 'object' ? stored.url : undefined
+    if (typeof u !== 'string' || !PR_RE.test(u)) return wikiLog('wiki groom: stored PR is not valid, skipped')
+    // REST with the owner in the path (src/prs.test.ts rule): the AX gateway needs it
+    const v = gh([
+      'api',
+      '--hostname',
+      r.host,
+      `repos/${r.owner}/${r.repo}/pulls/${u.split('/').pop()}`,
+      '--jq',
+      '.state',
+    ])
+    const state = v.exitCode === 0 ? v.stdout.toString().trim() : ''
+    if (state === 'open') return wikiLog(`wiki groom: skipped, PR ${u} open`)
+    if (state !== 'closed') return wikiLog(`wiki groom: PR ${u} state unknown, skipped`)
+    const { groomPr: _gone, ...rest } = readWikiState()
+    writeWikiState(rest)
+  }
+
+  if (
+    text(g('symbolic-ref', '-q', 'HEAD')) !== 'refs/heads/main' ||
+    g('status', '--porcelain', '-z', '--untracked-files=all').out.length
+  )
+    return wikiLog('wiki groom: wiki checkout not clean or not on main, skipped')
+  writeFileSync(join(HOME, 'wiki-groom.stamp'), '')
+  const fetch = g('fetch', '-q', url, '+refs/heads/main:refs/remotes/origin/main')
+  if (fetch.code !== 0) return wikiLog(`wiki groom: fetch failed (exit ${exit(fetch)})`)
+  const branch = `groom/${new Date().toISOString().slice(0, 10)}`
+  if (g('checkout', '-q', '-B', branch, 'refs/remotes/origin/main').code !== 0)
+    return wikiLog('wiki groom: checkout failed')
+  let ignoredBefore = new Set<string>()
+  let keepFiles = false
+  try {
+    if (list('-o', '--exclude-standard').length) {
+      keepFiles = true
+      return wikiLog('wiki groom: untracked files on the groom branch, skipped')
+    }
+    ignoredBefore = new Set(list('-o', '-i', '--exclude-standard'))
+    const p = plan()
+    if (!p) return
+    for (const a of p.actions) wikiLog(`wiki groom: plan ${a.op} ${a.paths.join(' ')}`)
+    const before = wikiBlame(dir)
+    if (!before) return
+    const ap = groomAgent(
+      dir,
+      `${p.prompt}${GROOM_APPLY}${p.planText}\n`,
+      'acceptEdits',
+      'Read,Glob,Grep,Edit,Write',
+      [],
+    )
+    if (ap.code !== 0) return wikiLog(`wiki groom: apply call failed (exit ${exit(ap)}), nothing committed`)
+    const kept = headKept(wikiRun(dir), before)
+    if (kept !== 'same')
+      return wikiLog(
+        kept === 'moved'
+          ? 'wiki groom: HEAD moved in the pass, nothing committed'
+          : 'wiki groom: HEAD moved in the pass, restore failed, nothing committed',
+      )
+
+    const changedPaths = () => {
+      if (g('add', '-A').code !== 0) return undefined
+      const d = g('diff', '--cached', '--name-only', '-z', '--no-renames', 'HEAD')
+      if (d.code !== 0) return undefined
+      const files = d.out.toString().split('\0').filter(Boolean)
+      for (const f of list('-o', '-i', '--exclude-standard')) if (!ignoredBefore.has(f)) files.push(f)
+      return files
+    }
+    const changed = changedPaths()
+    if (!changed) return wikiLog('wiki groom: git failed, nothing committed')
+    for (const path of outsidePlan(changed, p.actions)) {
+      if (g('cat-file', '-e', `HEAD:${path}`).code === 0)
+        g('restore', '--staged', '--worktree', '--source=HEAD', '--', path)
+      else {
+        g('rm', '--cached', '-f', '-q', '--ignore-unmatch', '--', path)
+        g('clean', '-f', '-f', '-x', '-q', '--', path)
+      }
+      wikiLog(
+        WIKI_PAGE_PATH.test(path) && !path.split('/').includes('..') && !/\p{Cc}/u.test(path)
+          ? `wiki groom: ${path} is not in the plan, reverted`
+          : 'wiki groom: a path not in the plan, reverted',
+      )
+    }
+    const after = changedPaths()
+    if (!after) return wikiLog('wiki groom: git failed, nothing committed')
+    if (outsidePlan(after, p.actions).length) return wikiLog('wiki groom: revert failed, nothing committed')
+
+    if (!keepPersonLines(before, 'groom', dir)) return
+    const c = commitWiki('groom', `${p.actions.length} actions`, dir)
+    if (c === false) return
+    if (c === null) return wikiLog('wiki groom: no change, no PR')
+    if (!pushWiki(dir, branch)) return
+    const body = p.planText
+      .split('\n')
+      .map(l => `    ${l}`)
+      .join('\n')
+    const make = gh([
+      ...['pr', 'create', '--repo', slug, '--base', 'main', '--head', branch],
+      ...['--title', `wiki groom: ${p.actions.length} actions`, '--body', body],
+    ])
+    let pr = make.exitCode === 0 ? make.stdout.toString().trim().split('\n').pop()! : ''
+    if (!PR_RE.test(pr)) {
+      const l = gh([
+        'api',
+        '--hostname',
+        r.host,
+        `repos/${r.owner}/${r.repo}/pulls?head=${r.owner}:${branch}&state=open`,
+        '--jq',
+        '.[0].html_url',
+      ])
+      pr = l.exitCode === 0 ? l.stdout.toString().trim() : ''
+      if (!PR_RE.test(pr)) return wikiLog(`wiki groom: PR create failed (exit ${make.exitCode ?? 'timeout'})`)
+    }
+    writeWikiState({ ...readWikiState(), groomPr: { url: pr, branch, openedAt: new Date().toISOString() } })
+    const done = `wiki groom: PR ${pr} with ${p.actions.length} actions`
+    wikiLog(done)
+    console.log(done)
+  } finally {
+    let ok = true
+    if (!keepFiles) {
+      ok = g('reset', '-q', '--hard').code === 0
+      for (const f of list('-o', '--exclude-standard', '--directory'))
+        ok = g('clean', '-f', '-f', '-d', '-q', '--', f).code === 0 && ok
+      for (const f of list('-o', '-i', '--exclude-standard'))
+        if (!ignoredBefore.has(f)) ok = g('clean', '-f', '-f', '-d', '-x', '-q', '--', f).code === 0 && ok
+    }
+    ok = g('checkout', '-q', 'main').code === 0 && ok
+    ok = g('branch', '-q', '-D', branch).code === 0 && ok
+    if (!ok) wikiLog(`wiki groom: cleanup failed, checkout left on ${branch}`)
+  }
 }
 
 /**
@@ -6255,22 +6491,23 @@ const kickGc = () => {
 }
 
 /**
- * `factory wiki refresh` at most every FACTORY_WIKI_REFRESH_MIN minutes (a positive number, default 30).
+ * `factory wiki <pass>` at most every FACTORY_WIKI_<PASS>_MIN minutes (a positive number, else `defMin`).
  * It does nothing while $HOME/wiki/.git is missing or wiki.lock is held. It writes the stamp before the spawn,
- * so a slow pass gets no second one. A halt does not stop it: the pages show a halted factory too.
+ * so a slow pass gets no second one. True only when it spawned.
  */
-const kickWiki = () => {
-  if (!existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return
-  const min = Number(process.env.FACTORY_WIKI_REFRESH_MIN)
-  const stamp = join(HOME, 'wiki-refresh.stamp')
+const kickWiki = (pass: 'refresh' | 'groom', defMin: number) => {
+  if (!existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return false
+  const min = Number(process.env[`FACTORY_WIKI_${pass.toUpperCase()}_MIN`])
+  const stamp = join(HOME, `wiki-${pass}.stamp`)
   const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
-  if (age < (min > 0 ? min : 30) * 60_000) return
+  if (age < (min > 0 ? min : defMin) * 60_000) return false
   writeFileSync(stamp, '')
-  spawnChild(CLI, ['wiki', 'refresh'], {
+  spawnChild(CLI, ['wiki', pass], {
     detached: true,
     stdio: 'ignore',
     env: kickEnv(process.env, HOME),
   }).unref()
+  return true
 }
 
 // ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
@@ -6880,7 +7117,8 @@ async function tick(isPatrol = false) {
       kickGc()
       kickGcWorktrees()
       kickSweeps()
-      kickWiki()
+      // one wiki pass in each tick, so refresh and groom never race for wiki.lock; a halt gets refresh only
+      if (!kickWiki('refresh', 30) && !halted()) kickWiki('groom', 24 * 60)
     }
   }
 }
@@ -11739,10 +11977,17 @@ const WIKI_RIG_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/
 /**
  * One `factory wiki refresh` pass: write rigs/<rig>.md for each rig with a valid name and the rig list in
  * index.md, from the run rows, the ship queues and the merged-PR cache (no gh call). A run that cannot be
- * read is left out. With `dryRun` it only returns the changed paths. Else it commits, pushes and journals.
+ * read is left out. With `dryRun` it only returns the changed paths. Else it first needs the checkout on main
+ * (a left-over groom branch skips the pass) and pulls main of origin, then commits, pushes and journals.
  */
 async function wikiRefresh(dryRun: boolean): Promise<string[]> {
   const dir = join(HOME, 'wiki')
+  if (!dryRun) {
+    // a groom pass that died leaves the checkout on its branch: refresh must not commit or push there
+    if (wikiGit(dir, ['symbolic-ref', '-q', 'HEAD']).out.toString().trim() !== 'refs/heads/main')
+      return (wikiLog('wiki: checkout not on main, refresh skipped'), [])
+    pullWiki(dir)
+  }
   const rows: RigRow[] = []
   for (const id of startedRunIds()) {
     try {
@@ -12556,6 +12801,27 @@ if (import.meta.main && !outboxCmd)
               const paths = await wikiRefresh(dry)
               if (dry) console.log(paths.join('\n'))
             }
+          } finally {
+            release()
+          }
+          break
+        }
+        if (args[0] === 'groom') {
+          const dry = args[1] === '--dry-run'
+          if (args.length > (dry ? 2 : 1)) {
+            console.error('usage: factory wiki groom [--dry-run]')
+            process.exitCode = 2
+            break
+          }
+          const release = hold('wiki.lock')
+          if (!release) {
+            console.log('wiki: busy')
+            break
+          }
+          try {
+            if (!existsSync(join(HOME, 'wiki', '.git')))
+              console.log('wiki: not set up: run factory wiki init')
+            else wikiGroom(dry)
           } finally {
             release()
           }
