@@ -369,6 +369,14 @@ test('the server answers the CLI bytes for the moved reads of H0', () => {
   expect(got).toEqual(['e', 'f', 'h'].map(k => ({ status: 200, body: GOLD[k]!.out })))
 })
 
+test('the server answers the CLI bytes for the rig list', () => {
+  writeLinearSync()
+  const [a] = serverGet(H2, ['/v1/rigs'])
+  expect(a).toEqual({ status: 200, body: GOLD.n2!.out })
+  const [b] = serverGet(H0, ['/v1/rigs'])
+  expect(b).toEqual({ status: 200, body: GOLD.n0!.out })
+})
+
 test('a refusal of the server holds the CLI stderr line', () => {
   const [a, b] = serverGet(H1, ['/v1/runs/nope', '/v1/runs/r2/brief'])
   expect(a!.status).toBe(422)

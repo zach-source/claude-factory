@@ -7,6 +7,7 @@ import * as leaseOps from './ops/lease'
 import * as metricsOps from './ops/metrics'
 import * as planOps from './ops/plan'
 import * as prsOps from './ops/prs'
+import * as rigsOps from './ops/rigs'
 import * as runsOps from './ops/runs'
 
 export type Kind = 'id' | 'text' | 'note' | 'path' | 'flag' | 'enum'
@@ -28,6 +29,7 @@ export type Port = {
   records: () => RunRecord[]
   refreshMerges: (recs: RunRecord[]) => Promise<RunRecord[]>
   managerUsage: (since: number) => ManagerUsage[]
+  rigList: (print: Print) => Promise<void>
 }
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
 export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
@@ -215,7 +217,7 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** the 19 operations: the routes of the client port, the board, the catalog and the parity fixture */
+/** the 20 operations: the routes of the client port, the board, the catalog and the parity fixture */
 export const CATALOG: Op[] = makeCatalog([
   local(
     {
@@ -343,6 +345,16 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'json',
     (c, i) => gatesOps.brief(c, i),
+  ),
+  local(
+    {
+      name: 'rigs.list',
+      summary: 'List the rigs, their runs and their settings.',
+      method: 'GET',
+      path: '/v1/rigs',
+    },
+    'text',
+    (c, i) => rigsOps.list(c, i),
   ),
   local(
     { name: 'lease.show', summary: 'Show the manager lease.', method: 'GET', path: '/v1/lease' },

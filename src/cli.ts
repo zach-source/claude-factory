@@ -320,6 +320,7 @@ import * as leaseOp from './core/ops/lease'
 import * as metricsOp from './core/ops/metrics'
 import * as planOp from './core/ops/plan'
 import * as prsOp from './core/ops/prs'
+import * as rigsOp from './core/ops/rigs'
 import * as runsOp from './core/ops/runs'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
@@ -10857,6 +10858,47 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
   return { busy, held }
 }
 
+/** the lines of `factory rig list`: each rig, its busy count and its settings, then the town's count */
+async function rigListLines(print: Print) {
+  const { busy, held } = await busyRigs()
+  if (!rigs().length) print('no rigs: factory rig add <name> <repo> [factory]')
+  for (const r of rigs()) {
+    // a stuck run holds this rig's own slot, so it counts here too (not the town's)
+    const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
+    let sweepsLine = r.sweeps
+    if (sweepsLine === undefined) {
+      try {
+        sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
+      } catch {
+        sweepsLine = []
+      }
+    }
+    print(
+      `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
+    )
+    if (r.goal) print(`  goal: ${r.goal}`)
+    if (r.slo) print(`  slo: ${r.slo}`)
+    if (r.drift) print(`  drift: ${r.drift}`)
+    if (r.agent) print(`  agent: ${r.agent}`)
+    if (personOnlyContexts(r)?.length) print(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
+    if (protectedBranches(r)?.length) print(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
+    if (r.mergeAuthority === true)
+      print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
+    if (r.mcp) print(`  mcp: ${r.mcp}`)
+    for (const [k, v] of Object.entries(r.params ?? {})) print(`  param ${k}: ${v}`)
+    if (r.linear) {
+      const extra = [
+        r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
+        r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
+      ].filter(Boolean)
+      print(
+        `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
+      )
+    }
+  }
+  print(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+}
+
 async function assertRoom(repo: string) {
   if (halted()) fail(`the factory is ${halted()!.state}: factory resume first`)
   const { busy, held } = await busyRigs()
@@ -12373,6 +12415,7 @@ export const corePort: Port = {
   records,
   refreshMerges,
   managerUsage,
+  rigList: rigListLines,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13830,45 +13873,7 @@ if (import.meta.main && !outboxCmd)
             }, 'cleared beadsRemote')
           }
         } else if (sub === 'list') {
-          const { busy, held } = await busyRigs()
-          if (!rigs().length) console.log('no rigs: factory rig add <name> <repo> [factory]')
-          for (const r of rigs()) {
-            // a stuck run holds this rig's own slot, so it counts here too (not the town's)
-            const n = busy.filter(b => b === r.name).length + held.filter(h => h === r.name).length
-            let sweepsLine = r.sweeps
-            if (sweepsLine === undefined) {
-              try {
-                sweepsLine = sweepNames(await loadFactory(factorySource(r.sweepsFactory ?? 'sweeps', r.repo)))
-              } catch {
-                sweepsLine = []
-              }
-            }
-            console.log(
-              `${r.name}  ${r.repo}  ${r.factory}  busy ${n}${r.maxRuns ? `/${r.maxRuns}` : ''}  sweeps ${sweepsLine.join(',') || 'none'}`,
-            )
-            if (r.goal) console.log(`  goal: ${r.goal}`)
-            if (r.slo) console.log(`  slo: ${r.slo}`)
-            if (r.drift) console.log(`  drift: ${r.drift}`)
-            if (r.agent) console.log(`  agent: ${r.agent}`)
-            if (personOnlyContexts(r)?.length)
-              console.log(`  person-only contexts: ${personOnlyContexts(r)!.join(', ')}`)
-            if (protectedBranches(r)?.length)
-              console.log(`  protected branches: ${protectedBranches(r)!.join(', ')}`)
-            if (r.mergeAuthority === true)
-              console.log(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
-            if (r.mcp) console.log(`  mcp: ${r.mcp}`)
-            for (const [k, v] of Object.entries(r.params ?? {})) console.log(`  param ${k}: ${v}`)
-            if (r.linear) {
-              const extra = [
-                r.linear.projects?.length ? `projects ${r.linear.projects.join('|')}` : '',
-                r.linear.labels?.length ? `labels ${r.linear.labels.join('|')}` : '',
-              ].filter(Boolean)
-              console.log(
-                `  linear: team ${r.linear.team.join(',')}${extra.length ? `, ${extra.join(', ')}` : ''}${linearSyncLine(r.name)}`,
-              )
-            }
-          }
-          console.log(`town: busy ${busy.length}/${MAX_BUSY}, stuck ${held.length}`)
+          emit(await rigsOp.list(cliCtx(), {}))
         } else if (sub === 'history') {
           const snaps = snapshots(rigsFile())
           if (!snaps.length) console.log('no rig history')

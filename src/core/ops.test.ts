@@ -19,6 +19,7 @@ const fake = () => {
     records: () => (calls.push(['records']), []),
     refreshMerges: async recs => (calls.push(['refreshMerges', recs]), recs),
     managerUsage: since => (calls.push(['managerUsage', typeof since]), []),
+    rigList: async print => (calls.push(['rigList']), print('rig')),
   }
   const home = mkdtempSync(join(tmpdir(), 'ops-'))
   const ctx = (env: Record<string, string | undefined> = {}): Ctx => ({
@@ -43,6 +44,7 @@ describe('moved reads run in process (AC1)', () => {
     ['plan.show', {}, [['planShowText']]],
     ['gates.brief', { id: 'r1' }, [['gateBriefFacts', 'r1']]],
     ['lease.show', {}, []],
+    ['rigs.list', {}, [['rigList']]],
     ['metrics.show', {}, [['records'], ['refreshMerges', []]]],
     [
       'metrics.show',
