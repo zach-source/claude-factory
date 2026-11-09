@@ -2645,10 +2645,11 @@ test('worker-shell-env.sh leaves no alias in zsh and bash, runs the user file fi
   const script = join(import.meta.dir, 'worker-shell-env.sh')
   for (const sh of ['zsh', 'bash']) {
     for (const f of [user, join(dir, 'missing.sh'), '']) {
-      const code = `alias gp='git push'; . '${script}'; echo "rc=$? W=\${ACME_WIDGET:-} N=$(alias | wc -l | tr -d ' ')"`
+      const zsh = sh === 'zsh'
+      const code = `${zsh ? 'alias -s txt=cat; ' : ''}alias gp='git push'; . '${script}'; echo "rc=$? W=\${ACME_WIDGET:-} N=$(alias | wc -l | tr -d ' ')${zsh ? ` S=$(alias -s | wc -l | tr -d ' ')` : ''}"`
       const r = Bun.spawnSync([sh, '-c', code], { env: { ...process.env, FACTORY_USER_ENV_FILE: f } })
       expect(r.stderr.toString()).toBe('')
-      expect(r.stdout.toString().trim()).toBe(`rc=0 W=${f === user ? '1' : ''} N=0`)
+      expect(r.stdout.toString().trim()).toBe(`rc=0 W=${f === user ? '1' : ''} N=0${zsh ? ' S=0' : ''}`)
     }
   }
   rmSync(dir, { recursive: true })
