@@ -4468,7 +4468,7 @@ test('a tick never spawns an outbox line over 100 KiB: it marks it seen, logs it
 }, 60_000)
 
 /** a run at a, stopped in the AX manager VM: its old task is gone and resume.json names it (claude-factory-d289.13) */
-function stoppedInVm(id: string, broker: string) {
+function stoppedInVm(id: string, broker: string, more: object = {}) {
   const sh = (cwd: string, ...a: string[]) => {
     const p = Bun.spawnSync(a, { cwd })
     if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
@@ -4486,7 +4486,7 @@ function stoppedInVm(id: string, broker: string) {
   const seq = launched(id, true, 'f-old-1')
   const runDir = join(home, 'runs', id)
   const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
-  writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, repo: worktree, worktree }))
+  writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, repo: worktree, worktree, ...more }))
   writeFileSync(
     join(home, 'rigs.json'),
     JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
@@ -4564,4 +4564,21 @@ test('a resume whose launch fails logs no launch, keeps the error on the run and
   )
   factory(['tick'], env)
   expect(factory(['status'], env).out).not.toMatch(/error: \S+ AX executor unavailable/)
+}, 90_000)
+
+test('in the AX manager VM, a migrated run gets its worktree from the branch on origin before any git call in it', () => {
+  // base set: the brief runs git log in the worktree before the launch (cutover attempt 3)
+  const env = stoppedInVm('rs3', `${READY}\\n200`, { base: 'HEAD' })
+  const row = JSON.parse(factory(['tick'], env).out).runs.find((r: { id: string }) => r.id === 'rs3')
+  expect(row.error).toBeNull()
+  expect(row.pane).toBe('ax://f-rs3-1')
+  expect(existsSync(join(home, 'worktrees', 'rs3', 'a'))).toBe(true)
+}, 90_000)
+
+test('in the AX manager VM, repos sync makes the missing worktree of each live run, and starts no worker', () => {
+  const env = stoppedInVm('rs4', `${READY}\\n200`)
+  const r = factory(['repos', 'sync'], env)
+  expect(r.err).toBe('')
+  expect(existsSync(join(home, 'worktrees', 'rs4', 'a'))).toBe(true)
+  expect(called()).not.toContain('apply')
 }, 90_000)

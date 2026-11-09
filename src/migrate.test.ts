@@ -6,6 +6,7 @@ import { homeReady, markerOk } from './managerhost'
 import {
   claudeFiles,
   describe,
+  isPushed,
   localLiveRuns,
   migratedRigs,
   pack,
@@ -25,7 +26,8 @@ function fixture(runs: Record<string, [string, string | null, number]>) {
   writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: 'alpha', repo: '/home/u/repos/alpha' }]))
   for (const f of ['decisions.json', 'dispatch.json', 'metrics.jsonl', 'manager-sessions.json', 'sync.json'])
     writeFileSync(join(home, f), '{}')
-  for (const f of ['tick.lock', 'rigs.json.bak-1', 'herdr.log']) writeFileSync(join(home, f), 'x')
+  for (const f of ['tick.lock', 'rigs.json.bak-1', 'herdr.log', 'manager-host.log'])
+    writeFileSync(join(home, f), 'x')
   writeFileSync(join(home, 'huge.log'), Buffer.alloc(6 * 1024 * 1024))
   for (const d of ['memory', 'launch', 'bin', 'devenv']) mkdirSync(join(home, d))
   for (const [id, [value, pane, at]] of Object.entries(runs)) {
@@ -56,6 +58,58 @@ test('selectTop keeps the state files and dirs, and leaves the lock, backups, ca
   expect(selectTop([{ name: 'metrics.jsonl', dir: false, bytes: 99_000_000 }]).take).toEqual([
     'metrics.jsonl',
   ])
+})
+
+test('the plan leaves out manager-host.log: the host in the task writes its own, and keeps the file open', () => {
+  expect(plan(fixture({}), 5, origin).top).not.toContain('manager-host.log')
+})
+
+test('the plan lists the live runs whose branch is not on origin, and describe names them', () => {
+  const home = fixture({
+    a: ['implement.working', 'ax://f-a-1', 1],
+    b: ['verify.working', null, 1],
+    c: ['done', null, 1],
+  })
+  for (const id of ['a', 'b', 'c'])
+    writeFileSync(
+      join(home, 'runs', id, 'run.json'),
+      JSON.stringify({ id, repo: '/r', worktree: `/w/${id}`, branch: `factory/${id}` }),
+    )
+  const p = plan(home, 5, origin, undefined, r => r.id !== 'b')
+  expect(p.unpushed).toEqual(['b'])
+  expect(describe(p)).toContain('live runs whose branch is not pushed: b')
+  expect(plan(home, 5, origin, undefined, () => true).unpushed).toEqual([])
+})
+
+test('isPushed: the worktree head, else the local branch, must be on origin', () => {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+  }
+  const d = mkdtempSync(join(tmpdir(), 'migrate-push-'))
+  const origin = join(d, 'o.git')
+  const repo = join(d, 'repo')
+  sh(d, 'git', 'init', '-q', '--bare', origin)
+  sh(d, 'git', 'clone', '-q', origin, repo)
+  const commit = (m: string) => {
+    writeFileSync(join(repo, 'f'), m)
+    sh(repo, 'git', 'add', '.')
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', m)
+  }
+  commit('base')
+  sh(repo, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/p')
+  sh(repo, 'git', 'branch', 'factory/p')
+  const run = { id: 'p', repo, worktree: join(d, 'gone'), branch: 'factory/p' }
+  expect(isPushed(run)).toBe(true)
+  expect(isPushed({ ...run, branch: 'factory/none' })).toBe(false)
+  // a commit only on the laptop
+  sh(repo, 'git', 'worktree', 'add', '-q', join(d, 'wt'), 'factory/p')
+  writeFileSync(join(d, 'wt', 'g'), 'x')
+  sh(join(d, 'wt'), 'git', 'add', '.')
+  sh(join(d, 'wt'), 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'local')
+  expect(isPushed({ ...run, worktree: join(d, 'wt') })).toBe(false)
+  sh(join(d, 'wt'), 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/p')
+  expect(isPushed({ ...run, worktree: join(d, 'wt') })).toBe(true)
 })
 
 test('live runs always move; of the finished runs only the newest N', () => {
