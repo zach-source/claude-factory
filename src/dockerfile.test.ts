@@ -60,10 +60,18 @@ test('the server image installs and smokes each tool', () => {
     'dolt version',
     'ax version',
     'kubectl version --client',
+    'gitleaks version',
   ]
   const line = stage.replace(/\\\n/g, ' ').match(/^RUN (bun --version .*)$/m)?.[1] ?? ''
   expect(line.split('&&').map(c => c.trim().replace(/\s+/g, ' '))).toEqual(smoke)
-  for (const a of ['CLAUDE_CODE_VERSION', 'GH_VERSION', 'BD_VERSION', 'DOLT_VERSION', 'KUBECTL_VERSION'])
+  for (const a of [
+    'CLAUDE_CODE_VERSION',
+    'GH_VERSION',
+    'BD_VERSION',
+    'DOLT_VERSION',
+    'KUBECTL_VERSION',
+    'GITLEAKS_VERSION',
+  ])
     expect(stage).toMatch(new RegExp(`^ARG ${a}=\\S+$`, 'm'))
   expect(serverFile()).toMatch(/^ARG AX_CLI_COMMIT=\S+$/m)
   expect(serverFile()).not.toMatch(/:latest|releases\/latest/)

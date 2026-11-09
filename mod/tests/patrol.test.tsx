@@ -529,12 +529,33 @@ test(
       'bD create -l factory x',
       '/Users/x/.nix-profile/bin/BD tag acme-1 factory',
       'bd show acme-1 && BD label add acme-1 factory',
+      'bd comment acme-1 approved --actor zperson',
+      'bd comment acme-1 approved --actor=zperson',
+      'bd comment acme-1 approved --acto zperson',
+      'bd comment acme-1 approved --act zperson',
+      'bd --actor zperson comment acme-1 approved',
+      "bd comment acme-1 approved '--actor' zperson",
+      'bd comment acme-1 approved -\\-actor zperson',
+      'bd comment acme-1 approved --act\\\nor zperson',
+      "bd comment acme-1 'the --actor flag'",
+      'bd comments add acme-1 approved --author zperson',
+      'bd comments add acme-1 approved --author=zperson',
+      'bd comments add acme-1 approved --auth zperson',
+      'bd comments add acme-1 approved -a zperson',
+      'bd comments add acme-1 approved -azperson',
+      'bd comments add acme-1 approved -a=zperson',
+      'BEADS_ACTOR=zperson bd comment acme-1 approved',
+      'export BEADS_ACTOR=zperson; bd comment acme-1 approved',
+      'env BEADS_ACTOR=zperson bd comments add acme-1 approved',
     ]
     for (const command of denied) {
       const r = await call(command, 'patrol-1')
       expect(r.deny, command).toContain('runs bd only')
     }
     expect((await call('bd tag acme-1 factory', 'other-1')).deny).toContain('runs bd only')
+    expect((await call('bd comment acme-1 approved --actor zperson', 'patrol-1')).deny).toContain(
+      'never set BEADS_ACTOR',
+    )
     expect(asked).toBe(0)
     expect(ran).toBe(0)
 
@@ -557,6 +578,13 @@ test(
       'ls .beads',
       'git log --oneline -3',
       '/repo/bin/factory queue acme acme-1',
+      "bd comment acme-1 'the actor field'",
+      'bd comments add acme-1 -f note.md',
+      'bd list -a zperson',
+      'bd list --assignee zperson',
+      "bd comments add acme-1 'P2 - a note'",
+      'git log --author=zperson --oneline',
+      'grep -rn BEADS_ACTOR src',
     ]
     for (const command of allowed) {
       const before = ran
@@ -573,6 +601,7 @@ test(
     }
     const main = await call('bd update acme-1 --add-label factory')
     expect(main.deny).toBeUndefined()
+    expect((await call('bd comment acme-1 approved --actor zperson')).deny).toBeUndefined()
     expect(asked).toBe(0)
     await clock.settle()
   },

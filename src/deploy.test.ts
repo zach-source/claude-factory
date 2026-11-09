@@ -182,6 +182,29 @@ test('RBAC is read-only on two named objects', () => {
   expect(rbacProblems(write)).not.toEqual([])
 })
 
+test('the optional factory-backup Secret turns the home backup on: a remote, a token file and nothing else', () => {
+  const pod = find(load(), 'Deployment').spec.template.spec
+  const c = pod.containers[0]
+  expect(c.env.find((e: Obj) => e.name === 'FACTORY_SERVER_BACKUP_REMOTE').valueFrom.secretKeyRef).toEqual({
+    name: 'factory-backup',
+    key: 'remote',
+    optional: true,
+  })
+  expect(c.env.find((e: Obj) => e.name === 'FACTORY_SERVER_BACKUP_AUTH_FILE').value).toBe(
+    '/etc/factory/backup/basic',
+  )
+  expect(c.volumeMounts).toContainEqual({ name: 'backup', mountPath: '/etc/factory/backup', readOnly: true })
+  expect(pod.volumes.find((v: Obj) => v.name === 'backup').secret).toEqual({
+    secretName: 'factory-backup',
+    optional: true,
+    items: [{ key: 'basic', path: 'basic' }],
+  })
+  const raw = readFileSync(join(import.meta.dir, '..', 'deploy', 'server.yaml'), 'utf8')
+  expect(raw).toContain(
+    '#   kubectl -n factory create secret generic factory-backup --from-literal=remote=<https url> --from-literal=basic=<base64 of x-access-token:token>   (optional: the home backup)',
+  )
+})
+
 // deploy/broker.yaml: the broker NetworkPolicy lets in the egress gateway namespace and the server pod only.
 const loadBroker = (): Obj[] =>
   Bun.YAML.parse(readFileSync(join(import.meta.dir, '..', 'deploy', 'broker.yaml'), 'utf8')) as Obj[]

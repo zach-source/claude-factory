@@ -143,7 +143,7 @@ test('the manager keeps the mod gate decisions and texts', () => {
 
 test('the patrol rules preserve their order and exact reasons', () => {
   const bd =
-    'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first'
+    'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author'
   const install =
     'a subagent never installs or rejects a skill or proposal: only the manager or the person installs'
   for (const [command, reason] of [

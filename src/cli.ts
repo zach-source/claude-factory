@@ -2106,7 +2106,7 @@ function launchNotesFailed(run: Run, node: string, why: string) {
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
-  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
+  if (!existsSync(run.worktree)) reviveWorktree(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   // a resumed session keeps the notes it was launched with; a new brief searches once, however often it is read
   const notes = session ? '' : launchNotes(run, node)
@@ -4942,6 +4942,33 @@ const isAlive = (pid: number) => {
     return true
   } catch (err) {
     return (err as { code?: string }).code === 'EPERM'
+  }
+}
+
+/**
+ * `factory server backup`: one backup of the server home in its own process, so a long git call cannot stop the server's lease renewal.
+ * backup.lock keeps one backup per home. While it holds that lock, it removes the git lock files that a killed backup left.
+ */
+async function serverBackup() {
+  const b = server.serverBackupCfg(process.env, HOME)
+  if (!b) return console.log('backup off: no remote')
+  if ('off' in b) return console.log(b.off)
+  const own = hold('backup.lock')
+  if (!own) return console.log('backup skipped: another backup runs')
+  try {
+    const gitDir = join(b.cfg.ws, 'backup.git')
+    if (existsSync(gitDir))
+      for (const f of readdirSync(gitDir, { recursive: true, encoding: 'utf8' }))
+        if (f.endsWith('.lock') && (!f.includes('/') || f.startsWith('refs/')))
+          rmSync(join(gitDir, f), { force: true })
+    await managerhost.backupStep(
+      b.cfg,
+      existsSync(join(HOME, 'rigs.json')),
+      () => hold('tick.lock'),
+      console.log,
+    )
+  } finally {
+    own()
   }
 }
 
@@ -12946,8 +12973,23 @@ if (import.meta.main && !outboxCmd)
         break
       case 'server':
         refuseWorker('server', true)
+        if (args[0] === 'backup') {
+          if (args.length > 1) fail('usage: factory server backup')
+          await serverBackup()
+          break
+        }
         lease()
-        server.main(args, HOME, () => tick(), corePort)
+        const backup = () => {
+          const p = Bun.spawn([CLI, 'server', 'backup'], {
+            stdout: 'inherit',
+            stderr: 'inherit',
+            env: kickEnv(process.env, HOME),
+          })
+          return p.exited.then(c => {
+            if (c !== 0) throw new Error(`exit ${c}`)
+          })
+        }
+        server.main(args, HOME, () => tick(), corePort, backup)
         break
       case 'cert': {
         refuseWorker('cert', true)
