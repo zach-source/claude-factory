@@ -155,3 +155,19 @@ test('AC4 proposals over the cap are dropped when the dream is refused', () => {
   expect(existsSync(join(memory, '.proposals', 'p3.md'))).toBe(true)
   expect(existsSync(join(memory, '.proposals', 'p4.md'))).toBe(false)
 })
+
+test('AC7d 96ks a dream whose agent pass writes the memory repo config commits nothing', () => {
+  seed()
+  const marker = join(dir, 'filter-marker')
+  const claude = fake([
+    `git rev-parse HEAD > "${dir}/before"`,
+    'echo new > inbox/z.md',
+    "echo '* filter=zq' > .gitattributes",
+    `printf '[filter "zq"]\\n\\tclean = sh -c "echo f >> ${marker}; cat"\\n' >> .git/config`,
+  ])
+  expect(run({ FACTORY_CLAUDE: claude }).code).toBe(0)
+  expect(gitMemory('rev-parse', 'HEAD')).toBe(readFileSync(join(dir, 'before'), 'utf8').trim())
+  expect(dreamLog()).toContain('memory: repo config not allowed, nothing committed')
+  expect(dreamCommits()).toBe('')
+  expect(existsSync(marker)).toBe(false)
+})

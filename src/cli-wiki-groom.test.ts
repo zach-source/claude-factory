@@ -593,6 +593,60 @@ test.skipIf(process.getuid?.() === 0)(
   SLOW,
 )
 
+// claude-factory-96ks: the repo config of wiki/.git must not redirect a push or run code
+const evilRepo = () => {
+  const e = join(dir, `evil${n}.git`)
+  run(['git', 'init', '-q', '--bare', '-b', 'main', e])
+  return e
+}
+
+test(
+  'AC5 96ks groom stops before the plan call when the repo config has a key outside the allow-list',
+  () => {
+    setup()
+    git('config', `url.${evilRepo()}.insteadOf`, URL_)
+    const gh0 = ghCalls().length
+    const r = groom()
+    expect(r.code).toBe(0)
+    expect(wikiLog()).toContain('wiki groom: repo config not allowed, skipped')
+    expect(claudeCalls()).toEqual([])
+    expect(ghCalls().length).toBe(gh0)
+    expect(bareGit('branch', '--list', 'groom/*')).toBe('')
+    expect(git('symbolic-ref', 'HEAD')).toBe('refs/heads/main')
+  },
+  SLOW,
+)
+
+for (const exit of [0, 1]) {
+  test(
+    `AC6 96ks a groom apply that writes the repo config and exits ${exit} commits and pushes nothing`,
+    () => {
+      setup()
+      const e = evilRepo()
+      const marker = join(dir, `marker${n}`)
+      apply(
+        `echo more >> topics/a.md\necho '* filter=zq' > .gitattributes\nprintf '[url "${e}"]\\n\\tinsteadOf = ${URL_}\\n[filter "zq"]\\n\\tsmudge = sh -c "echo f >> ${marker}; cat"\\n' >> .git/config\nexit ${exit}\n`,
+      )
+      const r = groom()
+      expect(r.code).toBe(0)
+      expect(wikiLog()).toContain('wiki groom: repo config not allowed, nothing committed')
+      const br = `groom/${today()}`
+      expect(git('rev-list', '--count', 'refs/remotes/origin/main..HEAD')).toBe('0')
+      expect(bareGit('branch', '--list', 'groom/*')).toBe('')
+      expect(run(['git', '-C', e, 'branch', '--list', 'groom/*']).out.trim()).toBe('')
+      expect(creates()).toHaveLength(0)
+      expect(existsSync(join(home, 'wiki-state.json')) && 'groomPr' in state()).toBe(false)
+      expect(git('symbolic-ref', 'HEAD')).toBe(`refs/heads/${br}`)
+      expect(existsSync(marker)).toBe(false)
+      const calls = claudeCalls().length
+      groom()
+      expect(wikiLog()).toContain('wiki groom: repo config not allowed, skipped')
+      expect(claudeCalls().length).toBe(calls)
+    },
+    SLOW,
+  )
+}
+
 // claude-factory-f1zc: the apply pass must not leave a .git change or a nested repo that runs a command
 const SCRIPT = () => join(dir, 'mark.sh')
 const MARKER = () => join(dir, 'MARKER')
