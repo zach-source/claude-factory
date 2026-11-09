@@ -402,7 +402,7 @@ test('a half-made run dir beside an eligible run does not stop the pass (claude-
 test('lt4u AC1: an old done and an old aborted run lose dir and worktree; the branch tip and metrics stay', () => {
   reset()
   const a = freshId('ship')
-  const b = freshId('shop')
+  const b = `shop-${(Date.now() - 10 * DAY).toString(36)}xx` // an aborted run ages off its id time
   const old = Date.now() - 10 * DAY
   const da = writeRun(a, { outcome: 'done', finishedAt: old, real: true })
   const db = writeRun(b, { outcome: 'aborted', finishedAt: old, real: true })
@@ -501,6 +501,7 @@ test('lt4u AC5: a refused run does not stop the next; the log names both; a metr
   // a metrics.jsonl that cannot be appended to: the run dir stays, a retry after repair succeeds
   const m = freshId('mmm')
   const dm = writeRun(m, { outcome: 'done', finishedAt: old, real: true })
+  rmSync(join(home, 'metrics.jsonl'))
   mkdirSync(join(home, 'metrics.jsonl'))
   factory(['gc'])
   expect(existsSync(dm)).toBe(true)

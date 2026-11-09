@@ -106,6 +106,31 @@ test('a done run with nothing to prune contributes no run to the plan', () => {
   expect(plan.totals.runs).toBe(0)
 })
 
+test('lt4u AC2: reap lists done and aborted runs at or past the cutoff, even with nothing to prune', () => {
+  const cut = 7 * DAY
+  const runs = [
+    run('done-at', 'done', NOW - cut, []),
+    run('done-young', 'done', NOW - cut + 1, []),
+    run('done-old', 'done', NOW - cut - 1, []),
+    run('abort-at', 'aborted', NOW - cut, []),
+    run('abort-young', 'aborted', NOW - cut + 1, []),
+  ]
+  expect(gcPlan(runs, [], new Set(), NOW, 7).reap).toEqual(['done-at', 'done-old', 'abort-at'])
+})
+
+test('lt4u AC2: reap keeps every nonterminal run, and a future, NaN or infinite finish time', () => {
+  const runs = [
+    run('working', 'implement', NOW - 30 * DAY, []),
+    run('stuck', 'stuck', NOW - 30 * DAY, []),
+    run('parked', 'parked', NOW - 30 * DAY, []),
+    run('unknown', '', NOW - 30 * DAY, []),
+    run('future', 'done', NOW + DAY, []),
+    run('nan', 'done', NaN, []),
+    run('inf', 'done', Infinity, []),
+  ]
+  expect(gcPlan(runs, [], new Set(), NOW, 7).reap).toEqual([])
+})
+
 test('livePanes null removes no launch script, however old or dead (AC5)', () => {
   const launch: LaunchFact[] = [{ pane: 'dead', bytes: 10, mtimeMs: NOW - 2 * 3_600_000 }]
   const plan = gcPlan([], launch, null, NOW, 7)

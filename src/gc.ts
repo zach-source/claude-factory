@@ -30,6 +30,8 @@ export type RunGc = {
 
 export type GcPlan = {
   runs: RunGc[]
+  /** These are the ids of every finished run old enough to reap whole, with or without files to prune. */
+  reap: string[]
   /** These are the panes whose launch script this plan removes. */
   launch: string[]
   totals: {
@@ -73,9 +75,11 @@ export function gcPlan(
 ): GcPlan {
   const cutoff = days * 24 * 3_600_000
   const runPlans: RunGc[] = []
+  const reap: string[] = []
   for (const r of runs) {
     if (!['done', 'aborted'].includes(r.node)) continue
-    if (now - r.finishedAt < cutoff) continue
+    if (!(now - r.finishedAt >= cutoff)) continue // a NaN or future time keeps the run
+    reap.push(r.id)
     const kinds = { prompts: zero(), briefs: zero(), backups: zero() }
     const paths: string[] = []
     for (const f of r.entries) {
@@ -96,6 +100,7 @@ export function gcPlan(
     runPlans.reduce((a, r) => ({ bytes: a.bytes + pick(r).bytes, files: a.files + pick(r).files }), zero())
   return {
     runs: runPlans,
+    reap,
     launch: launchPlan.map(l => l.pane),
     totals: {
       prompts: sum(r => r.kinds.prompts),
