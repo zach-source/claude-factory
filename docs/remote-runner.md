@@ -499,7 +499,7 @@ Owner steps (the factory does not do them):
 How it works:
 
 - The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot and frees it before the push. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
-- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log` and `worktrees/`.
+- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `claude/**/settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log` and `worktrees/`.
 - gitleaks scans the staged files (all its rules, `generic-api-key` too). The push has `[REDACTED]` in place of each secret that it finds. The backup finds the secret by its text, not by the gitleaks line and column. The file in the home does not change.
   - `manager-host.log` gets `backup redacted <rule id> <path>` for each file. The log never holds the value.
   - If gitleaks is not on `PATH`, or a secret is left after the redaction, the backup stops. Nothing stays staged.
