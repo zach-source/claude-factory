@@ -19,6 +19,8 @@ export function eventLog(cap = 1000) {
   let seq = 0
   return {
     epoch,
+    /** the seq of the latest event, 0 before the first */
+    last: () => seq,
     emit(resource: string): CoreEvent {
       const e = { seq: ++seq, resource, revision: (rev.get(resource) ?? 0) + 1 }
       rev.set(resource, e.revision)

@@ -164,7 +164,12 @@ export function cliRunner(
         stderr: 'pipe',
       })
       let timedOut = false as boolean
-      const onAbort = () => proc.kill()
+      let hard: ReturnType<typeof setTimeout> | undefined
+      const onAbort = () => {
+        proc.kill()
+        // a child that ignores SIGTERM gets SIGKILL after 10 s (the core stop waits for it)
+        hard = setTimeout(() => proc.kill(9), 10_000)
+      }
       if (opts.signal?.aborted) onAbort()
       else opts.signal?.addEventListener('abort', onAbort, { once: true })
       const timer = setTimeout(() => {
@@ -181,6 +186,7 @@ export function cliRunner(
       } finally {
         clearTimeout(timer)
         opts.signal?.removeEventListener('abort', onAbort)
+        clearTimeout(hard)
       }
     } finally {
       if (file) rmSync(file, { force: true })
