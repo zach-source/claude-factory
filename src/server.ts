@@ -15,7 +15,7 @@ import {
 } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
-import { CATALOG_VERSION, type Op } from './core/catalog'
+import { CATALOG_VERSION, type Op, type Port } from './core/catalog'
 import { commandStore } from './core/commands'
 import { eventLog, sseResponse } from './core/events'
 import * as managerLease from './lease'
@@ -256,7 +256,7 @@ function need(path: string): string {
 }
 
 /** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port ... --tls-cert ... --tls-key ... --person-ca ...]`. The caller passes the tick, so there is no import cycle with cli.ts. */
-export function main(args: string[], home: string, tick: () => unknown) {
+export function main(args: string[], home: string, tick: () => unknown, port: Port) {
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
   const log = (l: string) => console.log(l)
@@ -265,7 +265,7 @@ export function main(args: string[], home: string, tick: () => unknown) {
     cert: need(f.client.cert),
     key: need(f.client.key),
     ca: need(f.client.ca),
-    handle: clientHandler({ home, run: cliRunner(home), board: () => s?.board() ?? null, log }),
+    handle: clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log }),
   }
   s = serve({ home, port: f.port, everyMs: f.everyMs, leaseMs: f.leaseMs, tick, client })
   console.log(
@@ -337,6 +337,8 @@ export type CoreDeps = {
   lease: () => managerLease.Lease | undefined
   /** the runner of the catalog operations */
   runner: Runner
+  /** the cli.ts helpers that the catalog operations call */
+  helpers: Port
   /** runs one step as a child process */
   step: (argv: string[], signal: AbortSignal) => Promise<RunResult>
 }
@@ -464,6 +466,7 @@ export function startCore(o: CoreOpts) {
   const api = clientHandler({
     home: o.home,
     run: o.runner,
+    port: o.helpers,
     board: () => board ?? null,
     log,
     ops: o.ops,

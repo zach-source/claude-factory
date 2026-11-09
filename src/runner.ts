@@ -17,6 +17,8 @@ export type WorkerInfo = {
   egress?: { since: number; tries: number; last: string }
   /** a codex, cursor or grok worker's turn that ended on a usage limit or a refused login (kind auth): see worker.ts codexLimit, cursorLimit, grokLimit */
   limit?: { at: number; kind: string; resetsAt: number }
+  /** an AX task that waits for a free worker (WaitingForCapacity): queued, so the attempt's clock does not run */
+  queued?: boolean
   /** set once a runner gives up retrying something itself (a put stuck over ax ssh): the reconciler fails the attempt with this reason instead of retrying silently */
   failed?: string
   /** the ActorResumeFailed failure text. Set only when AX failed to restore the task and the rig has no fresh no-suspend marker; the reconciler writes the marker and mails the manager */

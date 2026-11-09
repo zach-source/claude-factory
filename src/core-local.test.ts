@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Op } from './core/catalog'
+import type { Op, Port } from './core/catalog'
 import { leaseFile, readLease, type Lease } from './lease'
 import type { RunResult } from './server-api'
 import { CoreRefusal, dueSteps, parseCoreFlags, startCore, type CoreOpts } from './server'
@@ -42,6 +42,7 @@ const make = (over: Partial<CoreOpts> = {}, home = tmp()) => {
       n.run++
       return { code: 0, out: '{"ok":1}\n', err: '' }
     },
+    helpers: {} as Port,
     step: async () => {
       n.step++
       return { code: 0, out: '', err: '' }

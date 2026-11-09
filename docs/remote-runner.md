@@ -278,7 +278,9 @@ Seen 2026-10-13 02:11Z and twice on 2026-10-14 (14:21Z, 14:35Z); a 2026-10-14 15
 
 The manager runs as a long-lived AX task. It needs more tools than a worker. `Dockerfile.worker` has a second target, `manager`. This target builds on the worker image, so the two images share their layers. The `manager` target adds these items:
 
-- `herdr` and `dolt` from the pinned nixpkgs (`NIXPKGS_REV`). `bd` uses `dolt` in server mode.
+- `dolt` from the pinned nixpkgs (`NIXPKGS_REV`). `bd` uses `dolt` in server mode.
+- `herdr`, the upstream release binary at `HERDR_VERSION` (default `0.9.3`), checked against `HERDR_SHA256`. `herdr --remote` on the laptop needs a compatible herdr in the task. Keep `HERDR_VERSION` the same as the laptop's `herdr --version`.
+- The Nix `sshd` (`/nix/var/nix/profiles/default/bin/sshd`) is already in the worker image. The attach uses it (see Attach to the AX manager).
 - The runner `ax-task-runner` (both targets). To build it against an env fork with a guest fix, set the build arg `ENV_REPLACE` to a `module@version`. That module replaces `github.com/agent-substrate/env`. Example: an env fork with `live_output`, so `ax stdio` streams have no 10 MiB stdout cap.
 - The `ax` CLI, built from `./cmd/ax`. By default it builds from `google/ax` at `v0.3.1`. To use a fork with the `AX_ROUTER` patch, set `AX_CLI_REPO` and `AX_CLI_COMMIT` when you run `hack/push-worker.sh`.
 - The mod, in `/opt/factory/mod`. The manager's Claude loads it as a plugin dir.
@@ -332,15 +334,18 @@ Existing pending workers are retained while that check fails; their station dead
 - The command stops if the task already runs. The task is the one-manager lease (see Attach to the AX manager).
 - The task has `spec.debug: true`, so `factory attach` and `factory say` can reach it.
 - The task runs `factory manager host <manager args>`. The task env has `FACTORY_IN_AX=1`, `FACTORY_HOME=/workspace/w/home` and `CLAUDE_CONFIG_DIR=/workspace/w/claude`. Both directories are on the workspace volume, which stays across a suspend.
-- The task env also holds the vault placeholders and `FACTORY_CA`, as a worker gets them. The laptop passes `FACTORY_MAX_RUNS`, `FACTORY_AX_IMAGE`, `FACTORY_AX_VAULT` and `FACTORY_AX_ATESPACE` to the task when they are set.
+- The task env also holds the vault placeholders and `FACTORY_CA`, as a worker gets them. The task holds no secret. The laptop passes `FACTORY_MAX_RUNS`, `FACTORY_AX_IMAGE`, `FACTORY_AX_VAULT`, `FACTORY_AX_ATESPACE`, `FACTORY_AX_PKG_GATE`, `FACTORY_AX_CAPABILITIES` (also when it is empty), `FACTORY_AX_CODEX`, `FACTORY_AX_CURSOR`, `FACTORY_AX_GROK` and `GRPC_ENFORCE_ALPN_ENABLED` to the task when they are set. The task env always has `FACTORY_AX_MANAGER`, the task's own name, so the AX sweep in the task skips its own task. If the laptop has `CURSOR_API_KEY` (the Cursor pool meter), the task gets `CURSOR_API_KEY=placeholder` (only with `FACTORY_AX_VAULT`), and the manager policy gets `api2.cursor.sh` with the vault key `CURSOR_API_KEY` on `/auth/` only. The real key does not go to the task. It sends the content of `FACTORY_AX_ENV` (a JSON file on the laptop), because the task has no laptop paths. In the task, `FACTORY_AX_ENV` can be the JSON itself.
+- `FACTORY_AX_MANAGER_SSH_PUBKEY` names a public key file on the laptop (for example `~/.ssh/id_ed25519.pub`). The laptop sends its lines as `FACTORY_SSH_AUTHORIZED_KEYS`. The command stops with an error if a line is not an OpenSSH public key. The error does not show the text. Do not give it a private key.
 - The egress policy has the worker defaults (Anthropic, GitHub, the Nix caches), `claude.ai`, and the host of `AX_SERVER` when it is set. The command tries to create the policy for 2 minutes, because the actor appears a short time after the apply.
 
 `factory manager host` runs inside the task. It stops unless `FACTORY_IN_AX=1`. It does these steps:
 
-1. It becomes the worker user, installs the gateway CA, and makes `FACTORY_HOME`.
-2. It starts herdr with no terminal attached. herdr needs a terminal, so `script` gives it one of 200 columns and 50 rows.
-3. It waits up to 60 seconds for `herdr pane list` to answer. Then it types `factory manager <args>` into the first pane (`w1:p1`).
-4. Every 30 seconds it checks herdr. If herdr is gone, it starts herdr and the manager again. It adds `--resume <session>` when `manager-sessions.json` in `FACTORY_HOME` names a session.
+1. As root, it adds the worker user to the `tty` group. Then it becomes the worker user, installs the gateway CA, and makes `FACTORY_HOME`.
+2. It writes the attach files in `/workspace/w/ssh` (see Attach to the AX manager). It does this before it waits for a home, so you can attach to a task that waits for `factory migrate-to-ax`.
+3. Before it types the manager command into the pane (step 5), it seeds `$CLAUDE_CONFIG_DIR/.claude.json` (onboarding done, theme, project trust for `/workspace/w` and `/workspace/w/home`) and `settings.json` (`skipDangerousModePermissionPrompt`). A new config dir otherwise stops at the onboarding check, which the egress gateway blocks, and at the Bypass Permissions dialog.
+4. It starts herdr with no terminal attached. herdr needs a terminal, so `script` gives it one of 200 columns and 50 rows.
+5. It waits up to 60 seconds for `herdr pane list` to answer. Then it types `factory manager <args>` into the first pane (`w1:p1`).
+6. Every 30 seconds it checks herdr. If herdr is gone, it starts herdr and the manager again. It adds `--resume <session>` when `manager-sessions.json` in `FACTORY_HOME` names a session.
 
 Each restart is one line in `FACTORY_HOME/manager-host.log`.
 
@@ -358,7 +363,38 @@ The manager runs in the AX task `f-manager` (`FACTORY_AX_MANAGER` sets another n
 - `factory say '<text...>'` types the text and Enter into the manager pane. The text travels as base64, because `ax` reads `-a`, `-n`, `--server` and `--context` anywhere on its command line. A worker cannot run it: the CLI refuses it and the worker hook denies it.
 - `FACTORY_AX_MANAGER_PANE` sets the pane id (default `w1:p1`, the first pane of a fresh herdr session). Use the id that `herdr pane list` shows in the task. The board is the `/factory` console in the same pane. It shows in the manager pane when the manager has `/factory` open.
 
-`ax ssh` has no stdin and no PTY. So `factory attach` shows a snapshot and does not give you a keyboard. A real `herdr attach` waits for stdin and a PTY in `ax ssh`.
+`ax ssh` has no stdin and no PTY. So `factory attach` shows a snapshot and does not give you a keyboard. For a keyboard, use `herdr --remote` over ssh.
+
+#### Attach with `herdr --remote`
+
+The laptop's ssh starts `sshd -i` in the task through `ax stdio` (claude-factory-d289.1). `ax stdio TASK -- CMD` sends local stdin to the command in the task. It needs an ax CLI with `ax stdio` (the AX fork). Upstream `ax` v0.3.1 does not have it.
+
+In the task, `factory manager host` writes these files in `/workspace/w/ssh`, as the worker user:
+
+- `host_ed25519`: the host key. The host makes it on the first start. The volume keeps it, so the key stays the same across a restart.
+- `authorized_keys`: the lines of `FACTORY_SSH_AUTHORIZED_KEYS`, on each start. Without that env, the file is empty and nobody can attach. `manager-host.log` then says `attach: off`.
+- `sshd_config`: `HostKey`, `AuthorizedKeysFile`, `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`, `StrictModes no`, `UsePAM no`, `PidFile none`, and `SetEnv` with each one-line value of the host env (`PATH` included, so the session finds `herdr` and `factory`).
+
+sshd runs as the worker user. A non-root sshd does no privilege separation and no chroot. Root in the task has no `SYS_CHROOT`, so a root sshd fails. The worker must be in the `tty` group, or sshd cannot chown the pty and the session gets no terminal.
+
+On the laptop:
+
+1. Set `FACTORY_AX_MANAGER_SSH_PUBKEY` before `factory manager --ax`.
+2. Run `factory attach --ssh-config >> ~/.ssh/config`. It prints the Host block for the manager task (`FACTORY_AX_MANAGER`, default `f-manager`). It uses `FACTORY_AX`, `FACTORY_AX_CONTEXT` and `FACTORY_AX_ATESPACE`:
+
+   ```
+   Host f-manager
+     User worker
+     ProxyCommand ax --context <ctx> -a factory stdio f-manager -- setpriv --reuid=worker --regid=worker --init-groups /nix/var/nix/profiles/default/bin/sshd -i -f /workspace/w/ssh/sshd_config
+   ```
+
+3. Run `herdr --remote f-manager`. The first ssh asks you to accept the host key.
+
+Limits (see claude-factory-d289.1 and claude-factory-d289.3):
+
+- An image built without `ENV_REPLACE` has the guest cap of 10 MiB stdout for each process. Then one ssh connection dies after 10 MiB from the task to the laptop. Build the manager image with `ENV_REPLACE` set to an env fork with `live_output` (claude-factory-d289.3).
+- The guest allows 10 processes at a time. Each ssh connection is one process.
+- Do not set `HERDR_REMOTE_BINARY`. Its upload echoes the binary back, and without `ENV_REPLACE` it hits the 10 MiB cap. The image has herdr on `PATH`.
 
 ### The AX sweep
 

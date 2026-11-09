@@ -1,5 +1,14 @@
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { AUTHORIZED_KEYS_ENV, MANAGER_CWD, MANAGER_HOME, publicKeys, SSH_DIR, SSHD_CONFIG, WS } from './ax'
 import { sq } from './harness'
 import { backup, restore, type BackupCfg, type Outcome } from './homebackup'
 import * as worker from './worker'
@@ -107,6 +116,115 @@ export function backupStep(
   }
 }
 
+/** env keys that sshd sets itself for a session; the attach session gets every other one-line value of the host */
+const SSH_OWN = new Set(['HOME', 'USER', 'LOGNAME', 'SHELL', 'TERM', 'PWD', 'OLDPWD', 'SHLVL', '_', 'MAIL'])
+
+/**
+ * The sshd_config for `sshd -i` as the worker user. A non-root sshd does no privilege separation and no chroot.
+ * PAM, passwords and the StrictModes check are off. The key in authorized_keys is the only way in.
+ * SetEnv gives the session the host env, so `herdr --remote` and `factory` find herdr, the home and the CA.
+ */
+export function sshdConfig(dir: string, env: Record<string, string | undefined>) {
+  const setEnv = Object.entries(env)
+    .filter(([k, v]) => v !== undefined && !SSH_OWN.has(k) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+    .filter(([, v]) => !/["\n\r\\]/.test(v!))
+    .map(([k, v]) => `"${k}=${v}"`)
+  return [
+    `HostKey ${dir}/host_ed25519`,
+    `AuthorizedKeysFile ${dir}/authorized_keys`,
+    'PasswordAuthentication no',
+    'KbdInteractiveAuthentication no',
+    'PermitRootLogin no',
+    'StrictModes no',
+    'UsePAM no',
+    'PidFile none',
+    ...(setEnv.length ? [`SetEnv ${setEnv.join(' ')}`] : []),
+    '',
+  ].join('\n')
+}
+
+/**
+ * As root, before the drop to the worker user: put the worker in the tty group. Without it, sshd cannot chown
+ * its pty (EPERM), and an attach gets no terminal. A failure goes to the log.
+ */
+function ttyGroup(log: (m: string) => void) {
+  if (process.getuid?.() !== 0) return
+  const p = Bun.spawnSync(['usermod', '-aG', 'tty', worker.WORKER_USER])
+  if (p.exitCode !== 0) log(`attach: usermod -aG tty failed: ${p.stderr.toString().trim()}`)
+}
+
+/**
+ * As the worker user: write the attach files in SSH_DIR. The host key is made once, on the first start.
+ * authorized_keys comes from FACTORY_SSH_AUTHORIZED_KEYS on each start. With no key, nobody can attach.
+ */
+export function prepareSsh(log: (m: string) => void, env: Record<string, string | undefined> = process.env) {
+  try {
+    mkdirSync(SSH_DIR, { recursive: true, mode: 0o700 })
+    const key = join(SSH_DIR, 'host_ed25519')
+    if (!existsSync(key)) {
+      const p = Bun.spawnSync(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', key])
+      if (p.exitCode !== 0) throw new Error(`ssh-keygen: ${p.stderr.toString().trim()}`)
+    }
+    const keys = env[AUTHORIZED_KEYS_ENV]
+    writeFileSync(join(SSH_DIR, 'authorized_keys'), keys ? publicKeys(keys) : '', { mode: 0o600 })
+    chmodSync(join(SSH_DIR, 'authorized_keys'), 0o600)
+    writeFileSync(SSHD_CONFIG, sshdConfig(SSH_DIR, env))
+    log(keys ? `attach: sshd ready (${SSHD_CONFIG})` : `attach: off, ${AUTHORIZED_KEYS_ENV} is not set`)
+  } catch (e) {
+    log(`attach: ${(e as Error).message}`)
+  }
+}
+
+type Json = Record<string, unknown>
+const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
+
+/**
+ * The `.claude.json` that lets a new CLAUDE_CONFIG_DIR skip the first-start onboarding. Onboarding checks the
+ * network, and the egress gateway blocks that check. The result keeps every other key and a theme that is set.
+ */
+export function seedClaudeJson(cur: Json, dirs: string[] = [MANAGER_CWD, MANAGER_HOME]): Json {
+  const projects = obj(cur.projects)
+  const seeded = Object.fromEntries(
+    dirs.map(d => [
+      d,
+      { ...obj(projects[d]), hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
+    ]),
+  )
+  return {
+    ...cur,
+    hasCompletedOnboarding: true,
+    theme: cur.theme ?? 'dark',
+    bypassPermissionsModeAccepted: true,
+    projects: { ...projects, ...seeded },
+  }
+}
+
+/** the settings.json that skips the Bypass Permissions dialog */
+export const seedSettings = (cur: Json): Json => ({ ...cur, skipDangerousModePermissionPrompt: true })
+
+/** merge `seed` into the JSON file `path`. A missing file starts empty. A file that is not an object throws */
+function seedFile(path: string, seed: (cur: Json) => Json) {
+  let cur: Json = {}
+  if (existsSync(path)) {
+    const v: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error(`${path} is not a JSON object`)
+    cur = v as Json
+  }
+  writeFileSync(path, JSON.stringify(seed(cur), null, 2))
+}
+
+/** seed the manager Claude's config dir (CLAUDE_CONFIG_DIR, else `${WS}/claude`) before the manager starts */
+function seedClaudeConfig(log: (m: string) => void) {
+  const dir = process.env.CLAUDE_CONFIG_DIR || `${WS}/claude`
+  try {
+    mkdirSync(dir, { recursive: true })
+    seedFile(join(dir, '.claude.json'), seedClaudeJson)
+    seedFile(join(dir, 'settings.json'), seedSettings)
+  } catch (e) {
+    log(`claude config seed failed: ${(e as Error).message}`)
+  }
+}
+
 export const HOST_PANE = () => process.env.FACTORY_AX_MANAGER_PANE ?? 'w1:p1'
 
 // env: Bun gives a child its start env unless told, and trustCA() sets the CA vars at runtime
@@ -153,6 +271,7 @@ async function bringUp(args: string[], home: string, log: (m: string) => void, s
   startHerdr(join(home, 'herdr.log'))
   // `herdr pane list` answering is the signal that the server and its first pane exist
   if (!(await waitFor(() => paneCount() > 0, 60_000))) throw new Error('herdr did not answer in 60 s')
+  seedClaudeConfig(log)
   startManager(args, session)
   log(`manager started in ${HOST_PANE()}${session ? ` (resume ${session})` : ''}`)
 }
@@ -168,12 +287,16 @@ export async function host(
   if (process.env.FACTORY_IN_AX !== '1') throw new Error('factory manager host runs only inside the AX task')
   const home = process.env.FACTORY_HOME
   if (!home) throw new Error('FACTORY_HOME is not set')
+  // as root, before the drop: the log is not open yet, so a failure goes to stderr (the task log)
+  ttyGroup(m => console.error(m))
   worker.asWorker() // as the worker user, like `ax ssh` for attach and say: it re-runs this command and exits
   mkdirSync(worker.own(), { recursive: true })
   worker.trustCA()
   mkdirSync(home, { recursive: true })
   const log = (m: string) =>
     appendFileSync(join(home, 'manager-host.log'), `${new Date().toISOString()} ${m}\n`)
+  // before the wait for a home: a person can attach while the task waits for `factory migrate-to-ax`
+  prepareSsh(log)
   const session = () => {
     const f = join(home, 'manager-sessions.json')
     return existsSync(f) ? lastSession(readFileSync(f, 'utf8')) : undefined

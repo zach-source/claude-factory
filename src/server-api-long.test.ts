@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Op } from './core/catalog'
+import type { Op, Port } from './core/catalog'
 import { clientHandler, cliRunner, type RunResult } from './server-api'
 
 let seq = 0
@@ -37,6 +37,7 @@ const make = (op: Op, long?: (o: Op, run: () => Promise<Response>) => Response) 
   clientHandler({
     home: tmp(),
     run: async () => ({ code: 0, out: '', err: '' }),
+    port: {} as Port,
     board: () => null,
     ops: [op],
     long,

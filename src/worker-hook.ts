@@ -8752,6 +8752,27 @@ function anyShellReason(
       break
     }
   }
+  // claude-factory-qn8a.15: a dynamic word in a find exec slot can expand to sh -c, so read each
+  // later slot word as a script (deny-only). A slot ends at ; or at + after {}.
+  // The rm, brace and delete rules deny these words with their own reason later, so skip them here.
+  // That later REASON deny runs only when the real command is find, so other heads keep the slot read.
+  const findOwnDeny =
+    baseWord(realCommand(words)[0] ?? '') === 'find' &&
+    !!(findBraceRmDeny(words) || findExecRmDeny(words) || findDeleteDeny(words, root))
+  for (let i = 0; i < words.length; i++) {
+    if (!FIND_EXEC_WORDS.has(words[i]!) && !globActionWord(words[i]!)) continue
+    if (findOwnDeny) return undefined
+    let dyn = false
+    for (i++; i < words.length; i++) {
+      const w = words[i]!
+      if (w === ';' || (w === '+' && words[i - 1] === '{}')) break
+      if (dyn) {
+        const r = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
+        if (r) return r
+      }
+      if (DYN_CHARS.test(w) || BRACE_LIST_WORD.test(w)) dyn = true
+    }
+  }
   return undefined
 }
 
