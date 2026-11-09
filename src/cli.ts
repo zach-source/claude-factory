@@ -201,6 +201,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError } from './homebackup'
 import * as managerhost from './managerhost'
@@ -11501,6 +11502,24 @@ function current(id: string | undefined) {
   return { run, value: saved.snapshot.value, c: saved.snapshot.context }
 }
 
+const HERDR_ADDRESS = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/
+const AX_ADDRESS = /^ax:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+
+/**
+ * the last screen of the worker of a run (runs.screen): `herdr pane read` for a pane, one `ax ssh` for an ax://
+ * task. It reads the saved worker address only, then checks it before any process starts. Throws a reason.
+ */
+async function screenRun(id: string | undefined) {
+  const pane = current(id).c.pane as unknown
+  if (pane === undefined || pane === null || pane === '') throw new Error(REASON.noWorker)
+  if (typeof pane !== 'string') throw new Error(REASON.badAddress)
+  if (AX_ADDRESS.test(pane)) return ax.screen(ax.taskOf(pane))
+  if (!HERDR_ADDRESS.test(pane)) throw new Error(REASON.badAddress)
+  const r = boundedRun([HERDR(), 'pane', 'read', pane, '--lines', '60'])
+  if ('reason' in r) throw new Error(r.reason)
+  return r.text
+}
+
 /** everything the manager's run view draws, in one read */
 async function show(id: string | undefined) {
   const { run, value, c } = current(id)
@@ -12631,6 +12650,7 @@ export const corePort: Port = {
   decisionsAnswer,
   goto: gotoRun,
   abort: abortRun,
+  screen: screenRun,
   mail: mailRun,
 }
 const cliCtx = (): OpCtx => ({
@@ -12656,13 +12676,14 @@ if (import.meta.main && !outboxCmd)
         const [sub, arg] = args
         if (sub === 'serve') await worker.serve(arg === '--model' ? args[2] : undefined)
         else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
+        else if (sub === 'screen' && args.length === 1) process.stdout.write(worker.screen())
         else if (sub === 'usage' && args.length === 1) console.log(JSON.stringify(worker.usageOfSession('')))
         else if (sub === 'prompt' && arg) worker.prompt(arg)
         else if (sub === 'put' && args.length === 5)
           worker.put(arg!, Number(args[2]), Number(args[3]), args[4]!)
         else
           fail(
-            'usage: factory worker serve [--model m] | poll <cursor> | usage | prompt <base64> | put <name> <part> <parts> <base64>',
+            'usage: factory worker serve [--model m] | poll <cursor> | usage | screen | prompt <base64> | put <name> <part> <parts> <base64>',
           )
         break
       }

@@ -56,6 +56,7 @@ const NAMES = [
   'runs.abort',
   'runs.goto',
   'runs.mail',
+  'runs.screen',
   'runs.show',
   'runs.start',
   'runs.status',
@@ -63,7 +64,7 @@ const NAMES = [
 ]
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 23 operations', async () => {
+  test('serves the envelope with the 24 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)
@@ -150,5 +151,68 @@ describe('input checks', () => {
       throw new Error('boom')
     })
     expect((await get(h, '/v1/board')).status).toBe(500)
+  })
+})
+
+describe('runs.screen', () => {
+  const withScreen = (screen: (id: string) => Promise<string>) => {
+    const calls: string[] = []
+    const p = new Proxy({} as Port, {
+      get: (_t, k) =>
+        k === 'screen'
+          ? async (id: string) => (calls.push(id), screen(id))
+          : () => {
+              throw new Error(`port.${String(k)} must not be called`)
+            },
+    })
+    const home = mkdtempSync(join(tmpdir(), 'cat-s-'))
+    const run = async (): Promise<RunResult> => {
+      throw new Error('the runner must not run')
+    }
+    return { calls, h: clientHandler({ home, run, port: p, board: () => null }) }
+  }
+  test('runs.screen catalog and route: the exact bytes, no newline added', async () => {
+    const { h, calls } = withScreen(async () => 'line 1\nline 2')
+    const r = await get(h, '/v1/runs/r1/screen')
+    expect(r.status).toBe(200)
+    expect(await r.text()).toBe('line 1\nline 2')
+    expect(calls).toEqual(['r1'])
+    const cat = (await (await get(h, '/v1/catalog')).json()) as any
+    const op = cat.data.operations.find((o: any) => o.name === 'runs.screen')
+    expect(op).toMatchObject({ rights: 'read', mutates: false, long: false, output: 'text' })
+    expect(op.inputs).toEqual([{ name: 'id', kind: 'id', required: true, help: 'the run id' }])
+    expect(op.route).toEqual({ method: 'GET', path: '/v1/runs/:id/screen' })
+  })
+  test('an empty screen succeeds', async () => {
+    const { h } = withScreen(async () => '')
+    const r = await get(h, '/v1/runs/r1/screen')
+    expect(r.status).toBe(200)
+    expect(await r.text()).toBe('')
+  })
+  test('a reason gives 422 with that reason', async () => {
+    const { h } = withScreen(async () => {
+      throw new Error('run has no worker')
+    })
+    const r = await get(h, '/v1/runs/r1/screen')
+    expect(r.status).toBe(422)
+    expect(((await r.json()) as any).refused).toContain('run has no worker')
+  })
+  test('refused rows make no port call', async () => {
+    const { h, calls } = withScreen(async () => 'x')
+    expect((await post(h, '/v1/runs/r1/screen', {})).status).toBe(404)
+    for (const p of [
+      '/v1/runs/r1/screen?x=1',
+      '/v1/runs/r1/screen?id=r2',
+      '/v1/runs/a%2Fb/screen',
+      '/v1/runs/a%2Eb/screen',
+      '/v1/runs/-x/screen',
+    ])
+      expect((await get(h, p)).status).toBe(400)
+    const auth = await h(
+      new Request('http://x/v1/runs/r1/screen', { headers: { authorization: 'Bearer zq' } }),
+      '1.2.3.4',
+    )
+    expect(auth.status).toBe(403)
+    expect(calls).toEqual([])
   })
 })
