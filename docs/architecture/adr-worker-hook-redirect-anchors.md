@@ -214,6 +214,15 @@ Recorded result (task `claude-factory-qn8a.14.7`). Each test runs plain and afte
 | `anyLiveApplyWord` | `qn8a.14 caller anyLiveApplyWord` | `kubectl --context acme apply -f x` is LIVE_REASON; `get pods` allows. |
 | `anyDynamicLiveApplyReason1` | `qn8a.14 caller anyDynamicLiveApplyReason1` | `$K --context acme delete -f x` denies; `get pods` allows. |
 
+Mutation evidence: a mutant drops the anchors that follow a redirect word.
+`factory mutate` refuses this file, so the mutant was a hand edit.
+The mutants for dynamicHeadRmReading, segmentMayDefineAlias, anyGlobCommandWord, anyLiveApplyWord and anyDynamicLiveApplyReason1 each fail their own caller test.
+In 11,485 corpus rows, gluedAtCommandSlot and shellStdinReason1 never receive a leading redirect word.
+An earlier step removes the redirect, so the skip cannot change their result.
+The gluedBraceSlots and anyDynamicCommandReason1 sites receive the word.
+Another rule denies the same rows, so their mutants are equivalent on that corpus.
+Their rows stay as behavior checks.
+
 The alias test is `qn8a.14 a git alias p for push denies and the fake reader is called`.
 The AC6 head tests are `qn8a.14 unsafe dynamic head denies` and `qn8a.14 safe dynamic head allows`.
 
