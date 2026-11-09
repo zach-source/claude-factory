@@ -12329,10 +12329,10 @@ test.each([['$X ' + Array(200).fill('"x y"').join(' ')], [Array(200).fill('$X').
   },
 )
 
-test('qn8a.14 script budget denies a script nested past the depth limit', () => {
-  let s = 'rm -rf /'
-  for (let i = 0; i < 30; i++) s = `$X "${s.replace(/"/g, '\\"')}"`
-  expect(redirectDeny(`>x $X '${s.replace(/'/g, '')}'`)).toBeTruthy()
+test.each(['', '>x '])('qn8a.14 script depth limit denies with the depth reason %#', p => {
+  const deep = (n: number) => `${p}$X x ${'eval '.repeat(n)}echo ok`
+  expect(redirectDeny(deep(5))).toBeUndefined()
+  expect(redirectDeny(deep(40))).toContain('nests more than 32')
 })
 
 test.each([
@@ -12386,3 +12386,26 @@ test('qn8a.14 redirect anchor budget stays at the raw tail-scan count', () => {
     commandAnchorsForTest(words).length,
   )
 })
+
+// claude-factory-qn8a.14.3: a quoted "<<<" argument is no here-string, so it must not hide the script.
+test.each(['', '>/dev/null ', 'sudo '])('qn8a.14 a quoted here-string word keeps the script read %#', p => {
+  expect(redirectDeny(`${p}$X x "echo ok; rm -rf / #" "<<<"`)).toBeTruthy()
+  expect(redirectDeny(`${p}$X x "git push origin main" '<<<'`)).toBeTruthy()
+  expect(redirectDeny(`${p}$X x "echo ok; rm -rf / #" a"<<<"`)).toBeTruthy()
+  expect(redirectDeny(`${p}env -i $X x 'bd create acme' "<<<"`)).toBe(BEADS_ACTOR_REASON)
+  expect(redirectDeny(`${p}env -i $X x 'factory mail acme manager' "<<<"`)).toContain('FACTORY_FROM')
+})
+
+// A real here-string keeps its own, more specific reason.
+test('qn8a.14 a real here-string word keeps the stdin reason', () => {
+  expect(redirectDeny('$X x "rm -rf /" <<<hi')).toBe(SHELL_STDIN_REASON)
+})
+
+// A path head and a single-quoted head are never read as a dynamic head.
+test.each(['"$ROOT/bin/factory" status', '\'$X\' "hello world"', '${ROOT}/x "rm -rf y z"'])(
+  'qn8a.14 head forms that stay allowed %s',
+  c => {
+    expect(redirectDeny(c)).toBeUndefined()
+    expect(redirectDeny(`>out ${c}`)).toBeUndefined()
+  },
+)
