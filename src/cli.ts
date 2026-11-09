@@ -7380,7 +7380,7 @@ export function conflictsOf(repo: string, base: string, branch: string): string[
 export function changedPaths(repo: string, base: string, branch: string): string[] | null {
   const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
   const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '-q', 'origin', ref(base), ref(branch)], {
-    env: GIT_NETWORK_ENV,
+    env: gitNetworkEnv(),
     timeout: GIT_NETWORK_TIMEOUT_MS,
   })
   if (fetch.exitCode !== 0) return null
