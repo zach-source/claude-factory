@@ -434,7 +434,9 @@ Limits:
 1. Stop the laptop manager. Stop `factory loop` and `factory tick` too.
 2. Run `factory migrate-to-ax --dry-run`. It prints what moves, the size, and what stays. It writes nothing and sends nothing. If it stops with a list of runs, those runs have a worker in a herdr pane on the laptop. A pane cannot move. Finish or abort those runs, or let them reach a station boundary (a gate or a wait). Then run the dry run again.
 3. Run `factory manager --ax`. The task starts. Its host sees an empty home and waits for the migration. It does not start the manager yet. For a new factory with no migration, set `FACTORY_AX_FRESH=1` on the laptop before this step.
-4. Run `factory migrate-to-ax`. It packs a tar.gz, sends it in parts to the task with `put`, and unpacks it into `FACTORY_HOME` as the worker user. The unpack writes `FACTORY_HOME/.migrated` last. The host sees the marker, runs `factory repos sync`, and starts the manager.
+4. Run `factory migrate-to-ax`. It packs a tar.gz and computes its sha256. Then it sends the archive to the task and unpacks it into `FACTORY_HOME` as the worker user. The unpack writes `FACTORY_HOME/.migrated` last. The host sees the marker, runs `factory repos sync`, and starts the manager.
+   - If the ax CLI has `ax stdio` (the AX fork; its `--help` lists it), the archive goes in one stream on stdin. In the task, a shell script writes it to `.factory-worker/migrate.tgz.tmp`, compares its sha256 with the laptop's, and only then moves it to `migrate.tgz`. A mismatch removes the file and stops the migrate.
+   - If the ax CLI has no `ax stdio`, the archive goes as base64 parts of 96 KB with `put`, one `ax ssh` call each. Then `sha256sum` in the task must give the laptop's hash. This is slow: about 14,000 calls for 1 GB.
 5. Run `factory attach`. The board shows the same runs as the laptop did.
 
 #### What moves
@@ -442,6 +444,7 @@ Limits:
 - `rigs.json`, with a `remote` added to each rig (the https form of `git remote get-url origin` in its repo). `repo` stays as written.
 - `decisions.json`, `dispatch.json`, `metrics.jsonl`, `manager-sessions.json`, `memory/`, `launch/`, and the small top-level files.
 - The directories of all live runs. For finished runs (done or aborted), only the newest 50 move. `--keep N` changes the number. Their records in `metrics.jsonl` are already written.
+- In each run directory that moves, only the newest `*.memory.tgz` moves (highest attempt number). The laptop writes one at each AX worker launch and deletes it after the put, so the older ones are not used. The dry run gives their count and size.
 
 These stay on the laptop: `tick.lock`, `bin`, `devenv/`, the backups of `rigs.json`, and any other top-level file over 5 MB. `runs/*/transcripts` also stays: it holds copies of AX worker sessions, and it can be large. The dry run names them.
 
