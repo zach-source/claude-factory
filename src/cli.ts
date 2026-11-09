@@ -12781,7 +12781,7 @@ if (queued) {
     const sync = worker.syncBeads()
     if (!sync.ok && worker.isSchemaSkew(sync)) {
       // no retry fixes a VM whose bd is too old for the store: the report goes out, and the laptop holds the station
-      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error)
+      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error, worker.startRecord())
       console.log(
         `queued for the factory: report; bd could not sync (schema skew: ${sync.error}), so the factory holds this station for the person; you are done, stop now`,
       )
@@ -12796,7 +12796,12 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...queuedArgs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
+  worker.queue(
+    [cmd!, ...queuedArgs],
+    cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined,
+    undefined,
+    cmd === 'report' ? worker.startRecord() : undefined,
+  )
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 

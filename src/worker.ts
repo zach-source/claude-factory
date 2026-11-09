@@ -78,7 +78,7 @@ export const outboxTooBig = (argv: string[]) => {
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
-export function queue(argv: string[], usage?: Usage[], bdSkew?: string) {
+export function queue(argv: string[], usage?: Usage[], bdSkew?: string, start?: unknown) {
   appendFileSync(
     outbox(),
     JSON.stringify({
@@ -87,8 +87,18 @@ export function queue(argv: string[], usage?: Usage[], bdSkew?: string) {
       at: Date.now(),
       ...(usage?.length && { usage }),
       ...(bdSkew && { bdSkew }),
+      ...(start !== undefined && { start }),
     }) + '\n',
   )
+}
+
+/** the start record serve wrote (claude-factory-ad6r), as parsed JSON; the laptop validates it. undefined when missing or not JSON */
+export function startRecord(): unknown {
+  try {
+    return JSON.parse(readFileSync(join(own(), 'start.json'), 'utf8'))
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -750,13 +760,15 @@ const NOT_DEVENV = new Set([
  * It drops print-dev-env's closing 'eval ${shellHook:-}' line, so enterShell does not run here either.
  * Every start: the environment lives only in this process. A devenv that will not load leaves the VM as it was
  */
-export function loadDevenv() {
-  if (!process.env.FACTORY_NIX_CACHE || !existsSync(join(repo(), 'devenv.nix'))) return
+export function loadDevenv(): 'none' | 'failed' | 'loaded' {
+  if (!process.env.FACTORY_NIX_CACHE || !existsSync(join(repo(), 'devenv.nix'))) return 'none'
   const script = join(own(), 'devenv.sh')
   const env = { ...process.env } as Record<string, string>
   const made = Bun.spawnSync(['devenv', 'print-dev-env'], { cwd: repo(), env, stderr: 'pipe' })
-  if (made.exitCode !== 0)
-    return void console.error(`devenv print-dev-env: ${made.stderr.toString().trim().slice(-2000)}`)
+  if (made.exitCode !== 0) {
+    console.error(`devenv print-dev-env: ${made.stderr.toString().trim().slice(-2000)}`)
+    return 'failed'
+  }
   // the script ends with 'eval ${shellHook:-}', which runs enterShell: drop it
   writeFileSync(script, made.stdout.toString().replace(/^[ \t]*eval "?\$\{shellHook:-\}"?[ \t]*$/gm, ''))
   const dumped = Bun.spawnSync(
@@ -772,6 +784,7 @@ export function loadDevenv() {
       process.env[k] = pair.slice(eq + 1)
   }
   if (process.env.PATH !== basePath) process.env.PATH = `${process.env.PATH}:${basePath}`
+  return 'loaded'
 }
 
 /** devenv 2.2.2's process.ready.http.get value. It is an object, never a URL string (claude-factory-5sn.5). */
@@ -1359,15 +1372,22 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
   // read once: a save below with no egress field would otherwise wipe out an outage a crash or
   // suspend left in progress, resetting its budget on every restart instead of carrying it through
   const prior = state()
+  const serveAt = Date.now()
+  const resumed = existsSync(join(repo(), '.git'))
+  // ms of one start step (claude-factory-ad6r)
+  const timed = async <T>(f: () => T | Promise<T>): Promise<[T, number]> => {
+    const t = Date.now()
+    return [await f(), Date.now() - t]
+  }
   // working from the start: until the first turn there is no state, which poll would read as exited
   save({ status: 'working', session: prior?.session, pid: process.pid, egress: prior?.egress })
-  const missing = await setup()
-  setupBeads() // after the clone: both wait on the task's egress policy
-  loadDevenv()
+  const [missing, cloneMs] = await timed(setup)
+  const [, beadsMs] = await timed(setupBeads) // after the clone: both wait on the task's egress policy
+  const [devenv, devenvMs] = await timed(loadDevenv)
   codexHome()
   cursorHome()
   grokHome()
-  const services = await startServices()
+  const [services, servicesMs] = await timed(startServices)
   let session = prior?.session
   let egress: Egress | undefined = prior?.egress
   const set = (status: State['status']) => save({ status, session, pid: process.pid, egress })
@@ -1389,6 +1409,10 @@ async function serveTurns(model?: string, { idleMs = 1000, once = false } = {}) 
     // a brief too long for the env (Substrate takes 32 KiB a value) comes as brief.md
     const brief = process.env.FACTORY_BRIEF ?? (await sentFile('brief.md')).toString()
     set('working')
+    try {
+      const start = { serveAt, turnAt: Date.now(), cloneMs, beadsMs, devenvMs, servicesMs, devenv, resumed }
+      writeFileSync(join(own(), 'start.json'), JSON.stringify(start))
+    } catch {} // a start record is metrics only: it never stops a worker
     session = await turnWithRetry(
       brief + missing + trustNote + servicesNote(services, process.env),
       model,

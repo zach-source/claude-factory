@@ -3656,3 +3656,106 @@ test('private patterns ride flat in the task env, and a rig repo file is read fr
     rmSync(repo, { recursive: true, force: true })
   }
 })
+
+test('loadDevenv says loaded, failed or none (claude-factory-ad6r)', () => {
+  const mk = (name: string, script: string, nix = true) => {
+    const own = join(dir, `own-${name}`)
+    const repo = join(dir, `repo-${name}`)
+    const bin = join(dir, `bin-${name}`)
+    for (const d of [own, repo, bin]) mkdirSync(d, { recursive: true })
+    if (nix) writeFileSync(join(repo, 'devenv.nix'), '{ }\n')
+    writeFileSync(join(bin, 'devenv'), script, { mode: 0o755 })
+    return { own, repo, bin }
+  }
+  const saved = { ...process.env }
+  const run = (m: ReturnType<typeof mk>, cache: string | undefined) => {
+    Object.assign(process.env, {
+      FACTORY_WORKER_DIR: m.own,
+      FACTORY_WORKER_REPO: m.repo,
+      PATH: `${m.bin}:${saved.PATH}`,
+    })
+    if (cache) process.env.FACTORY_NIX_CACHE = cache
+    else delete process.env.FACTORY_NIX_CACHE
+    return worker.loadDevenv()
+  }
+  const cache = 'https://cache.example.com:8443/devenv devenv:key='
+  try {
+    expect(run(mk('ls1', `#!/bin/sh\necho 'export A_B=1'\n`), cache)).toBe('loaded')
+    expect(run(mk('ls2', `#!/bin/sh\necho no >&2\nexit 1\n`), cache)).toBe('failed')
+    expect(run(mk('ls3', `#!/bin/sh\nexit 0\n`), undefined)).toBe('none')
+    expect(run(mk('ls4', `#!/bin/sh\nexit 0\n`, false), cache)).toBe('none')
+  } finally {
+    process.env = saved
+  }
+})
+
+test('serve writes start.json before the first brief turn only (claude-factory-ad6r)', async () => {
+  const own = join(dir, 'own-start')
+  const repo = join(dir, 'repo-start')
+  mkdirSync(own, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  const saved = { ...process.env }
+  const claude = join(dir, 'claude-start')
+  writeFileSync(
+    claude,
+    `#!/bin/sh\ncat >/dev/null\necho '{"type":"system","subtype":"init","session_id":"sess-s"}'\n`,
+    { mode: 0o755 },
+  )
+  Object.assign(process.env, {
+    FACTORY_BRIEF: 'b',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_WORKER_REPO: repo,
+    FACTORY_CLAUDE: claude,
+    FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+    FACTORY_FROM: 'implement',
+  })
+  const file = join(own, 'start.json')
+  try {
+    await worker.serve('m1', { once: true })
+    const first = JSON.parse(readFileSync(file, 'utf8'))
+    expect(Object.keys(first).sort()).toEqual(
+      ['beadsMs', 'cloneMs', 'devenv', 'devenvMs', 'resumed', 'serveAt', 'servicesMs', 'turnAt'].sort(),
+    )
+    for (const k of ['serveAt', 'turnAt', 'cloneMs', 'beadsMs', 'devenvMs', 'servicesMs'])
+      expect(Number.isInteger(first[k])).toBe(true)
+    expect(first.turnAt).toBeGreaterThanOrEqual(first.serveAt)
+    expect(first.devenv).toBe('none')
+    expect(first.resumed).toBe(false)
+    expect(worker.startRecord()).toEqual(first)
+    const bytes = readFileSync(file, 'utf8')
+    await worker.serve('m1', { once: true }) // resumed: session set
+    expect(readFileSync(file, 'utf8')).toBe(bytes)
+  } finally {
+    process.env = saved
+  }
+})
+
+test('serve records resumed: true for a cloned repo, and survives an unwritable start.json (claude-factory-ad6r)', async () => {
+  const saved = { ...process.env }
+  const claude = join(dir, 'claude-start')
+  try {
+    for (const [name, isDir] of [
+      ['res', false],
+      ['unw', true],
+    ] as const) {
+      const own = join(dir, `own-${name}`)
+      const repo = join(dir, `repo-${name}`)
+      mkdirSync(join(repo, '.git'), { recursive: true })
+      mkdirSync(own, { recursive: true })
+      if (isDir) mkdirSync(join(own, 'start.json'))
+      Object.assign(process.env, {
+        FACTORY_BRIEF: 'b',
+        FACTORY_WORKER_DIR: own,
+        FACTORY_WORKER_REPO: repo,
+        FACTORY_CLAUDE: claude,
+        FACTORY_OUTBOX: join(own, 'outbox.jsonl'),
+        FACTORY_FROM: 'implement',
+      })
+      await worker.serve('m1', { once: true })
+      expect(worker.poll(0).session).toBe('sess-s') // the turn ran
+      if (!isDir) expect(JSON.parse(readFileSync(join(own, 'start.json'), 'utf8')).resumed).toBe(true)
+    }
+  } finally {
+    process.env = saved
+  }
+})

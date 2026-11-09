@@ -3204,6 +3204,27 @@ test("inside a VM, a report carries the session's usage, subagents included (hr9
   expect(factory(['worker', 'usage', 'extra'], env).code).toBe(1)
 })
 
+test('inside a VM, a report carries the start record, a mail does not (claude-factory-ad6r AC2)', () => {
+  const own = join(dir, 'vm-own-start')
+  mkdirSync(own, { recursive: true })
+  const start = { serveAt: 1, turnAt: 2, devenv: 'none' }
+  const outbox = join(dir, 'outbox-start.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a', FACTORY_RUN: '', FACTORY_WORKER_DIR: own }
+  writeFileSync(join(own, 'start.json'), JSON.stringify(start))
+  expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)
+  expect(factory(['mail', 'r1', 'manager', 'hi'], env).code).toBe(0)
+  writeFileSync(join(own, 'start.json'), '{not json')
+  expect(factory(['report', 'r1', '1', 'ready', 'again'], env).code).toBe(0)
+  const lines = readFileSync(outbox, 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(lines[0].start).toEqual(start)
+  expect(lines[1].argv[0]).toBe('mail')
+  expect('start' in lines[1]).toBe(false)
+  expect('start' in lines[2]).toBe(false)
+})
+
 test('inside a VM, a codex report carries its rollout usage (aure.1 AC4)', () => {
   mkdirSync(dir, { recursive: true })
   const own = join(dir, 'vm-own-codex')
@@ -3758,9 +3779,10 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
   const SKEW_URL = `${SKEW} at https://dolt.example.com:50051/app`
   const SKEW_OUT = `${SKEW} at <url>`
   /** `factory report` on a fake VM whose bd is `body`; returns the run's files and result */
-  function vmReport(tag: string, body: string) {
+  function vmReport(tag: string, body: string, startJson?: string) {
     const vm = join(dir, tag)
     mkdirSync(vm, { recursive: true })
+    if (startJson) writeFileSync(join(vm, 'start.json'), startJson)
     const log = join(vm, 'bd.log')
     writeFileSync(join(vm, 'bd'), `#!/bin/sh\necho "$*" >> ${log}\n${body}\nexit 0\n`)
     chmodSync(join(vm, 'bd'), 0o755)
@@ -3773,6 +3795,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
         FACTORY_BD: join(vm, 'bd'),
         BEADS_DIR: join(vm, '.beads'),
         FACTORY_HOME: join(vm, 'nohome'),
+        ...(startJson && { FACTORY_WORKER_DIR: vm }),
       },
     })
     const outbox = existsSync(join(vm, 'outbox.jsonl')) ? readFileSync(join(vm, 'outbox.jsonl'), 'utf8') : ''
@@ -3792,6 +3815,11 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     expect(out).toContain('schema skew')
     expect(out).toContain('stop now')
     expect(r.bdLog).not.toContain('push')
+  })
+
+  test('a skew report carries the start record (claude-factory-ad6r AC2)', () => {
+    const r = vmReport('vm-skew-start', `[ "$2" = pull ] && { echo "${SKEW_URL}" >&2; exit 1; }`, '{"a":1}')
+    expect(JSON.parse(r.outbox.trim()).start).toEqual({ a: 1 })
   })
 
   test('AC2: other sync failures stay refused, and a cleared conflict has no bdSkew', () => {
