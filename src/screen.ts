@@ -13,6 +13,7 @@ export const REASON = {
   unavailable: 'worker screen could not be read',
   tooLarge: 'worker screen is too large',
   timeout: 'worker screen timed out',
+  failed: 'worker screen process failed',
 } as const
 
 /**
@@ -42,7 +43,7 @@ export function tailUtf8(buf: Uint8Array, cut = false): string {
 
 /**
  * run argv once: a 9 s deadline with a hard kill, and 128 KiB for stdout and for stderr each.
- * Never throws. A failure gives a reason without the stderr or the output of the process.
+ * Never throws. A failure gives a reason, never the stderr or the output: a launch error or a foreign signal is a process failure, a nonzero exit means the screen is unavailable.
  */
 export function boundedRun(argv: string[]): { text: string } | { reason: string } {
   try {
@@ -55,9 +56,10 @@ export function boundedRun(argv: string[]): { text: string } | { reason: string 
     })
     if (p.exitedDueToTimeout) return { reason: REASON.timeout }
     if (p.exitedDueToMaxBuffer) return { reason: REASON.tooLarge }
+    if (p.exitCode === null) return { reason: REASON.failed }
     if (p.exitCode !== 0) return { reason: REASON.unavailable }
     return { text: tailUtf8(p.stdout) }
   } catch {
-    return { reason: REASON.unavailable }
+    return { reason: REASON.failed }
   }
 }
