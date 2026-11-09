@@ -27,3 +27,21 @@ export async function abort(ctx: Ctx, i: Input): Promise<RunResult> {
     ctx.port.abort(i.id as string | undefined)
   })
 }
+
+/** `factory mail <run> <station> <text...>` as the manager; the sender rule reads i.cwd, never the cwd of this process */
+export async function mail(ctx: Ctx, i: Input): Promise<RunResult> {
+  return inProc(async print => {
+    const cwd = i.cwd
+    if (typeof cwd !== 'string') throw new Error('mail needs the working directory of the sender')
+    await ctx.port.mail(
+      {
+        id: i.id as string | undefined,
+        to: i.to as string | undefined,
+        text: i.text as string,
+        wake: i.wake === true,
+      },
+      { env: ctx.env, cwd },
+      print,
+    )
+  })
+}

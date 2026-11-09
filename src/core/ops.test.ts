@@ -27,6 +27,7 @@ const fake = () => {
     ),
     goto: async (id, node, print) => (calls.push(['goto', id, node]), print('queued')),
     abort: id => void calls.push(['abort', id]),
+    mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
   }
   const home = mkdtempSync(join(tmpdir(), 'ops-'))
   const ctx = (env: Record<string, string | undefined> = {}): Ctx => ({
@@ -91,7 +92,7 @@ describe('moved reads run in process (AC1)', () => {
       await op.run(t.ctx(), input)
       if (t.cli.length) bridged.push(op.name)
     }
-    expect(bridged).toEqual(['factory.halt', 'runs.mail', 'runs.start'])
+    expect(bridged).toEqual(['factory.halt', 'runs.start'])
   })
 })
 
@@ -316,4 +317,47 @@ describe('goto and abort check the worker rules in ctx.env (AC4)', () => {
         expect(t.calls).toEqual(call)
       })
   }
+})
+
+describe('runs.mail gives the request cwd and the ctx env to the port (AC1, AC4)', () => {
+  const base = { id: 'r1', to: 'plan', text: 'hi', from: 'manager', cwd: '/x' }
+  const m = { id: 'r1', to: 'plan', text: 'hi', wake: false }
+  test('calls the port with the mail, the env of ctx and the cwd', async () => {
+    const t = fake()
+    const env = { HOME_MARK: 'a' }
+    expect((await run('runs.mail', t.ctx(env), base)).code).toBe(0)
+    expect(t.calls).toEqual([['mail', m, { env, cwd: '/x' }]])
+    expect((t.calls[0]![2] as { env: unknown }).env).toBe(env)
+    expect(t.cli).toEqual([])
+  })
+  test('wake:true gives wake:true', async () => {
+    const t = fake()
+    await run('runs.mail', t.ctx(), { ...base, wake: true })
+    expect(t.calls[0]![1]).toEqual({ ...m, wake: true })
+  })
+  test('the end of the text is cut, as the text file form cut it', async () => {
+    const t = fake()
+    await run('runs.mail', t.ctx(), { ...base, text: 'hi\n\n' })
+    expect(t.calls[0]![1]).toEqual(m)
+  })
+  test('a text of only blanks rejects with 422 and makes no port call', async () => {
+    const t = fake()
+    const e = await run('runs.mail', t.ctx(), { ...base, text: ' \n' }).catch(x => x)
+    expect(e).toBeInstanceOf(OpError)
+    expect(e.status).toBe(422)
+    expect(t.calls).toEqual([])
+  })
+  for (const cwd of [undefined, true])
+    test(`a cwd of ${cwd} fails closed with no port call`, async () => {
+      const t = fake()
+      const input: Input = { id: 'r1', to: 'plan', text: 'hi', from: 'manager' }
+      if (cwd !== undefined) input.cwd = cwd
+      const r = await run('runs.mail', t.ctx(), input)
+      expect(r).toEqual({
+        code: 1,
+        out: '',
+        err: 'factory: mail needs the working directory of the sender\n',
+      })
+      expect(t.calls).toEqual([])
+    })
 })

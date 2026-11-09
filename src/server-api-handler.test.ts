@@ -10,6 +10,7 @@ let seq = 0
 const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'sapi-h-'))
   const calls: Call[] = []
+  let lastEnv: Record<string, string | undefined> = {}
   const logs: string[] = []
   const run = async (argv: string[], text?: string): Promise<RunResult> => {
     calls.push({ argv, text })
@@ -36,6 +37,11 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     ),
     goto: async (id, node, print) => (log('goto', [id, node]), print('{"ok":1}')),
     abort: id => void log('abort', [id]),
+    mail: async (m, who, print) => (
+      (lastEnv = who.env),
+      log('mail', [m, { cwd: who.cwd }]),
+      print('{"ok":1}')
+    ),
   }
   const make = () =>
     clientHandler({
@@ -45,7 +51,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
       board: () => (o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
-  return { home, calls, logs, h: make(), make }
+  return { home, calls, logs, h: make(), make, env: () => lastEnv }
 }
 type H = ReturnType<typeof setup>['h']
 const get = (h: H, path: string, headers: Record<string, string> = {}) =>
@@ -151,12 +157,12 @@ describe('action routes', () => {
     [
       '/v1/runs/r1/mail',
       { to: 'plan', text: 'hello', from: 'manager', cwd: '/elsewhere' },
-      [{ argv: ['mail', 'r1', 'plan'], text: 'hello' }],
+      [p('mail', { id: 'r1', to: 'plan', text: 'hello', wake: false }, { cwd: '/elsewhere' })],
     ],
     [
       '/v1/runs/r1/mail',
       { to: 'plan', text: 'hi', from: 'manager', cwd: '/elsewhere', wake: true },
-      [{ argv: ['mail', 'r1', 'plan', '--wake'], text: 'hi' }],
+      [p('mail', { id: 'r1', to: 'plan', text: 'hi', wake: true }, { cwd: '/elsewhere' })],
     ],
     ['/v1/runs/r1/goto', { node: 'plan' }, [p('goto', 'r1', 'plan')]],
     ['/v1/runs/r1/abort', {}, [p('abort', 'r1')]],
@@ -258,6 +264,23 @@ describe('refusals make zero calls', () => {
       expect(existsSync(join(t.home, 'client-idempotency.json'))).toBe(false)
       expect(existsSync(join(t.home, 'client-actions.jsonl'))).toBe(false)
     })
+})
+
+describe('mail env', () => {
+  test('the server gives personEnv: a patrol marker in the server env does not reach the port', async () => {
+    const old = process.env.FACTORY_PATROL
+    process.env.FACTORY_PATROL = '1'
+    try {
+      const t = setup()
+      const r = await post(t.h, '/v1/runs/r1/mail', { to: 'plan', text: 't', from: 'manager', cwd: '/x' })
+      expect(r.status).toBe(200)
+      expect(t.env().FACTORY_PATROL).toBeUndefined()
+      expect(t.env().FACTORY_HOME).toBe(t.home)
+    } finally {
+      if (old === undefined) delete process.env.FACTORY_PATROL
+      else process.env.FACTORY_PATROL = old
+    }
+  })
 })
 
 describe('mail cwd', () => {

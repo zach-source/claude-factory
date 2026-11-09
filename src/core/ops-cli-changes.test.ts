@@ -168,7 +168,9 @@ const state = (home: string) => {
   return {
     bd: existsSync(calls()) ? norm(home, readFileSync(calls(), 'utf8')).trim().split('\n') : [],
     decisions: existsSync(f) ? Object.keys(JSON.parse(readFileSync(f, 'utf8'))).sort() : null,
-    inbox: ['r1', 'r2', 'r3'].flatMap(id => inbox(home, id).map(e => ({ run: id, ...(e as object) }))),
+    inbox: ['r1', 'r2', 'r3'].flatMap(id =>
+      inbox(home, id).map(e => ({ run: id, ...(e as object) })),
+    ) as Record<string, unknown>[],
   }
 }
 
@@ -274,7 +276,7 @@ const post = (home: string, path: string, body: object, cwd = OUT) => {
   return { status: r.status, body: norm(home, r.body), ...state(home) }
 }
 const outOf = (id: string) => (golden[id] as { results: { out: string; err: string }[] }).results.at(-1)!
-const lineOf = (id: string) => (golden[id] as { inbox: { run: string }[] }).inbox
+const lineOf = (id: string) => (golden[id] as { inbox: Record<string, unknown>[] }).inbox
 const refusedOf = (id: string) => JSON.stringify({ refused: outOf(id).err.slice(0, 500) }) + '\n'
 
 if (!update) {
@@ -338,5 +340,49 @@ if (!update) {
     expect(r.status).toBe(200)
     expect(r.body).toBe(outOf('A1').out)
     expect(r.inbox).toEqual(lineOf('A1'))
+  })
+
+  // ---- in process with the real port: ctx.env and the input cwd count, process.env and the process cwd do not ----
+  const OPSCRIPT = `
+import { corePort } from ${JSON.stringify(join(ROOT, 'src', 'cli.ts'))}
+import { CATALOG } from ${JSON.stringify(join(ROOT, 'src', 'core', 'catalog.ts'))}
+const [home, name, input, env] = process.argv.slice(2)
+const op = CATALOG.find(o => o.name === name)!
+const r = await op.run({ home, env: JSON.parse(env), port: corePort, board: () => null, cli: async () => { throw new Error('ctx.cli') } }, JSON.parse(input))
+console.log(JSON.stringify(r))
+`
+  const inProc = (
+    home: string,
+    input: object,
+    ctxEnv: object,
+    procEnv: Record<string, string> = {},
+    cwd = OUT,
+  ) => {
+    const sf = join(dir, 'op.ts')
+    writeFileSync(sf, OPSCRIPT)
+    const argv = [process.execPath, sf, home, 'runs.mail', JSON.stringify(input), JSON.stringify(ctxEnv)]
+    const p = Bun.spawnSync(argv, { env: cleanEnv(home, procEnv), cwd, timeout: 60_000 })
+    if (p.exitCode !== 0) throw new Error('script failed: ' + p.stderr.toString())
+    const r = JSON.parse(p.stdout.toString().trim().split('\n').at(-1)!) as { code: number; err: string }
+    return { code: r.code, err: norm(home, r.err), inbox: state(home).inbox }
+  }
+  const mail = { id: 'r1', to: 'review', text: 'x', from: 'manager', cwd: OUT }
+  test('in process: the env of ctx counts, the env of the process does not', () => {
+    const refused = inProc(freshHome(), mail, { BEADS_ACTOR: 'factory/x/y' })
+    expect(refused.code).toBe(1)
+    expect(refused.err).toBe(outOf('M5').err)
+    expect(refused.inbox).toEqual([])
+    const allowed = inProc(freshHome(), mail, {}, { BEADS_ACTOR: 'factory/x/y' })
+    expect(allowed.code).toBe(0)
+    expect(allowed.inbox).toEqual([{ run: 'r1', type: 'MAIL', from: 'manager', to: 'review', text: 'x' }])
+  })
+  test('in process: the cwd of the input counts, the cwd of the process does not', () => {
+    const refused = inProc(freshHome(), { ...mail, cwd: join(WT, 'sub') }, {})
+    expect(refused.code).toBe(1)
+    expect(refused.err).toBe(outOf('M4').err)
+    expect(refused.inbox).toEqual([])
+    const allowed = inProc(freshHome(), mail, {}, {}, join(WT, 'sub'))
+    expect(allowed.code).toBe(0)
+    expect(allowed.inbox.length).toBe(1)
   })
 }

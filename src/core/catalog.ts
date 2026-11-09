@@ -37,6 +37,11 @@ export type Port = {
   decisionsAnswer: (rig: string, bead: string, text: string, print: Print) => void
   goto: (id: string | undefined, node: string | undefined, print: Print) => Promise<void>
   abort: (id: string | undefined) => void
+  mail: (
+    m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
+    who: { env: Env; cwd: string },
+    print: Print,
+  ) => Promise<void>
 }
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
 export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
@@ -409,7 +414,7 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     (c, i) => gatesOps.decide(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'runs.mail',
       summary: 'Send mail to a station of a run as the manager.',
@@ -424,9 +429,13 @@ export const CATALOG: Op[] = makeCatalog([
         f('wake', 'flag', false),
       ],
     },
-    i => ['mail', i.id as string, i.to as string, ...(i.wake ? ['--wake'] : [])],
     'text',
-    i => i.text as string,
+    async (c, i) => {
+      // the text file form of the old runner cut the end and refused a text of only blanks
+      const text = typeof i.text === 'string' ? i.text.trimEnd() : ''
+      if (!text) throw new OpError(422, 'the mail text is empty')
+      return runsOps.mail(c, { ...i, text })
+    },
   ),
   local(
     {

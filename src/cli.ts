@@ -310,8 +310,8 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
-import { refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
-import type { Ctx as OpCtx, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
+import { managerSender as managerSenderIn, refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
+import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
@@ -11149,18 +11149,18 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   )
 }
 
-/**
- * claude-factory-ab8n: the sender for mail the manager posts (mail, poke and fork).
- * A worker has FACTORY_DEF_NAME, a factory/ BEADS_ACTOR, or a cwd inside its run's worktree.
- * It must not mail as the manager, because the owner-only rule trusts mail from the manager.
- * It returns 'manager' when no marker is present. Otherwise it fails and posts nothing.
- */
-function managerSender(run: Run): 'manager' {
-  const marker =
-    workerMarker(true) ??
-    (insideWorktree(run) ? 'the working directory is inside the run worktree' : undefined)
-  if (marker) fail(`a worker cannot send mail as the manager (${marker}); a worker mails as its own station`)
-  return 'manager'
+/** the cwd of this process, or '' when its folder is gone: then no worktree matches, as before */
+function here(): string {
+  try {
+    return process.cwd()
+  } catch {
+    return ''
+  }
+}
+
+/** claude-factory-ab8n: the sender for mail the manager posts (mail, poke and fork); see src/core/caller.ts */
+function managerSender(run: Run, env: Env = process.env, cwd = here()): 'manager' {
+  return managerSenderIn(env, cwd, run)
 }
 
 /** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
@@ -11289,17 +11289,6 @@ function refuseWorker(verb: string, patrol = false) {
     refuseWorkerIn(process.env, verb, patrol)
   } catch (e) {
     fail((e as Error).message)
-  }
-}
-
-function insideWorktree(run: Run): boolean {
-  if (!run.worktree || run.worktree === run.repo) return false
-  try {
-    const wt = realpathSync(run.worktree)
-    const cwd = realpathSync(process.cwd())
-    return cwd === wt || cwd.startsWith(wt + sep)
-  } catch {
-    return false
   }
 }
 
@@ -11767,6 +11756,40 @@ function decisionsAnswer(rigName: string, id: string, text: string, print: Print
     writeJson(decisionsFile(), all)
   }
   print(`answered ${id}`)
+}
+
+async function mailRun(
+  m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
+  who: { env: Env; cwd: string },
+  print: Print,
+) {
+  const run = loadRun(m.id)
+  const def = await loadPinned(run.factory)
+  const workerFrom =
+    who.env.FACTORY_FROM && who.env.FACTORY_FROM !== 'manager' ? who.env.FACTORY_FROM : undefined
+  if (workerFrom !== undefined && !Object.hasOwn(def.nodes, workerFrom))
+    fail('FACTORY_FROM must name a station of this factory')
+  const boxes = Object.keys(def.nodes).concat('manager')
+  if (!boxes.includes(m.to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
+  post(run.id, {
+    type: 'MAIL',
+    from: workerFrom ?? managerSender(run, who.env, who.cwd),
+    to: m.to!,
+    text: cleanReport(m.text),
+    ...(m.wake && { wake: true as const }),
+  })
+  print(`mailed ${m.to}`)
+  const { c } = current(run.id)
+  if (!m.wake && isMailHeld(c, m.to!, def.nodes[m.to!]?.holdMail)) {
+    const last = c.log.at(-1)!
+    const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
+    const on = urls.length
+      ? `parked on ${urls.join(', ')}; it starts a worker when one changes or`
+      : `blocked twice in a row on the same wait; it starts a worker`
+    print(
+      `held for ${m.to}: ${on} at ${new Date(c.wakeAt).toISOString()}; add --wake only for an answer that changes the wait`,
+    )
+  }
 }
 
 async function gotoRun(id: string | undefined, node: string | undefined, print: Print) {
@@ -12470,6 +12493,7 @@ export const corePort: Port = {
   decisionsAnswer,
   goto: gotoRun,
   abort: abortRun,
+  mail: mailRun,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13420,35 +13444,12 @@ if (import.meta.main && !outboxCmd)
         const [id, to, ...rest] = fileArgs('mail', args)
         const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
-        const run = loadRun(id)
-        const def = await loadPinned(run.factory)
-        const workerFrom =
-          process.env.FACTORY_FROM && process.env.FACTORY_FROM !== 'manager'
-            ? process.env.FACTORY_FROM
-            : undefined
-        if (workerFrom !== undefined && !Object.hasOwn(def.nodes, workerFrom))
-          fail('FACTORY_FROM must name a station of this factory')
-        const boxes = Object.keys(def.nodes).concat('manager')
-        if (!boxes.includes(to ?? '')) fail(`mailbox must be one of: ${boxes.join(', ')}`)
-        post(run.id, {
-          type: 'MAIL',
-          from: workerFrom ?? managerSender(run),
-          to: to!,
-          text: cleanReport(text.join(' ')),
-          ...(wake && { wake: true as const }),
-        })
-        console.log(`mailed ${to}`)
-        const { c } = current(run.id)
-        if (!wake && isMailHeld(c, to!, def.nodes[to!]?.holdMail)) {
-          const last = c.log.at(-1)!
-          const urls = [...prsIn(last.summary), ...mrsIn(last.summary)]
-          const on = urls.length
-            ? `parked on ${urls.join(', ')}; it starts a worker when one changes or`
-            : `blocked twice in a row on the same wait; it starts a worker`
-          console.log(
-            `held for ${to}: ${on} at ${new Date(c.wakeAt).toISOString()}; add --wake only for an answer that changes the wait`,
-          )
-        }
+        emit(
+          await runsOp.mail(
+            cliCtx(),
+            defined({ id, to, text: text.join(' '), wake: wake || undefined, cwd: here() }),
+          ),
+        )
         break
       }
       case 'poke': {
