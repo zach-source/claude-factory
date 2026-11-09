@@ -4661,14 +4661,17 @@ test('a replayed AX report stores the start record once, with the laptop run, no
       ...GOOD_START,
     },
   ])
-  // a second, different report line for the same seq: the content hash does not hide it, the run/node/seq check does
+  rmSync(join(home, 'runs', 'rs2'), { recursive: true })
+  rmSync(join(home, 'starts.jsonl'), { force: true })
+  // two different report lines for one seq in one poll: the content hash hides neither, the run/node/seq check hides the second
+  const seq3 = launched('rs3')
   cluster('Running', {
     status: 'idle',
     session: 's1',
-    lines: [reportWith('rs2', seq2, 'built a', GOOD_START), reportWith('rs2', seq2, 'built b', GOOD_START)],
+    lines: [reportWith('rs3', seq3, 'built a', GOOD_START), reportWith('rs3', seq3, 'built b', GOOD_START)],
   })
   factory(['tick'])
   expect(startLines()).toHaveLength(1)
-  rmSync(join(home, 'runs', 'rs2'), { recursive: true })
+  rmSync(join(home, 'runs', 'rs3'), { recursive: true })
   rmSync(join(home, 'starts.jsonl'), { force: true })
 })
