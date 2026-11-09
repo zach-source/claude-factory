@@ -146,6 +146,18 @@ Use the normal soak deadline; this feature needs no new metrics or persistent lo
 
 Tasks 2 and 3 depend on task 1; task 3 also depends on task 2.
 Keep all three commits in one draft pull request. The scope fits one 120-minute implement pass.
+
+### Pre-change test evidence
+
+At `c8d9c3cb`, after `bun install`, the AC1/core-import command gave 104 passes and 10 expected feature failures.
+`bun test src/worker.test.ts` gave 52 passes and 22 failures.
+Twelve failures name the absent `worker.screen`; ten other failures require the absent `pkill` tool.
+`bun node_modules/typescript/bin/tsc --noEmit -p .` gave 12 errors for absent screen methods.
+The hook denied the AC5 transport command and a read of `src/core/ops-cli.test.ts` before execution.
+Its reason states that each command deletes or moves a home directory.
+Neither command requests that action. Manager mail requests a hook correction or an allowed command.
+Task 1 remains open until the transport tests can run.
+
 Before handoff, run `bun test --timeout 30000 src factories`, `bunx tsc --noEmit -p .`, and `claude plugin test mod`.
 Run `bunx prettier@3.9.9 --check .`, `bun audit`, and `gitleaks detect --log-opts=origin/main..HEAD`.
 Use exact-head CI for any documented local tool gap. Do not waive required checks.
