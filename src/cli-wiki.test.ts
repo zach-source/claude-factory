@@ -900,3 +900,148 @@ test('commitWiki makes no commit when diff --cached --quiet fails with exit 128'
   expect(r.exitCode).toBe(1)
   expect(commits()).toBe(base)
 })
+
+// claude-factory-96ks: the repo config of wiki/.git must not redirect a push or run code
+let ev = 0
+/** a second bare repo: a push that a config key redirects would land here */
+function evil() {
+  const e = join(dir, `evil${++ev}.git`)
+  Bun.spawnSync(['git', 'init', '-q', '--bare', '-b', 'main', e])
+  return e
+}
+/** hook scripts that append their name to a marker file; returns the marker path */
+function hooks(gitDir: string, names: string[]) {
+  const marker = join(dir, `marker${++ev}`)
+  mkdirSync(join(gitDir, 'hooks'), { recursive: true })
+  for (const name of names) {
+    writeFileSync(join(gitDir, 'hooks', name), `#!/bin/sh\necho ${name} >> '${marker}'\n`)
+    chmodSync(join(gitDir, 'hooks', name), 0o755)
+  }
+  return marker
+}
+const cfgRows = (e: string, marker: string): [string, string][] => {
+  mkdirSync(dir, { recursive: true })
+  const script = join(dir, `s${++ev}.sh`)
+  writeFileSync(script, `#!/bin/sh\necho fsm >> '${marker}'\n`)
+  chmodSync(script, 0o755)
+  const inc = join(dir, `inc${ev}`)
+  writeFileSync(inc, '[user]\n\tname = zq\n')
+  return [
+    [`url.${e}.insteadOf`, URL_],
+    [`url.${e}.pushInsteadOf`, URL_],
+    [`URL.${e}.InsteadOf`, URL_],
+    ['core.hooksPath', join(dir, 'nohooks')],
+    ['core.fsmonitor', script],
+    ['core.sshCommand', 'zq'],
+    ['core.worktree', dir],
+    ['include.path', inc],
+    ['includeIf.gitdir:/.path', inc],
+    ['credential.helper', 'zq'],
+    ['http.proxy', 'http://127.0.0.1:9'],
+    ['remote.origin.receivepack', 'zq'],
+    ['filter.zq.clean', `sh -c 'echo f >> ${marker}; cat'`],
+    ['extensions.worktreeConfig', 'true'],
+    ['branch.main.pushRemote', 'zq'],
+  ]
+}
+const ALLOW_ROWS: [string, string][] = [
+  ['user.name', 'zq'],
+  ['user.email', 'zq@acme.example'],
+  ['core.ignorecase', 'false'],
+  ['core.precomposeunicode', 'false'],
+  ['core.symlinks', 'true'],
+  ['branch.main.remote', 'origin'],
+  ['branch.main.merge', 'refs/heads/main'],
+]
+const rowNames = cfgRows('x', 'm').map(r => r[0])
+const SLOW60 = { timeout: 60_000 }
+
+/** a wiki that is pushed once, with one more commit ahead of the bare repo */
+function ahead() {
+  setup('PRIVATE')
+  const { b, env } = bare()
+  expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+  writeFileSync(join(wiki(), 'index.md'), page('index', 'Factory wiki') + 'more\n')
+  expect(factory(['wiki', 'init'], env).code).toBe(0)
+  const s = state()
+  s.visibility.checkedAt = new Date(Date.now() - 25 * 3600_000).toISOString()
+  writeFileSync(join(home, 'wiki-state.json'), JSON.stringify(s))
+  return { b, env, before: mainOf(b).stdout.toString().trim() }
+}
+
+for (const [i, name] of rowNames.entries()) {
+  test(
+    `AC1 96ks pushWiki pushes nothing when the repo config has ${name}`,
+    () => {
+      const ctx = ahead()
+      const e = evil()
+      const [key, value] = cfgRows(e, join(dir, 'm'))[i]!
+      git('config', key, value)
+      const calls0 = ghCalls()
+      expect(pushPass(ctx.env).exitCode).toBe(1)
+      expect(wikiLog()).toContain('wiki: repo config not allowed, push refused')
+      expect(mainOf(ctx.b).stdout.toString().trim()).toBe(ctx.before)
+      expect(mainOf(e).exitCode).not.toBe(0)
+      expect(ghCalls()).toBe(calls0)
+    },
+    SLOW60,
+  )
+}
+for (const [key, value] of ALLOW_ROWS) {
+  test(
+    `AC1 96ks pushWiki pushes with ${key} in the repo config`,
+    () => {
+      const ctx = ahead()
+      git('config', key, value)
+      expect(pushPass(ctx.env).exitCode).toBe(0)
+      expect(mainOf(ctx.b).stdout.toString().trim()).toBe(git('rev-parse', 'HEAD'))
+    },
+    SLOW60,
+  )
+}
+
+test(
+  'AC2 96ks commitWiki commits nothing when the repo config has a key outside the allow-list',
+  () => {
+    const marker = join(dir, 'filter-marker')
+    for (const [key, value] of [
+      ['url.@E.insteadOf', URL_],
+      ['url.https://github.com/acme/public.insteadOf', URL_],
+      ['filter.zq.clean', `sh -c 'echo f >> ${marker}; cat'`],
+    ] as const) {
+      setup('PRIVATE')
+      const { env } = bare()
+      expect(factory(['wiki', 'init'], env).code).toBe(0)
+      git('config', key.replace('@E', evil()), value)
+      writeFileSync(join(wiki(), '.gitattributes'), '* filter=zq\n')
+      writeFileSync(join(wiki(), 'index.md'), page('index', 'Factory wiki') + 'edit\n')
+      const base = commits()
+      expect(factory(['wiki', 'init'], env).code).toBe(1)
+      expect(wikiLog()).toContain('wiki: repo config not allowed, nothing committed')
+      expect(commits()).toBe(base)
+      expect(existsSync(marker)).toBe(false)
+    }
+  },
+  SLOW60,
+)
+
+test(
+  'AC3 96ks wiki commit and push run no hook',
+  () => {
+    setup('PRIVATE')
+    const { b, env } = bare()
+    expect(factory(['wiki', 'init', '--remote', URL_], env).code).toBe(0)
+    const marker = hooks(join(wiki(), '.git'), ['pre-commit', 'commit-msg', 'post-commit', 'pre-push'])
+    const base = commits()
+    writeFileSync(join(wiki(), 'index.md'), page('index', 'Factory wiki') + 'edit\n')
+    expect(factory(['wiki', 'init'], env).code).toBe(0)
+    expect(pushPass(env).exitCode).toBe(0)
+    expect(commits()).toBe(base + 1)
+    expect(mainOf(b).stdout.toString().trim()).toBe(git('rev-parse', 'HEAD'))
+    expect(existsSync(marker)).toBe(false)
+    // the fixture works: a plain commit runs the hook
+    git('-c', 'user.name=p', '-c', 'user.email=p@x.test', 'commit', '-q', '--allow-empty', '-m', 'p')
+    expect(existsSync(marker)).toBe(true)
+  },
+  SLOW60,
+)
