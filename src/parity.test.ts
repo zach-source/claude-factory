@@ -1,8 +1,8 @@
 // claude-factory-hpmc.7: the front-end parity check (spec 008, FR-018, FR-019).
 import { expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { CATALOG } from './core/catalog'
 import {
   checkParity,
@@ -201,6 +201,56 @@ test('AC7: parity fails closed on a blank error, a wrong id, bad JSON and no sta
   expect(why(row('other', 'open'))).toBe(none)
   expect(why({ code: 0, out: '[{"id":"x-1"}]', err: '' })).toBe(none)
 })
+
+/** run the tracked pre-push hook with a PATH of symlinks only; `status` adds a fake bd */
+function hook(status?: 'open' | 'closed') {
+  const bin = mkdtempSync(join(tmpdir(), 'parity-hook-'))
+  try {
+    for (const t of ['git', 'bun', 'sh', 'dirname', 'realpath']) symlinkSync(Bun.which(t)!, join(bin, t))
+    if (status) {
+      const sh = `#!/bin/sh\ncase "$1" in\n  hooks) exit 0 ;;\n  show) printf '[{"id":"%s","status":"${status}"}]\\n' "$2" ;;\n  *) exit 1 ;;\nesac\n`
+      writeFileSync(join(bin, 'bd'), sh, { mode: 0o755 })
+    }
+    const {
+      FACTORY_OUTBOX,
+      FACTORY_FROM,
+      FACTORY_RUN,
+      FACTORY_DEF_NAME,
+      BEADS_ACTOR,
+      FACTORY_PATROL,
+      FACTORY_SERVER,
+      ...rest
+    } = process.env
+    void [
+      FACTORY_OUTBOX,
+      FACTORY_FROM,
+      FACTORY_RUN,
+      FACTORY_DEF_NAME,
+      BEADS_ACTOR,
+      FACTORY_PATROL,
+      FACTORY_SERVER,
+    ]
+    const p = Bun.spawnSync(['sh', '.beads-hooks/pre-push', 'origin', 'x'], {
+      cwd: resolve(import.meta.dir, '..'),
+      stdin: new Blob(['']),
+      timeout: 25_000,
+      env: { ...rest, FACTORY_HOME: join(bin, 'home'), FACTORY_SELF_UPDATE: '0', PATH: bin },
+    })
+    return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
+  }
+}
+
+test('AC10: the pre-push hook runs factory parity', () => {
+  expect(hook('open').code).toBe(0)
+  const closed = hook('closed')
+  expect(closed.code).toBe(1)
+  expect(closed.out).toContain('status closed')
+  const none = hook()
+  expect(none.code).toBe(0)
+  expect(none.err).toContain('parity: bd or bun not on PATH: factory parity skipped')
+}, 30_000)
 
 test('AC8: a missing or bad gap file runs show zero times', () => {
   let calls = 0
