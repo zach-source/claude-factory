@@ -50,6 +50,35 @@ const empty = () => {
   return ws
 }
 
+test('d289.19: a staged file over 50 MB goes up as <path>.gz and comes back byte-equal; a small file stays plain', () => {
+  const r = remote()
+  const a = workspace()
+  const line = (i: number) => `{"n":${i},"text":"metrics line ${i} ünï ✓"}\n`
+  const big = Buffer.from(Array.from({ length: 1_400_000 }, (_, i) => line(i)).join(''))
+  expect(big.length).toBeGreaterThan(60 * 1024 * 1024)
+  writeFileSync(join(a, 'home', 'metrics.jsonl'), big)
+  const session = join(a, 'claude', 'projects', SLUG, 's1.jsonl')
+  writeFileSync(session, big)
+  const out = backup(cfg(a, r), true)
+  expect(out.error).toBeUndefined()
+  const tree = sh('--git-dir', r, 'ls-tree', '-r', '-l', 'manager-home')
+  expect(tree).toContain('\thome/metrics.jsonl.gz')
+  expect(tree).toContain(`\tclaude/projects/${SLUG}/s1.jsonl.gz`)
+  expect(tree).not.toContain('\thome/metrics.jsonl\n')
+  expect(tree).toContain('\thome/rigs.json\n')
+  // no blob in the pushed tree is over 50 MB
+  for (const l of tree.split('\n')) expect(Number(l.split(/\s+/)[3]) || 0).toBeLessThan(50 * 1024 * 1024)
+  // a second backup with the same files makes no commit
+  expect(backup(cfg(a, r), true).changed).toBe(false)
+  const b = empty()
+  expect(restore(cfg(b, r)).error).toBeUndefined()
+  expect(readFileSync(join(b, 'home', 'metrics.jsonl')).equals(big)).toBe(true)
+  expect(readFileSync(join(b, 'claude', 'projects', SLUG, 's1.jsonl')).equals(big)).toBe(true)
+  expect(readFileSync(join(b, 'home', 'rigs.json'), 'utf8')).toBe('[{"name":"acme"}]')
+  for (const f of ['home/metrics.jsonl.gz', 'home/.backup-gz.json'])
+    expect(existsSync(join(b, f))).toBe(false)
+}, 120_000)
+
 test('AC1: a backup restores into an empty home with the same state', () => {
   const r = remote()
   const a = workspace()
@@ -156,6 +185,29 @@ test('d289.19: gitleaks finds secrets in the staged blobs; the push has them red
   expect(out.redacted!.some(x => x.endsWith(' home/runs/r1/pull.json'))).toBe(true)
   expect(JSON.stringify(out)).not.toContain(TOKEN)
   expect(JSON.stringify(out)).not.toContain(docker)
+})
+
+test('d289.19: a file over 1 MB, a secret past the first chunk, multibyte chars before it: all redacted', () => {
+  const r = remote()
+  const ws = workspace()
+  const body = 'MIIEowIBAAKCAQEA7q9Zx3Lk2Vb8Hn4Rt6Yp1Ws5Dq0Fj3Gm8Kc2Xe7Ua9Ni4Ho6Bl1Tv5Rz3Qy8Pw2Js0'
+  const key = `-----BEGIN RSA PRIVATE KEY-----\\n${body}\\n${body}\\n-----END RSA PRIVATE KEY-----`
+  const filler = Array.from({ length: 30_000 }, (_, i) => `{"n":${i},"text":"plain metrics line ${i}"}`).join(
+    '\n',
+  )
+  const long = `{"note":"${'ünïcødé ✓ — '.repeat(800)}","key":"${key}","t":"${TOKEN}"}`
+  const big = `${filler}\n${long}\n${filler}\n{"last":"ëñd ${TOKEN}"}\n`
+  expect(Buffer.byteLength(big)).toBeGreaterThan(1_000_000)
+  put(join(ws, 'home', 'metrics.jsonl'), big)
+  const out = backup(cfg(ws, r), true)
+  expect(out.error).toBeUndefined()
+  const got = pushedFile(r, 'home/metrics.jsonl')
+  expect(got).not.toContain(TOKEN)
+  expect(got).not.toContain(body)
+  expect(got).toContain(`{"last":"ëñd [REDACTED]"}`)
+  expect(got).toContain(`${'ünïcødé ✓ — '.repeat(800)}","key":"`)
+  expect(got.split('\n').length).toBe(big.trim().split('\n').length) // no other text is lost
+  expect(JSON.stringify(out)).not.toContain(body)
 })
 
 test('d289.19: with no gitleaks the backup refuses, and nothing stays staged', () => {

@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { claudeFiles } from './migrate'
 
 /**
@@ -168,47 +169,44 @@ export type Outcome = {
   redacted?: string[]
 }
 
-/** one gitleaks finding; the report has --redact, so it holds no value */
-export type Leak = {
-  RuleID: string
-  File: string
-  StartLine: number
-  EndLine: number
-  StartColumn: number
-  EndColumn: number
+/** one gitleaks finding. It holds the secret: it stays in memory, and no log, file or error gets it */
+export type Leak = { RuleID: string; File: string; Secret: string; Tags?: string[] }
+
+const B64 = /[A-Za-z0-9+/_-]{16,}={0,2}/g
+/** whether a base64 run decodes to text that holds the needle, also after up to `depth` nested decodes */
+const holds = (run: string, needle: string, depth: number): boolean => {
+  const t = Buffer.from(run, 'base64').toString('latin1')
+  return t.includes(needle) || (depth > 1 && (t.match(B64) ?? []).some(r => holds(r, needle, depth - 1)))
 }
 
 /**
- * The text with each finding replaced by [REDACTED]. gitleaks 8.30.1 columns are 1-based and inclusive on line 1;
- * on a later line they are one more (they count the newline before the line). The columns are bytes, so the text
- * is latin1 (one char for each byte). A base64-decoded finding marks the encoded span.
+ * The text with each secret of the findings replaced by [REDACTED], found by content: gitleaks reads big files
+ * in chunks, so its line and column numbers do not point at the text. Each occurrence of a plain secret goes.
+ * For a `decoded:*` finding, the secret is the decoded text: each base64 run that decodes to text holding it
+ * goes. The text is latin1 (one char for each byte), and each secret is its UTF-8 bytes, so multibyte text
+ * before a secret does not matter.
  */
 export function redact(text: Buffer, leaks: Leak[]): Buffer {
-  const s = text.toString('latin1')
-  const starts = [0]
-  for (let i = s.indexOf('\n'); i >= 0; i = s.indexOf('\n', i + 1)) starts.push(i + 1)
-  const at = (line: number, col: number) => (starts[line - 1] ?? s.length) + col - (line === 1 ? 1 : 2)
-  const spans = leaks
-    .map(l => [at(l.StartLine, l.StartColumn), at(l.EndLine, l.EndColumn) + 1] as const)
-    .sort((a, b) => a[0] - b[0])
-  let out = ''
-  let pos = 0
-  for (const [a, b] of spans) {
-    if (b <= pos) continue // inside a span already redacted
-    out += s.slice(pos, Math.max(a, pos)) + '[REDACTED]'
-    pos = b
-  }
-  return Buffer.from(out + s.slice(pos), 'latin1')
+  const bytes = (x: string) => Buffer.from(x, 'utf8').toString('latin1')
+  const isDecoded = (l: Leak) => (l.Tags ?? []).some(t => t.startsWith('decoded:'))
+  const plain = [...new Set(leaks.filter(l => l.Secret && !isDecoded(l)).map(l => bytes(l.Secret)))]
+  const decoded = [...new Set(leaks.filter(l => l.Secret && isDecoded(l)).map(l => bytes(l.Secret)))]
+  let s = text.toString('latin1')
+  for (const n of plain.sort((x, y) => y.length - x.length)) s = s.split(n).join('[REDACTED]')
+  if (decoded.length) s = s.replace(B64, run => (decoded.some(n => holds(run, n, 3)) ? '[REDACTED]' : run))
+  return Buffer.from(s, 'latin1')
 }
 
-/** gitleaks over the files of dir; the findings, or an error. Its report goes to stdout only, with --redact */
+/**
+ * gitleaks over the files of dir; the findings, or an error. The report holds the secrets: it goes to a pipe
+ * only (stdout), never to a file or a log, and no error text gets any of it
+ */
 function gitleaks(bin: string, dir: string): Leak[] | { error: string } {
   const p = Bun.spawnSync(
     [
       bin,
       'dir',
       dir,
-      '--redact',
       '--no-banner',
       '--log-level',
       'error',
@@ -327,6 +325,65 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
   }
 }
 
+/** GitHub refuses a file over 100 MB and warns over 50 MB: the backup stores a bigger file as gzip */
+const GZ_OVER = 50 * 1024 * 1024
+/** the list of paths that the backup stored as <path>.gz; the restore gunzips only these */
+const GZ_LIST = 'home/.backup-gz.json'
+
+/**
+ * Each index file over 50 MB goes in the index as <path>.gz, after the scrub (the scan reads the plain text).
+ * The work tree file stays. The add stages the plain file again each time, so each backup does this again; the
+ * same text gives the same gzip blob, so no commit. GZ_LIST names the paths. ponytail: reads and gzips each
+ * big file at each backup, under the tick lock
+ */
+function gzipBig(cfg: BackupCfg): string | undefined {
+  const ls = git(cfg, ['ls-files', '--stage', '-z']).out.split('\0').filter(Boolean)
+  const rows = ls.map(l => /^(\d+) (\S+) \d+\t(.*)$/s.exec(l)).filter(m => m && m[1]!.startsWith('100'))
+  const sizes = git(cfg, ['cat-file', '--batch-check=%(objectsize)'], 120_000, {
+    input: rows.map(m => m![2]).join('\n') + '\n',
+  }).out.split('\n')
+  const big = rows.filter((m, i) => Number(sizes[i]) > GZ_OVER && m![3] !== GZ_LIST).map(m => m!)
+  const put = (path: string, b: Buffer, mode = '100644') => {
+    const h = git(cfg, ['hash-object', '-w', '--stdin'], 120_000, { input: b })
+    if (!h.ok) return `git hash-object: ${h.err}`
+    const u = git(cfg, ['update-index', '--add', '--cacheinfo', `${mode},${h.out},${path}`])
+    return u.ok ? undefined : `git update-index: ${u.err}`
+  }
+  for (const [, mode, blob, path] of big) {
+    if (existsSync(join(cfg.ws, `${path}.gz`)))
+      return `backup refused: ${path} is over 50 MB and ${path}.gz exists`
+    const c = git(cfg, ['cat-file', 'blob', blob!])
+    if (!c.ok) return `git cat-file: ${c.err}`
+    const e = put(`${path}.gz`, gzipSync(c.buf, { level: 6 }), mode)
+    if (e) return e
+    git(cfg, ['update-index', '--force-remove', '--', path!])
+  }
+  if (!big.length) return void git(cfg, ['update-index', '--force-remove', '--', GZ_LIST])
+  return put(GZ_LIST, Buffer.from(JSON.stringify(big.map(m => m[3])) + '\n'))
+}
+
+/** after a checkout: gunzip each <path>.gz that GZ_LIST names back to <path>, then drop the list */
+function gunzipBig(ws: string): string | undefined {
+  const f = join(ws, GZ_LIST)
+  if (!existsSync(f)) return
+  let list: unknown
+  try {
+    list = JSON.parse(readFileSync(f, 'utf8'))
+  } catch {
+    return `restore: ${GZ_LIST} is not JSON`
+  }
+  for (const p of Array.isArray(list) ? list : []) {
+    // only the paths the backup writes, and no way out of them
+    if (typeof p !== 'string' || p.split('/').includes('..') || !/^(home|claude\/projects)\//.test(p))
+      continue
+    const gz = join(ws, `${p}.gz`)
+    if (!existsSync(gz)) continue
+    writeFileSync(join(ws, p), gunzipSync(readFileSync(gz)))
+    rmSync(gz)
+  }
+  rmSync(f)
+}
+
 /**
  * Snapshot and push. Refuses when the home is not ready (an empty home must not replace a good backup) and when
  * the secret scan cannot run (nothing stays staged). It never forces a push. scrub redacts each secret it finds.
@@ -391,6 +448,11 @@ export function backup(
       return fail(scan.error)
     }
     redacted = scan.redacted
+    const gz = gzipBig(cfg)
+    if (gz) {
+      git(cfg, ['reset', '-q'])
+      return fail(gz)
+    }
     dirty = git(cfg, ['diff', '--cached', '--quiet']).ok === false
     if (dirty) {
       const c = git(cfg, ['commit', '-q', '-m', `backup ${new Date().toISOString()}`])
@@ -456,6 +518,8 @@ export function restore(cfg: BackupCfg): Outcome {
     writeFileSync(RESTORING(cfg.ws), `${sha}\n`)
     const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])
     if (!c.ok) return { error: `git checkout: ${c.err}` }
+    const gz = gunzipBig(cfg.ws)
+    if (gz) return { error: gz }
     const mem = memDir(cfg.ws)
     if (existsSync(mem)) {
       // memory is plain files in the backup: make it a repo again, dated by the last dream, so the next dream reads the journal from there
