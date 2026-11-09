@@ -256,6 +256,8 @@ test.each(
     ['set', 'x', flag],
     ...(flag === '--push-rule' ? [] : [['set', 'x', flag, values[0]!, flag, values[0]!]]),
   ])
+  if (flag === '--push-rule')
+    expect(factory(['rig', 'set', 'x', flag, ' ']).err).toContain('--push-rule is a non-empty rule text')
 })
 
 test('rig set clears autoQueue, pushRules, skills, otelContent and sandboxClass', () => {
