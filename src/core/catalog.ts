@@ -35,6 +35,8 @@ export type Port = {
   rigList: (print: Print) => Promise<void>
   decide: (id: string | undefined, outcome: string | undefined, note: string, print: Print) => Promise<void>
   decisionsAnswer: (rig: string, bead: string, text: string, print: Print) => void
+  goto: (id: string | undefined, node: string | undefined, print: Print) => Promise<void>
+  abort: (id: string | undefined) => void
 }
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
 export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
@@ -426,7 +428,7 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     i => i.text as string,
   ),
-  bridge(
+  local(
     {
       name: 'runs.goto',
       summary: 'Move a run to a station.',
@@ -434,9 +436,10 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/runs/:id/goto',
       inputs: [id('id'), id('node')],
     },
-    i => ['goto', i.id as string, i.node as string],
+    'text',
+    (c, i) => runsOps.goto(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'runs.abort',
       summary: 'Abort a run and close its worker.',
@@ -444,7 +447,8 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/runs/:id/abort',
       inputs: [id('id')],
     },
-    i => ['abort', i.id as string],
+    'text',
+    (c, i) => runsOps.abort(c, i),
   ),
   bridge(
     {

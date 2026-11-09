@@ -34,6 +34,8 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
       log('decisionsAnswer', [rig, bead, text]),
       print('{"ok":1}')
     ),
+    goto: async (id, node, print) => (log('goto', [id, node]), print('{"ok":1}')),
+    abort: id => void log('abort', [id]),
   }
   const make = () =>
     clientHandler({
@@ -156,8 +158,8 @@ describe('action routes', () => {
       { to: 'plan', text: 'hi', from: 'manager', cwd: '/elsewhere', wake: true },
       [{ argv: ['mail', 'r1', 'plan', '--wake'], text: 'hi' }],
     ],
-    ['/v1/runs/r1/goto', { node: 'plan' }, [{ argv: ['goto', 'r1', 'plan'] }]],
-    ['/v1/runs/r1/abort', {}, [{ argv: ['abort', 'r1'] }]],
+    ['/v1/runs/r1/goto', { node: 'plan' }, [p('goto', 'r1', 'plan')]],
+    ['/v1/runs/r1/abort', {}, [p('abort', 'r1')]],
     [
       '/v1/start',
       { factory: 'lifecycle', rig: 'acme', goal: 'do it' },

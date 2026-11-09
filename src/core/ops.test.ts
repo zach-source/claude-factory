@@ -25,6 +25,8 @@ const fake = () => {
       calls.push(['decisionsAnswer', rig, bead, text]),
       print('answered')
     ),
+    goto: async (id, node, print) => (calls.push(['goto', id, node]), print('queued')),
+    abort: id => void calls.push(['abort', id]),
   }
   const home = mkdtempSync(join(tmpdir(), 'ops-'))
   const ctx = (env: Record<string, string | undefined> = {}): Ctx => ({
@@ -57,6 +59,8 @@ describe('moved reads run in process (AC1)', () => {
       { rig: 'acme', bead: 'b1', text: 'yes' },
       [['decisionsAnswer', 'acme', 'b1', 'yes']],
     ],
+    ['runs.goto', { id: 'r1', node: 'plan' }, [['goto', 'r1', 'plan']]],
+    ['runs.abort', { id: 'r1' }, [['abort', 'r1']]],
     ['runners.show', {}, []],
     ['mail.list', {}, []],
     ['steps.reports', {}, []],
@@ -87,7 +91,7 @@ describe('moved reads run in process (AC1)', () => {
       await op.run(t.ctx(), input)
       if (t.cli.length) bridged.push(op.name)
     }
-    expect(bridged).toEqual(['factory.halt', 'runs.abort', 'runs.goto', 'runs.mail', 'runs.start'])
+    expect(bridged).toEqual(['factory.halt', 'runs.mail', 'runs.start'])
   })
 })
 
@@ -276,6 +280,36 @@ describe('decide and answer check the caller in ctx.env (AC4)', () => {
       expect(t.calls).toEqual([])
     })
     for (const env of [{}, { BEADS_ACTOR: 'person' }, { FACTORY_PATROL: '' }])
+      test(`${name} allows ${JSON.stringify(env)}`, async () => {
+        const t = fake()
+        expect((await run(name, t.ctx(env), input)).code).toBe(0)
+        expect(t.calls).toEqual(call)
+      })
+  }
+})
+
+describe('goto and abort check the worker rules in ctx.env (AC4)', () => {
+  const ops: [string, Input, Call[]][] = [
+    ['runs.goto', { id: 'r1', node: 'plan' }, [['goto', 'r1', 'plan']]],
+    ['runs.abort', { id: 'r1' }, [['abort', 'r1']]],
+  ]
+  for (const [name, input, call] of ops) {
+    const verb = name.split('.')[1]
+    const markers: Record<string, string>[] = [
+      { FACTORY_FROM: 'x' },
+      { FACTORY_RUN: 'x' },
+      { FACTORY_DEF_NAME: 'x' },
+      { BEADS_ACTOR: 'factory/x' },
+    ]
+    for (const env of markers)
+      test(`${name} refuses ${JSON.stringify(env)} with no port call`, async () => {
+        const t = fake()
+        const r = await run(name, t.ctx(env), input)
+        expect(r.code).toBe(1)
+        expect(r.err).toMatch(new RegExp(`^factory: a worker cannot run factory ${verb} \\(`))
+        expect(t.calls).toEqual([])
+      })
+    for (const env of [{}, { FACTORY_PATROL: '1' }])
       test(`${name} allows ${JSON.stringify(env)}`, async () => {
         const t = fake()
         expect((await run(name, t.ctx(env), input)).code).toBe(0)

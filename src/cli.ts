@@ -11769,6 +11769,39 @@ function decisionsAnswer(rigName: string, id: string, text: string, print: Print
   print(`answered ${id}`)
 }
 
+async function gotoRun(id: string | undefined, node: string | undefined, print: Print) {
+  const run = loadRun(id)
+  const nodes = Object.keys((await loadPinned(run.factory)).nodes).concat('done')
+  if (!nodes.includes(node ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
+  const target = node!
+  const saved = readJson<Saved>(join(runDir(run.id), 'state.json'))
+  const pending = inboxLines(run.id)
+    .slice(saved.cursor)
+    .map(l => JSON.parse(l) as Ev)
+  const queued = pending.find(e => e.type === 'GOTO')
+  if (queued?.type === 'GOTO')
+    fail(
+      `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
+    )
+  const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
+  if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
+  // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
+  const other =
+    ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
+      ? otherLiveShip(run)
+      : undefined
+  if (other)
+    fail(
+      `${other.run.id} is a live ship run on ${run.repo}: goto ${target} would revive ${run.id} as a second ship run on the rig. Run factory abort ${other.run.id}, then goto again.`,
+    )
+  post(run.id, { type: 'GOTO', node: target })
+  print(`queued goto ${target} for ${run.id}: the next tick applies it`)
+}
+
+function abortRun(id: string | undefined) {
+  post(loadRun(id).id, { type: 'ABORT' })
+}
+
 async function decideGate(id: string | undefined, outcome: string | undefined, note: string, print: Print) {
   const { run, value, c } = current(id)
   const [node, sub] = where(value)
@@ -12435,6 +12468,8 @@ export const corePort: Port = {
   rigList: rigListLines,
   decide: decideGate,
   decisionsAnswer,
+  goto: gotoRun,
+  abort: abortRun,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13455,39 +13490,11 @@ if (import.meta.main && !outboxCmd)
         )
         break
       }
-      case 'goto': {
-        refuseWorker('goto')
-        const run = loadRun(args[0])
-        const nodes = Object.keys((await loadPinned(run.factory)).nodes).concat('done')
-        if (!nodes.includes(args[1] ?? '')) fail(`node must be one of: ${nodes.join(', ')}`)
-        const target = args[1]!
-        const saved = readJson<Saved>(join(runDir(run.id), 'state.json'))
-        const pending = inboxLines(run.id)
-          .slice(saved.cursor)
-          .map(l => JSON.parse(l) as Ev)
-        const queued = pending.find(e => e.type === 'GOTO')
-        if (queued?.type === 'GOTO')
-          fail(
-            `a goto to ${queued.node} is queued since ${new Date(queued.at).toISOString()} and not applied yet: the next tick applies it. Do not repeat it; mail sent now reaches ${queued.node}`,
-          )
-        const why = gotoRefusal(await loadPinned(run.factory), saved.snapshot, pending, target, Date.now())
-        if (why) fail(`goto ${target} would not move ${run.id}: ${why}`)
-        // goto revives an ended ship run: refuse it beside another live ship run (claude-factory-9wch)
-        const other =
-          ['done', 'aborted'].includes(where(current(run.id).value)[0]) && target !== 'done'
-            ? otherLiveShip(run)
-            : undefined
-        if (other)
-          fail(
-            `${other.run.id} is a live ship run on ${run.repo}: goto ${target} would revive ${run.id} as a second ship run on the rig. Run factory abort ${other.run.id}, then goto again.`,
-          )
-        post(run.id, { type: 'GOTO', node: target })
-        console.log(`queued goto ${target} for ${run.id}: the next tick applies it`)
+      case 'goto':
+        emit(await runsOp.goto(cliCtx(), defined({ id: args[0], node: args[1] })))
         break
-      }
       case 'abort':
-        refuseWorker('abort')
-        post(loadRun(args[0]).id, { type: 'ABORT' })
+        emit(await runsOp.abort(cliCtx(), defined({ id: args[0] })))
         break
       case 'init': {
         if (!args[0]) fail('usage: factory init <dir>')
