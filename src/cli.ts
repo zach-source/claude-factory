@@ -475,6 +475,21 @@ export type Row = {
 }
 
 const runDir = (id: string) => join(HOME, 'runs', id)
+/**
+ * the error of the run's last tick, in runs/<id>/tick-error.txt. The tick output goes away, so
+ * `factory status` reads it from there. A tick with no error removes the file
+ */
+const tickErrorFile = (id: string) => join(runDir(id), 'tick-error.txt')
+function keepTickError(id: string, error: string | undefined) {
+  try {
+    if (error) writeFileSync(tickErrorFile(id), `${new Date().toISOString()} ${error}\n`)
+    else rmSync(tickErrorFile(id), { force: true })
+  } catch {
+    // best effort: the tick row still has the error
+  }
+}
+const tickError = (id: string) =>
+  existsSync(tickErrorFile(id)) ? readFileSync(tickErrorFile(id), 'utf8').trim() : undefined
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
 function durable(path: string, text: string, flag: 'w' | 'a') {
@@ -2058,8 +2073,10 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, full())
   }
+  const address = runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
+  // after the launch: a launch that throws is not a launch
   logLaunch(run, node, c.seq, agentOfNode(run, def, node), !!session)
-  return runnerOfStation(run, def, node).launch({ run, def, node, c, session, file, brief: full })
+  return address
 }
 
 /** a worker in a new tab of the run's workspace; given a session, it resumes that conversation */
@@ -4573,6 +4590,7 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   } catch (err) {
     error = (err as Error).message
   }
+  keepTickError(run.id, error)
 
   error ??= run.bead ? trackOf(run.id, saved).error : undefined
 
@@ -11962,7 +11980,7 @@ async function status(id: string | undefined, print: Print = l => console.log(l)
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
     const def = await loadPinned(run.factory)
-    const r = row(run, def, value, c, agentOf(def, value, c))
+    const r = row(run, def, value, c, agentOf(def, value, c), tickError(runId))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     print(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     // a bead's goal carries its whole description: bd show <bead> has it
