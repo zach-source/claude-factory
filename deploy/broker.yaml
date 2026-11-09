@@ -1,5 +1,5 @@
 # The policy broker (docs/remote-runner.md, Policy broker). Set BROKER_IMAGE to the image, by digest, and apply:
-#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> envsubst '$BROKER_IMAGE $CLAUDE_TOKEN_ITEM $CLAUDE_TOKEN_VAULT $CLAUDE_TOKEN_LIVE_FIELD $CLAUDE_TOKEN_SLOT_FIELD $CLAUDE_TOKEN_ACTIVE_FIELD' < deploy/broker.yaml | kubectl apply -f -
+#   BROKER_IMAGE=<registry>/factory-broker@sha256:<digest> envsubst '$BROKER_IMAGE $CLAUDE_TOKEN_ITEM $CLAUDE_TOKEN_VAULT $CLAUDE_TOKEN_LIVE_FIELD $CLAUDE_TOKEN_SLOT_FIELD $CLAUDE_TOKEN_ACTIVE_FIELD $FACTORY_BROKER_KEY_HOSTS' < deploy/broker.yaml | kubectl apply -f -
 # The CLAUDE_TOKEN_* values are bin/claude-token's variables. Leave CLAUDE_TOKEN_ITEM empty and POST /token/best is
 # not served. The op writer token is the Secret claude-token-op (key token) in namespace factory-broker.
 # Make it by hand, outside this file: kubectl -n factory-broker create secret generic claude-token-op --from-literal=token=<op token>
@@ -101,6 +101,7 @@ spec:
             - { name: CLAUDE_TOKEN_LIVE_FIELD, value: '${CLAUDE_TOKEN_LIVE_FIELD}' }
             - { name: CLAUDE_TOKEN_SLOT_FIELD, value: '${CLAUDE_TOKEN_SLOT_FIELD}' }
             - { name: CLAUDE_TOKEN_ACTIVE_FIELD, value: '${CLAUDE_TOKEN_ACTIVE_FIELD}' }
+            - { name: FACTORY_BROKER_KEY_HOSTS, value: '${FACTORY_BROKER_KEY_HOSTS}' }
             - name: OP_SERVICE_ACCOUNT_TOKEN
               valueFrom:
                 secretKeyRef: { name: claude-token-op, key: token, optional: true }
