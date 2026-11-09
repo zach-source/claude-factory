@@ -9,7 +9,6 @@ import {
   PATROL_LOG_CAP,
   PATROL_LOG_RECENT,
   PATROL_MS,
-  PATROL_VERB,
   PM_LOG_CAP,
   REVIEWER_LOG_CAP,
   cutText,
@@ -29,6 +28,7 @@ import type {
   FactoryRun,
 } from '../mod/types'
 import { claudeCommand } from './harness'
+import { PATROL_VERB } from './core/guards'
 import { stepPrompt } from './steps'
 
 /** the mod's rt.unsent, rt.seen, rt.patrolAt, rt.sig and rt.sigAt, kept in `<home>/patrol-state.json` */

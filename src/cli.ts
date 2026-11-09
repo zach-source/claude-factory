@@ -152,7 +152,7 @@ import {
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
 import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
-import { INSTALL_VERB, META_WRITE, bdWrite, gatedCommand } from '../mod/hooks/view'
+import { check } from './core/guards'
 import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -9575,18 +9575,8 @@ async function patrolGuard() {
     process.exitCode = 2 // Claude Code reads exit 2 as a deny and shows stderr to the model
   }
   if (typeof command !== 'string') return deny('the hook input has no Bash command')
-  const joined = command.replace(/\\\n/g, '')
-  const gated = gatedCommand(command)
-  if (gated) return deny(`${gated.deny} A patrol never decides this: leave it for the person.`)
-  if (INSTALL_VERB.test(joined))
-    return deny(
-      'a subagent never installs or rejects a skill or proposal: only the manager or the person installs',
-    )
-  if (META_WRITE.test(joined)) return deny('a subagent never writes bead metadata')
-  if (bdWrite(joined))
-    return deny(
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first',
-    )
+  const verdict = check(command, 'subagent')
+  if (verdict.decision === 'deny') return deny(verdict.reason)
 }
 
 /**
