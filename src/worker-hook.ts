@@ -8083,6 +8083,7 @@ const DYN_END_R2 = new RegExp(`.(?:${TRIGGER_ALT})$`)
  * deny past 64 readings.
  */
 function dynamicDashedVerb(w: string): boolean {
+  if (/\$\{\([^()]*[lr][^()]*\\/.test(w)) return true
   const s = w.replace(/\\\n/g, '').replace(/\\/g, '').replace(/["']/g, '').toLowerCase()
   if (DYN_END_R1.test(s.replace(DYN_EXP, ''))) return true
   for (const m of s.matchAll(/\$([a-z_]\w*)/g)) {
@@ -8103,49 +8104,46 @@ const DYN_READINGS_CAP = 64
 const DYN_PLAIN_EXP = /^\$(?:[a-z_]\w*|[@*#?!$0-9-])/
 
 /**
- * claude-factory-qn8a.16.3: fail closed. Whatever prefix a `${..}` body has, every `-`, `=` or
- * `+` in it outside a nested `${..}` can start a default word. Returns the readings of all such words, or null when one
- * list passes DYN_READINGS_CAP.
+ * claude-factory-qn8a.16.3: fail closed. Returns the readings of every word that a `${..}` body can
+ * add to the text, or null when the list passes DYN_READINGS_CAP. These are the words:
+ * - a nested `${..}` at the start of the body, after any flags (the body is read whole);
+ * - each fill string of a zsh pad flag `(l:4::fill:)` or `(r..)`, with each prefix and suffix, because
+ *   the pad cuts the fill to the width (the caller denies a fill with a backslash);
+ * - the replacement of a `/` pattern that can match the empty value (empty, only #, % and *, or an
+ *   expansion);
+ * - the text after each `-`, `=` or `+` outside a nested `${..}`.
  */
 function dynOpWords(body: string, memo: Map<string, string[] | null>): string[] | null {
   const out: string[] = []
-  const words: string[] = []
-  // claude-factory-qn8a.16.4: a zsh pad flag `(l:4::fill:)` or `(r..)`: each fill string is a word.
+  const add = (x: string): boolean => {
+    const r = dynReadings(x, memo)
+    if (!r) return false
+    out.push(...r)
+    return out.length <= DYN_READINGS_CAP
+  }
+  if (/^(?:\([^)]*\))?[~^=+]*\$\{/.test(body) && !add(body)) return null
   const flags = /^\(([^)]*)\)/.exec(body)
   const pad = flags ? /[lr]/.exec(flags[1]!) : null
   if (flags && pad)
-    words.push(
-      ...flags[1]!
-        .slice(pad.index + 1)
-        .split(/[^a-z0-9]+/)
-        .filter(Boolean),
-    )
-  // A `/` pattern that can match the empty value (empty, or only #, % and *): the replacement is a word.
-  const sl = /^[^/]*\/\/?([#%*]*)\/(?=[\s\S])/.exec(body)
-  if (sl) words.push(body.slice(sl[0].length))
-  for (const x of words) {
-    const r = dynReadings(x, memo)
-    if (!r) return null
-    out.push(...r)
-    if (out.length > DYN_READINGS_CAP) return null
-  }
+    for (const t of flags[1]!.slice(pad.index + 1).split(/[^a-z0-9]+/))
+      for (let i = 0; i < t.length; i++) if (!add(t.slice(i)) || !add(t.slice(0, i + 1))) return null
+  const sl = /^[^/]*\/\/?([#%*]*|[^/]*\$[^/]*)\/(?=[\s\S])/.exec(body)
+  if (sl && !add(body.slice(sl[0].length))) return null
   let depth = 0
   for (let j = 0; j < body.length; j++) {
     if (body.startsWith('${', j)) depth++
     else if (body[j] === '}') depth = Math.max(0, depth - 1)
     if (depth || !'-=+'.includes(body[j]!)) continue
-    const r = dynReadings(body.slice(j + 1), memo)
-    if (!r) return null
-    out.push(...r)
-    if (out.length > DYN_READINGS_CAP) return null
+    if (!add(body.slice(j + 1))) return null
   }
   return out
 }
 
 /**
  * claude-factory-qn8a.16: all readings of a word. `${X:-w}` (also `-`, `=`, `:=`, `+`, `:+`)
- * reads as empty or as any reading of w. Any later `}` can close it, because the caller removed
- * quotes and backslashes. Other `${..}`, `$name` and `$special` read as empty. A `$` with no name,
+ * reads as empty or as any reading of w. Other `${..}` forms read as empty or as the words that
+ * dynOpWords finds in them. Any later `}` can close it, because the caller removed
+ * quotes and backslashes. `$name` and `$special` read as empty. A `$` with no name,
  * a bare `{`, an unused `}` and a `${` with no `}` are literal text. Returns null when the list
  * passes DYN_READINGS_CAP: the caller then denies (fail closed).
  */
@@ -9913,11 +9911,14 @@ function denyAt(
       // claude-factory-qn8a.16.3: the lexer cut the word at the flag group, so read it whole here.
       if (r === DYNAMIC_VERB_REASON && bare.split(/\s+/).some(t => t.includes('$') && dynamicDashedVerb(t)))
         return r
-      // claude-factory-qn8a.16.4: a pad flag `(l:4::push:)` hides a verb in its fill. Read the head
-      // word of each segment whole.
+      // claude-factory-qn8a.16.4: a pad flag `(l:4::push:)` hides a verb in its fill. Read the command
+      // word of each segment whole, after any `(`, `{`, `!` or reserved word (qn8a.16.5).
+      const lead = /^(?:[({!]|(?:do|then|else|elif|if|while|until|time)\s)\s*/
       if (
         command.split(/[;&|\n]+/).some(seg => {
-          const h = seg.trim().split(/\s+/)[0] ?? ''
+          let t = seg.trim()
+          while (lead.test(t)) t = t.replace(lead, '')
+          const h = t.split(/\s+/)[0] ?? ''
           return /\$\{\([^()]*[lr]/.test(h) && dynamicDashedVerb(h)
         })
       )
