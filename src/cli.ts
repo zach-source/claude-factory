@@ -240,7 +240,6 @@ import {
   renderDenials,
   renderLaunches,
   renderTokens,
-  codexUsageOf,
   sessionOf,
   type RunRecord,
   type ManagerUsage,
@@ -4463,7 +4462,6 @@ function haltRun(
   } else if (step === 'close' || step === 'gone') {
     if (step === 'close') {
       runnerOf(c.pane!).close(c.pane!)
-      storeCodexUsage(run, node, c.seq)
     }
     halt.closed[run.id] = c.seq
   }
@@ -4475,36 +4473,32 @@ function haltRun(
 function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt: number) {
   try {
     if (runnerOf(pane).name !== 'herdr' || !startedAt) return
-    const rows = usageOf(run, startedAt).map(u => ({ ...u, node, seq }))
+    // a transcript that the previous station still wrote belongs to the first station that stored its session
+    const owner = new Map<string, Usage>()
+    for (const r of storedUsage(run.id)) if (!owner.has(r.session)) owner.set(r.session, r)
+    const rows = usageOf(run, startedAt)
     // a codex pane keeps its rollouts in its own CODEX_HOME (codexWorker): store them as the AX path does
     try {
-      rows.push(...codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
+      rows.push(...worker.codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
     } catch {} // a bad codex file must not drop the Claude rows
+    rows.forEach((u, i) => {
+      const o = owner.get(u.session)
+      rows[i] = { ...u, node: o?.node ?? node, seq: o?.seq ?? seq }
+    })
     if (rows.length) appendUsage(run.id, rows)
   } catch {}
 }
 /**
- * An AX codex station ended. Store its usage from the rollout files in
- * runs/<run>/transcripts/<seq>-<node>/codex. The VM wrote them, so read only 20 plain files
- * that have a rollout name and are 64 MiB or smaller. Send every row through validUsage.
- * Do not read claude/: the report already has that usage. Never throw.
- * ponytail: this reads the whole file; the upgrade is a stream of the last token_count.
+ * An AX station closed. If no report stored usage for this node and seq (a timeout, a lost worker, a refused
+ * usage), ask the VM for its rows with `factory worker usage`. The VM is untrusted: ax.usage caps the
+ * output, and validUsage checks every row and sets node and seq. Never throw.
  */
-function storeCodexUsage(run: Run, node: string, seq: number) {
+function storeAxUsage(run: Run, pane: string, node: string, seq: number) {
   try {
-    const d = join(runDir(run.id), 'transcripts', `${seq}-${node}`, 'codex')
-    if (!existsSync(d)) return
-    const rows = readdirSync(d)
-      .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(f))
-      .sort()
-      .slice(0, 20)
-      .flatMap(f => {
-        const st = lstatSync(join(d, f))
-        if (!st.isFile() || st.size > 64 * 1024 * 1024) return []
-        return codexUsageOf(readFileSync(join(d, f), 'utf8').split('\n'), f) ?? []
-      })
-    const ok = validUsage(rows, node, seq)
-    if (ok.length) appendUsage(run.id, ok)
+    if (runnerOf(pane).name !== 'ax') return
+    if (storedUsage(run.id).some(r => r.node === node && r.seq === seq)) return
+    const rows = validUsage(ax.usage(ax.taskOf(pane)), node, seq)
+    if (rows.length) appendUsage(run.id, rows)
   } catch {}
 }
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
@@ -4547,8 +4541,8 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
     actor.send({ ...e, at } as Ev)
     if (pane && pane !== ctx().pane) {
       storeUsage(run, pane, node, seq, startedAt)
+      storeAxUsage(run, pane, node, seq)
       runnerOf(pane).close(pane)
-      storeCodexUsage(run, node, seq)
     }
   }
 
@@ -5834,26 +5828,6 @@ function compactMessage(
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
 /**
- * The rollouts of a private CODEX_HOME since `since` (y3zo dream; vffe.3 laptop codex station). Read at most 20 plain files that have a rollout
- * name, are 64 MiB or smaller and sit under the private home's sessions/. Send every row through validUsage.
- */
-function codexHomeUsage(codexHome: string, since: number, node: string, seq: number) {
-  const sessions = join(codexHome, 'sessions')
-  if (!existsSync(sessions)) return []
-  // ponytail: this reads each whole file; the upgrade is a stream of the last token_count.
-  const rows = (readdirSync(sessions, { recursive: true }) as string[])
-    .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(basename(f)))
-    .sort()
-    .filter(f => {
-      const st = lstatSync(join(sessions, f))
-      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= since
-    })
-    .slice(0, 20)
-    .flatMap(f => codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? [])
-  return validUsage(rows, node, seq)
-}
-
-/**
  * Make a private CODEX_HOME for the codex dream. It holds a trust line for the memory and a link to the
  * person's auth.json (one token store, as codexWorker does). The dream copies nothing else.
  */
@@ -5876,7 +5850,7 @@ const DREAM_CODEX_NOTE =
 function storeDreamUsage(start: number, codexHome?: string) {
   try {
     const rows = codexHome
-      ? codexHomeUsage(codexHome, start, 'dream', 0)
+      ? worker.codexHomeUsage(codexHome, start, 'dream', 0)
       : usageIn(MEMORY, '', () => '?', start)
     appendFileSync(
       join(HOME, 'manager-usage.jsonl'),
@@ -12397,12 +12371,13 @@ if (import.meta.main && !outboxCmd)
         const [sub, arg] = args
         if (sub === 'serve') await worker.serve(arg === '--model' ? args[2] : undefined)
         else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
+        else if (sub === 'usage' && args.length === 1) console.log(JSON.stringify(worker.usageOfSession('')))
         else if (sub === 'prompt' && arg) worker.prompt(arg)
         else if (sub === 'put' && args.length === 5)
           worker.put(arg!, Number(args[2]), Number(args[3]), args[4]!)
         else
           fail(
-            'usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | put <name> <part> <parts> <base64>',
+            'usage: factory worker serve [--model m] | poll <cursor> | usage | prompt <base64> | put <name> <part> <parts> <base64>',
           )
         break
       }

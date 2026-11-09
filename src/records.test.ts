@@ -473,3 +473,55 @@ test('a laptop codex station end stores at most 20 rollouts (vffe.3 AC3)', () =>
   expect(rows.filter(r => r.session === 's20')).toHaveLength(0)
   expect(rows.filter(r => r.session === 's00')).toHaveLength(1)
 })
+
+test('two stations that share a late-written transcript store one row per session and model (aure.1 AC1)', () => {
+  const { runDir, seq, env } = workingRun('u7')
+  const owner = { node: 'plan', seq: seq - 1, session: 's1', model: 'claude-opus-4-7' }
+  writeFileSync(
+    join(runDir, 'usage.jsonl'),
+    JSON.stringify({
+      ...owner,
+      at: 1,
+      input: 1,
+      cacheWrite: 2,
+      cacheRead: 10,
+      output: 3,
+      turns: 1,
+      peak: 13,
+    }) +
+      '\n' +
+      JSON.stringify({
+        ...owner,
+        node: 'verify',
+        seq: seq + 5,
+        at: 2,
+        input: 1,
+        cacheWrite: 2,
+        cacheRead: 11,
+        output: 3,
+        turns: 1,
+        peak: 14,
+      }) +
+      '\n',
+  )
+  const projectDir = join(env.CLAUDE_CONFIG_DIR, 'projects', join(dir, 'wt-u7').replace(/[^a-zA-Z0-9]/g, '-'))
+  writeFileSync(join(projectDir, 's2.jsonl'), turnAt('c', 'claude-opus-4-7', 7) + '\n')
+  writeFileSync(
+    join(runDir, 'inbox.jsonl'),
+    JSON.stringify({ type: 'DONE', seq, outcome: 'ready', summary: 'built' }) + '\n',
+  )
+  expect(factory(['tick'], env).code).toBe(0)
+  const last = new Map<string, Record<string, unknown>>()
+  for (const l of readFileSync(join(runDir, 'usage.jsonl'), 'utf8').trim().split('\n')) {
+    const r = JSON.parse(l)
+    last.set([r.node, r.seq, r.session, r.model].join('|'), r)
+  }
+  const rows = [...last.values()]
+  const s1 = rows.filter(r => r.session === 's1' && r.node !== 'verify')
+  expect(s1.filter(r => r.node === 'implement')).toEqual([])
+  expect(s1.filter(r => r.model === 'claude-opus-4-7')).toMatchObject([
+    { node: 'plan', seq: seq - 1, cacheRead: 100 },
+  ])
+  expect(s1.filter(r => r.model === 'claude-haiku-5-5')).toMatchObject([{ node: 'plan', seq: seq - 1 }])
+  expect(rows.filter(r => r.session === 's2')).toMatchObject([{ node: 'implement', seq, cacheRead: 7 }])
+})

@@ -3196,6 +3196,37 @@ test("inside a VM, a report carries the session's usage, subagents included (hr9
     'claude-opus-4-7',
   ])
   expect(line.usage[0]).toMatchObject({ session: 'sess-9', input: 1, cacheRead: 9, output: 2 })
+
+  // aure.1 AC3: `factory worker usage` prints the same rows as one JSON array
+  const out = factory(['worker', 'usage'], env)
+  expect(out.code).toBe(0)
+  expect(JSON.parse(out.out)).toHaveLength(2)
+  expect(factory(['worker', 'usage', 'extra'], env).code).toBe(1)
+})
+
+test('inside a VM, a codex report carries its rollout usage (aure.1 AC4)', () => {
+  mkdirSync(dir, { recursive: true })
+  const own = join(dir, 'vm-own-codex')
+  const codexHome = join(dir, 'vm-codex')
+  mkdirSync(join(codexHome, 'sessions', '2026', '11', '05'), { recursive: true })
+  mkdirSync(own, { recursive: true })
+  writeFileSync(
+    join(codexHome, 'sessions', '2026', '11', '05', `rollout-2026-11-05T21-00-00-${UUID}.jsonl`),
+    rolloutLines(),
+  )
+  const outbox = join(dir, 'outbox-codex.jsonl')
+  const env = {
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'a',
+    FACTORY_RUN: '',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_HARNESS: 'codex',
+    CODEX_HOME: codexHome,
+  }
+  expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)
+  const line = JSON.parse(readFileSync(outbox, 'utf8').trim())
+  expect(line.usage).toHaveLength(1)
+  expect(line.usage[0]).toMatchObject({ model: 'gpt-6-astra', session: UUID, input: 12695 })
 })
 
 test("a replayed AX report stores the VM's usage as its station, and bad usage never refuses the report (hr94 AC6, AC7)", () => {
@@ -3270,87 +3301,112 @@ const rolloutLines = (over: { model?: string; out?: unknown } = {}) =>
   ]
     .map(l => JSON.stringify(l))
     .join('\n')
-/** an AX station for run `id` that reports ready; `kept` writes files under its transcripts dir before the closing tick */
-function codexTick(id: string, kept: (dir: string, seq: number) => void) {
-  const seq = launched(id)
-  kept(join(home, 'runs', id, 'transcripts', `${seq}-a`), seq)
-  const report = JSON.stringify({ argv: ['report', id, String(seq), 'ready', 'x'], from: 'a', at: 1 })
-  cluster('Running', { status: 'idle', session: 's1', lines: [report] })
-  for (let i = 0; i < 2; i++) expect(factory(['tick']).code).toBe(0)
-  expect(inbox(id)).toContain('"outcome":"ready"')
+/** like cluster(), but `factory worker usage` over ssh prints `usage.out` and exits `usage.code` */
+function clusterUsage(phase: string, poll: object, usage: { out: string; code: number }) {
+  cluster(phase, poll)
+  writeFileSync(join(dir, 'usage.out'), usage.out)
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$*" in
+  *"worker usage"*) cat ${dir}/usage.out; exit ${usage.code} ;;
+esac
+case "$3 $4" in
+  "get task") printf 'status:\\n  phase: ${phase}\\n' ;;
+  ssh*) cat ${dir}/ssh ;;
+esac
+`,
+  )
+}
+const CODEX_ROW = {
+  session: UUID,
+  model: 'gpt-6-astra',
+  input: 12695,
+  cacheWrite: 0,
+  cacheRead: 38784,
+  output: 46,
+  turns: 0,
+  peak: 0,
+}
+/**
+ * An AX station that timed out: the FAIL line replays, backoff goes back to working, and the old task
+ * closes (the pane changes). Returns the rows stored for run `id`, the timed-out seq and the tick's exit code.
+ */
+function timeoutTick(id: string, usage: { out: string; code: number }, stored?: object, pane?: string) {
+  const seq = launched(id, true, 't', pane)
+  if (stored)
+    writeFileSync(join(home, 'runs', id, 'usage.jsonl'), JSON.stringify({ node: 'a', seq, ...stored }) + '\n')
+  writeFileSync(
+    join(home, 'runs', id, 'inbox.jsonl'),
+    JSON.stringify({ type: 'FAIL', seq, reason: 'no report within 45 min', at: Date.now() - 120_000 }) + '\n',
+  )
+  clusterUsage('Running', { status: 'working', session: 's1', lines: [] }, usage)
+  const code = factory(['tick']).code
   const file = join(home, 'runs', id, 'usage.jsonl')
   const rows = existsSync(file) ? storedRows(id) : []
+  const log = called()
   rmSync(join(home, 'runs', id), { recursive: true })
-  return { rows, seq }
+  return { rows, seq, code, log }
 }
-const keep = (d: string, name: string, text: string, sub = 'codex') => {
-  mkdirSync(join(d, sub), { recursive: true })
-  writeFileSync(join(d, sub, name), text)
-}
-const ROLL = `rollout-2026-10-31T21-00-00-${UUID}.jsonl`
 
-test("an AX codex station's usage comes from the kept rollout, with node and seq from the laptop (flhv AC2)", () => {
-  const { rows, seq } = codexTick('rc1', d => keep(d, ROLL, rolloutLines()))
+test("an AX station that timed out stores the VM's usage rows with node and seq from the laptop (aure.1 AC2)", () => {
+  const { rows, seq, code, log } = timeoutTick('rc1', { out: JSON.stringify([CODEX_ROW]), code: 0 })
+  expect(code).toBe(0)
   expect(rows).toHaveLength(1)
-  expect(rows[0]).toMatchObject({
-    node: 'a',
-    seq,
-    session: UUID,
-    model: 'gpt-6-astra',
-    input: 12695,
-    cacheRead: 38784,
-    output: 46,
-  })
+  expect(rows[0]).toMatchObject({ node: 'a', seq, ...CODEX_ROW })
+  expect(log).toContain('worker usage')
+  expect(log.indexOf('worker usage')).toBeLessThan(log.indexOf('delete task'))
 })
 
-const noRows: [string, (d: string) => void][] = [
-  ['a missing dir', () => {}],
-  ['a wrong name', d => keep(d, 'notes.jsonl', rolloutLines())],
-  ['a name with a prefix', d => keep(d, `x-${ROLL}`, rolloutLines())],
-  ['a name with a suffix', d => keep(d, `${ROLL}.bak`, rolloutLines())],
-  ['the claude dir', d => keep(d, ROLL, rolloutLines(), 'claude')],
-  [
-    'a symlink',
-    d => {
-      const out = join(dir, 'outside.jsonl')
-      writeFileSync(out, rolloutLines())
-      mkdirSync(join(d, 'codex'), { recursive: true })
-      symlinkSync(out, join(d, 'codex', 'rollout-x.jsonl'))
-    },
-  ],
-  [
-    'a big file',
-    d => {
-      mkdirSync(join(d, 'codex'), { recursive: true })
-      const f = join(d, 'codex', ROLL)
-      writeFileSync(f, rolloutLines() + '\n')
-      truncateSync(f, 64 * 1024 * 1024 + 1)
-    },
-  ],
-  ['a bad model', d => keep(d, ROLL, rolloutLines({ model: 'bad model' }))],
-  ['a long model', d => keep(d, ROLL, rolloutLines({ model: 'm'.repeat(65) }))],
-  ...[-1, 1.5, '9', 2e12].map((out): [string, (d: string) => void] => [
+test('a row that names another node and seq is stored with the laptop node and seq (aure.1 AC2)', () => {
+  const { rows, seq } = timeoutTick('rc2', {
+    out: JSON.stringify([{ ...CODEX_ROW, node: 'evil', seq: 99 }]),
+    code: 0,
+  })
+  expect(rows).toMatchObject([{ node: 'a', seq }])
+})
+
+test('a station whose report stored usage does not ask the VM again (aure.1 AC2)', () => {
+  const { rows, log } = timeoutTick('rc3', { out: JSON.stringify([CODEX_ROW]), code: 0 }, usageRow())
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ session: 's1' })
+  expect(log).not.toContain('worker usage')
+})
+
+test('an old image that exits 1 stores no rows, and the task still closes (aure.1 AC2)', () => {
+  const { rows, code, log } = timeoutTick('rc4', { out: JSON.stringify([CODEX_ROW]), code: 1 })
+  expect(rows).toEqual([])
+  expect(code).toBe(0)
+  expect(log).toContain('delete task')
+})
+
+const noRows: [string, string][] = [
+  ['output over 64 KiB', JSON.stringify([CODEX_ROW]) + ' '.repeat(70 * 1024)], // valid JSON: only the cap refuses it
+  ['not JSON', 'lots'],
+  ['not an array', JSON.stringify(CODEX_ROW)],
+  ['an empty array', '[]'],
+  ['21 rows', JSON.stringify(Array.from({ length: 21 }, () => CODEX_ROW))],
+  ['a bad model', JSON.stringify([{ ...CODEX_ROW, model: 'bad model' }])],
+  ['a long model', JSON.stringify([{ ...CODEX_ROW, model: 'm'.repeat(65) }])],
+  ...[-1, 1.5, '9', 2e12].map((out): [string, string] => [
     `output count ${JSON.stringify(out)}`,
-    d => keep(d, ROLL, rolloutLines({ out })),
+    JSON.stringify([{ ...CODEX_ROW, output: out }]),
   ]),
 ]
-test.each(noRows.map(([n, k], i) => [n, k, i] as const))(
-  'codex usage: %s adds no rows (flhv AC3)',
-  (_n, kept, i) => {
-    expect(codexTick(`rc${i}`, kept).rows).toEqual([])
+test.each(noRows.map(([n, out], i) => [n, out, i] as const))(
+  'worker usage output: %s adds no rows (aure.1 AC2)',
+  (_n, out, i) => {
+    const r = timeoutTick(`rd${i}`, { out, code: 0 })
+    expect(r.rows).toEqual([])
+    expect(r.code).toBe(0)
   },
 )
 
-test('codex usage keeps the first 20 rollout files by name (flhv AC3)', () => {
-  const { rows } = codexTick('rc9', d => {
-    for (let i = 0; i < 21; i++) {
-      const id = `019a3b2c-0000-7000-8000-${String(i).padStart(12, '0')}`
-      keep(d, `rollout-2026-10-31T21-00-00-${id}.jsonl`, rolloutLines().replace(UUID, id))
-    }
-  })
-  expect(rows.map(r => r.session)).toEqual(
-    Array.from({ length: 20 }, (_, i) => `019a3b2c-0000-7000-8000-${String(i).padStart(12, '0')}`),
-  )
+test('a herdr pane makes no worker usage call at close (aure.1 AC2)', () => {
+  const { rows, log } = timeoutTick('rc5', { out: JSON.stringify([CODEX_ROW]), code: 0 }, undefined, 'w1:p1')
+  expect(rows).toEqual([])
+  expect(log).not.toContain('worker usage')
 })
 
 /** the fake cluster with a task in `phase` whose status.conditions hold `conds` (YAML list lines) */
