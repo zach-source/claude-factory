@@ -1157,7 +1157,7 @@ export const INSTALL_VERB = /\bfactory['"]?\s+['"]?(?:skills|proposals)['"]?\s+[
 // The `--metadata-field` read filter does not match: the lookahead refuses a word char or '-'.
 /** a bd metadata write flag */
 export const META_WRITE = /--(?:set-|unset-)?metadata(?![\w-])/
-/** the bd verbs a subagent runs: reads and a comment. None has a label or metadata write flag. */
+/** the bd verbs a subagent runs: reads and a comment. bdWrite denies a label, metadata or author flag on them. */
 const BD_READ = new Set([
   'show',
   'view',
@@ -1174,10 +1174,17 @@ const BD_READ = new Set([
  * This is an allowlist. A list of label spellings never closes, because bd (cobra) has flag aliases,
  * flags before the verb and verb aliases. The shell drops `\`, `'` and `"`, so this code drops them first.
  * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
+ * claude-factory-8njd: it also denies a bd command that sets the comment author: BEADS_ACTOR, a long flag
+ * that abbreviates --actor or --author (3 or more letters), or, with the word comments, a short flag word
+ * with the letter a. Quotes do not protect the text (fail closed).
  */
 export function bdWrite(command: string): boolean {
   const s = command.replace(/[\\'"]/g, '')
   if (/--add-label|--set-labels/.test(s)) return true
+  const bd = /\bbd\b/i.test(s)
+  if (bd && s.includes('BEADS_ACTOR')) return true
+  if (bd && /(?<![\w-])--(?:act(?:or?)?|aut(?:h(?:or?)?)?)(?![\w-])/.test(s)) return true
+  if (bd && /\bcomments\b/.test(s) && /(?<![\w-])-[A-Za-z]*a/.test(s)) return true
   for (const m of s.matchAll(/\bbd\b/gi)) {
     const verb = /^\s*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!
     if (!BD_READ.has(verb)) return true

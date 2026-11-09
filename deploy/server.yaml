@@ -1,6 +1,7 @@
 # The factory server (Dockerfile.server). Set the image by digest and the client gateway namespace, then apply:
 #   SERVER_IMAGE=<registry>/factory-server@sha256:<digest> CLIENT_GATEWAY_NAMESPACE=<ns> envsubst '$SERVER_IMAGE $CLIENT_GATEWAY_NAMESPACE' < deploy/server.yaml | kubectl apply -f -
 # Owner step. Confirm the namespaces before apply.
+# Apply deploy/broker.yaml first: its NetworkPolicy must admit this pod before the server launches a worker.
 # Make each Secret by hand, outside this file. This file holds Secret names only, never values:
 #   kubectl -n factory create secret generic factory-github --from-literal=token=<github token>
 #   kubectl -n factory create secret generic factory-linear --from-literal=token=<linear key>          (optional)
@@ -9,6 +10,7 @@
 #   kubectl -n factory create secret tls factory-server-tls --cert=<tls.crt> --key=<tls.key>
 #   kubectl -n factory create secret generic factory-person-ca --from-file=ca.crt=<person ca file>
 #   kubectl -n factory create secret generic factory-worker-key --from-file=key=<worker key file>
+#   kubectl -n factory create secret generic factory-backup --from-literal=remote=<https url> --from-literal=basic=<base64 of x-access-token:token>   (optional: the home backup)
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -125,6 +127,8 @@ spec:
           env:
             - name: FACTORY_HOME
               value: /var/lib/factory/home
+            - name: FACTORY_POLICY_BROKER
+              value: http://factory-policy-broker.factory-broker.svc:8080
             - name: GH_TOKEN
               valueFrom:
                 secretKeyRef: { name: factory-github, key: token }
@@ -134,6 +138,11 @@ spec:
             - name: AX_AUTH_TOKEN
               valueFrom:
                 secretKeyRef: { name: factory-ax-auth, key: token, optional: true }
+            - name: FACTORY_SERVER_BACKUP_REMOTE
+              valueFrom:
+                secretKeyRef: { name: factory-backup, key: remote, optional: true }
+            - name: FACTORY_SERVER_BACKUP_AUTH_FILE
+              value: /etc/factory/backup/basic
           ports:
             - containerPort: 8080
             - containerPort: 8443
@@ -147,6 +156,7 @@ spec:
             - { name: tls, mountPath: /etc/factory/tls, readOnly: true }
             - { name: person-ca, mountPath: /etc/factory/person-ca, readOnly: true }
             - { name: worker-key, mountPath: /etc/factory/worker-key, readOnly: true }
+            - { name: backup, mountPath: /etc/factory/backup, readOnly: true }
       volumes:
         - name: home
           persistentVolumeClaim:
@@ -160,6 +170,11 @@ spec:
         - name: worker-key
           secret:
             secretName: factory-worker-key
+        - name: backup
+          secret:
+            secretName: factory-backup
+            optional: true
+            items: [{ key: basic, path: basic }]
 ---
 apiVersion: v1
 kind: Service
