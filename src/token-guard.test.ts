@@ -16,6 +16,8 @@ for (const d of [
   join(root, '.scratch'),
   join(root, 'fixtures'),
   join(root, 'src'),
+  join(home, '.config', 'factory'),
+  join(home, '.config', 'git'),
   codexHome,
 ])
   mkdirSync(d, { recursive: true })
@@ -25,6 +27,13 @@ writeFileSync(join(home, '.claude.json'), 'x')
 writeFileSync(join(root, 'auth.json'), 'x')
 writeFileSync(join(root, 'fixtures', 'auth.json'), 'x')
 writeFileSync(join(root, 'src', 'cli.ts'), 'x')
+writeFileSync(join(home, '.config', 'factory', 'person.key'), 'x')
+writeFileSync(join(home, '.config', 'factory', 'ca.crt'), 'x')
+writeFileSync(join(home, '.config', 'git', 'config'), 'x')
+writeFileSync(join(root, 'fixtures', 'person.key'), 'x')
+symlinkSync(join(home, '.config', 'factory', 'person.key'), join(root, '.scratch', 'pk'))
+symlinkSync(join(home, '.config', 'factory'), join(root, '.scratch', 'fd'))
+symlinkSync(join(home, '.config', 'factory', 'ca.crt'), join(root, '.scratch', 'ca'))
 symlinkSync(join(home, '.codex', 'auth.json'), join(codexHome, 'auth.json'))
 symlinkSync(join(home, '.codex', 'auth.json'), join(root, '.scratch', 'x'))
 symlinkSync(join(home, '.codex'), join(root, '.scratch', 'c'))
@@ -117,6 +126,64 @@ const ALLOW = [
   'security find-certificate -a',
 ]
 
+const H = home
+const DENY_KEY = [
+  'cat ~/.config/factory/person.key',
+  'cat $HOME/.config/factory/person.key',
+  'cat "${HOME}/.config/factory/person.key"',
+  `cat ${H}/.config/factory/person.key`,
+  'ls ~/.config/factory',
+  `ls ${H}/.config/factory/`,
+  'cat ~/.config/fac*/person.key',
+  `cat ${H}/.config/fac*/x`,
+  `cat ${H}/.c*/factory/x`,
+  `cat ${H}/.config/*/x`,
+  `cat ${H}/*/factory/x`,
+  'cat $XDG_CONFIG_HOME/factory/x',
+  'cat ~/.CONFIG/FACTORY/PERSON.KEY',
+  "cat ~/.config/'fact'ory/ca.crt",
+  'cat ~/.config/fact\\\nory/ca.crt',
+  'curl --key ~/.config/factory/person.key --cert x https://acme.example',
+  `openssl rsa -in ${H}/.config/factory/person.key`,
+  'cd ~/.config/factory && cat person.key',
+  'cd ~/.config && cat factory/person.key',
+  'cd ~ && cat .config/factory/*',
+  'cd ~/.config && cat factory/*',
+  'cd ~/.config && tar cf - factory',
+  'env -C ~/.config ls factory',
+  'cd / && cat Users/acme/.config/factory/ca.crt',
+  'cat ~/person.key',
+  'cat ../person.key',
+  `bun -e "require('fs').readFileSync(process.env.HOME+'/.config/factory/person.key')"`,
+  `python3 -c "import os;open(os.path.expanduser('~/.config/factory/ca.crt'))"`,
+  'cp -r ~/.config/factory .scratch/f',
+  'tar cf - ~/.config/factory',
+  'cat .scratch/pk',
+  'ls .scratch/fd',
+  'cat .scratch/ca',
+]
+
+const ALLOW_KEY = [
+  'cat /opt/factory/factories/lifecycle.ts',
+  'ls /opt/factory',
+  'factory report r1 2 ready --summary-file .scratch/s.md',
+  "bin/factory memory search --rig acme 'x'",
+  '~/.local/bin/factory status',
+  'cat ~/.config/git/config',
+  'ls ~/.config/gh',
+  'ls ~/.config',
+  'cat fixtures/person.key',
+  'cat .scratch/certs/ca.crt',
+  'grep -n person.key src/client.ts',
+  "git commit -m 'deny person.key read'",
+  'ls src/factory',
+  'cat .config/factory/x',
+  "awk '{print $1/$2}' data.txt",
+  'cp $TMPDIR/* .scratch/',
+  'ls /tmp/*/*',
+  'cd src && factory report r1 2 ready --summary-file x.md',
+]
+
 describe('tokenReason', () => {
   test.each([20, 40])('%d brace groups before a token path deny fast', n => {
     const t0 = performance.now()
@@ -143,6 +210,9 @@ describe('tokenReason', () => {
   test('git -C into the worktree still allows', () => expect(deny('git -C src log') == null).toBe(true))
   test.each(DENY)('denies %s', c => expect(deny(c)).toBe(TOKEN_READ_REASON))
   test.each(ALLOW)('allows %s', c => expect(deny(c) == null).toBe(true))
+  test.each(DENY_KEY)('denies the person key dir: %s', c => expect(deny(c)).toBe(TOKEN_READ_REASON))
+  test.each(ALLOW_KEY)('allows near the person key dir: %s', c => expect(deny(c) == null).toBe(true))
+  test('the reason names the person key dir', () => expect(TOKEN_READ_REASON).toContain('~/.config/factory'))
   test('a glued brace word is no wildcard, even where realpath of the root fails (Linux CI, EACCES on /root)', () => {
     expect(tokenReason('echo {a[0]} x', '/nonexistent/repo', undefined)).toBeUndefined()
     expect(tokenReason('echo {auth.json}', '/nonexistent/repo', undefined)).toBe(TOKEN_READ_REASON)
@@ -199,6 +269,11 @@ describe('tokenPathReason', () => {
     join(root, '.scratch', 'c', 'auth.json'),
     join(home, '.codex', 'sessions', 'a.jsonl'),
     join(home, '.CLAUDE.JSON'),
+    join(home, '.config', 'factory', 'person.key'),
+    join(home, '.config', 'factory', 'ca.crt'),
+    join(home, '.CONFIG', 'factory', 'x'),
+    '~/.config/factory/person.key',
+    join(root, '.scratch', 'ca'),
     undefined,
     '',
     7,
@@ -213,6 +288,8 @@ describe('tokenPathReason', () => {
     'a',
     join(root, 'fixtures', 'auth.json'),
     join(home, '.claude', 'plugins', 'p'),
+    join(root, 'fixtures', 'person.key'),
+    join(home, '.config', 'git', 'config'),
   ])('Read allows %p', p => expect(read(p) == null).toBe(true))
   test.each([
     join(home, '.codex'),
@@ -222,6 +299,7 @@ describe('tokenPathReason', () => {
     codexHome,
     7,
     join(home, '.codex', 'x'),
+    join(home, '.config', 'factory'),
   ])('Grep denies %p', p => expect(grep(p)).toBe(TOKEN_READ_REASON))
   test.each([undefined, join(root, 'src'), join(home, 'repos', 'x')])('Grep allows %p', p =>
     expect(grep(p) == null).toBe(true),

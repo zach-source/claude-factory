@@ -428,8 +428,8 @@ The hook checks the lexical path and the real path, in lower case. A write insid
 
 A third entry runs the same hook for the Read and Grep tools (claude-factory-qn8a.19). It denies a path outside the
 worktree that names a harness token file or a token dir:
-- token files: `auth.json`, `.credentials.json`, `.claude.json`
-- token dirs: `~/.codex`, `~/.claude`, `$CODEX_HOME`, `$CLAUDE_CONFIG_DIR`
+- token files: `auth.json`, `.credentials.json`, `.claude.json`, `person.key`
+- token dirs: `~/.codex`, `~/.claude`, `$CODEX_HOME`, `$CLAUDE_CONFIG_DIR`, `~/.config/factory` (the person key dir)
 - a Grep `path` that holds one of these dirs
 
 The Bash check (`src/token-guard.ts`) denies the same names in a command and the macOS keychain `security` reads.
