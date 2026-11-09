@@ -203,7 +203,7 @@ import {
 import * as worker from './worker'
 import { REASON, boundedRun } from './screen'
 import * as client from './client'
-import { backupAge, backupError } from './homebackup'
+import { backupAge, backupError, backupWanted } from './homebackup'
 import * as managerhost from './managerhost'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
@@ -7151,6 +7151,8 @@ const kickSweeps = () => {
 }
 
 async function tick(isPatrol = false) {
+  // d289.21: the AX manager host waits to back up the home; it takes the lock next, then removes backup.want
+  if (backupWanted(HOME)) return { busy: true }
   const release = hold('tick.lock')
   if (!release) return { busy: true }
   try {
