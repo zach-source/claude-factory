@@ -109,6 +109,8 @@ export function metrics(records: RunRecord[]) {
   let capReplans = 0
   let implementPassesShipped = 0
   let smallRuns = 0
+  // claude-factory-aure.2: the share of approved builds that review or check sent to security, and what security found
+  const sec = { builds: 0, sent: 0, verdicts: 0, changes: 0 }
   for (const r of records) {
     const f = fate(r)
     fates[f] = (fates[f] ?? 0) + 1
@@ -120,6 +122,8 @@ export function metrics(records: RunRecord[]) {
     if (isSmall) smallRuns++
     let prev = r.createdAt
     let reviewChanges = 0
+    let approvedBuild = false
+    let sentToSecurity = false
     for (let i = 0; i < r.log.length; i++) {
       const e = r.log[i]!
       // a no-worker entry (isNoWorker: a pre-launch PR park or a routed outcome) spent no worker: skip it so it is not a station visit,
@@ -150,6 +154,17 @@ export function metrics(records: RunRecord[]) {
       // a review-then-plan pair a manager goto makes after a stuck hold or a review fail (review
       // round 1 finding .8: those write no log entry of their own, but still sit next to 'plan')
       if (e.replan) capReplans++
+      if (
+        (e.node === 'review' || e.node === 'check') &&
+        (e.outcome === 'approve' || e.outcome === 'security')
+      ) {
+        approvedBuild = true
+        if (e.outcome === 'security') sentToSecurity = true
+      }
+      if (e.node === 'security' && (e.outcome === 'approve' || e.outcome === 'changes')) {
+        sec.verdicts++
+        if (e.outcome === 'changes') sec.changes++
+      }
       if (e.node === 'triage' && e.outcome === 'reject' && ALREADY_DONE.test(e.summary)) triageAlreadyDone++
       prev = Math.max(prev, e.at)
     }
@@ -159,6 +174,8 @@ export function metrics(records: RunRecord[]) {
     if (r.mergedAt !== undefined && last && !r.log.some(e => e.node === 'approve'))
       gateWait.push(Math.max(0, r.mergedAt - last.at) / HOUR)
     if (reviewChanges >= 3) runsWith3PlusReviewRounds++
+    if (approvedBuild) sec.builds++
+    if (sentToSecurity) sec.sent++
     const shipped = r.log.find(e => e.node === 'deploy' && SHIPPED_OUTCOMES.has(e.outcome))
     const shippedAt = shipped?.at ?? (f === 'shipped' ? r.mergedAt : undefined)
     if (shippedAt !== undefined) {
@@ -185,6 +202,7 @@ export function metrics(records: RunRecord[]) {
     small: { runs: smallRuns, hoursToShip: { median: median(smallCycle), p90: p90(smallCycle) } },
     approveWaitHours: { median: median(gateWait), p90: p90(gateWait) },
     reviewLoops,
+    security: sec,
     deploySessionsPerShippedRun: fates.shipped ? deploySessions / fates.shipped : null,
     triageAlreadyDone,
     runsWith3PlusReviewRounds,
@@ -200,6 +218,7 @@ export function metrics(records: RunRecord[]) {
   }
 }
 
+const share = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : '-')
 const h = (x: number | null) => (x === null ? '-' : `${x.toFixed(1)}h`)
 
 export function render(
@@ -223,6 +242,8 @@ export function render(
         .map(([k, v]) => `${k} ${v}`)
         .join(', ') || 'none'
     }`,
+    `  security: sent ${m.security.sent} of ${m.security.builds} approved builds (${share(m.security.sent, m.security.builds)}); ` +
+      `changes ${m.security.changes} of ${m.security.verdicts} verdicts (${share(m.security.changes, m.security.verdicts)})`,
     `  3+ review rounds ${m.runsWith3PlusReviewRounds} runs; cap re-plans ${m.capReplans}; ` +
       `implement passes per shipped run ${m.implementPassesPerShippedRun === null ? '-' : m.implementPassesPerShippedRun.toFixed(2)}`,
     `  triage rejects ${triageRejects} of ${triageVisits} (${m.triageAlreadyDone} already done); ` +

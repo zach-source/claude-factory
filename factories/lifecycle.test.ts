@@ -404,7 +404,8 @@ test('small AC3: check changes loops back through quick; quick full joins the fu
 })
 
 test('AC8: review and check take their security route from the runner, not from their own judgment', () => {
-  const { review, check, plan } = lifecycle.nodes
+  const nodes = lifecycle.nodes as unknown as Factory['nodes']
+  const { review, check, plan } = nodes
   for (const n of [review!, check!]) {
     expect(n.prompt).toContain('## Security route')
     expect(n.prompt).toContain('never report security')
@@ -415,7 +416,7 @@ test('AC8: review and check take their security route from the runner, not from 
   expect(check!.prompt).not.toContain('the diff or the bead is security-sensitive')
   expect(plan!.prompt).toContain('Security-sensitive: yes (<area>)')
   expect(
-    Object.entries(lifecycle.nodes)
+    Object.entries(nodes)
       .filter(([, n]) => n.securityRoute)
       .map(([id]) => id),
   ).toEqual(['review', 'check'])

@@ -96,6 +96,24 @@ test('metrics counts a requeued ending in fates.requeued, out of the shipRate en
   expect(m.shipRate).toBe(0) // requeued is not an ended run: only r2 (closed) counts
 })
 
+// claude-factory-aure.2 AC9: the share of approved builds that went to security, and the security changes rate
+test('metrics count the review to security share and the security changes rate', () => {
+  const run = (id: string, ...log: ReturnType<typeof e>[]) => ({ id, node: 'done', createdAt: 0, log })
+  const m = metrics([
+    run('a', e('review', 'security', 1), e('security', 'approve', 2)),
+    run('b', e('review', 'changes', 1), e('review', 'security', 2), e('security', 'changes', 3)),
+    run('c', e('check', 'security', 1), e('security', 'approve', 2)),
+    run('d', e('review', 'approve', 1)),
+    run('e', e('review', 'changes', 1)),
+    run('f', { ...e('review', 'security', 1), attempt: 0 }, { ...e('security', 'approve', 2), attempt: 0 }),
+  ])
+  expect(m.security).toEqual({ builds: 4, sent: 3, verdicts: 3, changes: 1 })
+  expect(render(m, 't')).toContain(
+    'security: sent 3 of 4 approved builds (75%); changes 1 of 3 verdicts (33%)',
+  )
+  expect(render(metrics([]), 't')).toContain('sent 0 of 0 approved builds (-)')
+})
+
 test('metrics count ship rate, time to ship, the approve wait, review loops and failures by kind', () => {
   const m = metrics([
     {
