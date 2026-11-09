@@ -158,8 +158,16 @@ bun test --timeout 30000 src/core/ops-cli.test.ts src/ax.test.ts
 ```
 
 The stated reason concerns a home-directory delete or move, including scripts that do so.
-The command itself requests neither action. The plan does not establish which transitive input caused the denial.
+The command itself requests neither action.
+The manager identified `homeReason` as the cause: it reads files named directly in the command.
+A delete word plus a tilde or home path in a test file triggers the denial.
+This cause comes from manager mail; this pass did not reproduce it.
 No alternate command form ran. Do not bypass the hook or change tests merely to evade it.
+
+The latest manager mail directs a blocked report and requests a person to select the next step.
+It supersedes the earlier mail that proposed a script, separate test commands, or CI evidence.
+The choices are a hook correction, test results from a person on PR #746, or continued suspension.
+Do not repeat the denied command before that decision.
 
 The missed cause of the repeated rounds was the handoff rule: an external test barrier remained an implementation prerequisite.
 Another implementation pass cannot resolve that prerequisite through feature code.
@@ -167,8 +175,8 @@ Park this run as blocked until the manager supplies a hook correction or an auth
 Do not report partial and send the same task through another implementation round.
 Do not change `.factory/` or the worker hook within this feature.
 
-After the manager resolves the barrier, run the exact command above before a ready handoff.
-It must reach the test runner. Record assertion failures separately from tool or environment failures.
+After the decision, use the approved test path before a ready handoff.
+The tests must reach the test runner. Record assertion failures separately from tool or environment failures.
 Keep existing test commits. Finish task `.2`; do not recreate its six test files.
 Provide `pkill` through the supported VM toolchain before the full worker suite.
 The previous ten `pkill` failures do not prove a feature defect.
