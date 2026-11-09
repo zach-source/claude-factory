@@ -33,6 +33,8 @@ export type Port = {
   refreshMerges: (recs: RunRecord[]) => Promise<RunRecord[]>
   managerUsage: (since: number) => ManagerUsage[]
   rigList: (print: Print) => Promise<void>
+  decide: (id: string | undefined, outcome: string | undefined, note: string, print: Print) => Promise<void>
+  decisionsAnswer: (rig: string, bead: string, text: string, print: Print) => void
 }
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
 export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
@@ -394,7 +396,7 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     (c, i) => leaseOps.show(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'gates.decide',
       summary: 'Decide a gate of a run.',
@@ -402,7 +404,8 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/runs/:id/decide',
       inputs: [id('id'), id('outcome'), f('note', 'note')],
     },
-    i => ['decide', i.id as string, i.outcome as string, ...(i.note ? [i.note as string] : [])],
+    'text',
+    (c, i) => gatesOps.decide(c, i),
   ),
   bridge(
     {
@@ -475,7 +478,7 @@ export const CATALOG: Op[] = makeCatalog([
     },
     i => [i.mode as string],
   ),
-  bridge(
+  local(
     {
       name: 'decisions.answer',
       summary: 'Answer a question that waits for the person.',
@@ -483,6 +486,7 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/decisions/:rig/:bead/answer',
       inputs: [id('rig'), id('bead'), f('text', 'text', true, 'the answer')],
     },
-    i => ['decisions', 'answer', i.rig as string, i.bead as string, i.text as string],
+    'text',
+    (c, i) => decisionsOps.answer(c, i),
   ),
 ])

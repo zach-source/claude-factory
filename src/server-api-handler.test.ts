@@ -29,6 +29,11 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     refreshMerges: async recs => (log('refreshMerges', [recs]), []),
     managerUsage: since => (log('managerUsage', [typeof since]), []),
     rigList: async print => (log('rigList', []), print('{"ok":1}')),
+    decide: async (id, outcome, note, print) => (log('decide', [id, outcome, note]), print('{"ok":1}')),
+    decisionsAnswer: (rig, bead, text, print) => (
+      log('decisionsAnswer', [rig, bead, text]),
+      print('{"ok":1}')
+    ),
   }
   const make = () =>
     clientHandler({
@@ -137,43 +142,42 @@ describe('read routes', () => {
 })
 
 describe('action routes', () => {
-  const rows: [string, unknown, string[], string?][] = [
-    ['/v1/runs/r1/decide', { outcome: 'approve', note: 'ok' }, ['decide', 'r1', 'approve', 'ok']],
-    ['/v1/runs/r1/decide', { outcome: 'approve', note: '' }, ['decide', 'r1', 'approve']],
+  const p = (port: string, ...args: unknown[]): Call => ({ port, args })
+  const rows: [string, unknown, Call[]][] = [
+    ['/v1/runs/r1/decide', { outcome: 'approve', note: 'ok' }, [p('decide', 'r1', 'approve', 'ok')]],
+    ['/v1/runs/r1/decide', { outcome: 'approve', note: '' }, [p('decide', 'r1', 'approve', '')]],
     [
       '/v1/runs/r1/mail',
       { to: 'plan', text: 'hello', from: 'manager', cwd: '/elsewhere' },
-      ['mail', 'r1', 'plan'],
-      'hello',
+      [{ argv: ['mail', 'r1', 'plan'], text: 'hello' }],
     ],
     [
       '/v1/runs/r1/mail',
       { to: 'plan', text: 'hi', from: 'manager', cwd: '/elsewhere', wake: true },
-      ['mail', 'r1', 'plan', '--wake'],
-      'hi',
+      [{ argv: ['mail', 'r1', 'plan', '--wake'], text: 'hi' }],
     ],
-    ['/v1/runs/r1/goto', { node: 'plan' }, ['goto', 'r1', 'plan']],
-    ['/v1/runs/r1/abort', {}, ['abort', 'r1']],
+    ['/v1/runs/r1/goto', { node: 'plan' }, [{ argv: ['goto', 'r1', 'plan'] }]],
+    ['/v1/runs/r1/abort', {}, [{ argv: ['abort', 'r1'] }]],
     [
       '/v1/start',
       { factory: 'lifecycle', rig: 'acme', goal: 'do it' },
-      ['start', 'lifecycle', 'acme', 'do it'],
+      [{ argv: ['start', 'lifecycle', 'acme', 'do it'] }],
     ],
     [
       '/v1/start',
       { factory: 'lifecycle', station: 'plan', rig: 'acme', goal: 'g', owned: true },
-      ['start', 'lifecycle@plan', 'acme', 'g', '--owned'],
+      [{ argv: ['start', 'lifecycle@plan', 'acme', 'g', '--owned'] }],
     ],
-    ['/v1/halt', { mode: 'stop' }, ['stop']],
-    ['/v1/halt', { mode: 'resume' }, ['resume']],
-    ['/v1/decisions/acme/b1/answer', { text: 'yes' }, ['decisions', 'answer', 'acme', 'b1', 'yes']],
+    ['/v1/halt', { mode: 'stop' }, [{ argv: ['stop'] }]],
+    ['/v1/halt', { mode: 'resume' }, [{ argv: ['resume'] }]],
+    ['/v1/decisions/acme/b1/answer', { text: 'yes' }, [p('decisionsAnswer', 'acme', 'b1', 'yes')]],
   ]
-  for (const [path, body, argv, text] of rows)
+  for (const [path, body, calls] of rows)
     test(`POST ${path} ${JSON.stringify(body).slice(0, 40)}`, async () => {
       const t = setup()
       const r = await post(t.h, path, body)
       expect(r.status).toBe(200)
-      expect(t.calls).toEqual([{ argv, text }])
+      expect(t.calls).toEqual(calls)
     })
 })
 

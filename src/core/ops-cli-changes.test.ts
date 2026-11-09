@@ -274,7 +274,7 @@ const post = (home: string, path: string, body: object, cwd = OUT) => {
   return { status: r.status, body: norm(home, r.body), ...state(home) }
 }
 const outOf = (id: string) => (golden[id] as { results: { out: string; err: string }[] }).results.at(-1)!
-const lineOf = (id: string) => (golden[id] as { inbox: unknown[] }).inbox
+const lineOf = (id: string) => (golden[id] as { inbox: { run: string }[] }).inbox
 const refusedOf = (id: string) => JSON.stringify({ refused: outOf(id).err.slice(0, 500) }) + '\n'
 
 if (!update) {

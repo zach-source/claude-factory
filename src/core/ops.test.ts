@@ -20,6 +20,11 @@ const fake = () => {
     refreshMerges: async recs => (calls.push(['refreshMerges', recs]), recs),
     managerUsage: since => (calls.push(['managerUsage', typeof since]), []),
     rigList: async print => (calls.push(['rigList']), print('rig')),
+    decide: async (id, outcome, note, print) => (calls.push(['decide', id, outcome, note]), print('decided')),
+    decisionsAnswer: (rig, bead, text, print) => (
+      calls.push(['decisionsAnswer', rig, bead, text]),
+      print('answered')
+    ),
   }
   const home = mkdtempSync(join(tmpdir(), 'ops-'))
   const ctx = (env: Record<string, string | undefined> = {}): Ctx => ({
@@ -45,6 +50,13 @@ describe('moved reads run in process (AC1)', () => {
     ['gates.brief', { id: 'r1' }, [['gateBriefFacts', 'r1']]],
     ['lease.show', {}, []],
     ['rigs.list', {}, [['rigList']]],
+    ['gates.decide', { id: 'r1', outcome: 'approve', note: 'ok' }, [['decide', 'r1', 'approve', 'ok']]],
+    ['gates.decide', { id: 'r1', outcome: 'approve' }, [['decide', 'r1', 'approve', '']]],
+    [
+      'decisions.answer',
+      { rig: 'acme', bead: 'b1', text: 'yes' },
+      [['decisionsAnswer', 'acme', 'b1', 'yes']],
+    ],
     ['runners.show', {}, []],
     ['mail.list', {}, []],
     ['steps.reports', {}, []],
@@ -75,15 +87,7 @@ describe('moved reads run in process (AC1)', () => {
       await op.run(t.ctx(), input)
       if (t.cli.length) bridged.push(op.name)
     }
-    expect(bridged).toEqual([
-      'decisions.answer',
-      'factory.halt',
-      'gates.decide',
-      'runs.abort',
-      'runs.goto',
-      'runs.mail',
-      'runs.start',
-    ])
+    expect(bridged).toEqual(['factory.halt', 'runs.abort', 'runs.goto', 'runs.mail', 'runs.start'])
   })
 })
 
@@ -230,4 +234,52 @@ describe('lease.show keeps the worker rules (AC6)', () => {
       const r = await run('lease.show', fake().ctx(env), {})
       expect(r).toEqual({ code: 0, out: 'nobody holds the manager lease\n', err: '' })
     })
+})
+
+describe('decide and answer check the caller in ctx.env (AC4)', () => {
+  const ops: [string, Input, Call[], RegExp, RegExp][] = [
+    [
+      'gates.decide',
+      { id: 'r1', outcome: 'approve', note: '' },
+      [['decide', 'r1', 'approve', '']],
+      /^factory: a worker cannot decide a gate: mail the manager instead\n$/,
+      /^factory: a patrol cannot decide a gate: leave it for the person\n$/,
+    ],
+    [
+      'decisions.answer',
+      { rig: 'acme', bead: 'b1', text: 'yes' },
+      [['decisionsAnswer', 'acme', 'b1', 'yes']],
+      /^factory: a worker cannot answer the person's decisions: mail the manager instead\n$/,
+      /^factory: a patrol cannot answer the person's decisions: leave it for them\n$/,
+    ],
+  ]
+  for (const [name, input, call, worker, patrol] of ops) {
+    const markers: Record<string, string>[] = [
+      { FACTORY_FROM: 'x' },
+      { FACTORY_RUN: 'x' },
+      { FACTORY_DEF_NAME: 'x' },
+      { BEADS_ACTOR: 'factory/x' },
+    ]
+    for (const env of markers)
+      test(`${name} refuses ${JSON.stringify(env)} with no port call`, async () => {
+        const t = fake()
+        const r = await run(name, t.ctx(env), input)
+        expect(r.code).toBe(1)
+        expect(r.err).toMatch(worker)
+        expect(t.calls).toEqual([])
+      })
+    test(`${name} refuses a patrol with no port call`, async () => {
+      const t = fake()
+      const r = await run(name, t.ctx({ FACTORY_PATROL: '1' }), input)
+      expect(r.code).toBe(1)
+      expect(r.err).toMatch(patrol)
+      expect(t.calls).toEqual([])
+    })
+    for (const env of [{}, { BEADS_ACTOR: 'person' }, { FACTORY_PATROL: '' }])
+      test(`${name} allows ${JSON.stringify(env)}`, async () => {
+        const t = fake()
+        expect((await run(name, t.ctx(env), input)).code).toBe(0)
+        expect(t.calls).toEqual(call)
+      })
+  }
 })

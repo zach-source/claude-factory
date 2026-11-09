@@ -11756,11 +11756,7 @@ function staleProposal(key: string, rows: DecisionsRow[]): boolean {
 
 /** the person's answer to a bd decision: a human-flagged bead is answered and closed, an owner-only one just
  * gets a comment (queuing or starting it is a separate choice, made in the console or with start --owned) */
-function decisionsAnswer(rigName: string, id: string, text: string) {
-  if (workerMarker()) fail("a worker cannot answer the person's decisions: mail the manager instead")
-  // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above, behind
-  // the mod's own regex deny for this command.
-  if (process.env.FACTORY_PATROL) fail("a patrol cannot answer the person's decisions: leave it for them")
+function decisionsAnswer(rigName: string, id: string, text: string, print: Print) {
   const b = beads(repoOf(rigName), 'factory/person')
   if (b.human().some(x => x.id === id)) b.respond(id, text)
   else b.comment(id, text)
@@ -11770,7 +11766,19 @@ function decisionsAnswer(rigName: string, id: string, text: string) {
     for (const k of keys) delete all[k]
     writeJson(decisionsFile(), all)
   }
-  console.log(`answered ${id}`)
+  print(`answered ${id}`)
+}
+
+async function decideGate(id: string | undefined, outcome: string | undefined, note: string, print: Print) {
+  const { run, value, c } = current(id)
+  const [node, sub] = where(value)
+  const n = (await loadPinned(run.factory)).nodes[node]
+  if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
+  const outcomes = Object.keys(n!.next)
+  if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
+  const summary = note || `${outcome}, decided by the person`
+  post(run.id, { type: 'DONE', seq: c.seq, outcome: outcome!, summary })
+  print(`decided ${outcome} at ${node} of ${run.id}`)
 }
 
 /** one raw `label: effect` option, split the same way the console's own parser splits it: at the first ": "
@@ -12425,6 +12433,8 @@ export const corePort: Port = {
   refreshMerges,
   managerUsage,
   rigList: rigListLines,
+  decide: decideGate,
+  decisionsAnswer,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13189,7 +13199,7 @@ if (import.meta.main && !outboxCmd)
           const [rigName, id, ...text] = rest
           if (!rigName || !id || !text.length)
             fail("usage: factory decisions answer <rig> <bead> '<text...>'")
-          decisionsAnswer(rigName!, id!, text.join(' '))
+          emit(await decisionsOp.answer(cliCtx(), { rig: rigName!, bead: id!, text: text.join(' ') }))
           break
         }
         if (sub === 'propose' && rest[1]?.startsWith('--')) {
@@ -13367,20 +13377,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'decide': {
         const [id, outcome, ...note] = args
-        // ponytail: an env check, not a lock: it stops a worker deciding by habit, not one set on it
-        if (workerMarker()) fail('a worker cannot decide a gate: mail the manager instead')
-        // claude-factory-72v.19: same second CLI-side layer as beadFor's isOwned check above,
-        // behind the mod's own regex deny for this command.
-        if (process.env.FACTORY_PATROL) fail('a patrol cannot decide a gate: leave it for the person')
-        const { run, value, c } = current(id)
-        const [node, sub] = where(value)
-        const n = (await loadPinned(run.factory)).nodes[node]
-        if (!n?.gate || sub !== 'working') fail(`${run.id} is not at a gate (it is at ${node})`)
-        const outcomes = Object.keys(n!.next)
-        if (!outcomes.includes(outcome ?? '')) fail(`decision must be one of: ${outcomes.join(', ')}`)
-        const summary = note.join(' ') || `${outcome}, decided by the person`
-        post(run.id, { type: 'DONE', seq: c.seq, outcome: outcome!, summary })
-        console.log(`decided ${outcome} at ${node} of ${run.id}`)
+        emit(await gatesOp.decide(cliCtx(), defined({ id, outcome, note: note.join(' ') })))
         break
       }
       case 'mail': {
