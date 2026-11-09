@@ -38,7 +38,12 @@ function setup() {
 for a in "$@"; do
   if [ "$prev" = show ]; then cat '${data}/bead-'"$a"'.json' 2>/dev/null || echo null; exit 0; fi
   if [ "$prev" = comments ]; then echo '[]'; exit 0; fi
-  [ "$a" = list ] && { cat '${data}/list.json'; exit 0; }
+  if [ "$a" = list ]; then
+    since=''; p2=''
+    for b in "$@"; do [ "$p2" = --closed-after ] && since="$b"; p2="$b"; done
+    bun -e 'const s=process.argv[2];console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).filter((b)=>!s||(b.closed_at||"").slice(0,10)>=s)))' '${data}/list.json' "$since"
+    exit 0
+  fi
   prev="$a"
 done
 echo null
@@ -150,7 +155,10 @@ const pr = (num: number, title: string, files: string[], merged = true) => {
 }
 /** list.json for closedSince, the bead files for show, and the closed-PR list the search reads */
 function seed(beads: ReturnType<typeof closed>[], listed: unknown[] = []) {
-  writeFileSync(join(data, 'list.json'), JSON.stringify(beads.map(b => ({ id: b.id, title: b.title }))))
+  writeFileSync(
+    join(data, 'list.json'),
+    JSON.stringify(beads.map(b => ({ id: b.id, title: b.title, closed_at: b.closed_at }))),
+  )
   for (const b of beads) writeFileSync(join(data, `bead-${b.id}.json`), JSON.stringify([b]))
   writeFileSync(
     join(
@@ -715,4 +723,242 @@ slow('write AC2 a malformed GitLab reply or failed short id read keeps the bead 
     const r = factory(['wiki', 'write', '--dry-run'])
     expect([body, r.out]).toEqual([body, expect.stringContaining('0 groups from 0 beads; 1 waiting')])
   }
+})
+
+// AC8 and AC9 (claude-factory-tx6c.7.14): real passes, an explicit earlier lastWriteAt, a date-aware bead list
+const PRIOR = '2026-10-31T00:00:00.000Z'
+const prior = () =>
+  writeFileSync(join(home, 'wiki-state.json'), JSON.stringify({ ...state(), lastWriteAt: PRIOR }))
+const PR6 = 'https://github.com/acme/widget/pull/6'
+const callsOf = (re: RegExp) =>
+  (existsSync(join(data, 'gh-calls')) ? readFileSync(join(data, 'gh-calls'), 'utf8') : '')
+    .split('\n')
+    .filter(l => re.test(l)).length
+
+/** acme-1 (old, ship_pr PR 6) and acme-2 (new, ship_pr PR 5), both with a staged page */
+function twoBeads() {
+  setup()
+  seed([
+    closed('acme-1', { closed_at: OLD, metadata: { ship_pr: PR6 } }),
+    closed('acme-2', { metadata: { ship_pr: PR5 } }),
+  ])
+  pr(5, 'acme-2: fix it', ['src/a.ts'])
+  pr(6, 'acme-1: fix it', ['src/b.ts'])
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', PR6))
+  stage('solutions/2026-11/fix-acme-2.md', page('acme-2', PR5))
+  prior()
+}
+
+for (const [name, spoil] of [
+  [
+    'a malformed detail reply',
+    () => writeFileSync(join(data, `gh-${key('repos/acme/widget/pulls/6')}`), '{}'),
+  ],
+  [
+    'an empty file list',
+    () => writeFileSync(join(data, `gh-${key('repos/acme/widget/pulls/6/files?per_page=100')}`), '[]'),
+  ],
+  [
+    'a file with a parent path segment',
+    () =>
+      writeFileSync(
+        join(data, `gh-${key('repos/acme/widget/pulls/6/files?per_page=100')}`),
+        JSON.stringify([{ filename: '../x.ts' }]),
+      ),
+  ],
+] as const)
+  slow(`write AC9 ${name} keeps the older bead pending until the source is repaired`, () => {
+    twoBeads()
+    spoil()
+    factory(['wiki', 'write'])
+    expect(Object.keys(state().written)).toEqual(['acme-2'])
+    expect(state().lastWriteAt).toBe(PRIOR)
+    expect(runs()).toBe(1)
+    expect(prompt()).not.toContain('"id": "acme-1"')
+    pr(6, 'acme-1: fix it', ['src/b.ts'])
+    factory(['wiki', 'write'])
+    expect(Object.keys(state().written).sort()).toEqual(['acme-1', 'acme-2'])
+    expect(runs()).toBe(2)
+    expect(prompt()).toContain(PR6)
+    expect(state().lastWriteAt).not.toBe(PRIOR)
+    factory(['wiki', 'write'])
+    expect(runs()).toBe(2)
+  })
+
+slow('write AC9 a refused global GitHub list calls no agent, and both beads recover', () => {
+  setup()
+  seed([closed('acme-1', { closed_at: OLD }), closed('acme-2')], [])
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', 'https://github.com/acme/widget/pull/8'))
+  stage('solutions/2026-11/fix-acme-2.md', page('acme-2', 'https://github.com/acme/widget/pull/9'))
+  prior()
+  const l8 = pr(8, 'acme-1: fix it', ['src/b.ts'])
+  const l9 = pr(9, 'acme-2: fix it', ['src/a.ts'])
+  for (const bad of [[{}], [{ ...l9, merged_at: 42 }], [{ ...l9, title: '' }]]) {
+    writeFileSync(LIST(), JSON.stringify(bad))
+    factory(['wiki', 'write'])
+    expect(runs()).toBe(0)
+    expect(state().written).toBeUndefined()
+    expect(state().lastWriteAt).toBe(PRIOR)
+  }
+  writeFileSync(LIST(), JSON.stringify([l9, l8]))
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written).sort()).toEqual(['acme-1', 'acme-2'])
+  expect(runs()).toBe(1)
+})
+
+slow(
+  'write AC8 a match on page four is found, two beads share one scan, and 30 full pages stay pending',
+  () => {
+    setup()
+    seed([closed('acme-1'), closed('acme-2')], [])
+    const filler = (p: number) =>
+      Array.from({ length: 100 }, (_, i) => ({
+        number: 1000 + p * 100 + i,
+        html_url: `https://github.com/acme/widget/pull/${1000 + p * 100 + i}`,
+        title: 'other work',
+        merged_at: null,
+      }))
+    const at = (p: number) =>
+      join(
+        data,
+        `gh-${key(`repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=${p}`)}`,
+      )
+    for (const p of [1, 2, 3]) writeFileSync(at(p), JSON.stringify(filler(p)))
+    writeFileSync(
+      at(4),
+      JSON.stringify([pr(8, 'acme-1: fix it', ['src/b.ts']), pr(9, 'acme-2: fix it', ['src/a.ts'])]),
+    )
+    const r = factory(['wiki', 'write', '--dry-run'])
+    expect(r.out).toContain('acme-1')
+    expect(r.out).toContain('acme-2')
+    expect(callsOf(/page=4$/)).toBe(1)
+    for (let p = 4; p <= 30; p++) writeFileSync(at(p), JSON.stringify(filler(p)))
+    writeFileSync(join(data, 'gh-calls'), '')
+    expect(factory(['wiki', 'write', '--dry-run']).out).toContain('0 groups from 0 beads; 2 waiting')
+    expect(callsOf(/page=30$/)).toBe(1)
+    expect(callsOf(/page=31$/)).toBe(0)
+  },
+)
+
+slow('write AC8 a malformed metadata ship_pr keeps the bead pending without a detail call', () => {
+  setup()
+  for (const meta of [
+    '',
+    5,
+    'https://github.com/acme/widget/pull/5?x=1',
+    'https://evil.example.com/acme/widget/pull/5',
+  ]) {
+    seed([closed('acme-1', { metadata: { ship_pr: meta } })], [])
+    pr(5, 'acme-1: fix it', ['src/a.ts'])
+    writeFileSync(join(data, 'gh-calls'), '')
+    const r = factory(['wiki', 'write', '--dry-run'])
+    expect([meta, r.out]).toEqual([meta, expect.stringContaining('0 groups from 0 beads; 1 waiting')])
+    expect(callsOf(/pulls\/5/)).toBe(0)
+  }
+})
+
+slow('write AC8 detail and file rows: bad title, body type, patch type and extra fields', () => {
+  setup()
+  const detail = (o: Record<string, unknown>) =>
+    writeFileSync(
+      join(data, `gh-${key('repos/acme/widget/pulls/5')}`),
+      JSON.stringify({
+        number: 5,
+        title: 'acme-1: fix',
+        body: null,
+        merged_at: '2026-11-01T00:00:00Z',
+        ...o,
+      }),
+    )
+  const files = (rows: unknown[]) =>
+    writeFileSync(
+      join(data, `gh-${key('repos/acme/widget/pulls/5/files?per_page=100')}`),
+      JSON.stringify(rows),
+    )
+  seed([closed('acme-1', { metadata: { ship_pr: PR5 } })], [])
+  const waits = (extra = '1 waiting') => factory(['wiki', 'write', '--dry-run']).out.includes(extra)
+  files([{ filename: 'src/a.ts', extra: 1 }])
+  detail({ title: '' })
+  expect(waits('0 groups from 0 beads; 1 waiting')).toBe(true)
+  detail({ body: 7 })
+  expect(waits('0 groups from 0 beads; 1 waiting')).toBe(true)
+  detail({ merged_at: '2026-02-30T00:00:00Z' })
+  expect(waits('0 groups from 0 beads; 1 waiting')).toBe(true)
+  detail({})
+  for (const bad of [
+    [{ filename: 'src/a.ts', patch: 5 }],
+    [{ filename: '/abs.ts' }],
+    [{ filename: 'a\\b.ts' }],
+    [{ filename: 'a/./b.ts' }],
+    [{ filename: 'a//b.ts' }],
+    [{ filename: 'a\u0001b.ts' }],
+    [null],
+    [[]],
+  ]) {
+    files(bad)
+    expect([bad, waits('0 groups from 0 beads; 1 waiting')]).toEqual([bad, true])
+  }
+  files([{ filename: 'src/a.ts', patch: 'x', extra: 1 }])
+  expect(factory(['wiki', 'write', '--dry-run']).out).toContain('1 groups from 1 beads; 0 waiting')
+})
+
+const GL = 'https://gitlab.example.com/acme/widget/-/merge_requests/7'
+slow('write AC9 a failed GitLab short id search keeps the older bead pending until it works', () => {
+  setup()
+  Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'remote',
+    'set-url',
+    'origin',
+    'https://gitlab.example.com/acme/widget.git',
+  ])
+  seed([closed('acme-abc1.2', { closed_at: OLD }), closed('acme-def')])
+  const mrow = (iid: number, title: string) => ({
+    iid,
+    web_url: `https://gitlab.example.com/acme/widget/-/merge_requests/${iid}`,
+    title,
+    state: 'merged',
+    description: null,
+  })
+  const j = (name: string, v: unknown) => writeFileSync(join(data, name), JSON.stringify(v))
+  j('full-abc', [mrow(7, 'acme-abc1.2: fix it')])
+  j('full-def', [mrow(8, 'acme-def: fix it')])
+  j('mr7', mrow(7, 'acme-abc1.2: fix it'))
+  j('mr8', mrow(8, 'acme-def: fix it'))
+  j('ch7', { changes: [{ new_path: 'src/b.ts', diff: '' }] })
+  j('ch8', { changes: [{ new_path: 'src/a.ts', diff: '' }] })
+  writeFileSync(join(data, 'fail-short'), '')
+  const glab = join(dir, `bin${n}`, 'glab')
+  writeFileSync(
+    glab,
+    `#!/bin/sh
+d='${data}'
+case "$*" in
+  *search=acme-abc1.2*) cat "$d/full-abc";;
+  *search=acme-def*) cat "$d/full-def";;
+  *search=abc1.2*) if [ -f "$d/fail-short" ]; then echo failed >&2; exit 1; fi; echo '[]';;
+  *merge_requests/7/changes*) cat "$d/ch7";;
+  *merge_requests/8/changes*) cat "$d/ch8";;
+  *merge_requests/7*) cat "$d/mr7";;
+  *merge_requests/8*) cat "$d/mr8";;
+  *) echo '[]';;
+esac
+`,
+  )
+  chmodSync(glab, 0o755)
+  stage('solutions/2026-11/fix-acme-abc1.2.md', page('acme-abc1.2', GL))
+  stage('solutions/2026-11/fix-acme-def.md', page('acme-def', GL.replace('7', '8')))
+  prior()
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written)).toEqual(['acme-def'])
+  expect(state().lastWriteAt).toBe(PRIOR)
+  rmSync(join(data, 'fail-short'))
+  factory(['wiki', 'write'])
+  expect(Object.keys(state().written).sort()).toEqual(['acme-abc1.2', 'acme-def'])
+  expect(runs()).toBe(2)
+  expect(prompt()).toContain(GL)
+  factory(['wiki', 'write'])
+  expect(runs()).toBe(2)
 })

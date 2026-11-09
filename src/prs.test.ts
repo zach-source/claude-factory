@@ -2435,3 +2435,143 @@ test('manager GitHub reads never use a gh form without the owner in the path', a
   expect(hits).toHaveLength(1)
   expect(hits[0]).toContain("prs.ts: 'search', 'prs', '--owner'")
 })
+
+describe('strict wiki discovery grammar (claude-factory-tx6c.7.14)', () => {
+  const U = (n: number) => `https://github.com/acme/widget/pull/${n}`
+  const row = (o: Record<string, unknown> = {}) => ({
+    number: 5,
+    html_url: U(5),
+    title: 'acme-1: fix',
+    merged_at: '2026-11-01T00:00:00Z',
+    ...o,
+  })
+  const listOf = (rows: unknown[]) => async () => ({ code: 0, out: JSON.stringify(rows), err: '' })
+  const gh = (rows: unknown[], strict = true) =>
+    githubMergedJson(listOf(rows), 'acme/widget', '/tmp', { pages: 3, strict })
+
+  test('GitHub: a valid row, a known unmerged row and extra fields pass', async () => {
+    const out = JSON.parse(
+      (await gh([row({ extra: 1 }), row({ number: 6, html_url: U(6), merged_at: null })]))!,
+    )
+    expect(out.map((p: { number: number }) => p.number)).toEqual([5])
+    expect(await gh([])).toBe('[]')
+  })
+
+  test('GitHub: each malformed consumed field makes the whole read incomplete', async () => {
+    const bad: unknown[] = [
+      null,
+      5,
+      'x',
+      [],
+      row({ number: 0 }),
+      row({ number: 1.5 }),
+      row({ number: '5' }),
+      row({ number: 1_000_000_000, html_url: U(1_000_000_000) }),
+      row({ number: undefined }),
+      row({ html_url: U(6) }),
+      row({ html_url: undefined }),
+      row({ html_url: 'https://example.com/acme/widget/pull/5' }),
+      row({ html_url: 'https://github.com/acme/other/pull/5' }),
+      row({ html_url: `${U(5)}?x=1` }),
+      row({ html_url: `${U(5)}#f` }),
+      row({ html_url: `${U(5)}/` }),
+      row({ html_url: 'http://github.com/acme/widget/pull/5' }),
+      row({ html_url: 'https://u@github.com/acme/widget/pull/5' }),
+      row({ html_url: 'https://github.com:8443/acme/widget/pull/5' }),
+      row({ html_url: 'https://github.com/acme/widget/../widget/pull/5' }),
+      row({ html_url: 'https://github.com/acme/widget%2Fx/pull/5' }),
+      row({ title: undefined }),
+      row({ title: '' }),
+      row({ title: 7 }),
+      row({ merged_at: 42 }),
+      row({ merged_at: '' }),
+      row({ merged_at: '2026-11-01' }),
+      row({ merged_at: '2026-02-30T00:00:00Z' }),
+      row({ merged_at: 'garbage' }),
+      row({ merged_at: undefined }),
+      row({ merged_at: null, title: '' }),
+    ]
+    for (const b of bad) expect([b, await gh([row(), b])]).toEqual([b, null])
+    expect(await gh([row(), { ...row(), merged_at: '2026-11-01T00:00:00.123+02:00' }])).not.toBeNull()
+  })
+
+  test('GitHub: the permissive read keeps its old result for a malformed row', async () => {
+    expect(await gh([row(), {}], false)).not.toBeNull()
+  })
+
+  test('GitHub: strict reads to a short page, and a full page at the limit is incomplete', async () => {
+    const full = (from: number) =>
+      Array.from({ length: 100 }, (_, i) => row({ number: from + i, html_url: U(from + i), merged_at: null }))
+    const pages = (n: number, last: unknown[]) => async (argv: string[]) => {
+      const p = Number(/page=(\d+)/.exec(argv.join(' '))![1])
+      return { code: 0, out: JSON.stringify(p <= n ? full(p * 1000) : last), err: '' }
+    }
+    const four = await githubMergedJson(
+      pages(3, [row({ number: 7, html_url: U(7) })]),
+      'acme/widget',
+      '/tmp',
+      {
+        pages: 30,
+        strict: true,
+      },
+    )
+    expect(JSON.parse(four!)[0].number).toBe(7)
+    expect(
+      await githubMergedJson(pages(100, []), 'acme/widget', '/tmp', { pages: 30, strict: true }),
+    ).toBeNull()
+    expect(
+      await githubMergedJson(pages(100, []), 'acme/widget', '/tmp', { pages: 3, strict: false }),
+    ).not.toBeNull()
+  })
+
+  const M = (n: number) => `https://gl.example.com/acme/sub/widget/-/merge_requests/${n}`
+  const mr = (o: Record<string, unknown> = {}) => ({
+    iid: 5,
+    web_url: M(5),
+    title: 'acme-1: fix',
+    state: 'merged',
+    ...o,
+  })
+  const gl = (rows: unknown, strict = true) =>
+    gitlabMergedJson(
+      async () => ({ code: 0, out: JSON.stringify(rows), err: '' }),
+      'gl.example.com',
+      'acme/sub/widget',
+      '/tmp',
+      { search: 'x', strict },
+    )
+
+  test('GitLab: a valid row, a known unmerged row and a nested project path pass', async () => {
+    const out = JSON.parse((await gl([mr(), mr({ iid: 6, web_url: M(6), state: 'closed' })]))!)
+    expect(out.map((p: { number: number }) => p.number)).toEqual([5])
+    expect(await gl([])).toBe('[]')
+  })
+
+  test('GitLab: each malformed consumed field makes the read incomplete', async () => {
+    const bad: unknown[] = [
+      null,
+      7,
+      [],
+      mr({ state: 'unknown' }),
+      mr({ state: undefined }),
+      mr({ iid: 0 }),
+      mr({ iid: '5' }),
+      mr({ web_url: M(6) }),
+      mr({ web_url: 'https://other.example.com/acme/sub/widget/-/merge_requests/5' }),
+      mr({ web_url: `${M(5)}?a=1` }),
+      mr({ title: undefined }),
+      mr({ title: '' }),
+      mr({ state: 'closed', title: '' }),
+    ]
+    for (const b of bad) expect([b, await gl([mr(), b])]).toEqual([b, null])
+    for (const w of [{}, 'x', 5, null]) expect([w, await gl(w)]).toEqual([w, null])
+    expect(await gl([mr(), {}], false)).not.toBeNull()
+  })
+
+  test('GitLab: a full page of 30 rows is incomplete in strict mode only', async () => {
+    const rows = Array.from({ length: 30 }, (_, i) => mr({ iid: i + 1, web_url: M(i + 1) }))
+    expect(await gl(rows)).toBeNull()
+    expect(await gl(rows, false)).not.toBeNull()
+    expect(await gl(rows.slice(1))).not.toBeNull()
+  })
+})
