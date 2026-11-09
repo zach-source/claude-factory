@@ -38,6 +38,8 @@ export type Port = {
   decisionsAnswer: (rig: string, bead: string, text: string, print: Print) => void
   goto: (id: string | undefined, node: string | undefined, print: Print) => Promise<void>
   abort: (id: string | undefined) => void
+  /** the bounded worker screen of a run; throws a reason when there is none */
+  screen: (id: string | undefined) => Promise<string>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -230,7 +232,7 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** The 24 operations cover the client port, board, catalog and parity fixture. */
+/** The 25 operations cover the client port, board, catalog and parity fixture. */
 export const CATALOG: Op[] = makeCatalog([
   {
     ...local(
@@ -325,6 +327,17 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'json',
     (c, i) => runsOps.show(c, i),
+  ),
+  local(
+    {
+      name: 'runs.screen',
+      summary: 'Show the last screen of the worker of a run.',
+      method: 'GET',
+      path: '/v1/runs/:id/screen',
+      inputs: [id('id')],
+    },
+    'text',
+    (c, i) => runsOps.screen(c, i),
   ),
   local(
     {

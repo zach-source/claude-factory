@@ -110,6 +110,14 @@ test('isPushed: the worktree head, else the local branch, must be on origin', ()
   expect(isPushed({ ...run, worktree: join(d, 'wt') })).toBe(false)
   sh(join(d, 'wt'), 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/p')
   expect(isPushed({ ...run, worktree: join(d, 'wt') })).toBe(true)
+  // d289.17: a worker pushed newer commits that this repo has not fetched; the worktree head is on origin
+  const other = join(d, 'other')
+  sh(d, 'git', 'clone', '-q', '-b', 'factory/p', origin, other)
+  writeFileSync(join(other, 'h'), 'x')
+  sh(other, 'git', 'add', '.')
+  sh(other, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'worker')
+  sh(other, 'git', 'push', '-q', 'origin', 'HEAD:refs/heads/factory/p')
+  expect(isPushed({ ...run, worktree: join(d, 'wt') })).toBe(true)
 })
 
 test('live runs always move; of the finished runs only the newest N', () => {

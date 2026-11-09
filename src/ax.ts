@@ -5,6 +5,7 @@
 
 import { readFileSync } from 'node:fs'
 import { sq } from './harness'
+import { boundedRun } from './screen'
 import { WORKER_USER } from './worker'
 import { updateBody, workerPolicyRefusal } from './broker'
 import { parseNames } from './axsweep'
@@ -778,6 +779,24 @@ function asWorker(argv: string[]) {
 }
 export const poll = (task: string, cursor: number): Poll =>
   JSON.parse(must(['ssh', task, '--', ...asWorker(['factory', 'worker', 'poll', String(cursor)])]))
+/**
+ * the worker screen of `task`: the end of its harness stream, from one `ax ssh` call (see screen.ts).
+ * Throws a reason, never the remote stderr: an old image has no such verb and fails the same way.
+ */
+export function screen(task: string): string {
+  const r = boundedRun([
+    AX(),
+    ...context(),
+    '-a',
+    ATESPACE(),
+    'ssh',
+    task,
+    '--',
+    ...asWorker(['factory', 'worker', 'screen']),
+  ])
+  if ('reason' in r) throw new Error(r.reason)
+  return r.text
+}
 /**
  * what the VM's `factory worker usage` prints, parsed; null when ssh fails (an old image has no such verb),
  * the output is over 64 KiB or it is not JSON. The VM is untrusted: the caller sends this through validUsage.

@@ -1238,8 +1238,9 @@ test('run as `bun src/worker-hook.ts`, a payload that makes a guard throw prints
 test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-factory-99d.2', async () => {
   const env: Record<string, string | undefined> = { ...process.env }
   delete env.CLAUDE_PROJECT_DIR
+  const w = mkdtempSync(join(tmpdir(), 'wh-root-'))
   const deny = await run(
-    JSON.stringify({ tool_name: 'Bash', cwd: '/w', tool_input: { command: 'rm -f /tmp_x' } }),
+    JSON.stringify({ tool_name: 'Bash', cwd: w, tool_input: { command: 'rm -f /tmp_x' } }),
     env,
   )
   expect(deny.code).toBe(0)
@@ -1251,7 +1252,7 @@ test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-facto
     },
   })
   const allow = await run(
-    JSON.stringify({ tool_name: 'Bash', cwd: '/w', tool_input: { command: 'rm -f /w/a.md' } }),
+    JSON.stringify({ tool_name: 'Bash', cwd: w, tool_input: { command: `rm -f ${w}/a.md` } }),
     env,
   )
   expect(allow).toEqual({ out: '', code: 0 })
@@ -1259,10 +1260,12 @@ test('with no CLAUDE_PROJECT_DIR, main() takes root from input.cwd: claude-facto
 
 // claude-factory-pfb: CLAUDE_PROJECT_DIR outranks input.cwd as root. A cwd below the root must not shrink the root.
 test('with CLAUDE_PROJECT_DIR set, main() takes root from it, not from a sub-directory input.cwd (claude-factory-pfb)', async () => {
-  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: '/w' }
+  const w = mkdtempSync(join(tmpdir(), 'wh-root-'))
+  mkdirSync(join(w, 'sub'))
+  const env: Record<string, string | undefined> = { ...process.env, CLAUDE_PROJECT_DIR: w }
   const ask = (command: string) =>
-    run(JSON.stringify({ tool_name: 'Bash', cwd: '/w/sub', tool_input: { command } }), env)
-  expect(await ask('rm -f /w/a.md')).toEqual({ out: '', code: 0 })
+    run(JSON.stringify({ tool_name: 'Bash', cwd: join(w, 'sub'), tool_input: { command } }), env)
+  expect(await ask(`rm -f ${w}/a.md`)).toEqual({ out: '', code: 0 })
   const deny = await ask('rm -f /tmp_x')
   expect(JSON.parse(deny.out.trim()).hookSpecificOutput.permissionDecisionReason).toBe(REASON)
 }, 10_000)
@@ -2070,10 +2073,11 @@ test('run as `bun src/worker-hook.ts`, with no origin/HEAD to read, main and oth
   Bun.spawnSync(['git', '-C', dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
   const project = process.env.CLAUDE_PROJECT_DIR
   process.env.CLAUDE_PROJECT_DIR = dir
+  const plain = mkdtempSync(join(tmpdir(), 'wh-plain-'))
   try {
     const denyInput = JSON.stringify({
       tool_name: 'Bash',
-      cwd: '/w',
+      cwd: plain,
       tool_input: { command: 'git push origin main' },
     })
     const denied = await run(denyInput)
@@ -2087,7 +2091,7 @@ test('run as `bun src/worker-hook.ts`, with no origin/HEAD to read, main and oth
     })
     const otherInput = JSON.stringify({
       tool_name: 'Bash',
-      cwd: '/w',
+      cwd: plain,
       tool_input: { command: 'git push origin factory/x' },
     })
     const deniedOther = await run(otherInput)
@@ -5556,7 +5560,7 @@ test.each([
   expect(aliasSpawnCapMs(v)).toBe(want)
 })
 
-// claude-factory-zzxp (AC2, AC3): a `git` wrapper sleeps 2.5 s for `git -C <dir> config` only.
+// claude-factory-zzxp (AC2, AC3): a `git` wrapper sleeps 2.5 s for `git -C <dir> config --get-regexp` only.
 // With the default 2000 ms cap the alias read times out and the hook fails closed.
 // With the knob at 6000 the read finishes and the push guard gives its own reason.
 test.each([
@@ -5574,7 +5578,7 @@ test.each([
     const bin = mkdtempSync(join(tmpdir(), 'wh-zzxp-bin-'))
     writeFileSync(
       join(bin, 'git'),
-      `#!/bin/sh\n[ "$3" = config ] && sleep 2.5\nexec ${Bun.which('git')} "$@"\n`,
+      `#!/bin/sh\n[ "$3" = config ] && [ "$5" = --get-regexp ] && sleep 2.5\nexec ${Bun.which('git')} "$@"\n`,
       {
         mode: 0o755,
       },
@@ -9161,6 +9165,55 @@ test('shellSnapshotAliases gives an empty Map for a missing folder and undefined
   const bad = snapDir({})
   mkdirSync(join(bad, 'snapshot-zsh-1.sh'))
   expect(shellSnapshotAliases(bad)).toBeUndefined()
+})
+
+test('shellSnapshotAliases reads alias -s lines as suffix keys and skips their value lines (claude-factory-qn8a.28)', () => {
+  const dir = snapDir({
+    'snapshot-zsh-1.sh': [
+      'alias -s sh=zqx',
+      'alias -s -- py=zqy',
+      "alias -s md='zqz one",
+      "alias -- git=echo'",
+      'alias -- acme=widget',
+      '',
+    ].join('\n'),
+  })
+  const t = shellSnapshotAliases(dir)!
+  expect(t.get('*.sh')).toBeNull()
+  expect(t.has('*.sh')).toBe(true)
+  expect(t.has('*.py')).toBe(true)
+  expect(t.has('*.md')).toBe(true)
+  expect(t.has('git')).toBe(false)
+  expect(t.get('acme')).toBe('widget')
+  expect(t.has('sh')).toBe(false)
+  for (const bad of ["alias -s 'a b'=x", 'alias -s', "alias -s sh=$'a\\nb'"])
+    expect(shellSnapshotAliases(snapDir({ 'snapshot-zsh-1.sh': bad + '\n' }))).toBeUndefined()
+})
+
+test('denyReason denies a command word whose last suffix is a snapshot alias -s name (claude-factory-qn8a.28)', () => {
+  const gateFor = (text: string, fns = true): HookGate => ({
+    ...snapGate(() => shellSnapshotAliases(snapDir(text ? { 'snapshot-zsh-1.sh': text } : {}))),
+    shellFunctions: fns ? () => new Set<string>() : undefined,
+  })
+  const gate = gateFor('alias -s sh=zqx\n')
+  for (const cmd of [
+    'x.sh',
+    './run.sh',
+    '/opt/acme/x.sh arg',
+    'A=1 x.sh',
+    'ls; x.sh',
+    'echo x && x.sh',
+    '(x.sh)',
+    'a.b.sh',
+    '.sh',
+  ])
+    expect([cmd, denyReason(cmd, '/w', undefined, gate)]).toEqual([cmd, SHELL_ALIAS_REASON])
+  for (const cmd of ['x.txt', 'x.shx', 'xsh', 'cat x.sh', 'ls -la'])
+    expect([cmd, denyReason(cmd, '/w', undefined, gate)]).toEqual([cmd, undefined])
+  expect(denyReason('x.sh', '/w', undefined, gateFor(''))).toBeUndefined()
+  expect(denyReason('cat x.sh', '/w', undefined, gateFor('alias -s sh=zqx\n', false))).toBe(
+    SHELL_ALIAS_REASON,
+  )
 })
 
 // claude-factory-1zr5: the spawned hook reads the folder that CLAUDE_CONFIG_DIR names

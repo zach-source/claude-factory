@@ -6,7 +6,9 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -37,6 +39,8 @@ import { rmSafe } from './home-guard'
 import * as memory from './memory'
 import { codexUsageOf, cursorUsageOf, grokUsageOf, sessionOf, validUsage, type Usage } from './metrics'
 import { cut } from './cut'
+import { SCREEN_MAX, tailUtf8 } from './screen'
+import { REAP_FAILED } from './reap'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -517,7 +521,9 @@ async function turn(text: string, model?: string, session?: string, onSession?: 
   })
   // env spelled out: Bun's default is the env at startup, without what setup() added. The prompt goes on
   // stdin, not argv (see turnArgv): a Blob holds the whole text in memory, same as the string already did
-  const p = Bun.spawn(argv, {
+  // a codex turn runs under a child subreaper that kills what the turn left (src/reap.ts, claude-factory-qn8a.35)
+  const run = h === 'codex' ? [process.execPath, join(import.meta.dir, 'reap.ts'), ...argv] : argv
+  const p = Bun.spawn(run, {
     cwd: repo(),
     env: { ...process.env },
     stdin: new Blob([h === 'cursor' && !session ? cursorRules() + text : text]),
@@ -553,6 +559,11 @@ async function turn(text: string, model?: string, session?: string, onSession?: 
   const code = await p.exited
   if (code !== 0 || err)
     appendFileSync(serveLog(), `${new Date().toISOString()} ${h} exited ${code}: ${err.slice(-4000)}\n`)
+  // a signal on the reaper means that a turn process killed it: its leftovers can live on, so no next turn may start
+  if (h === 'codex' && (p.signalCode !== null || code === REAP_FAILED))
+    throw new Error(
+      `a codex worker keeps the deny hook on: the turn's reaper failed (${p.signalCode ?? code})`,
+    )
   return { session: h === 'pi' ? id : (sessionIn(h, out) ?? session), egress: egressFailure(h, out, err) }
 }
 
@@ -1162,10 +1173,24 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
   if (existsSync(local) && !beadsOnlyCodexDir(local))
     throw new Error(`a codex worker keeps the deny hook on: ${local} would add project config`)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // before chmodSync, which follows a link
+  if (!lstatSync(dir).isDirectory())
+    throw new Error(`a codex worker keeps the deny hook on: ${dir} is not a plain directory`)
   chmodSync(dir, 0o700)
+  // remove, then create with wx: a link a turn left at the path is replaced, never written through
+  const put = (path: string, text: string) => {
+    try {
+      rmSync(path, { force: true })
+      writeFileSync(path, text, { mode: 0o600, flag: 'wx' })
+    } catch (e) {
+      throw new Error(
+        `a codex worker keeps the deny hook on: cannot replace ${path} (${(e as Error).message})`,
+      )
+    }
+  }
   for (const [name, text] of Object.entries(JSON.parse(files) as Record<string, string>))
-    writeFileSync(join(dir, basename(name)), text, { mode: 0o600 })
-  writeFileSync(
+    put(join(dir, basename(name)), text)
+  put(
     join(dir, 'AGENTS.md'),
     readFileSync(join(import.meta.dir, 'worker-system.md'), 'utf8') +
       readFileSync(join(import.meta.dir, 'worker-vm.md'), 'utf8') +
@@ -1476,6 +1501,30 @@ function limitNow() {
     return (h === 'codex' ? codexLimit : h === 'grok' ? grokLimit : cursorLimit)(buf.toString(), mtimeMs)
   } catch {
     return null
+  }
+}
+
+/**
+ * `factory worker screen`: the last 64 KiB of the harness stream (own()/<h>.jsonl) as text. Only a regular file
+ * qualifies: a symlink, a directory or a FIFO throws before any read. Throws a reason, never file content.
+ */
+export function screen(): string {
+  const h = process.env.FACTORY_HARNESS ?? 'claude'
+  if (!['claude', 'codex', 'cursor', 'grok', 'pi'].includes(h)) throw new Error('unknown harness')
+  let fd: number
+  try {
+    fd = openSync(join(own(), `${h}.jsonl`), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch (e) {
+    throw new Error((e as NodeJS.ErrnoException).code === 'ELOOP' ? 'not a regular file' : 'no stream')
+  }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) throw new Error('not a regular file')
+    const buf = Buffer.alloc(Math.min(st.size, SCREEN_MAX))
+    const n = readSync(fd, buf, 0, buf.length, st.size - buf.length)
+    return tailUtf8(buf.subarray(0, n), st.size > SCREEN_MAX)
+  } finally {
+    closeSync(fd)
   }
 }
 

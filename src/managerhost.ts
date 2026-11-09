@@ -104,18 +104,28 @@ export async function awaitHome(ready: () => boolean, step: () => boolean, sleep
   }
 }
 
-/** one backup; backup() takes the tick lock for the snapshot only. A failure is logged and the host loop goes on */
-export function backupStep(
+/**
+ * one backup; backup() takes the tick lock for the snapshot only. A tick holds the lock most of the time.
+ * If the lock is held, the step tries again each second, up to `tries` times (2 min).
+ * It logs the skip once, at the end. It logs a failure, and the host loop goes on
+ */
+export async function backupStep(
   cfg: BackupCfg,
   ready: boolean,
   lock: () => (() => void) | null,
   log: (m: string) => void,
   run: (c: BackupCfg, ready: boolean, lock: () => (() => void) | null) => Outcome = backup,
+  tries = 120,
+  nap: () => Promise<unknown> = () => Bun.sleep(1000),
 ) {
   if (!cfg.remote) return
   try {
-    const o = run(cfg, ready, lock)
-    if (o.skipped === 'lock') log('backup skipped: a tick holds the lock')
+    let o = run(cfg, ready, lock)
+    for (let n = 1; o.skipped === 'lock' && n < tries; n++) {
+      await nap()
+      o = run(cfg, ready, lock)
+    }
+    if (o.skipped === 'lock') log(`backup skipped: a tick held the lock at ${tries} tries`)
     else if (o.error) log(o.error.startsWith('backup refused') ? o.error : `backup failed: ${o.error}`)
     else if (o.changed) log(`backup ${o.sha}`)
   } catch (e) {
@@ -356,7 +366,8 @@ export async function host(
     await Bun.sleep(everyMs)
     if (Date.now() - lastBackup >= backupMs) {
       lastBackup = Date.now()
-      backupStep(bcfg, ready(), lock, log)
+      // ponytail: the host loop waits for the backup, up to 2 min while a tick holds the lock
+      await backupStep(bcfg, ready(), lock, log)
     }
     const n = paneCount()
     const action = decide({ herdrUp: n >= 0, panes: Math.max(n, 0) })

@@ -37,6 +37,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     ),
     goto: async (id, node, print) => (log('goto', [id, node]), print('{"ok":1}')),
     abort: id => void log('abort', [id]),
+    screen: async id => (log('screen', [id]), 'screen'),
     mail: async (m, who, print) => (
       (lastEnv = who.env),
       log('mail', [m, { cwd: who.cwd }]),

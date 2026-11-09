@@ -10,6 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { hideParseText } from './secrets'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { MANAGER_CWD } from './ax'
@@ -173,6 +174,9 @@ export function isPushed(run: RunPaths) {
     (existsSync(run.worktree) && gitOut(['-C', run.worktree, 'rev-parse', 'HEAD'])) ||
     gitOut(['-C', run.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${run.branch}`])
   if (!local || local === remote) return true
+  // the repo can lack the newer origin commits of the branch; fetch them, or merge-base gives a false alarm
+  if (gitOut(['-C', run.repo, 'cat-file', '-e', `${remote}^{commit}`]) === undefined)
+    gitOut(['-C', run.repo, 'fetch', '--quiet', 'origin', `refs/heads/${run.branch}`])
   return gitOut(['-C', run.repo, 'merge-base', '--is-ancestor', local, remote]) !== undefined
 }
 
@@ -240,7 +244,14 @@ export function plan(
   const local = localLiveRuns(runs)
   const move = runsToMove(runs, keep)
   const rigsFile = join(home, 'rigs.json')
-  const m = migratedRigs(existsSync(rigsFile) ? JSON.parse(readFileSync(rigsFile, 'utf8')) : [], originOf)
+  const rigsText = existsSync(rigsFile) ? readFileSync(rigsFile, 'utf8') : '[]'
+  let rigList: unknown
+  try {
+    rigList = JSON.parse(rigsText)
+  } catch (e) {
+    throw new Error(`${rigsFile}: not valid JSON (${hideParseText((e as Error).message)})`)
+  }
+  const m = migratedRigs(rigList as Parameters<typeof migratedRigs>[0], originOf)
   const claude = claudeFiles(readSessions(home), config)
   const staleMemory = move.flatMap(id => {
     const dir = join(runsDir, id)

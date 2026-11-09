@@ -10,6 +10,30 @@ import {
 } from './managerhost'
 
 const free = () => () => {}
+const nap = async () => {}
+
+test('d289.18: a backup that finds the tick lock tries again each second and logs the skip once', async () => {
+  const lines: string[] = []
+  const cfg = { ws: '/w', remote: 'r', branch: 'b' }
+  let calls = 0
+  let naps = 0
+  const busyTwice = () => (++calls <= 2 ? { skipped: 'lock' as const } : { sha: 'abc', changed: true })
+  await backupStep(
+    cfg,
+    true,
+    free,
+    m => lines.push(m),
+    busyTwice,
+    120,
+    async () => void naps++,
+  )
+  expect([calls, naps, lines]).toEqual([3, 2, ['backup abc']])
+  calls = 0
+  const busy = () => (++calls, { skipped: 'lock' as const })
+  await backupStep(cfg, true, free, m => lines.push(m), busy, 4, nap)
+  expect(calls).toBe(4)
+  expect(lines.slice(1)).toEqual(['backup skipped: a tick held the lock at 4 tries'])
+})
 
 test('herdr down restarts everything, a live herdr with no pane restarts the manager only', () => {
   expect(decide({ herdrUp: false, panes: 0 })).toBe('restart-all')
@@ -26,23 +50,24 @@ test('a restart resumes the newest known session and replaces an old --resume', 
   expect(lastSession('not json')).toBeUndefined()
 })
 
-test('AC7: a backup step logs its result, never throws, and skips while the tick lock is held', () => {
+test('AC7: a backup step logs its result, never throws, and skips while the tick lock is held', async () => {
   const lines: string[] = []
   const log = (m: string) => lines.push(m)
   const boom = (): never => {
     throw new Error('disk full')
   }
   const cfg = { ws: '/w', remote: 'r', branch: 'b' }
-  expect(() => backupStep(cfg, true, free, log, boom)).not.toThrow()
+  expect(backupStep(cfg, true, free, log, boom)).resolves.toBeUndefined()
+  await Bun.sleep(0)
   expect(lines.at(-1)).toBe('backup failed: disk full')
-  backupStep(cfg, true, free, log, () => ({ sha: 'abc', changed: true }))
+  await backupStep(cfg, true, free, log, () => ({ sha: 'abc', changed: true }))
   expect(lines.at(-1)).toBe('backup abc')
-  backupStep(cfg, true, free, log, () => ({ skipped: 'lock' }))
-  expect(lines.at(-1)).toBe('backup skipped: a tick holds the lock')
-  backupStep(cfg, false, free, log, () => ({ error: 'backup refused: home is not ready' }))
+  await backupStep(cfg, true, free, log, () => ({ skipped: 'lock' }), 3, nap)
+  expect(lines.at(-1)).toBe('backup skipped: a tick held the lock at 3 tries')
+  await backupStep(cfg, false, free, log, () => ({ error: 'backup refused: home is not ready' }))
   expect(lines.at(-1)).toBe('backup refused: home is not ready')
   const n = lines.length
-  backupStep({ ...cfg, remote: undefined }, true, free, log, boom)
+  await backupStep({ ...cfg, remote: undefined }, true, free, log, boom)
   expect(lines.length).toBe(n)
 })
 
