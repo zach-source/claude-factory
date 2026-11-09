@@ -6807,6 +6807,10 @@ function launchFacts(): gc.LaunchFact[] {
 function removeRun(id: string): Run {
   const { run, value } = current(id)
   if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
+  for (const k of ['id', 'worktree', 'repo'] as const) {
+    const v: unknown = run[k]
+    if (typeof v !== 'string' || v === '') fail(`${id}: run.json has no ${k}: removed nothing`)
+  }
   // no --force except for a clean submodule worktree: herdr and git refuse uncommitted work; the branch always stays.
   // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
   const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
@@ -6842,11 +6846,13 @@ function gcPass(days: number, dryRun: boolean) {
   const now = Date.now()
   // a run dir removed mid-pass, or one with no run.json/state.json, must not fail the whole pass
   // (claude-factory-503.1.6)
+  const skipped: string[] = []
   const runs = runIds().flatMap(id => {
     try {
       return [runFact(id)]
     } catch (err) {
       console.error(`gc: skipping ${id}: ${(err as Error).message}`)
+      skipped.push(`skipped ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`)
       return []
     }
   })
@@ -6878,17 +6884,25 @@ function gcPass(days: number, dryRun: boolean) {
     return
   }
   // ponytail: gc.log grows by one line per reaped run and is never rotated; rotate it when it matters
+  // a gc.log write error must not change a removal result or stop the pass
   const say = (line: string) => {
     console.log(line)
-    appendFileSync(join(HOME, 'gc.log'), `${new Date(now).toISOString()} ${line}\n`)
+    try {
+      appendFileSync(join(HOME, 'gc.log'), `${new Date(now).toISOString()} ${line}\n`)
+    } catch (err) {
+      console.error(`gc: cannot write gc.log: ${(err as Error).message}`)
+    }
   }
+  for (const line of skipped) say(line)
   for (const id of plan.reap) {
+    let line: string
     try {
       removeRun(id)
-      say(`reaped ${id}`)
+      line = `reaped ${id}`
     } catch (err) {
-      say(`refused ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`)
+      line = `refused ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`
     }
+    say(line)
   }
   for (const pane of plan.launch) rmSync(join(launchDir(), `${pane}.sh`), { force: true })
 }

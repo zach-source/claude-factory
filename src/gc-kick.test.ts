@@ -110,7 +110,7 @@ test('tick spawns one gc pass, then none while still inside that pass’s hour (
   expect(existsSync(join(home, 'gc.stamp'))).toBe(false)
   factory(['tick'])
   await waitForGcStamp()
-  await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
+  for (let i = 0; i < 1500 && existsSync(d); i++) await new Promise(resolve => setTimeout(resolve, 10)) // bounded wait
   expect(existsSync(d)).toBe(false) // the spawned pass actually ran, not just stamped
   expect(existsSync(join(home, 'metrics.jsonl'))).toBe(true)
   const firstMtime = statSync(join(home, 'gc.stamp')).mtimeMs

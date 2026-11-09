@@ -78,7 +78,7 @@ export function gcPlan(
   const reap: string[] = []
   for (const r of runs) {
     if (!['done', 'aborted'].includes(r.node)) continue
-    if (!(now - r.finishedAt >= cutoff)) continue // a NaN or future time keeps the run
+    if (!Number.isFinite(r.finishedAt) || !(now - r.finishedAt >= cutoff)) continue // a nonfinite or future time keeps the run
     reap.push(r.id)
     const kinds = { prompts: zero(), briefs: zero(), backups: zero() }
     const paths: string[] = []

@@ -510,3 +510,59 @@ test('lt4u AC5: a refused run does not stop the next; the log names both; a metr
   expect(existsSync(dm)).toBe(false)
   expect(metricIds()).toContain(m)
 })
+
+// ---- claude-factory-lt4u review rework
+test('lt4u.4: run.json with an absent, null or empty worktree or repo is kept, with a reason', () => {
+  reset()
+  const old = Date.now() - 10 * DAY
+  let n = 0
+  for (const field of ['worktree', 'repo'])
+    for (const v of ['absent', null, '']) {
+      const id = freshId(`t${n++}x`)
+      const d = writeRun(id, { outcome: 'done', finishedAt: old })
+      const j = JSON.parse(readFileSync(join(d, 'run.json'), 'utf8'))
+      if (v === 'absent') delete j[field]
+      else j[field] = v
+      if (field === 'repo') j.worktree = join(dir, 'gone-wt') // a missing worktree must not pass the check
+      writeFileSync(join(d, 'run.json'), JSON.stringify(j))
+      const out = factory(['gc'])
+      expect(out.code).toBe(0)
+      expect(existsSync(d)).toBe(true)
+      expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(
+        `refused ${id}: ${id}: run.json has no ${field}`,
+      )
+    }
+  expect(existsSync(join(home, 'metrics.jsonl'))).toBe(false)
+})
+
+test('lt4u.5: a finishedAt of -Infinity (JSON -1e999) keeps the run', () => {
+  reset()
+  const id = freshId('ship')
+  const at = Date.now() - 10 * DAY
+  const d = writeRun(id, { outcome: 'done', finishedAt: at, real: true })
+  const sp = join(d, 'state.json')
+  const s = readFileSync(sp, 'utf8')
+  expect(s).toContain(`"at":${at}`)
+  writeFileSync(sp, s.replaceAll(`"at":${at}`, '"at":-1e999'))
+  const out = factory(['gc', '--dry-run'])
+  expect(out.out).not.toContain(`would reap ${id}`)
+  expect(existsSync(d)).toBe(true)
+})
+
+test('lt4u.6: an unwritable gc.log does not change a removal result or stop the pass', () => {
+  reset()
+  const old = Date.now() - 10 * DAY
+  const bad = freshId('aaa') // refused: a plain dir
+  const good = freshId('zzz')
+  const dbad = writeRun(bad, { outcome: 'done', finishedAt: old })
+  const dgood = writeRun(good, { outcome: 'done', finishedAt: old, real: true })
+  mkdirSync(join(home, 'gc.log'))
+  const out = factory(['gc'])
+  expect(out.code).toBe(0)
+  expect(existsSync(dbad)).toBe(true)
+  expect(existsSync(dgood)).toBe(false)
+  expect(out.out).toContain(`refused ${bad}`)
+  expect(out.out).toContain(`reaped ${good}`)
+  expect(out.out).not.toContain(`refused ${good}`)
+  expect(out.err).toContain('cannot write gc.log')
+})

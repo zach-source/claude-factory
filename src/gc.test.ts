@@ -127,6 +127,7 @@ test('lt4u AC2: reap keeps every nonterminal run, and a future, NaN or infinite 
     run('future', 'done', NOW + DAY, []),
     run('nan', 'done', NaN, []),
     run('inf', 'done', Infinity, []),
+    run('ninf', 'done', -Infinity, []),
   ]
   expect(gcPlan(runs, [], new Set(), NOW, 7).reap).toEqual([])
 })
