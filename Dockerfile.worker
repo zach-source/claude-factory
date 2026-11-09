@@ -9,8 +9,14 @@
 # AX's runner, at the release the factory is built against
 FROM golang:1.27-bookworm AS runner
 ARG AX_COMMIT=v0.3.1
+# ENV_REPLACE, if set, is a module@version that replaces github.com/agent-substrate/env (the guest server in
+# the runner). Use it for an env fork with a guest fix, such as live_output for long ssh streams.
+ARG ENV_REPLACE=
 RUN git clone https://github.com/google/ax /ax && git -C /ax checkout ${AX_COMMIT}
 WORKDIR /ax
+RUN if [ -n "${ENV_REPLACE}" ]; then \
+      go mod edit -replace github.com/agent-substrate/env=${ENV_REPLACE} && go mod download github.com/agent-substrate/env; \
+    fi
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /ax-task-runner ./cmd/ax-task-runner
 
 # the ax CLI, for the manager image only: its own stage, so the worker image does not build it
