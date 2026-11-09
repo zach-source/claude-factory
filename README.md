@@ -901,9 +901,12 @@ sweep stations from `factories/lifecycle.ts`, if its `factory.json` holds one.
 commit it, and the repo owns its factory like any other code:
 
 - **Runs pin their factory.** `start lifecycle` (and a rig's dispatch) use the repo's own
-  `.factory/lifecycle.ts` as of the commit the run starts from, copied into the run, so no
+  `.factory/lifecycle.ts` as of the default-branch commit the run is based on, copied into the run, so no
   later edit, the run's own included, changes the graph under it. Without a repo copy, the
   template in `factories/` is used. `factory status <run>` says which version a run follows.
+  A run on a PR branch (a rework, or a bead with `ship_branch`) also takes `.factory/` from
+  the default branch, never from the PR branch: a factory change on a branch reaches runs
+  only after it merges.
 - **New runs start from what has merged.** A run branches from the remote's default branch,
   freshly fetched, even when you have unpushed local commits (they never reach a run). Only a
   repo with no remote starts from local HEAD. So a merged factory change reaches the next run with nothing to pull.

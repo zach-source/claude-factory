@@ -167,7 +167,7 @@ export default ${factory('BRANCH-TS')}
   return { marker, tmp }
 }
 const pinnedPrompt = () => {
-  const [id] = readdirSync(join(home, 'runs'))
+  const id = readdirSync(join(home, 'runs'))[0]!
   return JSON.parse(readFileSync(join(home, 'runs', id, 'factory.json'), 'utf8')).nodes.work.prompt
 }
 const factoryBaseLeft = (tmp: string) => readdirSync(tmp).filter(f => f.startsWith('factory-base-'))
@@ -822,7 +822,7 @@ test('a run on a PR branch pins .factory/ from the default branch, not the branc
   expect(pinnedPrompt()).toBe('MAIN')
   expect(existsSync(marker)).toBe(false)
   const head = Bun.spawnSync(['git', '-C', r, 'rev-parse', 'HEAD']).stdout.toString().trim()
-  const [id] = readdirSync(join(home, 'runs'))
+  const id = readdirSync(join(home, 'runs'))[0]!
   const from = JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')).factoryFrom
   expect(from).toBe(`.factory/tiny.json at ${head.slice(0, 8)}`)
   expect(out.out).toContain(`following ${from}`)
