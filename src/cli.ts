@@ -12216,7 +12216,11 @@ async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: st
         : `repos/${slug}/pulls/${num}/files?per_page=100`,
     )
     // ponytail: one page of 100 files; a longer list stays unresolved. Page it when a real PR needs it.
-    const list = gl ? (f && !Array.isArray(f) && !f.overflow ? f.changes : null) : f
+    const list = gl
+      ? f && !Array.isArray(f) && (f.overflow === undefined || f.overflow === false)
+        ? f.changes
+        : null
+      : f
     rows = Array.isArray(list) && list.length > 0 && (gl || list.length < 100) ? list : null
   }
   // a file path is a label for the agent, never a filesystem target: refuse anything but a plain relative path
@@ -12386,7 +12390,7 @@ async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
         const meta = typeof raw === 'string' ? raw : ''
         const urls = new Set<string>()
         // an absent ship_pr lets discovery decide; a present one that is not this rig's own PR URL is incomplete input
-        if (raw != null) {
+        if (raw !== undefined) {
           if (!wikiPrNumber(meta, origin)) throw new Error('ship_pr is malformed')
           urls.add(meta)
         }

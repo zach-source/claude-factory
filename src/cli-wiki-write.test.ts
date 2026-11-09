@@ -1123,7 +1123,7 @@ test('AC10 ambient remote and routing values reach no setup or command child', (
     expect(factory(['wiki', 'write', '--dry-run']).code).toBe(0)
     expect(Bun.spawnSync(['git', '-C', wiki(), 'config', '--get', 'remote.origin.url']).exitCode).not.toBe(0)
     expect(existsSync(join(data, 'gh-calls'))).toBe(false)
-    expect(existsSync(seeded.FACTORY_OUTBOX)).toBe(false)
+    expect(existsSync(join(dir, 'outbox'))).toBe(false)
     for (const [k, v] of Object.entries(seeded)) expect(process.env[k]).toBe(v)
   } finally {
     for (const k of Object.keys(seeded)) delete process.env[k]
