@@ -1,5 +1,6 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import * as fsNs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -12526,3 +12527,81 @@ test.each([
   expect(redirectDeny(c)).toBeUndefined()
   expect(redirectDeny(`>out ${c}`)).toBeUndefined()
 })
+
+// claude-factory-qn8a.14.9: both script readers bound their work and depth, and run nothing.
+// Reader 1: anyShellReason -> denyAt. Reader 2: segmentRunsBdCommand -> stringNamesBdCommand.
+// Budgets are the scanReason work budget. Each charge is a count of characters (see spendWork).
+const AC7_FAKE_GATE = {
+  headOf: () => 'factory/x',
+  originHead: () => 'main',
+  gitAliases: () => new Map<string, string>(),
+  ghAliases: () => new Map<string, string>(),
+}
+const ac7Scan = (c: string, budget?: number) => scanReason(c, '/root/repo', ['acme'], AC7_FAKE_GATE, budget)
+
+// Each row: command, budget that reaches the script recursion and runs out inside it,
+// and the smallest budget that lets the whole scan finish. One less must still deny.
+const AC7_ROWS: Array<[string, string, number, number]> = [
+  ['shell', '$X "hello world"', 80, 209],
+  ['shell after redirect', '>zz $X "hello world"', 100, 232],
+  ['env', 'env -i $X x y', 28, 118],
+  ['env after redirect', '>zz env -i $X x y', 36, 141],
+]
+
+test.each(AC7_ROWS)(
+  'qn8a.14 script budget %s: exhausted inside the script read, exact at the boundary',
+  (_name, cmd, inside, finish) => {
+    expect(ac7Scan(cmd, inside)).toBe(SCAN_BUDGET_REASON)
+    expect(ac7Scan(cmd, finish - 1)).not.toBeUndefined()
+    expect(ac7Scan(cmd, finish)).toBeUndefined()
+    expect(ac7Scan(cmd)).toBeUndefined()
+  },
+)
+
+test('qn8a.14 script budget: a bd word in the script reads as BEADS_ACTOR_REASON only with enough budget', () => {
+  const cmd = "env -i $X x 'bd create acme'"
+  expect(ac7Scan(cmd, 28)).toBe(SCAN_BUDGET_REASON)
+  expect(ac7Scan(cmd, 1000)).toBe(BEADS_ACTOR_REASON)
+  expect(ac7Scan(`>zz ${cmd}`, 1000)).toBe(BEADS_ACTOR_REASON)
+})
+
+// Depth: the shell reader returns DEEP_COMMAND_REASON. The boolean bd reader answers true,
+// so the conservative environment denial is BEADS_ACTOR_REASON.
+test.each(['', '>zz '])('qn8a.14 script depth limit is exact for both readers %#', p => {
+  const shell = (n: number) => ac7Scan(`${p}$X x ${'eval '.repeat(n)}echo ok`)
+  expect(shell(31)).toBeUndefined()
+  expect(shell(32)).toBe(DEEP_COMMAND_REASON)
+  expect(shell(40)).toBe(DEEP_COMMAND_REASON)
+  const env = (n: number) => ac7Scan(`${p}env -i $X x ${'eval '.repeat(n)}echo ok`)
+  expect(env(30)).toBeUndefined()
+  expect(env(31)).toBe(BEADS_ACTOR_REASON)
+  expect(env(40)).toBe(BEADS_ACTOR_REASON)
+})
+
+// Observed APIs: Bun.spawnSync and Bun.spawn (process launch, also the real gate readers), and the
+// five node:fs functions that worker-hook.ts imports (appendFileSync, readdirSync, readFileSync,
+// realpathSync, statSync). A redirect target is opened only through one of them.
+// Bun tests in one file run one after another, so the process-wide spies cannot meet another test.
+test.each(AC7_ROWS)(
+  'qn8a.14 script readers launch nothing and open nothing: %s',
+  (_name, cmd, inside, finish) => {
+    const names = ['appendFileSync', 'readdirSync', 'readFileSync', 'realpathSync', 'statSync'] as const
+    const fsSpies = names.map(n => spyOn(fsNs, n))
+    const spawnSync = spyOn(Bun, 'spawnSync')
+    const spawn = spyOn(Bun, 'spawn')
+    try {
+      for (const b of [inside, finish - 1, finish, 1000]) ac7Scan(cmd, b)
+      ac7Scan("env -i $X x 'bd create acme'", 1000)
+      expect(spawnSync.mock.calls.length).toBe(0)
+      expect(spawn.mock.calls.length).toBe(0)
+      for (const s of fsSpies) expect(s.mock.calls.length).toBe(0)
+      // The spies are live: a direct call shows up.
+      fsNs.statSync('.')
+      expect(fsSpies[4]!.mock.calls.length).toBe(1)
+    } finally {
+      for (const s of fsSpies) s.mockRestore()
+      spawnSync.mockRestore()
+      spawn.mockRestore()
+    }
+  },
+)
