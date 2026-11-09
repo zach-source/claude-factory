@@ -171,6 +171,12 @@ describe('factory.halt and lease.release', () => {
     )
     const worker = await run('lease.release', t.ctx({ FACTORY_RUN: 'r1' }), {})
     expect(worker.err).toContain('a worker cannot run factory lease')
+    const rig = await run('rigs.set', t.ctx({ FACTORY_PATROL: '1' }), { name: 'acme', max: '3' })
+    expect(rig.err).toBe(
+      'factory: a patrol cannot run factory rig set: leave it for the person or the manager\n',
+    )
+    const queue = await run('runs.queue', t.ctx({ FACTORY_RUN: 'r1' }), { rig: 'acme', bead: 'b1' })
+    expect(queue.err).toContain('a worker cannot run factory queue')
     expect(t.calls).toEqual([])
   })
 })
