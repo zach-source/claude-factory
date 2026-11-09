@@ -118,18 +118,26 @@ const pending = () => {
   return [...s.mine, ...s.unproven]
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+// Fixture children are single Bun processes: a shell would leave a `sleep` descendant that no handle owns.
+const q = (s: string) => JSON.stringify(s)
+const stay = 'setTimeout(() => {}, 60000)'
+const takeLock = (lock: string) =>
+  `fs.mkdirSync(${q(lock)}); fs.writeFileSync(${q(`${lock}/pid`)}, String(process.pid))`
+const script = (js: string) => Bun.spawn([process.execPath, '-e', `const fs = require('node:fs'); ${js}`])
 // the nested row (AC10 assertion cleanup) shortens the hook waits; a normal run keeps these
 let hookMs = 10_000
 let settleMs = 5_000
 /** stop every owned child and wait for its exit; false when one is still alive or unproven at the deadline */
 async function stopOwned(ms = hookMs) {
+  scanReceipts() // a malformed receipt throws before any signal, handles included
   for (const h of handles.splice(0)) {
     h.kill(9)
     await h.exited
   }
   for (const t = Date.now(); ; await sleep(50)) {
     const s = status()
-    if (!s.mine.length && !s.unproven.length) return true
+    // an unresolved launch (a stamp moved, no receipt yet) may own a child nobody can see: no exit proof
+    if (!s.mine.length && !s.unproven.length) return awaiting.length === 0
     if (Date.now() - t > ms) return false
     for (const pid of s.mine) {
       try {
@@ -147,16 +155,16 @@ let awaiting: { pass: string; old: Set<string> }[] = []
  * stamp proves a launch. Wait for that pass's receipt (args end in wiki_<pass>); if it never comes, stop the
  * owned children and throw.
  */
-async function launchSeen(ms = 10_000) {
+async function launchSeen(ms = hookMs) {
   for (const t = Date.now(); awaiting.length; await sleep(20)) {
     scanReceipts()
     awaiting = awaiting.filter(
       w => ![...owned].some(([key, o]) => !w.old.has(key) && o.args.endsWith(`_wiki_${w.pass}`)),
     )
     if (awaiting.length && Date.now() - t > ms) {
-      const left = awaiting.splice(0)
-      if (!(await stopOwned())) throw new Error('an owned child did not exit: fixture kept')
-      throw new Error(`a launched pass never registered: ${left.map(w => w.pass)}`)
+      // the intents stay: stopOwned gives no exit proof while one is unresolved, so the fixture is kept
+      await stopOwned()
+      throw new Error(`a launched pass never registered: ${awaiting.map(w => w.pass)}; fixture kept`)
     }
   }
 }
@@ -544,7 +552,9 @@ test('AC10 control: a child that starts after 3 s is waited for; assertions foll
   setup()
   const lock = join(home, 'wiki.lock')
   const child = own(
-    Bun.spawn(['sh', '-c', `sleep 3; mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 1; rm -r '${lock}'`]),
+    script(
+      `setTimeout(() => { ${takeLock(lock)}; setTimeout(() => fs.rmSync(${q(lock)}, { recursive: true }), 1000) }, 3000)`,
+    ),
   )
   await passEnded()
   expect(alive(child.pid)).toBe(false)
@@ -556,7 +566,7 @@ test('AC10 control: a child that starts after the start deadline is stopped and 
   const lock = join(home, 'wiki.lock')
   const marker = join(dir, 'late-ran')
   const child = own(
-    Bun.spawn(['sh', '-c', `sleep 1; touch '${marker}'; mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 60`]),
+    script(`setTimeout(() => { fs.writeFileSync(${q(marker)}, ''); ${takeLock(lock)} }, 1000); ${stay}`),
   )
   await expect(passEnded(300, 300)).rejects.toThrow('never took')
   expect(await child.exited).not.toBe(0) // killed: it cannot use the fixture later
@@ -580,7 +590,7 @@ test('AC10 control: a child that removes its lock but stays alive is stopped by 
   setup()
   const lock = join(home, 'wiki.lock')
   const child = own(
-    Bun.spawn(['sh', '-c', `mkdir '${lock}'; echo $$ > '${lock}/pid'; sleep 1; rm -r '${lock}'; sleep 60`]),
+    script(`${takeLock(lock)}; setTimeout(() => fs.rmSync(${q(lock)}, { recursive: true }), 1000); ${stay}`),
   )
   await expect(passEnded(5_000, 4_000)).rejects.toThrow('did not end')
   expect(existsSync(lock)).toBe(false)
@@ -735,20 +745,23 @@ test('AC10 supported hosts: the ps identity gives the same exit contract without
 }, 30_000)
 
 // ---- AC10 assertion cleanup: a nested `bun test` runs only the fixture test below, with this file's real afterEach ----
+// The outer test starts and owns the child (handle) and passes its pid down; the nested test only registers a receipt.
 const nestedRow = process.env.FACTORY_WIKI_NESTED
 test.skipIf(!nestedRow)('AC10 nested fixture (started by the AC10 assertion cleanup test)', async () => {
   setup(false)
-  hookMs = settleMs = 300
-  const child = Bun.spawn(['sleep', '60'])
-  register(child.pid)
-  if (nestedRow === 'clean') own(child)
-  else identityOf = () => undefined // no exit proof is possible for this receipt
-  await sleep(200)
-  writeFileSync(process.env.FACTORY_WIKI_NESTED_OUT!, JSON.stringify({ pid: child.pid, dir }))
+  hookMs = settleMs = 1_000
+  if (nestedRow === 'unseen')
+    awaiting.push({ pass: 'unseen', old: new Set() }) // a launch that no receipt ever names
+  else {
+    register(Number(process.env.FACTORY_WIKI_NESTED_PID))
+    if (nestedRow === 'denied') identityOf = () => undefined // no exit proof is possible for this receipt
+  }
+  writeFileSync(process.env.FACTORY_WIKI_NESTED_OUT!, JSON.stringify({ dir }))
   expect(1).toBe(2) // the intentional assertion error
 })
 
-async function nestedRun(row: 'clean' | 'denied') {
+/** the outer test owns `child`; the nested run only sees its pid. The caller stops and awaits the child. */
+async function nestedRun(row: 'clean' | 'denied' | 'unseen', child: ReturnType<typeof Bun.spawn>) {
   const out = join(dir, `nested-${row}.json`)
   mkdirSync(dir, { recursive: true })
   const p = own(
@@ -763,39 +776,81 @@ async function nestedRun(row: 'clean' | 'denied') {
         'AC10 nested fixture',
       ],
       {
-        env: { ...process.env, FACTORY_WIKI_NESTED: row, FACTORY_WIKI_NESTED_OUT: out },
+        env: {
+          ...process.env,
+          FACTORY_WIKI_NESTED: row,
+          FACTORY_WIKI_NESTED_OUT: out,
+          FACTORY_WIKI_NESTED_PID: String(child.pid),
+        },
         stdout: 'ignore',
         stderr: 'ignore',
       },
     ),
   )
   const exit = await p.exited
-  return { exit, ...(JSON.parse(readFileSync(out, 'utf8')) as { pid: number; dir: string }) }
+  return { exit, ...(JSON.parse(readFileSync(out, 'utf8')) as { dir: string }) }
 }
 
 test('AC10 assertion cleanup: after a failed assertion the hook stops the child, then removes the fixture', async () => {
-  const r = await nestedRun('clean')
+  const child = own(Bun.spawn(['sleep', '60']))
+  const r = await nestedRun('clean', child)
   expect(r.exit).not.toBe(0)
-  expect(alive(r.pid)).toBe(false)
+  expect(await Promise.race([child.exited, sleep(5_000).then(() => 'alive')])).not.toBe('alive')
   expect(existsSync(r.dir)).toBe(false)
 }, 60_000)
 
 test('AC10 assertion cleanup: without exit proof the hook fails and the fixture stays', async () => {
-  let r: { exit: number; pid: number; dir: string } | undefined
+  const child = own(Bun.spawn(['sleep', '60']))
+  let dirOf = ''
   try {
-    r = await nestedRun('denied')
+    const r = await nestedRun('denied', child)
+    dirOf = r.dir
     expect(r.exit).not.toBe(0)
-    expect(alive(r.pid)).toBe(true) // the hook could not prove exit, and it did not signal the pid
+    expect(alive(child.pid)).toBe(true) // the hook could not prove exit, and it did not signal the pid
     expect(existsSync(r.dir)).toBe(true)
   } finally {
-    if (r) {
-      process.kill(r.pid, 'SIGKILL')
-      for (let i = 0; i < 100 && alive(r.pid); i++) await sleep(50)
-      expect(alive(r.pid)).toBe(false)
-      rmSync(r.dir, { recursive: true, force: true })
-    }
+    child.kill(9) // the outer test owns the handle
+    await child.exited
+    expect(alive(child.pid)).toBe(false)
+    if (dirOf) rmSync(dirOf, { recursive: true, force: true })
   }
 }, 60_000)
+
+test('AC10 assertion cleanup: an unseen launch keeps the fixture after the deadline', async () => {
+  const child = own(Bun.spawn(['sleep', '60'])) // unrelated: it must get no signal from the nested run
+  let dirOf = ''
+  try {
+    const r = await nestedRun('unseen', child)
+    dirOf = r.dir
+    expect(r.exit).not.toBe(0)
+    expect(alive(child.pid)).toBe(true)
+    expect(existsSync(r.dir)).toBe(true)
+  } finally {
+    child.kill(9)
+    await child.exited
+    if (dirOf) rmSync(dirOf, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test('AC10 control: an unseen launch past its deadline stays unresolved and blocks exit proof', async () => {
+  awaiting.push({ pass: 'unseen', old: new Set() })
+  await expect(launchSeen(200)).rejects.toThrow('fixture kept')
+  expect(awaiting.length).toBe(1) // not cleared
+  expect(await stopOwned(200)).toBe(false)
+  awaiting = []
+  expect(await stopOwned(200)).toBe(true)
+})
+
+test('AC10 control: a malformed receipt stops stopOwned before it signals a direct handle', async () => {
+  const child = own(Bun.spawn(['sleep', '60']))
+  mkdirSync(receipts(), { recursive: true })
+  writeFileSync(join(receipts(), 'abc'), '')
+  await expect(stopOwned(200)).rejects.toThrow('bad receipt')
+  expect(alive(child.pid)).toBe(true)
+  rmSync(join(receipts(), 'abc'))
+  expect(await stopOwned()).toBe(true)
+  expect(alive(child.pid)).toBe(false)
+})
 
 test('AC10 control: a live pid with an unreadable /proc record counts as alive', () => {
   expect(
