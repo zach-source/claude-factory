@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { isStale, readLease } from './lease'
 
 type Env = Record<string, string | undefined>
 export type Req = { method: 'GET' | 'POST'; path: string; body?: Record<string, unknown> }
@@ -204,4 +205,45 @@ export async function main(
   if (!res.ok) return refuse(`factory server: ${res.status} ${text.slice(0, 500)}`)
   io.out(text.endsWith('\n') ? text : `${text}\n`)
   return 0
+}
+
+export type CoreInfo = {
+  url: string
+  token: string
+  port: number
+  pid: number
+  holder: string
+  catalogVersion: number | undefined
+}
+
+/**
+ * The running local core of `home` (spec 008 local-core.md), or null. It makes no network call.
+ * A core counts as running when core.json names a live pid, the manager lease belongs to the same holder
+ * with kind core and is not stale, and core.token holds a good token.
+ */
+export function findCore(home: string): CoreInfo | null {
+  try {
+    const c = JSON.parse(readFileSync(join(home, 'core.json'), 'utf8')) as Record<string, unknown>
+    const { port, pid, holder } = c
+    if (!Number.isInteger(port) || !Number.isInteger(pid) || typeof holder !== 'string') return null
+    try {
+      process.kill(pid as number, 0)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EPERM') return null
+    }
+    const l = readLease(home)
+    if (!l || l.holder !== holder || l.kind !== 'core' || isStale(l, Date.now())) return null
+    const m = /^([0-9a-f]{64})\n?$/.exec(readFileSync(join(home, 'core.token'), 'utf8'))
+    if (!m) return null
+    return {
+      url: `http://127.0.0.1:${port}`,
+      token: m[1]!,
+      port: port as number,
+      pid: pid as number,
+      holder,
+      catalogVersion: Number.isInteger(c.catalogVersion) ? (c.catalogVersion as number) : undefined,
+    }
+  } catch {
+    return null
+  }
 }

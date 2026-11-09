@@ -51,6 +51,15 @@ test('asker: a named holder, else the pane, else the parent pid', () => {
   expect(asker({}, 7, 1)).toEqual({ holder: 'ppid:7', kind: 'cli', pid: 7, at: 1 })
 })
 
+test('asker: FACTORY_LEASE_PID gives the pid of a named holder only when it is a positive integer', () => {
+  const ask = (pid: string, holder = 'core:9') =>
+    asker({ FACTORY_LEASE_HOLDER: holder, FACTORY_LEASE_KIND: 'core', FACTORY_LEASE_PID: pid }, 7, 1)
+  expect(ask('123')).toEqual({ holder: 'core:9', kind: 'core', pid: 123, at: 1 })
+  for (const bad of ['0', '-1', '1x', '', '12345678901', '01'])
+    expect(ask(bad)).toEqual({ holder: 'core:9', kind: 'core', at: 1 })
+  expect(asker({ FACTORY_LEASE_PID: '123' }, 7, 1)).toEqual({ holder: 'ppid:7', kind: 'cli', pid: 7, at: 1 })
+})
+
 const factory = (args: string[], env: Record<string, string> = {}) => {
   const p = Bun.spawnSync([CLI, ...args], {
     env: {

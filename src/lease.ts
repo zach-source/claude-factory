@@ -60,8 +60,8 @@ export function take(home: string, want: Lease, now = Date.now()) {
 export const release = (home: string) => rmSync(leaseFile(home), { force: true })
 
 /**
- * Who asks for the lease. FACTORY_LEASE_HOLDER and FACTORY_LEASE_KIND name a holder.
- * The Herdr mod sets them.
+ * Who asks for the lease. FACTORY_LEASE_HOLDER and FACTORY_LEASE_KIND name a holder, and FACTORY_LEASE_PID its pid.
+ * The Herdr mod and the core set them.
  *
  * With no name, the holder is the herdr pane, else the parent process.
  * All ticks of the Claude mod come from one claude process, so they share one holder.
@@ -69,7 +69,16 @@ export const release = (home: string) => rmSync(leaseFile(home), { force: true }
  */
 export function asker(env: Record<string, string | undefined>, ppid: number, now = Date.now()): Lease {
   const kind = env.FACTORY_LEASE_KIND || (env.HERDR_PANE_ID ? 'claude' : 'cli')
-  if (env.FACTORY_LEASE_HOLDER) return { holder: env.FACTORY_LEASE_HOLDER, kind, at: now }
+  if (env.FACTORY_LEASE_HOLDER) {
+    // the core sets FACTORY_LEASE_PID: a lease that its step child renews goes stale when the core dies
+    const p = env.FACTORY_LEASE_PID
+    return {
+      holder: env.FACTORY_LEASE_HOLDER,
+      kind,
+      ...(p && /^[1-9]\d{0,9}$/.test(p) && { pid: Number(p) }),
+      at: now,
+    }
+  }
   if (env.HERDR_PANE_ID) return { holder: `pane:${env.HERDR_PANE_ID}`, kind, at: now }
   return { holder: `ppid:${ppid}`, kind, pid: ppid, at: now }
 }
