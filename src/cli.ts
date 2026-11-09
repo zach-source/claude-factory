@@ -157,7 +157,7 @@ import {
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
 import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
 import { check } from './core/guards'
-import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
+import { REPAIR_CAP, closableParents, conflictProbes, heldBeads, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import { GAPS_FILE, parity } from './parity'
@@ -4848,7 +4848,16 @@ export const factoryLabelName = (run: Run, def: Factory) => {
 }
 
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
-export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
+export function track(
+  run: Run,
+  def: Factory,
+  value: unknown,
+  c: Ctx,
+  t: Track,
+  now: number,
+  // ponytail: with no PR list here, any run of a parent holds it; the repair pass closes it later
+  runBeads: () => Set<string> = () => new Set(runBeadsOf(run.repo).values()),
+) {
   const b = beads(run.repo, actorOf(run.id))
   const id = run.bead!
   for (const e of c.log.slice(t.mirrored)) {
@@ -4930,7 +4939,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
-    else closeParents(b, run.repo, id, `run ${run.id}`)
+    else closeParents(b, run.repo, id, `run ${run.id}`, undefined, runBeads())
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
@@ -10416,9 +10425,10 @@ export function closeParents(
   id: string,
   by: string,
   closed = new Set([id]),
+  held = new Set<string>(),
 ) {
   try {
-    for (const p of closableParents(b.every(), closed, id)) {
+    for (const p of closableParents(b.every(), closed, id, held)) {
       if (!b.close(p, 'every child is closed')) return
       closed.add(p)
       b.comment(p, `${by} closed ${id}; every child of this bead is closed, so the factory closed it`)
@@ -10460,7 +10470,9 @@ async function repairPass() {
           const res = path ? await spawnGh(['api', path], { cwd: rig.repo, timeout: 30_000 }) : null
           p.mergeable = res?.code === 0 ? parseGithubView(res.out)?.mergeable : undefined
         }
-      const todo = repairs(rig.name, every, prs, live, Date.now()).slice(0, REPAIR_CAP)
+      // ponytail: rigPrs reads the newest 200 PRs, so an older open PR holds nothing. Upgrade: a separate open-only list.
+      const held = heldBeads(prs, runBeadsOf(rig.repo))
+      const todo = repairs(rig.name, every, prs, live, Date.now(), held).slice(0, REPAIR_CAP)
       const closed = new Set<string>()
       for (const r of todo) {
         const done =
@@ -10481,7 +10493,7 @@ async function repairPass() {
         console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
         if (r.kind === 'close') {
           closed.add(r.id)
-          closeParents(b, rig.repo, r.id, 'the repair pass', closed)
+          closeParents(b, rig.repo, r.id, 'the repair pass', closed, held)
         }
       }
     } catch (err) {
@@ -10794,6 +10806,22 @@ function axSweep() {
   }
   writeJson(join(HOME, 'ax-sweep.json'), errors)
   if (errors.length) log(errors.map(e => e.error).join('; '))
+}
+
+/**
+ * Run id -> bead for the runs of `repo` that have a bead. A run with no readable state is left out.
+ * ponytail: it reads every started run's state on each call. Upgrade: one read for each tick.
+ */
+export function runBeadsOf(repo: string, ids = startedRunIds(), read: typeof current = current) {
+  const out = new Map<string, string>()
+  for (const id of ids)
+    try {
+      const { run } = read(id)
+      if (run.repo === repo && run.bead) out.set(id, run.bead)
+    } catch {
+      // no readable state
+    }
+  return out
 }
 
 /** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
