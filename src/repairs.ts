@@ -80,7 +80,14 @@ export function conflictProbes(every: Bead[], prs: PrFact[], live: Set<string>):
  * closed unmerged, a conflicting queued ship PR. A stale claim goes first because bd refuses to close a bead another actor holds:
  * the next pass closes it.
  */
-export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<string>, now: number): Repair[] {
+export function repairs(
+  rig: string,
+  every: Bead[],
+  prs: PrFact[],
+  live: Set<string>,
+  now: number,
+  held: Set<string> = new Set(),
+): Repair[] {
   const doneEpics = new Set(
     findings(rig, undefined, every, live, now)
       .filter(f => f.kind === 'epic-done-open')
@@ -111,7 +118,8 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
       out.push({ kind: 'release', id: b.id, reason: stale })
       continue
     }
-    const reason = closeReason(b, prs) ?? (doneEpics.has(b.id) ? 'every child is closed' : undefined)
+    const reason =
+      closeReason(b, prs) ?? (doneEpics.has(b.id) && !held.has(b.id) ? 'every child is closed' : undefined)
     if (reason) {
       out.push({ kind: 'close', id: b.id, reason })
       continue
@@ -131,6 +139,18 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
   return out
 }
 
+/** the beads that own a run with an OPEN pull request from `factory/<run id>`. `runBead` maps run id to bead. */
+export function heldBeads(prs: PrFact[], runBead: Map<string, string>): Set<string> {
+  const out = new Set<string>()
+  for (const p of prs) {
+    const run =
+      p.state === 'OPEN' && p.headRefName?.startsWith('factory/') ? p.headRefName.slice(8) : undefined
+    const bead = run ? runBead.get(run) : undefined
+    if (bead) out.add(bead)
+  }
+  return out
+}
+
 /**
  * Find the ancestors of `id` to close after the factory closes `id`. Nearest first.
  * `closed` holds the ids that the factory closed in this pass. It wins over a stale `status`.
@@ -138,14 +158,19 @@ export function repairs(rig: string, every: Bead[], prs: PrFact[], live: Set<str
  * A parent with an assignee also stays open, because bd refuses to close it.
  * The walk stops at the first parent that stays open.
  */
-export function closableParents(every: Bead[], closed: Set<string>, id: string): string[] {
+export function closableParents(
+  every: Bead[],
+  closed: Set<string>,
+  id: string,
+  held: Set<string> = new Set(),
+): string[] {
   const done = new Set(closed)
   const out: string[] = []
   for (let cur = id; ;) {
     const pid = parentOf(every.find(b => b.id === cur) ?? { id: cur, title: '', status: 'open' })
     const p = pid ? every.find(b => b.id === pid) : undefined
     if (!p || done.has(p.id) || p.status === 'closed' || p.status === 'deferred') return out
-    if (p.labels?.includes(SHIP) || p.assignee) return out
+    if (p.labels?.includes(SHIP) || p.assignee || held.has(p.id)) return out
     if (every.some(b => parentOf(b) === p.id && b.status !== 'closed' && !done.has(b.id))) return out
     done.add(p.id)
     out.push(p.id)

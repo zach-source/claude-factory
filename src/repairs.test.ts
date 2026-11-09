@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Bead } from './beads'
-import { closableParents, conflictProbes, repairs, type PrFact } from './repairs'
+import { closableParents, conflictProbes, heldBeads, repairs, type PrFact } from './repairs'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: id, status: 'open', ...extra })
 const pr = (number: number, state: string, extra: Partial<PrFact> = {}): PrFact => ({
@@ -250,5 +250,43 @@ describe('closableParents', () => {
   test('an open child of the grandparent leaves only the parent', () => {
     const every = [bead('g'), bead('g.1'), bead('g.2'), bead('g.1.1')]
     expect(closableParents(every, closed('g.1.1'), 'g.1.1')).toEqual(['g.1'])
+  })
+})
+
+describe('held beads', () => {
+  const open = (head: string, state = 'OPEN') => pr(1, state, { headRefName: head })
+  const map = new Map([['run-1', 'bd-1']])
+  test('closableParents stops at a held parent', () => {
+    const every = [bead('p'), bead('p.1')]
+    expect(closableParents(every, new Set(['p.1']), 'p.1', new Set(['p']))).toEqual([])
+    expect(closableParents(every, new Set(['p.1']), 'p.1', new Set())).toEqual(['p'])
+    const tree = [bead('g'), bead('g.1'), bead('g.1.1')]
+    expect(closableParents(tree, new Set(['g.1.1']), 'g.1.1', new Set(['g']))).toEqual(['g.1'])
+    expect(closableParents(tree, new Set(['g.1.1']), 'g.1.1', new Set(['g.1']))).toEqual([])
+    expect(closableParents(tree, new Set(['g.1.1']), 'g.1.1')).toEqual(['g.1', 'g'])
+  })
+  test('heldBeads: only an OPEN factory/<run> PR of a known run holds', () => {
+    expect([...heldBeads([open('factory/run-1')], map)]).toEqual(['bd-1'])
+    for (const p of [
+      open('factory/run-1', 'MERGED'),
+      open('factory/run-1', 'CLOSED'),
+      open('factory/run-1-x'),
+      open('feat/run-1'),
+      open('factory/run-9'),
+      pr(2, 'OPEN'),
+    ])
+      expect(heldBeads([p], map).size).toBe(0)
+  })
+  test('repairs does not close a held epic as every child is closed', () => {
+    const all = [bead('e'), bead('e.1', { parent: 'e', status: 'closed' })]
+    expect(repairs('rig', all, [], new Set(), Date.now(), new Set(['e']))).toEqual([])
+    expect(repairs('rig', all, [], new Set(), Date.now(), new Set())).toEqual([
+      { kind: 'close', id: 'e', reason: 'every child is closed' },
+    ])
+  })
+  test('repairs still closes a held bead on merged evidence', () => {
+    const b = bead('a-1', { labels: ['ship'], metadata: { ship_pr: pr(5, 'MERGED').url } })
+    const out = repairs('rig', [b], [pr(5, 'MERGED')], new Set(), Date.now(), new Set(['a-1']))
+    expect(out.map(r => r.id)).toEqual(['a-1'])
   })
 })

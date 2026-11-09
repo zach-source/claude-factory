@@ -39,11 +39,11 @@ const io = (over: Partial<OrphanIo> = {}) => {
     label: [] as [string, string[]][],
   }
   const o: OrphanIo = {
-    beadStatus: async () => 'open',
+    bead: async () => ({ status: 'open' }),
     checks: async () => (calls.checks++, green),
     fork: async (p, src, note) => (calls.fork.push([p.url, src, note]), `fork-${p.number}`),
     record: p => void calls.record.push(p.url),
-    view: async () => ({ mergeable: 'MERGEABLE', changes: false }),
+    view: async () => ({ mergeable: 'MERGEABLE', changes: false, approved: false }),
     label: async (p, labels) => void calls.label.push([p.url, labels]),
     close: async (p, body) => void calls.close.push([p.url, body]),
     ...over,
@@ -71,7 +71,7 @@ const rows: [string, OrphanPr, Partial<OrphanCtx>, Partial<OrphanIo>][] = [
     { runs: new Map([['run-1', { bead: 'bd-1', decided: true }]]) },
     {},
   ],
-  ['bd show null', pr(), {}, { beadStatus: async () => null }],
+  ['bd show null', pr(), {}, { bead: async () => null }],
   ['CI pending', pr(), {}, { checks: async () => ({ pass: 1, fail: 0, pending: 1 }) }],
   ['checks call null', pr(), {}, { checks: async () => null }],
   ['not a draft', pr(1, { isDraft: false }), {}, {}],
@@ -101,7 +101,7 @@ test('AC2: zero checks, and a run with no bead, are allowed', async () => {
 
 test('a run with no bead makes no bd call', async () => {
   const { o } = io({
-    beadStatus: async () => {
+    bead: async () => {
       throw new Error('bd called')
     },
   })
@@ -229,7 +229,7 @@ const red = async () => ({ pass: 1, fail: 1, pending: 0 })
 
 for (const status of ['closed', 'deferred'])
   test(`e2xe: a ${status} bead closes the PR with a comment that names the run and the bead state`, async () => {
-    const { res, calls } = await sweep([pr()], {}, { beadStatus: async () => status })
+    const { res, calls } = await sweep([pr()], {}, { bead: async () => ({ status }) })
     expect(res.closed).toEqual([pr().url])
     expect(calls.close).toHaveLength(1)
     expect(calls.close[0]![1]).toContain('run-1')
@@ -240,7 +240,7 @@ for (const status of ['closed', 'deferred'])
 
 test('e2xe: a closed bead closes a PR that was forked at this head before', async () => {
   const records = { [pr().url]: { sha: SHA, run: 'fork-1', from: 'run-1', at: '' } }
-  const { res } = await sweep([pr()], { records }, { beadStatus: async () => 'closed' })
+  const { res } = await sweep([pr()], { records }, { bead: async () => ({ status: 'closed' }) })
   expect(res.closed).toEqual([pr().url])
 })
 
@@ -248,7 +248,7 @@ test('e2xe: an open bead and a conflicting PR get the conflict label', async () 
   const { res, calls } = await sweep(
     [pr()],
     {},
-    { view: async () => ({ mergeable: 'CONFLICTING', changes: false }) },
+    { view: async () => ({ mergeable: 'CONFLICTING', changes: false, approved: false }) },
   )
   expect(res.labeled).toEqual([{ url: pr().url, labels: ['conflict'] }])
   expect(calls.label).toEqual([[pr().url, ['conflict']]])
@@ -262,12 +262,16 @@ test('e2xe: an open bead and red checks get the rework label', async () => {
 })
 
 test('e2xe: changes asked by a review get the rework label, and red checks plus a conflict get both', async () => {
-  const asked = await sweep([pr()], {}, { view: async () => ({ mergeable: 'MERGEABLE', changes: true }) })
+  const asked = await sweep(
+    [pr()],
+    {},
+    { view: async () => ({ mergeable: 'MERGEABLE', changes: true, approved: false }) },
+  )
   expect(asked.res.labeled[0]!.labels).toEqual(['rework'])
   const both = await sweep(
     [pr()],
     {},
-    { checks: red, view: async () => ({ mergeable: 'CONFLICTING', changes: false }) },
+    { checks: red, view: async () => ({ mergeable: 'CONFLICTING', changes: false, approved: false }) },
   )
   expect(both.res.labeled[0]!.labels).toEqual(['conflict', 'rework'])
 })
@@ -312,7 +316,7 @@ test('e2xe: a label is recorded at the head, so the next pass leaves the PR alon
 })
 
 test('e2xe: a PR on a non-factory branch or from a fork is not closed or labeled', async () => {
-  const closed = { beadStatus: async () => 'closed' }
+  const closed = { bead: async () => ({ status: 'closed' }) }
   for (const p of [pr(1, { headRefName: 'feature/x' }), pr(1, { isCrossRepository: true })]) {
     const { res, calls } = await sweep([p], {}, closed)
     expect(res.closed).toEqual([])
@@ -324,7 +328,7 @@ test('e2xe: a PR on a non-factory branch or from a fork is not closed or labeled
 
 test('e2xe: close and label actions share one cap; forks keep their own', async () => {
   const prs = [1, 2, 3, 4].map(n => pr(n))
-  const { res, calls } = await sweep(prs, {}, { beadStatus: async () => 'closed' }, ORPHAN_CAP, 3)
+  const { res, calls } = await sweep(prs, {}, { bead: async () => ({ status: 'closed' }) }, ORPHAN_CAP, 3)
   expect(res.closed).toHaveLength(3)
   expect(calls.close).toHaveLength(3)
   const mix = await sweep(prs, {}, { checks: red }, ORPHAN_CAP, 1)
@@ -337,7 +341,7 @@ test('e2xe: a failed close, label or view call skips the PR and the sweep goes o
   const boom = async () => {
     throw new Error('boom')
   }
-  const c = await sweep([pr(1), pr(2)], {}, { beadStatus: async () => 'closed', close: boom })
+  const c = await sweep([pr(1), pr(2)], {}, { bead: async () => ({ status: 'closed' }), close: boom })
   expect(c.res.closed).toEqual([])
   expect(c.res.skipped.map(s => s.why)).toEqual(['close failed: boom', 'close failed: boom'])
   const l = await sweep([pr()], {}, { checks: red, label: boom })
@@ -348,9 +352,66 @@ test('e2xe: a failed close, label or view call skips the PR and the sweep goes o
 
 test('e2xe: a live owner or live bead stops the close, even when the PR has a record at this head', async () => {
   const records = { [pr().url]: { sha: SHA, run: 'labeled', from: 'run-1', at: '' } }
-  const closed = { beadStatus: async () => 'closed' }
+  const closed = { bead: async () => ({ status: 'closed' }) }
   const owned = await sweep([pr()], { records, owner: () => 'run-9' }, closed)
   expect(owned.res.closed).toEqual([])
   const held = await sweep([pr()], { records, liveBeads: new Set(['bd-1']) }, closed)
   expect(held.res.closed).toEqual([])
+})
+
+const gone = { status: 'closed', reason: 'every child is closed' }
+const approvedView = async () => ({ mergeable: 'MERGEABLE', changes: false, approved: true })
+
+test('i1qiv: a bead the repair pass closed keeps its PR open and gets the owner label', async () => {
+  const { res, calls } = await sweep([pr()], {}, { bead: async () => gone })
+  expect(calls.close).toEqual([])
+  expect(calls.label).toEqual([[pr().url, ['owner']]])
+  expect(res.closed).toEqual([])
+  expect(res.skipped).toEqual([{ url: pr().url, why: 'held for the person: every child is closed' }])
+})
+
+test('i1qiv: a PR that already has the owner label gets no second label call', async () => {
+  const p = pr(1, { labels: [{ name: 'owner' }] })
+  const { res, calls } = await sweep([p], {}, { bead: async () => gone })
+  expect(calls.close).toEqual([])
+  expect(calls.label).toEqual([])
+  expect(res.skipped).toEqual([{ url: p.url, why: 'held for the person: every child is closed' }])
+})
+
+for (const status of ['closed', 'deferred'])
+  test(`i1qiv: a ${status} bead with an approved PR keeps it open and labels it owner`, async () => {
+    const { res, calls } = await sweep([pr()], {}, { bead: async () => ({ status }), view: approvedView })
+    expect(calls.close).toEqual([])
+    expect(calls.label).toEqual([[pr().url, ['owner']]])
+    expect(res.skipped).toEqual([{ url: pr().url, why: 'held for the person: approved' }])
+  })
+
+test('i1qiv: a null or throwing view keeps the PR open', async () => {
+  for (const view of [
+    async () => null,
+    async () => {
+      throw new Error('boom')
+    },
+  ]) {
+    const { res, calls } = await sweep([pr()], {}, { bead: async () => ({ status: 'closed' }), view })
+    expect(calls.close).toEqual([])
+    expect(calls.label).toEqual([])
+    expect(res.skipped).toEqual([{ url: pr().url, why: 'view unreadable' }])
+  }
+})
+
+test('i1qiv: the view read counts toward the lookup cap, and the PR past it stays open', async () => {
+  const prs = Array.from({ length: ORPHAN_CHECKS_MAX + 1 }, (_, n) => pr(n + 1))
+  const ids = prs.map((_, n) => n + 1)
+  const x = io({ bead: async () => ({ status: 'closed' }) })
+  const res = await orphanSweep(prs, ctx({}, ids), x.o, ORPHAN_CAP, 1000)
+  expect(res.closed).toHaveLength(ORPHAN_CHECKS_MAX)
+  expect(res.skipped).toEqual([{ url: prs.at(-1)!.url, why: 'lookup cap' }])
+})
+
+test('i1qiv: a merged-evidence reason and an empty reason still close the PR', async () => {
+  for (const reason of ['shipped: https://github.com/acme/widget/pull/9 is merged', undefined]) {
+    const { calls } = await sweep([pr()], {}, { bead: async () => ({ status: 'closed', reason }) })
+    expect(calls.close).toHaveLength(1)
+  }
 })
