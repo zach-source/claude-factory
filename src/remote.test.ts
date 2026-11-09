@@ -4466,3 +4466,102 @@ test('a tick never spawns an outbox line over 100 KiB: it marks it seen, logs it
   expect((called().match(/worker prompt/g) ?? []).length).toBe(promptsBefore)
   rmSync(join(home, 'runs', 'ramzl'), { recursive: true })
 }, 60_000)
+
+/** a run at a, stopped in the AX manager VM: its old task is gone and resume.json names it (claude-factory-d289.13) */
+function stoppedInVm(id: string, broker: string) {
+  const sh = (cwd: string, ...a: string[]) => {
+    const p = Bun.spawnSync(a, { cwd })
+    if (p.exitCode !== 0) throw new Error(`${a.join(' ')}: ${p.stderr}`)
+  }
+  const origin = join(dir, id, 'github.com/acme/widget.git')
+  const worktree = join(dir, id, 'wt')
+  mkdirSync(join(dir, id), { recursive: true })
+  sh(dir, 'git', 'init', '-q', '--bare', origin)
+  sh(dir, 'git', 'clone', '-q', origin, worktree)
+  writeFileSync(join(worktree, 'a'), 'a\n')
+  sh(worktree, 'git', 'add', '.')
+  sh(worktree, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+  sh(worktree, 'git', 'push', '-q', 'origin', `HEAD:refs/heads/factory/${id}`)
+  sh(dir, 'git', 'clone', '-q', origin, join(dir, id, 'repos', 'x'))
+  const seq = launched(id, true, 'f-old-1')
+  const runDir = join(home, 'runs', id)
+  const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
+  writeFileSync(join(runDir, 'run.json'), JSON.stringify({ ...run, repo: worktree, worktree }))
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'x', repo: worktree, factory: 'one', runner: 'ax' }]),
+  )
+  writeFileSync(join(home, 'resume.json'), JSON.stringify({ [id]: seq }))
+  rmSync(join(home, 'launches.jsonl'), { force: true })
+  rmSync(calls, { force: true })
+  writeFileSync(
+    join(dir, 'ax'),
+    `#!/bin/sh
+echo "$*" >> ${calls}
+case "$*" in *"get task"*) echo 'getting task: rpc error: code = NotFound' >&2; exit 1 ;; esac
+`,
+  )
+  chmodSync(join(dir, 'ax'), 0o755)
+  const curl = join(dir, `${id}-curl`)
+  writeFileSync(
+    curl,
+    `#!/bin/sh
+echo "curl $*" >> ${calls}
+case "$*" in
+  *controller*) printf '${broker}' ;;
+  *PUT*) cat >/dev/null; printf 'created\\n200' ;;
+  *) printf 'CA\\n200' ;;
+esac
+`,
+  )
+  chmodSync(curl, 0o755)
+  // the manager VM's env: plaintext AX_SERVER, AX_ROUTER host:port, the broker, no context and no atespace
+  return {
+    FACTORY_IN_AX: '1',
+    FACTORY_AX_IMAGE: 'img',
+    FACTORY_AX_VAULT: 'factory',
+    AX_SERVER: 'ax-server.example.svc:8080',
+    AX_ROUTER: 'router.example.svc:80',
+    FACTORY_POLICY_BROKER: 'http://broker.example.svc:8080',
+    FACTORY_CURL: curl,
+    FACTORY_AX_CONTEXT: '',
+    FACTORY_AX_ATESPACE: '',
+    FACTORY_REPOS: join(dir, id, 'repos'),
+  }
+}
+const READY = JSON.stringify({
+  metadata: { generation: 1 },
+  spec: { replicas: 1 },
+  status: { observedGeneration: 1, readyReplicas: 1, availableReplicas: 1 },
+})
+
+test('a resume in the AX manager VM launches the worker task in atespace factory', () => {
+  const env = stoppedInVm('rs1', `${READY}\\n200`)
+  const out = factory(['tick'], env)
+  const row = JSON.parse(out.out).runs.find((r: { id: string }) => r.id === 'rs1')
+  expect(row.error).toBeNull()
+  expect(row.pane).toBe('ax://f-rs1-1')
+  expect(called()).toContain('-a factory apply -f -')
+  expect(called()).toContain('/policy/factory/f-rs1-1')
+  expect(JSON.parse(readFileSync(join(home, 'resume.json'), 'utf8'))).toEqual({})
+  expect(readFileSync(join(home, 'launches.jsonl'), 'utf8')).toContain('"resume":false')
+}, 90_000)
+
+test('a resume whose launch fails logs no launch, keeps the error on the run and shows it in factory status', () => {
+  // an old broker image has no /controller route: every launch failed and was retried with no trace
+  const env = stoppedInVm('rs2', 'not found\\n404')
+  for (let i = 0; i < 2; i++) factory(['tick'], env)
+  expect(existsSync(join(home, 'launches.jsonl'))).toBe(false)
+  expect(JSON.parse(readFileSync(join(home, 'resume.json'), 'utf8'))).toEqual({ rs2: 1 })
+  const status = factory(['status'], env).out
+  expect(status).toMatch(/error: \S+ AX executor unavailable/)
+  expect(status).toContain('broker GET /controller answered 404')
+  expect(factory(['status', 'rs2'], env).out).toContain('answered 404')
+  // the next good tick clears it
+  writeFileSync(
+    env.FACTORY_CURL,
+    readFileSync(env.FACTORY_CURL, 'utf8').replace("'not found\\n404'", `'${READY}\\n200'`),
+  )
+  factory(['tick'], env)
+  expect(factory(['status'], env).out).not.toMatch(/error: \S+ AX executor unavailable/)
+}, 90_000)

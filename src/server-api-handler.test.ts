@@ -28,6 +28,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     records: () => (log('records', []), []),
     refreshMerges: async recs => (log('refreshMerges', [recs]), []),
     managerUsage: since => (log('managerUsage', [typeof since]), []),
+    rigList: async print => (log('rigList', []), print('{"ok":1}')),
   }
   const make = () =>
     clientHandler({
@@ -68,6 +69,7 @@ describe('read routes', () => {
     ['/v1/prs', [p('prs')]],
     ['/v1/backlog', [p('backlog')]],
     ['/v1/decisions', [p('decisionsList')]],
+    ['/v1/rigs', [p('rigList')]],
     ['/v1/plan', [p('planShowText')]],
     ['/v1/runs/r1/brief', [p('gateBriefFacts', 'r1')]],
   ]
@@ -187,6 +189,7 @@ describe('refusals make zero calls', () => {
     ['Authorization empty', h => get(h, '/v1/prs', { authorization: '' }), 403],
     ['Authorization on an unknown path', h => get(h, '/nope', { authorization: 'x' }), 403],
     ['unknown path', h => get(h, '/v1/nope'), 404],
+    ['rigs with a query', h => get(h, '/v1/rigs?x=1'), 400],
     ['events not served', h => get(h, '/v1/events'), 404],
     ['rigs PUT', h => h(new Request('http://x/v1/rigs/a', { method: 'PUT', body: '{}' }), 'ip'), 404],
     ['rigs DELETE', h => h(new Request('http://x/v1/rigs/a', { method: 'DELETE' }), 'ip'), 404],

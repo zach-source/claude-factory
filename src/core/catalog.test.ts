@@ -145,9 +145,9 @@ describe('readQuery and readBody', () => {
 })
 
 describe('CATALOG', () => {
-  test('has 20 operations: 12 GET and 8 POST', () => {
-    expect(CATALOG.length).toBe(20)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(12)
+  test('has 24 operations: 16 GET and 8 POST', () => {
+    expect(CATALOG.length).toBe(24)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(16)
     expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(8)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
@@ -176,15 +176,19 @@ describe('CATALOG', () => {
       'gates.decide POST /v1/runs/:id/decide',
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
+      'mail.list GET /v1/mail',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
+      'rigs.list GET /v1/rigs',
+      'runners.show GET /v1/runners',
       'runs.abort POST /v1/runs/:id/abort',
       'runs.goto POST /v1/runs/:id/goto',
       'runs.mail POST /v1/runs/:id/mail',
       'runs.show GET /v1/runs/:id',
       'runs.start POST /v1/start',
       'runs.status GET /v1/status',
+      'steps.reports GET /v1/steps',
     ])
   })
 })
