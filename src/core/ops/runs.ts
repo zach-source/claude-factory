@@ -1,10 +1,20 @@
 // The run reads. The cli.ts helpers come through ctx.port.
 import { refuseWorker } from '../caller'
-import { inProc, type Ctx, type Input, type RunResult } from '../catalog'
+import { inProc, OpError, type Ctx, type Input, type RunResult } from '../catalog'
 
 /** `factory show [run]` */
 export async function show(ctx: Ctx, i: Input): Promise<RunResult> {
   return inProc(async print => print(JSON.stringify(await ctx.port.show(i.id as string | undefined))))
+}
+
+/** the last screen of the run's worker: the exact text, no added newline; a reason on err when there is none */
+export async function screen(ctx: Ctx, i: Input): Promise<RunResult> {
+  try {
+    return { code: 0, out: await ctx.port.screen(i.id as string), err: '' }
+  } catch (e) {
+    if (e instanceof OpError || !(e instanceof Error)) throw e
+    return { code: 1, out: '', err: `factory: ${e.message}\n` }
+  }
 }
 
 /** `factory status [run]` */

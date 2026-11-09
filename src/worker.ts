@@ -6,7 +6,9 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -37,6 +39,7 @@ import { rmSafe } from './home-guard'
 import * as memory from './memory'
 import { codexUsageOf, cursorUsageOf, grokUsageOf, sessionOf, validUsage, type Usage } from './metrics'
 import { cut } from './cut'
+import { SCREEN_MAX, tailUtf8 } from './screen'
 
 export const own = () => process.env.FACTORY_WORKER_DIR ?? '/workspace/w/.factory-worker'
 const repo = () => process.env.FACTORY_WORKER_REPO ?? '/workspace/w/repo'
@@ -1476,6 +1479,30 @@ function limitNow() {
     return (h === 'codex' ? codexLimit : h === 'grok' ? grokLimit : cursorLimit)(buf.toString(), mtimeMs)
   } catch {
     return null
+  }
+}
+
+/**
+ * `factory worker screen`: the last 64 KiB of the harness stream (own()/<h>.jsonl) as text. Only a regular file
+ * qualifies: a symlink, a directory or a FIFO throws before any read. Throws a reason, never file content.
+ */
+export function screen(): string {
+  const h = process.env.FACTORY_HARNESS ?? 'claude'
+  if (!['claude', 'codex', 'cursor', 'grok', 'pi'].includes(h)) throw new Error('unknown harness')
+  let fd: number
+  try {
+    fd = openSync(join(own(), `${h}.jsonl`), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch (e) {
+    throw new Error((e as NodeJS.ErrnoException).code === 'ELOOP' ? 'not a regular file' : 'no stream')
+  }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) throw new Error('not a regular file')
+    const buf = Buffer.alloc(Math.min(st.size, SCREEN_MAX))
+    const n = readSync(fd, buf, 0, buf.length, st.size - buf.length)
+    return tailUtf8(buf.subarray(0, n), st.size > SCREEN_MAX)
+  } finally {
+    closeSync(fd)
   }
 }
 
