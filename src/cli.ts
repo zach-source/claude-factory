@@ -4807,6 +4807,33 @@ const isAlive = (pid: number) => {
   }
 }
 
+/**
+ * `factory server backup`: one backup of the server home in its own process, so a long git call cannot stop the server's lease renewal.
+ * backup.lock keeps one backup per home. While it holds that lock, it removes the git lock files that a killed backup left.
+ */
+async function serverBackup() {
+  const b = server.serverBackupCfg(process.env, HOME)
+  if (!b) return console.log('backup off: no remote')
+  if ('off' in b) return console.log(b.off)
+  const own = hold('backup.lock')
+  if (!own) return console.log('backup skipped: another backup runs')
+  try {
+    const gitDir = join(b.cfg.ws, 'backup.git')
+    if (existsSync(gitDir))
+      for (const f of readdirSync(gitDir, { recursive: true, encoding: 'utf8' }))
+        if (f.endsWith('.lock') && (!f.includes('/') || f.startsWith('refs/')))
+          rmSync(join(gitDir, f), { force: true })
+    await managerhost.backupStep(
+      b.cfg,
+      existsSync(join(HOME, 'rigs.json')),
+      () => hold('tick.lock'),
+      console.log,
+    )
+  } finally {
+    own()
+  }
+}
+
 /** a lock held while its process lives, however long it takes: a pass over slow bd can take minutes */
 export function hold(name: string, rm?: Parameters<typeof rmSafe>[2], home = HOME): (() => void) | null {
   const dir = join(home, name)
@@ -12831,8 +12858,23 @@ if (import.meta.main && !outboxCmd)
         break
       case 'server':
         refuseWorker('server', true)
+        if (args[0] === 'backup') {
+          if (args.length > 1) fail('usage: factory server backup')
+          await serverBackup()
+          break
+        }
         lease()
-        server.main(args, HOME, () => tick(), corePort)
+        const backup = () => {
+          const p = Bun.spawn([CLI, 'server', 'backup'], {
+            stdout: 'inherit',
+            stderr: 'inherit',
+            env: kickEnv(process.env, HOME),
+          })
+          return p.exited.then(c => {
+            if (c !== 0) throw new Error(`exit ${c}`)
+          })
+        }
+        server.main(args, HOME, () => tick(), corePort, backup)
         break
       case 'cert': {
         refuseWorker('cert', true)

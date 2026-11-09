@@ -471,3 +471,84 @@ test('a962 AC3: the backup timer runs only for the lease holder, one run at a ti
   await sleep(200)
   expect(ne).toBe(at)
 }, 30_000)
+
+// a962 AC4: the `factory server backup` child
+async function child(home: string, extra: Record<string, string>, args: string[] = []) {
+  const p = Bun.spawn([CLI, 'server', 'backup', ...args], {
+    env: { ...env(home), ...extra },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  kids.push(p)
+  const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+  return { code: await p.exited, out, err }
+}
+const gitOf = (dir: string, ...a: string[]) => Bun.spawnSync(['git', '--git-dir', dir, ...a])
+function childSetup() {
+  const { ws, home } = wsHome()
+  mkdirSync(join(ws, 'bin'))
+  writeFileSync(join(ws, 'bin', 'gitleaks'), "#!/bin/sh\necho '[]'\n", { mode: 0o755 })
+  const ws2 = mkdtempSync(join(tmpdir(), 'server-remote-'))
+  dirs.push(ws2)
+  const bare = join(ws2, 'remote.git')
+  expect(Bun.spawnSync(['git', 'init', '-q', '--bare', bare]).exitCode).toBe(0)
+  writeFileSync(join(ws2, 'basic'), 'eHE6enE=\n')
+  const extra: Record<string, string> = {
+    FACTORY_SERVER_BACKUP_REMOTE: bare,
+    FACTORY_SERVER_BACKUP_AUTH_FILE: join(ws2, 'basic'),
+    PATH: `${join(ws, 'bin')}:${process.env.PATH}`,
+  }
+  const tip = () => gitOf(bare, 'rev-parse', 'server-home')
+  const files = () => gitOf(bare, 'ls-tree', '-r', '--name-only', 'server-home').stdout.toString().split('\n')
+  return { ws, home, bare, extra, tip, files }
+}
+
+test('a962 AC4: the child backs up the home, leaves the lease file out and removes stale git locks', async () => {
+  const s = childSetup()
+  writeFileSync(join(s.home, 'server-lease.json'), '{}')
+  writeFileSync(join(s.home, 'server-lease.json.x.tmp'), 'x')
+  const a = await child(s.home, s.extra)
+  expect(a.code).toBe(0)
+  expect(s.tip().exitCode).toBe(0)
+  expect(s.files()).toContain('home/rigs.json')
+  expect(s.files()).not.toContain('home/server-lease.json')
+  expect(s.files()).not.toContain('home/server-lease.json.x.tmp')
+  expect(a.out + a.err).not.toContain('eHE6enE=')
+  const before = s.tip().stdout.toString()
+  writeFileSync(join(s.home, 'note.txt'), 'x')
+  writeFileSync(join(s.ws, 'backup.git', 'index.lock'), '')
+  writeFileSync(join(s.ws, 'backup.git', 'mem.index.lock'), '')
+  const b = await child(s.home, s.extra)
+  expect(b.code).toBe(0)
+  expect(s.tip().stdout.toString()).not.toBe(before)
+  expect(s.files()).toContain('home/note.txt')
+}, 60_000)
+
+test('a962 AC4: the child skips when another backup holds backup.lock', async () => {
+  const s = childSetup()
+  mkdirSync(join(s.home, 'backup.lock'))
+  writeFileSync(join(s.home, 'backup.lock', 'pid'), String(process.pid))
+  const a = await child(s.home, s.extra)
+  expect(a.code).toBe(0)
+  expect(a.out).toContain('backup skipped: another backup runs')
+  expect(s.tip().exitCode).not.toBe(0)
+}, 30_000)
+
+test('a962 AC4: the child refuses a home that is not ready and goes off without a remote or on the manager branch', async () => {
+  const s = childSetup()
+  rmSync(join(s.home, 'rigs.json'))
+  const a = await child(s.home, s.extra)
+  expect(a.code).toBe(0)
+  expect(a.out).toContain('backup refused: home is not ready')
+  expect(s.tip().exitCode).not.toBe(0)
+  const { FACTORY_SERVER_BACKUP_REMOTE: _r, ...noRemote } = s.extra
+  const b = await child(s.home, noRemote)
+  expect(b).toMatchObject({ code: 0, out: 'backup off: no remote\n' })
+  const c = await child(s.home, { ...s.extra, FACTORY_SERVER_BACKUP_BRANCH: 'manager-home' })
+  expect(c).toMatchObject({ code: 0, out: 'backup off: bad branch\n' })
+  expect(existsSync(join(s.ws, 'backup.git'))).toBe(false)
+  expect(s.tip().exitCode).not.toBe(0)
+  const d = await child(s.home, s.extra, ['x'])
+  expect(d.code).toBe(1)
+  expect(d.err).toContain('usage: factory server backup')
+}, 30_000)
