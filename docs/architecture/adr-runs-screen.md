@@ -146,8 +146,39 @@ Use the normal soak deadline; this feature needs no new metrics or persistent lo
 
 Tasks 2 and 3 depend on task 1; task 3 also depends on task 2.
 Keep all three commits in one draft pull request.
-Three partial passes could not run the transport tests because the tool hook denied them.
-The next plan must resolve that barrier before it assigns more feature work.
+Four partial passes could not run the transport tests because the tool hook denied them.
+
+### Revised execution gate
+
+The plan station reproduced the same denial on 2026-11-09 at `a3bdba46`.
+The hook rejected this command before execution:
+
+```text
+bun test --timeout 30000 src/core/ops-cli.test.ts src/ax.test.ts
+```
+
+The stated reason concerns a home-directory delete or move, including scripts that do so.
+The command itself requests neither action. The plan does not establish which transitive input caused the denial.
+No alternate command form ran. Do not bypass the hook or change tests merely to evade it.
+
+The missed cause of the repeated rounds was the handoff rule: an external test barrier remained an implementation prerequisite.
+Another implementation pass cannot resolve that prerequisite through feature code.
+Park this run as blocked until the manager supplies a hook correction or an authorized test path.
+Do not report partial and send the same task through another implementation round.
+Do not change `.factory/` or the worker hook within this feature.
+
+After the manager resolves the barrier, run the exact command above before a ready handoff.
+It must reach the test runner. Record assertion failures separately from tool or environment failures.
+Keep existing test commits. Finish task `.2`; do not recreate its six test files.
+Provide `pkill` through the supported VM toolchain before the full worker suite.
+The previous ten `pkill` failures do not prove a feature defect.
+
+Keep the three existing tasks, their dependency order, and AC1 through AC6.
+Budget 30 minutes for the remaining test evidence, 60 minutes for transports, and 30 minutes for core integration.
+External environment repair is outside that 120-minute implementation budget.
+Do not split off AX: both transports share the absent port contract and the current test commits.
+A split would leave required checks red or require test removal without resolution of the barrier.
+Keep PR #746 as a draft until all feature checks pass and an authorized station approves it.
 
 ### Pre-change test evidence
 
