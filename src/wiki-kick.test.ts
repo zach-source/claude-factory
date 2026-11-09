@@ -26,7 +26,8 @@ let home = ''
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_NO_KICK, ...laptop } = process.env
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_NO_KICK, FACTORY_WIKI_REMOTE, ...laptop } =
+    process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_GC: '0', ...env },
   })
@@ -263,3 +264,20 @@ test('AC10 one wiki pass in each tick: no stamps at all gives the refresh stamp 
   expect(existsSync(stamp())).toBe(true)
   expect(existsSync(groomStampPath())).toBe(false)
 })
+
+test('AC10 an ambient wiki remote reaches no setup or tick child', async () => {
+  const seeded = 'https://example.invalid/acme/ambient.git'
+  process.env.FACTORY_WIKI_REMOTE = seeded
+  try {
+    setup()
+    factory(['tick'])
+    await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
+    await sleep(500)
+    expect(
+      Bun.spawnSync(['git', '-C', join(home, 'wiki'), 'config', '--get', 'remote.origin.url']).exitCode,
+    ).not.toBe(0)
+    expect(process.env.FACTORY_WIKI_REMOTE).toBe(seeded)
+  } finally {
+    delete process.env.FACTORY_WIKI_REMOTE
+  }
+}, 30_000)

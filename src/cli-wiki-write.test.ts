@@ -79,28 +79,25 @@ done
 `
   fake('agent', agent)
   fake('codex', agent)
-  const env = { ...process.env, FACTORY_HOME: home }
-  expect(
-    Bun.spawnSync([CLI, 'wiki', 'init'], { env: { ...env, FACTORY_NO_KICK: '1', FACTORY_SELF_UPDATE: '0' } })
-      .exitCode,
-  ).toBe(0)
+  expect(Bun.spawnSync([CLI, 'wiki', 'init'], { env: childEnv() }).exitCode).toBe(0)
   return bin
 }
 
-const factory = (args: string[], env: Record<string, string> = {}) => {
+/** the one child environment, for setup and every command: no ambient remote or routing, fixture tools first */
+const childEnv = (env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_WIKI_REMOTE, ...laptop } = process.env
-  const p = Bun.spawnSync([CLI, ...args], {
-    env: {
-      ...laptop,
-      FACTORY_HOME: home,
-      PATH: `${join(dir, `bin${n}`)}:${laptop.PATH}`,
-      FACTORY_SELF_UPDATE: '0',
-      FACTORY_NO_KICK: '1',
-      FACTORY_CLAUDE: join(dir, `bin${n}`, 'agent'),
-      ...env,
-    },
-    timeout: 50_000,
-  })
+  return {
+    ...laptop,
+    FACTORY_HOME: home,
+    PATH: `${join(dir, `bin${n}`)}:${laptop.PATH}`,
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_NO_KICK: '1',
+    FACTORY_CLAUDE: join(dir, `bin${n}`, 'agent'),
+    ...env,
+  }
+}
+const factory = (args: string[], env: Record<string, string> = {}) => {
+  const p = Bun.spawnSync([CLI, ...args], { env: childEnv(env), timeout: 50_000 })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
 const wiki = () => join(home, 'wiki')
@@ -961,4 +958,24 @@ esac
   expect(prompt()).toContain(GL)
   factory(['wiki', 'write'])
   expect(runs()).toBe(2)
+})
+
+test('AC10 ambient remote and routing values reach no setup or command child', () => {
+  const seeded: Record<string, string> = {
+    FACTORY_WIKI_REMOTE: 'https://example.invalid/acme/ambient.git',
+    FACTORY_OUTBOX: join(dir, 'outbox'),
+    FACTORY_FROM: 'ambient',
+    FACTORY_RUN: 'ambient-run',
+  }
+  Object.assign(process.env, seeded)
+  try {
+    setup()
+    expect(factory(['wiki', 'write', '--dry-run']).code).toBe(0)
+    expect(Bun.spawnSync(['git', '-C', wiki(), 'config', '--get', 'remote.origin.url']).exitCode).not.toBe(0)
+    expect(existsSync(join(data, 'gh-calls'))).toBe(false)
+    expect(existsSync(seeded.FACTORY_OUTBOX)).toBe(false)
+    for (const [k, v] of Object.entries(seeded)) expect(process.env[k]).toBe(v)
+  } finally {
+    for (const k of Object.keys(seeded)) delete process.env[k]
+  }
 })
