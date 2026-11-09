@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { claudeFiles } from './migrate'
 
 /**
@@ -324,6 +325,65 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
   }
 }
 
+/** GitHub refuses a file over 100 MB and warns over 50 MB: the backup stores a bigger file as gzip */
+const GZ_OVER = 50 * 1024 * 1024
+/** the list of paths that the backup stored as <path>.gz; the restore gunzips only these */
+const GZ_LIST = 'home/.backup-gz.json'
+
+/**
+ * Each index file over 50 MB goes in the index as <path>.gz, after the scrub (the scan reads the plain text).
+ * The work tree file stays. The add stages the plain file again each time, so each backup does this again; the
+ * same text gives the same gzip blob, so no commit. GZ_LIST names the paths. ponytail: reads and gzips each
+ * big file at each backup, under the tick lock
+ */
+function gzipBig(cfg: BackupCfg): string | undefined {
+  const ls = git(cfg, ['ls-files', '--stage', '-z']).out.split('\0').filter(Boolean)
+  const rows = ls.map(l => /^(\d+) (\S+) \d+\t(.*)$/s.exec(l)).filter(m => m && m[1]!.startsWith('100'))
+  const sizes = git(cfg, ['cat-file', '--batch-check=%(objectsize)'], 120_000, {
+    input: rows.map(m => m![2]).join('\n') + '\n',
+  }).out.split('\n')
+  const big = rows.filter((m, i) => Number(sizes[i]) > GZ_OVER && m![3] !== GZ_LIST).map(m => m!)
+  const put = (path: string, b: Buffer, mode = '100644') => {
+    const h = git(cfg, ['hash-object', '-w', '--stdin'], 120_000, { input: b })
+    if (!h.ok) return `git hash-object: ${h.err}`
+    const u = git(cfg, ['update-index', '--add', '--cacheinfo', `${mode},${h.out},${path}`])
+    return u.ok ? undefined : `git update-index: ${u.err}`
+  }
+  for (const [, mode, blob, path] of big) {
+    if (existsSync(join(cfg.ws, `${path}.gz`)))
+      return `backup refused: ${path} is over 50 MB and ${path}.gz exists`
+    const c = git(cfg, ['cat-file', 'blob', blob!])
+    if (!c.ok) return `git cat-file: ${c.err}`
+    const e = put(`${path}.gz`, gzipSync(c.buf, { level: 6 }), mode)
+    if (e) return e
+    git(cfg, ['update-index', '--force-remove', '--', path!])
+  }
+  if (!big.length) return void git(cfg, ['update-index', '--force-remove', '--', GZ_LIST])
+  return put(GZ_LIST, Buffer.from(JSON.stringify(big.map(m => m[3])) + '\n'))
+}
+
+/** after a checkout: gunzip each <path>.gz that GZ_LIST names back to <path>, then drop the list */
+function gunzipBig(ws: string): string | undefined {
+  const f = join(ws, GZ_LIST)
+  if (!existsSync(f)) return
+  let list: unknown
+  try {
+    list = JSON.parse(readFileSync(f, 'utf8'))
+  } catch {
+    return `restore: ${GZ_LIST} is not JSON`
+  }
+  for (const p of Array.isArray(list) ? list : []) {
+    // only the paths the backup writes, and no way out of them
+    if (typeof p !== 'string' || p.split('/').includes('..') || !/^(home|claude\/projects)\//.test(p))
+      continue
+    const gz = join(ws, `${p}.gz`)
+    if (!existsSync(gz)) continue
+    writeFileSync(join(ws, p), gunzipSync(readFileSync(gz)))
+    rmSync(gz)
+  }
+  rmSync(f)
+}
+
 /**
  * Snapshot and push. Refuses when the home is not ready (an empty home must not replace a good backup) and when
  * the secret scan cannot run (nothing stays staged). It never forces a push. scrub redacts each secret it finds.
@@ -388,6 +448,11 @@ export function backup(
       return fail(scan.error)
     }
     redacted = scan.redacted
+    const gz = gzipBig(cfg)
+    if (gz) {
+      git(cfg, ['reset', '-q'])
+      return fail(gz)
+    }
     dirty = git(cfg, ['diff', '--cached', '--quiet']).ok === false
     if (dirty) {
       const c = git(cfg, ['commit', '-q', '-m', `backup ${new Date().toISOString()}`])
@@ -453,6 +518,8 @@ export function restore(cfg: BackupCfg): Outcome {
     writeFileSync(RESTORING(cfg.ws), `${sha}\n`)
     const c = git(cfg, ['checkout', '-q', '-f', '-B', cfg.branch, sha])
     if (!c.ok) return { error: `git checkout: ${c.err}` }
+    const gz = gunzipBig(cfg.ws)
+    if (gz) return { error: gz }
     const mem = memDir(cfg.ws)
     if (existsSync(mem)) {
       // memory is plain files in the backup: make it a repo again, dated by the last dream, so the next dream reads the journal from there
