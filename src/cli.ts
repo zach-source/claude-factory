@@ -42,7 +42,7 @@ import {
 import { spawn as spawnChild } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir, hostname, tmpdir } from 'node:os'
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
   afterTimeout,
@@ -6806,8 +6806,12 @@ type WtEntry = { path: string; branch: string | null; locked: boolean; prunable:
  * `realpathSync`, so a symlinked repo path still matches and keeps this protection.
  */
 function worktreeEntries(repo: string): WtEntry[] {
+  return worktreeList(repo) ?? []
+}
+/** the entries of `worktreeEntries`, or null when `git worktree list` fails */
+function worktreeList(repo: string): WtEntry[] | null {
   const p = Bun.spawnSync(['git', '-C', repo, 'worktree', 'list', '--porcelain'])
-  if (p.exitCode !== 0) return []
+  if (p.exitCode !== 0) return null
   let repoReal = repo
   try {
     repoReal = realpathSync(repo)
@@ -6834,6 +6838,99 @@ function worktreeEntries(repo: string): WtEntry[] {
     }
     return real === repoReal ? { ...e, locked: true } : e
   })
+}
+/** `chmod -R u+w` on a worktree dir, so that a later delete does not stop on a read-only dir (envtest
+ * binaries, the Go module cache). argv only, no shell. It ignores a symlink or a missing path, and
+ * `chmod -R` does not follow symlinks inside the tree. The exit code is moot: the delete shows the real error. */
+function makeWritable(path: string): void {
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) return
+  Bun.spawnSync(['chmod', '-R', 'u+w', '--', path])
+}
+
+/** the registered worktree paths of a repo (raw and real), or null when `git worktree list` fails.
+ * Not `worktreeEntries`: its [] on failure would make every dir look unregistered. */
+function registeredWorktrees(repo: string): Set<string> | null {
+  const list = worktreeList(repo)
+  if (!list) return null
+  const set = new Set<string>()
+  for (const e of list) {
+    set.add(e.path)
+    try {
+      set.add(realpathSync(e.path))
+    } catch {
+      // gone already: the raw path is enough
+    }
+  }
+  return set
+}
+function isRegistered(reg: Set<string>, path: string): boolean {
+  if (reg.has(path)) return true
+  try {
+    return reg.has(realpathSync(path))
+  } catch {
+    return false
+  }
+}
+
+/** the dirs where the factory makes worktrees: herdr's layout (laptop) and the AX task layout */
+const WORKTREE_ROOTS = () => [join(homedir(), '.herdr', 'worktrees'), join(HOME, 'worktrees')]
+const escapes = (rel: string) => rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+
+/**
+ * Why `rmUnregisteredWorktree` must not delete `path`, or null when it may. One fail-closed rule: the
+ * path is a real dir (no symlink) below a factory worktree root, named after the run, not the repo,
+ * not listed by git, and with no live git dir behind its `.git` file.
+ */
+function unregisteredRefusal(path: string, runId: string, repo: string): string | null {
+  const st = lstatSync(path, { throwIfNoEntry: false })
+  if (!st) return 'missing'
+  if (st.isSymbolicLink()) return 'symlink'
+  if (!st.isDirectory()) return 'not a directory'
+  let real: string
+  try {
+    real = realpathSync(path)
+  } catch {
+    return 'outside the worktree roots'
+  }
+  const inRoot = WORKTREE_ROOTS().some(root => {
+    try {
+      const rel = relative(realpathSync(root), real)
+      return rel !== '' && !escapes(rel)
+    } catch {
+      return false
+    }
+  })
+  if (!inRoot) return 'outside the worktree roots'
+  if (basename(real) !== runId && basename(real) !== `factory-${runId}`) return 'name does not match the run'
+  try {
+    if (!escapes(relative(real, realpathSync(repo)))) return 'the repo itself'
+  } catch {
+    // repo unreadable: it cannot be the dir
+  }
+  const reg = registeredWorktrees(repo)
+  if (!reg) return 'git worktree list failed'
+  if (isRegistered(reg, path) || reg.has(real)) return 'git still lists it'
+  const dotGit = join(real, '.git')
+  const gst = lstatSync(dotGit, { throwIfNoEntry: false })
+  if (gst) {
+    let dead = false
+    try {
+      const first = gst.isFile() ? readFileSync(dotGit, 'utf8').split('\n')[0]! : ''
+      dead = first.startsWith('gitdir: ') && !existsSync(resolve(real, first.slice('gitdir: '.length)))
+    } catch {
+      // unreadable: not a dead link
+    }
+    if (!dead) return 'its git dir still exists'
+  }
+  return null
+}
+/** deletes a dir that git no longer lists (a `git worktree remove` that stopped halfway) */
+function rmUnregisteredWorktree(path: string, runId: string, repo: string): void {
+  const why = unregisteredRefusal(path, runId, repo)
+  if (why) throw new Error(`refusing to delete ${path}: ${why}`)
+  const real = realpathSync(path)
+  makeWritable(real)
+  rmSafe(real, { recursive: true, force: true })
 }
 const UNTRACKED_IGNORE = '.beads.gate.lock'
 /** each worktree's dirty state and disk use. `du -sk` runs once per worktree: slow at hundreds of
@@ -14337,12 +14434,21 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('rm')
         const { run, value } = current(args[0])
         if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
-        // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
-        rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
         // no --force: herdr and git refuse a worktree with uncommitted work; the branch always stays.
         // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
-        if (herdrPanes().some(p => isIn(p, run))) herdr('worktree', 'remove', '--workspace', run.ws)
-        else if (existsSync(run.worktree)) git(run.repo, 'worktree', 'remove', run.worktree)
+        const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
+        if (herdrPanes().some(p => isIn(p, run))) {
+          makeWritable(run.worktree)
+          lock() // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
+          herdr('worktree', 'remove', '--workspace', run.ws)
+        } else if (existsSync(run.worktree)) {
+          const reg = registeredWorktrees(run.repo)
+          if (reg && isRegistered(reg, run.worktree)) {
+            makeWritable(run.worktree)
+            lock()
+            git(run.repo, 'worktree', 'remove', run.worktree)
+          } else rmUnregisteredWorktree(run.worktree, run.id, run.repo) // git unregistered it, a read-only dir kept the rest
+        }
         // its record outlives it: metrics count removed runs too
         appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
         rmSafe(runDir(run.id), { recursive: true })
