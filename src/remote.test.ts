@@ -4610,3 +4610,65 @@ test('in the AX manager VM, repos sync makes the missing worktree of each live r
   expect(existsSync(join(home, 'worktrees', 'rs4', 'a'))).toBe(true)
   expect(called()).not.toContain('apply')
 }, 90_000)
+
+// claude-factory-ad6r AC4: the VM's start record is stored by the laptop, with the laptop's own run, node and seq
+const GOOD_START = {
+  serveAt: 1_800_000_000_000,
+  turnAt: 1_800_000_050_000,
+  cloneMs: 8000,
+  beadsMs: 3000,
+  devenvMs: 30000,
+  servicesMs: 2000,
+  devenv: 'loaded',
+  resumed: false,
+}
+const startLines = () =>
+  existsSync(join(home, 'starts.jsonl'))
+    ? readFileSync(join(home, 'starts.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l))
+    : []
+const reportWith = (id: string, seq: number, text: string, start: unknown) =>
+  JSON.stringify({ argv: ['report', id, String(seq), 'ready', text], from: 'a', at: 1, start })
+
+test('a replayed AX report stores the start record once, with the laptop run, node and seq (ad6r AC4)', () => {
+  rmSync(join(home, 'starts.jsonl'), { force: true })
+  const seq = launched('rs1')
+  const first = reportWith('rs1', seq, 'built a', { ...GOOD_START, node: 'evil', seq: 99 })
+  cluster('Running', { status: 'idle', session: 's1', lines: [first] })
+  expect(factory(['tick']).code).toBe(0)
+  expect(startLines()).toEqual([])
+  expect(inbox('rs1')).toContain('"outcome":"ready"') // a bad start never changes the report
+  rmSync(join(home, 'runs', 'rs1'), { recursive: true })
+
+  const seq2 = launched('rs2')
+  cluster('Running', {
+    status: 'idle',
+    session: 's1',
+    lines: [reportWith('rs2', seq2, 'built a', GOOD_START)],
+  })
+  expect(factory(['tick']).code).toBe(0)
+  expect(startLines()).toEqual([
+    {
+      at: expect.any(Number),
+      run: 'rs2',
+      rig: '(no rig)',
+      sandbox: 'gvisor',
+      node: 'a',
+      seq: seq2,
+      ...GOOD_START,
+    },
+  ])
+  // a second, different report line for the same seq: the content hash does not hide it, the run/node/seq check does
+  cluster('Running', {
+    status: 'idle',
+    session: 's1',
+    lines: [reportWith('rs2', seq2, 'built a', GOOD_START), reportWith('rs2', seq2, 'built b', GOOD_START)],
+  })
+  factory(['tick'])
+  expect(startLines()).toHaveLength(1)
+  rmSync(join(home, 'runs', 'rs2'), { recursive: true })
+  rmSync(join(home, 'starts.jsonl'), { force: true })
+})

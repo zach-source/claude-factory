@@ -250,6 +250,8 @@ import {
   type ManagerUsage,
   tokensReport,
   type StoredUsage,
+  validStart,
+  parseStartLines,
   validUsage,
   type Usage,
 } from './metrics'
@@ -1307,6 +1309,25 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         if (rows.length && !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq))
           appendUsage(run.id, rows)
       } catch {} // a bad usage never changes the report
+      try {
+        // claude-factory-ad6r: the VM's start record. rig, sandbox, node and seq are the laptop's, never the VM's
+        const start = validStart(JSON.parse(line).start)
+        const file = join(HOME, 'starts.jsonl')
+        const have = existsSync(file) ? parseStartLines(readFileSync(file, 'utf8')) : []
+        if (start && !have.some(l => l.run === run.id && l.node === side!.node && l.seq === side!.seq)) {
+          const rig = rigOf(run.repo)
+          const row = {
+            at: Date.now(),
+            run: run.id,
+            rig: rig?.name ?? '(no rig)',
+            sandbox: rig?.sandboxClass ?? 'gvisor',
+            node: side!.node,
+            seq: side!.seq,
+            ...start,
+          }
+          appendFileSync(file, JSON.stringify(row) + '\n')
+        }
+      } catch {} // a bad start never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       if (!skew) {
         // from where this VM was told to push, which a rig changed since does not move

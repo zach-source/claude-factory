@@ -21,6 +21,11 @@ import {
   tokensReport,
   sessionOf,
   codexUsageOf,
+  validStart,
+  type StartRecord,
+  startStats,
+  renderStarts,
+  parseStartLines,
 } from './metrics'
 
 const H = 3_600_000
@@ -762,4 +767,112 @@ test('a station visit never takes negative time when an entry is stamped before 
     },
   ])
   expect(m.stations.verify!.medianHours).toBe(0)
+})
+
+// claude-factory-ad6r: worker start metrics
+const GOOD = {
+  serveAt: 1_800_000_040_000,
+  turnAt: 1_800_000_095_000,
+  cloneMs: 8000,
+  beadsMs: 3000,
+  devenvMs: 30000,
+  servicesMs: 2000,
+  devenv: 'loaded' as const,
+  resumed: false,
+} as StartRecord
+
+test('validStart keeps one good record and refuses every other form', () => {
+  expect(validStart(GOOD)).toEqual(GOOD)
+  const bad: unknown[] = [
+    null,
+    [],
+    'x',
+    { ...GOOD, extra: 1 },
+    Object.fromEntries(Object.entries(GOOD).filter(([k]) => k !== 'resumed')),
+    { ...GOOD, cloneMs: '5' },
+    { ...GOOD, cloneMs: 1.5 },
+    { ...GOOD, cloneMs: -1 },
+    { ...GOOD, cloneMs: 86_400_001 },
+    { ...GOOD, serveAt: 5 },
+    { ...GOOD, serveAt: 1e15 },
+    { ...GOOD, turnAt: 1e15 },
+    { ...GOOD, turnAt: GOOD.serveAt - 1 },
+    { ...GOOD, devenv: 'built' },
+    { ...GOOD, resumed: 'true' },
+    { ...GOOD, serveAt: NaN },
+  ]
+  for (const b of bad) expect(validStart(b)).toBeNull()
+})
+
+const startLine = (o: object = {}) => ({
+  at: 1,
+  run: 'r1',
+  rig: 'acme',
+  sandbox: 'gvisor',
+  node: 'implement',
+  seq: 1,
+  ...GOOD,
+  ...o,
+})
+const launch = (o: object = {}) => ({
+  at: GOOD.serveAt - 40_000,
+  run: 'r1',
+  rig: 'acme',
+  node: 'implement',
+  seq: 1,
+  harness: 'claude',
+  model: 'm',
+  resume: false,
+  ...o,
+})
+
+test('startStats takes first starts only and joins the last launch before serveAt', () => {
+  const starts = [
+    startLine({ run: 'r1', turnAt: GOOD.serveAt + 55_000 }),
+    startLine({ run: 'r2', devenv: 'failed', devenvMs: 10_000, turnAt: GOOD.serveAt + 65_000 }),
+    startLine({ run: 'r3', devenv: 'none', devenvMs: 0 }),
+    startLine({ run: 'r4', resumed: true, devenvMs: 80_000 }),
+    startLine({ run: 'r5', rig: 'widget' }),
+  ]
+  const launches = [
+    launch({ run: 'r1' }),
+    launch({ run: 'r2', at: GOOD.serveAt - 41_000 }),
+    launch({ run: 'r2', at: GOOD.serveAt - 40_000 }), // the last launch before serveAt
+    launch({ run: 'r2', at: GOOD.serveAt + 5 }), // later than serveAt: ignored
+    launch({ run: 'r3', at: GOOD.serveAt + 5 }), // only a later launch: no launchMs
+    // r5: no launch at all
+  ]
+  const s = startStats(launches, starts)
+  expect(Object.keys(s).sort()).toEqual(['acme', 'widget'])
+  expect(s.acme).toEqual({
+    n: 3,
+    resumed: 1,
+    launchMs: 95_000, // r1 95 s, r2 105 s; r3 excluded
+    bootMs: 40_000,
+    cloneMs: 8000,
+    beadsMs: 3000,
+    devenvMs: 10_000, // 30 s, 10 s, 0 s: the resumed 80 s is out
+    servicesMs: 2000,
+    loaded: 1,
+    failed: 1,
+    none: 1,
+  })
+  expect(s.widget!.launchMs).toBeNull()
+  expect(s.widget!.cloneMs).toBe(8000)
+  expect(renderStarts({ acme: s.acme! })).toBe(
+    'acme: n 3, launch to first turn 95 s, boot 40 s, clone 8 s, beads 3 s, devenv 10 s, services 2 s; devenv loaded 1, failed 1, none 1; resumed 1.',
+  )
+  expect(renderStarts({ w: s.widget! })).toContain('launch to first turn -, boot -')
+})
+
+test('parseStartLines drops a non-JSON line, a bad seq and a bad record', () => {
+  const text = [
+    JSON.stringify(startLine()),
+    'not json',
+    JSON.stringify(startLine({ seq: '1' })),
+    JSON.stringify(startLine({ cloneMs: -1 })),
+    JSON.stringify(startLine({ at: 'x' })),
+    JSON.stringify(startLine({ rig: 5 })),
+  ].join('\n')
+  expect(parseStartLines(text)).toEqual([startLine()])
 })
