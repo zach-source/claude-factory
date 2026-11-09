@@ -483,7 +483,7 @@ const saved = '${saved}'
 if (process.argv[2] === 'before') {
   const b = wikiBlame()
   if (!b) process.exit(3)
-  writeFileSync(saved, JSON.stringify({ ref: b.ref, sha: b.sha, blames: [...b.blames] }))
+  writeFileSync(saved, JSON.stringify({ ref: b.ref, sha: b.sha, git: b.git, blames: [...b.blames] }))
 } else {
   const o = JSON.parse(readFileSync(saved, 'utf8'))
   const ok = keepPersonLines({ ...o, blames: new Map(o.blames) }, 'the pass tidied it')
@@ -940,4 +940,85 @@ test('t761 init with no good seed makes no commit', () => {
   expect(existsSync(a) || existsSync(b)).toBe(false)
   expect(wikiLog().split('seed not written').length - 1).toBe(2)
   expect(Bun.spawnSync(['git', '-C', wiki(), 'rev-parse', '-q', '--verify', 'HEAD']).exitCode).not.toBe(0)
+})
+
+// claude-factory-f1zc: an agent pass must not leave a .git change or a nested repo that runs a command
+const markerScript = () => {
+  const script = join(home, '..', 'mark.sh')
+  writeFileSync(script, `#!/bin/sh\ntouch '${join(home, '..', 'MARKER')}'\n`)
+  chmodSync(script, 0o755)
+  return script
+}
+const marker = () => existsSync(join(home, '..', 'MARKER'))
+const fsmon = (script: string) => `[core]\n\tfsmonitor = ${script}\n`
+const GITCHANGED = 'wiki: .git changed in the pass, nothing committed'
+
+test('AC5 a pass that writes fsmonitor into .git/config is undone and nothing is committed', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const script = markerScript()
+  expect(guardPass('before').exitCode).toBe(0)
+  const sha = git('rev-parse', 'HEAD')
+  const cfg = readFileSync(join(wiki(), '.git', 'config'), 'utf8')
+  appendFileSync(join(wiki(), '.git', 'config'), fsmon(script))
+  expect(guardPass('after').exitCode).toBe(4)
+  expect(marker()).toBe(false)
+  expect(readFileSync(join(wiki(), '.git', 'config'), 'utf8')).toBe(cfg)
+  expect(git('rev-parse', 'HEAD')).toBe(sha)
+  expect(wikiLog()).toContain(GITCHANGED)
+})
+
+test('AC5 a nested repo made of text files is removed', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const script = markerScript()
+  expect(guardPass('before').exitCode).toBe(0)
+  const sub = join(wiki(), 'topics', 'sub')
+  mkdirSync(join(sub, 'g', 'objects', 'info'), { recursive: true })
+  mkdirSync(join(sub, 'g', 'refs', 'heads'), { recursive: true })
+  writeFileSync(join(sub, '.git'), 'gitdir: ./g\n')
+  writeFileSync(join(sub, 'g', 'objects', 'info', 'alternates'), `${join(wiki(), '.git', 'objects')}\n`)
+  writeFileSync(join(sub, 'g', 'HEAD'), `${git('rev-parse', 'HEAD')}\n`)
+  writeFileSync(join(sub, 'g', 'config'), `[core]\n\trepositoryformatversion = 0\n\tfsmonitor = ${script}\n`)
+  writeFileSync(join(sub, 'f.md'), 'hi')
+  expect(guardPass('after').exitCode).toBe(4)
+  expect(marker()).toBe(false)
+  expect(existsSync(join(sub, '.git'))).toBe(false)
+  expect(git('ls-files', '-s', 'topics/sub')).not.toContain('160000')
+  expect(wikiLog()).toContain(GITCHANGED)
+})
+
+test('AC5 a .git that becomes a file fences the wiki and no git runs after it', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const script = markerScript()
+  expect(guardPass('before').exitCode).toBe(0)
+  renameSync(join(wiki(), '.git'), join(wiki(), '.g'))
+  writeFileSync(join(wiki(), '.git'), 'gitdir: .g\n')
+  appendFileSync(join(wiki(), '.g', 'config'), fsmon(script))
+  const glog = join(home, '..', 'git.log')
+  expect(guardPass('after', `echo "$*" >> '${glog}'`).exitCode).toBe(4)
+  expect(marker()).toBe(false)
+  expect(wikiLog()).toContain('wiki: .git changed in the pass, restore failed, git fenced, nothing committed')
+  expect(existsSync(join(home, 'wiki.fenced'))).toBe(true)
+  expect(existsSync(glog)).toBe(false)
+})
+
+test('AC5 a special file in .git refuses the pass', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  expect(Bun.spawnSync(['mkfifo', join(wiki(), '.git', 'info', 'x')]).exitCode).toBe(0)
+  expect(guardPass('before').exitCode).toBe(3)
+  expect(wikiLog()).toContain('wiki: .git holds a special file, pass refused')
+})
+
+test('AC5 a nested repo from before the pass refuses it and stays', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const clone = join(wiki(), 'topics', 'clone')
+  mkdirSync(clone, { recursive: true })
+  expect(Bun.spawnSync(['git', 'init', '-q', clone]).exitCode).toBe(0)
+  expect(guardPass('before').exitCode).toBe(3)
+  expect(wikiLog()).toContain('wiki: a nested .git is in the wiki, pass refused')
+  expect(existsSync(join(clone, '.git'))).toBe(true)
 })
