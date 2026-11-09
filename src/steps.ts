@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** the manager step prompts: one file each in src/steps/. The mod reads the same files (FR-019). */
-export const STEPS = ['patrol', 'pm', 'briefer', 'reviewer', 'dream'] as const
+export const STEPS = ['patrol', 'pm', 'briefer', 'reviewer', 'dream', 'chat'] as const
 export type StepName = (typeof STEPS)[number]
 
 /**
