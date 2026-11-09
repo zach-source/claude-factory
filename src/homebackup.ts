@@ -28,7 +28,7 @@ export type BackupCfg = {
 export const EXCLUDES = [
   '.claude.json',
   '.credentials.json',
-  'settings*.json',
+  '/claude/**/settings*.json',
   'rigs.json.*',
   '*.lock',
   '/home/bin/',
