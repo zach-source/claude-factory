@@ -2,7 +2,14 @@
 
 ## Context
 
-Bead: `claude-factory-qn8a.14`. Status: revised plan after four implementation rounds.
+Bead: `claude-factory-qn8a.14`. Status: revised plan after review of `58a9ee6d`.
+
+The current implementation satisfies the reported redirect and quoted-script denials.
+Review round 4 found no new parser defect. It found absent AC3, AC6, and AC7 evidence.
+The previous task mixed parser repairs with test completion. Implement closed it despite explicit test gaps.
+This revision separates caller coverage from budget and side-effect evidence. Neither task can close with an evidence gap.
+Keep the current implementation. Add tests first; change production code only when a required test proves a defect.
+The historical context below explains the prerequisite. Do not repeat that work.
 
 At `30e36e0e`, all ten unsafe rows below return `undefined` from `denyReason`.
 The three safe controls also return `undefined`.
@@ -168,6 +175,33 @@ The caller map must include these ten consumers:
 Use actual alias fixtures, including a fake alias that expands to a prohibited command.
 Replace the conditional tests at `src/worker-hook.test.ts:12294` with explicit expected results.
 Pin both first-head classifications for `['>x', '/bin/echo', 'alias']` and `['>x', 'echo', '$name']`.
+Test the consumer results, not only the anchor indices.
+`segmentMayDefineAlias(['>x', '/bin/echo', 'alias'])` must return `true`; the plain external-command control must return `false`.
+`segmentDynArg(['>x', 'echo', '$name'])` must return `true`; the plain echo control must return `false`.
+Use public behavior when it distinguishes the consumer. Otherwise, export the existing pure function with a test alias.
+Do not add a new implementation or a configurable production branch for a test.
+Use the existing `gitAliases` fixture with `p` mapped to `push`.
+Assert that `git p origin main` and `>out git p origin main` deny with `PUSH_REASON`.
+The matching `git status` controls must allow. The fake alias reader must receive a call for the alias rows.
+
+Complete this coverage map in this ADR with exact test names before task closure:
+
+| Consumer | Required observable check |
+| --- | --- |
+| `gluedAtCommandSlot` | A prohibited glued command-slot row denies after a redirect; its literal safe control allows. |
+| `gluedBraceSlots` | A prohibited brace command-slot row denies after a redirect; its safe argument control allows. |
+| `dynamicHeadRmReading` | The unquoted dynamic rm rows deny, plain and after redirects. |
+| `shellStdinReason1` | The existing stdin row retains its exact reason after redirects. |
+| `segmentDynArg` | Both first-head classifications above retain their boolean results. |
+| `segmentMayDefineAlias` | Both first-head classifications above retain their boolean results. |
+| `anyGlobCommandWord` | The command glob denies; a safe argument glob retains its verdict. |
+| `anyDynamicCommandReason1` | The existing dynamic-command denial survives the redirect prefix. |
+| `anyLiveApplyWord` | A literal apply against a fake protected context denies after a redirect. |
+| `anyDynamicLiveApplyReason1` | A dynamic apply against that fake context denies after a redirect. |
+
+Select glued/live rows from their existing tests. Use context `acme`; never call a cluster.
+Each row needs an explicit result and a named test. Another rule's early denial does not prove this consumer.
+Use a focused buildable mutation when public behavior cannot show which consumer supplied the result.
 Preserve the `sdur` reason-order tests and all unknown-flag and tail-scan denials.
 Pin the raw baseline budget before edits: the ordinary cap is 16, and the existing tail scan can add candidates.
 The review's `nice` plus 40 `-Q $G` pairs plus `x` returns 18 without a redirect.
@@ -213,6 +247,20 @@ env -u FACTORY_FROM $X 'factory mail acme manager'
 
 Use fake gates and test-local environment values for both guarded variables. No real bead or mail command may run.
 Retain the PR 235 nested-brace, quoted-head, split-head, and safe-path rows in the existing test file.
+The source is `412b8d4:src/worker-hook-ibas.test.ts`, not the older main test file.
+Add these explicit denial rows, plain and after `>out`:
+
+```text
+"$X" "rm -rf /"
+"$@" "rm -rf /"
+${=X} "rm -rf /"
+"${X/b/a}" "rm -rf /"
+"${X:-${Y}/}" "rm -rf /"
+${X:-\}/} "rm -rf /"
+${X:-"}/"} "rm -rf /"
+```
+
+Preserve the literal single-quoted head and all safe path controls. Do not copy unrelated PR 235 wrapper tests.
 These inputs must allow with and without `>out`:
 
 ```text
@@ -233,6 +281,30 @@ Measure both PR 235 cases: 200 `$X` words then `"x y"`, and `$X` then 200 `"x y"
 Each must finish in less than 1 second on the test runner. Record durations before and after the fix.
 Add nested-script cases that exhaust depth and work budgets; assert denial and zero downstream command executions.
 Do not add production metrics or execute any supplied script to measure this behavior.
+
+Use the existing `scanReason(..., budget)` argument for deterministic work exhaustion.
+Do not change `MAX_SCAN_WORK`, `MAX_SHELL_DEPTH`, or the production deadline.
+Cover both `anyShellReason -> denyAt` and `segmentRunsBdCommand -> stringNamesBdCommand`.
+Use a normal dynamic script for the first path, and `env -i $X x 'bd create acme'` for the second.
+For each path, select a budget that reaches the script recursion before exhaustion.
+Assert exactly `SCAN_BUDGET_REASON` at that budget; assert the normal verdict with sufficient budget.
+A budget of zero proves only the entry check and does not satisfy this criterion.
+Use the existing cbai tests near line 7488 as the pattern for charge accounting.
+Prove the charge location with an isolated mutation of that reader's recursive work charge.
+The mutation must change the focused assertion. A timeout, syntax error, or unrelated denial is not proof.
+Keep the depth test's exact `DEEP_COMMAND_REASON` assertion and its shallow allowance.
+For the environment reader, depth exhaustion returns a conservative match; assert the corresponding environment denial.
+Do not demand a depth-reason string from a boolean reader.
+
+Instrument the isolated guard call, after fixture setup and module import.
+Supply fake gate readers for every gate field the row uses.
+Spy on process launch APIs and filesystem target-open APIs that the hook can call; reject unexpected calls.
+Assert zero process launches, zero real gate subprocesses, and zero opens of the redirect target.
+Apply these assertions to both readers, with and without `>out`, for exhausted and sufficient budgets.
+Fake gate calls are permitted; they are not real subprocess calls.
+Restore every spy in `finally`. Isolate process-wide spies from concurrent tests.
+An absent target file alone is insufficient: a failed open or a read can leave no file.
+Name the observed APIs in the test so review can compare them with the hook's imports and gate defaults.
 
 ## Risk, rollout, and rollback
 
@@ -258,23 +330,29 @@ The ship soak can use revision evidence and offline guard results; it needs no l
 
 ## Commit tasks
 
-1. `claude-factory-qn8a.14.7`: add unconditional AC1–AC3 and AC6–AC7 tests in `src/worker-hook.test.ts`.
-   Record red results against `3ef9d269`. Check the focused command and baseline safe controls.
-2. `claude-factory-qn8a.14.3` (reopened): adapt the script prerequisite in `src/worker-hook.ts`. Depend on task 1.
-   Preserve the redirect fix and the anchor budget. Check AC1–AC7 and isolated mutations.
-   Correct stale comments in the touched functions and refresh the PR evidence. Add no changelog entry.
+1. `claude-factory-qn8a.14.7`: complete AC3 and AC6 caller and head-form tests, plus the exact caller map above.
+   One commit; allow 45 minutes. Check the focused suite, prompt-quotes, and changed-file format.
+   Add only minimal pure-function test exports if public results cannot distinguish a consumer.
+2. `claude-factory-qn8a.14.9`: complete AC7 work, depth, and zero-side-effect assertions for both readers.
+   Depend on task 1. One commit; allow 45 minutes. Check the focused suite, cbai tests, and isolated mutations.
+   Record exact budgets, normal verdicts, observed APIs, and failed mutation assertions in the task comment.
+   Refresh the draft PR body with current behavior and evidence. Add no changelog entry.
 
 Both tasks fit one 120-minute implement pass and one pull request.
-The test commit can fail locally before the fix; the final pull request head must pass every required check.
+Reserve 30 minutes for final checks and evidence. Keep task `.3` closed; its parser repair is complete.
+New coverage can pass on `58a9ee6d`; do not manufacture a baseline failure.
+Use buildable mutations to prove that new assertions catch regressions in code that already works.
+If a new test exposes an in-scope defect, commit that red test before the minimal fix in the same PR.
+The final pull request head must pass every required check. Do not close either task with partial evidence.
 
 ## Plan evidence
 
-Plan read the repo metadata, existing ADR, CI workflow, anchor callers, redirect reader, and prior PR 235 code.
+Plan read the current ADR, parser, tests, bead comments, PR reviews, and prior PR 235 tests.
 No root `CLAUDE.md`, `AGENTS.md`, or `CONTRIBUTING.md` exists in this checkout.
-The retry starts at `3ef9d269`, with a clean worktree and draft PR 702.
-CI run `42461843247` passed test, plugin, typecheck, and format on that code head.
-The focused `qn8a.14|leadingRedirects|sdur|anchor` command passed 86 tests with 74 assertions.
-A separate pure probe confirmed three quoted-script allowances, one unquoted denial, and all three required safe allowances.
+This retry starts at `58a9ee6d`, with a clean worktree and draft PR 702.
+GitHub confirms CI run `42542821002` passed test, plugin, typecheck, and format on that code head.
+The focused `qn8a.14` command passed 198 tests with 254 assertions and zero failures in this station.
+The two 200-word timing cases took 6.02 ms and 0.55 ms on this VM.
 The memory search returned no local notes. Plan changes only this ADR.
 Plan did not repeat the full suite, typecheck, plugin check, audit, secret scan, or mutations.
-These prior checks do not satisfy the revised AC1 or prove the future implementation.
+These checks do not substitute for the absent AC3, AC6, and AC7 assertions.
