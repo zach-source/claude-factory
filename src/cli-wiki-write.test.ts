@@ -671,7 +671,10 @@ slow('write AC3 202 beads on one PR stay waiting whole, never cut to 200', () =>
 })
 
 const LIST = () =>
-  join(data, `gh-${key('repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1')}`)
+  join(
+    data,
+    `gh-${key('repos/acme/widget/pulls?state=closed&sort=created&direction=desc&per_page=100&page=1')}`,
+  )
 const OLD = '2026-11-01T00:00:00Z'
 
 slow('write AC2 a malformed GitHub list row keeps the older bead pending', () => {
@@ -686,7 +689,15 @@ slow('write AC2 a malformed GitHub list row keeps the older bead pending', () =>
 
 slow('write AC2 a malformed GitLab reply or failed short id read keeps the bead pending', () => {
   setup()
-  Bun.spawnSync(['git', '-C', repo, 'remote', 'set-url', 'origin', 'https://gitlab.example.com/acme/widget.git'])
+  Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'remote',
+    'set-url',
+    'origin',
+    'https://gitlab.example.com/acme/widget.git',
+  ])
   seed([closed('acme-abc1.2')])
   const bin = join(dir, `bin${n}`)
   const glab = (body: string) => {
