@@ -13,7 +13,7 @@ const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
 /** the cluster's kube context for both ax and kubectl; unset, their current context */
 const context = () => (process.env.FACTORY_AX_CONTEXT ? ['--context', process.env.FACTORY_AX_CONTEXT] : [])
-export const ATESPACE = () => process.env.FACTORY_AX_ATESPACE ?? 'factory'
+export const ATESPACE = () => process.env.FACTORY_AX_ATESPACE || 'factory'
 /** where the task's one workspace is mounted, and the repo and the worker's own files inside it */
 export const WS = '/workspace/w'
 export const REPO = `${WS}/repo`
@@ -232,7 +232,9 @@ export function unavailable(): string | undefined {
     if (BROKER()) {
       // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
       const r = broker('GET', '/controller')
-      if (!r.ok) return unknown
+      // an old broker image has no /controller route: say what the broker answered
+      if (!r.ok)
+        return `${unknown} (broker GET /controller answered ${r.status}: ${r.body.trim().slice(0, 200)})`
       raw = r.body
     } else {
       const p = Bun.spawnSync(
@@ -342,6 +344,7 @@ function broker(method: string, path: string, body?: string) {
   const status = Number(out.slice(nl + 1))
   return {
     ok: p.exitCode === 0 && status >= 200 && status < 300,
+    status,
     body: nl >= 0 ? out.slice(0, nl) : p.stderr.toString(),
   }
 }
@@ -1007,6 +1010,11 @@ const MANAGER_AX_SERVER = 'FACTORY_AX_MANAGER_AX_SERVER'
 const MANAGER_ROUTER = 'FACTORY_AX_MANAGER_ROUTER'
 const MANAGER_BROKER = 'FACTORY_AX_MANAGER_BROKER'
 
+/**
+ * keys whose empty value means something, so it goes over too: no capabilities (workers stay root), and AX OTel
+ * off (unset, launchTask falls back to FACTORY_OTLP_ENDPOINT, the laptop's LAN collector)
+ */
+const EMPTY_MEANS = new Set(['FACTORY_AX_CAPABILITIES', 'FACTORY_AX_OTLP_ENDPOINT'])
 /** the manager's task env: where it keeps its state (the volume survives a suspend), and the laptop's knobs */
 export function managerEnv(
   env: Record<string, string | undefined> = process.env,
@@ -1019,12 +1027,9 @@ export function managerEnv(
     FACTORY_HOME: `${WS}/home`,
     // its Claude sessions on the volume, so `--resume` finds them after a restart
     CLAUDE_CONFIG_DIR: `${WS}/claude`,
-    // an empty FACTORY_AX_CAPABILITIES means "none" (workers stay root), so it goes over too
+    // an EMPTY_MEANS key goes over also when it is empty
     ...Object.fromEntries(
-      MANAGER_PASS.filter(k => env[k] || (k === 'FACTORY_AX_CAPABILITIES' && env[k] === '')).map(k => [
-        k,
-        env[k]!,
-      ]),
+      MANAGER_PASS.filter(k => env[k] || (EMPTY_MEANS.has(k) && env[k] === '')).map(k => [k, env[k]!]),
     ),
     // the task has no laptop paths: it gets the content. Worker env, the same that each worker task gets
     ...(env.FACTORY_AX_ENV && { FACTORY_AX_ENV: JSON.stringify(readAxEnv(env.FACTORY_AX_ENV, read)) }),

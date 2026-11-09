@@ -144,8 +144,9 @@ test('GET /controller returns only the readiness fields of the ax-controller Dep
     'ax-system',
     '-o',
     'json',
-    '--request-timeout=5s',
   ])
+  // in a pod, --request-timeout makes kubectl skip the in-cluster config and call localhost:8080 (the broker)
+  expect(calls[0]!.argv.some(a => a.startsWith('--request-timeout'))).toBe(false)
   const denied = setup(() => ({ code: 1, err: 'denied' }))
   expect((await handle(req('GET', '/controller'), denied.c)).status).toBe(502)
   const junk = setup(() => ({ code: 0, out: 'not json' }))

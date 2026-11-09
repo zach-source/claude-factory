@@ -80,6 +80,11 @@ test('managerEnv passes the pkg gate, an empty capabilities list, and FACTORY_AX
     FACTORY_AX_ENV: '{"FACTORY_BAZELRC":"x"}',
   })
   expect('FACTORY_AX_CAPABILITIES' in ax.managerEnv({})).toBe(false)
+  // empty turns AX OTel off: unset, the VM falls back to the laptop's LAN collector, an IP no policy takes
+  expect(
+    ax.managerEnv({ FACTORY_AX_OTLP_ENDPOINT: '', FACTORY_OTLP_ENDPOINT: 'http://192.0.2.1:4318' }),
+  ).toMatchObject({ FACTORY_AX_OTLP_ENDPOINT: '' })
+  expect('FACTORY_AX_OTLP_ENDPOINT' in ax.managerEnv({})).toBe(false)
   expect(ax.readAxEnv('{"A":"1"}')).toEqual({ A: '1' })
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '["secret"]' }))).toThrow(/not a JSON object/)
   expect(() => ax.readAxEnv('/e.json', files({ '/e.json': '{bad secret' }))).toThrow(

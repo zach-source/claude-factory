@@ -3,7 +3,7 @@
 // mod/hooks/views.tsx as text, so a future tab change (add, remove, rename, rekey) fails this test
 // structurally, without the test itself ever naming a removed tab's label.
 import { expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 const root = join(import.meta.dir, '..')
@@ -43,4 +43,54 @@ test('every image link in docs/console.md resolves to a file that exists', () =>
 test('README.md links docs/console.md', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   expect(readme).toContain('docs/console.md')
+})
+
+const docFiles = () => [
+  join(root, 'README.md'),
+  ...readdirSync(join(root, 'docs'))
+    .filter(f => f.endsWith('.md'))
+    .map(f => join(root, 'docs', f)),
+]
+
+test('README.md and docs/*.md name no deleted script', () => {
+  for (const f of docFiles()) {
+    const text = readFileSync(f, 'utf8')
+    expect(text).not.toContain('bin/factory' + '-up')
+    expect(text).not.toContain('push' + '-worker')
+  }
+})
+
+test('no doc line tells the person to edit rigs.json or devenv.json by hand', () => {
+  for (const f of docFiles())
+    for (const line of readFileSync(f, 'utf8').split('\n'))
+      if (/rigs\.json|devenv\.json/.test(line)) expect(line).not.toMatch(/by hand|\bedit(s|ed)?\b/i)
+})
+
+test('README.md names each new command', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  for (const c of [
+    'factory up',
+    'factory settings set',
+    'devenv.builder',
+    'factory image build',
+    'factory token',
+    'rig set',
+    'rig show',
+    'rig env set',
+    'rig env unset',
+    'rig egress add',
+    'rig egress rm',
+    'rig beads-remote set',
+    'rig beads-remote clear',
+    'rig history',
+    'rig undo',
+  ])
+    expect(readme).toContain(c)
+})
+
+test('the settings usage line names the devenv keys', () => {
+  const line = readFileSync(join(root, 'src/cli.ts'), 'utf8')
+    .split('\n')
+    .find(l => l.startsWith('  settings [list]'))
+  expect(line).toContain('devenv.builder')
 })
