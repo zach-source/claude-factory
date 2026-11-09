@@ -43,7 +43,7 @@ import {
 import { spawn as spawnChild } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { homedir, hostname, tmpdir } from 'node:os'
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createActor, type Snapshot } from 'xstate'
 import {
   afterTimeout,
@@ -7053,8 +7053,12 @@ type WtEntry = { path: string; branch: string | null; locked: boolean; prunable:
  * `realpathSync`, so a symlinked repo path still matches and keeps this protection.
  */
 function worktreeEntries(repo: string): WtEntry[] {
+  return worktreeList(repo) ?? []
+}
+/** the entries of `worktreeEntries`, or null when `git worktree list` fails */
+function worktreeList(repo: string): WtEntry[] | null {
   const p = Bun.spawnSync(['git', '-C', repo, 'worktree', 'list', '--porcelain'])
-  if (p.exitCode !== 0) return []
+  if (p.exitCode !== 0) return null
   let repoReal = repo
   try {
     repoReal = realpathSync(repo)
@@ -7081,6 +7085,99 @@ function worktreeEntries(repo: string): WtEntry[] {
     }
     return real === repoReal ? { ...e, locked: true } : e
   })
+}
+/** `chmod -R u+w` on a worktree dir, so that a later delete does not stop on a read-only dir (envtest
+ * binaries, the Go module cache). argv only, no shell. It ignores a symlink or a missing path, and
+ * `chmod -R` does not follow symlinks inside the tree. The exit code is moot: the delete shows the real error. */
+function makeWritable(path: string): void {
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) return
+  Bun.spawnSync(['chmod', '-R', 'u+w', '--', path])
+}
+
+/** the registered worktree paths of a repo (raw and real), or null when `git worktree list` fails.
+ * Not `worktreeEntries`: its [] on failure would make every dir look unregistered. */
+function registeredWorktrees(repo: string): Set<string> | null {
+  const list = worktreeList(repo)
+  if (!list) return null
+  const set = new Set<string>()
+  for (const e of list) {
+    set.add(e.path)
+    try {
+      set.add(realpathSync(e.path))
+    } catch {
+      // gone already: the raw path is enough
+    }
+  }
+  return set
+}
+function isRegistered(reg: Set<string>, path: string): boolean {
+  if (reg.has(path)) return true
+  try {
+    return reg.has(realpathSync(path))
+  } catch {
+    return false
+  }
+}
+
+/** the dirs where the factory makes worktrees: herdr's layout (laptop) and the AX task layout */
+const WORKTREE_ROOTS = () => [join(homedir(), '.herdr', 'worktrees'), join(HOME, 'worktrees')]
+const escapes = (rel: string) => rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
+
+/**
+ * Why `rmUnregisteredWorktree` must not delete `path` (a string), or the checked real path when it may. One fail-closed rule: the
+ * path is a real dir (no symlink) below a factory worktree root, named after the run, not the repo,
+ * not listed by git, and with no live git dir behind its `.git` file.
+ */
+function unregisteredRefusal(path: string, runId: string, repo: string): string | { real: string } {
+  const st = lstatSync(path, { throwIfNoEntry: false })
+  if (!st) return 'missing'
+  if (st.isSymbolicLink()) return 'symlink'
+  if (!st.isDirectory()) return 'not a directory'
+  let real: string
+  try {
+    real = realpathSync(path)
+  } catch {
+    return 'outside the worktree roots'
+  }
+  const inRoot = WORKTREE_ROOTS().some(root => {
+    try {
+      const rel = relative(realpathSync(root), real)
+      return rel !== '' && !escapes(rel)
+    } catch {
+      return false
+    }
+  })
+  if (!inRoot) return 'outside the worktree roots'
+  if (basename(real) !== runId && basename(real) !== `factory-${runId}`) return 'name does not match the run'
+  try {
+    if (!escapes(relative(real, realpathSync(repo)))) return 'the repo itself'
+  } catch {
+    // repo unreadable: it cannot be the dir
+  }
+  const reg = registeredWorktrees(repo)
+  if (!reg) return 'git worktree list failed'
+  if (isRegistered(reg, path) || reg.has(real)) return 'git still lists it'
+  const dotGit = join(real, '.git')
+  const gst = lstatSync(dotGit, { throwIfNoEntry: false })
+  if (gst) {
+    let dead = false
+    try {
+      const first = gst.isFile() ? readFileSync(dotGit, 'utf8').split('\n')[0]! : ''
+      dead = first.startsWith('gitdir: ') && !existsSync(resolve(real, first.slice('gitdir: '.length)))
+    } catch {
+      // unreadable: not a dead link
+    }
+    if (!dead) return 'its git dir still exists'
+  }
+  return { real }
+}
+/** deletes a dir that git no longer lists (a `git worktree remove` that stopped halfway) */
+function rmUnregisteredWorktree(path: string, runId: string, repo: string): void {
+  const why = unregisteredRefusal(path, runId, repo)
+  if (typeof why === 'string') throw new Error(`refusing to delete ${path}: ${why}`)
+  const { real } = why
+  makeWritable(real)
+  rmSafe(real, { recursive: true, force: true })
 }
 const UNTRACKED_IGNORE = '.beads.gate.lock'
 /** each worktree's dirty state and disk use. `du -sk` runs once per worktree: slow at hundreds of
@@ -7140,12 +7237,13 @@ function worktreeFacts(repo: string): gc.WorktreeFact[] {
         dirty = 'unknown' // a failed read must never read as clean (AC5-style)
       else if (revlist.stdout.toString().trim()) dirty = 'small' // snapshot it before removal, not removed bare
     }
-    const du = Bun.spawnSync(['du', '-sk', e.path])
-    const kb = du.exitCode === 0 ? Number(du.stdout.toString().split('\t')[0]) : 0
-    return [
-      { path: e.path, branch: e.branch, locked: e.locked, dirty, bytes: Number.isFinite(kb) ? kb * 1024 : 0 },
-    ]
+    return [{ path: e.path, branch: e.branch, locked: e.locked, dirty, bytes: duBytes(e.path) }]
   })
+}
+function duBytes(path: string): number {
+  const du = Bun.spawnSync(['du', '-sk', path])
+  const kb = du.exitCode === 0 ? Number(du.stdout.toString().split('\t')[0]) : 0
+  return Number.isFinite(kb) ? kb * 1024 : 0
 }
 
 /** every factory/* branch's local and remote tip, and whether each is an ancestor of origin's default
@@ -7458,6 +7556,23 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   const panes = strictPaneCwds()
   const facts: gc.RigWorktreeFacts[] = targetRigs.map(rig => {
     const worktrees = worktreeFacts(rig.repo)
+    // a dir a run owns that git no longer lists: a failed list gives no such fact (fail closed)
+    const reg = registeredWorktrees(rig.repo)
+    for (const r of reg ? runs.filter(r => r.repo === rig.repo && r.worktree !== '') : []) {
+      if (!existsSync(r.worktree) || isRegistered(reg!, r.worktree)) continue
+      const why = unregisteredRefusal(r.worktree, r.id, rig.repo)
+      if (typeof why === 'string')
+        console.log(`keep worktree ${r.worktree} (run ${r.id}, reason: unregistered, ${why})`)
+      else
+        worktrees.push({
+          path: r.worktree,
+          branch: null,
+          locked: false,
+          dirty: 'clean',
+          bytes: duBytes(r.worktree),
+          unregistered: true,
+        })
+    }
     const branches = branchFacts(rig.repo, dryRun)
     const prs = prFacts(rig.repo)
     const repoRuns = runs.filter(r => r.repo === rig.repo)
@@ -7474,7 +7589,7 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   for (const p of plans) {
     for (const w of p.removeWorktrees)
       console.log(
-        `remove worktree ${w.path} (run ${w.runId}${w.snapshot ? ', dirty: snapshot first' : ''}, ${fmtBytes(w.bytes)})`,
+        `remove worktree ${w.path} (run ${w.runId}${w.unregistered ? ', unregistered' : ''}${w.snapshot ? ', dirty: snapshot first' : ''}, ${fmtBytes(w.bytes)})`,
       )
     for (const b of p.removeBranches)
       console.log(
@@ -7490,33 +7605,44 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
     const failedWorktrees = new Set<string>()
     for (const w of p.removeWorktrees) {
       try {
-        rmSync(join(w.path, '.beads.gate.lock'), { force: true })
-        // --force deletes submodule gitdirs: only when no submodule holds uncommitted or unpushed work
-        const subs = submoduleState(w.path)
-        if (subs === 'dirty')
-          throw new Error('a submodule has uncommitted work or commits on no remote: kept')
         let snapshot: string | undefined
-        if (w.snapshot) {
-          snapshot = snapshotWorktree(w.path, w.runId)
-          gcLog({
-            type: 'snapshot',
-            rig: p.rig,
-            run: w.runId,
-            ref: `refs/factory-gc/${w.runId}`,
-            sha: snapshot,
-          })
+        if (w.unregistered) rmUnregisteredWorktree(w.path, w.runId, repo)
+        else {
+          rmSync(join(w.path, '.beads.gate.lock'), { force: true })
+          // --force deletes submodule gitdirs: only when no submodule holds uncommitted or unpushed work
+          const subs = submoduleState(w.path)
+          if (subs === 'dirty')
+            throw new Error('a submodule has uncommitted work or commits on no remote: kept')
+          if (w.snapshot) {
+            snapshot = snapshotWorktree(w.path, w.runId)
+            gcLog({
+              type: 'snapshot',
+              rig: p.rig,
+              run: w.runId,
+              ref: `refs/factory-gc/${w.runId}`,
+              sha: snapshot,
+            })
+          }
+          makeWritable(w.path)
+          const rm = Bun.spawnSync([
+            'git',
+            '-C',
+            repo,
+            'worktree',
+            'remove',
+            ...(w.snapshot || subs === 'clean' ? ['--force'] : []),
+            w.path,
+          ])
+          if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
         }
-        const rm = Bun.spawnSync([
-          'git',
-          '-C',
-          repo,
-          'worktree',
-          'remove',
-          ...(w.snapshot || subs === 'clean' ? ['--force'] : []),
-          w.path,
-        ])
-        if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
-        gcLog({ type: 'worktree', rig: p.rig, run: w.runId, path: w.path, bytes: w.bytes })
+        gcLog({
+          type: 'worktree',
+          rig: p.rig,
+          run: w.runId,
+          path: w.path,
+          bytes: w.bytes,
+          ...(w.unregistered && { unregistered: true }),
+        })
         worktreesN++
         bytesN += w.bytes
         const file = join(runDir(w.runId), 'gc.json')
@@ -14662,17 +14788,24 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('rm')
         const { run, value } = current(args[0])
         if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
-        // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
-        rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
-        // --force only for a clean submodule worktree (below): herdr and git refuse uncommitted work; the branch always stays.
+        // no --force except for a clean submodule worktree: herdr and git refuse uncommitted work; the branch always stays.
         // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
-        if (herdrPanes().some(p => isIn(p, run))) herdr('worktree', 'remove', '--workspace', run.ws)
-        else if (existsSync(run.worktree)) {
-          // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
-          const force =
-            submoduleState(run.worktree) === 'clean' &&
-            git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
-          git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
+        const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
+        if (herdrPanes().some(p => isIn(p, run))) {
+          makeWritable(run.worktree)
+          lock() // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
+          herdr('worktree', 'remove', '--workspace', run.ws)
+        } else if (existsSync(run.worktree)) {
+          const reg = registeredWorktrees(run.repo)
+          if (reg && isRegistered(reg, run.worktree)) {
+            makeWritable(run.worktree)
+            lock()
+            // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
+            const force =
+              submoduleState(run.worktree) === 'clean' &&
+              git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
+            git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
+          } else rmUnregisteredWorktree(run.worktree, run.id, run.repo) // git unregistered it, a read-only dir kept the rest
         }
         // its record outlives it: metrics count removed runs too
         appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
