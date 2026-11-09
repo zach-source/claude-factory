@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { planSecurity, routeLine, securityRoute, sensitivePath } from './security-route'
+import { planSecurity, routeLine, SECURITY_REASON, securityRoute, sensitivePath } from './security-route'
 
 describe('sensitivePath', () => {
   test.each([
@@ -111,4 +111,18 @@ describe('securityRoute', () => {
     expect(routeLine({ required: true, why: ['a', 'b'] })).toBe('required: a; b')
     expect(routeLine({ required: false, why: [] }).startsWith('not required: ')).toBe(true)
   })
+})
+
+test.each([
+  ['Security-reason: src/cli.ts:13388 report refusal', true],
+  ['Reviewed head: abc\n- Security-reason: a.ts:1 b', true],
+  ['  * Security-reason: a.ts:1 b', true],
+  ['summary text', false],
+  ['Security-reason: src/cli.ts report', false],
+  ['Security-reason: src/cli.ts: report', false],
+  ['Security-reason: src/cli.ts:12\nReviewed head: abc', false],
+  ['see Security-reason: a.ts:1 b', false],
+  ['see\u2028Security-reason: a.ts:1 b', true],
+])('SECURITY_REASON %j is %p', (input, ok) => {
+  expect(SECURITY_REASON.test(input)).toBe(ok)
 })

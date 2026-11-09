@@ -100,16 +100,24 @@ test('metrics counts a requeued ending in fates.requeued, out of the shipRate en
 test('metrics count the review to security share and the security changes rate', () => {
   const run = (id: string, ...log: ReturnType<typeof e>[]) => ({ id, node: 'done', createdAt: 0, log })
   const m = metrics([
-    run('a', e('review', 'security', 1), e('security', 'approve', 2)),
+    run(
+      'a',
+      { ...e('review', 'security', 1), summary: 'Security-reason: a.ts:1 b' },
+      e('security', 'approve', 2),
+    ),
     run('b', e('review', 'changes', 1), e('review', 'security', 2), e('security', 'changes', 3)),
-    run('c', e('check', 'security', 1), e('security', 'approve', 2)),
+    run(
+      'c',
+      { ...e('check', 'security', 1), summary: 'Security-reason: a.ts: b' },
+      e('security', 'approve', 2),
+    ),
     run('d', e('review', 'approve', 1)),
     run('e', e('review', 'changes', 1)),
     run('f', { ...e('review', 'security', 1), attempt: 0 }, { ...e('security', 'approve', 2), attempt: 0 }),
   ])
-  expect(m.security).toEqual({ builds: 4, sent: 3, verdicts: 3, changes: 1 })
+  expect(m.security).toEqual({ builds: 4, sent: 3, escalated: 1, verdicts: 3, changes: 1 })
   expect(render(m, 't')).toContain(
-    'security: sent 3 of 4 approved builds (75%); changes 1 of 3 verdicts (33%)',
+    'security: sent 3 of 4 approved builds (75%); changes 1 of 3 verdicts (33%); escalated by reason 1',
   )
   expect(render(metrics([]), 't')).toContain('sent 0 of 0 approved builds (-)')
 })

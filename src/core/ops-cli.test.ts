@@ -183,7 +183,7 @@ const GOLD: Record<string, Row> = {
   },
   h: {
     code: 0,
-    out: '{"grok":{"spentUsd":0,"budgetUsd":null},"all":{"runs":0,"fates":{},"shipRate":null,"hoursToShip":{"median":null,"p90":null},"small":{"runs":0,"hoursToShip":{"median":null,"p90":null}},"approveWaitHours":{"median":null,"p90":null},"reviewLoops":0,"security":{"builds":0,"sent":0,"verdicts":0,"changes":0},"deploySessionsPerShippedRun":null,"triageAlreadyDone":0,"runsWith3PlusReviewRounds":0,"implementPassesPerShippedRun":null,"capReplans":0,"fails":{},"stations":{}},"precheck":{"skipped":0,"mergedPr":0,"liveRun":0,"failOpen":0},"launches":[],"denials":{},"rigs":{}}\n',
+    out: '{"grok":{"spentUsd":0,"budgetUsd":null},"all":{"runs":0,"fates":{},"shipRate":null,"hoursToShip":{"median":null,"p90":null},"small":{"runs":0,"hoursToShip":{"median":null,"p90":null}},"approveWaitHours":{"median":null,"p90":null},"reviewLoops":0,"security":{"builds":0,"sent":0,"escalated":0,"verdicts":0,"changes":0},"deploySessionsPerShippedRun":null,"triageAlreadyDone":0,"runsWith3PlusReviewRounds":0,"implementPassesPerShippedRun":null,"capReplans":0,"fails":{},"stations":{}},"precheck":{"skipped":0,"mergedPr":0,"liveRun":0,"failOpen":0},"launches":[],"denials":{},"rigs":{}}\n',
     err: '',
   },
   i: {

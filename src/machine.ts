@@ -166,8 +166,8 @@ export type Node = {
   onTimeout?: { timeoutMin: number; prompt?: string }
   /**
    * The runner decides the security route when it starts this station (src/security-route.ts), writes it in
-   * the brief as `## Security route`, and `report` refuses `security` or `approve` when the outcome does not
-   * match it. `validate` refuses this field on a gate, and on a node whose `next` lacks `security` or `approve`.
+   * the brief as `## Security route`, and `report` refuses `approve` when the route is required, and `security`
+   * when it is not required and the summary has no `Security-reason:` line. `validate` refuses this field on a gate, and on a node whose `next` lacks `security` or `approve`.
    */
   securityRoute?: true
 }

@@ -2,6 +2,9 @@
 // It reads changed paths, the plan's Security-sensitive line and the bead labels.
 // Pure functions, no I/O.
 
+/** A reviewer's reason to send a not-required route to security: one line `Security-reason: <path>:<line> <text>`. */
+export const SECURITY_REASON = /^[ \t]*(?:[-*][ \t]+)?Security-reason:[ \t]*\S+:\d+[ \t]+\S/m
+
 const FILE_RES = [
   /^dockerfile[^/]*$/,
   /^(claude|agents)\.md$/,

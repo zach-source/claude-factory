@@ -103,7 +103,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { routeLine, securityRoute, type SecurityRoute } from './security-route'
+import { routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
 import * as plan from './plan'
 import { parseAdvisoryInput, planAdvisories } from './advisories'
@@ -13382,19 +13382,19 @@ if (import.meta.main && !outboxCmd)
         if (Number(seq) !== c.seq)
           fail(`stale report: seq ${seq} is no longer the active worker (now ${c.seq}); stop here`)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
+        const text = cleanReport(summaryArgs(args).slice(3).join(' '))
         if (n?.securityRoute && (outcome === 'security' || outcome === 'approve')) {
           const route = savedRoute(run, c)
           const line = routeLine(route)
-          if (outcome === 'security' && !route.required)
+          if (outcome === 'security' && !route.required && !SECURITY_REASON.test(text))
             fail(
-              `the security route for this diff is not required (${line}). Post your verdict as the approve rules say: the APPROVE review when FACTORY_GH_REVIEWER is 1, then mark the pull request ready if those rules allow it. Then report approve. Or report changes; put a security finding in changes.`,
+              `the security route for this diff is not required (${line}). Post your verdict as the approve rules say: the APPROVE review when FACTORY_GH_REVIEWER is 1, then mark the pull request ready if those rules allow it. Then report approve. Or, for a concrete security finding that the path rule missed, add one summary line Security-reason: <path>:<line> <what is sensitive> and report security again.`,
             )
           if (outcome === 'approve' && route.required)
             fail(
               `this diff needs the security station (${line}). If you marked the pull request ready, run gh pr ready <n> --undo. If you posted an APPROVE review, dismiss it: gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<review id>/dismissals -f message='security review follows' -f event=DISMISS. If the dismissal fails, name the review id in your summary. Post the verdict as a COMMENT, then report security.`,
             )
         }
-        const text = cleanReport(summaryArgs(args).slice(3).join(' '))
         post(
           run.id,
           outcome === 'fail'

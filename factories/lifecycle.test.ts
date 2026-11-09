@@ -408,7 +408,8 @@ test('AC8: review and check take their security route from the runner, not from 
   const { review, check, plan } = nodes
   for (const n of [review!, check!]) {
     expect(n.prompt).toContain('## Security route')
-    expect(n.prompt).toContain('never report security')
+    expect(n.prompt).toContain('Security-reason: <path>:<line>')
+    expect(n.prompt).not.toContain('never report security')
     expect(n.prompt).not.toContain('removes a gate, lets more run unattended')
     expect(n.securityRoute).toBe(true)
   }

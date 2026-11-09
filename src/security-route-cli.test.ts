@@ -1,5 +1,5 @@
 // The security route (claude-factory-aure.2): the runner writes it into the brief when a securityRoute
-// station starts, and `report` refuses security or approve when the outcome does not match it.
+// station starts, and `report` refuses approve when the route is required, and security when it is not required and the summary has no `Security-reason:` line.
 // The tick tests use a temp bare origin and a clone, as mergecheck.test.ts does.
 import { afterEach, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -161,13 +161,43 @@ type Row = {
   code: number
   err?: string[]
   def?: boolean
+  summary?: string
+  file?: boolean
 }
 const NOT = { required: false, why: [] }
 const YES = { required: true, why: ['factories/x.ts (dir:factories)'] }
 const rows: [string, Row][] = [
   [
     'not required, security',
-    { route: NOT, outcome: 'security', code: 1, err: ['is not required', 'report approve'] },
+    {
+      route: NOT,
+      outcome: 'security',
+      code: 1,
+      err: ['is not required', 'report approve', 'Security-reason: <path>:<line> <what is sensitive>'],
+    },
+  ],
+  ...(
+    [
+      ['reason', 'Security-reason: src/cli.ts:13388 report refusal', 0],
+      ['reason without line', 'Security-reason: src/cli.ts report', 1],
+      ['reason with empty line', 'Security-reason: src/cli.ts: report', 1],
+      ['reason with no text', 'Security-reason: src/cli.ts:12\nReviewed head: abc', 1],
+      ['reason inline', 'see Security-reason: a.ts:1 b', 1],
+      ['reason after U+2028', 'see\u2028Security-reason: a.ts:1 b', 1],
+    ] as [string, string, number][]
+  ).map(([n, summary, code]): [string, Row] => [
+    `not required, security, ${n}`,
+    { route: NOT, outcome: 'security', code, summary },
+  ]),
+  [
+    'not required, security, summary file, bullet on line 2',
+    {
+      route: NOT,
+      outcome: 'security',
+      code: 0,
+      file: true,
+      summary: 'Reviewed head: abc\n- Security-reason: a.ts:1 b',
+    },
   ],
   [
     'required, approve',
@@ -208,7 +238,11 @@ test.each(rows)(
             .filter(l => l).length
         : 0
     const before = lines()
-    const p = Bun.spawnSync([CLI, 'report', 'r1', String(seq), row.outcome, 'summary text'], { env: env() })
+    const summary = row.summary ?? 'summary text'
+    const sf = join(dir, 'summary.txt')
+    if (row.file) writeFileSync(sf, summary)
+    const tail = row.file ? ['--summary-file', sf] : [summary]
+    const p = Bun.spawnSync([CLI, 'report', 'r1', String(seq), row.outcome, ...tail], { env: env() })
     expect(p.exitCode).toBe(row.code)
     expect(lines() - before).toBe(row.code === 0 ? 1 : 0)
     for (const e of row.err ?? []) expect(p.stderr.toString()).toContain(e)
