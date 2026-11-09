@@ -1,6 +1,8 @@
-// `factory tick` starts `factory wiki refresh` (claude-factory-tx6c.5). kickWiki in src/cli.ts is the only
-// caller. It runs at most once in FACTORY_WIKI_REFRESH_MIN minutes (default 30), only when wiki/.git exists,
-// and also while the factory is halted. The tests follow src/gc-kick.test.ts.
+// `factory tick` starts `factory wiki refresh` (claude-factory-tx6c.5) and `factory wiki groom`
+// (claude-factory-tx6c.9). kickWiki in src/cli.ts is the only caller. Refresh runs at most once in
+// FACTORY_WIKI_REFRESH_MIN minutes (default 30), also while halted. Groom runs once in FACTORY_WIKI_GROOM_MIN
+// minutes (default 1440), not while halted. At most one pass starts in each tick, and only when wiki/.git exists.
+// The tests follow src/gc-kick.test.ts.
 import { afterEach, expect, test } from 'bun:test'
 import {
   chmodSync,

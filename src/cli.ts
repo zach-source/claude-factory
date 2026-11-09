@@ -11975,7 +11975,8 @@ const WIKI_RIG_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/
 /**
  * One `factory wiki refresh` pass: write rigs/<rig>.md for each rig with a valid name and the rig list in
  * index.md, from the run rows, the ship queues and the merged-PR cache (no gh call). A run that cannot be
- * read is left out. With `dryRun` it only returns the changed paths. Else it commits, pushes and journals.
+ * read is left out. With `dryRun` it only returns the changed paths. Else it first needs the checkout on main
+ * (a left-over groom branch skips the pass) and pulls main of origin, then commits, pushes and journals.
  */
 async function wikiRefresh(dryRun: boolean): Promise<string[]> {
   const dir = join(HOME, 'wiki')
