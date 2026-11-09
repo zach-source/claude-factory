@@ -218,10 +218,114 @@ describe('loadedTexts and the home guard', () => {
     expect(run('git commit -m x', d)).toBeUndefined()
   })
 
-  test('reads only a bin that the command names', () => {
+  // claude-factory-qn8a.37.17: every node_modules/.bin file is read, whatever the command text.
+  const BS = '\\'
+  test.each([
+    ['npx pret' + BS + '\ntier --write .', undefined, undefined],
+    ['bunx prettie' + BS + '\nr --write .', undefined, undefined],
+    ['make fmt', 'Makefile', 'fmt:\n\tnpx pret' + BS + '\ntier --write .\n'],
+    ['make fmt', 'Makefile', 'fmt:\n\tnpx pret' + BS + '\n\ttier --write .\n'],
+    [
+      'npm run fmt',
+      'package.json',
+      '{"scripts":{"fmt":"npx pret' + BS + BS + BS + 'ntier --write ."}}',
+    ],
+  ])('denies a bin whose name a line join hides: %s', (cmd, file, text) => {
     const d = repo()
-    put(d, 'node_modules/.bin/other', bad())
-    expect(run('bunx prettier --write .', d)).toBeUndefined()
+    if (file && text) put(d, file, text)
+    put(d, 'node_modules/.bin/prettier', bad())
+    expect(run(cmd, d)).toBe(HOME_REASON)
+  })
+
+  test.each(['git status', 'ls', 'bunx prettier --write .'])('reads a bin that nothing names: %s', cmd => {
+    const d = repo()
+    put(d, 'node_modules/.bin/zz-acme', bad())
+    expect(run(cmd, d)).toBe(HOME_REASON)
+  })
+
+  test('reads a bin in a parent dir', () => {
+    const d = repo()
+    put(d, 'node_modules/.bin/zz-acme', bad())
+    mkdirSync(join(d, 'sub'))
+    expect(run('git status', d, join(d, 'sub'))).toBe(HOME_REASON)
+  })
+
+  test.each(['bunx prettier --write .', 'git commit -m x', 'npm run fmt'])(
+    'allows a plain bin: %s',
+    cmd => {
+      const d = repo()
+      put(d, 'package.json', '{"scripts":{"fmt":"prettier --write ."}}')
+      put(d, 'node_modules/.bin/prettier', '#!/usr/bin/env node\nrequire("../prettier/bin.cjs")\n')
+      expect(run(cmd, d)).toBeUndefined()
+    },
+  )
+
+  test('allows a repo with no node_modules', () => {
+    expect(run('git status', repo())).toBeUndefined()
+  })
+
+  describe('the file and char caps', () => {
+    const clean = () => {
+      for (let p = tmpdir(); ; p = resolve(p, '..')) {
+        expect(existsSync(join(p, 'node_modules', '.bin'))).toBe(false)
+        expect(readdirSync(p).filter(n => /^(?:package\.json|bunfig\.toml|[Mm]akefile)$/.test(n))).toEqual([])
+        if (resolve(p, '..') === p) break
+      }
+    }
+    const fill = (d: string, rel: string, n: number, text = '', from = 0) => {
+      mkdirSync(join(d, rel), { recursive: true })
+      for (let i = from; i < from + n; i++) writeFileSync(join(d, rel, 'f' + i), text)
+    }
+    test('1025 files are over the cap, 1020 are not', () => {
+      clean()
+      const d = repo()
+      fill(d, 'node_modules/.bin', 1025)
+      expect(loadedTexts('ls', d)).toBeUndefined()
+      expect(run('ls', d)).toBe(LOADED_REASON)
+      const e = repo()
+      fill(e, 'node_modules/.bin', 1020)
+      expect(Array.isArray(loadedTexts('ls', e))).toBe(true)
+      expect(run('ls', e)).toBeUndefined()
+    })
+    test('the count is a total over all dirs', () => {
+      clean()
+      const d = repo()
+      mkdirSync(join(d, 'sub'))
+      fill(d, 'sub/node_modules/.bin', 600)
+      fill(d, 'node_modules/.bin', 425)
+      expect(loadedTexts('ls', join(d, 'sub'))).toBeUndefined()
+    })
+    test('the hooks files count too', () => {
+      clean()
+      const d = repo()
+      fill(d, 'node_modules/.bin', 1000)
+      fill(d, '.git/hooks', 25, '', 0)
+      expect(loadedTexts('ls', d)).toBeUndefined()
+    })
+    test('70 files of 64000 chars are over the char cap, 60 are not', () => {
+      clean()
+      const t = 'a'.repeat(64000)
+      const d = repo()
+      fill(d, 'node_modules/.bin', 70, t)
+      expect(loadedTexts('ls', d)).toBeUndefined()
+      const e = repo()
+      fill(e, 'node_modules/.bin', 60, t)
+      expect(Array.isArray(loadedTexts('ls', e))).toBe(true)
+    })
+    test('60 big files and 1000 small files load fast', () => {
+      clean()
+      const line = 'const x = require("./lib/a.js"); process.env.HOMEDIRX; os.homedir(); fs.readSync(p) ./x/y.sh\n'
+      const d = repo()
+      fill(d, 'node_modules/.bin', 60, line.repeat(800).slice(0, 64000))
+      let t = Date.now()
+      expect(run('ls', d)).toBeUndefined()
+      expect(Date.now() - t).toBeLessThan(5000)
+      const e = repo()
+      fill(e, 'node_modules/.bin', 1000, 'x'.repeat(2048))
+      t = Date.now()
+      expect(Array.isArray(loadedTexts('ls', e))).toBe(true)
+      expect(Date.now() - t).toBeLessThan(1000)
+    })
   })
 
   test('a read failure of the git config denies; a dir outside a work tree does not', () => {
@@ -285,7 +389,10 @@ describe('this repo', () => {
   }
 
   test('its own config and hooks give no false deny', () => {
-    const L = ['.prettierrc', 'package.json', 'bunfig.toml', 'node_modules/.bin/prettier']
+    const bins = existsSync(join(root, 'node_modules/.bin'))
+      ? readdirSync(join(root, 'node_modules/.bin')).map(f => join('node_modules/.bin', f))
+      : []
+    const L = ['.prettierrc', 'package.json', 'bunfig.toml', ...bins]
       .map(p => rd(p))
       .concat(
         (existsSync(join(root, '.beads-hooks')) ? readdirSync(join(root, '.beads-hooks')) : []).map(f =>
