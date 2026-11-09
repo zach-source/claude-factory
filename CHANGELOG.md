@@ -6,6 +6,14 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Fixed: the AX manager host did not make a backup (claude-factory-d289.18).
+  - A tick holds the tick lock most of the time. So each backup try found the lock and stopped.
+  - Now, if the lock is held, the host tries again each second for 2 min. Then it logs one skip line.
+
+- Fixed: `factory migrate-to-ax --dry-run` showed pushed runs as not pushed (claude-factory-d289.17).
+  - The main repo did not have the new origin commits of the run branch. So `merge-base` failed.
+  - Now, if the repo does not have the origin commit, the check fetches the branch first.
+
 - Fixed: in the AX manager host, `factory repos sync` could not make a run's worktree again: each fetch failed TLS (claude-factory-d289.14). The git network env was a copy of the env from before the host set `GIT_SSL_CAINFO`. Now each call reads the env at call time.
 
 - Fixed: AX manager cutover gaps from attempt 3 (claude-factory-d289.14, claude-factory-d289.15, claude-factory-d289.16).
