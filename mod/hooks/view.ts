@@ -1324,7 +1324,7 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
   const named = [
     ...(substitution ? [substitution.phrase] : []),
-    ...(verbHidden ? ['run a factory command whose verb is not a literal word'] : []),
+    ...(verbHidden ? ['run a factory command whose verb or an argument is not a literal word'] : []),
     ...kinds.map(k => `${k.phrase}${times(k.count)}`),
   ]
   const hidden = kinds.filter(k => k.hidden > 0)
@@ -1346,7 +1346,7 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
       ...(substitution ? [substitution.deny] : []),
       ...(verbHidden
         ? [
-            'The person did not confirm this verb. Write the factory verb as a literal word, with no $, backtick, * ? [ or {.',
+            'The person did not confirm this command. Write the factory verb as a literal word, with no $, backtick, * ? [ or {. Write each argument with no brace glued to a word. Pass free text by file.',
           ]
         : []),
       ...kinds.map(k => k.deny),
@@ -1368,10 +1368,17 @@ const canon = (s: string) =>
   s.replace(/\S+/g, w =>
     w.includes('{') ? `${w.split(/[{,}]/).filter(Boolean).map(one).join(' ')} factory` : one(w),
   )
-/** a non-literal verb word after the caller word */
-const VERB_HIDDEN = new RegExp(
-  String.raw`(?:(?<![\w.-])factory|${CLI})(?:\s+[^\s$\x60*?[{]*[$\x60*?[{]|[^;&|\n]{0,200}(?:[\w-]\{[^\s}]{0,100},|,[^\s{]{0,100}\}[\w-]))`,
-)
+/** the caller word, then a verb word with a hidden part */
+const VERB_FIRST = new RegExp(String.raw`(?:(?<![\w.-])factory|${CLI})\s+[^\s$\x60*?[{]*[$\x60*?[{]`)
+/** a brace group glued to a word: `a{b,c}`, `a{1..2}`, `{a,b}c`. Each run stops at the next brace, comma or space, so the scan is linear. */
+const GLUED_BRACE = /[\w-]\{+[^\s{},]*[,}]|[,{][^\s{},]*\}+[\w-]/
+/** a non-literal verb word after the caller word, or a brace word anywhere after it (no bound, no split on `;&|`: the strip copy lost the quotes) */
+const VERB_HIDDEN = {
+  test: (t: string) => {
+    const i = t.search(CALLER)
+    return VERB_FIRST.test(t) || (i >= 0 && GLUED_BRACE.test(t.slice(i)))
+  },
+}
 /** Return match ends. A tail cut prevents repeated scans of a suffix with no tail. */
 export function kindEnds(text: string, re: RegExp, tail?: RegExp): number[] {
   if (tail) {

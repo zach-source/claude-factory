@@ -204,6 +204,21 @@ test('a brace word after the caller is denied with no dialog', SLOW, async ($, o
     `${F} start lifecycle acme w-2 '--o'{w,w}'ned'`,
     `${F} wiki in{i,i}t`,
     `${F} decisions an{s,s}wer r1 x`,
+    `${F} start lifecycle acme w-2 ${'a'.repeat(300)} --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 ${'a'.repeat(5000)} --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 'x;y' --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 'x\ny' --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 x\\; --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 --own{{ed,},}`,
+    `${F} start lifecycle acme w-2 {x,{--own,}}ed`,
+    `${F} start lifecycle acme w-2 {--o,--ow}ned`,
+    `${F} status; echo a{b,c}d`,
+    `${F} start lifecycle acme w-2 --own{e..e}d`,
+    `${F} wiki ini{t..t}`,
+    `${F} decisions an{s..s}wer r1 x`,
+    `${F} start lifecycle acme w-2 --o{1..2}ned`,
+    `${F} start lifecycle acme w-2 --o{a..c}ned`,
+    `${F} start lifecycle acme w-2 --o{w,'w x'}ned`,
   ]
   for (const command of rows) {
     const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
@@ -211,6 +226,19 @@ test('a brace word after the caller is denied with no dialog', SLOW, async ($, o
   }
   expect(n.asked).toBe(0)
   expect(n.ran).toBe(0)
+})
+
+test('a plain word or JSON near the caller is not denied', SLOW, () => {
+  for (const c of [
+    `${F} mail r1 plan '{"a":1,"b":2}'`,
+    `${F} mail r1 plan '{"a":1}'`,
+    `echo a{b,c}d; ${F} status`,
+    'cp /tmp/factory/a{b,c}.md .',
+    'ls /x/factory-notes/a{b,c}d',
+    `${F} status`,
+    'ls -la',
+  ])
+    expect(gatedCommand(c), c).toBeNull()
 })
 
 test('a non-literal verb word after a literal caller is denied with no dialog', SLOW, async ($, on) => {
@@ -307,6 +335,17 @@ test('gatedCommand runs in linear time on hostile text', SLOW, () => {
     '{a,'.repeat(66000),
     '/'.repeat(200000),
     'x/bun '.repeat(33000),
+    '/repo/bin/factory {a,'.repeat(20000),
+    '/repo/bin/factory a{'.repeat(40000),
+    '/repo/bin/factory x{'.repeat(40000) + ',',
+    '/repo/bin/factory ' + '{'.repeat(200000),
+    '/repo/bin/factory ' + 'a{b,'.repeat(50000),
+    '/repo/bin/factory ' + 'a{'.repeat(100000) + ' ',
+    '/repo/bin/factory ' + ',a}'.repeat(60000),
+    '/repo/bin/factory ' + 'a{b '.repeat(50000),
+    '/repo/bin/factory ' + ';{a,b}'.repeat(30000),
+    '/repo/bin/factory ' + '{,'.repeat(100000),
+    '/repo/bin/factory start '.repeat(4000) + 'a{b,c}',
   ]
   for (const [i, t] of texts.entries()) {
     const t0 = performance.now()
