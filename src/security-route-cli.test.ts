@@ -134,6 +134,17 @@ test('a fetch that fails gives a required route with paths unknown (AC5)', () =>
   expect(prompt()).toContain('required: paths unknown')
 }, 60_000)
 
+test('the route diffs the branch the run started from, not the run branch (security round 1)', () => {
+  setup('factories/x.ts')
+  git(other, 'push', '-q', 'origin', 'main:empty')
+  reviewRun(def(true))
+  const f = join(runDir, 'run.json')
+  const run = JSON.parse(readFileSync(f, 'utf8'))
+  writeFileSync(f, JSON.stringify({ ...run, branch: 'empty', shipBranch: 'b' }))
+  tick()
+  expect(routeJson().route.required).toBe(true)
+}, 60_000)
+
 test('a station without securityRoute has no section and no route file (AC5)', () => {
   setup('factories/x.ts')
   reviewRun(def(false))

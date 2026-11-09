@@ -420,6 +420,8 @@ export type Run = {
   bead?: string
   /** a rig's ship run: only the runner writes this, and it counts against no run limit (claude-factory-rtuw) */
   ship?: true
+  /** the ship branch a rework run started from: set once, so a later bead edit cannot move the security diff */
+  shipBranch?: string
 }
 type Saved = {
   cursor: number
@@ -7401,13 +7403,12 @@ const routeFile = (run: Run) => join(runDir(run.id), 'security-route.json')
 /** The runner's security route for this run: changed paths, the plan's line and the bead's labels. */
 function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
   let labels: string[] | null = []
-  let ref = run.branch
+  const ref = run.shipBranch ?? run.branch
   if (run.bead) {
     try {
       const bead = beads(run.repo, actorOf(run.id)).lookup(run.bead)
       if (bead) {
         labels = bead.labels ?? []
-        ref = shipBranchOf(bead) ?? run.branch
       } else labels = null
     } catch {
       labels = null
@@ -8063,7 +8064,15 @@ async function createRun(
     from,
     ship,
     onto,
-  }: { id: string; bead?: string; from?: { run: Run; saved: Saved }; ship?: true; onto?: string },
+    shipBranch,
+  }: {
+    id: string
+    bead?: string
+    from?: { run: Run; saved: Saved }
+    ship?: true
+    onto?: string
+    shipBranch?: string
+  },
 ) {
   const branch = `factory/${id}`
   const base = from?.run.base ?? freshBase(repo)
@@ -8123,6 +8132,7 @@ async function createRun(
     ...(from && { forkedFrom: from.run.id }),
     ...(bead && { bead }),
     ...(ship && { ship }),
+    ...(shipBranch && { shipBranch }),
   }
   // the source's worker stays the source's: the fork launches its own
   const snapshot = from
@@ -8155,7 +8165,7 @@ async function createTracked(
     // the goal says the worktree starts from this branch: do not fall back to the default branch
     if (shipBranch && !onto)
       throw new Error(`origin has no branch ${shipBranch}: a rework run must start from it`)
-    return await createRun(spec, repo, goal, { id, bead, from, ship, onto })
+    return await createRun(spec, repo, goal, { id, bead, from, ship, onto, shipBranch })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
     if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
