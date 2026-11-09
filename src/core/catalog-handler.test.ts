@@ -3,7 +3,14 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { clientHandler, type RunResult } from '../server-api'
+import type { Port } from './catalog'
 
+// the board and catalog tests call no port function
+const port = new Proxy({} as Port, {
+  get: (_t, k) => () => {
+    throw new Error(`port.${String(k)} must not be called`)
+  },
+})
 const setup = (board: () => unknown = () => null) => {
   const home = mkdtempSync(join(tmpdir(), 'cat-h-'))
   const calls: string[][] = []
@@ -11,7 +18,7 @@ const setup = (board: () => unknown = () => null) => {
     calls.push(argv)
     return { code: 0, out: 'ok\n', err: '' }
   }
-  return { calls, h: clientHandler({ home, run, board }) }
+  return { calls, h: clientHandler({ home, run, port, board }) }
 }
 type H = ReturnType<typeof setup>['h']
 const get = (h: H, path: string) => h(new Request(`http://x${path}`), '1.2.3.4')
@@ -37,7 +44,9 @@ const NAMES = [
   'decisions.answer',
   'decisions.list',
   'factory.halt',
+  'gates.brief',
   'gates.decide',
+  'lease.show',
   'metrics.show',
   'plan.show',
   'prs.show',
@@ -50,7 +59,7 @@ const NAMES = [
 ]
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 17 operations', async () => {
+  test('serves the envelope with the 19 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)
