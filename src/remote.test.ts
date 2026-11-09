@@ -3196,6 +3196,37 @@ test("inside a VM, a report carries the session's usage, subagents included (hr9
     'claude-opus-4-7',
   ])
   expect(line.usage[0]).toMatchObject({ session: 'sess-9', input: 1, cacheRead: 9, output: 2 })
+
+  // aure.1 AC3: `factory worker usage` prints the same rows as one JSON array
+  const out = factory(['worker', 'usage'], env)
+  expect(out.code).toBe(0)
+  expect(JSON.parse(out.out)).toHaveLength(2)
+  expect(factory(['worker', 'usage', 'extra'], env).code).toBe(1)
+})
+
+test('inside a VM, a codex report carries its rollout usage (aure.1 AC4)', () => {
+  mkdirSync(dir, { recursive: true })
+  const own = join(dir, 'vm-own-codex')
+  const codexHome = join(dir, 'vm-codex')
+  mkdirSync(join(codexHome, 'sessions', '2026', '11', '05'), { recursive: true })
+  mkdirSync(own, { recursive: true })
+  writeFileSync(
+    join(codexHome, 'sessions', '2026', '11', '05', `rollout-2026-11-05T21-00-00-${UUID}.jsonl`),
+    rolloutLines(),
+  )
+  const outbox = join(dir, 'outbox-codex.jsonl')
+  const env = {
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'a',
+    FACTORY_RUN: '',
+    FACTORY_WORKER_DIR: own,
+    FACTORY_HARNESS: 'codex',
+    CODEX_HOME: codexHome,
+  }
+  expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)
+  const line = JSON.parse(readFileSync(outbox, 'utf8').trim())
+  expect(line.usage).toHaveLength(1)
+  expect(line.usage[0]).toMatchObject({ model: 'gpt-6-astra', session: UUID, input: 12695 })
 })
 
 test("a replayed AX report stores the VM's usage as its station, and bad usage never refuses the report (hr94 AC6, AC7)", () => {

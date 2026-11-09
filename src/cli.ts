@@ -4415,7 +4415,7 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
     const rows = usageOf(run, startedAt)
     // a codex pane keeps its rollouts in its own CODEX_HOME (codexWorker): store them as the AX path does
     try {
-      rows.push(...codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
+      rows.push(...worker.codexHomeUsage(join(runDir(run.id), 'codex', node), startedAt, node, seq))
     } catch {} // a bad codex file must not drop the Claude rows
     rows.forEach((u, i) => {
       const o = owner.get(u.session)
@@ -5543,26 +5543,6 @@ function compactMessage(
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
 /**
- * The rollouts of a private CODEX_HOME since `since` (y3zo dream; vffe.3 laptop codex station). Read at most 20 plain files that have a rollout
- * name, are 64 MiB or smaller and sit under the private home's sessions/. Send every row through validUsage.
- */
-function codexHomeUsage(codexHome: string, since: number, node: string, seq: number) {
-  const sessions = join(codexHome, 'sessions')
-  if (!existsSync(sessions)) return []
-  // ponytail: this reads each whole file; the upgrade is a stream of the last token_count.
-  const rows = (readdirSync(sessions, { recursive: true }) as string[])
-    .filter(f => /^rollout-[A-Za-z0-9._-]{1,200}\.jsonl$/.test(basename(f)))
-    .sort()
-    .filter(f => {
-      const st = lstatSync(join(sessions, f))
-      return st.isFile() && st.size <= 64 * 1024 * 1024 && st.mtimeMs >= since
-    })
-    .slice(0, 20)
-    .flatMap(f => codexUsageOf(readFileSync(join(sessions, f), 'utf8').split('\n'), basename(f)) ?? [])
-  return validUsage(rows, node, seq)
-}
-
-/**
  * Make a private CODEX_HOME for the codex dream. It holds a trust line for the memory and a link to the
  * person's auth.json (one token store, as codexWorker does). The dream copies nothing else.
  */
@@ -5585,7 +5565,7 @@ const DREAM_CODEX_NOTE =
 function storeDreamUsage(start: number, codexHome?: string) {
   try {
     const rows = codexHome
-      ? codexHomeUsage(codexHome, start, 'dream', 0)
+      ? worker.codexHomeUsage(codexHome, start, 'dream', 0)
       : usageIn(MEMORY, '', () => '?', start)
     appendFileSync(
       join(HOME, 'manager-usage.jsonl'),
@@ -12068,12 +12048,13 @@ if (import.meta.main && !outboxCmd)
         const [sub, arg] = args
         if (sub === 'serve') await worker.serve(arg === '--model' ? args[2] : undefined)
         else if (sub === 'poll') console.log(JSON.stringify(worker.poll(Number(arg ?? 0))))
+        else if (sub === 'usage' && args.length === 1) console.log(JSON.stringify(worker.usageOfSession('')))
         else if (sub === 'prompt' && arg) worker.prompt(arg)
         else if (sub === 'put' && args.length === 5)
           worker.put(arg!, Number(args[2]), Number(args[3]), args[4]!)
         else
           fail(
-            'usage: factory worker serve [--model m] | poll <cursor> | prompt <base64> | put <name> <part> <parts> <base64>',
+            'usage: factory worker serve [--model m] | poll <cursor> | usage | prompt <base64> | put <name> <part> <parts> <base64>',
           )
         break
       }
