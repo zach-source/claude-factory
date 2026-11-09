@@ -11642,7 +11642,7 @@ function record(id: string): RunRecord {
   }
 }
 
-async function status(id: string | undefined, print: Print = l => print(l)) {
+async function status(id: string | undefined, print: Print = l => console.log(l)) {
   const halt = halted()
   if (halt && !id)
     print(
