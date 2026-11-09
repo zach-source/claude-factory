@@ -498,7 +498,15 @@ async function launchAxManager(args: string[]) {
     fail('FACTORY_AX_MANAGER_IMAGE is not set: name the manager image (Dockerfile.worker, target manager)')
   const m = ax.remoteManager()
   if (m) fail(m)
-  const { name, policy } = await ax.launchManager(image!, args, rawRigs())
+  // an old Workspace keeps an old home and its .migrated: refuse it, unless a resume asks to keep it
+  const reuse = args.includes('--reuse-workspace')
+  if (!reuse && ax.workspaceExists(ax.managerTask())) fail(ax.staleWorkspaceRefusal(ax.managerTask()))
+  const { name, policy } = await ax.launchManager(
+    image!,
+    args.filter(a => a !== '--reuse-workspace'),
+    rawRigs(),
+    { launch: reuse ? undefined : crypto.randomUUID() },
+  )
   console.log(
     `the manager runs in AX task ${name}${policy ? '' : ' (its egress policy is NOT created: the task has no egress; check the AX controller)'}`,
   )
@@ -8393,7 +8401,8 @@ async function migrateToAx(args: string[]) {
     if (!r.ok) fail(`the archive did not arrive over ax stdio: ${r.err}`)
     console.log(`sent over ax stdio in ${Math.round((Date.now() - t0) / 1000)} s; sha256 matches`)
   } else await sendParts(task, out, sha)
-  ax.unpackMigration('migrate.tgz', HOME)
+  // the marker holds the task's launch id: the host trusts only a marker of its own launch
+  ax.unpackMigration('migrate.tgz', HOME, ax.launchId(task))
   rmSafe(dir, { recursive: true, force: true })
   console.log(`moved the factory home to ${task}: its manager starts now. factory attach`)
 }

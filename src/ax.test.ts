@@ -36,6 +36,7 @@ case "$3 $4" in
   "apply -f") cat > ${dir}/applied; echo created ;;
   "get task") [ -f ${dir}/get ] && cat ${dir}/get || { echo 'getting task: rpc error: code = NotFound' >&2; exit 1; } ;;
   "get tasks"|"get workspaces") [ -f ${dir}/listfail ] && { cat ${dir}/list; exit 1; }; [ -f ${dir}/list ] && cat ${dir}/list || { echo 'boom' >&2; exit 1; } ;;
+  "get workspace") [ -f ${dir}/wsfail ] && { echo 'boom' >&2; exit 1; }; [ -f ${dir}/ws ] && cat ${dir}/ws || { echo 'getting workspace: rpc error: code = NotFound' >&2; exit 1; } ;;
   "delete task") if [ -f ${dir}/deltask ]; then cat ${dir}/deltask >&2; exit 1; fi ;;
   "delete workspace") if [ -f ${dir}/delws ]; then cat ${dir}/delws >&2; exit 1; fi ;;
   ssh*) cat ${dir}/ssh ;;
@@ -55,7 +56,11 @@ case "$*" in
 esac
 case "$1" in
   get) printf 'CA-PEM' ;;
-  ate) cat > ${dir}/policy; [ -f ${dir}/actor ] || { touch ${dir}/actor; echo 'actor not found' >&2; exit 1; } ;;
+  ate) case "$2" in
+      get) [ -f ${dir}/stored ] && cat ${dir}/stored || { echo 'egress policy not found' >&2; exit 1; }; exit ;;
+      update) cat > ${dir}/updated; exit 0 ;;
+    esac
+    cat > ${dir}/policy; [ -f ${dir}/stored ] && { echo 'Error: AlreadyExists' >&2; exit 1; }; [ -f ${dir}/actor ] || { touch ${dir}/actor; echo 'actor not found' >&2; exit 1; } ;;
 esac
 `,
 )
@@ -79,6 +84,10 @@ beforeEach(() => {
     'list',
     'deltask',
     'delws',
+    'stored',
+    'updated',
+    'ws',
+    'wsfail',
   ])
     rmSync(join(dir, f), { force: true })
 })
@@ -272,8 +281,61 @@ test("a rig's sandboxClass reaches spec.sandboxClass; absent, the field stays ou
 test("a task's egress policy is one try: refused until its actor shows, then in", () => {
   expect(ax.createPolicy('f-r1-1')).toBe(false)
   expect(ax.createPolicy('f-r1-1')).toBe(true)
-  expect(logged()).toEqual(Array(2).fill('kubectl ate create egress-policy f-r1-1 -a factory -f -'))
+  expect(logged()).toEqual(
+    Array(2)
+      .fill([
+        'kubectl ate get egress-policy f-r1-1 -a factory -o json',
+        'kubectl ate create egress-policy f-r1-1 -a factory -f -',
+      ])
+      .flat(),
+  )
   expect(JSON.parse(readFileSync(join(dir, 'policy'), 'utf8'))).toEqual(ax.egressPolicy())
+})
+
+test('an egress policy that exists already is updated in place, with its stored uid and version', () => {
+  const meta = { atespace: 'factory', name: 'default', uid: 'u-1', version: '7', createTime: 't0' }
+  writeFileSync(
+    join(dir, 'stored'),
+    JSON.stringify({ metadata: meta, rules: [{ https: { hostnames: ['old.example.com'] } }] }),
+  )
+  expect(ax.createPolicy('f-r1-1')).toBe(true)
+  expect(logged()).toEqual([
+    'kubectl ate get egress-policy f-r1-1 -a factory -o json',
+    'kubectl ate update egress-policy f-r1-1 -a factory -f -',
+  ])
+  expect(JSON.parse(readFileSync(join(dir, 'updated'), 'utf8'))).toEqual({
+    ...ax.egressPolicy(),
+    metadata: meta,
+  })
+})
+
+test('unpackMigration writes the launch id into .migrated, and no id with none', () => {
+  writeFileSync(join(dir, 'ssh'), '')
+  ax.unpackMigration('migrate.tgz', '', 'id-1')
+  expect(logged().at(-1)).toContain('launch=id-1" > /workspace/w/home/.migrated')
+  ax.unpackMigration('migrate.tgz', '')
+  expect(logged().at(-1)).not.toContain('launch=')
+  expect(() => ax.unpackMigration('migrate.tgz', '', 'a b')).toThrow('launch id')
+})
+
+test('workspaceExists: true when ax has it, false when not found, and any other error throws', () => {
+  expect(ax.workspaceExists('f-manager')).toBe(false)
+  writeFileSync(join(dir, 'ws'), 'metadata:\n  name: f-manager\n')
+  expect(ax.workspaceExists('f-manager')).toBe(true)
+  writeFileSync(join(dir, 'wsfail'), '')
+  expect(() => ax.workspaceExists('f-manager')).toThrow('boom')
+  expect(logged().at(-1)).toEndWith('get workspace f-manager')
+})
+
+test('launchIdOf reads FACTORY_AX_LAUNCH_ID from the task YAML, and launchId gets the task', () => {
+  const yaml = (v: string) =>
+    `metadata:\n  name: f-manager\nspec:\n  env:\n    - name: FACTORY_IN_AX\n      value: "1"\n    - name: FACTORY_AX_LAUNCH_ID\n      value: ${v}\n`
+  expect(ax.launchIdOf(yaml('0b6e-4f2a'))).toBe('0b6e-4f2a')
+  expect(ax.launchIdOf(yaml('"a b; rm -rf /"'))).toBeUndefined()
+  expect(ax.launchIdOf('metadata:\n  name: x\n')).toBeUndefined()
+  expect(ax.launchIdOf('{bad')).toBeUndefined()
+  writeFileSync(join(dir, 'get'), yaml('id-9'))
+  expect(ax.launchId('f-manager')).toBe('id-9')
 })
 
 test('with a vault named, the task sends placeholder auth headers for the gateway to fill in', () => {
@@ -3215,10 +3277,11 @@ test('the real manager launch stays within 30 entries with every optional var se
       FACTORY_AX_MANAGER_ROUTER: 'http://router.example.svc',
       FACTORY_AX_MANAGER_BROKER: 'http://broker.example.svc:8080',
     })
-    await ax.launchManager('mgr@sha256:abc', [], [], { waitMs: 0 })
+    await ax.launchManager('mgr@sha256:abc', [], [], { waitMs: 0, launch: 'id-1' })
     const { names, effective } = taskEnv()
     expect(names.length).toBeLessThanOrEqual(30)
     expect(effective).toMatchObject({
+      FACTORY_AX_LAUNCH_ID: 'id-1',
       FACTORY_IN_AX: '1',
       FACTORY_HOME: '/workspace/w/home',
       GOPROXY: 'http://gate.example:8080/go',
@@ -3226,6 +3289,23 @@ test('the real manager launch stays within 30 entries with every optional var se
   } finally {
     process.env = saved
   }
+})
+
+test('the launch id stays flat in a packed env, so the laptop reads it from `ax get task`', () => {
+  ax.launch({
+    name: 'f-manager',
+    image: 'i',
+    command: ['factory', 'manager', 'host'],
+    env: { ...flatEnv(31), FACTORY_AX_LAUNCH_ID: 'id-2' },
+  })
+  expect(taskEnv().names).toEqual(['FACTORY_AX_LAUNCH_ID', 'FACTORY_VM_ENV'])
+})
+
+test('staleWorkspaceRefusal names the delete command and the reuse flag', () => {
+  const m = ax.staleWorkspaceRefusal('f-manager')
+  expect(m).toContain('Workspace f-manager')
+  expect(m).toContain('ax -a factory delete workspace f-manager')
+  expect(m).toContain('factory manager --ax --reuse-workspace')
 })
 
 const SERVER = 'https://factory.factory.svc.cluster.local:8443'

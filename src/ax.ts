@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs'
 import { sq } from './harness'
 import { WORKER_USER } from './worker'
-import { workerPolicyRefusal } from './broker'
+import { updateBody, workerPolicyRefusal } from './broker'
 import { parseNames } from './axsweep'
 
 const AX = () => process.env.FACTORY_AX ?? 'ax'
@@ -139,6 +139,8 @@ const FLAT_KEYS = new Set([
   'FACTORY_CURSOR_HOOKS',
   'FACTORY_GROK_HOOKS',
   'FACTORY_PRIVATE_PATTERNS',
+  // migrate-to-ax reads it from `ax get task`
+  'FACTORY_AX_LAUNCH_ID',
 ])
 
 /**
@@ -630,14 +632,15 @@ export function createPolicy(
   if (why) throw new Error(`egress policy for ${task} ${why}`)
   if (BROKER()) return broker('PUT', `/policy/${ATESPACE()}/${task}`, policy).ok
   // a kubectl plugin takes kubectl's flags only after its name
-  const p = Bun.spawnSync(
-    [KUBECTL(), 'ate', ...context(), 'create', 'egress-policy', task, '-a', ATESPACE(), '-f', '-'],
-    {
-      stdin: Buffer.from(policy),
+  const ate = (op: string, extra: string[], stdin?: string) =>
+    Bun.spawnSync([KUBECTL(), 'ate', ...context(), op, 'egress-policy', task, '-a', ATESPACE(), ...extra], {
+      stdin: stdin === undefined ? undefined : Buffer.from(stdin),
       timeout: 30_000,
-    },
-  )
-  return p.exitCode === 0
+    })
+  // an old task of the same name can leave a policy, and a create then fails AlreadyExists: update it in place
+  const got = ate('get', ['-o', 'json'])
+  const update = got.exitCode === 0 ? updateBody(policy, got.stdout.toString()) : undefined
+  return ate(update ? 'update' : 'create', ['-f', '-'], update ?? policy).exitCode === 0
 }
 
 /**
@@ -710,6 +713,35 @@ export function read(task: string): { phase: string | null; failure?: string; qu
   throw new Error(`ax get task: ${r.err}`)
 }
 export const phase = (task: string) => read(task).phase
+
+/** whether the Workspace `name` exists; an `ax get workspace` error other than not found throws */
+export function workspaceExists(name: string) {
+  const r = ax(['get', 'workspace', name])
+  if (r.ok) return true
+  if (/not ?found/i.test(r.err)) return false
+  throw new Error(`ax get workspace: ${r.err}`)
+}
+
+/** why `factory manager --ax` refuses an existing manager Workspace: its home can hold an old factory */
+export const staleWorkspaceRefusal = (name: string) =>
+  `Workspace ${name} exists: its home can hold an old factory and an old .migrated. ` +
+  `Delete it first: ax ${[...context(), '-a', ATESPACE()].join(' ')} delete workspace ${name}. ` +
+  `To keep it (a suspend and resume), run factory manager --ax --reuse-workspace`
+
+const LAUNCH_ID = /^[\w-]+$/
+/** FACTORY_AX_LAUNCH_ID from an `ax get task` YAML; undefined when it is not there or not a plain id */
+export function launchIdOf(yaml: string): string | undefined {
+  try {
+    const spec = (Bun.YAML.parse(yaml) as { spec?: { env?: { name?: string; value?: unknown }[] } } | null)
+      ?.spec
+    const v = spec?.env?.find(e => e.name === 'FACTORY_AX_LAUNCH_ID')?.value
+    return typeof v === 'string' && LAUNCH_ID.test(v) ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+/** the launch id of task `name`, which `factory manager --ax` set */
+export const launchId = (name: string) => launchIdOf(must(['get', 'task', name]))
 /**
  * a VM command as the worker user, not root: root over `ax ssh` has no DAC_OVERRIDE or CAP_FOWNER (see
  * docs/remote-runner.md), so it cannot write `.factory-worker`, which `serve` gave to WORKER_USER. setpriv
@@ -1139,10 +1171,12 @@ export async function launchManager(
   image: string,
   args: string[],
   rigs: Parameters<typeof managerEgress>[1] = [],
-  { tries = 24, waitMs = 5000 } = {},
+  { tries = 24, waitMs = 5000, launch: id }: { tries?: number; waitMs?: number; launch?: string } = {},
 ) {
   const name = managerTask()
-  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env: managerEnv() })
+  // the host trusts only a .migrated with this id (managerhost.markerOk)
+  const env = { ...managerEnv(), ...(id && { FACTORY_AX_LAUNCH_ID: id }) }
+  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env })
   for (let i = 0; i < tries; i++) {
     if (
       createPolicy(
@@ -1223,9 +1257,11 @@ export function rewriteHomeCmd(from: string, to = MANAGER_HOME) {
  * Unpack the migration archive (sent with put, so it is under .factory-worker) into the manager's home. Then
  * write .migrated: `factory manager host` waits for that marker before it starts the manager.
  * `laptopHome` is the laptop's factory home. Run state holds it in absolute paths, and the unpack rewrites it.
+ * `launch` is the task's launch id. The marker holds it, so the host knows the marker is of this launch.
  */
-export const unpackMigration = (name: string, laptopHome = '') =>
-  must(
+export function unpackMigration(name: string, laptopHome = '', launch?: string) {
+  if (launch !== undefined && !LAUNCH_ID.test(launch)) throw new Error(`not a launch id: ${launch}`)
+  return must(
     managerCmd([
       'sh',
       '-c',
@@ -1234,6 +1270,7 @@ export const unpackMigration = (name: string, laptopHome = '') =>
         `if [ -d ${MANAGER_HOME}/claude-project ]; then mkdir -p ${MANAGER_PROJECT}; ` +
         `cp -a ${MANAGER_HOME}/claude-project/. ${MANAGER_PROJECT}/; rm -rf ${MANAGER_HOME}/claude-project; fi; ` +
         `${rewriteHomeCmd(laptopHome)}; ` +
-        `date -u +%FT%TZ > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
+        `echo "$(date -u +%FT%TZ)${launch ? ` launch=${launch}` : ''}" > ${MANAGER_HOME}/.migrated; rm -f ${OWN}/${name}`,
     ]),
   )
+}

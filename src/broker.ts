@@ -328,11 +328,26 @@ export async function handle(req: Request, c: Config): Promise<Response> {
   if (!policy) return text(400, 'body is not an EgressPolicy (a JSON object with rules)\n')
   const why = workerPolicyRefusal(JSON.parse(policy))
   if (why) return text(400, `policy refused: it ${why}\n`)
-  // ponytail: delete then create, so a repeat is not an error; the actor has no policy for a moment between them.
-  // Replacing in place (update egress-policy) needs the stored version; not worth it for one writer
-  await c.run([...c.ate, 'delete', 'egress-policy', ...target])
-  const p = await c.run([...c.ate, 'create', 'egress-policy', ...target, '-f', '-'], policy)
-  return p.code === 0 ? text(200, 'created\n') : text(502, `create: ${p.err.trim()}\n`)
+  // update a stored policy in place, so the actor always has one; with no stored policy, create one
+  const got = await c.run([...c.ate, 'get', 'egress-policy', ...target, '-o', 'json'])
+  const update = got.code === 0 ? updateBody(policy, got.out) : undefined
+  const op = update ? 'update' : 'create'
+  const p = await c.run([...c.ate, op, 'egress-policy', ...target, '-f', '-'], update ?? policy)
+  return p.code === 0 ? text(200, `${op}d\n`) : text(502, `${op}: ${p.err.trim()}\n`)
+}
+
+/**
+ * the body for `kubectl ate update egress-policy`: the new rules with the stored metadata, since the update
+ * needs its uid and version. undefined when `stored` (the `get -o json` text) has no uid or version
+ */
+export function updateBody(policy: string, stored: string): string | undefined {
+  try {
+    const m = JSON.parse(stored)?.metadata
+    if (!m?.uid || !m?.version) return undefined
+    return JSON.stringify({ ...JSON.parse(policy), metadata: m })
+  } catch {
+    return undefined
+  }
 }
 
 export function serve(port: number, c: Config = configFrom(process.env)) {
