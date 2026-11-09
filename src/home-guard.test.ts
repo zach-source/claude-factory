@@ -629,6 +629,11 @@ describe('homeReason', () => {
       expect(homeReason('ls', undefined, H, [{ text, dir: D }])).toBe(HOME_REASON)
     })
 
+    test('tests the unescaped copy of a named file', () => {
+      const body = JSON.stringify({ scripts: { clean: bad() } })
+      expect(homeReason('ls', () => body, H, [{ text: 'cat ./package.json', dir: D }])).toBe(HOME_REASON)
+    })
+
     test('caps the reads of loaded texts at 64', () => {
       const mk = (n: number) => Array.from({ length: n }, (_, i) => ({ text: `sh ./f${i}.sh`, dir: D }))
       expect(homeReason('ls', () => 'echo ok', H, mk(65))).toBe(LOADED_REASON)
