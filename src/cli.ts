@@ -164,7 +164,7 @@ import { GAPS_FILE, parity } from './parity'
 import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
-import { inStore, needsInstall, upCheck, upDir } from './up'
+import { defaultHome, inStore, needsInstall, platformHome, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import {
@@ -331,8 +331,20 @@ import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './gr
 import { maskAssignments } from './worker-hook'
 
 const ROOT = resolve(import.meta.dir, '..')
-// a Nix store install cannot hold its own state, so it uses `factory up`'s default home
-const DEFAULT_HOME = inStore(ROOT) ? join(homedir(), 'factory') : join(ROOT, '.factory-state')
+// the platform data dir, unless only an old default (the checkout's .factory-state, or ~/factory) holds a factory
+const DEFAULT = defaultHome(
+  platformHome(process.env, process.platform, homedir()),
+  [join(ROOT, '.factory-state'), join(homedir(), 'factory')],
+  d => existsSync(join(d, 'rigs.json')),
+)
+const DEFAULT_HOME = DEFAULT.dir
+let noted = false
+/** DEFAULT_HOME, and the one-line note on stderr (once) when it is an old default */
+function usedDefault(): string {
+  if (DEFAULT.note && !noted) console.error(DEFAULT.note)
+  noted = true
+  return DEFAULT_HOME
+}
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
 const factoryAt = (dir: string): string | undefined =>
   existsSync(join(dir, 'rigs.json')) ? dir : dirname(dir) === dir ? undefined : factoryAt(dirname(dir))
@@ -340,7 +352,7 @@ const factoryAt = (dir: string): string | undefined =>
 // absolute, so a relative FACTORY_HOME (`FACTORY_HOME=.`) still matches pane cwds and survives a cd
 const HOME = process.env.FACTORY_HOME
   ? resolve(process.env.FACTORY_HOME)
-  : (factoryAt(process.cwd()) ?? DEFAULT_HOME)
+  : (factoryAt(process.cwd()) ?? usedDefault())
 /** where a repo keeps its own factories, versioned with its code */
 const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
@@ -4945,6 +4957,33 @@ const isAlive = (pid: number) => {
   }
 }
 
+/**
+ * `factory server backup`: one backup of the server home in its own process, so a long git call cannot stop the server's lease renewal.
+ * backup.lock keeps one backup per home. While it holds that lock, it removes the git lock files that a killed backup left.
+ */
+async function serverBackup() {
+  const b = server.serverBackupCfg(process.env, HOME)
+  if (!b) return console.log('backup off: no remote')
+  if ('off' in b) return console.log(b.off)
+  const own = hold('backup.lock')
+  if (!own) return console.log('backup skipped: another backup runs')
+  try {
+    const gitDir = join(b.cfg.ws, 'backup.git')
+    if (existsSync(gitDir))
+      for (const f of readdirSync(gitDir, { recursive: true, encoding: 'utf8' }))
+        if (f.endsWith('.lock') && (!f.includes('/') || f.startsWith('refs/')))
+          rmSync(join(gitDir, f), { force: true })
+    await managerhost.backupStep(
+      b.cfg,
+      existsSync(join(HOME, 'rigs.json')),
+      () => hold('tick.lock'),
+      console.log,
+    )
+  } finally {
+    own()
+  }
+}
+
 /** a lock held while its process lives, however long it takes: a pass over slow bd can take minutes */
 export function hold(name: string, rm?: Parameters<typeof rmSafe>[2], home = HOME): (() => void) | null {
   const dir = join(home, name)
@@ -5350,6 +5389,24 @@ const wikiRun =
     return { code: r.code, out: r.out.toString().trim() }
   }
 
+/** Make `file` with `text` when no entry is there ('made'). 'kept' when a regular file with one link is there.
+ * 'bad' in every other case: a symlink, a hard link, another type, an lstat error that is not ENOENT, or a failed write.
+ * Flag 'wx' fails on any entry, a dangling symlink too, so this never writes through a link. No journal line: the caller logs. */
+export function wikiNewFile(file: string, text: string): 'made' | 'kept' | 'bad' {
+  try {
+    const st = lstatSync(file)
+    return st.isFile() && st.nlink === 1 ? 'kept' : 'bad'
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return 'bad'
+  }
+  try {
+    writeFileSync(file, text, { flag: 'wx' })
+    return 'made'
+  } catch {
+    return 'bad'
+  }
+}
+
 /**
  * The branch ref and sha of HEAD, and `git blame --line-porcelain <sha>` of each tracked page outside rigs/,
  * for keepPersonLines() after an agent pass. Undefined (and a journal line) when there is no branch head
@@ -5408,14 +5465,8 @@ export function keepPersonLines(
   }
   if (flags.length) {
     const file = join(dir, 'needs-person.md')
-    let regular: boolean | undefined
-    try {
-      const st = lstatSync(file)
-      regular = st.isFile() && st.nlink === 1
-    } catch {}
-    if (regular === false)
+    if (wikiNewFile(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n') === 'bad')
       return (wikiLog('wiki: needs-person.md is not a regular file, nothing committed'), false)
-    if (regular === undefined) writeFileSync(file, '---\nkind: "index"\ntitle: "Needs a person"\n---\n')
     appendFileSync(file, `${flags.join('\n')}\n`)
   }
   return true
@@ -6877,11 +6928,11 @@ const WORKTREE_ROOTS = () => [join(homedir(), '.herdr', 'worktrees'), join(HOME,
 const escapes = (rel: string) => rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)
 
 /**
- * Why `rmUnregisteredWorktree` must not delete `path`, or null when it may. One fail-closed rule: the
+ * Why `rmUnregisteredWorktree` must not delete `path` (a string), or the checked real path when it may. One fail-closed rule: the
  * path is a real dir (no symlink) below a factory worktree root, named after the run, not the repo,
  * not listed by git, and with no live git dir behind its `.git` file.
  */
-function unregisteredRefusal(path: string, runId: string, repo: string): string | null {
+function unregisteredRefusal(path: string, runId: string, repo: string): string | { real: string } {
   const st = lstatSync(path, { throwIfNoEntry: false })
   if (!st) return 'missing'
   if (st.isSymbolicLink()) return 'symlink'
@@ -6922,13 +6973,13 @@ function unregisteredRefusal(path: string, runId: string, repo: string): string 
     }
     if (!dead) return 'its git dir still exists'
   }
-  return null
+  return { real }
 }
 /** deletes a dir that git no longer lists (a `git worktree remove` that stopped halfway) */
 function rmUnregisteredWorktree(path: string, runId: string, repo: string): void {
   const why = unregisteredRefusal(path, runId, repo)
-  if (why) throw new Error(`refusing to delete ${path}: ${why}`)
-  const real = realpathSync(path)
+  if (typeof why === 'string') throw new Error(`refusing to delete ${path}: ${why}`)
+  const { real } = why
   makeWritable(real)
   rmSafe(real, { recursive: true, force: true })
 }
@@ -7157,6 +7208,50 @@ function allRunRefs(): GcRunRef[] {
   })
 }
 
+/** What a forced `git worktree remove` would lose in submodules (claude-factory-m9f9). `none`: no
+ * submodule gitdir under the worktree's admin dir. `clean`: every submodule has no uncommitted work
+ * and no commit that a remote-tracking ref misses. `dirty`: otherwise, and on any read error. */
+function submoduleState(wt: string): 'none' | 'clean' | 'dirty' {
+  const run = (...a: string[]) => Bun.spawnSync(['git', ...a], { env: process.env })
+  const unpushed = ['rev-list', '-n', '1', '--all', '--not', '--remotes']
+  try {
+    const each = run(
+      '-C',
+      wt,
+      'submodule',
+      'foreach',
+      '--recursive',
+      '--quiet',
+      'git status --porcelain --ignore-submodules=none && git rev-list -n 1 --all --not --remotes',
+    )
+    if (each.exitCode !== 0 || each.stdout.toString().trim() !== '') return 'dirty'
+    const m = run('-C', wt, 'rev-parse', '--path-format=absolute', '--git-path', 'modules')
+    if (m.exitCode !== 0) return 'dirty'
+    const modules = m.stdout.toString().trim()
+    if (!existsSync(modules)) return 'none'
+    let found = false
+    // a gitdir has HEAD and objects: look only into its modules/ child. Look into each child dir of any other dir.
+    const walk = (d: string): boolean => {
+      if (!lstatSync(d).isDirectory()) return false
+      if (existsSync(join(d, 'HEAD')) && existsSync(join(d, 'objects'))) {
+        found = true
+        const r = run(`--git-dir=${d}`, ...unpushed)
+        if (r.exitCode !== 0 || r.stdout.toString().trim() !== '') return false
+        const nested = join(d, 'modules')
+        return !existsSync(nested) || walk(nested)
+      }
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        if (e.isSymbolicLink()) return false
+        if (e.isDirectory() && !walk(join(d, e.name))) return false
+      }
+      return true
+    }
+    return walk(modules) ? (found ? 'clean' : 'none') : 'dirty'
+  } catch {
+    return 'dirty'
+  }
+}
+
 /** commits every change in `path` (tracked and untracked, `.gitignore` honored) to a local-only ref
  * at `refs/factory-gc/<runId>`: a dirty-small worktree's work survives its removal (AC6). Returns the sha. */
 function snapshotWorktree(path: string, runId: string): string {
@@ -7270,7 +7365,8 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
     for (const r of reg ? runs.filter(r => r.repo === rig.repo && r.worktree !== '') : []) {
       if (!existsSync(r.worktree) || isRegistered(reg!, r.worktree)) continue
       const why = unregisteredRefusal(r.worktree, r.id, rig.repo)
-      if (why) console.log(`keep worktree ${r.worktree} (run ${r.id}, reason: unregistered, ${why})`)
+      if (typeof why === 'string')
+        console.log(`keep worktree ${r.worktree} (run ${r.id}, reason: unregistered, ${why})`)
       else
         worktrees.push({
           path: r.worktree,
@@ -7317,6 +7413,10 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
         if (w.unregistered) rmUnregisteredWorktree(w.path, w.runId, repo)
         else {
           rmSync(join(w.path, '.beads.gate.lock'), { force: true })
+          // --force deletes submodule gitdirs: only when no submodule holds uncommitted or unpushed work
+          const subs = submoduleState(w.path)
+          if (subs === 'dirty')
+            throw new Error('a submodule has uncommitted work or commits on no remote: kept')
           if (w.snapshot) {
             snapshot = snapshotWorktree(w.path, w.runId)
             gcLog({
@@ -7334,7 +7434,7 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
             repo,
             'worktree',
             'remove',
-            ...(w.snapshot ? ['--force'] : []),
+            ...(w.snapshot || subs === 'clean' ? ['--force'] : []),
             w.path,
           ])
           if (rm.exitCode !== 0) throw new Error(`git worktree remove: ${rm.stderr.toString().trim()}`)
@@ -11691,7 +11791,7 @@ function makeFactory(dir: string) {
   console.log(
     [
       `a new factory in ${dir}. Commands run in that directory work it; add its rigs there:`,
-      `  cd ${dir} && ${CLI} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
+      `  cd ${sq(dir)} && ${sq(CLI)} rig add <name> <repo> [factory] [--max n] [--goal <what to work toward>]`,
       `and run its manager there: ${CLI} manager (fullscreen, so the console docks beside the chat; lean: no MCP servers, without herdr-fleet)`,
     ].join('\n'),
   )
@@ -12710,7 +12810,9 @@ const usage = `factory — herdr software factories on xstate
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps (not from a Nix store
                                      install), init a new dir, run the manager there (dir: the first arg, else
-                                     FACTORY_HOME, else ~/factory)
+                                     FACTORY_HOME, else the platform data dir: XDG_DATA_HOME/claude-factory,
+                                     else ~/Library/Application Support/claude-factory on macOS, else
+                                     ~/.local/share/claude-factory)
   rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
@@ -12825,7 +12927,7 @@ const usage = `factory — herdr software factories on xstate
 
 <factory> is a path, or a name: the repo's own .factory/<name>.ts as of the base commit of the run (never a PR branch's),
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
-(FACTORY_HOME, else the nearest directory up holding a rigs.json). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
+(FACTORY_HOME, else the nearest directory up holding a rigs.json, else the default home in up). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
 or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
@@ -13071,8 +13173,23 @@ if (import.meta.main && !outboxCmd)
         break
       case 'server':
         refuseWorker('server', true)
+        if (args[0] === 'backup') {
+          if (args.length > 1) fail('usage: factory server backup')
+          await serverBackup()
+          break
+        }
         lease()
-        server.main(args, HOME, () => tick(), corePort)
+        const backup = () => {
+          const p = Bun.spawn([CLI, 'server', 'backup'], {
+            stdout: 'inherit',
+            stderr: 'inherit',
+            env: kickEnv(process.env, HOME),
+          })
+          return p.exited.then(c => {
+            if (c !== 0) throw new Error(`exit ${c}`)
+          })
+        }
+        server.main(args, HOME, () => tick(), corePort, backup)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -13510,9 +13627,21 @@ if (import.meta.main && !outboxCmd)
             process.exitCode = 1
             break
           }
-          for (const [name, text] of Object.entries(WIKI_SEEDS))
-            if (!existsSync(join(dir, name))) writeFileSync(join(dir, name), text)
-          if (commitWiki('init', 'seed index and glossary', dir, Object.keys(WIKI_SEEDS)) === false) {
+          const seeds = Object.entries(WIKI_SEEDS).filter(([name, text]) => {
+            if (wikiNewFile(join(dir, name), text) !== 'bad') return true
+            wikiLog(`wiki: ${name} is not a regular file, seed not written`)
+            process.exitCode = 1
+            return false
+          })
+          if (
+            seeds.length &&
+            commitWiki(
+              'init',
+              'seed index and glossary',
+              dir,
+              seeds.map(([n]) => n),
+            ) === false
+          ) {
             process.exitCode = 1
             break
           }
@@ -13968,7 +14097,8 @@ if (import.meta.main && !outboxCmd)
       }
       case 'up': {
         refuseWorker('up', true)
-        const { dir, rest } = upDir(args, BOOT_ENV, homedir())
+        const { dir, rest } = upDir(args, BOOT_ENV, homedir(), DEFAULT_HOME)
+        if (dir === DEFAULT_HOME) usedDefault()
         const { errors, warnings } = upCheck(t => !!Bun.which(t), BOOT_ENV)
         if (errors.length) fail(errors.join('\n'))
         const modules = join(ROOT, 'node_modules')
@@ -14462,7 +14592,7 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('rm')
         const { run, value } = current(args[0])
         if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
-        // no --force: herdr and git refuse a worktree with uncommitted work; the branch always stays.
+        // no --force except for a clean submodule worktree: herdr and git refuse uncommitted work; the branch always stays.
         // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
         const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
         if (herdrPanes().some(p => isIn(p, run))) {
@@ -14474,7 +14604,11 @@ if (import.meta.main && !outboxCmd)
           if (reg && isRegistered(reg, run.worktree)) {
             makeWritable(run.worktree)
             lock()
-            git(run.repo, 'worktree', 'remove', run.worktree)
+            // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
+            const force =
+              submoduleState(run.worktree) === 'clean' &&
+              git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
+            git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
           } else rmUnregisteredWorktree(run.worktree, run.id, run.repo) // git unregistered it, a read-only dir kept the rest
         }
         // its record outlives it: metrics count removed runs too

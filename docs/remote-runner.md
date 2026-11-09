@@ -548,6 +548,35 @@ To turn it off, unset `FACTORY_AX_BACKUP_REMOTE` and run `factory manager --ax` 
 - Runs on `ax://` workers move with no change. Their workers keep running while the move happens.
 - The upload is `PUT_PART` bytes of base64 for each `ax ssh` call, because `ax ssh` has no stdin. A home of 100 MB sends in about 1500 calls. A part that fails is sent again 3 times. Then the command stops. Run it again, because a part sent twice does no harm.
 
+### Back up the factory server home
+
+`factory server` can back up its home (`/var/lib/factory/home` on the `factory-home` volume) to a private git branch. If the volume is lost, the home is lost. The backup is off until the owner makes the Secret `factory-backup`.
+
+Owner steps (the factory does not do them):
+
+1. Make a private GitHub repository. The backup holds run journals, transcripts and bead text. Do not install the GitHub App on it. Every worker task has the App token. A worker can then rewrite the branch.
+   In a worker task, run `git ls-remote <backup url>`. It must get 401 or 403.
+2. Make a fine-grained token with contents read and write on that repository only. Optional: add a ruleset that blocks force-push and delete of the branch.
+3. Run `kubectl -n factory create secret generic factory-backup --from-literal=remote=<https url> --from-literal=basic=<base64 of x-access-token:token>`.
+4. Roll the new server image (it has `gitleaks`) and apply `deploy/server.yaml`.
+
+How it works:
+
+- The branch is `server-home` (`FACTORY_SERVER_BACKUP_BRANCH`). The server refuses `manager-home`, because the AX manager uses it.
+- The backup is on only when all of these are true. If one is false, the server prints one `backup off: ...` line at start and runs no backup.
+  - `FACTORY_SERVER_BACKUP_REMOTE` is an https URL with no user info (the Secret key `remote`).
+  - `FACTORY_HOME` is `<workspace>/home`.
+  - `FACTORY_SERVER_BACKUP_AUTH_FILE` (the Secret key `basic`, mounted as a file) holds base64 text.
+- The token is a file, not an environment variable. The server and its children never get it in their environment. Only the backup git calls send it, and only to URLs under the remote.
+- The server starts `factory server backup` as a child process every `FACTORY_SERVER_BACKUP_EVERY` ms (default 600000, minimum 60000). It starts the child only while it holds the lease and no earlier child runs. A separate process keeps the git calls from blocking the lease renewal and `/healthz`.
+- The child uses the same code as the manager backup: the same exclude rules, the same gitleaks scan and redaction, a fast-forward push and no force. It also leaves out `server-lease.json`.
+- The child holds `backup.lock` and removes git lock files that a killed backup left.
+- `home/backup.json` (`at`, `sha`, `error`) and the pod log show the result. The log has `backup <sha>`, `backup refused: ...` or `backup failed: ...`. The pod log never has the URL or the token.
+
+The server does not restore. To restore a lost home, a person clones the `server-home` branch and copies `home/` to the new volume before the server starts. Auto restore is separate work.
+
+To turn it off, delete the Secret `factory-backup` and restart the pod.
+
 ### Policy broker
 
 The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it. The factory server pod (`deploy/server.yaml`) uses the broker too.

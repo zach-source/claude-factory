@@ -3,8 +3,9 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { Port } from './core/catalog'
+import { EXCLUDES, type BackupCfg } from './homebackup'
 import { clientHandler, clientListener, cliRunner } from './server-api'
 
 export type Lease = { holder: string; until: number }
@@ -77,6 +78,8 @@ export type ServeOpts = {
   everyMs: number
   leaseMs: number
   tick: () => unknown
+  /** the home backup: `run` starts every `everyMs` while this server holds the lease and no earlier `run` is pending */
+  backup?: { everyMs: number; run: () => Promise<unknown> }
   holder?: string
   log?: (line: string) => void
   /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address */
@@ -145,6 +148,25 @@ export function serve(o: ServeOpts) {
     h.ticks++
     h.tickAt = new Date().toISOString()
   }
+  let pending = false
+  const backupTimer = o.backup
+    ? setInterval(() => {
+        if (!held || pending || stopping) return
+        pending = true
+        void Promise.resolve()
+          .then(o.backup!.run)
+          .catch(e =>
+            log(
+              `backup failed: ${String((e as Error)?.message ?? e)
+                .split('\n')[0]!
+                .slice(0, 300)}`,
+            ),
+          )
+          .finally(() => {
+            pending = false
+          })
+      }, o.backup.everyMs)
+    : undefined
   let timer: ReturnType<typeof setTimeout>
   const next = () => {
     if (stopping) return
@@ -182,6 +204,7 @@ export function serve(o: ServeOpts) {
     async stop() {
       stopping = true
       clearTimeout(timer)
+      clearInterval(backupTimer)
       await running
       clearInterval(renew)
       if (held) {
@@ -241,8 +264,49 @@ function need(path: string): string {
   }
 }
 
+const REMOTE = /^(https:\/\/[A-Za-z0-9.-]+(:\d+)?\/[^\s@]+|\/[^\s]+)$/
+const BRANCH = /^[\w.-]+(\/[\w.-]+)*$/
+
+/**
+ * The server home backup (claude-factory-a962) from env. The backup is on only when every check passes; the first failure wins.
+ * Return undefined with no remote, { off } with the reason (never the remote or the token), else the config and the period.
+ * The token is in a file (a Kubernetes Secret), never in env, so no child process inherits it.
+ */
+export function serverBackupCfg(
+  env: Record<string, string | undefined>,
+  home: string,
+): undefined | { off: string } | { cfg: BackupCfg; everyMs: number } {
+  const remote = env.FACTORY_SERVER_BACKUP_REMOTE
+  if (!remote) return undefined
+  if (!REMOTE.test(remote)) return { off: 'backup off: the remote is not an https URL with no user info' }
+  if (basename(home) !== 'home') return { off: 'backup off: FACTORY_HOME is not <workspace>/home' }
+  const branch = env.FACTORY_SERVER_BACKUP_BRANCH || 'server-home'
+  if (!BRANCH.test(branch) || branch === 'manager-home') return { off: 'backup off: bad branch' }
+  const file = env.FACTORY_SERVER_BACKUP_AUTH_FILE
+  if (!file) return { off: 'backup off: no auth file' }
+  let auth: string
+  try {
+    auth = readFileSync(file, 'utf8').trim()
+  } catch {
+    return { off: `backup off: cannot read the auth file ${file}` }
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(auth)) return { off: 'backup off: the auth file is not base64' }
+  const every = env.FACTORY_SERVER_BACKUP_EVERY
+  const ms = every && /^\d+$/.test(every) && Number(every) >= 60_000 ? Number(every) : 600_000
+  return {
+    cfg: { ws: dirname(home), remote, branch, auth, excludes: [...EXCLUDES, '/home/server-lease.json*'] },
+    everyMs: ms,
+  }
+}
+
 /** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port ... --tls-cert ... --tls-key ... --person-ca ...]`. The caller passes the tick, so there is no import cycle with cli.ts. */
-export function main(args: string[], home: string, tick: () => unknown, port: Port) {
+export function main(
+  args: string[],
+  home: string,
+  tick: () => unknown,
+  port: Port,
+  backup?: () => Promise<unknown>,
+) {
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
   const log = (l: string) => console.log(l)
@@ -253,10 +317,20 @@ export function main(args: string[], home: string, tick: () => unknown, port: Po
     ca: need(f.client.ca),
     handle: clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log }),
   }
-  s = serve({ home, port: f.port, everyMs: f.everyMs, leaseMs: f.leaseMs, tick, client })
+  const b = serverBackupCfg(process.env, home)
+  s = serve({
+    home,
+    port: f.port,
+    everyMs: f.everyMs,
+    leaseMs: f.leaseMs,
+    tick,
+    client,
+    backup: b && 'cfg' in b && backup ? { everyMs: b.everyMs, run: backup } : undefined,
+  })
   console.log(
     `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''} as ${s.holder}`,
   )
+  if (b) console.log('off' in b ? b.off : `backup on: branch ${b.cfg.branch} every ${b.everyMs} ms`)
   const stop = () => void s!.stop().then(() => process.exit(0))
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
