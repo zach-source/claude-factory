@@ -166,6 +166,9 @@ test('patrol-guard denies the subagent verbs and allows reads', () => {
     'factory decide r1 ok',
     'factory skills install x',
     'bd update x --set-metadata a=b',
+    'bd comment x y --actor p',
+    'bd comments add x y -a p',
+    'BEADS_ACTOR=p bd comment x y',
   ]) {
     const r = guard(bad)
     expect([bad, r.code]).toEqual([bad, 2])
