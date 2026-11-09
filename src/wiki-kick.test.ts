@@ -266,18 +266,42 @@ test('AC10 one wiki pass in each tick: no stamps at all gives the refresh stamp 
 })
 
 test('AC10 an ambient wiki remote reaches no setup or tick child', async () => {
-  const seeded = 'https://example.invalid/acme/ambient.git'
-  process.env.FACTORY_WIKI_REMOTE = seeded
+  // fake gh and git first on PATH: gh records every call, git records and refuses transport commands
+  const bin = join(dir, `bin-${++n}`)
+  mkdirSync(bin, { recursive: true })
+  const calls = join(dir, `calls-${n}`)
+  const realGit = Bun.which('git')
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$*" >> '${calls}'\necho PRIVATE\n`)
+  writeFileSync(
+    join(bin, 'git'),
+    `#!/bin/sh\ncase " $* " in *" push "*|*" fetch "*|*" pull "*|*" ls-remote "*|*" clone "*) echo "$*" >> '${calls}'; exit 1;; esac\nexec '${realGit}' "$@"\n`,
+  )
+  chmodSync(join(bin, 'gh'), 0o755)
+  chmodSync(join(bin, 'git'), 0o755)
+  const seeded: Record<string, string> = {
+    FACTORY_WIKI_REMOTE: 'https://example.invalid/acme/ambient.git',
+    FACTORY_OUTBOX: join(dir, 'outbox'),
+    FACTORY_FROM: 'ambient',
+    FACTORY_RUN: 'ambient-run',
+    PATH: `${bin}:${process.env.PATH}`,
+  }
+  const before = Object.fromEntries(Object.keys(seeded).map(k => [k, process.env[k]]))
+  Object.assign(process.env, seeded)
   try {
     setup()
     factory(['tick'])
     await waitFor(join(home, 'wiki', 'rigs', 'acme.md'))
-    await sleep(500)
+    await sleep(1500) // the detached children end before the checks and the cleanup
     expect(
       Bun.spawnSync(['git', '-C', join(home, 'wiki'), 'config', '--get', 'remote.origin.url']).exitCode,
     ).not.toBe(0)
-    expect(process.env.FACTORY_WIKI_REMOTE).toBe(seeded)
+    expect(existsSync(calls)).toBe(false)
+    expect(existsSync(join(dir, 'outbox'))).toBe(false)
+    for (const [k, v] of Object.entries(seeded)) expect(process.env[k]).toBe(v)
   } finally {
-    delete process.env.FACTORY_WIKI_REMOTE
+    for (const [k, v] of Object.entries(before)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
   }
 }, 30_000)

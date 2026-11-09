@@ -51,10 +51,27 @@ echo null
   )
   fake(
     'gh',
-    `if [ "$1" = repo ]; then echo PRIVATE; exit 0; fi
+    `if [ "$1" = repo ]; then echo "$*" >> '${data}/gh-repo-calls'; echo PRIVATE; exit 0; fi
 echo "$*" >> '${data}/gh-calls'
 f='${data}/gh-'$(printf '%s' "$2" | sed 's/[^A-Za-z0-9]/_/g')
 if [ -f "$f" ]; then cat "$f"; else echo 'not found' >&2; exit 1; fi
+`,
+  )
+  // a git that records and refuses every transport command; the rest goes to the real git
+  const realGit = Bun.which('git')
+  fake(
+    'git',
+    `skip=''
+for a in "$@"; do
+  if [ -n "$skip" ]; then skip=''; continue; fi
+  case "$a" in
+    -C|-c) skip=1; continue ;;
+    -*) continue ;;
+    push|fetch|pull|ls-remote|clone) echo "$*" >> '${data}/git-net'; echo 'blocked' >&2; exit 1 ;;
+  esac
+  break
+done
+exec '${realGit}' "$@"
 `,
   )
   const agent = `echo "$PWD" > '${data}/agent-cwd'
@@ -1117,15 +1134,20 @@ test('AC10 ambient remote and routing values reach no setup or command child', (
     FACTORY_FROM: 'ambient',
     FACTORY_RUN: 'ambient-run',
   }
+  const before = Object.fromEntries(Object.keys(seeded).map(k => [k, process.env[k]]))
   Object.assign(process.env, seeded)
   try {
     setup()
     expect(factory(['wiki', 'write', '--dry-run']).code).toBe(0)
     expect(Bun.spawnSync(['git', '-C', wiki(), 'config', '--get', 'remote.origin.url']).exitCode).not.toBe(0)
-    expect(existsSync(join(data, 'gh-calls'))).toBe(false)
+    for (const f of ['gh-calls', 'gh-repo-calls', 'git-net'])
+      expect([f, existsSync(join(data, f))]).toEqual([f, false])
     expect(existsSync(join(dir, 'outbox'))).toBe(false)
     for (const [k, v] of Object.entries(seeded)) expect(process.env[k]).toBe(v)
   } finally {
-    for (const k of Object.keys(seeded)) delete process.env[k]
+    for (const [k, v] of Object.entries(before)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
   }
 })
