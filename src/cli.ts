@@ -12436,8 +12436,9 @@ const usage = `factory — herdr software factories on xstate
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   token [list] | use <n> | best        Claude token slots: the live slot and each slot's 7d and 5h use; make slot n live, or the slot with the lowest 7d use
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
-                                     manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
+  up [factory-dir] [manager args...] start a factory's manager in one step: install deps (not from a Nix store
+                                     install), init a new dir, run the manager there (dir: the first arg, else
+                                     FACTORY_HOME, else ~/factory)
   rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
