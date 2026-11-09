@@ -1,7 +1,16 @@
 // `factory wiki write` end to end (claude-factory-tx6c.7). Every test spawns bin/factory with a new temp
 // FACTORY_HOME and fake `bd`, `gh` and agent programs first on PATH, so nothing reaches a live service.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -889,6 +898,9 @@ slow('write AC8 a malformed metadata ship_pr keeps the bead pending without a de
     null,
     '',
     5,
+    true,
+    [],
+    {},
     'https://github.com/acme/widget/pull/5?x=1',
     'https://evil.example.com/acme/widget/pull/5',
   ]) {
@@ -897,6 +909,15 @@ slow('write AC8 a malformed metadata ship_pr keeps the bead pending without a de
     writeFileSync(join(data, 'gh-calls'), '')
     const r = factory(['wiki', 'write', '--dry-run'])
     expect([meta, r.out]).toEqual([meta, expect.stringContaining('0 groups from 0 beads; 1 waiting')])
+    expect(callsOf(/pulls\/5/)).toBe(0)
+    prior()
+    factory(['wiki', 'write'])
+    expect([meta, runs(), state().lastWriteAt, Object.keys(state().written ?? {})]).toEqual([
+      meta,
+      0,
+      PRIOR,
+      [],
+    ])
     expect(callsOf(/pulls\/5/)).toBe(0)
   }
 })
@@ -1262,3 +1283,172 @@ test('AC10 ambient remote and routing values reach no setup or command child', (
     }
   }
 })
+
+// AC8 finite matrix (claude-factory-tx6c.7.16): real passes on both forges and both entry paths. After the first
+// refusal the newer bead is written, so every later row proves that the refused source starts no agent, writes
+// no page for the older bead and keeps the prior lastWriteAt. A null text removes the reply (a failed command).
+type Spoil = (text: string | null) => void
+type Rig = { detail: Spoil; files: Spoil; fixDetail: () => void; fixFiles: () => void; calls: () => number }
+const raw = (path: string, text: string | null) =>
+  text === null ? unlinkSync(path) : writeFileSync(path, text)
+const drop = (path: string, text: string | null) =>
+  existsSync(path) || text !== null ? raw(path, text) : undefined
+function githubRig(entry: 'discovered' | 'metadata'): Rig {
+  setup()
+  const row = pr(6, 'acme-1: fix it', ['src/b.ts'])
+  pr(5, 'acme-2: fix it', ['src/a.ts'])
+  seed(
+    [
+      closed('acme-1', { closed_at: OLD, metadata: entry === 'metadata' ? { ship_pr: PR6 } : undefined }),
+      closed('acme-2', { closed_at: NEW, metadata: { ship_pr: PR5 } }),
+    ],
+    entry === 'discovered' ? [row] : [],
+  )
+  stage('solutions/2026-11/fix-acme-1.md', page('acme-1', PR6))
+  stage('solutions/2026-11/fix-acme-2.md', page('acme-2', PR5))
+  prior()
+  const d = join(data, `gh-${key('repos/acme/widget/pulls/6')}`)
+  const f = join(data, `gh-${key('repos/acme/widget/pulls/6/files?per_page=100')}`)
+  const goodD = readFileSync(d, 'utf8')
+  const goodF = readFileSync(f, 'utf8')
+  return {
+    detail: t => drop(d, t),
+    files: t => drop(f, t),
+    fixDetail: () => raw(d, goodD),
+    fixFiles: () => raw(f, goodF),
+    calls: () => callsOf(/pulls\/6\/files/),
+  }
+}
+function gitlabMatrixRig(entry: 'discovered' | 'metadata'): Rig {
+  gitlabRig()
+  if (entry === 'metadata')
+    seed([
+      closed('acme-old', { closed_at: OLD, metadata: { ship_pr: GL } }),
+      closed('acme-new', { closed_at: NEW }),
+    ])
+  const d = join(data, 'mr7')
+  const f = join(data, 'ch7')
+  const goodD = readFileSync(d, 'utf8')
+  const goodF = readFileSync(f, 'utf8')
+  return {
+    detail: t => drop(d, t),
+    files: t => drop(f, t),
+    fixDetail: () => raw(d, goodD),
+    fixFiles: () => raw(f, goodF),
+    calls: () => glabCalls(/merge_requests\/7\/changes/),
+  }
+}
+
+const J = JSON.stringify
+const BADPATHS = ['/a', 'a//b', './a', 'a/../b', 'a\\b', 'a\u0001b', '', 5, null, undefined]
+type Forge = {
+  detail: (o: Record<string, unknown>) => string
+  name: string
+  diff: string
+  head: string
+  gh: boolean
+}
+const gh: Forge = {
+  detail: o => J({ number: 6, title: 'acme-1: fix it', body: null, merged_at: '2026-11-01T00:00:00Z', ...o }),
+  name: 'filename',
+  diff: 'patch',
+  head: 'merged_at',
+  gh: true,
+}
+const gl: Forge = {
+  detail: o => J({ ...MR7, ...o }),
+  name: 'new_path',
+  diff: 'diff',
+  head: 'state',
+  gh: false,
+}
+const fileList = (forge: Forge, rows: unknown[], extra: Record<string, unknown> = {}) =>
+  forge.gh ? J(rows) : J({ changes: rows, ...extra })
+const label = (v: unknown) => (v === undefined ? 'absent' : J(v))
+
+const detailRefusals = (forge: Forge): [string, string | null][] => {
+  const d = forge.detail
+  const num = forge.gh ? 'number' : 'iid'
+  const body = forge.gh ? 'body' : 'description'
+  const rows: [string, string | null][] = [
+    ['a failed read', null],
+    ['invalid JSON', 'not json'],
+    ['null', 'null'],
+    ['an array', '[]'],
+    ['an empty object', '{}'],
+  ]
+  for (const v of [undefined, null, '6', 0, 6.5, 9]) rows.push([`${num} ${label(v)}`, d({ [num]: v })])
+  for (const v of [undefined, null, '', 5]) rows.push([`title ${label(v)}`, d({ title: v })])
+  for (const v of [true, 5, [], {}]) rows.push([`${body} ${label(v)}`, d({ [body]: v })])
+  const heads: unknown[] = forge.gh
+    ? [undefined, 42, '', '2026-02-30T00:00:00Z']
+    : [undefined, null, 5, 'bogus']
+  for (const v of heads) rows.push([`${forge.head} ${label(v)}`, d({ [forge.head]: v })])
+  return rows
+}
+const fileRefusals = (forge: Forge): [string, string | null][] => {
+  const ok = { [forge.name]: 'src/b.ts' }
+  const rows: [string, string | null][] = [
+    ['a failed read', null],
+    ['invalid JSON', 'not json'],
+    ['null', 'null'],
+    ['an empty list', fileList(forge, [])],
+    ['a null row', fileList(forge, [null])],
+    ['an array row', fileList(forge, [[]])],
+    ['an empty object row', fileList(forge, [{}])],
+    [forge.gh ? 'a wrong root type' : 'an absent changes', '{}'],
+  ]
+  for (const v of BADPATHS) rows.push([`path ${label(v)}`, fileList(forge, [{ [forge.name]: v }])])
+  for (const v of [null, true, 5, [], {}])
+    rows.push([`${forge.diff} ${label(v)}`, fileList(forge, [{ ...ok, [forge.diff]: v }])])
+  if (!forge.gh) {
+    rows.push(['a list root', J([ok])])
+    for (const v of [true, null, 0, 1, '', 'false', [], {}])
+      rows.push([`overflow ${label(v)}`, fileList(forge, [ok], { overflow: v })])
+  }
+  return rows
+}
+const acceptedDetails = (forge: Forge) => {
+  const body = forge.gh ? 'body' : 'description'
+  return [forge.detail({ extra: 1 }), forge.detail({ [body]: undefined }), forge.detail({ [body]: 'text' })]
+}
+const acceptedFiles = (forge: Forge) => [
+  fileList(forge, [{ [forge.name]: 'src/nested/b.ts', extra: 1 }]),
+  fileList(forge, [{ [forge.name]: 'src/b.ts', [forge.diff]: 'x' }]),
+  ...(forge.gh ? [] : [fileList(forge, [{ [forge.name]: 'src/b.ts' }], { overflow: false })]),
+]
+
+for (const [fname, forge, rig] of [
+  ['GitHub', gh, githubRig],
+  ['GitLab', gl, gitlabMatrixRig],
+] as const)
+  for (const entry of ['discovered', 'metadata'] as const)
+    for (const [part, rows, accepted] of [
+      ['detail', detailRefusals(forge), acceptedDetails(forge)],
+      ['file list', fileRefusals(forge), acceptedFiles(forge)],
+    ] as const)
+      slow(`write AC8 ${fname} ${entry} ${part} matrix: refusals stay pending, accepted rows go on`, () => {
+        const r = rig(entry)
+        const spoil = part === 'detail' ? r.detail : r.files
+        for (const [name, text] of rows) {
+          spoil(text)
+          const before = r.calls()
+          factory(['wiki', 'write'])
+          const written = Object.keys(state().written ?? {})
+          expect([name, written.filter(id => id === 'acme-1' || id === 'acme-old')]).toEqual([name, []])
+          expect([name, written.length]).toEqual([name, 1])
+          expect([name, state().lastWriteAt]).toEqual([name, PRIOR])
+          expect([name, runs()]).toEqual([name, 1])
+          if (part === 'detail') expect([name, r.calls() - before]).toEqual([name, 0])
+        }
+        for (const text of accepted) {
+          spoil(text)
+          const out = factory(['wiki', 'write', '--dry-run']).out
+          expect([text, out]).toEqual([text, expect.stringContaining('1 groups from 1 beads; 0 waiting')])
+        }
+        if (part === 'detail') r.fixDetail()
+        else r.fixFiles()
+        factory(['wiki', 'write'])
+        expect(Object.keys(state().written)).toHaveLength(2)
+        expect(state().lastWriteAt).toBe(OLD_ISO)
+      })

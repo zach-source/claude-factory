@@ -23,7 +23,29 @@ const dir = join(realpathSync(tmpdir()), `wiki-kick-${process.pid}`)
 let n = 0
 let home = ''
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+/** the pid in wiki.lock of the current home; 0 when none, or when the test itself plays the holder */
+function holder() {
+  try {
+    const pid = Number(readFileSync(join(home, 'wiki.lock', 'pid'), 'utf8')) || 0
+    return pid === process.pid ? 0 : pid
+  } catch {
+    return 0
+  }
+}
+/** stop the pass that holds wiki.lock, so cleanup never leaves a running child */
+function reap() {
+  try {
+    if (holder()) process.kill(holder(), 'SIGKILL')
+  } catch {
+    // the pass already ended
+  }
+}
+afterEach(async () => {
+  // a refresh or groom pass may still hold the lock: give it 5 s to end, then stop it
+  for (let i = 0; i < 50 && holder(); i++) await sleep(100)
+  reap()
+  rmSync(dir, { recursive: true, force: true })
+})
 
 /** fixture gh, glab, claude and codex first on PATH: each records its call in forge-calls and fails */
 const fx = () => join(dir, 'fx')
@@ -71,10 +93,14 @@ function setup(withWiki = true, groomStamp = true) {
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0)
+  } catch {
+    return false
+  }
+  try {
     // a zombie that init has not reaped has exited
     return !/^\d+ \([^)]*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
   } catch {
-    return false
+    return true // kill(pid, 0) succeeded, so a failed /proc read is not proof of exit
   }
 }
 /**
@@ -90,7 +116,10 @@ async function passEnded(startMs = 10_000, endMs = 15_000) {
     if (!pid && Date.now() - t > startMs) throw new Error('the pass never took wiki.lock')
   }
   for (const t = Date.now(); existsSync(lock) || alive(pid); await sleep(100)) {
-    if (Date.now() - t > endMs) throw new Error('the pass did not end')
+    if (Date.now() - t > endMs) {
+      reap()
+      throw new Error('the pass did not end')
+    }
   }
 }
 async function waitFor(path: string, tries = 150) {
@@ -383,6 +412,8 @@ test('AC10 passEnded fails when the pass never starts or never ends, and the fix
     mkdirSync(lock, { recursive: true })
     writeFileSync(join(lock, 'pid'), String(child.pid))
     await expect(passEnded(300, 300)).rejects.toThrow('did not end')
+    await child.exited // the deadline itself stopped the child
+    expect(alive(child.pid)).toBe(false)
   } finally {
     child.kill()
     await child.exited
