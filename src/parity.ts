@@ -122,7 +122,7 @@ export function parity(o: { file: string; show: Show; print: (l: string) => void
 }
 
 function notOpen(id: string, r: ReturnType<Show>): string | undefined {
-  if (r.code !== 0) return `bd show failed: ${r.err.split('\n')[0]!.slice(0, 200) || `exit ${r.code}`}`
+  if (r.code !== 0) return `bd show failed: ${r.err.trim().split('\n')[0]!.slice(0, 200) || `exit ${r.code}`}`
   let row: { id?: unknown; status?: unknown } | undefined
   try {
     const a: unknown = JSON.parse(r.out)

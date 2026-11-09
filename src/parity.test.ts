@@ -1,8 +1,19 @@
 // claude-factory-hpmc.7: the front-end parity check (spec 008, FR-018, FR-019).
 import { expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { CATALOG } from './core/catalog'
-import { checkParity, FRONT_ENDS, GAPS_FILE, parseGaps, type FrontEnd, type Gap } from './parity'
+import {
+  checkParity,
+  FRONT_ENDS,
+  GAPS_FILE,
+  parity,
+  parseGaps,
+  type FrontEnd,
+  type Gap,
+  type Show,
+} from './parity'
 
 const echo = async (_op: string, i: Record<string, string | boolean>) => ({
   code: 0,
@@ -134,4 +145,71 @@ test('AC6: parseGaps refuses each bad form with its message', () => {
   ]
   for (const [text, msg] of rows) expect(() => parseGaps(text)).toThrow(msg)
   expect(parseGaps('[]')).toEqual([])
+})
+
+function gapsFile(gaps: Gap[]): string {
+  const d = mkdtempSync(join(tmpdir(), 'parity-file-'))
+  const f = join(d, 'g.json')
+  writeFileSync(f, JSON.stringify(gaps))
+  return f
+}
+const runParity = (file: string, show: Show) => {
+  const lines: string[] = []
+  const code = parity({ file, show, print: l => lines.push(l) })
+  return { code, lines }
+}
+const row = (id: string, status: string) => ({ code: 0, out: JSON.stringify([{ id, status }]), err: '' })
+
+test('AC7: parity is 0 when each gap bead is open', () => {
+  const f = gapsFile([gap('cli'), gap('web')])
+  for (const s of ['open', 'in_progress', 'blocked', 'deferred']) {
+    const r = runParity(f, id => row(id, s))
+    expect(r).toEqual({ code: 0, lines: ['parity: 2 gaps, all beads open'] })
+  }
+})
+
+test('AC7: parity names each bead that is not open', () => {
+  const g = (frontEnd: Gap['frontEnd'], bead: string): Gap => ({ ...gap(frontEnd), bead })
+  const f = gapsFile([g('cli', 'a-1'), g('web', 'a-1'), g('herdr-mod', 'b-2'), g('claude-mod', 'c-3')])
+  const shown: string[] = []
+  const r = runParity(f, id => {
+    shown.push(id)
+    if (id === 'a-1') return row(id, 'closed')
+    if (id === 'b-2') return { code: 1, out: '', err: 'boom\nmore' }
+    return { code: 0, out: '[]', err: '' }
+  })
+  expect(shown).toEqual(['a-1', 'b-2', 'c-3'])
+  expect(r.code).toBe(1)
+  expect(r.lines).toEqual([
+    'parity: a-1 (cli catalog.echo): status closed, remove the gap or reopen the bead',
+    'parity: a-1 (web catalog.echo): status closed, remove the gap or reopen the bead',
+    'parity: b-2 (herdr-mod catalog.echo): bd show failed: boom',
+    'parity: c-3 (claude-mod catalog.echo): bd show gave no row for it',
+    'parity: 4 of 4 gaps name a bead that is not open',
+  ])
+})
+
+test('AC7: parity fails closed on a blank error, a wrong id, bad JSON and no status', () => {
+  const f = gapsFile([gap('cli')])
+  const why = (r: ReturnType<Show>) => runParity(f, () => r).lines[0]
+  expect(why({ code: 124, out: '', err: ' ' })).toBe(
+    'parity: x-1 (cli catalog.echo): bd show failed: exit 124',
+  )
+  const none = 'parity: x-1 (cli catalog.echo): bd show gave no row for it'
+  expect(why({ code: 0, out: 'nope', err: '' })).toBe(none)
+  expect(why({ code: 0, out: '{"id":"x-1","status":"open"}', err: '' })).toBe(none)
+  expect(why(row('other', 'open'))).toBe(none)
+  expect(why({ code: 0, out: '[{"id":"x-1"}]', err: '' })).toBe(none)
+})
+
+test('AC8: a missing or bad gap file runs show zero times', () => {
+  let calls = 0
+  const show: Show = id => (calls++, row(id, 'open'))
+  const missing = runParity('/nonexistent/g.json', show)
+  expect(missing.code).toBe(1)
+  expect(missing.lines[0]).toStartWith('parity: cannot read /nonexistent/g.json: ')
+  const f = gapsFile([])
+  writeFileSync(f, '{}')
+  expect(runParity(f, show)).toEqual({ code: 1, lines: ['parity: parity-gaps.json: not an array'] })
+  expect(calls).toBe(0)
 })
