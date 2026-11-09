@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Port } from './core/catalog'
 import { clientHandler, type RunResult } from './server-api'
 
-type Call = { argv: string[]; text?: string }
+type Call = { argv: string[]; text?: string } | { port: string; args: unknown[] }
 let seq = 0
 const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'sapi-h-'))
@@ -14,10 +15,25 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     calls.push({ argv, text })
     return { code: 0, out: '{"ok":1}\n', err: '', ...o.result }
   }
+  // each port function logs into the same array as the runner, so a "zero calls" check counts both
+  const log = (port: string, args: unknown[]) => calls.push({ port, args })
+  const port: Port = {
+    show: async id => (log('show', [id]), { ok: 1 }),
+    status: async (id, print) => (log('status', [id]), print('{"ok":1}')),
+    backlog: async () => (log('backlog', []), { ok: 1 }),
+    prs: async () => (log('prs', []), { ok: 1 }),
+    decisionsList: () => (log('decisionsList', []), { ok: 1 }),
+    planShowText: () => (log('planShowText', []), '{"ok":1}'),
+    gateBriefFacts: async id => (log('gateBriefFacts', [id]), { ok: 1 }),
+    records: () => (log('records', []), []),
+    refreshMerges: async recs => (log('refreshMerges', [recs]), []),
+    managerUsage: since => (log('managerUsage', [typeof since]), []),
+  }
   const make = () =>
     clientHandler({
       home,
       run,
+      port,
       board: () => (o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
@@ -43,28 +59,62 @@ const post = (
   )
 
 describe('read routes', () => {
-  const rows: [string, string[]][] = [
-    ['/v1/runs/r1', ['show', 'r1']],
-    ['/v1/status', ['status']],
-    ['/v1/status?run=r1', ['status', 'r1']],
-    ['/v1/prs', ['prs']],
-    ['/v1/backlog', ['backlog']],
-    ['/v1/decisions', ['decisions', 'list']],
-    ['/v1/plan', ['plan', 'show']],
-    ['/v1/metrics', ['metrics']],
-    [
-      '/v1/metrics?rig=acme&since=7d&json=1&tokens=1',
-      ['metrics', '--rig', 'acme', '--since', '7d', '--json', '--tokens'],
-    ],
+  // the moved reads run in process: the port call and its arguments, never the runner
+  const p = (port: string, ...args: unknown[]): Call => ({ port, args })
+  const rows: [string, Call[]][] = [
+    ['/v1/runs/r1', [p('show', 'r1')]],
+    ['/v1/status', [p('status', undefined)]],
+    ['/v1/status?run=r1', [p('status', 'r1')]],
+    ['/v1/prs', [p('prs')]],
+    ['/v1/backlog', [p('backlog')]],
+    ['/v1/decisions', [p('decisionsList')]],
+    ['/v1/plan', [p('planShowText')]],
+    ['/v1/runs/r1/brief', [p('gateBriefFacts', 'r1')]],
   ]
-  for (const [path, argv] of rows)
-    test(`GET ${path} runs ${argv.join(' ')}`, async () => {
+  for (const [path, calls] of rows)
+    test(`GET ${path} calls the port`, async () => {
       const t = setup()
       const r = await get(t.h, path)
       expect(r.status).toBe(200)
       expect(await r.text()).toBe('{"ok":1}\n')
-      expect(t.calls).toEqual([{ argv, text: undefined }])
+      expect(t.calls).toEqual(calls)
     })
+  test('GET /v1/metrics reads the records and the merges', async () => {
+    const t = setup()
+    expect((await get(t.h, '/v1/metrics')).status).toBe(200)
+    expect(t.calls).toEqual([p('records'), p('refreshMerges', [])])
+  })
+  test('GET /v1/metrics with every input also reads the manager usage', async () => {
+    const t = setup()
+    expect((await get(t.h, '/v1/metrics?rig=acme&since=7d&json=1&tokens=1')).status).toBe(200)
+    expect(t.calls).toEqual([p('records'), p('refreshMerges', []), p('managerUsage', 'number')])
+  })
+  test('GET /v1/lease calls no port function and answers the lease line', async () => {
+    const t = setup()
+    const r = await get(t.h, '/v1/lease')
+    expect(r.status).toBe(200)
+    expect(await r.text()).toBe('nobody holds the manager lease\n')
+    expect(t.calls).toEqual([])
+  })
+  test('the lease is shown to the person even when the server env says patrol (personEnv)', async () => {
+    const old = process.env.FACTORY_PATROL
+    process.env.FACTORY_PATROL = '1'
+    try {
+      expect((await get(setup().h, '/v1/lease')).status).toBe(200)
+    } finally {
+      if (old === undefined) delete process.env.FACTORY_PATROL
+      else process.env.FACTORY_PATROL = old
+    }
+  })
+  test('a moved read that throws gives 422 with the CLI line', async () => {
+    const t = setup()
+    const r = await get(t.h, '/v1/metrics?since=0d')
+    expect(r.status).toBe(422)
+    expect(JSON.parse(await r.text()).refused).toBe(
+      'factory: usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]\n',
+    )
+    expect(t.calls).toEqual([])
+  })
   test('GET /v1/board answers the last tick and runs nothing; 503 before the first tick', async () => {
     const t = setup({ board: { runs: [] } })
     const r = await get(t.h, '/v1/board')
@@ -76,11 +126,11 @@ describe('read routes', () => {
   })
   test('a non-zero exit gives 422 with the stderr, a timeout gives 504', async () => {
     const t = setup({ result: { code: 1, out: '', err: 'x'.repeat(900) } })
-    const r = await get(t.h, '/v1/prs')
+    const r = await post(t.h, '/v1/halt', { mode: 'stop' })
     expect(r.status).toBe(422)
     expect(JSON.parse(await r.text()).refused.length).toBe(500)
     const u = setup({ result: { code: -1, timedOut: true } })
-    expect((await get(u.h, '/v1/prs')).status).toBe(504)
+    expect((await post(u.h, '/v1/halt', { mode: 'stop' })).status).toBe(504)
   })
 })
 
@@ -143,6 +193,11 @@ describe('refusals make zero calls', () => {
     ['GET on a POST path', h => get(h, '/v1/halt'), 404],
     ['POST on a GET path', h => post(h, '/v1/prs', {}), 404],
     ['extra query', h => get(h, '/v1/prs?x=1'), 400],
+    ['brief with an encoded slash', h => get(h, '/v1/runs/..%2f/brief'), 400],
+    ['brief with two segments', h => get(h, '/v1/runs/a/b/brief'), 404],
+    ['lease with a query', h => get(h, '/v1/lease?x=1'), 400],
+    ['POST on the lease', h => post(h, '/v1/lease', {}), 404],
+    ['status run with dots', h => get(h, '/v1/status?run=../x'), 400],
     ['unknown query key', h => get(h, '/v1/status?x=1'), 400],
     ['duplicate query key', h => get(h, '/v1/status?run=a&run=b'), 400],
     ['bad query value', h => get(h, '/v1/metrics?json=2'), 400],

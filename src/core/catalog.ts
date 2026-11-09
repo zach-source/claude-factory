@@ -1,11 +1,36 @@
-/** The operation catalog. It lists each feature of the manager with its inputs and its /v1 route. It imports node: modules only. */
+/** The operation catalog. It lists each feature of the manager with its inputs and its /v1 route. It imports node: modules, the operation files in ./ops, and types from ../metrics. */
+import type { ManagerUsage, RunRecord } from '../metrics'
+import * as backlogOps from './ops/backlog'
+import * as decisionsOps from './ops/decisions'
+import * as gatesOps from './ops/gates'
+import * as leaseOps from './ops/lease'
+import * as metricsOps from './ops/metrics'
+import * as planOps from './ops/plan'
+import * as prsOps from './ops/prs'
+import * as runsOps from './ops/runs'
 
 export type Kind = 'id' | 'text' | 'note' | 'path' | 'flag' | 'enum'
 export type Field = { name: string; kind: Kind; required: boolean; help: string; values?: string[] }
 export type RunResult = { code: number; out: string; err: string; timedOut?: boolean }
 /** run one CLI form; `text` is mail text that the runner passes by file */
 export type Runner = (argv: string[], text?: string) => Promise<RunResult>
-export type Ctx = { home: string; cli: Runner; board: () => unknown }
+export type Env = Record<string, string | undefined>
+export type Print = (line: string) => void
+/** the cli.ts helpers that the moved operations call; cli.ts builds it, tests fake it */
+export type Port = {
+  show: (id: string | undefined) => Promise<unknown>
+  status: (id: string | undefined, print: Print) => Promise<void>
+  backlog: () => Promise<unknown>
+  prs: () => Promise<unknown>
+  decisionsList: () => unknown
+  planShowText: () => string
+  gateBriefFacts: (id: string | undefined) => Promise<unknown>
+  records: () => RunRecord[]
+  refreshMerges: (recs: RunRecord[]) => Promise<RunRecord[]>
+  managerUsage: (since: number) => ManagerUsage[]
+}
+/** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
+export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
 export type Input = Record<string, string | boolean>
 export type Op = {
   name: string
@@ -18,6 +43,22 @@ export type Op = {
   route: { method: 'GET' | 'POST'; path: string }
   since: number
   run: (ctx: Ctx, input: Input) => Promise<RunResult>
+}
+
+/**
+ * Run `fn` with a line buffer, as the CLI prints. A thrown OpError goes up. Any other thrown Error gives
+ * code 1, the lines printed before it, and the CLI's own `factory: <msg>` line on err.
+ */
+export async function inProc(fn: (print: Print) => unknown): Promise<RunResult> {
+  const lines: string[] = []
+  const out = () => lines.map(l => `${l}\n`).join('')
+  try {
+    await fn(l => lines.push(l))
+    return { code: 0, out: out(), err: '' }
+  } catch (e) {
+    if (e instanceof OpError || !(e instanceof Error)) throw e
+    return { code: 1, out: out(), err: `factory: ${e.message}\n` }
+  }
 }
 
 /** an error with an HTTP status that the client port shows as is */
@@ -173,9 +214,8 @@ const bridge = (
   run: (ctx, i) => ctx.cli(argv(i), text?.(i)),
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
-const opt = (i: Input, k: string, flag: string) => (i[k] === undefined ? [] : [flag, i[k] as string])
 
-/** the 17 operations: the 14 routes of the client port, the board, the catalog and the parity fixture */
+/** the 19 operations: the routes of the client port, the board, the catalog and the parity fixture */
 export const CATALOG: Op[] = makeCatalog([
   local(
     {
@@ -232,7 +272,7 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     async (_, i) => ({ code: 0, out: (i.text as string) + '\n', err: '' }),
   ),
-  bridge(
+  local(
     {
       name: 'runs.show',
       summary: 'Show one run as JSON.',
@@ -240,10 +280,10 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/runs/:id',
       inputs: [id('id')],
     },
-    i => ['show', i.id as string],
     'json',
+    (c, i) => runsOps.show(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'runs.status',
       summary: 'Show the status of all runs, or of one run.',
@@ -251,30 +291,33 @@ export const CATALOG: Op[] = makeCatalog([
       path: '/v1/status',
       inputs: [f('run', 'id', false)],
     },
-    i => ['status', ...(i.run === undefined ? [] : [i.run as string])],
+    'text',
+    (c, i) => runsOps.status(c, i),
   ),
-  bridge(
+  local(
     { name: 'prs.show', summary: 'Show the open pull requests of the runs.', method: 'GET', path: '/v1/prs' },
-    () => ['prs'],
+    'text',
+    (c, i) => prsOps.show(c, i),
   ),
-  bridge(
+  local(
     { name: 'backlog.show', summary: 'Show the backlog of each rig.', method: 'GET', path: '/v1/backlog' },
-    () => ['backlog'],
+    'text',
+    (c, i) => backlogOps.show(c, i),
   ),
-  bridge(
+  local(
     {
       name: 'decisions.list',
       summary: 'List the questions that wait for the person.',
       method: 'GET',
       path: '/v1/decisions',
     },
-    () => ['decisions', 'list'],
+    'text',
+    (c, i) => decisionsOps.list(c, i),
   ),
-  bridge({ name: 'plan.show', summary: 'Show the plan.', method: 'GET', path: '/v1/plan' }, () => [
-    'plan',
-    'show',
-  ]),
-  bridge(
+  local({ name: 'plan.show', summary: 'Show the plan.', method: 'GET', path: '/v1/plan' }, 'text', (c, i) =>
+    planOps.show(c, i),
+  ),
+  local(
     {
       name: 'metrics.show',
       summary: 'Show the run metrics.',
@@ -287,13 +330,24 @@ export const CATALOG: Op[] = makeCatalog([
         f('tokens', 'flag', false),
       ],
     },
-    i => [
-      'metrics',
-      ...opt(i, 'rig', '--rig'),
-      ...opt(i, 'since', '--since'),
-      ...(i.json ? ['--json'] : []),
-      ...(i.tokens ? ['--tokens'] : []),
-    ],
+    'text',
+    (c, i) => metricsOps.show(c, i),
+  ),
+  local(
+    {
+      name: 'gates.brief',
+      summary: 'Show the facts of the gate of a run.',
+      method: 'GET',
+      path: '/v1/runs/:id/brief',
+      inputs: [id('id')],
+    },
+    'json',
+    (c, i) => gatesOps.brief(c, i),
+  ),
+  local(
+    { name: 'lease.show', summary: 'Show the manager lease.', method: 'GET', path: '/v1/lease' },
+    'text',
+    (c, i) => leaseOps.show(c, i),
   ),
   bridge(
     {

@@ -225,14 +225,68 @@ const GOLD: Record<string, Row> = {
 
 for (const [key, home, args, extra] of ROWS)
   test(`factory ${args.join(' ')}${extra ? ` ${JSON.stringify(extra)}` : ''} keeps its output (${key})`, () => {
-    const r = factory(home, args, extra)
-    if (process.env.RECORD) {
-      GOLD[key] = r
-      return
-    }
-    expect(r).toEqual(GOLD[key]!)
+    expect(factory(home, args, extra)).toEqual(GOLD[key]!)
   })
 
-afterAll(() => {
-  if (process.env.RECORD) writeFileSync(process.env.RECORD, JSON.stringify(GOLD, null, 1))
+// The server answers the same bytes in process: a script gives corePort to clientHandler and GETs each path.
+const serverGet = (home: string, paths: string[]): { status: number; body: string }[] => {
+  const script = join(dir, 'serve.ts')
+  writeFileSync(
+    script,
+    [
+      `import { corePort } from ${JSON.stringify(join(import.meta.dir, '..', 'cli.ts'))}`,
+      `import { clientHandler } from ${JSON.stringify(join(import.meta.dir, '..', 'server-api.ts'))}`,
+      `const run = async () => { throw new Error('the runner must not run') }`,
+      `const h = clientHandler({ home: process.env.FACTORY_HOME!, run, port: corePort, board: () => null })`,
+      `for (const p of process.argv.slice(2)) {`,
+      `  const r = await h(new Request('http://x' + p), '1.2.3.4')`,
+      `  console.log(JSON.stringify({ status: r.status, body: await r.text() }))`,
+      `}`,
+      `process.exit(0)`,
+    ].join('\n'),
+  )
+  const p = Bun.spawnSync([process.execPath, script, ...paths], { env: cleanEnv(home), timeout: 30_000 })
+  expect(p.stderr.toString()).toBe('')
+  return p.stdout
+    .toString()
+    .trim()
+    .split('\n')
+    .map(l => {
+      const j = JSON.parse(l) as { status: number; body: string }
+      return { status: j.status, body: norm(j.body) }
+    })
+}
+const refused = (body: string) => (JSON.parse(body) as { refused: string }).refused
+
+test('the server answers the CLI bytes for the moved reads of H1', () => {
+  const paths: [string, string][] = [
+    ['/v1/runs/r1', 'a'],
+    ['/v1/status', 'c'],
+    ['/v1/status?run=r1', 'd'],
+    ['/v1/runs/r1/brief', 'j'],
+    ['/v1/backlog', 'l1'],
+    ['/v1/prs', 'l2'],
+    ['/v1/decisions', 'l3'],
+  ]
+  const got = serverGet(
+    H1,
+    paths.map(p => p[0]),
+  )
+  expect(got).toEqual(paths.map(([, k]) => ({ status: 200, body: GOLD[k]!.out })))
+})
+
+test('the server answers the CLI bytes for the moved reads of H0', () => {
+  const got = serverGet(H0, ['/v1/plan', '/v1/lease', '/v1/metrics?json=1'])
+  expect(got).toEqual(['e', 'f', 'h'].map(k => ({ status: 200, body: GOLD[k]!.out })))
+})
+
+test('a refusal of the server holds the CLI stderr line', () => {
+  const [a, b] = serverGet(H1, ['/v1/runs/nope', '/v1/runs/r2/brief'])
+  expect(a!.status).toBe(422)
+  expect(refused(a!.body)).toBe(GOLD.b!.err)
+  expect(b!.status).toBe(422)
+  expect(refused(b!.body)).toBe(GOLD.k!.err)
+  const [c] = serverGet(H0, ['/v1/metrics?since=0d'])
+  expect(c!.status).toBe(422)
+  expect(refused(c!.body)).toBe(GOLD.i!.err)
 })

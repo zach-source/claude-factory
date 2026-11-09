@@ -296,6 +296,16 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
+import { refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
+import type { Ctx as OpCtx, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
+import * as backlogOp from './core/ops/backlog'
+import * as decisionsOp from './core/ops/decisions'
+import * as gatesOp from './core/ops/gates'
+import * as leaseOp from './core/ops/lease'
+import * as metricsOp from './core/ops/metrics'
+import * as planOp from './core/ops/plan'
+import * as prsOp from './core/ops/prs'
+import * as runsOp from './core/ops/runs'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
 import { maskAssignments } from './worker-hook'
@@ -10795,26 +10805,6 @@ function managerSender(run: Run): 'manager' {
   return 'manager'
 }
 
-/**
- * claude-factory-5y7b: the env marker that says a worker runs this command, else undefined.
- * forMail skips FACTORY_FROM and FACTORY_RUN: the manager mails with FACTORY_FROM=manager (remote.test.ts) and a run worker mails its own station (run-scope.test.ts), so managerSender keeps its old three markers.
- * ponytail: env only. A cwd check for say, stop and start needs a scan of every run; the worker hook covers the rest.
- */
-function workerMarker(
-  forMail = false,
-  env: Record<string, string | undefined> = process.env,
-): string | undefined {
-  return env.FACTORY_FROM && !forMail
-    ? 'FACTORY_FROM is set'
-    : env.FACTORY_RUN && !forMail
-      ? 'FACTORY_RUN is set'
-      : env.FACTORY_DEF_NAME
-        ? 'FACTORY_DEF_NAME is set'
-        : env.BEADS_ACTOR?.startsWith('factory/')
-          ? 'BEADS_ACTOR names a factory worker'
-          : undefined
-}
-
 /** claude-factory-e10f: the verbs a worker can run. The CLI refuses all other verbs, also a new verb. */
 const WORKER_VERBS = [
   'report',
@@ -10937,10 +10927,11 @@ function makeFactory(dir: string) {
 
 /** the person and the manager run these verbs; a worker mails the manager instead. With patrol, a patrol (FACTORY_PATROL) must not run it either */
 function refuseWorker(verb: string, patrol = false) {
-  const marker = workerMarker()
-  if (marker) fail(`a worker cannot run factory ${verb} (${marker}): mail the manager instead`)
-  if (patrol && process.env.FACTORY_PATROL)
-    fail(`a patrol cannot run factory ${verb}: leave it for the person or the manager`)
+  try {
+    refuseWorkerIn(process.env, verb, patrol)
+  } catch (e) {
+    fail((e as Error).message)
+  }
 }
 
 function insideWorktree(run: Run): boolean {
@@ -11651,54 +11642,54 @@ function record(id: string): RunRecord {
   }
 }
 
-async function status(id: string | undefined) {
+async function status(id: string | undefined, print: Print = l => print(l)) {
   const halt = halted()
   if (halt && !id)
-    console.log(
+    print(
       halt.state === 'paused'
         ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
         : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
     )
   const stale = !id && managerStale(HOME, managerCommand([], ''))
-  if (stale) console.log(stale)
+  if (stale) print(stale)
   if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
     const age = backupAge(HOME, Date.now())
     const err = backupError(HOME)
-    console.log(
+    print(
       (age === undefined ? 'home backup: none yet' : `home backup: ${Math.round(age / 60_000)} min ago`) +
         (err ? `; last run failed: ${err}` : ''),
     )
   }
   if (!id && process.env.CURSOR_API_KEY) {
     await refreshCursorMeter(HOME)
-    console.log(cursorLine(cursorMeter(HOME), cursorCap()))
+    print(cursorLine(cursorMeter(HOME), cursorCap()))
   }
   if (!id && (grokSpent(HOME) > 0 || grokBudget() !== undefined))
-    console.log(grokLine(grokSpent(HOME), grokBudget()))
-  if (!runIds().length) console.log("no runs yet: factory start <factory> <repo> '<goal...>'")
+    print(grokLine(grokSpent(HOME), grokBudget()))
+  if (!runIds().length) print("no runs yet: factory start <factory> <repo> '<goal...>'")
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
     const def = await loadPinned(run.factory)
     const r = row(run, def, value, c, agentOf(def, value, c))
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
-    console.log(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
+    print(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     // a bead's goal carries its whole description: bd show <bead> has it
-    console.log(`  goal: ${clip(r.goal!.split('\n')[0]!, 200)}`)
-    if (id) console.log(`  factory: ${run.factoryFrom ?? run.factory}`)
-    if (r.error) console.log(`  error: ${r.error}`)
+    print(`  goal: ${clip(r.goal!.split('\n')[0]!, 200)}`)
+    if (id) print(`  factory: ${run.factoryFrom ?? run.factory}`)
+    if (r.error) print(`  error: ${r.error}`)
     if (id && run.bead) {
       const tasks = beads(run.repo, 'factory').children(run.bead)
       const closed = tasks.filter(t => t.status === 'closed').length
-      console.log(`  bead: ${run.bead}, tasks ${closed}/${tasks.length} closed (bd children ${run.bead})`)
-    } else if (run.bead) console.log(`  bead: ${run.bead}`)
+      print(`  bead: ${run.bead}, tasks ${closed}/${tasks.length} closed (bd children ${run.bead})`)
+    } else if (run.bead) print(`  bead: ${run.bead}`)
     if (r.gate)
-      console.log(
+      print(
         `  gate: ${r.gate.question}\n  decide: factory decide ${r.id} <${r.gate.outcomes.join('|')}> '[note]'`,
       )
     const mail = Object.keys(c.mail).filter(box => unread(c, box).length)
-    if (mail.length) console.log(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
+    if (mail.length) print(`  unread: ${mail.map(box => `${box} ${unread(c, box).length}`).join(', ')}`)
     for (const e of id ? c.log : c.log.slice(-1))
-      console.log(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
+      print(`  ${e.node}#${e.attempt} ${e.outcome}: ${cut(e.summary.replace(/\s+/g, ' '), 160)}`)
   }
   if (!id) {
     const ships = liveShipRuns()
@@ -11706,7 +11697,7 @@ async function status(id: string | undefined) {
       const repo = rigs().find(r => r.name === rig)!.repo
       const live = ships.find(s => s.run.repo === repo)
       const lines = shipLines(queue, live && { id: live.run.id, node: live.node })
-      if (lines.length) console.log(`rig ${rig}\n${lines.join('\n')}`)
+      if (lines.length) print(`rig ${rig}\n${lines.join('\n')}`)
     }
   }
 }
@@ -12054,6 +12045,35 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** the helpers of this file that the catalog operations call (src/core/ops) */
+export const corePort: Port = {
+  show,
+  status,
+  backlog,
+  prs,
+  decisionsList,
+  planShowText,
+  gateBriefFacts,
+  records,
+  refreshMerges,
+  managerUsage,
+}
+const cliCtx = (): OpCtx => ({
+  home: HOME,
+  env: process.env,
+  port: corePort,
+  board: () => null,
+  cli: () => fail('no CLI runner in the CLI'),
+})
+/** the input of an op from CLI words: a missing word leaves its key out */
+const defined = (o: Record<string, string | boolean | undefined>): OpInput =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as OpInput
+const emit = (r: OpResult) => {
+  process.stdout.write(r.out)
+  process.stderr.write(r.err)
+  process.exitCode = r.code
+}
+
 if (import.meta.main && !outboxCmd)
   try {
     switch (cmd) {
@@ -12156,7 +12176,7 @@ if (import.meta.main && !outboxCmd)
           leases.release(HOME)
           console.log('released the manager lease')
         } else if (!args.length || (args[0] === 'status' && args.length === 1))
-          console.log(leases.leaseLine(leases.readLease(HOME), Date.now()))
+          emit(await leaseOp.show(cliCtx(), {}))
         else fail('usage: factory lease [status|release]')
         break
       }
@@ -12178,7 +12198,7 @@ if (import.meta.main && !outboxCmd)
       case 'server':
         refuseWorker('server', true)
         lease()
-        server.main(args, HOME, () => tick())
+        server.main(args, HOME, () => tick(), corePort)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -12741,93 +12761,33 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'show':
-        console.log(JSON.stringify(await show(args[0])))
+        emit(await runsOp.show(cliCtx(), defined({ id: args[0] })))
         break
       case 'metrics': {
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
-        const rig = opt('--rig')
-        const since = opt('--since')
-        const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
-        if (!(days > 0)) fail('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
-        const picked = await refreshMerges(records().filter(r => inWindow(r, rig, days)))
-        const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
-        const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
-        // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
-        // fail-opens (logPrecheck), independent of bd; this command is the only reader.
-        const since_ = since ? Date.now() - days * 86_400_000 : 0
-        const precheckAll = existsSync(precheckFile())
-          ? parsePrecheckLines(readFileSync(precheckFile(), 'utf8')).filter(l => l.at >= since_)
-          : []
-        const launchFile = join(HOME, 'launches.jsonl')
-        const launchesAll = existsSync(launchFile) ? parseLaunchLines(readFileSync(launchFile, 'utf8')) : []
-        const launches = launchesAll.filter(l => l.at >= since_ && (!rig || l.rig === rig))
-        // claude-factory-dsfg: runs/*/denials.jsonl, one file a run. --rig maps a run to its rig through
-        // every launch line (not the --since window: a denial can be newer than its run's first launch)
-        const rigOfRun = new Map(launchesAll.map(l => [l.run, l.rig]))
-        const denials = denialStats(
-          (existsSync(join(HOME, 'runs'))
-            ? readdirSync(join(HOME, 'runs'), { withFileTypes: true })
-            : []
-          ).flatMap(d => {
-            const f = join(HOME, 'runs', d.name, 'denials.jsonl')
-            if (!d.isDirectory() || !existsSync(f) || (rig && rigOfRun.get(d.name) !== rig)) return []
-            return parseDenialLines(readFileSync(f, 'utf8')).filter(l => l.at >= since_)
-          }),
-        )
-        const precheckOf = (g: string) => precheckStats(precheckAll.filter(l => l.rig === g))
-        // --tokens reads what runs stored (record().sessions) and manager-usage.jsonl, never a live transcript
-        const tokenArgs = args.includes('--tokens')
-          ? ([
-              picked.flatMap(r => (r.sessions ?? []).map(u => ({ ...u, run: r.id }))),
-              new Set(picked.filter(r => fate(r) === 'shipped').map(r => r.id)),
-              managerUsage(since_),
-            ] as const)
-          : null
-        // the weekly Cursor pool as a gauge: the last reading and the cap, or null when the meter is unknown
-        const cursor = cursorMeter(HOME)
-        if (args.includes('--json'))
-          console.log(
-            JSON.stringify({
-              cursor: cursor && { ...cursor, cap: cursorCap() },
-              grok: { spentUsd: grokSpent(HOME), budgetUsd: grokBudget() ?? null },
-              all: metrics(picked),
-              ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
-              precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
-              launches,
-              denials,
-              rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
+        emit(
+          await metricsOp.show(
+            cliCtx(),
+            defined({
+              rig: opt('--rig'),
+              since: opt('--since'),
+              json: args.includes('--json') || undefined,
+              tokens: args.includes('--tokens') || undefined,
             }),
-          )
-        else {
-          console.log(
-            render(
-              metrics(picked),
-              `${basename(HOME)}${since ? `, last ${days}d` : ''}`,
-              precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
-            ),
-          )
-          if (groups.length > 1) for (const g of groups) console.log('\n' + render(of(g), g, precheckOf(g)))
-          if (launches.length)
-            console.log('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
-          if (Object.keys(denials).length)
-            console.log('\ndenials by harness and reason:\n' + renderDenials(denials))
-          if (cursor || process.env.CURSOR_API_KEY) console.log('\n' + cursorLine(cursor, cursorCap()))
-          if (grokSpent(HOME) > 0 || grokBudget() !== undefined)
-            console.log('\n' + grokLine(grokSpent(HOME), grokBudget()))
-        }
-        if (tokenArgs && !args.includes('--json')) console.log('\n' + renderTokens(...tokenArgs))
+          ),
+        )
         break
       }
       case 'backlog':
-        console.log(JSON.stringify(await backlog()))
+        emit(await backlogOp.show(cliCtx(), {}))
         break
       case 'prs':
-        console.log(JSON.stringify(await prs()))
+        emit(await prsOp.show(cliCtx(), {}))
         break
       case 'decisions': {
         const [sub, ...rest] = args
         if (!sub || sub === 'list') {
-          console.log(JSON.stringify(decisionsList()))
+          emit(await decisionsOp.list(cliCtx(), {}))
           break
         }
         if (sub === 'answer') {
@@ -12885,7 +12845,7 @@ if (import.meta.main && !outboxCmd)
       case 'plan': {
         const [sub, arg] = args
         if (!sub || sub === 'show') {
-          console.log(planShowText())
+          emit(await planOp.show(cliCtx(), {}))
           break
         }
         if (sub === 'facts') {
@@ -12921,7 +12881,7 @@ if (import.meta.main && !outboxCmd)
       case 'gate-brief': {
         const [sub, a1, a2] = args
         if (sub === 'facts') {
-          console.log(JSON.stringify(await gateBriefFacts(a1)))
+          emit(await gatesOp.brief(cliCtx(), defined({ id: a1 })))
           break
         }
         if (sub === 'set') {
@@ -12969,7 +12929,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'status':
-        await status(args[0])
+        emit(await runsOp.status(cliCtx(), defined({ run: args[0] })))
         break
       case 'digest':
         await digest()
