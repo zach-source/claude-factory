@@ -67,7 +67,7 @@ The exact list is the `SETTING_KEYS` table in `src/settings.ts`. A key outside t
 
 ## Token slot (computed from the store)
 
-`{ n, hasToken, use7d, use5h, status, live }`. `status` is `ok`, `refused` (at its limit) or `empty` (no token). The live slot number comes from the `token.active-field`. No token value is part of this record.
+`{ n, hasToken, use7d, use5h, status, live }`. `status` is `ok`, `refused` (at its limit), `empty` (no token), or `error` (the probe failed or gave no status). The live slot number comes from the `token.active-field`. No token value is part of this record.
 
 ## Worker image
 

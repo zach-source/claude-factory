@@ -32,7 +32,7 @@ function word(file: string, key: string): string {
 }
 
 /**
- * Builds and pushes the worker or manager image as hack/push-worker.sh did. `run` gets the argv after `docker`
+ * Builds and pushes the worker or manager image. `run` gets the argv after `docker`
  * and resolves to the exit code. The setting `ax.image` (or `ax.manager-image`) changes only after a push with a good digest.
  * Returns `<tag>@<digest>`.
  */
