@@ -111,7 +111,7 @@ test('AC2: the login files, locks, bin, devenv, logs and rigs.json backups stay 
   const never = [
     'home/.claude.json',
     'home/.credentials.json',
-    'home/settings.json',
+    `claude/projects/${SLUG}/memory/settings.json`,
     'home/rigs.json.bak',
     'home/tick.lock',
     'home/gc.lock',
@@ -125,10 +125,12 @@ test('AC2: the login files, locks, bin, devenv, logs and rigs.json backups stay 
     `claude/projects/${SLUG}/other.jsonl`,
   ]
   for (const f of never) put(join(ws, f), 'x')
+  put(join(ws, 'home/settings.json'), '{}')
   expect(backup(cfg(ws, r), true).error).toBeUndefined()
   const files = sh('--git-dir', r, 'ls-tree', '-r', '--name-only', 'manager-home').split('\n')
   for (const f of never) expect(files).not.toContain(f)
   expect(files).toContain('home/rigs.json')
+  expect(files).toContain('home/settings.json')
 })
 
 test('AC2: each exclude rule is needed', () => {
@@ -138,7 +140,7 @@ test('AC2: each exclude rule is needed', () => {
   const probes: Record<string, string> = {
     '.claude.json': 'home/.claude.json',
     '.credentials.json': 'home/.credentials.json',
-    'settings*.json': 'home/settings.json',
+    '/claude/**/settings*.json': `claude/projects/${SLUG}/memory/settings.json`,
     'rigs.json.*': 'home/rigs.json.bak',
     '*.lock': 'home/tick.lock',
     '/home/bin/': 'home/bin/factory',
