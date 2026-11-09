@@ -56,6 +56,11 @@ const setup = (settings?: (tmp: string) => Record<string, string>) => {
         repo,
         factory: 'lifecycle',
         agent: 'run ' + SHAPED,
+        goal: 'goal ' + SHAPED,
+        slo: 'slo ' + SHAPED,
+        drift: 'drift ' + SHAPED,
+        mcp: 'mcp ' + SHAPED,
+        linear: { team: [SHAPED] },
         env: { API_TOKEN: KEYED, PLAIN: SHAPED },
         params: { db_password: KEYED },
         beadsRemote: { name: 'origin', url: USERINFO_URL, user: 'bot' },
@@ -169,6 +174,21 @@ done
       if (p) symlinkSync(p, join(bin, n))
     }
     expect(run(['up'], 1, { PATH: bin }).err).toContain('claude not on PATH')
+  }, 60_000)
+})
+
+describe('a bad devenv.json and an agent refusal hide the secret', () => {
+  test('devenv', () => {
+    const { home, run } = setup()
+    writeFileSync(join(home, 'devenv.json'), '{"token": ' + 'zqsecret' + 'bare}')
+    const r = run(['devenv'], 1, { FACTORY_AX_IMAGE: 'img' })
+    expect(r.out + r.err).toContain('not valid JSON')
+  }, 60_000)
+
+  test('agent', () => {
+    const { repo, run } = setup()
+    const args = ['rig', 'add', 'y', repo, 'lifecycle', '--runner', 'ax', '--agent', SHAPED]
+    expect(run(args, 1).err).toContain('not "<hidden>"')
   }, 60_000)
 })
 
