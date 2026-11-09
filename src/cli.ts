@@ -155,9 +155,19 @@ import {
   writeLaunch,
 } from './harness'
 import { hold as holdOf, shipLines, tokens, waiting, waitingItems } from './sidebar'
-import { CODEX_MODEL, briefOnce, keepTick, patrolOnce, pmOnce, reviewOnce, type Io } from './once'
+import {
+  CODEX_MODEL,
+  briefOnce,
+  keepTick,
+  patrolOnce,
+  pmOnce,
+  reviewOnce,
+  runModelAsync,
+  type Io,
+} from './once'
+import { guardHook } from './core/chat'
 import { check } from './core/guards'
-import { REPAIR_CAP, closableParents, conflictProbes, repairs, type PrFact } from './repairs'
+import { REPAIR_CAP, closableParents, conflictProbes, heldBeads, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
 import { GAPS_FILE, parity } from './parity'
@@ -1459,7 +1469,9 @@ function git(cwd: string, ...args: string[]) {
   const probe = Bun.spawnSync(['git', '-C', cwd, 'var', 'GIT_AUTHOR_IDENT'], { env: process.env })
   const env = probe.exitCode === 0 ? process.env : { ...process.env, ...MEMORY_GIT_IDENTITY_FALLBACK }
   const p = Bun.spawnSync(['git', '-C', cwd, ...args], { env })
-  return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[0]}: ${p.stderr.toString().trim()}`)
+  let i = 0
+  while (args[i] === '-c') i += 2
+  return p.exitCode === 0 ? p.stdout.toString().trim() : fail(`git ${args[i]}: ${p.stderr.toString().trim()}`)
 }
 
 /** every git call that can reach a remote (fetch, ls-remote, push) gets this: a credential prompt
@@ -4848,7 +4860,16 @@ export const factoryLabelName = (run: Run, def: Factory) => {
 }
 
 /** mirrors a run into its bead, advancing `t` as each write lands so a failure retries next tick */
-export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, now: number) {
+export function track(
+  run: Run,
+  def: Factory,
+  value: unknown,
+  c: Ctx,
+  t: Track,
+  now: number,
+  // ponytail: with no PR list here, any run of a parent holds it; the repair pass closes it later
+  runBeads: () => Set<string> = () => new Set(runBeadsOf(run.repo).values()),
+) {
   const b = beads(run.repo, actorOf(run.id))
   const id = run.bead!
   for (const e of c.log.slice(t.mirrored)) {
@@ -4930,7 +4951,7 @@ export function track(run: Run, def: Factory, value: unknown, c: Ctx, t: Track, 
     // not the factory's to do: left open for a person, who queues it again or closes it
     else if (typeof edge === 'object' && edge.reject) b.reject(id, `${run.id}/${last!.node}`, reason)
     else if (!b.close(id, reason)) b.defer(id, `run ${run.id} could not close it: ${reason}`)
-    else closeParents(b, run.repo, id, `run ${run.id}`)
+    else closeParents(b, run.repo, id, `run ${run.id}`, undefined, runBeads())
     t.isSettled = true
   } else if (!isOver && t.isSettled) {
     t.isSettled = !b.reopen(id) // a run revived with goto
@@ -5263,9 +5284,19 @@ function proposalMail(now: number) {
   return [{ run: 'factory', from: 'dream', text: memory.proposalMailText(pending, CLI), at: now }]
 }
 
-const commitMemory = (message: string) => {
-  git(MEMORY, 'add', '-A')
-  if (git(MEMORY, 'status', '--porcelain')) git(MEMORY, 'commit', '-q', '-m', message)
+const memGit = (...args: string[]) => git(MEMORY, ...NO_HOOKS, ...args)
+const MEMORY_REFUSED = 'memory: repo config not allowed, nothing committed'
+const memoryRefused = () => (
+  appendFileSync(join(HOME, 'dream.log'), `${new Date().toISOString()} ${MEMORY_REFUSED}\n`),
+  false
+)
+
+/** commit the memory notes with no hook; false (and a dream.log line) when the repo config is not allowed */
+export function commitMemory(message: string): boolean {
+  if (!repoConfigOk(MEMORY)) return memoryRefused()
+  memGit('add', '-A')
+  if (memGit('status', '--porcelain')) memGit('commit', '-q', '-m', message)
+  return true
 }
 
 const WIKI_PAGE_MAX = 65_536
@@ -5300,6 +5331,22 @@ function wikiLog(line: string) {
   console.error(line)
 }
 
+const NO_HOOKS = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false']
+
+/**
+ * The key names that the repo config of wiki/.git and memory/.git may hold. Each key runs no program and
+ * rewrites no URL. POSIX ERE only, so `grep -E` in CONFIG_SYNC uses the same source text.
+ */
+export const REPO_CONFIG_KEY =
+  /^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks)|extensions\.(objectformat|refstorage)|user\.(name|email)|remote\.origin\.(url|fetch|pushurl)|branch\.[A-Za-z0-9_./-]+\.(remote|merge))$/
+
+/** true only when each key name of the repo's own config is in REPO_CONFIG_KEY; a failed read or no key refuses */
+function repoConfigOk(dir: string) {
+  const p = wikiGit(dir, ['config', '--local', '--name-only', '--null', '--list'])
+  const keys = p.out.toString().split('\0').slice(0, -1)
+  return p.code === 0 && keys.length > 0 && keys.every(k => REPO_CONFIG_KEY.test(k))
+}
+
 /** git in the wiki: no identity, repo or index from the caller's environment, and literal pathspecs */
 function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<string, string> = {}) {
   const env: Record<string, string | undefined> = {
@@ -5310,7 +5357,7 @@ function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<
   for (const k of Object.keys(env))
     if (/^GIT_(AUTHOR|COMMITTER)_/.test(k) || /^GIT_(DIR|WORK_TREE|INDEX_FILE)$/.test(k)) delete env[k]
   Object.assign(env, extraEnv)
-  const p = Bun.spawnSync(['git', '-C', dir, ...args], {
+  const p = Bun.spawnSync(['git', '-C', dir, ...NO_HOOKS, ...args], {
     env,
     stderr: 'pipe',
     timeout: network ? GIT_NETWORK_TIMEOUT_MS : undefined,
@@ -5484,6 +5531,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
       .split('\n')[0]!
       .replace(/\p{Cc}/gu, ' ')
       .slice(0, 200)
+  if (!repoConfigOk(dir)) return (wikiLog('wiki: repo config not allowed, nothing committed'), false)
   if (wikiGit(dir, ['add', '-A', '--', ...(paths ?? [])]).code !== 0)
     return (wikiLog('wiki: stage failed, nothing committed'), false)
   const list = wikiGit(dir, ['diff', '--cached', '--raw', '--no-renames', '-z', '--diff-filter=d'])
@@ -5602,6 +5650,7 @@ function wikiAllowed(r: { host: string; owner: string; repo: string }, fresh = f
  * nothing to do. True when the push worked.
  */
 export function pushWiki(dir = join(HOME, 'wiki'), branch = 'main') {
+  if (!repoConfigOk(dir)) return (wikiLog('wiki: repo config not allowed, push refused'), false)
   if (wikiGit(dir, ['symbolic-ref', '-q', 'HEAD']).out.toString().trim() !== `refs/heads/${branch}`)
     return (wikiLog(`wiki: checkout not on ${branch}, push refused`), false)
   const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
@@ -5619,6 +5668,7 @@ export function pushWiki(dir = join(HOME, 'wiki'), branch = 'main') {
  * pull gets a rebase abort and a journal line; the caller goes on. No origin: nothing to do.
  */
 function pullWiki(dir: string) {
+  if (!repoConfigOk(dir)) return wikiLog('wiki: repo config not allowed, pull skipped')
   const url = wikiGit(dir, ['config', '--get', 'remote.origin.url']).out.toString().trim()
   if (!url) return
   if (!wikiRemote(url)) return wikiLog('wiki: remote not allowed, pull skipped')
@@ -5693,6 +5743,7 @@ function wikiGroom(dryRun: boolean) {
     return
   }
 
+  if (!repoConfigOk(dir)) return wikiLog('wiki groom: repo config not allowed, skipped')
   const head = text(g('symbolic-ref', '-q', 'HEAD'))
   if (head.startsWith('refs/heads/groom/')) {
     if (g('status', '--porcelain', '-z', '--untracked-files=all').out.length)
@@ -5745,6 +5796,7 @@ function wikiGroom(dryRun: boolean) {
     return wikiLog('wiki groom: checkout failed')
   let ignoredBefore = new Set<string>()
   let keepFiles = false
+  let configBad = false
   try {
     if (list('-o', '--exclude-standard').length) {
       keepFiles = true
@@ -5763,6 +5815,10 @@ function wikiGroom(dryRun: boolean) {
       'Read,Glob,Grep,Edit,Write',
       [],
     )
+    if (!repoConfigOk(dir)) {
+      configBad = true
+      return wikiLog('wiki groom: repo config not allowed, nothing committed')
+    }
     if (ap.code !== 0) return wikiLog(`wiki groom: apply call failed (exit ${exit(ap)}), nothing committed`)
     const kept = headKept(wikiRun(dir), before)
     if (kept !== 'same')
@@ -5830,6 +5886,7 @@ function wikiGroom(dryRun: boolean) {
     wikiLog(done)
     console.log(done)
   } finally {
+    if (configBad) return
     let ok = true
     if (!keepFiles) {
       ok = g('reset', '-q', '--hard').code === 0
@@ -6161,7 +6218,7 @@ async function dream() {
     writeFileSync(join(HOME, 'dream.stamp'), '') // a failed dream waits for the next day too, rather than retrying every tick
     mkdirSync(MEMORY, { recursive: true })
     if (!existsSync(join(MEMORY, '.git'))) {
-      git(MEMORY, 'init', '-q')
+      memGit('init', '-q')
     }
     // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
     // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
@@ -6169,9 +6226,9 @@ async function dream() {
     memory.writeStore(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
     const codexLinked = pre.some(l => l.path === '.codex') // a removed .codex link still refuses this dream
     if (pre.length) appendFileSync(join(HOME, 'dream.log'), removedLine(pre))
-    commitMemory('notes since the last dream')
+    if (!commitMemory('notes since the last dream')) return MEMORY_REFUSED
     // the journal since the last dream that finished: a failed one leaves its entries to the next
-    const since = Number(git(MEMORY, 'log', '-1', '--grep=^dream:', '--format=%at')) * 1000
+    const since = Number(memGit('log', '-1', '--grep=^dream:', '--format=%at')) * 1000
     const journal = journalSince(since)
     const manager = managerSince(since)
     if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
@@ -6292,8 +6349,9 @@ async function dream() {
       appendFileSync(dreamLog, `${line}\n`)
       return line
     }
+    if (!repoConfigOk(MEMORY)) return (memoryRefused(), MEMORY_REFUSED)
     if (p.exitCode !== 0) return said
-    git(MEMORY, 'add', '-A')
+    memGit('add', '-A')
     // a filed or renamed note keeps its counts. An entry a dream merged by hand keeps its usage too,
     // through the alias it left on the entry that absorbed it (claude-factory-59r.11).
     // Read from the staged index (--cached), not HEAD. compact() runs below, before the commit.
@@ -6301,7 +6359,7 @@ async function dream() {
     // right after it (claude-factory-503.3).
     const renamed: Record<string, string> = {
       ...Object.fromEntries(
-        git(MEMORY, 'diff', '-M', '--name-status', '--cached', before)
+        memGit('diff', '-M', '--name-status', '--cached', before)
           .split('\n')
           .filter(l => l.startsWith('R'))
           .map(l => l.split('\t').slice(1)),
@@ -6313,17 +6371,9 @@ async function dream() {
     // each help since the last dream gets its attempt's outcome as it folds (claude-factory-3u1.2.4)
     const outcomes = outcomesSince(since)
     memory.compact(MEMORY, renamed, Date.now(), (by, at) => memory.helpOk(outcomes, by, at))
-    git(MEMORY, 'add', '-A')
+    memGit('add', '-A')
     // committed even when it changed nothing, and dated when it began: what was journaled meanwhile is the next one's
-    git(
-      MEMORY,
-      'commit',
-      '-q',
-      '--allow-empty',
-      `--date=@${Math.floor(start / 1000)}`,
-      '-m',
-      `dream: ${said}`,
-    )
+    memGit('commit', '-q', '--allow-empty', `--date=@${Math.floor(start / 1000)}`, '-m', `dream: ${said}`)
     let pass = { archived: 0, retired: 0 } // the tier pass's archives, for the metrics line below
     if (process.env.FACTORY_MEMORY_TIERS !== '0') {
       const filesBefore = memory.mdFileCount(MEMORY)
@@ -6335,10 +6385,9 @@ async function dream() {
         onPlan: lines => appendFileSync(join(HOME, 'dream.log'), lines.join('\n') + '\n'),
       })
       memory.compact(MEMORY, tiers.renamed)
-      git(MEMORY, 'add', '-A')
+      memGit('add', '-A')
       // its own commit, dated with the dream it followed, even when it merged and archived nothing
-      git(
-        MEMORY,
+      memGit(
         'commit',
         '-q',
         '--allow-empty',
@@ -6566,7 +6615,9 @@ const CONFIG_SYNC_MS = 10 * 60_000
 export const CONFIG_SYNC = `git remote get-url origin >/dev/null 2>&1 || exit 0
 git add -A && { git diff --cached --quiet || git commit -qm 'factory: sync config'; }
 timeout 120 git push -q origin HEAD
-[ -d memory/.git ] && timeout 120 git -C memory push -q "$(git remote get-url origin)" HEAD:refs/heads/memory`
+[ -d memory/.git ] || exit 0
+keys=$(GIT_CEILING_DIRECTORIES="$PWD" git -C memory config --local --name-only --list) && ! printf '%s\\n' "$keys" | LC_ALL=C grep -Evq '${REPO_CONFIG_KEY.source}' || { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) memory: repo config not allowed, push refused" >> dream.log; exit 0; }
+GIT_CEILING_DIRECTORIES="$PWD" timeout 120 git -C memory -c core.hooksPath=/dev/null -c core.fsmonitor=false push -q "$(git remote get-url origin)" HEAD:refs/heads/memory`
 
 /**
  * every 10 minutes, a factory home that is a git repo with an origin pushes its config, so the factory can
@@ -10542,9 +10593,10 @@ export function closeParents(
   id: string,
   by: string,
   closed = new Set([id]),
+  held = new Set<string>(),
 ) {
   try {
-    for (const p of closableParents(b.every(), closed, id)) {
+    for (const p of closableParents(b.every(), closed, id, held)) {
       if (!b.close(p, 'every child is closed')) return
       closed.add(p)
       b.comment(p, `${by} closed ${id}; every child of this bead is closed, so the factory closed it`)
@@ -10586,7 +10638,9 @@ async function repairPass() {
           const res = path ? await spawnGh(['api', path], { cwd: rig.repo, timeout: 30_000 }) : null
           p.mergeable = res?.code === 0 ? parseGithubView(res.out)?.mergeable : undefined
         }
-      const todo = repairs(rig.name, every, prs, live, Date.now()).slice(0, REPAIR_CAP)
+      // ponytail: rigPrs reads the newest 200 PRs, so an older open PR holds nothing. Upgrade: a separate open-only list.
+      const held = heldBeads(prs, runBeadsOf(rig.repo))
+      const todo = repairs(rig.name, every, prs, live, Date.now(), held).slice(0, REPAIR_CAP)
       const closed = new Set<string>()
       for (const r of todo) {
         const done =
@@ -10607,7 +10661,7 @@ async function repairPass() {
         console.log(`${at} repair ${rig.name} ${r.kind} ${r.id}: ${r.reason}`)
         if (r.kind === 'close') {
           closed.add(r.id)
-          closeParents(b, rig.repo, r.id, 'the repair pass', closed)
+          closeParents(b, rig.repo, r.id, 'the repair pass', closed, held)
         }
       }
     } catch (err) {
@@ -10922,6 +10976,22 @@ function axSweep() {
   if (errors.length) log(errors.map(e => e.error).join('; '))
 }
 
+/**
+ * Run id -> bead for the runs of `repo` that have a bead. A run with no readable state is left out.
+ * ponytail: it reads every started run's state on each call. Upgrade: one read for each tick.
+ */
+export function runBeadsOf(repo: string, ids = startedRunIds(), read: typeof current = current) {
+  const out = new Map<string, string>()
+  for (const id of ids)
+    try {
+      const { run } = read(id)
+      if (run.repo === repo && run.bead) out.set(id, run.bead)
+    } catch {
+      // no readable state
+    }
+  return out
+}
+
 /** the run view orphanPass builds OrphanCtx from; `read` is injectable for tests */
 export function orphanRuns(ids: string[], read: typeof current = current) {
   const runs = new Map<string, Run>()
@@ -11017,9 +11087,10 @@ async function orphanPass() {
         prs,
         ctx,
         {
-          beadStatus: async id => {
+          bead: async id => {
             try {
-              return beads(rig.repo, 'factory').show(id)?.status ?? null
+              const b = beads(rig.repo, 'factory').show(id)
+              return b?.status ? { status: b.status, reason: b.close_reason } : null
             } catch {
               return null
             }
@@ -11035,6 +11106,7 @@ async function orphanPass() {
                 v && {
                   mergeable: v.mergeable ?? 'UNKNOWN',
                   changes: v.reviewDecision === 'CHANGES_REQUESTED',
+                  approved: v.reviewDecision === 'APPROVED',
                 }
               )
             }
@@ -11059,6 +11131,8 @@ async function orphanPass() {
                     ? 'MERGEABLE'
                     : 'UNKNOWN',
               changes: status === 'requested_changes',
+              // ponytail: the MR endpoint has no approval field, so a GitLab MR never counts as approved. Upgrade: the MR /approvals endpoint (as src/prs.ts reads approvals.approved).
+              approved: false,
             }
           },
           label: async (pr, labels) => {
@@ -11108,7 +11182,7 @@ async function orphanPass() {
       )
       const shown = new Set<string>()
       for (const s of skipped)
-        if (/^(fork|record) failed/.test(s.why)) {
+        if (/^((fork|record) failed|held for the person: )/.test(s.why)) {
           shown.add(s.url)
           errors.push({ id: `rig:${rig.name}`, error: `orphans: ${s.url}: ${s.why}` })
         }
@@ -13031,6 +13105,7 @@ export const corePort: Port = {
   abort: abortRun,
   screen: screenRun,
   mail: mailRun,
+  chatModel: runModelAsync,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
@@ -13141,6 +13216,12 @@ if (import.meta.main && !outboxCmd)
         const other = localLease()
         if (other) fail(`no ${cmd}: ${leases.leaseLine(other, Date.now())}`)
         console.log(await onceCmd(cmd, args))
+        break
+      }
+      case 'chat-guard': {
+        const r = guardHook(await Bun.stdin.text())
+        if (r.err) process.stderr.write(r.err)
+        process.exitCode = r.code
         break
       }
       case 'patrol-guard':
@@ -13481,7 +13562,12 @@ if (import.meta.main && !outboxCmd)
             }
             try {
               mkdirSync(MEMORY, { recursive: true })
-              if (!existsSync(join(MEMORY, '.git'))) git(MEMORY, 'init', '-q')
+              if (!existsSync(join(MEMORY, '.git'))) memGit('init', '-q')
+              if (!repoConfigOk(MEMORY)) {
+                memoryRefused()
+                process.exitCode = 1
+                break
+              }
               const filesBefore = memory.mdFileCount(MEMORY)
               // the plan reaches dream.log before applyTiers writes or removes anything (claude-factory-503.2)
               const tiers = memory.applyTiers(MEMORY, {
@@ -13491,9 +13577,9 @@ if (import.meta.main && !outboxCmd)
               // runs before the commit, so its .usage.jsonl/.renames.jsonl writes land inside it and
               // the repo stays clean right after (claude-factory-503.3)
               memory.compact(MEMORY, tiers.renamed)
-              git(MEMORY, 'add', '-A')
+              memGit('add', '-A')
               const message = compactMessage(tiers, filesBefore, memory.mdFileCount(MEMORY))
-              git(MEMORY, 'commit', '-q', '--allow-empty', '-m', message)
+              memGit('commit', '-q', '--allow-empty', '-m', message)
               console.log(message)
             } finally {
               release()

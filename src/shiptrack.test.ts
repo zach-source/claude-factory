@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beads } from './beads'
-import { closeParents, shipPrOf, track, type Track } from './cli'
+import { closeParents, runBeadsOf, shipPrOf, track, type Track } from './cli'
 import { hasShipEdge, type Ctx, type Factory } from './machine'
 
 const repairsLog = join(mkdtempSync(join(tmpdir(), 'repairs-')), 'repairs.jsonl')
@@ -112,13 +112,17 @@ test('a run that ends on a plain edge still closes its bead', () => {
 })
 
 const plain = { ...def, nodes: { review: { prompt: '', next: { approve: 'done' } } } } satisfies Factory
-const trackPlain = (list: string, c = ctx(`approve ${PR}`)) => {
+const trackPlain = (
+  list: string,
+  c = ctx(`approve ${PR}`),
+  runBeads: () => Set<string> = () => new Set(),
+) => {
   const f = fakeBd(`fake-bd-parent-${Math.random().toString(36).slice(2)}`, ['factory'], list)
   const path = process.env.PATH
   process.env.PATH = `${f.bin}:${path}`
   try {
     const t: Track = { mirrored: 1, beatAt: 0, isSettled: false }
-    track({ ...run, bead: 'fx-1.1' }, plain, { done: '' }, c, t, Date.now())
+    track({ ...run, bead: 'fx-1.1' }, plain, { done: '' }, c, t, Date.now(), runBeads)
     return { calls: f.calls(), t }
   } finally {
     process.env.PATH = path
@@ -193,4 +197,37 @@ test('closeParents adds each parent it closes to the shared set, so a later clos
 test('hasShipEdge finds a ship edge and nothing else', () => {
   expect(hasShipEdge(def)).toBe(true)
   expect(hasShipEdge({ nodes: { a: { next: { x: 'done', y: { to: 'done', requeue: true } } } } })).toBe(false)
+})
+
+test('track leaves a parent that has a run of its own for the repair pass', () => {
+  const list = JSON.stringify([bead('fx-1'), bead('fx-1.1')])
+  const { calls } = trackPlain(list, ctx(`approve ${PR}`), () => new Set(['fx-1']))
+  expect(calls.some(c => c.startsWith('close fx-1.1'))).toBe(true)
+  expect(calls.some(c => c.startsWith('close fx-1 '))).toBe(false)
+  expect(calls.some(c => c.startsWith('comment fx-1 '))).toBe(false)
+})
+
+test('closeParents closes nothing for a held parent', () => {
+  const f = fakeBd('fake-bd-closeparents-held', ['factory'], JSON.stringify([bead('fx-1'), bead('fx-1.1')]))
+  const path = process.env.PATH
+  process.env.PATH = `${f.bin}:${path}`
+  try {
+    const b = beads(tmpdir(), 'factory')
+    closeParents(b, tmpdir(), 'fx-1.1', 'the repair pass', new Set(['fx-1.1']), new Set(['fx-1']))
+    expect(f.calls().some(c => c.startsWith('close fx-1 ') || c.startsWith('comment fx-1 '))).toBe(false)
+    closeParents(b, tmpdir(), 'fx-1.1', 'the repair pass', new Set(['fx-1.1']), new Set())
+    expect(f.calls().filter(c => c.startsWith('close fx-1 '))).toHaveLength(1)
+  } finally {
+    process.env.PATH = path
+  }
+})
+
+test('runBeadsOf maps the runs of one repo to their beads and leaves out the rest', () => {
+  const state = (repo: string, bead?: string) => ({ run: { repo, bead } }) as never
+  const read = (id?: string) => {
+    if (id === 'bad') throw new Error('no state')
+    return state(id === 'other' ? '/elsewhere' : '/repo', id === 'nobead' ? undefined : `bd-${id}`)
+  }
+  const got = runBeadsOf('/repo', ['a', 'other', 'nobead', 'bad'], read)
+  expect([...got]).toEqual([['a', 'bd-a']])
 })

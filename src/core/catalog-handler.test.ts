@@ -43,6 +43,8 @@ const NAMES = [
   'board.show',
   'catalog.echo',
   'catalog.show',
+  'chat.send',
+  'chat.show',
   'decisions.answer',
   'decisions.list',
   'factory.halt',
@@ -67,7 +69,7 @@ const NAMES = [
 ]
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 25 operations', async () => {
+  test('serves the envelope with the 27 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)

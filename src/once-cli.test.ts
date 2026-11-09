@@ -2,9 +2,19 @@
 // A stub script takes the place of the model: FACTORY_CLAUDE names it. It saves its arguments and stdin,
 // and prints a canned stream-json reply. Each test uses its own temp home.
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseStream, runModel, runModelAsync } from './once'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 let dir = ''
@@ -224,4 +234,121 @@ test('brief --once and review --once report nothing due on an empty board', () =
   write('manager-tick.json', { runs: [], manager: [], reviews: [] })
   expect(factory(['brief', '--once']).out.trim()).toBe('nothing due')
   expect(factory(['review', '--once']).out.trim()).toBe('nothing due')
+})
+
+const stream = (lines: unknown[]) => lines.map(l => JSON.stringify(l)).join('\n')
+
+test('parseStream keeps tool ids and the session', () => {
+  const bash = (id: unknown, command: string) => ({ type: 'tool_use', name: 'Bash', id, input: { command } })
+  const out = stream([
+    {
+      type: 'assistant',
+      message: {
+        content: [
+          bash('toolu_a', 'factory status'),
+          bash('toolu_b', 'factory show r1'),
+          bash(undefined, 'no id'),
+          { type: 'tool_use', name: 'Read', id: 'toolu_c', input: { command: 'x' } },
+        ],
+      },
+    },
+    { type: 'result', subtype: 'success', result: 'ok', session_id: 's-9' },
+  ])
+  const r = parseStream(out, 'm')
+  expect(r.calls).toEqual([
+    { id: 'toolu_a', command: 'factory status' },
+    { id: 'toolu_b', command: 'factory show r1' },
+  ])
+  expect(r.session).toBe('s-9')
+  expect(r.commands).toEqual(['factory status', 'factory show r1', 'no id'])
+  const none = parseStream(stream([{ type: 'assistant', message: { content: [bash('t', 'x')] } }]), 'm')
+  expect(none.reason).toBe('no-result')
+  expect(none.calls).toEqual([{ id: 't', command: 'x' }])
+  expect(parseStream('', 'm').calls).toEqual([])
+})
+
+test('runModelAsync passes session, resume, cwd and the base env', async () => {
+  const stub = join(dir, 'chat-stub.sh')
+  writeFileSync(
+    stub,
+    `#!/bin/sh\npwd > '${dir}/pwd.txt'\nenv > '${dir}/env.txt'\nprintf '%s\\n' "$@" > '${dir}/args.txt'\ncat > /dev/null\ncat '${dir}/reply.jsonl'\n`,
+  )
+  chmodSync(stub, 0o755)
+  writeFileSync(
+    join(dir, 'reply.jsonl'),
+    stream([{ type: 'result', subtype: 'success', result: 'hi', session_id: 's-1' }]),
+  )
+  const base = { system: 's', input: 'i', model: 'm', tools: 'Bash', maxTurns: 3, timeoutMs: 20_000 }
+  const old = process.env.FACTORY_CLAUDE
+  process.env.FACTORY_CLAUDE = stub
+  process.env.ONLY_PROC = '1'
+  try {
+    const r = await runModelAsync({
+      ...base,
+      persist: true,
+      resume: 's-1',
+      cwd: home,
+      baseEnv: { PATH: process.env.PATH, ONLY_BASE: '1' },
+    })
+    expect(r.isOk).toBe(true)
+    expect(r.session).toBe('s-1')
+    const args = readFileSync(join(dir, 'args.txt'), 'utf8').split('\n')
+    expect(args).not.toContain('--no-session-persistence')
+    expect(args[args.indexOf('--verbose') + 1]).toBe('--resume')
+    expect(args[args.indexOf('--verbose') + 2]).toBe('s-1')
+    expect(readFileSync(join(dir, 'pwd.txt'), 'utf8').trim()).toBe(realpathSync(home))
+    const env = readFileSync(join(dir, 'env.txt'), 'utf8')
+    expect(env).toContain('ONLY_BASE=1')
+    expect(env).not.toContain('ONLY_PROC')
+    // the same argv as the sync runModel without the new fields
+    await runModelAsync(base)
+    const a = readFileSync(join(dir, 'args.txt'), 'utf8')
+    runModel(base)
+    expect(readFileSync(join(dir, 'args.txt'), 'utf8')).toBe(a)
+    expect(a).toContain('--no-session-persistence')
+  } finally {
+    delete process.env.ONLY_PROC
+    if (old === undefined) delete process.env.FACTORY_CLAUDE
+    else process.env.FACTORY_CLAUDE = old
+  }
+})
+
+test('runModelAsync kills the process group at the timeout', async () => {
+  const stub = join(dir, 'slow.sh')
+  writeFileSync(stub, '#!/bin/sh\nsleep 30 & sleep 30\n')
+  chmodSync(stub, 0o755)
+  const old = process.env.FACTORY_CLAUDE
+  process.env.FACTORY_CLAUDE = stub
+  try {
+    const t = Date.now()
+    const r = await runModelAsync({
+      system: 's',
+      input: 'i',
+      model: 'm',
+      tools: 'Bash',
+      maxTurns: 3,
+      timeoutMs: 500,
+    })
+    expect(Date.now() - t).toBeLessThan(3000)
+    expect(r.isOk).toBe(false)
+    expect(r.reason).toBe('spawn-failed')
+  } finally {
+    if (old === undefined) delete process.env.FACTORY_CLAUDE
+    else process.env.FACTORY_CLAUDE = old
+  }
+})
+
+test('chat-guard allows reads, asks for a gate and fails closed', () => {
+  const guard = (command: string) => factory(['chat-guard'], JSON.stringify({ tool_input: { command } }))
+  expect(guard('factory status').code).toBe(0)
+  const ask = guard('/repo/bin/factory decide lifecycle-abc ship "looks good"')
+  expect(ask.code).toBe(2)
+  expect(ask.err).toEndWith(
+    'the person must approve this command; a chat turn cannot run it: tell the person\n',
+  )
+  expect(factory(['chat-guard'], '{}')).toEqual({
+    code: 2,
+    out: '',
+    err: 'the hook input has no Bash command\n',
+  })
 })
