@@ -37,7 +37,7 @@ describe('runs.screen', () => {
   test('returns the port result with no extra newline or CLI call', async () => {
     const t = fake()
     const ctx = t.ctx()
-    ctx.port.screen = async id => {
+    ctx.port.screen = async (id: string) => {
       t.calls.push(['screen', id])
       return { code: 0, out: 'last screen', err: '' }
     }
@@ -46,7 +46,8 @@ describe('runs.screen', () => {
     expect(t.cli).toEqual([])
   })
 
-  for (const input of [{}, { id: '' }, { id: '../r1' }, { id: '-r1' }, { id: true }, { id: 'a'.repeat(129) }, { id: 'r1', pane: 'w1:p1' }])
+  const invalidInputs: Input[] = [{}, { id: '' }, { id: '../r1' }, { id: '-r1' }, { id: true }, { id: 'a'.repeat(129) }, { id: 'r1', pane: 'w1:p1' }]
+  for (const input of invalidInputs)
     test(`refuses direct input ${JSON.stringify(input)} before the port`, async () => {
       const t = fake()
       const result = await run('runs.screen', t.ctx(), input).catch(e => e)

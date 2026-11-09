@@ -48,13 +48,14 @@ describe('worker screen', () => {
     expect(worker.screen()).toBe('default')
   })
 
-  for (const [source, want] of [
+  const tails: [string, string][] = [
     ['x'.repeat(65536), 'x'.repeat(65536)],
     ['ax'.repeat(32768) + 'z', 'x' + 'ax'.repeat(32767) + 'z'],
     ['€' + 'x'.repeat(65535), 'x'.repeat(65535)],
     ['😀' + 'x'.repeat(65534), 'x'.repeat(65534)],
     ['x'.repeat(65532) + '😀', 'x'.repeat(65532) + '😀'],
-  ])
+  ]
+  for (const [source, want] of tails)
     test(`caps ${Buffer.byteLength(source)} bytes at a UTF-8 boundary`, () => {
       writeFileSync(join(home, 'claude.jsonl'), source)
       const out = worker.screen()
@@ -68,17 +69,13 @@ describe('worker screen', () => {
     fs.ftruncateSync(fd, 64 * 1024 * 1024)
     fs.writeSync(fd, Buffer.alloc(65536, 'z'), 0, 65536, 64 * 1024 * 1024 - 65536)
     fs.closeSync(fd)
-    const original = fs.readSync
-    const reads: { length: number; position: number | null }[] = []
-    const spy = spyOn(fs, 'readSync').mockImplementation((fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null) => {
-      reads.push({ length, position })
-      return original(fd, buffer, offset, length, position)
-    })
+    const spy = spyOn(fs, 'readSync')
     try {
       expect(worker.screen()).toBe('z'.repeat(65536))
+      const reads = (spy.mock.calls as unknown[][]).map(args => ({ length: Number(args[3]), position: args[4] }))
       expect(reads.length).toBeGreaterThan(0)
       expect(reads.reduce((n, r) => n + r.length, 0)).toBeLessThanOrEqual(65536)
-      expect(reads.every(r => r.position !== null && r.position >= 64 * 1024 * 1024 - 65536)).toBe(true)
+      expect(reads.every(r => typeof r.position === 'number' && r.position >= 64 * 1024 * 1024 - 65536)).toBe(true)
     } finally { spy.mockRestore() }
   })
 
