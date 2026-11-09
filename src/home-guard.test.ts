@@ -2,7 +2,15 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FACTORY_BIN, HOME_REASON, homeReason, protectedPath, rmQuiet, rmSafe } from './home-guard'
+import {
+  FACTORY_BIN,
+  HOME_REASON,
+  homeReason,
+  LOADED_REASON,
+  protectedPath,
+  rmQuiet,
+  rmSafe,
+} from './home-guard'
 import { denyReason } from './worker-hook'
 
 const H = ['/Users/pat']
@@ -593,6 +601,55 @@ describe('homeReason', () => {
 
   test('the worker hook gives HOME_REASON first', () => {
     expect(denyReason('find ~ -delete', '/Users/pat/wt')).toBe(HOME_REASON)
+  })
+
+  describe('loaded texts', () => {
+    const D = '/w/acme'
+    const hasBad = (p: string) => (p === '/w/acme/clean.sh' ? bad() : undefined)
+
+    test.each(['git commit -m x', 'git status'])('denies a bad loaded text on %s', cmd => {
+      expect(homeReason(cmd, () => undefined, H, [{ text: bad(), dir: D }])).toBe(HOME_REASON)
+      expect(homeReason(cmd, undefined, H, [{ text: bad(), dir: D }])).toBe(HOME_REASON)
+    })
+
+    test('reads a file that a loaded text names, against its dir', () => {
+      expect(homeReason('ls', hasBad, H, [{ text: 'sh ./clean.sh', dir: D }])).toBe(HOME_REASON)
+    })
+
+    test('allows clean loaded texts', () => {
+      const loaded = [
+        { text: 'echo ok', dir: D },
+        { text: '', dir: D },
+      ]
+      expect(homeReason('git commit -m x', bad, H, loaded)).toBeUndefined()
+    })
+
+    test('tests the unescaped copy of a JSON text', () => {
+      const text = JSON.stringify({ scripts: { clean: bad() } })
+      expect(homeReason('ls', undefined, H, [{ text, dir: D }])).toBe(HOME_REASON)
+    })
+
+    test('caps the reads of loaded texts at 64', () => {
+      const mk = (n: number) => Array.from({ length: n }, (_, i) => ({ text: `sh ./f${i}.sh`, dir: D }))
+      expect(homeReason('ls', () => 'echo ok', H, mk(65))).toBe(LOADED_REASON)
+      expect(homeReason('ls', () => 'echo ok', H, mk(64))).toBeUndefined()
+    })
+
+    test('reads one level only', () => {
+      const got: string[] = []
+      const read = (p: string) => {
+        got.push(p)
+        return p === '/w/acme/clean.sh' ? 'sh ./deep.sh' : bad()
+      }
+      expect(homeReason('ls', read, H, [{ text: 'sh ./clean.sh', dir: D }])).toBeUndefined()
+      expect(got.filter(p => p === '/w/acme/clean.sh')).toHaveLength(1)
+      expect(got.some(p => p.endsWith('deep.sh'))).toBe(false)
+    })
+
+    test('a null loaded list gives LOADED_REASON, after the command text', () => {
+      expect(homeReason('ls', undefined, H, null)).toBe(LOADED_REASON)
+      expect(homeReason(['r', 'm -rf ~'].join(''), undefined, H, null)).toBe(HOME_REASON)
+    })
   })
 })
 
