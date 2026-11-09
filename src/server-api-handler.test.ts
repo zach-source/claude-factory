@@ -566,25 +566,28 @@ describe('events replay and ring', () => {
 })
 
 describe('serveSocket event transport', () => {
-  const fake = (writeOk: () => boolean) =>
-    Object.assign(new EventEmitter(), {
-      destroyed: false,
-      remoteAddress: '127.0.0.1',
-      written: [] as string[],
-      ended: false,
-      setTimeout: () => {},
-      write(c: string | Uint8Array) {
-        this.written.push(String(c))
-        return writeOk()
-      },
-      end() {
-        this.ended = true
-      },
-      destroy() {
-        this.destroyed = true
-        this.emit('close')
-      },
-    })
+  class Fake extends EventEmitter {
+    destroyed = false
+    remoteAddress = '127.0.0.1'
+    written: string[] = []
+    ended = false
+    constructor(private writeOk: () => boolean) {
+      super()
+    }
+    setTimeout() {}
+    write(c: string | Uint8Array) {
+      this.written.push(String(c))
+      return this.writeOk()
+    }
+    end() {
+      this.ended = true
+    }
+    destroy() {
+      this.destroyed = true
+      this.emit('close')
+    }
+  }
+  const fake = (writeOk: () => boolean) => new Fake(writeOk)
   const tick = () => new Promise(r => setTimeout(r, 20))
   const open = (sock: ReturnType<typeof fake>, h: H) => {
     serveSocket(sock as never, h, 1000)
