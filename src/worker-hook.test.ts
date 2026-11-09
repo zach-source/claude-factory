@@ -1084,7 +1084,7 @@ test.each([
   'find . -exec $X "a b" "rm -rf /" {} +',
   'find . -exec $X a + "rm -rf /" {} +',
   'gfind . -exec $X "rm -rf /" {} +',
-])('denyReason denies %s (claude-factory-qn8a.15)', (cmd) => {
+])('denyReason denies %s (claude-factory-qn8a.15)', cmd => {
   expect(q15(cmd)).toBe(REASON)
 })
 
@@ -1106,13 +1106,13 @@ test.each([
   'find . -exec $X {} + -name "rm -rf a"',
   "find src -name '*.ts' -exec $EDITOR {} +",
   "find . -exec $X 'a=b' {} +",
-])('denyReason allows %s (claude-factory-qn8a.15)', (cmd) => {
+])('denyReason allows %s (claude-factory-qn8a.15)', cmd => {
   expect(q15(cmd)).toBeUndefined()
 })
 
 test.each(['find . -exec $X {} \\; -name "rm -rf a"', 'find . -exec $FMT "a b" {} \\;'])(
   'denyReason keeps SHELL_ALIAS_DEFINE_REASON for %s (claude-factory-qn8a.15)',
-  (cmd) => {
+  cmd => {
     expect(q15(cmd)).toBe(SHELL_ALIAS_DEFINE_REASON)
   },
 )
@@ -1123,19 +1123,15 @@ test.each([
   'find . -exec rm -rf / {} +',
   'find . -exec $X rm -rf / {} +',
   'find . -exec $X -c "rm -rf /" {} +',
-])('denyReason keeps denying %s (claude-factory-qn8a.15)', (cmd) => {
+])('denyReason keeps denying %s (claude-factory-qn8a.15)', cmd => {
   expect(q15(cmd)).toBe(REASON)
 })
 
-test(
-  'denyReason reads a 1300-word dynamic find exec slot fast (claude-factory-qn8a.15)',
-  () => {
-    const t = Date.now()
-    expect(q15('find . -exec $X ' + '"a b" '.repeat(1300) + '{} +')).toBeUndefined()
-    expect(Date.now() - t).toBeLessThan(1000)
-  },
-  30_000,
-)
+test('denyReason reads a 1300-word dynamic find exec slot fast (claude-factory-qn8a.15)', () => {
+  const t = Date.now()
+  expect(q15('find . -exec $X ' + '"a b" '.repeat(1300) + '{} +')).toBeUndefined()
+  expect(Date.now() - t).toBeLessThan(1000)
+}, 30_000)
 
 const HOOK = join(import.meta.dir, 'worker-hook.ts')
 

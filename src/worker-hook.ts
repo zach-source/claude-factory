@@ -8752,6 +8752,21 @@ function anyShellReason(
       break
     }
   }
+  // claude-factory-qn8a.15: a dynamic word in a find exec slot can expand to sh -c, so read each
+  // later slot word as a script (deny-only). A slot ends at ; or at + after {}.
+  for (let i = 0; i < words.length; i++) {
+    if (!FIND_EXEC_WORDS.has(words[i]!) && !globActionWord(words[i]!)) continue
+    let dyn = false
+    for (i++; i < words.length; i++) {
+      const w = words[i]!
+      if (w === ';' || (w === '+' && words[i - 1] === '{}')) break
+      if (dyn) {
+        const r = denyAt(w, root, personOnly, gate, depth + 1, state, moved, ghConfigMovedBefore, [], vars)
+        if (r) return r
+      }
+      if (DYN_CHARS.test(w) || BRACE_LIST_WORD.test(w)) dyn = true
+    }
+  }
   return undefined
 }
 
