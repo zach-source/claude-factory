@@ -162,7 +162,7 @@ const title = (r: Row) => {
   const g = (r.goal ?? '').split('\n')[0] ?? ''
   return (r.bead && g.startsWith(`${r.bead}: `) ? g.slice(r.bead.length + 2) : g) || r.id
 }
-const step = (r: Row) => `[${r.node}](../glossary.md#${r.node})`
+const step = (r: Row) => `[${r.node}](../glossary.md#station)`
 const list = (items: string[]) => (items.length ? items.join('\n') : 'None.')
 const stamp = (ms: number) => new Date(ms).toISOString().replace('.000', '')
 

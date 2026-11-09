@@ -163,7 +163,7 @@ import { GAPS_FILE, parity } from './parity'
 import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
-import { needsInstall, upCheck, upDir } from './up'
+import { inStore, needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import {
@@ -212,7 +212,7 @@ import {
 import * as worker from './worker'
 import { REASON, boundedRun } from './screen'
 import * as client from './client'
-import { backupAge, backupError } from './homebackup'
+import { backupAge, backupError, backupWanted } from './homebackup'
 import * as managerhost from './managerhost'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
@@ -341,6 +341,8 @@ import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './gr
 import { maskAssignments } from './worker-hook'
 
 const ROOT = resolve(import.meta.dir, '..')
+// a Nix store install cannot hold its own state, so it uses `factory up`'s default home
+const DEFAULT_HOME = inStore(ROOT) ? join(homedir(), 'factory') : join(ROOT, '.factory-state')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
 const factoryAt = (dir: string): string | undefined =>
   existsSync(join(dir, 'rigs.json')) ? dir : dirname(dir) === dir ? undefined : factoryAt(dirname(dir))
@@ -348,7 +350,7 @@ const factoryAt = (dir: string): string | undefined =>
 // absolute, so a relative FACTORY_HOME (`FACTORY_HOME=.`) still matches pane cwds and survives a cd
 const HOME = process.env.FACTORY_HOME
   ? resolve(process.env.FACTORY_HOME)
-  : (factoryAt(process.cwd()) ?? join(ROOT, '.factory-state'))
+  : (factoryAt(process.cwd()) ?? DEFAULT_HOME)
 /** where a repo keeps its own factories, versioned with its code */
 const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
@@ -1467,7 +1469,7 @@ const GIT_NETWORK_TIMEOUT_MS = 30_000
 
 /**
  * the factory a new run follows: a path as given; else the repo's own `.factory/<name>.ts` in `checkout`
- * (the run's worktree, so the version in the commit it starts from); else the template of that name
+ * (the run's worktree, or the default branch's `.factory/` for a run on a PR branch); else the template of that name
  */
 /** a factory is a module (default export) or data: JSON, YAML or TOML, in that order of precedence after .ts */
 const FACTORY_EXTS = ['.ts', '.json', '.yaml', '.yml', '.toml']
@@ -1480,6 +1482,29 @@ function factorySource(spec: string, checkout: string) {
     findIn(join(ROOT, 'factories'), spec) ??
     join(ROOT, 'factories', `${spec}.ts`)
   )
+}
+/** claude-factory-1d9l: `.factory/` as `commit` holds it, in a new temp dir; a run on a PR branch never loads the branch's own */
+function factoryDirAt(repo: string, commit: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-base-'))
+  try {
+    const has = Bun.spawnSync(['git', '-C', repo, 'ls-tree', '--name-only', commit, '--', OWN], {
+      stderr: 'pipe',
+    })
+    if (has.exitCode !== 0) throw new Error(has.stderr.toString().trim())
+    if (!has.stdout.toString().trim()) return dir // base has no .factory/: templates only
+    const tar = Bun.spawnSync(['git', '-C', repo, 'archive', '--format=tar', commit, '--', OWN], {
+      stderr: 'pipe',
+    })
+    const x =
+      tar.exitCode === 0
+        ? Bun.spawnSync(['tar', '-x', '--no-same-owner', '-C', dir], { stdin: tar.stdout, stderr: 'pipe' })
+        : tar
+    if (x.exitCode !== 0) throw new Error(x.stderr.toString().trim())
+    return dir
+  } catch (err) {
+    rmQuiet(dir, { recursive: true, force: true })
+    return fail(`${OWN} at ${commit.slice(0, 8)}: could not read it: ${clip((err as Error).message, 300)}`)
+  }
 }
 /**
  * The factory that a bead's `factory:<name>` label names (claude-factory-wnm), by name only. It
@@ -1526,7 +1551,7 @@ export function ownCopy(template: string, name: string) {
     .replace(/\}\s*satisfies Factory\s*$/, '}\n')
   return (
     `// This repo's own factory, from claude-factory's "${name}" template (factory adopt).\n` +
-    `// A run follows the version in the commit it starts from, so change it like code: in a run or a\n` +
+    `// A run follows the version on the default branch when it starts, so change it like code: in a run or a\n` +
     `// commit, checked with \`factory check ${OWN}/${name}.ts\`. The improve sweep proposes changes to it.\n\n` +
     body
   )
@@ -5083,7 +5108,7 @@ const WIKI_VISIBLE = ['PUBLIC', 'PRIVATE', 'INTERNAL']
 const WIKI_CACHE_MS = 24 * 3600_000
 const WIKI_SEEDS: Record<string, string> = {
   'index.md': `---\nkind: "index"\ntitle: "Factory wiki"\n---\nThe factory writes this wiki. Start from the pages below.\n`,
-  'glossary.md': `---\nkind: "glossary"\ntitle: "Glossary"\n---\n- station: one step of a factory run, such as plan or implement.\n- soak: the time a deployed change runs under watch before a run ends.\n- rig: a repository the factory works on.\n- ship lane: the path of a pull request from ready to merged.\n- bead: one tracked task in bd.\n- run: one trip of a goal through the stations of a factory.\n`,
+  'glossary.md': `---\nkind: "glossary"\ntitle: "Glossary"\n---\n## station\n\none step of a factory run, such as plan or implement.\n\n## soak\n\nthe time a deployed change runs under watch before a run ends.\n\n## rig\n\na repository the factory works on.\n\n## ship lane\n\nthe path of a pull request from ready to merged.\n\n## bead\n\none tracked task in bd.\n\n## run\n\none trip of a goal through the stations of a factory.\n`,
 }
 
 /**
@@ -6274,7 +6299,7 @@ const kickSelfUpdate = () => {
   // FACTORY_SELF_UPDATE=0 is a full no-op here, not a recorded refusal: it never spawns, so it
   // never writes self-update.json and never mails anyone. (A direct `factory self-update` still
   // checks the same switch itself, and reports the refusal to whoever ran it.)
-  if (process.env.FACTORY_SELF_UPDATE === '0') return
+  if (process.env.FACTORY_SELF_UPDATE === '0' || inStore(ROOT)) return // a store install updates with its flake
   const stamp = join(HOME, 'self-update.stamp')
   const lastAt = existsSync(stamp) ? statSync(stamp).mtimeMs : undefined
   if (isHeld('tick.lock') || !selfupdate.isDue(lastAt, Date.now(), SELF_UPDATE_MS)) return
@@ -6394,7 +6419,7 @@ function managerWorkspace(): string | undefined {
   const id = process.env['HERDR_PANE_ID']
   if (!id) return undefined
   const pane = JSON.parse(Bun.spawnSync([HERDR(), 'pane', 'get', id]).stdout.toString() || '{}').result?.pane
-  const isOurs = pane?.cwd && (factoryAt(pane.cwd) ?? join(ROOT, '.factory-state')) === HOME
+  const isOurs = pane?.cwd && (factoryAt(pane.cwd) ?? DEFAULT_HOME) === HOME
   return isOurs ? pane.workspace_id : undefined
 }
 /**
@@ -7190,6 +7215,8 @@ const kickSweeps = () => {
 }
 
 async function tick(isPatrol = false) {
+  // d289.21: the AX manager host waits to back up the home; it takes the lock next, then removes backup.want
+  if (backupWanted(HOME)) return { busy: true }
   const release = hold('tick.lock')
   if (!release) return { busy: true }
   try {
@@ -8153,45 +8180,52 @@ async function createRun(
   const startPoint = from?.run.branch ?? onto ?? base
   // an AX rig needs no herdr: a plain git worktree at herdr's own layout, so `herdr worktree open` finds it later
   const isAx = rigOf(repo)?.runner === 'ax'
+  // claude-factory-1d9l: a run on a PR branch loads the factory the default branch holds, never the branch's own
+  const checkout = onto && !from ? factoryDirAt(repo, base) : undefined
   let ws = ''
   let worktree = join(homedir(), '.herdr', 'worktrees', basename(repo), `factory-${id}`)
-  if (isAx) git(repo, 'worktree', 'add', '-b', branch, worktree, startPoint)
-  else {
-    const created = herdr(
-      ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', startPoint],
-      ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
-    )
-    ws = created.workspace.workspace_id
-    worktree = created.worktree.path
-  }
-  worker.excludeScratch(worktree) // claude-factory-9wu: .scratch/ stays untracked, with no commit, in this repo
-  const source = from ? from.run.factory : factorySource(spec, worktree)
+  let source = ''
+  let def: Factory
   // pinned resolved, as data: a base it extends may change after the run starts
   const pinned = join(runDir(id), 'factory.json')
-  mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
-  let def: Factory
   try {
-    def = await (from ? loadPinned : loadFactory)(source)
-    // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
-    if (hasShipEdge(def) && !hasBeads(repo))
-      throw new Error('it hands its beads to ship, which needs a repo with .beads')
-    writeJson(pinned, def)
-  } catch (err) {
-    // fresh, nothing in it yet
-    // a failed cleanup must not hide the factory error
+    if (isAx) git(repo, 'worktree', 'add', '-b', branch, worktree, startPoint)
+    else {
+      const created = herdr(
+        ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', startPoint],
+        ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
+      )
+      ws = created.workspace.workspace_id
+      worktree = created.worktree.path
+    }
+    worker.excludeScratch(worktree) // claude-factory-9wu: .scratch/ stays untracked, with no commit, in this repo
+    source = from ? from.run.factory : factorySource(spec, checkout ?? worktree)
+    mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
     try {
-      if (isAx) git(repo, 'worktree', 'remove', '--force', worktree)
-      else herdr('worktree', 'remove', '--workspace', ws, '--force')
-    } catch {}
-    rmQuiet(runDir(id), { recursive: true, force: true })
-    throw new Error(
-      `${relative(worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
-    )
+      def = await (from ? loadPinned : loadFactory)(source)
+      // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
+      if (hasShipEdge(def) && !hasBeads(repo))
+        throw new Error('it hands its beads to ship, which needs a repo with .beads')
+      writeJson(pinned, def)
+    } catch (err) {
+      // fresh, nothing in it yet
+      // a failed cleanup must not hide the factory error
+      try {
+        if (isAx) git(repo, 'worktree', 'remove', '--force', worktree)
+        else herdr('worktree', 'remove', '--workspace', ws, '--force')
+      } catch {}
+      rmQuiet(runDir(id), { recursive: true, force: true })
+      throw new Error(
+        `${relative(checkout ?? worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
+      )
+    }
+  } finally {
+    if (checkout) rmQuiet(checkout, { recursive: true, force: true })
   }
   const factoryFrom = from
     ? (from.run.factoryFrom ?? from.run.factory)
-    : source.startsWith(worktree)
-      ? `${relative(worktree, source)} at ${base.slice(0, 8)}`
+    : source.startsWith(checkout ?? worktree)
+      ? `${relative(checkout ?? worktree, source)} at ${base.slice(0, 8)}`
       : source
   const run: Run = {
     id,
@@ -11301,7 +11335,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   await assertRoom(root)
   // <factory>@<station> starts past the triage when the caller already knows the kind of work
   const [spec, at] = factory!.split(/@(?=[^@/]+$)/)
-  // the checkout's version answers the station question; the run pins the version its own commit holds
+  // the checkout's version answers the station question; the run pins the version its base commit holds
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !Object.hasOwn(preview.nodes, at))
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
@@ -12851,8 +12885,9 @@ const usage = `factory — herdr software factories on xstate
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
   token [list] | use <n> | best        Claude token slots: the live slot and each slot's 7d and 5h use; make slot n live, or the slot with the lowest 7d use
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
-  up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
-                                     manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
+  up [factory-dir] [manager args...] start a factory's manager in one step: install deps (not from a Nix store
+                                     install), init a new dir, run the manager there (dir: the first arg, else
+                                     FACTORY_HOME, else ~/factory)
   rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
@@ -12965,7 +13000,7 @@ const usage = `factory — herdr software factories on xstate
                                      every FACTORY_SWEEP_MS (default 300000); FACTORY_SWEEPS=0 turns
                                      it off)
 
-<factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
+<factory> is a path, or a name: the repo's own .factory/<name>.ts as of the base commit of the run (never a PR branch's),
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
 (FACTORY_HOME, else the nearest directory up holding a rigs.json). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
 or past the rig's own --max.
@@ -14140,6 +14175,7 @@ if (import.meta.main && !outboxCmd)
         if (errors.length) fail(errors.join('\n'))
         const modules = join(ROOT, 'node_modules')
         if (
+          !inStore(ROOT) &&
           needsInstall(
             existsSync(modules) ? statSync(modules).mtimeMs : undefined,
             statSync(join(ROOT, 'bun.lock')).mtimeMs,
@@ -14696,7 +14732,7 @@ if (import.meta.main && !outboxCmd)
       }
       default:
         console.log(usage)
-        if (cmd && cmd !== 'help') process.exitCode = 2
+        if (cmd && !['help', '--help', '-h'].includes(cmd)) process.exitCode = 2
     }
   } catch (err) {
     console.error(`factory: ${(err as Error).message}`)

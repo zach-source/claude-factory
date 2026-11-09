@@ -1,10 +1,22 @@
 import { expect, test } from 'bun:test'
 import * as ax from './ax'
-import { configFrom, handle, MAX_BODY, route, updateBody, workerPolicyRefusal, type Run } from './broker'
+import {
+  configFrom,
+  handle,
+  keyHostRefusal,
+  keyHostsFrom,
+  MAX_BODY,
+  route,
+  updateBody,
+  workerPolicyRefusal,
+  type Run,
+} from './broker'
+import { codexEgress, cursorEgress, grokEgress } from './cli'
 
 type Call = { argv: string[]; stdin?: string }
 const setup = (
   reply: (argv: string[]) => { code: number; out?: string; err?: string } = () => ({ code: 0 }),
+  env: Record<string, string> = {},
 ) => {
   const calls: Call[] = []
   const run: Run = async (argv, stdin) => {
@@ -12,7 +24,7 @@ const setup = (
     const r = reply(argv)
     return { code: r.code, out: r.out ?? '', err: r.err ?? '' }
   }
-  return { calls, c: configFrom({ FACTORY_BROKER_ENDPOINT: 'api.example.svc:443' }, run) }
+  return { calls, c: configFrom({ FACTORY_BROKER_ENDPOINT: 'api.example.svc:443', ...env }, run) }
 }
 const req = (method: string, path: string, body?: string) =>
   new Request(`http://broker.example.svc${path}`, { method, body })
@@ -208,13 +220,14 @@ test('POST /token/best answers 409 while a swap runs, then 502 with a fixed body
 })
 
 const U = (key: string) => 'ate-secret://agent-vault/v1/' + key
-const withHeader = (h: Record<string, unknown>) => ({
-  rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: [h] } }],
+const withHeader = (h: Record<string, unknown>, host = 'a.example.com') => ({
+  rules: [{ https: { hostnames: [host], effects: { replaceHeaders: [h] } } }],
 })
 const withPath = (hostnames: unknown, extra: Record<string, unknown> = { pathPrefixes: ['/x/'] }) => ({
   rules: [{ https: { hostnames, ...extra } }],
 })
-const hdr = (credentialUri: unknown) => withHeader({ header: 'Authorization', credentialUri })
+const hdr = (credentialUri: unknown, host?: string) =>
+  withHeader({ header: 'Authorization', credentialUri }, host)
 
 test('PUT refuses a worker policy that names a manager-only key or a github path rule, before any command runs', async () => {
   const refused: Record<string, unknown> = {
@@ -265,14 +278,23 @@ test('PUT refuses a worker policy that names a manager-only key or a github path
 })
 
 test('PUT still creates a normal worker policy', async () => {
-  const keys = ['AX_AUTH_X', 'MY_AX_AUTH', 'GITHUB_BASIC'].map(k => ({ header: 'A', credentialUri: U(k) }))
+  const keys = ['AX_AUTH_X', 'MY_AX_AUTH'].map(k => ({
+    header: 'A',
+    prefix: 'Bearer ',
+    credentialUri: U(k),
+  }))
   const allowed: Record<string, unknown> = {
     current: JSON.parse(POLICY),
-    'github owner key': hdr(U('GITHUB_ZS_BASIC')),
+    'github owner key': hdr(U('GITHUB_ZS_BASIC'), 'github.com'),
     gitlab: hdr(U('GITLAB')),
-    'vault factory': hdr('ate-secret://agent-vault/factory/GITHUB'),
-    'vault with hyphen and digit': hdr('ate-secret://agent-vault/my-vault-2/GITHUB'),
-    'look-alike keys': { rules: [{ https: { hostnames: ['a.example.com'], replaceHeaders: keys } }] },
+    'vault factory': hdr('ate-secret://agent-vault/factory/GITHUB', 'github.com'),
+    'vault with hyphen and digit': hdr('ate-secret://agent-vault/my-vault-2/GITHUB', 'github.com'),
+    'look-alike keys': {
+      rules: [
+        { https: { hostnames: ['a.example.com'], effects: { replaceHeaders: keys } } },
+        { https: hostRule(['github.com'], 'GITHUB_BASIC') },
+      ],
+    },
     'path on other host': withPath(['gitlab.example.com']),
     'path on look-alike host': withPath(['notgithub.com']),
     'path on *.org': withPath(['*.org']),
@@ -280,8 +302,13 @@ test('PUT still creates a normal worker policy', async () => {
     'any host no path': withPath(['*'], {}),
     'any .com no path': withPath(['*.com'], {}),
   }
+  const keyHosts = JSON.stringify({
+    GITLAB: ['a.example.com'],
+    AX_AUTH_X: ['a.example.com'],
+    MY_AX_AUTH: ['a.example.com'],
+  })
   for (const [name, body] of Object.entries(allowed)) {
-    const { calls, c } = setup()
+    const { calls, c } = setup(undefined, { FACTORY_BROKER_KEY_HOSTS: keyHosts })
     const text = JSON.stringify(body)
     const res = await handle(req('PUT', '/policy/factory/f-r1-1', text), c)
     expect([name, res.status]).toEqual([name, 200])
@@ -429,6 +456,7 @@ const hostRule = (hostnames: string[], key: string) => ({
   hostnames,
   effects: { replaceHeaders: [{ header: 'Authorization', prefix: 'Bearer ', credentialUri: U(key) }] },
 })
+const REVIEWER_HOSTS = JSON.stringify({ REVIEWER: ['a.example.com'], BUILDBUDDY: ['a.example.com'] })
 const rulesOf = (...rs: Record<string, unknown>[]) => ({ rules: rs.map(https => ({ https })) })
 
 test('the reviewer keys appear only in one pair of reviewer rules', async () => {
@@ -502,7 +530,7 @@ test('the reviewer keys appear only in one pair of reviewer rules', async () => 
   const accepted: Record<string, unknown> = {
     'api rule alone': rulesOf(api),
     'api plus git rule': rulesOf(api, gitRule()),
-    'look-alike GITHUB_REVIEW': rulesOf(hostRule(['a.example.com'], 'GITHUB_REVIEW')),
+    'look-alike GITHUB_REVIEW': rulesOf(hostRule(['github.com'], 'GITHUB_REVIEW')),
     'look-alike REVIEWER': rulesOf(hostRule(['a.example.com'], 'REVIEWER')),
     'egressPolicy non-reviewer': ax.egressPolicy('v', [], undefined, undefined, 'acme'),
   }
@@ -520,7 +548,7 @@ test('the reviewer keys appear only in one pair of reviewer rules', async () => 
     )
   for (const [name, body] of Object.entries(accepted)) {
     expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
-    const { calls, c } = setup()
+    const { calls, c } = setup(undefined, { FACTORY_BROKER_KEY_HOSTS: REVIEWER_HOSTS })
     const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
     expect([name, res.status]).toEqual([name, 200])
     expect(calls.length).toBe(2)
@@ -574,7 +602,7 @@ test('a policy with the reviewer API rule gets no other key on a github host', a
     'pair + keyed other host': rulesOf(api, gitRule(), hostRule(['a.example.com'], 'BUILDBUDDY')),
     'no reviewer rule, GITHUB and GITHUB_BASIC': rulesOf(
       hostRule(['github.com'], 'GITHUB'),
-      hostRule(['relay.example.com'], 'GITHUB_BASIC'),
+      hostRule(['github.com'], 'GITHUB_BASIC'),
     ),
     'egressPolicy reviewer with extras': ax.egressPolicy(
       'v',
@@ -590,9 +618,261 @@ test('a policy with the reviewer API rule gets no other key on a github host', a
   }
   for (const [name, body] of Object.entries(accepted)) {
     expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
-    const { calls, c } = setup()
+    const { calls, c } = setup(undefined, { FACTORY_BROKER_KEY_HOSTS: REVIEWER_HOSTS })
     const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
     expect([name, res.status]).toEqual([name, 200])
     expect(calls.length).toBe(2)
+  }
+})
+
+const KEEP = JSON.stringify({
+  GITLAB: ['gitlab.acme.example'],
+  GITLAB_BASIC: ['gitlab.acme.example'],
+  DOLT_BASIC: ['dolt.acme.example'],
+  BUILDBUDDY: ['cache.acme.example'],
+})
+const keyed = (hostnames: unknown, key: string, over: Record<string, unknown> = {}) => ({
+  rules: [
+    {
+      https: {
+        hostnames,
+        effects: { replaceHeaders: [{ header: 'Authorization', prefix: 'Bearer ', credentialUri: U(key) }] },
+        ...over,
+      },
+    },
+  ],
+})
+const put = async (body: unknown, keyHosts?: string) => {
+  const { calls, c } = setup(undefined, keyHosts ? { FACTORY_BROKER_KEY_HOSTS: keyHosts } : {})
+  const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+  return { status: res.status, calls: calls.length, keyHosts: c.keyHosts }
+}
+
+test('every worker egressPolicy output passes the key pins', async () => {
+  const dolt = ax.withDoltEgress([], { beadsRemote: { url: 'https://dolt.acme.example/acme/beads' } })!
+  expect(dolt.some(e => e.key === 'DOLT_BASIC')).toBe(true)
+  const rows: Record<string, [unknown, string | undefined]> = {
+    acme: [ax.egressPolicy('v', [], undefined, undefined, 'acme'), undefined],
+    'zach-source': [ax.egressPolicy('v', [], undefined, undefined, 'zach-source'), undefined],
+    reviewer: [
+      ax.egressPolicy('v', [], undefined, undefined, 'acme', undefined, true, false, 'widget'),
+      undefined,
+    ],
+    grok: [ax.egressPolicy('v', grokEgress([]), undefined, undefined, 'acme'), undefined],
+    cursor: [ax.egressPolicy('v', cursorEgress([]), undefined, undefined, 'acme'), undefined],
+    codex: [ax.egressPolicy('v', codexEgress([]), undefined, undefined, 'acme'), undefined],
+    gitlab: [ax.egressPolicy('v', [], undefined, 'gitlab.acme.example', 'acme'), KEEP],
+    buildbuddy: [
+      ax.egressPolicy(
+        'v',
+        [{ hosts: ['cache.acme.example'], key: 'BUILDBUDDY' }],
+        undefined,
+        undefined,
+        'acme',
+      ),
+      KEEP,
+    ],
+    dolt: [ax.egressPolicy('v', dolt, undefined, undefined, 'acme'), KEEP],
+  }
+  for (const [name, [body, env]] of Object.entries(rows)) {
+    const r = await put(body, env)
+    expect([name, workerPolicyRefusal(body), keyHostRefusal(body, r.keyHosts)]).toEqual([name, null, null])
+    expect([name, r.status, r.calls]).toEqual([name, 200, 2])
+  }
+})
+
+test('a pinned vault key on another host is refused', async () => {
+  const rows: Record<string, unknown> = {}
+  for (const k of [
+    'GITHUB_BASIC',
+    'GITHUB',
+    'GITHUB_ZS_BASIC',
+    'ANTHROPIC',
+    'XAI_API_KEY',
+    'CURSOR_API_KEY',
+    'CODEX_CHATGPT',
+    'CODEX_CHATGPT_ACCOUNT',
+  ])
+    rows['relay ' + k] = keyed(['relay.example.com'], k)
+  Object.assign(rows, {
+    'ANTHROPIC on github': keyed(['api.github.com'], 'ANTHROPIC'),
+    'GITHUB on anthropic': keyed(['api.anthropic.com'], 'GITHUB'),
+    'XAI on chatgpt': keyed(['chatgpt.com'], 'XAI_API_KEY'),
+    'mixed list': keyed(['api.anthropic.com', 'relay.example.com'], 'ANTHROPIC'),
+    'upper case': keyed(['API.ANTHROPIC.COM'], 'ANTHROPIC'),
+    'trailing dot': keyed(['api.anthropic.com.'], 'ANTHROPIC'),
+    star: keyed(['*'], 'ANTHROPIC'),
+    'star anthropic': keyed(['*.anthropic.com'], 'ANTHROPIC'),
+    'star github': keyed(['*.github.com'], 'GITHUB'),
+    'star com': keyed(['*.com'], 'GITHUB'),
+    'codex second entry': keyed(['chatgpt.com'], 'CODEX_CHATGPT', {
+      effects: {
+        replaceHeaders: [
+          { header: 'Authorization', prefix: 'Bearer ', credentialUri: U('CODEX_CHATGPT') },
+          { header: 'X-Key', prefix: '', credentialUri: U('ANTHROPIC') },
+        ],
+      },
+    }),
+  })
+  for (const [name, body] of Object.entries(rows)) {
+    expect([name, workerPolicyRefusal(body)]).toEqual([name, null])
+    expect([name, typeof keyHostRefusal(body, {})]).toEqual([name, 'string'])
+    const r = await put(body)
+    expect([name, r.status, r.calls]).toEqual([name, 400, 0])
+  }
+  const cfg = JSON.stringify({ GITLAB: ['gitlab.acme.example'] })
+  for (const h of [['relay.example.com'], ['gitlab.acme.example', 'relay.example.com']]) {
+    const r = await put(keyed(h, 'GITLAB'), cfg)
+    expect([h, r.status, r.calls]).toEqual([h, 400, 0])
+  }
+  const ok: [string[], string, Record<string, unknown>?][] = [
+    [['api.github.com'], 'GITHUB'],
+    [['uploads.github.com'], 'GITHUB'],
+    [['github.com'], 'GITHUB_BASIC'],
+    [['api.anthropic.com'], 'ANTHROPIC'],
+    [['api.x.ai'], 'XAI_API_KEY'],
+    [['api2.cursor.sh'], 'CURSOR_API_KEY'],
+    [['chatgpt.com'], 'CODEX_CHATGPT', { ports: { numbers: [443] } }],
+    [['chatgpt.com'], 'CODEX_CHATGPT_ACCOUNT'],
+  ]
+  for (const [h, k, over] of ok) {
+    const r = await put(keyed(h, k, over))
+    expect([k, h, r.status, r.calls]).toEqual([k, h, 200, 2])
+  }
+})
+
+test('a key with no pinned hosts is refused', async () => {
+  for (const [k, h] of [
+    ['BUILDBUDDY', 'cache.acme.example'],
+    ['GITLAB', 'gitlab.acme.example'],
+    ['DOLT_BASIC', 'dolt.acme.example'],
+  ] as const) {
+    const r = await put(keyed([h], k))
+    expect([k, r.status, r.calls]).toEqual([k, 400, 0])
+  }
+  const cfg = JSON.stringify({ BUILDBUDDY: ['cache.acme.example'] })
+  expect((await put(keyed(['cache.acme.example'], 'BUILDBUDDY'), cfg)).status).toBe(200)
+  expect((await put(keyed(['cache.acme.example'], 'KUBE_READ'), cfg)).status).toBe(400)
+})
+
+test('a credentialUri or effects outside rules[i].https.effects.replaceHeaders is refused', async () => {
+  const entry = { header: 'Authorization', prefix: 'Bearer ', credentialUri: U('ANTHROPIC') }
+  const effects = { replaceHeaders: [entry] }
+  const hostnames = ['api.anthropic.com']
+  const rule = (https: unknown) => ({ rules: [{ https }] })
+  const rows: Record<string, unknown> = {
+    'no effects': rule({ hostnames, replaceHeaders: [entry] }),
+    'http effects': { rules: [{ http: { hostnames, effects } }] },
+    'effects beside https': { rules: [{ https: { hostnames }, effects }] },
+    'Effects spelling': rule({ hostnames, Effects: effects }),
+    'Hostnames spelling': rule({ hostnames, Hostnames: ['relay.example.com'], effects }),
+    'extra field in https': rule({ hostnames, effects, extra: 1 }),
+    'extra field in rule': { rules: [{ https: { hostnames, effects }, extra: 1 }] },
+    'http beside https': { rules: [{ https: { hostnames, effects }, http: { hostnames } }] },
+    'two effects keys': rule({ hostnames, effects: { replaceHeaders: [entry], setHeaders: [] } }),
+    'replaceHeaders object': rule({ hostnames, effects: { replaceHeaders: entry } }),
+    'effects array': rule({ hostnames, effects: [] }),
+    'effects null': rule({ hostnames, effects: null }),
+    'entry credential_uri': rule({
+      hostnames,
+      effects: { replaceHeaders: [{ ...entry, credential_uri: U('ANTHROPIC') }] },
+    }),
+    'entry hostnames': rule({
+      hostnames,
+      effects: { replaceHeaders: [{ ...entry, hostnames: ['relay.example.com'] }] },
+    }),
+    'entry only credential_uri': rule({
+      hostnames,
+      effects: { replaceHeaders: [{ header: 'Authorization', credential_uri: U('ANTHROPIC') }] },
+    }),
+    'no hostnames': rule({ effects }),
+    'empty hostnames': rule({ hostnames: [], effects }),
+    'string hostnames': rule({ hostnames: 'api.anthropic.com', effects }),
+    'number hostnames': rule({ hostnames: [5], effects }),
+    'number hostnames, no entry': rule({ hostnames: [5], effects: { replaceHeaders: [] } }),
+    'credentialUri array': rule({
+      hostnames,
+      effects: { replaceHeaders: [{ header: 'Authorization', credentialUri: [U('ANTHROPIC')] }] },
+    }),
+    'empty effects beside https': { rules: [{ https: { hostnames }, effects: {} }] },
+    'empty effects in http': { rules: [{ http: { hostnames, effects: {} } }] },
+    'top level credentialUri': { ...rule({ hostnames, effects }), credentialUri: U('ANTHROPIC') },
+  }
+  for (const [name, body] of Object.entries(rows)) {
+    const r = await put(body)
+    expect([name, typeof keyHostRefusal(body, {}), r.status, r.calls]).toEqual([name, 'string', 400, 0])
+  }
+  const ok: Record<string, unknown> = {
+    'no effects, any host': rule({ hostnames: ['relay.example.com'] }),
+    'no prefix': rule({
+      hostnames,
+      effects: { replaceHeaders: [{ header: 'Authorization', credentialUri: U('ANTHROPIC') }] },
+    }),
+    'empty replaceHeaders': rule({ hostnames: ['relay.example.com'], effects: { replaceHeaders: [] } }),
+  }
+  for (const [name, body] of Object.entries(ok)) {
+    const r = await put(body)
+    expect([name, r.status, r.calls]).toEqual([name, 200, 2])
+  }
+})
+
+test('FACTORY_BROKER_KEY_HOSTS is parsed and a bad value throws', () => {
+  expect(configFrom({}).keyHosts).toEqual({})
+  expect(configFrom({ FACTORY_BROKER_KEY_HOSTS: '' }).keyHosts).toEqual({})
+  const good = { GITLAB: ['gitlab.acme.example', 'a-b.example.com'], K1: ['x.example.com'] }
+  expect(configFrom({ FACTORY_BROKER_KEY_HOSTS: JSON.stringify(good) }).keyHosts).toEqual(good)
+  expect(keyHostsFrom(JSON.stringify(good))).toEqual(good)
+  for (const bad of [
+    'not json',
+    '[]',
+    'null',
+    '"x"',
+    '{"gitlab":["a.example.com"]}',
+    '{"GITHUB_X":["a.example.com"]}',
+    '{"ANTHROPIC":["a.example.com"]}',
+    '{"CODEX_CHATGPT":["a.example.com"]}',
+    '{"XAI_API_KEY":["a.example.com"]}',
+    '{"CURSOR_API_KEY":["a.example.com"]}',
+    '{"CODEX_CHATGPT_ACCOUNT":["a.example.com"]}',
+    '{"K":[]}',
+    '{"K":"a.example.com"}',
+    '{"K":[5]}',
+    '{"K":[["a.example.com"]]}',
+    '{"K":["A.example.com"]}',
+    '{"K":["*.example.com"]}',
+    '{"K":["a.example.com."]}',
+    '{"K":["a.example.com:443"]}',
+    '{"K":["localhost"]}',
+  ])
+    expect(() => configFrom({ FACTORY_BROKER_KEY_HOSTS: bad }), bad).toThrow('FACTORY_BROKER_KEY_HOSTS')
+})
+
+test('a refused policy logs one line with no secret and no newline', async () => {
+  const logged: unknown[][] = []
+  const old = console.error
+  console.error = (...a: unknown[]) => void logged.push(a)
+  try {
+    expect((await put(keyed(['relay.example.com'], 'ANTHROPIC'))).status).toBe(400)
+    expect(logged.length).toBe(1)
+    const line = String(logged[0]![0])
+    expect(line).toContain('f-r1-1')
+    expect(line).toContain('relay.example.com')
+    expect(line).not.toContain('ate-secret://')
+    logged.length = 0
+    const evil = 'relay.example.com\n2026-11-09T00:00:00Z PUT /policy/factory/x 200'
+    expect((await put(keyed([evil], 'ANTHROPIC'))).status).toBe(400)
+    expect(logged.length).toBe(1)
+    const l2 = String(logged[0]![0])
+    expect(l2).not.toContain('\n')
+    expect(l2.length).toBeLessThanOrEqual(400)
+    logged.length = 0
+    expect((await put(keyed(['x'.repeat(1000)], 'ANTHROPIC'))).status).toBe(400)
+    expect(logged.length).toBe(1)
+    expect(String(logged[0]![0]).length).toBeLessThanOrEqual(400)
+    logged.length = 0
+    expect((await put(keyed(['api.anthropic.com'], 'ANTHROPIC'))).status).toBe(200)
+    expect(logged).toEqual([])
+  } finally {
+    console.error = old
   }
 })

@@ -1,7 +1,7 @@
 name: CI
 
 # This workflow has 4 required checks on main: test, plugin, typecheck and format
-# (claude-factory-5h9.5).
+# (claude-factory-5h9.5). The nix job builds the flake and runs a smoke test.
 #
 # The workflow_dispatch trigger lets release.yml start a run of this workflow on a release
 # PR's branch. GITHUB_TOKEN opens that PR. A GITHUB_TOKEN-opened PR starts a
@@ -102,3 +102,16 @@ jobs:
           bun-version: '1.4.4'
       - run: bun install --frozen-lockfile
       - run: bunx prettier@3.9.9 --check .
+
+  nix:
+    name: nix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - run: nix build .#factory
+      - name: smoke test the store install
+        # the store is read-only: status must work with no write into the package
+        run: |
+          ./result/bin/factory --help
+          FACTORY_HOME="$(mktemp -d)" ./result/bin/factory status

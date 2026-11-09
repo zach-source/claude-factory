@@ -407,6 +407,21 @@ Limits (see claude-factory-d289.1 and claude-factory-d289.3):
 - The guest allows 10 processes at a time. Each ssh connection is one process.
 - Do not set `HERDR_REMOTE_BINARY`. Its upload echoes the binary back, and without `ENV_REPLACE` it hits the 10 MiB cap. The image has herdr on `PATH`.
 
+#### Attach with the Herdr app (herdr core)
+
+The manager and worker images have herdr core (`hc`, `HC_VERSION` in `Dockerfile.worker`). The Herdr app on the laptop reaches a task through `hc machine add`. That command runs `hc connect` in the task over ssh, or over any command given with `--via`. The laptop `hc` must not be newer than the image's `hc`. Keep them at the same version.
+
+- The manager: with the `Host f-manager` block from step 2 above, run `hc machine add f-manager`.
+- A worker task has no sshd. Use `ax stdio` as the transport. hc gives the shell line to run as the last argument, so end the command with `sh -c`:
+
+  ```bash
+  hc machine add --temp --name <task> --via "ax --context <ctx> -a factory stdio <task> -- setpriv --reuid=worker --regid=worker --init-groups sh -c"
+  ```
+
+  The `ax` process needs the same AX env as the ProxyCommand in step 2. `--temp` marks the machine as short-lived. Remove it with `hc machine rm <task>` when the task ends.
+
+The same limits as for `herdr --remote` apply: each connection is one guest process, and an image without `ENV_REPLACE` has the 10 MiB stdout cap.
+
 ### The AX sweep
 
 A failed `ax delete`, or a run that ends with its worker up, can leave a task or a workspace on the cluster. The `factory beads` pass removes them. It runs at most every 10 minutes, only when a rig has `runner: 'ax'`, and not after `factory stop`.
@@ -504,8 +519,11 @@ Owner steps (the factory does not do them):
 
 How it works:
 
-- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It holds `tick.lock` during the snapshot and frees it before the push. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
-- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log` and `worktrees/`.
+- The host pushes a snapshot every `FACTORY_AX_BACKUP_EVERY` ms. It commits only when a file changed. The push is fast-forward only. The host never forces a push.
+- Ticks run back to back and hold `tick.lock`. So when a backup is due, the host writes `FACTORY_HOME/backup.want`. A tick does not start while that file is younger than 10 min. The host tries the lock each second, for up to 10 min. When it takes the lock, it removes `backup.want`.
+- Under `tick.lock`, the host only snapshots the memory and adds the files to the backup index. It frees the lock before the scan, the gzip, the commit and the push.
+- If GitHub refused a push (for example GH001), the next push does not send the refused commit again. If the remote tip is absent or an ancestor of the local branch, the host pushes one commit of the current tree on that tip.
+- The snapshot holds `home/` and the Claude memory and session files of the sessions in `manager-sessions.json`. It leaves out `.claude.json`, `.credentials.json`, `claude/**/settings*.json`, `rigs.json.*`, `*.lock`, `bin/`, `devenv/`, `herdr.log`, `manager-host.log` and `worktrees/`.
 - gitleaks scans the staged files (all its rules, `generic-api-key` too). The push has `[REDACTED]` in place of each secret that it finds. The backup finds the secret by its text, not by the gitleaks line and column. The file in the home does not change.
   - `manager-host.log` gets `backup redacted <rule id> <path>` for each file. The log never holds the value.
   - If gitleaks is not on `PATH`, or a secret is left after the redaction, the backup stops. Nothing stays staged.
@@ -538,7 +556,7 @@ The broker is a small HTTP server in the cluster (`factory broker serve [--port 
 
 | Call                                  | Result                                                                                              |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `PUT /policy/<atespace>/<actor>`      | Body is an EgressPolicy as JSON. The broker deletes the old policy, then creates the new one.       |
+| `PUT /policy/<atespace>/<actor>`      | Body is an EgressPolicy as JSON. The broker updates the stored policy in place, or creates it. |
 | `DELETE /policy/<atespace>/<actor>`   | Deletes the policy. A policy that is gone already is not an error.                                  |
 | `GET /ca`                             | The PEM of the gateway CA bundle.                                                                   |
 | `GET /healthz`                        | `ok`.                                                                                               |
@@ -565,8 +583,20 @@ Limits:
   - The policy has the reviewer rule. Another rule has a `credentialUri` whose vault key starts with `GITHUB`, on any host. So one policy cannot hold the reviewer key and a `GITHUB` author key. Limit 1: a GitHub token under a vault key name that does not start with `GITHUB` passes. Limit 2: the broker keeps no state, and a later PUT replaces the policy of the same actor. A compromised manager can thus give one task the two keys, one after the other (claude-factory-mzoy).
   - A key has a non-ASCII character.
   - The policy nests deeper than 32 levels.
+  - A vault key goes to a host that the key is not pinned to. `keyHostRefusal` in `src/broker.ts` makes this check, after `workerPolicyRefusal`. The gateway adds the real key to each request to the named host, so a key on a relay host would leave the cluster in plain text. A key can be only in `rules[i].https.effects.replaceHeaders[j].credentialUri`. The rule has a closed shape: `rules[i]` has only `https`, `https` has only `hostnames`, `ports`, `pathPrefixes`, `paths` and `effects`, `effects` has only `replaceHeaders`, and each entry has only `header`, `prefix` and `credentialUri`. Every hostname of the rule must be a host of the key (exact text: no case fold, no trailing dot, no wildcard). A `credentialUri` or `effects` field anywhere else fails. A key with no pinned host fails. The pins are:
+
+    | Key                                         | Hosts                                                  |
+    | ------------------------------------------- | ------------------------------------------------------ |
+    | Any key that starts with `GITHUB`           | `api.github.com`, `uploads.github.com`, `github.com`   |
+    | `ANTHROPIC`                                 | `api.anthropic.com`                                    |
+    | `XAI_API_KEY`                               | `api.x.ai`                                             |
+    | `CURSOR_API_KEY`                            | `api2.cursor.sh`                                       |
+    | `CODEX_CHATGPT`, `CODEX_CHATGPT_ACCOUNT`    | `chatgpt.com`                                          |
+    | Any other key (`GITLAB`, `DOLT_BASIC`, a rig key) | The hosts in `FACTORY_BROKER_KEY_HOSTS`, else none |
+
+    `FACTORY_BROKER_KEY_HOSTS` is a JSON object in the broker Deployment env. The manager VM cannot change it. Example: `{"GITLAB":["gitlab.acme.example"],"DOLT_BASIC":["dolt.acme.example"]}`. Each name is upper case, does not start with `GITHUB` and is not a built-in key. Each value is a non-empty list of lower-case host names (no `*`, no port, no trailing dot). A bad value stops the broker at start. Unset or empty means no extra keys. To fill it, list each key of the keyed `rig egress` entries in `rigs.json`, the `GITLAB` and `GITLAB_BASIC` keys with each GitLab rig host, and the Dolt key of each https `beadsRemote` host. After each new `factory rig egress add <host>=KEY` on an AX rig, deploy the broker again with that key. Until then the task shows only `pending: egress policy not created`. The reason is in the broker log. A `GITHUB*` key or a built-in key on another host (for example GitHub Enterprise) cannot be set by the config: rename the vault key. A pinned key can still go to any path and port of its own host. `createPolicy` does not run `keyHostRefusal`.
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.
-- The broker logs one line for each call.
+- The broker logs one line for each call, and one line `policy refused for <atespace>/<actor>: <reason>` for each refusal.
 
 Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task. The broker has no caller authentication.
 
@@ -576,7 +606,7 @@ Use in the manager task:
 2. The manager policy gets one `http` rule for the router and one for the broker. An `https` rule does not work for plain HTTP (h2c) to a service. When ax-server caller authentication is on, use an `https` AX server URL, for example `https://ax-server.ax-system.svc:8443`. The gateway then adds `Authorization: Bearer <AX_AUTH>`. On the laptop, export `AX_AUTH_TOKEN` in the shell that runs `factory`. The `ax` CLI sends it over the loopback tunnel.
 3. In the VM, `FACTORY_POLICY_BROKER` makes `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before.
 
-Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
+Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE $FACTORY_BROKER_KEY_HOSTS' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
 
 Two more calls serve the manager's secrets (see Manager secrets):
 

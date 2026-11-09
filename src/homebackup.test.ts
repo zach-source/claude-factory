@@ -2,7 +2,16 @@ import { afterEach, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { backup, backupAge, EXCLUDES, restore, secretFile, type BackupCfg } from './homebackup'
+import {
+  backup,
+  backupAge,
+  backupWant,
+  backupWanted,
+  EXCLUDES,
+  restore,
+  secretFile,
+  type BackupCfg,
+} from './homebackup'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -79,6 +88,70 @@ test('d289.19: a staged file over 50 MB goes up as <path>.gz and comes back byte
     expect(existsSync(join(b, f))).toBe(false)
 }, 120_000)
 
+test('d289.21: backup.want is fresh for 10 min; the backup removes it at the lock and scans after the lock is free', () => {
+  const r = remote()
+  const ws = workspace()
+  const home = join(ws, 'home')
+  expect(backupWanted(home)).toBe(false)
+  writeFileSync(backupWant(home), '')
+  expect(backupWanted(home)).toBe(true)
+  expect(backupWanted(home, Date.now() + 601_000)).toBe(false)
+  // a gitleaks stand-in that marks when it runs and finds nothing
+  const mark = join(tmp(), 'scanned')
+  const bin = join(tmp(), 'gitleaks')
+  writeFileSync(bin, `#!/bin/sh\ntouch '${mark}'\necho '[]'\n`, { mode: 0o755 })
+  const seen: string[] = []
+  const lock = () => {
+    seen.push(`take want=${existsSync(backupWant(home))}`)
+    return () => seen.push(`free scanned=${existsSync(mark)}`)
+  }
+  const out = backup({ ...cfg(ws, r), gitleaks: bin }, true, lock)
+  expect(out.error).toBeUndefined()
+  expect(seen).toEqual(['take want=true', 'free scanned=false'])
+  expect(existsSync(mark)).toBe(true)
+  expect(existsSync(backupWant(home))).toBe(false)
+  // a home change after the lock is free does not go into this commit
+  expect(pushedFile(r, 'home/decisions.json')).toBe('[]')
+})
+
+test('d289.20: after the remote rejects a commit, the next backup pushes a fixed tree without that commit', () => {
+  const r = remote()
+  // like GH001: refuse a push when any new commit holds home/huge.txt
+  const hook = join(r, 'hooks', 'pre-receive')
+  writeFileSync(
+    hook,
+    '#!/bin/sh\nwhile read old new ref; do\n' +
+      '  for c in $(git rev-list "$new" --not --all); do\n' +
+      '    git ls-tree -r --name-only "$c" | grep -qx home/huge.txt && { echo "GH001 large file" >&2; exit 1; }\n' +
+      '  done\ndone\nexit 0\n',
+    { mode: 0o755 },
+  )
+  for (const first of [true, false]) {
+    const rr = first ? r : remote()
+    if (!first) Bun.spawnSync(['cp', hook, join(rr, 'hooks', 'pre-receive')])
+    const a = workspace()
+    // the second pass starts with a good backup on the remote
+    const good = first ? null : backup(cfg(a, rr), true).sha!
+    put(join(a, 'home', 'huge.txt'), 'too big')
+    expect(backup(cfg(a, rr), true).error).toContain('git push')
+    rmSync(join(a, 'home', 'huge.txt'))
+    put(join(a, 'home', 'decisions.json'), '[1]')
+    const out = backup(cfg(a, rr), true)
+    expect(out.error).toBeUndefined()
+    expect(out.sha).toBe(sh('--git-dir', rr, 'rev-parse', 'manager-home'))
+    const parents = sh('--git-dir', rr, 'rev-list', '--parents', '-n', '1', 'manager-home')
+      .split(' ')
+      .slice(1)
+    expect(parents).toEqual(good ? [good] : [])
+    expect(pushedFile(rr, 'home/decisions.json')).toBe('[1]')
+    // a later backup goes on top as usual
+    put(join(a, 'home', 'decisions.json'), '[2]')
+    const next = backup(cfg(a, rr), true)
+    expect(sh('--git-dir', rr, 'rev-parse', 'manager-home^')).toBe(out.sha!)
+    expect(next.changed).toBe(true)
+  }
+})
+
 test('AC1: a backup restores into an empty home with the same state', () => {
   const r = remote()
   const a = workspace()
@@ -111,7 +184,7 @@ test('AC2: the login files, locks, bin, devenv, logs and rigs.json backups stay 
   const never = [
     'home/.claude.json',
     'home/.credentials.json',
-    'home/settings.json',
+    `claude/projects/${SLUG}/memory/settings.json`,
     'home/rigs.json.bak',
     'home/tick.lock',
     'home/gc.lock',
@@ -125,10 +198,12 @@ test('AC2: the login files, locks, bin, devenv, logs and rigs.json backups stay 
     `claude/projects/${SLUG}/other.jsonl`,
   ]
   for (const f of never) put(join(ws, f), 'x')
+  put(join(ws, 'home/settings.json'), '{}')
   expect(backup(cfg(ws, r), true).error).toBeUndefined()
   const files = sh('--git-dir', r, 'ls-tree', '-r', '--name-only', 'manager-home').split('\n')
   for (const f of never) expect(files).not.toContain(f)
   expect(files).toContain('home/rigs.json')
+  expect(files).toContain('home/settings.json')
 })
 
 test('AC2: each exclude rule is needed', () => {
@@ -138,7 +213,7 @@ test('AC2: each exclude rule is needed', () => {
   const probes: Record<string, string> = {
     '.claude.json': 'home/.claude.json',
     '.credentials.json': 'home/.credentials.json',
-    'settings*.json': 'home/settings.json',
+    '/claude/**/settings*.json': `claude/projects/${SLUG}/memory/settings.json`,
     'rigs.json.*': 'home/rigs.json.bak',
     '*.lock': 'home/tick.lock',
     '/home/bin/': 'home/bin/factory',

@@ -5,12 +5,13 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { AUTHORIZED_KEYS_ENV, MANAGER_CWD, MANAGER_HOME, publicKeys, SSH_DIR, SSHD_CONFIG, WS } from './ax'
 import { sq } from './harness'
-import { backup, restore, type BackupCfg, type Outcome } from './homebackup'
+import { backup, backupWant, restore, WANT_MS, type BackupCfg, type Outcome } from './homebackup'
 import * as worker from './worker'
 
 /**
@@ -105,8 +106,9 @@ export async function awaitHome(ready: () => boolean, step: () => boolean, sleep
 }
 
 /**
- * one backup; backup() takes the tick lock for the snapshot only. A tick holds the lock most of the time.
- * If the lock is held, the step tries again each second, up to `tries` times (2 min).
+ * one backup; backup() takes the tick lock for the snapshot only. Ticks run back to back and hold the lock.
+ * So first the step writes backup.want: no new tick starts while it is fresh (d289.21). Then it tries the lock
+ * again each second, up to `tries` times (10 min: the longest tick), and removes backup.want at the end.
  * It logs the skip once, at the end. It logs a failure, and the host loop goes on
  */
 export async function backupStep(
@@ -115,10 +117,14 @@ export async function backupStep(
   lock: () => (() => void) | null,
   log: (m: string) => void,
   run: (c: BackupCfg, ready: boolean, lock: () => (() => void) | null) => Outcome = backup,
-  tries = 120,
+  tries = WANT_MS / 1000,
   nap: () => Promise<unknown> = () => Bun.sleep(1000),
 ) {
   if (!cfg.remote) return
+  const want = backupWant(join(cfg.ws, 'home'))
+  try {
+    writeFileSync(want, '')
+  } catch {} // ponytail: no backup.want (no home dir): the step only tries the lock, as before
   try {
     let o = run(cfg, ready, lock)
     for (let n = 1; o.skipped === 'lock' && n < tries; n++) {
@@ -131,6 +137,8 @@ export async function backupStep(
     for (const x of o.redacted ?? []) log(`backup redacted ${x}`) // the rule id and the path, never the value
   } catch (e) {
     log(`backup failed: ${(e as Error).message}`)
+  } finally {
+    rmSync(want, { force: true })
   }
 }
 
@@ -367,7 +375,7 @@ export async function host(
     await Bun.sleep(everyMs)
     if (Date.now() - lastBackup >= backupMs) {
       lastBackup = Date.now()
-      // ponytail: the host loop waits for the backup, up to 2 min while a tick holds the lock
+      // ponytail: the host loop waits for the backup, up to 10 min while a tick holds the lock
       await backupStep(bcfg, ready(), lock, log)
     }
     const n = paneCount()
