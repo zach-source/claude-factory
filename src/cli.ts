@@ -2106,7 +2106,7 @@ function launchNotesFailed(run: Run, node: string, why: string) {
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
-  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
+  if (!existsSync(run.worktree)) reviveWorktree(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   // a resumed session keeps the notes it was launched with; a new brief searches once, however often it is read
   const notes = session ? '' : launchNotes(run, node)

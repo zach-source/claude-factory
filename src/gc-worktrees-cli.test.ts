@@ -312,11 +312,11 @@ function writeRun(
   return { worktree, branch }
 }
 
-function writeRigs(rigs: { name: string; repo: string }[]) {
+function writeRigs(rigs: { name: string; repo: string; runner?: string }[]) {
   mkdirSync(home, { recursive: true })
   writeFileSync(
     join(home, 'rigs.json'),
-    JSON.stringify(rigs.map(r => ({ name: r.name, repo: r.repo, factory: 'ship' }))),
+    JSON.stringify(rigs.map(r => ({ name: r.name, repo: r.repo, factory: 'ship', runner: r.runner }))),
   )
 }
 
@@ -816,6 +816,40 @@ test('i: goto after gc recreates the removed worktree at the same path and start
   expect(row.pane).toBe('p1')
   expect(existsSync(worktree)).toBe(true) // recreated at the same path, from the surviving branch
   expect(readFileSync(join(worktree, `${id}.txt`), 'utf8')).toBe(id) // the branch's own commit
+})
+
+test('i: goto after gc recreates the removed worktree of an ax run too (claude-factory-2pez)', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: false })
+  writeRigs([{ name: 'r1', repo, runner: 'ax' }])
+  fakeGh([])
+  expect(factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() }).code).toBe(0)
+  expect(existsSync(worktree)).toBe(false)
+  expect(factory(['goto', id, 'implement']).code).toBe(0)
+  // the ax launch itself may fail here (fake ax); the worktree must be back before it runs
+  const ax = join(bin, 'ax')
+  const axLog = join(dir, 'ax-calls.log')
+  writeFileSync(ax, `#!/bin/sh\necho "$@" >> '${axLog}'\nexit 1\n`)
+  chmodSync(ax, 0o755)
+  const kubectl = join(bin, 'kubectl')
+  const ready =
+    '{"metadata":{"generation":1},"spec":{"replicas":1},"status":{"observedGeneration":1,"readyReplicas":1,"availableReplicas":1}}'
+  writeFileSync(kubectl, `#!/bin/sh\necho '${ready}'\n`)
+  chmodSync(kubectl, 0o755)
+  factory(['tick'], {
+    FACTORY_KUBECTL: kubectl,
+    FACTORY_HERDR: noPanes(),
+    FACTORY_AX: ax,
+    FACTORY_AX_IMAGE: 'acme/worker:1',
+    CLAUDE_CONFIG_DIR: join(dir, 'no-claude-config'),
+    FACTORY_GC: '0',
+  })
+  expect(existsSync(worktree)).toBe(true)
+  expect(readFileSync(join(worktree, `${id}.txt`), 'utf8')).toBe(id)
+  expect(readFileSync(axLog, 'utf8')).toContain('apply') // the launch reached ax
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('')
 })
 
 test('i: goto after gc refuses when the branch is also gone, and starts no worker (AC12)', () => {
