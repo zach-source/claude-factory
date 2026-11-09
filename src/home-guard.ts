@@ -26,6 +26,14 @@ export const OVERRIDE_REASON =
   'runs a git alias that does. The home guard cannot check the programs that such a setting ' +
   'loads. To search, use the Grep tool. For a commit message, use git commit -F <file>.'
 
+// claude-factory-qn8a.37.14: an inline hooks dir or include override. The rule reads no value.
+const OVERRIDE = /hookspath|include\.path|includeif\./
+const strip = (t: string) =>
+  t
+    .replace(/\\\n/g, '')
+    .replace(/['"\\$]/g, '')
+    .toLowerCase()
+
 /** the most files that the guard reads for the loaded texts of one command; the next read denies */
 export const MAX_LOADED_READS = 64
 
@@ -255,18 +263,10 @@ function readerSegment(w: string[]): boolean {
  * the script read runs. A sed word after the script, with quotes removed, must not start with -. For git, only
  * -C <dir> and --no-pager can come before a read subcommand. For sed, only -n with line-range p
  * scripts (no w, e, r, -i, -f).
- * ponytail: the loaded texts of homeReason cover git hooks, git config values and the config files
- * in cwd and its parents. Not covered: config in a subdir below cwd or in a dir that cd, git -C,
- * --git-dir, --prefix or --config names; a package name that selects a program; a bin that
- * nothing names; a path relative to a bin; a script that a hook calls; a file over 64 KiB; a file
- * name outside CONFIG_NAME; an env var that sets a program; other escapes than a quote or a
- * backslash. A -c or --config-env core.hooksPath word after a git word fails closed when it is
- * split, has no value or has a char outside [\w./+@,=-]. A core.hooksPath word with no git word
- * before it, or outside a -c or --config-env word, is not read. A -c core.hooksPath word after a
- * git word in a pipe is a false deny. False denies
- * stay for awk, rg, sort, jq, find, xargs, globs, $, subshells, heredocs, line joins and verbs
- * outside the reader and non-runner tables. Upgrade path: a real shell parser, or a per-file
- * config lookup for prettier.
+ * ponytail: for what the loaded texts of homeReason cover and do not cover, see loadedTexts in
+ * src/worker-hook.ts. False denies stay for awk, rg, sort, jq, find, xargs, globs, $, subshells,
+ * heredocs, line joins and verbs outside the reader and non-runner tables. Upgrade path: a real
+ * shell parser.
  */
 function readOnly(command: string): boolean {
   let seg: string[] = []
@@ -322,7 +322,9 @@ function namedHits(
  * HOME_REASON when `command`, a script file it names, or a loaded text holds a delete word and a
  * whole-home word. `readFile` reads a named script (small files only); without it, only the command text counts.
  * `loaded` holds the texts that git hooks, git config values and config files load (the worker hook
- * builds them). null means the loader failed: LOADED_REASON. A loaded text is always tested, also for a
+ * builds them). null means the loader failed: LOADED_REASON. With a
+ * loader, a command or alias text that names core.hooksPath, include.path or includeIf gives
+ * OVERRIDE_REASON. A loaded text is always tested, also for a
  * read-only command, and the files it names are read once (one level).
  * A read-only command (see readOnly: readers and non-runners) runs no file, so its named files are not read.
  * ponytail: one level of scripts, no follow of a script that calls another; add it if a bypass shows
@@ -336,9 +338,11 @@ export function homeReason(
   const word = homeWord(protect)
   if (hits(command, word)) return HOME_REASON
   if (loaded === null) return LOADED_REASON
+  if (loaded !== undefined && OVERRIDE.test(strip(command))) return OVERRIDE_REASON
   const loadedSeen = new Set<string>()
   const reads = { n: 0 }
-  for (const { text, dir } of loaded ?? []) {
+  for (const { text, dir, alias } of loaded ?? []) {
+    if (alias && OVERRIDE.test(strip(text))) return OVERRIDE_REASON
     if (hits(text, word) || hits(unjson(text), word)) return HOME_REASON
     if (!readFile) continue
     const r = namedHits(text, readFile, word, protect, loadedSeen, dir, reads)

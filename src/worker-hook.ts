@@ -10570,20 +10570,23 @@ const CONFIG_NAME =
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /**
- * claude-factory-qn8a.37: the texts that a command can load with no script named: git config values,
- * the files of the git hooks dir (not *.sample), the CONFIG_NAME files in cwd and each parent, and
- * the node_modules/.bin files that the command or a config text names. Each text has the dir that
- * its relative paths resolve against. It does not depend on the verbs of `command`, so a quote or
- * an alias cannot hide a git verb. It returns undefined when git cannot read the config in time:
- * the home guard then denies (fail closed). An unreadable file gives no text.
- * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir, --prefix
- * or --config names; a package name that selects a program; a bin that nothing names; a path
- * relative to a bin; a script that a hook calls; a file over 64 KiB; a file name outside
- * CONFIG_NAME; an env var that sets a program; other escapes than a quote or a backslash (for
- * example $'..' or a variable). A -c or --config-env core.hooksPath word after a git word fails
- * closed when it is split, has no value or has a char outside [\w./+@,=-]. A core.hooksPath word
- * with no git word before it, or outside a -c or --config-env word, is not read. A -c
- * core.hooksPath word after a git word in a pipe is a false deny.
+ * claude-factory-qn8a.37: the texts that a command can load with no script named: git config
+ * values (an alias value has alias: true), the files of the git hooks dir (not *.sample), the
+ * CONFIG_NAME files in cwd and each parent, and the node_modules/.bin files that the command or
+ * a config text names. Each text has the dir that its relative paths resolve against. It does
+ * not depend on the verbs of `command`, so a quote or an alias cannot hide a git verb. It returns
+ * undefined when git cannot read the config in time: the home guard then denies (fail closed).
+ * An unreadable file gives no text. homeReason denies an inline core.hooksPath, include.path or
+ * includeIf in the command or in an alias value (OVERRIDE_REASON), so no dir that the command
+ * names is read.
+ * ponytail: not read: config in a subdir below cwd or in a dir that cd, git -C, --git-dir,
+ * --prefix or --config names; a package name that selects a program; a bin that nothing names;
+ * a path relative to a bin; a script that a hook calls; a file over 64 KiB; a file name outside
+ * CONFIG_NAME; an env var that sets a program; a bin name or override key that an expansion
+ * builds (${E}, $(..), a backtick, $'\x..', a variable, {a,b}); an override in a config file,
+ * a hook file or a named script (only alias values are tested). False denies: any Bash text that
+ * holds hookspath, include.path or includeif. after quotes, backslashes and $ are removed (grep,
+ * a commit -m, bd text), and a git alias value that names one.
  * Upgrade path: a real shell parser, or a per-file config lookup for prettier.
  */
 export function loadedTexts(command: string, cwd: string): LoadedText[] | undefined {
@@ -10612,7 +10615,10 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
   const out: LoadedText[] = []
   for (const rec of s1.stdout.toString().split('\0')) {
     const nl = rec.indexOf('\n')
-    if (nl >= 0) out.push({ text: rec.slice(nl + 1), dir: top })
+    if (nl < 0) continue
+    const text = rec.slice(nl + 1)
+    if (rec.slice(0, nl).toLowerCase().startsWith('alias.')) out.push({ text, dir: top, alias: true })
+    else out.push({ text, dir: top })
   }
   const names = (d: string) => {
     try {
@@ -10621,29 +10627,9 @@ export function loadedTexts(command: string, cwd: string): LoadedText[] | undefi
       return []
     }
   }
-  // claude-factory-qn8a.37.4, .7, .8, .10: a -c core.hooksPath=DIR word names one more hooks dir.
-  // Git resolves DIR against the top dir. The key is case-insensitive. Only a -c or --config-env
-  // word counts. A --config-env word, a key with no value, and a key or value that a quote, a
-  // backslash or a space splits name no dir: fail closed.
-  const hooksDirs = hooks ? [hooks] : []
-  const flat = command.replace(/\\\n/g, '')
-  const bare = flat.replace(/['"\\]/g, '')
-  const pre = '(?:^|\\s)(?:-c\\s*|--config-env[=\\s]+)'
-  if (/(?:^|\s)--config-env[=\s]+core\.hookspath/i.test(bare)) return undefined
-  const afterGit = (t: string) => {
-    const i = t.search(/(?:^|[\s;&|(])git(?=\s)/)
-    return i < 0 ? '' : t.slice(i)
-  }
-  const keyRaw = [...afterGit(flat).matchAll(new RegExp(pre + '(["\']?)core\\.hookspath(=?)(\\S*)', 'gi'))]
-  const keyBare = [...afterGit(bare).matchAll(new RegExp(pre + 'core\\.hookspath', 'gi'))]
-  if (keyRaw.length !== keyBare.length) return undefined
-  for (const m of keyRaw) {
-    if (m[1] || !m[2] || !/^[\w./+@,=-]+$/.test(m[3])) return undefined
-    hooksDirs.push(resolvePath(top, m[3]))
-  }
-  for (const hd of hooksDirs)
-    for (const n of names(hd)) {
-      const text = n.endsWith('.sample') ? undefined : readSmallFile(joinPath(hd, n), cwd)
+  if (hooks)
+    for (const n of names(hooks)) {
+      const text = n.endsWith('.sample') ? undefined : readSmallFile(joinPath(hooks, n), cwd)
       if (text !== undefined) out.push({ text, dir: top })
     }
   const dirs: string[] = []
