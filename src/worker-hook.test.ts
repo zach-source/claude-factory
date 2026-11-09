@@ -1088,6 +1088,17 @@ test.each([
   expect(q15(cmd)).toBe(REASON)
 })
 
+test.each([
+  'gfind / -delete -exec $X "rm -rf /" {} +',
+  'gfind / -delete -exec $X "git push origin main" {} +',
+  'busybox find / -delete -exec $X "rm -rf /" {} +',
+  'bfs / -delete -exec $X "rm -rf /" {} +',
+  'command gfind / -delete -exec $X "rm -rf /" {} +',
+  'sudo gfind / -delete -exec $X "rm -rf /" {} +',
+])('denyReason denies %s (claude-factory-qn8a.15.4)', cmd => {
+  expect(q15(cmd)).toBeDefined()
+})
+
 test('denyReason denies a dynamic find exec head with git push in the script (claude-factory-qn8a.15)', () => {
   expect(q15('find . -exec $X "git push origin main" {} +')).toBeDefined()
 })
