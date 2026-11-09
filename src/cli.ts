@@ -15,6 +15,7 @@ import {
   unsetDevenv,
   unsetSetting,
 } from './settings'
+import { tokenCommand } from './claude-token'
 import { buildImage, IMAGE_KEY, type Target } from './image'
 import {
   appendFileSync,
@@ -12149,6 +12150,7 @@ const usage = `factory — herdr software factories on xstate
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
+  token [list] | use <n> | best        Claude token slots: the live slot and each slot's 7d and 5h use; make slot n live, or the slot with the lowest 7d use
   init <dir>                         a new factory: a directory whose rigs and runs commands run in it work
   up [factory-dir] [manager args...] start a factory's manager in one step: install deps, init a new dir, run the
                                      manager there (dir: the first arg, else FACTORY_HOME, else ~/factory)
@@ -13521,6 +13523,11 @@ if (import.meta.main && !outboxCmd)
           else unsetSetting(file, key!)
           console.log(`unset ${key}`)
         } else fail(usage)
+        break
+      }
+      case 'token': {
+        refuseWorker('token', true)
+        console.log(await tokenCommand(args, readSettings(join(HOME, 'settings.json'))))
         break
       }
       case 'image': {
