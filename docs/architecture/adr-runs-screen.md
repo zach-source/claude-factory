@@ -145,7 +145,9 @@ Use the normal soak deadline; this feature needs no new metrics or persistent lo
 3. `claude-factory-keuya.1`: Add the core port and catalog operation. Update catalog fixtures. Run all AC tests.
 
 Tasks 2 and 3 depend on task 1; task 3 also depends on task 2.
-Keep all three commits in one draft pull request. The scope fits one 120-minute implement pass.
+Keep all three commits in one draft pull request.
+Three partial passes could not run the transport tests because the tool hook denied them.
+The next plan must resolve that barrier before it assigns more feature work.
 
 ### Pre-change test evidence
 
