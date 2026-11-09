@@ -2,7 +2,38 @@
 
 ## Context
 
-Bead: `claude-factory-qn8a.14`. Status: revised plan after review of `58a9ee6d`.
+Bead: `claude-factory-qn8a.14`. Status: implementation complete at `91e2a81f`; verify and review remain necessary.
+
+## Current handoff
+
+This section supersedes the historical task status below. AC1 through AC7 retain their requirements.
+All nine child tasks are closed. No new implementation task is necessary without a reproduced defect or evidence gap.
+Keep the parser, caller tests, budget tests, and side-effect tests already on this branch.
+Do not repeat the PR 235 port or reopen completed tasks solely because this run returned to plan.
+
+Task `.7` supplied the ten-caller map, alias fixture, first-head checks, and unsafe head controls.
+Its commits are `ef19ea8b`, `053679dc`, and `be4850d8`.
+Task `.9` supplied the recursive work, depth, and zero-call tests in `9b561268`.
+The merge commit `91e2a81f` contains both tasks and the current main branch at that point.
+The dependency order remains `.7` before `.9`. Keep task `.3` closed unless a test proves another script-reader defect.
+
+Verify must check AC1 through AC7 against the final PR head.
+Review must assess the recorded equivalent mutations against AC3; a corpus result alone does not prove universal equivalence.
+Do not change production code solely to make an equivalent mutation fail.
+If review finds an evidence gap, reopen the relevant task with the exact assertion or consumer that lacks proof.
+Commit a failing regression test before any required parser repair. Keep the final required checks green.
+The implement handoff needs no new source commit if these checks confirm the existing result.
+Release still owns the changelog. The PR must remain a draft until an authorized approval station marks it ready.
+
+Plan repeated `bun test --timeout 30000 src/worker-hook.test.ts -t qn8a.14` on `91e2a81f`.
+Result: 251 tests passed, zero failed, with 427 assertions.
+Plan read the new caller and budget tests; it did not repeat their mutations.
+[CI run 42549894734](https://github.com/zach-source/claude-factory/actions/runs/42549894734) passed test, plugin, typecheck, and format on that head.
+The prior local full-suite failures remain local gaps; plan did not reproduce or classify them.
+Plan did not repeat the full suite, plugin check, typecheck, audit, or secret scan.
+No production read or command execution is necessary. No AC is must-see-live.
+
+## Historical context
 
 The current implementation satisfies the reported redirect and quoted-script denials.
 Review round 4 found no new parser defect. It found absent AC3, AC6, and AC7 evidence.
