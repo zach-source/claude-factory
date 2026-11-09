@@ -18,6 +18,7 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -35,7 +36,10 @@ let homeN = 0
 let home = join(dir, 'home')
 const bin = join(dir, 'bin')
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+afterEach(() => {
+  Bun.spawnSync(['chmod', '-R', 'u+w', dir]) // a test may leave a 555 dir
+  rmSync(dir, { recursive: true, force: true })
+})
 
 const GIT_ENV = {
   GIT_AUTHOR_NAME: 'factory',
@@ -251,14 +255,30 @@ const runDir = (id: string) => join(home, 'runs', id)
 function writeRun(
   repo: string,
   id: string,
-  opts: { outcome: 'done' | 'aborted' | 'working'; finishedAt?: number; merged?: boolean; bead?: string },
+  opts: {
+    outcome: 'done' | 'aborted' | 'working'
+    finishedAt?: number
+    merged?: boolean
+    bead?: string
+    /** where `git worktree add` puts the worktree (default dir/wt/<id>) */
+    worktree?: string
+    /** the `worktree` value stored in run.json (default: the worktree path) */
+    recorded?: string
+    /** commit ro/f.txt, so the test can chmod the dir ro/ to 555 afterwards */
+    ro?: true
+  },
 ): { worktree: string; branch: string } {
   const branch = `factory/${id}`
-  const worktree = join(dir, 'wt', id)
-  mkdirSync(join(dir, 'wt'), { recursive: true })
+  const worktree = opts.worktree ?? join(dir, 'wt', id)
+  mkdirSync(dirname(worktree), { recursive: true })
   git(repo, 'worktree', 'add', '-q', '-b', branch, worktree, 'main')
   writeFileSync(join(worktree, `${id}.txt`), id)
   git(worktree, 'add', `${id}.txt`)
+  if (opts.ro) {
+    mkdirSync(join(worktree, 'ro'))
+    writeFileSync(join(worktree, 'ro', 'f.txt'), 'ro')
+    git(worktree, 'add', 'ro/f.txt')
+  }
   git(worktree, 'commit', '-q', '-m', `work on ${id}`)
   git(worktree, 'push', '-q', 'origin', `${branch}:${branch}`)
   // `repo`'s HEAD stays on main throughout (the branch is checked out in its own worktree, and
@@ -279,7 +299,7 @@ function writeRun(
       repo,
       goal: 'g',
       ws: `ws-${id}`,
-      worktree,
+      worktree: opts.recorded ?? worktree,
       branch,
       ...(opts.bead && { bead: opts.bead }),
     }),
@@ -1140,6 +1160,234 @@ test('w: a failing "git worktree remove" scrubs URL userinfo from the journaled 
   const errLine = lines.find(l => l.type === 'error' && l.run === id)
   expect(errLine).toBeDefined()
   expect(errLine.reason).toContain('https://github.com/acme/widget.git')
+})
+
+// claude-factory-r3bb: `factory rm` and `gc --worktrees` reap read-only and unregistered worktree dirs
+const userhome = () => join(dir, 'userhome')
+const rmEnv = () => ({ FACTORY_HERDR: noPanes(), HOME: userhome() })
+/** what git does at the end of a half-done `git worktree remove`: the admin dir goes, the dir stays */
+const unregister = (repo: string, worktree: string) =>
+  rmSync(join(repo, '.git', 'worktrees', worktree.split('/').at(-1)!), { recursive: true, force: true })
+const readOnly = (worktree: string) => chmodSync(join(worktree, 'ro'), 0o555)
+const metricsHas = (id: string) =>
+  existsSync(join(home, 'metrics.jsonl')) && readFileSync(join(home, 'metrics.jsonl'), 'utf8').includes(id)
+
+test('rm-a: rm removes a registered worktree that holds a read-only dir, and drops the run state', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const worktree = join(home, 'worktrees', id)
+  const { branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, worktree, ro: true })
+  readOnly(worktree)
+  const out = factory(['rm', id], rmEnv())
+  expect(out.err).toBe('')
+  expect(out.code).toBe(0)
+  expect(existsSync(worktree)).toBe(false)
+  expect(git(repo, 'worktree', 'list', '--porcelain')).not.toContain(worktree)
+  expect(existsSync(runDir(id))).toBe(false)
+  expect(git(repo, 'branch', '--list', branch)).not.toBe('')
+})
+
+test('rm-b: rm reaps an unregistered dir under each worktree root', () => {
+  for (const where of ['factory', 'herdr'] as const) {
+    reset()
+    const { repo } = makeRig('r1')
+    const id = freshId('ship')
+    const worktree =
+      where === 'factory'
+        ? join(home, 'worktrees', id)
+        : join(userhome(), '.herdr', 'worktrees', 'r1', `factory-${id}`)
+    writeRun(repo, id, { outcome: 'done', finishedAt: OLD, worktree, ro: true })
+    unregister(repo, worktree)
+    readOnly(worktree)
+    const out = factory(['rm', id], rmEnv())
+    expect(out.err).toBe('')
+    expect(out.code).toBe(0)
+    expect(existsSync(worktree)).toBe(false)
+    expect(existsSync(runDir(id))).toBe(false)
+    expect(metricsHas(id)).toBe(true)
+  }
+})
+
+test('rm-c: rm refuses an unregistered dir that fails the guard, and changes nothing', () => {
+  type Row = { reason: string; setup: (repo: string, id: string) => string }
+  const rows: Row[] = [
+    {
+      reason: 'outside the worktree roots',
+      setup: (repo, id) => {
+        const { worktree } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD })
+        unregister(repo, worktree)
+        return worktree
+      },
+    },
+    {
+      reason: 'name does not match the run',
+      setup: (repo, id) => {
+        const worktree = join(home, 'worktrees', `x-${id}`)
+        writeRun(repo, id, { outcome: 'done', finishedAt: OLD, worktree, recorded: worktree })
+        unregister(repo, worktree)
+        return worktree
+      },
+    },
+    {
+      reason: 'symlink',
+      setup: (repo, id) => {
+        const target = join(dir, 'outside', id)
+        const link = join(home, 'worktrees', id)
+        writeRun(repo, id, { outcome: 'done', finishedAt: OLD, worktree: target, recorded: link })
+        mkdirSync(join(home, 'worktrees'), { recursive: true })
+        symlinkSync(target, link)
+        unregister(repo, target)
+        return target
+      },
+    },
+    {
+      reason: 'outside the worktree roots',
+      setup: (repo, id) => {
+        const target = join(dir, 'outside', id)
+        mkdirSync(join(home, 'worktrees'), { recursive: true })
+        writeRun(repo, id, {
+          outcome: 'done',
+          finishedAt: OLD,
+          worktree: target,
+          recorded: `${home}/worktrees/../../outside/${id}`,
+        })
+        unregister(repo, target)
+        return target
+      },
+    },
+    {
+      reason: 'git worktree list failed',
+      setup: (repo, id) => {
+        const worktree = join(home, 'worktrees', id)
+        writeRun(repo, id, { outcome: 'done', finishedAt: OLD, worktree })
+        unregister(repo, worktree)
+        failGit('worktree', 'list', 'boom', 1)
+        return worktree
+      },
+    },
+    {
+      reason: 'its git dir still exists',
+      setup: (repo, id) => {
+        const worktree = join(home, 'worktrees', id)
+        writeRun(repo, id, { outcome: 'done', finishedAt: OLD, recorded: worktree })
+        const { repo: other } = makeRig('r2')
+        mkdirSync(join(home, 'worktrees'), { recursive: true })
+        git(other, 'worktree', 'add', '-q', '-b', 'other', worktree, 'main')
+        return worktree
+      },
+    },
+  ]
+  for (const row of rows) {
+    reset()
+    const { repo } = makeRig('r1')
+    const id = freshId('ship')
+    const keep = row.setup(repo, id)
+    writeFileSync(join(keep, 'keep.txt'), 'k')
+    const out = factory(['rm', id], rmEnv())
+    expect(out.code).not.toBe(0)
+    expect(out.err).toContain('refusing to delete')
+    expect(out.err).toContain(row.reason)
+    expect(readFileSync(join(keep, 'keep.txt'), 'utf8')).toBe('k')
+    expect(existsSync(runDir(id))).toBe(true)
+    expect(metricsHas(id)).toBe(false)
+  }
+})
+
+test('rm-c: a registered worktree behind a symlink takes the git path, not the guard', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const target = join(dir, 'outside', id)
+  const link = join(home, 'worktrees', id)
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, worktree: target, recorded: link })
+  mkdirSync(join(home, 'worktrees'), { recursive: true })
+  symlinkSync(target, link)
+  writeFileSync(join(target, `${id}.txt`), 'changed')
+  const out = factory(['rm', id], rmEnv())
+  expect(out.code).not.toBe(0)
+  expect(out.err).not.toContain('refusing to delete')
+  expect(readFileSync(join(target, `${id}.txt`), 'utf8')).toBe('changed')
+  expect(existsSync(runDir(id))).toBe(true)
+})
+
+test('rm-d: rm never forces: a registered worktree with uncommitted work stays', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const worktree = join(home, 'worktrees', id)
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, worktree })
+  writeFileSync(join(worktree, `${id}.txt`), 'changed')
+  const out = factory(['rm', id], rmEnv())
+  expect(out.code).not.toBe(0)
+  expect(existsSync(worktree)).toBe(true)
+  expect(existsSync(runDir(id))).toBe(true)
+})
+
+const gcEnv = () => ({ HOME: userhome() })
+
+test('gc-a: gc reaps a registered worktree that holds a read-only dir', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const { worktree } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true, ro: true })
+  readOnly(worktree)
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes(), ...gcEnv() })
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('reclaimed: 1 worktrees')
+  expect(out.out).toContain('0 errors')
+  expect(existsSync(worktree)).toBe(false)
+})
+
+test('gc-b: gc reaps an unregistered dir of a finished run; --dry-run changes nothing', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const id = freshId('ship')
+  const worktree = join(home, 'worktrees', id)
+  writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged: true, ro: true, worktree })
+  unregister(repo, worktree)
+  readOnly(worktree)
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  const env = { FACTORY_HERDR: noPanes(), ...gcEnv() }
+  const dry = factory(['gc', '--worktrees', '--dry-run'], env)
+  expect(dry.out).toContain(`remove worktree ${worktree} (run ${id}, unregistered,`)
+  expect(existsSync(worktree)).toBe(true)
+  const out = factory(['gc', '--worktrees'], env)
+  expect(out.code).toBe(0)
+  expect(out.out).toContain('0 errors')
+  expect(existsSync(worktree)).toBe(false)
+  const lines = readFileSync(join(home, 'gc-worktrees.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(lines.some(l => l.type === 'worktree' && l.run === id && l.unregistered === true)).toBe(true)
+  expect(JSON.parse(readFileSync(join(runDir(id), 'gc.json'), 'utf8')).worktree.path).toBe(worktree)
+})
+
+test('gc-c: gc keeps an unregistered dir of a live run, and one outside the roots, with no error', () => {
+  reset()
+  const { repo } = makeRig('r1')
+  const liveId = freshId('live')
+  const live = join(home, 'worktrees', liveId)
+  writeRun(repo, liveId, { outcome: 'working', worktree: live })
+  unregister(repo, live)
+  const outId = freshId('out')
+  const { worktree: outside } = writeRun(repo, outId, { outcome: 'done', finishedAt: OLD, merged: true })
+  unregister(repo, outside)
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  const out = factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes(), ...gcEnv() })
+  expect(out.code).toBe(0)
+  expect(out.out).toContain(`keep worktree ${live} (run ${liveId}, reason: live)`)
+  expect(out.out).toContain(
+    `keep worktree ${outside} (run ${outId}, reason: unregistered, outside the worktree roots)`,
+  )
+  expect(out.out).toContain('0 errors')
+  expect(existsSync(live)).toBe(true)
+  expect(existsSync(outside)).toBe(true)
 })
 
 // claude-factory-m9f9: a worktree with a submodule. `git worktree remove` refuses it without --force,

@@ -571,3 +571,19 @@ test('scrubUrlUserinfo: an scp-style remote (no scheme) is left alone', () => {
 test('scrubUrlUserinfo: plain text with no URL is unchanged', () => {
   expect(scrubUrlUserinfo('fatal: not a git repository')).toBe('fatal: not a git repository')
 })
+
+test('u1: an unregistered fact plans an unregistered removal (claude-factory-r3bb)', () => {
+  const runs = [ref('r1', 'done')]
+  const rig = rigFacts({ worktrees: [wt('/wt/r1', null, { unregistered: true })] })
+  expect(planOf(rig, runs).removeWorktrees).toEqual([
+    { runId: 'r1', path: '/wt/r1', bytes: 1_000, snapshot: false, unregistered: true },
+  ])
+})
+
+test('u2: a run finished under an hour ago keeps its unregistered dir (claude-factory-r3bb)', () => {
+  const runs = [ref('r1', 'done', '/wt/r1', { finishedAt: NOW - 10 * 60_000 })]
+  const rig = rigFacts({ worktrees: [wt('/wt/r1', null, { unregistered: true })] })
+  const p = planOf(rig, runs)
+  expect(p.removeWorktrees).toEqual([])
+  expect(p.keep).toContainEqual({ kind: 'worktree', runId: 'r1', name: '/wt/r1', reason: 'recent' })
+})
