@@ -267,7 +267,7 @@ factory rig add gitops ~/repos/gitops --sweeps drift --drift "flux get kustomiza
 factory rig                                                 # each rig, its busy runs and sweeps
 factory rig set app --max 5 --goal ship v3                  # change only the named fields; a name or a repo path
 factory rig set app --cluster-runs 3 --auto-queue 2,3
-factory rig set app --skills asd-ste100,egm --sandbox-class microvm
+factory rig set app --runner ax --skills asd-ste100,egm --sandbox-class microvm
 factory rig egress add app broker.example.com=AWS_BROKER:Authorization: --port 8443 --path-prefix /v1/aws/acme/
 factory rig show app                                        # every field of the rig, secret values hidden
 factory rig env set svc FACTORY_SERVICES=0                  # svc runs on ax: set one env key of its VM workers
