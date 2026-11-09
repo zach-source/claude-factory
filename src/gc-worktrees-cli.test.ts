@@ -805,7 +805,8 @@ test('i: goto after gc recreates the removed worktree of an ax run too (claude-f
   writeFileSync(ax, '#!/bin/sh\nexit 1\n')
   chmodSync(ax, 0o755)
   const kubectl = join(bin, 'kubectl')
-  const ready = '{"metadata":{"generation":1},"spec":{"replicas":1},"status":{"observedGeneration":1,"readyReplicas":1,"availableReplicas":1}}'
+  const ready =
+    '{"metadata":{"generation":1},"spec":{"replicas":1},"status":{"observedGeneration":1,"readyReplicas":1,"availableReplicas":1}}'
   writeFileSync(kubectl, `#!/bin/sh\necho '${ready}'\n`)
   chmodSync(kubectl, 0o755)
   factory(['tick'], {
