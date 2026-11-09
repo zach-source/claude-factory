@@ -2106,7 +2106,7 @@ function launchNotesFailed(run: Run, node: string, why: string) {
 /** a worker for a station, wherever the rig runs them; given a session, it resumes that conversation */
 function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
   // a revived run (goto or retry after `factory gc --worktrees`) lost its worktree: recreate it first
-  if (runnerOfStation(run, def, node).local && !existsSync(run.worktree)) reviveWorktree(run)
+  if (!existsSync(run.worktree)) reviveWorktree(run)
   const file = session ? resumeFile(run, node, c) : promptOf(run, node, c)
   // a resumed session keeps the notes it was launched with; a new brief searches once, however often it is read
   const notes = session ? '' : launchNotes(run, node)
@@ -11188,8 +11188,12 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
     const { run, value } = cur
     if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this, and a fork copies it from its source
     const [node, sub] = where(value)
-    const n = (await loadPinned(run.factory)).nodes[node]
-    const s = slot(n, sub)
+    let s
+    try {
+      s = slot((await loadPinned(run.factory)).nodes[node], sub)
+    } catch {
+      s = 'busy' // a def that does not load: count the run busy on its rig, safe on the cap
+    }
     if (s === 'busy') busy.push(rigOf(run.repo)?.name)
     else if (s === 'rig') held.push(rigOf(run.repo)?.name)
   }

@@ -134,8 +134,10 @@ spec:
     - port: 8080
       targetPort: 8080
 ---
-# Only the egress gateway's namespace can call the broker: the manager's calls arrive from the gateway.
-# Confirm the gateway namespace and pod labels before apply.
+# Two callers reach the broker: the egress gateway's namespace (the manager's calls arrive from it) and the
+# factory server pod (namespace factory, label app: factory-server). Residual risk: any pod in ate-system and any
+# pod with that label in factory can call every route.
+# Confirm the gateway namespace and the server pod labels before apply.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -151,6 +153,11 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ate-system
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - { namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: factory } }, podSelector: { matchLabels: { app: factory-server } } }
       ports:
         - protocol: TCP
           port: 8080
