@@ -78,6 +78,8 @@ export type ServeOpts = {
   everyMs: number
   leaseMs: number
   tick: () => unknown
+  /** called with each accepted tick result (not a busy one), before the next tick */
+  onBoard?: (board: unknown) => void
   /** the home backup: `run` starts every `everyMs` while this server holds the lease and no earlier `run` is pending */
   backup?: { everyMs: number; run: () => Promise<unknown> }
   holder?: string
@@ -135,7 +137,10 @@ export function serve(o: ServeOpts) {
     try {
       const r = await o.tick()
       // a tick that found the lock busy has no rows: keep the last full result
-      if (!(r as { busy?: boolean } | undefined)?.busy) last = r ?? null
+      if (!(r as { busy?: boolean } | undefined)?.busy) {
+        last = r ?? null
+        o.onBoard?.(last)
+      }
       h.tickOk = true
     } catch (e) {
       h.tickOk = false
@@ -310,12 +315,13 @@ export function main(
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
   const log = (l: string) => console.log(l)
+  const handle = clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log })
   const client = f.client && {
     port: f.client.port,
     cert: need(f.client.cert),
     key: need(f.client.key),
     ca: need(f.client.ca),
-    handle: clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log }),
+    handle,
   }
   const b = serverBackupCfg(process.env, home)
   s = serve({
@@ -324,6 +330,7 @@ export function main(
     everyMs: f.everyMs,
     leaseMs: f.leaseMs,
     tick,
+    onBoard: handle.publish,
     client,
     backup: b && 'cfg' in b && backup ? { everyMs: b.everyMs, run: backup } : undefined,
   })
