@@ -1,6 +1,7 @@
 /** The operation catalog. It imports node: modules, ./chat, ./guards, the operation files in ./ops, and types from ../metrics and ../once. */
 import type { ManagerUsage, RunRecord } from '../metrics'
 import type { ModelCall, ModelResult } from '../once'
+import { redactRig } from '../rigs-edit'
 import * as chat from './chat'
 import { check, type Role } from './guards'
 import * as backlogOps from './ops/backlog'
@@ -237,6 +238,49 @@ const bridge = (
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
 /** The 27 operations cover the client port, board, catalog and parity fixture. */
+const pick = (o: unknown, keys: string[]): Record<string, unknown> => {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('board rig is malformed')
+  const r = o as Record<string, unknown>
+  return Object.fromEntries(keys.filter(k => r[k] !== undefined).map(k => [k, r[k]]))
+}
+
+/**
+ * The board a client may read: each rig keeps only the fields a front end draws (mod/types FactoryRig).
+ * Fail closed: env, params, beadsRemote and any unknown field never leave. A malformed rig list throws.
+ */
+function boardView(b: unknown): unknown {
+  if (!b || typeof b !== 'object' || (b as { rigs?: unknown }).rigs === undefined) return b
+  const rigs = (b as { rigs: unknown }).rigs
+  if (!Array.isArray(rigs)) throw new Error('board rigs are malformed')
+  const view = rigs.map(r => {
+    const o = pick(r, [
+      'name',
+      'repo',
+      'factory',
+      'maxRuns',
+      'sweeps',
+      'goal',
+      'runner',
+      'sandboxClass',
+      'linear',
+      'linearSync',
+    ])
+    if (o.linear !== undefined) o.linear = pick(o.linear, ['team', 'projects', 'labels'])
+    if (o.linearSync !== undefined)
+      o.linearSync = pick(o.linearSync, [
+        'at',
+        'pulled',
+        'created',
+        'updated',
+        'stripped',
+        'unrouted',
+        'error',
+      ])
+    return redactRig(o)
+  })
+  return { ...b, rigs: view }
+}
+
 export const CATALOG: Op[] = makeCatalog([
   {
     ...local(
@@ -277,7 +321,7 @@ export const CATALOG: Op[] = makeCatalog([
     async ctx => {
       const b = ctx.board()
       if (b === null || b === undefined) throw new OpError(503, 'no tick yet')
-      return { code: 0, out: JSON.stringify(b) + '\n', err: '' }
+      return { code: 0, out: JSON.stringify(boardView(b)) + '\n', err: '' }
     },
   ),
   local(
