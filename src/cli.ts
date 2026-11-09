@@ -13498,6 +13498,12 @@ if (import.meta.main && !outboxCmd)
         break
       case 'devenv':
         refuseWorker('devenv')
+        if (args.includes('--missing')) {
+          if (args.length !== 1) fail('usage: factory devenv [rig...] [--force] | factory devenv --missing')
+          const lines = devenv.cacheProposal(rigs(), r => devenv.remoteDevenv(r.repo).hasDevenv)
+          if (lines.length) console.log(lines.join('\n'))
+          break
+        }
         console.log(
           devenvPass(
             args.filter(a => a !== '--force'),

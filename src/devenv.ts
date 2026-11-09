@@ -6,8 +6,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { REPO } from './ax'
+import { REPO, parseEgress, type Egress } from './ax'
 import { rmQuiet } from './home-guard'
+import { SECRETS } from './secrets'
 
 /**
  * `$FACTORY_HOME/devenv.json`: the buildx builder, a command printing the cache's push token, and the shell
@@ -132,4 +133,69 @@ export const readStamp = (file: string): Stamp | undefined =>
 export function writeStamp(file: string, stamp: Stamp) {
   mkdirSync(join(file, '..'), { recursive: true })
   writeFileSync(file, `${JSON.stringify(stamp)}\n`)
+}
+
+export type ProposalRig = {
+  name: string
+  repo: string
+  runner?: string
+  env?: Record<string, string>
+  egress?: Egress[]
+}
+
+/**
+ * The commands that give each ax rig with a devenv and no cache the cache of the first rig that has one
+ * (`factory devenv --missing`, claude-factory-ad6r). It prints a URL, a public key and a vault key name, never a token.
+ * Where it cannot copy the rule with certainty, the line says what to copy by hand. It changes nothing.
+ */
+export function cacheProposal(rigs: ProposalRig[], hasDevenv: (r: ProposalRig) => boolean): string[] {
+  const usable = (r: ProposalRig) => {
+    const words = (r.env?.FACTORY_NIX_CACHE ?? '').trim().split(/\s+/)
+    if (r.runner !== 'ax' || words.length !== 2) return undefined
+    try {
+      return { rig: r, value: r.env!.FACTORY_NIX_CACHE!, url: new URL(words[0]!) }
+    } catch {
+      return undefined
+    }
+  }
+  const tpl = rigs.map(usable).find(Boolean)
+  if (!tpl) return ['no ax rig has a usable FACTORY_NIX_CACHE: nothing to copy']
+  const host = tpl.url.hostname.toLowerCase()
+  const rule = tpl.rig.egress?.find(e => e.hosts.some(h => h.toLowerCase() === host))
+  const spec =
+    rule?.key &&
+    `${rule.hosts.join(',')}=${rule.key}${rule.header ? `:${rule.header}:${rule.prefix ?? ''}` : ''}`
+  const safe = (t: string) => !/['\u0000-\u001f\u007f]/.test(t) && !SECRETS.some(p => p.test(t))
+  const copyable = (() => {
+    if (!rule || !spec || rule.headers || rule.pathPrefixes || rule.http) return false
+    if (tpl.url.username || tpl.url.password || !safe(tpl.value) || !safe(spec)) return false
+    try {
+      const back = parseEgress(spec)
+      return (
+        back.hosts.join() === rule.hosts.join() &&
+        back.key === rule.key &&
+        back.header === rule.header &&
+        (back.prefix ?? '') === (rule.header ? (rule.prefix ?? '') : '')
+      )
+    } catch {
+      return false
+    }
+  })()
+  const out: string[] = []
+  for (const r of rigs) {
+    if (r.runner !== 'ax' || r.env?.FACTORY_NIX_CACHE || !hasDevenv(r)) continue
+    const shared = r.egress?.some(e =>
+      e.hosts.some(h => rule?.hosts.some(x => x.toLowerCase() === h.toLowerCase())),
+    )
+    if (!copyable || shared)
+      out.push(
+        `${r.name}: copy FACTORY_NIX_CACHE and the egress rule for ${host} from rig ${tpl.rig.name} (factory rig show ${tpl.rig.name})`,
+      )
+    else
+      out.push(
+        `factory rig env set ${r.name} 'FACTORY_NIX_CACHE=${tpl.value}'`,
+        `factory rig egress add ${r.name} '${spec}'${rule!.port ? ` --port ${rule!.port}` : ''}`,
+      )
+  }
+  return out
 }

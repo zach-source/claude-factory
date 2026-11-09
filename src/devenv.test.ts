@@ -1,9 +1,17 @@
 import { expect, test } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { cacheKey, configMissing, DOCKERFILE, isDue, remoteDevenv } from './devenv'
+import {
+  cacheKey,
+  cacheProposal,
+  configMissing,
+  DOCKERFILE,
+  isDue,
+  remoteDevenv,
+  type ProposalRig,
+} from './devenv'
 
 const git = (cwd: string, ...a: string[]) => Bun.spawnSync(['git', '-C', cwd, ...a], { stderr: 'pipe' })
 
@@ -49,3 +57,114 @@ test('configMissing names the fields that are absent, empty or not a string', ()
   expect(configMissing({ builder: 1, token: 't', push: 'p' })).toEqual(['builder'])
   expect(configMissing({ builder: 'b', token: 't', push: 'p' })).toEqual([])
 })
+
+// claude-factory-ad6r AC7: factory devenv --missing
+const CACHE = 'https://cache.example:8443/devenv devenv:key='
+const tpl = (o: object = {}) => ({
+  name: 'tpl',
+  repo: '/r/tpl',
+  runner: 'ax',
+  env: { FACTORY_NIX_CACHE: CACHE },
+  egress: [{ hosts: ['cache.example'], key: 'NIX_CACHE', port: 8443 }],
+  ...o,
+})
+const cand = (o: object = {}) => ({ name: 'acme', repo: '/r/acme', runner: 'ax', ...o })
+const proposal = (rigs: object[], has = true) => {
+  const calls: string[] = []
+  const lines = cacheProposal(rigs as ProposalRig[], r => (calls.push(r.name), has))
+  return { lines, calls }
+}
+const COPY =
+  'acme: copy FACTORY_NIX_CACHE and the egress rule for cache.example from rig tpl (factory rig show tpl)'
+
+test('cacheProposal prints the two commands for an ax rig with a devenv and no cache', () => {
+  const { lines, calls } = proposal([tpl(), cand()])
+  expect(lines).toEqual([
+    `factory rig env set acme 'FACTORY_NIX_CACHE=${CACHE}'`,
+    `factory rig egress add acme 'cache.example=NIX_CACHE' --port 8443`,
+  ])
+  expect(calls).toEqual(['acme'])
+  const withHeader = tpl({
+    egress: [{ hosts: ['cache.example'], key: 'NIX_CACHE', header: 'Authorization', prefix: 'Bearer ' }],
+  })
+  expect(proposal([withHeader, cand()]).lines[1]).toBe(
+    `factory rig egress add acme 'cache.example=NIX_CACHE:Authorization:Bearer '`,
+  )
+})
+
+test('cacheProposal skips a rig with the cache, with no devenv.nix, or off ax', () => {
+  expect(proposal([tpl(), cand({ env: { FACTORY_NIX_CACHE: CACHE } })]).lines).toEqual([])
+  expect(proposal([tpl(), cand()], false).lines).toEqual([])
+  const herdr = proposal([tpl(), cand({ runner: undefined })])
+  expect(herdr.lines).toEqual([])
+  expect(herdr.calls).toEqual([])
+})
+
+test('cacheProposal copies by hand when it cannot be sure of the rule', () => {
+  const rule = (o: object) => tpl({ egress: [{ hosts: ['cache.example'], key: 'NIX_CACHE', ...o }] })
+  const cases: object[] = [
+    tpl({ egress: [] }), // no cache rule
+    tpl({ egress: [{ hosts: ['cache.example'] }] }), // no key
+    rule({ headers: [{ header: 'X', prefix: '', key: 'K' }] }),
+    rule({ pathPrefixes: ['/a/'] }),
+    rule({ http: true }),
+    rule({ key: 'bad-key' }), // parseEgress refuses it
+    tpl({ env: { FACTORY_NIX_CACHE: "https://cache.example:8443/d it's=" } }),
+    tpl({ env: { FACTORY_NIX_CACHE: `https://cache.example:8443/d ghp_${'a'.repeat(36)}` } }),
+    tpl({ env: { FACTORY_NIX_CACHE: 'https://u:p@cache.example/d key=' } }),
+  ]
+  for (const t of cases) expect(proposal([t, cand()]).lines).toEqual([COPY])
+  // the candidate has the host in upper case
+  expect(proposal([tpl(), cand({ egress: [{ hosts: ['CACHE.example'] }] })]).lines).toEqual([COPY])
+})
+
+test('cacheProposal prints one line and asks hasDevenv for no rig when it has no usable template', () => {
+  const none = 'no ax rig has a usable FACTORY_NIX_CACHE: nothing to copy'
+  for (const rigs of [
+    [cand()],
+    [tpl({ env: { FACTORY_NIX_CACHE: 'https://cache.example' } }), cand()], // one word
+    [tpl({ env: { FACTORY_NIX_CACHE: 'not-a-url key=' } }), cand()],
+    [tpl({ runner: undefined }), cand()],
+  ]) {
+    const { lines, calls } = proposal(rigs)
+    expect(lines).toEqual([none])
+    expect(calls).toEqual([])
+  }
+})
+
+test('factory devenv --missing prints the commands, changes no file and refuses other args', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'devenv-missing-'))
+  const origin = join(dir, 'origin')
+  const clone = join(dir, 'clone')
+  git(dir, 'init', '-q', '-b', 'main', origin)
+  writeFileSync(join(origin, 'devenv.nix'), '{ }\n')
+  git(origin, 'add', '.')
+  git(origin, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'one')
+  git(dir, 'clone', '-q', origin, clone)
+  const home = join(dir, 'home')
+  mkdirSync(home)
+  const rigsFile = join(home, 'rigs.json')
+  writeFileSync(rigsFile, JSON.stringify([tpl(), cand({ repo: clone })]))
+  const before = readFileSync(rigsFile, 'utf8')
+  const env = {
+    ...process.env,
+    FACTORY_HOME: home,
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_NO_KICK: '1',
+  } as Record<string, string | undefined>
+  delete env.FACTORY_OUTBOX
+  delete env.FACTORY_FROM
+  const cli = join(import.meta.dir, '..', 'bin', 'factory')
+  const ok = Bun.spawnSync([cli, 'devenv', '--missing'], { env, stdout: 'pipe', stderr: 'pipe' })
+  expect(ok.stderr.toString()).toBe('')
+  expect(ok.stdout.toString().trim().split('\n')).toEqual([
+    `factory rig env set acme 'FACTORY_NIX_CACHE=${CACHE}'`,
+    `factory rig egress add acme 'cache.example=NIX_CACHE' --port 8443`,
+  ])
+  expect(readFileSync(rigsFile, 'utf8')).toBe(before)
+  const bad = Bun.spawnSync([cli, 'devenv', '--missing', 'x'], { env, stdout: 'pipe', stderr: 'pipe' })
+  expect(bad.exitCode).toBe(1)
+  expect(bad.stderr.toString()).toContain(
+    'usage: factory devenv [rig...] [--force] | factory devenv --missing',
+  )
+}, 60_000)
