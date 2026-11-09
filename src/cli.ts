@@ -1458,7 +1458,7 @@ const GIT_NETWORK_TIMEOUT_MS = 30_000
 
 /**
  * the factory a new run follows: a path as given; else the repo's own `.factory/<name>.ts` in `checkout`
- * (the run's worktree, so the version in the commit it starts from); else the template of that name
+ * (the run's worktree, or the default branch's `.factory/` for a run on a PR branch); else the template of that name
  */
 /** a factory is a module (default export) or data: JSON, YAML or TOML, in that order of precedence after .ts */
 const FACTORY_EXTS = ['.ts', '.json', '.yaml', '.yml', '.toml']
@@ -1471,6 +1471,29 @@ function factorySource(spec: string, checkout: string) {
     findIn(join(ROOT, 'factories'), spec) ??
     join(ROOT, 'factories', `${spec}.ts`)
   )
+}
+/** claude-factory-1d9l: `.factory/` as `commit` holds it, in a new temp dir; a run on a PR branch never loads the branch's own */
+function factoryDirAt(repo: string, commit: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-base-'))
+  try {
+    const has = Bun.spawnSync(['git', '-C', repo, 'ls-tree', '--name-only', commit, '--', OWN], {
+      stderr: 'pipe',
+    })
+    if (has.exitCode !== 0) throw new Error(has.stderr.toString().trim())
+    if (!has.stdout.toString().trim()) return dir // base has no .factory/: templates only
+    const tar = Bun.spawnSync(['git', '-C', repo, 'archive', '--format=tar', commit, '--', OWN], {
+      stderr: 'pipe',
+    })
+    const x =
+      tar.exitCode === 0
+        ? Bun.spawnSync(['tar', '-x', '--no-same-owner', '-C', dir], { stdin: tar.stdout, stderr: 'pipe' })
+        : tar
+    if (x.exitCode !== 0) throw new Error(x.stderr.toString().trim())
+    return dir
+  } catch (err) {
+    rmQuiet(dir, { recursive: true, force: true })
+    return fail(`${OWN} at ${commit.slice(0, 8)}: could not read it: ${clip((err as Error).message, 300)}`)
+  }
 }
 /**
  * The factory that a bead's `factory:<name>` label names (claude-factory-wnm), by name only. It
@@ -1517,7 +1540,7 @@ export function ownCopy(template: string, name: string) {
     .replace(/\}\s*satisfies Factory\s*$/, '}\n')
   return (
     `// This repo's own factory, from claude-factory's "${name}" template (factory adopt).\n` +
-    `// A run follows the version in the commit it starts from, so change it like code: in a run or a\n` +
+    `// A run follows the version on the default branch when it starts, so change it like code: in a run or a\n` +
     `// commit, checked with \`factory check ${OWN}/${name}.ts\`. The improve sweep proposes changes to it.\n\n` +
     body
   )
@@ -8116,45 +8139,52 @@ async function createRun(
   const startPoint = from?.run.branch ?? onto ?? base
   // an AX rig needs no herdr: a plain git worktree at herdr's own layout, so `herdr worktree open` finds it later
   const isAx = rigOf(repo)?.runner === 'ax'
+  // claude-factory-1d9l: a run on a PR branch loads the factory the default branch holds, never the branch's own
+  const checkout = onto && !from ? factoryDirAt(repo, base) : undefined
   let ws = ''
   let worktree = join(homedir(), '.herdr', 'worktrees', basename(repo), `factory-${id}`)
-  if (isAx) git(repo, 'worktree', 'add', '-b', branch, worktree, startPoint)
-  else {
-    const created = herdr(
-      ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', startPoint],
-      ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
-    )
-    ws = created.workspace.workspace_id
-    worktree = created.worktree.path
-  }
-  worker.excludeScratch(worktree) // claude-factory-9wu: .scratch/ stays untracked, with no commit, in this repo
-  const source = from ? from.run.factory : factorySource(spec, worktree)
+  let source = ''
+  let def: Factory
   // pinned resolved, as data: a base it extends may change after the run starts
   const pinned = join(runDir(id), 'factory.json')
-  mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
-  let def: Factory
   try {
-    def = await (from ? loadPinned : loadFactory)(source)
-    // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
-    if (hasShipEdge(def) && !hasBeads(repo))
-      throw new Error('it hands its beads to ship, which needs a repo with .beads')
-    writeJson(pinned, def)
-  } catch (err) {
-    // fresh, nothing in it yet
-    // a failed cleanup must not hide the factory error
+    if (isAx) git(repo, 'worktree', 'add', '-b', branch, worktree, startPoint)
+    else {
+      const created = herdr(
+        ...['worktree', 'create', '--cwd', repo, '--branch', branch, '--base', startPoint],
+        ...['--label', `${basename(repo)}/${id}`, '--no-focus', '--json'],
+      )
+      ws = created.workspace.workspace_id
+      worktree = created.worktree.path
+    }
+    worker.excludeScratch(worktree) // claude-factory-9wu: .scratch/ stays untracked, with no commit, in this repo
+    source = from ? from.run.factory : factorySource(spec, checkout ?? worktree)
+    mkdirSync(join(runDir(id), 'prompts'), { recursive: true })
     try {
-      if (isAx) git(repo, 'worktree', 'remove', '--force', worktree)
-      else herdr('worktree', 'remove', '--workspace', ws, '--force')
-    } catch {}
-    rmQuiet(runDir(id), { recursive: true, force: true })
-    throw new Error(
-      `${relative(worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
-    )
+      def = await (from ? loadPinned : loadFactory)(source)
+      // a ship edge queues the bead in bd: a repo with no beads has nowhere to queue it
+      if (hasShipEdge(def) && !hasBeads(repo))
+        throw new Error('it hands its beads to ship, which needs a repo with .beads')
+      writeJson(pinned, def)
+    } catch (err) {
+      // fresh, nothing in it yet
+      // a failed cleanup must not hide the factory error
+      try {
+        if (isAx) git(repo, 'worktree', 'remove', '--force', worktree)
+        else herdr('worktree', 'remove', '--workspace', ws, '--force')
+      } catch {}
+      rmQuiet(runDir(id), { recursive: true, force: true })
+      throw new Error(
+        `${relative(checkout ?? worktree, source)} at ${base.slice(0, 8)} is not a valid factory: ${(err as Error).message}`,
+      )
+    }
+  } finally {
+    if (checkout) rmQuiet(checkout, { recursive: true, force: true })
   }
   const factoryFrom = from
     ? (from.run.factoryFrom ?? from.run.factory)
-    : source.startsWith(worktree)
-      ? `${relative(worktree, source)} at ${base.slice(0, 8)}`
+    : source.startsWith(checkout ?? worktree)
+      ? `${relative(checkout ?? worktree, source)} at ${base.slice(0, 8)}`
       : source
   const run: Run = {
     id,
@@ -11261,7 +11291,7 @@ async function start(factory: string | undefined, repo: string | undefined, goal
   await assertRoom(root)
   // <factory>@<station> starts past the triage when the caller already knows the kind of work
   const [spec, at] = factory!.split(/@(?=[^@/]+$)/)
-  // the checkout's version answers the station question; the run pins the version its own commit holds
+  // the checkout's version answers the station question; the run pins the version its base commit holds
   const preview = await loadFactory(factorySource(spec!, root))
   if (at && !Object.hasOwn(preview.nodes, at))
     fail(`no station "${at}" in ${preview.name}: ${Object.keys(preview.nodes).join(', ')}`)
@@ -12553,7 +12583,7 @@ const usage = `factory — herdr software factories on xstate
                                      every FACTORY_SWEEP_MS (default 300000); FACTORY_SWEEPS=0 turns
                                      it off)
 
-<factory> is a path, or a name: the repo's own .factory/<name>.ts as of the commit a run starts from,
+<factory> is a path, or a name: the repo's own .factory/<name>.ts as of the base commit of the run (never a PR branch's),
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
 (FACTORY_HOME, else the nearest directory up holding a rigs.json). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
 or past the rig's own --max.
