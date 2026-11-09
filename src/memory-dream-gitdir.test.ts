@@ -91,7 +91,7 @@ const nested = (at = 'sub', fileName = '.git') => [
 function guarded(body: string[], codex = false) {
   seed()
   const before = cfg()
-  const env = codex
+  const env: Record<string, string> = codex
     ? {
         FACTORY_DREAM_CODEX: 'acme-model',
         FACTORY_CODEX: fake(body, 'fake-codex.sh'),

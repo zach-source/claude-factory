@@ -619,59 +619,75 @@ const groomed = () => {
   expect(git('symbolic-ref', 'HEAD')).toBe('refs/heads/main')
 }
 
-test('AC6a a config write in the apply pass is undone and nothing is committed', SLOW, () => {
-  setup()
-  markScript()
-  const before = join(fake, 'config.before')
-  apply(`cp .git/config "${before}"\n${EDIT3}${FSMON()}`)
-  expect(groom().code).toBe(0)
-  // the cleanup then drops the groom branch section, so the bytes differ only by that
-  expect(readFileSync(join(wiki(), '.git', 'config'), 'utf8')).not.toContain('fsmonitor')
-  expect(readFileSync(before, 'utf8')).not.toContain('fsmonitor')
-  groomed()
-})
+test(
+  'AC6a a config write in the apply pass is undone and nothing is committed',
+  () => {
+    setup()
+    markScript()
+    const before = join(fake, 'config.before')
+    apply(`cp .git/config "${before}"\n${EDIT3}${FSMON()}`)
+    expect(groom().code).toBe(0)
+    // the cleanup then drops the groom branch section, so the bytes differ only by that
+    expect(readFileSync(join(wiki(), '.git', 'config'), 'utf8')).not.toContain('fsmonitor')
+    expect(readFileSync(before, 'utf8')).not.toContain('fsmonitor')
+    groomed()
+  },
+  SLOW,
+)
 
-test('AC6b a nested repo from the apply pass is removed', SLOW, () => {
-  setup()
-  markScript()
-  apply(EDIT3 + NESTED())
-  expect(groom().code).toBe(0)
-  expect(existsSync(join(wiki(), 'topics', 'sub', '.git'))).toBe(false)
-  groomed()
-})
+test(
+  'AC6b a nested repo from the apply pass is removed',
+  () => {
+    setup()
+    markScript()
+    apply(EDIT3 + NESTED())
+    expect(groom().code).toBe(0)
+    expect(existsSync(join(wiki(), 'topics', 'sub', '.git'))).toBe(false)
+    groomed()
+  },
+  SLOW,
+)
 
-test('AC6c a .git that becomes a file fences the wiki', SLOW, () => {
-  setup()
-  markScript()
-  const shim = join(dir, 'shim')
-  const glog = join(dir, 'git.log')
-  mkdirSync(shim, { recursive: true })
-  writeFileSync(join(shim, 'git'), `#!/bin/sh\necho "$*" >> '${glog}'\nexec '${Bun.which('git')}' "$@"\n`)
-  chmodSync(join(shim, 'git'), 0o755)
-  const PATH = `${shim}:${join(dir, 'bin')}:${process.env.PATH}`
-  apply(
-    `mv .git .g\nprintf 'gitdir: .g\\n' > .git\nprintf '[core]\\n\\tfsmonitor = ${SCRIPT()}\\n' >> .g/config\necho PASS-END >> '${glog}'\n`,
-  )
-  expect(groom([], { PATH }).code).toBe(0)
-  expect(wikiLog()).toContain(
-    'wiki groom: .git changed in the pass, restore failed, git fenced, nothing committed',
-  )
-  expect(wikiLog()).toContain('wiki groom: cleanup failed, checkout left on groom/')
-  expect(existsSync(join(home, 'wiki.fenced'))).toBe(true)
-  const lines = readFileSync(glog, 'utf8').split('\n')
-  expect(lines.slice(lines.indexOf('PASS-END') + 1).filter(l => l.includes(wiki()))).toEqual([])
-  const n = readFileSync(glog, 'utf8').length
-  groom([], { PATH })
-  expect(readFileSync(glog, 'utf8').slice(n)).not.toContain(wiki())
-  expect(existsSync(MARKER())).toBe(false)
-  expect(creates()).toEqual([])
-})
+test(
+  'AC6c a .git that becomes a file fences the wiki',
+  () => {
+    setup()
+    markScript()
+    const shim = join(dir, 'shim')
+    const glog = join(dir, 'git.log')
+    mkdirSync(shim, { recursive: true })
+    writeFileSync(join(shim, 'git'), `#!/bin/sh\necho "$*" >> '${glog}'\nexec '${Bun.which('git')}' "$@"\n`)
+    chmodSync(join(shim, 'git'), 0o755)
+    const PATH = `${shim}:${join(dir, 'bin')}:${process.env.PATH}`
+    apply(
+      `mv .git .g\nprintf 'gitdir: .g\\n' > .git\nprintf '[core]\\n\\tfsmonitor = ${SCRIPT()}\\n' >> .g/config\necho PASS-END >> '${glog}'\n`,
+    )
+    expect(groom([], { PATH }).code).toBe(0)
+    expect(wikiLog()).toContain(
+      'wiki groom: .git changed in the pass, restore failed, git fenced, nothing committed',
+    )
+    expect(wikiLog()).toContain('wiki groom: cleanup failed, checkout left on groom/')
+    expect(existsSync(join(home, 'wiki.fenced'))).toBe(true)
+    const lines = readFileSync(glog, 'utf8').split('\n')
+    expect(lines.slice(lines.indexOf('PASS-END') + 1).filter(l => l.includes(wiki()))).toEqual([])
+    const n = readFileSync(glog, 'utf8').length
+    groom([], { PATH })
+    expect(readFileSync(glog, 'utf8').slice(n)).not.toContain(wiki())
+    expect(existsSync(MARKER())).toBe(false)
+    expect(creates()).toEqual([])
+  },
+  SLOW,
+)
 
-test('AC6d a failed apply call that also wrote config is still undone', SLOW, () => {
-  setup()
-  markScript()
-  apply(`${FSMON()}exit 1\n`)
-  expect(groom().code).toBe(0)
-  groomed()
-  expect(wikiLog()).not.toContain('apply call failed')
-})
+test(
+  'AC6d a failed apply call that also wrote config is still undone',
+  () => {
+    setup()
+    markScript()
+    apply(`${FSMON()}exit 1\n`)
+    expect(groom().code).toBe(0)
+    groomed()
+    expect(wikiLog()).not.toContain('apply call failed')
+  },
+  SLOW,
+)
