@@ -347,6 +347,7 @@ const DENIED = [
   'skills',
   'proposals',
   'loop',
+  'core',
   'metrics',
   'backlog',
   'prs',
