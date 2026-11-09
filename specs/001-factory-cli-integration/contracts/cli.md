@@ -6,11 +6,11 @@ All commands are person-only (`refuseWorker`) except `rig show` and `rig list`. 
 
 ```text
 factory rig show <rig>
-factory rig set <rig> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd]
+factory rig set <rig> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]
                       [--mcp file] [--param name=value]...
 factory rig env set <rig> KEY=VALUE
 factory rig env unset <rig> KEY
-factory rig egress add <rig> host[,host]...[=KEY[:Header:Prefix]] [--port n]
+factory rig egress add <rig> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]...
 factory rig egress rm <rig> host[,host]...
 factory rig beads-remote set <rig> --name n --url u --user user
 factory rig beads-remote clear <rig>
