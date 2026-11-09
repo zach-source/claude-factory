@@ -225,11 +225,7 @@ describe('loadedTexts and the home guard', () => {
     ['bunx prettie' + BS + '\nr --write .', undefined, undefined],
     ['make fmt', 'Makefile', 'fmt:\n\tnpx pret' + BS + '\ntier --write .\n'],
     ['make fmt', 'Makefile', 'fmt:\n\tnpx pret' + BS + '\n\ttier --write .\n'],
-    [
-      'npm run fmt',
-      'package.json',
-      '{"scripts":{"fmt":"npx pret' + BS + BS + BS + 'ntier --write ."}}',
-    ],
+    ['npm run fmt', 'package.json', '{"scripts":{"fmt":"npx pret' + BS + BS + BS + 'ntier --write ."}}'],
   ])('denies a bin whose name a line join hides: %s', (cmd, file, text) => {
     const d = repo()
     if (file && text) put(d, file, text)
@@ -250,15 +246,12 @@ describe('loadedTexts and the home guard', () => {
     expect(run('git status', d, join(d, 'sub'))).toBe(HOME_REASON)
   })
 
-  test.each(['bunx prettier --write .', 'git commit -m x', 'npm run fmt'])(
-    'allows a plain bin: %s',
-    cmd => {
-      const d = repo()
-      put(d, 'package.json', '{"scripts":{"fmt":"prettier --write ."}}')
-      put(d, 'node_modules/.bin/prettier', '#!/usr/bin/env node\nrequire("../prettier/bin.cjs")\n')
-      expect(run(cmd, d)).toBeUndefined()
-    },
-  )
+  test.each(['bunx prettier --write .', 'git commit -m x', 'npm run fmt'])('allows a plain bin: %s', cmd => {
+    const d = repo()
+    put(d, 'package.json', '{"scripts":{"fmt":"prettier --write ."}}')
+    put(d, 'node_modules/.bin/prettier', '#!/usr/bin/env node\nrequire("../prettier/bin.cjs")\n')
+    expect(run(cmd, d)).toBeUndefined()
+  })
 
   test('allows a repo with no node_modules', () => {
     expect(run('git status', repo())).toBeUndefined()
@@ -314,7 +307,8 @@ describe('loadedTexts and the home guard', () => {
     })
     test('60 big files and 1000 small files load fast', () => {
       clean()
-      const line = 'const x = require("./lib/a.js"); process.env.HOMEDIRX; os.homedir(); fs.readSync(p) ./x/y.sh\n'
+      const line =
+        'const x = require("./lib/a.js"); process.env.HOMEDIRX; os.homedir(); fs.readSync(p) ./x/y.sh\n'
       const d = repo()
       fill(d, 'node_modules/.bin', 60, line.repeat(800).slice(0, 64000))
       let t = Date.now()
