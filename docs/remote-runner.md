@@ -442,7 +442,8 @@ Do these checks before step 3. `<ctx>` is `FACTORY_AX_CONTEXT`, and the atespace
 1. The Workspace `f-manager` must not exist. `ax --context <ctx> -a factory get workspace f-manager` must say not found. If it exists, delete it with `ax --context <ctx> -a factory delete workspace f-manager`. `factory manager --ax` also refuses it.
 2. The Task `f-manager` must not exist. `ax --context <ctx> -a factory get task f-manager` must say not found.
 3. Look for an old EgressPolicy: `kubectl ate --context <ctx> get egress-policy f-manager -a factory -o json`. An old policy does not stop the launch: `factory manager --ax` updates it in place.
-4. After step 3, the task env must have `FACTORY_AX_LAUNCH_ID` (`ax --context <ctx> -a factory get task f-manager`). `factory migrate-to-ax` reads it there and writes `launch=<id>` into `.migrated`.
+4. The policy broker must be of the same build as the manager image. `GET /controller` on the broker must answer 200 with the controller readiness. An older broker answers 404. Then each worker launch in the task fails with `AX executor unavailable: controller readiness could not be observed (broker GET /controller answered 404: ...)`, and no worker task starts. To update the broker, run `kubectl set image deploy/factory-policy-broker -n factory-broker broker=<image@digest>`.
+5. After step 3, the task env must have `FACTORY_AX_LAUNCH_ID` (`ax --context <ctx> -a factory get task f-manager`). `factory migrate-to-ax` reads it there and writes `launch=<id>` into `.migrated`.
 
 The host starts the manager only on a `.migrated` with its own launch id. A backup restore writes the same id. With a launch id, a home with `rigs.json` and no good marker does not start the manager. In that case the host logs `.migrated is not of launch <id>` in `manager-host.log`. With no launch id (`--reuse-workspace`), the host trusts any `.migrated`, as before.
 

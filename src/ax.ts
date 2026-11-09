@@ -13,7 +13,7 @@ const AX = () => process.env.FACTORY_AX ?? 'ax'
 const KUBECTL = () => process.env.FACTORY_KUBECTL ?? 'kubectl'
 /** the cluster's kube context for both ax and kubectl; unset, their current context */
 const context = () => (process.env.FACTORY_AX_CONTEXT ? ['--context', process.env.FACTORY_AX_CONTEXT] : [])
-export const ATESPACE = () => process.env.FACTORY_AX_ATESPACE ?? 'factory'
+export const ATESPACE = () => process.env.FACTORY_AX_ATESPACE || 'factory'
 /** where the task's one workspace is mounted, and the repo and the worker's own files inside it */
 export const WS = '/workspace/w'
 export const REPO = `${WS}/repo`
@@ -232,7 +232,9 @@ export function unavailable(): string | undefined {
     if (BROKER()) {
       // the manager's VM has no kube API: the broker reads the Deployment's readiness fields
       const r = broker('GET', '/controller')
-      if (!r.ok) return unknown
+      // an old broker image has no /controller route: say what the broker answered
+      if (!r.ok)
+        return `${unknown} (broker GET /controller answered ${r.status}: ${r.body.trim().slice(0, 200)})`
       raw = r.body
     } else {
       const p = Bun.spawnSync(
@@ -342,6 +344,7 @@ function broker(method: string, path: string, body?: string) {
   const status = Number(out.slice(nl + 1))
   return {
     ok: p.exitCode === 0 && status >= 200 && status < 300,
+    status,
     body: nl >= 0 ? out.slice(0, nl) : p.stderr.toString(),
   }
 }
