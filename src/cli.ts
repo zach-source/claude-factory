@@ -11167,8 +11167,12 @@ async function busyRigs(): Promise<{ busy: (string | undefined)[]; held: (string
     const { run, value } = cur
     if (run.ship) continue // a rig's ship run counts against no cap (claude-factory-rtuw); only shipPass sets this, and a fork copies it from its source
     const [node, sub] = where(value)
-    const n = (await loadPinned(run.factory)).nodes[node]
-    const s = slot(n, sub)
+    let s
+    try {
+      s = slot((await loadPinned(run.factory)).nodes[node], sub)
+    } catch {
+      s = 'busy' // a def that does not load: count the run busy on its rig, safe on the cap
+    }
     if (s === 'busy') busy.push(rigOf(run.repo)?.name)
     else if (s === 'rig') held.push(rigOf(run.repo)?.name)
   }

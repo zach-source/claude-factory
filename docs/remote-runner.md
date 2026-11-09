@@ -579,7 +579,7 @@ To turn it off, delete the Secret `factory-backup` and restart the pod.
 
 ### Policy broker
 
-The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it.
+The manager runs in an AX VM. The VM cannot reach ate-api: the gateway fails the TLS call to it with grpc-status 14. So the manager cannot create a worker egress policy or read the gateway CA with `kubectl ate`. The policy broker does these two jobs for it. The factory server pod (`deploy/server.yaml`) uses the broker too.
 
 The broker is a small HTTP server in the cluster (`factory broker serve [--port 8080]`, image from `Dockerfile.broker`, manifest `deploy/broker.yaml`). It runs `kubectl ate` with a projected ServiceAccount token (audience `api.ate-system.svc`). ate-api checks the token and its audience. It applies no other authorization, so the broker enforces the limits itself.
 
@@ -627,13 +627,13 @@ Limits:
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.
 - The broker logs one line for each call, and one line `policy refused for <atespace>/<actor>: <reason>` for each refusal.
 
-Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task. The broker has no caller authentication.
+Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task and the factory server pod. Two callers can reach the broker. The manager task calls it through the egress gateway in namespace `ate-system`. Any pod in namespace `ate-system` can call the broker too, not only the gateway. The factory server pod calls it from namespace `factory` with the label `app: factory-server`. Any pod in namespace `factory` with that label can call the broker. Only the owner may create pods in that namespace. The broker has no caller authentication.
 
 Use in the manager task:
 
-1. On the laptop, set `FACTORY_AX_MANAGER_AX_SERVER`, `FACTORY_AX_MANAGER_ROUTER` and `FACTORY_AX_MANAGER_BROKER` to the in-cluster URLs. Keep the values out of the repository. `factory manager --ax` then sets `AX_SERVER` and `FACTORY_POLICY_BROKER` in the task env.
+1. On the laptop, set `FACTORY_AX_MANAGER_AX_SERVER`, `FACTORY_AX_MANAGER_ROUTER` and `FACTORY_AX_MANAGER_BROKER` to the in-cluster URLs. Keep the values out of the repository. The server pod URL is not secret: `deploy/server.yaml` holds it. `factory manager --ax` then sets `AX_SERVER` and `FACTORY_POLICY_BROKER` in the task env.
 2. The manager policy gets one `http` rule for the router and one for the broker. An `https` rule does not work for plain HTTP (h2c) to a service. When ax-server caller authentication is on, use an `https` AX server URL, for example `https://ax-server.ax-system.svc:8443`. The gateway then adds `Authorization: Bearer <AX_AUTH>`. On the laptop, export `AX_AUTH_TOKEN` in the shell that runs `factory`. The `ax` CLI sends it over the loopback tunnel.
-3. In the VM, `FACTORY_POLICY_BROKER` makes `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before.
+3. In the manager VM and in the server pod, `FACTORY_POLICY_BROKER` makes `unavailable`, `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before. `deploy/server.yaml` sets `FACTORY_POLICY_BROKER` to `http://factory-policy-broker.factory-broker.svc:8080`.
 
 Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE $FACTORY_BROKER_KEY_HOSTS' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
 
@@ -644,7 +644,7 @@ Two more calls serve the manager's secrets (see Manager secrets):
 | `GET /controller`       | The readiness fields of Deployment `ax-system/ax-controller` as JSON: generation, replicas, observed generation, ready and available replicas. No env or annotation. |
 | `POST /token/best`      | Runs `claude-token best`. 200 with its first stdout line. 409 while one runs. 502 with the first stderr line. 404 when `CLAUDE_TOKEN_ITEM` is unset.       |
 
-`GET /controller` needs `get` on that one Deployment (a Role in `ax-system`). `POST /token/best` changes the live Claude token for every AX worker, so `deploy/broker.yaml` has a NetworkPolicy. It lets only namespace `ate-system` (the egress gateway) reach port 8080. Confirm the gateway pod labels at apply. The response never holds a token.
+`GET /controller` needs `get` on that one Deployment (a Role in `ax-system`). `POST /token/best` changes the live Claude token for every AX worker, so `deploy/broker.yaml` has a NetworkPolicy. It lets two peers reach port 8080: namespace `ate-system` (the egress gateway), and the pods with label `app: factory-server` in namespace `factory` (the factory server). The second rule has one peer that holds both a `namespaceSelector` and a `podSelector`, so both must match. Confirm the gateway pod labels at apply. The response never holds a token.
 
 ### Manager secrets
 
