@@ -75,6 +75,7 @@ describe('loadedTexts and the home guard', () => {
     'git --config-env=core.hooksPath=HP commit -m x',
     'git --config-env core.hooksPath=HP commit -m x',
     'git -c core.hooksPath commit -m x',
+    'git -c core.hooksPath= commit -m x',
   ])('fails closed on a hooks dir with no path: %s', cmd => {
     const d = repo()
     expect(run(cmd, d)).toBe(LOADED_REASON)
