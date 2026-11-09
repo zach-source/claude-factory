@@ -104,7 +104,7 @@ function fakeHerdr() {
   const script = [
     '#!/bin/sh',
     'case "$1 $2" in',
-    `  "worktree create") echo "$*" >> ${join(dir, 'herdr.log')}; printf '%s' '{"result":{"workspace":{"workspace_id":"ws1"},"worktree":{"path":"${worktree}"}}}';;`,
+    `  "worktree create") [ -e ${join(dir, 'herdr-fail')} ] && exit 1; echo "$*" >> ${join(dir, 'herdr.log')}; printf '%s' '{"result":{"workspace":{"workspace_id":"ws1"},"worktree":{"path":"${worktree}"}}}';;`,
     '  "worktree remove") exit 0;;',
     '  *) echo "herdr-stub: unexpected $*" >&2; exit 1;;',
     'esac',
@@ -133,6 +133,44 @@ function repo(name = 'repo') {
   ])
   return r
 }
+
+/** claude-factory-1d9l: base has .factory/tiny.json (MAIN); origin/factory/pr-1 and the worktree stub hold the branch's tiny.json (BRANCH) and tiny.ts (BRANCH-TS, writes a marker on import) */
+function prBranchFixture(r: string): { marker: string; tmp: string } {
+  const marker = join(dir, 'imported')
+  const tmp = join(dir, 'tmp')
+  mkdirSync(tmp, { recursive: true })
+  const factory = (prompt: string) =>
+    JSON.stringify({ name: 'tiny', start: 'work', nodes: { work: { prompt, next: { ok: 'done' } } } })
+  const ts = `import { writeFileSync } from 'node:fs'
+writeFileSync(${JSON.stringify(marker)}, 'imported')
+export default ${factory('BRANCH-TS')}
+`
+  const git = (...a: string[]) =>
+    expect(Bun.spawnSync(['git', '-C', r, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a]).exitCode).toBe(
+      0,
+    )
+  mkdirSync(join(r, '.factory'), { recursive: true })
+  writeFileSync(join(r, '.factory', 'tiny.json'), factory('MAIN'))
+  git('add', '.factory')
+  git('commit', '-q', '-m', 'main factory')
+  git('checkout', '-q', '-b', 'pr')
+  writeFileSync(join(r, '.factory', 'tiny.json'), factory('BRANCH'))
+  writeFileSync(join(r, '.factory', 'tiny.ts'), ts)
+  git('add', '.factory')
+  git('commit', '-q', '-m', 'branch factory')
+  git('update-ref', 'refs/remotes/origin/factory/pr-1', 'HEAD')
+  git('checkout', '-q', '-')
+  const stub = join(dir, 'worktree-stub', '.factory')
+  mkdirSync(stub, { recursive: true })
+  writeFileSync(join(stub, 'tiny.json'), factory('BRANCH'))
+  writeFileSync(join(stub, 'tiny.ts'), ts)
+  return { marker, tmp }
+}
+const pinnedPrompt = () => {
+  const [id] = readdirSync(join(home, 'runs'))
+  return JSON.parse(readFileSync(join(home, 'runs', id, 'factory.json'), 'utf8')).nodes.work.prompt
+}
+const factoryBaseLeft = (tmp: string) => readdirSync(tmp).filter(f => f.startsWith('factory-base-'))
 
 const factoryFixture = () => {
   const f = join(dir, 'tiny.json')
@@ -769,3 +807,66 @@ test('a patrol cannot start a bead with a hold label; a person can (9kou.4)', ()
     expect(runCount()).toBe(1)
   }
 }, 30000)
+
+// claude-factory-1d9l: a run on a PR branch must not load the branch's own .factory/ (no person merged it)
+test('a run on a PR branch pins .factory/ from the default branch, not the branch (claude-factory-1d9l)', () => {
+  reset()
+  const r = repo()
+  const { marker, tmp } = prBranchFixture(r)
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'ship-branch')
+  const out = run(['start', 'tiny', r, 'acme-1'], { TMPDIR: tmp })
+  expect(out.code).toBe(0)
+  expect(readFileSync(join(dir, 'herdr.log'), 'utf8')).toMatch(/--base origin\/factory\/pr-1\b/)
+  expect(pinnedPrompt()).toBe('MAIN')
+  expect(existsSync(marker)).toBe(false)
+  const head = Bun.spawnSync(['git', '-C', r, 'rev-parse', 'HEAD']).stdout.toString().trim()
+  const [id] = readdirSync(join(home, 'runs'))
+  const from = JSON.parse(readFileSync(join(home, 'runs', id, 'run.json'), 'utf8')).factoryFrom
+  expect(from).toBe(`.factory/tiny.json at ${head.slice(0, 8)}`)
+  expect(out.out).toContain(`following ${from}`)
+  expect(factoryBaseLeft(tmp)).toEqual([])
+})
+
+test('a run on a PR branch whose worktree cannot be made leaves no temp dir (claude-factory-1d9l)', () => {
+  reset()
+  const r = repo()
+  const { tmp } = prBranchFixture(r)
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'ship-branch')
+  writeFileSync(join(dir, 'herdr-fail'), '')
+  expect(run(['start', 'tiny', r, 'acme-1'], { TMPDIR: tmp }).code).not.toBe(0)
+  expect(factoryBaseLeft(tmp)).toEqual([])
+})
+
+test('a run on a PR branch whose default-branch .factory cannot be read does not start (claude-factory-1d9l)', () => {
+  reset()
+  const r = repo()
+  const { marker, tmp } = prBranchFixture(r)
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'ship-branch')
+  writeFileSync(join(bin, 'tar'), '#!/bin/sh\nexit 1\n')
+  chmodSync(join(bin, 'tar'), 0o755)
+  const out = run(['start', 'tiny', r, 'acme-1'], { TMPDIR: tmp })
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('could not read it')
+  expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')).length : 0).toBe(0)
+  expect(existsSync(join(dir, 'herdr.log'))).toBe(false)
+  expect(existsSync(marker)).toBe(false)
+  expect(readFileSync(calls, 'utf8')).toContain('defer acme-1 --reason could not start a run:')
+  expect(factoryBaseLeft(tmp)).toEqual([])
+})
+
+test('a run with no ship_branch still pins .factory/ from its own worktree (claude-factory-1d9l)', () => {
+  reset()
+  const r = repo()
+  const { tmp } = prBranchFixture(r)
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(showMode, 'found')
+  expect(run(['start', 'tiny', r, 'acme-1'], { TMPDIR: tmp }).code).toBe(0)
+  expect(pinnedPrompt()).toBe('BRANCH-TS')
+})
