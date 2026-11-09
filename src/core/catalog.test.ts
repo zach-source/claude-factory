@@ -145,10 +145,10 @@ describe('readQuery and readBody', () => {
 })
 
 describe('CATALOG', () => {
-  test('has 25 operations: 17 GET and 8 POST', () => {
-    expect(CATALOG.length).toBe(25)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(17)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(8)
+  test('has 27 operations: 18 GET and 9 POST', () => {
+    expect(CATALOG.length).toBe(27)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(18)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(9)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -158,10 +158,42 @@ describe('CATALOG', () => {
       const get = o.route.method === 'GET' || o.name === 'guard.check'
       expect(o.rights).toBe(get ? 'read' : 'owner')
       expect(o.mutates).toBe(!get)
-      expect(o.long).toBe(false)
+      expect(o.long).toBe(o.name === 'chat.send')
       expect(o.since).toBe(1)
     }
     expect(CATALOG_VERSION).toBe(1)
+  })
+  test('the chat operations', () => {
+    const send = CATALOG.find(o => o.name === 'chat.send')!
+    const show = CATALOG.find(o => o.name === 'chat.show')!
+    expect(send).toMatchObject({
+      summary: 'Send a message to the manager chat and wait for its answer.',
+      rights: 'owner',
+      mutates: true,
+      long: true,
+      output: 'json',
+    })
+    expect(send.inputs.map(i => [i.name, i.kind, i.required, i.values])).toEqual([
+      ['id', 'id', true, undefined],
+      ['text', 'text', true, undefined],
+      ['front', 'enum', true, ['cli', 'web', 'claude-mod', 'herdr-mod']],
+    ])
+    expect(show).toMatchObject({
+      summary: 'Show a manager conversation: its session and its turns.',
+      rights: 'read',
+      mutates: false,
+      long: false,
+      output: 'json',
+    })
+    expect(show.inputs.map(i => i.name)).toEqual(['id'])
+    expect(readQuery(show, ['..'], '')).toBe('bad path segment')
+    expect(readQuery(show, ['a%2Fb'], '')).toBe('bad path segment')
+    expect(readBody(send, { id: 'c' }, { text: 'x', front: 'tui' })).toBe('bad body')
+    expect(readBody(send, { id: 'c' }, { text: 'x', front: 'web' })).toEqual({
+      id: 'c',
+      text: 'x',
+      front: 'web',
+    })
   })
   test('names and routes', () => {
     expect(CATALOG.map(o => `${o.name} ${o.route.method} ${o.route.path}`)).toEqual([
@@ -169,6 +201,8 @@ describe('CATALOG', () => {
       'board.show GET /v1/board',
       'catalog.echo GET /v1/catalog/echo',
       'catalog.show GET /v1/catalog',
+      'chat.send POST /v1/conversations/:id',
+      'chat.show GET /v1/conversations/:id',
       'decisions.answer POST /v1/decisions/:rig/:bead/answer',
       'decisions.list GET /v1/decisions',
       'factory.halt POST /v1/halt',
