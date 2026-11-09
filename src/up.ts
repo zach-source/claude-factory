@@ -31,6 +31,9 @@ export function upDir(
   }
 }
 
+/** true when root is in the read-only Nix store: there the package ships node_modules, and nothing may write */
+export const inStore = (root: string): boolean => root.startsWith('/nix/store/')
+
 // ponytail: reinstall only when there is no node_modules or the lockfile is newer
 export const needsInstall = (nodeModulesMtime: number | undefined, lockMtime: number): boolean =>
   nodeModulesMtime === undefined || lockMtime > nodeModulesMtime

@@ -163,7 +163,7 @@ import { GAPS_FILE, parity } from './parity'
 import { pgScratch } from './pg-scratch'
 import * as gc from './gc'
 import * as selfupdate from './selfupdate'
-import { needsInstall, upCheck, upDir } from './up'
+import { inStore, needsInstall, upCheck, upDir } from './up'
 import { kickEnv } from './kick-env'
 import * as memory from './memory'
 import {
@@ -330,6 +330,8 @@ import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './gr
 import { maskAssignments } from './worker-hook'
 
 const ROOT = resolve(import.meta.dir, '..')
+// a Nix store install cannot hold its own state, so it uses `factory up`'s default home
+const DEFAULT_HOME = inStore(ROOT) ? join(homedir(), 'factory') : join(ROOT, '.factory-state')
 /** a factory is a directory holding its rigs.json (Gas Town's town); its runs live there too */
 const factoryAt = (dir: string): string | undefined =>
   existsSync(join(dir, 'rigs.json')) ? dir : dirname(dir) === dir ? undefined : factoryAt(dirname(dir))
@@ -337,7 +339,7 @@ const factoryAt = (dir: string): string | undefined =>
 // absolute, so a relative FACTORY_HOME (`FACTORY_HOME=.`) still matches pane cwds and survives a cd
 const HOME = process.env.FACTORY_HOME
   ? resolve(process.env.FACTORY_HOME)
-  : (factoryAt(process.cwd()) ?? join(ROOT, '.factory-state'))
+  : (factoryAt(process.cwd()) ?? DEFAULT_HOME)
 /** where a repo keeps its own factories, versioned with its code */
 const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
@@ -6252,7 +6254,7 @@ const kickSelfUpdate = () => {
   // FACTORY_SELF_UPDATE=0 is a full no-op here, not a recorded refusal: it never spawns, so it
   // never writes self-update.json and never mails anyone. (A direct `factory self-update` still
   // checks the same switch itself, and reports the refusal to whoever ran it.)
-  if (process.env.FACTORY_SELF_UPDATE === '0') return
+  if (process.env.FACTORY_SELF_UPDATE === '0' || inStore(ROOT)) return // a store install updates with its flake
   const stamp = join(HOME, 'self-update.stamp')
   const lastAt = existsSync(stamp) ? statSync(stamp).mtimeMs : undefined
   if (isHeld('tick.lock') || !selfupdate.isDue(lastAt, Date.now(), SELF_UPDATE_MS)) return
@@ -6372,7 +6374,7 @@ function managerWorkspace(): string | undefined {
   const id = process.env['HERDR_PANE_ID']
   if (!id) return undefined
   const pane = JSON.parse(Bun.spawnSync([HERDR(), 'pane', 'get', id]).stdout.toString() || '{}').result?.pane
-  const isOurs = pane?.cwd && (factoryAt(pane.cwd) ?? join(ROOT, '.factory-state')) === HOME
+  const isOurs = pane?.cwd && (factoryAt(pane.cwd) ?? DEFAULT_HOME) === HOME
   return isOurs ? pane.workspace_id : undefined
 }
 /**
@@ -13698,6 +13700,7 @@ if (import.meta.main && !outboxCmd)
         if (errors.length) fail(errors.join('\n'))
         const modules = join(ROOT, 'node_modules')
         if (
+          !inStore(ROOT) &&
           needsInstall(
             existsSync(modules) ? statSync(modules).mtimeMs : undefined,
             statSync(join(ROOT, 'bun.lock')).mtimeMs,
