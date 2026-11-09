@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import * as ax from './ax'
-import { configFrom, handle, MAX_BODY, route, workerPolicyRefusal, type Run } from './broker'
+import { configFrom, handle, MAX_BODY, route, updateBody, workerPolicyRefusal, type Run } from './broker'
 
 type Call = { argv: string[]; stdin?: string }
 const setup = (
@@ -34,8 +34,10 @@ test('route accepts a served atespace and an actor that is not the manager', () 
     expect(route('PUT', `/policy/factory/${bad}`, c)).toMatchObject({ status: 400 })
 })
 
-test('PUT deletes the old policy, then creates the new one from the body', async () => {
-  const { calls, c } = setup()
+test('PUT creates the policy from the body when the get finds none', async () => {
+  const { calls, c } = setup(a =>
+    a.includes('get') ? { code: 1, err: 'egress policy not found' } : { code: 0 },
+  )
   const res = await handle(req('PUT', '/policy/factory/f-r1-1', POLICY), c)
   expect(res.status).toBe(200)
   const ate = [
@@ -47,7 +49,7 @@ test('PUT deletes the old policy, then creates the new one from the body', async
     '/var/run/secrets/ate-api/token',
   ]
   expect(calls.map(x => x.argv)).toEqual([
-    [...ate, 'delete', 'egress-policy', 'f-r1-1', '-a', 'factory'],
+    [...ate, 'get', 'egress-policy', 'f-r1-1', '-a', 'factory', '-o', 'json'],
     [...ate, 'create', 'egress-policy', 'f-r1-1', '-a', 'factory', '-f', '-'],
   ])
   expect(JSON.parse(calls[1]!.stdin!)).toEqual(JSON.parse(POLICY))
@@ -64,6 +66,28 @@ test('PUT answers 502 with the create error, and 400 or 413 before any command r
   const big = JSON.stringify({ rules: ['x'.repeat(MAX_BODY)] })
   expect((await handle(req('PUT', '/policy/factory/f-r1-1', big), c)).status).toBe(413)
   expect(calls).toEqual([])
+})
+
+test('PUT updates a stored policy in place with its uid and version, and never deletes it', async () => {
+  const meta = { atespace: 'factory', name: 'default', uid: 'u-1', version: '3' }
+  const stored = JSON.stringify({ metadata: meta, rules: [] })
+  const { calls, c } = setup(a => (a.includes('get') ? { code: 0, out: stored } : { code: 0 }))
+  expect((await handle(req('PUT', '/policy/factory/f-r1-1', POLICY), c)).status).toBe(200)
+  expect(calls.map(x => x.argv.slice(6, 8))).toEqual([
+    ['get', 'egress-policy'],
+    ['update', 'egress-policy'],
+  ])
+  expect(JSON.parse(calls[1]!.stdin!)).toEqual({ ...JSON.parse(POLICY), metadata: meta })
+})
+
+test('updateBody puts the stored metadata on the new rules; none without a uid and a version', () => {
+  const meta = { uid: 'u', version: '1', name: 'default' }
+  expect(JSON.parse(updateBody(POLICY, JSON.stringify({ metadata: meta }))!)).toEqual({
+    ...JSON.parse(POLICY),
+    metadata: meta,
+  })
+  for (const bad of ['', '{bad', '{}', JSON.stringify({ metadata: { uid: 'u' } })])
+    expect(updateBody(POLICY, bad)).toBeUndefined()
 })
 
 test('DELETE succeeds when the policy is gone already, and fails on any other error', async () => {
