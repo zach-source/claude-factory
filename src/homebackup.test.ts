@@ -90,6 +90,7 @@ test('AC2: the login files, locks, bin, devenv, logs and rigs.json backups stay 
     'home/devenv/x',
     'home/herdr.log',
     'home/backup.json',
+    'home/beads/acme/.beads/x',
     'home/runs/r1/worktrees/acme/f.txt',
     `claude/.credentials.json`,
     `claude/projects/${SLUG}/other.jsonl`,
@@ -117,6 +118,7 @@ test('AC2: each exclude rule is needed', () => {
     '/home/backup.json': 'home/backup.json',
     '/home/manager-host.log': 'home/manager-host.log',
     '/home/ui-cache/': 'home/ui-cache/rig.json',
+    '/home/beads/': 'home/beads/acme/.beads/x',
     'worktrees/': 'home/runs/r1/worktrees/acme/f.txt',
   }
   for (const [rule, file] of Object.entries(probes)) {
