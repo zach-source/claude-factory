@@ -8007,6 +8007,8 @@ const DYN_END_R2 = new RegExp(`.(?:${TRIGGER_ALT})$`)
  * or after a dash. R2: the tokenizer drops quotes, so `"$G"push` reads as the bare name `$Gpush`.
  * For each bare name, deny when the name and the rest end in any char and a verb. The caller runs
  * this in the late fallback, so a real command reason (glued IFS push) wins.
+ * R3 (claude-factory-qn8a.16): read `${X:-w}` as empty or as w, try every `}` as the close, and
+ * deny past 64 readings.
  */
 function dynamicDashedVerb(w: string): boolean {
   const s = w.replace(/\\\n/g, '').replace(/\\/g, '').replace(/["']/g, '').toLowerCase()
@@ -8016,7 +8018,48 @@ function dynamicDashedVerb(w: string): boolean {
     const rest = s.slice(m.index! + m[0].length)
     if (DYN_END_R2.test(name + rest.replace(DYN_EXP, ''))) return true
   }
+  const r1 = dynReadings(s, new Map())
+  if (!r1 || r1.some(r => DYN_END_R1.test(r))) return true
+  for (const m of s.matchAll(/\$([a-z_]\w*)/g)) {
+    const r2 = dynReadings(s.slice(m.index! + m[0].length), new Map())
+    if (!r2 || r2.some(r => DYN_END_R2.test(m[1]! + r))) return true
+  }
   return false
+}
+
+const DYN_READINGS_CAP = 64
+const DYN_OP_BODY = /^(?:[a-z_]\w*|[0-9]+|[@*#?!$-]):?[-=+]([\s\S]*)$/
+const DYN_PLAIN_EXP = /^\$(?:[a-z_]\w*|[@*#?!$0-9-])/
+
+/**
+ * claude-factory-qn8a.16: all readings of a word. `${X:-w}` (also `-`, `=`, `:=`, `+`, `:+`)
+ * reads as empty or as any reading of w. Any later `}` can close it, because the caller removed
+ * quotes and backslashes. Other `${..}`, `$name` and `$special` read as empty. A `$` with no name,
+ * a bare `{`, an unused `}` and a `${` with no `}` are literal text. Returns null when the list
+ * passes DYN_READINGS_CAP: the caller then denies (fail closed).
+ */
+function dynReadings(s: string, memo: Map<string, string[] | null>): string[] | null {
+  if (memo.has(s)) return memo.get(s)!
+  let lit = ''
+  let i = 0
+  for (; i < s.length && !s.startsWith('${', i); i++) {
+    const m = DYN_PLAIN_EXP.exec(s.slice(i))
+    if (m) i += m[0].length - 1
+    else lit += s[i]
+  }
+  let res: string[] | null = []
+  if (i >= s.length) res = [lit]
+  for (let k = s.indexOf('}', i + 2); i < s.length && res && k >= 0; k = s.indexOf('}', k + 1)) {
+    const op = DYN_OP_BODY.exec(s.slice(i + 2, k))
+    const word = op ? dynReadings(op[1]!, memo) : []
+    const tail = dynReadings(s.slice(k + 1), memo)
+    if (!word || !tail) res = null
+    else for (const a of ['', ...word]) for (const b of tail) res.push(lit + a + b)
+    if (res && res.length > DYN_READINGS_CAP) res = null
+  }
+  if (res && !res.length) res = [lit + s.slice(i)]
+  memo.set(s, res)
+  return res
 }
 
 /**
