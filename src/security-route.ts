@@ -4,6 +4,10 @@
 
 const FILE_RES = [
   /^dockerfile[^/]*$/,
+  /^(claude|agents)\.md$/,
+  /^\.(mcp\.json|gitmodules|gitattributes|npmrc|envrc|pre-commit-config\.yaml)$/,
+  /^\.yarnrc[^/]*$/,
+  /^bunfig\.toml$/,
   /^docker-compose[^/]*$/,
   /^[^/]*\.tf$/,
   /^codeowners$/,
@@ -14,6 +18,12 @@ const FILE_RES = [
 
 const DIRS = new Set([
   '.factory',
+  '.claude',
+  '.codex',
+  '.cursor',
+  '.agents',
+  '.husky',
+  '.cargo',
   'factories',
   '.github',
   'deploy',

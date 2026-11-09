@@ -21,6 +21,23 @@ describe('sensitivePath', () => {
     'mod/hooks/register.tsx',
     'pkg/auth/x.go',
     'src/parser.ts',
+    '.claude/settings.json',
+    '.codex/config.toml',
+    '.cursor/rules/x.mdc',
+    '.agents/x.md',
+    '.husky/pre-commit',
+    '.cargo/config.toml',
+    'CLAUDE.md',
+    'AGENTS.md',
+    'docs/CLAUDE.md',
+    '.mcp.json',
+    '.gitmodules',
+    '.gitattributes',
+    '.npmrc',
+    '.yarnrc.yml',
+    'bunfig.toml',
+    '.pre-commit-config.yaml',
+    '.envrc',
   ])('sensitive %s', p => expect(sensitivePath(p)).not.toBe(''))
 
   test('order and shapes', () => {
@@ -32,6 +49,7 @@ describe('sensitivePath', () => {
 
   test.each([
     'src/metrics.ts',
+    'docs/claude-notes.md',
     'src/cli.ts',
     'README.md',
     'docs/console.md',
