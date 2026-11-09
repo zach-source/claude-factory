@@ -49,7 +49,7 @@ The repo does not state a version for most tools. The table shows what the repo 
    /path/to/claude-factory/bin/factory home
    ```
 
-The `factory home` command prints the factory that the commands work on. The factory is the directory in `FACTORY_HOME`. If `FACTORY_HOME` is not set, the factory is the nearest directory up that holds a `rigs.json`. If both are absent, the factory is `.factory-state/` in the claude-factory checkout. A Nix store install (`nix run github:zach-source/claude-factory`) cannot write into its own directory, so there the factory is `~/factory`.
+The `factory home` command prints the factory that the commands work on. The factory is the directory in `FACTORY_HOME`. If `FACTORY_HOME` is not set, the factory is the nearest directory up that holds a `rigs.json`. If both are absent, the factory is the default home: `$XDG_DATA_HOME/claude-factory` when `XDG_DATA_HOME` is set, else `~/Library/Application Support/claude-factory` on macOS, else `~/.local/share/claude-factory`. If the default home has no `rigs.json` but an old default has one (`.factory-state/` in the claude-factory checkout, or `~/factory`), the factory uses the old one and prints a note on stderr that names the new path.
 
 To do the install and start the manager in one step, run this command in a herdr pane:
 
@@ -57,7 +57,7 @@ To do the install and start the manager in one step, run this command in a herdr
 bin/factory up [factory-dir] [manager args...]
 ```
 
-It stops if `bun` or `claude` is not on `PATH`. It runs `bun install` when `node_modules` is missing or older than `bun.lock`. A Nix store install does not run `bun install`: the package holds its own `node_modules`. It makes the factory if the dir has no `rigs.json`. It warns outside herdr, then starts the manager. The dir is the first argument when it does not start with `-`, else `$FACTORY_HOME`, else `~/factory`. The other arguments go to the manager. Example: `bin/factory up ~/my-factory --resume <session>`.
+It stops if `bun` or `claude` is not on `PATH`. It runs `bun install` when `node_modules` is missing or older than `bun.lock`. A Nix store install does not run `bun install`: the package holds its own `node_modules`. It makes the factory if the dir has no `rigs.json`. It warns outside herdr, then starts the manager. The dir is the first argument when it does not start with `-`, else `$FACTORY_HOME`, else the default home. The other arguments go to the manager. Example: `bin/factory up ~/my-factory --resume <session>`.
 
 ## 4. Add your first rig
 

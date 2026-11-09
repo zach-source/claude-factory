@@ -19,7 +19,7 @@ nix profile install github:zach-source/claude-factory   # puts factory on PATH
 ```
 
 A store install does not write into its own directory. It does not self-update. Update it with its flake.
-Without `FACTORY_HOME`, it uses `~/factory`. From a checkout, use the steps below.
+Without `FACTORY_HOME`, it uses the default home, as a checkout does (see Rigs). From a checkout, use the steps below.
 
 ```sh
 bun install
@@ -35,7 +35,7 @@ cd ~/my-factory
 Or in one step from a herdr pane: `bin/factory up [factory-dir] [manager args...]`. It stops if `bun` or
 `claude` is not on `PATH`. It runs `bun install` when `node_modules` is missing or older than `bun.lock`.
 It makes the factory if the dir has no `rigs.json`. It warns outside herdr, then starts the manager.
-The dir is the first argument when it does not start with `-`, else `$FACTORY_HOME`, else `~/factory`.
+The dir is the first argument when it does not start with `-`, else `$FACTORY_HOME`, else the default home (see Rigs).
 The other arguments go to the manager. Example: `bin/factory up ~/my-factory --resume <session>`.
 
 In the manager session:
@@ -252,8 +252,9 @@ and mail escalates from worker to manager to you.
 A factory is a directory (Gas Town's town): `factory init <dir>` makes one, its
 `rigs.json` defines its rigs, and its runs live beside it. Commands, the manager session and
 `factory loop` started inside it work that factory; `FACTORY_HOME` overrides, and with
-neither the factory is `.factory-state/` here. Run several factories side by side, each with its
-own manager.
+neither the factory is the default home: `$XDG_DATA_HOME/claude-factory` when `XDG_DATA_HOME` is set, else `~/Library/Application Support/claude-factory` on macOS, else `~/.local/share/claude-factory`.
+If the default home has no `rigs.json` but an old default has one (`.factory-state/` in the claude-factory checkout, or `~/factory`), the factory uses the old one and prints a note on stderr that names the new path.
+Run several factories side by side, each with its own manager.
 
 To keep a factory's config in a repo, make its home one: `git init`, a `.gitignore` that lets in only
 the config (`/*`, `!/.gitignore`, `!/rigs.json`), and an `origin`. Every 10 minutes the tick commits
@@ -1399,7 +1400,7 @@ rows = [
 
 ## How a run behaves
 
-- **Snapshots**: `.factory-state/runs/<run>/state.json` is the run (`FACTORY_HOME` moves it). Every tick restores
+- **Snapshots**: `<factory home>/runs/<run>/state.json` is the run. Every tick restores
   it, drains `inbox.jsonl`, reconciles the worker, and writes it back (fsynced),
   so a crashed or restarted manager picks up where it stopped.
 - **Mailboxes and journal**: a station's report summary is mailed to the next

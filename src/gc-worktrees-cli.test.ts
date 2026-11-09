@@ -9,7 +9,17 @@
 // tests. The origin's URL is rewritten with `insteadOf` so it reads as github.com to the forge
 // check in cli.ts, while `git fetch`/`push` still reach the real local bare repo.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createActor } from 'xstate'
@@ -1130,4 +1140,130 @@ test('w: a failing "git worktree remove" scrubs URL userinfo from the journaled 
   const errLine = lines.find(l => l.type === 'error' && l.run === id)
   expect(errLine).toBeDefined()
   expect(errLine.reason).toContain('https://github.com/acme/widget.git')
+})
+
+// claude-factory-m9f9: a worktree with a submodule. `git worktree remove` refuses it without --force,
+// and --force deletes the submodule gitdir, so the CLI forces only when nothing in a submodule is lost.
+const SUBPROTO = ['-c', 'protocol.file.allow=always']
+/** adds a pushed submodule `sub` to the rig's repo: call it before writeRun so run branches carry it */
+function addSubmodule(repo: string) {
+  const origin = join(dir, 'sub-origin.git')
+  const src = join(dir, 'sub-src')
+  git(dir, 'init', '--bare', '-b', 'main', origin)
+  git(dir, 'clone', '--quiet', origin, src)
+  git(src, 'commit', '-q', '--allow-empty', '-m', 'sub init')
+  git(src, 'push', '-q', 'origin', 'HEAD:main')
+  git(repo, ...SUBPROTO, 'submodule', 'add', '-q', origin, 'sub')
+  git(repo, 'commit', '-q', '-m', 'add sub')
+  git(repo, 'push', '-q', 'origin', 'main')
+}
+const initSub = (worktree: string) => git(worktree, ...SUBPROTO, 'submodule', 'update', '--init', '-q')
+const journal = () =>
+  readFileSync(join(home, 'gc-worktrees.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+
+/** one run with an initialised submodule; `change` runs on its worktree before the command */
+function subRun(change: (wt: string, repo: string, id: string) => void = () => {}, merged = true) {
+  reset()
+  const { repo } = makeRig('r1')
+  addSubmodule(repo)
+  const id = freshId('ship')
+  const { worktree, branch } = writeRun(repo, id, { outcome: 'done', finishedAt: OLD, merged })
+  initSub(worktree)
+  change(worktree, repo, id)
+  writeRigs([{ name: 'r1', repo }])
+  fakeGh([])
+  return { repo, id, worktree, branch }
+}
+const gcSub = () => factory(['gc', '--worktrees'], { FACTORY_HERDR: noPanes() })
+const branchExists = (repo: string, b: string) => git(repo, 'branch', '--list', b) !== ''
+
+test('y1: gc reaps a clean worktree with a pushed submodule', () => {
+  const { id, worktree } = subRun()
+  gcSub()
+  expect(existsSync(worktree)).toBe(false)
+  const rows = journal()
+  expect(rows.some(l => l.type === 'worktree' && l.run === id)).toBe(true)
+  expect(rows.find(l => l.type === 'pass').errors).toBe(0)
+})
+
+test('y2: gc keeps a worktree whose submodule has an untracked file, and its branch', () => {
+  const { repo, id, worktree, branch } = subRun(wt => writeFileSync(join(wt, 'sub', 'u.txt'), 'u'))
+  gcSub()
+  expect(existsSync(join(worktree, 'sub', 'u.txt'))).toBe(true)
+  expect(branchExists(repo, branch)).toBe(true)
+  const e = journal().find(l => l.type === 'error' && l.run === id)
+  expect(e.reason).toContain('submodule')
+})
+
+test('y3: gc keeps a worktree whose submodule has a commit on no remote', () => {
+  const { id, worktree } = subRun(wt => git(join(wt, 'sub'), 'commit', '-q', '--allow-empty', '-m', 'local'))
+  gcSub()
+  expect(existsSync(worktree)).toBe(true)
+  expect(journal().some(l => l.type === 'error' && l.run === id)).toBe(true)
+})
+
+test('y4: gc keeps a worktree with a deinit-ed submodule gitdir that holds a local branch', () => {
+  const { id, worktree } = subRun(wt => {
+    git(join(wt, 'sub'), 'checkout', '-q', '-b', 'keep')
+    git(join(wt, 'sub'), 'commit', '-q', '--allow-empty', '-m', 'keep')
+    git(wt, 'submodule', 'deinit', '-q', '-f', 'sub')
+  })
+  gcSub()
+  expect(existsSync(worktree)).toBe(true)
+  expect(journal().some(l => l.type === 'error' && l.run === id)).toBe(true)
+})
+
+test('y5: rm reaps a clean worktree with a pushed submodule and keeps the branch', () => {
+  const { repo, id, worktree, branch } = subRun(() => {}, false)
+  const r = factory(['rm', id], { FACTORY_HERDR: noPanes() })
+  expect(r.code).toBe(0)
+  expect(existsSync(worktree)).toBe(false)
+  expect(existsSync(runDir(id))).toBe(false)
+  expect(branchExists(repo, branch)).toBe(true)
+})
+
+test('y6: rm refuses a dirty submodule, a local submodule commit and superproject work', () => {
+  const rows: [(wt: string) => void, string][] = [
+    [wt => writeFileSync(join(wt, 'sub', 'u.txt'), 'u'), 'sub/u.txt'],
+    [wt => git(join(wt, 'sub'), 'commit', '-q', '--allow-empty', '-m', 'local'), ''],
+    [wt => writeFileSync(join(wt, 'top.txt'), 't'), 'top.txt'],
+  ]
+  for (const [change, kept] of rows) {
+    const { id, worktree } = subRun(change, false)
+    const before = git(join(worktree, 'sub'), 'rev-parse', 'HEAD')
+    const r = factory(['rm', id], { FACTORY_HERDR: noPanes() })
+    expect(r.code).not.toBe(0)
+    expect(existsSync(runDir(id))).toBe(true)
+    expect(existsSync(worktree)).toBe(true)
+    if (kept) expect(existsSync(join(worktree, kept))).toBe(true)
+    else expect(git(join(worktree, 'sub'), 'rev-parse', 'HEAD')).toBe(before)
+  }
+})
+
+test('y7: gc keeps a worktree whose embedded-.git submodule has a local commit', () => {
+  const { id, worktree } = subRun((wt, repo, rid) => {
+    const mod = join(repo, '.git', 'worktrees', rid, 'modules')
+    rmSync(join(wt, 'sub', '.git'))
+    renameSync(join(mod, 'sub'), join(wt, 'sub', '.git'))
+    rmdirSync(mod)
+    git(wt, 'config', '-f', join(wt, 'sub', '.git', 'config'), '--unset', 'core.worktree')
+    git(join(wt, 'sub'), 'commit', '-q', '--allow-empty', '-m', 'local')
+  })
+  gcSub()
+  expect(existsSync(worktree)).toBe(true)
+  expect(git(join(worktree, 'sub'), 'log', '-1', '--format=%s')).toBe('local')
+  expect(journal().some(l => l.type === 'error' && l.run === id)).toBe(true)
+})
+
+test('y8: gc keeps a worktree when the submodule status read fails', () => {
+  const { id, worktree } = subRun((wt, repo, rid) => {
+    git(repo, 'config', 'submodule.sub.ignore', 'all')
+    writeFileSync(join(repo, '.git', 'worktrees', rid, 'modules', 'sub', 'index'), 'garbage')
+  })
+  gcSub()
+  expect(existsSync(worktree)).toBe(true)
+  expect(journal().some(l => l.type === 'error' && l.run === id)).toBe(true)
 })
