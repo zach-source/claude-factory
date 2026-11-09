@@ -4,6 +4,7 @@
  * needs these files. Two checks serve the worker hook:
  *   - `tokenReason` reads the raw Bash text, before any parse, as home-guard does.
  *   - `tokenPathReason` checks the path of a Read or Grep tool call.
+ * The person key dir ~/.config/factory (person.key, ca.crt: client.ts tlsFor) is guarded the same way by rules 7 and 8.
  * Both fail closed: a path that can name a token file or dir and is not provably inside the worktree is denied.
  * Out of scope (claude-factory-qn8a.72): a name built at run time ('au'+'th.json', base64, printf), a variable set in an
  * earlier call, a recursive read from an ancestor of a token dir (grep -r x ~), a symlink with an innocent name reached
@@ -17,11 +18,12 @@ import { fold, unshell, WORD } from './home-guard'
 
 export const TOKEN_READ_REASON =
   'The factory denies this command: it can read a harness token file (auth.json, .credentials.json, .claude.json) ' +
-  'or a token dir (~/.codex, ~/.claude, $CODEX_HOME, $CLAUDE_CONFIG_DIR) outside the worktree, or the keychain. ' +
+  'or a token dir (~/.codex, ~/.claude, $CODEX_HOME, $CLAUDE_CONFIG_DIR) outside the worktree, the factory person ' +
+  'key dir (~/.config/factory, person.key), or the keychain. ' +
   'A worker never needs these. If you only name the file in a message, write the text to .scratch/ and pass it ' +
   'with -F or --body-file. Do not retry this exact command.'
 
-const TOKEN_FILES = new Set(['auth.json', '.credentials.json', '.claude.json'])
+const TOKEN_FILES = new Set(['auth.json', '.credentials.json', '.claude.json', 'person.key'])
 // cursor-agent keeps its login in ~/.cursor, ~/.config/cursor (cli-config.json authInfo) and the macOS keychain item `cursor`
 // grok keeps its login in ~/.grok/auth.json (or $GROK_HOME) and reads the key from the env var XAI_API_KEY
 const TOKEN_DIRS = new Set(['.codex', '.claude', '.cursor', 'cursor', '.grok'])
@@ -153,6 +155,26 @@ function globRe(f: string): { test(name: string): boolean } {
   }
 }
 
+/** the count of literal chars of the folded component `f`: no variable and no shell syntax */
+const lits = (f: string) => f.replace(/\$(?:\{[^}]*\}?|\w+|[@*#?!$-])|[*?[\]{}!\\,&()]/g, '').length
+
+/** can the component `c` (folded) be the name `name`? A glob needs the same literal floor as kind(). */
+const can = (c: string, name: string) =>
+  c === name ||
+  (PATTERN.test(c) && lits(c) >= (c.includes('$') ? 3 : 2) && expand(c).some(x => globRe(x).test(name)))
+
+/** do two adjacent components (folded) name the person key dir .config/factory? A wildcard next to one literal half counts. */
+const namesFactoryDir = (comps: string[]) =>
+  comps.some((a, i) => {
+    const b = comps[i + 1]
+    return (
+      b !== undefined &&
+      ((can(a, '.config') && can(b, 'factory')) ||
+        (a === '.config' && PATTERN.test(b)) ||
+        (PATTERN.test(a) && b === 'factory'))
+    )
+  })
+
 /** can the last component `f` (folded) name a token file or a token dir? */
 function kind(f: string): { file: boolean; dir: boolean } {
   if (!PATTERN.test(f)) return { file: TOKEN_FILES.has(f), dir: TOKEN_DIRS.has(f) }
@@ -160,8 +182,7 @@ function kind(f: string): { file: boolean; dir: boolean } {
   if (one) return { file: false, dir: TOKEN_VARS.has(one[1] ?? one[2] ?? '') }
   // A name with no literal char ({}, [, *, &!) is shell syntax or a bare wildcard. A variable stands for any text:
   // with fewer than 3 literal chars it would match every token name. A wildcard-only name is covered by rule 6.
-  const lits = f.replace(/\$(?:\{[^}]*\}?|\w+|[@*#?!$-])|[*?[\]{}!\\,&()]/g, '').length
-  if (lits < (f.includes('$') ? 3 : 2)) return { file: false, dir: false }
+  if (lits(f) < (f.includes('$') ? 3 : 2)) return { file: false, dir: false }
   const res = expand(f).map(globRe)
   const hit = (names: Set<string>) => [...names].some(n => res.some(r => r.test(n)))
   return { file: hit(TOKEN_FILES), dir: hit(TOKEN_DIRS) }
@@ -195,6 +216,13 @@ function pieceDenied(
       (fold(c) === 'cursor' && fold(comps[k - 1] ?? '') === '.config'),
   )
   if (curs && (dyn || !inside(p, base))) return true
+  // rule 8: the person key dir ~/.config/factory (client.ts tlsFor reads person.key there), outside the worktree.
+  // Under a marker a relative piece resolves against the moved shell, so it is never provably inside.
+  const fc = comps.map(fold)
+  const away = dyn || !inside(p, base)
+  if (namesFactoryDir(fc) && (away || (marker && !p.startsWith('/')))) return true
+  // rule 8b: a cd or chdir into .config, then a relative read of factory/...
+  if (marker && can(fc.at(-1) as string, '.config') && (away || !p.startsWith('/'))) return true
   if (!k.file && !k.dir) return false
   if (dyn) return true // rule 5a: never guess an expansion
   // rule 5b: a pattern in the name or in a dir part checks the literal dir prefix
@@ -239,7 +267,9 @@ export function tokenReason(command: string, base: string, root?: string): strin
     const real = realPath(resolve(base, p.startsWith('~/') ? homedir() + p.slice(1) : p))
     if (!real) continue
     const f = fold(basename(real))
-    if ((TOKEN_FILES.has(f) || TOKEN_DIRS.has(f)) && !inside(real, base)) return TOKEN_READ_REASON
+    const rc = real.split('/').filter(Boolean).map(fold)
+    const xdg = rc.some((c, i) => c === '.config' && rc[i + 1] === 'factory')
+    if ((TOKEN_FILES.has(f) || TOKEN_DIRS.has(f) || xdg) && !inside(real, base)) return TOKEN_READ_REASON
   }
   return undefined
 }
@@ -291,8 +321,10 @@ export function tokenPathReason(
     const comps = a.split(sep).filter(Boolean).map(fold)
     const f = comps.at(-1) ?? ''
     const xdgCursor = comps.some((c, k) => c === 'cursor' && comps[k - 1] === '.config')
+    const xdgFactory = comps.some((c, k) => c === 'factory' && comps[k - 1] === '.config')
     if (
       TOKEN_FILES.has(f) ||
+      xdgFactory ||
       TOKEN_DIRS.has(f) ||
       xdgCursor ||
       comps.includes('.codex') ||
