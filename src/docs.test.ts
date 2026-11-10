@@ -112,7 +112,7 @@ test('docs/server.md names worker routes, each owner step, both modes and the wa
     'The way back',
   ])
     expect(text).toContain(s)
-  expect(text).toContain('report, mail and progress')
+  expect(text).toContain('The worker API serves report, mail and progress (FR-017).')
   expect(text).toContain('--worker-port 8443 --worker-key <path>')
   expect(text).not.toContain('no worker API route today')
   expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('docs/server.md')
