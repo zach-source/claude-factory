@@ -14124,19 +14124,42 @@ if (import.meta.main && !outboxCmd)
       }
       case 'wiki': {
         refuseWorker('wiki', true)
-        // read-only verbs: no wiki.lock
         if (args[0] === 'find') {
           if (args.length !== 2) {
             console.error('usage: factory wiki find <bead|pr|word>')
             process.exitCode = 2
-          } else process.exitCode = wikiFind(args[1]!)
+          } else {
+            const release = hold('wiki.lock')
+            if (!release) {
+              console.error('wiki: busy')
+              process.exitCode = 1
+              break
+            }
+            try {
+              process.exitCode = wikiFind(args[1]!)
+            } finally {
+              release()
+            }
+          }
           break
         }
         if (args[0] === 'status') {
           if (args.length !== 1) {
             console.error('usage: factory wiki status')
             process.exitCode = 2
-          } else console.log(JSON.stringify(wikiStatus()))
+          } else {
+            const release = hold('wiki.lock')
+            if (!release) {
+              console.error('wiki: busy')
+              process.exitCode = 1
+              break
+            }
+            try {
+              console.log(JSON.stringify(wikiStatus()))
+            } finally {
+              release()
+            }
+          }
           break
         }
         if (args[0] === 'refresh') {
@@ -14327,14 +14350,36 @@ if (import.meta.main && !outboxCmd)
             ),
           )
         else if (verb === 'install') {
-          memory.installSkill(MEMORY, name ?? fail('skills install <name>'))
-          commitMemory(`the manager installed the skill ${name}`)
-          console.log(`installed ${name}: the manager's Claude picks it up now`)
+          if (!name) fail('skills install <name>')
+          const release = hold('dream.lock')
+          if (!release) {
+            console.error('memory: busy')
+            process.exitCode = 1
+            break
+          }
+          try {
+            memory.installSkill(MEMORY, name!)
+            commitMemory(`the manager installed the skill ${name}`)
+            console.log(`installed ${name}: the manager's Claude picks it up now`)
+          } finally {
+            release()
+          }
         } else if (verb === 'reject') {
+          if (!name) fail('skills reject <name> <why>')
           if (!why.length) fail('skills reject <name> <why>: the dream learns from the reason')
-          memory.rejectSkill(MEMORY, name ?? fail('skills reject <name> <why>'), why.join(' '))
-          commitMemory(`the manager rejected the skill ${name}`)
-          console.log(`rejected ${name}; the dream reads why`)
+          const release = hold('dream.lock')
+          if (!release) {
+            console.error('memory: busy')
+            process.exitCode = 1
+            break
+          }
+          try {
+            memory.rejectSkill(MEMORY, name!, why.join(' '))
+            commitMemory(`the manager rejected the skill ${name}`)
+            console.log(`rejected ${name}; the dream reads why`)
+          } finally {
+            release()
+          }
         } else fail('skills [install <name> | reject <name> <why>]')
         break
       }
@@ -14357,35 +14402,55 @@ if (import.meta.main && !outboxCmd)
         } else if ((verb === 'install' || verb === 'reject') && workerMarker()) {
           fail(`a worker cannot ${verb} a proposal: mail the manager instead`)
         } else if (verb === 'install' && name) {
-          const p = memory.proposals(MEMORY).find(x => x.name === name)
-          if (p?.rung === 'core') {
-            memory.installCoreProposal(MEMORY, name)
-            commitMemory(`installed the proposal ${name} as a CORE.md line`)
-            console.log(`installed ${name}: CORE.md now says "${p.change}"`)
+          const release = hold('dream.lock')
+          if (!release) {
+            console.error('memory: busy')
+            process.exitCode = 1
             break
           }
-          // FR-020: a rung above core is a bead for a person, filed in the factory's own rig; no code changes here
-          const rig = rigName ? rigs().find(r => r.name === rigName) : rigOf(ROOT)
-          if (!rig)
-            fail(
-              `no rig ${rigName ? `named ${rigName}` : `holds the factory's own repo ${ROOT}`}: pass --rig <name>`,
+          try {
+            const p = memory.proposals(MEMORY).find(x => x.name === name)
+            if (p?.rung === 'core') {
+              memory.installCoreProposal(MEMORY, name)
+              commitMemory(`installed the proposal ${name} as a CORE.md line`)
+              console.log(`installed ${name}: CORE.md now says "${p.change}"`)
+              break
+            }
+            // FR-020: a rung above core is a bead for a person, filed in the factory's own rig; no code changes here
+            const rig = rigName ? rigs().find(r => r.name === rigName) : rigOf(ROOT)
+            if (!rig)
+              fail(
+                `no rig ${rigName ? `named ${rigName}` : `holds the factory's own repo ${ROOT}`}: pass --rig <name>`,
+              )
+            const bead = memory.installProposalAsBead(MEMORY, name, x =>
+              beads(rig!.repo, 'factory/proposals').createUnlabeled(
+                cut(`memory proposal ${x.name}: ${x.change}`, 200),
+                readFileSync(x.file, 'utf8'),
+                { memory_proposal: x.name },
+                '-l',
+                'human',
+              ),
             )
-          const bead = memory.installProposalAsBead(MEMORY, name, x =>
-            beads(rig!.repo, 'factory/proposals').createUnlabeled(
-              cut(`memory proposal ${x.name}: ${x.change}`, 200),
-              readFileSync(x.file, 'utf8'),
-              { memory_proposal: x.name },
-              '-l',
-              'human',
-            ),
-          )
-          commitMemory(`filed the proposal ${name} as ${bead}`)
-          console.log(`filed ${name} (rung ${p?.rung}) as ${bead} in ${rig!.name}, for a person`)
+            commitMemory(`filed the proposal ${name} as ${bead}`)
+            console.log(`filed ${name} (rung ${p?.rung}) as ${bead} in ${rig!.name}, for a person`)
+          } finally {
+            release()
+          }
         } else if (verb === 'reject' && name) {
           if (!why.length) fail(`${usage}: the dream learns from the reason`)
-          memory.rejectProposal(MEMORY, name, why.join(' '))
-          commitMemory(`rejected the proposal ${name}`)
-          console.log(`rejected ${name}; the dream reads why`)
+          const release = hold('dream.lock')
+          if (!release) {
+            console.error('memory: busy')
+            process.exitCode = 1
+            break
+          }
+          try {
+            memory.rejectProposal(MEMORY, name, why.join(' '))
+            commitMemory(`rejected the proposal ${name}`)
+            console.log(`rejected ${name}; the dream reads why`)
+          } finally {
+            release()
+          }
         } else fail(usage)
         break
       }
