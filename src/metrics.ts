@@ -395,6 +395,8 @@ export type Usage = {
   peak: number
   /** what an API-billed harness (grok) charged, in millionths of a dollar */
   costMicro?: number
+  /** stored at a factory stop's close of an AX task; a resume keeps the seq, so this row does not end the seq's usage */
+  halt?: true
 }
 
 /**

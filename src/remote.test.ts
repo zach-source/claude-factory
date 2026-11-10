@@ -3430,6 +3430,210 @@ test('a herdr pane makes no worker usage call at close (aure.1 AC2)', () => {
   expect(log).not.toContain('worker usage')
 })
 
+const writeHalt = (id: string, seq: number) =>
+  writeFileSync(
+    join(home, 'halt.json'),
+    JSON.stringify({ state: 'stopping', at: Date.now(), told: { [id]: seq }, closed: {} }),
+  )
+const haltClosed = (id: string) => JSON.parse(readFileSync(join(home, 'halt.json'), 'utf8')).closed[id]
+const noUsageFile = (id: string) => existsSync(join(home, 'runs', id, 'usage.jsonl'))
+const haltCleanup = (id: string) => {
+  rmSync(join(home, 'halt.json'), { force: true })
+  rmSync(join(home, 'runs', id), { recursive: true, force: true })
+}
+const reportLine = (id: string, seq: number, usage: object[]) =>
+  JSON.stringify({ argv: ['report', id, String(seq), 'ready', 'built a'], from: 'a', at: 1, usage })
+
+test("a halt close of an AX task stores the VM's usage before it deletes the task (claude-factory-w6id AC1)", () => {
+  const id = 'rw1'
+  const seq = launched(id)
+  try {
+    clusterUsage(
+      'Running',
+      { status: 'idle', session: 's1', lines: [] },
+      { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    )
+    writeHalt(id, seq)
+    expect(factory(['tick']).code).toBe(0)
+    const rows = storedRows(id)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ node: 'a', seq, ...CODEX_ROW, halt: true })
+    const log = called()
+    expect(log).toContain('worker usage')
+    expect(log.indexOf('worker usage')).toBeLessThan(log.indexOf('delete task'))
+    expect(haltClosed(id)).toBe(seq)
+  } finally {
+    haltCleanup(id)
+  }
+})
+
+test('halt rows do not stop a later report of the same seq from storing its rows (claude-factory-w6id AC2)', () => {
+  const id = 'rw2'
+  const seq = launched(id)
+  try {
+    writeFileSync(
+      join(home, 'runs', id, 'usage.jsonl'),
+      JSON.stringify({ node: 'a', seq, ...usageRow({ session: 'old', halt: true }) }) + '\n',
+    )
+    cluster('Running', {
+      status: 'idle',
+      session: 's2',
+      lines: [reportLine(id, seq, [usageRow({ session: 's2' })])],
+    })
+    expect(factory(['tick']).code).toBe(0)
+    const rows = storedRows(id)
+    expect(rows.map(r => r.session)).toEqual(['old', 's2'])
+    expect(rows[0].halt).toBe(true)
+    expect(rows[1].halt).toBeUndefined()
+  } finally {
+    haltCleanup(id)
+  }
+})
+
+test('a stored row without the halt mark still makes a report skip (claude-factory-w6id AC2a)', () => {
+  const id = 'rw3'
+  const seq = launched(id)
+  try {
+    writeFileSync(
+      join(home, 'runs', id, 'usage.jsonl'),
+      JSON.stringify({ node: 'a', seq, ...usageRow({ session: 's1' }) }) + '\n',
+    )
+    cluster('Running', {
+      status: 'idle',
+      session: 's3',
+      lines: [reportLine(id, seq, [usageRow({ session: 's3' })])],
+    })
+    expect(factory(['tick']).code).toBe(0)
+    expect(storedRows(id).map(r => r.session)).toEqual(['s1'])
+  } finally {
+    haltCleanup(id)
+  }
+})
+
+test('a VM cannot mark its own report rows as halt rows (claude-factory-w6id AC2b)', () => {
+  const id = 'rw4'
+  const seq = launched(id)
+  try {
+    cluster('Running', {
+      status: 'idle',
+      session: 's7',
+      lines: [reportLine(id, seq, [usageRow({ session: 's7', halt: true })])],
+    })
+    expect(factory(['tick']).code).toBe(0)
+    const rows = storedRows(id)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].session).toBe('s7')
+    expect(rows[0].halt).toBeUndefined()
+  } finally {
+    haltCleanup(id)
+  }
+})
+
+test('after halt rows, the station-end read asks the new VM and stores its rows (claude-factory-w6id AC3)', () => {
+  const { rows, log } = timeoutTick(
+    'rw5',
+    { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    usageRow({ session: 'old', halt: true }),
+  )
+  expect(rows).toHaveLength(2)
+  expect(rows[0]).toMatchObject({ session: 'old', halt: true })
+  expect(rows[1]).toMatchObject({ session: CODEX_ROW.session })
+  expect(rows[1].halt).toBeUndefined()
+  expect(log).toContain('worker usage')
+})
+
+test('a halt close never fails on a usage error (claude-factory-w6id AC4a)', () => {
+  const id = 'rw6'
+  const seq = launched(id)
+  try {
+    clusterUsage('Running', { status: 'idle', session: 's1', lines: [] }, { out: '[]', code: 1 })
+    writeHalt(id, seq)
+    expect(factory(['tick']).code).toBe(0)
+    expect(noUsageFile(id)).toBe(false)
+    expect(called()).toContain('delete task')
+    expect(haltClosed(id)).toBe(seq)
+  } finally {
+    haltCleanup(id)
+  }
+})
+
+test('a halt close of a herdr pane makes no worker usage call (claude-factory-w6id AC4b)', () => {
+  const id = 'rw7'
+  const seq = launched(id, true, 't', 'w1:p1')
+  const fakeHerdr = join(dir, 'fakeherdr-w6id')
+  const herdrCalls = join(dir, 'herdr-calls-w6id.log')
+  rmSync(herdrCalls, { force: true })
+  writeFileSync(
+    fakeHerdr,
+    `#!/bin/sh
+echo "$*" >> ${herdrCalls}
+case "$1 $2" in
+  "pane get") echo '{"result":{"pane":{"agent_status":"idle","agent":"claude"}}}' ;;
+  *) echo '{}' ;;
+esac
+`,
+  )
+  chmodSync(fakeHerdr, 0o755)
+  try {
+    clusterUsage(
+      'Running',
+      { status: 'idle', session: 's1', lines: [] },
+      { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    )
+    writeHalt(id, seq)
+    expect(factory(['tick'], { FACTORY_HERDR: fakeHerdr }).code).toBe(0)
+    expect(readFileSync(herdrCalls, 'utf8')).toContain('pane close w1:p1')
+    expect(haltClosed(id)).toBe(seq)
+    expect(called()).not.toContain('worker usage')
+    expect(noUsageFile(id)).toBe(false)
+  } finally {
+    haltCleanup(id)
+  }
+})
+
+test('a halt close of a Suspended AX task makes no worker usage call (claude-factory-w6id AC4d)', () => {
+  const id = 'rw8'
+  const seq = launched(id)
+  try {
+    clusterUsage(
+      'Suspended',
+      { status: 'idle', session: 's1', lines: [] },
+      { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    )
+    writeHalt(id, seq)
+    expect(factory(['tick']).code).toBe(0)
+    const log = called()
+    expect(log).toContain('delete task')
+    expect(log).not.toContain('worker usage')
+    expect(noUsageFile(id)).toBe(false)
+    expect(haltClosed(id)).toBe(seq)
+  } finally {
+    haltCleanup(id)
+  }
+})
+
+test('a report queued before the stop is replayed in the halt tick, and the halt close does not read the VM (claude-factory-w6id AC5)', () => {
+  const id = 'rw9'
+  const seq = launched(id)
+  try {
+    clusterUsage(
+      'Running',
+      { status: 'idle', session: 's1', lines: [reportLine(id, seq, [usageRow()])] },
+      { out: JSON.stringify([CODEX_ROW]), code: 0 },
+    )
+    writeHalt(id, seq)
+    expect(factory(['tick']).code).toBe(0)
+    const rows = storedRows(id)
+    expect(rows.map(r => r.session)).toEqual(['s1'])
+    expect(rows[0].halt).toBeUndefined()
+    const log = called()
+    expect(log).toContain('delete task')
+    expect(log).not.toContain('worker usage')
+  } finally {
+    haltCleanup(id)
+  }
+})
+
 /** the fake cluster with a task in `phase` whose status.conditions hold `conds` (YAML list lines) */
 function clusterConds(phase: string, conds: string) {
   rmSync(calls, { force: true })
@@ -3551,6 +3755,7 @@ test('a halt that reads the Failed task first does not drop the one ActorResumeF
   )
   factory(['tick']) // halted: the halt path reads the task
   expect(resumeMails('r42')).toHaveLength(0)
+  expect(called()).not.toContain('worker usage') // claude-factory-w6id AC4e: a Failed task is not read
   rmSync(join(home, 'halt.json'), { force: true })
   factory(['tick'])
   expect(resumeMails('r42')).toHaveLength(1)

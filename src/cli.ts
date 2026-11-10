@@ -1327,8 +1327,11 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     else if (argv![0] === 'report') {
       try {
         const rows = validUsage(JSON.parse(line).usage, side!.node, side!.seq)
-        // first report wins per node+seq: a replayed line must not add rows again
-        if (rows.length && !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq))
+        // first report wins per node+seq: a replayed line must not add rows again (halt rows do not count)
+        if (
+          rows.length &&
+          !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq && !r.halt)
+        )
           appendUsage(run.id, rows)
       } catch {} // a bad usage never changes the report
       try {
@@ -4726,6 +4729,8 @@ function haltRun(
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
     if (step === 'close') {
+      // ponytail: a Suspended or serve-exited task's usage is still lost here; resume it before the read to keep it
+      if (info!.status === 'working' || info!.status === 'idle') storeAxUsage(run, c.pane!, node, c.seq, true)
       runnerOf(c.pane!).close(c.pane!)
     }
     halt.closed[run.id] = c.seq
@@ -4756,14 +4761,16 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
 /**
  * An AX station closed. If no report stored usage for this node and seq (a timeout, a lost worker, a refused
  * usage), ask the VM for its rows with `factory worker usage`. The VM is untrusted: ax.usage caps the
- * output, and validUsage checks every row and sets node and seq. Never throw.
+ * output, and validUsage checks every row and sets node and seq. A factory stop's close also calls it with
+ * `halt`: those rows get `halt: true`, and halt rows do not stop a later read, because a resume keeps the
+ * seq and starts a new VM. Never throw.
  */
-function storeAxUsage(run: Run, pane: string, node: string, seq: number) {
+function storeAxUsage(run: Run, pane: string, node: string, seq: number, halt = false) {
   try {
     if (runnerOf(pane).name !== 'ax') return
-    if (storedUsage(run.id).some(r => r.node === node && r.seq === seq)) return
+    if (storedUsage(run.id).some(r => r.node === node && r.seq === seq && !r.halt)) return
     const rows = validUsage(ax.usage(ax.taskOf(pane)), node, seq)
-    if (rows.length) appendUsage(run.id, rows)
+    if (rows.length) appendUsage(run.id, halt ? rows.map(r => ({ ...r, halt: true as const })) : rows)
   } catch {}
 }
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
