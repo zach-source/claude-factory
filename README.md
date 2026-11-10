@@ -284,6 +284,7 @@ factory rig show app                                        # every field of the
 factory rig env set svc FACTORY_SERVICES=0                  # svc runs on ax: set one env key of its VM workers
 factory rig env unset svc FACTORY_SERVICES
 factory rig egress add svc cache.example=NIX_CACHE --port 8443   # add one egress rule
+factory devenv --missing                                    # the rig env and egress commands for each ax rig with a devenv and no cache
 factory rig egress rm svc cache.example                     # remove the rule with these hosts
 factory rig beads-remote set svc --name ds --url https://dolt.example/svc --user svc
 factory rig beads-remote clear svc

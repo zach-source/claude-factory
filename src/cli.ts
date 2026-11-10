@@ -29,6 +29,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   readSync,
   realpathSync,
   renameSync,
@@ -267,6 +268,8 @@ import {
   type ManagerUsage,
   tokensReport,
   type StoredUsage,
+  validStart,
+  parseStartLines,
   validUsage,
   type Usage,
 } from './metrics'
@@ -1332,10 +1335,32 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     else if (argv![0] === 'report') {
       try {
         const rows = validUsage(JSON.parse(line).usage, side!.node, side!.seq)
-        // first report wins per node+seq: a replayed line must not add rows again
-        if (rows.length && !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq))
+        // first report wins per node+seq: a replayed line must not add rows again (halt rows do not count)
+        if (
+          rows.length &&
+          !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq && !r.halt)
+        )
           appendUsage(run.id, rows)
       } catch {} // a bad usage never changes the report
+      try {
+        // claude-factory-ad6r: the VM's start record. rig, sandbox, node and seq are the laptop's, never the VM's
+        const start = validStart(JSON.parse(line).start)
+        const file = join(HOME, 'starts.jsonl')
+        const have = existsSync(file) ? parseStartLines(readFileSync(file, 'utf8')) : []
+        if (start && !have.some(l => l.run === run.id && l.node === side!.node && l.seq === side!.seq)) {
+          const rig = rigOf(run.repo)
+          const row = {
+            at: Date.now(),
+            run: run.id,
+            rig: rig?.name ?? '(no rig)',
+            sandbox: rig?.sandboxClass ?? 'gvisor',
+            node: side!.node,
+            seq: side!.seq,
+            ...start,
+          }
+          appendFileSync(file, JSON.stringify(row) + '\n')
+        }
+      } catch {} // a bad start never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       if (!skew) {
         // from where this VM was told to push, which a rig changed since does not move
@@ -1473,6 +1498,7 @@ export function privatePatterns(repo: string) {
 }
 
 function git(cwd: string, ...args: string[]) {
+  if (memory.gitFenced(cwd)) fail(`git: ${cwd} is fenced, check ${cwd}/.git and remove ${cwd}.fenced`)
   const probe = Bun.spawnSync(['git', '-C', cwd, 'var', 'GIT_AUTHOR_IDENT'], { env: process.env })
   const env = probe.exitCode === 0 ? process.env : { ...process.env, ...MEMORY_GIT_IDENTITY_FALLBACK }
   const p = Bun.spawnSync(['git', '-C', cwd, ...args], { env })
@@ -4712,6 +4738,8 @@ function haltRun(
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
     if (step === 'close') {
+      // ponytail: a Suspended or serve-exited task's usage is still lost here; resume it before the read to keep it
+      if (info!.status === 'working' || info!.status === 'idle') storeAxUsage(run, c.pane!, node, c.seq, true)
       runnerOf(c.pane!).close(c.pane!)
     }
     halt.closed[run.id] = c.seq
@@ -4742,14 +4770,16 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
 /**
  * An AX station closed. If no report stored usage for this node and seq (a timeout, a lost worker, a refused
  * usage), ask the VM for its rows with `factory worker usage`. The VM is untrusted: ax.usage caps the
- * output, and validUsage checks every row and sets node and seq. Never throw.
+ * output, and validUsage checks every row and sets node and seq. A factory stop's close also calls it with
+ * `halt`: those rows get `halt: true`, and halt rows do not stop a later read, because a resume keeps the
+ * seq and starts a new VM. Never throw.
  */
-function storeAxUsage(run: Run, pane: string, node: string, seq: number) {
+function storeAxUsage(run: Run, pane: string, node: string, seq: number, halt = false) {
   try {
     if (runnerOf(pane).name !== 'ax') return
-    if (storedUsage(run.id).some(r => r.node === node && r.seq === seq)) return
+    if (storedUsage(run.id).some(r => r.node === node && r.seq === seq && !r.halt)) return
     const rows = validUsage(ax.usage(ax.taskOf(pane)), node, seq)
-    if (rows.length) appendUsage(run.id, rows)
+    if (rows.length) appendUsage(run.id, halt ? rows.map(r => ({ ...r, halt: true as const })) : rows)
   } catch {}
 }
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
@@ -5356,6 +5386,7 @@ function repoConfigOk(dir: string) {
 
 /** git in the wiki: no identity, repo or index from the caller's environment, and literal pathspecs */
 function wikiGit(dir: string, args: string[], network = false, extraEnv: Record<string, string> = {}) {
+  if (memory.gitFenced(dir)) return { code: 1, out: Buffer.alloc(0) }
   const env: Record<string, string | undefined> = {
     ...(network ? gitNetworkEnv() : process.env),
     GIT_LITERAL_PATHSPECS: '1',
@@ -5436,6 +5467,186 @@ function headKept(run: GitRun, pair: HeadPair): 'same' | 'moved' | 'restore fail
   return ok ? 'moved' : 'restore failed'
 }
 
+/**
+ * Git reads config, hooks and gitdir pointers from a repo, so an agent pass that writes them makes the next factory
+ * git call run a command as the factory user. gitDirSnapshot() records the control area of `root/.git`; gitDirKept()
+ * after the pass puts it back and removes any nested .git (claude-factory-f1zc). The data set is what git never reads
+ * as config, hooks or a pointer: objects, refs, logs, index, HEAD and the like, and regular *.lock files.
+ * Key = path under .git (`.` is .git); value d:<mode> | l:<target> | f:<mode>:<nlink>:<base64> | x (other type).
+ */
+export type GitDirSnapshot = Record<string, string>
+const GIT_DATA_TOP = new Set(
+  'objects refs logs fsmonitor--daemon index HEAD ORIG_HEAD FETCH_HEAD packed-refs COMMIT_EDITMSG gc.pid gc.log fsmonitor--daemon.ipc'.split(
+    ' ',
+  ),
+)
+const ownerRwx = (p: string) => {
+  try {
+    if (lstatSync(p).isDirectory()) chmodSync(p, lstatSync(p).mode | 0o700)
+  } catch {}
+}
+function readDirOwner(dir: string) {
+  try {
+    return readdirSync(dir)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EACCES') throw e
+    ownerRwx(dir)
+    return readdirSync(dir)
+  }
+}
+const modeOf = (mode: number) => (mode & 0o7777).toString(8)
+
+export function gitDirSnapshot(root: string): GitDirSnapshot {
+  const top = join(root, '.git')
+  const st = lstatSync(top)
+  if (!st.isDirectory()) throw new Error(`${top} is not a directory`)
+  const snap: GitDirSnapshot = { '.': `d:${modeOf(st.mode)}` }
+  const walk = (rel: string) => {
+    for (const name of readDirOwner(join(top, rel))) {
+      if (!rel && (GIT_DATA_TOP.has(name) || name.startsWith('sharedindex.'))) continue
+      const key = rel ? `${rel}/${name}` : name
+      const p = join(top, key)
+      const s = lstatSync(p)
+      if (s.isDirectory()) {
+        snap[key] = `d:${modeOf(s.mode)}`
+        walk(key)
+      } else if (s.isSymbolicLink()) snap[key] = `l:${readlinkSync(p)}`
+      else if (s.isFile()) {
+        if (!name.endsWith('.lock'))
+          snap[key] = `f:${modeOf(s.mode)}:${s.nlink}:${readFileSync(p).toString('base64')}`
+      } else snap[key] = 'x'
+    }
+  }
+  walk('')
+  return snap
+}
+
+/** count of entries named .git (ASCII case fold) under `root`, outside root/.git; `remove` deletes them (a symlink, not its target) */
+function sweepNested(root: string, remove: boolean): number {
+  let n = 0
+  const walk = (dir: string) => {
+    for (const name of readDirOwner(dir)) {
+      const p = join(dir, name)
+      if (p === join(root, '.git')) continue
+      if (name.toLowerCase() === '.git') {
+        n++
+        if (remove) {
+          ownerRwx(dir)
+          ownerRwx(p)
+          rmSync(p, { recursive: true, force: true })
+        }
+      } else if (lstatSync(p).isDirectory()) walk(p)
+    }
+  }
+  walk(root)
+  return n
+}
+
+/** The snapshot to take before a pass, or why the pass must not run. `nested` is checked first. */
+export function gitDirPre(root: string): { snap: GitDirSnapshot } | { why: 'nested' | 'special' | 'notdir' } {
+  try {
+    if (sweepNested(root, false)) return { why: 'nested' }
+    const snap = gitDirSnapshot(root)
+    const special = Object.values(snap).some(
+      v => v === 'x' || (v.startsWith('f:') && v.split(':')[2] !== '1'),
+    )
+    return special ? { why: 'special' } : { snap }
+  } catch {
+    return { why: 'notdir' }
+  }
+}
+export const gitPreLine = (who: 'dream' | 'wiki', why: 'nested' | 'special' | 'notdir') =>
+  ({
+    dream: {
+      nested: 'dream: a nested .git is in the memory, dream refused',
+      special: 'dream: .git holds a special file, dream refused',
+      notdir: 'dream: .git is not a directory, dream refused',
+    },
+    wiki: {
+      nested: 'wiki: a nested .git is in the wiki, pass refused',
+      special: 'wiki: .git holds a special file, pass refused',
+      notdir: 'wiki: blame failed, pass refused',
+    },
+  })[who][why]
+
+/** Write `<root>.fenced`: every factory git spawn in root then refuses, in later processes too. */
+export function fenceGit(root: string) {
+  try {
+    writeFileSync(
+      resolve(root) + '.fenced',
+      `${new Date().toISOString()} git in ${root} refused: an agent pass changed ${root}/.git and the restore failed. Check it, then remove this file.\n`,
+    )
+  } catch {}
+}
+
+/**
+ * After an agent pass: remove nested .git entries, compare `root/.git` with `before` and put it back.
+ * 'same' when nothing differed; 'changed' when something did and it is restored; 'restore failed' (root fenced) on any error.
+ * No git call runs here.
+ */
+export function gitDirKept(root: string, before: GitDirSnapshot): 'same' | 'changed' | 'restore failed' {
+  try {
+    const swept = sweepNested(root, true)
+    const after = gitDirSnapshot(root)
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)])
+    const diff = [...keys].filter(k => before[k] !== after[k])
+    if (!diff.length && !swept) return 'same'
+    const top = join(root, '.git')
+    const depth = (k: string) => k.split('/').length
+    const bothDirs = (k: string) => before[k]?.startsWith('d:') && after[k]?.startsWith('d:')
+    for (const k of diff
+      .filter(k => k !== '.' && k in after && !bothDirs(k))
+      .sort((a, b) => depth(b) - depth(a))) {
+      ownerRwx(dirname(join(top, k)))
+      rmSync(join(top, k), { recursive: true, force: true })
+    }
+    const kinds = Object.keys(before).filter(k => k !== '.')
+    for (const k of kinds.sort((a, b) => depth(a) - depth(b))) {
+      const p = join(top, k)
+      try {
+        lstatSync(p)
+        continue
+      } catch {}
+      ownerRwx(dirname(p))
+      const v = before[k]!
+      if (v.startsWith('d:')) mkdirSync(p, { mode: 0o700 })
+      else if (v.startsWith('l:')) symlinkSync(v.slice(2), p)
+      else if (v.startsWith('f:')) {
+        const [, mode, , data] = v.split(':')
+        writeFileSync(p, Buffer.from(data!, 'base64'))
+        chmodSync(p, parseInt(mode!, 8))
+      } else throw new Error(`cannot restore ${k}`)
+    }
+    for (const k of Object.keys(before).sort((a, b) => depth(b) - depth(a)))
+      if (before[k]!.startsWith('d:')) {
+        if (k !== '.') ownerRwx(dirname(join(top, k)))
+        chmodSync(k === '.' ? top : join(top, k), parseInt(before[k]!.slice(2), 8))
+      }
+    return 'changed'
+  } catch {
+    fenceGit(root)
+    return 'restore failed'
+  }
+}
+
+/** The journal line(s) for a pass that changed .git; `run` and `pair` are the HEAD guard that still runs after a restore. Returns the first line. */
+function gitChangedAct(
+  prefix: string,
+  gk: 'changed' | 'restore failed',
+  run: GitRun,
+  pair: HeadPair,
+  log: (line: string) => void,
+) {
+  const line = `${prefix}: .git changed in the pass, ${gk === 'changed' ? '' : 'restore failed, git fenced, '}nothing committed`
+  log(line)
+  if (gk === 'changed') {
+    const k = headKept(run, pair)
+    if (k !== 'same')
+      log(`${prefix}: HEAD moved in the pass, ${k === 'moved' ? '' : 'restore failed, '}nothing committed`)
+  }
+  return line
+}
+
 const wikiRun =
   (dir: string): GitRun =>
   args => {
@@ -5478,7 +5689,9 @@ export function wikiBlame(dir = join(HOME, 'wiki')) {
     if (b.code !== 0) return (wikiLog('wiki: blame failed, pass refused'), undefined)
     blames.set(path, b.out.toString())
   }
-  return { ...pair, blames }
+  const pre = gitDirPre(dir)
+  if ('why' in pre) return (wikiLog(gitPreLine('wiki', pre.why)), undefined)
+  return { ...pair, blames, git: pre.snap }
 }
 
 /**
@@ -5492,6 +5705,8 @@ export function keepPersonLines(
   reason: string,
   dir = join(HOME, 'wiki'),
 ) {
+  const gk = gitDirKept(dir, before.git)
+  if (gk !== 'same') return (gitChangedAct('wiki', gk, wikiRun(dir), before, wikiLog), false)
   const kept = headKept(wikiRun(dir), before)
   if (kept !== 'same')
     return (
@@ -5822,6 +6037,8 @@ function wikiGroom(dryRun: boolean) {
       'Read,Glob,Grep,Edit,Write',
       [],
     )
+    const gk = gitDirKept(dir, before.git)
+    if (gk !== 'same') return void gitChangedAct('wiki groom', gk, wikiRun(dir), before, wikiLog)
     if (!repoConfigOk(dir)) {
       configBad = true
       return wikiLog('wiki groom: repo config not allowed, nothing committed')
@@ -6227,6 +6444,14 @@ async function dream() {
     if (!existsSync(join(MEMORY, '.git'))) {
       memGit('init', '-q')
     }
+    const start = Date.now()
+    // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
+    const refuse = (why: string) => {
+      appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
+      return why
+    }
+    // a nested .git (from a pass before this check shipped) would run its config at the next git call
+    if (sweepNested(MEMORY, false)) return refuse(gitPreLine('dream', 'nested'))
     // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
     // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
     const pre = memory.dropLinks(MEMORY)
@@ -6240,12 +6465,6 @@ async function dream() {
     const manager = managerSince(since)
     if (!journal.length && !memory.inboxCount(MEMORY) && !manager.activity.length)
       return 'nothing new since the last dream'
-    const start = Date.now()
-    // kickDream runs with stdio ignored and the stamp is new, so a refusal must reach dream.log
-    const refuse = (why: string) => {
-      appendFileSync(join(HOME, 'dream.log'), `${new Date(start).toISOString()} refused\n${why}\n`)
-      return why
-    }
     const memRun = wikiRun(MEMORY)
     const pair = headPair(memRun)
     if (!pair) return refuse('dream: no branch head, dream refused')
@@ -6294,6 +6513,8 @@ async function dream() {
         return refuse('the memory holds .codex, which would add codex project config')
       codexHome = dreamCodexHome()
     }
+    const gitPre = gitDirPre(MEMORY)
+    if ('why' in gitPre) return refuse(gitPreLine('dream', gitPre.why))
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = codexHome
       ? Bun.spawnSync(
@@ -6330,6 +6551,7 @@ async function dream() {
           ],
           { cwd: MEMORY, stdin: Buffer.from(prompt), timeout: 45 * 60_000 },
         )
+    const gk = gitDirKept(MEMORY, gitPre.snap) // before dropLinks: it removes a symlinked sub/.git
     const removed = memory.dropLinks(MEMORY)
     const said = p.stdout.toString().trim() || `the dream exited ${p.exitCode}: ${p.stderr.toString().trim()}`
     // dream.log keeps history: a log past 256 KB moves to dream.log.1 (one old file, replaced each time)
@@ -6347,6 +6569,8 @@ async function dream() {
     if (overProposals.length)
       appendFileSync(join(HOME, 'dream.log'), `dropped proposals over the cap: ${overProposals.join(', ')}\n`)
     // a pass that moved HEAD commits nothing: its edits stay in the worktree for the next dream's notes commit
+    if (gk !== 'same')
+      return gitChangedAct('dream', gk, memRun, pair, l => appendFileSync(dreamLog, `${l}\n`))
     const kept = headKept(memRun, pair)
     if (kept !== 'same') {
       const line =
@@ -13066,7 +13290,7 @@ if (queued) {
     const sync = worker.syncBeads()
     if (!sync.ok && worker.isSchemaSkew(sync)) {
       // no retry fixes a VM whose bd is too old for the store: the report goes out, and the laptop holds the station
-      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error)
+      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error, worker.startRecord())
       console.log(
         `queued for the factory: report; bd could not sync (schema skew: ${sync.error}), so the factory holds this station for the person; you are done, stop now`,
       )
@@ -13081,7 +13305,12 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...queuedArgs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
+  worker.queue(
+    [cmd!, ...queuedArgs],
+    cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined,
+    undefined,
+    cmd === 'report' ? worker.startRecord() : undefined,
+  )
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
@@ -13781,6 +14010,12 @@ if (import.meta.main && !outboxCmd)
         break
       case 'devenv':
         refuseWorker('devenv')
+        if (args.includes('--missing')) {
+          if (args.length !== 1) fail('usage: factory devenv [rig...] [--force] | factory devenv --missing')
+          const lines = devenv.cacheProposal(rigs(), r => devenv.remoteDevenv(r.repo).hasDevenv)
+          if (lines.length) console.log(lines.join('\n'))
+          break
+        }
         console.log(
           devenvPass(
             args.filter(a => a !== '--force'),

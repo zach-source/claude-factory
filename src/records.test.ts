@@ -525,3 +525,50 @@ test('two stations that share a late-written transcript store one row per sessio
   expect(s1.filter(r => r.model === 'claude-haiku-5-5')).toMatchObject([{ node: 'plan', seq: seq - 1 }])
   expect(rows.filter(r => r.session === 's2')).toMatchObject([{ node: 'implement', seq, cacheRead: 7 }])
 })
+
+test('metrics shows start times by rig, joined to a launch older than --since (ad6r)', () => {
+  mkdirSync(home, { recursive: true })
+  rmSync(join(home, 'runs'), { recursive: true, force: true })
+  const now = Date.now()
+  const launchAt = now - 2 * 86_400_000
+  const serveAt = launchAt + 40_000
+  writeFileSync(
+    join(home, 'launches.jsonl'),
+    JSON.stringify({
+      at: launchAt,
+      run: 'a-1',
+      rig: 'acme',
+      node: 'implement',
+      seq: 1,
+      harness: 'claude',
+      model: 'm',
+      resume: false,
+    }) + '\n',
+  )
+  const line = {
+    at: now,
+    run: 'a-1',
+    rig: 'acme',
+    sandbox: 'gvisor',
+    node: 'implement',
+    seq: 1,
+    serveAt,
+    turnAt: serveAt + 55_000,
+    cloneMs: 8000,
+    beadsMs: 3000,
+    devenvMs: 30_000,
+    servicesMs: 2000,
+    devenv: 'loaded',
+    resumed: false,
+  }
+  writeFileSync(join(home, 'starts.jsonl'), JSON.stringify(line) + '\n')
+  const out = factory(['metrics', '--since', '1d'])
+  expect(out.out).toContain(
+    'starts by rig (first starts, median s):\nacme: n 1, launch to first turn 95 s, boot 40 s',
+  )
+  expect(JSON.parse(factory(['metrics', '--json', '--since', '1d']).out).starts.acme.launchMs).toBe(95_000)
+  expect(JSON.parse(factory(['metrics', '--json', '--rig', 'widget']).out).starts).toEqual({})
+  rmSync(join(home, 'starts.jsonl'))
+  rmSync(join(home, 'launches.jsonl'))
+  expect(factory(['metrics']).out).not.toContain('starts by rig')
+})

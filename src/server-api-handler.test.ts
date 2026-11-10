@@ -53,11 +53,12 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
       print('{"ok":1}')
     ),
   }
-  const make = () =>
+  const make = (over: Partial<Port> = {}, callTimeoutMs?: number) =>
     clientHandler({
       home,
       run,
-      port,
+      callTimeoutMs,
+      port: { ...port, ...over },
       board: () => (o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
@@ -156,6 +157,17 @@ describe('read routes', () => {
     expect(JSON.parse(await r.text()).refused.length).toBe(500)
     const u = setup({ result: { code: -1, timedOut: true } })
     expect((await post(u.h, '/v1/halt', { mode: 'stop' })).status).toBe(504)
+  })
+})
+
+describe('in-process time limit', () => {
+  test('a port function that never resolves gives 504 within the limit and frees the chain', async () => {
+    const t = setup()
+    const h = t.make({ goto: () => new Promise(() => {}) }, 50)
+    const t0 = Date.now()
+    expect((await post(h, '/v1/runs/r1/goto', { node: 'plan' })).status).toBe(504)
+    expect(Date.now() - t0).toBeLessThan(2000)
+    expect((await post(h, '/v1/runs/r1/goto', { node: 'plan' })).status).toBe(504)
   })
 })
 
