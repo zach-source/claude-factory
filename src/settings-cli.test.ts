@@ -100,6 +100,19 @@ describe('settings set and unset errors', () => {
 })
 
 describe('a worker', () => {
+  test('a patrol cannot set or unset', () => {
+    const { run, file } = setup()
+    for (const args of [
+      ['settings', 'set', 'ax.vault', 'x'],
+      ['settings', 'unset', 'ax.vault'],
+    ]) {
+      const r = run(args, { FACTORY_PATROL: '1' })
+      expect(r.code).toBe(1)
+      expect(r.err).toContain('a patrol cannot run factory settings')
+      expect(existsSync(file)).toBe(false)
+    }
+    expect(run(['settings', 'list']).code).toBe(0)
+  })
   test.each([[{ FACTORY_FROM: 'implement' }], [{ BEADS_ACTOR: 'factory/r1/plan' }]])(
     '%j cannot set or unset',
     env => {

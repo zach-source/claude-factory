@@ -14496,12 +14496,12 @@ if (import.meta.main && !outboxCmd)
             [...settingsRows(readSettings(file), BOOT_ENV), ...devenvRows(readDevenv(dfile))].join('\n'),
           )
         } else if (sub === 'set' && args.length === 3) {
-          refuseWorker('settings set')
+          refuseWorker('settings set', true)
           if (isDevenvKey(key!)) setDevenv(dfile, key!, value!)
           else setSetting(file, key!, value!)
           console.log(`set ${key}`)
         } else if (sub === 'unset' && args.length === 2) {
-          refuseWorker('settings unset')
+          refuseWorker('settings unset', true)
           if (isDevenvKey(key!)) unsetDevenv(dfile, key!)
           else unsetSetting(file, key!)
           console.log(`unset ${key}`)

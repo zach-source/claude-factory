@@ -387,6 +387,10 @@ export function syncBeads({ tries = 3 } = {}): SyncResult {
 type Harness = 'claude' | 'codex' | 'pi' | 'cursor' | 'grok'
 const harness = (): Harness => (process.env.FACTORY_HARNESS as Harness | undefined) ?? 'claude'
 
+/** A turn owns /nix/var, and its profile bin is ahead of /usr/local/bin. So serve starts codex by absolute path, not by PATH (claude-factory-kiy42). */
+const codexCmd = () =>
+  process.env.FACTORY_CODEX ? [process.env.FACTORY_CODEX] : ['/usr/local/bin/node', '/usr/local/bin/codex']
+
 /**
  * the argv of one headless turn of an agent. Claude: `-p --resume <id>`; codex: `exec`, then
  * `exec resume <id>`; cursor: `-p --resume <id>`; grok: `--prompt-file /dev/stdin -r <id>`; pi: `-p --session-id <id>`, which pi creates on first use. The brief is the first turn,
@@ -422,7 +426,7 @@ export function turnArgv(
       ]
     case 'codex':
       return [
-        process.env.FACTORY_CODEX ?? 'codex',
+        ...codexCmd(),
         // the deny hook on, the features that skip it off (codexHome checks they hold)
         ...CODEX_GUARD_FLAGS,
         ...['exec', ...(o.session ? ['resume'] : [])],
@@ -1210,7 +1214,7 @@ export function codexHome(dir = process.env.CODEX_HOME, timeoutMs = 30_000, plug
       readFileSync(join(import.meta.dir, 'worker-codex.md'), 'utf8'),
   )
   codexSkills(dir, plugins)
-  const p = Bun.spawnSync([process.env.FACTORY_CODEX ?? 'codex', ...CODEX_GUARD_FLAGS, 'features', 'list'], {
+  const p = Bun.spawnSync([...codexCmd(), ...CODEX_GUARD_FLAGS, 'features', 'list'], {
     env: { ...process.env, CODEX_HOME: dir },
     stdin: 'ignore',
     timeout: timeoutMs,
