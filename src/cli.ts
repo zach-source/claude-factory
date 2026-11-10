@@ -339,8 +339,15 @@ import {
 import { rmQuiet, rmSafe } from './home-guard'
 import { ciReport, failedChecks } from './ci'
 import { cut } from './cut'
-import { managerSender as managerSenderIn, refuseWorker as refuseWorkerIn, workerMarker } from './core/caller'
+import {
+  mainChatKind,
+  mainChatRefusal,
+  managerSender as managerSenderIn,
+  refuseWorker as refuseWorkerIn,
+  workerMarker,
+} from './core/caller'
 import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
+import { slimBoard, snapshot as snapshotRun } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
@@ -382,6 +389,9 @@ const OWN = '.factory'
 const CLI = join(ROOT, 'bin', 'factory')
 // yolo: workers run unattended in their own worktree, so permission prompts would only stall them
 const AGENT = `${claudeCommand()} --dangerously-skip-permissions`
+// claude-factory-6g6ud: take the one-time Allow token out of the env, so no child process gets it
+const ALLOW_TOKEN = process.env.FACTORY_ALLOW
+delete process.env.FACTORY_ALLOW
 /** the env before the stored settings fill it: `factory up` gives it to a manager of another dir */
 const BOOT_ENV = { ...process.env }
 loadIntoEnv(join(HOME, 'settings.json')) // stored settings fill unset env vars; the environment wins
@@ -13377,9 +13387,16 @@ else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This
 or past the rig's own --max.
 In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
 
+// claude-factory-6g6ud: a gated kind from the main chat needs the person's one-time Allow token
+function mainChatGateRefusal(): string | undefined {
+  const kind = mainChatKind(cmd, args)
+  return kind && mainChatRefusal({ ...process.env, FACTORY_ALLOW: ALLOW_TOKEN }, HOME, kind)
+}
 {
   const why = import.meta.main
-    ? (otherRunRefusal(cmd, args, process.env) ?? workerVerbRefusal(cmd, args, process.env))
+    ? (otherRunRefusal(cmd, args, process.env) ??
+      workerVerbRefusal(cmd, args, process.env) ??
+      mainChatGateRefusal())
     : undefined
   if (why) {
     console.error(why)
@@ -13573,11 +13590,10 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('tick', true)
         // --board (claude-factory-hpmc.14): the board with no tick and no lease, for a remote view
         if (args[0] === '--board') {
-          console.log(
-            JSON.stringify(
-              await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() }),
-            ),
+          const full = await readOnlyBoard(
+            leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() },
           )
+          console.log(JSON.stringify(args.includes('--slim') ? slimBoard(full) : full))
           break
         }
         lease()
@@ -14339,6 +14355,16 @@ if (import.meta.main && !outboxCmd)
             }),
           ),
         )
+        break
+      }
+      case 'snapshot': {
+        // claude-factory-hpmc.23: several read views in one call; the board view is the slim board
+        if (args[0] !== '--views' || !args[1] || args.length !== 2)
+          fail('usage: factory snapshot --views a,b')
+        const board = args[1]!.split(',').includes('board')
+          ? await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() })
+          : null
+        emit(await snapshotRun({ ...cliCtx(), board: () => board }, { views: args[1]! }))
         break
       }
       case 'backlog':

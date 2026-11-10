@@ -204,7 +204,7 @@ test('the turn runs with the chat guard', async () => {
     },
   })
   expect(c.baseEnv).toBe(env)
-  expect(c.env).toEqual({ FACTORY_HOME: home })
+  expect(c.env).toEqual({ FACTORY_HOME: home, FACTORY_MAIN_CHAT: '1' })
   expect(c.input).toBe('a')
 })
 
