@@ -7,7 +7,7 @@ the run's git worktree, and the outcome it reports routes the run along the grap
 A Claude mod turns one session into the manager: it ticks every run, draws the
 board, and runs a hidden patrol subagent that wakes on mail and works each rig's goal.
 
-New to claude-factory? Start with [docs/onboarding.md](docs/onboarding.md).
+New to claude-factory? Start with [docs/onboarding.md](docs/onboarding.md). For server mode and the way back to local mode, see [docs/server.md](docs/server.md).
 
 ## Run it
 
