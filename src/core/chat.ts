@@ -1,8 +1,6 @@
 // The manager chat of the core: one conversation file for each id, one model turn at a time.
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
-import { connect, createServer, type Server } from 'node:net'
-import { tmpdir } from 'node:os'
+import { spawn } from 'node:child_process'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { line } from '../../mod/hooks/view'
 import { appendUsage, type ModelResult } from '../once'
@@ -36,10 +34,37 @@ export type Turn = {
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
 const CONVERSATION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
-export async function runApproved(
-  _c: Parameters<Port['chatRun']>[0],
-): Promise<{ code: number; out: string }> {
-  throw new Error('not built')
+/** Run the approved command before the model turn. Keep the last 4000 characters of output. */
+export function runApproved(c: Parameters<Port['chatRun']>[0]): Promise<{ code: number; out: string }> {
+  return new Promise((resolve, reject) => {
+    let out = ''
+    let timedOut = false
+    const child = spawn('bash', ['-c', c.command], {
+      cwd: c.cwd,
+      env: c.env,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const collect = (text: string) => {
+      out = (out + text).slice(-4000)
+    }
+    child.stdout.setEncoding('utf8').on('data', collect)
+    child.stderr.setEncoding('utf8').on('data', collect)
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL')
+      } catch {}
+    }, c.timeoutMs)
+    child.once('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', code => {
+      clearTimeout(timer)
+      resolve({ code: timedOut ? 124 : (code ?? 127), out })
+    })
+  })
 }
 
 export function conversationFile(home: string, id: string): string {
@@ -78,61 +103,6 @@ export function show(home: string, id: string): { id: string; session: string | 
 /** the tail of each conversation's queue; an entry leaves the map when its turn is the last one */
 export const queue = new Map<string, Promise<void>>()
 
-const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
-const HASH = /^[0-9a-f]{64}$/
-const SOCK = /^\/[A-Za-z0-9._/-]{1,100}$/
-
-const PUB = /^[0-9a-f]{88}$/
-const NONCE = /^[0-9a-f]{32}$/
-
-/**
- * the one-use count of an approval, in this process. The hook sends `<hash> <nonce>`; the first right hash gets
- * `yes <signature>` over `<hash> <nonce> yes`. The private key stays in this process, the public key goes in the hook argv:
- * a model that replaces the socket cannot sign, and a captured answer fails on the next nonce.
- */
-function approvalServer(hash: string): Promise<{ path: string; server: Server; pub: string }> {
-  const path = join(tmpdir(), `fcg-${randomBytes(12).toString('hex')}.sock`)
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
-  const pub = publicKey.export({ type: 'spki', format: 'der' }).toString('hex')
-  let used = false
-  const server = createServer(c => {
-    c.setEncoding('utf8')
-    c.once('data', d => {
-      const [h, n, ...rest] = String(d).trim().split(' ')
-      if (used || h !== hash || !NONCE.test(n ?? '') || rest.length) return void c.end('no')
-      used = true
-      c.end(`yes ${sign(null, Buffer.from(`${h} ${n} yes`), privateKey).toString('hex')}`)
-    })
-    c.on('error', () => {})
-  })
-  return new Promise((res, rej) => {
-    server.once('error', rej)
-    server.listen(path, () => res({ path, server, pub }))
-  })
-}
-
-/** ask the core for the one use; any failure, or an answer without the core's signature, is no */
-const askUse = (path: string, hash: string, pub: string) =>
-  new Promise<boolean>(res => {
-    const nonce = randomBytes(16).toString('hex')
-    let out = ''
-    const c = connect(path)
-    c.setEncoding('utf8')
-    c.setTimeout(5000, () => c.destroy())
-    c.on('data', d => (out += d))
-    c.on('error', () => res(false))
-    c.on('close', () => {
-      const m = /^yes ([0-9a-f]{128})$/.exec(out)
-      try {
-        const key = createPublicKey({ key: Buffer.from(pub, 'hex'), format: 'der', type: 'spki' })
-        res(!!m && verify(null, Buffer.from(`${hash} ${nonce} yes`), key, Buffer.from(m[1]!, 'hex')))
-      } catch {
-        res(false)
-      }
-    })
-    c.write(`${hash} ${nonce}`)
-  })
-
 /** a model can leave a half line: write a newline first, so the next turn stays readable */
 const append = (path: string, t: Turn) => {
   let pre = ''
@@ -147,6 +117,7 @@ const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 
 
 /** the command that the person approves: the ask `id` of the last manager turn; throws a refusal */
 function approved(turns: Turn[], id: string): string {
+  if (!CONVERSATION.test(id)) throw new Error('the approval is refused: bad id')
   const last = turns.filter(t => t.who === 'manager').at(-1)
   if (!last) throw new Error('the approval is refused: the conversation has no manager turn')
   const list = (x: unknown) => (Array.isArray(x) ? x.filter(isObj) : [])
@@ -175,73 +146,94 @@ export function send(
       const session = sessionOf(turns)
       const command = a.approve === undefined ? undefined : approved(turns, a.approve)
       mkdirSync(join(ctx.home, 'conversations'), { recursive: true })
-      let hook = `'${CLI}' chat-guard`
-      let server: Server | undefined
+      // ponytail: model code with the person certificate can approve through the client port.
+      // Upgrade: sandbox or client-port rights (claude-factory-xrbpw, aya5.6).
       if (command !== undefined) {
-        const hash = sha(command)
-        const s = await approvalServer(hash)
-        server = s.server
-        hook += ` ${hash} ${s.path} ${s.pub}`
-      }
-      try {
-        append(path, {
-          who: 'person',
-          text: a.text,
-          front: a.front,
-          at: Date.now(),
-          ...(a.approve === undefined ? {} : { approve: a.approve }),
-        })
-        const guard = { type: 'command', command: hook }
-        let res: ModelResult
+        const dir = join(ctx.home, 'conversations', a.id + '.approved')
+        const failed = (e: unknown) =>
+          new Error('the approval is refused: cannot record the use: ' + (e as NodeJS.ErrnoException).code)
         try {
-          res = await ctx.port.chatModel({
-            system: stepPrompt('chat', { cli: CLI }),
-            input:
-              command === undefined
-                ? a.text
-                : `${a.text}\n\nThe person approved one run of this exact command in this turn:\n${command}`,
-            model: 'claude-opus-5-5',
-            tools: 'Bash,Read,Grep,Glob,Write',
-            maxTurns: 40,
-            settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
-            baseEnv: ctx.env,
-            env: { FACTORY_HOME: ctx.home, FACTORY_MAIN_CHAT: '1' },
-            cwd: ctx.home,
-            timeoutMs: 15 * 60_000,
-            persist: true,
-            ...(session ? { resume: session } : {}),
-          })
+          mkdirSync(dir, { recursive: true })
         } catch (e) {
-          res = {
-            isOk: false,
-            text: '',
-            error: line(String(e), 300),
-            reason: 'spawn-failed',
-            durationMs: 0,
-            commands: [],
-            calls: [],
-          }
+          throw failed(e)
         }
-        const asks = res.calls.flatMap(c => {
-          const v = check(c.command, 'manager')
-          return v.decision === 'ask' ? [{ id: c.id, question: v.question }] : []
-        })
-        const out: Turn = {
-          who: 'manager',
-          text: res.text,
-          front: a.front,
-          at: Date.now(),
-          commands: res.calls,
-          asks,
-          ...(res.session && SESSION.test(res.session) ? { session: res.session } : {}),
-          ...(res.isOk ? {} : { error: res.error ?? 'the model failed', reason: res.reason }),
+        try {
+          writeFileSync(join(dir, a.approve!), '', { flag: 'wx' })
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'EEXIST')
+            throw new Error(`the approval is refused: ask ${a.approve} already ran`)
+          throw failed(e)
         }
-        append(path, out)
-        appendUsage(ctx.home, 'chat', res.usage)
-        return out
-      } finally {
-        server?.close()
       }
+      append(path, {
+        who: 'person',
+        text: a.text,
+        front: a.front,
+        at: Date.now(),
+        ...(a.approve === undefined ? {} : { approve: a.approve }),
+      })
+      let ran: Turn['ran']
+      if (command !== undefined) {
+        const env: Ctx['env'] = { ...ctx.env, FACTORY_HOME: ctx.home }
+        delete env.FACTORY_MAIN_CHAT
+        delete env.FACTORY_ALLOW
+        let result: { code: number; out: string }
+        try {
+          result = await ctx.port.chatRun({ command, cwd: ctx.home, env, timeoutMs: 300000 })
+        } catch (e) {
+          result = { code: 127, out: line(String(e), 4000) }
+        }
+        ran = { id: a.approve!, command, ...result }
+      }
+      const guard = { type: 'command', command: `'${CLI}' chat-guard` }
+      let res: ModelResult
+      try {
+        res = await ctx.port.chatModel({
+          system: stepPrompt('chat', { cli: CLI }),
+          input:
+            command === undefined
+              ? a.text
+              : `${a.text}\n\nThe core ran the approved command:\n${command}\nexit ${ran!.code}\n${ran!.out}`,
+          model: 'claude-opus-5-5',
+          tools: 'Bash,Read,Grep,Glob,Write',
+          maxTurns: 40,
+          settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
+          baseEnv: ctx.env,
+          env: { FACTORY_HOME: ctx.home, FACTORY_MAIN_CHAT: '1' },
+          cwd: ctx.home,
+          timeoutMs: 15 * 60_000,
+          persist: true,
+          ...(session ? { resume: session } : {}),
+        })
+      } catch (e) {
+        res = {
+          isOk: false,
+          text: '',
+          error: line(String(e), 300),
+          reason: 'spawn-failed',
+          durationMs: 0,
+          commands: [],
+          calls: [],
+        }
+      }
+      const asks = res.calls.flatMap(c => {
+        const v = check(c.command, 'manager')
+        return v.decision === 'ask' ? [{ id: c.id, question: v.question }] : []
+      })
+      const out: Turn = {
+        who: 'manager',
+        text: res.text,
+        front: a.front,
+        at: Date.now(),
+        commands: res.calls,
+        ...(ran ? { ran } : {}),
+        asks,
+        ...(res.session && SESSION.test(res.session) ? { session: res.session } : {}),
+        ...(res.isOk ? {} : { error: res.error ?? 'the model failed', reason: res.reason }),
+      }
+      append(path, out)
+      appendUsage(ctx.home, 'chat', res.usage)
+      return out
     }
     // the stored tail never rejects: a failed turn reaches only its own caller
     const run = (queue.get(path) ?? Promise.resolve()).then(turn)
@@ -259,16 +251,8 @@ export function send(
   })
 }
 
-/**
- * the body of `factory chat-guard [<sha256> <socket> <public key>]`: every result but allow gives code 2.
- * The three words are the approval of one asked command: the core process counts the use on its socket and signs its answer.
- * ponytail: a model that runs a script can still kill the core's socket (a denial only) or relay one hook to it. Upgrade: the sandbox (see claude-factory-xrbpw).
- */
-export async function guardHook(stdin: string, args: string[] = []): Promise<{ code: number; err: string }> {
-  const bad =
-    args.length !== 0 &&
-    !(args.length === 3 && HASH.test(args[0]!) && SOCK.test(args[1]!) && PUB.test(args[2]!))
-  if (bad) return { code: 2, err: 'bad chat-guard arguments\n' }
+/** Refuse each hook command that needs approval. */
+export function guardHook(stdin: string): { code: number; err: string } {
   let command: unknown
   try {
     command = JSON.parse(stdin)?.tool_input?.command
@@ -277,8 +261,6 @@ export async function guardHook(stdin: string, args: string[] = []): Promise<{ c
   const v = check(command, 'manager')
   if (v.decision === 'allow') return { code: 0, err: '' }
   if (v.decision === 'deny') return { code: 2, err: v.reason + '\n' }
-  if (args.length === 3 && sha(command) === args[0] && (await askUse(args[1]!, args[0]!, args[2]!)))
-    return { code: 0, err: '' }
   return {
     code: 2,
     err: `${v.question}\nthe person must approve this command; a chat turn cannot run it: tell the person\n`,

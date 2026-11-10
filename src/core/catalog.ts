@@ -481,7 +481,7 @@ export const CATALOG: Op[] = makeCatalog([
             'approve',
             'id',
             false,
-            'a tool_use id from the asks of the last manager turn: the person approves that command for one run in the next turn',
+            'a tool_use id from the asks of the last manager turn: the core runs that command one time before the next turn',
           ),
         ],
       },

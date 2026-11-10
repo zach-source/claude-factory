@@ -13648,7 +13648,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'chat-guard': {
-        const r = await guardHook(await Bun.stdin.text(), args)
+        const r = guardHook(await Bun.stdin.text())
         if (r.err) process.stderr.write(r.err)
         process.exitCode = r.code
         break

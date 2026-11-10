@@ -185,6 +185,9 @@ describe('CATALOG', () => {
       approve: 'toolu_01A',
     })
     expect(readBody(send, { id: 'c' }, { text: 'x', front: 'web', approve: '../x' })).toBe('bad body')
+    expect(send.inputs.find(i => i.name === 'approve')!.help).toBe(
+      'a tool_use id from the asks of the last manager turn: the core runs that command one time before the next turn',
+    )
     expect(show).toMatchObject({
       summary: 'Show a manager conversation: its session and its turns.',
       rights: 'read',

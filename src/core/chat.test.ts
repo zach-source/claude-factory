@@ -212,8 +212,7 @@ test('the turn runs with the chat guard', async () => {
   expect(c.input).toBe('a')
 })
 
-const hook = (command: unknown, args: string[] = []) =>
-  guardHook(JSON.stringify({ tool_input: { command } }), args)
+const hook = (command: unknown) => guardHook(JSON.stringify({ tool_input: { command } }))
 
 test('guardHook allows, asks, denies and fails closed', async () => {
   expect(await hook('/repo/bin/factory status')).toEqual({ code: 0, err: '' })
