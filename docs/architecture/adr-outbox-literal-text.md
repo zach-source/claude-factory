@@ -172,3 +172,13 @@ No AC is must-see-live. No production read is a pre-merge condition.
 
 Task 2 depends on task 1. Both tasks fit one 120-minute implementation pass and one PR.
 The plan commit contains only this ADR. The report lists the child bead IDs.
+
+## Revised verification plan
+
+Three partial passes completed the source fix and the regression tests.
+Local model access and time checks prevented a green local gate.
+The manager accepted green CI as AC3 and AC4 proof, per the task 2 close record.
+Both child tasks are closed. No further source change is necessary.
+Merge current main, then repeat the regression tests, typecheck, format check, scans, and literal branch mutations.
+Require all CI checks on that final head before the handoff to verify.
+Retain the local gate failures in the report. Do not change tests or limits to hide them.
