@@ -1,3 +1,5 @@
 0a80dacf12b971cbd76c0790419ea156ca669f11:src/homebackup.test.ts:generic-api-key:654
 # This historical idempotency fixture is not a credential. Keep the rule active for all other matches.
 5f5a65a7eb2558ffbe1f993a7eed9dfb3b892877:src/core/catalog-handler.test.ts:generic-api-key:117
+# This historical consent fixture uses a public sample UUID, not a credential.
+67cb7ec9a93568755382f9b7c7bc51acb1eb4f7a:src/text-file-flags.test.ts:generic-api-key:569

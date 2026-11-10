@@ -482,12 +482,16 @@ test('help prints free-text placeholders in quotes (claude-factory-nt33)', () =>
     "say '<text...>'",
     "poke <run> '[text...]'",
     "fork <run> <station> '[note...]'",
-    "memory search [--rig r] '<query...>'",
+    "memory search [--rig r] [--from run/station] [--no-core] '<query...>'|--query-file path",
     '(--title <t> | --title-file <path>) (--description <d> | --description-file <path>)',
     "<rig|repo> '<goal...>'|bead",
     "'<summary...>'|--summary-file",
     "--goal '<text...>'",
-    "'<summary>' ('[body...]' | --body-file <path>)",
+    "('<summary>' | --summary-file <path>) ('[body...]' | --body-file <path>)",
+    "poke <run> '[text...]'|--text-file path",
+    "fork <run> <station> '[note...]'|--note-file path",
+    "'<goal...>'|bead|--goal-file path",
+    "'<why>'|--reason-file path",
   ])
     expect(text).toContain(p)
   expect(text).not.toMatch(

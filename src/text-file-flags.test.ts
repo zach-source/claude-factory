@@ -634,7 +634,7 @@ mock.module(${JSON.stringify(gates)}, () => ({ ...gates, decide: target }))
 mock.module(${JSON.stringify(decisions)}, () => ({ ...decisions, answer: target }))
 `,
   )
-  const token = '123e4567-e89b-12d3-a456-426614174000'
+  const allowId = '123e4567-e89b-12d3-a456-426614174000'
   for (const [verb, args, kind, key] of [
     ['decide', 'r1 ready', 'decide', 'note'],
     ['decisions', 'answer acme acme-1', 'answer', 'text'],
@@ -655,10 +655,10 @@ mock.module(${JSON.stringify(decisions)}, () => ({ ...decisions, answer: target 
     expect(denied.exitCode).not.toBe(0)
     expect(existsSync(calls) ? readFileSync(calls, 'utf8') : '').toBe(before)
     writeFileSync(
-      join(home, 'allow', `${token}.json`),
+      join(home, 'allow', `${allowId}.json`),
       JSON.stringify({ kinds: [kind], exp: Date.now() + 60_000 }),
     )
-    const allowed = Bun.spawnSync(['bash', script], { env: { ...env, FACTORY_ALLOW: token } })
+    const allowed = Bun.spawnSync(['bash', script], { env: { ...env, FACTORY_ALLOW: allowId } })
     expect(allowed.exitCode, allowed.stderr.toString()).toBe(0)
     const rows = readFileSync(calls, 'utf8')
       .slice(before.length)
