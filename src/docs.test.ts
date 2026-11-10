@@ -57,6 +57,7 @@ test('README.md and docs/*.md name no deleted script', () => {
     const text = readFileSync(f, 'utf8')
     expect(text).not.toContain('bin/factory' + '-up')
     expect(text).not.toContain('push' + '-worker')
+    expect(text).not.toContain('bin/' + 'up')
   }
 })
 
