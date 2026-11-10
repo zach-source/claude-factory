@@ -756,6 +756,7 @@ test('3w8o AC1 soak has a deadline rule for unseen own output', () => {
     'plus this soak once',
   ])
     expect(cnt, t).toContain(t)
+  expect(soakSentence('Read the deploy time')).toBe("Read the deploy time from deploy's report.")
   const ok = soakSentence('At the deadline, if the rollout')
   for (const t of [
     'rollout is complete (ready, no restarts)',
