@@ -75,6 +75,18 @@ const REP = { outcome: 'ready', summary: 'done' }
 const body = async (r: Response) => JSON.parse(await r.text())
 
 describe('worker API', () => {
+  test('the contract puts identity before endpoint grammar', async () => {
+    const contract = readFileSync(
+      join(import.meta.dir, '../specs/004-factory-server/contracts/worker-api.md'),
+      'utf8',
+    )
+    expect(contract).toContain('8. 403: the body names another `run`, `node` or `seq` than the token.')
+    expect(contract).toContain('9. 400: the body breaks the endpoint grammar below.')
+    const s = setup()
+    expect((await s.post('/v1/report', { run: 'other', outcome: 'ok' })).status).toBe(403)
+    expect(Object.values(s.rows())).toMatchObject([{ status: 'refused' }])
+  })
+
   test('Quickstart 2 sends a foreign report with the required headers', async () => {
     const s = setup()
     const doc = readFileSync(join(import.meta.dir, '../specs/004-factory-server/quickstart.md'), 'utf8')

@@ -45,10 +45,11 @@ Workers call this API. The caller is a worker CLI (`factory report|mail|memory|u
   4. 400: the `Idempotency-Key` does not match `^[A-Za-z0-9-]{8,128}$`.
   5. 503: the call store does not parse.
   6. 409: the key was used for another token or body, or the first call with this key did not finish (`pending`).
-  7. 400: the body breaks the closed grammar below.
+  7. 400: the content type is not JSON, the body exceeds 128 KiB, or JSON is not an object.
   8. 403: the body names another `run`, `node` or `seq` than the token.
-  9. 409: the run is not at the node and seq of the token, or the run is unknown.
-  10. 409: the CLI refused the call. 504: the CLI timed out and the call can have applied.
+  9. 400: the body breaks the endpoint grammar below.
+  10. 409: the run is not at the node and seq of the token, or the run is unknown.
+  11. 409: the CLI refused the call. 504: the CLI timed out and the call can have applied.
 - Rows. Only a call with a live token and a good key makes a row. The checks 1 to 6 write no row. A replay writes no row. A refusal from check 7 on writes a `refused` row.
 - Store. The rows are in `<home>/worker-calls.json` (mode 0600), kept 7 days, until the Dolt table of S6. The row key is the Idempotency-Key. The row holds the token id, never the token. Status `pending` marks a call that started and did not finish: the same key gets 409 and the CLI never runs two times.
 - Body keys. `run`, `node` and `seq` are optional in each body and must equal the token. Other keys are closed: report `outcome, summary`; mail `to, text`; progress `note`. There is no `wake` key.
