@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { bootstrapBeads } from './worker'
 
 /**
@@ -88,6 +88,23 @@ export function bdEnv(repo: string, env: Env = process.env) {
     BD_NON_INTERACTIVE: '1',
     BEADS_DIR: join(dir, '.beads'),
   }
+}
+
+/**
+ * claude-factory-d289.26: the env keys for a manager shell `bd` in the rig repo `top` (a git toplevel).
+ * It gives nothing on the laptop, outside a rig's clone under the repos root, or before the rig's store exists.
+ */
+export function bdExports(top: string | undefined, env: Env = process.env): Record<string, string> {
+  if (!top || !inAx(env)) return {}
+  try {
+    if (realpathSync(dirname(top)) !== realpathSync(reposRoot(env))) return {}
+  } catch {
+    return {}
+  }
+  const full = bdEnv(top, env)
+  return Object.fromEntries(
+    Object.entries(full).filter((e): e is [string, string] => e[1] !== undefined && env[e[0]] !== e[1]),
+  )
 }
 
 export type RepoStep =

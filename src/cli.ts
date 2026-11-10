@@ -232,6 +232,7 @@ import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
 import {
   bdEnv,
+  bdExports,
   httpsRemote,
   inAx,
   isLaptopPane,
@@ -13738,7 +13739,16 @@ if (import.meta.main && !outboxCmd)
         console.log(HOME)
         break
       case 'repos': {
-        if (args[0] !== 'sync') fail('usage: factory repos sync')
+        if (args[0] === 'bd-env') {
+          // claude-factory-d289.26: the manager model's shell evals this before its bd, in the cwd it has then
+          const top = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { stderr: 'ignore' })
+          for (const [k, v] of Object.entries(
+            bdExports(top.success ? top.stdout.toString().trim() : undefined),
+          ))
+            console.log(`export ${k}=${sq(v)}`)
+          break
+        }
+        if (args[0] !== 'sync') fail('usage: factory repos sync | factory repos bd-env')
         const problems = reposSync()
         if (problems.length) fail(problems.join('\n'))
         console.log(`repos in place under ${process.env.FACTORY_REPOS ?? '/workspace/w/repos'}`)
