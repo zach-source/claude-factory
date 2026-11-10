@@ -10510,7 +10510,7 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
       gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
       reviewFacts: key => JSON.stringify(reviewFacts(key)),
     }
-    if (verb === 'patrol') return patrolOnce(io)
+    if (verb === 'patrol') return await patrolOnce(io)
     return verb === 'pm'
       ? await pmOnce(io, codex)
       : verb === 'brief'
