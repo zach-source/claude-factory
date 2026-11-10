@@ -259,16 +259,16 @@ export function parseFlags(args: string[]) {
     const raw = args[i + 1]
     if (raw === undefined || seen.has(flag)) throw new Error(USAGE)
     seen.add(flag)
-    if (flag in NUMS) {
+    if (Object.hasOwn(NUMS, flag)) {
       if (!/^\d+$/.test(raw)) throw new Error(USAGE)
       v[NUMS[flag as keyof typeof NUMS]] = Number(raw)
-    } else if (flag in PATHS) {
+    } else if (Object.hasOwn(PATHS, flag)) {
       if (!raw || raw.startsWith('--')) throw new Error(USAGE)
       files[PATHS[flag as keyof typeof PATHS]] = raw
     } else throw new Error(USAGE)
   }
   if (v.everyMs <= 0 || v.leaseMs < 2 * v.everyMs || v.port > 65535) throw new Error(USAGE)
-  if (v.patrolMs > 0 && v.patrolMs < v.everyMs) throw new Error(USAGE)
+  if (v.patrolMs !== 0) throw new Error('server patrol needs an isolated runner; use --patrol-every-ms 0')
   const { clientPort, ...base } = v
   const given = [clientPort !== undefined, !!files.cert, !!files.key, !!files.ca].filter(Boolean).length
   if (given !== 0 && given !== 4) throw new Error(USAGE)
@@ -328,7 +328,6 @@ export function main(
   tick: () => unknown,
   port: Port,
   backup?: () => Promise<unknown>,
-  patrol?: { run: () => Promise<unknown>; kill?: () => void; keep: (out: unknown) => void },
 ) {
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
@@ -342,29 +341,19 @@ export function main(
     handle,
   }
   const b = serverBackupCfg(process.env, home)
-  // with the patrol on, each tick keeps its manager mail for the patrol; with it off, the tick is not wrapped
-  const patrolOn = f.patrolMs > 0 && patrol
   s = serve({
     home,
     port: f.port,
     everyMs: f.everyMs,
     leaseMs: f.leaseMs,
-    tick: patrolOn
-      ? async () => {
-          const out = await tick()
-          patrolOn.keep(out)
-          return out
-        }
-      : tick,
+    tick,
     onBoard: handle.publish,
     client,
     backup: b && 'cfg' in b && backup ? { everyMs: b.everyMs, run: backup } : undefined,
-    patrol: patrolOn ? { everyMs: f.patrolMs, run: patrolOn.run, kill: patrolOn.kill } : undefined,
   })
   console.log(
     `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''} as ${s.holder}`,
   )
-  if (patrolOn) console.log(`patrol every ${f.patrolMs} ms`)
   if (b) console.log('off' in b ? b.off : `backup on: branch ${b.cfg.branch} every ${b.everyMs} ms`)
   const stop = () => void s!.stop().then(() => process.exit(0))
   process.once('SIGTERM', stop)
