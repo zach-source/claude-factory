@@ -841,6 +841,35 @@ export function summaryArgs(args: string[]): string[] {
 
 /** the flags of `memory add` that take a value */
 const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--supersedes']
+// every flag the rig verb reads with opt() (claude-factory-svah)
+const RIG_VALUE_FLAGS = [
+  '--max',
+  '--sweeps',
+  '--slo',
+  '--drift',
+  '--runner',
+  '--agent',
+  '--mcp',
+  '--linear',
+  '--linear-projects',
+  '--linear-labels',
+  '--param',
+  '--egress',
+  '--person-only-context',
+  '--protected-branch',
+  '--cluster-runs',
+  '--auto-queue',
+  '--push-rule',
+  '--sensitive-path',
+  '--skills',
+  '--otel-content',
+  '--sandbox-class',
+  '--port',
+  '--name',
+  '--url',
+  '--user',
+  '--path-prefix',
+]
 
 /**
  * claude-factory-jho3: expand a file flag to the inline form. Three forms exist:
@@ -864,6 +893,8 @@ export function fileArgs(cmd: string, args: string[]): string[] {
       return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
     return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
   }
+  const bad = cmd === 'memory' ? memory.bareValueFlag(args, MEMORY_ADD_VALUE_FLAGS) : undefined
+  if (bad) return fail(`${bad} needs a value`)
   if (cmd !== 'memory' || args[0] !== 'add' || !args.includes('--body-file')) return args
   const i = args.indexOf('--body-file')
   const path = args[i + 1]
@@ -13327,6 +13358,7 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
 const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
+const MEMORY_USAGE = `usage: factory memory search [--rig r] '<query...>' | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`
 
 /**
  * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
@@ -13937,20 +13969,16 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'memory': {
-        if (args[0] === 'add')
-          try {
-            args.splice(0, args.length, ...fileArgs('memory', args))
-          } catch (e) {
-            console.error(`factory memory add: ${(e as Error).message}`)
-            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
-            process.exitCode = 2
-            break
-          }
+        try {
+          args.splice(0, args.length, ...fileArgs('memory', args))
+        } catch (e) {
+          console.error(`factory memory ${args[0] ?? ''}: ${(e as Error).message}`)
+          console.error(args[0] === 'add' ? `usage: factory memory add ${MEMORY_ADD_USAGE}` : MEMORY_USAGE)
+          process.exitCode = 2
+          break
+        }
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
-        // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
-        // value) looks the same as a caller who never passed --supersedes at all.
-        const hasSupersedes = args.includes('--supersedes')
         // `search --no-core`: the launch brief already prints CORE.md in full
         const noCore = args.includes('--no-core')
         if (noCore) args.splice(args.indexOf('--no-core'), 1)
@@ -14032,13 +14060,7 @@ if (import.meta.main && !outboxCmd)
           // Check it after gate() runs, before same() runs. A bad path must cost no embedding.
           // A bad path must write nothing, the same as any other usage error here.
           let supersedesPath: string | undefined
-          if (hasSupersedes) {
-            if (supersedesArg === undefined || supersedesArg.startsWith('--')) {
-              console.error(`factory memory add: --supersedes needs a note path`)
-              console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
-              process.exitCode = 2
-              break
-            }
+          if (supersedesArg !== undefined) {
             const resolved = memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, supersedesArg)))
             const bad = supersedesRefusal(MEMORY, resolved)
             if (bad) {
@@ -14183,10 +14205,7 @@ if (import.meta.main && !outboxCmd)
               ),
             ].join('\n'),
           )
-        } else
-          fail(
-            `usage: factory memory search [--rig r] '<query...>' | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
-          )
+        } else fail(MEMORY_USAGE)
         break
       }
       case 'wiki': {
@@ -14451,6 +14470,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'proposals': {
+        if (memory.bareValueFlag(args, ['--rig'])) fail('--rig needs a value')
         const rigName = args.includes('--rig') ? args.splice(args.indexOf('--rig'), 2)[1] : undefined
         const [verb, name, ...why] = args
         const usage = 'proposals [install <name> [--rig r] | reject <name> <why>]'
@@ -14979,6 +14999,8 @@ if (import.meta.main && !outboxCmd)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
+        const bareFlag = memory.bareValueFlag(args, RIG_VALUE_FLAGS)
+        if (bareFlag) fail(`${bareFlag} needs a value`)
         const [max, sweeps, slo, drift, runner, agent, mcp, linear, linearProjects, linearLabels] = [
           opt('--max'),
           opt('--sweeps'),

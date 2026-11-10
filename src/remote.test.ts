@@ -158,6 +158,9 @@ test('inside a VM, a memory add the laptop would refuse exits 2 and queues nothi
     ['memory', 'add', 's', 'b'], // no --kind
     ['memory', 'add', '--kind', 'nope', 's', 'b'], // bad kind
     ['memory', 'add', '--kind', 'fact', '--until', 'zz zz', 's', 'b'], // bad --until
+    ['memory', 'add', '--kind', 'fact', 's', 'b', '--until'], // bare value flag
+    ['memory', 'add', '--rig', '--kind', 'fact', 's', 'b'], // bare value flag
+    ['memory', 'helped', 'topic/n.md', '--rig'], // bare value flag
   ]) {
     const r = factory(args, env)
     expect(r.code).toBe(2)
@@ -716,6 +719,18 @@ test('memory search --from logs shown with the run and station; without it, no b
   expect(factory(['memory', 'search', 'dolt lock']).code).toBe(0)
   expect(rows()[1].by).toBeUndefined()
   rmSync(memDir, { recursive: true })
+}, 60_000)
+
+test('a laptop memory search and helped refuse a bare value flag (claude-factory-svah)', () => {
+  for (const [args, flag] of [
+    [['memory', 'search', 'x', '--rig'], '--rig'],
+    [['memory', 'search', '--rig', '--no-core', 'x'], '--rig'],
+    [['memory', 'helped', 'topic/n.md', '--from'], '--from'],
+  ] as [string[], string][]) {
+    const r = factory(args)
+    expect(r.code).toBe(2)
+    expect(r.err).toContain(`${flag} needs a value`)
+  }
 }, 60_000)
 
 test('a laptop memory search does not import the parent worker snapshot', () => {
@@ -2063,7 +2078,7 @@ test('a replayed memory add or helped always starts with the forced --from (clau
   ])
 })
 
-test('a replayed memory add that ends with a bare --rig keeps its from (claude-factory-zw2n)', () => {
+test('a replayed memory add that ends with a bare --rig is refused (claude-factory-svah)', () => {
   const h = join(dir, 'zw2n-home')
   mkdirSync(h, { recursive: true })
   const argv = replayable(
@@ -2072,13 +2087,10 @@ test('a replayed memory add that ends with a bare --rig keeps its from (claude-f
     'r1',
   )!
   const r = factory(argv, { FACTORY_HOME: h, FACTORY_OUTBOX: '', FACTORY_FROM: 'plan', FACTORY_RUN: 'r1' })
-  expect(r.code).toBe(0)
-  const files = readdirSync(join(h, 'memory', 'inbox'))
-  expect(files).toHaveLength(1)
-  const note = readFileSync(join(h, 'memory', 'inbox', files[0]!), 'utf8')
-  expect(note).toMatch(/^from: r1\/plan$/m)
-  expect(note).not.toContain('rig: --from')
-  expect(note.split('---').slice(2).join('---')).not.toContain('r1/plan')
+  expect(r.code).toBe(2)
+  expect(r.err).toContain('--rig needs a value')
+  const inbox = join(h, 'memory', 'inbox')
+  expect(existsSync(inbox) ? readdirSync(inbox) : []).toEqual([])
 })
 
 test("a VM's bd writes go to GitHub, not the outbox, and its report pushes them first", () => {
