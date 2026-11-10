@@ -14,7 +14,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseStream, runModel, runModelAsync } from './once'
+import { parseStream, patrolOnce, runModel, runModelAsync } from './once'
+import { STEP_SPECS } from './steps'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 let dir = ''
@@ -34,7 +35,15 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], stdin = '') => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_PATROL, ...laptop } = process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_PATROL,
+    FACTORY_POLICY_BROKER,
+    FACTORY_STEP_ISOLATE,
+    ...laptop
+  } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,
@@ -124,6 +133,57 @@ test('patrol --once sends the kept mail to the model and logs the outcome', () =
     cacheRead: 3,
     cacheWrite: 2,
   })
+  expect(lines('agent-steps.jsonl')).toMatchObject([{ step: 'patrol', outcome: 'ok', token_slot: 'live' }])
+})
+
+const MAIL = { run: 'r1', from: 'build', text: 'which branch do I merge into?', at: 5 }
+
+test('a patrol that a usage limit refused keeps its mail', () => {
+  write('manager-tick.json', { runs: [], manager: [], rigs: [] })
+  write('patrol-state.json', { unsent: [MAIL], seen: [], patrolAt: 0 })
+  writeFileSync(
+    join(dir, 'reply.jsonl'),
+    JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 429,
+      result: 'slow down',
+    }) + '\n',
+  )
+  expect(factory(['patrol', '--once']).err).toBe('')
+  expect(read('patrol-state.json').unsent).toEqual([MAIL])
+  const row = lines('agent-steps.jsonl')[0]
+  expect(row.outcome).toBe('limit')
+  expect(row.summary).toContain('no swap:')
+})
+
+test('a patrol that ran over its limit commits its mail and logs a timeout', async () => {
+  const stub = join(dir, 'slow.sh')
+  writeFileSync(stub, '#!/bin/sh\nsleep 30\n')
+  chmodSync(stub, 0o755)
+  write('manager-tick.json', { runs: [], manager: [], rigs: [] })
+  write('patrol-state.json', { unsent: [MAIL], seen: [], patrolAt: 0 })
+  const old = process.env.FACTORY_CLAUDE
+  process.env.FACTORY_CLAUDE = stub
+  try {
+    const io = {
+      home,
+      cli: CLI,
+      factories: '/x/factories/',
+      settings: {},
+      planFacts: async () => '',
+      gateFacts: async () => '',
+      reviewFacts: () => '',
+    }
+    const specs = { ...STEP_SPECS, patrol: { ...STEP_SPECS.patrol, timeoutMs: 300 } }
+    await patrolOnce(io, { specs })
+  } finally {
+    if (old === undefined) delete process.env.FACTORY_CLAUDE
+    else process.env.FACTORY_CLAUDE = old
+  }
+  expect(read('patrol-state.json').unsent).toEqual([])
+  expect(lines('agent-steps.jsonl')[0].outcome).toBe('timeout')
 })
 
 test('patrol --once with no news and no heartbeat due calls no model', () => {
@@ -332,6 +392,7 @@ test('runModelAsync kills the process group at the timeout', async () => {
     expect(Date.now() - t).toBeLessThan(3000)
     expect(r.isOk).toBe(false)
     expect(r.reason).toBe('spawn-failed')
+    expect(r.timedOut).toBe(true)
   } finally {
     if (old === undefined) delete process.env.FACTORY_CLAUDE
     else process.env.FACTORY_CLAUDE = old

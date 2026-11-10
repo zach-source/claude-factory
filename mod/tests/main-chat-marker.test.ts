@@ -124,6 +124,21 @@ test("a patrol subagent's prefix has FACTORY_PATROL and not the marker (AC1)", S
   expect(s.commands.at(-1)).not.toContain('FACTORY_MAIN_CHAT')
 })
 
+// claude-factory-d289.26: the AX manager task's shell bd gets the rig store env (only when FACTORY_IN_AX is 1 in the shell)
+test(
+  'every model command carries the bd shim that asks repos bd-env, for the main chat and a subagent',
+  SLOW,
+  async ($, on) => {
+    const s = await session($, on, 'Allow')
+    const shim = `if [ "$FACTORY_IN_AX" = 1 ]; then bd() { (eval "$('/repo/mod/../bin/factory' repos bd-env 2>/dev/null)"; command bd "$@"); }; fi\n`
+    await $.tool.call({ tool: 'Bash', command: 'bd ready' })
+    expect(s.commands.at(-1)).toContain(shim)
+    expect(s.commands.at(-1)!.endsWith('bd ready')).toBe(true)
+    await $.tool.call({ tool: 'Bash', command: 'bd ready', agentId: 'sub-1' } as never)
+    expect(s.commands.at(-1)).toContain(shim)
+  },
+)
+
 // claude-factory-d289.25: Allow for this turn
 const TURN = 'Allow for this turn'
 const ANSWER = '/repo/bin/factory decisions answer rig bead-1 "not now"'
