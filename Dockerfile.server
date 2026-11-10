@@ -40,7 +40,7 @@ COPY --from=axcli /ax-cli /usr/local/bin/ax
 RUN bun --version && claude --version && git --version && gh --version && bd version && dolt version \
   && ax version && kubectl version --client && gitleaks version
 WORKDIR /opt/factory
-COPY package.json bun.lock tsconfig.json ./
+COPY package.json bun.lock tsconfig.json parity-gaps.json ./
 RUN bun install --frozen-lockfile --production
 COPY bin bin
 COPY src src
