@@ -2803,7 +2803,7 @@ test('launchManager applies the manager task with its command and env, then retr
     const prefixed = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.flatMap(
       (x: any) => x.https?.pathPrefixes ?? [],
     )
-    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/'])
+    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/', '/backend-api/codex/'])
     expect(task.spec.debug).toBe(true)
     expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
     const env = Object.fromEntries(
@@ -2828,7 +2828,7 @@ test('launchManager applies the manager task with its command and env, then retr
     expect(
       rules.some((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('claude.ai')),
     ).toBe(true)
-    expect(rules.slice(-3)).toEqual([
+    expect(rules.filter((x: { http?: unknown }) => x.http)).toEqual([
       { http: { hostnames: ['ax.example.svc'], ports: { numbers: [8080] } } },
       { http: { hostnames: ['router.example.svc'], ports: { numbers: [80] } } },
       { http: { hostnames: ['broker.example.svc'], ports: { numbers: [8080] } } },
@@ -2856,12 +2856,18 @@ test('managerEnv sets the token swap to a broker POST only when the broker is se
   ).toBe('curl -sSf -m 25 -X POST http://broker.example.svc:8080/token/best')
 })
 
+// the Codex fallback rules (y3f8w.1) follow the manager's other rules
+const CODEX = [ax.OPENAI_RULE, ax.CODEX_CHATGPT_RULE]
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
-  expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
-  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([
+    { hosts: ['claude.ai'] },
+    ...CODEX,
+  ])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_ROUTER: 'http://r.example.svc' })).toEqual([
     { hosts: ['claude.ai'] },
     { hosts: ['r.example.svc'], port: 80, http: true },
+    ...CODEX,
   ])
 })
 
@@ -2964,6 +2970,7 @@ test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none 
     { hosts: ['claude.ai'] },
     dolt(['beads-dolt.beads.svc.cluster.local'], 50051),
     dolt(['dolt.example.com'], 443),
+    ...CODEX,
   ])
   const own = rig('g', 'https://own.example.com:8443/x', [
     { hosts: ['own.example.com'], port: 8443, key: 'ACME_DOLT', header: 'X-Auth', prefix: 'T ' },
@@ -2975,15 +2982,16 @@ test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none 
     prefix: 'T ',
     port: 8443,
   })
-  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
 })
 
 test('managerEgress adds the Linear rule only for a rig with --linear', () => {
   const linear = { linear: { team: 't' } }
-  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
   expect(ax.managerEgress({}, [linear])).toEqual([
     { hosts: ['claude.ai'] },
     { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
+    ...CODEX,
   ])
 })
 
@@ -3243,6 +3251,7 @@ test('managerEgress gives an https AX server a keyed rule and no http rule', () 
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8443' })).toEqual([
     { hosts: ['claude.ai'] },
     { hosts: ['ax.example.svc'], port: 8443, key: 'AX_AUTH', header: 'Authorization', prefix: 'Bearer ' },
+    ...CODEX,
   ])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc' })[1]).toMatchObject({
     port: 443,
@@ -3272,7 +3281,9 @@ test('launchManager with an https AX server injects AX_AUTH and sets a placehold
     expect(env.AX_AUTH_TOKEN).toBe('placeholder')
     expect(env.AX_SERVER).toBe('https://ax.example.svc:8443')
     const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
-    expect(rules.at(-1)).toEqual({
+    expect(
+      rules.find((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('ax.example.svc')),
+    ).toEqual({
       https: {
         hostnames: ['ax.example.svc'],
         ports: { numbers: [8443] },
