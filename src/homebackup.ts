@@ -52,6 +52,8 @@ export const EXCLUDES = [
   '/home/ui-cache/',
   // the beads stores: GBs of Dolt data with an empty nested .git; repos sync runs bd bootstrap from Dolt again
   '/home/beads/',
+  // a step's own HOME and Claude config dir (src/steps.ts runStep): its login never goes in the backup
+  '/home/steps/',
   'worktrees/',
 ]
 

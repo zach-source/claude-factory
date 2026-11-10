@@ -29,7 +29,7 @@ import type {
 import { claudeCommand } from './harness'
 import { PATROL_VERB } from './core/guards'
 import { isValidPlanShape } from './plan'
-import { stepPrompt } from './steps'
+import { runStep, stepLimit, stepPrompt, type StepKey, type StepSpec } from './steps'
 
 /** the mod's rt.unsent, rt.seen, rt.patrolAt, rt.sig and rt.sigAt, kept in `<home>/patrol-state.json` */
 export type PatrolState = {
@@ -84,6 +84,10 @@ export type ModelResult = {
   calls: { id: string; command: string }[]
   /** the Claude session id of the run */
   session?: string
+  /** the call's own timer stopped the child (runModelAsync only) */
+  timedOut?: boolean
+  /** the result event's api_error_status */
+  apiErrorStatus?: number
 }
 
 export type ModelCall = {
@@ -107,6 +111,8 @@ export type ModelCall = {
   cwd?: string
   /** the env that the child starts from, in place of process.env */
   baseEnv?: Record<string, string | undefined>
+  /** Claude only: pass --strict-mcp-config, so no MCP server loads from a config */
+  strictMcp?: boolean
 }
 
 /** the same check as FACTORY_DREAM_CODEX */
@@ -123,9 +129,12 @@ function readJsonFile<T>(path: string, fallback: T): T {
 }
 
 /** atomic: a reader never sees half a file */
+// ponytail: the server tick and a patrol child can write this file at the same time. The last write wins. Upgrade: Dolt (S6).
 function saveJson(path: string, value: unknown) {
-  writeFileSync(`${path}.tmp`, JSON.stringify(value, null, 2))
-  renameSync(`${path}.tmp`, path)
+  // a tmp name per pid: the server and a patrol child never rename the same tmp file
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(value, null, 2))
+  renameSync(tmp, path)
 }
 
 const readState = (home: string): PatrolState => ({
@@ -234,6 +243,7 @@ export function parseStream(
     commands,
     calls,
     session: typeof result.session_id === 'string' ? result.session_id : undefined,
+    apiErrorStatus: typeof result.api_error_status === 'number' ? result.api_error_status : undefined,
   }
 }
 
@@ -256,6 +266,7 @@ function modelSpawn(c: ModelCall): Spawn {
         ...(c.tools ? ['--allowedTools', c.tools] : []),
         ...['--system-prompt', c.system, '--disable-slash-commands'],
         ...(c.settings ? ['--settings', JSON.stringify(c.settings)] : []),
+        ...(c.strictMcp ? ['--strict-mcp-config'] : []),
       ]
   // codex has no system prompt flag: the step text leads its stdin
   const stdin = c.codex ? `${c.system}\n\n${c.input}` : c.input
@@ -331,6 +342,7 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
   const start = Date.now()
   const { argv, env, stdin } = modelSpawn(c)
   let timer: ReturnType<typeof setTimeout> | undefined
+  let timedOut = false
   try {
     const proc = Bun.spawn(argv, {
       env,
@@ -341,6 +353,7 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
       detached: true,
     })
     timer = setTimeout(() => {
+      timedOut = true
       try {
         process.kill(-proc.pid, 'SIGKILL')
       } catch {}
@@ -350,7 +363,8 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
       new Response(proc.stderr).text(),
       proc.exited,
     ])
-    return modelResult(c, out, err, proc.exitCode, start)
+    const r = modelResult(c, out, err, proc.exitCode, start)
+    return timedOut ? { ...r, timedOut } : r
   } catch (err) {
     return spawnFailed(line(String(err), 300), start)
   } finally {
@@ -361,7 +375,7 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
 const mailId = (m: FactoryMail) => `${m.run}\0${m.from}\0${m.at}\0${m.text}`
 
 /** `factory patrol --once`. Gives the report text, or `nothing due`. */
-export function patrolOnce(io: Io): string {
+export async function patrolOnce(io: Io, deps: { specs?: Record<StepKey, StepSpec> } = {}): Promise<string> {
   const tick = readTick(io.home)
   const state = readState(io.home)
   const now = Date.now()
@@ -387,18 +401,21 @@ export function patrolOnce(io: Io): string {
   )
   if (!due) return 'nothing due'
   const guard = { type: 'command', command: `'${io.cli}' patrol-guard` }
-  const res = runModel({
-    system: stepPrompt('patrol', { cli: io.cli, factories: io.factories }),
-    input: due.text,
-    model: 'claude-sonnet-5-5',
-    tools: 'Bash,Read,Grep,Glob,Write',
-    maxTurns: 40,
-    settings: { ...io.settings, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
-    env: { FACTORY_PATROL: '1', FACTORY_HOME: io.home },
-    timeoutMs: 15 * 60_000,
-  })
-  // the mod commits after a confirmed spawn: a model that never started keeps its mail for the next patrol
-  if (res.reason !== 'spawn-failed') {
+  const res = await runStep(
+    io.home,
+    'patrol',
+    {
+      system: stepPrompt('patrol', { cli: io.cli, factories: io.factories }),
+      input: due.text,
+      settings: { ...io.settings, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
+      env: { FACTORY_HOME: io.home },
+    },
+    runModelAsync,
+    deps,
+  )
+  // the mod commits after a confirmed spawn: a model that never started, or that a usage limit refused,
+  // did no work and keeps its mail for the next patrol. A timeout commits: the patrol ran and can have acted.
+  if (res.reason !== 'spawn-failed' && !stepLimit(res)) {
     const sent = new Set(state.unsent.map(mailId))
     const fresh = readState(io.home) // mail that a tick added meanwhile
     saveJson(file(io.home, 'patrol-state.json'), {
@@ -437,23 +454,13 @@ const factory = (io: Io, args: string[]) => {
 }
 
 /** a step that needs no tool: the model reads the facts and answers in text */
-function noToolCall(
-  io: Io,
-  step: 'pm' | 'briefer' | 'reviewer',
-  model: string,
-  maxTurns: number,
-  facts: string,
-  codex?: string,
-) {
-  return runModel({
-    system: stepPrompt(step, step === 'pm' ? { cli: io.cli } : {}),
-    input: facts,
-    model,
-    tools: '',
-    maxTurns,
-    codex,
-    timeoutMs: step === 'pm' ? 15 * 60_000 : 10 * 60_000,
-  })
+function noToolCall(io: Io, step: 'pm' | 'briefer' | 'reviewer', facts: string, codex?: string) {
+  return runStep(
+    io.home,
+    step,
+    { system: stepPrompt(step, step === 'pm' ? { cli: io.cli } : {}), input: facts, codex },
+    runModelAsync,
+  )
 }
 
 /** `factory pm --once`: ranks each rig's next work, then applies the answer with `factory plan set` */
@@ -471,7 +478,7 @@ export async function pmOnce(io: Io, codex?: string): Promise<string> {
     } satisfies FactoryPmLogEntry)
     return `plan facts failed: ${(err as Error).message}`
   }
-  const res = noToolCall(io, 'pm', 'claude-sonnet-5-5', 15, facts, codex)
+  const res = await noToolCall(io, 'pm', facts, codex)
   appendUsage(io.home, 'pm', res.usage)
   const base = { at, reason: res.reason, durationMs: res.durationMs, tokens: tokensOf(res.usage) }
   const fence = [...res.text.matchAll(/```json\s*([\s\S]*?)```/g)].at(-1)?.[1]?.trim()
@@ -512,7 +519,7 @@ type Filed = { key: string; facts: () => Promise<string> | string; answerFile: s
 
 async function filedStep(
   io: Io,
-  c: { name: 'briefer' | 'reviewer'; log: string; cap: number; model: string; maxTurns: number },
+  c: { name: 'briefer' | 'reviewer'; log: string; cap: number },
   f: Filed,
   codex?: string,
 ): Promise<string> {
@@ -525,7 +532,7 @@ async function filedStep(
     note({ at, key: f.key, durationMs: 0, error: line((err as Error).message, 300) })
     return `${c.name} facts failed: ${(err as Error).message}`
   }
-  const res = noToolCall(io, c.name, c.model, c.maxTurns, facts, codex)
+  const res = await noToolCall(io, c.name, facts, codex)
   appendUsage(io.home, c.name, res.usage)
   const base = { at, key: f.key, reason: res.reason, durationMs: res.durationMs, tokens: tokensOf(res.usage) }
   let entry: FactoryBriefLogEntry | FactoryReviewLogEntry
@@ -547,7 +554,7 @@ export async function briefOnce(io: Io, codex?: string): Promise<string> {
   if (!next) return 'nothing due'
   return filedStep(
     io,
-    { name: 'briefer', log: 'brief-log.jsonl', cap: BRIEFER_LOG_CAP, model: 'claude-haiku-5-5', maxTurns: 3 },
+    { name: 'briefer', log: 'brief-log.jsonl', cap: BRIEFER_LOG_CAP },
     {
       key: next.key,
       facts: () => io.gateFacts(next.r.id),
@@ -565,13 +572,7 @@ export async function reviewOnce(io: Io, codex?: string): Promise<string> {
   if (!item) return 'nothing due'
   return filedStep(
     io,
-    {
-      name: 'reviewer',
-      log: 'review-log.jsonl',
-      cap: REVIEWER_LOG_CAP,
-      model: 'claude-sonnet-5-5',
-      maxTurns: 3,
-    },
+    { name: 'reviewer', log: 'review-log.jsonl', cap: REVIEWER_LOG_CAP },
     {
       key: item.key,
       facts: () => io.reviewFacts(item.key),
