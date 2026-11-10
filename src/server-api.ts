@@ -462,13 +462,23 @@ export function serveSocket(
   sock: Socket,
   handle: (req: Request, ip: string) => Promise<Response>,
   idleMs: number,
+  policy?: { bodyMax: number; validTarget: (target: string) => boolean },
 ) {
   const reply = (status: number, body: string, type = 'application/json', extra = '') => {
     sock.end(
       `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? 'Status'}\r\ncontent-type: ${type}\r\ncontent-length: ${Buffer.byteLength(body)}\r\nconnection: close\r\n${extra}\r\n${body}`,
     )
   }
-  const bad = (status: number, why: string) => reply(status, `${JSON.stringify({ refused: why })}\n`)
+  const bad = (status: number, why: string) => {
+    done = true
+    if (deadline) clearTimeout(deadline)
+    if (policy) reply(400, JSON.stringify({ error: 'invalid_request' }))
+    else reply(status, `${JSON.stringify({ refused: why })}\n`)
+  }
+  const deadline = policy ? setTimeout(() => sock.destroy(), idleMs) : undefined
+  sock.once('close', () => {
+    if (deadline) clearTimeout(deadline)
+  })
   // the idle limit covers the read of the request only: a CLI call can run to its own 60 s limit and answer 504
   sock.setTimeout(idleMs, () => sock.destroy())
   sock.on('error', () => sock.destroy())
@@ -477,6 +487,7 @@ export function serveSocket(
   let done = false
   const finish = async () => {
     done = true
+    if (deadline) clearTimeout(deadline)
     sock.setTimeout(0)
     try {
       const body = buf.subarray(head!.end, head!.end + head!.length)
@@ -534,7 +545,21 @@ export function serveSocket(
   }
   sock.on('data', (chunk: Buffer) => {
     if (done) return
-    buf = Buffer.concat([buf, chunk])
+    let tail: Buffer | undefined
+    if (policy && !head) {
+      const prefix = Buffer.concat([buf, chunk.subarray(0, HEAD_MAX + 4 - buf.length)])
+      const at = prefix.indexOf('\r\n\r\n')
+      if (at < 0) {
+        buf = prefix
+        return buf.length > HEAD_MAX ? bad(400, 'request head too large') : undefined
+      }
+      tail = chunk.subarray(at + 4 - buf.length)
+      buf = prefix.subarray(0, at + 4)
+    } else {
+      if (policy && head && buf.length + chunk.length > head.end + head.length)
+        return bad(400, 'unexpected data')
+      buf = Buffer.concat([buf, chunk])
+    }
     if (!head) {
       const at = buf.indexOf('\r\n\r\n')
       if (at < 0) return buf.length > HEAD_MAX ? bad(431, 'request head too large') : undefined
@@ -542,6 +567,7 @@ export function serveSocket(
       const [line, ...rest] = buf.subarray(0, at).toString('latin1').split('\r\n')
       const m = /^([A-Z]{1,16}) (\/\S{0,4000}) HTTP\/1\.1$/.exec(line ?? '')
       if (!m) return bad(400, 'bad request line')
+      if (policy && !policy.validTarget(m[2]!)) return bad(400, 'bad target')
       const headers = new Headers()
       const seen = new Set<string>()
       for (const l of rest) {
@@ -558,8 +584,13 @@ export function serveSocket(
       const cl = headers.get('content-length')
       if (cl !== null && !/^\d{1,9}$/.test(cl)) return bad(400, 'bad content-length')
       const length = cl === null ? 0 : Number(cl)
-      if (length > BODY_MAX) return bad(400, 'body too large')
+      if (length > (policy?.bodyMax ?? BODY_MAX)) return bad(400, 'body too large')
+      if (policy && (m[1] === 'GET' || m[1] === 'HEAD') && length !== 0) return bad(400, 'unexpected body')
       head = { method: m[1]!, target: m[2]!, headers, length, end: at + 4 }
+    }
+    if (tail) {
+      if (tail.length > head.length) return bad(400, 'unexpected data')
+      buf = Buffer.concat([buf, tail])
     }
     if (buf.length >= head.end + head.length) void finish()
   })
