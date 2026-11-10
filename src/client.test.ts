@@ -54,7 +54,7 @@ test('n69b2 AC2 invalid gc forms cause no HTTP request', async () => {
   const fetchFn = (async () => {
     requests++
     throw new Error('unexpected HTTP request')
-  }) as typeof fetch
+  }) as unknown as typeof fetch
   for (const args of rows) {
     expect(typeof route('gc', args)).toBe('string')
     expect(
@@ -65,6 +65,28 @@ test('n69b2 AC2 invalid gc forms cause no HTTP request', async () => {
     ).toBe(1)
   }
   expect(requests).toBe(0)
+})
+
+test('n69b2 AC2 each gc caller marker refuses before HTTP, including previews', async () => {
+  let requests = 0
+  const fetchFn = (async () => {
+    requests++
+    return new Response('ok\n')
+  }) as unknown as typeof fetch
+  const io = { out: () => {}, err: () => {} }
+  for (const marker of [
+    { FACTORY_FROM: 'implement' },
+    { FACTORY_RUN: 'r1' },
+    { FACTORY_DEF_NAME: 'lifecycle' },
+    { BEADS_ACTOR: 'factory/r1/implement' },
+    { FACTORY_PATROL: '1' },
+  ]) {
+    for (const args of [[], ['--dry-run'], ['--worktrees', '--dry-run']])
+      expect(await main('gc', args, { FACTORY_SERVER: 'http://127.0.0.1:9', ...marker }, fetchFn, io)).toBe(1)
+  }
+  expect(requests).toBe(0)
+  expect(await main('gc', [], { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, io)).toBe(0)
+  expect(requests).toBe(1)
 })
 
 test('serverUrl: https, or http on loopback, an origin only', () => {

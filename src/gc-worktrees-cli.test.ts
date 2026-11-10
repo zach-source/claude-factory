@@ -54,7 +54,16 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_DEF_NAME,
+    FACTORY_PATROL,
+    BEADS_ACTOR,
+    FACTORY_SERVER,
+    ...laptop
+  } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...env },
     timeout: 30_000,
@@ -330,6 +339,75 @@ const reset = () => {
 
 const DAY = 24 * 3_600_000
 const OLD = Date.now() - 2 * 3_600_000 // finished 2h ago: past WORKTREE_MIN_AGE_MS (1h)
+
+test('n69b2 AC3 server preview and rig selection preserve real refs and wrong-rig worktrees', async () => {
+  reset()
+  const a = makeRig('a')
+  const b = makeRig('b', 'https://github.com/acme/other.git')
+  const selected = writeRun(a.repo, 'ship-selected', { outcome: 'done', finishedAt: OLD, merged: true })
+  const other = writeRun(b.repo, 'ship-other', { outcome: 'done', finishedAt: OLD, merged: true })
+  writeRigs([
+    { name: 'a', repo: a.repo },
+    { name: 'b', repo: b.repo },
+  ])
+  const herdr = noPanes()
+  fakeGh([])
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_DEF_NAME,
+    FACTORY_PATROL,
+    BEADS_ACTOR,
+    FACTORY_SERVER,
+    ...person
+  } = process.env
+  const env = {
+    ...person,
+    FACTORY_HOME: home,
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_NO_KICK: '1',
+    FACTORY_HERDR: herdr,
+    PATH: `${bin}:${person.PATH}`,
+  }
+  const server = Bun.spawn(
+    [
+      process.execPath,
+      '-e',
+      `
+    const {corePort} = await import(${JSON.stringify(join(import.meta.dir, 'cli.ts'))});
+    const {clientHandler} = await import(${JSON.stringify(join(import.meta.dir, 'server-api.ts'))});
+    const s = Bun.serve({hostname:'127.0.0.1',port:0,fetch:clientHandler({home:process.env.FACTORY_HOME,port:corePort,board:()=>null,run:async()=>{throw Error('no CLI bridge')}})});
+    console.log(s.url.origin);
+  `,
+    ],
+    { env, stdout: 'pipe', stderr: 'pipe', timeout: 30000 },
+  )
+  try {
+    const first = await server.stdout.getReader().read()
+    const origin = new TextDecoder().decode(first.value).trim()
+    const before = git(a.repo, 'show-ref')
+    const local = factory(['gc', '--worktrees', '--rig', 'a', '--dry-run'], { FACTORY_HERDR: herdr })
+    const remote = factory(['gc', '--worktrees', '--rig', 'a', '--dry-run'], { FACTORY_SERVER: origin })
+    expect(remote).toEqual(local)
+    expect(remote.code).toBe(0)
+    expect(remote.out).toContain(`remove worktree ${selected.worktree}`)
+    expect(remote.out).not.toContain(other.worktree)
+    expect(git(a.repo, 'show-ref')).toBe(before)
+    expect(existsSync(join(home, 'gc-worktrees.stamp'))).toBe(false)
+    expect(existsSync(join(home, 'gc-worktrees.jsonl'))).toBe(false)
+    const execute = factory(['gc', '--worktrees', '--rig', 'a'], { FACTORY_SERVER: origin })
+    expect(execute.code).toBe(0)
+    expect(execute.out).toContain('reclaimed: 1 worktrees, 1 local + 1 remote branches')
+    expect(existsSync(selected.worktree)).toBe(false)
+    expect(existsSync(other.worktree)).toBe(true)
+    expect(git(a.repo, 'branch', '--list', selected.branch)).toBe('')
+    expect(git(b.repo, 'branch', '--list', other.branch)).toContain(other.branch)
+  } finally {
+    server.kill()
+    await server.exited
+  }
+}, 30000)
 
 test('a: --dry-run lists what it would remove and changes nothing', () => {
   reset()

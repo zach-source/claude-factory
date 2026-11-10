@@ -9,6 +9,11 @@ const fake = () => {
   const calls: Call[] = []
   const cli: string[][] = []
   const port: Port = {
+    gcPass: () => {},
+    gcWorktreesPass: () => {},
+    gcRigs: () => [],
+    gcHold: () => () => {},
+    gcStamp: () => {},
     show: async id => (calls.push(['show', id]), { ok: 1 }),
     status: async (id, print) => (calls.push(['status', id]), print('line')),
     backlog: async () => (calls.push(['backlog']), []),

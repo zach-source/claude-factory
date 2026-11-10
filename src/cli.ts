@@ -352,6 +352,7 @@ import { slimBoard, snapshot as snapshotRun } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
+import * as gcOp from './core/ops/gc'
 import * as leaseOp from './core/ops/lease'
 import { flowMermaid, flowTable, type FlowGraph, type FlowRun } from './flows'
 import * as flowsOp from './core/ops/flows'
@@ -7161,7 +7162,7 @@ function removeRun(id: string): Run {
  *
  * `--dry-run` prints the runs it would reap. It deletes nothing (claude-factory-503.1, claude-factory-lt4u).
  */
-function gcPass(days: number, dryRun: boolean) {
+function gcPass(days: number, dryRun: boolean, print: Print, error: Print) {
   const now = Date.now()
   // a run dir removed mid-pass, or one with no run.json/state.json, must not fail the whole pass
   // (claude-factory-503.1.6)
@@ -7170,7 +7171,7 @@ function gcPass(days: number, dryRun: boolean) {
     try {
       return [runFact(id)]
     } catch (err) {
-      console.error(`gc: skipping ${id}: ${(err as Error).message}`)
+      error(`gc: skipping ${id}: ${(err as Error).message}`)
       skipped.push(`skipped ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`)
       return []
     }
@@ -7188,7 +7189,7 @@ function gcPass(days: number, dryRun: boolean) {
     plan.totals.briefs.files +
     plan.totals.backups.files +
     plan.totals.launch.files
-  console.log(
+  print(
     [
       `prompts: ${plan.totals.prompts.files} files, ${fmtBytes(plan.totals.prompts.bytes)}`,
       `briefs: ${plan.totals.briefs.files} files, ${fmtBytes(plan.totals.briefs.bytes)}`,
@@ -7199,17 +7200,17 @@ function gcPass(days: number, dryRun: boolean) {
     ].join('\n'),
   )
   if (dryRun) {
-    for (const id of plan.reap) console.log(`would reap ${id}`)
+    for (const id of plan.reap) print(`would reap ${id}`)
     return
   }
   // ponytail: gc.log grows by one line per reaped run and is never rotated; rotate it when it matters
   // a gc.log write error must not change a removal result or stop the pass
   const say = (line: string) => {
-    console.log(line)
+    print(line)
     try {
       appendFileSync(join(HOME, 'gc.log'), `${new Date(now).toISOString()} ${line}\n`)
     } catch (err) {
-      console.error(`gc: cannot write gc.log: ${(err as Error).message}`)
+      error(`gc: cannot write gc.log: ${(err as Error).message}`)
     }
   }
   for (const line of skipped) say(line)
@@ -7778,14 +7779,9 @@ const gcLog = (entry: Record<string, unknown>) =>
  * gc.worktreePlan() finds every tip covered. `--dry-run` only prints what this pass would do: it
  * runs no git, gh or bd write (AC1). `rigName`, when set, limits the pass to one rig.
  */
-function gcWorktreesPass(dryRun: boolean, rigName?: string) {
+function gcWorktreesPass(dryRun: boolean, rigName: string | undefined, print: Print) {
   const now = Date.now()
   const allRigs = rigs()
-  // an unknown --rig must fail, not silently run on zero rigs and print "reclaimed: 0" (claude-factory-l38.16)
-  if (rigName && !allRigs.some(r => r.name === rigName))
-    fail(
-      `factory gc --worktrees --rig ${rigName}: no such rig. Known rigs: ${allRigs.map(r => r.name).join(', ') || '(none)'}`,
-    )
   const targetRigs = allRigs.filter(r => !rigName || r.name === rigName)
   const runs = allRunRefs()
   const panes = strictPaneCwds()
@@ -7797,7 +7793,7 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
       if (!existsSync(r.worktree) || isRegistered(reg!, r.worktree)) continue
       const why = unregisteredRefusal(r.worktree, r.id, rig.repo)
       if (typeof why === 'string')
-        console.log(`keep worktree ${r.worktree} (run ${r.id}, reason: unregistered, ${why})`)
+        print(`keep worktree ${r.worktree} (run ${r.id}, reason: unregistered, ${why})`)
       else
         worktrees.push({
           path: r.worktree,
@@ -7823,16 +7819,16 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
   let errors = 0
   for (const p of plans) {
     for (const w of p.removeWorktrees)
-      console.log(
+      print(
         `remove worktree ${w.path} (run ${w.runId}${w.unregistered ? ', unregistered' : ''}${w.snapshot ? ', dirty: snapshot first' : ''}, ${fmtBytes(w.bytes)})`,
       )
     for (const b of p.removeBranches)
-      console.log(
+      print(
         `remove branch ${b.name} (run ${b.runId}, local ${b.local?.slice(0, 8) ?? '-'}, remote ${b.remote?.slice(0, 8) ?? '-'})`,
       )
     for (const k of p.keep)
-      console.log(`keep ${k.kind} ${k.name} (run ${k.runId ?? 'unowned'}, reason: ${k.reason})`)
-    console.log(`${p.rig}: owned ${p.owned}, live ${p.live}, unowned ${p.unowned}`)
+      print(`keep ${k.kind} ${k.name} (run ${k.runId ?? 'unowned'}, reason: ${k.reason})`)
+    print(`${p.rig}: owned ${p.owned}, live ${p.live}, unowned ${p.unowned}`)
     if (dryRun) continue
     const repo = byRigRepo.get(p.rig)!
     // a worktree whose `git worktree remove` fails keeps its branch too (claude-factory-l38.6):
@@ -7918,7 +7914,7 @@ function gcWorktreesPass(dryRun: boolean, rigName?: string) {
     })
   // the report line must show the error count too (claude-factory-l38.17): the journal has it, but
   // exit code stays 0 either way, so a reader of only this line must see a failed removal.
-  console.log(
+  print(
     `reclaimed: ${worktreesN} worktrees, ${localN} local + ${remoteN} remote branches, ${fmtBytes(bytesN)}, ${errors} errors`,
   )
 }
@@ -13527,6 +13523,11 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
 
 /** the helpers of this file that the catalog operations call (src/core/ops) */
 export const corePort: Port = {
+  gcPass,
+  gcWorktreesPass,
+  gcRigs: () => rigs().map(r => r.name),
+  gcHold: hold,
+  gcStamp: name => writeFileSync(join(HOME, name), ''),
   show,
   status,
   backlog,
@@ -15216,40 +15217,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'gc': {
-        refuseWorker('gc', true)
-        const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
-        const dryRun = args.includes('--dry-run')
-        if (args.includes('--worktrees')) {
-          const rigName = opt('--rig')
-          const release = hold('gc-worktrees.lock')
-          if (!release) {
-            console.log('a gc --worktrees pass is already running: skipped this one')
-            break
-          }
-          try {
-            // a failed pass waits for the next window too, not every tick (same rule as gc.stamp);
-            // --dry-run never stamps, so it never changes HOME at all (AC1)
-            if (!dryRun) writeFileSync(join(HOME, 'gc-worktrees.stamp'), '')
-            gcWorktreesPass(dryRun, rigName)
-          } finally {
-            release()
-          }
-          break
-        }
-        const daysArg = opt('--days') ?? process.env.FACTORY_GC_DAYS
-        const days = daysArg === undefined ? 7 : Number(daysArg)
-        if (!(days > 0)) fail('usage: factory gc [--days N] [--dry-run]: --days must be a positive number')
-        const release = hold('gc.lock')
-        if (!release) {
-          console.log('a gc pass is already running: skipped this one')
-          break
-        }
-        try {
-          writeFileSync(join(HOME, 'gc.stamp'), '') // a failed pass waits for the next window too, not every tick
-          gcPass(days, dryRun)
-        } finally {
-          release()
-        }
+        emit(await gcOp.run(cliCtx(), gcOp.argsInput(args)))
         break
       }
       case 'sweep': {

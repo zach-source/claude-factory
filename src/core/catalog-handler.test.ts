@@ -51,6 +51,7 @@ const NAMES = [
   'flows.show',
   'gates.brief',
   'gates.decide',
+  'gc.run',
   'guard.check',
   'lease.show',
   'mail.list',
@@ -102,15 +103,44 @@ test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {
   ] as const) {
     const r = await post(h, '/v1/gc', body)
     expect(r.status).toBe(200)
-    expect(await r.json()).toMatchObject({ code: 0, out, err: '' })
+    expect(await r.text()).toBe(out)
   }
   expect(calls.filter(c => c === 'gcPass')).toHaveLength(1)
   expect(calls.filter(c => c === 'gcWorktreesPass')).toHaveLength(1)
   expect(cliCalls).toBe(0)
 })
 
+test('n69b2 AC2 gc transport and invalid input refuse before every port effect', async () => {
+  const { h, calls } = setup()
+  for (const body of [
+    null,
+    [],
+    { path: '/x' },
+    { dryRun: false },
+    { days: 7 },
+    { days: 'Infinity' },
+    { days: '0x7' },
+    { rig: 'acme' },
+    { worktrees: true, days: '7' },
+  ]) {
+    expect((await post(h, '/v1/gc', body)).status).toBeGreaterThanOrEqual(400)
+  }
+  expect((await post(h, '/v1/gc?dryRun=1', {})).status).toBe(400)
+  for (const [headers, status] of [
+    [{ authorization: 'Bearer v1.a.b' }, 403],
+    [{ 'content-type': 'text/plain', 'idempotency-key': 'gc-key-123' }, 400],
+    [{ 'content-type': 'application/json' }, 400],
+  ] as const) {
+    expect(
+      (await h(new Request('http://x/v1/gc', { method: 'POST', headers, body: '{"dryRun":true}' }), 'ip'))
+        .status,
+    ).toBe(status)
+  }
+  expect(calls).toEqual([])
+})
+
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 29 operations', async () => {
+  test('serves the envelope with the 30 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)
