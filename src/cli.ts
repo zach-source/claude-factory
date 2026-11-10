@@ -1295,6 +1295,8 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       side!.memory = { bytes: statSync(file).size, parts, sentAt: Date.now() }
     }
     writeJson(sideFile(run, task), side)
+    if (name === MEMORY_TGZ)
+      launchLog(run, side!.node, `memory snapshot sent: ${side!.memory!.bytes} bytes in ${parts} parts`)
     // remove the file after the save: a stop between the two would leave side.put naming a missing file
     if (name === MEMORY_TGZ) rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
   }
@@ -2170,24 +2172,25 @@ export function launchNotes(run: Run, node: string) {
       { env: { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '' }, timeout: 60_000 },
     )
     if (p.exitCode !== 0) {
-      launchNotesFailed(run, node, p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`)
+      launchLog(
+        run,
+        node,
+        `launch memory search failed: ${p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`}`,
+      )
       return ''
     }
     const out = p.stdout.toString().trim()
     return out.startsWith('nothing in ') ? '' : clip(out, 6000)
   } catch (e) {
-    launchNotesFailed(run, node, String(e))
+    launchLog(run, node, `launch memory search failed: ${String(e)}`)
     return ''
   }
 }
 
 /** one line in HOME/launches.log; a write error never blocks the launch */
-function launchNotesFailed(run: Run, node: string, why: string) {
+function launchLog(run: Run, node: string, text: string) {
   try {
-    appendFileSync(
-      join(HOME, 'launches.log'),
-      `${new Date().toISOString()} ${run.id}/${node} launch memory search failed: ${why}\n`,
-    )
+    appendFileSync(join(HOME, 'launches.log'), `${new Date().toISOString()} ${run.id}/${node} ${text}\n`)
   } catch {
     // best effort
   }
@@ -2466,6 +2469,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
   // the VM cannot reach the laptop's memory: it gets a snapshot of the notes its rig can see (vffe.4)
   const snap = memorySnapshotPut(MEMORY, rig?.name, join(runDir(run.id), `${name}.${MEMORY_TGZ}`))
+  if (snap.skipped) launchLog(run, node, `memory snapshot skipped: ${snap.skipped}`)
   // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
   // the fleet may hold other VMs' writes since: take them first, or the push is refused
   if (hasRunBeads) (syncRigBeads(run, 'pull'), syncRigBeads(run, 'push'))
