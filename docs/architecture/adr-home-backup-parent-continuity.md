@@ -204,3 +204,24 @@ Task 1 blocks task 2. Both tasks belong in one PR. No external merge blocks this
 Check its state before the final merge from main and preserve both changes if it lands.
 Do not absorb its timeout work or wait for it without a concrete dependency.
 Plan commits only this ADR. Scratch probes and logs remain untracked.
+
+## Implementation checks
+
+The resumed implement station checked commit `0153f488` with Git 2.56.0 and Bun 1.4.4.
+All 30 fresh-process `d289.20` repetitions passed without retry.
+The complete home backup suite passed: 34 tests, zero failures.
+The plugin suite passed: 238 tests, zero failures.
+Typecheck, Prettier 3.9.9, gitleaks 8.30.1, and `bun audit` passed.
+
+The `ohn03` regression killed two buildable mutants at `src/homebackup.ts:170`:
+
+- Replace the home add with `git status --porcelain`.
+- Insert the memory index removal before the home add.
+
+The second mutant restores the proved index rewrite order.
+Both mutants returned `changed=false`; the regression required `changed=true`.
+The mutation tool restored the source after each test.
+
+All five CI checks passed at `0153f488`, which includes the main merge:
+[CI run](https://github.com/zach-source/claude-factory/actions/runs/42827327819).
+The final PR head must also pass the required checks.
