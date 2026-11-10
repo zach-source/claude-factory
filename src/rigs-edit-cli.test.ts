@@ -76,6 +76,17 @@ test('rig add writes the list, replaces a rig by name and refuses a second name 
   expect(names()).toEqual(['x', 'z'])
 })
 
+test('rig refuses a bare value flag but reads a --goal that ends in one (claude-factory-svah)', () => {
+  const a = repo('a')
+  const bad = factory(['rig', 'add', 'x', a, '--max', '--sweeps', 'none'])
+  expect(bad.code).not.toBe(0)
+  expect(bad.err).toContain('--max needs a value')
+  expect(existsSync(file())).toBe(false)
+  expect(factory(['rig', 'add', 'x', a, '--goal', 'ship', '--max']).code).toBe(0)
+  expect(JSON.parse(text())[0].goal).toBe('ship --max')
+  expect(factory(['rig', 'add', 'x', a, '--max', '2']).code).toBe(0)
+})
+
 test('rig rm removes a rig and refuses an unknown name', () => {
   factory(['rig', 'add', 'x', repo('a')])
   factory(['rig', 'add', 'y', repo('b')])
