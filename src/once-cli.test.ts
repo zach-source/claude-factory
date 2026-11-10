@@ -14,7 +14,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseStream, patrolOnce, runModel, runModelAsync } from './once'
+import { parseStream, patrolOnce, runModel, runModelAsync, type ModelCall } from './once'
 import { STEP_SPECS } from './steps'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -297,6 +297,60 @@ test('brief --once and review --once report nothing due on an empty board', () =
 })
 
 const stream = (lines: unknown[]) => lines.map(l => JSON.stringify(l)).join('\n')
+
+test('wua3v model argv preserves source restriction', async () => {
+  reply('ok')
+  const old = { claude: process.env.FACTORY_CLAUDE, codex: process.env.FACTORY_CODEX }
+  process.env.FACTORY_CLAUDE = join(dir, 'stub.sh')
+  process.env.FACTORY_CODEX = join(dir, 'stub.sh')
+  const settings = {
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'guard' }] }] },
+  }
+  const base = {
+    system: 's',
+    input: 'i',
+    model: 'm',
+    tools: 'Bash',
+    maxTurns: 3,
+    timeoutMs: 20_000,
+    settings,
+  }
+  const restricted: ModelCall = { ...base, settingSources: 'user' }
+  const args = () => readFileSync(join(dir, 'args.txt'), 'utf8').trimEnd().split('\n')
+  try {
+    for (const run of [runModel, runModelAsync]) {
+      for (const mode of [{}, { persist: true }, { persist: true, resume: 's-1' }]) {
+        expect((await run({ ...restricted, ...mode })).isOk).toBe(true)
+        const a = args()
+        expect(a.filter(v => v === '--setting-sources')).toHaveLength(1)
+        expect(a[a.indexOf('--setting-sources') + 1]).toBe('user')
+        expect(JSON.parse(a[a.indexOf('--settings') + 1]!)).toEqual(settings)
+      }
+      await run(base)
+      expect(args()).not.toContain('--setting-sources')
+      await run({ ...restricted, codex: 'gpt-5' })
+      expect(args()).not.toContain('--setting-sources')
+    }
+    const reject = join(dir, 'reject.sh')
+    writeFileSync(
+      reject,
+      `#!/bin/sh\nprintf 'spawn\\n' >> '${dir}/spawns.txt'\nprintf 'unknown option: --setting-sources' >&2\nexit 1\n`,
+    )
+    chmodSync(reject, 0o755)
+    process.env.FACTORY_CLAUDE = reject
+    for (const run of [runModel, runModelAsync]) {
+      const r = await run(restricted)
+      expect(r.isOk).toBe(false)
+      expect(r.error).toContain('unknown option: --setting-sources')
+    }
+    expect(readFileSync(join(dir, 'spawns.txt'), 'utf8')).toBe('spawn\nspawn\n')
+  } finally {
+    if (old.claude === undefined) delete process.env.FACTORY_CLAUDE
+    else process.env.FACTORY_CLAUDE = old.claude
+    if (old.codex === undefined) delete process.env.FACTORY_CODEX
+    else process.env.FACTORY_CODEX = old.codex
+  }
+})
 
 test('parseStream keeps tool ids and the session', () => {
   const bash = (id: unknown, command: string) => ({ type: 'tool_use', name: 'Bash', id, input: { command } })
