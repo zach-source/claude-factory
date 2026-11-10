@@ -124,6 +124,16 @@ test('p99sx AC3: digest tolerates a bad def with a bead', () => {
   expect(result.err).not.toContain('runner "nope"')
 })
 
+test('p99sx sibling: flows keeps good runs when one def does not load', () => {
+  const bad = held('nope')
+  const good = held('herdr')
+  const result = factory(['flows', '--factory', 'ship', '--json'])
+  expect(result.err).not.toContain('runner "nope"')
+  expect(result.code).toBe(0)
+  expect(result.out).toContain(good.id)
+  expect(result.out).not.toContain(bad.id)
+})
+
 test('AC1/AC4: a mark wakes the held stations of its runner only', () => {
   const a = held('ax')
   const h = held('herdr')

@@ -13071,9 +13071,11 @@ async function flowData(name: string | undefined): Promise<{ def: Factory; runs:
   const live: FlowRun[] = []
   for (const id of startedRunIds()) {
     const { run, value, c } = current(id)
-    if (factoryLabelName(run, await loadPinned(run.factory)) !== spec) continue
-    const [node, sub] = where(value)
-    live.push({ id, node, sub, createdAt: createdAt(id), log: c.log })
+    try {
+      if (factoryLabelName(run, await loadPinned(run.factory)) !== spec) continue
+      const [node, sub] = where(value)
+      live.push({ id, node, sub, createdAt: createdAt(id), log: c.log })
+    } catch {}
   }
   const ids = new Set(live.map(r => r.id))
   const kept: FlowRun[] = records()
