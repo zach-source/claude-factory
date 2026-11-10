@@ -4,7 +4,7 @@
 
 This plan covers claude-factory-5wwv and its related `rigs.list` exposure.
 The original base commit is `95e4a33d`.
-This revision uses head `839967f513f772b090f4b81dd3a072338bf6f58a` of PR #787.
+This revision uses head `1e926cebc1f62a1aec60a031c9fa0444ef7a73a1` of PR #787.
 Return only explicit rig display fields from catalog operation `board.show` and GET `/v1/events`.
 Use the same `boardView` projection before SSE serialization, replay-cache insertion, and live delivery.
 Hide every param value in `rigListLines`, for both the CLI and `GET /v1/rigs`.
@@ -96,10 +96,17 @@ Reviews then found missing controls in separate rounds.
 The release-note task also conflicted with the pinned station rule; release owns that note.
 
 Commit `40e6196c` closes the SSE runtime path with the shared projection.
-Its test at `src/server-api-handler.test.ts:490` combines private values and rejects only a malformed `rigs` collection.
-It does not prove the separate private-field rows, nested failures, source preservation, or recovery required by task `.6`.
-Narrow the next pass to those controls. Keep the runtime design and all completed HTTP work.
-Reopen task `.6`; do not create a second defect for the same missing controls.
+Commits `0e835623` and `de9744a0` add the private-field matrix, malformed rows, and refusal counters.
+Review round four accepts AC7 and AC8. Only the complete AC6 fixture remains incomplete.
+At `src/server-api-handler.test.ts:538`, the matrix fixture lacks most nested display fields.
+At line 562, the live source is anonymous. Line 580 compares only the first source; neither source has a nested freeze.
+The previous task combined matrix expansion with fixture controls, but its evidence did not identify each fixture assertion.
+The matrix grew while the complete fixture remained absent.
+
+Narrow task `.6` to one named test: `events preserve the complete display and both frozen sources`.
+Use the concrete fixture and checkpoints below. Keep all current matrix rows and the runtime design.
+Do not expand the matrix again or reopen AC1-AC5, AC7, or AC8 without a new defect.
+Task `.6` remains open; do not create another task for this remainder.
 
 ## Acceptance criteria
 
@@ -154,9 +161,38 @@ Assert exact projected replay and live frames, with consecutive IDs.
 Assert no private field names or marker in either frame or captured logs.
 Cover both runners and normal, halted, and read-only boards across the controls.
 Use one complete benign display fixture to assert all allowed fields and array order.
-Freeze nested source data and compare the whole source after publication and replay.
+Retain both publication sources. Deeply freeze both sources before either publication.
+Compare both whole sources after publication and replay against independent snapshots.
 Keep unrelated board data, including `manager`, `reviews`, `reviewed`, runs, lease, and halt, unchanged when present.
 The publisher must make zero board-provider, port, and runner calls.
+
+The remaining named test must use this complete benign rig fixture:
+
+| Fields                                                                  | Values                                       |
+| ----------------------------------------------------------------------- | -------------------------------------------- |
+| `name`, `repo`, `factory`                                               | `acme`, `repo-a`, `lifecycle`                |
+| `goal`, `runner`, `sandboxClass`, `maxRuns`                             | `Build widget`, `ax`, `small`, `2`           |
+| `sweeps`                                                                | `["second", "first"]`                        |
+| `linear.team`                                                           | `["team-b", "team-a"]`                       |
+| `linear.projects`                                                       | `["project-b", "project-a"]`                 |
+| `linear.labels`                                                         | `["label-b", "label-a"]`                     |
+| `linearSync.at`, `pulled`, `created`, `updated`, `stripped`, `unrouted` | `100`, `2`, `3`, `4`, `5`, `6`, respectively |
+| `linearSync.error`                                                      | `Temporary failure`                          |
+
+Use separate retained objects named `replaySource` and `liveSource`; the live rig changes only `repo` to `repo-b`.
+Each board includes `manager`, `reviews`, `reviewed`, `runs`, `lease`, and `halt` with benign nonempty values.
+Each rig also contains `env.FOO`, `params.FOO`, and `beadsRemote` with the fake marker `zqsecret`.
+These private values provide a negative control; the existing matrix supplies separate private-field cases.
+Take independent whole-source snapshots before publication, with `structuredClone` or the existing JSON snapshot convention.
+Freeze every nested object and array in both sources, including private data and unrelated board fields.
+Use a small test-local recursive freeze helper, as the HTTP test does; add no shared production utility.
+Publish `replaySource`, then subscribe. Publish `liveSource` after subscription and collect two frames.
+Compare the complete output with explicit expected frames 1 and 2, with every field above and the unchanged board fields.
+Do not derive expected rigs with `boardView`; that would repeat the implementation under test.
+Assert array order exactly. Do not use substring checks as the only display assertions.
+Compare both whole sources to their snapshots after both publications and the replay read.
+Assert zero board-provider, port, and runner calls, and no marker in frames or captured logs.
+One fixture suffices; existing rows retain both runners and all three board kinds.
 
 AC7. Add `events reject malformed rig data without cache or delivery changes` in the same test file.
 Cover null, primitive, and array values for rig entries, `linear`, and `linearSync`.
@@ -199,15 +235,17 @@ Record red and green commands, test names, and SHAs in the task evidence.
 No mutation test is necessary if the committed tests fail on the pre-fix code for the stated exposure.
 
 Tasks `.1` through `.5` are complete; preserve their commits and tests.
-Task `.6` now has one remaining test commit, after `40e6196c`:
+Task `.6` now has one remaining test commit, after `de9744a0`:
 
-1. Extend `src/server-api-handler.test.ts` with AC6-AC8 controls.
+1. Add the named complete AC6 fixture to `src/server-api-handler.test.ts` first.
+   Preserve every existing test. No production source change is planned.
 2. Run the focused test command and the expanded AC5 gate.
-3. Commit the tests, then prove the privacy and failure controls with separate mutations.
-   Replace `boardView(board)` with `board` for the first mutation.
-   Remove the malformed-publication return for the second mutation.
-   Each mutant must build and fail its named test; restore each mutation before the next check.
-4. Record each command, result, and SHA on task `.6`, then close it.
+3. Commit the test. Prove it detects loss of `linear.projects` with a buildable mutation in `boardView`.
+   Delete only the `projects` schema member from the `linear` projection for this mutation.
+   The new named test must fail; restore the file and confirm a clean worktree.
+   The prior privacy and malformed-return mutations remain evidence; do not repeat them for this fixture-only change.
+4. Record the test name, command, result, mutation result, and SHA on task `.6`.
+   Cite the exact assertions for all display fields and both frozen source comparisons before task closure.
 
 These tests can pass on the current fix; do not undo completed work to create a red tests-first commit.
 The earlier SSE test was red before `40e6196c`; the new controls prove that fix with mutations.
@@ -268,9 +306,11 @@ This station changes only this architecture record; implementation tests and the
 
 ## Revised plan validation
 
-At `839967f5`, the expanded AC5 test command passed: 495 tests, zero failures, 2525 assertions across 15 files.
-An earlier invocation hit the tool's 60-second limit; the completed run took 77.78 seconds.
-TypeScript, explicit ADR Prettier, and `bun audit` passed.
+At `1e926ceb`, the focused SSE baseline passed: 249 tests, zero failures, 1282 assertions.
+Command: `bun test --timeout 30000 src/server-api-handler.test.ts`.
+TypeScript passed with `node node_modules/typescript/bin/tsc --noEmit -p .`.
+Prettier 3.9.9 formatted this ADR with `--ignore-path /dev/null`.
+The initial worktree lacked dependencies; `bun install` restored them without a tracked dependency change.
 The full suite and plugin tests did not run at this plan station.
 Task `.6` is open and ready; tasks `.1` through `.5` remain closed.
-The new AC6-AC8 controls remain for implement; these baseline results do not prove those new controls.
+Only the named complete AC6 fixture remains for implement; the baseline does not prove that new control.
