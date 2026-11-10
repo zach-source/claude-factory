@@ -2,6 +2,7 @@
 import { readFileSync, realpathSync, renameSync, unlinkSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import type { Env } from './catalog'
+import { check } from './guards'
 
 /**
  * claude-factory-5y7b: the env marker that says a worker runs this command, else undefined.
@@ -122,4 +123,36 @@ export function mainChatRefusal(env: Env, home: string, kind: string): string | 
     // no file, a second use, a bad body: refuse
   }
   return refuse
+}
+
+/**
+ * claude-factory-y3f8w.5: what the Claude patrol-guard hook refuses for the factory CLI, now in core.
+ * Under FACTORY_PATROL a patrol (any harness) cannot run a gated kind, install or reject a skill or proposal,
+ * or answer a decision. The Claude hook stays as a second layer. Returns the refusal, else undefined.
+ */
+const OWN_REFUSAL = new Set(['decide', 'answer', 'owned', 'image'])
+export function patrolRefusal(cmd: string | undefined, args: string[], env: Env): string | undefined {
+  if (!env.FACTORY_PATROL) return undefined
+  // these four keep their own refusals in the command (claude-factory-72v.19)
+  const gated = mainChatKind(cmd, args)
+  const kind =
+    (gated && OWN_REFUSAL.has(gated) ? undefined : gated) ??
+    ((cmd === 'skills' || cmd === 'proposals') && (args[0] === 'install' || args[0] === 'reject')
+      ? `${cmd} ${args[0]}`
+      : undefined)
+  return kind
+    ? `a patrol cannot run factory ${kind}: leave it for the person or the manager (FACTORY_PATROL is set)`
+    : undefined
+}
+
+const BARE = /^[A-Za-z0-9_./:=,@%+-]+$/
+const quoted = (a: string) => (BARE.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)
+
+/**
+ * The bd shim of a patrol (claude-factory-y3f8w.5): the same rule as the hook's bd check, on the argument list.
+ * A harness with no hook (codex) gets a `bd` that runs this first. Best-effort, as bdWrite is: a call by absolute path is not seen.
+ */
+export function patrolBdRefusal(args: string[]): string | undefined {
+  const v = check(`bd ${args.map(quoted).join(' ')}`, 'subagent')
+  return v.decision === 'allow' ? undefined : v.reason
 }

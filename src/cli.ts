@@ -2,6 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
+import { codexAuth as managerCodexAuthState, codexAuthMail } from './codex-auth'
 import {
   devenvRows,
   isDevenvKey,
@@ -344,6 +345,8 @@ import { cut } from './cut'
 import {
   mainChatKind,
   mainChatRefusal,
+  patrolBdRefusal,
+  patrolRefusal,
   managerSender as managerSenderIn,
   refuseWorker as refuseWorkerIn,
   workerMarker,
@@ -629,6 +632,7 @@ async function readOnlyBoard(holder: leases.Lease) {
     runs,
     manager: [],
     managerLimited: managerLimited() ?? null,
+    managerCodexAuth: managerCodexAuthState(HOME),
     rigs: rigs(),
   }
 }
@@ -5289,9 +5293,20 @@ export const shipStarts = (repos: string[], queued: (repo: string) => number, li
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
-      const { run, value, c } = current(id)
+      const run = loadRun(id)
+      if (!run.ship) return []
+      const saved = readJson<Saved>(join(runDir(id), 'state.json'))
+      const { value, context: c } = saved.snapshot
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && run.ship ? [{ run, node: where(value)[0], c }] : []
+      const revival = ended
+        ? inboxLines(id)
+            .slice(saved.cursor)
+            .map(line => JSON.parse(line) as Ev)
+            .find(e => e.type === 'GOTO' && e.node !== 'done')
+        : undefined
+      return !ended || revival
+        ? [{ run, node: revival?.type === 'GOTO' ? revival.node : where(value)[0], c }]
+        : []
     } catch {
       return [] // removed mid-pass
     }
@@ -8087,6 +8102,8 @@ async function tick(isPatrol = false) {
       manager: [] as (Mail & { run: string })[],
       // set while the manager's Claude is refused and every account is drained (claude-factory-y3f8w.3)
       managerLimited: managerLimited() ?? null,
+      // set while a codex step of the manager gets an auth error (claude-factory-y3f8w.10)
+      managerCodexAuth: managerCodexAuthState(HOME),
       // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
       // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
@@ -8115,6 +8132,7 @@ async function tick(isPatrol = false) {
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
     out.manager.push(...managerStaleMail(now))
+    out.manager.push(...codexAuthMail(now, HOME))
     out.manager.push(...tokenDigestMail(now))
     // skip rows are for people reading dispatch.json; the board, sidebar and reap() see only the rest
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()).filter(r => !r.skip) : []))
@@ -10627,8 +10645,6 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
   const codex = codexAt >= 0 ? args[codexAt + 1] : isFallback ? fallbackCodexModel() : undefined
   if (codexAt >= 0 && !(codex && CODEX_MODEL.test(codex))) fail('--codex needs a model name')
   if (isFallback && !(codex && CODEX_MODEL.test(codex))) fail('FACTORY_MANAGER_CODEX is not a model name')
-  if (verb === 'patrol' && (codexAt >= 0 || isFallback))
-    fail('the patrol cannot run on codex: codex has no PreToolUse hook, so the Bash guard cannot apply')
   const release = hold(`${verb}.lock`)
   if (!release) return `a ${verb} is already running`
   try {
@@ -10641,7 +10657,7 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
       gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
       reviewFacts: key => JSON.stringify(reviewFacts(key)),
     }
-    if (verb === 'patrol') return await patrolOnce(io)
+    if (verb === 'patrol') return await patrolOnce(io, {}, codex)
     return verb === 'pm'
       ? await pmOnce(io, codex)
       : verb === 'brief'
@@ -11900,10 +11916,10 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = cut(body.split('\n', 1)[0]!, 80)
+                const first = cleanText(cut(body.split('\n', 1)[0]!, 80), 80)
                 b.create(
                   `PR change request: ${first}`,
-                  `${d.url}\n\n${body}`,
+                  cleanReport(`${d.url}\n\n${body}`),
                   '--parent',
                   run.bead,
                   '-t',
@@ -13566,7 +13582,8 @@ function mainChatGateRefusal(): string | undefined {
   const why = import.meta.main
     ? (otherRunRefusal(cmd, args, process.env) ??
       workerVerbRefusal(cmd, args, process.env) ??
-      mainChatGateRefusal())
+      mainChatGateRefusal() ??
+      patrolRefusal(cmd, args, process.env))
     : undefined
   if (why) {
     console.error(why)
@@ -13822,6 +13839,13 @@ if (import.meta.main && !outboxCmd)
       case 'patrol-guard':
         await patrolGuard()
         break
+      case 'patrol-bd': {
+        // the bd shim of a codex patrol (src/once.ts): refuse a write, else run the real bd
+        const why = patrolBdRefusal(args)
+        if (why) fail(why)
+        const bdBin = process.env.FACTORY_REAL_BD || 'bd'
+        process.exit(await Bun.spawn([bdBin, ...args], { stdio: ['inherit', 'inherit', 'inherit'] }).exited)
+      }
       case 'lease': {
         refuseWorker('lease', true)
         if (args[0] === 'release' && args.length === 1) {

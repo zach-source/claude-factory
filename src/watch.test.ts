@@ -392,9 +392,26 @@ const OWNER = { login: 'zach', assoc: 'OWNER' }
 const BOT = { login: 'github-actions', assoc: 'NONE' }
 
 function fakeBd() {
-  writeFileSync(join(bin, 'bd'), ['#!/bin/sh', `echo "$*" >> ${bdCalls}`, `printf '%s' task-1`].join('\n'))
+  writeFileSync(
+    join(bin, 'bd'),
+    [
+      '#!/usr/bin/env bun',
+      "import { appendFileSync } from 'node:fs'",
+      `appendFileSync(${JSON.stringify(bdCalls)}, JSON.stringify(process.argv.slice(2)) + '\\n')`,
+      "process.stdout.write('task-1')",
+    ].join('\n'),
+  )
   chmodSync(join(bin, 'bd'), 0o755)
 }
+
+const bdCreates = (): string[][] =>
+  existsSync(bdCalls)
+    ? readFileSync(bdCalls, 'utf8')
+        .trim()
+        .split('\n')
+        .map(l => JSON.parse(l))
+        .filter(a => a[0] === 'create')
+    : []
 
 /** every event line a run's inbox was sent */
 function inboxOf(id: string): { type: string; [k: string]: unknown }[] {
@@ -523,15 +540,168 @@ test('a person change request routes changes to implement with a bd task each, a
   expect(text).toContain('/changes rename the flag')
   expect(text).toContain('the test is vacuous')
   expect(text).not.toContain('ignore me')
-  const creates = readFileSync(bdCalls, 'utf8')
-    .trim()
-    .split('\n')
-    .filter(l => l.startsWith('create '))
+  const creates = bdCreates()
   expect(creates).toHaveLength(2)
-  expect(creates.every(l => l.startsWith('create --title PR change request: '))).toBe(true)
-  // the description holds line breaks, so bd's argv spreads over lines: count the parent flags in all
-  expect(readFileSync(bdCalls, 'utf8').split('--parent acme-1')).toHaveLength(3)
+  expect(creates.every(a => a[a.indexOf('--title') + 1]!.startsWith('PR change request: '))).toBe(true)
+  expect(creates.every(a => a[a.indexOf('--parent') + 1] === 'acme-1')).toBe(true)
   expect(watchJson().routed).toMatchObject([{ outcome: 'changes' }])
+})
+
+for (const source of ['review', 'comment']) {
+  for (const [name, char] of Object.entries({
+    ESC: '\u001b[2J',
+    CR: '\r',
+    NUL: '\0',
+    DEL: '\u007f',
+    C1: '\u0085',
+    Cf: '\u202e',
+    Zl: '\u2028',
+    Zp: '\u2029',
+    TAB: '\t',
+  })) {
+    test(`b0vm AC1 ${source} ${name} task arguments`, () => {
+      reset()
+      fakeBd()
+      routeRun('r1', { bead: 'acme-1' })
+      const prefix = source === 'comment' ? '/changes ' : ''
+      const body = `${prefix}first${char}end\nlater${char}end`
+      prJson(
+        source === 'comment'
+          ? { comments: [comment(body, OWNER)] }
+          : {
+              reviews: [
+                {
+                  author: { login: 'person' },
+                  authorAssociation: 'OWNER',
+                  state: 'CHANGES_REQUESTED',
+                  body,
+                  submittedAt: iso(30_000),
+                },
+              ],
+            },
+      )
+      expect(factory(['watch']).code).toBe(0)
+      const args = bdCreates()[0]!
+      const replacement = name === 'ESC' ? ' [2J' : ' '
+      expect(args[args.indexOf('--title') + 1]).toBe(`PR change request: ${prefix}first${replacement}end`)
+      const description = args[args.indexOf('-d') + 1]!
+      expect(description).toBe(
+        `${PR}\n\n${prefix}first${name === 'TAB' ? '\t' : replacement}end\nlater${name === 'TAB' ? '\t' : replacement}end`,
+      )
+      expect(description).not.toMatch(/[^\P{Cc}\t\n]|[\p{Cf}\p{Zl}\p{Zp}]/u)
+      expect(args).toContain('--parent')
+      expect(args[args.indexOf('--parent') + 1]).toBe('acme-1')
+      expect(args[args.indexOf('-t') + 1]).toBe('task')
+    })
+  }
+}
+
+test('b0vm AC1 description alone removes controls', () => {
+  reset()
+  fakeBd()
+  routeRun('r1', { bead: 'acme-1' })
+  prJson({ comments: [comment('/changes safe title\nlater\u001b[2Jend', OWNER)] })
+  factory(['watch'])
+  const args = bdCreates()[0]!
+  expect(args[args.indexOf('-d') + 1]).toBe(`${PR}\n\n/changes safe title\nlater [2Jend`)
+})
+
+for (const body of [
+  'plain café 😀\nnext\tline',
+  'a'.repeat(79) + '😀z',
+  'a'.repeat(1999) + '😀z',
+  '',
+  'a'.repeat(80),
+  'a'.repeat(2000),
+]) {
+  test(`b0vm AC2 permitted text and limits ${body.length}`, () => {
+    reset()
+    fakeBd()
+    routeRun('r1', { bead: 'acme-1' })
+    prJson({
+      reviews: [
+        {
+          author: { login: 'person' },
+          authorAssociation: 'OWNER',
+          state: 'CHANGES_REQUESTED',
+          body,
+          submittedAt: iso(30_000),
+        },
+      ],
+    })
+    factory(['watch'])
+    const expected = body
+      ? body.slice(
+          0,
+          body.length > 2000 && body.charCodeAt(1999) >= 0xd800 && body.charCodeAt(1999) <= 0xdbff
+            ? 1999
+            : 2000,
+        )
+      : 'changes requested (a review with no text)'
+    const args = bdCreates()[0]!
+    expect(bdCreates()).toHaveLength(1)
+    expect(args[args.indexOf('--title') + 1]).toBe(
+      `PR change request: ${expected.split('\n')[0]!.slice(0, expected.charCodeAt(79) >= 0xd800 && expected.charCodeAt(79) <= 0xdbff ? 79 : 80)}`,
+    )
+    expect(args[args.indexOf('-d') + 1]).toBe(`${PR}\n\n${expected}`)
+  })
+}
+
+for (const source of ['review', 'comment']) {
+  for (const assoc of ['OWNER', 'MEMBER', 'COLLABORATOR', 'NONE', undefined]) {
+    test(`b0vm AC3 ${source} association ${assoc}`, () => {
+      reset()
+      fakeBd()
+      routeRun('r1', { bead: 'acme-1' })
+      const note = {
+        author: { login: 'person' },
+        authorAssociation: assoc,
+        body: '/changes fix it',
+        submittedAt: iso(30_000),
+        createdAt: iso(30_000),
+        state: 'CHANGES_REQUESTED',
+      }
+      prJson({ [source === 'review' ? 'reviews' : 'comments']: [note] })
+      factory(['watch'])
+      const accepted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(assoc ?? '')
+      expect(bdCreates()).toHaveLength(accepted ? 1 : 0)
+      if (accepted) expect(watchJson().routed).toMatchObject([{ outcome: 'changes' }])
+      factory(['watch'])
+      expect(bdCreates()).toHaveLength(accepted ? 1 : 0)
+    })
+  }
+}
+
+test('b0vm AC3 bots, ordinary notes and old requests create no task', () => {
+  reset()
+  fakeBd()
+  routeRun('r1', { bead: 'acme-1' })
+  prJson({
+    comments: [
+      comment('/changes bot', { login: 'github-actions', assoc: 'OWNER' }),
+      comment('ordinary', OWNER),
+      { ...comment('/changes at park', OWNER), createdAt: new Date(PARKED_AT).toISOString() },
+    ],
+    reviews: [
+      {
+        author: { login: 'person' },
+        authorAssociation: 'OWNER',
+        body: 'ordinary',
+        state: 'APPROVED',
+        submittedAt: iso(30_000),
+      },
+      {
+        author: { login: 'person' },
+        authorAssociation: 'OWNER',
+        body: 'old',
+        state: 'CHANGES_REQUESTED',
+        submittedAt: new Date(PARKED_AT - 1).toISOString(),
+      },
+    ],
+  })
+  factory(['watch'])
+  expect(bdCreates()).toEqual([])
+  expect(watchJson().routed).toEqual([])
 })
 
 test('near its timer an unchanged open pull request parks again with no worker (5wav AC5)', () => {

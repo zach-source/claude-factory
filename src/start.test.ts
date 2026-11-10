@@ -686,6 +686,24 @@ test('fork of an ended ship run is refused while another ship run is live on the
   expect(childRun.ship).toBe(true)
 })
 
+test.each(['fork', 'goto'])('%s refuses a second ship run before a queued GOTO takes effect', verb => {
+  const { a, b } = setupForkRig(true, true)
+  endRun(b)
+  expect(run(['goto', b, 'work']).code).toBe(0)
+  const refused = run([verb, a, 'work'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(`${b} is a live ship run`)
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(2)
+})
+
+test.each(['done', 'consumed'])('fork ignores a %s GOTO on an ended ship run', target => {
+  const { a, b } = setupForkRig(true, true)
+  endRun(b)
+  expect(run(['goto', b, target === 'done' ? 'done' : 'work']).code).toBe(0)
+  if (target === 'consumed') endRun(b)
+  expect(run(['fork', a, 'work']).code).toBe(0)
+})
+
 test('fork of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {
   const { a } = setupForkRig(false, true)
   const forked = run(['fork', a, 'work', 'again'])

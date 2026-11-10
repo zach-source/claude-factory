@@ -750,6 +750,25 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
         rt.isPatrolling = false
       })
   }
+  // claude-factory-y3f8w.5: with the manager's Claude limited, the core runs this patrol on Codex (no Agent tool needed)
+  if (isManagerLimited(rt.managerLimited, now)) {
+    try {
+      const { isOk, out } = await factory($, ['patrol', '--once', '--fallback'])
+      // the verb prints a failure and exits 0, so the text tells the two apart
+      if (!isOk || /^(the patrol failed|a patrol is already running)/.test(out)) {
+        rt.retryAt = now + PATROL_RETRY_MS
+        $.ui.status(`factory: the patrol on Codex failed: ${line(out, 160)}`)
+        return
+      }
+      if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
+      rt.unsent = due.kept
+      for (const key of due.keys) rt.seen.add(key)
+      rt.patrolAt = now
+    } finally {
+      rt.isPatrolling = false
+    }
+    return
+  }
   if (hasAgentTool(toolNames) === false) return fallback('this manager has no Agent tool')
   try {
     const res = await $.agent.spawn({
