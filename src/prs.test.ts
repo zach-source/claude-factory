@@ -46,6 +46,8 @@ test('6r645 AC2: GitLab list rejects every invalid decision field', async () => 
     '[1]',
     ...[
       { iid: 0 },
+      { iid: 0, web_url: 'https://gitlab.com/acme/widget/-/merge_requests/0' },
+      { iid: 9007199254740992, web_url: 'https://gitlab.com/acme/widget/-/merge_requests/9007199254740992' },
       { iid: -1 },
       { iid: 1.5 },
       { iid: '7' },
