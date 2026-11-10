@@ -96,8 +96,11 @@ test('teyn1 AC3 real CLI preserves file text at the mail port', async () => {
   ])
     delete env[key]
   try {
-    for (const wake of [false, true, false]) {
-      const worker = t.calls.length > 0 && !wake
+    for (const [wake, worker] of [
+      [false, false],
+      [true, false],
+      [false, true],
+    ]) {
       if (worker) {
         mkdirSync(join(t.home, 'runs', 'r1'), { recursive: true })
         writeFileSync(

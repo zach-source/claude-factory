@@ -13517,7 +13517,7 @@ if (queued) {
 if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   let sent: number | null
   try {
-    sent = await client.main(cmd, cmd === 'mail' ? fileArgs('mail', args) : args, process.env)
+    sent = await client.main(cmd, args, process.env, undefined, undefined, a => fileArgs('mail', a))
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)

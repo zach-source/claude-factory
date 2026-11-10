@@ -575,11 +575,18 @@ test('teyn1 AC2 invalid file forms fail before transport', async () => {
     expect(hits).toHaveLength(0)
   }
   expect(typeof route('mail', ['r1', 'manager', '--text-file', th.file])).toBe('string')
+  let reads = 0
+  const resolve = () => (reads++, ['r1', 'manager', 'text'])
+  for (const args of rows.filter(a => a.includes('--text-file'))) {
+    expect(typeof route('mail', args, resolve)).toBe('string')
+  }
+  expect(reads).toBe(0)
 })
 
 test('teyn1 AC2 file roots and file checks survive the client route', async () => {
   const th = textHome('valid.txt', 'valid')
   const dir = join(th.home, 'text')
+  mkdirSync(join(dir, 'directory'))
   writeFileSync(join(dir, 'empty'), '')
   writeFileSync(join(dir, 'blank'), ' \n\t')
   writeFileSync(join(dir, 'large'), 'x'.repeat(102401))
@@ -588,6 +595,7 @@ test('teyn1 AC2 file roots and file checks survive the client route', async () =
   symlinkSync(outside, join(dir, 'escape'))
   for (const [file, error] of [
     [join(dir, 'missing'), 'not a readable file'],
+    [join(dir, 'directory'), 'not a readable file'],
     [dir, 'outside'],
     [join(dir, 'empty'), 'empty'],
     [join(dir, 'blank'), 'empty'],
@@ -605,6 +613,17 @@ test('teyn1 AC2 file roots and file checks survive the client route', async () =
     expect(hits).toHaveLength(0)
   }
   const wt = tmp('teyn1-worktree')
+  hits.length = 0
+  expect(
+    (
+      await cli(
+        ['mail', 'r1', 'manager', '--text-file', 'text/valid.txt'],
+        { FACTORY_SERVER: url(), FACTORY_HOME: th.home },
+        th.home,
+      )
+    ).code,
+  ).toBe(0)
+  expect(JSON.parse(hits[0]!.body).text).toBe('valid')
   expect(Bun.spawnSync(['git', 'init', wt]).exitCode).toBe(0)
   mkdirSync(join(wt, '.scratch'))
   writeFileSync(join(wt, '.scratch', 'text'), 'scratch')

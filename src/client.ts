@@ -53,7 +53,11 @@ export function serverUrl(env: Env): { url: URL } | { error: string } | null {
 }
 
 /** the request for one CLI form, `{local: true}` for a command that stays local, or the refusal text */
-export function route(cmd: string | undefined, args: string[]): Req | { local: true } | string {
+export function route(
+  cmd: string | undefined,
+  args: string[],
+  resolveMail?: (args: string[]) => string[],
+): Req | { local: true } | string {
   if (!cmd || LOCAL.has(cmd)) return { local: true }
   const no = `factory ${cmd} has no server mode: unset FACTORY_SERVER to run it on the local home`
   const bad = `usage: factory ${cmd} ...: the server mode form is not valid (see specs/004-factory-server/contracts/client-api.md)`
@@ -113,9 +117,13 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
           }
         : bad
     case 'mail': {
-      // cli.ts expands --text-file before this call
       const wake = args[2] === '--wake'
-      const text = args.slice(wake ? 3 : 2).join(' ')
+      const at = wake ? 3 : 2
+      if (args.slice(at).includes('--text-file')) {
+        if (!seg(a, b) || args[at] !== '--text-file' || n !== at + 2 || !resolveMail) return bad
+        args = resolveMail(args)
+      }
+      const text = args.slice(at).join(' ')
       return n >= 3 && seg(a, b) && text
         ? {
             method: 'POST',
@@ -175,6 +183,7 @@ export async function main(
   env: Env,
   fetchFn: typeof fetch = fetch,
   io: Io = stdio,
+  resolveMail?: (args: string[]) => string[],
 ): Promise<number | null> {
   if (!env.FACTORY_SERVER) return null
   const refuse = (s: string) => (io.err(s), 1)
@@ -185,7 +194,7 @@ export async function main(
       return refuse((e as Error).message)
     }
   }
-  const req = route(cmd, args)
+  const req = route(cmd, args, resolveMail)
   if (typeof req !== 'string' && 'local' in req) return null
   const found = serverUrl(env)
   if (!found) return null
