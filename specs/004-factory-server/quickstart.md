@@ -34,6 +34,8 @@ From the task, with its own token:
 
 ```sh
 curl -H "Authorization: Bearer $FACTORY_TOKEN" \
+  -H "Idempotency-Key: 7ba9443d-b54b-4b3d-94b5-dbe4ed618632" \
+  -H "Content-Type: application/json" \
   -X POST "$FACTORY_WORKER_API/v1/report" -d '{"run":"<other run>","outcome":"ok","summary":"x"}'
 ```
 

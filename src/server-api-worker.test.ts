@@ -69,12 +69,52 @@ const setup = (
   const file = join(home, 'worker-calls.json')
   const rows = () => (existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Record<string, any>) : {})
   const text = () => (existsSync(file) ? readFileSync(file, 'utf8') : null)
-  return { home, calls, post, rows, text, token, file, tick: (ms: number) => (t += ms), defTok }
+  return { home, calls, post, rows, text, token, file, tick: (ms: number) => (t += ms), defTok, h }
 }
 const REP = { outcome: 'ready', summary: 'done' }
 const body = async (r: Response) => JSON.parse(await r.text())
 
 describe('worker API', () => {
+  test('Quickstart 2 sends a foreign report with the required headers', async () => {
+    const s = setup()
+    const doc = readFileSync(join(import.meta.dir, '../specs/004-factory-server/quickstart.md'), 'utf8')
+    const command = doc.split('## 2.')[1]!.split('```sh\n')[1]!.split('```')[0]!
+    writeFileSync(
+      join(s.home, 'curl'),
+      '#!/usr/bin/env bun\nconsole.log(JSON.stringify(process.argv.slice(2)))\n',
+      { mode: 0o700 },
+    )
+    const proc = Bun.spawn(['bash', '-c', command], {
+      env: {
+        ...process.env,
+        PATH: `${s.home}:${process.env.PATH}`,
+        FACTORY_TOKEN: s.defTok,
+        FACTORY_WORKER_API: 'https://x.invalid',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const args: string[] = JSON.parse(await new Response(proc.stdout).text())
+    expect(await proc.exited).toBe(0)
+    const headers = new Headers()
+    for (let i = 0; i < args.length; i++)
+      if (args[i] === '-H') {
+        const [name, ...value] = args[++i]!.split(':')
+        headers.set(name!, value.join(':').trim())
+      }
+    const r = await s.h(
+      new Request(args[args.indexOf('-X') + 2]!, {
+        method: args[args.indexOf('-X') + 1],
+        headers,
+        body: args[args.indexOf('-d') + 1],
+      }),
+      '1.2.3.4',
+    )
+    expect(r.status).toBe(403)
+    expect(Object.values(s.rows())).toMatchObject([{ status: 'refused' }])
+    expect(s.calls).toHaveLength(0)
+  })
+
   test('report: applies once with the token identity', async () => {
     const s = setup()
     const was = { o: process.env.FACTORY_OUTBOX, s: process.env.FACTORY_SERVER }
