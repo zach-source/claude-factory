@@ -8,6 +8,33 @@ const DECIDE = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
 const ANSWER = '/repo/bin/factory decisions answer api api-7 "use postgres"'
 const START_OWNED = '/repo/bin/factory start lifecycle api api-9 --owned'
 
+for (const verb of ['decide r1 ship', 'decisions answer acme w-1']) {
+  test(`0s5e decision text remains visible: ${verb}`, SLOW, async ($, on) => {
+    mock.clock(on)
+    const command = '/repo/bin/factory ' + verb + " 'owner'\\''s choice; printf marker | true'"
+    let answer = 'Deny'
+    let ran = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, (_$, e) => {
+      const question = e.questions[0]!.question
+      expect(question).toContain(command)
+      expect(question).not.toContain('characters not shown')
+      return { result: { questions: e.questions, answers: { [question]: answer } } }
+    })
+    on('tool.call', { tool: 'Bash' }, (_$, e) => {
+      expect(e.command).toBe('export FACTORY_MAIN_CHAT=1\n' + command)
+      ran++
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+    const denied = await $.tool.call({ tool: 'Bash', command, description: 'decision' })
+    expect(denied.deny).toContain('did not confirm')
+    expect(ran).toBe(0)
+    answer = 'Allow'
+    const allowed = await $.tool.call({ tool: 'Bash', command, description: 'decision' })
+    expect(allowed.deny).toBeUndefined()
+    expect(ran).toBe(1)
+  })
+}
+
 const MONITOR_DENY = 'Monitor is disabled in the factory mod. Use Bash for shell commands.'
 const monitorInputs = [
   { command: '/repo/bin/factory decide r1 ship' },

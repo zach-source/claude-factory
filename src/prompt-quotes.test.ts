@@ -10,8 +10,29 @@ import release from '../factories/release'
 import ship from '../factories/ship'
 import sweeps from '../factories/sweeps'
 import type { Factory } from './machine'
+import { fileFormBad } from '../mod/tests/quote-checks'
 
 const root = join(import.meta.dir, '..')
+
+test('0s5e manager skills use files and retain owner consent', () => {
+  for (const name of ['factory-handoff', 'factory-prioritize']) {
+    const text = readFileSync(join(root, 'plugins/factory-rig/skills', name, 'SKILL.md'), 'utf8')
+    expect([name, fileFormBad(text)]).toEqual([name, []])
+    expect([name, scan(name, text)]).toEqual([name, []])
+    expect(text).toContain('--body-file')
+    expect(text).toContain('Write')
+    expect(text).toContain("'\\''")
+    expect(text).toContain('rig list')
+    expect(text).not.toMatch(/bd (?:comment|close)[^\n]*(?:"<|'<)/)
+  }
+  const handoff = readFileSync(join(root, 'plugins/factory-rig/skills/factory-handoff/SKILL.md'), 'utf8')
+  expect(handoff).toContain('Confirm the bead id, the priority and the start station with the user')
+  const prioritize = readFileSync(
+    join(root, 'plugins/factory-rig/skills/factory-prioritize/SKILL.md'),
+    'utf8',
+  )
+  expect(prioritize).toContain('--text-file <path>')
+})
 const files = [
   'factories/lifecycle.ts',
   'factories/ship.ts',

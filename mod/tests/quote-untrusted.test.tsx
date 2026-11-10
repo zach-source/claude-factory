@@ -54,3 +54,44 @@ test('the manual passes file-elsewhere and decisions propose text by file', () =
   expect(t).toContain('`factory home`')
   expect(t).toContain('--question-file <path>')
 })
+
+test('0s5e manager examples use files', () => {
+  const t = manual('factory')
+  for (const flag of [
+    '--text-file <path>',
+    '--note-file <path>',
+    '--goal-file <path>',
+    '--summary-file <path>',
+    '--body-file <path>',
+    '--query-file <path>',
+    '--reason-file <path>',
+  ])
+    expect(t).toContain(flag)
+  expect(fileFormBad(t)).toEqual([])
+  expect(t).toContain('Write tool')
+  expect(t).toContain('text/')
+  for (const command of ['decide <run> <outcome>', 'decisions answer <rig> <bead>']) {
+    expect(t).toContain(`factory ${command} '`)
+    expect(t).not.toContain(`factory ${command} --`)
+  }
+  expect(t).toContain("'\\''")
+})
+
+test('0s5e file checker rejects bare and quoted manager text', () => {
+  for (const command of [
+    'mail <run> <station>',
+    'poke <run>',
+    'fork <run> <station>',
+    'start <factory> <rig|repo>',
+    'memory add --kind fact',
+    'memory search',
+    'skills reject <name>',
+    'rig add <name> <repo> --goal',
+  ]) {
+    for (const text of ['<payload>', "'<payload>'", '"<payload>"'])
+      expect(fileFormBad('`factory ' + command + ' ' + text + '`')).toEqual([text])
+  }
+  expect(fileFormBad('`factory mail <run> <station> --text-file <path>`')).toEqual([])
+  expect(fileFormBad("`factory decide <run> <outcome> '<note>'`")).toEqual([])
+  expect(fileFormBad("`factory decisions answer <rig> <bead> '<text>'`")).toEqual([])
+})

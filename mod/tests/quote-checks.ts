@@ -7,6 +7,7 @@ export const placeholderSpans = (t: string) =>
 
 export const ID_PLACEHOLDERS = new Set([
   'run',
+  'id',
   'outcome',
   'name',
   'repo',
@@ -27,12 +28,15 @@ export const badPlaceholders = (t: string) =>
     (s.replace(/'<[^>]*>'/g, '').match(/<[^>]*>/g) ?? []).filter(p => !ID_PLACEHOLDERS.has(p.slice(1, -1))),
   )
 
-const FILE_OK = new Set(['run', 'rig', 'bead', 'key', 'source rig', 'source id', 'path'])
 export const fileSpans = (t: string) =>
-  (t.match(/`[^`]*`/g) ?? []).filter(s => /file-elsewhere|decisions propose/.test(s))
+  (t.match(/`[^`]*`/g) ?? []).filter(s =>
+    /\bfactory (?:file-elsewhere|decisions propose|mail|poke|fork|start|memory (?:add|search)|skills reject|rig (?:add|set))\b/.test(
+      s,
+    ),
+  )
 export const fileFormBad = (t: string) =>
   fileSpans(t).flatMap(s =>
     (s.match(/['"]?<[^>]*>['"]?/g) ?? []).filter(
-      p => /^['"]/.test(p) || !FILE_OK.has(p.replace(/^<|>$/g, '')),
+      p => /^['"]/.test(p) || !ID_PLACEHOLDERS.has(p.replace(/^<|>$/g, '')),
     ),
   )

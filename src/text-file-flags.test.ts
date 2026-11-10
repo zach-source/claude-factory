@@ -146,12 +146,14 @@ const notes = () =>
 test('memory add --body-file stores the file text as the body (AC2)', () => {
   mkdirSync(home, { recursive: true })
   const f = txt('b.md', TEXT)
-  const r = factory([...ADD, '--body-file', f, 'a plain summary'])
+  const r = factory([...ADD, '--anyway', '--body-file', f, 'a plain summary'])
   expect(r.err).toBe('')
   expect(r.code).toBe(0)
   expect(notes().join('')).toContain(TEXT.trimEnd())
   // the flag may come before the other flags
-  expect(factory([...ADD.slice(0, 2), '--body-file', f, '--kind', 'rule', 'another summary']).code).toBe(0)
+  expect(
+    factory([...ADD.slice(0, 2), '--anyway', '--body-file', f, '--kind', 'rule', 'another summary']).code,
+  ).toBe(0)
 })
 
 test('memory add --body-file refuses a bad form with exit 2 and writes nothing (AC2)', () => {
@@ -211,4 +213,227 @@ test('inside a VM, a bad file queues nothing: exit 1 for mail, 2 for memory add 
   }
   expect(factory(['mail', 'r1', 'manager', '--text-file', txt('ok.txt', 'ok'), 'extra'], env).code).toBe(1)
   expect(existsSync(outbox)).toBe(false)
+})
+
+test('0s5e file fields preserve text: poke and mail do not parse payload options', () => {
+  const events = makeRun('literal')
+  for (const text of [TEXT, '--wake', '--text-file']) {
+    const path = txt('literal.md', text)
+    for (const command of [
+      ['poke', 'literal'],
+      ['mail', 'literal', 'manager'],
+    ]) {
+      const before = events().length
+      const r = factory([...command, '--text-file', path], {}, dir)
+      expect(r.code, r.err).toBe(0)
+      expect(events()).toHaveLength(before + 1)
+      expect(events().at(-1).text).toBe(text.trimEnd())
+      expect(events().at(-1).wake).not.toBe(true)
+    }
+  }
+})
+
+test('0s5e file fields preserve text: memory files expand before the worker queue', () => {
+  const summary = txt('summary.md', "A literal summary with an apostrophe: it's safe")
+  const body = txt('body.md', TEXT)
+  const outbox = join(dir, 'outbox.jsonl')
+  const r = factory([...ADD, '--summary-file', summary, '--body-file', body], {
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'implement',
+  })
+  expect(r.code, r.err).toBe(0)
+  expect(JSON.parse(readFileSync(outbox, 'utf8')).argv).toEqual([
+    ...ADD,
+    readFileSync(summary, 'utf8'),
+    TEXT.trimEnd(),
+  ])
+})
+
+test('0s5e remote text is data: unresolved summary files and manager verbs cannot replay', () => {
+  expect(replayable(['memory', 'add', '--summary-file', '/x'], side, 'r1')).toBeNull()
+  for (const cmd of ['poke', 'fork', 'start', 'rig', 'skills'])
+    expect(replayable([cmd, 'r1', '--text-file', '/x'], side, 'r1')).toBeNull()
+})
+
+const consumers = (path: string) => [
+  ['poke', 'r1', '--text-file', path],
+  ['fork', 'r1', 'implement', '--note-file', path],
+  ['start', 'lifecycle', wt, '--goal-file', path],
+  [...ADD, '--summary-file', path],
+  [...ADD, 'summary', '--body-file', path],
+  ['memory', 'search', '--query-file', path],
+  ['skills', 'reject', 'acme', '--reason-file', path],
+  ['rig', 'add', 'acme', wt, '--goal-file', path],
+  ['rig', 'set', 'acme', '--goal-file', path],
+]
+
+test('0s5e file fields preserve text: rig goals and skill reasons are literal', () => {
+  mkdirSync(join(wt, '.beads'), { recursive: true })
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const path = txt('goal.md', TEXT)
+  const rigs = join(home, 'rigs.json')
+  for (const verb of ['add', 'set']) {
+    const argv = verb === 'add' ? ['rig', verb, 'acme', wt] : ['rig', verb, 'acme']
+    const r = factory([...argv, '--goal-file', path])
+    expect(r.code, r.err).toBe(0)
+    expect(JSON.parse(readFileSync(rigs, 'utf8'))[0].goal).toBe(TEXT.trimEnd())
+  }
+  const proposal = join(home, 'memory', '.manager', 'skills', 'acme')
+  mkdirSync(proposal, { recursive: true })
+  writeFileSync(join(proposal, 'SKILL.md'), '# Acme\n')
+  const r = factory(['skills', 'reject', 'acme', '--reason-file', path])
+  expect(r.code, r.err).toBe(0)
+  expect(notes().join('')).toContain(TEXT.trimEnd())
+  expect(existsSync(proposal)).toBe(false)
+})
+
+test('0s5e file fields preserve text: memory summary and body select their sources independently', () => {
+  const summary = 'A literal summary'
+  const s = txt('s.md', summary)
+  const b = txt('b.md', TEXT)
+  for (const fields of [
+    ['--summary-file', s],
+    ['--summary-file', s, TEXT],
+    ['--summary-file', s, '--body-file', b],
+    [summary, '--body-file', b],
+  ]) {
+    const r = factory([...ADD, '--anyway', ...fields])
+    expect(r.code, r.err).toBe(0)
+  }
+  expect(notes()).toHaveLength(4)
+  expect(notes().filter(n => n.includes(TEXT.trimEnd()))).toHaveLength(3)
+})
+
+test('0s5e file fields preserve text: memory query cannot supply options or another file', () => {
+  const query = txt('query.md', TEXT)
+  const calls = join(home, 'queries.jsonl')
+  const preload = join(home, 'query-spy.ts')
+  const module = join(import.meta.dir, 'memory.ts')
+  writeFileSync(
+    preload,
+    `import { mock } from 'bun:test'
+import { appendFileSync } from 'node:fs'
+const real = await import(${JSON.stringify(module)})
+mock.module(${JSON.stringify(module)}, () => ({ ...real, search: async (...args) => {
+  appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n'); return []
+}}))
+`,
+  )
+  for (const text of [TEXT, '--rig', '--query-file']) {
+    writeFileSync(query, text)
+    const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...base } = process.env
+    const p = Bun.spawnSync(
+      [
+        process.execPath,
+        '--preload',
+        preload,
+        join(import.meta.dir, 'cli.ts'),
+        'memory',
+        'search',
+        '--rig',
+        'acme',
+        '--query-file',
+        query,
+      ],
+      {
+        env: { ...base, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' },
+      },
+    )
+    expect(p.exitCode, p.stderr.toString()).toBe(0)
+    const rows = readFileSync(calls, 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+    expect(rows.at(-1)).toEqual([join(home, 'memory'), text.trimEnd(), { rig: 'acme', core: true }])
+  }
+})
+
+test('0s5e remote text is data: server mail reads only the caller file', async () => {
+  const bodies: unknown[] = []
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(req) {
+      bodies.push(await req.json())
+      return Response.json({ code: 0, out: '', err: '' })
+    },
+  })
+  try {
+    for (const text of [TEXT, '--wake', '--text-file']) {
+      const path = txt('remote.md', text)
+      const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...base } =
+        process.env
+      const p = Bun.spawn([CLI, 'mail', 'r1', 'manager', '--text-file', path], {
+        env: { ...base, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_SERVER: server.url.origin },
+      })
+      expect(await p.exited).toBe(0)
+      expect(bodies.at(-1)).toMatchObject({ text: text.trimEnd(), to: 'manager' })
+      expect(bodies.at(-1)).not.toHaveProperty('wake', true)
+    }
+    const before = bodies.length
+    const p = Bun.spawn([CLI, 'mail', 'r1', 'manager', '--text-file', txt('blank.md', ' ')], {
+      env: {
+        PATH: process.env.PATH,
+        FACTORY_HOME: home,
+        FACTORY_SELF_UPDATE: '0',
+        FACTORY_SERVER: server.url.origin,
+      },
+    })
+    expect(await p.exited).not.toBe(0)
+    expect(bodies).toHaveLength(before)
+  } finally {
+    server.stop(true)
+  }
+})
+
+test('0s5e file mode fails closed before operations for every consumer', () => {
+  const events = makeRun('r1')
+  const bad = badFiles()
+  mkdirSync(join(home, 'text-other'), { recursive: true })
+  const sibling = join(home, 'text-other', 'x.md')
+  writeFileSync(sibling, 'outside')
+  bad['prefix sibling'] = sibling
+  const before = readFileSync(join(home, 'rigs.json'), 'utf8')
+  for (const [name, path] of Object.entries(bad)) {
+    for (const argv of consumers(path)) {
+      const r = factory(argv, {}, wt)
+      expect(r.code, `${name}: ${argv.slice(0, 2)}`).not.toBe(0)
+      expect(r.err, `${name}: ${argv.slice(0, 2)}`).toMatch(/file|empty|outside|cap/)
+    }
+  }
+  expect(events()).toEqual([])
+  expect(notes()).toEqual([])
+  expect(readFileSync(join(home, 'rigs.json'), 'utf8')).toBe(before)
+  expect(readdirSync(join(home, 'runs'))).toEqual(['r1'])
+})
+
+test('0s5e file mode fails closed on malformed argv and memory option payloads', () => {
+  const events = makeRun('r1')
+  const path = txt('ok.md', 'literal')
+  for (const argv of consumers(path)) {
+    const flag = argv.findIndex(w => /--(?:text|note|goal|summary|body|query|reason)-file/.test(w))
+    for (const bad of [
+      argv.slice(0, -1),
+      [...argv, argv[flag]!, path],
+      [...argv, '--unknown'],
+      [...argv, 'extra', 'words'],
+      ...(argv[flag] === '--summary-file' ? [] : [[...argv.slice(0, flag), 'inline', ...argv.slice(flag)]]),
+    ]) {
+      const r = factory(bad, {}, dir)
+      expect(r.code, bad.join(' ')).not.toBe(0)
+      expect(r.err).toMatch(/file|usage|unknown|replaces/)
+    }
+  }
+  for (const payload of ['--anyway', '--rig', '--summary-file']) {
+    const outbox = join(dir, 'outbox.jsonl')
+    expect(
+      factory([...ADD, '--summary-file', txt('flag.md', payload)], {
+        FACTORY_OUTBOX: outbox,
+        FACTORY_FROM: 'implement',
+      }).code,
+    ).toBe(2)
+    expect(existsSync(outbox)).toBe(false)
+  }
+  expect(events()).toEqual([])
+  expect(notes()).toEqual([])
 })
