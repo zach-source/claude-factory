@@ -14854,8 +14854,8 @@ if (import.meta.main && !outboxCmd)
       }
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
+        const wake = args[2] === '--wake'
         const [id, to, ...rest] = fileArgs('mail', args)
-        const wake = rest[0] === '--wake'
         const body = wake ? rest.slice(1) : rest
         const text = body[0] === '--' ? body.slice(1) : body
         emit(
