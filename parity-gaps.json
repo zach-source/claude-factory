@@ -160,5 +160,17 @@
     "frontEnd": "web",
     "bead": "claude-factory-hpmc.30",
     "reason": "the web UI polls the board and the decisions in separate calls; /v1/snapshot serves it"
+  },
+  {
+    "op": "flows.show",
+    "frontEnd": "web",
+    "bead": "claude-factory-hpmc.28",
+    "reason": "the web UI has no Flow view"
+  },
+  {
+    "op": "flows.show",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-hpmc.29",
+    "reason": "the Claude mod has no Flow view"
   }
 ]

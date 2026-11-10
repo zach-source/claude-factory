@@ -88,7 +88,6 @@ import {
   factoryOf,
   goalOf,
   shipBranchOf,
-  hasBeads,
   isHandedOff,
   isOwned,
   OWNER,
@@ -173,6 +172,7 @@ import {
   pmOnce,
   reviewOnce,
   runModelAsync,
+  type TickOut,
   type Io,
 } from './once'
 import { guardHook } from './core/chat'
@@ -232,6 +232,8 @@ import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
 import {
   bdEnv,
+  bdExports,
+  hasRigBeads,
   httpsRemote,
   inAx,
   isLaptopPane,
@@ -351,6 +353,8 @@ import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
 import * as leaseOp from './core/ops/lease'
+import { flowMermaid, flowTable, type FlowGraph, type FlowRun } from './flows'
+import * as flowsOp from './core/ops/flows'
 import * as metricsOp from './core/ops/metrics'
 import * as planOp from './core/ops/plan'
 import * as prsOp from './core/ops/prs'
@@ -9413,6 +9417,8 @@ function edit(fn: (list: Rig[]) => Rig[]) {
   }
 }
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
+/** in the AX task a rig with a beadsRemote has beads, with no .beads in git */
+const hasBeads = (repo: string) => hasRigBeads(repo, rigs())
 /** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a rigs.json written outside the CLI) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
   Array.isArray(rig?.personOnlyContexts) && rig.personOnlyContexts.every(c => typeof c === 'string')
@@ -10520,7 +10526,7 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
       gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
       reviewFacts: key => JSON.stringify(reviewFacts(key)),
     }
-    if (verb === 'patrol') return patrolOnce(io)
+    if (verb === 'patrol') return await patrolOnce(io)
     return verb === 'pm'
       ? await pmOnce(io, codex)
       : verb === 'brief'
@@ -13050,6 +13056,26 @@ function record(id: string): RunRecord {
   }
 }
 
+/** flows.show: the factory template of that name and its runs (the live runs that follow it, and kept records that fit its stations) */
+async function flowData(name: string | undefined): Promise<{ def: Factory; runs: FlowRun[] }> {
+  const spec = name ?? 'lifecycle'
+  // ponytail: the template in ROOT/factories only. Upgrade path: a rig's own .factory/<name>.ts, once a rig is an input
+  const file = findIn(join(ROOT, 'factories'), spec) ?? fail(`no factory "${spec}"`)
+  const def = await loadFactory(file)
+  const live: FlowRun[] = []
+  for (const id of startedRunIds()) {
+    const { run, value, c } = current(id)
+    if (factoryLabelName(run, await loadPinned(run.factory)) !== spec) continue
+    const [node, sub] = where(value)
+    live.push({ id, node, sub, createdAt: createdAt(id), log: c.log })
+  }
+  const ids = new Set(live.map(r => r.id))
+  const kept: FlowRun[] = records()
+    .filter(r => !ids.has(r.id) && r.log.length && r.log.every(e => e.node in def.nodes))
+    .map(r => ({ id: r.id, node: r.node, sub: '', createdAt: r.createdAt, log: r.log, ended: true as const }))
+  return { def, runs: [...live, ...kept] }
+}
+
 async function status(id: string | undefined, print: Print = l => console.log(l)) {
   const halt = halted()
   if (halt && !id)
@@ -13489,6 +13515,7 @@ export const corePort: Port = {
   planShowText,
   gateBriefFacts,
   records,
+  flowData,
   refreshMerges,
   managerUsage,
   rigList: rigListLines,
@@ -13671,7 +13698,26 @@ if (import.meta.main && !outboxCmd)
             if (c !== 0) throw new Error(`exit ${c}`)
           })
         }
-        server.main(args, HOME, () => tick(), corePort, backup)
+        // the patrol child takes manager.lease as ppid:<server pid>; the marker moves its HOME away from the person certificate
+        let patrolKid: ReturnType<typeof Bun.spawn> | undefined
+        const patrol = {
+          // ponytail: SIGTERM reaches the patrol child only; a grandchild (the claude step) can outlive it. patrol.lock limits that. Upgrade: kill the process group.
+          kill: () => patrolKid?.kill('SIGTERM'),
+          run: () => {
+            const { FACTORY_LEASE_HOLDER, FACTORY_LEASE_KIND, ...env } = kickEnv(process.env, HOME)
+            const p = Bun.spawn([CLI, 'patrol', '--once'], {
+              stdout: 'ignore',
+              stderr: 'inherit',
+              env: { ...env, FACTORY_STEP_ISOLATE: '1' },
+            })
+            patrolKid = p
+            return p.exited.then(c => {
+              if (c !== 0) throw new Error(`exit ${c}`)
+            })
+          },
+          keep: (out: unknown) => keepTick(HOME, out as TickOut),
+        }
+        server.main(args, HOME, () => tick(), corePort, backup, patrol)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -13738,7 +13784,16 @@ if (import.meta.main && !outboxCmd)
         console.log(HOME)
         break
       case 'repos': {
-        if (args[0] !== 'sync') fail('usage: factory repos sync')
+        if (args[0] === 'bd-env') {
+          // claude-factory-d289.26: the manager model's shell evals this before its bd, in the cwd it has then
+          const top = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { stderr: 'ignore' })
+          for (const [k, v] of Object.entries(
+            bdExports(top.success ? top.stdout.toString().trim() : undefined),
+          ))
+            console.log(`export ${k}=${sq(v)}`)
+          break
+        }
+        if (args[0] !== 'sync') fail('usage: factory repos sync | factory repos bd-env')
         const problems = reposSync()
         if (problems.length) fail(problems.join('\n'))
         console.log(`repos in place under ${process.env.FACTORY_REPOS ?? '/workspace/w/repos'}`)
@@ -14345,6 +14400,16 @@ if (import.meta.main && !outboxCmd)
           ? await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() })
           : null
         emit(await snapshotRun({ ...cliCtx(), board: () => board }, { views: args[1]! }))
+        break
+      }
+      case 'flows': {
+        const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
+        const r = await flowsOp.show(cliCtx(), defined({ factory: opt('--factory'), since: opt('--since') }))
+        if (r.code || args.includes('--json')) emit(r)
+        else {
+          const g = JSON.parse(r.out) as FlowGraph
+          emit({ ...r, out: (args.includes('--mermaid') ? flowMermaid(g) : flowTable(g)) + '\n' })
+        }
         break
       }
       case 'backlog':

@@ -6,6 +6,7 @@ import {
   axRepoPath,
   bdEnv,
   beadsDirOf,
+  hasRigBeads,
   httpsRemote,
   mapRigs,
   mapRunRepo,
@@ -99,6 +100,65 @@ test('repos sync reports a rig with no beadsRemote whose origin has no refs/dolt
     expect(problems.join('\n')).toContain('no refs/dolt/data')
     const dir = beadsDirOf(home, join(root, 'repos', 'widget'))
     expect(existsSync(join(dir, '.beads', 'embeddeddolt'))).toBe(false)
+  } finally {
+    if (saved === undefined) delete process.env.FACTORY_BD
+    else process.env.FACTORY_BD = saved
+  }
+})
+
+test('a rig with no .beads in git has beads in the task when it has a beadsRemote or a store in the home', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-has-'))
+  const home = join(root, 'home')
+  const env = { ...AX, FACTORY_HOME: home }
+  const repo = join(root, 'repos', 'widget')
+  const remote = { url: 'dolt://dolt.example/widget', user: 'u' }
+  const plain = [{ name: 'widget', repo }]
+  const remoted = [{ name: 'widget', repo, beadsRemote: remote }]
+  expect(hasRigBeads(repo, plain, env)).toBe(false)
+  expect(hasRigBeads(repo, remoted, env)).toBe(true)
+  expect(hasRigBeads(join(root, 'other'), remoted, env)).toBe(false)
+  mkdirSync(join(beadsDirOf(home, repo), '.beads'), { recursive: true })
+  expect(hasRigBeads(repo, plain, env)).toBe(true)
+  // a .beads in the repo counts everywhere
+  mkdirSync(join(root, 'git', '.beads'), { recursive: true })
+  expect(hasRigBeads(join(root, 'git'), plain, {})).toBe(true)
+})
+
+test('on the laptop a beadsRemote and a home store do not make beads: only the repo .beads does', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-has-'))
+  const repo = join(root, 'widget')
+  const rig = { name: 'widget', repo, beadsRemote: { url: 'dolt://dolt.example/widget', user: 'u' } }
+  mkdirSync(join(beadsDirOf(join(root, 'home'), repo), '.beads'), { recursive: true })
+  expect(hasRigBeads(repo, [rig], { FACTORY_HOME: join(root, 'home') })).toBe(false)
+})
+
+test('repos sync bootstraps a rig with a beadsRemote and no .beads in git, from the remote', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-sync-'))
+  const origin = join(root, 'origin')
+  const git = (...a: string[]) =>
+    Bun.spawnSync(['git', '-C', origin, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])
+  mkdirSync(origin, { recursive: true })
+  writeFileSync(join(origin, 'README'), 'x\n')
+  git('init', '-q')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'init')
+  const bd = join(root, 'bd')
+  writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
+  const saved = process.env.FACTORY_BD
+  process.env.FACTORY_BD = bd
+  try {
+    const home = join(root, 'home')
+    const env = { ...AX, FACTORY_HOME: home, FACTORY_REPOS: join(root, 'repos') }
+    const beadsRemote = { url: 'dolt://dolt.example/widget', user: 'u' }
+    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: origin, beadsRemote }], home, env)
+    expect(problems).toEqual([])
+    const clone = join(root, 'repos', 'widget')
+    const dir = beadsDirOf(home, clone)
+    expect(readFileSync(join(dir, '.beads', 'config.yaml'), 'utf8')).toBe(
+      `sync.remote: "${beadsRemote.url}"\n`,
+    )
+    expect(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8')).DOLT_REMOTE_USER).toBe('u')
+    expect(bdEnv(clone, env).BEADS_DIR).toBe(join(dir, '.beads'))
   } finally {
     if (saved === undefined) delete process.env.FACTORY_BD
     else process.env.FACTORY_BD = saved

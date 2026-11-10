@@ -152,6 +152,18 @@ async function stepPrompt($: EngineInterface, name: string, vars: Record<string,
     return undefined
   }
 }
+
+const ALLOW_TURN = 'Allow for this turn'
+/** an Allow for this turn lasts to the turn's end, or this long if the turn runs longer */
+const TURN_ALLOW_MS = 30 * 60_000
+
+/** claude-factory-d289.25: forget the turn Allows that `isDone` picks, and empty their token files (the mod API has no unlink: an empty file is an expired token) */
+async function endTurnAllows($: EngineInterface, isDone: (g: (typeof rt.turnAllows)[number]) => boolean) {
+  const done = rt.turnAllows.filter(isDone)
+  rt.turnAllows = rt.turnAllows.filter(g => !done.includes(g))
+  for (const g of done) await $.fs.write(g.file, '').catch(() => {})
+}
+
 const patrolPrompt = ($: EngineInterface) =>
   stepPrompt($, 'patrol', { cli: rt.cli, factories: rt.cli.replace(/bin\/factory$/, 'factories/') })
 
@@ -160,6 +172,8 @@ const rt = {
   cli: '',
   /** this session's factory: every command the model runs works it, wherever its shell has cd'd */
   home: '',
+  /** claude-factory-d289.25: the person's "Allow for this turn" tokens; the turn's end or exp empties each file */
+  turnAllows: [] as { token: string; file: string; kinds: string[]; until: number }[],
   timer: undefined as { cancel: () => void } | undefined,
   isTicking: false,
   /** a tick was asked for while one ran: run another right after it, so an action shows at once */
@@ -1464,11 +1478,17 @@ export const register: Register = (on, options) => {
     // both unsets this var and obfuscates the text still gets through. Fixing that needs the CLI
     // to know the caller's identity on its own.
     // claude-factory-6g6ud: the main chat's prefix also sets FACTORY_MAIN_CHAT=1. Under it, src/cli.ts refuses
-    // each gated kind unless the person's Allow wrote a one-time token (below). That covers the forms the text
+    // each gated kind unless the person's Allow wrote a token (below): a one-time token, or an Allow for this turn token that lasts to the turn's end. That covers the forms the text
     // gate cannot read (a symlink to bin/factory, a hidden verb word). One residual stays: a command that unsets the marker.
     const prefix =
       (e.agentId ? 'export FACTORY_PATROL=1\n' : 'export FACTORY_MAIN_CHAT=1\n') +
-      (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '')
+      (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '') +
+      // claude-factory-d289.26: in the AX manager task, a shell bd gets the beads env of its cwd's rig repo.
+      // The factory's own bd calls get it too. `repos bd-env` prints nothing outside a rig repo.
+      // The laptop has no FACTORY_IN_AX, so nothing changes there.
+      (rt.cli
+        ? `if [ "$FACTORY_IN_AX" = 1 ]; then bd() { (eval "$('${rt.cli}' repos bd-env 2>/dev/null)"; command bd "$@"); }; fi\n`
+        : '')
     const pinned = prefix ? { ...e, command: `${prefix}${e.command}` } : e
     const gated = gatedCommand(e.command)
     // joined drops every backslash-newline pair, even after an even run: these guards only deny, and a nested shell can read the pair as a continuation (gatedCommand uses joinLines)
@@ -1523,22 +1543,37 @@ export const register: Register = (on, options) => {
     if (!gated) return next(pinned)
     // nobody watches the dialog in a manager loop: deny a substitution-only or unreadable-only command with its rewrite hint
     if (!gated.ask) return { deny: gated.deny }
-    const choice = await $.ui.ask(gated.question, ['Allow', 'Deny']).catch(() => 'Deny')
-    if (choice !== 'Allow') return { deny: gated.deny }
+    // claude-factory-d289.25: an Allow for this turn covers every later gated call of the same kinds with no dialog
+    if (rt.turnAllows.length) {
+      const clockNow = await $.clock.now()
+      await endTurnAllows($, g => g.until <= clockNow)
+    }
+    const held = rt.turnAllows.find(g => gated.kinds.every(k => g.kinds.includes(k)))
+    if (held) return next({ ...pinned, command: `export FACTORY_ALLOW=${held.token}\n${pinned.command}` })
+    const choice = await $.ui.ask(gated.question, ['Allow', ALLOW_TURN, 'Deny']).catch(() => 'Deny')
+    if (choice !== 'Allow' && choice !== ALLOW_TURN) return { deny: gated.deny }
     // claude-factory-6g6ud: the Allow writes a one-time token the CLI consumes. With no home there is no token, so the CLI refuses.
     if (!rt.home) return next(pinned)
+    const isTurn = choice === ALLOW_TURN
     const token = crypto.randomUUID()
     const file = `${rt.home}/allow/${token}.json`
+    const exp = Date.now() + (isTurn ? TURN_ALLOW_MS : 600_000)
     try {
-      await $.fs.write(file, JSON.stringify({ kinds: gated.kinds, exp: Date.now() + 600_000 }))
+      // turn: true tells the CLI not to consume the token: this hook empties it when the turn ends or at exp
+      await $.fs.write(file, JSON.stringify({ kinds: gated.kinds, exp, ...(isTurn ? { turn: true } : {}) }))
     } catch (err) {
       return { deny: `The factory could not write the Allow token (${line(String(err), 120)}): nothing ran.` }
     }
+    if (isTurn)
+      rt.turnAllows = [
+        ...rt.turnAllows,
+        { token, file, kinds: [...gated.kinds], until: (await $.clock.now()) + TURN_ALLOW_MS },
+      ]
     try {
       return await next({ ...pinned, command: `export FACTORY_ALLOW=${token}\n${pinned.command}` })
     } finally {
       // the mod API has no unlink: an empty file is an expired token
-      await $.fs.write(file, '').catch(() => {})
+      if (!isTurn) await $.fs.write(file, '').catch(() => {})
     }
   })
 
@@ -1576,6 +1611,8 @@ export const register: Register = (on, options) => {
   // of the same event with no matcher (there is no per-agent-type matcher for this event, unlike
   // `agent.offer`'s `{ agent }`), so the patrol's own branch and the pm's own branch share one hook.
   on('turn.complete', async ($, e, next) => {
+    // claude-factory-d289.25: the main chat's turn ends the person's Allow for this turn
+    if (!e.agentId) await endTurnAllows($, () => true)
     if (
       rt.isPatrolling &&
       e.agentId &&
@@ -1790,6 +1827,8 @@ export const register: Register = (on, options) => {
   // defense only: the probe behind claude-factory-72v found that a plugin's own `$.agent.spawn` queues
   // no task-notification turn (unlike the model's own background Agent call). This must not fire.
   on('prompt.submit', async ($, e, next) => {
+    // claude-factory-d289.25: a new prompt that is not a task-notification starts a new turn: the Allow for this turn ends
+    if (e.origin.kind !== 'task-notification') await endTurnAllows($, () => true)
     if (e.origin.kind === 'task-notification') {
       const id = e.text.match(/<task-id>([^<]+)<\/task-id>/)?.[1]
       if (

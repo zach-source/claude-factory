@@ -83,24 +83,41 @@ export function mainChatKind(
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
+/** claude-factory-d289.25: an Allow for this turn token lives at most this long (the hook writes exp 30 min on) */
+const TURN_ALLOW_MAX_MS = 30 * 60_000
+
+type AllowToken = { kinds?: unknown; exp?: unknown; turn?: unknown }
+const allows = (t: AllowToken, kind: string, now: number) =>
+  Array.isArray(t.kinds) && t.kinds.includes(kind) && typeof t.exp === 'number' && t.exp > now
+
 /**
  * claude-factory-6g6ud: the main chat's hook sets FACTORY_MAIN_CHAT on each model command. Under it, a gated kind needs the
- * one-time token the hook wrote at the person's Allow (FACTORY_ALLOW, a file in <home>/allow). Returns the refusal, else undefined.
- * ponytail: one Allow permits one gated call; upgrade path: a count per kind. The token file is renamed first, so two calls cannot both use it.
+ * token the hook wrote at the person's Allow (FACTORY_ALLOW, a file in <home>/allow). Returns the refusal, else undefined.
+ * A one-time token is renamed first, so two calls cannot both use it.
+ * claude-factory-d289.25: a token with turn: true (Allow for this turn) is read and kept, so it works for many calls of its kinds.
+ * The hook empties its file when the turn ends; an empty file or a past exp refuses. An exp over 30 min away refuses too.
  */
 export function mainChatRefusal(env: Env, home: string, kind: string): string | undefined {
   if (!env.FACTORY_MAIN_CHAT) return undefined
   const refuse = `factory ${kind} is the person's call: refused without the person's Allow (FACTORY_MAIN_CHAT is set). Ask the person to run it.`
   const token = env.FACTORY_ALLOW
   if (!token || !UUID.test(token)) return refuse
+  const file = join(home, 'allow', `${token}.json`)
+  try {
+    const peek = JSON.parse(readFileSync(file, 'utf8')) as AllowToken
+    if (peek.turn === true) {
+      const now = Date.now()
+      return allows(peek, kind, now) && (peek.exp as number) <= now + TURN_ALLOW_MAX_MS ? undefined : refuse
+    }
+  } catch {
+    // no file, an empty file or a bad body: the one-time path below refuses it
+  }
   const used = join(home, 'allow', `${token}.${process.pid}.used`)
   try {
-    renameSync(join(home, 'allow', `${token}.json`), used)
+    renameSync(file, used)
     const body = readFileSync(used, 'utf8')
     unlinkSync(used)
-    const t = JSON.parse(body) as { kinds?: unknown; exp?: unknown }
-    if (Array.isArray(t.kinds) && t.kinds.includes(kind) && typeof t.exp === 'number' && t.exp > Date.now())
-      return undefined
+    if (allows(JSON.parse(body) as AllowToken, kind, Date.now())) return undefined
   } catch {
     // no file, a second use, a bad body: refuse
   }
