@@ -163,6 +163,18 @@ describe('1ocuv AC4 remote lease exclusion and replay', () => {
     ).toBe(409)
     expect(t.call('renew', { epoch: t.lease.epoch, generation: 'stale' }, 'stale-key').status).toBe(409)
     expect(index).not.toHaveBeenCalled()
+    expect(
+      t.call(
+        'complete',
+        { epoch: t.lease.epoch, generation: first.generation, outcome: 'success' },
+        'complete-key',
+      ).status,
+    ).toBe(200)
+    index.mockClear()
+    expect(
+      t.call('renew', { epoch: t.lease.epoch, generation: first.generation }, 'terminal-renew-key').status,
+    ).toBe(409)
+    expect(index).not.toHaveBeenCalled()
     t.time(first.expiresAt)
     expect(
       t.call(
