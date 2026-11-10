@@ -87,6 +87,59 @@ const nested = (at = 'sub', fileName = '.git') => [
   `echo hi > ${at}/f.md`,
 ]
 
+test.each(['config', 'nested'])(
+  'ot1ew pass overlap dream %s',
+  async kind => {
+    seed()
+    const ready = join(dir, 'ready')
+    const release = join(dir, 'release')
+    const lock = join(home, 'dream.lock', 'pid')
+    mkdirSync(join(memory, '.manager', 'skills', 'sample'), { recursive: true })
+    writeFileSync(
+      join(memory, '.manager', 'skills', 'sample', 'SKILL.md'),
+      '---\ndescription: sample\n---\nUse the tool.\n',
+    )
+    const agent = fake([
+      ...(kind === 'config' ? [FSMON] : nested()),
+      `touch '${ready}'`,
+      `n=0; while [ ! -f '${release}' ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done`,
+    ])
+    const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_DREAM_CODEX, ...env } = process.env
+    const pass = Bun.spawn([CLI, 'dream'], {
+      env: {
+        ...env,
+        FACTORY_HOME: home,
+        FACTORY_SELF_UPDATE: '0',
+        FACTORY_NO_KICK: '1',
+        FACTORY_CLAUDE: agent,
+      },
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
+    try {
+      const until = Date.now() + 15_000
+      while (!existsSync(ready) && Date.now() < until) await Bun.sleep(20)
+      expect(existsSync(ready)).toBe(true)
+      const owner = readFileSync(lock, 'utf8')
+      expect(owner).toBe(String(pass.pid))
+      const bin = join(dir, 'recorder')
+      mkdirSync(bin)
+      writeFileSync(join(bin, 'git'), `#!/bin/sh\ntouch '${gitLog}'\nexit 99\n`)
+      chmodSync(join(bin, 'git'), 0o755)
+      const r = run({ PATH: `${bin}:${env.PATH}` }, ['skills', 'reject', 'sample', 'reason'])
+      expect([r.code, r.out, r.err]).toEqual([1, '', 'memory: busy'])
+      expect(existsSync(gitLog)).toBe(false)
+      expect(existsSync(MARKER)).toBe(false)
+      expect(readFileSync(lock, 'utf8')).toBe(owner)
+      expect(pass.exitCode).toBe(null)
+    } finally {
+      writeFileSync(release, '')
+      expect(await pass.exited).toBe(0)
+    }
+  },
+  30_000,
+)
+
 /** run a dream whose pass is `body`; the shared checks of a guarded pass */
 function guarded(body: string[], codex = false) {
   seed()
