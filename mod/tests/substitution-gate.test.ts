@@ -242,6 +242,7 @@ test('a plain word or JSON near the caller is not denied', SLOW, () => {
     'ls -la',
     'wc -l src/cli.ts src/*.ts',
     'bun test x; cat src/cli.ts',
+    'gh run view 1 --log | grep -c cli',
   ])
     expect(gatedCommand(c), c).toBeNull()
 })
@@ -277,6 +278,18 @@ test('a non-literal verb word after a literal caller is denied with no dialog', 
     'bun run --smol src/cli.ts dec* r1 ship',
     'bun src/cli.ts start lifecycle acme w-2 --own{e..e}d',
     'bun src/cli.ts ima* x',
+    'V=decide; bun --cwd $(pwd) src/cli.ts $V r1 ship',
+    'bun --cwd $(pwd) src/cli.ts dec* r1 ship',
+    'bun --cwd $(pwd) src/cli.ts start lifecycle acme w-2 --o{w,w}ned',
+    'bun --cwd $(true;pwd) src/cli.ts dec* r1 ship',
+    'bun --define a=$((1)) src/cli.ts dec* r1 ship',
+    'bun --cwd <(true) src/cli.ts dec* r1 ship',
+    'bun --cwd >(true) src/cli.ts dec* r1 ship',
+    `bun --cwd ${BT}true;pwd${BT} src/cli.ts dec* r1 ship`,
+    'bun --cwd @(x) src/cli.ts dec* r1 ship',
+    "bun --define $'a\\'b;c' src/cli.ts dec* r1 ship",
+    'bun src/cli.ts status; bun --smol src/cli.ts dec* r1 ship',
+    'bun install\ncat src/cli.ts *.md',
   ]
   for (const command of rows) {
     const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
@@ -297,6 +310,7 @@ test(
       'bun --smol src/cli.ts mail r1 plan "$(id)"',
       'bun --cwd \'a;b\' /repo/src/cli.ts mail r1 plan "$(id)"',
       '/usr/bin/bun src/cli.ts mail r1 plan "$(id)"',
+      'bun --cwd $(pwd) src/cli.ts mail r1 plan "$(id)"',
     ]) {
       const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
       expect(r.deny, command).toContain('shell substitution')
@@ -387,6 +401,11 @@ test('gatedCommand runs in linear time on hostile text', SLOW, () => {
     "bun --cwd 'a;b' ".repeat(20000) + 'src/cli.ts dec*',
     '/repo/bin/factory ' + '{,'.repeat(100000),
     '/repo/bin/factory start '.repeat(4000) + 'a{b,c}',
+    'bun ' + 'src/cli.ts;'.repeat(20000),
+    'bun' + ' src/cli.ts'.repeat(20000),
+    'bun ' + 'src/cli.ts x;'.repeat(20000),
+    'bun ' + 'src/cli.ts '.repeat(10000) + 'dec*',
+    'bun $( '.repeat(30000) + 'src/cli.ts dec*',
   ]
   for (const [i, t] of texts.entries()) {
     const t0 = performance.now()
