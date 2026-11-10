@@ -2,6 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
+import { codexAuth as managerCodexAuthState, codexAuthMail } from './codex-auth'
 import {
   devenvRows,
   isDevenvKey,
@@ -206,6 +207,7 @@ import {
 } from './wiki'
 import type { Page } from './wiki'
 import * as ax from './ax'
+import { codexChatLaunch } from './manager-codex'
 import type { Egress } from './ax'
 import {
   type ConnectCache,
@@ -343,6 +345,8 @@ import { cut } from './cut'
 import {
   mainChatKind,
   mainChatRefusal,
+  patrolBdRefusal,
+  patrolRefusal,
   managerSender as managerSenderIn,
   refuseWorker as refuseWorkerIn,
   workerMarker,
@@ -622,7 +626,15 @@ async function readOnlyBoard(holder: leases.Lease) {
       runs.push({ id, error: (err as Error).message })
     }
   }
-  return { readOnly: leases.leaseLine(holder, Date.now()), lease: holder, runs, manager: [], rigs: rigs() }
+  return {
+    readOnly: leases.leaseLine(holder, Date.now()),
+    lease: holder,
+    runs,
+    manager: [],
+    managerLimited: managerLimited() ?? null,
+    managerCodexAuth: managerCodexAuthState(HOME),
+    rigs: rigs(),
+  }
 }
 const fail = (msg: string): never => {
   throw new Error(msg)
@@ -725,6 +737,9 @@ type TaskSide = {
   /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
   beadsRemote?: Rig['beadsRemote']
 }
+/** the wire name of the launch memory snapshot in the worker dir */
+const MEMORY_TGZ = 'memory.tgz'
+
 /**
  * Write the memory snapshot file for a launch. `put` is true when the file must go to the VM.
  * `skipped` says why not: the snapshot is over `max` bytes, or `memory.snapshot` threw.
@@ -829,6 +844,35 @@ export function summaryArgs(args: string[]): string[] {
 
 /** the flags of `memory add` that take a value */
 const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--supersedes']
+// every flag the rig verb reads with opt() (claude-factory-svah)
+const RIG_VALUE_FLAGS = [
+  '--max',
+  '--sweeps',
+  '--slo',
+  '--drift',
+  '--runner',
+  '--agent',
+  '--mcp',
+  '--linear',
+  '--linear-projects',
+  '--linear-labels',
+  '--param',
+  '--egress',
+  '--person-only-context',
+  '--protected-branch',
+  '--cluster-runs',
+  '--auto-queue',
+  '--push-rule',
+  '--sensitive-path',
+  '--skills',
+  '--otel-content',
+  '--sandbox-class',
+  '--port',
+  '--name',
+  '--url',
+  '--user',
+  '--path-prefix',
+]
 
 /**
  * claude-factory-jho3: expand a file flag to the inline form. Three forms exist:
@@ -852,6 +896,8 @@ export function fileArgs(cmd: string, args: string[]): string[] {
       return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
     return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
   }
+  const bad = cmd === 'memory' ? memory.bareValueFlag(args, MEMORY_ADD_VALUE_FLAGS) : undefined
+  if (bad) return fail(`${bad} needs a value`)
   if (cmd !== 'memory' || args[0] !== 'add' || !args.includes('--body-file')) return args
   const i = args.indexOf('--body-file')
   const path = args[i + 1]
@@ -1276,12 +1322,14 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     side!.putPart = undefined
     side!.putFailedAt = undefined
     side!.putError = undefined
-    if (name === 'memory.tgz') {
+    if (name === MEMORY_TGZ) {
       side!.memory = { bytes: statSync(file).size, parts, sentAt: Date.now() }
     }
     writeJson(sideFile(run, task), side)
+    if (name === MEMORY_TGZ)
+      launchLog(run, side!.node, `memory snapshot sent: ${side!.memory!.bytes} bytes in ${parts} parts`)
     // remove the file after the save: a stop between the two would leave side.put naming a missing file
-    if (name === 'memory.tgz') rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
+    if (name === MEMORY_TGZ) rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
   }
   // always ask for everything: which lines are already replayed lives here, keyed by content (see `loadSeen`
   // below), not as a line count the VM slices by -- a worker that edits outbox.jsonl (claude-factory-4x1)
@@ -2155,24 +2203,25 @@ export function launchNotes(run: Run, node: string) {
       { env: { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '' }, timeout: 60_000 },
     )
     if (p.exitCode !== 0) {
-      launchNotesFailed(run, node, p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`)
+      launchLog(
+        run,
+        node,
+        `launch memory search failed: ${p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`}`,
+      )
       return ''
     }
     const out = p.stdout.toString().trim()
     return out.startsWith('nothing in ') ? '' : clip(out, 6000)
   } catch (e) {
-    launchNotesFailed(run, node, String(e))
+    launchLog(run, node, `launch memory search failed: ${String(e)}`)
     return ''
   }
 }
 
 /** one line in HOME/launches.log; a write error never blocks the launch */
-function launchNotesFailed(run: Run, node: string, why: string) {
+function launchLog(run: Run, node: string, text: string) {
   try {
-    appendFileSync(
-      join(HOME, 'launches.log'),
-      `${new Date().toISOString()} ${run.id}/${node} launch memory search failed: ${why}\n`,
-    )
+    appendFileSync(join(HOME, 'launches.log'), `${new Date().toISOString()} ${run.id}/${node} ${text}\n`)
   } catch {
     // best effort
   }
@@ -2322,17 +2371,7 @@ export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
 export const codexEgress = (egress: Egress[] = []) =>
   codexAuth(egress) === 'apikey' || egress.some(e => e.hosts.includes('chatgpt.com'))
     ? egress
-    : [
-        ...egress,
-        {
-          hosts: ['chatgpt.com'],
-          pathPrefixes: ['/backend-api/codex/'],
-          headers: [
-            { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
-            { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
-          ],
-        },
-      ]
+    : [...egress, ax.CODEX_CHATGPT_RULE]
 
 /** FACTORY_GH_REVIEWER comes only from launchTask's reviewer flag, never from FACTORY_AX_ENV or a rig's env */
 const noReviewerFlag = (e: Record<string, string> = {}) => {
@@ -2460,7 +2499,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   // beadsRemote or else the repo's GitHub origin
   writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
   // the VM cannot reach the laptop's memory: it gets a snapshot of the notes its rig can see (vffe.4)
-  const snap = memorySnapshotPut(MEMORY, rig?.name, join(runDir(run.id), `${name}.memory.tgz`))
+  const snap = memorySnapshotPut(MEMORY, rig?.name, join(runDir(run.id), `${name}.${MEMORY_TGZ}`))
+  if (snap.skipped) launchLog(run, node, `memory snapshot skipped: ${snap.skipped}`)
   // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
   // the fleet may hold other VMs' writes since: take them first, or the push is refused
   if (hasRunBeads) (syncRigBeads(run, 'pull'), syncRigBeads(run, 'push'))
@@ -2539,7 +2579,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(reviewer && { reviewer }),
     ...(reviewer && { githubRepo }),
     policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer, false, githubRepo),
-    put: ['brief.md', ...(snap.put ? ['memory.tgz'] : [])],
+    put: ['brief.md', ...(snap.put ? [MEMORY_TGZ] : [])],
     ...(snap.skipped && { memorySkipped: snap.skipped }),
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -2877,6 +2917,18 @@ export function recordHarnessLimit(runner: string, h: Harness, until: number, ho
   } catch {} // none yet
   writeJson(file, { ...m, [h]: until })
 }
+/** drop one harness entry of harness-limit-<runner>.json, as unhold does after a token swap */
+export function clearHarnessLimit(runner: string, h: Harness, home = HOME) {
+  const file = harnessLimitFile(runner, home)
+  let m: Record<string, number>
+  try {
+    m = readJson(file)
+  } catch {
+    return // none yet
+  }
+  delete m[h]
+  writeJson(file, m)
+}
 
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
@@ -3116,6 +3168,26 @@ export function clearLimit(at: number) {
   delete s.limits[active]
   delete s.hitAt?.[active]
   writeJson(LIMITS, s)
+}
+
+/** <home>/manager-limit.json: the manager's Claude is refused and no account is free (claude-factory-y3f8w.3) */
+const managerLimitFile = (home = HOME) => join(home, 'manager-limit.json')
+const MANAGER_LIMIT_UNKNOWN_MS = 30 * 60_000 // a limit with no known reset counts for this long
+export function recordManagerLimit(hit: { at: number; kind: string; resetsAt: number }, home = HOME) {
+  writeJson(managerLimitFile(home), hit)
+}
+export function clearManagerLimit(home = HOME) {
+  rmSync(managerLimitFile(home), { force: true })
+}
+/** the manager's limit while it holds: its kind and when it lifts (ms), else null */
+export function managerLimited(now = Date.now(), home = HOME) {
+  try {
+    const h = readJson<{ at: number; kind: string; resetsAt: number }>(managerLimitFile(home))
+    const until = h.resetsAt > 0 ? h.resetsAt : h.at + MANAGER_LIMIT_UNKNOWN_MS
+    return until > now && until <= now + LIMIT_RESET_MAX_MS ? { kind: h.kind, until } : null
+  } catch {
+    return null
+  }
 }
 
 function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
@@ -4138,10 +4210,16 @@ async function superviseManager(args: string[]) {
     const watch = setInterval(() => {
       const tail = tailOf(process.cwd(), session)
       const hit = limitHit(tail)
-      if (!hit) clearLimit(servedAt(tail))
-      if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
-        isSwapped = true
-        child.kill()
+      if (!hit) {
+        clearLimit(servedAt(tail))
+        if (servedAt(tail)) clearManagerLimit()
+      }
+      if (hit && hit.at > startedAt) {
+        const wait = swapAccount(hit, Date.now())
+        if (wait === 0) {
+          isSwapped = true
+          child.kill()
+        } else recordManagerLimit({ ...hit, resetsAt: wait || hit.resetsAt })
       }
     }, 60_000)
     const code = await child.exited
@@ -5182,9 +5260,20 @@ export const shipStarts = (repos: string[], queued: (repo: string) => number, li
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
-      const { run, value, c } = current(id)
+      const run = loadRun(id)
+      if (!run.ship) return []
+      const saved = readJson<Saved>(join(runDir(id), 'state.json'))
+      const { value, context: c } = saved.snapshot
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && run.ship ? [{ run, node: where(value)[0], c }] : []
+      const revival = ended
+        ? inboxLines(id)
+            .slice(saved.cursor)
+            .map(line => JSON.parse(line) as Ev)
+            .find(e => e.type === 'GOTO' && e.node !== 'done')
+        : undefined
+      return !ended || revival
+        ? [{ run, node: revival?.type === 'GOTO' ? revival.node : where(value)[0], c }]
+        : []
     } catch {
       return [] // removed mid-pass
     }
@@ -7978,6 +8067,10 @@ async function tick(isPatrol = false) {
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
+      // set while the manager's Claude is refused and every account is drained (claude-factory-y3f8w.3)
+      managerLimited: managerLimited() ?? null,
+      // set while a codex step of the manager gets an auth error (claude-factory-y3f8w.10)
+      managerCodexAuth: managerCodexAuthState(HOME),
       // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
       // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
@@ -8006,6 +8099,7 @@ async function tick(isPatrol = false) {
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
     out.manager.push(...managerStaleMail(now))
+    out.manager.push(...codexAuthMail(now, HOME))
     out.manager.push(...tokenDigestMail(now))
     // skip rows are for people reading dispatch.json; the board, sidebar and reap() see only the rest
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()).filter(r => !r.skip) : []))
@@ -9027,7 +9121,11 @@ async function createTracked(
     return await createRun(spec, repo, goal, { id, bead, from, ship, onto, shipBranch })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
-    if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
+    try {
+      if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
+    } catch (deferErr) {
+      throw new Error(`${(err as Error).message}; could not defer ${bead}: ${(deferErr as Error).message}`)
+    }
     throw err
   }
 }
@@ -10503,13 +10601,17 @@ async function planFactsCmd() {
   console.log(await planFactsText())
 }
 
+/** the Codex model of the manager's fallback steps: FACTORY_MANAGER_CODEX, else gpt-5-codex */
+export const fallbackCodexModel = (env = process.env) => env.FACTORY_MANAGER_CODEX || 'gpt-5-codex'
+
 /** `factory patrol|pm|brief|review --once`: one step of the manager, headless (src/once.ts) */
 async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[]) {
   const codexAt = args.indexOf('--codex')
-  const codex = codexAt >= 0 ? args[codexAt + 1] : undefined
+  // --fallback: the manager's Claude is limited, so the step runs on Codex with the factory's own model name
+  const isFallback = args.includes('--fallback')
+  const codex = codexAt >= 0 ? args[codexAt + 1] : isFallback ? fallbackCodexModel() : undefined
   if (codexAt >= 0 && !(codex && CODEX_MODEL.test(codex))) fail('--codex needs a model name')
-  if (verb === 'patrol' && codexAt >= 0)
-    fail('the patrol cannot run on codex: codex has no PreToolUse hook, so the Bash guard cannot apply')
+  if (isFallback && !(codex && CODEX_MODEL.test(codex))) fail('FACTORY_MANAGER_CODEX is not a model name')
   const release = hold(`${verb}.lock`)
   if (!release) return `a ${verb} is already running`
   try {
@@ -10522,7 +10624,7 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
       gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
       reviewFacts: key => JSON.stringify(reviewFacts(key)),
     }
-    if (verb === 'patrol') return await patrolOnce(io)
+    if (verb === 'patrol') return await patrolOnce(io, {}, codex)
     return verb === 'pm'
       ? await pmOnce(io, codex)
       : verb === 'brief'
@@ -11781,10 +11883,10 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = cut(body.split('\n', 1)[0]!, 80)
+                const first = cleanText(cut(body.split('\n', 1)[0]!, 80), 80)
                 b.create(
                   `PR change request: ${first}`,
-                  `${d.url}\n\n${body}`,
+                  cleanReport(`${d.url}\n\n${body}`),
                   '--parent',
                   run.bead,
                   '-t',
@@ -13263,6 +13365,7 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
 const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
+const MEMORY_USAGE = `usage: factory memory search [--rig r] '<query...>' | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`
 
 /**
  * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
@@ -13349,6 +13452,7 @@ const usage = `factory — herdr software factories on xstate
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
+  manager chat --codex               a Codex chat here, for when the manager's Claude is limited
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
@@ -13391,7 +13495,7 @@ const usage = `factory — herdr software factories on xstate
   herdr install [--app-home <dir>]   copy the Herdr app manager mod and its layout into the app folder
   lease [status|release]             who holds the local manager lease (only its holder ticks); release it
   patrol --once                      one headless manager patrol: answers the kept mail and works the board
-  pm --once | brief --once | review --once [--codex <model>]   one headless pm, gate-brief or skill/proposal review
+  pm --once | brief --once | review --once [--codex <model> | --fallback]   one headless pm, gate-brief or skill/proposal review
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
@@ -13441,7 +13545,8 @@ function mainChatGateRefusal(): string | undefined {
   const why = import.meta.main
     ? (otherRunRefusal(cmd, args, process.env) ??
       workerVerbRefusal(cmd, args, process.env) ??
-      mainChatGateRefusal())
+      mainChatGateRefusal() ??
+      patrolRefusal(cmd, args, process.env))
     : undefined
   if (why) {
     console.error(why)
@@ -13663,7 +13768,7 @@ if (import.meta.main && !outboxCmd)
       case 'brief': {
         refuseWorker(cmd, true)
         if (!args.includes('--once'))
-          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model>]'}`)
+          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model> | --fallback]'}`)
         lease()
         // only the lease holder patrols (claude-factory-s01d.2)
         const other = localLease()
@@ -13680,6 +13785,13 @@ if (import.meta.main && !outboxCmd)
       case 'patrol-guard':
         await patrolGuard()
         break
+      case 'patrol-bd': {
+        // the bd shim of a codex patrol (src/once.ts): refuse a write, else run the real bd
+        const why = patrolBdRefusal(args)
+        if (why) fail(why)
+        const bdBin = process.env.FACTORY_REAL_BD || 'bd'
+        process.exit(await Bun.spawn([bdBin, ...args], { stdio: ['inherit', 'inherit', 'inherit'] }).exited)
+      }
       case 'lease': {
         refuseWorker('lease', true)
         if (args[0] === 'release' && args.length === 1) {
@@ -13747,6 +13859,15 @@ if (import.meta.main && !outboxCmd)
         if (args[0] === '--ax') {
           await launchAxManager(args.slice(1))
           break
+        }
+        if (args[0] === 'chat') {
+          // the manager's chat on Codex, for when every Claude slot is at its limit (claude-factory-y3f8w.4)
+          if (args.length !== 2 || args[1] !== '--codex') fail('usage: factory manager chat --codex')
+          const l = codexChatLaunch({ cli: CLI, home: HOME, env: process.env })
+          process.exit(
+            await Bun.spawn(l.argv, { cwd: l.cwd, env: l.env, stdio: ['inherit', 'inherit', 'inherit'] })
+              .exited,
+          )
         }
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
@@ -13853,20 +13974,16 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'memory': {
-        if (args[0] === 'add')
-          try {
-            args.splice(0, args.length, ...fileArgs('memory', args))
-          } catch (e) {
-            console.error(`factory memory add: ${(e as Error).message}`)
-            console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
-            process.exitCode = 2
-            break
-          }
+        try {
+          args.splice(0, args.length, ...fileArgs('memory', args))
+        } catch (e) {
+          console.error(`factory memory ${args[0] ?? ''}: ${(e as Error).message}`)
+          console.error(args[0] === 'add' ? `usage: factory memory add ${MEMORY_ADD_USAGE}` : MEMORY_USAGE)
+          process.exitCode = 2
+          break
+        }
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
-        // Capture this before opt('--supersedes') below runs. Otherwise a bare trailing flag (no
-        // value) looks the same as a caller who never passed --supersedes at all.
-        const hasSupersedes = args.includes('--supersedes')
         // `search --no-core`: the launch brief already prints CORE.md in full
         const noCore = args.includes('--no-core')
         if (noCore) args.splice(args.indexOf('--no-core'), 1)
@@ -13881,18 +13998,21 @@ if (import.meta.main && !outboxCmd)
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
           // a VM has no store: the laptop put a snapshot (memory.tgz) in the worker dir at launch (vffe.4)
-          const snap = join(worker.own(), 'memory.tgz')
+          const snap = join(worker.own(), MEMORY_TGZ)
+          let unpack: string | undefined
           if (!existsSync(MEMORY) && existsSync(snap)) {
             const tmp = `${MEMORY}.tmp-${process.pid}`
-            mkdirSync(tmp, { recursive: true })
-            const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
             try {
-              if (r.exitCode !== 0) throw new Error('tar failed')
+              mkdirSync(tmp, { recursive: true })
+              const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
+              if (r.exitCode !== 0) throw new Error(`tar exit ${r.exitCode}`)
               renameSync(tmp, MEMORY)
-            } catch {
-              rmSafe(tmp, { recursive: true, force: true }) // a cut file, or another search won the rename
+            } catch (e) {
+              rmSafe(tmp, { recursive: true, force: true }) // a cut file, a missing tar, or another search won the rename
+              if (!existsSync(MEMORY)) unpack = cleanText((e as Error).message, 200)
             }
           }
+          const vm = !!process.env.FACTORY_OUTBOX
           const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
@@ -13912,7 +14032,12 @@ if (import.meta.main && !outboxCmd)
                     .map(l => `    ${l}`),
                 ].join('\n'),
               )
-              .join('\n\n') || `nothing in ${MEMORY} yet`,
+              .join('\n\n') ||
+              (vm && !existsSync(MEMORY) && unpack
+                ? `the memory snapshot did not unpack (${unpack}): search again in a few minutes`
+                : vm && !existsSync(MEMORY) && !existsSync(snap)
+                  ? 'the memory snapshot has not arrived yet: search again in a few minutes'
+                  : `nothing in ${MEMORY} yet`),
           )
         } else if (sub === 'add' && words[0]) {
           // a --word left after the opt() splices (typo, repeat, flag an older bin lacks) would become the
@@ -13948,13 +14073,7 @@ if (import.meta.main && !outboxCmd)
           // Check it after gate() runs, before same() runs. A bad path must cost no embedding.
           // A bad path must write nothing, the same as any other usage error here.
           let supersedesPath: string | undefined
-          if (hasSupersedes) {
-            if (supersedesArg === undefined || supersedesArg.startsWith('--')) {
-              console.error(`factory memory add: --supersedes needs a note path`)
-              console.error(`usage: factory memory add ${MEMORY_ADD_USAGE}`)
-              process.exitCode = 2
-              break
-            }
+          if (supersedesArg !== undefined) {
             const resolved = memory.resolvePath(MEMORY, relative(MEMORY, resolve(MEMORY, supersedesArg)))
             const bad = supersedesRefusal(MEMORY, resolved)
             if (bad) {
@@ -14099,10 +14218,7 @@ if (import.meta.main && !outboxCmd)
               ),
             ].join('\n'),
           )
-        } else
-          fail(
-            `usage: factory memory search [--rig r] '<query...>' | add ${MEMORY_ADD_USAGE} | helped [--from run/station] <note path...> | compact [--dry-run] | eval [--self [n] [--seed s]]`,
-          )
+        } else fail(MEMORY_USAGE)
         break
       }
       case 'wiki': {
@@ -14367,6 +14483,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'proposals': {
+        if (memory.bareValueFlag(args, ['--rig'])) fail('--rig needs a value')
         const rigName = args.includes('--rig') ? args.splice(args.indexOf('--rig'), 2)[1] : undefined
         const [verb, name, ...why] = args
         const usage = 'proposals [install <name> [--rig r] | reject <name> <why>]'
@@ -14694,8 +14811,8 @@ if (import.meta.main && !outboxCmd)
       }
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
+        const wake = args[2] === '--wake'
         const [id, to, ...rest] = fileArgs('mail', args)
-        const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
         emit(
           await runsOp.mail(
@@ -14739,6 +14856,7 @@ if (import.meta.main && !outboxCmd)
         if (!r || r.local !== false || args.length > (codex ? 2 : 1))
           fail('usage: factory unhold <runner> [--codex]; the runner is a remote one, such as ax')
         writeUnhold(r!.name, codex, Date.now(), Date.now())
+        clearHarnessLimit(r!.name, codex ? 'codex' : 'claude')
         console.log(
           `marked: the next tick wakes the ${r!.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
         )
@@ -14894,6 +15012,8 @@ if (import.meta.main && !outboxCmd)
         const goal = args.includes('--goal')
           ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
           : undefined
+        const bareFlag = memory.bareValueFlag(args, RIG_VALUE_FLAGS)
+        if (bareFlag) fail(`${bareFlag} needs a value`)
         const [max, sweeps, slo, drift, runner, agent, mcp, linear, linearProjects, linearLabels] = [
           opt('--max'),
           opt('--sweeps'),

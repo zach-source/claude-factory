@@ -1,3 +1,4 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import * as fsNs from 'node:fs'
@@ -58,6 +59,8 @@ import {
   shellSnapshotAliases,
   XARGS_REASON,
 } from './worker-hook'
+
+stripLiveRunVars()
 
 // claude-factory-qn8a.9 instance index. This class bead replaced 17 one-off beads. Each line gives the test or the known gap.
 // - sibp (and qn8a.38): 'a payload that makes a guard throw prints one HOOK_ERROR_REASON deny'.

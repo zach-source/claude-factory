@@ -50,6 +50,7 @@ import {
   patrol,
   patrolsText,
   pmDue,
+  isManagerLimited,
   pmRetryDelay,
   quickAnswer,
   statusText,
@@ -234,6 +235,8 @@ const rt = {
   liveIds: new Set<string>(),
   /** the next attempt after a failed spawn or a failed `factory plan facts` call; 0 means try at once */
   pmRetryAt: 0,
+  /** the board's managerLimited from the last tick: the manager's Claude is refused (claude-factory-y3f8w.5) */
+  managerLimited: null as { kind?: string; until?: number } | null,
   /** pm spawns that failed (a deny or a throw), or `factory plan facts` calls that failed
    * (claude-factory-4hb), since the last spawn that worked; feeds `pmRetryDelay`'s backoff
    * (claude-factory-dun.29). A working spawn resets this to 0. */
@@ -318,6 +321,7 @@ async function tick($: EngineInterface) {
       reviewed?: FactoryReviewRow[]
       halt?: 'stopping' | 'paused'
       readOnly?: string
+      managerLimited?: { kind?: string; until?: number } | null
     }
     if (res.busy) return
     // claude-factory-s01d.2: another manager holds the lease. Show its board, and do not patrol or spawn.
@@ -326,6 +330,7 @@ async function tick($: EngineInterface) {
       $.ui.status(`factory: read-only: ${line(res.readOnly, 160)}`)
       return
     }
+    rt.managerLimited = res.managerLimited ?? null
     // what waits on the manager, for the patrol prompt: the reviewed items first, then those with no verdict yet
     rt.reviewRows = [...(res.reviewed ?? []), ...(res.reviews ?? [])]
     await update($, board, b => ({
@@ -744,6 +749,25 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
         rt.isPatrolling = false
       })
   }
+  // claude-factory-y3f8w.5: with the manager's Claude limited, the core runs this patrol on Codex (no Agent tool needed)
+  if (isManagerLimited(rt.managerLimited, now)) {
+    try {
+      const { isOk, out } = await factory($, ['patrol', '--once', '--fallback'])
+      // the verb prints a failure and exits 0, so the text tells the two apart
+      if (!isOk || /^(the patrol failed|a patrol is already running)/.test(out)) {
+        rt.retryAt = now + PATROL_RETRY_MS
+        $.ui.status(`factory: the patrol on Codex failed: ${line(out, 160)}`)
+        return
+      }
+      if (due.sig !== last) [rt.sig, rt.sigAt] = [due.sig, now]
+      rt.unsent = due.kept
+      for (const key of due.keys) rt.seen.add(key)
+      rt.patrolAt = now
+    } finally {
+      rt.isPatrolling = false
+    }
+    return
+  }
   if (hasAgentTool(toolNames) === false) return fallback('this manager has no Agent tool')
   try {
     const res = await $.agent.spawn({
@@ -805,6 +829,26 @@ async function patrolNow($: EngineInterface, runs: FactoryRun[], rigs: FactoryRi
  * spawn failures still doubles its wait, up to the 60 min cap. This stops `factory plan facts`
  * from retrying every 60 s forever.
  */
+/** one pm turn on Codex through `factory pm --once --fallback`: the core gathers the facts, runs it and sets the plan */
+async function pmOnCodex($: EngineInterface, now: number) {
+  rt.isPlanning = true
+  rt.pmStartedAt = now
+  try {
+    const { isOk, out } = await factory($, ['pm', '--once', '--fallback'])
+    // the verb prints a failure and exits 0, so the text tells the two apart
+    if (isOk && !/^(the pm failed|plan facts failed|a pm is already running)/.test(out)) {
+      rt.pmFailures = 0
+      rt.pmAt = now
+      return
+    }
+    rt.pmFailures += 1
+    rt.pmRetryAt = now + pmRetryDelay(rt.pmFailures)
+    $.ui.status(`factory: the pm on Codex failed: ${line(out, 160)}`)
+  } finally {
+    rt.isPlanning = false
+  }
+}
+
 async function pmNow($: EngineInterface, runs: FactoryRun[]) {
   if (!rt.isPmEnabled || rt.pmBlocked) return
   const now = await $.clock.now()
@@ -827,6 +871,8 @@ async function pmNow($: EngineInterface, runs: FactoryRun[]) {
   const { due, wanted } = pmDue(now, rt.pmAt, plan?.at, liveDropped, rt.pmWanted)
   rt.pmWanted = wanted
   if (!due) return
+  // claude-factory-y3f8w.5: with the manager's Claude limited, the core runs the pm on Codex (no Agent tool needed)
+  if (isManagerLimited(rt.managerLimited, now)) return await pmOnCodex($, now)
   // the Agent-tool check, before any `bd` call: a missing `tool.list` event (an old engine, or a
   // test with no mock) throws, which reads as "unknown" (claude-factory-dun.28), the same path
   // this session took before this check existed.
@@ -1404,6 +1450,30 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Monitor' }, () => ({
     deny: 'Monitor is disabled in the factory mod. Use Bash for shell commands.',
   }))
+
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    if (!e.agentId || !(rt.patrolIds.includes(e.agentId) || (await isPatrolAgent($, e.agentId))))
+      return next(e)
+    const absolute = (path: unknown): path is string =>
+      typeof path === 'string' && path.startsWith('/') && !path.includes('\0')
+    const normalize = (path: string) => {
+      const parts: string[] = []
+      for (const part of path.split('/')) {
+        if (part === '..') parts.pop()
+        else if (part && part !== '.') parts.push(part)
+      }
+      return `/${parts.join('/')}`
+    }
+    // ponytail: lexical checks do not detect symlinks, hard links, mounts, or concurrent path replacement.
+    // Use an OS boundary or a directory-relative no-follow writer for filesystem isolation.
+    if (
+      !absolute(rt.home) ||
+      !absolute(e.file_path) ||
+      !normalize(e.file_path).startsWith(`${normalize(`${rt.home}/text`)}/`)
+    )
+      return { deny: 'Patrol Write requires a path inside FACTORY_HOME/text/.' }
+    return next(e)
+  })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     // e.agentId is the subagent's own loop id (AgentLoop), absent on the main loop: the patrol's

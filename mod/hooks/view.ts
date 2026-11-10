@@ -625,6 +625,10 @@ export function hasAgentTool(names: readonly string[] | undefined): boolean | un
  * that failed (claude-factory-4hb): 60 s, 120 s, 240 s, doubling up to a 60 minute cap.
  * `failures` counts facts and spawn failures since the last spawn that worked; a working spawn
  * resets it to 0. */
+/** the board's managerLimited while it still holds (claude-factory-y3f8w.5): then the pm runs on Codex */
+export const isManagerLimited = (limited: { until?: unknown } | null | undefined, now: number): boolean =>
+  typeof limited?.until === 'number' && limited.until > now
+
 export function pmRetryDelay(failures: number): number {
   return Math.min(60_000 * 2 ** (failures - 1), 3_600_000)
 }
@@ -1208,6 +1212,7 @@ function plainText(command: string): string | null {
  * claude-factory-8njd: it also denies a bd command that sets the comment author: BEADS_ACTOR, a long flag
  * that abbreviates --actor or --author (3 or more letters), or, with the word comments, a short flag word
  * with the letter a. Quotes do not protect the text (fail closed).
+ * claude-factory-giqs: a newline ends the bd verb, and --claim (bd ready) denies.
  */
 export function bdWrite(command: string): boolean {
   const s = command.replace(/[\\'"]/g, '')
@@ -1224,9 +1229,10 @@ export function bdWrite(command: string): boolean {
   }
   if (bd && s.includes('BEADS_ACTOR')) return true
   if (bd && /(?<![\w-])--(?:act(?:or?)?|aut(?:h(?:or?)?)?)(?![\w-])/.test(s)) return true
+  if (bd && /(?<![\w-])--cla(?:im?)?(?![\w-])/.test(s)) return true
   if (bd && /\bcomments\b/.test(s) && /(?<![\w-])-[A-Za-z]*a/.test(s)) return true
   for (const m of s.matchAll(/\bbd\b/gi)) {
-    const verb = /^\s*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!
+    const verb = /^[ \t]*([^\s;&|()<>]*)/.exec(s.slice(m.index + 2))![1]!
     if (!BD_READ.has(verb)) return true
   }
   return false

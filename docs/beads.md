@@ -31,7 +31,7 @@ A rig's ready beads that carry the label `factory` become runs. Dispatch looks e
 
 ```sh
 bd create "Add a /health endpoint" -t feature -p 1 -d "What, why, and how to verify it" -l factory
-factory queue app app-42          # or label a bead that already exists (also takes it out of rejected)
+factory queue app app-42          # queue an existing bead; remove rejected, human and held:* labels
 factory queue app app-42 plan     # start it at the plan station (adds station:plan)
 bd update app-42 -l factory:release -l station:implement   # or: hand this bead to another factory
 ```
@@ -42,6 +42,8 @@ A bead is **queued** (dispatch starts it) when all of these are true:
 | ------------------------------------- | ------------------------------------------------------------------------- |
 | `bd ready` lists it                   | It is closed, deferred, in progress, or blocked by an open dependency     |
 | It has the `factory` label            | You did not label it, or a station rejected it (label `rejected`)         |
+| It has no `rejected`, `human`, `held:*` or `owner` label | One of these labels holds it, even with the `factory` label |
+| It has no hygiene hold               | It has `stale?` and metadata `hygiene_proposed` that starts with `shipped@` or `duplicate@` |
 | It has no assignee                    | Someone (a person, a run) holds it                                        |
 | It is top-level                       | It has a parent: it is a task of some bead                                |
 | It has no open children               | It is an epic that you split into children (see below)                    |

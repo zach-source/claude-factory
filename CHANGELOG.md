@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Changed: `security_model` is now `claude-fable-5-2` (was `claude-fable-5-1`) in lifecycle, ship and sweeps. The lifecycle `codex_security_share` default is now `0.5` (was `0.3`), so more security stations use `gpt-6-astra`. The worker and server images and CI now pin Claude Code 2.1.322 (was 2.1.319 in the worker, 2.1.291 in the server and CI). The `fable` key in `PRICES` prices Fable 5.2.
 - New: remote mode for the Herdr app mod (claude-factory-hpmc.14). `factory herdr install --machine <m> [--home <path>]` writes a config that sends every exec and file read to that `hc` machine. The mod only shows the board and calls `stop`, `resume`, `unhold`, `abort`. It never ticks, patrols or takes the lease. A "Manager chat" button opens `<m>/manager`. A local install refuses a home whose manager runs in AX. `factory tick --board` prints the board and changes nothing.
 - Changed: the default factory home is the platform data dir (claude-factory-nnkqp).
   - The order stays: `FACTORY_HOME`, then the nearest dir up with a `rigs.json`, then the default home.
@@ -117,9 +118,11 @@ minor release may change the factory format, the CLI or the run state.
 - Fix: the home guard no longer denies a read-only command that only names a script file (claude-factory-lqr3). Examples are `git diff src/cli.ts`, `grep -n x src/cli.ts` and `bd create -d "see src/home-guard.ts"`. A closed one-command grammar skips the script read. Every other form still reads the scripts and fails closed. The raw command-text check is unchanged.
 - Fix: the reconciler bounds the usage-limit data that a VM sends (claude-factory-5nca). It ignores a hit that is more than 5 minutes ahead of the laptop clock. It limits `kind` to seven_day, five_hour, usage and auth. It sets a reset time more than 8 days out to 0. The token swap command runs at most one time for each 5 minutes, for each runner and harness.
 - Fix: `factory report` strips control, format and line-separator characters from the report text, the `mail` text and the `memory add` summary, body, rig and `--from` (claude-factory-67bw). Each such character becomes a space. LF and TAB stay. This holds for the FAIL reason, the BLOCKED reason and the DONE and HANDOFF summary, also for a VM report that the laptop replays.
-- Fix: `factory fork` of an ended ship run is refused while another ship run is live on the same repo (claude-factory-9wch). The error names the live run and tells you to run `factory abort` on it first. Before, the fork gave the rig two ship runs that worked the same queue.
+- Fix: `factory fork` and `factory goto` refuse to revive an ended ship run beside another live ship run (claude-factory-9wch). This guard applies to runs on the same repo. The error names the live run and tells you to run `factory abort` on it first. Before, these commands gave the rig two ship runs that worked the same queue.
 - Added: `factory rig history` lists the newest 20 snapshots of `rigs.json`. `factory rig undo [n]` restores snapshot n (default 1, the newest) through the rig edit lock. The undo makes its own snapshot, so a second `rig undo` reverses it (claude-factory-wy9u.6). A worker cannot run either verb.
 - Fix: `env -i` before `bun src/cli.ts` no longer clears FACTORY_FROM and FACTORY_RUN without a hook denial (claude-factory-qn8a.27). The worker hook now reads a JS runtime word (bun, node, npx and others) as a start of the factory CLI.
+
+- Fix: an ended ship run with a queued GOTO to work counts as live before the next tick. It blocks a second ship run from fork, goto or ship dispatch (claude-factory-eyxt).
 
 ## 0.16.0 (2026-11-03)
 

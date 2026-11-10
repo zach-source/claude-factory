@@ -2439,3 +2439,10 @@ ${closed.join('\n') || '(none)'}
 
 ## Run journal since the last dream (run, rig, station#attempt outcome: report)
 ${journal.join('\n') || '(nothing new)'}`
+
+/** the first value flag in `args` whose next word is missing or starts with `--` (claude-factory-svah) */
+export function bareValueFlag(args: string[], flags: readonly string[]): string | undefined {
+  return args.find(
+    (w, i) => flags.includes(w) && (args[i + 1] === undefined || args[i + 1]!.startsWith('--')),
+  )
+}

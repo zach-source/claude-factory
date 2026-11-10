@@ -1,3 +1,4 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
 import {
@@ -10,6 +11,8 @@ import {
   MERGE_REASON,
   READY_REASON,
 } from './worker-hook'
+
+stripLiveRunVars()
 
 // claude-factory-qn8a.32: glab merge and glab ready are gated like their gh twins.
 const FILES: Record<string, string> = {

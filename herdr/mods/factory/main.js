@@ -39,6 +39,7 @@ import {
   actionWords,
   SNAPSHOT_WORDS,
   chatArgv,
+  chatLabel,
   directJob,
   onOf,
   FLOW_FACTORIES,
@@ -46,6 +47,8 @@ import {
   FLOW_WINDOWS,
   flowJobWords,
   flowLayout,
+  managerLimitText,
+  managerCodexAuthText,
   parseFlows,
   recentMovers,
 } from './view.js'
@@ -152,6 +155,8 @@ export default class Factory extends View {
       runs: res.runs,
       halt: res.halt,
       readOnly: res.readOnly,
+      managerLimited: res.managerLimited ?? null,
+      managerCodexAuth: res.managerCodexAuth ?? null,
       at: Date.now(),
       mail: [...(prev.mail ?? []), ...res.manager].slice(-50),
     })
@@ -191,7 +196,13 @@ export default class Factory extends View {
       ? `read-only: ${state.readOnly}`
       : state.error
         ? `tick failed: ${state.error}`
-        : statusText(runs) || 'no live runs'
+        : [
+            statusText(runs) || 'no live runs',
+            managerLimitText(state.managerLimited),
+            managerCodexAuthText(state.managerCodexAuth),
+          ]
+            .filter(Boolean)
+            .join(' · ')
     if (p.band)
       return h_flex()
         .size_full()
@@ -487,8 +498,11 @@ export default class Factory extends View {
     return [
       ...(chatArgv(this.cfg)
         ? [
-            button('chat', 'Manager chat', () =>
-              run('terminal.open', { argv: chatArgv(this.cfg), place: 'tab' }),
+            button('chat', chatLabel(shared('factory')?.managerLimited), () =>
+              run('terminal.open', {
+                argv: chatArgv(this.cfg, shared('factory')?.managerLimited),
+                place: 'tab',
+              }),
             ),
           ]
         : []),
