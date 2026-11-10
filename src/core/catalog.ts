@@ -50,6 +50,12 @@ export type Port = {
   screen: (id: string | undefined) => Promise<string>
   /** one async manager chat model call (src/once.ts runModelAsync); a fake in tests */
   chatModel: (c: ModelCall) => Promise<ModelResult>
+  chatRun: (c: {
+    command: string
+    cwd: string
+    env: Env
+    timeoutMs: number
+  }) => Promise<{ code: number; out: string }>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },

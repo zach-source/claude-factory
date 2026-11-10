@@ -44,6 +44,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     goto: async (id, node, print) => (log('goto', [id, node]), print('{"ok":1}')),
     abort: id => void log('abort', [id]),
     screen: async id => (log('screen', [id]), 'screen'),
+    chatRun: async c => (log('chatRun', [c]), { code: 0, out: '' }),
     chatModel: async () => ({
       isOk: true,
       text: '',

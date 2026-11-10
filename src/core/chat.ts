@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { line } from '../../mod/hooks/view'
 import { appendUsage, type ModelResult } from '../once'
 import { stepPrompt } from '../steps'
-import { inProc, type Ctx, type RunResult } from './catalog'
+import { inProc, type Ctx, type RunResult, type Port } from './catalog'
 import { refuseWorker } from './caller'
 import { check } from './guards'
 
@@ -26,6 +26,7 @@ export type Turn = {
   asks?: { id: string; question: string }[]
   /** the tool_use id of the ask that the person approved for this turn */
   approve?: string
+  ran?: { id: string; command: string; code: number; out: string }
   session?: string
   error?: string
   reason?: string
@@ -34,6 +35,12 @@ export type Turn = {
 /** the session goes into argv after --resume: the first character cannot be '-' */
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
 const CONVERSATION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+export async function runApproved(
+  _c: Parameters<Port['chatRun']>[0],
+): Promise<{ code: number; out: string }> {
+  throw new Error('not built')
+}
 
 export function conversationFile(home: string, id: string): string {
   if (!CONVERSATION.test(id)) throw new Error(`bad conversation id: ${line(id, 40)}`)
