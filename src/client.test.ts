@@ -562,6 +562,7 @@ test('teyn1 AC2 invalid file forms fail before transport', async () => {
     ['r1', 'manager', '--text-file', th.file, 'extra'],
     ['r1', 'manager', '--text-file', th.file, '--text-file', th.file],
     ['r1', 'manager', 'extra', '--text-file', th.file],
+    ['r1', 'manager', 'extra', '--text-file'],
     ['../r1', 'manager', '--text-file', th.file],
     ['r1', '../manager', '--text-file', th.file],
     ['r1', 'manager'],
