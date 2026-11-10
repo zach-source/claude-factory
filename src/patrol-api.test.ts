@@ -673,7 +673,7 @@ test('1ocuv AC2 the read deadline also bounds a socket that sends partial header
     },
     destroy() {
       destroyed = true
-      this.emit('close')
+      socket.emit('close')
       return this
     },
   })
