@@ -194,6 +194,7 @@ import {
   groomPlan,
   groomPrompt,
   humanLines,
+  mask,
   outsidePlan,
   pageMatches,
   parse as parseWikiPage,
@@ -201,9 +202,17 @@ import {
   rigList,
   scanPages,
   tombstones,
+  trivial,
   WIKI_PAGE_PATH,
+  writeCap,
+  writeGroups,
+  writePrompt,
   type Merged,
+  type PrFile,
   type RigRow,
+  type WriteBead,
+  type WriteGroup,
+  type WritePr,
 } from './wiki'
 import type { Page } from './wiki'
 import * as ax from './ax'
@@ -293,6 +302,7 @@ import {
   githubLabelArgv,
   githubCommentArgv,
   githubMergedJson,
+  isoDateTime,
   gitlabMergedJson,
   githubUnlabelArgv,
   githubPullPath,
@@ -310,6 +320,7 @@ import {
   onHost,
   parseGitlabLabeled,
   parseMergedPrs,
+  citesBead,
   shortBeadId,
   parseRemote,
   sameFile,
@@ -6268,8 +6279,10 @@ function wikiGroom(dryRun: boolean) {
  * HEAD has it with mode 100644 or 100755, its path passes the path rule, it is a regular file with one link and
  * at most 65,536 bytes, and parse() accepts it. An agent pass controls the worktree.
  * A symlink or a hard link must not send an outside file to stdout.
+ * With `committed`, the function reads the committed blob and ignores the worktree. The write pass needs this:
+ * its progress must follow the commits, never the files that an agent left behind.
  */
-function wikiPages(dir: string) {
+function wikiPages(dir: string, committed = false) {
   const ls = wikiGit(dir, ['ls-tree', '-r', '-z', 'HEAD'])
   if (ls.code !== 0) return []
   const out: { path: string; page: Page }[] = []
@@ -6280,9 +6293,18 @@ function wikiPages(dir: string) {
     if (tab < 0 || (mode !== '100644' && mode !== '100755')) continue
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..')) continue
     try {
-      const st = lstatSync(join(dir, path))
-      if (!st.isFile() || st.nlink !== 1 || st.size > WIKI_PAGE_MAX) continue
-      const p = parseWikiPage(readFileSync(join(dir, path), 'utf8'))
+      let text: string
+      if (committed) {
+        const sha = e.slice(0, tab).split(/\s+/)[2] ?? ''
+        const blob = /^[0-9a-f]{40,64}$/.test(sha) ? wikiGit(dir, ['cat-file', 'blob', sha]) : null
+        if (!blob || blob.code !== 0 || blob.out.length > WIKI_PAGE_MAX) continue
+        text = blob.out.toString('utf8')
+      } else {
+        const st = lstatSync(join(dir, path))
+        if (!st.isFile() || st.nlink !== 1 || st.size > WIKI_PAGE_MAX) continue
+        text = readFileSync(join(dir, path), 'utf8')
+      }
+      const p = parseWikiPage(text)
       if ('page' in p) out.push({ path, page: p.page })
     } catch {}
   }
@@ -6527,11 +6549,11 @@ function compactMessage(
  * Make a private CODEX_HOME for the codex dream. It holds a trust line for the memory and a link to the
  * person's auth.json (one token store, as codexWorker does). The dream copies nothing else.
  */
-function dreamCodexHome() {
-  const dir = join(HOME, 'codex-dream')
+function dreamCodexHome(name = 'codex-dream', trusted = MEMORY) {
+  const dir = join(HOME, name)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  writeFileSync(join(dir, 'config.toml'), `[projects.${JSON.stringify(MEMORY)}]\ntrust_level = "trusted"\n`)
+  writeFileSync(join(dir, 'config.toml'), `[projects.${JSON.stringify(trusted)}]\ntrust_level = "trusted"\n`)
   const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
   const link = join(dir, 'auth.json')
   rmSync(link, { force: true })
@@ -7308,6 +7330,25 @@ const kickWiki = (pass: 'refresh' | 'groom', defMin: number) => {
     env: kickEnv(process.env, HOME),
   }).unref()
   return true
+}
+
+/**
+ * `factory wiki write` at most every FACTORY_WIKI_WRITE_MIN minutes (a finite positive number, default 180).
+ * It does nothing while halted, while $HOME/wiki/.git is missing or while wiki.lock is held.
+ * It writes the stamp before the spawn, so a failed spawn gets no second try at once.
+ */
+const kickWikiWrite = () => {
+  if (halted() || !existsSync(join(HOME, 'wiki', '.git')) || isHeld('wiki.lock')) return
+  const min = Number(process.env.FACTORY_WIKI_WRITE_MIN)
+  const stamp = join(HOME, 'wiki-write.stamp')
+  const age = existsSync(stamp) ? Date.now() - statSync(stamp).mtimeMs : Infinity
+  if (age < (Number.isFinite(min) && min > 0 ? min : 180) * 60_000) return
+  writeFileSync(stamp, '')
+  spawnChild(CLI, ['wiki', 'write'], {
+    detached: true,
+    stdio: 'ignore',
+    env: kickEnv(process.env, HOME),
+  }).unref()
 }
 
 // ---- `factory gc --worktrees` (claude-factory-l38): the impure half. gc.worktreePlan() decides.
@@ -8094,8 +8135,8 @@ async function tick(isPatrol = false) {
       kickGc()
       kickGcWorktrees()
       kickSweeps()
-      // one wiki pass in each tick, so refresh and groom never race for wiki.lock; a halt gets refresh only
-      if (!kickWiki('refresh', 30) && !halted()) kickWiki('groom', 24 * 60)
+      // one wiki pass in each tick, so refresh, groom and write never race for wiki.lock; a halt gets refresh only
+      if (!kickWiki('refresh', 30) && !(!halted() && kickWiki('groom', 24 * 60))) kickWikiWrite()
     }
   }
 }
@@ -9680,6 +9721,7 @@ async function mergedPrsFor(
   id: string,
   branches: string[],
   cli: { gh: Gh; glab: Gh },
+  strict = false,
 ): Promise<MergedPr[]> {
   const gl = origin.forge === 'gitlab'
   const glabPath = `${origin.owner}/${origin.repo}`
@@ -9693,7 +9735,7 @@ async function mergedPrsFor(
         origin.host,
         glabPath,
         repo,
-        { search: id, timeoutMs: PRECHECK_TIMEOUT_MS },
+        { search: id, timeoutMs: PRECHECK_TIMEOUT_MS, strict },
         e => (firstErr = e),
       )
     : ref
@@ -9702,7 +9744,7 @@ async function mergedPrsFor(
           cli.gh,
           ref.slug,
           repo,
-          { pages: 3, timeoutMs: PRECHECK_TIMEOUT_MS },
+          { pages: strict ? 30 : 3, timeoutMs: PRECHECK_TIMEOUT_MS, strict, host: origin.host },
           e => (firstErr = e),
         )
       : null
@@ -9715,7 +9757,9 @@ async function mergedPrsFor(
     const byShort = await gitlabMergedJson(cli.glab, origin.host, glabPath, repo, {
       search: short,
       timeoutMs: PRECHECK_TIMEOUT_MS,
+      strict,
     })
+    if (strict && byShort === null) throw new Error('short id search failed')
     if (byShort !== null) found.push(...parseMergedPrs(byShort))
   }
   // claude-factory-6as.9: a failed branch call must not discard a hit the search already found.
@@ -13324,6 +13368,379 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
   return changed
 }
 
+const WRITE_STR = 8192
+const WRITE_ITEMS = 32
+const WRITE_TOTAL = 262_144
+const WRITE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/** `[--dry-run] [--bead <id>]`, each once and in any order; null for anything else */
+export function wikiWriteArgs(args: string[]): { dry: boolean; bead?: string } | null {
+  let dry = false
+  let bead: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--dry-run' && !dry) dry = true
+    else if (args[i] === '--bead' && bead === undefined && WRITE_ID.test(args[i + 1] ?? '')) bead = args[++i]
+    else return null
+  }
+  return { dry, bead }
+}
+
+/** the number in a metadata PR URL, only when the URL is exactly this rig's own PR or MR form */
+function wikiPrNumber(url: string, o: NonNullable<ReturnType<typeof originRef>>) {
+  const base =
+    o.forge === 'github'
+      ? `https://github.com/${o.owner}/${o.repo}/pull/`
+      : `https://${o.host}/${o.owner}/${o.repo}/-/merge_requests/`
+  const tail = url.startsWith(base) ? url.slice(base.length) : ''
+  return /^[1-9]\d{0,8}$/.test(tail) ? Number(tail) : null
+}
+
+/** one PR or MR from the forge: merged or not, its text and its file list (null when incomplete or unread) */
+async function wikiPrInfo(o: NonNullable<ReturnType<typeof originRef>>, repo: string, num: number) {
+  const gl = o.forge === 'gitlab'
+  const slug = `${o.owner}/${o.repo}`
+  const t = { cwd: repo, timeout: PRECHECK_TIMEOUT_MS }
+  const get = async (path: string): Promise<Record<string, unknown> | unknown[] | null> => {
+    const r = gl ? await spawnGlab(['api', '--hostname', o.host, path], t) : await spawnGh(['api', path], t)
+    try {
+      const v = r.code === 0 ? JSON.parse(r.out) : null
+      return v !== null && typeof v === 'object' ? v : null
+    } catch {
+      return null
+    }
+  }
+  const text = (v: unknown) => (typeof v === 'string' ? v : '')
+  const pr = (await get(
+    gl ? `projects/${encodeURIComponent(slug)}/merge_requests/${num}` : `repos/${slug}/pulls/${num}`,
+  )) as Record<string, unknown> | null
+  if (!pr || Array.isArray(pr)) return null
+  // a reply without its own number, a merge field, a title or a text body is incomplete, never "not merged"
+  const body = gl ? pr.description : pr.body
+  if (
+    (gl
+      ? pr.iid !== num || !['opened', 'closed', 'locked', 'merged'].includes(pr.state as string)
+      : pr.number !== num || (pr.merged_at !== null && !isoDateTime(pr.merged_at))) ||
+    !text(pr.title) ||
+    (body != null && typeof body !== 'string')
+  )
+    return null
+  const merged = gl ? pr.state === 'merged' : text(pr.merged_at) !== ''
+  let rows: unknown[] | null = null
+  if (merged) {
+    const f = await get(
+      gl
+        ? `projects/${encodeURIComponent(slug)}/merge_requests/${num}/changes`
+        : `repos/${slug}/pulls/${num}/files?per_page=100`,
+    )
+    // ponytail: one page of 100 files; a longer list stays unresolved. Page it when a real PR needs it.
+    const list = gl
+      ? f && !Array.isArray(f) && (f.overflow === undefined || f.overflow === false)
+        ? f.changes
+        : null
+      : f
+    rows = Array.isArray(list) && list.length > 0 && (gl || list.length < 100) ? list : null
+  }
+  // a file path is a label for the agent, never a filesystem target: refuse anything but a plain relative path
+  const pathOk = (v: unknown): v is string =>
+    typeof v === 'string' &&
+    !/[\\\u0000-\u001f\u007f]/.test(v) &&
+    v.split('/').every(g => g && g !== '.' && g !== '..')
+  const files: PrFile[] | null =
+    rows &&
+    rows.every(r => {
+      const x = r as Record<string, unknown> | null
+      return (
+        !!x &&
+        typeof x === 'object' &&
+        !Array.isArray(x) &&
+        pathOk(x[gl ? 'new_path' : 'filename']) &&
+        (x[gl ? 'diff' : 'patch'] === undefined || typeof x[gl ? 'diff' : 'patch'] === 'string')
+      )
+    })
+      ? rows.map(r => {
+          const x = r as Record<string, unknown>
+          const path = text(x[gl ? 'new_path' : 'filename'])
+          const patch = text(x[gl ? 'diff' : 'patch'])
+          return path.endsWith('package.json') && patch ? { path, patch } : { path }
+        })
+      : null
+  return { merged, title: text(pr.title), body: text(body), files }
+}
+
+/**
+ * Bounds one group for the prompt. It removes each patch: only the trivial test used it. It keeps at most 200
+ * files per PR and marks the omission. It returns null if a bead, PR or link array has over 200 items. It cuts each string to 8192, then 2048, then 512 characters until the group fits
+ * WRITE_TOTAL. It returns null if the group is still too big. The caller then keeps its beads pending.
+ */
+function wikiBound(g: WriteGroup): WriteGroup | null {
+  const strip = (v: WriteGroup): WriteGroup => ({
+    ...v,
+    prs: v.prs.map(p => ({ ...p, files: p.files.map(f => ({ path: f.path })) })),
+  })
+  // an identity array (beads, prs, bead.prs) is never cut: a cut bead would count as written
+  if (g.beads.length > 200 || g.prs.length > 200 || g.beads.some(b => b.prs.length > 200)) return null
+  for (const cut of [WRITE_STR, 2048, 512]) {
+    const out = JSON.parse(JSON.stringify(strip(g)), (k, x) =>
+      typeof x === 'string' && x.length > cut
+        ? `${x.slice(0, cut)} [truncated]`
+        : k === 'files' && Array.isArray(x) && x.length > 200
+          ? [...x.slice(0, 200), { path: '[more files omitted]' }]
+          : x,
+    ) as WriteGroup
+    if (JSON.stringify(out).length <= WRITE_TOTAL) return out
+  }
+  return null
+}
+
+// ponytail: FACTORY_WIKI_AGENT_MS exists only so a test can cut the 45 min limit; leave it unset in use
+const WIKI_AGENT_MS =
+  Number(process.env.FACTORY_WIKI_AGENT_MS) > 0 ? Number(process.env.FACTORY_WIKI_AGENT_MS) : 45 * 60_000
+
+/** the model run of a write pass: Claude, or Codex with FACTORY_DREAM_CODEX. A string is a refusal. */
+function wikiAgent(prompt: string, dir: string): { code: number | null; said: string } | string {
+  const model = process.env.FACTORY_DREAM_CODEX
+  let codexHome: string | undefined
+  if (model) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model)) return 'FACTORY_DREAM_CODEX is not a model name'
+    try {
+      lstatSync(join(dir, '.codex'))
+      return 'the wiki holds .codex, which would add codex project config'
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+    }
+    codexHome = dreamCodexHome('codex-wiki', dir)
+  }
+  const p = codexHome
+    ? Bun.spawnSync(
+        [
+          process.env.FACTORY_CODEX ?? 'codex',
+          ...['exec', '-s', 'workspace-write', '-c', 'approval_policy="never"'],
+          ...['-c', 'sandbox_workspace_write.network_access=false'],
+          ...['-c', 'sandbox_workspace_write.exclude_slash_tmp=true'],
+          ...['-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true'],
+          ...['-C', dir, '-m', model!, '-'],
+        ],
+        {
+          cwd: dir,
+          env: {
+            ...Object.fromEntries(
+              ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
+                process.env[k] === undefined ? [] : [[k, process.env[k]!]],
+              ),
+            ),
+            CODEX_HOME: codexHome,
+          },
+          stdin: Buffer.from(prompt + DREAM_CODEX_NOTE),
+          timeout: WIKI_AGENT_MS,
+        },
+      )
+    : Bun.spawnSync(
+        [
+          ...claudeCommand().split(/\s+/),
+          ...['-p', '--permission-mode', 'acceptEdits'],
+          ...['--settings', JSON.stringify(passSettings())],
+          ...['--allowedTools', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(git mv:*)', 'Bash(git rm:*)'],
+        ],
+        { cwd: dir, stdin: Buffer.from(prompt), timeout: WIKI_AGENT_MS },
+      )
+  const said = p.stdout.toString().trim() || p.stderr.toString().trim()
+  return { code: p.exitCode, said }
+}
+
+/**
+ * One `factory wiki write` pass; the caller holds wiki.lock. It writes a solution page for each closed bead that
+ * has a merged, non-trivial PR and no page. `dry` only returns the groups. `only` selects one closed bead and
+ * leaves lastWriteAt alone. Progress (`written`, `lastWriteAt`) moves only for pages that are in the commit.
+ */
+async function wikiWrite(dry: boolean, only?: string): Promise<string[]> {
+  const dir = join(HOME, 'wiki')
+  const state0 = readWikiState()
+  const last = typeof state0.lastWriteAt === 'string' ? Date.parse(state0.lastWriteAt) : NaN
+  const since = Number.isFinite(last) ? last : 0
+  const solutions = () => wikiPages(dir, true).filter(p => p.page.kind === 'solution')
+  const done = new Set([
+    ...Object.keys((state0.written as object | undefined) ?? {}),
+    ...solutions().flatMap(p => p.page.beads ?? []),
+  ])
+  const pageOfPr = new Map(solutions().flatMap(p => (p.page.prs ?? []).map(u => [u, p.path] as const)))
+  const lim = (s: unknown) => {
+    const t = typeof s === 'string' ? s : ''
+    return t.length > WRITE_STR ? `${t.slice(0, WRITE_STR)} [truncated]` : t
+  }
+  // one closed-PR list scan serves every bead of this pass; the next pass reads fresh data
+  const scans = new Map<string, ReturnType<typeof spawnGh>>()
+  const gh: Gh = (argv, opts) => {
+    if (!/^repos\/[^/]+\/[^/]+\/pulls\?/.test(argv[1] ?? '')) return spawnGh(argv, opts)
+    const k = `${opts.cwd} ${argv.join(' ')}`
+    if (!scans.has(k)) scans.set(k, spawnGh(argv, opts))
+    return scans.get(k)!
+  }
+  const cli = { gh, glab: spawnGlab }
+  const wb: WriteBead[] = []
+  const prs = new Map<string, WritePr>()
+  const settled: number[] = []
+  let unresolved = 0
+  for (const rig of rigs().filter(r => hasBeads(r.repo))) {
+    const b = beads(rig.repo, 'factory/wiki')
+    const origin = originRef(rig.repo)
+    let ids: string[]
+    try {
+      ids = only ? [only] : b.closedSince(new Date(since).toISOString().slice(0, 10)).map(x => x.id)
+    } catch {
+      unresolved++
+      continue
+    }
+    for (const id of ids) {
+      if (done.has(id)) continue
+      try {
+        const full = b.show(id)
+        if (!full) throw new Error('bead record unread')
+        if (full.status !== 'closed') continue
+        const at = Date.parse(full.closed_at ?? '')
+        if (!only && Number.isFinite(at) && at < since) continue
+        const closedAt = Number.isFinite(at) ? at : 0
+        if (!origin) {
+          settled.push(closedAt)
+          continue
+        }
+        const raw = full.metadata?.ship_pr
+        const meta = typeof raw === 'string' ? raw : ''
+        const urls = new Set<string>()
+        // an absent ship_pr lets discovery decide; a present one that is not this rig's own PR URL is incomplete input
+        if (raw !== undefined) {
+          if (!wikiPrNumber(meta, origin)) throw new Error('ship_pr is malformed')
+          urls.add(meta)
+        }
+        const short = shortBeadId(id)
+        for (const m of await mergedPrsFor(rig.repo, origin, id, [], cli, true))
+          if ((citesBead(id, m.title) || (short && citesBead(short, m.title))) && wikiPrNumber(m.url, origin))
+            urls.add(m.url)
+        const merged: string[] = []
+        for (const url of [...urls].sort()) {
+          let info = null
+          const cached = prs.get(url)
+          if (!cached) info = await wikiPrInfo(origin, rig.repo, wikiPrNumber(url, origin)!)
+          if (!cached && (!info || (info.merged && !info.files))) throw new Error('forge read incomplete')
+          if (cached || info!.merged) {
+            merged.push(url)
+            if (!cached)
+              prs.set(url, { url, title: lim(info!.title), body: lim(info!.body), files: info!.files! })
+          } else if (url === meta) throw new Error('PR not merged yet')
+        }
+        if (!merged.length) {
+          settled.push(closedAt)
+          continue
+        }
+        const reports = runIds()
+          .flatMap(rid => {
+            try {
+              if (loadRun(rid).bead !== id) return []
+              return readJson<Saved>(join(runDir(rid), 'state.json')).snapshot.context.log.map(
+                e => `${e.node}#${e.attempt} ${e.outcome}: ${lim(e.summary)}`,
+              )
+            } catch {
+              return []
+            }
+          })
+          .slice(-WRITE_ITEMS)
+        wb.push({
+          id,
+          rig: rig.name,
+          title: lim(full.title),
+          closeReason: lim(full.close_reason),
+          comments: b
+            .comments(id)
+            .slice(-WRITE_ITEMS)
+            .map(c => lim(c.text)),
+          closedAt,
+          closedIso: Number.isFinite(at) ? new Date(at).toISOString() : '',
+          prs: merged,
+          reports,
+        })
+      } catch {
+        unresolved++
+      }
+    }
+  }
+  const all = writeGroups(wb, [...prs.values()], Infinity)
+  const groups: typeof all = []
+  let size = 0
+  let deferred = 0
+  for (const g of all) {
+    // writeGroups drops a trivial PR (a release record); the bead still cites it, so put it back
+    const urls = [...new Set(g.beads.flatMap(b => b.prs))].sort()
+    const s = wikiBound({ ...g, prs: urls.flatMap(u => (prs.has(u) ? [prs.get(u)!] : [])) })
+    size += s ? JSON.stringify(s).length : 0
+    if (!s || groups.length >= writeCap() || size > WRITE_TOTAL) {
+      deferred += g.beads.length
+      size -= s ? JSON.stringify(s).length : 0
+      continue
+    }
+    groups.push({ ...s, existingPage: s.prs.map(p => pageOfPr.get(p.url)).find(Boolean) })
+  }
+  const waiting = unresolved + deferred
+  const ids = groups.flatMap(g => g.beads.map(b => b.id))
+  const shown = groups.map(
+    g => `group: ${g.beads.map(b => b.id).join(' ')} ${g.prs.map(p => p.url).join(' ')}`,
+  )
+  if (dry)
+    return [...shown, `wiki write: ${groups.length} groups from ${ids.length} beads; ${waiting} waiting`]
+  // ponytail: the settled-bead timestamp is rebuilt each pass; a stuck bead repeats reads, never agent work
+  const newest = [...settled, ...wb.map(b => b.closedAt)]
+  const finish = (committed: Set<string>) => {
+    const pages = solutions()
+    const written = { ...(readWikiState().written as object | undefined) } as Record<string, unknown>
+    for (const p of pages) for (const bead of p.page.beads ?? []) written[bead] ??= { page: p.path }
+    const state: Record<string, unknown> = { ...readWikiState(), written }
+    const complete = !only && !waiting && groups.every(g => g.beads.every(b => committed.has(b.id)))
+    const top = Math.max(0, ...newest)
+    if (complete && top >= since && top > 0) state.lastWriteAt = new Date(top).toISOString()
+    writeWikiState(state)
+  }
+  if (!groups.length) {
+    finish(new Set())
+    pushWiki(dir) // also retries an earlier failed push
+    return [`wiki write: 0 pages from 0 beads; ${waiting} waiting`]
+  }
+  const before = wikiBlame(dir)
+  if (!before) return ['wiki write: refused, no branch head or blame failed']
+  const prompt = writePrompt(
+    groups,
+    wikiTombstones(dir),
+    (() => {
+      try {
+        const g = join(dir, 'glossary.md')
+        return lstatSync(g).isFile()
+          ? [...readFileSync(g, 'utf8').matchAll(/^- ([A-Za-z][A-Za-z -]{0,40}):/gm)].map(m => m[1]!)
+          : []
+      } catch {
+        return []
+      }
+    })(),
+  )
+  const ran = wikiAgent(prompt, dir)
+  if (typeof ran === 'string') {
+    wikiLog(`wiki write: ${ran}`)
+    return [`wiki write: refused: ${ran}`]
+  }
+  wikiLog(`wiki write: agent exit ${ran.code}`)
+  const said = mask(ran.said.replace(/[\s\p{Cc}]+/gu, ' ')).slice(0, 2000)
+  if (said)
+    appendFileSync(join(HOME, 'wiki.log'), `${new Date().toISOString()} wiki write: agent said: ${said}\n`)
+  if (ran.code !== 0) return [`wiki write: agent failed (exit ${ran.code}); ${waiting + ids.length} waiting`]
+  if (!keepPersonLines(before, 'wiki write')) return ['wiki write: nothing committed; the guard refused']
+  const had = new Set(solutions().map(p => p.path))
+  const ok = commitWiki('write', `${ids.length} beads`, dir)
+  if (ok === false) return ['wiki write: commit failed; progress unchanged']
+  const now = solutions()
+  const committed = new Set(now.flatMap(p => p.page.beads ?? []))
+  const fresh = now.filter(p => !had.has(p.path)).length
+  finish(committed)
+  pushWiki(dir)
+  const left = ids.filter(id => !committed.has(id)).length
+  return [`wiki write: ${fresh} pages from ${ids.length - left} beads; ${waiting + left} waiting`]
+}
+
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
 const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
@@ -14247,6 +14664,31 @@ if (import.meta.main && !outboxCmd)
             else {
               const paths = await wikiRefresh(dry)
               if (dry) console.log(paths.join('\n'))
+            }
+          } finally {
+            release()
+          }
+          break
+        }
+        if (args[0] === 'write') {
+          const opt = wikiWriteArgs(args.slice(1))
+          if (!opt) {
+            console.error('usage: factory wiki write [--dry-run] [--bead <id>]')
+            process.exitCode = 2
+            break
+          }
+          const release = hold('wiki.lock')
+          if (!release) {
+            console.log('wiki: busy')
+            break
+          }
+          try {
+            if (!existsSync(join(HOME, 'wiki', '.git')))
+              console.log('wiki: not set up: run factory wiki init')
+            else {
+              // the stamp comes first: a failed pass waits for the next kick, it does not retry each tick
+              if (!opt.dry) writeFileSync(join(HOME, 'wiki-write.stamp'), '')
+              console.log((await wikiWrite(opt.dry, opt.bead)).join('\n'))
             }
           } finally {
             release()
