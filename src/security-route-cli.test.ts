@@ -111,6 +111,28 @@ test('a plain branch with a "no" plan line gets "not required" (AC5)', () => {
   expect(routeJson().route.required).toBe(false)
 }, 60_000)
 
+// claude-factory-rtk0w: a rig's sensitivePaths widen the route
+const rigWith = (sensitivePaths?: unknown) =>
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([
+      { name: 'widget', repo: clone, factory: 'sr', ...(sensitivePaths !== undefined && { sensitivePaths }) },
+    ]),
+  )
+test.each([
+  [['src/worker-system.md'], 'required: src/worker-system.md (rig:src/worker-system.md)', true],
+  [undefined, 'not required: ', false],
+  [['src/other.ts'], 'not required: ', false],
+  ['src/worker-system.md', 'required: rig sensitivePaths malformed', true],
+])('a rig sensitivePaths %j gives %s', (paths, line, required) => {
+  setup('src/worker-system.md')
+  rigWith(paths)
+  reviewRun(def(true), 'Security-sensitive: no')
+  tick()
+  expect(prompt()).toContain(`## Security route\n${line}`)
+  expect(routeJson().route.required).toBe(required)
+}, 60_000)
+
 test('a plan "yes" line makes a plain branch required', () => {
   setup('src/metrics.ts')
   reviewRun(def(true), 'Security-sensitive: yes (parses input)')

@@ -103,7 +103,7 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
+import { rigPaths, routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
 import { hideParseText, hideSecret } from './secrets'
 import * as plan from './plan'
@@ -7874,7 +7874,7 @@ export function changedPaths(repo: string, base: string, branch: string): string
 
 const routeFile = (run: Run) => join(runDir(run.id), 'security-route.json')
 
-/** The runner's security route for this run: changed paths, the plan's line and the bead's labels. */
+/** The runner's security route for this run: changed paths, the rig's sensitivePaths, the plan's line and the bead's labels. */
 function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
   let labels: string[] | null = []
   const ref = run.shipBranch ?? run.branch
@@ -7889,10 +7889,12 @@ function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
     }
   }
   const plan = c.log.findLast(e => e.node === 'plan' && e.outcome === 'ready')?.summary
+  const rig = rigOf(run.repo)
   return securityRoute({
-    paths: changedPaths(run.repo, baseBranchOf(def, rigOf(run.repo), run.repo), ref),
+    paths: changedPaths(run.repo, baseBranchOf(def, rig, run.repo), ref),
     plan,
     labels,
+    rigPaths: rigPaths(rig?.sensitivePaths),
   })
 }
 
@@ -8791,6 +8793,8 @@ export type Rig = {
   runner?: string
   /** Rules before each push, one paragraph each; `{base_branch}` expands. Set with `factory rig set --push-rule text|none` (repeatable). */
   pushRules?: string[]
+  /** Extra repo paths the security route treats as sensitive (claude-factory-rtk0w); set with `factory rig set --sensitive-path`. */
+  sensitivePaths?: string[]
   /** Skills for all workers in this rig, on top of the factory and station lists. Names come from harness.ts VM_PLUGINS. Use `factory rig set --skills a,b|none`. */
   skills?: string[]
   /** The literal false turns off tool details in the OTel export (src/otel.ts). Use `factory rig set --otel-content on|off`. */
