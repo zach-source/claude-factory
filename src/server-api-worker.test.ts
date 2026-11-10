@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { revoke, sign } from './tokens'
+import { check, revoke, sign } from './tokens'
 import { workerHandler, workerKey, type RunResult } from './server-api'
 
 const KEY = Buffer.alloc(32, 7)
@@ -75,6 +75,60 @@ const REP = { outcome: 'ready', summary: 'done' }
 const body = async (r: Response) => JSON.parse(await r.text())
 
 describe('worker API', () => {
+  for (const kind of ['report', 'mail', 'progress'] as const)
+    for (const invalid of ['expired', 'revoked'] as const)
+      test(`${kind}: refuses a token ${invalid} after the queue wait`, async () => {
+        let release!: () => void
+        let entered!: () => void
+        const blocked = new Promise<void>(resolve => (release = resolve))
+        const started = new Promise<void>(resolve => (entered = resolve))
+        const s = setup({
+          runner: async () => {
+            entered()
+            await blocked
+            return { code: 0, out: '', err: '' }
+          },
+        })
+        const first = s.post('/v1/mail', { to: 'manager', text: 'first' })
+        await started
+        const payload =
+          kind === 'report' ? REP : kind === 'mail' ? { to: 'manager', text: 'next' } : { note: 'next' }
+        const request = new Request(`https://x.invalid/v1/${kind}`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${s.defTok}`,
+            'idempotency-key': 'queued-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        })
+        const read = request.text.bind(request)
+        let bodyRead!: () => void
+        const queued = new Promise<void>(resolve => (bodyRead = resolve))
+        Object.defineProperty(request, 'text', {
+          value: async () => {
+            const raw = await read()
+            bodyRead()
+            return raw
+          },
+        })
+        const second = s.h(request, '1.2.3.4')
+        await queued
+        if (invalid === 'expired') s.tick(3600_000)
+        else revoke(s.home, { run: 'r1' }, T0)
+        expect(check(s.home, KEY, s.defTok, invalid === 'expired' ? T0 + 3600_000 : T0)).toMatchObject({
+          ok: false,
+          reason: invalid,
+        })
+        release()
+        expect((await first).status).toBe(200)
+        const response = await second
+        expect(response.status).toBe(403)
+        expect(await body(response)).toEqual({ refused: `token ${invalid}` })
+        expect(s.calls).toHaveLength(1)
+        expect(s.rows()['queued-token']).toBeUndefined()
+      })
+
   test('the contract puts identity before endpoint grammar', async () => {
     const contract = readFileSync(
       join(import.meta.dir, '../specs/004-factory-server/contracts/worker-api.md'),

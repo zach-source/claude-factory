@@ -587,6 +587,8 @@ export function workerHandler(o: {
     const raw = await req.text()
 
     const work = async (): Promise<Response> => {
+      const live = check(o.home, o.key, m[1]!, clock())
+      if (!live.ok) return no(403, `token ${live.reason}`)
       const rows = readCalls(file)
       if (rows === 'bad') return no(503, 'the worker call store is corrupt')
       const t = clock()
