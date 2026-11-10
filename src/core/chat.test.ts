@@ -368,9 +368,9 @@ test('approve: equal questions do not select another command', async () => {
     id: 'c',
     text: 'yes',
     front: 'web',
-    approve: 't2',
+    approve: 't3',
   })
-  expect(r.calls.map(c => c.command)).toEqual([L])
+  expect(r.calls.map(c => c.command)).toEqual([M])
 })
 
 test('approve: denied and allowed commands refuse approval', async () => {
