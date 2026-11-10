@@ -99,12 +99,12 @@ export default {
     claude: 'claude-smart --new --no-channels', // the Claude Code launcher
     exec_model: 'claude-sonnet-5-5[1m]', // execution
     judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
-    security_model: 'claude-fable-5-1', // security and architecture
+    security_model: 'claude-fable-5-2', // security and architecture
     codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
     codex_exec_model: 'gpt-6.1-sol', // codex in place of exec_model
     codex_security_model: 'gpt-6-astra', // codex in place of security_model
     codex_share: '0.3', // share of runs whose implement and verify use codex; 0 turns it off
-    codex_security_share: '0.3', // share of runs whose security uses codex; 0 turns it off
+    codex_security_share: '0.5', // share of runs whose security uses codex; 0 turns it off
     codex_judge_model: 'gpt-6-astra', // codex in place of judge_model at plan and review
     codex_judge_share: '0', // share of runs whose plan and review use codex; off until a rig sets it
     fast_check: '', // a rig's fast check command (format, lint, build-file lists); empty turns it off
