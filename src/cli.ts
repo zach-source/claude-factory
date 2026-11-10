@@ -2,6 +2,7 @@
 // Only `tick` writes run state (under a lock); every other command appends to
 // the run's inbox.jsonl, which the next tick drains in order.
 import './vm-env' // first: it may re-run the process with the packed AX env
+import { codexAuth as managerCodexAuthState, codexAuthMail } from './codex-auth'
 import {
   devenvRows,
   isDevenvKey,
@@ -629,6 +630,7 @@ async function readOnlyBoard(holder: leases.Lease) {
     runs,
     manager: [],
     managerLimited: managerLimited() ?? null,
+    managerCodexAuth: managerCodexAuthState(HOME),
     rigs: rigs(),
   }
 }
@@ -8016,6 +8018,8 @@ async function tick(isPatrol = false) {
       manager: [] as (Mail & { run: string })[],
       // set while the manager's Claude is refused and every account is drained (claude-factory-y3f8w.3)
       managerLimited: managerLimited() ?? null,
+      // set while a codex step of the manager gets an auth error (claude-factory-y3f8w.10)
+      managerCodexAuth: managerCodexAuthState(HOME),
       // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
       // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
@@ -8044,6 +8048,7 @@ async function tick(isPatrol = false) {
     out.manager.push(...linearMail(now))
     out.manager.push(...selfUpdateMail(now))
     out.manager.push(...managerStaleMail(now))
+    out.manager.push(...codexAuthMail(now, HOME))
     out.manager.push(...tokenDigestMail(now))
     // skip rows are for people reading dispatch.json; the board, sidebar and reap() see only the rest
     out.runs.push(...(existsSync(dispatchFile()) ? readJson<Row[]>(dispatchFile()).filter(r => !r.skip) : []))
@@ -11829,10 +11834,10 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = cut(body.split('\n', 1)[0]!, 80)
+                const first = cleanText(cut(body.split('\n', 1)[0]!, 80), 80)
                 b.create(
                   `PR change request: ${first}`,
-                  `${d.url}\n\n${body}`,
+                  cleanReport(`${d.url}\n\n${body}`),
                   '--parent',
                   run.bead,
                   '-t',
