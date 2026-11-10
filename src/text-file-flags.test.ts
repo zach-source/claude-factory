@@ -94,7 +94,9 @@ test('0s5e legacy inline mail retains separators locally and after worker replay
     expect(events().at(-1).text).toBe('-- literal')
     const outbox = join(dir, `outbox-${wake.length}.jsonl`)
     expect(factory(argv, { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'implement' }).code).toBe(0)
-    const queued = JSON.parse(readFileSync(outbox, 'utf8')).argv
+    const record = JSON.parse(readFileSync(outbox, 'utf8'))
+    expect(record).not.toHaveProperty('mailFile')
+    const queued = record.argv
     expect(replayable(queued, side, 'r1')).toEqual(argv)
     expect(factory(queued).code).toBe(0)
     expect(events().at(-1).text).toBe('-- literal')
