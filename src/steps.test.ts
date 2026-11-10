@@ -14,7 +14,16 @@ import { join } from 'node:path'
 import { fillStep as modFillStep } from '../mod/hooks/view'
 import { badPlaceholders, fileFormBad, fileSpans, placeholderSpans } from '../mod/tests/quote-checks'
 import { runModelAsync, type ModelResult } from './once'
-import { STEP_SPECS, STEPS, fillStep, runStep, stepLimit, stepPrompt } from './steps'
+import {
+  STEP_KEEP_ENV,
+  STEP_SPECS,
+  STEPS,
+  fillStep,
+  runStep,
+  stepLimit,
+  stepPrompt,
+  stepSecretEnv,
+} from './steps'
 
 // The step files were byte-identical to the mod's inline strings at 91dadfdc (the identity rows lived in this file then).
 const patrol = () => stepPrompt('patrol', { cli: 'factory', factories: '/x/factories/' })
@@ -238,6 +247,79 @@ test('with the isolate marker the child gets its own HOME; without it the base H
   const local = sread('env.txt')
   expect(local).toContain(`HOME=${person}\n`)
   expect(local).not.toContain('CLAUDE_CONFIG_DIR')
+})
+
+test('server steps remove secret env keys and pin cwd without shell rc files', async () => {
+  const secretKeys = [
+    'AX_AUTH_TOKEN',
+    'LINEAR_API_KEY',
+    'FACTORY_SERVER_BACKUP_REMOTE',
+    'FACTORY_SERVER_BACKUP_AUTH_FILE',
+    'ACME_SECRET',
+  ]
+  const keepKeys = ['GH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
+  const baseEnv = {
+    PATH: process.env.PATH,
+    ...Object.fromEntries([...secretKeys, ...keepKeys].map(k => [k, 'zqsecret'])),
+  }
+  const dir = join(shome, 'steps', 'patrol')
+  mkdirSync(dir, { recursive: true })
+  const rc = ['.bashrc', '.bash_profile', '.profile', '.zshrc', '.zshenv']
+  for (const f of rc) writeFileSync(join(dir, f), 'false')
+  await runStep(
+    shome,
+    'patrol',
+    { ...CALL, baseEnv: { ...baseEnv, FACTORY_STEP_ISOLATE: '1' } },
+    runModelAsync,
+  )
+  const env = sread('env.txt')
+  for (const k of secretKeys) expect(env).not.toContain(`${k}=`)
+  for (const k of keepKeys) expect(env).toContain(`${k}=zqsecret\n`)
+  expect(env).toContain(`PWD=${dir}\n`)
+  for (const f of rc) expect(existsSync(join(dir, f))).toBe(false)
+  await runStep(shome, 'patrol', { ...CALL, baseEnv }, runModelAsync)
+  for (const k of [...secretKeys, ...keepKeys]) expect(sread('env.txt')).toContain(`${k}=zqsecret\n`)
+})
+
+test('the server manifest secret env keys match the step filter', () => {
+  const docs = Bun.YAML.parse(
+    readFileSync(join(import.meta.dir, '..', 'deploy', 'server.yaml'), 'utf8'),
+  ) as any[]
+  const keys = docs
+    .filter(d => d.kind === 'Deployment')
+    .flatMap(d =>
+      d.spec.template.spec.containers.flatMap((c: any) =>
+        c.env.filter((e: any) => e.valueFrom?.secretKeyRef).map((e: any) => e.name),
+      ),
+    )
+  keys.push('FACTORY_SERVER_BACKUP_AUTH_FILE')
+  expect(keys.length).toBeGreaterThan(1)
+  for (const k of keys) {
+    expect(stepSecretEnv(k)).toBe(true)
+    if (k !== 'GH_TOKEN') expect(STEP_KEEP_ENV.has(k)).toBe(false)
+  }
+  for (const k of [
+    'ACME_TOKEN',
+    'ACME_SECRET',
+    'ACME_PASSWORD',
+    'ACME_CREDENTIAL',
+    'ACME_API_KEY',
+    'ACME_AUTH',
+    'FACTORY_SERVER_BACKUP_REMOTE',
+  ])
+    expect(stepSecretEnv(k)).toBe(true)
+  expect(stepSecretEnv('PATH')).toBe(false)
+})
+
+test('server Codex steps get a cwd and retain an explicit cwd', async () => {
+  const baseEnv = { FACTORY_STEP_ISOLATE: '1' }
+  for (const cwd of [undefined, sdir]) {
+    await runStep(shome, 'pm', { ...CALL, baseEnv, codex: true, cwd }, async c => {
+      expect(c.cwd).toBe(cwd ?? join(shome, 'steps', 'pm'))
+      expect(existsSync(c.cwd!)).toBe(true)
+      return { isOk: true, text: 'done' }
+    })
+  }
 })
 
 test('a step over its limit is stopped and logged as a timeout', async () => {

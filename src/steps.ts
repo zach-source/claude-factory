@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelCall, ModelResult } from './once'
 
@@ -118,6 +118,17 @@ export async function swapSlot(
 
 const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s)
 
+export const stepSecretEnv = (k: string): boolean =>
+  /TOKEN|SECRET|PASSW|CREDENTIAL|API_KEY|AUTH/i.test(k) || k.startsWith('FACTORY_SERVER_BACKUP_')
+
+// ponytail: gh and model login need these keys. Use a separate container to isolate them from tools.
+export const STEP_KEEP_ENV: ReadonlySet<string> = new Set([
+  'GH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+])
+
 function logRow(home: string, row: AgentStepRow) {
   const path = join(home, 'agent-steps.jsonl')
   try {
@@ -153,15 +164,23 @@ export async function runStep(
   const broker = base.FACTORY_POLICY_BROKER
   delete base.FACTORY_SERVER
   delete base.FACTORY_STEP_ISOLATE
-  if (isolate && !call.codex) {
+  let cwd = call.cwd
+  if (isolate) {
+    for (const k of Object.keys(base)) if (stepSecretEnv(k) && !STEP_KEEP_ENV.has(k)) delete base[k]
     const dir = join(home, 'steps', name)
-    mkdirSync(join(dir, '.claude'), { recursive: true, mode: 0o700 })
-    base.HOME = dir
-    base.CLAUDE_CONFIG_DIR = join(dir, '.claude')
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    cwd ??= dir
+    for (const rc of ['.bashrc', '.bash_profile', '.profile', '.zshrc', '.zshenv'])
+      rmSync(join(dir, rc), { force: true })
+    if (!call.codex) {
+      mkdirSync(join(dir, '.claude'), { recursive: true, mode: 0o700 })
+      base.HOME = dir
+      base.CLAUDE_CONFIG_DIR = join(dir, '.claude')
+    }
   }
   const env: Record<string, string> = { ...call.env, FACTORY_PATROL: '1' }
   delete env.FACTORY_STEP_ISOLATE
-  let r = await model({ ...call, ...spec, strictMcp: true, baseEnv: base, env })
+  let r = await model({ ...call, ...spec, cwd, strictMcp: true, baseEnv: base, env })
   let outcome: AgentStepRow['outcome'] = r.isOk ? 'ok' : 'error'
   let tail = ''
   if (r.timedOut) {
