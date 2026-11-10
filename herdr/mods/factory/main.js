@@ -7,7 +7,7 @@
 // Props { dialog: "interview" } draw the Interview dialog.
 // `factory herdr install` writes config.json next to this file: { cli, home, machine? }.
 
-import { View, div } from 'gpui-kit'
+import { View, div, PathBuilder } from 'gpui-kit'
 import { v_flex, h_flex } from 'gpui-base'
 import {
   appHome,
@@ -41,6 +41,13 @@ import {
   chatArgv,
   directJob,
   onOf,
+  FLOW_FACTORIES,
+  FLOW_LENSES,
+  FLOW_WINDOWS,
+  flowJobWords,
+  flowLayout,
+  parseFlows,
+  recentMovers,
 } from './view.js'
 
 const TICK_MS = 5_000
@@ -66,6 +73,11 @@ export default class Factory extends View {
     this.screen = ''
     this.before = {}
     this.mailSeen = 0
+    this.tab = 'board' // 'board' | 'flow'
+    this.lens = 'live'
+    this.flowWindow = '24h'
+    this.flowFactory = 'lifecycle'
+    this.flow = null // { graph } | { error }
     const p = props() ?? {}
     if (p.band || p.dialog) return // only the panel copy ticks
     try {
@@ -158,6 +170,8 @@ export default class Factory extends View {
       }
       const tick = this.cfg.machine ? null : await this.finished('tick')
       if (tick) this.onTick(parseTick(tick.code, tick.out, tick.err))
+      const fl = await this.finished('flows')
+      if (fl) this.flow = parseFlows(fl.code, fl.out, fl.err)
       const dec = await this.finished('decisions')
       if (dec && dec.code === 0) {
         try {
@@ -171,6 +185,8 @@ export default class Factory extends View {
         else if (r && name === 'patrol' && r.out.trim() && r.out.trim() !== 'nothing due')
           notify({ title: 'factory patrol', body: line(r.out.split('\n')[0], 200), level: 'info' })
       }
+      // the Flow tab asks for the graph while it is shown
+      if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
       for (const j of beatJobs(this.cfg, shared('factory') ?? {}, this.ran, Date.now()))
         this.start(j.name, j.words)
       cx.notify()
@@ -333,12 +349,15 @@ export default class Factory extends View {
             .child(button('interview', `Interview (${items.length})`, () => this.openInterview()))
             .children(this.cfg.machine ? this.controls(button) : []),
         )
+        .child(this.tabs(t))
         .child(
-          v_flex()
-            .flex_1()
-            .min_h(0)
-            .overflow_y_scrollbar()
-            .children(rows.length ? rows : [div().text_color(t.dim).child('Nothing runs.')]),
+          this.tab === 'flow'
+            ? this.flowTab(t)
+            : v_flex()
+                .flex_1()
+                .min_h(0)
+                .overflow_y_scrollbar()
+                .children(rows.length ? rows : [div().text_color(t.dim).child('Nothing runs.')]),
         )
         .when(!!this.selected, el =>
           el.child(
@@ -355,6 +374,160 @@ export default class Factory extends View {
           ),
         )
     )
+  }
+
+  /** a row of small text buttons; the picked one is marked */
+  picker(t, id, names, picked, pick) {
+    return h_flex()
+      .gap(4)
+      .children(
+        names.map(n =>
+          div()
+            .id(`${id}-${n}`)
+            .px(8)
+            .py(2)
+            .rounded(6)
+            .cursor_pointer()
+            .text_color(n === picked ? t.foreground : t.dim)
+            .bg(n === picked ? t.selected : t.surface)
+            .hover(s => s.bg(t.hover))
+            .on_click((_e, cx) => {
+              pick(n)
+              cx.notify()
+            })
+            .child(n),
+        ),
+      )
+  }
+
+  tabs(t) {
+    return this.picker(t, 'tab', ['board', 'flow'], this.tab, n => {
+      this.tab = n
+      this.flow = null
+    })
+  }
+
+  /** the Flow tab: the graph of the workflow, drawn with native paths */
+  flowTab(t) {
+    const pick = (id, names, picked, set) => this.picker(t, id, names, picked, set)
+    const reset = () => (this.flow = null)
+    const bar = h_flex()
+      .gap(14)
+      .flex_wrap()
+      .child(pick('wf', FLOW_FACTORIES, this.flowFactory, n => ((this.flowFactory = n), reset())))
+      .child(pick('lens', FLOW_LENSES, this.lens, n => (this.lens = n)))
+      .child(pick('win', FLOW_WINDOWS, this.flowWindow, n => ((this.flowWindow = n), reset())))
+    const body = !this.flow
+      ? div().text_color(t.dim).child('reading the flow…')
+      : this.flow.error
+        ? div().text_color(t.blocked).child(this.flow.error)
+        : this.flowGraph(t, this.flow.graph)
+    return v_flex()
+      .flex_1()
+      .min_h(0)
+      .gap(8)
+      .child(bar)
+      .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().child(body))
+  }
+
+  flowGraph(t, graph) {
+    const l = flowLayout(graph, this.lens)
+    const movers = new Set(recentMovers(graph))
+    const stroke = (e, color) => {
+      const b = PathBuilder.stroke(e.width)
+      for (const [op, x, y, ax, ay, bx, by] of e.path)
+        op === 'M' ? b.move_to(x, y) : b.cubic_bezier_to(x, y, ax, ay, bx, by)
+      return window.paint_path(e.dashed ? b.dash_array([5, 4]).build() : b.build(), color)
+    }
+    const dotColor = n => (n.counts.stuck ? t.blocked : n.counts.waiting ? t.idle : t.working)
+    const live = new Map(this.liveRuns().map(r => [r.id, r]))
+    const box = n =>
+      v_flex()
+        .id(`node-${n.id}`)
+        .absolute()
+        .left(n.x)
+        .top(n.y)
+        .w(n.w)
+        .h(n.h)
+        .px(6)
+        .py(4)
+        .gap(2)
+        .rounded(n.gate ? 14 : 6)
+        .border(1)
+        .border_color(n.legacy ? t.dim : t.border)
+        .bg(n.heat ? t.blocked : t.raised)
+        .when(n.heat > 0, el => el.opacity(0.35 + 0.65 * n.heat))
+        .child(div().truncate().text_size(11).font_semibold().text_color(t.foreground).child(n.label))
+        .child(
+          h_flex()
+            .gap(4)
+            .items_center()
+            .children(
+              n.dots.map(d => {
+                const r = live.get(d.run)
+                const dot = div()
+                  .id(`dot-${d.run}`)
+                  .w(9)
+                  .h(9)
+                  .rounded_full()
+                  .cursor_pointer()
+                  .bg(dotColor(n))
+                  .on_click((_e, cx) => r && this.select(r, cx))
+                // a run that moved lately pulses, natively
+                return movers.has(d.run) ? dot.loop('opacity', { from: 0.35, to: 1, period: 900 }) : dot
+              }),
+            )
+            .child(n.chip ? div().text_size(10).text_color(t.muted).child(n.chip) : div())
+            .child(
+              div()
+                .flex_1()
+                .text_size(10)
+                .text_color(t.dim)
+                .child(this.lens === 'time' && n.p90 !== null ? `p90 ${Math.round(n.p90 / 1000)}s` : ''),
+            ),
+        )
+    const exits = l.exits.map(x =>
+      x.opens
+        ? div()
+            .id(`exit-${x.from}-${x.outcome}`)
+            .cursor_pointer()
+            .text_size(11)
+            .text_color(t.muted)
+            .on_click((_e, cx) => {
+              this.flowFactory = x.opens
+              this.flow = null
+              cx.notify()
+            })
+            .child(`${x.from} → ${x.outcome}: open ${x.opens}`)
+        : div().text_size(11).text_color(t.dim).child(`${x.from} → ${x.outcome}: ${x.to}`),
+    )
+    return v_flex()
+      .gap(8)
+      .child(
+        div()
+          .relative()
+          .w(l.width)
+          .h(l.height)
+          .children(l.edges.map(e => stroke(e, e.back ? t.dim : t.muted)))
+          .children(
+            l.edges.map(e =>
+              div()
+                .absolute()
+                .left(e.lx - 24)
+                .top(e.ly)
+                .text_size(10)
+                .text_color(t.dim)
+                .child(e.label),
+            ),
+          )
+          .children(l.nodes.map(box)),
+      )
+      .children(exits)
+  }
+
+  /** the live runs of the shared board, by id */
+  liveRuns() {
+    return (shared('factory') ?? {}).runs ?? []
   }
 
   /** runs one factory command on the machine of a remote config and toasts the result */

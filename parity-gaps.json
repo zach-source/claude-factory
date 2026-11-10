@@ -172,11 +172,5 @@
     "frontEnd": "claude-mod",
     "bead": "claude-factory-hpmc.29",
     "reason": "the Claude mod has no Flow view"
-  },
-  {
-    "op": "flows.show",
-    "frontEnd": "herdr-mod",
-    "bead": "claude-factory-hpmc.26",
-    "reason": "the Herdr mod has no Flow tab"
   }
 ]

@@ -76,7 +76,6 @@ test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpm
       [
         ['web', 28, 'the web UI has no Flow view'],
         ['claude-mod', 29, 'the Claude mod has no Flow view'],
-        ['herdr-mod', 26, 'the Herdr mod has no Flow tab'],
       ] as const
     ).map(([frontEnd, n, reason]) => ({
       op: 'flows.show',
