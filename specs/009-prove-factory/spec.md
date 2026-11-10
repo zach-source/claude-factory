@@ -66,7 +66,7 @@ This decision replaces an earlier draft. That draft put Go and TypeScript in lat
 
 | Phase | Scope | Depends on |
 | --- | --- | --- |
-| 1 | Go: the shared pipeline, the `prove` workflow, and the Go path on the AArch64 semantics. Pilot: `HostnamePattern.Matches` in `substrate`. Go holds most of the logic of our rigs. | The upstream AArch64 semantics and `comparator`. |
+| 1 | Go: the shared pipeline, the `prove` workflow, and the Go path on the AArch64 semantics. Pilot: one pure Go function in the owner's main private Go rig (see "Pilot of phase 1"). Go holds most of the logic of our rigs. | The upstream AArch64 semantics and `comparator`. |
 | 2 | TypeScript cores through `.wasm`. | A new Lean 4 WebAssembly semantics in its own repo (owner, 2026-11-10; research.md R12). It must pass differential tests against the reference interpreter and the official testsuite before any proof. A separate spec or a spec amendment adds the rest of this phase. Phase 1 does not wait for it. |
 | 3 | Rust and C native (static musl `aarch64`). Python through `.wasm` or a Rust extension. | Phase 1 for Rust and C. Phase 2 for Python through `.wasm`. |
 | — | Java stays a note. | — |
@@ -75,15 +75,16 @@ This spec has the full detail for phase 1 only. Phases 2 and 3 are later work. E
 
 ### Pilot of phase 1
 
-The pilot is `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy/egresspolicy.go`). Reasons:
+The owner set the scope on 2026-11-10: mainly the owner's main private Go rig, and the owner's other private, owned projects. Forked repos are out of scope.
 
-- It is a pure leaf function. It does no I/O and it does not allocate: a comment in the code says that `dotSuffix` is built once "so Matches does not allocate per call".
-- It is security-relevant. It decides which host names the egress policy lets out. A match bug lets traffic out.
-- It has a real historical bug for the historical-bug check. Before commit `6621f2b4`, an empty host name matched a pattern with an empty exact name. The theorem must be false on that old code.
-- It has a twin in Rust (`pattern_matches`), and a comment says that the two "must agree". One Lean reference matcher can serve both. Phase 3 can then prove the Rust twin against the same reference.
-- It is small (11 lines), but it calls `strings.CutSuffix` and `strings.Contains`. `strings.Contains` with a one-byte string calls `internal/bytealg.IndexByteString`, which is hand-written arm64 assembly. So the pilot also tests the instruction coverage and the hook contracts.
+The pilot is one pure Go function in the owner's main private Go rig. This public spec does not name the function or describe it, because the rig is private. The private pilot bead names it and gives the reasons. The pilot meets these rules:
 
-Other Go candidates (not the pilot): the other pure parsers and matchers in `internal/egresspolicy` (for example `ParseHostnamePattern` and the CIDR checks). They allocate or return errors, so they need the `mallocgc` hook.
+- It is a pure leaf function. It does no I/O and it does not allocate.
+- It is security-relevant.
+- It has a real historical bug in the rig's history, for the historical-bug check.
+- It calls at least one routine of the Go runtime or of `internal/bytealg`, so that the pilot also tests the instruction coverage and the hook contracts.
+
+Second Go target: `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy/egresspolicy.go`). It is public and owned, and it is not a fork. It is a pure leaf matcher with no allocation, and it has a historical bug before commit `6621f2b4`.
 
 ### Limits of the AArch64 semantics
 
@@ -113,7 +114,7 @@ A path fits a pure function with no I/O best: a parser, a matcher, a policy deci
 
 | Path | Rigs | Code that can fit |
 | --- | --- | --- |
-| Go | `substrate`, `blocks-operator`, `beveil` and four other rigs (seven Go rigs) | Leaf pure functions. Example: `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy`). |
+| Go | Six owned Go rigs: the owner's main private Go rig, `substrate`, `blocks-operator`, `beveil` and two others. One more Go rig is a fork, so it is out of scope. | Leaf pure functions. The pilot is in the main private Go rig. Second target: `HostnamePattern.Matches` in `substrate`. |
 | TypeScript | `claude-factory`, `fabriek`, `sluis`, and the TypeScript parts of two Go rigs | A pure core that moves to WebAssembly. Example: a rule check in `src/machine.ts` (`validate`). |
 | Rust and C | `substrate` (the Envoy egress-policy crate), `stek` (the `validate` crate) | `pattern_matches`, `transport_verdict` and `tls_verdict` in `substrate`. `pattern_matches` is the Rust twin of the Go `HostnamePattern.Matches`: a comment in the code says that the two must agree. The `stek` crate uses `tokio` with many threads and the network. Only a pure helper in a crate of its own can fit. |
 | Python (maybe) | `stek` and three config rigs | Not checked. The config rigs hold Nix, manifests and scripts, with no core to prove. |
@@ -127,8 +128,14 @@ The full list of rig names is in the factory home (`rigs.json`). This table name
 
 - Q: What are the proofs about: a Lean model of the code tied to it by differential tests, a Rust verifier (Verus, or Aeneas to Lean), or the compiled code? → A: The compiled code that ships, as DeepMind did (owner, 2026-11-10). The factory reuses the upstream Lean AArch64 Linux semantics (Apache-2.0) and `comparator` (Apache-2.0, with `landrun`, MIT). The Lean model and the Rust verifier are not in this spec.
 - Q: Which languages, and in which order? → A: Go and TypeScript first, Rust supported, Python maybe, Java a note only (owner, 2026-11-10). Each language has one target path. The proven artifact must be the artifact that ships, and the spec names each gap. See "Target paths by language".
-- Q: Which language path is phase 1? → A: Go, because Go holds most of our logic (owner, 2026-11-10). Phase 1 proves functions of the `GOARCH=arm64 CGO_ENABLED=0` proof build on the AArch64 semantics. Runtime calls are hooked with contracts that the owner approves. Production stays on amd64, and the spec names that gap. Phase 2 is TypeScript cores through `.wasm`. Phase 3 is Rust and C native, and Python through `.wasm`. Java stays a note. Pilot (recommended): `HostnamePattern.Matches` in `substrate`. See "Pilot of phase 1".
+- Q: Which language path is phase 1? → A: Go, because Go holds most of our logic (owner, 2026-11-10). Phase 1 proves functions of the `GOARCH=arm64 CGO_ENABLED=0` proof build on the AArch64 semantics. Runtime calls are hooked with contracts that the owner approves. Production stays on amd64, and the spec names that gap. Phase 2 is TypeScript cores through `.wasm`. Phase 3 is Rust and C native, and Python through `.wasm`. Java stays a note. The first pilot recommendation (`HostnamePattern.Matches` in `substrate`) is now the second target, because the owner scope of 2026-11-10 puts the pilot in the main private Go rig. See "Pilot of phase 1".
 - Q: For phase 2, a new Lean 4 WebAssembly semantics or Rocq (WasmCert-Coq with Iris-Wasm)? → A: A new Lean 4 semantics (owner, 2026-11-10). Fork a permissive base (argumentcomputer/Wasm.lean or linobit-corp/wasm-lean, both MIT) or build a new one. Do not copy from AGPL or GPL code. Scope: Wasm 2.0 MVP plus bulk memory and sign extension, executable, with a decoder. It has a runs-to relation in the style of `ElfRunsTo`. Differential tests against the reference interpreter and the official testsuite must pass before any proof. It lives in its own repo with a generic name. Phase 1 does not wait for it.
+- Q: Who merges the spec PR, and when? → A: The owner merges it when it is open (owner, 2026-11-10).
+- Q: Which rigs does phase 1 target? → A: Mainly the owner's main private Go rig, and the owner's other private, owned projects that are not forks. Forked repos are out of scope (owner, 2026-11-10). The pilot is one function in the main private Go rig. The private pilot bead names it.
+- Q: Where does the Lean WebAssembly semantics repo live? → A: In the owner's GitHub org. Public is fine. It has a generic name (owner, 2026-11-10).
+- Q: What budget limits a prove run? → A: Only a limit on the number of active prove sessions, as a setting for each factory (`prove.max-sessions`). There is no token cap and no time cap (owner, 2026-11-10).
+- Q: Where do proofs run? → A: On AX workers. The worker image needs the pinned Lean toolchain (`v4.34.0`, the upstream `lean-toolchain`) and the Lake cache. The plan has the image change and its size (owner, 2026-11-10).
+- Q: Do the Go runtime contracts and the exact-proof parts get one approval, or one for each part? → A: One owner decision for each part (owner, 2026-11-10). This also answers the earlier open question about the hook contracts.
 
 ## User Scenarios & Testing _(mandatory)_
 
@@ -138,7 +145,7 @@ The person starts `prove` on a rig. A spec-writer agent reads the rig's code. It
 
 **Why this priority**: A proof is only as good as the statement. A wrong statement gives a proof that means nothing. The person must own what the factory proves.
 
-**Independent Test**: Start `prove` on the `substrate` rig. The run stops at a decision. The decision lists properties of `HostnamePattern.Matches`. The person answers from the CLI. The run continues with the picked properties only.
+**Independent Test**: Start `prove` on the owner's main private Go rig. The run stops at a decision. The decision lists properties of the pilot function. The person answers from the CLI. The run continues with the picked properties only.
 
 **Acceptance Scenarios**:
 
@@ -195,7 +202,7 @@ Prover workers prove one lemma each. An integrator merges the proofs into the pr
 
 **Why this priority**: This is the work that makes the proof. It is P1 with the statements and the gatekeeper, because each one alone gives no value.
 
-**Independent Test**: Run `prove` on one approved theorem of `substrate`. The run ends with a proof that the gatekeeper accepts, with no step that the person does by hand.
+**Independent Test**: Run `prove` on one approved theorem of the pilot rig. The run ends with a proof that the gatekeeper accepts, with no step that the person does by hand.
 
 **Acceptance Scenarios**:
 
@@ -312,7 +319,9 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
 - **FR-004**: The workflow MUST refuse code that does not fit a path that the factory has. It MUST name the limit that the code breaks (threads, dynamic linking, signals, JIT, I/O, an unsupported target or language).
 - **FR-004a**: Phase 1 MUST support the Go path: function-level proofs on the `GOARCH=arm64 CGO_ENABLED=0` proof build of the same commit and compiler as production.
 - **FR-004b**: The Go path MUST have a trusted spec of the Go `ABIInternal` calling convention for arm64.
-- **FR-004c**: The Go path MUST hook the runtime calls (`runtime.mallocgc`, the write barriers, `runtime.morestack`, `runtime.gopanic` and the panic entry points) with contracts. The owner MUST approve each contract with a decision before a proof can use it.
+- **FR-004c**: The Go path MUST hook the runtime calls (`runtime.mallocgc`, the write barriers, `runtime.morestack`, `runtime.gopanic` and the panic entry points) with contracts. The owner MUST approve each contract with its own decision (one decision for each part) before a proof can use it.
+- **FR-004g**: An exact-proof part MUST also have its own owner decision. An exact-proof part is a part whose production the owner moves to the arm64 nodes, so that the proof covers the shipped binary. After the approval, the factory files a bead on the rig to pin that workload to `kubernetes.io/arch=arm64`. The factory does not change the cluster.
+- **FR-004h**: The workflow MUST refuse a rig whose repo is a fork.
 - **FR-004d**: The Go path MUST add the AArch64 instructions that the Go compiler and the Go runtime assembly emit and that the upstream semantics does not have. Each added instruction MUST pass differential tests against the upstream test tools (Unicorn, Sail or `qemu-aarch64`), as the upstream instructions do.
 - **FR-004e**: The proof run MUST use `GODEBUG=asyncpreemptoff=1` and `GOMAXPROCS=1`.
 - **FR-004f**: The brief and the trusted base of each Go proof MUST name the gap: production runs the amd64 binary, and the proof covers the arm64 binary.
@@ -371,6 +380,11 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
 - **FR-028**: The rig MUST pin the upstream semantics, `comparator` and `landrun` at fixed commits, with their license text.
 - **FR-029**: The factory MUST NOT copy AGPL-3.0 files from the upstream repo.
 
+**Budget and runners**
+
+- **FR-031**: Each factory MUST have the setting `prove.max-sessions`. It limits the number of active prove runs (parent and child runs) at the same time. The factory MUST NOT start a prove run over the limit. The run waits. There is no token cap and no time cap for prove runs.
+- **FR-032**: Prove runs on AX MUST use a worker image with the pinned Lean toolchain (`leanprover/lean4:v4.34.0`, the `lean-toolchain` of the upstream repo) and a Lake cache of the pinned dependencies. A run must not need network access to GitHub to build the proofs.
+
 **Front ends**
 
 - **FR-030**: Every prove operation and decision MUST be an operation of the core. All four front ends MUST get them through the core interface (constitution Principle II). If a front end cannot show a part, the change MUST file a bead for that gap and name it in the PR.
@@ -391,9 +405,9 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
 
 ### Measurable Outcomes
 
-- **SC-001**: One property of `HostnamePattern.Matches` in `substrate` is proved on its arm64 proof build, checked by the gatekeeper and merged with a CI job. The person does no step by hand other than the decisions.
+- **SC-001**: One property of the pilot function is proved on its arm64 proof build, checked by the gatekeeper and merged with a CI job. The person does no step by hand other than the decisions.
 - **SC-002**: The gatekeeper refuses 100% of a set of bad proofs (`sorry`, a new axiom, a weaker theorem, old machine code, a changed statement) and accepts the good proof.
-- **SC-001a**: The theorem of the pilot is proved false on the code before commit `6621f2b4` (the historical-bug check).
+- **SC-001a**: The theorem of the pilot is proved false on the code before the fix of its historical bug (the historical-bug check).
 - **SC-003**: Each approved theorem has a vacuity witness and at least one mutation test that the Lean kernel checks.
 - **SC-004**: After a change to a proved function, CI fails in the same pull request, and the factory files one bead and queues one repair run.
 - **SC-005**: The person answers each prove decision from each of the four front ends, and the core gives the same result.
@@ -404,7 +418,8 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
 - The upstream `subroutine_ok` and the separation-logic predicates can state a contract for a Go function under `ABIInternal`. The upstream DSLs are for C and Rust only, so a Go surface is new trusted code. The plan must confirm this with a small case first.
 - The Go toolchain version is the version in the rig's `go.mod` (`go 1.27.0` in `substrate` on 2026-11-10). The proof pins it.
 - The rig's proof code lives in the rig's repo, in one directory (for example, `proofs/`), as a Lake package.
-- A Linux runner with at least 16 GB of memory is available to the factory. A laptop on macOS cannot run `comparator`.
+- Proof work runs on AX workers in the `microvm` sandbox class (16 GiB each). The authoritative gatekeeper runs in the rig's CI on Linux. A laptop on macOS cannot run `comparator`. If the Kata guest kernel has Landlock, AX can also run `comparator`. Slice I1 checks it.
+- The AX workers are amd64. Lean does not depend on the CPU. Go cross-compiles the arm64 proof build, and `qemu-aarch64` runs the differential tests.
 - The existing gate and decision operations of the core (`gates.decide`, `gates.brief`, `decisions.list`, `decisions.answer`) are enough for the prove decisions. Spec 008 already makes them reach all front ends.
 - The upstream semantics is correct for the code that phase 1 proves. The brief names it as trusted.
 

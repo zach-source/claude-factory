@@ -40,7 +40,7 @@ Neither repo has a release (0 releases on 2026-11-10). So the rig pins a commit.
 
 - `comparator` uses `landrun`, and `landrun` uses Landlock. Landlock is Linux only. The laptop runs macOS.
 - The upstream core build needs about 6 GB and about 15 minutes. A full upstream build needs about 25 GiB. The manager process must not run a build of that size.
-- `substrate` is public and its CI uses `ubuntu-latest` (4 vCPU, 16 GB for a public repo). The core build fits.
+- `substrate` is public and its CI uses `ubuntu-latest` (4 vCPU, 16 GB for a public repo). The main private Go rig uses larger hosted Linux runners (8 and 16 vCPU). The core build fits on both.
 - FR-022 says that the gatekeeper is the same command in a run and in CI. When the run uses the CI result, there is only one command.
 - An agent cannot decide the result. The runner reads the check state from GitHub. No worker report goes into it.
 
@@ -123,9 +123,9 @@ The worker hook (`src/worker-hook.ts`, `fileWriteReason`) also denies a write to
 
 ## R9. The pilot
 
-**Decision**: `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy/egresspolicy.go:342`). The spec gives the reasons ("Pilot of phase 1").
+**Decision (owner scope, 2026-11-10)**: The pilot is one pure Go function in the owner's main private Go rig. The private pilot bead names it, with the reasons and the historical bug. This public file does not, because the rig is private. Forked repos are out of scope.
 
-The historical bug for the historical-bug check is the code before commit `6621f2b4`. That code had no `case hostname == ""` and no `case p.any`. An empty host name then matched a pattern with an empty exact name.
+The second Go target is `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy/egresspolicy.go:342`). It is public, owned and not a fork. Its historical bug is the code before commit `6621f2b4`. That code had no `case hostname == ""` and no `case p.any`. An empty host name then matched a pattern with an empty exact name.
 
 ## R10. Mutation tests and vacuity witnesses
 
@@ -183,7 +183,7 @@ These theorems are part of the approved statements. So `comparator` checks them,
 
 ## R13. Where the Go engine lives
 
-**Decision (default, owner question)**: The Go path is a Lean package in a new public repo that the owner makes. The package holds `go-elf2lean`, `go_spec`, the hook contracts and the added instructions. Each rig pins it, as it pins `arm64-semantics/`. The `substrate` proofs live in `substrate/proofs/`.
+**Decision (default, owner question)**: The Go path is a Lean package in a new public repo that the owner makes, in the owner's GitHub org, with a generic name. The package holds `go-elf2lean`, `go_spec`, the hook contracts and the added instructions. Each rig pins it, as it pins `arm64-semantics/`. The `substrate` proofs live in `substrate/proofs/`.
 
 **Rationale**: Seven Go rigs use the same engine. One package gets one review of its trusted code. claude-factory does not build Lean in its CI.
 
@@ -192,3 +192,40 @@ These theorems are part of the approved statements. So `comparator` checks them,
 - `lean/` in claude-factory. Its CI then needs Lean and about 6 GB.
 - In each rig. Seven copies of trusted code.
 - A fork of code-verification. Upstream changes then need a merge.
+
+## R14. The AX worker image for prove runs
+
+**Decision**: Add a second build target, `prove`, to `Dockerfile.worker`. It starts `FROM worker`, so it has the same skills, rules and plugins (constitution Principle I). It adds only toolchains and caches:
+
+| Layer | Content | Size |
+| --- | --- | --- |
+| Lean | elan with the toolchain `leanprover/lean4:v4.34.0` (the upstream `lean-toolchain`), in `/opt/elan`, which the `worker` user can read | The release archive `lean-4.34.0-linux.tar.zst` is 553 MiB. Slice I1 measures the size when unpacked. |
+| Lake cache | google-deepmind/code-verification at the pinned commit, with the default targets of `arm64-semantics/` built (`Arm64`, `ProofLib`), in `/opt/lean-cache` | Slice I1 measures it. The upstream core build needs about 6 GB of memory and 13 to 15 minutes. |
+| Gate tools | `comparator` and `lean4export` at their `v4.34.0` tags, `landrun` at a pinned commit | Small. Slice I1 measures it. |
+| Test tools | `qemu-aarch64` at the version that the upstream `scripts/fetch-qemu-aarch64` pins | Small |
+| Go toolchains | The Go version that each target rig uses in production, in the Go module cache (`GOTOOLCHAIN=local` for each version). The proof build must use the production compiler, not the newest one in the image. | About 70 MiB for each version |
+
+At the start of a prove run, the worker copies `/opt/lean-cache` into the rig's `proofs/.lake/packages`. The manifest pins the same commits, so Lake uses the built files and does not fetch from GitHub. AX pod egress cannot reach GitHub.
+
+Two new settings for each factory: `prove.image` (`FACTORY_PROVE_IMAGE`, the image of prove runs) and `prove.sandbox-class` (`FACTORY_PROVE_SANDBOX_CLASS`, default `microvm`). Prove runs use the `microvm` class for these reasons: the gVisor pool has less memory for each task, and the Kata guest kernel can have Landlock for `comparator`. Slice I1 checks Landlock in the guest. If Landlock is not there, `comparator` runs only in the rig's CI, which is the authoritative gate in all cases.
+
+If the image grows by more than 5 GiB, the Lake cache moves to the in-cluster object store. Then the worker fetches it at the start of the task. The owner builds, pushes and rolls the image. This spec does not change the cluster.
+
+**Alternatives**: Add the layers to the `worker` target. Then the 29 gVisor workers pull several GiB that they do not use. Fetch the toolchain at run time: AX pod egress cannot reach GitHub.
+
+## R15. The session limit
+
+**Decision**: A setting for each factory: `prove.max-sessions` (`FACTORY_PROVE_MAX_SESSIONS`), with the check `^[1-9][0-9]*$` and the default `2`. It is in `src/settings.ts` next to `max-runs`. The scheduler (`room()` in `src/cli.ts`) counts the active runs of factory `prove`. An active run is a parent or child run that holds a worker. A run at a gate or parked holds no worker, so it does not count. A prove run over the limit waits. It also counts against `max-runs` and the rig's `maxRuns`, as today. There is no token cap and no time cap (owner, 2026-11-10).
+
+**Rationale**: The default `2` fits the `microvm` pool: 3 workers of 16 GiB, shared with Nix builds.
+
+## R16. One decision for each part
+
+**Decision**: Each Go runtime contract and each exact-proof part is one part. The `draft` station lists the parts in `proofs/parts.json` and files one child bead for each part, with the labels `factory:prove` and `station:part`. The child run has one gate, `part`, with `freeze` on that one file. The person approves or refuses each part on its own. The `freeze` of the parent `approve` gate refuses the decision until each part in `proofs/parts.json` has an approval record. The core gives the reason, with the open parts.
+
+For an exact-proof part, the approval also files a bead on the rig: pin the workload of that part to `kubernetes.io/arch=arm64`. The factory does not change the cluster.
+
+**Rationale**: A worker cannot propose a decision (`decisionsPropose` in `src/cli.ts` refuses a worker). A gate is the only person decision that a run can make. One child run for each part reuses the gate and the child-bead flow of R5, with no new decision kind.
+
+**Alternatives**: One gate for all parts. The owner asked for one decision for each part. A gate that loops once for each part: the machine has no way to choose the next edge from the count of open parts.
+

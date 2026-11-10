@@ -22,7 +22,7 @@ The factory model gets three node fields:
 
 The gatekeeper is one script in the rig. The rig's CI runs it on Linux.
 
-Phase 1 is Go. It proves functions of the `GOARCH=arm64 CGO_ENABLED=0` proof build on the DeepMind AArch64 semantics. A Go engine package adds the Go ABI, the Go linker output, the runtime hook contracts and the missing instructions. The pilot is `HostnamePattern.Matches` in `substrate`. Phases 2 (TypeScript through `.wasm`) and 3 (Rust and C native, Python) are beads that stay blocked.
+Phase 1 is Go. It proves functions of the `GOARCH=arm64 CGO_ENABLED=0` proof build on the DeepMind AArch64 semantics. A Go engine package adds the Go ABI, the Go linker output, the runtime hook contracts and the missing instructions. The pilot is one pure Go function in the owner's main private Go rig. Its private bead names it. `HostnamePattern.Matches` in `substrate` is the second target. Proof work runs on AX workers with a `prove` image (Lean `v4.34.0` and a Lake cache). A setting, `prove.max-sessions`, limits the active prove runs. Each runtime contract and each exact-proof part gets its own owner decision. Phases 2 (TypeScript through `.wasm`) and 3 (Rust and C native, Python) are beads that stay blocked.
 
 ## Technical Context
 
@@ -47,7 +47,7 @@ Phase 1 is Go. It proves functions of the `GOARCH=arm64 CGO_ENABLED=0` proof bui
 - claude-factory is public. No private names in a commit. The `guard-private` hook must pass.
 - This spec does not change the cluster, `f-manager` or a rollout.
 
-**Scale/Scope**: 15 stations, 3 node fields, 1 new read operation, 1 sweep change, 1 rig template, 1 Lean package. Pilot: one function of 11 lines.
+**Scale/Scope**: 16 stations, 3 node fields, 1 new read operation, 3 new settings, 1 sweep change, 1 rig template, 1 image target, 1 Lean package. Pilot: one function of about 6 lines.
 
 ## Constitution Check
 
@@ -100,7 +100,7 @@ factories/sweeps.ts       # ci: prove-gate goes to station:repair
 templates/prove/          # the rig template: lakefile.lean, gate.sh, comparator.json, prove-gate.yml, LICENSE-upstream
 ```
 
-The Go engine is a Lean package in its own repo (research.md R13; owner question). The pilot's proofs are in `substrate/proofs/`.
+The Go engine is a Lean package in its own repo (research.md R13; owner question). The pilot's proofs are in `proofs/` of the main private Go rig.
 
 ## Delivery
 
@@ -119,8 +119,11 @@ Phase 1, in order. Each slice is one bead and one pull request.
 | F4 | claude-factory | `factories/prove.ts` and `factories/prove.test.ts`: the stations, the prompts and the child-bead flow. | F1 |
 | F5 | claude-factory | `templates/prove/`: `gate.sh` with draft mode, `comparator.json`, `prove-gate.yml`, `lakefile.lean`. A test with the bad cases of quickstart step 2. | E3, F4 |
 | F6 | claude-factory | The `ci` sweep: `prove-gate` goes to `station:repair`. | F4 |
-| P1 | `substrate` | The pilot run: `HostnamePattern.Matches`. The person makes the decisions and merges. | E4, F2, F3, F5, F6 |
-| P2 | `substrate` | Break the function on a test branch. Show SC-004. | P1 |
+| F7 | claude-factory | The settings `prove.max-sessions`, `prove.image` and `prove.sandbox-class` in `src/settings.ts`. `room()` counts the active prove runs (research.md R15). Prove runs use the prove image and sandbox class. | F4 |
+| F8 | claude-factory | One decision for each part: the `part` station, the child bead for each part in `proofs/parts.json`, the refusal of the `approve` freeze while a part is open, and the rig bead for an exact-proof part (research.md R16). | F2, F4 |
+| I1 | claude-factory | The `prove` target of `Dockerfile.worker` (research.md R14). Build it, and record the size of each layer. Check Landlock in the Kata guest. The owner pushes and rolls the image. | E0 |
+| P1 | main private Go rig | The pilot run on the function that its bead names. The person makes the decisions, one for each part, and merges. | E4, F2, F3, F5, F6, F7, F8, I1 |
+| P2 | main private Go rig | Break the function on a test branch. Show SC-004. | P1 |
 
 Phase 2 base: the Lean 4 WebAssembly semantics (research.md R12). It lives in its own repo with a generic name. Rigs use it as a Lake dependency. It does not wait for phase 1, and phase 1 does not wait for it.
 
@@ -146,13 +149,14 @@ Java stays a note in the spec. It gets no bead.
 
 1. F1 to F6 merge with no rig that uses them. The new fields change no current workflow. The tests show it.
 2. E0 to E4 merge in the Go engine repo.
-3. P1 runs on `substrate` only. The person merges the pilot pull request.
-4. After P2, a second Go rig can start `prove`.
+3. The owner pushes the `prove` image and sets `prove.image`.
+4. P1 runs on the main private Go rig only. The person merges the pilot pull request.
+5. After P2, a second Go rig can start `prove`. The second target is `HostnamePattern.Matches` in `substrate`. Forked repos are out of scope.
 
 ## Open owner questions
 
-1. Where does the Go engine live? Default: a new public repo that the owner makes (research.md R13). Other choices: `lean/` in claude-factory, or a copy in each rig.
-2. Do the hook contracts get their own gate, or do they go into the `approve` gate with the statements? Default: in the `approve` gate, because the person must see the trusted base and the statements together.
+1. Where does the Go engine live? Default: a new public repo in the owner's GitHub org, with a generic name, that the owner makes (research.md R13). Other choices: `lean/` in claude-factory, or a copy in each rig.
+Answered on 2026-11-10: the hook contracts and the exact-proof parts get one decision for each part (research.md R16). The Wasm repo is in the owner's GitHub org, with a generic name.
 
 ## Complexity Tracking
 
