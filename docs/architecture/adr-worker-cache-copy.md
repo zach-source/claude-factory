@@ -119,17 +119,18 @@ This is a local fixture check, not a production read. No AC is must-see-live.
 ### Test access prerequisite
 
 Three implement passes could not start the required guard tests because the worker hook denied them.
-The next plan must identify an authorized test environment before implementation resumes.
+The manager then directed plan to try the plain test command and proceed if the hook still denied it.
 Do not repeat denied commands through another tool or change the hook environment.
-The manager request for this prerequisite is in the run mail.
+The manager direction is in the run mail.
 Both tasks remain open. No regression test or source exception exists yet.
 
 The plan recheck at `3191f744` received the same denial before Bun started.
 PR #834 remains open and draft: https://github.com/zach-source/claude-factory/pull/834.
-The plan is blocked on an authorized environment that can execute the exact baseline command below.
-Do not send this unchanged prerequisite back to implement as ready.
-After the manager supplies that environment, run the baseline before task 1.
-Keep AC1 through AC4 and both existing tasks; no separate guard repair belongs in this run without direction.
+The authorized plain command, `bun test src/worker-hook-qn8a21.test.ts`, also received a denial before Bun started.
+Baseline: not runnable, hook false positive.
+Per manager direction, this gap does not block the plan or implementation.
+Keep AC1 through AC4 and both existing tasks. Record unavailable local evidence and obtain final-head CI evidence.
+Do not bypass the hook or claim that an unexecuted test passed.
 
 Commit the AC1 through AC3 regression tests before the fix.
 Show the AC1 allow row fails against the baseline with `HOOK_CONTROL_REASON`.
