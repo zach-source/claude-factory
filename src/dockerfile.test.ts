@@ -147,5 +147,13 @@ test('the worker image installs gitleaks and jq and smokes them (claude-factory-
   const worker = workerStage()
   expect(worker).toContain('nixpkgs#gitleaks nixpkgs#jq')
   expect(worker).toContain('gitleaks version && jq --version')
-  expect(worker).not.toMatch(/nixpkgs#go\b/)
+  // claude-factory-ad6r: the image keeps the pinned Go in the store but puts none on PATH (this replaces "the image carries no Go")
+  expect(worker).toContain(
+    'RUN nix build --out-link /nix/var/nix/gcroots/go nixpkgs#go && nix shell nixpkgs#go -c go version',
+  )
+  const profile = worker.split('\n').find(l => l.includes('nix profile install'))
+  expect(profile).not.toMatch(/nixpkgs#go\b/)
+  expect(worker).not.toMatch(/^ENV PATH=.*go/m)
+  expect(worker.match(/nixpkgs#go\b/g)).toHaveLength(2)
+  expect(worker).toContain("'substituters = https://cache.nixos.org https://devenv.cachix.org'")
 })
