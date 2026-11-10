@@ -123,6 +123,29 @@ describe('1ocuv AC4 remote lease exclusion and replay', () => {
     ).toBe(409)
     expect(t.lookup).not.toHaveBeenCalled()
   })
+  test('a stale generation with a fresh key has no renewal or release effect', () => {
+    const t = setup()
+    const first = t.first()
+    t.call(
+      'complete',
+      { epoch: t.lease.epoch, generation: first.generation, outcome: 'success' },
+      'complete-key',
+    )
+    const newer = t.acquire('new-acquire')
+    t.lookup.mockClear()
+    expect(
+      t.call('renew', { epoch: t.lease.epoch, generation: first.generation }, 'stale-renew').status,
+    ).toBe(409)
+    expect(
+      t.call(
+        'complete',
+        { epoch: t.lease.epoch, generation: first.generation, outcome: 'success' },
+        'stale-complete',
+      ).status,
+    ).toBe(409)
+    expect(t.lookup).not.toHaveBeenCalled()
+    expect(t.acquire('new-acquire')).toEqual(newer)
+  })
   test('restart refuses an old epoch before replay', () => {
     const old = setup().first()
     const t = setup()
@@ -131,9 +154,12 @@ describe('1ocuv AC4 remote lease exclusion and replay', () => {
     expect(t.lookup).not.toHaveBeenCalled()
   })
   for (const change of [
-    { id: 'rotated', digest: 'b'.repeat(64) },
+    { id: 'rotated' },
+    { digest: 'b'.repeat(64) },
     { audience: 'new-server' },
     { rigs: ['other'] },
+    { notBefore: 1 },
+    { expiresAt: 999_999 },
   ])
     test(`changed identity ${Object.keys(change).join(',')} cannot replay`, () => {
       const t = setup()
