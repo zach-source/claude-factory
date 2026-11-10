@@ -117,6 +117,8 @@ export type ClientOpts = {
   /** the last tick result, null before the first tick */
   board: () => unknown
   log?: (line: string) => void
+  /** the limit of one call, 60 s by default */
+  callTimeoutMs?: number
 }
 
 const WORKER_ENV = [
@@ -316,8 +318,13 @@ export function clientHandler(o: ClientOpts) {
       env: personEnv(process.env, o.home),
       port: o.port,
     }
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      const r = await op.run(ctx, input)
+      // the work can continue after the 504 (ponytail: no cancel; upgrade path: an AbortSignal in the port)
+      const limit = new Promise<{ timedOut: true }>(res => {
+        timer = setTimeout(() => res({ timedOut: true }), o.callTimeoutMs ?? 60_000)
+      })
+      const r = await Promise.race([op.run(ctx, input), limit])
       return r.timedOut
         ? refuse(504, 'the command timed out')
         : r.code === 0
@@ -326,6 +333,8 @@ export function clientHandler(o: ClientOpts) {
     } catch (e) {
       if (e instanceof OpError) return refuse(e.status, e.message)
       throw e
+    } finally {
+      clearTimeout(timer)
     }
   }
 
