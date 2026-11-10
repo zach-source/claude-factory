@@ -85,7 +85,7 @@ test('ksx5 AC4: absent and invalid answers deny without a downstream call', SLOW
     ran++
     return { result: { stdout: '', stderr: '', interrupted: false } }
   })
-  for (const value of [undefined, 'yes', 'Allow please']) {
+  for (const value of [undefined, 'yes', 'Allow please', 'Allow\n']) {
     answer = value
     const result = await $.tool.call({ tool: 'Bash', command: DECIDE, description: 'x' })
     expect(result.deny, String(value)).toContain('did not confirm')
