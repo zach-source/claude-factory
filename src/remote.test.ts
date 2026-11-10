@@ -742,6 +742,64 @@ test('a laptop memory search does not import the parent worker snapshot', () => 
   }
 })
 
+describe('a VM memory search says why it found nothing', () => {
+  const rowEnv = (id: string, vm: boolean) => {
+    const base = join(dir, `vmsearch-${id}`)
+    mkdirSync(join(base, 'worker'), { recursive: true })
+    return {
+      base,
+      env: {
+        FACTORY_HOME: join(base, 'home'),
+        FACTORY_WORKER_DIR: join(base, 'worker'),
+        ...(vm ? { FACTORY_OUTBOX: join(base, 'outbox.jsonl') } : {}),
+      } as Record<string, string>,
+    }
+  }
+  const put = (base: string) => {
+    const store = join(base, 'store')
+    mkdirSync(join(store, 'topic'), { recursive: true })
+    writeFileSync(join(store, 'topic', 'n.md'), '---\nsummary: dolt lock note\n---\nbody\n')
+    expect(memorySnapshotPut(store, undefined, join(base, 'worker', 'memory.tgz')).put).toBe(true)
+  }
+  const rows: { id: string; vm: boolean; setup?: (base: string) => void; mem?: boolean; want: string }[] = [
+    { id: 'a', vm: true, want: 'the memory snapshot has not arrived yet: search again in a few minutes' },
+    { id: 'b', vm: true, mem: true, want: 'nothing in ' },
+    { id: 'c', vm: false, want: 'nothing in ' },
+    {
+      id: 'e',
+      vm: true,
+      setup: base => writeFileSync(join(base, 'worker', 'memory.tgz'), 'not gzip at all'),
+      want: 'the memory snapshot did not unpack (tar exit',
+    },
+    { id: 'd', vm: true, setup: put, want: 'dolt lock note' },
+  ]
+  for (const row of rows) {
+    test(`row ${row.id}`, () => {
+      const { base, env } = rowEnv(row.id, row.vm)
+      if (row.mem) mkdirSync(join(env.FACTORY_HOME!, 'memory'), { recursive: true })
+      row.setup?.(base)
+      const r = factory(['memory', 'search', 'dolt lock'], env)
+      expect(r.code).toBe(0)
+      expect(r.out).toContain(row.want)
+      if (row.id !== 'a' && row.id !== 'e') expect(r.out).not.toContain('memory snapshot')
+      rmSync(base, { recursive: true, force: true })
+    })
+  }
+  test('a VM memory search with no tar exits 0 and says the snapshot did not unpack', () => {
+    const { base, env } = rowEnv('notar', true)
+    put(base)
+    const bin = join(base, 'bin')
+    mkdirSync(bin)
+    for (const n of ['bun', 'dirname', 'realpath']) symlinkSync(Bun.which(n)!, join(bin, n))
+    const r = factory(['memory', 'search', 'dolt lock'], { ...env, PATH: bin })
+    expect(r.code).toBe(0)
+    expect(r.out.startsWith('the memory snapshot did not unpack')).toBe(true)
+    expect(existsSync(join(env.FACTORY_HOME!, 'memory'))).toBe(false)
+    expect(readdirSync(env.FACTORY_HOME!).filter(n => n.startsWith('memory'))).toEqual([])
+    rmSync(base, { recursive: true, force: true })
+  })
+})
+
 test('a report appended after the worker deletes its already-replayed probes still replays (claude-factory-4x1)', () => {
   const seq = launched('r8')
   const probe1 = JSON.stringify({ argv: ['mail', 'r8', 'manager', 'probe one'], from: 'a', at: 1 })

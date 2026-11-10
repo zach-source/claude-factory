@@ -13973,17 +13973,20 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'search' && words.length) {
           // a VM has no store: the laptop put a snapshot (memory.tgz) in the worker dir at launch (vffe.4)
           const snap = join(worker.own(), MEMORY_TGZ)
+          let unpack: string | undefined
           if (!existsSync(MEMORY) && existsSync(snap)) {
             const tmp = `${MEMORY}.tmp-${process.pid}`
-            mkdirSync(tmp, { recursive: true })
-            const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
             try {
-              if (r.exitCode !== 0) throw new Error('tar failed')
+              mkdirSync(tmp, { recursive: true })
+              const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
+              if (r.exitCode !== 0) throw new Error(`tar exit ${r.exitCode}`)
               renameSync(tmp, MEMORY)
-            } catch {
-              rmSafe(tmp, { recursive: true, force: true }) // a cut file, or another search won the rename
+            } catch (e) {
+              rmSafe(tmp, { recursive: true, force: true }) // a cut file, a missing tar, or another search won the rename
+              if (!existsSync(MEMORY)) unpack = cleanText((e as Error).message, 200)
             }
           }
+          const vm = !!process.env.FACTORY_OUTBOX
           const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
@@ -14003,7 +14006,12 @@ if (import.meta.main && !outboxCmd)
                     .map(l => `    ${l}`),
                 ].join('\n'),
               )
-              .join('\n\n') || `nothing in ${MEMORY} yet`,
+              .join('\n\n') ||
+              (vm && !existsSync(MEMORY) && unpack
+                ? `the memory snapshot did not unpack (${unpack}): search again in a few minutes`
+                : vm && !existsSync(MEMORY) && !existsSync(snap)
+                  ? 'the memory snapshot has not arrived yet: search again in a few minutes'
+                  : `nothing in ${MEMORY} yet`),
           )
         } else if (sub === 'add' && words[0]) {
           // a --word left after the opt() splices (typo, repeat, flag an older bin lacks) would become the
