@@ -1,3 +1,4 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,6 +12,8 @@ import {
   SCAN_BUDGET_REASON,
   scanReason,
 } from './worker-hook'
+
+stripLiveRunVars()
 
 // claude-factory-qn8a.33: GitLab runs a /approve or /merge line in a note or description as a quick action.
 const FILES: Record<string, string> = {}

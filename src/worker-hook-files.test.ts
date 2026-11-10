@@ -1,9 +1,12 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 // claude-factory-g4du: the file-tool guard of worker-hook.ts (Write, Edit, MultiEdit, NotebookEdit)
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FILE_WRITE_REASON, fileWriteReason } from './worker-hook'
+
+stripLiveRunVars()
 
 let base: string
 let root: string
