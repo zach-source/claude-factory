@@ -132,6 +132,7 @@ export function parseTick(code, out, err) {
       halt: res.halt,
       readOnly: res.readOnly,
       managerLimited: res.managerLimited ?? null,
+      managerCodexAuth: res.managerCodexAuth ?? null,
     }
   } catch {
     return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
@@ -145,6 +146,11 @@ export function managerLimitText(limited) {
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `manager: Claude limited until ${hh}:${mm}`
+}
+
+/** the board header when the manager's Codex key is refused (claude-factory-y3f8w.10), else '' */
+export function managerCodexAuthText(auth) {
+  return auth ? 'manager codex: key refused' : ''
 }
 
 /** the result of `factory snapshot --views board,decisions`: { tick, decisions } for the tabs to share */
