@@ -620,6 +620,37 @@ test('yn9ag AC3: canonical argv byte cap includes boundaries and multibyte text'
   expect(worker.outboxTooBig([...argv.slice(0, -1), argv[4] + 'x'])).toBe(102401)
 })
 
+test('yn9ag AC3: canonical producers replay at the byte cap and refuse one more byte before sync', () => {
+  const id = 'yn9-cap'
+  const seq = launched(id)
+  const outbox = join(dir, 'yn9-cap.jsonl')
+  const bd = fakeBd(id)
+  const prefix = ['mail', id, 'manager', '--']
+  const text = 'é' + 'x'.repeat(worker.OUTBOX_MAX_BYTES - prefix.join('').length - 2)
+  expect(factory([...prefix, text + 'x'], bd.env(outbox)).code).toBe(1)
+  expect(factory(['report', id, String(seq), 'ready', '--', text + 'x'], bd.env(outbox)).code).toBe(1)
+  expect(existsSync(outbox)).toBe(false)
+  expect(existsSync(bd.marker)).toBe(false)
+  expect(factory([...prefix, text], bd.env(outbox)).code).toBe(0)
+  expect(factory(['mail', id, 'manager', '--wake', '--', '--wake'], bd.env(outbox)).code).toBe(0)
+  expect(factory(['report', id, String(seq), 'ready', '--', '--summary-file'], bd.env(outbox)).code).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  const oversized = JSON.stringify({ argv: [...prefix, text + 'x'] })
+  const { env, trace } = replayTrace(join(dir, 'yn9-unused'), 'yn9-cap')
+  cluster('Running', { status: 'working', lines: [oversized, ...lines] })
+  expect(factory(['tick'], env).code).toBe(0)
+  const events = inbox(id)
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+  expect(events).toEqual([
+    { type: 'MAIL', from: 'a', to: 'manager', text, at: expect.any(Number) },
+    { type: 'MAIL', from: 'a', to: 'manager', text: '--wake', wake: true, at: expect.any(Number) },
+    { type: 'DONE', seq, outcome: 'ready', summary: '--summary-file', at: expect.any(Number) },
+  ])
+  expect(readFileSync(trace, 'utf8').trim().split('\n')).toHaveLength(3)
+})
+
 test('yn9ag AC2: local handlers reject malformed literal args without events', () => {
   const id = 'yn9-local'
   const seq = launched(id)
