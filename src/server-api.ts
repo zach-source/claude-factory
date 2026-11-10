@@ -143,7 +143,7 @@ export function personEnv(env: Record<string, string | undefined>, home: string)
 
 /**
  * The real runner: one `bun cli.ts <argv>` process for each call, with cwd = home. It has no shell.
- * Mail text goes through <home>/text/<uuid>.md and --text-file. The file is gone when the call ends.
+ * Report and mail text use <home>/text/<uuid>.md and their file flags. The file is gone when the call ends.
  * ponytail: one bun process per call (about 0.3 s). Upgrade path: export the command functions from cli.ts and call them in process.
  */
 export function cliRunner(
@@ -159,13 +159,21 @@ export function cliRunner(
         file = join(home, 'text', `${randomUUID()}.md`)
         writeFileSync(file, text, { mode: 0o600 })
       }
-      const proc = Bun.spawn([process.execPath, cli, ...argv, ...(file ? ['--text-file', file] : [])], {
-        cwd: home,
-        env: env ?? personEnv(process.env, home),
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
+      const proc = Bun.spawn(
+        [
+          process.execPath,
+          cli,
+          ...argv,
+          ...(file ? [argv[0] === 'report' ? '--summary-file' : '--text-file', file] : []),
+        ],
+        {
+          cwd: home,
+          env: env ?? personEnv(process.env, home),
+          stdin: 'ignore',
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      )
       let timedOut = false as boolean
       const timer = setTimeout(() => {
         timedOut = true
@@ -666,8 +674,8 @@ export function workerHandler(o: {
           r =
             kind === 'report'
               ? await o.run(
-                  ['report', claims.run, String(claims.seq), b.outcome as string, b.summary as string],
-                  undefined,
+                  ['report', claims.run, String(claims.seq), b.outcome as string],
+                  b.summary as string,
                   env,
                 )
               : await o.run(['mail', claims.run, b.to as string], b.text as string, env)

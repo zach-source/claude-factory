@@ -93,7 +93,7 @@ test('report once, mail from the station, a foreign run refused, no client certi
       tls: { ca },
     })
 
-  const rep = { outcome: 'ready', summary: 'worker api summary' }
+  const rep = { outcome: 'ready', summary: '--summary-file' }
   const a = await post('/v1/report', rep, 'report-key-1')
   expect(a.status).toBe(200)
   const b = await post('/v1/report', rep, 'report-key-1')
@@ -101,9 +101,13 @@ test('report once, mail from the station, a foreign run refused, no client certi
   const done = run.lines().filter(x => x.type === 'DONE' && x.summary === rep.summary)
   expect(done.length).toBe(1)
 
-  const m = await post('/v1/mail', { to: 'manager', text: 'hi' }, 'mail-key-001')
+  const m = await post('/v1/mail', { to: 'manager', text: '--wake' }, 'mail-key-001')
   expect(m.status).toBe(200)
-  expect(run.lines().some(x => x.from === 'implement' && JSON.stringify(x).includes('hi'))).toBe(true)
+  expect(run.lines().find(x => x.type === 'MAIL')).toMatchObject({
+    from: 'implement',
+    text: '--wake',
+  })
+  expect(run.lines().find(x => x.type === 'MAIL')?.wake).not.toBe(true)
 
   const before = readFileSync(join(home, 'runs', 'r1', 'inbox.jsonl'), 'utf8')
   const f = await post('/v1/report', { run: 'other', outcome: 'ok', summary: 'x' }, 'other-key-01')

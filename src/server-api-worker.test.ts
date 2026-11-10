@@ -143,8 +143,8 @@ describe('worker API', () => {
       else process.env.FACTORY_SERVER = was.s
     }
     expect(s.calls.length).toBe(1)
-    expect(s.calls[0]!.argv).toEqual(['report', 'r1', '2', 'ready', 'done'])
-    expect(s.calls[0]!.text).toBeUndefined()
+    expect(s.calls[0]!.argv).toEqual(['report', 'r1', '2', 'ready'])
+    expect(s.calls[0]!.text).toBe('done')
     const env = s.calls[0]!.env
     expect(env.FACTORY_FROM).toBe('plan')
     expect(env.FACTORY_RUN).toBe('r1')
