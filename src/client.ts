@@ -115,7 +115,7 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
     case 'mail': {
       // cli.ts expands --text-file before this call
       const wake = args[2] === '--wake'
-      const text = args.slice(wake ? 3 : 2).join(' ')
+      const text = args.slice(wake || args[2] === '--' ? 3 : 2).join(' ')
       return n >= 3 && seg(a, b) && text
         ? {
             method: 'POST',

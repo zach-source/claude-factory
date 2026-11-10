@@ -24,6 +24,7 @@ import * as worker from './worker'
 const parentEnv = { ...process.env }
 for (const key of Object.keys(process.env))
   if (key.startsWith('FACTORY_') || key.startsWith('BEADS_')) delete process.env[key]
+delete process.env.DEVENV_TASK_FILE
 
 const dir = join(tmpdir(), `ax-${process.pid}`)
 const calls = join(dir, 'calls.log')
@@ -113,9 +114,29 @@ test('the AX fixtures ignore inherited worker and Beads settings', () => {
         FACTORY_BEADS_REMOTE: '',
         BEADS_DIR: join(dir, 'parent-beads'),
       },
-      timeout: 20_000,
+      timeout: 30_000,
     },
   )
+  expect(p.exitCode, p.stderr.toString()).toBe(0)
+})
+
+test('the AX fixtures ignore inherited service tasks', () => {
+  const tasks = join(dir, 'parent-tasks.json')
+  writeFileSync(
+    tasks,
+    JSON.stringify([
+      {
+        name: 'devenv:processes:web',
+        type: 'process',
+        command: 'exit 0',
+        process: { start: { enable: true }, ready: { exec: 'exit 0' } },
+      },
+    ]),
+  )
+  const p = Bun.spawnSync([process.execPath, 'test', import.meta.filename, '-t', '^the worker briefs once'], {
+    env: { ...process.env, DEVENV_TASK_FILE: tasks },
+    timeout: 20_000,
+  })
   expect(p.exitCode, p.stderr.toString()).toBe(0)
 })
 

@@ -9079,7 +9079,11 @@ async function createTracked(
     return await createRun(spec, repo, goal, { id, bead, from, ship, onto, shipBranch })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
-    if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
+    try {
+      if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
+    } catch (deferErr) {
+      throw new Error(`${(err as Error).message}; could not defer ${bead}: ${(deferErr as Error).message}`)
+    }
     throw err
   }
 }
@@ -13582,7 +13586,9 @@ if (queued) {
 if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   let sent: number | null
   try {
-    sent = await client.main(cmd, cmd === 'mail' ? fileArgs('mail', args) : args, process.env)
+    const remoteArgs = cmd === 'mail' ? fileArgs('mail', args) : args
+    if (cmd === 'mail' && args[2] === '--text-file') remoteArgs.splice(2, 0, '--')
+    sent = await client.main(cmd, remoteArgs, process.env)
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
