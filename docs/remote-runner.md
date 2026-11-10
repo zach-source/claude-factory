@@ -664,11 +664,12 @@ The manager VM holds placeholders only. The egress gateway puts the real value i
 | Dolt (`bd dolt pull`)     | `DOLT_REMOTE_PASSWORD=placeholder`                     | The rig's own egress entry for that host and port gives the vault key, header and prefix. Else the key is `DOLT_BASIC`. `managerEgress` adds one rule for each `https` `beadsRemote` host and port. A rig with none, or with an `http` remote, adds none.            |
 | Linear (`--linear` rigs)  | Key `placeholder` when `FACTORY_IN_AX=1`               | Vault key `LINEAR`, header `Authorization`, no prefix. `managerEgress` adds the `api.linear.app` rule only for a `--linear` rig.   |
 | AX server                 | `AX_AUTH_TOKEN=placeholder` for an `https` URL         | Vault key `AX_AUTH`, header `Authorization`, prefix `Bearer `. `managerEgress` gives an `https` `FACTORY_AX_MANAGER_AX_SERVER` an `https` rule (port from the URL, else 443). An `http` URL keeps a plain rule and no token. `createPolicy` refuses `AX_AUTH` in the policy of any task but the manager. |
+| Codex fallback            | none; the Codex login holds placeholders                | Vault key `OPENAI`, rule for `api.openai.com`. Vault keys `CODEX_CHATGPT` and `CODEX_CHATGPT_ACCOUNT`, rule for `chatgpt.com` (path prefix `/backend-api/codex/` only). `managerEgress` adds both rules always. The manager uses Codex when every Claude slot is at its limit (claude-factory-y3f8w). |
 | Router, broker            | none                                                   | Plain `http` (h2c) rules, no credential.                                                                                           |
 | Kube API                  | none                                                   | The VM has none. `unavailable()` asks the broker `GET /controller`.                                                                |
 | Token swap                | `FACTORY_AX_TOKEN_SWAP` is a `curl` POST to the broker | The broker pod runs `claude-token best`. The op writer token is the Secret `claude-token-op` there, never in the VM.                |
 
-Workers only (not the manager): `BUILDBUDDY`, `ATTIC`, `OPENAI`, `CODEX_CHATGPT`, `CODEX_CHATGPT_ACCOUNT`, `GITLAB`.
+Workers only (not the manager): `BUILDBUDDY`, `ATTIC`, `GITLAB`.
 
 Check it in the VM: `AX_CHECK_SWAP=1 RIG_REPO=<clone> BEADS_RIG_REPO=<clone> AX_PROBE_FILE=<task manifest with __NAME__> hack/ax-manager-check.sh`. `AX_CHECK_SWAP=1` is needed for the token swap check. It swaps the live Claude token for all AX workers. Without it, the check prints SKIP. The script prints PASS or FAIL for the `gh`, `git push`, `bd dolt pull`, token swap, AX apply and no-secret-on-disk checks.
 
@@ -680,6 +681,7 @@ Owner steps (a worker never runs these):
 4. Run `CLAUDE_TOKEN_ITEM=.. CLAUDE_TOKEN_VAULT=.. CLAUDE_TOKEN_LIVE_FIELD=.. CLAUDE_TOKEN_SLOT_FIELD=.. CLAUDE_TOKEN_ACTIVE_FIELD=.. BROKER_IMAGE=<digest> envsubst '<the variables>' < deploy/broker.yaml | kubectl apply -f -`.
 5. Launch the manager again with `FACTORY_AX_MANAGER_BROKER`, `FACTORY_AX_MANAGER_AX_SERVER` and `FACTORY_AX_MANAGER_ROUTER` set.
 6. For a `--linear` rig, add `LINEAR` to the agent-vault vault.
+7. Roll out the new manager egress only as an owner step. It is a credential change: the manager VM can then reach `api.openai.com` and `chatgpt.com`.
 
 AX server caller authentication (owner steps, in order):
 
