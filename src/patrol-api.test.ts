@@ -189,9 +189,39 @@ describe('1ocuv AC1 identity before application access', () => {
     expect((await t.request(undefined, undefined, `Patrol ${malformed}`)).status).toBe(401)
     t.zero()
   })
+  test('an invalid unused record refuses the whole provider result', async () => {
+    for (const change of [{ notBefore: 2000, expiresAt: 1000 }, { audience: '../bad' }]) {
+      const t = setup()
+      await t.acquire()
+      t.clear()
+      t.records([identity(), { ...identity(), id: 'unused', digest: digest(otherToken), ...change }])
+      expect((await t.request()).status).toBe(401)
+      t.zero()
+    }
+  })
 })
 
 describe('1ocuv AC2 closed grammar', () => {
+  test('owner paths, held-run mutations, and mismatched route methods have no adapter calls', async () => {
+    const t = setup()
+    for (const path of [
+      '/v1/runs/run-one/decide',
+      '/v1/runs/run-one/goto',
+      '/v1/runs/held-run/abort',
+      '/v1/patrol/runs/run-one/mail',
+      '/v1/patrol/runs/held-run/wake',
+      '/v1/workers/report',
+      '/v1/patrol/snapshot',
+      '/v1/patrol/runs/run-one',
+    ]) {
+      expect((await t.request(path, { epoch: t.epoch })).status).toBe(403)
+      t.zero()
+    }
+    for (const route of ['acquire', 'renew', 'complete']) {
+      expect((await t.request(`/v1/patrol/lease/${route}`)).status).toBe(403)
+      t.zero()
+    }
+  })
   test('key boundaries and field order remain valid', async () => {
     for (const key of ['a'.repeat(8), 'Z'.repeat(128)]) {
       const t = setup()

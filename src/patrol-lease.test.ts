@@ -85,6 +85,13 @@ describe('1ocuv AC4 remote lease exclusion and replay', () => {
       const done = t.call('complete', body, 'complete-key')
       expect(done).toEqual({ status: 200, body: { completed: true } })
       expect(t.call('complete', body, 'complete-key')).toEqual(done)
+      t.lookup.mockClear()
+      expect(t.acquire().status).toBe(409)
+      expect(t.call('complete', body, 'new-complete-key').status).toBe(409)
+      expect(
+        t.call('renew', { epoch: t.lease.epoch, generation: first.generation }, 'new-renew-key').status,
+      ).toBe(409)
+      expect(t.lookup).not.toHaveBeenCalled()
       expect(
         t.call('complete', { ...body, outcome: outcome === 'success' ? 'failed' : 'success' }, 'complete-key')
           .status,
