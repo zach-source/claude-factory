@@ -152,6 +152,8 @@ import {
   beadsOnlyCodexDir,
   codexSkills,
   command,
+  SandboxPathError,
+  seatbelt,
   cutOffCall,
   cutOffNote,
   harnessOf,
@@ -220,6 +222,7 @@ import {
   syncEnv,
 } from './linear'
 import * as worker from './worker'
+import { realPath } from './token-guard'
 import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError, backupWanted } from './homebackup'
@@ -3918,11 +3921,79 @@ export function otelFor(run: Run, node: string, c: Ctx, agent: string, endpoint:
   )
 }
 
-function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, session?: string) {
+const SANDBOX_EXEC = '/usr/bin/sandbox-exec'
+
+/**
+ * the command prefix that runs a laptop herdr worker in a macOS Seatbelt sandbox (claude-factory-o7h6h),
+ * or a refusal. Off macOS it refuses while a person key exists. ponytail: a Linux laptop gets no OS
+ * sandbox; the upgrade path is bwrap.
+ */
+export function laptopSandbox(
+  h: Harness | null,
+  worktree: string,
+  o: {
+    platform?: string
+    exists?: (p: string) => boolean
+    home?: string
+    factoryHome?: string
+    env?: Record<string, string | undefined>
+  } = {},
+): string {
+  const { platform = process.platform, exists = existsSync, home = homedir(), env = process.env } = o
+  if (platform !== 'darwin') {
+    const key = join(home, '.config', 'factory', 'person.key')
+    if (!exists(key)) return ''
+    return refuse(
+      `this host (${platform}) has no worker sandbox, and the person key ${key} exists: the factory refuses the launch (claude-factory-o7h6h)`,
+    )
+  }
+  if (!exists(SANDBOX_EXEC))
+    refuse(`a laptop worker runs in the macOS sandbox, and ${SANDBOX_EXEC} is missing (claude-factory-o7h6h)`)
+  const factoryHome = o.factoryHome ?? HOME
+  let sb: ReturnType<typeof seatbelt>
+  try {
+    sb = seatbelt(h, {
+      home,
+      factoryHome,
+      claudeDir: env.CLAUDE_CONFIG_DIR,
+      codexHome: env.CODEX_HOME,
+      cursorDir: env.CURSOR_CONFIG_DIR,
+      grokHome: env.GROK_HOME,
+    })
+  } catch (e) {
+    if (e instanceof SandboxPathError) return refuse(`${e.message} (claude-factory-o7h6h)`)
+    throw e
+  }
+  const inside = (what: string, path: string) => {
+    const real = realPath(resolve(path))
+    if (real === undefined)
+      refuse(
+        `the factory cannot find the real path of ${path}, so it cannot check the worker sandbox (claude-factory-o7h6h)`,
+      )
+    for (const p of [resolve(path), real!])
+      for (const d of sb.denied)
+        if (p === d || p.startsWith(d + sep))
+          refuse(`the ${what} ${path} is inside the sandbox deny path ${d} (claude-factory-o7h6h)`)
+  }
+  inside('worktree', worktree)
+  inside('factory home', factoryHome)
+  return `${SANDBOX_EXEC} -p ${sq(sb.profile)} `
+}
+
+export function launch(
+  run: Run,
+  def: Factory,
+  node: string,
+  c: Ctx,
+  prompt: string,
+  session?: string,
+  sb = laptopSandbox,
+) {
   const rig = rigOf(run.repo)
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const h = harnessOf(agent)
+  const wrap = sb(h, run.worktree)
   const skills = skillsFor(h, workerSkills(def, def.nodes[node]!, rig))
   const otel = otelFor(run, node, c, agent, process.env.FACTORY_OTLP_ENDPOINT)
   warnSkillsForHarness(h, skills, node, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'))
@@ -3943,6 +4014,7 @@ function launch(run: Run, def: Factory, node: string, c: Ctx, prompt: string, se
     session,
     ...setup,
     mcp: rig?.mcp ? readMcp(rig.mcp) : undefined,
+    wrap,
   })
 }
 

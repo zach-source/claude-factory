@@ -1,5 +1,15 @@
 import { expect, test } from 'bun:test'
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  cpSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -11,6 +21,8 @@ import {
   harnessOf,
   LAUNCH_LINE,
   readMcp,
+  SandboxPathError,
+  seatbelt,
   skillsFor,
   writeLaunch,
 } from './harness'
@@ -238,4 +250,160 @@ test('a home with a space: the launch line sources the launch file, and the work
   })
   expect(p.stderr.toString()).toBe('')
   expect(p.stdout.toString()).toBe('hello from the prompt')
+})
+
+// claude-factory-o7h6h: the Seatbelt profile of a laptop worker
+const SB = {
+  home: '/u/a',
+  factoryHome: '/f/home',
+  claudeDir: '/c/claude',
+  codexHome: '/c/codex',
+  cursorDir: '/c/cursor',
+  grokHome: '/c/grok',
+}
+const id = (p: string) => p
+const KEY = '/u/a/.config/factory'
+const SETS = {
+  claude: [
+    ['/u/a/.claude/.credentials.json', 'literal'],
+    ['/u/a/.claude.json', 'literal'],
+    ['/c/claude/.credentials.json', 'literal'],
+    ['/c/claude/.claude.json', 'literal'],
+  ],
+  codex: [
+    ['/u/a/.codex', 'subpath'],
+    ['/c/codex', 'subpath'],
+  ],
+  cursor: [
+    ['/u/a/.cursor', 'subpath'],
+    ['/u/a/.config/cursor', 'subpath'],
+    ['/c/cursor', 'subpath'],
+  ],
+  grok: [
+    ['/u/a/.grok', 'subpath'],
+    ['/c/grok', 'subpath'],
+  ],
+} as const
+const rule = (kind: string, p: string) => `(deny file-read* file-write* file-link (${kind} "${p}"))`
+
+test('seatbelt denies the table paths for each harness', () => {
+  for (const h of ['claude', 'codex', 'pi', 'cursor', 'grok', null] as const) {
+    const { profile, denied } = seatbelt(h, SB, id)
+    expect(profile).toContain(rule('subpath', KEY))
+    expect(denied).toContain(KEY)
+    for (const [own, set] of Object.entries(SETS))
+      for (const [p, kind] of set) {
+        if (own === h) {
+          expect(profile).not.toContain(`"${p}"`)
+          expect(denied).not.toContain(p)
+        } else {
+          expect(profile).toContain(rule(kind, p))
+          expect(denied).toContain(p)
+        }
+      }
+  }
+  // no override set: the default paths stay denied; '' counts as unset
+  const { profile } = seatbelt('pi', { home: '/u/a', factoryHome: '/f', codexHome: '' }, id)
+  for (const [p, kind] of [
+    ['/u/a/.codex', 'subpath'],
+    ['/u/a/.cursor', 'subpath'],
+    ['/u/a/.config/cursor', 'subpath'],
+    ['/u/a/.grok', 'subpath'],
+    ['/u/a/.claude.json', 'literal'],
+    ['/u/a/.claude/.credentials.json', 'literal'],
+  ])
+    expect(profile).toContain(rule(kind!, p!))
+  expect(profile).not.toContain('(subpath "")')
+})
+
+test('seatbelt denies writes to each ancestor', () => {
+  const { profile, denied } = seatbelt('claude', SB, id)
+  expect(profile.startsWith('(version 1)\n(allow default)\n')).toBe(true)
+  expect(profile.split('\n').filter(l => l.startsWith('(allow'))).toEqual(['(allow default)'])
+  expect(profile).toContain('(deny file-write* (literal "/u/a/.config"))')
+  expect(profile).toContain('(deny file-write* (literal "/u/a"))')
+  expect(profile).toContain('(deny file-write* (literal "/u"))')
+  expect(profile).not.toContain('(literal "/")')
+  expect(profile).not.toContain('/f/home')
+  expect(denied).not.toContain('/f/home')
+  const n = seatbelt('claude', { home: '/u/a/../b/', factoryHome: '/f' }, id)
+  expect(n.profile).toContain(rule('subpath', '/u/b/.config/factory'))
+  // a symlinked key dir: both forms are denied, and the real path's ancestors are protected
+  const real = (p: string) => (p === '/u/a/.config/factory' ? '/r/factory' : p)
+  const s = seatbelt('claude', SB, real)
+  expect(s.profile).toContain(rule('subpath', '/u/a/.config/factory'))
+  expect(s.profile).toContain(rule('subpath', '/r/factory'))
+  expect(s.profile).toContain('(deny file-write* (literal "/r"))')
+  expect(s.denied).toEqual(expect.arrayContaining(['/u/a/.config/factory', '/r/factory']))
+  expect(() => seatbelt('claude', SB, () => undefined)).toThrow(SandboxPathError)
+})
+
+test('seatbelt refuses a path it cannot quote', () => {
+  for (const bad of ['/u/"a', '/u/\\a', '/u/\na', '/u/\x01a', '/u/\x7fa', 'rel/x', '~/x'])
+    expect(() => seatbelt('claude', { ...SB, home: bad }, id)).toThrow(SandboxPathError)
+  for (const bad of ['/c/"x', '/c/\\x', '/c/\nx', '/c/\x01x', '/c/\x7fx', 'rel/x', '~/x'])
+    expect(() => seatbelt('claude', { ...SB, codexHome: bad }, id)).toThrow(SandboxPathError)
+})
+
+test('seatbelt keeps a path with a space or a quote', () => {
+  for (const home of ['/Users/a b', "/Users/o'k"])
+    expect(seatbelt('claude', { home, factoryHome: '/f' }, id).profile).toContain(`"${home}/.config/factory"`)
+})
+
+test('command puts the sandbox wrap before the agent exe', () => {
+  const W = "/usr/bin/sandbox-exec -p 'x' "
+  const env = { A: '1' }
+  const lines = [
+    command('claude', 'p.md', { env, wrap: W }),
+    command('claude', 'p.md', { env, wrap: W, session: 's' }),
+    command('codex', 'p.md', { env, wrap: W }),
+    command('codex', 'p.md', { env, wrap: W, session: 's' }),
+    command('pi', 'p.md', { env, wrap: W }),
+    command('cursor-agent', 'p.md', { env, wrap: W, rules: 'r.md' }),
+    command('grok', 'p.md', { env, wrap: W }),
+  ]
+  for (const l of lines) expect(l).toStartWith(`A='1' ${W}`)
+  expect(lines[0]).toStartWith(`A='1' ${W}claude `)
+  expect(lines[3]).toStartWith(`A='1' ${W}codex resume`)
+  expect(command('weird-agent', 'p.md', { wrap: W })).toStartWith(`${W}weird-agent `)
+  for (const a of ['claude', 'weird-agent']) expect(command(a, 'p.md', { wrap: '' })).toBe(command(a, 'p.md'))
+  expect(command('codex', 'p.md', { session: 's' })).toStartWith('codex resume')
+})
+
+test.skipIf(process.platform !== 'darwin')('seatbelt blocks reads on macOS', () => {
+  const home = mkdtempSync(join(tmpdir(), 'sb-home-'))
+  mkdirSync(join(home, '.config', 'factory'), { recursive: true })
+  writeFileSync(join(home, '.config', 'factory', 'person.key'), 'secret')
+  mkdirSync(join(home, '.claude'), { recursive: true })
+  writeFileSync(join(home, '.claude', 'settings.json'), '{}')
+  const wt = join(home, 'wt')
+  mkdirSync(wt)
+  Bun.spawnSync(['git', 'init', '-q'], { cwd: wt })
+  symlinkSync(join(home, '.config', 'factory'), join(wt, 'k'))
+  const { profile } = seatbelt('claude', { home, factoryHome: join(home, 'fh') })
+  const run = (code: string) =>
+    Bun.spawnSync(['/usr/bin/sandbox-exec', '-p', profile, 'bun', '-e', code], { cwd: wt })
+  const key = `[${JSON.stringify(home)}, '.config', 'fac' + 'tory', 'person' + '.key']`
+  const k = JSON.stringify(join(home, '.config', 'factory', 'person.key'))
+  const fails = [
+    `require('fs').readFileSync(require('path').join(...${key}))`,
+    `require('fs').readdirSync(${JSON.stringify(join(home, '.config', 'factory'))})`,
+    `require('fs').readFileSync(${JSON.stringify(join(wt, 'k', 'person.key'))})`,
+    `require('fs').linkSync(${k}, ${JSON.stringify(join(wt, 'hl'))})`,
+    `require('fs').renameSync(${JSON.stringify(join(home, '.config'))}, ${JSON.stringify(join(home, '.c'))})`,
+    `require('fs').renameSync(${JSON.stringify(join(home, '.config', 'factory'))}, ${JSON.stringify(join(home, 'f2'))})`,
+  ]
+  for (const code of fails) {
+    const r = run(code)
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr.toString()).toMatch(/EPERM|EACCES|operation not permitted|permission denied/i)
+  }
+  expect(run(`require('fs').writeFileSync('w.txt','x'); require('fs').readFileSync('w.txt')`).exitCode).toBe(
+    0,
+  )
+  expect(
+    run(`require('fs').readFileSync(${JSON.stringify(join(home, '.claude', 'settings.json'))})`).exitCode,
+  ).toBe(0)
+  const git = Bun.spawnSync(['/usr/bin/sandbox-exec', '-p', profile, 'git', 'status'], { cwd: wt })
+  expect(git.exitCode).toBe(0)
 })

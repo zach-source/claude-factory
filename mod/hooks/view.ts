@@ -1271,7 +1271,14 @@ export function gatedCommand(
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
   // `factory` as a command word (`factory`, `bin/factory`), not a part of a path such as `acme-factory/x`
-  const at = /(?<![\w.-])factory(?![\w./-])/.test(command) ? substitutionIn(rawCommand) : -1
+  const baseTexts = unreadable
+    ? [rawCommand.replace(/\\\n/g, '\n'), rawCommand.replace(/\\\n/g, '')]
+    : [command]
+  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t)) || cliCall(strip(t)))
+    ? substitutionIn(rawCommand)
+    : -1
+  // claude-factory-6tl1: the first word after the caller must be a literal word
+  const verbHidden = baseTexts.some(t => VERB_HIDDEN.test(t))
   let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
@@ -1298,26 +1305,37 @@ export function gatedCommand(
     unreadable
       ? [(t: string) => t.replace(/\\\n/g, '\n'), (t: string) => t.replace(/\\\n/g, '')]
       : [joinLines]
-  ).map(f => {
-    const text = f(rawCommand)
-    // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
-    return {
-      text,
-      cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
-    }
-  })
+  )
+    .map(f => {
+      const text = f(rawCommand)
+      // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
+      return {
+        text,
+        cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
+        canonical: false,
+      }
+    })
+    .flatMap(r => {
+      // the canonical read: the strip copy with each hidden word read as `factory`. A cut that splits a word drops that word.
+      const s = strip(r.text)
+      let h = strip(r.text.slice(0, r.cut))
+      if (h.length < s.length && /\S/.test(s[h.length]!)) h = h.replace(/\S+$/, '')
+      return [r, { text: canon(s), cut: canon(h).length, canonical: true }]
+    })
   const kinds = GATED_KINDS.flatMap(k => {
     const per = reads.map(r => {
       const ends = kindEnds(r.text, k.re, k.tail)
-      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length }
+      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length, base: !r.canonical }
     })
     const count = Math.max(...per.map(x => x.count))
-    return count ? [{ ...k, count, hidden: Math.max(...per.map(x => x.hidden)) }] : []
+    const base = per.some(x => x.base && x.count > 0)
+    return count ? [{ ...k, count, base, hidden: Math.max(...per.map(x => x.hidden)) }] : []
   })
-  if (!unreadable && !substitution && !kinds.length) return null
+  if (!unreadable && !substitution && !verbHidden && !kinds.length) return null
   const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
   const named = [
     ...(substitution ? [substitution.phrase] : []),
+    ...(verbHidden ? ['run a factory command whose verb or an argument is not a literal word'] : []),
     ...kinds.map(k => `${k.phrase}${times(k.count)}`),
   ]
   const hidden = kinds.filter(k => k.hidden > 0)
@@ -1327,8 +1345,13 @@ export function gatedCommand(
   const names = [...(who ? [who] : []), ...named]
   return {
     // only a person-decision kind is worth a dialog; a substitution or unreadable form alone is denied at once
+<<<<<<< HEAD
     ask: kinds.length > 0,
     kinds: kinds.map(k => k.id),
+=======
+    // a kind found on a base read asks. One found only on the canonical read asks only if nothing else is wrong.
+    ask: kinds.some(k => k.base) || (kinds.length > 0 && !substitution && !verbHidden && !unreadable),
+>>>>>>> origin/main
     question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
     deny: [
       ...(unreadable
@@ -1337,11 +1360,62 @@ export function gatedCommand(
           ]
         : []),
       ...(substitution ? [substitution.deny] : []),
+      ...(verbHidden
+        ? [
+            'The person did not confirm this command. Write the factory verb as a literal word, with no $, backtick, * ? [ or {. Write each argument with no brace glued to a word. Pass free text by file.',
+          ]
+        : []),
       ...kinds.map(k => k.deny),
     ].join(' '),
   }
 }
 
+/** the shell drops these before it runs a word */
+const strip = (s: string) => s.replace(/[\\'"]/g, '')
+/** the CLI by its source file: `bun src/cli.ts`, `bun run x/cli.ts`, `node cli.js` */
+const CLI = String.raw`(?:^|[\s;&|(])(?:[^\s;&|()]*/)?(?:bun|node|run)\s+(?:\S*/)?cli(?:\.\w+)?`
+/** the factory CLI as a command word */
+const CALLER = new RegExp(String.raw`(?<![\w.-])factory(?![\w./-])|${CLI}(?=[\s;&|),}]|$)`)
+/** A runner word (bun, node, run) and each later cli word. The call starts at the first runner word and ends with the text. No character ends it, because this guard cannot split shell text into commands. One linear word scan. */
+function cliCall(t: string): { start: number; ends: number[] } | null {
+  let start = -1
+  const ends: number[] = []
+  for (const m of t.matchAll(/[^\s;&|()]+/g)) {
+    const w = m[0]
+    if (start >= 0 && /(?:^|\/)cli(?:\.\w+)?$/.test(w)) ends.push(m.index! + w.length)
+    else if (start < 0 && /(?:^|\/)(?:bun|node|run)$/.test(w)) start = m.index!
+  }
+  return start >= 0 && ends.length ? { start, ends } : null
+}
+const VERB_AFTER = /\s+[^\s$\x60*?[{]*[$\x60*?[{]/y
+/** a word the hook cannot read as a literal command name */
+const HIDDEN = /[$`*?[)]|(?:^|[/;&|])cli(?:\.\w+)?$/
+const one = (p: string) => (HIDDEN.test(p) ? 'factory' : p)
+/** the strip copy with each such word read as `factory`, so GATED_KINDS match it; a brace word reads as its parts */
+const canon = (s: string) =>
+  s.replace(/\S+/g, w =>
+    w.includes('{') ? `${w.split(/[{,}]/).filter(Boolean).map(one).join(' ')} factory` : one(w),
+  )
+/** the caller word, then a verb word with a hidden part */
+const VERB_FIRST = new RegExp(String.raw`(?:(?<![\w.-])factory|${CLI})\s+[^\s$\x60*?[{]*[$\x60*?[{]`)
+/** a brace group glued to a word: `a{b,c}`, `a{1..2}`, `{a,b}c`. Each run stops at the next brace, comma or space, so the scan is linear. */
+const GLUED_BRACE = /[\w-]\{+[^\s{},]*[,}]|[,{][^\s{},]*\}+[\w-]/
+/** a non-literal verb word after the caller word, or a brace word anywhere after it (no bound, no split on `;&|`: the strip copy lost the quotes) */
+const VERB_HIDDEN = {
+  test: (t: string) => {
+    const s = strip(t)
+    const c = cliCall(s)
+    if (c) {
+      if (GLUED_BRACE.test(s.slice(c.start))) return true
+      for (const end of c.ends) {
+        VERB_AFTER.lastIndex = end
+        if (VERB_AFTER.test(s)) return true
+      }
+    }
+    const i = s.search(CALLER)
+    return VERB_FIRST.test(s) || (i >= 0 && GLUED_BRACE.test(s.slice(i)))
+  },
+}
 /** Return match ends. A tail cut prevents repeated scans of a suffix with no tail. */
 export function kindEnds(text: string, re: RegExp, tail?: RegExp): number[] {
   if (tail) {

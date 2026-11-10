@@ -2,8 +2,9 @@
 // so the runner watches them all the same way; they differ only in how a launch, a resume and an
 // MCP config are spelled on the command line.
 import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { cut } from './cut'
+import { realPath } from './token-guard'
 
 export type Harness = 'claude' | 'codex' | 'pi' | 'cursor' | 'grok'
 
@@ -229,13 +230,21 @@ export const codexMcp = (servers: Record<string, McpServer>) =>
 export function command(
   agent: string,
   prompt: string,
-  o: { session?: string; mcp?: Mcp; extra?: string; env?: Record<string, string>; rules?: string } = {},
+  o: {
+    session?: string
+    mcp?: Mcp
+    extra?: string
+    env?: Record<string, string>
+    rules?: string
+    wrap?: string
+  } = {},
 ) {
   const text = `"$(cat ${sq(prompt)})"`
   const { session, mcp } = o
-  const env = Object.entries(o.env ?? {})
-    .map(([k, v]) => `${k}=${sq(v)} `)
-    .join('')
+  const env =
+    Object.entries(o.env ?? {})
+      .map(([k, v]) => `${k}=${sq(v)} `)
+      .join('') + (o.wrap ?? '')
   switch (harnessOf(agent)) {
     case 'claude': {
       const base = session ? `${agent.replace(/\s--new\b/, '')} --resume ${sq(session)}` : agent
@@ -269,7 +278,7 @@ export function command(
       return `${env}${agent}${o.extra ?? ''}${rules}${session ? ` -r ${sq(session)}` : ''} ${text}`
     }
     default:
-      return `${agent} ${text}`
+      return `${o.wrap ?? ''}${agent} ${text}`
   }
 }
 
@@ -292,4 +301,62 @@ export function writeLaunch(home: string, pane: string, cmd: string): string {
   writeFileSync(file, `${cmd}\n`, { mode: 0o600 })
   chmodSync(file, 0o600) // writeFileSync's mode is masked by umask; an existing file keeps its old mode otherwise
   return LAUNCH_LINE
+}
+
+export class SandboxPathError extends Error {}
+export type SandboxPaths = {
+  home: string
+  factoryHome: string
+  claudeDir?: string
+  codexHome?: string
+  cursorDir?: string
+  grokHome?: string
+}
+/** the Seatbelt profile for a worker of harness h, and every path it denies, for the inside check */
+export function seatbelt(
+  h: Harness | null,
+  p: SandboxPaths,
+  real: (p: string) => string | undefined = realPath,
+): { profile: string; denied: string[] } {
+  const set = (v: string | undefined) => v !== undefined && v !== ''
+  for (const [k, v] of Object.entries(p))
+    if (set(v) && !isAbsolute(v)) throw new SandboxPathError(`the sandbox path ${k} must be absolute: ${v}`)
+  const home = resolve(p.home)
+  const abs = (v: string | undefined) => (set(v) ? [resolve(v!)] : [])
+  // [path, kind] of each store that a harness other than h must not reach
+  const own = (name: Harness, dirs: [string[], boolean]) =>
+    h === name ? [] : dirs[0]!.map(d => [d, dirs[1]] as const)
+  const entries: (readonly [string, boolean])[] = [
+    [join(home, '.config', 'factory'), true],
+    ...own('claude', [[join(home, '.claude', '.credentials.json'), join(home, '.claude.json')], false]),
+    ...own('claude', [
+      abs(p.claudeDir).flatMap(d => [join(d, '.credentials.json'), join(d, '.claude.json')]),
+      false,
+    ]),
+    ...own('codex', [[join(home, '.codex'), ...abs(p.codexHome)], true]),
+    ...own('cursor', [[join(home, '.cursor'), join(home, '.config', 'cursor'), ...abs(p.cursorDir)], true]),
+    ...own('grok', [[join(home, '.grok'), ...abs(p.grokHome)], true]),
+  ]
+  const rules = new Map<string, boolean>()
+  for (const [path, dir] of entries) {
+    const r = real(path)
+    if (r === undefined) throw new SandboxPathError(`the factory cannot find the real path of ${path}`)
+    for (const x of [path, r]) rules.set(x, dir)
+  }
+  const denied = [...rules.keys()]
+  for (const d of denied)
+    // eslint-disable-next-line no-control-regex
+    if (/["\\\u0000-\u001f\u007f]/.test(d))
+      throw new SandboxPathError(`the sandbox cannot quote the path ${JSON.stringify(d)}`)
+  const ancestors = new Set<string>()
+  for (const d of denied) for (let a = dirname(d); a !== dirname(a); a = dirname(a)) ancestors.add(a)
+  const lines = [
+    '(version 1)',
+    '(allow default)',
+    ...[...rules].map(
+      ([d, dir]) => `(deny file-read* file-write* file-link (${dir ? 'subpath' : 'literal'} "${d}"))`,
+    ),
+    ...[...ancestors].map(a => `(deny file-write* (literal "${a}"))`),
+  ]
+  return { profile: lines.join('\n') + '\n', denied }
 }
