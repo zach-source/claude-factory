@@ -6785,7 +6785,8 @@ function runFact(id: string): gc.RunFact {
     const { bytes, files } = st.isDirectory() ? dirSize(join(dir, name)) : { bytes: st.size, files: 1 }
     return { name, isDir: st.isDirectory(), bytes, files }
   })
-  const { value, c } = current(id)
+  const { run, value, c } = current(id)
+  if (run.id !== id) throw new Error('run.json names run "' + run.id + '", not "' + id + '"')
   return { id, node: where(value)[0], finishedAt: c.log.at(-1)?.at ?? createdAt(id), entries }
 }
 function launchFacts(): gc.LaunchFact[] {
@@ -6806,6 +6807,7 @@ function launchFacts(): gc.LaunchFact[] {
  */
 function removeRun(id: string): Run {
   const { run, value } = current(id)
+  if (run.id !== id) fail(id + ': run.json names run "' + run.id + '": removed nothing')
   if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
   for (const k of ['id', 'worktree', 'repo'] as const) {
     const v: unknown = run[k]
@@ -7309,6 +7311,7 @@ function allRunRefs(): GcRunRef[] {
     try {
       const run = loadRun(id)
       const { value, c } = current(id)
+      if (run.id !== id) throw new Error('run.json id differs from its directory')
       const finishedAt = c.log.at(-1)?.at ?? createdAt(id)
       return { id, node: where(value)[0], finishedAt, worktree: run.worktree, bead: run.bead, repo: run.repo }
     } catch {
@@ -14737,7 +14740,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'rm': {
         refuseWorker('rm')
-        const run = removeRun(loadRun(args[0]).id)
+        const run = removeRun(args[0]!)
         console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
         break
       }
