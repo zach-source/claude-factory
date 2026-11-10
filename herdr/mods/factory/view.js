@@ -191,8 +191,22 @@ export function actionWords(action, arg) {
   throw new Error(`no such action: ${action}`)
 }
 
-/** the terminal command for the manager chat of a remote config, or null for a local one */
-export const chatArgv = cfg => (cfg.machine ? ['hc', 'attach', `${cfg.machine}/manager`] : null)
+/**
+ * the terminal command for the manager chat of a remote config, or null for a local one. While the manager's Claude
+ * is limited (board managerLimited), it starts a Codex chat in a terminal named manager-codex on the machine, if
+ * none is live, and attaches to it. The values travel as arguments of sh, so no quoting is needed.
+ */
+export function chatArgv(cfg, limited = null) {
+  if (!cfg.machine) return null
+  if (!limited) return ['hc', 'attach', `${cfg.machine}/manager`]
+  const script =
+    'hc run --bg --on "$0" --name manager-codex env "FACTORY_HOME=$1" "$2" manager chat --codex >/dev/null 2>&1; ' +
+    'exec hc attach "$0/manager-codex"'
+  return ['sh', '-c', script, cfg.machine, cfg.home, cfg.cli]
+}
+
+/** the label of the manager chat button */
+export const chatLabel = limited => (limited ? 'Manager chat (codex)' : 'Manager chat')
 
 /** the exec call of a remote job: [command, args]. It runs in the foreground, since hc exec kills what a command leaves behind. */
 export const directJob = (cfg, words) => ['env', [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...words]]
