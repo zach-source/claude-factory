@@ -10381,7 +10381,13 @@ function rigFacts(
   const candidates = linear.rigs.has(rig.name)
     ? []
     : dispatchable(ready, linked, Infinity, byId(every))
-        .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
+        .filter(
+          x =>
+            !isOwned(x) &&
+            !x.labels?.some(isHoldLabel) &&
+            !openChildrenOf(x.id).length &&
+            !linear.ids.has(x.id),
+        )
         .slice(0, 40)
         .map(c => ({
           id: c.id,
