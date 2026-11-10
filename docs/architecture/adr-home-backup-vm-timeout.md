@@ -126,7 +126,7 @@ Implement stopped that run and excluded it from the measurements above.
 
 The scans consumed about 79.6% of the measured large test time.
 This observation identifies the largest measured cost, not the cause of the earlier failure.
-The failure did not recur in these focused runs. No production change follows from this evidence.
+The failure did not recur in the four paired focused runs. No production change follows from this evidence.
 The next experiment must capture phase status during a full-suite recurrence on the same VM.
 It must also compare the focused test immediately afterward, with host CPU quota data if available.
 
@@ -137,6 +137,13 @@ All original size, blob, byte-equality, small-file, and cleanup checks remain.
 Production backup and secret code stay unchanged.
 The paired focused evidence does not include a full-suite comparison.
 The station report records the final gate and independent mutation results.
+
+A later clean baseline under `factory mutate` exceeded the large test limit at 120.83 seconds.
+That run used the stronger assertions and unchanged production code. The tool refused the mutation and left the file clean.
+The test reported 30 assertion calls but no failed result assertion. This does not identify the slow phase.
+This observation confirms that a focused run can also exceed the limit on this VM.
+It does not establish the cause of the original absent `changed` result.
+The timeout and all assertions remain unchanged.
 
 ### Rejected alternatives
 
