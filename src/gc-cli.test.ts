@@ -912,8 +912,18 @@ echo '{"result":{"panes":[]}}'
   )
   const wtb = join(home, 'worktrees', b)
   const tb = tip(b)
-  const out = factory(['gc'], { FACTORY_HERDR: bin })
+  const out = traced(['gc'], { FACTORY_HERDR: bin })
   expect(out.code).toBe(0)
+  // control: run a gets chmod, worktree remove, an archive append and a recursive removal. Run b gets none.
+  const wta = join(home, 'worktrees', a)
+  expect(spawned(out.calls, 'chmod', wta).length).toBe(1)
+  expect(spawned(out.calls, 'worktree', 'remove', wta).length).toBe(1)
+  expect(appends(out.calls).map(c => JSON.parse(c.data!).id)).toEqual([a])
+  expect(rmsUnder(out.calls, da).length).toBeGreaterThan(0)
+  expect(spawned(out.calls, 'chmod', wtb)).toEqual([])
+  expect(spawned(out.calls, 'worktree', 'remove', wtb)).toEqual([])
+  expect(rmsUnder(out.calls, db)).toEqual([])
+  expect(rmsUnder(out.calls, wtb)).toEqual([])
   expect(existsSync(da)).toBe(false)
   expect(existsSync(db)).toBe(true)
   expect(existsSync(wtb)).toBe(true)
@@ -945,10 +955,70 @@ test('lt4u.7 AC3: --dry-run leaves nested run files, worktree contents, metrics 
     )
   const before = snap()
   const t = tip(id)
-  const out = factory(['gc', '--dry-run'])
+  const out = traced(['gc', '--dry-run'])
   expect(out.out).toContain(`would reap ${id}`)
   expect(snap()).toEqual(before)
   expect(tip(id)).toBe(t)
+  // the control test shows the trace sees each of these when a real reap runs
+  expect(spawned(out.calls, 'chmod')).toEqual([])
+  expect(spawned(out.calls, 'worktree', 'remove')).toEqual([])
+  expect(appends(out.calls)).toEqual([])
+  expect(rmsUnder(out.calls, d)).toEqual([])
+  expect(rmsUnder(out.calls, wt)).toEqual([])
+})
+
+test('lt4u.9 AC1: a reap of a done and an aborted run issues no branch, ref, tag or remote command', () => {
+  reset()
+  const a = freshId('aaa')
+  const b = `zzz-${OLD().toString(36)}xx` // an aborted run ages off its id time
+  writeRun(a, { outcome: 'done', finishedAt: OLD(), real: true })
+  writeRun(b, { outcome: 'aborted', finishedAt: OLD(), real: true })
+  const refs = git(join(dir, 'repo'), 'for-each-ref')
+  const out = traced(['gc'])
+  expect(out.code).toBe(0)
+  expect(spawned(out.calls, 'worktree', 'remove').length).toBe(2) // control: both reaped
+  expect(metricIds()).toEqual([a, b])
+  const gitCalls = out.calls.filter(c => c.op === 'spawn' && c.argv![0] === 'git')
+  expect(gitCalls.length).toBeGreaterThan(0)
+  const banned = [
+    'branch',
+    'update-ref',
+    'push',
+    'fetch',
+    'remote',
+    'tag',
+    'symbolic-ref',
+    'checkout',
+    'switch',
+  ]
+  expect(gitCalls.filter(c => c.argv!.some(w => banned.includes(w)))).toEqual([])
+  expect(git(join(dir, 'repo'), 'for-each-ref')).toBe(refs)
+})
+
+test('lt4u.9 AC5: the first archive append fails: its worktree goes, its run dir stays, the next run is archived; a retry finishes', () => {
+  reset()
+  const a = freshId('aaa')
+  const b = freshId('zzz')
+  const da = writeRun(a, { outcome: 'done', finishedAt: OLD(), real: true })
+  const db = writeRun(b, { outcome: 'done', finishedAt: OLD(), real: true })
+  const wta = join(home, 'worktrees', a)
+  const ta = tip(a)
+  const out = traced(['gc'], { GC_FAIL_FIRST_APPEND: '1' })
+  expect(out.code).toBe(0)
+  expect(appends(out.calls).length).toBe(2) // a failed, b went through
+  expect(existsSync(wta)).toBe(false)
+  expect(existsSync(da)).toBe(true)
+  expect(rmsUnder(out.calls, da)).toEqual([]) // the run dir is never removed after a failed archive
+  expect(existsSync(db)).toBe(false)
+  expect(metricIds()).toEqual([b])
+  const log = readFileSync(join(home, 'gc.log'), 'utf8')
+  expect(log).toContain(`refused ${a}: injected append failure`)
+  expect(log).toContain(`reaped ${b}`)
+  // repaired: the retry archives a, removes its dir and keeps the branch
+  expect(factory(['gc']).code).toBe(0)
+  expect(existsSync(da)).toBe(false)
+  expect(metricIds()).toEqual([b, a])
+  expect(tip(a)).toBe(ta)
 })
 
 test('lt4u.7 AC5: one failing metrics record keeps its run; the next run is reaped', () => {
